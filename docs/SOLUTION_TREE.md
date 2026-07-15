@@ -4560,3 +4560,32 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   a new tracked node — same precedent as the entries above: a contained,
   single-declaration fix plus a correctly root-caused test correction.
   Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-15 (cont'd 4)** — **`niamonx` ATT&CK-mapping fix: added an
+  explicit `attack_techniques()` override it never had, so it stops
+  silently inheriting the Breach-category's 2-technique default despite
+  genuinely minting `Person` entities.** The second and final candidate
+  from the "other breach and analogous sources" investigation, picked up
+  after `dehashed` closed. Verified directly against source: `niamonx`
+  declared no override at all, falling through to `core::attack`'s
+  category-default table; its own `produces()` comment ("Person is
+  emitted from PBS v1 meta.names corroboration") was confirmed genuinely
+  real by reading the emitter directly (`mod.rs:431-438`, every
+  corroborating name becomes a `Person` pivot). `T1589.003` is exactly the
+  technique `dehashed`/`see_know`/`oathnet_pro` all declare for the
+  identical name-field Person pattern. Confirmed uncaught (the only
+  existing assertion was a trivial non-empty check) and confirmed no
+  pinned assertion exists in `tests/architecture.rs` for this module
+  (avoiding a repeat of the merged-loop surprise the `dehashed` fix
+  exposed). Fixed by adding the explicit override, mirroring `dehashed`'s
+  comment style. New test, red/green-verified by temporarily removing the
+  override (failed — fell back to the 2-technique default) and restoring
+  (passed). Full parity: all 8 `niamonx` tests + all 30 architecture
+  guards pass unchanged — `produces()`/`category()` were already correct
+  and untouched. Gate green: fmt/clippy `--all-targets -D warnings`/
+  strict-rustdoc `cargo doc`/`cargo test` — 4378 total pass (+1). No
+  identity/PII impact. This closes both candidates the broadened-scope
+  investigation surfaced; the other six modules read alongside them were
+  confirmed clean. Logged as a dated entry, not a new tracked node — same
+  precedent as the entries above: a contained, single-declaration fix.
+  Paired: `PROBLEM_TREE` §8 — same commit.

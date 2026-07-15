@@ -145,6 +145,20 @@ fn module_metadata() {
 }
 
 #[test]
+fn attack_techniques_include_employee_names_for_the_pbs_v1_name_pivot() {
+    use crate::core::attack;
+    let t = NiamonX.attack_techniques();
+    // The Breach-category default (Credentials + Email Addresses) omits
+    // Employee Names, but PBS v1's meta.names corroboration mints Person
+    // entities (process()'s name-pivot loop) — the same pattern
+    // dehashed/see_know/oathnet_pro declare T1589.003 for.
+    for id in ["T1589.001", "T1589.002", "T1589.003"] {
+        assert!(t.contains(&id), "niamonx must claim {id}, got {t:?}");
+        assert!(attack::technique(id).is_some(), "{id} must be catalogued");
+    }
+}
+
+#[test]
 fn pbs_v2_found_with_records_tags_breach() {
     let resp = PbsV2Response {
         success: true,

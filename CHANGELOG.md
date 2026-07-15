@@ -433,6 +433,10 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`niamonx`'s MITRE ATT&CK coverage report was missing "Employee Names"
+  (T1589.003), despite the module already extracting corroborating names
+  into Person entities.** Like the `dehashed` fix above, this brings its
+  declared coverage in line with what it actually collects.
 - **`dehashed`'s MITRE ATT&CK coverage report was missing 5 techniques —
   IP addresses, physical locations, business relationships, device
   fingerprints, and social media handles — despite the module already

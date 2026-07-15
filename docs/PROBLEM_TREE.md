@@ -6213,3 +6213,48 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   contained, single-declaration fix (plus a correctly root-caused test
   correction it exposed), not a new tracked node. **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-15 (cont'd 4)** — **`niamonx` had no `attack_techniques()`
+  override at all, silently inheriting the 2-technique Breach-category
+  default (`T1589.001, T1589.002`) despite genuinely minting `Person`
+  entities — the second and last candidate the same "other breach and
+  analogous sources" investigation surfaced, picked up now that `dehashed`
+  is closed.** Verified directly against source before acting: `niamonx`'s
+  `category()` returns `ModuleCategory::Breach` and the module declares no
+  `attack_techniques()` override, so it silently falls through to `core::
+  attack::mod.rs`'s category-default table entry for `Breach` — confirmed
+  to be exactly `&["T1589.001", "T1589.002"]`. Its own `produces()`
+  comment (`niamonx/mod.rs:216`) already states "Person is emitted from
+  PBS v1 meta.names corroboration"; confirmed genuinely real, not stale
+  prose, by reading the actual emitter (`mod.rs:431-438`): every
+  corroborating name in a PBS v1 hit's `meta.names` array becomes an
+  `EntityKind::Person` pivot tagged `pbs-v1-pivot`. `T1589.003` (Employee
+  Names) is the catalogued technique for exactly this — the same pattern
+  `dehashed`/`see_know`/`oathnet_pro` all declare it for their own
+  name-field Person extraction, two of which were fixed for a closely
+  related gap earlier this same day. Confirmed uncaught: the only existing
+  assertion touching `attack_techniques()` was `module_metadata`'s
+  `!m.attack_techniques().is_empty()`, trivially satisfied by the 2-element
+  default and incapable of catching a missing technique; confirmed
+  `niamonx` has no pinned assertion anywhere in `tests/architecture.rs`
+  either (avoiding a repeat of the merged-loop surprise the `dehashed` fix
+  uncovered). Fixed by adding an explicit `attack_techniques()` override
+  declaring `T1589.001, T1589.002, T1589.003`, mirroring `dehashed`'s exact
+  comment style and justification. New test `attack_techniques_include_
+  employee_names_for_the_pbs_v1_name_pivot`, red/green-verified by
+  temporarily removing the override entirely (failed — the module fell
+  back to the 2-technique default and missed `T1589.003`) and restoring
+  (passed). Full parity: all 8 `niamonx` tests + all 30 architecture
+  guards pass unchanged — `produces()` and `category()` were both already
+  correct and untouched; this purely corrects the previously-absent
+  override. Gate green: fmt/clippy `--all-targets -D warnings`/strict-
+  rustdoc `cargo doc`/`cargo test` — 4378 total pass (+1). No identity/PII
+  impact, no architecture-guard change. This closes both candidates the
+  2026-07-15 broadened-scope investigation surfaced (`dehashed`,
+  `niamonx`); the six modules read alongside them (`hibp`, `xposed_or_not`,
+  `hudsonrock`, `comb_search`, `psbdmp`, `pwned_passwords`) were confirmed
+  clean — internally consistent `produces()`/extraction/`attack_
+  techniques()`, no fabricated counts, deterministic ordering, no unguarded
+  panics on parsed HTTP bodies. Logged here per the established precedent
+  for this bug class: a contained, single-declaration fix, not a new
+  tracked node. **Paired:** `SOLUTION_TREE` §5 — same commit.

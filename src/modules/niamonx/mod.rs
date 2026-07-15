@@ -211,6 +211,16 @@ impl Module for NiamonX {
         ModuleCategory::Breach
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Breach default covers Credentials (T1589.001) + Email Addresses
+        // (T1589.002), but PBS v1's `meta.names` corroboration also mints
+        // Person entities (see `produces()`/`process()` below) → T1589.003
+        // Employee Names, which the default omits. Same pattern as
+        // `dehashed`/`see_know`/`oathnet_pro` declaring it for their own
+        // name-field Person extraction.
+        &["T1589.001", "T1589.002", "T1589.003"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         // Domain is accepted as input but no Domain pivot entity is ever emitted.
         // Person is emitted from PBS v1 meta.names corroboration.
