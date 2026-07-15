@@ -472,6 +472,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`api_key_probe` reported "no keys found" when every probe failed to
+  reach the network (T2.123).** `probe_endpoint` returned `None` for both a
+  transport failure (timeout / connection / DNS / TLS) and a normal
+  non-match, so a total outage across all 23+ probes was indistinguishable
+  from "this key matches no known service." A new `ProbeOutcome` enum
+  distinguishes `TransportFailure` from `Executed`, and `process()` now
+  surfaces an error only when nothing was identified *and* every probe
+  failed to execute — a genuine no-match (any probe that ran) stays a clean
+  result. Two hermetic tests drive the real curl subprocess.
 - **`chain_intel` conflated a source failure with a deliberate
   unsupported-chain no-op (T2.122).** Each of the five per-chain enrichers
   returned `Option<Enrichment>` and swallowed its sole data source's failure

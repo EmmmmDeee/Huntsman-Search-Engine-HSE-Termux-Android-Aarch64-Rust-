@@ -2278,15 +2278,37 @@ direct.**
   `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test`.
   **Paired:** `SOLUTION_TREE` SOL-CHAININTEL-SINGLE-SOURCE `[ ]`→`[x]` — same
   commit.
-- **`[ ]` T2.123 · `api_key_probe::probe_endpoint()` returns `None` for any
+- **`[x]` T2.123 · `api_key_probe::probe_endpoint()` returns `None` for any
   transport failure, treated identically to a normal non-match.**
   If all 23+ probes fail (e.g. no network), no error is surfaced anywhere —
   it looks like a clean "no keys found in this text" result. → **Solution:**
   track transport-failure count separately from non-match count and surface
   an error when every probe failed to even execute. **P2**. *Queued from
-  the 2026-07-14 comprehensive audit, wave 1 (module categories) — not yet
-  investigated or fixed.* **Paired:** `SOLUTION_TREE`
-  SOL-APIKEYPROBE-TRANSPORT-SWALLOW (new stub).
+  the 2026-07-14 comprehensive audit, wave 1 (module categories).* **Fixed
+  (2026-07-15):** read `probe_endpoint` directly and confirmed its four
+  `return None`s conflate a probe that **couldn't execute** (a `timeout`
+  elapsing, `cmd.output()` failing to spawn, or curl's own non-zero exit — a
+  connection/DNS/TLS failure, since curl returns 0 for *any* HTTP response
+  actually received) with a probe that **ran** but got nothing usable (a
+  non-UTF-8 or too-short body); `process()`'s `None => continue` then folded
+  all of it into the same clean `Ok(result)`. Introduced a `ProbeOutcome`
+  enum — `TransportFailure` vs `Executed(Option<String>)` — so
+  `probe_endpoint` reports the distinction; `process()` counts
+  `transport_failures`, and a new pure `all_probes_failed_to_execute
+  (transport_failures, total_probes, identified)` returns an `Error::module`
+  **only** when nothing was identified AND every probe failed to execute (a
+  total network outage), while any single probe that ran — a match or an
+  honest negative — keeps the empty result a clean `Ok`. **Genuine-execution
+  validation:** `probe_endpoint` drives a real `curl` subprocess, so two
+  hermetic tests exercise it for real — `probe_endpoint_reports_transport_
+  failure_on_an_unreachable_host` (curl to `127.0.0.1:1`, nothing listening →
+  `TransportFailure`, the exact red/green the old `None` couldn't express) and
+  `probe_endpoint_reports_executed_when_the_host_answers` (a real local
+  `TcpListener` returning JSON → `Executed(Some(..))`) — plus a pure
+  decision-table test on `all_probes_failed_to_execute`. Gate green:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
+  test`. **Paired:** `SOLUTION_TREE` SOL-APIKEYPROBE-TRANSPORT-SWALLOW
+  `[ ]`→`[x]` — same commit.
 - **`[ ]` T2.124 · `contact_enrich` hand-duplicates sibling `gravatar`
   module's entire profile-enrichment logic (its own MD5 hash + response
   types) instead of reusing it.**
@@ -17285,3 +17307,26 @@ way, so this specific drift class can't recur silently again.
   fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
   test` — 4866 total pass (+2). **Paired:** `SOLUTION_TREE`
   SOL-CHAININTEL-SINGLE-SOURCE `[ ]`→`[x]`, §5 — same commit.
+- **2026-07-15 (cont'd)** — **Executed T2.123** (`api_key_probe`'s
+  `probe_endpoint` returning `None` for both a transport failure and a normal
+  non-match, so a total network outage — every one of 23+ probes unable to
+  execute — read as a clean "this key matches no known service"). Read
+  `probe_endpoint` directly: its four `return None`s conflate a probe that
+  couldn't execute (timeout, `cmd.output()` spawn failure, or curl's own
+  non-zero exit — a connection/DNS/TLS failure, since curl returns 0 for any
+  HTTP response actually received) with one that ran but got no usable body
+  (non-UTF-8 / too short); `process()`'s `None => continue` folded them
+  together. Introduced a `ProbeOutcome` enum (`TransportFailure` vs
+  `Executed(Option<String>)`), had `process()` count `transport_failures`, and
+  added a pure `all_probes_failed_to_execute(transport_failures, total,
+  identified)` that returns an `Error::module` only when nothing was
+  identified AND every probe failed to execute — so a genuine no-match (any
+  probe that ran) stays a clean `Ok`, while a total outage surfaces.
+  **Genuine-execution validation:** `probe_endpoint` runs a real `curl`
+  subprocess, so two hermetic tests exercise it for real — a curl to
+  `127.0.0.1:1` (nothing listening) → `TransportFailure` (the exact red/green
+  the old `None` couldn't express), and a real local `TcpListener` returning
+  JSON → `Executed(Some(..))` — plus a pure decision-table test. Gate green:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
+  test` — 4869 total pass (+3). **Paired:** `SOLUTION_TREE`
+  SOL-APIKEYPROBE-TRANSPORT-SWALLOW `[ ]`→`[x]`, §5 — same commit.

@@ -3682,10 +3682,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `enrich_esplora` against a real local server (503→`Err`, 200→parsed); the
   fixture shape was confirmed against a live `blockstream.info` `curl`. See
   `PROBLEM_TREE` T2.122 for the full finding.
-- **`[ ]` SOL-APIKEYPROBE-TRANSPORT-SWALLOW · Track transport-failure count
+- **`[x]` SOL-APIKEYPROBE-TRANSPORT-SWALLOW · Track transport-failure count
   separately from non-match count, surface an error when all probes fail**
-  → **T2.123**. Queued, not yet started — see `PROBLEM_TREE` T2.123 for the
-  finding.
+  → **T2.123**. Delivered 2026-07-15: new `ProbeOutcome` enum
+  (`TransportFailure` vs `Executed(Option<String>)`) lets `probe_endpoint`
+  distinguish a probe that couldn't execute (timeout / curl spawn failure /
+  curl non-zero exit) from one that ran but got no usable body; `process()`
+  counts `transport_failures` and a pure `all_probes_failed_to_execute`
+  returns `Error::module` only when nothing was identified AND every probe
+  failed to execute, so a total network outage surfaces while any single
+  probe running keeps an empty result a clean `Ok`. Two hermetic tests drive
+  the real curl subprocess (`127.0.0.1:1`→`TransportFailure`; a real local
+  server→`Executed(Some)`) + a pure decision-table test. See `PROBLEM_TREE`
+  T2.123 for the full finding.
 - **`[ ]` SOL-CONTACTENRICH-DEDUP · Call into `gravatar`'s shared
   enrichment logic instead of maintaining a parallel copy** → **T2.124**.
   Queued, not yet started — see `PROBLEM_TREE` T2.124 for the finding.
@@ -4659,7 +4668,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   of swallowing it) delivered 2026-07-15. **T2.122** (`chain_intel`'s five
   per-chain enrichers now return `Result<Option>` so a source failure is
   distinguished from an unsupported-chain no-op / empty address) delivered
-  2026-07-15. 29 of 49 still queued (20 of
+  2026-07-15. **T2.123** (`api_key_probe` surfaces a total transport failure
+  — every probe unable to execute — instead of a clean "no keys found")
+  delivered 2026-07-15. 28 of 49 still queued (21 of
   T2.102–T2.150 now `[x]`, machine-counted against the tree).*
 
 ### 4b · Solutions begun but unfinished (the finish queue)
@@ -12007,3 +12018,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fetch_json`'s already-tested contract. Gate green: fmt/clippy `--all-targets
   -D warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4866 total pass (+2).
   **Paired:** `PROBLEM_TREE` T2.122 `[ ]`→`[x]` — same commit.
+- **2026-07-15 (cont'd)** — **SOL-APIKEYPROBE-TRANSPORT-SWALLOW closed**
+  (`api_key_probe`'s `probe_endpoint` collapsing a transport failure and a
+  normal non-match into the same `None`, so a total network outage read as
+  "no keys found"). New `ProbeOutcome` enum (`TransportFailure` vs
+  `Executed(Option<String>)`) surfaces the distinction; `process()` counts
+  `transport_failures` and a pure `all_probes_failed_to_execute` returns an
+  `Error::module` only when nothing was identified AND every probe failed to
+  execute — any single probe running keeps an empty result a clean `Ok`. Two
+  hermetic tests drive the real curl subprocess (`127.0.0.1:1`→
+  `TransportFailure`; a real local server→`Executed(Some)`) + a pure
+  decision-table test. Gate green: fmt/clippy `--all-targets -D warnings`/
+  strict-rustdoc `cargo doc`/`cargo test` — 4869 total pass (+3). **Paired:**
+  `PROBLEM_TREE` T2.123 `[ ]`→`[x]` — same commit.
