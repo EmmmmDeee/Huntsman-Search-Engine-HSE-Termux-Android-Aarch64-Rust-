@@ -4495,3 +4495,38 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   added). No identity/PII impact. Logged as a dated entry, not a new
   tracked node — same precedent as the entries above: a contained,
   single-declaration fix. Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-15 (cont'd 2)** — **`see_know` cross-platform identity-pivot
+  fix: a discovered Discord/Steam id was marked "resolved" on discovery,
+  not on dispatch, so any id the shared per-scan budget couldn't fit into
+  one hop's dispatch was silently, permanently excluded from every
+  remaining hop of that seed's pivot chase — despite never once being
+  queried.** Found via a fourth, more targeted pass over `see_know`/
+  `oathnet_pro`, deliberately scoped to the parts of these modules three
+  prior passes had covered only lightly (Discord/Steam pivot logic
+  specifically). `resolve_identity_pivots`'s `.filter(|id|
+  resolved.insert(...))` fired the `HashSet` insert unconditionally for
+  every DISCOVERED id, before the dispatch functions' own internal
+  budget-truncation ever ran — directly contradicting the function's own
+  doc comment ("Distinct IDs already dispatched..."). Fixed by extracting
+  the dispatch functions' inline truncation loops into two pure,
+  single-source-of-truth functions (`discord_attempt_slice`/
+  `steam_attempt_slice` in `pivots/mod.rs`), having `dispatch_discord_
+  pivots`/`dispatch_steam_pivots` return `(results, attempted_ids)`, and
+  having the caller mark `resolved` from `attempted_ids` AFTER dispatch
+  instead of from the raw discovery list before it. 6 new pure unit tests
+  cover the exact per-id 2-slot(discord)/1-slot(steam) consumption formula
+  across budget 0 through ample — no live network needed, since the actual
+  defect lived entirely in bookkeeping the pure functions now own
+  exclusively. Deliberately did not attempt a live-network end-to-end test
+  of the full async caller (would require either a real `see-know.eu` call
+  or a new HTTP-injection seam, both out of proportion to this fix); the
+  caller wiring itself is a small, directly-reviewable 2-line change built
+  entirely on the exhaustively-tested pure functions. Full parity: all 78
+  `see_know` tests pass, including the pre-existing `resolve_identity_
+  pivots_is_noop_and_terminates_without_ids` integration test, unchanged.
+  Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
+  doc`/`cargo test` — 4376 total pass (+6). No identity/PII impact. Logged
+  as a dated entry, not a new tracked node — same precedent as the entries
+  above: a contained fix scoped to one module's internal bookkeeping.
+  Paired: `PROBLEM_TREE` §8 — same commit.

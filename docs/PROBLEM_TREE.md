@@ -6080,3 +6080,77 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   here per the established precedent for this bug class: a contained,
   single-declaration fix, not a new tracked node. **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-15 (cont'd 2)** — **`see_know::resolve_identity_pivots` marked a
+  discovered Discord/Steam ID as "resolved" the moment it was DISCOVERED,
+  not once it was actually DISPATCHED — so any id past what the shared,
+  per-scan-wide SeekNow budget could fit into a single hop's dispatch call
+  was silently, permanently blacklisted from every remaining hop of that
+  seed's pivot resolution, despite zero HTTP calls ever being attempted
+  for it.** Found via a fourth, deeper investigation pass over `see_know`/
+  `oathnet_pro` (explicitly scoped to areas the prior three passes had
+  touched only lightly — Discord/Steam pivot logic, associates/geo
+  extraction, budget scaling, endpoint dispatch tables — after the operator
+  repeated the standing "focus on seek and oathnet" request a fourth time).
+  `resolve_identity_pivots` (`src/modules/see_know/mod.rs:372-423`) built
+  its per-hop candidate lists via `discover_discord_pivots(result)
+  .into_iter().filter(|id| resolved.insert(format!("d:{id}"))).collect()`
+  — the `HashSet::insert` runs as a side effect of the filter, so EVERY
+  discovered id (not just the ones about to be dispatched) got marked
+  resolved unconditionally, before `dispatch_discord_pivots`/
+  `dispatch_steam_pivots` (`src/modules/see_know/pivots/mod.rs`) ever ran.
+  Those two dispatch functions cap how many ids they actually attempt to
+  the CURRENT remaining `see_know::scan_budget_remaining()` (2 slots per
+  discord id — `discord_user` + `discord_to_roblox`; 1 slot per steam id),
+  silently dropping the rest via an internal `break` — a design already
+  correct in isolation, but the caller's `resolved` bookkeeping never
+  distinguished "discovered" from "dispatched," directly contradicting the
+  function's own doc comment: "Distinct IDs already dispatched, so a chain
+  that loops back never re-resolves the same account." A subject whose
+  breach/stealer records surface more Discord/Steam ids in one hop than the
+  scan's shared budget can fit — realistic for a heavily-exposed target,
+  since `see_know::BUDGET` is a single process-wide static shared across
+  every module call in the scan, not reserved per-pivot-chase — would have
+  the overflow ids permanently excluded from consideration in hops 2 and 3
+  of that seed's resolution, weakening SeekNow's own self-described unique
+  differentiator ("only a breach/identity pool turns a Discord snowflake or
+  SteamID64 into its linked accounts"). Confirmed uncaught: the only
+  existing test, `resolve_identity_pivots_is_noop_and_terminates_without_
+  ids`, exercises only the empty-ids convergence case. Fixed by extracting
+  the dispatch functions' inline budget-truncation loops into two new pure,
+  directly-testable functions — `discord_attempt_slice`/
+  `steam_attempt_slice` in `pivots/mod.rs` — the SINGLE source of truth for
+  "which ids will actually be dispatched given this budget," so the
+  caller's bookkeeping can never independently drift from what the
+  dispatcher really does; `dispatch_discord_pivots`/`dispatch_steam_pivots`
+  now return `(results, attempted_ids)` instead of just `results`, and
+  `resolve_identity_pivots` marks `resolved` from the returned
+  `attempted_ids` AFTER dispatch, not from the raw discovery list before
+  it — an id the budget couldn't fit stays eligible for a later hop instead
+  of being wrongly blacklisted. Hand-verified the dispatch loops'
+  behaviour-preservation for every discord budget value 0 through 5 against
+  the pre-fix inline loop (the redundant top-of-loop budget check the old
+  code needed is provably unreachable once the caller pre-truncates to the
+  `attempt_slice`, confirmed by construction, not assumption). 6 new pure
+  unit tests on `discord_attempt_slice`/`steam_attempt_slice` (budget 0, 1,
+  2, 3, and ample-budget cases, matching the exact hand-derived per-id
+  2-slot/1-slot consumption formula) — no live network required, since the
+  actual bug lived entirely in control-flow bookkeeping the pure functions
+  now make the single source of truth for. Deliberately did NOT attempt an
+  end-to-end network-backed red/green test of the full async caller: doing
+  so would require either a live `see-know.eu` call (non-deterministic,
+  slow, against this codebase's own no-live-network-in-unit-tests
+  convention) or a new HTTP-injection test seam (a materially larger,
+  out-of-scope architecture change for this fix) — the pure functions carry
+  the actual defect and are exhaustively tested; the caller wiring itself
+  is a small, code-reviewable 2-line change (read `attempted`, not the
+  discovery list). Full parity: all 78 `see_know` tests (incl. the
+  pre-existing `resolve_identity_pivots_is_noop_and_terminates_without_ids`
+  integration test, unchanged) pass; the only call site of the two dispatch
+  functions is `resolve_identity_pivots` itself, already updated. Gate
+  green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
+  doc`/`cargo test` — 4376 total pass (+6). No identity/PII impact, no
+  architecture-guard change. Logged here per the established precedent for
+  this bug class: a contained fix scoped to one module's internal
+  bookkeeping, not a new tracked node. **Paired:** `SOLUTION_TREE` §5 —
+  same commit.

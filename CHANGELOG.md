@@ -433,6 +433,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`see_know` no longer permanently drops Discord/Steam identity pivots it
+  discovered but couldn't immediately query due to the scan's shared quota
+  running low.** Cross-platform ID resolution (chasing a Discord snowflake
+  or SteamID64 to its linked accounts) is one of SeekNow's flagship
+  capabilities. Previously, if a subject's breach data surfaced more pivot
+  IDs in one pass than the remaining budget could fit, the leftover IDs
+  were marked as already handled — even though they were never actually
+  queried — so they were silently skipped for the rest of that lookup.
+  They're now correctly retried as budget allows instead of being
+  permanently written off.
 - **`oathnet_pro`'s MITRE ATT&CK coverage report was missing "Business
   Relationships" (T1591.002), despite the module already extracting
   employer/company/organisation fields from breach records into their own
