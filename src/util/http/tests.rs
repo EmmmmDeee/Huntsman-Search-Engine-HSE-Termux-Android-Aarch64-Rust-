@@ -275,6 +275,10 @@ async fn fetch_json_propagates_a_non_2xx_status_as_err_not_a_silent_default() {
         result.is_err(),
         "fetch_json must propagate a non-2xx status as Err, got {result:?}"
     );
+    // The 500 response above recorded a breaker failure for "127.0.0.1" —
+    // reset it so this test doesn't nudge an unrelated later test toward the
+    // shared host's FAILURE_THRESHOLD, symmetric with the isolation reset above.
+    crate::util::circuit_breaker::record_success("127.0.0.1");
 }
 
 #[test]
