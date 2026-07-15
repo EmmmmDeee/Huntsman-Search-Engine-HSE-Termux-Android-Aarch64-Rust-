@@ -82,12 +82,22 @@ pub fn line_count() -> usize {
 /// small honest header. Suitable as a downloadable `.log` body.
 #[must_use]
 pub fn dump() -> String {
+    dump_with_count().0
+}
+
+/// Like [`dump`] but returns the serialised body AND its line count from a
+/// SINGLE lock acquisition, so a caller that shows both (e.g. a bundle header
+/// "N lines" printed next to the body) can't observe a torn read where the
+/// count and the body disagree because a line landed between two separate
+/// `dump()` / [`line_count`] locks.
+#[must_use]
+pub fn dump_with_count() -> (String, usize) {
     let r = lock();
+    let n = r.lines.len();
     let mut out = String::with_capacity(r.lines.iter().map(|l| l.len() + 1).sum::<usize>() + 160);
     out.push_str(&format!(
-        "# Huntsman Search Engine v{} — verbose debug log\n# lines={} dropped={} cap={}\n\n",
+        "# Huntsman Search Engine v{} — verbose debug log\n# lines={n} dropped={} cap={}\n\n",
         crate::VERSION,
-        r.lines.len(),
         r.dropped,
         r.cap
     ));
@@ -95,7 +105,7 @@ pub fn dump() -> String {
         out.push_str(l);
         out.push('\n');
     }
-    out
+    (out, n)
 }
 
 /// Drop all buffered lines (the Settings "clear" action / tests).

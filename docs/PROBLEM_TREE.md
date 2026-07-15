@@ -3896,6 +3896,112 @@ direct.**
   variants`, red/green-verified (2 results each yielding 2 variants must
   count as `corroboration=2`, not 4). **P1** (real confidence-inflation bug
   in the same code path as T2.161, same root evidentiary concern).
+- **`[x]` T2.163 · Debuggability: HSE had NO single "download everything to
+  repair the engine" artifact — the ~12 system-diagnostic surfaces
+  (`/health`, `/version`, `/selftest`, `/modules/health`, `/engines/health`,
+  `/health/scrapers`, `/logs`, `/keys/status`, `/keys/pool`, `/update/status`,
+  `/cells/status`) were scattered across separate endpoints and separate SPA
+  pages, and a failed scan's top-level `error` was unreachable in the SPA at
+  all (`info.js` orphaned).**
+  Confirmed against the code + a read-only SPA map: the only "download-all"
+  was the *per-scan* `debug.txt`; there was nothing at the *engine* level, so
+  diagnosing "why is HSE itself misbehaving?" meant hitting a dozen endpoints
+  and stitching them by hand — and the fragmented per-module health lived on
+  three different pages, none showing an all-clear. → **Solution (delivered):**
+  a consolidated **system self-diagnosis bundle** — one loopback-gated
+  `GET /api/v1/debug/bundle` + one prominent Settings button ("Download full
+  diagnostic bundle") producing a single artifact that encompasses the whole
+  engine's diagnostic + validation state, led by an auto-computed **DETECTED
+  ISSUES** verdict (the "self-debugging" brain: a pure `detect_issues` joins
+  failed self-test checks + missing `curl` [CRITICAL] and module/engine/
+  scraper drift, failed scans, exhausted provider quotas [WARNING] into one
+  worst-first, deterministically-ordered list). Sections: DETECTED ISSUES →
+  environment → disabled capabilities → self-test (validation) → module /
+  engine / scraper health → provider quotas → recent scans (each failed
+  scan's error inline, closing the SPA gap) → verbose log ring → source
+  manifest. Reuses the existing tested sources (no new data), respects the
+  `logs`-endpoint loopback gate (the ring holds PII) and is secret-free (key
+  NAMES only). Shares the `cli::export` renderer home + `render_environment`
+  with the per-scan bundle (the `curl_present()` detection extracted so both
+  agree on one check). **Tests:** 9 pure `detect_issues`/renderer unit tests
+  (verdict classification, determinism across input permutations, all-clear,
+  failure-surfacing) + 2 integration tests (loopback gate → 403; loopback →
+  200 with every section) + the SPA↔routes drift-guard extended. Gate green:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc/`cargo test`. **P2.**
+  *From the operator directive to consolidate all debugging into one powerful,
+  autonomous, downloadable artifact.* **Paired:** `SOLUTION_TREE`
+  SOL-SYSTEM-DEBUG-BUNDLE `[ ]`→`[x]` — same commit.
+- **`[ ]` T2.164 · UI simplification: three defined-but-orphaned scan-info
+  panels (`status.js`, `info.js`, `relations.js`) are dead code from the
+  "ten tabs → one Report tab" consolidation, and per-module health is
+  surfaced fragmented across five endpoints/pages with no consolidated
+  "all modules + current health" matrix.**
+  Grounded in a read-only SPA map (2026-07-15): the three panels are imported
+  nowhere; `status.js`/`info.js` carry genuinely useful debug views (per-module
+  evidence-contribution counts; full scan options + error) that are currently
+  unreachable. → **Solution:** remove the dead panels or wire their useful
+  content into the consolidated diagnostics surface; join the module roster
+  with the health signals into one status view. **P2.** *From the operator
+  directive to simplify the UI.* **Paired:** `SOLUTION_TREE`
+  SOL-UI-SIMPLIFY-DEBUG (new stub).
+- **`[ ]` T2.165 · CLI surface breadth — consolidate to only the most
+  essential, comprehensive commands.**
+  The operator directive asks to "remove all but the most essential and
+  comprehensive CLI commands." Grounded in `src/cli/command.rs`'s command
+  enum; needs a real audit of which commands are load-bearing vs. subsumed
+  (several already note "subsumed by `hse diagnostics`; kept for scripting").
+  → **Solution:** audit every subcommand against real usage / test / API-and-UI
+  callers, fold or hide the subsumed ones behind the comprehensive aggregates,
+  preserving scripting-critical paths. **P2.** *Not yet investigated.*
+  **Paired:** `SOLUTION_TREE` SOL-CLI-CONSOLIDATE (new stub).
+- **`[ ]` T2.166 · Scan default power — "all scans must be maximum power."**
+  The operator directive asks that every scan run at maximum capability by
+  default. Grounded in `core::scan::ScanOptions`/the scan-profile defaults;
+  needs investigation of what "max power" means without breaking the
+  free-only / passive / budget guarantees. → **Solution:** determine and set
+  the maximally-thorough safe defaults (breadth, expansion, module allowlist)
+  with evidence they don't regress determinism/quota safety. **P2.** *Not yet
+  investigated.* **Paired:** `SOLUTION_TREE` SOL-SCAN-MAX-POWER (new stub).
+- **`[ ]` T2.167 · Install idempotency — new installs must integrate flawlessly
+  over existing Termux (aarch64, no-root) installations.**
+  The operator directive asks that a fresh install layer cleanly over an
+  existing one. Grounded in the repo's setup/install tooling; needs a real
+  over-install test (existing DB/keys/settings preserved, binary/schema
+  upgraded in place). → **Solution:** verify + harden the setup script's
+  detect-existing-install path with a reproducible over-install run. **P2.**
+  *Not yet investigated.* **Paired:** `SOLUTION_TREE` SOL-INSTALL-IDEMPOTENT
+  (new stub).
+- **`[ ]` T2.168 · Enrich the system self-diagnosis bundle (T2.163) with four
+  more diagnostic surfaces an adversarial verification pass confirmed as
+  high-value repair signals it currently omits.**
+  A 4-lens verification workflow over the T2.163 delivery (each finding
+  re-verified against real code) confirmed the bundle silently misses: (1)
+  **key-pool / dead-key health** — when a service's keys are all
+  exhausted/invalid/revoked the module returns `Ok(empty)` with no error and
+  no failure streak (`see_know/endpoints.rs`: `if is_key_invalid() ||
+  !budget_try_increment() { return Ok(vec![]) }`), so DETECTED ISSUES stays
+  clean while HSE's top paid source is silently dead — the largest invisible
+  failure class; the bundle should surface `summarize_pool(&key_pool::
+  global_pool().snapshot())` per-service active/exhausted/invalid/revoked +
+  account validity and flag a 0-active-keys service; (2) **real on-disk DB
+  health** — `Store::integrity_check()` + WAL size (the self-test only
+  round-trips a throwaway temp DB, never the operator's real store); (3)
+  **update status** — `UpdatePhase::Error(msg)` / a stuck `Applying`/
+  `Restarting` is invisible; (4) **cell-tower GEOINT dataset** — an
+  empty/stale/failed OpenCelliD import makes `cell_local`/`cell_intel`/
+  `signal_radar` return nothing silently. → **Solution:** thread the
+  store/AppState-bound parts (DB integrity + WAL, update phase, cells-import
+  phase) through `SystemDebugInputs` (the handler gathers them, matching the
+  selftest/scans pattern) and read the process-global parts (key-pool summary,
+  account status, cell-DB counts) inline; add the matching pure `detect_issues`
+  arms (dead-key service → CRITICAL/WARNING, integrity fail → CRITICAL, update
+  Error → CRITICAL, cell-DB empty/stale → WARNING) with literal-input unit
+  tests. **P2.** *Confirmed by the T2.163 verification workflow; deferred as a
+  focused increment rather than sprawl the T2.163 commit (the three CORRECTNESS
+  findings from the same pass — a non-hermetic test, a doubled `curl` spawn,
+  and a torn log dump/count read — were fixed in the T2.163 commit itself,
+  along with adding search-engine toggles to its DISABLED CAPABILITIES
+  section).* **Paired:** `SOLUTION_TREE` SOL-BUNDLE-ENRICH (new stub).
 - **`[x]` T2.18 · `core::exposure`'s `DOB_KEYS` missing Wikidata's own DOB
   spelling** — the Exposure Index's `sensitive_component` scores a "date of
   birth" disclosure (+7 of the 30-point Sensitive PII ceiling) only when an
@@ -17374,4 +17480,48 @@ way, so this specific drift class can't recur silently again.
   `accounts`+`photos`, bool-or-string `verified`). Gate green: fmt/clippy
   `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4872
   total pass (+3). **Paired:** `SOLUTION_TREE` SOL-CONTACTENRICH-DEDUP
+  `[ ]`→`[x]`, §5 — same commit.
+- **2026-07-15** — **Executed T2.163** (consolidated system self-diagnosis
+  debug bundle — from the operator directive to "consolidate all debugging
+  into one powerful, autonomous, downloadable artifact … turn it into
+  self-debugging software"). Established the architecture first (read-only SPA
+  map + backend recon): HSE already had a comprehensive *per-scan* `debug.txt`
+  but NO *engine-level* download — the ~12 system-diagnostic surfaces were
+  scattered across separate endpoints and SPA pages, and a failed scan's
+  top-level error was unreachable in the reachable UI. Built one loopback-gated
+  `GET /api/v1/debug/bundle` + one prominent Settings button producing a single
+  artifact led by an auto-computed DETECTED ISSUES verdict (pure `detect_issues`
+  joins failed self-test checks + missing `curl` as CRITICAL and module/engine/
+  scraper drift + failed scans + exhausted provider quotas as WARNING, worst-
+  first, deterministically ordered), then environment, disabled capabilities,
+  self-test validation, live + cross-scan module/engine/scraper health, provider
+  quotas, recent scans (each failed scan's error inline), the verbose log ring,
+  and the source manifest. Reuses only already-tested sources; honours the
+  `/logs` loopback gate (the ring holds PII) and stays secret-free (key NAMES
+  only); shares the `cli::export` renderer home + `render_environment` with the
+  per-scan bundle (`curl_present()` extracted so both agree). Termux-safe (pure
+  in-process reads, no new deps, ASCII-consistent with the existing bundle).
+  **Tests:** 9 unit (`detect_issues` classification + determinism-across-
+  permutations + all-clear + failure-surfacing; renderer all-sections) + 2
+  integration (loopback 403 / loopback 200-with-every-section) + the SPA↔routes
+  drift-guard extended for the new `/debug/bundle`. **Adversarially verified**
+  before commit by a 4-lens workflow (secret-leakage / correctness /
+  completeness / architecture-Termux), each finding re-verified against real
+  code: 8 confirmed. The 3 CORRECTNESS findings were fixed in this same commit
+  — a non-hermetic all-clear test assertion (reproduced 26/40 failures under
+  `--test-threads=8` because sibling tests pollute the shared module-health
+  map + a curl-less host; removed the assertion, the classification is already
+  covered hermetically by `detect_issues`), a doubled `curl --version` spawn
+  per bundle (`render_environment` re-detecting what the verdict already
+  computed → parameterised it to take the bool, one spawn), and a torn log
+  dump/count read across two ring locks (`log_capture::dump_with_count()`
+  locks once). Also added search-engine toggles to DISABLED CAPABILITIES
+  (a disabled engine silently never dispatches). Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4881 lib
+  + 103 api pass. Queued the directive's remaining threads as **T2.164** (UI
+  simplification / dead panels), **T2.165** (CLI consolidation), **T2.166**
+  (max-power scan defaults), **T2.167** (install idempotency), and the 4
+  COMPLETENESS findings from the same verification pass (key-pool/dead-key, DB
+  integrity+WAL, update phase, cell-DB health) as **T2.168** — rather than
+  sprawl this commit. **Paired:** `SOLUTION_TREE` SOL-SYSTEM-DEBUG-BUNDLE
   `[ ]`→`[x]`, §5 — same commit.

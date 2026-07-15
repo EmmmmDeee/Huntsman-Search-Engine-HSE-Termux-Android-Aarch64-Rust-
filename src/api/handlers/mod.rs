@@ -430,6 +430,89 @@ pub async fn logs_download(
         .into_response()
 }
 
+/// `GET /api/v1/debug/bundle` — the consolidated **system self-diagnosis
+/// bundle**: one download that encompasses the whole engine's diagnostic +
+/// validation state (an auto-computed DETECTED ISSUES verdict, the environment
+/// fingerprint, the full self-test, live + cross-scan module/engine/scraper
+/// health, the recent-scan index with each failed scan's error, the recent
+/// verbose log ring, and the source-file manifest). It joins the otherwise-
+/// scattered `/health` · `/selftest` · `/modules/health` · `/engines/health` ·
+/// `/health/scrapers` · `/logs` surfaces into ONE artifact organised so the
+/// engine can be repaired from this one file. Backs the Settings page's
+/// "Download full diagnostic bundle" button.
+///
+/// **Loopback-only** — like [`logs_download`], the artifact embeds the TRACE
+/// log ring (scan targets + discovered PII), so under a LAN bind it must not
+/// stream to arbitrary peers. Secret-free otherwise (key NAMES only, never
+/// values).
+pub async fn system_debug_bundle(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    State(s): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "the system debug bundle is loopback-only" })),
+        )
+            .into_response();
+    }
+    // Validation runs against a throwaway temp DB (offline, side-effect-free).
+    let selftest = crate::selftest::run().await;
+    // Store reads are blocking — off the reactor (matches `scan_debug_bundle`).
+    let store = Arc::clone(&s.store);
+    let loaded = tokio::task::spawn_blocking(move || {
+        let scans = store.list_scans(200)?;
+        let events = store
+            .recent_module_outcome_events(crate::util::scraper_health::RECENT_EVENTS_WINDOW)?;
+        Ok::<_, crate::core::error::Error>((scans, events))
+    })
+    .await;
+    let (scans, events) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("debug-bundle query task failed: {e}")),
+    };
+    let scraper_events_checked = events.len();
+    let scraper_health = crate::util::scraper_health::aggregate_source_health(&events);
+    // One lock for body + count so the "N lines" header can't disagree with the
+    // dumped body (a line landing between two separate ring locks).
+    let (log_dump, log_lines) = crate::util::log_capture::dump_with_count();
+    let inputs = crate::cli::export::SystemDebugInputs {
+        selftest,
+        scans,
+        scraper_health,
+        scraper_events_checked,
+        log_dump,
+        log_lines,
+    };
+    // Render off the reactor too: it reads the log ring + spawns `curl` (via the
+    // environment fingerprint) — both blocking — and builds a potentially large
+    // string, so on the ~2-worker reactor it would otherwise stall peers.
+    let rendered = tokio::task::spawn_blocking(move || {
+        crate::cli::export::render_system_debug_bundle(&inputs)
+    })
+    .await;
+    let body = match rendered {
+        Ok(b) => b,
+        Err(e) => return internal_error(&format!("debug-bundle render task failed: {e}")),
+    };
+    let filename = format!("hse-system-debug-{}.txt", crate::core::entity::unix_now());
+    (
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8".to_string(),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        body,
+    )
+        .into_response()
+}
+
 pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
     let mods: Vec<Value> = s
         .engine

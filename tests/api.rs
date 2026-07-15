@@ -2148,6 +2148,11 @@ async fn spa_references_only_registered_api_endpoints() {
             "plan" => "/api/v1/plan?value=example.com".to_string(),
             // Cell-tower DB status — ungated GET, safe to probe with no side effects.
             "cells" => "/api/v1/cells/status".to_string(),
+            // System self-diagnosis bundle — loopback-gated and it also needs a
+            // `ConnectInfo` peer, so a bare probe GET reaches the handler and
+            // returns 403/500 (never the fallback 404), confirming the route is
+            // registered.
+            "debug" => "/api/v1/debug/bundle".to_string(),
             other => panic!(
                 "SPA references /api/v1/{other} but this test has no probe for it — \
                  add one and confirm the route is registered in src/api/routes.rs"
@@ -3117,4 +3122,79 @@ async fn bodyless_mutating_post_requires_csrf_header() {
         403,
         "with X-HSE-CSRF the request reaches the handler (404 for the missing scan)"
     );
+}
+
+// ── System self-diagnosis debug bundle ──────────────────────────────────────
+
+/// Build a GET request carrying a `ConnectInfo<SocketAddr>` peer, so the
+/// loopback-gated handlers (logs, system debug bundle) see a client address
+/// under `.oneshot()` — production supplies this via
+/// `into_make_service_with_connect_info`.
+fn get_with_peer(uri: &str, peer: &str) -> Request<Body> {
+    let mut req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+    let addr: std::net::SocketAddr = peer.parse().expect("valid socket addr");
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(addr));
+    req
+}
+
+#[tokio::test]
+async fn system_debug_bundle_is_loopback_gated() {
+    // The bundle embeds the TRACE log ring (scan targets / PII), so a
+    // non-loopback peer must be refused — the same gate `/logs` carries.
+    let app = test_app("sysdbg-gate");
+    let resp = app
+        .oneshot(get_with_peer("/api/v1/debug/bundle", "192.168.1.10:5555"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "non-loopback peer must be forbidden");
+}
+
+#[tokio::test]
+async fn system_debug_bundle_returns_the_diagnostic_artifact_on_loopback() {
+    let app = test_app("sysdbg-ok");
+    let resp = app
+        .oneshot(get_with_peer("/api/v1/debug/bundle", "127.0.0.1:5555"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(ct.starts_with("text/plain"), "content-type was {ct}");
+    let cd = resp
+        .headers()
+        .get("content-disposition")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        cd.contains("attachment") && cd.contains("hse-system-debug-"),
+        "download disposition was {cd}"
+    );
+    let bytes = axum::body::to_bytes(resp.into_body(), 50_000_000)
+        .await
+        .unwrap();
+    let body = String::from_utf8_lossy(&bytes);
+    // The consolidated artifact carries every top-level section — one file, the
+    // whole engine's diagnostic + validation state.
+    for header in [
+        "HUNTSMAN SYSTEM DEBUG BUNDLE",
+        "── DETECTED ISSUES",
+        "── ENVIRONMENT",
+        "── DISABLED CAPABILITIES",
+        "── VALIDATION (SELF-TEST) ──",
+        "── MODULE HEALTH",
+        "── SEARCH-ENGINE LIVENESS",
+        "── SCRAPER HEALTH",
+        "── PROVIDER QUOTAS",
+        "── RECENT SCANS",
+        "── RECENT LOGS",
+        "── SOURCE FILES",
+    ] {
+        assert!(body.contains(header), "bundle missing section: {header}");
+    }
 }

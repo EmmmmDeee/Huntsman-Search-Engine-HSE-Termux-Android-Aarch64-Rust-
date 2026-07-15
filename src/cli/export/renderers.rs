@@ -367,7 +367,9 @@ pub(crate) fn render_debug_bundle(
     // `Date` header / shell). Guarded by `debug_bundle_is_deterministic`.
 
     // ── 0. Environment fingerprint (reconstructable scan context) ──
-    s.push_str(&super::environment::render_environment());
+    s.push_str(&super::environment::render_environment(
+        super::environment::curl_present(),
+    ));
 
     // ── 1. Full dossier (entities/evidence/provenance/raw records) ──
     s.push_str(&render_full(store, sid)?);
@@ -578,6 +580,547 @@ pub(crate) fn render_debug_bundle(
     }
 
     Ok(s)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// System self-diagnosis bundle — the whole engine's health in ONE artifact.
+//
+// The per-scan `render_debug_bundle` above answers "what happened in THIS
+// scan?". This answers the orthogonal, engine-level question the operator (or
+// Claude Code) actually asks when HSE itself misbehaves: "what is wrong with
+// the install, right now, and where do I look?" — by joining every otherwise-
+// fragmented diagnostic surface (the scattered `/health`, `/selftest`,
+// `/modules/health`, `/engines/health`, `/health/scrapers`, `/logs` endpoints)
+// into one downloadable, self-diagnosing file, led by an auto-computed
+// DETECTED ISSUES verdict.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A single automatically-detected problem for the bundle's headline DETECTED
+/// ISSUES section — what makes the artifact *self*-diagnosing rather than a raw
+/// dump. Ordered CRITICAL-first when rendered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DetectedIssue {
+    /// [`SEV_CRITICAL`] (a hard failure that stops real work) or
+    /// [`SEV_WARNING`] (a degradation worth investigating).
+    pub severity: &'static str,
+    pub category: &'static str,
+    pub detail: String,
+}
+
+/// `"CRITICAL"` — a hard failure: a failed core self-test check, or missing
+/// `curl` (which silently disables `search_engines`/`social_probe`/`oathnet`).
+pub(crate) const SEV_CRITICAL: &str = "CRITICAL";
+/// `"WARNING"` — a live degradation (a module/engine/scraper failing streak, a
+/// silently-zero-yield source, a stored failed scan) that still leaves the
+/// engine running.
+pub(crate) const SEV_WARNING: &str = "WARNING";
+
+/// Primitive-only inputs to [`detect_issues`], deliberately free of domain
+/// structs so the "what counts as a problem" policy is unit-testable from
+/// literals. The renderer does the trivial extraction from the live `Report`
+/// and health snapshots.
+pub(crate) struct IssueInputs<'a> {
+    pub selftest_ok: bool,
+    /// `(check name, detail)` for every self-test check that FAILED.
+    pub selftest_failures: Vec<(&'a str, &'a str)>,
+    pub curl_present: bool,
+    /// `(module, consecutive_failures)` — live per-process failure streaks.
+    pub unhealthy_modules: Vec<(&'a str, u32)>,
+    pub engines_down: Vec<&'a str>,
+    pub engines_blocked: Vec<&'a str>,
+    /// `(module, consecutive_failures)` — cross-scan persisted hard-failure drift.
+    pub scrapers_drifted: Vec<(&'a str, u32)>,
+    /// modules whose recent completions all silently returned zero results.
+    pub scrapers_yield_drifted: Vec<&'a str>,
+    /// count of stored scans whose status is `failed`.
+    pub failed_scans: usize,
+    /// keyed-provider budgets whose daily/session quota is exhausted right now —
+    /// the reason a keyed module returns nothing until the quota resets.
+    pub quota_exhausted_providers: Vec<&'a str>,
+}
+
+/// Join every health signal into one worst-first problem list. **Pure** (no
+/// I/O), so the classification policy is unit-testable off fixtures; a fully
+/// healthy engine yields an empty vec (rendered as an explicit "no issues
+/// auto-detected"). Deterministic ordering (severity, then category, then
+/// detail) so two bundles over identical state produce an identical verdict.
+pub(crate) fn detect_issues(inp: &IssueInputs) -> Vec<DetectedIssue> {
+    let mut issues: Vec<DetectedIssue> = Vec::new();
+    // A failed self-test check is the strongest signal — a fundamental
+    // subsystem (registry / dispatch / core math / storage) is broken.
+    if !inp.selftest_ok {
+        for (name, detail) in &inp.selftest_failures {
+            issues.push(DetectedIssue {
+                severity: SEV_CRITICAL,
+                category: "self-test",
+                detail: format!("check `{name}` FAILED: {detail}"),
+            });
+        }
+    }
+    if !inp.curl_present {
+        issues.push(DetectedIssue {
+            severity: SEV_CRITICAL,
+            category: "environment",
+            detail: "curl is MISSING — search_engines/social_probe/oathnet return \
+                     nothing; install with `pkg install curl`"
+                .to_string(),
+        });
+    }
+    for (name, streak) in &inp.unhealthy_modules {
+        issues.push(DetectedIssue {
+            severity: SEV_WARNING,
+            category: "module-health",
+            detail: format!(
+                "module `{name}` has failed its last {streak} dispatch(es) this process"
+            ),
+        });
+    }
+    for name in &inp.engines_down {
+        issues.push(DetectedIssue {
+            severity: SEV_WARNING,
+            category: "search-engine",
+            detail: format!("search engine `{name}` is DOWN (unreachable)"),
+        });
+    }
+    for name in &inp.engines_blocked {
+        issues.push(DetectedIssue {
+            severity: SEV_WARNING,
+            category: "search-engine",
+            detail: format!(
+                "search engine `{name}` is BLOCKED (captcha / rate-limit / parser defect)"
+            ),
+        });
+    }
+    for (name, streak) in &inp.scrapers_drifted {
+        issues.push(DetectedIssue {
+            severity: SEV_WARNING,
+            category: "scraper-drift",
+            detail: format!(
+                "source `{name}` has failed its last {streak} completion(s) across scans"
+            ),
+        });
+    }
+    for name in &inp.scrapers_yield_drifted {
+        issues.push(DetectedIssue {
+            severity: SEV_WARNING,
+            category: "scraper-yield-drift",
+            detail: format!(
+                "source `{name}` completes without error but has silently stopped finding anything"
+            ),
+        });
+    }
+    if inp.failed_scans > 0 {
+        issues.push(DetectedIssue {
+            severity: SEV_WARNING,
+            category: "scans",
+            detail: format!(
+                "{} stored scan(s) ended in `failed` — see the RECENT SCANS section for each error",
+                inp.failed_scans
+            ),
+        });
+    }
+    for name in &inp.quota_exhausted_providers {
+        issues.push(DetectedIssue {
+            severity: SEV_WARNING,
+            category: "provider-quota",
+            detail: format!(
+                "provider `{name}` quota is exhausted — its keyed modules return nothing until it resets"
+            ),
+        });
+    }
+    issues.sort_by(|a, b| {
+        severity_rank(a.severity)
+            .cmp(&severity_rank(b.severity))
+            .then_with(|| a.category.cmp(b.category))
+            .then_with(|| a.detail.cmp(&b.detail))
+    });
+    issues
+}
+
+/// CRITICAL sorts before WARNING; any unknown label sorts last.
+fn severity_rank(sev: &str) -> u8 {
+    match sev {
+        SEV_CRITICAL => 0,
+        SEV_WARNING => 1,
+        _ => 2,
+    }
+}
+
+/// The gathered-off-reactor inputs for [`render_system_debug_bundle`]. The
+/// async / store-bound parts (the self-test, the recent-scan list, the
+/// cross-scan scraper-outcome events, and the in-memory log ring) are fetched
+/// by the caller — the HTTP handler or a CLI command — and handed in; the
+/// renderer reads only cheap, synchronous process-global state (version,
+/// registry, live health snapshots, source manifest) inline.
+pub(crate) struct SystemDebugInputs {
+    pub selftest: crate::selftest::Report,
+    pub scans: Vec<crate::core::scan::Scan>,
+    pub scraper_health: Vec<crate::util::scraper_health::SourceHealth>,
+    pub scraper_events_checked: usize,
+    pub log_dump: String,
+    pub log_lines: usize,
+}
+
+/// Render the consolidated **system self-diagnosis bundle**: one artifact that
+/// encompasses the whole engine's diagnostic + validation state — a headline
+/// auto-computed DETECTED ISSUES verdict, the environment fingerprint, the full
+/// self-test (validation), live + cross-scan module / engine / scraper health,
+/// the recent-scan index (each failed scan's error inline), the recent verbose
+/// log ring, and the source-file manifest — organised so the engine can be
+/// repaired from this one file.
+///
+/// Unlike the per-scan [`render_debug_bundle`], this is a LIVE snapshot: it
+/// carries logs and a headline health read that change moment to moment, so it
+/// is deliberately NOT byte-deterministic across time (the [`detect_issues`]
+/// ordering and every section's internal ordering ARE deterministic, so two
+/// bundles taken in the same instant diff cleanly). Secret-free by construction
+/// — the environment section prints key NAMES only, never values — but the
+/// caller still gates it to loopback because the log ring can contain scan
+/// targets / discovered PII.
+pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "╔═══════════════════════════════════════════════════════╗"
+    );
+    let _ = writeln!(
+        s,
+        "║  HUNTSMAN SYSTEM DEBUG BUNDLE — full engine self-diag   ║"
+    );
+    let _ = writeln!(
+        s,
+        "║  One file: what's wrong, the proof, and every module.  ║"
+    );
+    let _ = writeln!(
+        s,
+        "╚═══════════════════════════════════════════════════════╝"
+    );
+
+    // Live snapshots — cheap synchronous process-global reads.
+    let module_health = crate::core::engine::module_health_report();
+    let engines = crate::modules::search_engines::health::cached_or_empty();
+    use crate::modules::search_engines::health::EngineStatus;
+    let engines_down: Vec<&str> = engines
+        .engines
+        .iter()
+        .filter(|h| h.status == EngineStatus::Down)
+        .map(|h| h.name)
+        .collect();
+    let engines_blocked: Vec<&str> = engines
+        .engines
+        .iter()
+        .filter(|h| h.status == EngineStatus::Blocked)
+        .map(|h| h.name)
+        .collect();
+    let curl_present = super::environment::curl_present();
+    let failed_scans = inp
+        .scans
+        .iter()
+        .filter(|sc| sc.status.as_str() == "failed")
+        .count();
+    // Keyed-provider quota budgets (the same snapshots `/stats` serves). WiGLE
+    // splits into four independent sub-budgets. A `quota_exhausted` flag is why
+    // that provider's keyed modules currently return nothing.
+    let provider_budgets: Vec<(&str, crate::util::budget::BudgetSnapshot)> = {
+        let w = crate::modules::wigle::budget_snapshot();
+        vec![
+            ("seeknow", crate::util::see_know::budget_snapshot()),
+            ("oathnet", crate::util::oathnet::budget_snapshot()),
+            ("wigle:geo", w.geo),
+            ("wigle:bssid", w.bssid),
+            ("wigle:cell", w.cell),
+            ("wigle:bluetooth", w.bluetooth),
+        ]
+    };
+    let quota_exhausted: Vec<&str> = provider_budgets
+        .iter()
+        .filter(|(_, b)| b.quota_exhausted)
+        .map(|(n, _)| *n)
+        .collect();
+
+    // ── 0. DETECTED ISSUES — the self-diagnosing verdict, read first ──
+    let issues = detect_issues(&IssueInputs {
+        selftest_ok: inp.selftest.ok,
+        selftest_failures: inp
+            .selftest
+            .checks
+            .iter()
+            .filter(|c| c.status == crate::selftest::Status::Fail)
+            .map(|c| (c.name.as_str(), c.detail.as_str()))
+            .collect(),
+        curl_present,
+        unhealthy_modules: module_health
+            .iter()
+            .map(|h| (h.name, h.consecutive_failures))
+            .collect(),
+        engines_down: engines_down.clone(),
+        engines_blocked: engines_blocked.clone(),
+        scrapers_drifted: inp
+            .scraper_health
+            .iter()
+            .filter(|h| h.is_drifted())
+            .map(|h| (h.module.as_str(), h.consecutive_failures))
+            .collect(),
+        scrapers_yield_drifted: inp
+            .scraper_health
+            .iter()
+            .filter(|h| h.is_yield_drifted())
+            .map(|h| h.module.as_str())
+            .collect(),
+        failed_scans,
+        quota_exhausted_providers: quota_exhausted.clone(),
+    });
+    let (crit, warn) = issues.iter().fold((0usize, 0usize), |(c, w), i| {
+        if i.severity == SEV_CRITICAL {
+            (c + 1, w)
+        } else {
+            (c, w + 1)
+        }
+    });
+    let _ = writeln!(
+        s,
+        "\n── DETECTED ISSUES ({crit} critical, {warn} warning) ──"
+    );
+    if issues.is_empty() {
+        let _ = writeln!(
+            s,
+            "  ✓ no issues auto-detected — self-test OK, no module/engine/scraper drift, \
+             no failed scans"
+        );
+    }
+    for i in &issues {
+        let _ = writeln!(s, "  [{}] {}: {}", i.severity, i.category, i.detail);
+    }
+
+    // ── 1. Environment fingerprint (build / host / module set / key presence) ──
+    // Reuse the `curl_present` already computed for the verdict — one spawn, not two.
+    s.push_str(&super::environment::render_environment(curl_present));
+
+    // ── 1b. Disabled capabilities (operator toggles) — the single most direct
+    //        answer to "why didn't module/feature X run?" that isn't a bug: an
+    //        operator turned it off in `~/.huntsman/settings.json`. ──
+    let disabled_modules: Vec<&'static str> = {
+        let reg = crate::modules::registry();
+        let mut v: Vec<&'static str> = reg
+            .iter()
+            .map(|m| m.name())
+            .filter(|n| !crate::util::settings::get_bool(&format!("module.{n}"), true))
+            .collect();
+        v.sort_unstable();
+        v
+    };
+    let disabled_features: Vec<String> = crate::util::settings::feature_toggles()
+        .into_iter()
+        .filter(|(_, on)| !on)
+        .map(|(k, _)| k)
+        .collect();
+    // Search-engine toggles too — a disabled engine silently never dispatches,
+    // exactly the "why did search find nothing?" question. Keys are already
+    // `engine.<name>`; strip the prefix for a clean roster.
+    let mut disabled_engines: Vec<String> = crate::modules::search_engines::engine_toggles()
+        .into_iter()
+        .filter(|(_, on)| !on)
+        .map(|(k, _)| k.strip_prefix("engine.").map_or(k.clone(), str::to_string))
+        .collect();
+    disabled_engines.sort_unstable();
+    let _ = writeln!(
+        s,
+        "\n── DISABLED CAPABILITIES ({} module(s), {} engine(s), {} feature(s) turned OFF) ──",
+        disabled_modules.len(),
+        disabled_engines.len(),
+        disabled_features.len()
+    );
+    if disabled_modules.is_empty() && disabled_engines.is_empty() && disabled_features.is_empty() {
+        let _ = writeln!(
+            s,
+            "  ✓ nothing disabled — every module, engine, and feature is enabled"
+        );
+    }
+    if !disabled_modules.is_empty() {
+        let _ = writeln!(s, "  modules OFF : {}", disabled_modules.join(", "));
+    }
+    if !disabled_engines.is_empty() {
+        let _ = writeln!(s, "  engines OFF : {}", disabled_engines.join(", "));
+    }
+    if !disabled_features.is_empty() {
+        let _ = writeln!(s, "  features OFF: {}", disabled_features.join(", "));
+    }
+
+    // ── 2. Validation — the full self-test suite (`hse selftest`) ──
+    let _ = writeln!(s, "\n── VALIDATION (SELF-TEST) ──");
+    let _ = writeln!(s, "  {}", inp.selftest.summary());
+    s.push_str(&inp.selftest.render());
+    s.push('\n');
+
+    // ── 3. Live per-process module health (failure streaks) ──
+    let _ = writeln!(
+        s,
+        "\n── MODULE HEALTH (live, this process — {} with a failure streak) ──",
+        module_health.len()
+    );
+    if module_health.is_empty() {
+        let _ = writeln!(
+            s,
+            "  ✓ no module is currently showing a dispatch-failure streak"
+        );
+    }
+    for h in &module_health {
+        let last = h
+            .last_success_at
+            .map_or_else(|| "never this process".to_string(), |t| t.to_string());
+        let _ = writeln!(
+            s,
+            "  {:<28} {} consecutive failure(s) · last success: {}",
+            h.name, h.consecutive_failures, last
+        );
+    }
+
+    // ── 4a. Search-engine liveness (latest cached sweep) ──
+    let _ = writeln!(
+        s,
+        "\n── SEARCH-ENGINE LIVENESS (checked_at={}, {} engines: {} down, {} blocked) ──",
+        engines.checked_at,
+        engines.engines.len(),
+        engines_down.len(),
+        engines_blocked.len()
+    );
+    if engines.engines.is_empty() {
+        let _ = writeln!(
+            s,
+            "  (no sweep cached yet — start `hse serve`/`hse engines` to populate)"
+        );
+    }
+    for h in &engines.engines {
+        let _ = writeln!(
+            s,
+            "  {:<14} {:<8} {:>5} ms · {} result(s) · {}",
+            h.name,
+            h.status.as_str(),
+            h.latency_ms,
+            h.results,
+            h.detail
+        );
+    }
+
+    // ── 4b. Cross-scan scraper health (persisted drift) ──
+    let drifted: Vec<_> = inp
+        .scraper_health
+        .iter()
+        .filter(|h| h.is_drifted())
+        .collect();
+    let yield_drifted: Vec<_> = inp
+        .scraper_health
+        .iter()
+        .filter(|h| h.is_yield_drifted())
+        .collect();
+    let _ = writeln!(
+        s,
+        "\n── SCRAPER HEALTH (cross-scan, {} tracked over {} events — {} drifted, {} yield-drifted) ──",
+        inp.scraper_health.len(),
+        inp.scraper_events_checked,
+        drifted.len(),
+        yield_drifted.len()
+    );
+    if drifted.is_empty() && yield_drifted.is_empty() {
+        let _ = writeln!(
+            s,
+            "  ✓ no source is drifting (no hard-failure streaks, no silent zero-yield)"
+        );
+    }
+    for h in &drifted {
+        let err = h.last_error.as_deref().unwrap_or("(no message)");
+        let _ = writeln!(
+            s,
+            "  [FAIL-DRIFT] {:<24} {} consecutive failure(s) · last error: {}",
+            h.module, h.consecutive_failures, err
+        );
+    }
+    for h in &yield_drifted {
+        let _ = writeln!(
+            s,
+            "  [YIELD-DRIFT] {:<24} {} consecutive zero-yield completion(s)",
+            h.module, h.consecutive_zero_yield
+        );
+    }
+
+    // ── 4c. Keyed-provider quota budgets (why a keyed module returns nothing) ──
+    let _ = writeln!(
+        s,
+        "\n── PROVIDER QUOTAS ({} exhausted) ──",
+        quota_exhausted.len()
+    );
+    for (name, b) in &provider_budgets {
+        let flag = if b.quota_exhausted {
+            " · EXHAUSTED"
+        } else {
+            ""
+        };
+        let _ = writeln!(
+            s,
+            "  {:<16} scan {}/{} · session {}/{}{}",
+            name, b.scan_used, b.scan_cap, b.session_used, b.session_cap, flag
+        );
+    }
+
+    // ── 5. Recent scans (with each failed scan's error inline) ──
+    let _ = writeln!(
+        s,
+        "\n── RECENT SCANS ({}, newest-first; pull /api/v1/scans/<id>/debug.txt for per-scan depth) ──",
+        inp.scans.len()
+    );
+    if inp.scans.is_empty() {
+        let _ = writeln!(s, "  (no scans stored yet)");
+    }
+    for sc in &inp.scans {
+        let _ = writeln!(
+            s,
+            "  {}  {:<9} ents={} run={} err={} timeout={} cached={}  {:?}:{}",
+            sc.id,
+            sc.status.as_str(),
+            sc.entity_count,
+            sc.modules_run,
+            sc.modules_errored,
+            sc.modules_timed_out,
+            sc.modules_cached,
+            sc.target.kind,
+            sc.target.value,
+        );
+        if let Some(err) = sc.error.as_deref().filter(|e| !e.is_empty()) {
+            let _ = writeln!(s, "        error: {err}");
+        }
+    }
+
+    // ── 6. Recent verbose logs (the in-memory TRACE ring) ──
+    let _ = writeln!(
+        s,
+        "\n── RECENT LOGS ({} line(s) in the ring buffer) ──",
+        inp.log_lines
+    );
+    if inp.log_dump.trim().is_empty() {
+        let _ = writeln!(
+            s,
+            "  (log ring empty — capture installs with the server; a bare CLI run buffers little)"
+        );
+    } else {
+        s.push_str(&inp.log_dump);
+        if !inp.log_dump.ends_with('\n') {
+            s.push('\n');
+        }
+    }
+
+    // ── 7. Source-file manifest (build fingerprint — every file the binary carries) ──
+    let _ = writeln!(
+        s,
+        "\n── SOURCE FILES ({} files, {} LOC) ──",
+        crate::source_manifest::SOURCE_FILES.len(),
+        crate::source_manifest::SOURCE_TOTAL_LINES,
+    );
+    for (path, lines) in crate::source_manifest::SOURCE_FILES {
+        let _ = writeln!(s, "  {lines:>6}  {path}");
+    }
+
+    s
 }
 
 pub(super) fn render_report(store: &Store, sid: &str, include_infra: bool) -> Result<String> {

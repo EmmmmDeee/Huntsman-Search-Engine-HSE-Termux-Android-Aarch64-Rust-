@@ -3796,6 +3796,45 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **`[ ]` SOL-URLHAUS-COST-OVERRIDE · Add a `cost()` override returning
   `ModuleCost::KeyGated`** → **T2.150**. Queued, not yet started — see
   `PROBLEM_TREE` T2.150 for the finding.
+- **`[x]` SOL-SYSTEM-DEBUG-BUNDLE · One consolidated, loopback-gated
+  system self-diagnosis download that encompasses the whole engine's
+  diagnostic + validation state, led by an auto-computed DETECTED ISSUES
+  verdict** → **T2.163**. Delivered 2026-07-15: new `GET /api/v1/debug/bundle`
+  (handler in `api::handlers`, mirroring the loopback gate of `logs_download`)
+  + a shared `cli::export::render_system_debug_bundle` renderer + a pure
+  `detect_issues` verdict engine (both new in `renderers.rs`, re-exported via
+  `cli::export`), + a prominent "Download full diagnostic bundle" button that
+  becomes the Settings/Diagnostics panel's primary action. The artifact joins
+  the ~12 previously-scattered system-diagnostic surfaces into one file:
+  DETECTED ISSUES → environment → disabled capabilities → self-test validation
+  → module/engine/scraper health → provider quotas → recent scans (each failed
+  scan's error inline) → verbose log ring → source manifest. Reuses only
+  already-tested sources (no new data providers); secret-free (key names only);
+  respects the log-ring PII loopback gate. 9 unit + 2 integration tests + the
+  SPA↔routes drift-guard extended. See `PROBLEM_TREE` T2.163 for the full
+  finding and the deferred directive threads (T2.164–T2.167).
+- **`[ ]` SOL-UI-SIMPLIFY-DEBUG · Remove the three orphaned scan-info panels
+  (or wire their useful debug content in) and join the module roster with the
+  fragmented health signals into one consolidated status view** → **T2.164**.
+  Queued — see `PROBLEM_TREE` T2.164.
+- **`[ ]` SOL-CLI-CONSOLIDATE · Audit every subcommand against real
+  usage/test/API-UI callers and fold or hide the subsumed ones behind the
+  comprehensive aggregates, preserving scripting-critical paths** → **T2.165**.
+  Queued — see `PROBLEM_TREE` T2.165.
+- **`[ ]` SOL-SCAN-MAX-POWER · Determine and set the maximally-thorough safe
+  scan defaults without regressing determinism / free-only / quota
+  guarantees** → **T2.166**. Queued — see `PROBLEM_TREE` T2.166.
+- **`[ ]` SOL-INSTALL-IDEMPOTENT · Verify + harden the setup script's
+  detect-existing-install path with a reproducible over-install run that
+  preserves DB/keys/settings and upgrades the binary/schema in place** →
+  **T2.167**. Queued — see `PROBLEM_TREE` T2.167.
+- **`[ ]` SOL-BUNDLE-ENRICH · Add the four verification-confirmed diagnostic
+  surfaces the T2.163 bundle omits — key-pool/dead-key health, real on-disk DB
+  integrity + WAL, update phase, and cell-tower GEOINT dataset — each with a
+  pure `detect_issues` arm so a silently-dead key / corrupt DB / failed update
+  / empty cell-DB reaches the headline verdict** → **T2.168**. Queued —
+  confirmed by the T2.163 adversarial verification workflow; see `PROBLEM_TREE`
+  T2.168.
 - **`[x]` SOL-OATHNET-FULL-PAGINATION · Raise OathNet `page_size` to the
   documented per-endpoint maximum and implement real cursor-based
   pagination** → **T2.151**. Delivered 2026-07-14: Breach Search page_size
@@ -12066,3 +12105,31 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   bool-or-string `verified`). Gate green: fmt/clippy `--all-targets -D
   warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4872 total pass (+3).
   **Paired:** `PROBLEM_TREE` T2.124 `[ ]`→`[x]` — same commit.
+- **2026-07-15 (cont'd)** — **SOL-SYSTEM-DEBUG-BUNDLE delivered** (operator
+  directive: consolidate all debugging into one powerful, autonomous,
+  downloadable artifact — "self-debugging software"). Understood the existing
+  architecture first (a read-only SPA map + backend recon confirmed HSE had a
+  full *per-scan* `debug.txt` but no *engine-level* download, ~12 scattered
+  system-diagnostic surfaces, and a failed scan's error unreachable in the
+  SPA). Added one loopback-gated `GET /api/v1/debug/bundle` + a shared pure
+  renderer `render_system_debug_bundle` + a pure `detect_issues` verdict engine
+  in `cli::export`, and made a prominent "Download full diagnostic bundle" the
+  Settings/Diagnostics panel's primary action. The single artifact leads with
+  an auto-computed DETECTED ISSUES verdict (failed self-test / missing `curl`
+  → CRITICAL; module/engine/scraper drift + failed scans + exhausted provider
+  quotas → WARNING; worst-first, deterministic) then folds in environment,
+  disabled capabilities, self-test validation, live + cross-scan health,
+  provider quotas, recent scans (each failed scan's error inline), the log
+  ring, and the source manifest. Reuses only already-tested sources; secret-
+  free (key names only) and loopback-gated (the ring holds PII); shares the
+  renderer home + `render_environment` (with a `curl_present()` extraction) so
+  it never drifts from the per-scan bundle. Termux-safe (pure in-process reads,
+  no new deps). **Tests:** 9 unit (`detect_issues` classification, determinism
+  across input permutations, all-clear, failure-surfacing; renderer all-
+  sections) + 2 integration (loopback 403 / loopback 200 with every section) +
+  the SPA↔routes drift-guard extended for `/debug/bundle`. Gate green:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
+  test` — 4881 lib + 103 api pass. Directive's remaining threads queued as
+  T2.164–T2.167 (SOL-UI-SIMPLIFY-DEBUG / SOL-CLI-CONSOLIDATE /
+  SOL-SCAN-MAX-POWER / SOL-INSTALL-IDEMPOTENT) rather than sprawl this commit.
+  **Paired:** `PROBLEM_TREE` T2.163 `[ ]`→`[x]` — same commit.
