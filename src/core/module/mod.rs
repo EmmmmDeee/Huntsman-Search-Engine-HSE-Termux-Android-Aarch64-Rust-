@@ -427,6 +427,30 @@ impl ModuleResult {
     pub fn len(&self) -> usize {
         self.entities.len()
     }
+
+    /// Fold a module's outcome across several *independent* concurrent
+    /// sub-fetches into its final `process()` return value: if nothing was
+    /// collected AND a genuine hard failure occurred among the sub-fetches,
+    /// surface that failure as a real `Error` (a `ModuleError` event the
+    /// operator and circuit breaker can react to) instead of a silent empty
+    /// success — a total outage must never be indistinguishable from a clean
+    /// negative. But if ANY sub-fetch already produced real evidence, that
+    /// evidence is always kept even when a *different* sub-fetch failed, so a
+    /// partial outage can never discard a genuine finding. `hard_failure` is
+    /// typically the last (or first) `Err` observed across the sub-fetches —
+    /// callers don't need to distinguish which one, since this only fires
+    /// when nothing was found at all. Shared by every module with
+    /// independent concurrent sub-fetches (`ip_reputation`, T2.111;
+    /// `niamonx`, T2.114) so this evidentiary-integrity invariant is defined
+    /// once, not re-derived per module.
+    pub fn or_hard_failure(self, hard_failure: Option<Error>) -> Result<Self> {
+        if self.is_empty()
+            && let Some(e) = hard_failure
+        {
+            return Err(e);
+        }
+        Ok(self)
+    }
 }
 
 #[cfg(test)]

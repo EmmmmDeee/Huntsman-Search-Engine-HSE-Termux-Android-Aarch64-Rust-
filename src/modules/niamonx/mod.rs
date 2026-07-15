@@ -254,24 +254,43 @@ impl Module for NiamonX {
         let mut entity = target.to_entity(0.80, &ctx.scan_id);
         entity.tag(SRC);
 
+        // The last genuine transport/parse failure seen across the three
+        // independent endpoints (T2.114). Real evidence from any endpoint is
+        // never discarded because a *different* endpoint failed — see
+        // `ModuleResult::or_hard_failure` below.
+        let mut hard_failure: Option<Error> = None;
         match r1 {
             Ok(r) => emit_pbs_v1(r, &mut entity, &mut result, query, &ctx.scan_id),
-            Err(e) => warn!(error = %e, "niamonx pbs_v1 failed"),
+            Err(e) => {
+                warn!(error = %e, "niamonx pbs_v1 failed");
+                hard_failure = Some(e);
+            }
         }
         match r2 {
             Ok(r) => emit_pbs_v2(r, &mut entity, &mut result, query, &ctx.scan_id),
-            Err(e) => warn!(error = %e, "niamonx pbs_v2 failed"),
+            Err(e) => {
+                warn!(error = %e, "niamonx pbs_v2 failed");
+                hard_failure.get_or_insert(e);
+            }
         }
         match r3 {
             Ok(r) => emit_ulp(r, &mut entity, &mut result, query, &ctx.scan_id),
-            Err(e) => warn!(error = %e, "niamonx ulp failed"),
+            Err(e) => {
+                warn!(error = %e, "niamonx ulp failed");
+                hard_failure.get_or_insert(e);
+            }
         }
 
         // Only emit the entity when at least one endpoint contributed evidence.
         if !entity.evidence.is_empty() {
             result.push(entity);
         }
-        Ok(result)
+        // All three endpoints failing (e.g. a revoked API key, or a full
+        // dash.niamonx.io outage) previously read as "nothing found on any of
+        // the three PBS/ULP surfaces" — indistinguishable from a genuine
+        // triple-negative. Surface it as a real error instead, unless at
+        // least one endpoint already produced real evidence.
+        result.or_hard_failure(hard_failure)
     }
 }
 

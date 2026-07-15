@@ -142,6 +142,52 @@ use super::*;
     }
 
     #[test]
+    fn resolve_profile_propagates_a_genuine_fetch_error_instead_of_masking_it_as_no_profile() {
+        // T2.112: before this fix, `process()` folded EVERY `Err` from the
+        // fetch — a 429, a 5xx, or a transport failure even the curl
+        // fallback couldn't rescue — into the same clean `Ok(empty)` a real
+        // "no Gravatar profile" 404 produces, making a genuine outage
+        // indistinguishable from a negative result.
+        let err = crate::core::error::Error::module("gravatar", "simulated 503 from gravatar.com");
+        let result = resolve_profile(Err(err), "deadbeef", "scan-1");
+        assert!(
+            result.is_err(),
+            "a genuine fetch error must propagate, not collapse into Ok(empty)"
+        );
+    }
+
+    #[test]
+    fn resolve_profile_treats_a_confirmed_404_as_a_clean_miss() {
+        // Gravatar's real, live-confirmed "no such profile" signal (a 404 —
+        // reconfirmed live 2026-07-15 against a random unregistered email);
+        // `fetch_json_or_404` maps it to `Ok(None)` before any body is read.
+        let result = resolve_profile(Ok(None), "deadbeef", "scan-1").unwrap();
+        assert!(result.entities.is_empty());
+    }
+
+    #[test]
+    fn resolve_profile_builds_entities_from_a_real_profile() {
+        let resp: GravatarResp =
+            serde_json::from_str(r#"{"entry":[{"preferredUsername":"matt"}]}"#).unwrap();
+        let result = resolve_profile(Ok(Some(resp)), "deadbeef", "scan-1").unwrap();
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username && e.value == "matt")
+        );
+    }
+
+    #[test]
+    fn resolve_profile_is_a_clean_miss_when_the_profile_has_no_entry() {
+        // A `200` whose `entry` array is empty (no linked identity data) is
+        // not an error either — just nothing to extract.
+        let resp: GravatarResp = serde_json::from_str(r#"{"entry":[]}"#).unwrap();
+        let result = resolve_profile(Ok(Some(resp)), "deadbeef", "scan-1").unwrap();
+        assert!(result.entities.is_empty());
+    }
+
+    #[test]
     fn account_verified_accepts_legacy_string_shape_too() {
         // The field was originally typed for the string "true"/"false" shape;
         // the fix must stay backward-compatible with it, not just add the bool

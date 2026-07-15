@@ -472,6 +472,53 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`pwned_passwords` treated a non-2xx response (a transient 429/5xx)
+  identically to a genuine zero-count "not pwned" result (T2.116).**
+  Confirmed the k-Anonymity range API's genuine "not found" signal is
+  always a `200` whose suffix listing simply omits the queried hash's
+  suffix, so the module's non-2xx check was never protecting a legitimate
+  clean-miss path — only masking a rate limit or server outage as "this
+  credential is not in any known breach," unlike sibling Breach modules
+  which already propagate non-2xx as an error. The fetch + status-check is
+  now a `url`-parameterised `fetch_range` helper, independently testable
+  against a real local HTTP server.
+- **`niamonx::process()` swallowed an all-3-concurrent-endpoints failure
+  (a revoked API key, or a full `dash.niamonx.io` outage) into the same
+  empty result a genuine triple-negative produces (T2.114).** The exact
+  same shape as the already-fixed `ip_reputation` (T2.111): independent
+  concurrent sub-fetches, each `Err` logged then discarded, no way to tell
+  "every source found nothing" from "every source was unreachable."
+  Centralised `ip_reputation`'s partial-failure-preserving combinator into
+  a new shared `ModuleResult::or_hard_failure` on `core::module` instead of
+  hand-rolling a third copy — both modules now delegate to it. Any endpoint
+  that contributed real evidence always wins; only a genuine zero-evidence
+  outcome with at least one real failure now surfaces as an error.
+- **`employer_pivot::process()` swallowed a total homepage-fetch failure
+  into the same empty result a genuine no-business-info page produces
+  (T2.113).** The fetch loop already breaks immediately after the
+  homepage's own failure, so in practice only one fetch is ever attempted
+  against a dead/unreachable domain, and the existing `homepage_ok` flag
+  already tracked whether it succeeded — the gap was that this flag was
+  computed and never checked before the empty-result return. A new pure
+  `fetch_failed(homepage_ok, collected_any_content)` (mirrors
+  `asic_director`'s `request_failed` decision table) is now checked first:
+  a homepage that never answered with nothing collected returns a real
+  error instead of a silent empty result; a homepage that answered fine
+  but simply had no business info is unchanged.
+- **`gravatar::process()` collapsed every fetch `Err` — not just a genuine
+  404 — into the same empty result a clean "no Gravatar profile" miss also
+  produces (T2.112).** Live-verified against the real endpoint first: a
+  known real profile returns `200` with the full profile JSON, and a
+  randomly generated unregistered email's hash returns a genuine `404` —
+  not the `200`-with-body-`"User not found"` shape the module's stale doc
+  comment claimed (that shape only ever traces to the curl-fallback path,
+  reached solely when the primary transport call itself fails). A 429/5xx
+  status or an unrescued transport failure is a real operational failure,
+  not a clean miss, and now propagates as a genuine error (visible to the
+  operator, feeding the T2.7 scraper-health signal) instead of silently
+  masquerading as "this email has no Gravatar." New pure `resolve_profile`
+  function + 4 regression tests pin the confirmed-404/error/profile/
+  empty-entry cases.
 - **`psbdmp::process()` treated a genuine fetch failure (transport error,
   non-2xx status, malformed JSON) identically to a real "no pastes found"
   result.** The module's own doc comment already recorded this happening in

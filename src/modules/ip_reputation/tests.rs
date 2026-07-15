@@ -107,51 +107,11 @@ fn meaningful_tag_keeps_threat_categories_drops_noise() {
     // Before this fix, `run_otx`/`run_tor_check` discarded every `Err` with
     // a bare `return`, and `process()` always returned `Ok(result)` — a
     // total outage was indistinguishable from a clean "nothing found".
-
-    #[test]
-    fn combine_result_errors_when_empty_and_a_hard_failure_occurred() {
-        // The exact regression: previously this situation silently returned
-        // Ok(empty) — the operator could not tell a real outage from a
-        // clean negative.
-        let empty = ModuleResult::new();
-        let err = Error::module("ip_reputation", "boom");
-        let out = combine_result(empty, Some(err));
-        assert!(
-            out.is_err(),
-            "an empty result with a genuine failure must surface as Err, not a hollow Ok"
-        );
-    }
-
-    #[test]
-    fn combine_result_stays_ok_when_empty_and_no_failure_occurred() {
-        // A real clean negative (both sub-checks ran fine, found nothing)
-        // must NOT be turned into a spurious error.
-        let empty = ModuleResult::new();
-        let out = combine_result(empty, None);
-        assert!(out.is_ok(), "a clean negative must stay Ok(empty)");
-        assert!(out.unwrap().is_empty());
-    }
-
-    #[test]
-    fn combine_result_preserves_evidence_despite_a_sibling_failure() {
-        // If one sub-check hard-fails but the OTHER already found real
-        // evidence, that evidence must never be thrown away just because
-        // a sibling check also failed.
-        let mut with_data = ModuleResult::new();
-        with_data.push(Entity::new(
-            EntityKind::IpAddress,
-            "1.2.3.4",
-            0.9,
-            "test-scan",
-        ));
-        let err = Error::module("ip_reputation", "tor list unreachable");
-        let out = combine_result(with_data, Some(err));
-        assert!(
-            out.is_ok(),
-            "real evidence from one sub-check must survive a sibling's failure"
-        );
-        assert_eq!(out.unwrap().len(), 1);
-    }
+    // `process()` now folds `hard_failure` through the shared
+    // `ModuleResult::or_hard_failure` (T2.114 centralised this exact
+    // combinator out of this module so `niamonx` could reuse it instead of
+    // duplicating it) — its decision-table regression tests now live beside
+    // it in `core::module::tests`, not here.
 
     /// A one-shot local HTTP server that always answers with `status` and
     /// `body` — used to give `fetch_exit_set` a real (not mocked) transport

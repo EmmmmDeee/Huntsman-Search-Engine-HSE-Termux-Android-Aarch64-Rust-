@@ -195,26 +195,8 @@ impl Module for IpReputation {
             hard_failure.get_or_insert(e);
         }
 
-        combine_result(result, hard_failure)
+        result.or_hard_failure(hard_failure)
     }
-}
-
-/// Fold the entities collected and the last hard failure (if any) into the
-/// `process()` return value.
-///
-/// A total outage used to be indistinguishable from a clean "nothing
-/// found" — both surfaced as `Ok(empty)` (T2.111). Now a genuine
-/// transport/parse failure is surfaced as `Err` (a `ModuleError` event the
-/// operator can see and the circuit breaker can react to) UNLESS a
-/// sub-check that *did* succeed already produced real evidence — a partial
-/// failure elsewhere must never cause that evidence to be discarded.
-fn combine_result(result: ModuleResult, hard_failure: Option<Error>) -> Result<ModuleResult> {
-    if result.is_empty()
-        && let Some(e) = hard_failure
-    {
-        return Err(e);
-    }
-    Ok(result)
 }
 
 // ── OTX sub-routine ────────────────────────────────────────────────

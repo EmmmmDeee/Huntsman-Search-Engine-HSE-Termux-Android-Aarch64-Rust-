@@ -1920,32 +1920,90 @@ direct.**
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4686 lib
   tests, +6). **Paired:** `SOLUTION_TREE` SOL-IPREP-SWALLOWED `[ ]`→`[x]`
   — same commit.
-- **`[ ]` T2.112 · `gravatar::process()` collapses every `Err` from
+- **`[x]` T2.112 · `gravatar::process()` collapses every `Err` from
   `fetch_json_or_404`, not just deserialize failures, into the same empty
   result as a legitimate 404.**
   A transport error or a non-404 HTTP failure is indistinguishable from a
   real "no Gravatar profile" outcome. → **Solution:** narrow the collapse
   to the genuine 404 case only and propagate other errors. **P2**. *Queued
-  from the 2026-07-14 comprehensive audit, wave 1 (module categories) —
-  not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
-  SOL-GRAVATAR-ERR-COLLAPSE (new stub).
-- **`[ ]` T2.113 · `employer_pivot::process()` returns plain `Ok` when all up
+  from the 2026-07-14 comprehensive audit, wave 1 (module categories).*
+  **Fixed (2026-07-15):** live-verified against the real `gravatar.com`
+  endpoint first (a random unregistered email hash genuinely 404s; a real
+  profile returns 200 with the full JSON) to confirm what "no profile"
+  actually looks like today before touching the code — the module's own
+  stale doc comment claimed a `200`-with-body-`"User not found"` shape that
+  the live API does not exhibit for the direct-fetch path. `process()`'s
+  `Ok(None) | Err(_) => return Ok(result)` match collapsed a 404 (a real
+  clean miss) and every other failure (a 429/5xx status, or a transport
+  error even the curl fallback couldn't rescue) into the identical empty
+  success. Extracted the fetch-outcome handling into a new pure
+  `resolve_profile(fetched, hash, scan_id)` — `Ok(None)` stays the clean
+  miss, `Err` now propagates via `?` (mirrors `hlr_cnam`'s existing
+  `let Some(x) = …? else { … }` idiom elsewhere in this same codebase),
+  `Ok(Some(_))` builds entities exactly as before. Pure, so unit-tested
+  directly without a live server (unlike `process()` itself, whose URL is
+  hardcoded to `gravatar.com`) — 4 new regression tests cover the error/404/
+  populated-profile/empty-entry cases; confirmed via `git stash` of `mod.rs`
+  alone that the new tests fail to even compile against the pre-fix code
+  (they reference a function that didn't exist), then pass clean against the
+  fix. Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc
+  `cargo doc`/`cargo test` — 4856 total pass (+4). **Paired:**
+  `SOLUTION_TREE` SOL-GRAVATAR-ERR-COLLAPSE `[ ]`→`[x]` — same commit.
+- **`[x]` T2.113 · `employer_pivot::process()` returns plain `Ok` when all up
   to 8 page fetches fail at the transport/HTTP level, including the
   homepage.**
   A total fetch outage is indistinguishable from a genuine no-info result,
   hiding a source that never actually ran. → **Solution:** track whether
   every fetch failed and surface that as an error/skip rather than a clean
   empty `Ok`. **P2**. *Queued from the 2026-07-14 comprehensive audit, wave
-  1 (module categories) — not yet investigated or fixed.* **Paired:**
-  `SOLUTION_TREE` SOL-EMPLOYERPIVOT-ALLFAIL (new stub).
-- **`[ ]` T2.114 · `niamonx` returns `Ok(ModuleResult::new())` when all 3
+  1 (module categories).* **Fixed (2026-07-15):** read the loop directly
+  before assuming the stub's "up to 8 fetches fail" framing — the loop
+  already breaks after the very first (homepage) failure (`if path != "/"
+  && !homepage_ok { break; }`), so in practice exactly one fetch is
+  attempted on a dead/unreachable domain, and the existing `homepage_ok`
+  flag already tracks whether it succeeded; the gap was that this flag was
+  computed but never checked before the empty-result return. Added a new
+  pure `fetch_failed(homepage_ok, collected_any_content)` — mirrors
+  `asic_director`'s `request_failed` two-bool decision table (T2.120)
+  exactly — checked immediately before the existing `all_text.is_empty()`
+  clean-miss return: when the homepage never answered (transport error,
+  non-success status, or unreadable body) AND no page's content was
+  collected at all, `process()` now returns a real `Error::module` instead
+  of a silent empty success; a homepage that read fine but simply carried
+  no business info (or whose contact/about sub-pages 404) is unchanged, an
+  honest empty result. 3 new regression tests pin the decision table. Gate
+  green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/
+  `cargo test` — 4859 total pass (+3). **Paired:** `SOLUTION_TREE`
+  SOL-EMPLOYERPIVOT-ALLFAIL
+  `[ ]`→`[x]` — same commit.
+- **`[x]` T2.114 · `niamonx` returns `Ok(ModuleResult::new())` when all 3
   concurrently-fetched endpoints fail (e.g. an invalid API key).**
   An entirely broken key or outage is indistinguishable from a genuine
   no-hit result. → **Solution:** detect the all-endpoints-failed case and
   surface it as an error instead of a silent empty result. **P2**. *Queued
-  from the 2026-07-14 comprehensive audit, wave 1 (module categories) —
-  not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
-  SOL-NIAMONX-ALLFAIL (new stub).
+  from the 2026-07-14 comprehensive audit, wave 1 (module categories).*
+  **Fixed (2026-07-15):** the exact same shape as T2.111's already-fixed
+  `ip_reputation` (independent concurrent sub-fetches, `warn!`-logged but
+  otherwise discarded `Err`s, no way to distinguish a total outage from a
+  genuine triple-negative) — rather than re-deriving the same
+  "collect-a-hard-failure, propagate only when nothing was found" logic a
+  third time, centralised `ip_reputation`'s private `combine_result` into a
+  new shared `ModuleResult::or_hard_failure(self, hard_failure:
+  Option<Error>) -> Result<Self>` (`core::module`), and had `niamonx` use it
+  too: each of the three `tokio::join!` legs (`pbs_v1`/`pbs_v2`/`ulp`) now
+  records its `Err` into a `hard_failure` slot alongside its existing
+  `warn!` log, and `process()`'s final `Ok(result)` return became
+  `result.or_hard_failure(hard_failure)` — if any endpoint already
+  contributed evidence, that evidence always wins; only a genuine
+  zero-evidence outcome with at least one real failure now surfaces as
+  `Error::module`. `ip_reputation` updated to delegate to the same shared
+  method (its local `combine_result` removed as dead duplication per
+  `docs/CONVENTIONS.md` §4's "delegate, never copy"); its three
+  `combine_result_*` regression tests moved to `core::module::tests`
+  (`or_hard_failure_*`) rather than being re-derived per caller. Gate green:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
+  test`. **Paired:** `SOLUTION_TREE` SOL-NIAMONX-ALLFAIL `[ ]`→`[x]` — same
+  commit.
 - **`[x]` T2.115 · `psbdmp`'s sole data fetch converts every failure mode
   (network error, non-2xx, malformed JSON) into a clean empty result.**
   The module's own doc comment records this happening in production (0/152
@@ -2001,14 +2059,30 @@ direct.**
   than overclaimed. **Paired:**
   `SOLUTION_TREE` SOL-PSBDMP-SWALLOWED-FAILURE `[ ]`→`[x]`, §5 — same
   commit.
-- **`[ ]` T2.116 · `pwned_passwords` treats a non-2xx response (transient
+- **`[x]` T2.116 · `pwned_passwords` treats a non-2xx response (transient
   5xx/429) identically to a genuine zero-count result.**
   Sibling Breach modules propagate non-2xx as `Err`; this one silently folds
   a rate-limit or server error into "password not found in any breach."
   → **Solution:** propagate non-2xx as an error, matching sibling Breach
   modules. **P2**. *Queued from the 2026-07-14 comprehensive audit, wave 1
-  (module categories) — not yet investigated or fixed.* **Paired:**
-  `SOLUTION_TREE` SOL-PWNEDPW-NON2XX (new stub).
+  (module categories).* **Fixed (2026-07-15):** confirmed the k-Anonymity
+  range API's genuine "not found" signal is always a `200` whose suffix
+  listing simply omits the queried hash's suffix — `parse_breach_count`
+  returning `None` already handles that honestly — so the `if
+  !resp.status().is_success() { return Ok(ModuleResult::new()); }` check was
+  never protecting a legitimate clean-miss path; every 429/5xx silently read
+  as "this credential is not in any known breach." Extracted the fetch +
+  status-check + body-read into a new `fetch_range(http, url)`, `url`
+  parameterised so it is testable against a real local server (mirrors
+  `ip_reputation`'s `fetch_exit_set`/`serve_once` pattern, T2.111) unlike
+  `process()` itself, whose host is hardcoded to `api.pwnedpasswords.com`;
+  a non-success status now calls the shared `http::http_status_error`
+  helper already used by `github_user` and other modules for the identical
+  conversion, instead of hand-rolling a new one. 3 new regression tests
+  (429, 503, and a genuine 200 success) drive `fetch_range` against a real
+  local HTTP server. Gate green: fmt/clippy `--all-targets -D warnings`/
+  strict-rustdoc `cargo doc`/`cargo test` — 4865 total pass (+3). **Paired:**
+  `SOLUTION_TREE` SOL-PWNEDPW-NON2XX `[ ]`→`[x]` — same commit.
 - **`[ ]` T2.117 · Nine Social profile modules (`bitbucket_user` + 8 others)
   share `Ok(None)|Err(_) => Ok(ModuleResult::new())`, converting real
   fetch failures into a fake 404.**
@@ -16882,3 +16956,106 @@ way, so this specific drift class can't recur silently again.
   used it. Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc
   `cargo doc`/`cargo test` — 4853 total pass (net unchanged: −1 flawed test,
   +1 hermetic one). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-15 (cont'd)** — **Executed T2.112** (`gravatar::process()`
+  collapsing every `Err` from `fetch_json_or_404` — not just a genuine 404 —
+  into the same empty result a clean "no profile" miss also produces). This
+  sandbox's egress proxy allows outbound HTTPS this cycle (unlike the
+  2026-07-14 investigation that left T2.108 blocked), so before touching any
+  code the real endpoint was fetched live twice: a known real profile
+  (`gravatar.com/22bd03…json`, the same fixture `SOL-GRAVATAR-VERIFIED-BOOL`
+  already pinned) returned 200 with the full profile JSON, and a randomly
+  generated unregistered email's hash returned a genuine HTTP 404 — not the
+  200-with-body-`"User not found"` shape the module's own doc comment
+  claimed, which only ever applied to the curl-fallback path (reached solely
+  when reqwest's own transport call fails, not the common case). Read
+  `fetch_json_inner` directly to confirm `Err` here means one of three real
+  things — a non-2xx status (429/5xx), a reqwest transport failure whose curl
+  fallback also failed, or a 2xx body that fails to deserialise — and that
+  none of those is "Gravatar said no such profile," only the live-confirmed
+  404 is. Extracted the fetch-outcome handling out of `process()` into a new
+  pure `resolve_profile(fetched, hash, scan_id)` (mirrors `combine_result`/
+  `request_failed`'s "hardcoded-URL module → pure decision function,
+  unit-tested without a live server" precedent from T2.111/T2.120): `Ok(None)`
+  stays the clean miss, `Ok(Some(_))` builds entities via the existing pure
+  `extract_entry` unchanged, and `Err` now propagates via `?` instead of the
+  old `Ok(None) | Err(_) => return Ok(result)` catch-all. 4 new regression
+  tests pin all three outcomes plus the empty-`entry`-array edge case;
+  red/green-verified by `git stash`-ing `mod.rs` alone and confirming the new
+  tests don't even compile against the pre-fix code (they reference a
+  function that didn't exist there), then pass clean restored. Gate green:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
+  test` — 4856 total pass (+4). **Paired:** `SOLUTION_TREE`
+  SOL-GRAVATAR-ERR-COLLAPSE `[ ]`→`[x]`, §5 — same commit.
+- **2026-07-15 (cont'd)** — **Executed T2.113** (`employer_pivot::process()`
+  swallowing a total homepage-fetch failure into the same empty result a
+  genuine no-business-info page produces). Read the fetch loop directly
+  rather than trusting the stub's "up to 8 fetches fail" framing: the loop
+  already breaks immediately after the homepage's own failure (`if path !=
+  "/" && !homepage_ok { break; }`), so in practice only one fetch is ever
+  attempted against a dead domain, and the existing `homepage_ok` flag
+  already tracked its outcome — the real gap was that this flag was computed
+  and then never checked before the empty-result return. Mirrored
+  `asic_director`'s `request_failed` two-bool decision table (T2.120) with a
+  new pure `fetch_failed(homepage_ok, collected_any_content)`, checked
+  immediately before the existing `all_text.is_empty()` clean-miss path: a
+  homepage that never answered (transport error, non-success status, or
+  unreadable body) with nothing collected now returns a real `Error::module`;
+  a homepage that answered fine but simply carried no business info (or whose
+  contact/about sub-pages individually 404) is unchanged — an honest empty
+  result, not an error. 3 new regression tests pin all three cells of the
+  decision table. Gate green: fmt/clippy `--all-targets -D warnings`/
+  strict-rustdoc `cargo doc`/`cargo test` — 4859 total pass (+3).
+  **Paired:** `SOLUTION_TREE` SOL-EMPLOYERPIVOT-ALLFAIL `[ ]`→`[x]`, §5 —
+  same commit.
+- **2026-07-15 (cont'd)** — **Executed T2.114** (`niamonx` swallowing an
+  all-3-concurrent-endpoints failure into the same empty result a genuine
+  triple-negative produces). Recognised this as the exact same shape as
+  T2.111's already-fixed `ip_reputation` — independent concurrent sub-
+  fetches, each `Err` `warn!`-logged then otherwise discarded, no way to
+  distinguish "every endpoint genuinely found nothing" from "every endpoint
+  was unreachable" (e.g. a revoked API key). Rather than re-deriving the
+  same "collect a hard failure, propagate it only when nothing was
+  collected at all" combinator a third time, centralised `ip_reputation`'s
+  private `combine_result` into a new shared `ModuleResult::or_hard_failure
+  (self, hard_failure: Option<Error>) -> Result<Self>` on `core::module`
+  (`docs/CONVENTIONS.md` §4: "delegate, never copy" — a hand-rolled second
+  copy of identical logic is exactly the drift class that rule exists to
+  prevent). Each of niamonx's three `tokio::join!` legs (`pbs_v1`/`pbs_v2`/
+  `ulp`) now records its `Err` into a `hard_failure` slot alongside its
+  existing `warn!` log, and `process()`'s final return became
+  `result.or_hard_failure(hard_failure)` — any endpoint that already
+  contributed evidence always wins; only a genuine zero-evidence outcome
+  with at least one real failure now surfaces as `Error::module`.
+  `ip_reputation` updated to delegate to the same shared method; its three
+  `combine_result_*` regression tests moved to `core::module::tests` as
+  `or_hard_failure_*` rather than staying duplicated per caller. Gate
+  green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/
+  `cargo test` — 4859 total pass (net unchanged: +3 new in
+  `core::module::tests`, -3 removed from `ip_reputation::tests` now that
+  the logic they pinned is centralised). **Paired:** `SOLUTION_TREE`
+  SOL-NIAMONX-ALLFAIL `[ ]`→`[x]`, §5 — same commit.
+- **2026-07-15 (cont'd)** — **Executed T2.116** (`pwned_passwords` treating
+  a non-2xx response — a transient 429/5xx — identically to a genuine
+  zero-count result), closing the five-item batch this cycle worked through
+  (T2.112–T2.116) off the 2026-07-14 comprehensive-audit queue. Confirmed
+  the k-Anonymity range API's genuine "not found" signal is always a `200`
+  whose suffix listing simply omits the queried hash's suffix —
+  `parse_breach_count` already returns `None` for that honestly — so the
+  `if !resp.status().is_success() { return Ok(ModuleResult::new()); }`
+  check was never protecting a legitimate clean-miss path; every rate limit
+  or server outage silently read as "this credential is not in any known
+  breach." Rather than leaving `process()`'s network call untestable
+  (its host is hardcoded to `api.pwnedpasswords.com`), extracted the fetch +
+  status-check + body-read into a new `fetch_range(http, url)` with `url`
+  parameterised — mirrors `ip_reputation`'s `fetch_exit_set`/`serve_once`
+  local-HTTP-server test pattern (T2.111) rather than the hardcoded-URL
+  pure-decision-function idiom used for T2.112/T2.113/T2.115, since this
+  fix has no branching decision to extract, just a network call worth
+  making independently testable. The non-success path now calls the shared
+  `util::http::http_status_error` helper already used by `github_user` and
+  other modules for the identical status→`Error::module` conversion,
+  instead of hand-rolling a new one. 3 new regression tests (429, 503, and a
+  genuine 200 success) drive `fetch_range` against a real local HTTP
+  server. Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc
+  `cargo doc`/`cargo test` — 4865 total pass (+3). **Paired:**
+  `SOLUTION_TREE` SOL-PWNEDPW-NON2XX `[ ]`→`[x]`, §5 — same commit.
