@@ -150,6 +150,16 @@ impl super::Store {
             let mut merged = serde_json::from_str::<Entity>(&existing_json)?;
             let old_value = merged.value.clone();
             merged.merge(entity.clone());
+            // `merge`'s evidence/tag Vecs are appended in whatever order the two
+            // sides happened to be in (see `Entity::absorb`) — that order depends
+            // on which of the two same-uid entities reached storage first, so
+            // without this the PERSISTED row leaks insertion order exactly as
+            // `Entity::canonicalize_order`'s own doc comment warns against.
+            // `entities_from_events` already re-canonicalises after its own
+            // in-memory merge fold; this direct storage-merge path needs the same
+            // call so a batch upsert containing two same-uid entities (forward
+            // vs. reversed) persists byte-identically either way.
+            merged.canonicalize_order();
             let merged_json = serde_json::to_string(&merged)?;
             tx.prepare_cached(
                 "UPDATE entities SET scan_id = ?1, confidence = ?2, corroboration = ?3,

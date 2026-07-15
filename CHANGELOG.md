@@ -433,6 +433,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Exporting the same scan results in a different byte order (JSON/CSV/
+  GEXF/full dossier/debug bundle) than a previous export, purely depending
+  on the arrival order of two findings that describe the same entity.**
+  Found by the test suite's own randomised export-determinism check, which
+  stumbled onto a genuine, previously-undiscovered edge case: when two
+  findings for the same entity (e.g. the same email surfaced by two
+  modules) are persisted, the merge step folded their evidence/tags
+  together but didn't re-sort the result into a canonical order the way
+  every other merge path in this codebase already does — so which finding
+  reached storage first silently leaked into the exported order. Fixed by
+  applying the same canonical-ordering step this codebase already uses
+  elsewhere after every storage-level merge, so the same underlying
+  evidence now always exports identically regardless of arrival order.
 - **`seon`'s email enrichment was silently returning almost nothing on every
   real call, despite successfully spending the operator's paid/keyed quota
   each time.** SEON changed their email API's response format at some point

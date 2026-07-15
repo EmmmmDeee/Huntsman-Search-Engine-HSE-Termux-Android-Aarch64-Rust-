@@ -1225,6 +1225,46 @@ fn upsert_entity_cross_scan_merge_preserves_evidence_and_tags() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[test]
+fn upsert_entity_merge_result_is_insertion_order_independent() {
+    // `merge_and_persist_entity`'s slow (ON CONFLICT) path merges the
+    // incoming entity into the already-stored one via `Entity::merge`, whose
+    // `absorb` appends evidence/tags in whatever order the two sides happen
+    // to arrive in (see `Entity::absorb`'s doc comment) — so without a
+    // re-canonicalisation after the merge, which of two same-uid entities
+    // reaches storage FIRST leaks into the persisted evidence/tag order.
+    // `entities_from_events` already re-canonicalises after its own in-memory
+    // merge fold; this pins the same guarantee for the direct storage-merge
+    // path. Insert the same two entities in both orders and require
+    // byte-identical persisted evidence/tag order either way.
+    use crate::core::entity::Evidence;
+    let persisted_order = |first_source: &str, second_source: &str| -> (Vec<String>, Vec<String>) {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "order-scan");
+        let mut a = Entity::new(EntityKind::Email, "dup@x.com", 0.5, "order-scan");
+        a.add_evidence(Evidence::new(first_source, "seen"));
+        a.tag("z-tag");
+        store.upsert_entity(&a).unwrap();
+        let mut b = Entity::new(EntityKind::Email, "dup@x.com", 0.5, "order-scan");
+        b.add_evidence(Evidence::new(second_source, "seen"));
+        b.tag("a-tag");
+        store.upsert_entity(&b).unwrap();
+        let merged = store.get_entity(&a.uid).unwrap().unwrap();
+        let _ = std::fs::remove_file(&path);
+        (
+            merged.evidence.iter().map(|e| e.source.clone()).collect(),
+            merged.tags,
+        )
+    };
+    let forward = persisted_order("mod_a", "mod_b");
+    let reversed = persisted_order("mod_b", "mod_a");
+    assert_eq!(
+        forward, reversed,
+        "persisted evidence/tag order must not depend on which same-uid entity was upserted first"
+    );
+}
+
 // ── upsert_entities_batch ──────────────────────────────────────────────
 
 #[test]
