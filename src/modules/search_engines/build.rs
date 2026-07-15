@@ -308,17 +308,50 @@ pub(super) fn build_entities(
         // address injected a false "Sydney, NSW" location that contradicted the
         // real QLD evidence and drove a wrong-state AU-056 jurisdiction plus a
         // 700 km geo-divergence).
+        let has_postcode = |addr: &str| {
+            addr.split_whitespace()
+                .last()
+                .is_some_and(|t| t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()))
+        };
         let snippet_addresses = if result_names_the_subject {
             extract_addresses_from_text(&combined_text)
         } else {
             Vec::new()
         };
+        // `extract_addresses_from_text` deliberately emits BOTH a bare "City,
+        // STATE" and a more specific postcode-qualified "City, STATE 1234" for
+        // the SAME underlying locality when both appear in one result's text
+        // (its own pass 3: "an AU postcode... appended as a more-specific
+        // variant of a matched City, STATE"), and `normalise_address_key`
+        // deliberately collapses both to the same dedup key — by design, so a
+        // bare mention in one result and a postcode-qualified mention in a
+        // DIFFERENT result correctly merge into one entity. But without this
+        // dedup, the SAME result's two variants would ALSO merge with each
+        // other, double-counting one real search hit as two independent
+        // corroborations (two +0.10 confidence bumps, two `corroboration`
+        // increments) — found in review of the corroboration-cap fix above.
+        // Collapse to at most one variant per normalised key, per result,
+        // preferring the postcode-qualified (more informative) form, before
+        // the corroboration loop below ever sees more than one entry for it.
+        // Vec-based (not a HashMap) and insertion-ordered so the choice is
+        // deterministic (CONVENTIONS.md §5), not dependent on hash iteration.
+        let snippet_addresses: Vec<String> = {
+            let mut deduped: Vec<(String, String)> = Vec::new();
+            for addr in snippet_addresses {
+                let key = normalise_address_key(&addr);
+                match deduped.iter_mut().find(|(k, _)| *k == key) {
+                    Some(slot) if has_postcode(&addr) && !has_postcode(&slot.1) => {
+                        slot.1 = addr;
+                    }
+                    Some(_) => {}
+                    None => deduped.push((key, addr)),
+                }
+            }
+            deduped.into_iter().map(|(_, addr)| addr).collect()
+        };
         for addr in snippet_addresses {
             let addr_key = format!("@addr:{}", normalise_address_key(&addr));
-            let has_postcode = addr
-                .split_whitespace()
-                .last()
-                .is_some_and(|t| t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()));
+            let has_postcode = has_postcode(&addr);
             let base_conf = if has_postcode { 0.55 } else { 0.45 };
             // Cap for multi-source merge: postcode-qualified can reach 0.70;
             // bare city+state is capped lower at 0.65. Both stay strictly below

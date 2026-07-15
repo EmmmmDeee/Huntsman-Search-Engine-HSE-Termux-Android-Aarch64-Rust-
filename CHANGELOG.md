@@ -492,6 +492,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
   Verified — matching the documented intent of the surrounding code, which
   had already drifted from the actual cap value. New regression test
   reproduces the exact 99-hit scenario and proves it stays below Verified.
+- **`search_engines`' address-merge loop double-counted a single search
+  result when its snippet yielded two extracted address variants (found by
+  a GitHub Copilot review comment on the fix above, same code path).**
+  Address extraction deliberately emits both a bare "City, STATE" and a
+  more specific postcode-qualified "City, STATE 1234" for one locality when
+  a result's text contains both, and the dedup key deliberately strips the
+  postcode so both variants merge — correct for merging a bare mention in
+  one result with a postcode-qualified mention in a DIFFERENT result, but
+  without a per-result dedup step the SAME result's two variants also
+  merged with each other, counting one real search hit as two independent
+  corroborations. Added a per-result dedup immediately before the
+  corroboration loop, collapsing to one variant per address per result and
+  preferring the postcode-qualified form. New regression test proves two
+  results, each yielding two variants of the same address, count as exactly
+  two corroborations, not four.
 - **OathNet's automatic pagination — added in the previous release — never
   actually worked against the real API.** A page of search results beyond
   the first was supposed to be fetched automatically, but a mismatch

@@ -11674,3 +11674,29 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc
   `cargo doc`/`cargo test` — 4848 total pass (+1). **Paired:**
   `PROBLEM_TREE` T2.161 (new) — same commit.
+- **2026-07-15 (cont'd)** — **T2.162 closed** (address-merge loop
+  double-counting one search result's two extracted address variants, in
+  the same `search_engines::build.rs` code path as T2.161). Surfaced by a
+  GitHub Copilot automated review comment on the T2.161 pull request (#236)
+  — verified for real rather than taken on faith: `extract_addresses_
+  from_text`'s pass 3 deliberately emits both a bare "City, STATE" and a
+  postcode-qualified "City, STATE 1234" for one locality when a single
+  result's text contains both, and `normalise_address_key` deliberately
+  strips the postcode so both variants share one dedup key — correct for
+  merging a bare mention in one result with a postcode-qualified mention in
+  a DIFFERENT result, but wrong when both variants come from the SAME
+  result: the corroboration loop counted that one real hit twice (two
+  `corroboration` increments, two confidence bumps). Confirmed with a
+  temporary debug print that a real two-variant snippet does trigger this.
+  Fixed with a per-result, insertion-ordered `Vec<(String, String)>` dedup
+  immediately before the corroboration loop — not a `HashMap`, preserving
+  `docs/CONVENTIONS.md` §5's determinism-by-construction — collapsing each
+  result to one variant per normalised key, preferring the postcode-
+  qualified (more-informative) form. New regression test
+  `address_corroboration_counts_each_result_once_despite_two_extracted_
+  variants` (2 results × 2 variants each must yield `corroboration=2`, not
+  4), red/green-verified by temporarily disabling the dedup and confirming
+  the test failed at `corroboration=4`. Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` —
+  4849 total pass (+1). **Paired:** `PROBLEM_TREE` T2.162 (new) — same
+  commit.

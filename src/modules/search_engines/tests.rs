@@ -1059,6 +1059,47 @@ fn address_corroboration_cannot_reach_verified_on_a_surname_placename_collision(
 }
 
 #[test]
+fn address_corroboration_counts_each_result_once_despite_two_extracted_variants() {
+    // Found in review of the fix above: `extract_addresses_from_text` deliberately
+    // emits BOTH a bare "City, STATE" and a more specific postcode-qualified
+    // "City, STATE 1234" for the SAME underlying locality when a snippet's text
+    // contains both (its own pass 3: the postcode form is "a more-specific
+    // variant of a matched City, STATE"), and `normalise_address_key`
+    // deliberately collapses both to the same dedup key. Without a per-result
+    // dedup, ONE search result yielding both variants would be counted as TWO
+    // independent corroborations (create + immediate self-merge) — silently
+    // doubling `corroboration` and the confidence-bump count for a single real
+    // hit. Two results, each with a snippet that yields both variants, must
+    // produce EXACTLY corroboration=2 (one per real result), not 4.
+    let target = Target::new(TargetKind::FullName, "Brett Lawnton");
+    let mk = |n: usize| SearchResult {
+        url: format!("https://view.com.au/property/qld/lawnton-4501/listing-{n}/"),
+        title: "Property for sale".to_string(),
+        snippet: "Located in Lawnton, QLD 4501".to_string(),
+        engine: "brave",
+        query: "Brett Lawnton".to_string(),
+    };
+    let results: Vec<SearchResult> = (0..2).map(mk).collect();
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    let addr = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Address && e.value.to_lowercase().contains("lawnton"))
+        .expect("the address must still be extracted");
+    assert_eq!(
+        addr.corroboration, 2,
+        "2 real search results, each yielding a bare + postcode-qualified variant of the \
+         SAME address, must count as 2 corroborations, not 4 (one per variant per result): {addr:?}"
+    );
+    // The postcode-qualified (more informative) variant must be the one kept.
+    assert!(
+        addr.value.to_lowercase().contains("4501")
+            || addr.raw_value.to_lowercase().contains("4501"),
+        "the postcode-qualified variant should be preferred when both are present: {addr:?}"
+    );
+}
+
+#[test]
 fn captcha_page_detection() {
     assert!(is_captcha_page(
         "<html><body>captcha-delivery.com script</body></html>"

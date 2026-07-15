@@ -3565,6 +3565,33 @@ direct.**
   (bare city+state unchanged at 0.65) so same-source-type repetition can
   land at most in Probable, never Verified; corrected the doc comment.
   **P1** (a real false-positive at the tool's highest confidence tier).
+- **`[x]` T2.162 · `search_engines`' address-merge loop double-counted a
+  single search result when one snippet yielded two address variants** —
+  found by a GitHub Copilot automated review comment on the T2.161 fix's PR,
+  then independently confirmed against real extractor behaviour (not taken
+  on faith). `extract_addresses_from_text` deliberately emits BOTH a bare
+  "City, STATE" and a more-specific postcode-qualified "City, STATE 1234"
+  for the SAME locality when a single result's title+snippet text contains
+  both (its own pass 3: the postcode form is documented as "a more-specific
+  variant of a matched City, STATE"), and `normalise_address_key`
+  deliberately strips trailing postcode tokens so both variants share one
+  dedup key — by design, so a bare mention in one result and a
+  postcode-qualified mention in a DIFFERENT result correctly merge into one
+  entity. But without a per-result dedup step, the SAME result's two
+  variants also merged with each other in the corroboration loop, counting
+  one real search hit as two independent corroborations (two `+0.10`-class
+  confidence bumps, two `corroboration` increments) — inflating confidence
+  faster than genuine independent evidence would, compounding the T2.161
+  risk rather than eliminating it. → **Solution:** added a per-result,
+  insertion-ordered `Vec`-based dedup (not a `HashMap`, per
+  `docs/CONVENTIONS.md` §5's determinism-by-construction rule) immediately
+  before the corroboration loop, collapsing to at most one variant per
+  normalised key per result and preferring the postcode-qualified
+  (more-informative) form when both are present. New regression test
+  `address_corroboration_counts_each_result_once_despite_two_extracted_
+  variants`, red/green-verified (2 results each yielding 2 variants must
+  count as `corroboration=2`, not 4). **P1** (real confidence-inflation bug
+  in the same code path as T2.161, same root evidentiary concern).
 - **`[x]` T2.18 · `core::exposure`'s `DOB_KEYS` missing Wikidata's own DOB
   spelling** — the Exposure Index's `sensitive_component` scores a "date of
   birth" disclosure (+7 of the 30-point Sensitive PII ceiling) only when an
@@ -16671,3 +16698,26 @@ way, so this specific drift class can't recur silently again.
   `c_effective=0.75`, passes at 0.70). Gate green: fmt/clippy
   `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4848
   total pass (+1). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-15** — **Executed T2.162** (address-merge loop double-counting a
+  single search result's two extracted address variants). Surfaced by a
+  GitHub Copilot automated review comment on T2.161's PR (#236), not
+  self-discovered — verified for real before acting on it: re-read
+  `extract_addresses_from_text`'s pass 3 and `normalise_address_key`'s doc
+  comment, confirmed via a temporary debug print that a genuine two-result
+  fixture (`"Located in Lawnton, QLD 4501"`) really does extract both
+  `"Lawnton, QLD"` and `"Lawnton, QLD 4501"` per result, and that the
+  existing dedup-by-key was firing across the two variants of one result as
+  well as across results. Fixed with a per-result, insertion-ordered
+  `Vec<(String, String)>` dedup in `search_engines::build.rs` immediately
+  before the corroboration loop (deliberately not a `HashMap` — CONVENTIONS
+  §5 determinism-by-construction), collapsing each result to at most one
+  variant per normalised address key, preferring the postcode-qualified
+  form. Verified with the same red/green methodology as T2.161: temporarily
+  disabled the new dedup, confirmed the new test failed
+  (`corroboration=4` instead of `2`), restored the fix, confirmed green.
+  New regression test `address_corroboration_counts_each_result_once_
+  despite_two_extracted_variants`. Gate green: fmt (one pre-existing
+  rustfmt-style diff in the new test's `assert!` line-wrap, corrected)/
+  clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
+  test` — 4849 total pass (+1). **Paired:** `SOLUTION_TREE` §5 — same
+  commit.
