@@ -348,6 +348,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Internal: two test-suite checks that verify the correlation engine's
+  output is reproducible could themselves fail intermittently, with no
+  effect on the correlation engine itself.** Both checks compared two runs
+  of the same analysis for an exact match, but the comparison included a
+  timestamp of when each run happened, rather than only the actual
+  findings — so a run that happened to land a fraction of a second later
+  than its comparison run could show a false mismatch, purely because the
+  clock had ticked over, not because anything about the analysis itself
+  changed. This is what caused a build check to fail shortly after the fix
+  above was published, even though nothing was actually wrong. Both checks
+  now compare only the substance of the analysis, matching what they were
+  always meant to verify.
 - **A single (non-comma) API key configured for a service never actually
   registered with the key-rotation system at all — the root cause
   underneath the "nine providers had no key rotation" fix below.** Only

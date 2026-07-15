@@ -2411,6 +2411,72 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   **Paired:** `SOLUTION_TREE` SOL-RATELIMIT-UNIVERSAL-PRIMITIVES (extended
   again) + SOL-KEYPOOL-PLAIN-KEY-REGISTRATION (new node), §5 — same
   commit.
+- **`[x]` T2.155 · Two `core::correlator` determinism guards asserted full
+  JSON equality across two separate calls, but the compared structs each
+  carry a live `unix_now()` wall-clock stamp — CI-flaky by construction,
+  not just in theory.** Found immediately after pushing T2.154: GitHub
+  Actions CI on `main` (run 29391161566, commit `5851b9aa`) failed a test
+  that had passed locally on the same commit —
+  `bench_correlate_entities_matches_the_internal_pass_and_is_deterministic`
+  — `assertion left == right failed`. Diagnosed by extracting and diffing
+  the actual `left`/`right` JSON payloads from the real CI log rather than
+  guessing: all 106 findings on both sides were byte-identical in every
+  field EXCEPT `ts` — `1784092984` on one side, `1784092985` on the
+  other. Root cause: `evaluate_rules` (which `correlate_entities` calls)
+  computes `now = crate::core::entity::unix_now()` fresh on every
+  invocation and stamps it into every `Correlation` it produces; the test
+  calls the pass three times in a row and asserts full-string equality,
+  so any run where two of those calls straddle a real wall-clock second
+  (more likely on a loaded/slower CI runner than an idle local dev
+  machine) fails — not because the correlation RULES are non-deterministic
+  (they demonstrably aren't: same order, same 106 findings, same rule_id
+  distribution, same ranks), but because the test's equality check also
+  incidentally captures the OS clock, which was never the property under
+  test. Checking the file's OTHER full-JSON-equality determinism test for
+  the identical pattern (rather than assuming it was fine because it
+  hadn't failed yet) found a second, live one:
+  `bench_synthetic_entities_yields_exactly_n_deterministic_entities`
+  compares two `bench_synthetic_entities(n)` calls by full JSON, and every
+  entity it builds carries its OWN pair of live-clock fields —
+  `Entity::observed_at` and each `Evidence::recorded_at` (`Entity::new`/
+  `Evidence::new` both stamp `unix_now()`) — the identical bug class,
+  confirmed live by forcing a real 1.1s sleep between the two calls and
+  watching the pre-fix comparison fail exactly as predicted. **P2**
+  (evidentiary integrity of the test suite itself — a real, reproducible
+  CI failure on `main`, not a hypothetical: this is what "empirically
+  proven" means when the target is the verification gate rather than a
+  scan module). → **Solution:** two ts-blind comparison helpers in
+  `core/correlator/tests.rs` — `ts_blind_json(&[Correlation])` (zeroes
+  `ts`) and `ts_blind_entities_json(&[Entity])` (zeroes `observed_at` and
+  every evidence record's `recorded_at`) — clone the slice, blind the
+  live-clock field(s), and re-serialize, so the comparison targets
+  exactly the property each test claims to guarantee (rule
+  firings/attribution/ranking; entity content) without also asserting
+  something about the OS clock. No production code changed: the
+  correlation pass and `bench_synthetic_entities` are exactly as
+  deterministic as documented — only the TEST's equality check was too
+  strict for what it was actually verifying. 2 new regression tests
+  directly reproduce both real races on demand rather than waiting for
+  CI to get unlucky again:
+  `bench_correlate_entities_is_ts_blind_deterministic_across_a_real_second_boundary`
+  and
+  `bench_synthetic_entities_is_ts_blind_deterministic_across_a_real_second_boundary`
+  each force a real 1.1s sleep between two calls (guaranteeing
+  `unix_now()`, truncated to whole seconds, advances by at least one full
+  second — a real clock boundary, not a mocked one), assert the raw
+  live-clock field actually DID change (proving the test is exercising the
+  real race, not accidentally passing), then assert the ts-blind view
+  stays equal. Both fixes were empirically proven against the real bug
+  before being trusted: a throwaway test using the OLD raw-comparison
+  style was added, run under the identical forced 1.1s sleep, confirmed
+  to FAIL exactly as the live CI run had (git-stash-provable — this
+  project's own regression discipline, applied here to a test file rather
+  than production code), then removed once the real fix's two dedicated
+  regression tests were confirmed to pass under the same forced race.
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full `core::
+  correlator` module 446 tests 0 failures (+2). **Paired:**
+  `SOLUTION_TREE` SOL-CORRELATOR-TS-BLIND-DETERMINISM (new node), §5 —
+  same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -13014,4 +13080,37 @@ way, so this specific drift class can't recur silently again.
   `-D warnings`/rustdoc clean, full suite 0 failures (4711 lib tests,
   +12). **Paired:** `SOLUTION_TREE` SOL-RATELIMIT-UNIVERSAL-PRIMITIVES
   (extended again) + SOL-KEYPOOL-PLAIN-KEY-REGISTRATION (new) — same
+  commit.
+- **2026-07-15** — **T2.155: a real GitHub Actions CI failure on `main`,
+  minutes after the T2.154 commit landed — root-caused and fixed the same
+  day.** `bench_correlate_entities_matches_the_internal_pass_and_is_
+  deterministic` failed in CI (run 29391161566, commit `5851b9aa`) despite
+  passing locally on the identical commit. Pulled the real CI job log and
+  diffed the actual `left`/`right` panic payloads rather than guessing:
+  all 106 findings matched byte-for-byte except `ts`, exactly one real
+  wall-clock second apart. Root cause: `evaluate_rules` stamps a fresh
+  `unix_now()` into every `Correlation` on each call, and the test
+  compares three such calls by full JSON string equality — flaky by
+  construction on a CI runner slow enough for two calls to straddle a
+  real second, even though the correlation RULES themselves are fully
+  deterministic (identical order/content/ranks). Checking this file's
+  other full-JSON determinism test for the same pattern rather than
+  assuming it was fine found a second live instance:
+  `bench_synthetic_entities_yields_exactly_n_deterministic_entities`
+  compares entity sets whose `Entity::observed_at`/`Evidence::recorded_at`
+  are equally live-clock-stamped — confirmed real by forcing an actual
+  1.1s sleep between two calls and watching the pre-fix comparison fail
+  exactly as predicted. Fixed with two ts-blind comparison helpers
+  (`ts_blind_json`, `ts_blind_entities_json`) — no production code
+  changed, only the tests' equality checks, which were asserting
+  something about the OS clock that was never the property under test. 2
+  new regression tests force the real race on every run via a real 1.1s
+  sleep rather than waiting for CI to get unlucky again. Both fixes
+  empirically proven against the real bug: a throwaway old-style
+  comparison test, forced across the same real second boundary, was
+  confirmed to fail exactly as the live CI run had, then removed once the
+  real fix's own regression tests were confirmed to pass under the
+  identical forced race. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4713 lib tests, +2). **Paired:**
+  `SOLUTION_TREE` SOL-CORRELATOR-TS-BLIND-DETERMINISM (new) — same
   commit.

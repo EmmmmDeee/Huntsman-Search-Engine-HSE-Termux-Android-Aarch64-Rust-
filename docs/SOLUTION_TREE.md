@@ -3178,6 +3178,43 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   side-confirmation of the fix's real-world reach. 12 new regression
   tests across the four touched modules — see `PROBLEM_TREE` T2.154 for
   the full list and live-verification detail.
+- **`[x]` SOL-CORRELATOR-TS-BLIND-DETERMINISM · Two `core::correlator`
+  determinism guards no longer assert equality on a live wall-clock
+  field** → **T2.155**. Found immediately after pushing T2.154's fix to
+  `main`: a real GitHub Actions CI run failed
+  `bench_correlate_entities_matches_the_internal_pass_and_is_deterministic`
+  on the exact commit that had passed the identical test locally.
+  Diagnosed by pulling the real CI log and diffing the actual `left`/
+  `right` payloads (not guessed at): all 106 findings matched byte-for-
+  byte except `ts` — one real wall-clock second apart — because
+  `evaluate_rules` stamps a fresh `unix_now()` into every `Correlation`
+  on each call, and the test calls the pass three times and asserts full
+  JSON equality across all three. Checking this file's other full-JSON
+  determinism test for the same pattern (rather than assuming it was
+  fine) found a second, structurally identical instance:
+  `bench_synthetic_entities_yields_exactly_n_deterministic_entities`
+  compares two entity sets whose `Entity::observed_at` and every
+  `Evidence::recorded_at` are equally live-clock-stamped. Delivered
+  2026-07-15: `ts_blind_json`/`ts_blind_entities_json` clone-and-zero the
+  live-clock field(s) before the canonical-JSON comparison each test
+  already used (neither `Correlation` nor `Entity` derive `PartialEq`),
+  so the comparison targets exactly the property under test — rule
+  firings/attribution/ranking, and entity content — without incidentally
+  asserting something about the OS clock. No production code changed:
+  the correlation pass and `bench_synthetic_entities` are exactly as
+  deterministic as already documented; only the tests' equality checks
+  were too strict for what they claimed to verify. *Closes:* **T2.155**
+  (`[ ]`→`[x]`). Both fixes were empirically proven against the real bug,
+  not assumed correct: a throwaway old-style comparison test, forced
+  across a real 1.1s sleep spanning a genuine wall-clock second boundary,
+  was confirmed to fail exactly as the live CI run had, then removed once
+  the real fix's own two dedicated regression tests
+  (`bench_correlate_entities_is_ts_blind_deterministic_across_a_real_
+  second_boundary`, `bench_synthetic_entities_is_ts_blind_deterministic_
+  across_a_real_second_boundary`) — which force the identical real
+  1.1s-sleep race on every run rather than waiting for CI to get unlucky
+  again — were confirmed to pass under it. See `PROBLEM_TREE` T2.155 for
+  the full live-CI-log diagnosis.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -3431,6 +3468,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-STEALER-LOGS-VIEWER | C10 | `[x]` |
 | SOL-KEYPOOL-REGISTRY-GAPS | T2.153 | `[x]` |
 | SOL-KEYPOOL-PLAIN-KEY-REGISTRATION | T2.154 | `[x]` |
+| SOL-CORRELATOR-TS-BLIND-DETERMINISM | T2.155 | `[x]` |
 | SOL-HEALTH-SIGNAL | T2.7 (per-source health) | `[~]` |
 | SOL-UPDATE | UX self-upgrade + CLI consolidation | `[x]` |
 | SOL-UPDATE-GIT-FIXTURE | T2.21 | `[x]` |
@@ -3482,6 +3520,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   network-calling modules and a pure `should_report_key_status()` to
   `opencorporates` so 429 reports to the key pool exactly like 401/403.
   Off the open queue.
+- ~~**T2.155**~~ — **delivered** ✅ (`SOL-CORRELATOR-TS-BLIND-DETERMINISM`,
+  2026-07-15). Two `core::correlator` determinism tests asserted full JSON
+  equality across calls that each stamp a live `unix_now()` field
+  (`Correlation.ts`; `Entity.observed_at`/`Evidence.recorded_at`) —
+  live-reproduced as a real GitHub Actions CI failure on `main` minutes
+  after the T2.154 commit landed, root-caused from the actual CI log, and
+  fixed with ts-blind comparison helpers plus two regression tests that
+  force the real race on every run instead of waiting for CI to get
+  unlucky again. No production code changed. Off the open queue.
 - ~~**T2.154**~~ — **delivered** ✅ (`SOL-RATELIMIT-UNIVERSAL-PRIMITIVES`
   extended again + `SOL-KEYPOOL-PLAIN-KEY-REGISTRATION` new, 2026-07-15).
   The root cause underneath every prior key-pool fix: a plain single
@@ -8896,3 +8943,56 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
   (4711 lib tests, +12). **Paired:** `PROBLEM_TREE` T2.154 (new) `[ ]`→
   `[x]` + §8 — same commit.
+- **2026-07-15 — SOL-CORRELATOR-TS-BLIND-DETERMINISM `[ ]`→`[x]`: a real
+  GitHub Actions CI failure on `main`, minutes after the T2.154 commit
+  landed, root-caused and fixed the same day.** GitHub Actions failed
+  `bench_correlate_entities_matches_the_internal_pass_and_is_deterministic`
+  on commit `5851b9aa` — the identical test had passed locally on the
+  same commit. Pulled the real CI job log (`mcp__github__get_job_logs`)
+  and diffed the actual `left`/`right` payloads from the panic message
+  rather than guessing at the cause: all 106 correlation findings on both
+  sides were byte-for-byte identical except `ts`, one real wall-clock
+  second apart (`1784092984` vs `1784092985`). Root cause:
+  `evaluate_rules` (which `correlate_entities` delegates to) computes
+  `now = unix_now()` fresh on every call and stamps it into every
+  `Correlation`; the test calls the pass three times in a row and
+  asserted full JSON-string equality across all three, so any run where
+  two calls straddle a real second — more likely on a loaded CI runner
+  than an idle local machine — fails, even though the correlation RULES
+  themselves are fully deterministic (identical order, content, rule_id
+  distribution, and ranks in the captured failure). Re-applied the same
+  "check for the identical pattern elsewhere rather than assume it's
+  fine" discipline this session used repeatedly for the key-pool work,
+  and found a second live instance in the same file:
+  `bench_synthetic_entities_yields_exactly_n_deterministic_entities`
+  compares two entity sets via full JSON equality too, and every entity
+  `bench_synthetic_entities` builds carries its own live-clock
+  `Entity::observed_at` and `Evidence::recorded_at` stamps (`Entity::new`/
+  `Evidence::new` both call `unix_now()`) — confirmed real, not assumed,
+  by forcing an actual 1.1s sleep between two calls and watching the
+  pre-fix comparison fail exactly as predicted. Fixed with two new pure
+  helpers in `core/correlator/tests.rs` — `ts_blind_json`/
+  `ts_blind_entities_json` — that clone the compared slice, zero the
+  live-clock field(s), and re-serialize, so each test's equality check
+  targets exactly the property it claims to verify (rule firings/
+  attribution/ranking; entity content) rather than also asserting
+  something about the OS clock. No production code touched — the
+  correlation pass and `bench_synthetic_entities` are exactly as
+  deterministic as already documented; only the tests' assertions were
+  too strict. 2 new regression tests
+  (`bench_correlate_entities_is_ts_blind_deterministic_across_a_real_
+  second_boundary`, `bench_synthetic_entities_is_ts_blind_deterministic_
+  across_a_real_second_boundary`) force the real second-boundary race on
+  every run via a real 1.1s sleep (not a mocked clock), assert the raw
+  live-clock field actually moved (proving the race is genuinely
+  exercised), then assert the ts-blind view stays equal. Both fixes were
+  empirically proven against the real bug before being trusted: a
+  throwaway old-style-comparison test, run under the identical forced
+  1.1s sleep, was confirmed to FAIL exactly as the live CI run had —
+  git-stash-provable regression discipline applied to a test file rather
+  than production code — then removed once the real fix's two dedicated
+  regression tests were confirmed to pass under the same forced race.
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full `core::
+  correlator` module 446 tests 0 failures (+2), full suite 4713 lib tests
+  0 failures (+2). **Paired:** `PROBLEM_TREE` T2.155 (new) `[ ]`→`[x]` +
+  §8 — same commit.

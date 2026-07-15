@@ -8497,6 +8497,37 @@ fn correlator_budget_stops_starting_new_rules_past_the_deadline() {
 // precedent the 2026-07-14 cargo-fuzz cycle established for
 // `fuzz_entry_parse_der`.
 
+/// Canonical JSON encoding of an entity set for equality comparison, with
+/// every live-clock field zeroed first: each `Entity::observed_at` and every
+/// `Evidence::recorded_at` in its evidence chain.
+///
+/// Both are stamped from the real wall clock (`unix_now()`, inside
+/// `Entity::new`/`Evidence::new`) — `bench_synthetic_entities` calls both for
+/// every entity it builds, so despite its own doc comment's "pure and
+/// deterministic (no RNG)" claim, two calls a moment apart legitimately
+/// produce different `observed_at`/`recorded_at` whenever they straddle a
+/// real second boundary. This is the identical bug class
+/// [`ts_blind_json`] fixes for `Correlation` just below (see its doc
+/// comment for the live-reproduced CI failure this whole family of fixes
+/// responds to) — found by checking this file's OTHER full-JSON-equality
+/// determinism test for the same latent flakiness rather than assuming it
+/// was fine, and confirmed real the same way: forcing a real 1.1s sleep
+/// between two calls reliably fails the raw (pre-fix) comparison here too.
+fn ts_blind_entities_json(ents: &[Entity]) -> String {
+    let blinded: Vec<Entity> = ents
+        .iter()
+        .cloned()
+        .map(|mut e| {
+            e.observed_at = 0;
+            for ev in &mut e.evidence {
+                ev.recorded_at = 0;
+            }
+            e
+        })
+        .collect();
+    serde_json::to_string(&blinded).unwrap()
+}
+
 #[test]
 fn bench_synthetic_entities_yields_exactly_n_deterministic_entities() {
     for &n in &[0usize, 1, 4, 37, 200] {
@@ -8510,12 +8541,14 @@ fn bench_synthetic_entities_yields_exactly_n_deterministic_entities() {
         // Neither `Entity` nor `Correlation` derive `PartialEq` (large,
         // evolving structs — see e.g. line ~366's precedent), so compare via
         // their canonical JSON encoding, same as this file already does
-        // elsewhere for structural equality.
+        // elsewhere for structural equality — `ts`-blind, see
+        // `ts_blind_entities_json`'s own doc comment for why.
         assert_eq!(
-            serde_json::to_string(&a).unwrap(),
-            serde_json::to_string(&b).unwrap(),
+            ts_blind_entities_json(&a),
+            ts_blind_entities_json(&b),
             "bench_synthetic_entities is documented pure/deterministic (no RNG) — \
-             two calls at the same n must be identical, or bench-to-bench \
+             two calls at the same n must produce identical entities (bar the real \
+             wall-clock observed_at/recorded_at stamps), or bench-to-bench \
              comparisons and the perf-guard ratio assertion it also feeds \
              (core::correlator::perf) would be meaningless"
         );
@@ -8523,24 +8556,89 @@ fn bench_synthetic_entities_yields_exactly_n_deterministic_entities() {
 }
 
 #[test]
+fn bench_synthetic_entities_is_ts_blind_deterministic_across_a_real_second_boundary() {
+    // Same forced-race technique as `bench_correlate_entities_is_ts_blind_
+    // deterministic_across_a_real_second_boundary` just below — see its doc
+    // comment for why a real sleep past a real clock boundary, not a
+    // mocked/injected clock.
+    let a = bench_synthetic_entities(200);
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    let b = bench_synthetic_entities(200);
+
+    assert_ne!(
+        a.first().map(|e| e.observed_at),
+        b.first().map(|e| e.observed_at),
+        "this test's whole point is to force a real second-boundary crossing \
+         between the two calls — if observed_at didn't move, the sleep isn't \
+         doing its job and this test isn't actually proving anything"
+    );
+    assert_eq!(
+        ts_blind_entities_json(&a),
+        ts_blind_entities_json(&b),
+        "entity content must stay identical even when the two calls land in \
+         different wall-clock seconds"
+    );
+}
+
+/// Canonical JSON encoding of a correlation set for equality comparison,
+/// with every `ts` zeroed first.
+///
+/// `ts` is stamped from the real wall clock (`unix_now()`, called fresh
+/// inside `evaluate_rules` on every invocation) — it legitimately differs
+/// between two calls made a moment apart, whenever they happen to straddle
+/// a real second boundary. That's correct behaviour for a field that
+/// records *when* a correlation fired, not a determinism defect in the
+/// rules themselves. Live-reproduced on 2026-07-15: a real GitHub Actions
+/// run failed `bench_correlate_entities_matches_the_internal_pass_and_is_
+/// deterministic` with `left`/`right` differing in exactly one respect —
+/// every one of 106 findings carried `ts=1784092984` on one side and
+/// `ts=1784092985` on the other (rule firings, descriptions, entity_uids,
+/// ranks, and ordering were all byte-identical) — because the runner was
+/// briefly slow enough for two back-to-back calls to cross a real second.
+/// The property this file actually needs to guarantee — that the RULES'
+/// decisions (which fire, on which entities, in which order, ranked how)
+/// are a pure function of the input — holds regardless; comparing through
+/// this `ts`-blind view is what actually tests that, without also
+/// asserting something about the OS clock that was never the point.
+/// Neither `Correlation` nor `Entity` derive `PartialEq` (see this file's
+/// header comment), so equality is still via canonical JSON, same
+/// precedent as every other struct-equality check here — just of a
+/// `ts`-blind clone rather than the raw value.
+fn ts_blind_json(corrs: &[Correlation]) -> String {
+    let blinded: Vec<Correlation> = corrs
+        .iter()
+        .cloned()
+        .map(|mut c| {
+            c.ts = 0;
+            c
+        })
+        .collect();
+    serde_json::to_string(&blinded).unwrap()
+}
+
+#[test]
 fn bench_correlate_entities_matches_the_internal_pass_and_is_deterministic() {
     let ents = bench_synthetic_entities(200);
     // Delegates straight to `correlate_entities` — must produce byte-identical
-    // output to calling the internal pass directly, not a divergent copy.
-    let via_bench = serde_json::to_string(&bench_correlate_entities(&ents, "scan")).unwrap();
-    let via_internal = serde_json::to_string(&correlate_entities(&ents, "scan")).unwrap();
+    // output (bar the real wall-clock `ts`, see `ts_blind_json`) to calling
+    // the internal pass directly, not a divergent copy.
+    let via_bench = bench_correlate_entities(&ents, "scan");
+    let via_internal = correlate_entities(&ents, "scan");
     assert_eq!(
-        via_bench, via_internal,
+        ts_blind_json(&via_bench),
+        ts_blind_json(&via_internal),
         "bench_correlate_entities must be a pure delegation to correlate_entities, \
          not an independently-drifting copy"
     );
     // Determinism-by-construction (docs/CONVENTIONS.md §5): running the pass
-    // twice over the same input must yield identical output — the property
-    // the criterion bench and the perf module's `pass_is_subquadratic` guard
-    // both implicitly rely on when comparing timings/ratios across runs.
-    let again = serde_json::to_string(&bench_correlate_entities(&ents, "scan")).unwrap();
+    // twice over the same input must yield identical rule decisions — the
+    // property the criterion bench and the perf module's
+    // `pass_is_subquadratic` guard both implicitly rely on when comparing
+    // timings/ratios across runs.
+    let again = bench_correlate_entities(&ents, "scan");
     assert_eq!(
-        via_bench, again,
+        ts_blind_json(&via_bench),
+        ts_blind_json(&again),
         "the correlation pass must be deterministic across repeated calls on \
          identical input"
     );
@@ -8549,5 +8647,37 @@ fn bench_correlate_entities_matches_the_internal_pass_and_is_deterministic() {
         "the representative synthetic set (shared handles, breach/stealer tags) \
          must exercise at least one firing rule, or the bench would be timing an \
          early-exit no-op rather than real correlation work"
+    );
+}
+
+#[test]
+fn bench_correlate_entities_is_ts_blind_deterministic_across_a_real_second_boundary() {
+    // Directly, reliably reproduces the 2026-07-15 live CI failure above
+    // instead of relying on the two calls happening to straddle a wall-clock
+    // second by luck: sleeps a real 1.1s (guaranteeing `unix_now()`, which
+    // truncates to whole seconds, advances by at least one full second
+    // between the calls) and confirms `ts` DOES genuinely differ — proving
+    // this test is actually exercising the race, not accidentally passing —
+    // while the `ts`-blind view stays equal. A real sleep past a real clock
+    // boundary, not a mocked/injected clock: the same "exercise real
+    // behaviour, don't fake it" discipline this file uses for its other
+    // timing-sensitive coverage.
+    let ents = bench_synthetic_entities(200);
+    let first = correlate_entities(&ents, "scan");
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    let second = correlate_entities(&ents, "scan");
+
+    assert_ne!(
+        first.first().map(|c| c.ts),
+        second.first().map(|c| c.ts),
+        "this test's whole point is to force a real second-boundary crossing \
+         between the two calls — if ts didn't move, the sleep isn't doing its \
+         job and this test isn't actually proving anything"
+    );
+    assert_eq!(
+        ts_blind_json(&first),
+        ts_blind_json(&second),
+        "rule firings/attribution/ranking must stay identical even when the \
+         two calls land in different wall-clock seconds"
     );
 }
