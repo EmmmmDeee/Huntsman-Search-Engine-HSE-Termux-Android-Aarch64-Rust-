@@ -1,6 +1,6 @@
 use super::client::{build_client, build_client_with_trace};
 use super::fetch::{
-    JSON_BODY_CAP, fetch_json_or_404, fetch_json_or_absent, fetch_json_probe,
+    JSON_BODY_CAP, fetch_json, fetch_json_or_404, fetch_json_or_absent, fetch_json_probe,
     is_keyed_error_status, key_tail, keyed_ok_or_404, parse_retry_after_secs, retry_after_secs,
 };
 use super::redact::{redact_credentials, redact_literal_secrets};
@@ -235,6 +235,45 @@ async fn fetch_json_or_absent_maps_400_to_none_while_or_404_still_errors() {
     assert!(
         errored.is_err(),
         "400 must remain an error for the 404-only helper, got {errored:?}"
+    );
+}
+
+#[tokio::test]
+async fn fetch_json_propagates_a_non_2xx_status_as_err_not_a_silent_default() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // `fetch_json` (unlike `fetch_json_or_404`/`fetch_json_or_absent`) has no
+    // absent-status list at all — every non-2xx status is an error. This is
+    // the exact contract callers rely on when they propagate it with a bare
+    // `?` instead of collapsing every `Err` into an empty success shape (the
+    // T2.115 defect class: psbdmp and ~9 other modules replaced `match {
+    // Ok(r) => r, Err(_) => return Ok(empty) }` with `fetch_json(...).await?`
+    // on the strength of this contract). A genuine fetch/status failure must
+    // surface as `Err`, never be silently indistinguishable from a real
+    // "nothing found" result.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 2048];
+        let _ = sock.read(&mut buf).await;
+        let body = b"{}";
+        let head = format!(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let _ = sock.write_all(head.as_bytes()).await;
+        let _ = sock.write_all(body).await;
+        let _ = sock.flush().await;
+    });
+
+    let client = build_client();
+    crate::util::circuit_breaker::record_success("127.0.0.1"); // isolate from parallel tests
+    let result: crate::core::error::Result<serde_json::Value> =
+        fetch_json(&client, "test_plain", &format!("http://{addr}/")).await;
+    assert!(
+        result.is_err(),
+        "fetch_json must propagate a non-2xx status as Err, got {result:?}"
     );
 }
 

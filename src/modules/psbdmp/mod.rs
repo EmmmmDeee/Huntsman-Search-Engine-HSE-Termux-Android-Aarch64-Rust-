@@ -10,6 +10,13 @@
 //! `{ "count": N, "data": [ { "id": "...", "date": "...", "tags": "..." }, … ] }`.
 //! Each `id` maps to `https://pastebin.com/<id>` — emitted as a `Url` the
 //! `web_crawler` can then fetch and re-scan.
+//!
+//! `fetch_json`'s `Err` (transport failure, non-2xx status, or a malformed
+//! body) propagates as a real module error rather than being folded into an
+//! empty result — a real, previously-observed failure mode: a live scan
+//! recorded this endpoint averaging 0/152 ok (see [`Psbdmp::max_timeout_ms`]),
+//! which used to read as "no pastes for this term" on every one of those 152
+//! scans instead of "the source was down."
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -95,10 +102,7 @@ impl Module for Psbdmp {
             return Ok(result);
         }
         let url = format!("https://psbdmp.ws/api/v3/search/{}", urlencode(term));
-        let resp: SearchResp = match fetch_json(&ctx.http, SRC, &url).await {
-            Ok(r) => r,
-            Err(_) => return Ok(result),
-        };
+        let resp: SearchResp = fetch_json(&ctx.http, SRC, &url).await?;
         extract(&resp, term, target.kind, &ctx.scan_id, &mut result);
         Ok(result)
     }

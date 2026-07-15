@@ -1946,15 +1946,61 @@ direct.**
   from the 2026-07-14 comprehensive audit, wave 1 (module categories) —
   not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
   SOL-NIAMONX-ALLFAIL (new stub).
-- **`[ ]` T2.115 · `psbdmp`'s sole data fetch converts every failure mode
+- **`[x]` T2.115 · `psbdmp`'s sole data fetch converts every failure mode
   (network error, non-2xx, malformed JSON) into a clean empty result.**
   The module's own doc comment records this happening in production (0/152
   ok) — a real, observed failure pattern, not a hypothetical. → **Solution:**
   distinguish fetch/parse failure from a genuine zero-match result and
-  surface the former as an error. **P2**. *Queued from the 2026-07-14
-  comprehensive audit, wave 1 (module categories) — not yet investigated or
-  fixed.* **Paired:** `SOLUTION_TREE` SOL-PSBDMP-SWALLOWED-FAILURE (new
-  stub).
+  surface the former as an error. **P2**. **Fixed (2026-07-15):** unlike
+  `au_property`/`asic_director` (hand-rolled multi-leg/scrape fetches needing
+  a bespoke pure predicate), `psbdmp` makes exactly one call through
+  `fetch_json`, which already returns a `Result<T>` correctly separating
+  transport/status/parse failure (`Err`) from a genuine successful
+  zero-match body (`Ok`). The fix is a one-line propagation swap:
+  `let resp: SearchResp = match fetch_json(...).await { Ok(r) => r, Err(_)
+  => return Ok(result) };` → `fetch_json(...).await?` — the exact idiom ~9
+  sibling modules (`npm_author`, `hacker_news`, `wikidata`, `ip_geo`,
+  `ip_whois_geo`, `mylnikov`, `urlscan`, `gleif_lei`, `acnc_charities`)
+  already use correctly. First attempt at a `process()`-level regression test
+  used `reqwest::Client::builder().resolve("psbdmp.ws", "127.0.0.1:1")` to
+  force a transport failure without touching the module's hardcoded
+  production URL — it red/green-verified correctly (failed against the
+  pre-fix code, passed against the fix), but an independent adversarial
+  review caught a real, confirmed flaw before it shipped: `fetch_json_inner`
+  (`util/http/fetch.rs:358-382`) falls back to a `curl` subprocess on ANY
+  reqwest transport error, and that subprocess does its OWN independent OS
+  DNS resolution of the literal URL string — entirely bypassing the
+  `reqwest::Client`'s `.resolve()` override, which is private state scoped to
+  that one client instance. Since `psbdmp.ws` is a real, resolvable public
+  domain (unlike an RFC 6761 `.invalid` name), the test could make a genuine
+  live request to the real third-party API in any environment with real
+  outbound internet — including this project's own primary deployment target
+  (a real Termux/Android device with genuine mobile internet), where it
+  would be a live, non-deterministic side effect rather than a hermetic
+  test. Verified directly against source before accepting the finding
+  (traced the exact fallback call chain), then confirmed no existing
+  precedent anywhere in this codebase tests a module's `process()`
+  end-to-end against its own hardcoded HTTPS URL via a local mock — every
+  existing `TcpListener`-based mock-server test (`ip_reputation`, `wigle`,
+  `smtp_vrfy`, `portscan`) instead tests a lower-level, URL-*parameterized*
+  helper directly, which `psbdmp` has no equivalent of (`fetch_json` IS the
+  shared helper). Removed the flawed test rather than ship a
+  network-dependent false-failure/side-effect risk. In its place: a new
+  hermetic test at the primitive layer,
+  `util::http::tests::fetch_json_propagates_a_non_2xx_status_as_err_not_a_
+  silent_default`, calling `fetch_json` directly against a real local
+  `TcpListener` returning HTTP 500 (the exact `TcpListener`+`http://`
+  pattern `fetch_json_or_absent_maps_400_to_none_while_or_404_still_errors`
+  already established) — proving the exact contract the fix now relies on,
+  entirely on loopback, no TLS, no external DNS, no live network possible.
+  This does not fail against the pre-fix `psbdmp.rs` specifically (the
+  shared primitive was already correct; the bug was in how `psbdmp` used
+  it), so it is a class-level guard (CONVENTIONS.md §7: "fixes to a class of
+  bug get a guard for the class... not just the instance") rather than a
+  literal red/green instance regression — logged honestly as such rather
+  than overclaimed. **Paired:**
+  `SOLUTION_TREE` SOL-PSBDMP-SWALLOWED-FAILURE `[ ]`→`[x]`, §5 — same
+  commit.
 - **`[ ]` T2.116 · `pwned_passwords` treats a non-2xx response (transient
   5xx/429) identically to a genuine zero-count result.**
   Sibling Breach modules propagate non-2xx as `Err`; this one silently folds
@@ -2013,15 +2059,30 @@ direct.**
   own fix documented). Gate green: fmt/clippy `--all-targets -D warnings`/
   strict-rustdoc `cargo doc`/`cargo test` — 4852 total pass (+3). **Paired:**
   `SOLUTION_TREE` SOL-ASIC-DIRECTOR-SWALLOWED `[ ]`→`[x]`, §5 — same commit.
-- **`[ ]` T2.121 · `urlhaus`'s 401/403 (rejected Auth-Key) handling degrades
+- **`[x]` T2.121 · `urlhaus`'s 401/403 (rejected Auth-Key) handling degrades
   to a clean `Ok(ModuleResult::new())` without calling
   `ctx.report_key_exhausted`.**
   The key pool never learns the key is dead, so a revoked/invalid urlhaus
   key keeps being used (and silently producing nothing) instead of being
   rotated out. → **Solution:** call `ctx.report_key_exhausted` on 401/403
   before returning the empty result. **P2**. *Queued from the 2026-07-14
-  comprehensive audit, wave 1 (module categories) — not yet investigated or
-  fixed.* **Paired:** `SOLUTION_TREE` SOL-URLHAUS-KEY-EXHAUSTED (new stub).
+  comprehensive audit, wave 1 (module categories).* **Doc-drift correction
+  (2026-07-15):** this node was never actually implemented as written —
+  it was superseded the same day (2026-07-14) by the broader T2.153
+  universal key-pool audit, whose own text explicitly names `urlhaus` as
+  one of "4 modules dropping 401/403/429 signals" it fixed (commit
+  `c917251e`, which added the `note_keyed_error(status, key_service, key,
+  ctx)` call — internally `if is_keyed_error_status(code) {
+  ctx.report_key_exhausted(...) }` — at `urlhaus::process()`'s 401/403
+  branch). Verified directly against the current source before flipping
+  this marker: the call is genuinely present. This node was left `[ ]`
+  because it was queued from a separate 2026-07-14 audit wave and never
+  cross-closed when T2.153 superseded it — closing it now purely as a
+  bookkeeping correction, no code change (implementing the literal wording
+  today would either be a no-op or risk a duplicate
+  `report_key_exhausted` call). **Paired:** `SOLUTION_TREE`
+  SOL-URLHAUS-KEY-EXHAUSTED `[ ]`→`[x]`, cross-referenced to
+  SOL-KEYPOOL-REGISTRY-GAPS — same commit.
 - **`[ ]` T2.122 · Each of `chain_intel`'s 5 wired chains has exactly one
   data source; when that call fails, `process()` returns the same clean
   result as a deliberate unsupported-chain no-op.**
@@ -16771,3 +16832,53 @@ way, so this specific drift class can't recur silently again.
   larger, out-of-scope refactor). Gate green: fmt/clippy `--all-targets -D
   warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4852 total pass (+3).
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-15 (cont'd 2)** — **Executed T2.115** (`psbdmp`'s sole data fetch
+  converting every failure mode into a clean empty result), selected via a
+  parallel investigation workflow that read the real current source of 11
+  open candidate nodes (T2.112–T2.123) before picking one — never trusting a
+  stub's paraphrase. That sweep also surfaced a genuine false lead worth
+  recording: T2.121 (`urlhaus` 401/403 key-exhaustion reporting) turned out
+  to already be fixed — under a *different* tracking item (T2.153,
+  2026-07-14, commit `c917251e`) that superseded it the same day the T2.121
+  stub was queued, but was never cross-closed. Verified directly against
+  current source (`note_keyed_error` already calls
+  `ctx.report_key_exhausted` at `urlhaus::process()`'s 401/403 branch) before
+  flipping it `[x]` as a doc-only correction — implementing the stub's
+  literal wording today would have been a no-op at best, a duplicate
+  `report_key_exhausted` call at worst. T2.115 itself: unlike `au_property`/
+  `asic_director` (hand-rolled multi-leg/scrape fetches needing a bespoke
+  pure predicate), `psbdmp` makes exactly one call through `fetch_json`,
+  which already returns a `Result<T>` correctly separating transport/status/
+  parse failure (`Err`) from a genuine successful zero-match body (`Ok`) —
+  confirmed ~9 sibling modules (`npm_author`, `hacker_news`, `wikidata`,
+  `ip_geo`, `ip_whois_geo`, `mylnikov`, `urlscan`, `gleif_lei`,
+  `acnc_charities`) already propagate it correctly via a bare `?`, so the fix
+  is a one-line swap to match, not a new abstraction. First regression-test
+  attempt forced a genuine transport failure via
+  `reqwest::Client::builder().resolve("psbdmp.ws", "127.0.0.1:1")`; it
+  red/green-verified correctly, but an independent adversarial-review agent
+  caught a real flaw before it shipped: `fetch_json_inner`'s curl-subprocess
+  fallback on transport failure (`util/http/fetch.rs:358-382`) does its own
+  independent OS DNS resolution of the literal URL, entirely bypassing the
+  `reqwest::Client`'s `.resolve()` override — since `psbdmp.ws` genuinely
+  resolves (unlike an RFC 6761 `.invalid` name), the test could fire a real
+  live request to the actual third-party API on any host with real internet,
+  including this project's own primary Termux/Android target. Verified the
+  finding directly (traced the fallback call chain) rather than trusting the
+  review at face value, and confirmed no existing precedent anywhere in this
+  codebase hermetically tests a module's `process()` against its own
+  hardcoded HTTPS URL — every existing mock-server test (`ip_reputation`,
+  `wigle`) instead tests a lower-level, URL-parameterized helper directly,
+  which `psbdmp` has no equivalent of. Removed the flawed test; added a
+  hermetic one at the primitive layer instead —
+  `util::http::tests::fetch_json_propagates_a_non_2xx_status_as_err_not_a_
+  silent_default`, mirroring the already-established
+  `fetch_json_or_absent_maps_400_to_none_while_or_404_still_errors`
+  `TcpListener`+`http://` pattern — proving the exact contract the fix now
+  relies on, entirely on loopback, no external DNS or TLS possible. Logged
+  honestly as a class-level guard (CONVENTIONS.md §7), not a literal
+  instance-level red/green regression, since the shared primitive was
+  already correct before this fix — the defect was only in how `psbdmp`
+  used it. Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc
+  `cargo doc`/`cargo test` — 4853 total pass (net unchanged: −1 flawed test,
+  +1 hermetic one). **Paired:** `SOLUTION_TREE` §5 — same commit.

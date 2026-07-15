@@ -472,6 +472,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`psbdmp::process()` treated a genuine fetch failure (transport error,
+  non-2xx status, malformed JSON) identically to a real "no pastes found"
+  result.** The module's own doc comment already recorded this happening in
+  production: a live scan averaged 0/152 successful requests, every one
+  silently reported as a clean empty result instead of a source outage.
+  `process()` now propagates the underlying fetch error instead of
+  discarding it, matching how ~9 sibling modules already handle the same
+  primitive. A genuine successful response with no matching pastes still
+  returns the ordinary empty success, unchanged.
 - **`asic_director::process()` treated a total request failure (transport
   error, non-2xx status, or an oversized/undecodable body) identically to a
   genuine "no director records for this name" result.** Same defect class
