@@ -4466,3 +4466,32 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   4370 total pass (+1). No identity/PII impact. Logged as a dated entry,
   not a new tracked node — same precedent as the entries above: a
   contained, single-function fix. Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-15 (cont'd)** — **`oathnet_pro`'s `attack_techniques()`
+  ATT&CK-mapping fix: added the missing `T1591.002` (Business
+  Relationships) it should have declared alongside `see_know` all along.**
+  The second of two candidates the same investigation surfaced; the first
+  (`see_know`'s possible `/search` capped-count headline) was re-checked
+  this cycle and confirmed to still lack the evidence needed for a safe
+  fix — no genuine captured `see-know.eu` `/search` response exists
+  anywhere in the repo, and the `RICH_DETAIL_SKIP` denylist's `total`/
+  `breach_count`/`stealer_count`/`external_count` entries are confirmed to
+  be PER-RECORD fields the catch-all extractor walks, not proven envelope-
+  level fields — so it stays open rather than being fixed on a guess.
+  `T1591.002`, by contrast, is fully verifiable from source alone:
+  `oathnet_pro/breach.rs` mints `EntityKind::Organisation` from `employer`/
+  `company`/`organization`/`organisation`/`workplace` fields (doc-commented
+  "mirroring the see_know extractor"), and the *shared* `breach_rich`
+  catch-all both providers run mints the same entity kind from the same
+  field set again — yet only `see_know` declared the technique for it.
+  Fixed by adding the one array entry + extending the doc comment; the
+  existing `attack_techniques_reflect_breach_pool_not_role_identification`
+  test (previously silent on this ID) now asserts it. Red/green-verified
+  by temporarily removing the array entry (failed) and restoring (passed).
+  All 197 `oathnet_pro` tests + 30 architecture guards (including the
+  ATT&CK-catalogue membership check) pass unchanged. Gate green: fmt/
+  clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
+  test` — 4370 total pass (an existing test was extended, not a new one
+  added). No identity/PII impact. Logged as a dated entry, not a new
+  tracked node — same precedent as the entries above: a contained,
+  single-declaration fix. Paired: `PROBLEM_TREE` §8 — same commit.

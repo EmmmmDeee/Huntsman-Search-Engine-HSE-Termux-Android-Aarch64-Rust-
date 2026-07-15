@@ -658,13 +658,17 @@ use super::*;
         use crate::core::attack;
         let t = OathnetPro.attack_techniques();
         // Each claimed technique is backed by a concrete extractor: credentials,
-        // emails, employee names, network IPs, and physical-location addresses.
+        // emails, employee names, network IPs, physical-location addresses, and
+        // (via `breach.rs`'s own employer/company/organization/organisation/
+        // workplace fields, plus the shared `breach_rich` catch-all) Organisation
+        // entities.
         for id in [
             "T1589.001",
             "T1589.002",
             "T1589.003",
             "T1590.005",
             "T1591.001",
+            "T1591.002",
         ] {
             assert!(t.contains(&id), "oathnet_pro must claim {id}, got {t:?}");
             assert!(attack::technique(id).is_some(), "{id} must be catalogued");

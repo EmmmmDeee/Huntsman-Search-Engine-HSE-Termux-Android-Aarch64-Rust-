@@ -433,6 +433,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`oathnet_pro`'s MITRE ATT&CK coverage report was missing "Business
+  Relationships" (T1591.002), despite the module already extracting
+  employer/company/organisation fields from breach records into their own
+  entities.** `see_know`, which shares the same extraction logic, already
+  declared this correctly. `oathnet_pro` now does too, so per-scan
+  coverage reporting reflects what it actually collects.
 - **OathNet breach records could name a different "top" set of breach
   databases across identical re-runs of the identical scan.** When several
   breach databases tied for a spot in the top-5 ranking, which one made

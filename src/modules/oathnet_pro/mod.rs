@@ -95,18 +95,23 @@ impl Module for OathnetPro {
     fn attack_techniques(&self) -> &'static [&'static str] {
         // oathnet_pro sits in the People category for dispatch, but functionally
         // it is a breach / stealer pool: its extractors mint leaked credentials,
-        // emails, employee names, network IPs, and physical addresses. The People
-        // default (T1589.003 + T1591.004 "Identify Roles") both over-claims a
-        // role mapping the module never performs and under-claims the
-        // credential/email/IP/location collection it actually does — so declare
-        // the precise set instead (mirroring au_people, which likewise drops
-        // T1591.004 where no role is identified).
+        // emails, employee names, network IPs, physical addresses, and — via its
+        // own `employer`/`company`/`organization`/`organisation`/`workplace`
+        // field extraction (`breach.rs`) plus the shared `breach_rich` catch-all
+        // both providers run — Organisation entities. The People default
+        // (T1589.003 + T1591.004 "Identify Roles") both over-claims a role
+        // mapping the module never performs and under-claims the credential/
+        // email/IP/location/org collection it actually does — so declare the
+        // precise set instead (mirroring au_people, which likewise drops
+        // T1591.004 where no role is identified, and see_know, which correctly
+        // claims T1591.002 for the identical Organisation-minting field set).
         &[
             "T1589.001", // Credentials — leaked passwords / hashes
             "T1589.002", // Email Addresses
             "T1589.003", // Employee Names — Person from name fields
             "T1590.005", // IP Addresses
             "T1591.001", // Determine Physical Locations — street / city / state address
+            "T1591.002", // Business Relationships — company / employer / org
         ]
     }
 

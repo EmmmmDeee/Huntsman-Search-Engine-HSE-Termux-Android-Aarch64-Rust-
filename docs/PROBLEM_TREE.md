@@ -6025,3 +6025,58 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   per the established precedent for this bug class: a contained,
   single-function fix, not a new tracked node. **Paired:** `SOLUTION_TREE`
   §5 — same commit.
+
+- **2026-07-15 (cont'd)** — **`oathnet_pro`'s `attack_techniques()` was
+  missing `T1591.002` (Business Relationships) despite genuinely minting
+  `EntityKind::Organisation` entities — the second of the two candidates
+  the same `see_know`/`oathnet_pro` investigation surfaced but deliberately
+  deferred above.** Picked up this cycle after the first candidate (a
+  possible `see_know` `/search` capped-count headline) was re-verified and
+  confirmed to still lack the evidence needed for a safe fix: a repo-wide
+  search for any genuine captured `see-know.eu` `/search` response (test
+  fixtures, `testdata/`, raw-archive samples) found none, and the one
+  `envelope."total"` reference in `util/see_know/tests.rs` is incidental
+  test data for `parse_response`'s pass-through behaviour, not a captured
+  real response — while the `RICH_DETAIL_SKIP` denylist's `total`/
+  `breach_count`/`stealer_count`/`external_count` entries in
+  `src/modules/breach_rich.rs` are confirmed to operate PER-RECORD (the
+  catch-all walks each item's own fields), not proven to be ENVELOPE-level
+  fields sibling to `items`/`results` — so fixing the headline would mean
+  guessing at an unobserved API shape, which the standing "behavior must be
+  observed, not assumed" constraint forbids. Left open, more precisely
+  scoped than before. The T1591.002 gap, by contrast, is fully verifiable
+  from source with no external dependency: `oathnet_pro/breach.rs:560-576`
+  extracts `employer`/`company`/`organization`/`organisation`/`workplace`
+  fields into `EntityKind::Organisation` (tagged `employer-field`,
+  doc-commented "mirroring the see_know extractor"), and the *shared*
+  `breach_rich::extract_rich_detail` catch-all both `see_know` and
+  `oathnet_pro` run (`src/modules/breach_rich.rs:298-312`) mints the
+  identical entity kind from the identical field set a second time. Per
+  CLAUDE.md's ATT&CK-mapping invariant, every module's `attack_techniques()`
+  must accurately reflect what it extracts — `see_know` already correctly
+  declares `T1591.002` for this exact field set (`see_know/mod.rs:123`,
+  comment: "Business Relationships — company / employer / org"), making
+  `oathnet_pro`'s omission a verified inconsistency between two modules
+  sharing the same extractor, not a speculative gap. The existing test
+  `attack_techniques_reflect_breach_pool_not_role_identification` only
+  positively asserted the 5 present IDs and negatively asserted the absence
+  of `T1591.004` — it never checked `T1591.002`, so nothing caught the gap.
+  Fixed by adding `"T1591.002"` to the declared array (one line) and
+  extending the doc comment to explain the Organisation-minting basis;
+  `produces()` already declared `EntityKind::Organisation` (unchanged — no
+  new entity kind, no `produces()` change). Test extended in place to
+  assert the new ID alongside the existing five; red/green-verified by
+  temporarily removing the array entry (failed — assertion on `T1591.002`
+  presence) and restoring (passed). Full parity: all 197 `oathnet_pro`
+  tests + all 30 architecture guards (including the ATT&CK-catalogue
+  membership check in `tests/architecture.rs`) pass unchanged. Gate green:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
+  test` — 4370 total pass (same count — an existing test was extended, not
+  a new one added). No identity/PII impact, no architecture-guard change
+  beyond the intended catalogue-membership check passing for the new ID.
+  This closes the second of the two candidates the 2026-07-15 investigation
+  surfaced; only the `see_know` capped-count lead remains open, now with a
+  more precise "why it's still blocked" note for a future cycle. Logged
+  here per the established precedent for this bug class: a contained,
+  single-declaration fix, not a new tracked node. **Paired:**
+  `SOLUTION_TREE` §5 — same commit.
