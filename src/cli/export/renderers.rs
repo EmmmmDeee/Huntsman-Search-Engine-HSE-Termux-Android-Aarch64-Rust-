@@ -643,6 +643,9 @@ pub(crate) struct IssueInputs<'a> {
     /// commits behind upstream (`Some(n>0)` ⇒ a newer build exists) — surfaced
     /// because a stale build may be reproducing already-fixed bugs.
     pub update_commits_behind: Option<u64>,
+    /// `(service, total_keys)` for each configured service whose pooled keys are
+    /// ALL non-active — its keyed modules silently return nothing.
+    pub dead_key_services: Vec<(&'a str, usize)>,
 }
 
 /// Join every health signal into one worst-first problem list. **Pure** (no
@@ -756,6 +759,21 @@ pub(crate) fn detect_issues(inp: &IssueInputs) -> Vec<DetectedIssue> {
             ),
         });
     }
+    // A configured service whose keys are ALL non-active (exhausted / invalid /
+    // rate-limited / revoked) is the largest INVISIBLE failure class: the keyed
+    // module returns `Ok(empty)` with no error and no failure streak (e.g.
+    // `see_know` short-circuits on `is_key_invalid()`/exhausted budget), so it
+    // never reaches the error-based health arms above — the pool is the only
+    // place the silent death is visible.
+    for (service, total) in &inp.dead_key_services {
+        issues.push(DetectedIssue {
+            severity: SEV_WARNING,
+            category: "key-pool",
+            detail: format!(
+                "service `{service}`: all {total} pooled key(s) are non-active (exhausted/invalid/rate-limited/revoked) — its keyed modules return nothing silently; top up or rotate (`hse keys`)"
+            ),
+        });
+    }
     issues.sort_by(|a, b| {
         severity_rank(a.severity)
             .cmp(&severity_rank(b.severity))
@@ -774,6 +792,35 @@ fn severity_rank(sev: &str) -> u8 {
     }
 }
 
+/// A value-free per-service key-pool summary the caller hands in (mapped from
+/// the api layer's `summarize_pool`), so the renderer stays self-contained and
+/// never touches key material. A pool is genuinely dead only when it has
+/// neither an ACTIVE nor an UNTESTED key ([`KeyPoolSummary::is_dead`]) — an
+/// untested key has simply not been probed yet and may work on first use, so it
+/// must NOT count as dead (a real-binary run flagged an untested `shodan` key
+/// "ALL DEAD" before this distinction was added).
+pub(crate) struct KeyPoolSummary {
+    pub service: String,
+    pub total: usize,
+    pub active: usize,
+    pub untested: usize,
+    pub rate_limited: usize,
+    pub exhausted: usize,
+    pub invalid: usize,
+    pub revoked: usize,
+    pub avg_health: f64,
+}
+
+impl KeyPoolSummary {
+    /// True iff the pool holds keys but NONE can currently be dispatched and
+    /// none remain untested — every key is exhausted / invalid / rate-limited /
+    /// revoked, so the service's keyed modules silently return nothing.
+    #[must_use]
+    pub fn is_dead(&self) -> bool {
+        self.total > 0 && self.active == 0 && self.untested == 0
+    }
+}
+
 /// The gathered-off-reactor inputs for [`render_system_debug_bundle`]. The
 /// async / store-bound parts (the self-test, the recent-scan list, the
 /// cross-scan scraper-outcome events, and the in-memory log ring) are fetched
@@ -787,6 +834,9 @@ pub(crate) struct SystemDebugInputs {
     pub scraper_events_checked: usize,
     pub log_dump: String,
     pub log_lines: usize,
+    /// Per-service key-pool health (value-free), for the KEY POOL section and
+    /// the silently-dead-pool verdict arm.
+    pub key_pool: Vec<KeyPoolSummary>,
     /// Commits the running binary is behind upstream, or `None` if never
     /// checked / offline. A build that is behind may be hitting bugs already
     /// fixed upstream — the exact situation a real operator debug bundle showed
@@ -912,6 +962,12 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
         // `Error` variant; recover the message for the verdict.
         update_error: inp.update_phase.strip_prefix("error: "),
         update_commits_behind: inp.update_commits_behind,
+        dead_key_services: inp
+            .key_pool
+            .iter()
+            .filter(|k| k.is_dead())
+            .map(|k| (k.service.as_str(), k.total))
+            .collect(),
     });
     let (crit, warn) = issues.iter().fold((0usize, 0usize), |(c, w), i| {
         if i.severity == SEV_CRITICAL {
@@ -1118,6 +1174,40 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             s,
             "  {:<16} scan {}/{} · session {}/{}{}",
             name, b.scan_used, b.scan_cap, b.session_used, b.session_cap, flag
+        );
+    }
+
+    // ── 4d. Key-pool health — value-free per-service status. A service with
+    //        keys but 0 ACTIVE is a silent top-source death (invisible to the
+    //        error-based health above). ──
+    let dead_pools = inp.key_pool.iter().filter(|k| k.is_dead()).count();
+    let _ = writeln!(
+        s,
+        "\n── KEY POOL ({} service(s) pooled, {} fully dead) ──",
+        inp.key_pool.len(),
+        dead_pools
+    );
+    if inp.key_pool.is_empty() {
+        let _ = writeln!(
+            s,
+            "  (no keys in the pool — free modules still run; keyed modules skip cleanly)"
+        );
+    }
+    for k in &inp.key_pool {
+        let dead = if k.is_dead() { "  · ALL DEAD" } else { "" };
+        let _ = writeln!(
+            s,
+            "  {:<14} {}/{} active · {} untested · {} rate-limited · {} exhausted · {} invalid · {} revoked · health {:.2}{}",
+            k.service,
+            k.active,
+            k.total,
+            k.untested,
+            k.rate_limited,
+            k.exhausted,
+            k.invalid,
+            k.revoked,
+            k.avg_health,
+            dead
         );
     }
 

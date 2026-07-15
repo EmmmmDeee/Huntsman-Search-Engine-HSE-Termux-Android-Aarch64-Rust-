@@ -493,6 +493,24 @@ pub async fn system_debug_bundle(
         };
         (info.commits_behind, info.last_checked, phase)
     };
+    // Value-free per-service key-pool summary (reuses `keys_status`'
+    // `summarize_pool`; never copies a key value). Mapped to the renderer's own
+    // owned type so `cli::export` stays self-contained.
+    let key_pool: Vec<crate::cli::export::KeyPoolSummary> =
+        super::settings_handlers::summarize_pool(&crate::util::key_pool::global_pool().snapshot())
+            .into_iter()
+            .map(|q| crate::cli::export::KeyPoolSummary {
+                service: q.service,
+                total: q.total,
+                active: q.active,
+                untested: q.untested,
+                rate_limited: q.rate_limited,
+                exhausted: q.exhausted,
+                invalid: q.invalid,
+                revoked: q.revoked,
+                avg_health: q.avg_health,
+            })
+            .collect();
     let inputs = crate::cli::export::SystemDebugInputs {
         selftest,
         scans,
@@ -500,6 +518,7 @@ pub async fn system_debug_bundle(
         scraper_events_checked,
         log_dump,
         log_lines,
+        key_pool,
         update_commits_behind,
         update_last_checked,
         update_phase,

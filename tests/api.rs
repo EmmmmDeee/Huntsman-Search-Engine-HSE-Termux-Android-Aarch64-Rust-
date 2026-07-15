@@ -3192,6 +3192,7 @@ async fn system_debug_bundle_returns_the_diagnostic_artifact_on_loopback() {
         "── SEARCH-ENGINE LIVENESS",
         "── SCRAPER HEALTH",
         "── PROVIDER QUOTAS",
+        "── KEY POOL",
         "── RECENT SCANS",
         "── RECENT LOGS",
         "── SOURCE FILES",
