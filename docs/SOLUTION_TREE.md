@@ -3634,10 +3634,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   there is genuinely actionable. New hermetic primitive-layer guard
   `fetch_json_or_404_maps_404_to_none_but_propagates_5xx_as_err` pins the
   contract. See `PROBLEM_TREE` T2.117 for the full finding.
-- **`[ ]` SOL-ASIC-CKAN-HANDROLL · Migrate `asic_persons`/
+- **`[x]` SOL-ASIC-CKAN-HANDROLL · Migrate `asic_persons`/
   `asic_banned_orgs`/`asic_business_names` onto shared `util::ckan::Response`**
-  → **T2.118**. Queued, not yet started — see `PROBLEM_TREE` T2.118 for the
-  finding.
+  → **T2.118**. Delivered 2026-07-15: all three replaced their local
+  `success`-less `CkanResp` + swallow-to-empty `ckan_query` with
+  `util::ckan::{Response, datastore_search_url, field_str}` +
+  `util::http::fetch_json`, mirroring the canonical `acnc_charities` idiom —
+  transport/status/parse failures propagate via `?`, `success == Some(false)`
+  becomes an `Error::module`, a genuine empty result stays a clean miss.
+  `asic_persons`' three concurrent register queries fold through
+  `ModuleResult::or_hard_failure` (the `niamonx`/T2.114 combinator). Each
+  `field()` now delegates to the shared `field_str` (CONVENTIONS §4) keeping
+  its own sentinel filter. **Validated end-to-end against the real
+  data.gov.au ASIC datastore** (3/3 live `#[ignore]` tests pass through the
+  migrated path). See `PROBLEM_TREE` T2.118 for the full finding.
 - **`[ ]` SOL-AU-UNCLAIMED-SWALLOWED · Surface transport/parse failure as
   an error instead of a silent empty result** → **T2.119**. Queued, not
   yet started — see `PROBLEM_TREE` T2.119 for the finding.
@@ -4623,9 +4633,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `ModuleResult::or_hard_failure`), and **T2.116** (`pwned_passwords`)
   delivered 2026-07-15; **T2.115** (`psbdmp`) and **T2.121** (`urlhaus`)
   delivered 2026-07-15 on the parallel `main` line. **T2.117** (nine Social
-  profile modules' shared fake-404 collapse) delivered 2026-07-15. 32 of 49
-  still queued (17 of T2.102–T2.150 now `[x]`, machine-counted against the
-  tree).*
+  profile modules' shared fake-404 collapse) delivered 2026-07-15.
+  **T2.118** (three ASIC modules migrated onto the shared `util::ckan::
+  Response`, surfacing CKAN `success:false` + fetch failures instead of
+  swallowing them) delivered 2026-07-15. 31 of 49 still queued (18 of
+  T2.102–T2.150 now `[x]`, machine-counted against the tree).*
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -11922,3 +11934,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   the reviewed T2.115 precedent). Gate green: fmt/clippy `--all-targets -D
   warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4864 total pass (+1).
   **Paired:** `PROBLEM_TREE` T2.117 `[ ]`→`[x]` — same commit.
+- **2026-07-15 (cont'd)** — **SOL-ASIC-CKAN-HANDROLL closed** (three ASIC
+  modules hand-rolling a `success`-less CKAN response + swallow-to-empty
+  fetch instead of the shared `util::ckan::Response`) — a reuse-and-honesty
+  fix in one. All three (`asic_persons`, `asic_banned_orgs`,
+  `asic_business_names`) migrated onto `util::ckan::{Response,
+  datastore_search_url, field_str}` + `util::http::fetch_json`, mirroring the
+  canonical `acnc_charities`: transport/status/parse failures propagate via
+  `?`, `success == Some(false)` (a CKAN application error returned with HTTP
+  200) becomes an `Error::module`, a genuine empty result stays a clean miss.
+  `asic_persons`' three concurrent register queries fold through the
+  `niamonx`/T2.114 `ModuleResult::or_hard_failure`. Each `field()` delegates
+  to the shared `field_str` (CONVENTIONS §4) keeping its own sentinel filter;
+  the hand-rolled URL is replaced by the injection-safe `datastore_search_url`.
+  Validated with genuine execution: a direct `curl` confirmed the live
+  `{"success":true,"result":{"records":[…]}}` shape, and all three modules'
+  live `#[ignore]` tests pass end-to-end against the real data.gov.au ASIC
+  datastore (3/3). Correctness rests on already-tested shared contracts (no
+  new unit test — the same rationale as T2.115/T2.117; the `acnc_charities`
+  precedent that introduced this idiom has none either). Gate green:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
+  test` — 4864 total pass (net 0). **Paired:** `PROBLEM_TREE` T2.118
+  `[ ]`→`[x]` — same commit.

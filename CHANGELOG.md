@@ -472,6 +472,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Three ASIC modules (`asic_persons`, `asic_banned_orgs`,
+  `asic_business_names`) hand-rolled a CKAN fetch that dropped the `success`
+  field and swallowed every failure into an empty result (T2.118).** A
+  transport error, a non-2xx status, or a CKAN application error
+  (`success:false`, returned with HTTP 200) all read identically to "not in
+  this register." Migrated all three onto the shared `util::ckan::Response`
+  + `fetch_json` (mirroring the sibling `acnc_charities`): real failures now
+  propagate, `success:false` surfaces as an error, and `asic_persons`' three
+  concurrent register queries fold through `ModuleResult::or_hard_failure`
+  so partial success is preserved. Also removed three copies of the CKAN
+  envelope and a per-module `field()` helper in favour of the single shared,
+  already-tested `util::ckan`. Validated end-to-end against the real
+  data.gov.au ASIC datastore (3/3 live tests).
 - **Nine Social profile modules (`launchpad_user`, `codewars_user`,
   `hexpm_user`, `dockerhub_user`, `bitbucket_user`, `huggingface_user`,
   `sourceforge_user`, `cpan_user`, `gitea_user`) converted a real fetch
