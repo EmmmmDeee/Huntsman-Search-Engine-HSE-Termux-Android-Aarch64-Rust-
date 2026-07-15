@@ -2242,15 +2242,42 @@ direct.**
   `report_key_exhausted` call). **Paired:** `SOLUTION_TREE`
   SOL-URLHAUS-KEY-EXHAUSTED `[ ]`→`[x]`, cross-referenced to
   SOL-KEYPOOL-REGISTRY-GAPS — same commit.
-- **`[ ]` T2.122 · Each of `chain_intel`'s 5 wired chains has exactly one
+- **`[x]` T2.122 · Each of `chain_intel`'s 5 wired chains has exactly one
   data source; when that call fails, `process()` returns the same clean
   result as a deliberate unsupported-chain no-op.**
   There's no way to tell "this chain isn't supported" apart from "the one
   source for this chain just failed." → **Solution:** distinguish
   unsupported-chain from fetch-failure in the returned result/error.
   **P2**. *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
-  categories) — not yet investigated or fixed.* **Paired:**
-  `SOLUTION_TREE` SOL-CHAININTEL-SINGLE-SOURCE (new stub).
+  categories).* **Fixed (2026-07-15):** confirmed by direct read that each of
+  the five enrichers (`enrich_esplora` for BTC/LTC, `enrich_eth`,
+  `enrich_sol`, `enrich_doge`) returned `Option<Enrichment>` and swallowed its
+  sole source's failure with `fetch_json(…).await.ok()?` (and `enrich_sol`'s
+  `send…ok()?` / `if !status.is_success() { return None }` / `json_decode…
+  ok()?`), so a `None` conflated **three** cases `process()` then folded into
+  one clean `Ok(result)`: a genuine source failure, a recognised-but-unwired
+  chain (`_ => None`), and a supported chain whose source honestly reported no
+  data. Changed all five enrichers to return `Result<Option<Enrichment>>`: a
+  real failure (transport/non-2xx/unparseable body) now propagates as `Err`
+  (`fetch_json`'s `?`, and `enrich_sol`'s non-2xx via the shared
+  `http_status_error`), while `Ok(None)` is reserved for the honest "nothing
+  to enrich" (a Blockscout reply with no parseable balance, an RPC reply with
+  no `result.value`). `process()`'s `match` gained `_ => Ok(None)` for the
+  deliberate unsupported-chain no-op and a `?` after it, so an unsupported
+  chain and a genuinely-empty address stay clean misses while a real source
+  outage surfaces as a `ModuleError`. **Genuine-execution validation:** a
+  `curl` against the real `blockstream.info/api/address/<a>` confirmed the
+  live `chain_stats`/`mempool_stats` shape the test fixture models, and — since
+  `enrich_esplora` is the one enricher whose base URL is a *parameter* — two
+  new hermetic tests drive it against a real local `TcpListener`:
+  `enrich_esplora_propagates_a_source_error_instead_of_a_silent_none` (503 →
+  `Err`, the exact T2.122 red/green — the old `.ok()?` returned `None`) and
+  `enrich_esplora_parses_a_real_shaped_body_into_enrichment` (200 → correct
+  balance/tx_count). The other four hardcode their host and rest on
+  `fetch_json`'s already-tested non-2xx→`Err` contract. Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test`.
+  **Paired:** `SOLUTION_TREE` SOL-CHAININTEL-SINGLE-SOURCE `[ ]`→`[x]` — same
+  commit.
 - **`[ ]` T2.123 · `api_key_probe::probe_endpoint()` returns `None` for any
   transport failure, treated identically to a normal non-match.**
   If all 23+ probes fail (e.g. no network), no error is surfaced anywhere —
@@ -17233,3 +17260,28 @@ way, so this specific drift class can't recur silently again.
   `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4864
   total pass (+1 `#[ignore]` live test, not counted). **Paired:**
   `SOLUTION_TREE` SOL-AU-UNCLAIMED-SWALLOWED `[ ]`→`[x]`, §5 — same commit.
+- **2026-07-15 (cont'd)** — **Executed T2.122** (`chain_intel`'s five
+  single-source chains swallowing a source failure into the same clean result
+  as a deliberate unsupported-chain no-op). Read every enricher before
+  trusting the stub: each returned `Option<Enrichment>` and swallowed its sole
+  source's `Err` (`fetch_json(…).await.ok()?`; `enrich_sol` also
+  `send…ok()?` / `if !status.is_success() { return None }` /
+  `json_decode…ok()?`), so `process()`'s `let Some(enr) = enriched else {
+  return Ok(result) }` conflated three cases — a genuine source failure, the
+  `_ => None` unsupported-chain no-op, and a supported chain that honestly
+  had no data. Changed all five enrichers to `Result<Option<Enrichment>>`: a
+  real failure propagates as `Err` (`fetch_json`'s `?`; `enrich_sol`'s non-2xx
+  via the shared `http_status_error`), `Ok(None)` reserved for the honest
+  empty (Blockscout with no parseable balance, an RPC reply with no
+  `result.value`); `process()`'s `match` gained `_ => Ok(None)` + a `?`, so an
+  unsupported chain / empty address stays a clean miss while a real outage
+  surfaces as a `ModuleError`. **Genuine-execution validation:** a `curl`
+  against the real `blockstream.info/api/address/<a>` confirmed the live
+  `chain_stats`/`mempool_stats` shape the fixture models; two new hermetic
+  tests drive the URL-parameterized `enrich_esplora` against a real local
+  `TcpListener` (503→`Err` — the exact red/green, the old `.ok()?` returned
+  `None`; 200→correct balance/tx_count). The other four hardcode their host and
+  rest on `fetch_json`'s already-tested non-2xx→`Err` contract. Gate green:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
+  test` — 4866 total pass (+2). **Paired:** `SOLUTION_TREE`
+  SOL-CHAININTEL-SINGLE-SOURCE `[ ]`→`[x]`, §5 — same commit.
