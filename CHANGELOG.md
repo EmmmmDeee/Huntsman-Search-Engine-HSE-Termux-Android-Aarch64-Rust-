@@ -433,6 +433,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **OathNet breach records could name a different "top" set of breach
+  databases across identical re-runs of the identical scan.** When several
+  breach databases tied for a spot in the top-5 ranking, which one made
+  the cut (and the order they were listed in) depended on in-memory
+  iteration order rather than anything meaningful. This affected both the
+  operator-facing "OathNet: N matching breach record(s) …" summary and the
+  reused-secret correlation finding's list of corroborating sources. Ties
+  now resolve alphabetically, so the same scan always reports the same
+  result.
 - **Importing a real "Combined Search" aggregator export no longer doubles
   the reported breach-record count.** That export format repeats every
   module's results twice — once nested under a `Modules:` section, again

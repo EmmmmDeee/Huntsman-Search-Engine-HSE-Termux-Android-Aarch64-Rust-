@@ -350,7 +350,17 @@ pub fn top_dbnames(items: &[Value], n: usize) -> Vec<String> {
         }
     }
     let mut sorted: Vec<(String, usize)> = counts.into_iter().collect();
-    sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
+    // Count descending, then dbname ascending as a deterministic tie-break.
+    // `counts` came from a `HashMap`, so its pre-sort order (and therefore
+    // which of several equal-count names lands inside the top-`n` cutoff) is
+    // process-random without the second key — the same reproducibility class
+    // already closed elsewhere in this codebase (`recall_prior_entities`,
+    // `wigle::mode`). This feeds both the operator-facing "OathNet: N
+    // matching breach record(s) … — {top_dbs}" headline and the AU-047
+    // reused-secret correlator's `distinct_sources` reader, so a tied 5th/6th
+    // dbname flipping in or out of the result between identical re-runs of
+    // the identical scan is a real, not cosmetic, non-determinism.
+    sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     sorted.into_iter().take(n).map(|(k, _)| k).collect()
 }
 

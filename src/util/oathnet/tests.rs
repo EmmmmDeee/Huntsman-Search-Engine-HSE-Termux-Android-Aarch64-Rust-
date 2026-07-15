@@ -186,6 +186,35 @@ use super::*;
     }
 
     #[test]
+    fn top_dbnames_ties_break_alphabetically_not_by_hashmap_order() {
+        // 10 distinct dbnames, each appearing exactly once — a full tie at
+        // every rank. Without a deterministic tie-break, which 5 of the 10
+        // land in the top-5 cutoff (and in what order) depends on the
+        // process-random `HashMap` iteration order the counts are collected
+        // through, so two identical scans could report a different set of
+        // "top" breach databases for the same subject. With the fix, the
+        // result is always the alphabetically-first 5 — the same every call.
+        let items = vec![
+            json!({"dbname": "zebra"}),
+            json!({"dbname": "yankee"}),
+            json!({"dbname": "xray"}),
+            json!({"dbname": "whiskey"}),
+            json!({"dbname": "victor"}),
+            json!({"dbname": "uniform"}),
+            json!({"dbname": "tango"}),
+            json!({"dbname": "sierra"}),
+            json!({"dbname": "romeo"}),
+            json!({"dbname": "quebec"}),
+        ];
+        let top = top_dbnames(&items, 5);
+        assert_eq!(
+            top,
+            vec!["quebec", "romeo", "sierra", "tango", "uniform"],
+            "a full tie must resolve deterministically (alphabetically), not by HashMap iteration order"
+        );
+    }
+
+    #[test]
     fn distinct_field_aggregates_every_record_additively() {
         // Regression guard: a last-write-wins overwrite would keep only "GB" and
         // only the final name. The additive aggregator retains ALL distinct

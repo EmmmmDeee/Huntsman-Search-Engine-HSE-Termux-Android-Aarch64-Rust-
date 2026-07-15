@@ -4430,3 +4430,39 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   change. Logged as a dated entry, not a new tracked node — same
   precedent as the entries above: a contained, single-function fix.
   Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-15** — **`util::oathnet::top_dbnames` non-determinism fix: added
+  the missing tie-break so which of several equal-count breach databases
+  lands in the top-5 cutoff no longer depends on `HashMap` iteration order.**
+  Found via a focused investigation of `see_know`/`oathnet_pro` (the
+  operator's explicit request, prompted by a real debug bundle showing
+  `see_know` failing every attempt in a live scan). The bundle's own raw
+  curl-error and missing-`breach_date` symptoms were first checked against
+  current `HEAD` and confirmed to be artifacts of a stale build (18 commits
+  behind, including the already-shipped `-S` curl fix and the
+  `dbname_info`→`breach_date` enrichment) — not re-investigated as live
+  bugs. `top_dbnames`'s single-key `sort_by_key(|b| Reverse(b.1))` left ties
+  at the top-5 boundary resolved by the `HashMap`'s process-random pre-sort
+  order — the same reproducibility class already closed by T1.1/T2.9/T2.15/
+  `wigle::mode` in this codebase. This feeds both the "OathNet: N matching
+  breach record(s) … — {top_dbs}" operator-facing headline and AU-047's
+  `distinct_sources` reused-secret rule (`sources.iter().take(5)` in its
+  "reused across N source(s) (…)" clause), so identical re-runs of an
+  identical scan could name different specific breach databases in that
+  clause. Fixed with a deterministic secondary sort key (dbname ascending),
+  one line, matching the codebase's own established `.then_with(...)`
+  tie-break idiom. New regression test constructs a full 10-way tie and
+  asserts the exact alphabetically-first-5 result; red/green-verified by
+  temporarily reverting to the single-key sort (failed — hash-order-
+  dependent, non-alphabetical result) and restoring (passed). Full
+  downstream parity confirmed: 30 `util::oathnet` + 197 `oathnet_pro` + 14
+  `core::correlator::rules::breach` tests all pass unchanged — only tie
+  resolution changed, non-tied output is byte-identical. Two other real
+  candidates from the same investigation (a possible `see_know` `/search`
+  capped-count headline, and `oathnet_pro`'s missing `T1591.002` ATT&CK
+  declaration) were deliberately left open rather than folded into this
+  commit, to keep the shipped unit small. Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` —
+  4370 total pass (+1). No identity/PII impact. Logged as a dated entry,
+  not a new tracked node — same precedent as the entries above: a
+  contained, single-function fix. Paired: `PROBLEM_TREE` §8 — same commit.

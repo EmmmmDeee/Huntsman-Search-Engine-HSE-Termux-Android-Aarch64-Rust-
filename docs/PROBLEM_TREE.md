@@ -5966,3 +5966,62 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `#![forbid(unsafe_code)]` impact. Logged here per the established
   precedent for this bug class: a contained, single-function fix, not a new
   tracked node. **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-15** — **`util::oathnet::top_dbnames`'s tie-break was missing —
+  which of several equal-count breach databases lands in the top-`n` cutoff
+  (and in what order) depended on `HashMap` iteration order, feeding both the
+  operator-facing "OathNet: N matching breach record(s) … — {top_dbs}"
+  headline and the AU-047 reused-secret correlator's `distinct_sources`
+  reader — the same reproducibility bug class already closed elsewhere in
+  this codebase (T1.1, T2.9, T2.15, `wigle::mode`), found via a focused
+  investigation of `see_know`/`oathnet_pro` (both paid, highest-priority
+  breach sources) after the operator supplied a real debug bundle showing
+  `see_know` failing every attempt in a live scan and asked that both
+  modules be made to work to their fullest useful capacity.** Cross-checking
+  that bundle's evidence against current `HEAD` first: its raw `curl exited
+  N` errors (no diagnostic snippet) and missing `oathnet_pro` `breach_date`
+  attribute both turned out to be artifacts of a stale build — the bundle's
+  own embedded source-file manifest listed `curl_client/mod.rs` at 208 LOC
+  against current `HEAD`'s 216, and `git log` confirmed the gap is exactly
+  the already-shipped `-S`/`--show-error` fix (`b02476a1`) plus 17 further
+  commits including the `dbname_info`→`breach_date` enrichment — so neither
+  symptom was re-investigated as if it were a live bug (would have
+  duplicated already-closed work). `top_dbnames`'s `sorted.sort_by_key(|b|
+  std::cmp::Reverse(b.1))` sorts primary-key-only (count descending); its
+  pre-sort order comes from `counts.into_iter()` on a `HashMap`, so a tie at
+  the top-5 boundary (realistic — OathNet aggregates breach hits across many
+  same-frequency databases) is resolved by process-random hash-bucket order,
+  not any meaningful ranking. This directly changes `core/correlator/rules/
+  breach.rs`'s AU-047 rule output: `distinct_sources(secret)` reads the
+  `top_dbnames` evidence attribute (among others) and its `sources.iter()
+  .take(5)` feeds the operator-facing "reused across N source(s) (A, B, …)"
+  clause — so identical re-runs of the identical scan against the identical
+  data could name different specific breach databases in that clause.
+  Confirmed uncaught: the existing `top_dbnames_ranks_by_frequency` test
+  uses only strictly-distinct counts (3/2/1), no tie case anywhere in the
+  suite. Fixed with a deterministic secondary key (`.then_with(|| a.0.cmp(&
+  b.0))`, dbname ascending) — one line, exactly the `.then_with(...)`
+  idiom already established by `recall_prior_entities` and `wigle::mode` in
+  this codebase. New regression test (`top_dbnames_ties_break_alphabetically_
+  not_by_hashmap_order`) constructs a full 10-way tie and asserts the exact
+  alphabetically-first-5 result; red/green-verified by temporarily reverting
+  to the single-key sort (failed — a non-alphabetical, hash-order-dependent
+  set) and restoring (passed). Full downstream parity confirmed: all 30
+  `util::oathnet` tests, all 197 `oathnet_pro` module tests, and all 14
+  `core::correlator::rules::breach` tests pass unchanged — the fix only
+  resolves ties, non-tied output is byte-identical. Two other candidates
+  from the same investigation were surfaced but deliberately NOT picked this
+  cycle to keep the unit small: `see_know`'s `/search` may report a
+  page-capped hit count as the provider's true total (same fabricated-count
+  class as `wigle`/`netlas`, but the envelope field name needs confirming
+  against a live response before a fix lands) and `oathnet_pro`'s
+  `attack_techniques()` is missing `T1591.002` despite minting Organisation
+  entities (a documentation-accuracy gap, lowest severity of the three) —
+  both left open for a future cycle, not silently dropped. Gate green:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
+  test` — 4370 total pass (+1). No identity/PII impact (the real debug
+  bundle's PII was read only for structural/field-shape diagnosis, never
+  reproduced beyond what was needed to identify the code path). Logged here
+  per the established precedent for this bug class: a contained,
+  single-function fix, not a new tracked node. **Paired:** `SOLUTION_TREE`
+  §5 — same commit.
