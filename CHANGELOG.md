@@ -348,6 +348,40 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **OathNet's automatic pagination — added in the previous release — never
+  actually worked against the real API.** A page of search results beyond
+  the first was supposed to be fetched automatically, but a mismatch
+  between the documented response format and the real one meant the
+  signal telling HSE "there's more data" was never read correctly, so
+  every search silently stopped after page one regardless of how many
+  real matches existed. This mattered most for stealer-log searches,
+  where a popular target could have far more than the ~100 records a
+  single page holds — anything past that was quietly dropped. Also added:
+  the account's real remaining daily quota is now shown on the Key
+  Harvest page (previously only an internal, self-imposed spending
+  estimate was shown, never the provider's own number); a search-session
+  bug that could cause two searches running at the same time to
+  interfere with each other's quota-saving optimization is fixed; the
+  `oathnet-batch` command-line tool now uses that same optimization
+  (previously it never did, even though it was already generating query
+  pairs specifically designed to benefit from it); and a server error
+  from OathNet is now retried automatically instead of failing
+  immediately.
+- **SeekNow's own setup documentation overstated what's actually
+  connected — it claimed all 24 of the provider's published endpoints
+  were wired up and all internal tests passing, when only 18 endpoints
+  are actually used and the "tests" it pointed to didn't test anything
+  real.** No functionality was silently broken by this — it's a
+  documentation-accuracy fix, not a behavior change — but the setup
+  guide and integration summary now describe HSE's real SeekNow coverage
+  honestly (which endpoints are wired, which were tried and abandoned
+  after the provider's own API rejected them, and which were simply
+  never built) instead of a number that didn't match reality. A handful
+  of related internal cleanups landed alongside this: some hardcoded
+  configuration values are now correctly read from the single settings
+  file they were supposed to come from instead of being silently
+  duplicated by hand in multiple places, and some no-longer-reachable
+  code was removed.
 - **Internal: two test-suite checks that verify the correlation engine's
   output is reproducible could themselves fail intermittently, with no
   effect on the correlation engine itself.** Both checks compared two runs

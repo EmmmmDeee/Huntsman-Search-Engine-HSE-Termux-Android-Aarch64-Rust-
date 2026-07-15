@@ -25,11 +25,17 @@
 //!   FullName   → /search (auto-detect) — no add-on needed
 //!
 //! Single-origin presence checks (github/twitter/reddit/tiktok/roblox/xbox/
-//! minecraft) are deliberately NOT dispatched — the free `username_search`
-//! stack (600+ sites), `social_probe`, and `search_engines` scraping already
-//! cover those, so SeekNow's paid lookups go only to the broad `/search`,
-//! username-history aggregation, and cross-platform ID resolution. See the
-//! `endpoints` submodule (`FREE_COVERED_SINGLE_ORIGIN` / `effective_plan`).
+//! minecraft) ARE dispatched for every Username target, alongside the free
+//! `username_search` stack (600+ sites)/`social_probe`/`search_engines`
+//! scraping that also covers those platforms — the operator's maximisation
+//! directive means every endpoint adding platform-specific profile depth or
+//! breach context fires, with the per-scan budget cap as the only rate
+//! limiter, not a platform-presence filter. (An OLDER revision of this
+//! comment described a filter, `FREE_COVERED_SINGLE_ORIGIN`, that stripped
+//! these before dispatch — that filter was removed; the constant is kept
+//! `#[allow(dead_code)]` for documentation/future policy control, but
+//! `effective_plan()` no longer applies it. See the `endpoints` submodule's
+//! own, up-to-date doc comments.)
 //!
 //! Each scan spends up to HUNTSMAN_SEEKNOW_SCAN_CAP lookups (default 300,
 //! dynamically scaled up to 750 after the per-scan `/credits` probe —
@@ -59,9 +65,7 @@ mod extract;
 mod pivots;
 
 use endpoints::{dispatch_plan, effective_plan};
-use extract::{
-    extract_entities, extract_geo_entities, extract_message_emails, extract_message_mentions,
-};
+use extract::{extract_entities, extract_geo_entities};
 use pivots::{
     discover_discord_pivots, discover_steam_pivots, dispatch_discord_pivots, dispatch_steam_pivots,
 };
@@ -290,18 +294,23 @@ impl Module for SeekNow {
 
         // ── Per-seed endpoint matrix: maximise SeekNow's UNIQUE coverage ──
         //
-        // Each target kind plans the relevant SeekNow endpoints, then
-        // `effective_plan` strips the single-origin presence checks the free
-        // username stack already covers, and the remainder dispatch
-        // concurrently (bounded by remaining scan + session budget). What
-        // actually runs:
+        // Each target kind plans the relevant SeekNow endpoints via
+        // `effective_plan` (an unfiltered pass-through of `plan_endpoints`
+        // — see the `endpoints` submodule's own doc comments for why the
+        // single-origin filter this comment used to describe was removed),
+        // and the whole plan dispatches concurrently (bounded by remaining
+        // scan + session budget). What actually runs:
         //
         // (breach + stealer + external records already arrived via the broad
-        // `/search` above; these add-ons only cover what `/search` does not):
+        // `/search` above; these add-ons cover what `/search` does not, PLUS
+        // the single-origin platform-presence checks — see below):
         //
         //   Email     → email-check (account/service existence map)
         //   Username  → social (multi-platform aggregate, 1 call),
-        //               username-history
+        //               github, twitter, reddit, tiktok, roblox, xbox,
+        //               minecraft (platform-specific profile depth beyond
+        //               what free `username_search`'s presence-only check
+        //               returns), username-history
         //               (+ discord/user + discord-to-roblox when the value
         //                parses as a Discord ID; + steam when a Steam ID —
         //                ID resolution, not single-site enumeration)
@@ -310,18 +319,15 @@ impl Module for SeekNow {
         //   IpAddress → network/ip
         //   FullName  → (none — `/search` auto-detect already covers it)
         //
-        // The single-origin github/twitter/reddit/tiktok/roblox/xbox/minecraft
-        // endpoints are filtered out — free `username_search` handles those, so
-        // paid quota isn't wasted re-confirming them.
-        //
         // Within each plan, calls run via `join_all` — the wall-time
         // collapses to the slowest single endpoint instead of summing
         // every call's latency. Budget gates inside util::see_know
         // turn no-quota calls into instant empty-vec returns.
         if !ctx.cancel.is_cancelled() && see_know::budget_remaining() {
-            // effective_plan() drops single-origin endpoints the free
-            // username stack already covers, so paid quota is spent only on
-            // breach / history / multi-platform aggregation and ID pivots.
+            // effective_plan() dispatches the FULL matrix, including the
+            // single-origin platform checks — the maximisation directive
+            // means SeekNow's platform-specific profile depth is worth the
+            // quota even where free coverage exists at presence-only depth.
             let plan = effective_plan(target.kind, v);
             let endpoint_results = dispatch_plan(key, v, &plan).await;
 
@@ -457,10 +463,6 @@ fn extract_pivot_entities(
         for item in items {
             extract_entities(item, seed_value, scan_id, endpoint, key_fp, seen, result);
             extract_geo_entities(item, endpoint, scan_id, seen, result);
-            if *endpoint == "discord_messages" {
-                extract_message_emails(item, scan_id, seen, result);
-                extract_message_mentions(item, scan_id, seen, result);
-            }
             store_api_credential(item, SRC);
             extract_api_keys_from_item(item, scan_id, SRC, seen, result);
         }

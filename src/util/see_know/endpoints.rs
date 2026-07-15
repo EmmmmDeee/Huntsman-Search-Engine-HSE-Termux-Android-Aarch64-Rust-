@@ -9,16 +9,19 @@ use super::budget::{budget_try_increment, is_key_invalid, mark_key_invalid};
 use super::client::{
     base_url, cache_get, cache_put, get_json, is_auth_error, post_json, typed_cache_key,
 };
+use super::enterprise_config::ENTERPRISE;
 
 /// Retry pacing for a transient see-know.eu rate-limit response
 /// (`Error::RateLimited`, distinct from true quota exhaustion — see
-/// `client::Terminal::RateLimited`'s doc comment). 3 attempts (the initial
-/// call plus 2 retries), doubling 2s → 4s, capped at 8s, jittered so several
-/// concurrently-dispatched endpoint calls that all get rate-limited at once
-/// don't all retry in lockstep. These are the same figures a prior,
-/// never-wired `RETRY_STRATEGY` constant in `orchestration.rs` already
-/// specified — reused here now that they have a real, live call site.
-const RATE_LIMIT_BACKOFF: BackoffPolicy = BackoffPolicy::new(3, 2_000, 8_000, true);
+/// `client::Terminal::RateLimited`'s doc comment). [`ENTERPRISE`]`.max_retries`
+/// attempts (the initial call plus 2 retries), doubling 2s → 4s, capped at
+/// 8s, jittered so several concurrently-dispatched endpoint calls that all
+/// get rate-limited at once don't all retry in lockstep. These are the same
+/// figures a prior, never-wired `RETRY_STRATEGY` constant in
+/// `orchestration.rs` already specified — reused here now that they have a
+/// real, live call site.
+const RATE_LIMIT_BACKOFF: BackoffPolicy =
+    BackoffPolicy::new(ENTERPRISE.max_retries, 2_000, 8_000, true);
 
 /// Max records per the see-know.eu Universal Search spec (`limit`, default 100,
 /// **max 500**). Requested in full — the standing directive is to use

@@ -76,12 +76,18 @@ function accountHealthPanel(accounts){
       : 'Could not reach SeekNow (network error or unexpected response).';
   const seeknowOk = seeknow.invalid ? false : (seeknow.reachable ? true : null);
 
+  const rq = oathnet.real_quota;
   const oathnetBody = `Scan budget: <b>${esc(oathnet.scan_used)}</b> / ${esc(oathnet.scan_cap)}
     &nbsp;·&nbsp; Session: <b>${esc(oathnet.session_used)}</b> / ${esc(oathnet.session_cap)}
     ${oathnet.quota_exhausted ? '<br><span class="text-danger">daily quota exhausted</span>' : ''}
-    <br><span style="font-size:11px">OathNet has no live account-health endpoint — this is the
-    process-local budget/quota state, not a network probe.</span>`;
-  const oathnetOk = oathnet.quota_exhausted ? false : true;
+    ${rq
+      ? `<br>Real daily quota: <b>${esc(rq.left_today)}</b>${rq.daily_limit != null ? ' / ' + esc(rq.daily_limit) : ''}${rq.is_unlimited ? ' (unlimited plan)' : ''} remaining
+         <br><span style="font-size:11px">Observed on the last successful search this process — OathNet has no dedicated
+         account-status endpoint to probe on demand, but every search response carries this for free.</span>`
+      : `<br><span style="font-size:11px">OathNet has no dedicated account-status endpoint to probe on demand — the real
+         daily quota will appear here after the first successful search this process makes. Until then, this is only
+         HSE's own process-local budget/quota state, not the provider's.</span>`}`;
+  const oathnetOk = oathnet.quota_exhausted ? false : (rq ? rq.left_today > 0 : true);
 
   const wigleBody = wigle.verified === false
     ? 'Email NOT verified — WiGLE throttles DB queries until the account email is confirmed.'

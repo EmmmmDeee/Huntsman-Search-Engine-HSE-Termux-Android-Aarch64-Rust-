@@ -2477,6 +2477,198 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   correlator` module 446 tests 0 failures (+2). **Paired:**
   `SOLUTION_TREE` SOL-CORRELATOR-TS-BLIND-DETERMINISM (new node), §5 —
   same commit.
+- **`[x]` T2.156 · OathNet's cursor-based pagination has been structurally
+  inert against the real live API since it was "fixed" in T2.151 — a
+  field-name mismatch nobody's unit tests could catch, because the tests
+  also used the wrong shape.** Operator instruction: "focus entirely on
+  fixing... Oathnet and make sure that it works to the absolute maximum
+  of its useful capacity." Live-tested the real production API directly
+  (`curl` with the embedded default key against
+  `GET /service/v2/breach/search`, real browser-like headers — a bare
+  request without a UA/Accept header hits Cloudflare's bot challenge, not
+  the API) rather than trusting either the vendor's own
+  `docs/OATHNET_API_GUIDE.txt` or a prior code-reading audit's conclusion
+  that pagination was "confirmed working" (an independent Explore-agent
+  pass over this exact code, run in parallel with this live test, reached
+  that wrong conclusion — it could only validate the code against the
+  same wrong reference document the code itself was wrong against,
+  demonstrating exactly why source review alone can't substitute for a
+  real request). The real captured response: `data.meta` (no underscore)
+  carries `has_more`/`total`/`count`; the continuation cursor is
+  `data.next_cursor`, a SIBLING of `meta`; the account's real quota
+  (`user`/`lookups.left_today`/`service`/`performance`) is a TOP-LEVEL
+  `_meta`, a sibling of `data` itself — none of which matches
+  `docs/OATHNET_API_GUIDE.txt` §3.1's illustrative example
+  (`data._meta.{has_more,next_cursor,lookups}`), which is exactly the
+  shape `SearchData`/`PageMeta` were written against
+  (`#[serde(rename = "_meta")]`). Since serde's `#[serde(default)]`
+  silently absorbs a missing/mismatched key instead of erroring,
+  `sd.meta` deserialized to `None` on every real response, `has_more`
+  always defaulted `false`, and `search()`'s pagination loop always
+  stopped after page 1 — for every OathNet query, breach or stealer,
+  since T2.151 shipped. Real-world impact is concrete, not theoretical:
+  stealer search requests `page_size=100` (`oathnet_pro/mod.rs`), so any
+  target with more than 100 genuine stealer-log matches silently lost
+  everything past the first page, directly undermining the dedicated
+  Stealer Logs Viewer's own data completeness. **P1** (evidentiary
+  integrity — the "looks fixed, is actually inert" class, one layer
+  deeper than T2.99/T2.111/T2.151/T2.152/T2.153/T2.154: the fix itself
+  compiled clean and passed its own unit tests, which pinned the same
+  wrong fixture shape the vendor doc implies, so nothing in the existing
+  test suite could ever have caught this). Three further OathNet gaps
+  found and fixed in the same live-verification pass: (1) the account's
+  real daily quota (`_meta.lookups.left_today`) was never parsed or
+  surfaced anywhere — despite arriving for free on every response, HSE
+  only ever detected exhaustion at the exact moment it hit zero
+  (`body.contains("\"left_today\":0")`), never the actual remaining
+  count, contradicting the vendor's own explicit best practice ("Monitor
+  `left_today` after every response. Stop gracefully when quota is
+  low"); (2) `hse oathnet-batch --execute` — the tool purpose-built to
+  fire large volumes of related queries — never called
+  `init_session()`, so the batch generator's own deliberate breach+
+  stealer pairing on identical field+value (`oathnet_batch::query_gen`)
+  never actually realized the vendor's documented "N calls, 1 lookup"
+  session saving; every dispatched query paid its own full cost
+  regardless; (3) `SEARCH_SESSION` was a single global
+  `Mutex<Option<(String, String)>>` slot — under `hse serve`'s own
+  supported concurrent-scan dispatch (`core::engine::dispatch`'s
+  `JoinSet`), target B's `init_session` could silently clobber target
+  A's in-flight session between A's breach and stealer calls, A's
+  stealer query then silently paying full cost with no error or log
+  line. Also: 5xx responses got zero retry despite
+  `docs/OATHNET_API_GUIDE.txt` §13 documenting "retry up to 3 times with
+  exponential backoff (2s, 4s, 8s)" for them — every non-404/429 status
+  fell straight into one generic, unretried `Err`. → **Solution:**
+  `SearchData` now reads `meta` as primary (matching the real API) with
+  `alias = "_meta"` kept as a defensive fallback for a response shape
+  that might genuinely nest it there; `next_cursor` is read from its
+  real location (`data.next_cursor`) first, falling back to the nested
+  `meta.next_cursor` location. New `RealQuota` struct +
+  `real_quota_from_envelope`/`record_real_quota`/`real_quota()` capture
+  the account's real quota state from the SAME top-level `_meta` block
+  on every response (success or failure — a quota-exhausted 403 carries
+  it too), at zero extra query cost; surfaced through the web UI's Key
+  Harvest OathNet card, replacing the now-outdated "no live account-
+  health endpoint" copy. `execute_plan` (the batch CLI) now calls
+  `init_session` once per distinct query value before dispatching its
+  queries, tracked via a `HashSet` so the second query for the same
+  value doesn't redundantly re-init. `SEARCH_SESSION` converted from a
+  single-slot `Mutex` to the shared, already-tested, bounded
+  `ResponseCache<String>` primitive (same cap/eviction discipline as the
+  existing response cache), keyed per query value — target A and B now
+  get independent slots, cleared at scan boundaries via the existing
+  `reset_budget()`. 5xx responses now retry with the same
+  `RATE_LIMIT_BACKOFF` policy the doc specifies (identical timing to the
+  429 path, reused not duplicated); a persistent 5xx after retries
+  returns a real `Err`, not a silent `Ok(all_items)` — a server failure
+  is not the same as "no more pages" or a quota condition. 4 new
+  regression tests in `util::oathnet::tests` (one existing test —
+  pinning the OLD, now-proven-wrong `_meta`-nested shape — was rewritten
+  in place to pin the real captured shape instead, and a second new test
+  pins the `_meta`-alias fallback still works), including
+  `search_data_deserialises_the_real_live_confirmed_envelope_shape` (the
+  exact real captured JSON, trimmed) and `real_quota_from_envelope_
+  parses_the_real_live_confirmed_shape` (same). Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures — see T2.157 for
+  the final combined count, shipped in the same commit. **Paired:**
+  `SOLUTION_TREE` SOL-OATHNET-REAL-PAGINATION (new node), §5 — same
+  commit.
+- **`[x]` T2.157 · SeekNow's own "24 endpoints, all wired" self-
+  documentation was false, its dedicated integration-test file was
+  entirely tautological, and a "single source of truth" config struct
+  had 7 of 9 fields dead.** Operator instruction: "focus entirely on
+  fixing seek... and make sure that it works to the absolute maximum of
+  its useful capacity." SeekNow's API is unreachable from this build
+  environment (`curl` to `see-know.eu` returns a bare connection
+  failure, independent of any key — the same environment-level
+  restriction the prior SeekNow key-rotation work already established),
+  so this pass is source-code archaeology, not live curl testing —
+  every finding below is traceable to an exact file:line, not assumed.
+  Cross-checked all 24 endpoints `docs/SEEKNOW_SETUP.md`/
+  `docs/SEEKNOW_INTEGRATION_SUMMARY.md` document HSE as using against
+  the real `EndpointCall` dispatch enum and every call site in the
+  crate: only 18 are ever actually called. `/stealer` was tried,
+  live-verified 404 against the real API, and correctly removed — a
+  regression test (`"404 endpoint must be gone"`) already guards this,
+  so it is not a gap. `/search/deep`, the three
+  `/enterprise/discord/*`, and `/status` were never built at all (zero
+  call sites anywhere). The module's own doc comments (`mod.rs`) still
+  claimed single-origin platform checks (github/twitter/reddit/tiktok/
+  roblox/xbox/minecraft) are "deliberately NOT dispatched" — false as of
+  the current code: the filter that once stripped them
+  (`FREE_COVERED_SINGLE_ORIGIN`) was removed when the operator's
+  maximisation directive landed, but two of three comment sites
+  describing the old behaviour were never updated (the
+  "you.com-stale-comment class," found this time inside the source, not
+  just a `.md` file). `EnterprisePlan`/`ENTERPRISE`
+  (`enterprise_config.rs`) — documented in three separate places as
+  "the single source of truth" — had 2 of 9 fields genuinely wired
+  (`scan_budget_floor`, `session_cap`) and 7 silently dead:
+  `scan_budget_ceil`/`cache_size`/`max_retries`/`curl_timeout_secs`/
+  `tokio_timeout_millis` were each independently duplicated as raw
+  literals at their real call sites instead of reading the "authoritative"
+  struct, and `daily_limit`/`per_scan_cap` were pure fiction — a
+  hardcoded "15,000 credits/day, the operator's actual plan" that is
+  simply wrong for any operator on a different tier (Beginner's
+  100/day up), never consulted by any runtime code (the real daily
+  limit only ever comes from the live `/credits` probe). The dedicated
+  test file for this, `util::see_know::integration_tests.rs` (its own
+  doc comment: "Comprehensive integration tests for all 24 SeekNow API
+  endpoints... validate endpoint availability... across the entire API
+  surface"), was found to be entirely tautological: every `#[test]`
+  asserted properties of its own hand-written 24-entry table against
+  itself, never once calling `search()`/`get_path()`/any real client
+  function — it could not have caught any of the drift above by
+  construction. Its own `#[ignore]`d `live_api_connectivity_test`'s body
+  was a `println!` with an explicit comment admitting no HTTP call is
+  made — accurately self-documented there, but contradicted by the
+  file's own header claim. A second, real bug found IN an existing
+  test, not just the docs: `endpoint_call_labels_are_unique` listed only
+  16 of the real 17 `EndpointCall` variants, silently omitting
+  `SteamProfile` — a label collision involving Steam specifically would
+  have gone uncaught. Also found genuinely dead code:
+  `extract_message_emails`/`extract_message_mentions`, gated on
+  `*endpoint == "discord_messages"`, a label nothing in the crate ever
+  produces (orphaned residue from the never-built
+  `/enterprise/discord/messages`). **P2** (capability/evidentiary — a
+  false "fully covered, fully tested" self-description is its own
+  distinct hazard: it makes a real gap invisible to the next audit
+  rather than flagging it as open work). → **Solution:** rewrote
+  `integration_tests.rs`'s `ENDPOINTS` table with a `Wired` status
+  (`Yes`/`RemovedLiveVerified404`/`NotImplemented`) per entry, each
+  citing its real evidence; its tests now assert the table's own
+  internal bookkeeping (18 wired + 1 removed + 5 not-implemented = 24)
+  rather than falsely implying HTTP-level verification — `util` cannot
+  depend on `modules::see_know::endpoints::EndpointCall` (wrong
+  direction for this crate's layering), so a companion regression test,
+  `endpoint_call_count_matches_the_documented_wired_total`, lives where
+  `EndpointCall` actually is (`modules::see_know::endpoints::tests`) and
+  pins its real variant count (17) instead; `endpoint_call_labels_are_
+  unique` now includes `SteamProfile`. `EnterprisePlan` reduced to
+  exactly the 7 fields with a real call site (each field's own doc
+  comment now names it), with `daily_limit`/`per_scan_cap` removed
+  entirely rather than left unwired — they were not just dead, they
+  actively misdescribed a per-operator-variable number as a fixed
+  constant; the 5 previously-hardcoded-elsewhere literals
+  (`scale_scan_cap_from_daily`'s clamp bounds, `RESPONSE_CACHE`'s cap,
+  `RATE_LIMIT_BACKOFF`'s attempt count, `CLIENT`'s two timeouts) now all
+  read `ENTERPRISE.*` for real. Stale doc comments corrected in three
+  sites across `mod.rs`. Dead `discord_messages` extraction code
+  deleted (functions, the local `MESSAGE_MENTION_RE` regex, the call
+  site, the now-unused `EMAIL_RE` import). `docs/SEEKNOW_SETUP.md`/
+  `docs/SEEKNOW_INTEGRATION_SUMMARY.md`'s false "24 endpoints, all
+  wired"/"76/76 tests passing" claims corrected throughout (7 distinct
+  sites) to the real, verified 18/24 and the real per-file test counts
+  — `util/see_know/tests.rs` has 40 tests, not 76, and no single file
+  in the tree has 76. 1 new regression test
+  (`endpoint_call_count_matches_the_documented_wired_total`, in
+  `modules::see_know::endpoints::tests` — the architecturally correct
+  layer, since `util` cannot depend on `modules`); `endpoint_call_labels_
+  are_unique` fixed in place rather than duplicated. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4718
+  lib tests, +5 combined with T2.156's 4 tests in the same commit).
+  **Paired:** `SOLUTION_TREE` SOL-SEEKNOW-HONEST-COVERAGE (new node),
+  §5 — same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -13114,3 +13306,53 @@ way, so this specific drift class can't recur silently again.
   clean, full suite 0 failures (4713 lib tests, +2). **Paired:**
   `SOLUTION_TREE` SOL-CORRELATOR-TS-BLIND-DETERMINISM (new) — same
   commit.
+- **2026-07-15** — **T2.156 + T2.157: user directive "focus entirely on
+  fixing seek and Oathnet... the absolute maximum of their useful
+  capacity," both delivered together.** OathNet (T2.156): direct live
+  curl testing against the real production API (proper browser-like
+  headers required — Cloudflare blocks a bare request) found the real
+  breach-search response shape differs from
+  `docs/OATHNET_API_GUIDE.txt` §3.1's own illustrative example exactly
+  where it mattered — `data.meta` (no underscore) not `data._meta`, and
+  `next_cursor` as a sibling of `meta` rather than nested inside it —
+  meaning T2.151's "implemented real cursor-based pagination" had been
+  structurally inert against the live API since it shipped: `has_more`
+  silently defaulted `false` on every real response via
+  `#[serde(default)]`, so pagination always stopped after page 1,
+  concretely losing stealer-search results past the first 100-item page
+  for any target with more real matches. A parallel Explore-agent audit
+  of this exact function, run independently in the same session,
+  concluded pagination was "confirmed working" from source alone — it
+  could only validate against the same wrong reference shape the code
+  itself was wrong against, directly demonstrating why live requests
+  are not optional. Fixed the field mapping; added real account quota
+  tracking (`RealQuota`) from data every response already carries for
+  free, previously never parsed; fixed a session-single-slot race under
+  `hse serve`'s concurrent scan dispatch; wired session-reuse into
+  `hse oathnet-batch --execute` (the batch generator already
+  deliberately paired queries for this saving, but the tool never
+  triggered a session to realise it); added the documented 5xx
+  retry-with-backoff policy, previously entirely absent. SeekNow
+  (T2.157): unreachable from this build environment (reconfirmed, same
+  restriction as the earlier SeekNow key-rotation round), so this leg
+  was source-code archaeology. Found the module's own "24 endpoints,
+  all wired"/"76/76 tests passing" self-description was false (only 18
+  of 24 are actually called; `/stealer` was correctly removed after a
+  live-verified 404, but `/search/deep`/the 3 `/enterprise/discord/*`/
+  `/status` were simply never built); the dedicated test file cited as
+  proof was entirely tautological (asserted its own table against
+  itself, never touched real code); a real bug IN an existing test
+  (`endpoint_call_labels_are_unique` silently missing the `SteamProfile`
+  variant); and a "single source of truth" config struct
+  (`EnterprisePlan`) with 7 of 9 fields dead, 2 of them pure fiction (a
+  hardcoded "15,000 credits/day, the operator's plan" wrong for any
+  operator on a different tier). Fixed all of the above: honest
+  per-endpoint status ledger with citations, the missing test variant
+  restored, the config struct reduced to exactly its 7 real fields (all
+  wired for real, the 2 fictional ones removed rather than left
+  unwired), stale in-source comments corrected, confirmed-dead code
+  deleted, and 7 false-claim sites corrected across two `.md` docs. 5
+  new regression tests combined. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4718 lib tests, +5).
+  **Paired:** `SOLUTION_TREE` SOL-OATHNET-REAL-PAGINATION (new) +
+  SOL-SEEKNOW-HONEST-COVERAGE (new) — same commit.

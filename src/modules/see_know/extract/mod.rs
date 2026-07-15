@@ -29,72 +29,12 @@ use crate::core::{
     tags,
     validation::is_username_derived_name,
 };
-use crate::util::extract::EMAIL_RE;
 use crate::util::geo::is_valid_coords;
 use crate::util::see_know::val_str;
 use crate::util::target_match::TargetMatch;
 
 use super::SRC;
 use super::pivots::looks_like_steam_id;
-
-/// Matches `<@id>` and `<@!id>` Discord user-mention shapes.
-static MESSAGE_MENTION_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"<@!?(\d{17,20})>").expect("constant discord-mention regex")
-});
-
-/// Mine a `discord_messages` item's free-text `content` for embedded emails
-/// and emit each as a low-confidence `Email` entity (0.30 — below pivot floor).
-pub(super) fn extract_message_emails(
-    item: &Value,
-    scan_id: &str,
-    seen: &mut HashSet<String>,
-    result: &mut ModuleResult,
-) {
-    let Some(content) = val_str(item, "content") else {
-        return;
-    };
-    let ev = Evidence::new(SRC, "SeekNow discord_messages content")
-        .with_attr("source", "discord_messages");
-    for m in EMAIL_RE.find_iter(&content) {
-        let email = m.as_str().to_lowercase();
-        if seen.insert(email.clone()) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.30, scan_id);
-            e.tag("see-know");
-            e.tag("discord-message");
-            e.tag("weak-lead");
-            e.add_evidence(ev.clone());
-            result.push(e);
-        }
-    }
-}
-
-/// Mine a `discord_messages` item's free-text `content` for `<@id>` / `<@!id>`
-/// Discord user-mention snowflakes and emit each as a low-confidence `Username`
-/// entity (`discord:<id>`, 0.30 — below pivot floor).
-pub(super) fn extract_message_mentions(
-    item: &Value,
-    scan_id: &str,
-    seen: &mut HashSet<String>,
-    result: &mut ModuleResult,
-) {
-    let Some(content) = val_str(item, "content") else {
-        return;
-    };
-    let ev = Evidence::new(SRC, "SeekNow discord_messages content")
-        .with_attr("source", "discord_messages");
-    for caps in MESSAGE_MENTION_RE.captures_iter(&content) {
-        let id = &caps[1];
-        if seen.insert(format!("@discord:{id}")) {
-            let mut e = Entity::new(EntityKind::Username, format!("discord:{id}"), 0.30, scan_id);
-            e.tag("see-know");
-            e.tag("discord-message");
-            e.tag("weak-lead");
-            e.tag("mention");
-            e.add_evidence(ev.clone());
-            result.push(e);
-        }
-    }
-}
 
 /// Build an [`Evidence`] record that preserves EVERY field of the raw source
 /// record `item` as an attribute — full fidelity, nothing redacted or omitted

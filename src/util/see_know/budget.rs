@@ -65,7 +65,7 @@ pub fn scale_scan_cap_from_daily(daily_limit: u32) {
     {
         return;
     }
-    let cap = (daily_limit / 20).clamp(300, 2500);
+    let cap = (daily_limit / 20).clamp(ENTERPRISE.scan_budget_floor, ENTERPRISE.scan_budget_ceil);
     BUDGET.set_scan_cap_override(cap);
     tracing::debug!(
         daily_limit,

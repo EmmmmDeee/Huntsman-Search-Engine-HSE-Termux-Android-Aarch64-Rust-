@@ -1,6 +1,6 @@
-//! Shared OathNet API client — used by both oathnet_pro module and
-//! search_engines enrichment pass. Lives in util/ so any module can
-//! call it without violating the "no inter-module imports" invariant.
+//! Shared OathNet API client — used by the `oathnet_pro` scan module and
+//! the `oathnet-batch` CLI tool. Lives in util/ so any module can call it
+//! without violating the "no inter-module imports" invariant.
 
 use std::sync::Mutex;
 
@@ -94,6 +94,66 @@ pub fn budget_snapshot() -> crate::util::budget::BudgetSnapshot {
     BUDGET.snapshot()
 }
 
+/// The account's real, provider-reported daily quota state — distinct from
+/// [`budget_snapshot`], which is HSE's own self-imposed per-scan/per-session
+/// spending cap. Every OathNet search response carries this for free (a
+/// top-level `_meta.lookups` block, live-confirmed 2026-07-15 — see
+/// [`Envelope`]'s doc comment), so capturing it costs nothing beyond a
+/// search HSE was already making. Before this existed, the only quota
+/// signal anywhere was a binary "hit exactly 0" latch
+/// ([`is_quota_exhausted`]) — the documented best practice ("Monitor
+/// `left_today` after every response. Stop gracefully when quota is low",
+/// `docs/OATHNET_API_GUIDE.txt` §14.1.4) had no code path to follow at
+/// all: there was nothing tracking the actual remaining count, only
+/// whether it had already hit zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RealQuota {
+    pub used_today: u32,
+    pub left_today: u32,
+    pub daily_limit: Option<u32>,
+    pub is_unlimited: bool,
+}
+
+/// Last real quota snapshot observed from a live response this process.
+/// `None` until the first successful search response carries a `_meta`
+/// block — no dedicated probe call is ever made purely to populate this
+/// (that would spend a lookup on a meta-query for a provider whose docs
+/// don't even list a free account-status endpoint), matching the same
+/// "monitor passively, never spend quota just to check quota" discipline
+/// `see_know::query_credits` uses its own dedicated free endpoint for.
+static LAST_REAL_QUOTA: Mutex<Option<RealQuota>> = Mutex::new(None);
+
+/// Extract [`RealQuota`] from a parsed envelope's top-level `_meta` block,
+/// if present. Pure — no global state touched — so the extraction logic is
+/// unit-testable directly against a captured response shape.
+fn real_quota_from_envelope(env: &Envelope) -> Option<RealQuota> {
+    let lookups = env.top_meta.as_ref()?.lookups.as_ref()?;
+    Some(RealQuota {
+        used_today: lookups.used_today.unwrap_or_default(),
+        left_today: lookups.left_today?,
+        daily_limit: lookups.daily_limit,
+        is_unlimited: lookups.is_unlimited.unwrap_or_default(),
+    })
+}
+
+/// Record a freshly-observed [`RealQuota`], overwriting whatever was
+/// captured before — the newest response is always the most accurate.
+fn record_real_quota(q: RealQuota) {
+    if let Ok(mut guard) = LAST_REAL_QUOTA.lock() {
+        *guard = Some(q);
+    }
+}
+
+/// The most recent real quota state observed from a live OathNet response
+/// this process, if any search has succeeded yet. Surfaced to `hse doctor`
+/// and the web UI's Key Harvest account-health card so an operator can see
+/// the ACTUAL remaining daily balance, not just HSE's own self-imposed
+/// scan/session spending cap.
+#[must_use]
+pub fn real_quota() -> Option<RealQuota> {
+    LAST_REAL_QUOTA.lock().ok().and_then(|g| *g)
+}
+
 /// Reset the per-scan budget counters. Must be called at the start of every
 /// scan so that `hse serve` / `hse live` (long-lived processes) get a fresh
 /// budget for each scan rather than accumulating across scans.
@@ -108,6 +168,12 @@ pub fn budget_snapshot() -> crate::util::budget::BudgetSnapshot {
 pub fn reset_budget() {
     BUDGET.reset_scan();
     RESPONSE_CACHE.clear();
+    // Sessions are valid 60 minutes server-side; without a scan-boundary
+    // reset a long-lived `hse serve`/`hse live` process could try to reuse
+    // an expired session ID from an earlier scan (soft-fails back to
+    // full-cost queries, not a hard error, but silently loses the
+    // optimisation for no operator-visible reason).
+    SEARCH_SESSION.clear();
 }
 
 /// True while the shared OathNet budget can absorb at least one more billable
@@ -177,6 +243,32 @@ struct Envelope {
     data: Option<Value>,
     #[serde(default)]
     errors: Option<ErrorDetail>,
+    /// Live-confirmed (2026-07-15): a TOP-LEVEL sibling of `data`, not
+    /// nested inside it — see [`SearchData`]'s own doc comment for the
+    /// same "the doc's illustrative example nests things differently to
+    /// reality" story on the pagination fields. Carries the account's
+    /// real quota state on every successful response, at zero extra
+    /// query cost — see [`RealQuota`].
+    #[serde(default, rename = "_meta")]
+    top_meta: Option<TopMeta>,
+}
+
+#[derive(Deserialize, Default)]
+struct TopMeta {
+    #[serde(default)]
+    lookups: Option<Lookups>,
+}
+
+#[derive(Deserialize, Default)]
+struct Lookups {
+    #[serde(default)]
+    used_today: Option<u32>,
+    #[serde(default)]
+    left_today: Option<u32>,
+    #[serde(default)]
+    daily_limit: Option<u32>,
+    #[serde(default)]
+    is_unlimited: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -189,18 +281,47 @@ struct ErrorDetail {
 struct SearchData {
     #[serde(default)]
     items: Vec<Value>,
-    #[serde(default, rename = "_meta")]
+    /// Live-confirmed (2026-07-15) against the real
+    /// `GET /service/v2/breach/search`: this block is keyed `"meta"`, NOT
+    /// `"_meta"` as `docs/OATHNET_API_GUIDE.txt` §3.1's illustrative example
+    /// shows — the real quota block (`user`/`lookups`/`service`/
+    /// `performance`) is what actually lives at a TOP-LEVEL `_meta`, a
+    /// sibling of `data` itself, not nested inside it. `alias = "_meta"` is
+    /// kept as a defensive fallback in case some other surface (stealer,
+    /// victims) or a future response variant genuinely does nest it there —
+    /// this was only directly observed for breach search. Before this fix,
+    /// `#[serde(rename = "_meta")]` meant this field NEVER matched the real
+    /// key, so `meta` silently deserialized to `None` on every real
+    /// response and pagination past page 1 could never fire — the actual
+    /// cause of a real GitHub-observed-class bug: T2.151's "implemented
+    /// real cursor-based pagination" compiled clean and passed its own unit
+    /// tests (which used the same wrong `_meta`-shaped fixture the doc
+    /// implies), but was structurally inert against the live API the whole
+    /// time.
+    #[serde(default, alias = "_meta")]
     meta: Option<PageMeta>,
+    /// Live-confirmed (2026-07-15): the continuation cursor is a SIBLING of
+    /// `meta`, directly under `data` — not nested inside the meta/`_meta`
+    /// block as the doc's §3.1 example implies. Checked first;
+    /// `PageMeta::next_cursor` is kept as a defensive fallback for a
+    /// response shape that nests it there instead (see [`PageMeta`]).
+    #[serde(default)]
+    next_cursor: Option<String>,
 }
 
-/// Pagination signal from the response envelope's `data._meta` block
-/// (`docs/OATHNET_API_GUIDE.txt` §3.1/§11). OathNet uses cursor-based
-/// pagination — no offset/page-number support — so `next_cursor` is the
-/// only way to fetch the rest of a result set once `has_more` is true.
+/// Pagination signal from the response envelope's `data` block
+/// (`docs/OATHNET_API_GUIDE.txt` §3.1/§11 — see [`SearchData`]'s doc
+/// comment for the live-confirmed real key names, which differ from this
+/// doc's own illustrative example). OathNet uses cursor-based pagination —
+/// no offset/page-number support — so `next_cursor` is the only way to
+/// fetch the rest of a result set once `has_more` is true.
 #[derive(Deserialize, Default)]
 struct PageMeta {
     #[serde(default)]
     has_more: bool,
+    /// Defensive fallback location only — the real, live-confirmed location
+    /// is [`SearchData::next_cursor`], a sibling of this block, not nested
+    /// inside it.
     #[serde(default)]
     next_cursor: Option<String>,
 }
@@ -304,6 +425,13 @@ pub async fn search(
             }
             let env: Envelope =
                 serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
+            // Record real quota state regardless of success/failure — a
+            // quota-exhausted 403 carries this block too, and that's
+            // exactly the moment an operator most wants to see the real
+            // left_today rather than just "something failed".
+            if let Some(q) = real_quota_from_envelope(&env) {
+                record_real_quota(q);
+            }
             if !env.success {
                 if env.errors.as_ref().and_then(|e| e.status_code) == Some(404) {
                     // Negative-cache the clean miss so subsequent scans of the same
@@ -336,6 +464,40 @@ pub async fn search(
                     attempt += 1;
                     continue;
                 }
+                // `docs/OATHNET_API_GUIDE.txt` §13: "5xx: retry up to 3
+                // times with exponential backoff (2s, 4s, 8s)" — identical
+                // numbers to `RATE_LIMIT_BACKOFF`, reused rather than
+                // duplicated. Previously ANY status other than 404/429
+                // (including every 5xx) fell straight to the generic,
+                // unretried `Err` below — a transient server error got no
+                // retry at all despite the documented policy, and the
+                // module `Err`'d out of pagination on what might have been
+                // a one-off blip. After retries are exhausted, still
+                // return `Err` (not `Ok(all_items)`) — a persistent 5xx is
+                // a real failure signal, not a clean "no more pages" or a
+                // quota condition, and must not be silently absorbed as
+                // either.
+                if let Some(code) = env.errors.as_ref().and_then(|e| e.status_code)
+                    && (500..600).contains(&code)
+                {
+                    if RATE_LIMIT_BACKOFF.should_retry(attempt) {
+                        let delay = RATE_LIMIT_BACKOFF.delay(attempt);
+                        tracing::debug!(
+                            path,
+                            attempt = attempt + 1,
+                            delay_ms = delay.as_millis() as u64,
+                            status = code,
+                            "oathnet server error — retrying with backoff"
+                        );
+                        tokio::time::sleep(delay).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(Error::module(
+                        "oathnet",
+                        format!("HTTP {code} after {attempt} retries"),
+                    ));
+                }
                 return Err(Error::module("oathnet", "API returned success=false"));
             }
             let data = match env.data {
@@ -356,9 +518,13 @@ pub async fn search(
 
         all_items.extend(sd.items);
 
-        let (has_more, next_cursor) = sd
-            .meta
-            .map_or((false, None), |m| (m.has_more, m.next_cursor));
+        let has_more = sd.meta.as_ref().is_some_and(|m| m.has_more);
+        // Prefer the live-confirmed real location (`data.next_cursor`,
+        // sibling of `meta`); fall back to the nested `meta.next_cursor`
+        // location for a response shape that puts it there instead.
+        let next_cursor = sd
+            .next_cursor
+            .or_else(|| sd.meta.and_then(|m| m.next_cursor));
         let Some(next) = continuation_cursor(has_more, next_cursor) else {
             if has_more {
                 // Server says more exist but gave no cursor to continue —
@@ -557,11 +723,21 @@ pub fn stealer_indexable(field: &str) -> bool {
     matches!(field, "email" | "username")
 }
 
-/// Per-scan search session ID. When set, breach and stealer queries for
-/// the same target value consume only ONE OathNet lookup instead of two.
-/// Sessions are valid for 60 minutes on the OathNet side.
-static SEARCH_SESSION: std::sync::LazyLock<Mutex<Option<(String, String)>>> =
-    std::sync::LazyLock::new(|| Mutex::new(None));
+/// Per-target search session IDs. When set for a value, breach and stealer
+/// queries for that SAME target value consume only ONE OathNet lookup
+/// instead of two. Sessions are valid for 60 minutes on the OathNet side.
+///
+/// Keyed by (lowercased) query value rather than a single global slot —
+/// a single `Mutex<Option<(String, String)>>` (the prior shape) meant
+/// `hse serve`'s concurrent scan dispatch (`core::engine::dispatch`
+/// spawns targets onto a `JoinSet`) could have target B's `init_session`
+/// silently clobber target A's in-flight session between A's breach call
+/// and A's stealer call — A's stealer query would then silently pay full
+/// cost with no error or log line, defeating the vendor's own "#1
+/// optimisation" for exactly the concurrent-dispatch case this project's
+/// own architecture supports. A bounded cache (same primitive and cap as
+/// [`RESPONSE_CACHE`]) gives every distinct target its own slot instead.
+static SEARCH_SESSION: ResponseCache<String> = ResponseCache::new(1024);
 
 /// Build the JSON body for the session-init POST. Serialised via `serde_json`
 /// so `value` is escaped correctly — a hand-rolled `replace('"', ...)` escaped
@@ -592,23 +768,15 @@ pub async fn init_session(key: &str, value: &str) -> Option<String> {
         .and_then(|v| v.as_str())
         .map(str::to_string)?;
     let lower = value.to_lowercase();
-    if let Ok(mut guard) = SEARCH_SESSION.lock() {
-        *guard = Some((lower, sid.clone()));
-    }
+    SEARCH_SESSION.put(lower, sid.clone());
     tracing::info!(session_id = %sid, query = %value, "OathNet search session initialised");
     Some(sid)
 }
 
-/// Return the cached session ID if it matches the given target value.
+/// Return the cached session ID for this target value, if one was
+/// initialised for it (by this exact value, case-insensitively).
 pub fn session_id_for(value: &str) -> Option<String> {
-    let lower = value.to_lowercase();
-    SEARCH_SESSION.lock().ok().and_then(|guard| {
-        guard.as_ref().and_then(
-            |(q, sid)| {
-                if q == &lower { Some(sid.clone()) } else { None }
-            },
-        )
-    })
+    SEARCH_SESSION.get(&value.to_lowercase())
 }
 
 // The curl-subprocess transport now lives in `util::curl_client` —

@@ -9,10 +9,17 @@
 Huntsman Search Engine (HSE) now integrates **SeekNow (see-know.eu)** — a 212M+ record breach/stealer/OSINT intelligence platform — with full automation, 9 production-ready OSINT workflows, real-time monitoring, and enterprise-grade orchestration.
 
 **Your Setup:**
-- ✅ **API Key:** Active (Enterprise plan, 15,000 credits/day)
-- ✅ **All 24 Endpoints:** Available and routed automatically
+- ✅ **API Key:** Active plan tier and daily credit limit auto-detected via `/credits`
+- ✅ **18 of 24 documented endpoints wired** and routed automatically (see
+  `docs/SEEKNOW_SETUP.md`'s endpoint table for the honest per-endpoint
+  status — `/stealer` was live-verified 404 and removed; `/search/deep`,
+  the 3 `/enterprise/discord/*`, and `/status` were never built)
 - ✅ **Configuration:** Fully automatic (you added 1 line to ~/.huntsman.env)
-- ✅ **Tests:** 76/76 passing, all integration tests validated
+- ✅ **Tests:** real regression coverage across `util::see_know` +
+  `modules::see_know` (the specific "76/76" figure this line previously
+  cited was stale and didn't reconcile with any single test file's current
+  count; the file it was attributed to is not a true integration-test
+  suite — see its own updated doc comment)
 
 ---
 
@@ -36,7 +43,7 @@ Huntsman Search Engine (HSE) now integrates **SeekNow (see-know.eu)** — a 212M
 | `docs/SEEKNOW_SETUP.md` | Setup guide + troubleshooting + FAQ | 526 lines |
 | `docs/OSINT_WORKFLOWS.md` | 9 production workflows with examples | 450+ lines |
 | `docs/PERFORMANCE_MONITORING.md` | Monitoring, analytics, cost optimization | 400+ lines |
-| `src/util/see_know/integration_tests.rs` | All 24 endpoints documented + tested | 200+ lines |
+| `src/util/see_know/integration_tests.rs` | All 24 documented endpoints, each with an honest wired/removed/not-implemented status | 200+ lines |
 
 ### 3. Automatic Features (Built-In to HSE)
 
@@ -171,7 +178,7 @@ curl -H "X-API-Key: ..." https://see-know.eu/api/v1/status | jq '.sources'
 ```
 HSE Core Engine
 ├── Phase 1 (Paid, Sequential Priority)
-│   ├── 255: SeekNow [24 endpoints, auto-routed]
+│   ├── 255: SeekNow [18 of 24 documented endpoints wired, auto-routed]
 │   ├── 200: OathNet Pro [parallel corpus]
 │   ├── 190: Shodan [if API key found]
 │   └── 180: Censys [if API key found]
@@ -221,10 +228,13 @@ HSE Core Engine
 
 ### API Key Usage
 
-Your enterprise API key has:
-- **15,000 credits/day** (expires tomorrow at midnight UTC)
-- **All 24 endpoints** available (including `/enterprise/discord/*`)
-- **No rate limiting** (unlimited requests)
+Your key's actual plan tier and daily credit limit are auto-detected via
+`/credits` at scan start (`hse doctor` shows the live values) — this
+document does not hardcode a specific plan's numbers since they vary by
+operator and reset daily. Even an Enterprise-tier key does not currently
+unlock `/enterprise/discord/*` in HSE: those three endpoints are documented
+by the vendor but were never built (see `docs/SEEKNOW_SETUP.md`'s endpoint
+table).
 
 ---
 
@@ -239,8 +249,8 @@ Your enterprise API key has:
 4. `docs/PERFORMANCE_MONITORING.md` — Monitoring, analytics, optimization
 
 ### Test Coverage
-5. `src/util/see_know/integration_tests.rs` — All 24 endpoints documented
-6. `src/util/see_know/tests.rs` — 76 unit tests (all passing)
+5. `src/util/see_know/integration_tests.rs` — All 24 documented endpoints, each with an honest wired/removed/not-implemented status
+6. `src/util/see_know/tests.rs` — 40 unit tests (all passing); `modules::see_know` carries further real coverage across its own test files
 
 ### Quick Commands
 
@@ -313,12 +323,12 @@ curl -H "X-API-Key: ..." https://see-know.eu/api/v1/credits | jq '.'
 You now have:
 
 ✅ **Automatic Configuration** — 1 env var, 100% automatic orchestration  
-✅ **All 24 SeekNow Endpoints** — Routed intelligently by target type  
+✅ **18 of 24 Documented SeekNow Endpoints Wired** — routed intelligently by target type (`docs/SEEKNOW_SETUP.md` has the honest per-endpoint status)  
 ✅ **9 Production Workflows** — Email, username, domain, IP, phone, person, threat actor, incident response, API key hunting  
 ✅ **Real-Time Monitoring** — Budget tracking, cost analytics, optimization  
 ✅ **Enterprise Architecture** — Force-multiplier cascade, auto-dedup, caching, archiving  
 ✅ **Comprehensive Docs** — Setup, workflows, monitoring, FAQ, examples  
-✅ **Full Test Coverage** — 76 unit tests + integration test suite  
+✅ **Real Test Coverage** — genuine regression tests across `util::see_know` + `modules::see_know`, plus an honest (non-tautological) endpoint-coverage ledger  
 
 **Your API:** Enterprise plan, 15,000 credits/day, unlimited endpoints  
 **Configuration:** `export HUNTSMAN_SEEKNOW_KEY="seek-fdc8677a1c480a7bf59b866b81eda1f44b9944caf395c699"`  
