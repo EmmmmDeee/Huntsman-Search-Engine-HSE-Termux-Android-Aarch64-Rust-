@@ -161,14 +161,10 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ## Module Overview (162 modules — 128 free, 34 key-gated/paid)
 
-> Grouped highlights below (all 159). The **complete** catalogue with target
-> kinds and output entities — kept exhaustive by the
-> `modules_md_lists_every_registered_module` CI guard — lives in
-> [`docs/MODULES.md`](docs/MODULES.md). The headline count is swept against
-> `registry()` in CI; run `hse modules` for the live list.
->
-> **How HSE compares** to SpiderFoot, Maltego, Recon-ng, Shodan, and SEON:
-> see [`docs/COMPARISON.md`](docs/COMPARISON.md).
+> Grouped highlights below (all 159). The complete, always-current catalogue
+> with target kinds and output entities lives in the running software — run
+> `hse modules` or open the web UI's module wizard — never a static doc that
+> can drift from the registry.
 
 **API-Free (no keys required) — 92:**
 - **Breach/identity**: `psbdmp`, `pwned_passwords`, `xposed_or_not`
@@ -338,7 +334,7 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 ## Architecture
 
 - `#![forbid(unsafe_code)]` — entire codebase
-- **Runtime AI-independence** — zero AI/ML/LLM/inference/vector/embedding deps; every result is deterministic Rust, identical on Termux aarch64 (no root), Linux and CI with no AI available (CI-enforced; charter: [`docs/RUNTIME_INDEPENDENCE.md`](docs/RUNTIME_INDEPENDENCE.md))
+- **Runtime AI-independence** — zero AI/ML/LLM/inference/vector/embedding deps; every result is deterministic Rust, identical on Termux aarch64 (no root), Linux and CI with no AI available (CI-enforced by `runtime_carries_no_ai_ml_inference_dependency` in `tests/architecture.rs`)
 - rustls + bundled-sqlite only — no OpenSSL, no native TLS, no C deps
 - `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
 - 4,300+ tests (unit + API integration + architecture boundary enforcement)
@@ -347,11 +343,10 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 - 2 tokio worker threads (tuned for Termux low-power devices)
 - Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)
 
-Full facts table (verified module/rule/test counts, dependency-pin rationale,
-subsystem breakdown, dependency-direction diagram) live in
-[`docs/ARCHITECTURE_AUDIT.md`](docs/ARCHITECTURE_AUDIT.md) — kept current
-rather than restated here, so there is exactly one place these numbers can
-drift.
+Run `hse selftest` or `hse diagnostics` for a live, self-checked account of
+the module registry, dispatch graph, and core invariants — or pull the
+one-click system debug bundle (Settings → Diagnostics → "Download full
+diagnostic bundle") for the complete engine state in one file.
 
 ---
 
@@ -359,15 +354,16 @@ drift.
 
 | Document | Content |
 |----------|---------|
-| [`docs/ARCHITECTURE_AUDIT.md`](docs/ARCHITECTURE_AUDIT.md) | Full architecture reference: facts table, dependency direction, core subsystems, determinism doctrine, CI/supply chain |
 | [`docs/INSTALL.md`](docs/INSTALL.md) | All install paths + Termux quirks |
-| [`docs/USAGE.md`](docs/USAGE.md) | Full CLI reference + HTTP API |
-| [`docs/MODULES.md`](docs/MODULES.md) | Module catalogue + synergy map |
-| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Common errors + fixes |
-| [`docs/FAULT_TREE_ANALYSIS.md`](docs/FAULT_TREE_ANALYSIS.md) | System-wide FTA: failure modes, controls + open risks |
-| [`docs/RUNTIME_INDEPENDENCE.md`](docs/RUNTIME_INDEPENDENCE.md) | Runtime AI-independence, parity & reproducibility charter |
-| [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) | Source-tree conventions: layering, one-module-per-file, single-source vocabularies, determinism, drift-guards |
-| [`CHANGELOG.md`](CHANGELOG.md) | Version history |
+| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Common install/runtime errors + fixes |
+| [`docs/OSINT_API_REFERENCE.md`](docs/OSINT_API_REFERENCE.md) | External OSINT-provider API reference (free tiers, key shapes, integration status) |
+| [`docs/SEEKNOW_SETUP.md`](docs/SEEKNOW_SETUP.md) | SeekNow (see-know.eu) API setup + full endpoint reference |
+| [`docs/OATHNET_API_GUIDE.txt`](docs/OATHNET_API_GUIDE.txt) | OathNet API contract reference |
+
+For everything else — module catalogue, CLI reference, architecture — the
+running software is the source of truth: `hse --help`, `hse modules`, the web
+UI, and `hse selftest`/`hse diagnostics` never drift from the code the way a
+static doc can.
 
 ---
 

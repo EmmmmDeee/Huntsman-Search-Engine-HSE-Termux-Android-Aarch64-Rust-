@@ -582,5 +582,3 @@ SeekNow returns geolocation, ASN, breach mentions. Depth 2 auto-expands to relat
 3. ✅ Start scanning: `hse scan --kind email --value test@example.com --depth 1`
 
 **HSE automatically handles** endpoint routing, credit optimization, caching, archiving, error recovery, key extraction, and force-multiplier cascade.
-
-**Read next:** [API Key Hunting Guide](./API_KEY_HUNTING_GUIDE.md) — how the discovered-key cascade multiplies scanning power across all modules.

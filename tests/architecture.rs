@@ -335,33 +335,6 @@ fn module_registry_count_is_stable() {
 /// the whole class a CI failure rather than a silent runtime no-op. Passive
 /// modules (local sensors, pure computation) legitimately keep the default
 /// and are exempt.
-/// Every registered module must appear in `docs/MODULES.md`. The catalogue
-/// section there is generated from `hse modules --json`, but nothing stops a
-/// future contributor adding a module and forgetting to regenerate it — the
-/// doc had drifted to describe only 31 of 85 modules (and listed ~11 that no
-/// longer existed) before this guard. A missing module name here fails CI,
-/// keeping the operator-facing catalogue honest.
-#[test]
-fn modules_md_lists_every_registered_module() {
-    let doc = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/MODULES.md"))
-        .expect("docs/MODULES.md must exist");
-    let modules = huntsman_search_engine::modules::registry();
-    let missing: Vec<&str> = modules
-        .iter()
-        .map(|m| m.name())
-        .filter(|name| {
-            // Match the `\`name\`` form used in the generated table so a
-            // substring of another name can't accidentally satisfy it.
-            !doc.contains(&format!("`{name}`"))
-        })
-        .collect();
-    assert!(
-        missing.is_empty(),
-        "modules missing from docs/MODULES.md (regenerate the catalogue from \
-         `hse modules --json`): {missing:?}"
-    );
-}
-
 #[test]
 fn every_module_maps_to_valid_attack_reconnaissance_techniques() {
     // Every registered module declares the MITRE ATT&CK Reconnaissance technique

@@ -1,10 +1,9 @@
 # OSINT API Reference (HSE)
 
 An extensive, categorised reference of OSINT-relevant APIs for the Huntsman
-Search Engine. It complements [`OSINT_API_CATALOGUE.md`](OSINT_API_CATALOGUE.md)
-(the bare provider→category classification used by key detection) with detail:
-what each provider gives you, whether it has a free tier, its API-key shape (for
-detection in stealer logs), and HSE's integration/detection status.
+Search Engine: what each provider gives you, whether it has a free tier, its
+API-key shape (for detection in stealer logs), and HSE's integration/detection
+status.
 
 Use it to (a) see what HSE already covers, (b) decide which BYO-key providers to
 light up, and (c) compare your own keys against what HSE will recognise.
@@ -261,5 +260,4 @@ usually on a free tier).
 If a provider is missing, mis-categorised, or you know its key format, tell the
 maintainer — three places make detection accurate:
 `util/osint_providers` (category), `key_harvest/service_domains.rs` (domain
-routing), and `key_harvest/osint_keys.rs` (prefix-less key shapes). The bare
-provider→category list in `OSINT_API_CATALOGUE.md` is enforced in sync by a test.
+routing), and `key_harvest/osint_keys.rs` (prefix-less key shapes).
