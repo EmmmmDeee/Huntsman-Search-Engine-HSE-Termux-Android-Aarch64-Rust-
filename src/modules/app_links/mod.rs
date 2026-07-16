@@ -29,7 +29,7 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -144,24 +144,64 @@ impl Module for AppLinks {
         let (android, ios) =
             tokio::join!(fetch_text(ctx, &android_url), fetch_text(ctx, &ios_url),);
 
-        if let Some(body) = android {
-            parse_assetlinks(&body, &domain, &ctx.scan_id, &mut result);
+        let mut transport_failures = 0usize;
+        match android {
+            FetchOutcome::Body(body) => parse_assetlinks(&body, &domain, &ctx.scan_id, &mut result),
+            FetchOutcome::Answered => {}
+            FetchOutcome::TransportFailed => transport_failures += 1,
         }
-        if let Some(body) = ios {
-            parse_aasa(&body, &domain, &ctx.scan_id, &mut result);
+        match ios {
+            FetchOutcome::Body(body) => parse_aasa(&body, &domain, &ctx.scan_id, &mut result),
+            FetchOutcome::Answered => {}
+            FetchOutcome::TransportFailed => transport_failures += 1,
+        }
+
+        // Both well-knowns failing at the transport level (unreachable host,
+        // TLS failure, timeout — not a 404) is a real outage, not the ordinary
+        // "site doesn't publish app links" clean miss; surface it rather than
+        // read as a silent zero-yield.
+        if transport_failures == 2 && result.entities.is_empty() {
+            return Err(Error::module(
+                SRC,
+                format!(
+                    "both app-linkage well-knowns failed at the transport level for {domain} \
+                     — cannot determine whether it publishes app links"
+                ),
+            ));
         }
         Ok(result)
     }
 }
 
-/// Best-effort text GET: a transport error or unreadable body is a clean miss,
-/// never a scan error (an ordinary domain 404s on both well-knowns).
-async fn fetch_text(ctx: &ModuleContext, url: &str) -> Option<String> {
-    let resp = ctx.http.get(url).send_tagged(SRC).await.ok()?;
+/// Outcome of fetching one app-linkage well-known: a non-empty 2xx body, a
+/// genuine "answered, nothing here" (a 404/non-2xx status, or a 2xx with an
+/// unreadable/empty body — an ordinary site's expected negative), or a real
+/// transport failure (connection refused, DNS failure, TLS failure, timeout).
+/// Kept distinct so [`Module::process`] can tell a real outage on BOTH
+/// well-knowns apart from the ordinary "this domain doesn't publish app
+/// links" clean miss.
+enum FetchOutcome {
+    Body(String),
+    Answered,
+    TransportFailed,
+}
+
+/// Text GET classified into a [`FetchOutcome`]. Only a genuine `send()`
+/// failure counts as a transport failure; a non-2xx status and an
+/// unreadable/empty 2xx body both stay `Answered` (an ordinary domain 404s on
+/// both well-knowns — that must never read as an outage).
+async fn fetch_text(ctx: &ModuleContext, url: &str) -> FetchOutcome {
+    let resp = match ctx.http.get(url).send_tagged(SRC).await {
+        Ok(r) => r,
+        Err(_) => return FetchOutcome::TransportFailed,
+    };
     if !resp.status().is_success() {
-        return None;
+        return FetchOutcome::Answered;
     }
-    read_text(SRC, resp).await.ok().filter(|b| !b.is_empty())
+    match read_text(SRC, resp).await {
+        Ok(body) if !body.is_empty() => FetchOutcome::Body(body),
+        _ => FetchOutcome::Answered,
+    }
 }
 
 /// Parse Android Digital Asset Links: app packages + signing-cert fingerprints,

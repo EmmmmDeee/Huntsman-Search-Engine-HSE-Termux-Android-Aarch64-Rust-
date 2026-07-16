@@ -199,6 +199,96 @@ fn malformed_bodies_are_clean_misses() {
     assert!(r.entities.is_empty());
 }
 
+// -- fetch_text failure contract (T2.153) -----------------------------------
+
+/// One-shot local HTTP server answering with `status` + `body`. Mirrors the
+/// pgp / sanctions_ofac / chain_intel / geocode / opencellid test pattern.
+async fn serve_once(status: u16, body: &'static str) -> std::net::SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 2048];
+        let _ = sock.read(&mut buf).await;
+        let reason = if status == 200 { "OK" } else { "Error" };
+        let head = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let _ = sock.write_all(head.as_bytes()).await;
+        let _ = sock.write_all(body.as_bytes()).await;
+        let _ = sock.flush().await;
+    });
+    addr
+}
+
+fn test_ctx() -> ModuleContext {
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    ModuleContext {
+        scan_id: "t".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    }
+}
+
+#[tokio::test]
+async fn fetch_text_reports_transport_failed_on_an_unreachable_host() {
+    // T2.153 regression: a genuine transport failure (connection refused)
+    // previously collapsed into the same None as an ordinary 404 — a
+    // total outage on both well-knowns was indistinguishable from "this
+    // domain doesn't publish app links". Port 1: connection refused.
+    let ctx = test_ctx();
+    let outcome = fetch_text(&ctx, "http://127.0.0.1:1/").await;
+    assert!(
+        matches!(outcome, FetchOutcome::TransportFailed),
+        "an unreachable host must report TransportFailed"
+    );
+}
+
+#[tokio::test]
+async fn fetch_text_keeps_404_and_5xx_as_answered_not_transport_failed() {
+    // The ordinary negative (a site that doesn't publish this well-known)
+    // must stay Answered, never TransportFailed — a real HTTP answer (even
+    // an error status) means the host WAS reachable.
+    let ctx = test_ctx();
+    let addr_404 = serve_once(404, "not found").await;
+    assert!(matches!(
+        fetch_text(&ctx, &format!("http://{addr_404}/")).await,
+        FetchOutcome::Answered
+    ));
+
+    let addr_500 = serve_once(500, "upstream error").await;
+    assert!(matches!(
+        fetch_text(&ctx, &format!("http://{addr_500}/")).await,
+        FetchOutcome::Answered
+    ));
+}
+
+#[tokio::test]
+async fn fetch_text_returns_body_on_a_real_2xx_payload() {
+    let ctx = test_ctx();
+    let addr = serve_once(200, "[]").await;
+    let outcome = fetch_text(&ctx, &format!("http://{addr}/")).await;
+    assert!(matches!(outcome, FetchOutcome::Body(ref b) if b == "[]"));
+}
+
+#[tokio::test]
+async fn fetch_text_treats_empty_2xx_body_as_answered() {
+    // A 2xx with an empty body is a genuine (if unusual) answer, not a
+    // failure.
+    let ctx = test_ctx();
+    let addr = serve_once(200, "").await;
+    assert!(matches!(
+        fetch_text(&ctx, &format!("http://{addr}/")).await,
+        FetchOutcome::Answered
+    ));
+}
+
 #[test]
 fn is_free_web_module() {
     let m = AppLinks;
