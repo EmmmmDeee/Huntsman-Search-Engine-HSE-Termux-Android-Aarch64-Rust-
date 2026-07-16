@@ -1,152 +1,274 @@
 # HSE Development Rules — Standing Core Doctrine
 
+**METHOD: Andrew Gallant**
+
 Nine standing core rules govern all Huntsman Search Engine development. These are not advisory; they are the foundation of correctness, reliability, and OSINT fidelity. Every commit, every cycle, every improvement must honor these principles or it fails the project's mission.
 
----
-
-## 1. Complete Files Only
-
-**Every file written is full, compatible, and deployable. No stubs, partial implementations, or "TODO" markers in shipped code.**
-
-- Write complete functionality or nothing at all.
-- A new module ships with all required methods (name, description, priority, accepts, produces, process, max_timeout_ms, category, attack_techniques, cost).
-- A utility function ships with comprehensive error handling, edge cases, and tests.
-- Every shipped file must work in context immediately; it must not require downstream fixes to be useful.
-- Exceptions: Tests may be incomplete during development (marked with `#[ignore]`); documentation stubs are acceptable during writing; temporary branches for mid-cycle work are allowed. But nothing reaches `main` (or the designated branch) incomplete.
-
-**Why**: Incomplete code accumulates technical debt, creates false signals in CI, and damages confidence in the codebase. A complete, testable unit of work is the smallest atomic change worth recording in git.
+This doctrine is written and enforced with the uncompromising pragmatism of ripgrep's author: performance obsession, ruthless scope discipline, relentless user-centric design, and aggressive intolerance for waste.
 
 ---
 
-## 2. Aggressive Workaround Culture
+## 1. Ship Working Code or Don't Ship
 
-**Upon any failure or shortcoming, aggressively attempt workarounds until a solution is found that supersedes anything existent.**
+**Every file is production-ready the moment it lands on the branch. Full functionality, tested, no stubs, no "TODO", no placeholders. Ship it to users or throw it away.**
 
-- Lint failures? Don't disable the lint—refactor the code to satisfy it.
-- A module's output format doesn't align with others? Unify the pattern across all instances, not just the one that broke.
-- A test reveals a subtle bug in a dependency you can't modify? Fix the call site, add a guard, or rearchitect to avoid the hazard—don't work around it inline and move on.
-- Performance regression in a query? Profile, optimize, and ship the faster solution—not a workaround that hides the problem.
+- A module is useless if it's 90% done. Either finish it or delete the branch and start over.
+- Every module must have: name, description, priority, accepts, produces, process, max_timeout_ms, category, attack_techniques, cost. No exceptions.
+- A utility function must handle its edge cases the first time. Refactor it later if needed, but ship it working today.
+- Tests are mandatory before shipping. Run the full gate (fmt, clippy, doc, test, selftest). Fail even one? Don't commit.
+- No "TODO" comments in shipped code. If you don't have time to do it, don't write the comment; just don't do it.
+- Exceptions: Temporary branches for in-progress work are fine. Tests can be marked `#[ignore]`. But the moment it touches the designated branch, it ships complete or it doesn't ship.
 
-**Why**: Workarounds are debt markers. Every workaround that enters the codebase is a small lie about what the system actually does. Over time, workarounds hide real problems and make the codebase brittle. Aggressive resolution keeps the system honest and maintainable.
-
----
-
-## 3. Real Live Validation, Never Fabricated Data
-
-**Seed entities come from fresh searches or established test seeds (e.g., `Kylo4kylo`). Live API calls are preferred. Zero mocks, zero invented PII, zero fabricated findings.**
-
-- Every fixture or test data point must either:
-  - Come from a live, consented query (a real Shodan search, a real WHOIS lookup, a real CKAN call).
-  - Use an established, long-lived test seed (Kylo4kylo for people data, established dummy domains for DNS queries).
-  - Be synthetic and clearly marked as such (a fake email address of the form `test_12345@example.invalid`, a UUID, a dummy IP from TEST-NET).
-- Never invent a real third party's PII or simulate their existence in fixtures.
-- Never mock an API response to hide a real failure.
-- Never fabricate a finding (a breach, a credential, a threat) to satisfy a test or demo.
-
-**Why**: HSE is an OSINT tool. False positives are worse than missed findings. Every entity must trace back to a real source or a clearly synthetic test seed. Fabricated data breeds fabricated findings, which destroy the tool's credibility and harm real investigations.
+**Why**: Incomplete code is a lie. It pretends to be done but isn't. It breaks the build. It wastes time. It teaches people to ignore warnings. Ship working code, or don't ship. This is non-negotiable.
 
 ---
 
-## 4. Andrew Gallant's Rust Craftsmanship
+## 2. No Workarounds—Fix It or Cut It
 
-**Performance-first, clean abstractions, thorough error handling, minimal-unsafe discipline, excellent documentation, practical patterns (ripgrep's standard).**
+**When code fails to pass the gate, fix the code. Don't disable the lint, don't add a comment, don't work around it. Either solve the problem or remove the change.**
 
-- Prefer performance-optimal solutions over convenience APIs, but always measure. No premature optimization; optimize only where profiling shows the cost.
-- Write abstractions that solve a real problem, not theoretical ones. If two places use a pattern, unify it; if only one place needs it, keep it local.
-- Handle errors explicitly. No silent swallows (`Err(_) => {}`); every failure path must either propagate the error, log it with context, or make a deliberate choice to ignore it (with a comment explaining why).
-- Unsafe code is forbidden (`#![forbid(unsafe_code)]`). No exceptions. The safety guarantees of Rust are non-negotiable.
-- Write code as though someone else (or future-you) will need to understand it in six months. Prefer clarity over clever.
-- Follow ripgrep's coding style: minimal allocations, explicit error types, composable building blocks, relentless testing.
+- Clippy warning? Refactor the code. All of it if necessary. The lint is right.
+- Module output format doesn't match the pattern? Go back and unify all instances. Yes, all of them. That's not extra work; that's the actual work.
+- Test fails? Find the root cause. Is it the test? Is it the code? Is it the design? Fix the real problem, not the symptom.
+- Performance regression? Profile it. Don't guess. If optimization is needed, do it. If it can't be optimized to acceptable speed, cut the feature. Slow code is dead code.
+- Dependency bug that you can't fix upstream? Rearchitect your call site to avoid it. Don't layer workarounds; just don't call the broken method.
 
-**Why**: HSE runs on potentially untrusted network data and produces findings that inform real investigations. Poor performance wastes researcher time; poor error handling hides bugs; unsafe code introduces exploitable vulnerabilities. Craftsmanship is the difference between a toy tool and an enterprise OSINT platform.
-
----
-
-## 5. Maximum File Synergy
-
-**All files linked, vocabularies single-sourced, shared utilities reused, patterns consistent across the codebase.**
-
-- Every domain-specific vocabulary (entity kinds, tags, evidence attributes, module categories, ATT&CK techniques) is defined in one place and imported everywhere.
-- Every common utility (URL parsing, email validation, JSON parsing, HTTP client building) lives in `util/` and is imported by any module that needs it. Don't reimplement.
-- Every pattern (module structure, entity building, evidence attachment, error surfacing) is consistent. A new module looks like the last one; a fix to one module's pattern applies to all.
-- Cross-module references are explicit and bidirectional where needed (e.g., if module A produces entities that module B consumes, both know about the relationship).
-- Refactor for consistency. If you notice two modules doing the same thing differently, unify them.
-
-**Why**: A codebase fractures when each module is an island. Synergy reduces bugs (fewer reimplementations = fewer bugs per concept), makes changes propagate cleanly (fix the utility; all modules benefit), and makes the code readable (patterns are predictable). See `docs/CONVENTIONS.md` for the vocabulary and pattern bank.
+**Why**: Workarounds are compound interest on debt. They multiply. The first one seems harmless. The tenth one makes the codebase unreadable. There are only two categories of code: code that works correctly, and code that doesn't belong in the repo. Workarounds blur that line until the entire codebase is a lie.
 
 ---
 
-## 6. Outdo Spiderfoot Recursively
+## 3. Real Data Only—No Mocks, No Fabrication, Ever
 
-**More modules, deeper correlation, aggressive recursive entity expansion, intelligent multi-level searching.**
+**Every test uses live API calls, established test seeds (Kylo4kylo), or clearly synthetic data. No mocks. No invented PII. No fabricated findings. Full stop.**
 
-- HSE's advantage is not any single module but the recursive web of correlations.
-- When a module discovers an entity (email, domain, phone), that entity becomes a seed for other modules. An email → PGP key lookup → alternate emails on that key → scan those → contact extraction → new phones. Chains extend 3–5 levels.
-- Every module that produces an entity kind should ask: "What other modules can consume this and discover new signals?" If a gap exists, write the consumer module.
-- Use the expansion scoring (geo_npv, entity kind weights) to prioritize which entities to expand and how aggressively.
-- Intelligent recursion means: don't expand everything (infinite loop risk); prioritize high-signal expansions; stop when confidence or freshness signals drop.
+- Test data must come from one of three sources:
+  1. **Live queries**: Real Shodan searches, real WHOIS lookups, real CKAN calls. Make the call; keep the response as a fixture if needed.
+  2. **Established seeds**: Kylo4kylo for people data. Standard dummy domains for DNS. Known-safe test IPs. These are trusted fixtures.
+  3. **Synthetic, clearly marked**: `test_12345@example.invalid` (not a real domain). UUIDs. TEST-NET IPs (192.0.2.0/24, etc.). These must be obviously fake.
+- Never invent a real person's name, email, phone, or PII to populate a test. Never simulate a real company's existence in a fixture. Never create a realistic-looking but fake email address from a real domain.
+- Never mock an API. If the API is down or broken, skip the test with `#[ignore]`, don't fake the response.
+- Never fabricate a finding (a breach, a credential, a threat) to make a test pass or demo look good.
+- If you need test data and can't get it live, write `#[ignore]` on the test and document why. Don't fake it.
 
-**Why**: Spiderfoot and Maltego are useful but operate largely breadth-first and surface-level. HSE's edge is correlation depth: the ability to pivot through multiple OSINT layers and surface hidden relationships. Aggressive recursion finds the signals competitors miss.
-
----
-
-## 7. Data-Driven Continuous Improvement
-
-**Organize and retain results for statistical analysis, algorithm refinement, technique evolution. Every scan generates signal for tomorrow's optimization.**
-
-- Every scan produces structured results (entities, confidence scores, source provenance, execution time, module hit rates).
-- Accumulate and analyze these results to identify:
-  - Which modules have the highest signal (most entities confirmed by multiple sources).
-  - Which confidence thresholds correspond to true vs. false positives.
-  - Which entity kinds are underutilized (produced often but rarely consumed/expanded).
-  - Which queries are slow (module-level and overall).
-  - Which ATT&CK techniques are most frequent in findings.
-- Use these insights to tune:
-  - Module priorities (high-signal modules run first).
-  - Confidence baselines (calibrate to ground truth).
-  - Expansion strategies (if an entity kind rarely leads to new discoveries, deprioritize its expansion).
-  - Query strategies (combine multiple search modalities for reliability).
-- Document every major optimization in commit messages and the solution tree log.
-
-**Why**: OSINT is an empirical discipline. The queries that work best, the correlations that matter most, the techniques that yield real intelligence—these are discovered through data, not intuition. A system that improves itself based on evidence is more reliable and more powerful than one frozen at design time.
+**Why**: HSE is an intelligence tool. False positives can cause real harm. Every finding must trace to a real source or be obviously synthetic. The moment we fabricate test data, we've lied to ourselves about what the tool does. And if the tool lies in tests, it will lie in production.
 
 ---
 
-## 8. Maximize Autonomy in All Possible Ways
+## 4. Ruthless Performance, Explicit Error Handling, No Unsafe Code
 
-**The tool should operate with minimal user intervention, requiring configuration only for credentials and optional advanced tuning.**
+**Code must be fast. Errors must be clear. Unsafe code is forbidden. No exceptions to any of these.**
 
-- HSE must run scans end-to-end with a single command: `hse scan <target>`. No manual steps, no prompts for each module.
-- Intelligent defaults: if a module is free and has no key configured, use it; if it's keyed and the key is missing, skip it and continue.
-- Parallelization and scheduling should be automatic. The tool decides how many modules to run concurrently based on system resources and module dependencies.
-- Error recovery should be automatic where possible: retry transient network failures; skip modules that are temporarily unavailable; continue the scan even if one module fails.
-- Autonomous diagnosis: when the scan finishes, the tool should surface what succeeded, what failed, why, and suggestions for fixing failures (missing keys, network problems, data issues).
-- Autonomous optimization: the tool should tune itself based on observed performance (module priority, confidence thresholds, expansion depth).
+**Performance:**
+- Measure before optimizing, but optimize aggressively. Ripgrep is fast because it was designed to be fast from day one.
+- Prefer allocation-free solutions. Preallocate when you know the size. Use references; avoid cloning.
+- Profile the hot paths. A 10% speedup in a path that runs 1M times per scan is worth two days of work.
+- Reject features that are too slow. If a module takes 30 seconds for one query and its module runs 100 times in a scan, that's 50 minutes wasted. Cut it.
+- Network I/O is your enemy. Batch requests. Reuse connections. Cache aggressively. A module that makes 100 sequential requests will be slow no matter how fast the CPU is.
 
-**Why**: Manual OSINT investigation is slow and error-prone. Autonomy is the difference between a tool and a chore. Users should think about *what to search*, not *how to search it*.
+**Error Handling:**
+- Every `Result` must either be propagated with `?` or deliberately handled. No `Err(_) => {}` without a comment explaining why.
+- When you ignore an error, write the reason in one line. "Ignore parse errors; we expect some rows to be malformed." Not an empty handler.
+- Design for clarity. An error message should tell you what went wrong, where, and what to do about it. Not "failed"; "failed to fetch example.com: 404 Not Found".
+- Propagate errors up. Don't catch a transport error and return an empty result and pretend everything is fine. The caller needs to know.
+
+**Safety:**
+- `#![forbid(unsafe_code)]` is absolute. No `unsafe`, no exceptions, no comments saying "but this is safe because...". Use Rust's safety guarantees or rewrite the code.
+- If you're tempted to use `unsafe`, you've hit a design problem. Solve the design problem.
+
+**Clarity:**
+- Write code that's easy to understand the first time. If a future reader has to ask "why did they do it this way?", you wrote it wrong.
+- Explicit types. Explicit error handling. Explicit bounds. Let the compiler help you.
+- No clever tricks. No "this works because of Rust's orphan rules and monomorphization." Write boring code that works.
+
+**Why**: HSE processes untrusted network data and produces findings that guide real investigations. Slow code = lost research time = bad UX = users abandoning the tool. Wrong error handling = silent failures = missed security signals. Unsafe code = exploitable bugs = compromised data. Craftsmanship isn't optional; it's the difference between a tool people use and a tool that collects dust.
 
 ---
 
-## 9. Unified Autonomous Debugging That Improves Perpetually
+## 5. One Definition, Everywhere—No Duplication Allowed
 
-**Incorporate comprehensive debugging and self-diagnosis that continuously evolves.**
+**Every vocabulary, utility, and pattern is defined once and imported everywhere. Duplication is a bug.**
 
-- Every scan should include a debug bundle: timestamps, module execution order, which entities were produced, which modules they were expanded into, which relations were confirmed by correlator rules, final confidence scores for each entity.
-- The debug bundle should be structured so it can be analyzed programmatically: JSON, not free-form logs.
-- Errors should be captured with full context: the input that caused the error, the module that failed, the exact error message, the HTTP status if it was a network failure, the stack location.
-- When the same error occurs repeatedly across scans, HSE should recognize the pattern and either:
-  - Auto-correct it (if it's a known issue with a known fix, apply the fix).
-  - Surface it to the user as an actionable diagnosis (e.g., "module X expects a key but none is configured; run `hse config` to add one").
-  - Build a hypothesis about the root cause and log it for analysis.
-- After each scan, HSE should analyze the debug bundle and ask:
-  - Which modules had the best ROI (entities produced / execution time)?
-  - Which entity kinds were discovered most often?
-  - Which correlations were confirmed most frequently?
-  - Where did the scan slow down?
-  - Which modules produced entities that no other module consumed (unused signals)?
-- Use these analyses to refine future scans: adjust priorities, skip low-ROI modules for similar targets, suggest new search strategies.
+**Vocabularies:**
+- Entity kinds, tags, evidence attributes, module categories, ATT&CK techniques: defined once in `core/`, imported everywhere.
+- Don't define a new tag in a module. Import it from `core::tags`.
+- Don't invent a new module category. Use the existing ones or add it to `core/` so all modules can use it.
+- If you see the same string in two modules, extract it to a constant in `util/`.
 
-**Why**: Debugging is not a one-time activity; it's continuous. Every scan teaches the tool something. A system that learns from its own failures, explains its reasoning, and improves itself with each run is far more valuable than a static tool.
+**Utilities:**
+- URL parsing, email validation, domain classification, JSON handling, HTTP client building: all live in `util/`.
+- Don't reimplement URL parsing in a module. Import `util::url_util::parse_url`.
+- Don't write email validation twice. Import `util::extract::looks_like_email`.
+- If you write a utility and it's useful, move it to `util/` and import it from `util/`.
+
+**Patterns:**
+- Every module follows the same structure: types, pure functions, Module impl.
+- Every entity is built the same way: Entity::new(), tags, evidence, push.
+- Every error is surfaced the same way: either propagate it or log it with context.
+- A new module should be indistinguishable from the last one in structure. The difference should be the data it processes, not how it processes it.
+
+**Refactoring for Consistency:**
+- When you see two modules doing the same thing differently, stop and unify them.
+- When you see the same logic in three modules, extract it to `util/`.
+- When a pattern appears in more than one place, it belongs in the architecture, not the module.
+- This is not optional. This is part of the work.
+
+**Cross-Module Relationships:**
+- If module A produces EmailAddress entities and module B consumes them, both should document that relationship.
+- If module A's output is a common input to module B, C, and D, the expansion weight should reflect that.
+- Relationships should be explicit in code or comments, not implicit.
+
+**Why**: Duplication is where bugs hide. Fix a bug in one copy; it lives in three others. Add a feature; you have to add it to every copy. Inconsistent patterns make code hard to read and harder to change. One definition, everywhere, is the only way to stay sane.
+
+---
+
+## 6. Recursive Expansion—No Stone Unturned, But Stop When the Gains Dry Up
+
+**HSE wins through correlation depth, not breadth. Expand aggressively, measure relentlessly, stop when ROI collapses.**
+
+**The Expansion Strategy:**
+- Every discovered entity is a seed for the next layer. Email → PGP keys → alternate emails → rescan → contact extraction → new phones. Chains extend 3–5 levels.
+- Every module that produces an entity kind must ask: "What other modules consume this?" If there's a gap, write the module.
+- Use expansion scoring (entity weights, geo_npv, confidence) to prioritize. High-confidence, high-signal entities expand first.
+- Don't expand everything uniformly. A domain with high correlation weight expands differently than a random IP.
+
+**When to Expand:**
+- Always expand high-confidence entities (0.80+). These are high-signal.
+- Expand medium-confidence entities (0.60–0.79) when they link to high-signal consumers (domain → look-alike domain searches).
+- Don't expand low-confidence entities (< 0.60) unless they're the only lead on the target.
+
+**When to Stop:**
+- Stop when confidence drops below 0.50. A 0.45-confidence entity expanded into a 0.60-confidence module doesn't yield useful findings.
+- Stop when an entity has been expanded 3 times and produced no new high-confidence entities. You're chasing ghosts.
+- Stop when the time cost exceeds the signal gain. If expanding an entity takes 10 seconds and yields only low-confidence results, skip it.
+- Stop when an expansion produces duplicate entities. Once you've found email@example.com, finding it again via a different path is noise, not signal.
+
+**Measurement:**
+- Track expansion ROI: how many new high-confidence entities per expansion unit.
+- Track which modules have the best ROI. Prioritize them.
+- If a module consistently produces entities that expand poorly, deprioritize it or cut it.
+- Data-driven expansion, not theoretical. Every expansion must earn its time.
+
+**Why**: Recursive expansion is HSE's edge over Spiderfoot. But infinite recursion is death by a thousand cuts. The art is knowing when to dig and when to stop. The tool that expands intelligently is faster, smarter, and more credible than the tool that expands everything and drowns the user in noise.
+
+---
+
+## 7. Measure Everything, Optimize Ruthlessly, Never Guess
+
+**Every scan is data. Accumulate it, analyze it, optimize based on it. Intuition is not allowed.**
+
+**What to Measure:**
+- Per-module: runtime (ms), entities produced, entities with confidence > 0.70, entities expanded downstream, ROI (entities / time).
+- Per-entity: confidence score, source module, how many other modules produced it (validation signal), whether it was expanded, what expansions yielded.
+- Per-correlation: which relation rules fired, which entities converged in the correlator, which correlations were human-validated (ground truth).
+- Per-scan: total time, parallel efficiency, memory usage, which modules were bottlenecks.
+
+**Analysis:**
+- Which modules are fast and produce high-signal entities? Prioritize them; run them early.
+- Which modules are slow? Is the slowness justified by signal? If not, deprioritize or cut the module.
+- Which confidence thresholds correspond to true vs. false positives in ground truth? Tune the baselines.
+- Which entity kinds are produced often but expanded rarely? Either improve the downstream modules or stop producing them.
+- Which expansion patterns yield the most new high-confidence entities? Double down on those patterns.
+
+**Optimization:**
+- Use the data to decide priorities. Don't guess. Run module X first if data shows it yields 5× ROI of module Y.
+- If an entity kind produces 1000 results but only 10 are ever expanded, something is wrong. Either fix the producer or kill it.
+- If a module takes 5 minutes and produces one entity, cut it. Time spent on low-ROI modules is time not spent on high-ROI work.
+- If parallel execution isn't scaling linearly, find the bottleneck and fix it. Network I/O? Shared locks? Fix it or redesign.
+
+**Iteration:**
+- Run a scan. Collect the data. Analyze. Optimize. Commit. Repeat.
+- Every optimization should be justified by data, not by intuition or "best practices."
+- If data shows your assumption was wrong, change the code. Data wins; assumptions lose.
+- Document every major optimization in commit messages and the solution tree log so the next person knows why the code is structured this way.
+
+**Why**: Intuition is a poor guide to performance and correctness. Two modules that "feel" similar in speed might have 10x different ROI. An entity kind that "should" be useful might produce noise. Only data tells the truth. A system that measures, analyzes, and optimizes based on evidence is faster, smarter, and more credible than one built on intuition.
+
+---
+
+## 8. Zero Configuration, Maximum Autonomy—The Tool Works Out of the Box
+
+**Users should never have to think about how to run a scan. They think about what to search. HSE handles everything else.**
+
+**Zero Configuration:**
+- `hse scan <target>` should work immediately. No config files, no environment setup, no API key prompts.
+- Free modules (CKAN, DNS, public archives) run by default. Keyed modules are skipped if the key is missing; the scan continues.
+- If a module is temporarily down, skip it and move on. Don't block the scan.
+- If a network request fails, retry with backoff. Three strikes and the module is skipped.
+
+**Intelligent Defaults:**
+- Parallelism is automatic: run as many modules concurrently as CPU cores allow, respecting rate limits and dependencies.
+- Expansion depth is automatic: expand high-ROI entities, stop when confidence or gains dry up.
+- Confidence thresholds are baked in; no tuning needed for 95% of users.
+- Module priorities are data-driven: high-ROI modules run first.
+
+**Error Handling:**
+- A module fails? Skip it, log why, continue. The scan doesn't stop.
+- A network request fails? Retry automatically. Three retries, then skip.
+- A module times out? Skip it. Slow modules are dead weight; don't wait for them.
+- A parsing error? Skip the malformed response; continue with what worked.
+
+**Autonomous Diagnosis:**
+- When the scan finishes, HSE reports:
+  - What succeeded and how many entities were produced.
+  - What failed and why (module timeout, network error, missing key, parse failure).
+  - What can be fixed (e.g., "add HUNTSMAN_VIRUSTOTAL_KEY for 5x more results").
+  - Performance summary: which modules were fastest, which were slowest, where the bottlenecks are.
+- The output is formatted for humans: clear, actionable, not a wall of JSON.
+
+**User Experience:**
+- The tool feels instant. If the scan takes 30 seconds, 25 of them are network I/O (unavoidable). The tool doesn't waste the other 5 on overhead.
+- If a user has a slow connection, the tool adapts. Fewer concurrent requests. Longer timeouts. Still completes.
+- If a user adds a new API key, the tool automatically uses it on the next scan without restarting.
+- The tool learns from feedback: if a user marks a finding as false positive, that data informs future confidence calibration.
+
+**Why**: Ripgrep doesn't ask you to configure fuzzy matching; it's just fast. HSE shouldn't ask users to configure priorities or thresholds; it should just work. Autonomy is the difference between a tool people reach for and a tool that stays on the shelf.
+
+---
+
+## 9. Self-Aware, Self-Improving Debugging—The Tool Learns From Every Scan
+
+**HSE must know what it did, why it did it, and whether it worked. It must learn and improve with every scan.**
+
+**Debug Capture:**
+- Every scan produces a structured debug bundle: JSON, not logs. Timestamps, module execution order, every entity produced, every expansion path, every correlator rule fired, every error.
+- Errors capture full context: the input, the module, the exact error message, HTTP status, the request that failed. Not just "network error"; "failed to fetch api.example.com/v1/users at 12:34:56: HTTP 503, retried 3 times".
+- The debug bundle is immutable and retained. Old scans teach you about patterns.
+
+**Pattern Recognition:**
+- When the same error occurs 3+ times across scans, HSE recognizes it and either:
+  - Auto-corrects if there's a known fix (e.g., "module X times out on slow networks; add 2s to the timeout").
+  - Surfaces it as an actionable diagnosis (e.g., "module X failed 5 times; you're missing HUNTSMAN_X_KEY").
+  - Logs it with a hypothesis for human analysis.
+- Errors cluster by module, target type, and time of day. If module X always fails at 3 PM, you've found a rate-limiting issue.
+
+**Scan Analysis:**
+After each scan, HSE analyzes itself:
+- ROI per module: entities produced / execution time. Modules with 0.01 entities/ms are dead weight; modules with 10 entities/ms are worth prioritizing.
+- Confidence distribution: are the confidence scores realistic? If 90% of findings are 0.50 (baseline), you're producing noise.
+- Expansion paths: which entity kinds expanded the most? Which died at depth 1? Which led to high-confidence convergences?
+- Bottlenecks: where does time go? Network I/O? Module overhead? JSON parsing?
+- Unused signals: which modules produced entities that no other module consumed? Either kill the producer or write a consumer.
+
+**Self-Improvement:**
+- Use the analysis to optimize future scans:
+  - Adjust module priorities based on ROI. Run high-ROI modules first.
+  - Adjust expansion depth for entity kinds: low-signal kinds expand less; high-signal kinds expand more.
+  - Adjust parallelism: if network is the bottleneck, don't spawn more threads.
+  - Adjust confidence thresholds: if the ground truth shows a module is consistently optimistic, lower its baseline.
+- These adjustments are per-target-type and per-user. A domain scan might prioritize DNS; a person scan might prioritize social media.
+- The tool suggests new strategies: "Your last 10 scans on domains consistently missed typosquatting; try the domainsdb module." "Your PII leaks are from social search; profile.io is worth enabling."
+
+**User Visibility:**
+- The debug bundle is downloadable. Users can inspect it, understand the scan, verify the findings.
+- The debug bundle is machine-readable. Customers can build their own analyses, tune the tool for their needs.
+- HSE's reasoning is transparent. The user sees which module produced which entity, which correlations were confirmed, why confidence was high or low.
+
+**Iteration:**
+- Every scan teaches HSE something. The more you use it, the smarter it gets.
+- Feedback loops: if a user marks a finding as false positive, that signal informs confidence calibration for future scans.
+- The tool doesn't plateau; it improves with every scan.
+
+**Why**: A static tool is eventually superseded. A tool that learns from its failures, understands its own behavior, and improves with every scan becomes indispensable. Self-awareness is the difference between a hammer and a power drill.
 
 ---
 
@@ -163,24 +285,61 @@ These rules are the *how*; those documents are the *what* and *why*.
 
 ## Enforcement
 
-These rules are non-negotiable. Every commit, every pull request, every release is measured against them:
+These rules are non-negotiable and absolute. Every commit, pull request, and release is gated against them:
 
-1. **Completeness**: Is every file in this commit deployable?
-2. **Workarounds**: Does it work around a problem, or does it solve it?
-3. **Data fidelity**: Are all entities traced to real sources or established test seeds?
-4. **Craftsmanship**: Does it follow ripgrep's standard? Is unsafe code absent?
-5. **Synergy**: Are utilities reused? Are patterns consistent?
-6. **Recursion**: Does it expand entities intelligently?
-7. **Data-driven**: Are the decisions informed by empirical evidence?
-8. **Autonomy**: Can the user run this with minimal configuration?
-9. **Debugging**: Does it surface errors clearly and improve itself?
+1. **Completeness**: Is every file deployable? Run the full gate (fmt, clippy, doc, test, selftest). Fail even one? Don't commit.
+2. **No Workarounds**: Does it solve the problem, or hide it? Lint failure? Refactor the code. Test fails? Fix the root cause. Performance regression? Optimize or cut the feature.
+3. **Data Fidelity**: Are all entities traced to live sources or Kylo4kylo? Zero mocks. Zero fabrication. One false finding poisons the whole tool.
+4. **Craftsmanship**: Ripgrep standard or better. No unsafe code. No silent error swallows. Performance measured and optimized. Code is clear or it's wrong.
+5. **Synergy**: Utilities reused? Patterns consistent? Vocabularies single-sourced? One definition, everywhere. If you're writing the same logic in two places, you've already lost.
+6. **Intelligent Recursion**: Expand high-signal entities. Stop when ROI collapses. Measure expansion ROI. Kill low-ROI modules.
+7. **Data-Driven**: Every decision backed by measurement. Intuition is not allowed. If data says you're wrong, you're wrong.
+8. **Autonomy**: `hse scan <target>` works out of the box. No configuration, no prompts, no manual tuning. Free modules run by default.
+9. **Self-Improvement**: Every scan generates data. HSE learns and improves. Errors are recognized and auto-corrected. Patterns are detected and exploited.
 
-A commit that violates one rule is a regression, not progress. It is better to defer a feature than to ship it incompletely or with fabricated test data. It is better to refactor three times to find the clean solution than to ship a workaround and move on.
+**Gating Criteria:**
+- **Commits**: Every commit must pass fmt, clippy, doc, test, and selftest. Every commit is measured against all nine rules. A commit that violates one is rejected, not fixed.
+- **Features**: A feature is done when it's shipped, tested, and documented. "90% done" is 100% useless. Finish it or delete it.
+- **Data**: Every test uses live data or Kylo4kylo. Fabricated findings are cause for revert.
+- **Performance**: If a module takes > 5 seconds per query on reasonable hardware, it's too slow. Optimize or cut it.
+- **Coverage**: If a module produces entities that no other module consumes, it's dead code. Kill it or write a consumer.
 
-HSE's ambition is to be the fastest, most correct, most reproducible OSINT engine, surpassing SpiderFoot and Maltego. These nine rules are how.
+**On Violations:**
+- A single violation is a revert. Not a discussion, not a comment, not a "we'll fix it later." Revert and start over.
+- Repeat violations by the same author warrant a conversation about priorities and fit.
+- Systemic violations (e.g., a whole module that ignores rule 7) are fatal. The module is cut.
+
+**What You Can't Do:**
+- You can't add `#[allow(clippy::*)]` without a comment explaining why, for that specific line only.
+- You can't use `Err(_) => {}` without a comment.
+- You can't mock an API. Use live data or skip the test.
+- You can't ship a feature that's slower than a known alternative.
+- You can't add a module that produces entities no other module consumes.
+- You can't ignore test failures and commit anyway.
+
+**What You Must Do:**
+- Run the full gate before every commit. All four checks, no shortcuts.
+- Write at least one test that fails against the unfixed code and passes against the fix.
+- Document the "why" in the commit message and in code comments.
+- Measure performance for anything that touches I/O or CPU.
+- Refactor for consistency. If you see duplication, unify it.
+
+**The Standard:**
+These rules define what "done" means. A feature that violates one rule is not done. A commit that doesn't pass the gate is not done. A module that produces unused entities is not done. Don't commit "done" code unless it's actually done.
+
+---
+
+## Philosophy
+
+This is the Andrew Gallant doctrine: ruthless pragmatism, relentless measurement, aggressive optimization, and zero tolerance for waste. Ripgrep didn't become the fastest text searcher by accident or by shipping "good enough" code. It became fast because Gallant measured, optimized, and refused to ship anything that didn't earn its place.
+
+HSE's ambition is to be the fastest, most correct, most reproducible OSINT engine, surpassing SpiderFoot and Maltego without ever fabricating a finding. These nine rules, enforced absolutely, are how.
+
+**Ship working code or don't ship. Solve problems or cut scope. Measure everything. Optimize ruthlessly. Learn and improve. Never stop.**
 
 ---
 
 **Last updated**: 2026-07-16  
-**Established by**: Development team  
-**Status**: Standing core doctrine
+**Philosophy**: Andrew Gallant (ripgrep)  
+**Status**: Absolute, non-negotiable doctrine  
+**Violations**: Zero tolerance, immediate revert
