@@ -28,11 +28,28 @@ trusted.
   parse a response field you have not confirmed exists in the provider's
   authoritative spec or in a real response. An API you *expect* to work is a
   guess until the provider says otherwise.
-- **No synthetic/mocked data passed off as real.** Test fixtures must be labelled
-  fixtures. A mock may prove *logic*; it may never stand in as *evidence* that
-  a live service behaves a given way.
+- **No synthetic data as a finding — ever.** HSE must never emit, store,
+  correlate, rank, or report synthetic, mocked, generated, or fabricated data
+  as though it were a real observation. Not "probably real", not
+  "representative", not "close enough". If the engine did not observe it from a
+  real source, it does not become a finding. No field, no entity, no evidence
+  record, no correlation, and no exported artifact may originate in invented
+  data. This is absolute.
 - **No speculative conclusions.** "Probably", "should", "I assume" are not
   evidence. If the code depends on it, verify it or do not depend on it.
+
+### The One Permitted Use of Synthetic Data
+
+A **labelled test fixture that proves code logic and never leaves the test
+harness.** This is the single, bounded exception — and it is the mechanism the
+entire test suite is built on (every test uses synthetic hosts like
+`example.com`, the consented seed `Kylo4kylo`, or genuinely synthetic records).
+A fixture proves *the code is correct*; it may **never** stand in as *evidence
+that a live service behaved a given way*, and it may **never** cross out of the
+test harness into a scan result, an entity, a correlation, or any operator-
+facing output. A fixture that escapes into a finding is exactly the fabrication
+the bullet above forbids. There is no other exception: outside a labelled test,
+synthetic data does not exist in HSE.
 
 ### The Evidence Test
 
