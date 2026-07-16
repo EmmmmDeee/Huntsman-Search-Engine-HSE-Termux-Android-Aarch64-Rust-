@@ -113,3 +113,20 @@ use super::*;
     fn blank_domain_is_skipped() {
         assert!(build_domain_entity(&entry(r#"{"domain":"  "}"#), false, "s").is_none());
     }
+
+    // -- all_zones_failed_transport (T2.134) -------------------------
+
+    #[test]
+    fn all_zones_failed_transport_only_on_total_outage_with_no_hits() {
+        let total = ZONES.len(); // 6
+        // Every zone failed at transport AND nothing found → the outage → Err.
+        assert!(all_zones_failed_transport(total, total, 0));
+        // At least one zone answered (fewer transport failures) → NOT an outage,
+        // stays a clean Ok-empty "no look-alike domains".
+        assert!(!all_zones_failed_transport(total - 1, total, 0));
+        // Something was found → never an error, even if some zones failed transport.
+        assert!(!all_zones_failed_transport(total, total, 3));
+        // Early cancel / nothing attempted → not an outage.
+        assert!(!all_zones_failed_transport(0, total, 0));
+        assert!(!all_zones_failed_transport(0, 0, 0));
+    }

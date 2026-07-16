@@ -31,7 +31,7 @@ use std::collections::HashSet;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -42,6 +42,11 @@ use crate::core::{
 const KEY_ENV: &str = "HUNTSMAN_DOMAINSDB_KEY";
 
 const SRC: &str = "domainsdb";
+
+/// TLD zones the look-alike search fans across. A countable list (not an inline
+/// array literal) so the "every zone failed at the transport level" outage check
+/// can compare against its length — see [`all_zones_failed_transport`].
+const ZONES: &[&str] = &["com", "net", "org", "io", "com.au", "co.uk"];
 
 /// A keyword matching more than this many domains in a single TLD is generic;
 /// its hits are keyword coincidences, not target-specific, so they are tagged
@@ -194,8 +199,13 @@ impl Module for DomainsDb {
 
         let mut result = ModuleResult::new();
         let mut seen: HashSet<String> = HashSet::new();
+        // Count zones whose request never got an answer (transport-level failure),
+        // kept separate from zones that answered with no match, so a total network
+        // outage is told apart from a genuine "no look-alike domains" (mirrors
+        // api_key_probe's all_probes_failed_to_execute, T2.123).
+        let mut transport_failures = 0usize;
 
-        for zone in &["com", "net", "org", "io", "com.au", "co.uk"] {
+        for zone in ZONES {
             if ctx.cancel.is_cancelled() {
                 break;
             }
@@ -210,7 +220,10 @@ impl Module for DomainsDb {
                 .timeout(std::time::Duration::from_secs(8))
                 .send()
                 .await;
-            let Ok(r) = resp else { continue };
+            let Ok(r) = resp else {
+                transport_failures += 1;
+                continue;
+            };
             let status = r.status().as_u16();
             // An auth failure on a configured key is retry-futile for every
             // remaining zone (same key, same rejection), and it must not be
@@ -238,8 +251,34 @@ impl Module for DomainsDb {
                 build_domain_entity(entry, broad_match, &ctx.scan_id)
             }));
         }
+
+        // If EVERY zone query failed at the transport level and nothing was found,
+        // the lookup could not execute — surface it rather than return the empty
+        // result an operator can't tell from "the subject has no look-alike
+        // domains". A zone that answered (200-empty, a non-2xx, a 401/403 break,
+        // or an early cancel) keeps the counter below the zone count and stays a
+        // clean Ok-empty. (T2.123 api_key_probe pattern.)
+        if all_zones_failed_transport(transport_failures, ZONES.len(), result.entities.len()) {
+            return Err(Error::module(
+                SRC,
+                "every domainsdb zone query failed at the transport level (no network \
+                 reachable?) — cannot determine whether the subject has look-alike domains"
+                    .to_string(),
+            ));
+        }
         Ok(result)
     }
+}
+
+/// True when every zone query failed at the transport level and nothing was
+/// found — the "no network reachable" state that must surface as an `Err` rather
+/// than masquerade as "no look-alike domains". A zone that answered at all (even
+/// with no match, a non-2xx, or a key rejection) reached the server, so any
+/// response keeps this `false`; an early cancel (fewer zones attempted) likewise
+/// leaves `transport_failures` below `total_zones`. Pure — unit-testable off the
+/// counters. Mirrors `api_key_probe::all_probes_failed_to_execute`.
+fn all_zones_failed_transport(transport_failures: usize, total_zones: usize, found: usize) -> bool {
+    found == 0 && total_zones > 0 && transport_failures == total_zones
 }
 
 #[cfg(test)]
