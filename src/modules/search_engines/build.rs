@@ -172,6 +172,15 @@ pub(super) fn build_entities(
         // snippet PII at all (mirrors the parent-reaffirmation skip above).
         let result_names_the_subject = if location_seed {
             false
+        } else if matches!(target.kind, TargetKind::Phone) {
+            // A phone is a PRECISE identifier — require the number itself (in any
+            // format) to appear before mining this result's snippet PII/geo.
+            // Without this a phone seed (a single token) fell through to the
+            // permissive branch below and mined every irrelevant result: a live
+            // +61 scan geocoded a generic "Ghan, NT" weather page that never
+            // contained the number into a confident NT location. See
+            // `helpers::relevance::result_mentions_phone`.
+            result_mentions_phone(&format!("{combined_text} {}", r.url), &target.value)
         } else if terms.len() >= 2 {
             let hay = format!("{combined_text} {}", r.url).to_lowercase();
             terms
