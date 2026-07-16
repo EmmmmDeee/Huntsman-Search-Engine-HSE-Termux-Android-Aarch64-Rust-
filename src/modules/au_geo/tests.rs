@@ -129,6 +129,28 @@ fn assemble_skips_absent_layers_and_empty_resolution() {
     assert!(empty.entities.is_empty());
 }
 
+#[test]
+fn all_layers_failed_transport_only_on_total_outage_with_no_hits() {
+    // Regression (T2.149): distinguishes an ABS-host outage across every layer
+    // from legitimate ASGS non-coverage or a partial-transport-failure case.
+    // Mirrors domainsdb::all_zones_failed_transport_only_on_total_outage_with_no_hits.
+
+    // Every layer failed at the transport level AND nothing was found → outage.
+    assert!(all_layers_failed_transport(LAYERS.len(), LAYERS.len(), 0));
+
+    // Some layers failed but at least one genuinely resolved → not an outage
+    // (partial real evidence, keep it).
+    assert!(!all_layers_failed_transport(LAYERS.len() - 1, LAYERS.len(), 1));
+
+    // No transport failures at all, just a legitimate empty resolution (e.g. an
+    // offshore point within the AU bbox but outside every ASGS polygon).
+    assert!(!all_layers_failed_transport(0, LAYERS.len(), 0));
+
+    // Every layer failed at the transport level but a layer still (impossibly,
+    // but defensively) produced an entity — found > 0 keeps this false.
+    assert!(!all_layers_failed_transport(LAYERS.len(), LAYERS.len(), 1));
+}
+
 #[tokio::test]
 async fn non_au_or_malformed_coordinate_makes_no_request() {
     // London is outside the AU bbox → the module returns before any network I/O,

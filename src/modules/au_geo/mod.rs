@@ -32,7 +32,7 @@ use serde_json::{Map, Value};
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -214,20 +214,50 @@ impl Module for AuGeo {
         // ArcGIS points are x,y = lon,lat.
         let geom = urlencode(&format!("{lon},{lat}"));
         // Resolve every layer concurrently (join_all preserves LAYERS order).
-        let resolved = join_all(LAYERS.iter().map(|spec| query_layer(ctx, &geom, spec))).await;
+        let outcomes = join_all(LAYERS.iter().map(|spec| query_layer(ctx, &geom, spec))).await;
+
+        // Transport-level failures (network error, non-2xx, unreadable body) are
+        // tracked separately from a genuine "no covering feature" miss, so an ABS
+        // host outage across every layer can be told apart from legitimate ASGS
+        // non-coverage (mirrors domainsdb::all_zones_failed_transport, T2.134).
+        let transport_failures = outcomes
+            .iter()
+            .filter(|o| matches!(o, LayerOutcome::TransportFailed))
+            .count();
+        let resolved: Vec<Option<(String, String, Option<String>)>> = outcomes
+            .into_iter()
+            .map(|o| match o {
+                LayerOutcome::Found(name, code, state) => Some((name, code, state)),
+                LayerOutcome::Miss | LayerOutcome::TransportFailed => None,
+            })
+            .collect();
 
         assemble(&target.value, &resolved, &ctx.scan_id, &mut result);
+
+        if all_layers_failed_transport(transport_failures, LAYERS.len(), result.entities.len()) {
+            return Err(Error::module(
+                SRC,
+                "every ASGS layer query failed at the transport level — cannot determine \
+                 this coordinate's AU administrative geography",
+            ));
+        }
         Ok(result)
     }
 }
 
-/// Query one ASGS layer for the polygon containing the point. `None` on a miss
-/// (transport error, non-2xx, no covering feature) — never a scan error.
-async fn query_layer(
-    ctx: &ModuleContext,
-    geom: &str,
-    spec: &LayerSpec,
-) -> Option<(String, String, Option<String>)> {
+/// Outcome of resolving one ASGS layer for a point: a covering feature was
+/// found, the query answered with no covering feature (a genuine clean miss),
+/// or the query never got a real answer at all (transport error, non-2xx,
+/// unreadable body) — kept distinct from a miss so [`all_layers_failed_transport`]
+/// can tell an ABS host outage apart from legitimate ASGS non-coverage.
+enum LayerOutcome {
+    Found(String, String, Option<String>),
+    Miss,
+    TransportFailed,
+}
+
+/// Query one ASGS layer for the polygon containing the point.
+async fn query_layer(ctx: &ModuleContext, geom: &str, spec: &LayerSpec) -> LayerOutcome {
     let url = format!(
         "{BASE}/{}/MapServer/0/query?geometry={geom}&geometryType=esriGeometryPoint\
          &inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=*&returnGeometry=false&f=json",
@@ -235,18 +265,41 @@ async fn query_layer(
     );
     // The ABS WAF 403s a request with no User-Agent — present the browser UA the
     // sibling AU registry scrapers use.
-    let resp = ctx
+    let resp = match ctx
         .http
         .get(&url)
         .header("User-Agent", UA_BROWSER)
         .send_tagged(SRC)
         .await
-        .ok()?;
+    {
+        Ok(r) => r,
+        Err(_) => return LayerOutcome::TransportFailed,
+    };
     if !resp.status().is_success() {
-        return None;
+        return LayerOutcome::TransportFailed;
     }
-    let body = read_text(SRC, resp).await.ok()?;
-    parse_feature(&body, spec.name_field, spec.code_field)
+    let body = match read_text(SRC, resp).await {
+        Ok(b) => b,
+        Err(_) => return LayerOutcome::TransportFailed,
+    };
+    match parse_feature(&body, spec.name_field, spec.code_field) {
+        Some((name, code, state)) => LayerOutcome::Found(name, code, state),
+        None => LayerOutcome::Miss,
+    }
+}
+
+/// True when every ASGS layer query failed at the transport level and nothing
+/// was found — the "ABS host unreachable" state that must surface as an `Err`
+/// rather than masquerade as "no AU administrative geography here". A layer
+/// that answered at all (even a genuine miss) reached the server, so any
+/// answer keeps this `false`. Pure — unit-tested off the counters. Mirrors
+/// `domainsdb::all_zones_failed_transport` (T2.134).
+fn all_layers_failed_transport(
+    transport_failures: usize,
+    total_layers: usize,
+    found: usize,
+) -> bool {
+    found == 0 && total_layers > 0 && transport_failures == total_layers
 }
 
 /// Extract `(name, code, state)` from a layer-query response's first feature.
