@@ -7,13 +7,15 @@ use crate::core::{
 };
 
 use super::{
-    HANDLE_PROPS, PERSON_PRIMARY, Wikidata,
+    HANDLE_PROPS, MAX_CANDIDATES, PERSON_PRIMARY, Wikidata,
     builder::{candidate_entity, primary_entities},
     claims::{claim_entity_ids, claim_p625, claim_strings, en_text},
     classify::{classify, name_matches_query, seed_kind},
+    mark_candidate_truncation,
     types::SearchHit,
     urls::{entities_url, search_url},
 };
+use crate::core::entity::Entity;
 use crate::core::module::Module;
 
 fn torvalds_entity() -> Value {
@@ -162,6 +164,39 @@ fn candidate_is_sub_floor_with_description_evidence() {
             .attributes
             .iter()
             .any(|(k, v)| k == "description" && v == "English cricketer")
+    );
+}
+
+#[test]
+fn mark_candidate_truncation_flags_only_when_over_max_candidates() {
+    // Regression: when more items match the seed name than MAX_CANDIDATES
+    // surfaces, the primary/head entity must be tagged `truncated` with the
+    // true match count — a namesake-heavy name (e.g. "John Smith") must not
+    // read its 6-item candidate list as exhaustive.
+    let mut head = Entity::new(EntityKind::Person, "John Smith", PERSON_PRIMARY, "s");
+
+    // At or under the cap: no signal.
+    mark_candidate_truncation(&mut head, MAX_CANDIDATES);
+    assert!(
+        !head.has_tag("truncated"),
+        "must not flag at or under the cap"
+    );
+    assert!(head.evidence.is_empty());
+
+    // Over the cap: tagged + dedicated evidence with the true total.
+    let total = MAX_CANDIDATES + 9;
+    mark_candidate_truncation(&mut head, total);
+    assert!(head.has_tag("truncated"), "head must be tagged 'truncated'");
+    let ev = head.evidence.last().unwrap();
+    assert_eq!(
+        ev.attributes.get("total_name_matches").map(String::as_str),
+        Some(total.to_string().as_str()),
+        "total_name_matches must reflect the true pre-cap match count"
+    );
+    assert_eq!(
+        ev.attributes.get("candidates_capped").map(String::as_str),
+        Some("true"),
+        "candidates_capped must be set when the cap is hit"
     );
 }
 

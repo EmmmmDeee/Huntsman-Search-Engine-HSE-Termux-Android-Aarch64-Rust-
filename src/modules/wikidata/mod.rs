@@ -15,11 +15,15 @@
 //! Precision over recall: Wikidata only holds *notable* entities and a name-only
 //! seed has namesakes, so a false match is costly. We therefore require the
 //! item's label to contain every seed token as a whole word (the same gate as
-//! `acnc_charities`/`gleif_lei`); the top such match is fanned out, further
-//! same-name items are surfaced as low-confidence candidates (with their Wikidata
-//! id + description in evidence — nothing dropped) that stay below the expansion
-//! floor so a namesake can't pivot. Single-source findings keep base confidence
-//! until another module independently corroborates them.
+//! `acnc_charities`/`gleif_lei`); the top such match is fanned out, and up to
+//! [`MAX_CANDIDATES`] further same-name items are surfaced as low-confidence
+//! candidates (with their Wikidata id + description in evidence) that stay
+//! below the expansion floor so a namesake can't pivot. When more than
+//! `MAX_CANDIDATES` items match the name (the search API's own `limit=10`
+//! bounds how many can), the surplus IS dropped — the primary/head entity is
+//! tagged `truncated` with the true match count so an operator knows the
+//! candidate list isn't exhaustive. Single-source findings keep base
+//! confidence until another module independently corroborates them.
 
 mod builder;
 mod claims;
@@ -149,7 +153,10 @@ impl Module for Wikidata {
         let search: SearchResp = fetch_json(&ctx.http, SRC, &search_url(query)).await?;
 
         // Eligible = items whose label matches every seed token (precision gate).
-        let eligible: Vec<&self::types::SearchHit> = search
+        // The filter is split from the cap so `total_name_matches` recovers the
+        // pre-cap count — the search API's own `search` array (limit=10) can
+        // hold more name-matching items than MAX_CANDIDATES surfaces.
+        let name_matched: Vec<&self::types::SearchHit> = search
             .search
             .iter()
             .filter(|h| {
@@ -157,8 +164,10 @@ impl Module for Wikidata {
                     .as_deref()
                     .is_some_and(|l| name_matches_query(l, query))
             })
-            .take(MAX_CANDIDATES)
             .collect();
+        let total_name_matches = name_matched.len();
+        let eligible: Vec<&self::types::SearchHit> =
+            name_matched.into_iter().take(MAX_CANDIDATES).collect();
 
         let Some((primary, rest)) = eligible.split_first() else {
             return Ok(ModuleResult::new());
@@ -202,6 +211,34 @@ impl Module for Wikidata {
                 .map(|hit| candidate_entity(hit, target.kind, &ctx.scan_id)),
         );
 
+        // More name-matching items existed than MAX_CANDIDATES surfaced — the
+        // head entity (always out.entities[0]: both branches above push it
+        // first, before rest is appended) carries the signal so an operator
+        // knows the candidate list isn't exhaustive.
+        if let Some(head) = out.entities.first_mut() {
+            mark_candidate_truncation(head, total_name_matches);
+        }
+
         Ok(out)
     }
+}
+
+/// Signal on the primary/head entity when more items matched the seed name
+/// than [`MAX_CANDIDATES`] surfaced. **Pure**. No-op when the match count is
+/// within the cap.
+fn mark_candidate_truncation(head: &mut Entity, total_name_matches: usize) {
+    if total_name_matches <= MAX_CANDIDATES {
+        return;
+    }
+    head.tag("truncated");
+    head.add_evidence(
+        Evidence::new(
+            SRC,
+            format!(
+                "Wikidata name search matched {total_name_matches} item(s); only {MAX_CANDIDATES} surfaced"
+            ),
+        )
+        .with_attr("total_name_matches", total_name_matches.to_string())
+        .with_attr("candidates_capped", "true"),
+    );
 }
