@@ -145,10 +145,17 @@ fn au002_refuses_to_fuse_an_implausible_identity_dump() {
             false,
         ));
     }
-    assert!(
-        rule_au_002_identity_cluster(&big, "scan", 0).is_empty(),
-        "30 distinct emails is a dump, not an identity cluster"
+    let rejections = rule_au_002_identity_cluster(&big, "scan", 0);
+    assert_eq!(
+        rejections.len(),
+        1,
+        "implausibility must surface as AU-002-REJECT"
     );
+    assert_eq!(
+        rejections[0].rule_id, "AU-002-REJECT",
+        "30 distinct emails is a dump: rejection surfaces, not silent drop"
+    );
+    assert_eq!(rejections[0].severity, Severity::Medium);
 
     // A plausible identity (a handful each) still fires.
     let small = vec![

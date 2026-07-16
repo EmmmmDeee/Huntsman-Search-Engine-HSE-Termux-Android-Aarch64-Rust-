@@ -44,9 +44,32 @@ pub(in crate::core::correlator) fn rule_au_002_identity_cluster(
     if emails.is_empty() || usernames.is_empty() || phones.is_empty() {
         return Vec::new();
     }
+
+    // If any entity kind exceeds plausibility limits, surface the implausibility
+    // instead of silently dropping. Per Rule 0.7 priority 2 (Evidence Integrity):
+    // operator must be informed of rejected candidates, not left with silence.
     if emails.len() > MAX_PER_KIND || usernames.len() > MAX_PER_KIND || phones.len() > MAX_PER_KIND
     {
-        return Vec::new();
+        let mut uids: Vec<String> = emails.iter().map(|e| e.uid.clone()).collect();
+        uids.extend(usernames.iter().map(|e| e.uid.clone()));
+        uids.extend(phones.iter().map(|e| e.uid.clone()));
+
+        return vec![Correlation {
+            rule_id: "AU-002-REJECT".into(),
+            rule_name: "Identity cluster (implausibility rejection)".into(),
+            severity: Severity::Medium,
+            description: format!(
+                "AU-002 candidate rejected: {} email(s), {} username(s), {} phone(s) exceed plausibility limit (max {})",
+                emails.len(),
+                usernames.len(),
+                phones.len(),
+                MAX_PER_KIND
+            ),
+            entity_uids: uids,
+            scan_id: scan_id.into(),
+            ts,
+            rank: 0.0,
+        }];
     }
 
     let mut uids: Vec<String> = emails.iter().map(|e| e.uid.clone()).collect();

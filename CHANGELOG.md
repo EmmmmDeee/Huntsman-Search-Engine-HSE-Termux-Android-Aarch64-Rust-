@@ -8,6 +8,22 @@ All notable changes to this project are documented here. Format per [Keep a Chan
 
 ### Added
 
+- T3 quality: AU-002 identity-cluster implausibility rejection signaling as AU-002-REJECT finding
+
+### Changed
+
+- AU-002 rule now surfaces MAX_PER_KIND limit-exceeded cases as Medium-severity rejection findings instead of silent drops
+
+### Fixed
+
+- AU-002 silent drop when entity counts exceed plausibility limits: now signals rejection per Rule 0.7 priority 2 (Evidence Integrity)
+
+---
+
+## Previous [Unreleased] (RETIRED — merged to infrastructure commit 2691cb5d)
+
+### Added
+
 - Engineering reference quick-lookup guide (`docs/ENGINEERING_REFERENCE.md`) with decision matrix and enforcement checklist
 - Planning tree documents (`docs/PROBLEM_TREE.md`, `docs/SOLUTION_TREE.md`, `docs/gap_register.md`) for autonomous development cycle
 - Spatial consistency check for AU-098 geo-consensus findings: suppresses findings when coordinate-based consensus states scatter beyond 300 km

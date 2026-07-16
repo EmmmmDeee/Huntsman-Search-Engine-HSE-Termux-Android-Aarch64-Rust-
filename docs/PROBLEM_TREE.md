@@ -26,7 +26,13 @@ Guarantee (Rule 0.7 priority 1): correctness. Priority 2: evidence integrity. Pr
 
 ## 3. Open Defects (`[ ]`)
 
-**None identified.** All known defects from the debug bundle (HSE session #3789) have been fixed:
+**None identified.** All known defects have been fixed:
+
+**Recent (this arc):**
+
+- `[x]` T3.001 — AU-002 identity-cluster implausibility silent drop: surfaced as AU-002-REJECT finding (commit TBD)
+
+**Prior arcs:**
 
 - `[x]` T2.136 — T2.165 (30 modules): silent failure swallows replaced with honest error surfacing (commits 1988a03c through b69ca682, plus preceding series)
 - `[x]` see_know module name: error labels corrected from "seek_now" to "see_know" (commit be9e4760)
@@ -82,6 +88,8 @@ Per Rule 0.7 (priorities 1-5 are correctness, evidence integrity, safety, determ
 ---
 
 ## 8. Cycle Log
+
+**2026-07-16 14:XX UTC** — T3.001 fixed: AU-002 identity-cluster implausibility rejection now surfaced as AU-002-REJECT finding (Medium severity) instead of silent drop. Per Rule 0.7 priority 2 (Evidence Integrity) and T2 quality doctrine, operator informed of rejected candidates. Tests updated. Gate passing. Paired: SOLUTION_TREE.md.
 
 **2026-07-16 13:57 UTC** — Initial tree created. Project state: all P0-P2 defects closed, Rule 0-0.7 baseline established, gate passing, 242 tests passing. Marked ready for autonomous cycle. Deferred work correctly out-of-scope per Rule 0.7. See SOLUTION_TREE.md for paired solution state.
 

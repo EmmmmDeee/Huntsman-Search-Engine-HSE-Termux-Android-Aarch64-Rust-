@@ -94,6 +94,19 @@ Rationale: Trees and code are one artifact. Stale trees mislead the next develop
 
 **None.** All P0-P2 defects are closed (PROBLEM_TREE.md §3). CAP (capability program) is correctly deferred per Rule 0.7.
 
+### T3 Quality — Evidence Integrity in Correlator Rules
+
+**Built:** AU-002 identity-cluster implausibility rejection signaling
+
+- Modified `rule_au_002_identity_cluster` to surface MAX_PER_KIND exceeded cases as AU-002-REJECT findings
+- Severity: Medium (rejection notification, not positive claim)
+- Rationale: Per Rule 0.7 priority 2 (Evidence Integrity), operator informed of rejected candidates instead of silent drop
+- Mirrors T2 quality pattern: explicit error/rejection surfacing
+- Tests updated to verify AU-002-REJECT fires on implausibility
+- Test coverage: 3 au002 tests passing
+
+**Status:** ✓ Complete. T3 quality gate passing.
+
 ---
 
 ## 4. Gap Analysis
