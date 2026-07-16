@@ -195,3 +195,33 @@ use crate::core::entity::Evidence;
         let results = rule_au_083_locale_multi_email_corroboration(&[a], "scan-au083-arch", 0);
         assert_eq!(results.len(), 1, "locale rule must fire when >=2 email_locale evidence entries share a locale");
     }
+
+    #[test]
+    fn au114_transitive_credential_reuse_blast_radius_fires() {
+        // Secret A ties alice+bob; a DIFFERENT secret B ties bob+carol. No single
+        // secret spans all three, so only the transitive-closure rule (AU-114)
+        // surfaces the full three-account blast radius — the AU-047 blind spot.
+        let mut a = Entity::new(
+            EntityKind::Password,
+            "$2b$12$abcdefghijklmnopqrstuv0123456789ABCDEFGHIJKLMNOPqrst",
+            0.9,
+            "scan-au114",
+        );
+        a.add_evidence(Evidence::new("breach", "record").with_attr("username", "alice"));
+        a.add_evidence(Evidence::new("breach", "record").with_attr("username", "bob"));
+        let mut b = Entity::new(
+            EntityKind::Password,
+            "$2b$12$ZYXWVUTSRQPONMLKJIHGFE9876543210zyxwvutsrqponmlkAAAA",
+            0.9,
+            "scan-au114",
+        );
+        b.add_evidence(Evidence::new("breach", "record").with_attr("username", "bob"));
+        b.add_evidence(Evidence::new("breach", "record").with_attr("username", "carol"));
+        let results = super::rule_au_114_credential_reuse_blast_radius(&[a, b], "scan-au114", 0);
+        assert_eq!(
+            results.len(),
+            1,
+            "AU-114 must fire once on a transitive reuse chain no single secret spans"
+        );
+        assert_eq!(results[0].rule_id, "AU-114");
+    }

@@ -405,6 +405,10 @@ const RULES: &[RuleFn] = &[
     // network block also discovered this scan — shared hosting infrastructure,
     // reusing util::spf's CIDR-containment maths rather than duplicating it.
     rule_au_112_shared_cidr_infrastructure,
+    // AU-114: the transitive closure of reused-secret links — a chain of
+    // accounts no single secret spans (AU-047's blind spot), reported as one
+    // credential-reuse blast radius.
+    rule_au_114_credential_reuse_blast_radius,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
