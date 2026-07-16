@@ -40,10 +40,15 @@ use super::*;
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
         // A port almost-certainly closed.
         let closed = port.wrapping_add(1).max(1);
-        let open = scan_ports(ip, &[(port, "test"), (closed, "closed")], 4).await;
+        let (open, transport_failures) =
+            scan_ports(ip, &[(port, "test"), (closed, "closed")], 4).await;
         assert!(
             open.iter().any(|(p, _)| *p == port),
             "listening port must be open: {open:?}"
+        );
+        assert_eq!(
+            transport_failures, 0,
+            "a real listener/refusal is not a transport failure"
         );
     }
 
@@ -59,4 +64,20 @@ use super::*;
             );
         }
         assert!(!crate::core::validation::is_non_routable_ip("8.8.8.8"));
+    }
+
+    // -- all_ports_failed_transport failure contract (T2.159) ---------------
+
+    #[test]
+    fn all_ports_failed_transport_only_on_total_outage_with_no_hits() {
+        // T2.159 regression: every connect collapsing to `NetworkUnreachable`/
+        // `HostUnreachable` (no route to the target at all) previously read
+        // identically to 23/23 genuine closed/filtered ports.
+        assert!(all_ports_failed_transport(23, 23, 0));
+        // Mixed: some ports genuinely closed/filtered, not a total outage.
+        assert!(!all_ports_failed_transport(5, 23, 0));
+        // Any real hit, even alongside transport failures, is not an outage.
+        assert!(!all_ports_failed_transport(22, 23, 1));
+        // The vacuous case (no ports configured) must never be a false outage.
+        assert!(!all_ports_failed_transport(0, 0, 0));
     }

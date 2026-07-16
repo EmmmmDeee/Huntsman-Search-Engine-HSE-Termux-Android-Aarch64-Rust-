@@ -14,6 +14,7 @@
 //! sockets). Bounded by a short per-port timeout × capped concurrency, and it
 //! refuses non-routable / reserved IPs so it can't be turned on internal space.
 
+use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,7 +25,7 @@ use tokio::sync::Semaphore;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -129,7 +130,13 @@ impl Module for PortScan {
             return Ok(result);
         }
 
-        let open = scan_ports(ip, PORTS, MAX_CONCURRENT).await;
+        let (open, transport_failures) = scan_ports(ip, PORTS, MAX_CONCURRENT).await;
+        if all_ports_failed_transport(transport_failures, PORTS.len(), open.len()) {
+            return Err(Error::module(
+                SRC,
+                "every port connect attempt failed at the transport level (no route to target?) — cannot determine whether the target has open ports",
+            ));
+        }
         if open.is_empty() {
             return Ok(result);
         }
@@ -179,35 +186,72 @@ fn bracketed(ip: IpAddr) -> String {
     }
 }
 
-/// Concurrently TCP-connect to each `(port, service)` and return the open ones,
-/// sorted by port (deterministic). A connect that succeeds within
-/// [`CONNECT_TIMEOUT`] = open; timeout / refused / error = not reported.
+/// The classified outcome of one port's connect attempt.
+enum PortOutcome {
+    Open(u16, &'static str),
+    /// A genuine target-side negative: refused (RST) or silently dropped
+    /// within [`CONNECT_TIMEOUT`] — the scan reached the target.
+    Closed,
+    /// The connect never reached the network at all — no route to the
+    /// destination's address family (`NetworkUnreachable`/`HostUnreachable`),
+    /// plausible on this project's mobile/Termux deployment target. This is
+    /// categorically different from a target-side refusal or timeout.
+    TransportFailure,
+}
+
+/// Concurrently TCP-connect to each `(port, service)` and return the open
+/// ones (sorted by port, deterministic) alongside a count of connects that
+/// failed at the transport level rather than receiving a genuine
+/// closed/filtered response from the target.
 async fn scan_ports(
     ip: IpAddr,
     ports: &[(u16, &'static str)],
     concurrency: usize,
-) -> Vec<(u16, &'static str)> {
+) -> (Vec<(u16, &'static str)>, usize) {
     let sem = Arc::new(Semaphore::new(concurrency.max(1)));
     let mut set = tokio::task::JoinSet::new();
     for &(port, svc) in ports {
         let sem = Arc::clone(&sem);
         set.spawn(async move {
-            let _permit = sem.acquire_owned().await.ok()?;
+            let Ok(_permit) = sem.acquire_owned().await else {
+                return PortOutcome::Closed;
+            };
             let addr = SocketAddr::new(ip, port);
             match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr)).await {
-                Ok(Ok(_stream)) => Some((port, svc)),
-                _ => None,
+                Ok(Ok(_stream)) => PortOutcome::Open(port, svc),
+                Ok(Err(e))
+                    if matches!(
+                        e.kind(),
+                        ErrorKind::NetworkUnreachable | ErrorKind::HostUnreachable
+                    ) =>
+                {
+                    PortOutcome::TransportFailure
+                }
+                _ => PortOutcome::Closed,
             }
         });
     }
     let mut open: Vec<(u16, &'static str)> = Vec::new();
+    let mut transport_failures = 0usize;
     while let Some(joined) = set.join_next().await {
-        if let Ok(Some(hit)) = joined {
-            open.push(hit);
+        match joined {
+            Ok(PortOutcome::Open(port, svc)) => open.push((port, svc)),
+            // A JoinError (task panic/cancel) means the outcome is unknown,
+            // not a genuine closed/filtered response — count it the same as
+            // a transport failure rather than silently treating it as clean.
+            Ok(PortOutcome::TransportFailure) | Err(_) => transport_failures += 1,
+            Ok(PortOutcome::Closed) => {}
         }
     }
     open.sort_by_key(|(p, _)| *p);
-    open
+    (open, transport_failures)
+}
+
+/// True only when every port connect attempt failed at the transport level
+/// (never reached the target) and nothing was found — a genuine total
+/// outage, distinguished from ports that were merely closed/filtered.
+fn all_ports_failed_transport(transport_failures: usize, total_ports: usize, found: usize) -> bool {
+    found == 0 && total_ports > 0 && transport_failures == total_ports
 }
 
 #[cfg(test)]
