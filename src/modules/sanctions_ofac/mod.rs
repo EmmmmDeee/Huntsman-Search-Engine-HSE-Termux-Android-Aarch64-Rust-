@@ -152,6 +152,49 @@ async fn fetch_sdn_list(ctx: &ModuleContext) -> Vec<SdnRecord> {
 /// Map one matched SDN record to its entity, if its kind has a matching
 /// `EntityKind` — `Vessel`/`Aircraft` rows return `None` (see module doc).
 /// **Pure** — no network/IO.
+/// Screen the SDN list against the query `tokens`: keep the name-matching
+/// person/organisation records, count the **total** that matched, emit up to
+/// [`MAX_HITS`] as entities, and stamp that total on every emitted entity —
+/// tagging them `truncated` when more matched than are shown.
+///
+/// Without the total, a capped 20-entity result is indistinguishable from the
+/// complete set: because [`parse_sdn_csv`] preserves the SDN file's own row
+/// order (no relevance ranking), a common transliterated name that matches well
+/// over 20 rows would silently drop every match past the cap in arbitrary file
+/// order — a genuine OFAC hit could be the 21st and vanish with no signal to
+/// look further. This is the exact `total_matches` discipline the AU registers
+/// (`acnc_charities`/`opencorporates`/`au_unclaimed`) already apply.
+///
+/// `Vessel`/`Aircraft` rows are excluded from both the count and the output —
+/// they never map to an entity. Pure (no I/O), so the count/cap contract is
+/// unit-testable off a fixture list.
+fn screen(records: &[SdnRecord], tokens: &[String], scan_id: &str) -> Vec<Entity> {
+    let matched: Vec<&SdnRecord> = records
+        .iter()
+        .filter(|r| record_name_matches(&r.name, tokens))
+        .filter(|r| matches!(r.kind, SdnKind::Individual | SdnKind::Organisation))
+        .collect();
+    let total = matched.len();
+    let truncated = total > MAX_HITS;
+    matched
+        .into_iter()
+        .take(MAX_HITS)
+        .filter_map(|rec| build_entity(rec, scan_id))
+        .map(|mut e| {
+            if let Some(ev) = e.evidence.first_mut() {
+                ev.attributes
+                    .insert("total_matches".to_string(), total.to_string());
+            }
+            if truncated {
+                // More SDN rows matched than MAX_HITS shows — flag the partial
+                // view so a capped result can't read as the complete match set.
+                e.tag("truncated");
+            }
+            e
+        })
+        .collect()
+}
+
 fn build_entity(rec: &SdnRecord, scan_id: &str) -> Option<Entity> {
     let (kind, display_name) = match rec.kind {
         SdnKind::Individual => (EntityKind::Person, humanise_name(&rec.name)),
@@ -249,15 +292,7 @@ impl Module for SanctionsOfac {
         }
 
         let records = fetch_sdn_list(ctx).await;
-        for rec in records
-            .iter()
-            .filter(|r| record_name_matches(&r.name, &tokens))
-            .take(MAX_HITS)
-        {
-            if let Some(e) = build_entity(rec, &ctx.scan_id) {
-                result.push(e);
-            }
-        }
+        result.entities = screen(&records, &tokens, &ctx.scan_id);
         Ok(result)
     }
 }

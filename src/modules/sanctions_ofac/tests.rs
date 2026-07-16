@@ -101,3 +101,65 @@ fn vessel_and_aircraft_rows_emit_no_entity() {
     assert!(build_entity(&aircraft, "s").is_none());
 }
 
+fn indiv(ent_num: u64) -> SdnRecord {
+    SdnRecord {
+        ent_num,
+        name: "SMITH, JOHN".to_string(),
+        kind: SdnKind::Individual,
+        program: "SDGT".to_string(),
+        title: String::new(),
+        remarks: String::new(),
+    }
+}
+
+#[test]
+fn screen_stamps_total_matches_and_flags_truncation_beyond_the_cap() {
+    // T2.130 regression: 25 SDN individuals all matching "john smith" — more than
+    // the MAX_HITS cap. Because parse_sdn_csv preserves file order with no
+    // ranking, the old `.take(MAX_HITS)` dropped every match past the 20th in
+    // arbitrary order with NO signal — a genuine OFAC hit could be the 21st and
+    // vanish, and the operator saw 20 entities believing that was the whole set.
+    let records: Vec<SdnRecord> = (0..25).map(indiv).collect();
+    let tokens = name_tokens("John Smith");
+    let ents = screen(&records, &tokens, "scan");
+
+    assert_eq!(ents.len(), MAX_HITS, "only MAX_HITS entities are emitted");
+    for e in &ents {
+        assert_eq!(
+            e.evidence[0]
+                .attributes
+                .get("total_matches")
+                .map(String::as_str),
+            Some("25"),
+            "every emitted hit must record the TRUE match total, not just the cap"
+        );
+        assert!(
+            e.has_tag("truncated"),
+            "a capped result must be tagged truncated so it can't read as complete"
+        );
+    }
+}
+
+#[test]
+fn screen_reports_true_total_without_truncating_below_the_cap() {
+    // Below the cap: the total is still surfaced (3), but nothing is truncated.
+    let records: Vec<SdnRecord> = (0..3).map(indiv).collect();
+    let tokens = name_tokens("John Smith");
+    let ents = screen(&records, &tokens, "scan");
+
+    assert_eq!(ents.len(), 3);
+    for e in &ents {
+        assert_eq!(
+            e.evidence[0]
+                .attributes
+                .get("total_matches")
+                .map(String::as_str),
+            Some("3")
+        );
+        assert!(
+            !e.has_tag("truncated"),
+            "an uncapped result must NOT be tagged truncated"
+        );
+    }
+}
+
