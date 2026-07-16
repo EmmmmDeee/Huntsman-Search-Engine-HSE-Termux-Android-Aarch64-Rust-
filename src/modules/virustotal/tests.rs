@@ -189,3 +189,64 @@ use super::*;
             "expected at most {MAX_DNS_RECORDS} IP pivots, got {ip_count}"
         );
     }
+
+    #[test]
+    fn dns_truncation_at_max_records_is_surfaced() {
+        // Regression: when DNS records exceed MAX_DNS_RECORDS, truncation must be
+        // surfaced in evidence so operator knows the scan stopped at a hard cap.
+        let total_records = MAX_DNS_RECORDS + 15;
+        let records: Vec<String> = (0..total_records)
+            .map(|i| format!(r#"{{"type":"A","value":"203.0.113.{}"}}"#, i % 250))
+            .collect();
+        let json = format!(
+            r#"{{"data":{{"attributes":{{"last_dns_records":[{}]}}}}}}"#,
+            records.join(",")
+        );
+        let target = Target::new(TargetKind::Domain, "evil.example");
+        let entities = build_all(&target, &json);
+        let seed = &entities[0];
+
+        // Should have capped and set truncation flag.
+        assert!(seed.has_tag("truncated"), "seed must be tagged 'truncated'");
+
+        let ev = &seed.evidence[0];
+        assert_eq!(
+            ev.attributes.get("total_dns_records").map(String::as_str),
+            Some(total_records.to_string().as_str()),
+            "total_dns_records must reflect all records in response"
+        );
+        assert_eq!(
+            ev.attributes.get("dns_records_capped").map(String::as_str),
+            Some("true"),
+            "dns_records_capped must be set when limit is hit"
+        );
+    }
+
+    #[test]
+    fn dns_no_truncation_when_under_cap() {
+        // No truncation flag when DNS records stay below MAX_DNS_RECORDS.
+        let total_records = MAX_DNS_RECORDS - 5;
+        let records: Vec<String> = (0..total_records)
+            .map(|i| format!(r#"{{"type":"A","value":"203.0.113.{}"}}"#, i % 250))
+            .collect();
+        let json = format!(
+            r#"{{"data":{{"attributes":{{"last_dns_records":[{}]}}}}}}"#,
+            records.join(",")
+        );
+        let target = Target::new(TargetKind::Domain, "evil.example");
+        let entities = build_all(&target, &json);
+        let seed = &entities[0];
+
+        assert!(!seed.has_tag("truncated"), "seed must not be tagged when under cap");
+
+        let ev = &seed.evidence[0];
+        assert_eq!(
+            ev.attributes.get("total_dns_records").map(String::as_str),
+            Some(total_records.to_string().as_str()),
+            "total_dns_records must be present even when not capped"
+        );
+        assert!(
+            !ev.attributes.contains_key("dns_records_capped"),
+            "dns_records_capped must be absent when not truncated"
+        );
+    }

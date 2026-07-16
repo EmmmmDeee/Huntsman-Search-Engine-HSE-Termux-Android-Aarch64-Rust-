@@ -140,6 +140,17 @@ fn build_entities(target: &Target, attrs: &VtAttributes, scan_id: &str) -> Vec<E
     if let Some(rep) = attrs.reputation {
         ev = ev.with_attr("reputation", rep.to_string());
     }
+
+    let total_dns_records = attrs.last_dns_records.len();
+    let dns_records_capped = total_dns_records > MAX_DNS_RECORDS;
+    if total_dns_records > 0 {
+        ev = ev.with_attr("total_dns_records", total_dns_records.to_string());
+    }
+    if dns_records_capped {
+        ev = ev.with_attr("dns_records_capped", "true");
+        e.tag("truncated");
+    }
+
     e.add_evidence(ev);
 
     let mut out = vec![e];
