@@ -16,7 +16,7 @@ use async_trait::async_trait;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -88,9 +88,11 @@ impl Module for WebserverBanner {
         };
 
         let port_suffix = port.map_or(String::new(), |p| format!(":{p}"));
+        let mut transport_failures = 0usize;
         for scheme in ["https", "http"] {
             let url = format!("{scheme}://{host}{port_suffix}/");
             let Ok(resp) = ctx.http.head(&url).send().await else {
+                transport_failures += 1;
                 continue;
             };
             let status = resp.status();
@@ -128,6 +130,12 @@ impl Module for WebserverBanner {
             let mut result = ModuleResult::new();
             result.push(entity);
             return Ok(result);
+        }
+        if transport_failures == 2 {
+            return Err(Error::module(
+                SRC,
+                "both https and http HEAD requests failed at the transport level — cannot determine whether this host has a fingerprintable banner",
+            ));
         }
         Ok(ModuleResult::new())
     }

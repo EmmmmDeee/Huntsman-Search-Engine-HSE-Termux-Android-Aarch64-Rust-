@@ -138,3 +138,66 @@ use super::*;
         assert_eq!(e.kind, EntityKind::IpAddress);
         assert_eq!(e.value, "1.2.3.4");
     }
+
+    // -- process() total-transport-failure guard (T2.166) -------------------
+
+    fn test_ctx() -> ModuleContext {
+        let (bus, _rx) = tokio::sync::broadcast::channel(1);
+        ModuleContext {
+            scan_id: "t".into(),
+            bus,
+            http: reqwest::Client::new(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn process_surfaces_err_when_both_schemes_fail_transport() {
+        // T2.166 regression: the loop's `let Ok(resp) = ... else { continue }`
+        // previously discarded every transport failure with no counter, so a
+        // host that refuses both HTTPS and HTTP outright produced the same
+        // Ok(empty) as a host that answered both but had no fingerprint
+        // headers.
+        let target = Target::new(TargetKind::Url, "http://127.0.0.1:1/");
+        let ctx = test_ctx();
+        let out = WebserverBanner.process(&target, &ctx).await;
+        assert!(
+            out.is_err(),
+            "a host refusing both schemes must surface as Err, not a silent empty result"
+        );
+    }
+
+    #[tokio::test]
+    async fn process_stays_ok_when_only_one_scheme_fails_transport() {
+        // The HTTPS attempt against a plain-HTTP listener fails at the TLS
+        // layer (a real transport failure); the HTTP fallback then reaches
+        // the same server and gets a real answer. Only one of the two
+        // attempts failed transport-wise, so this must stay Ok — never
+        // escalate just because the higher-priority scheme alone failed.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            // Exactly two sequential connection attempts are expected — the
+            // failed HTTPS handshake, then the successful HTTP fallback.
+            for _ in 0..2 {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = vec![0u8; 2048];
+                let _ = sock.read(&mut buf).await;
+                let body = "";
+                let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.flush().await;
+            }
+        });
+        let target = Target::new(TargetKind::Url, format!("http://{addr}/"));
+        let ctx = test_ctx();
+        let out = WebserverBanner.process(&target, &ctx).await;
+        assert!(
+            out.is_ok(),
+            "only one scheme failing transport-wise must not escalate to Err: {out:?}"
+        );
+    }
