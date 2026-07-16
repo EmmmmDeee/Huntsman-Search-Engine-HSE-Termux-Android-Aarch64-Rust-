@@ -69,6 +69,22 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
         ev = ev.with_attr("gst_registered", &gst);
     }
 
+    let mut trading_names_capped = false;
+    let mut total_trading_names = 0;
+    if let Some(names) = data.get("BusinessName").and_then(|v| v.as_array()) {
+        total_trading_names = names.len();
+        if total_trading_names > super::MAX_TRADING_NAMES {
+            trading_names_capped = true;
+        }
+    }
+
+    if trading_names_capped {
+        org.tag("truncated");
+        ev = ev
+            .with_attr("total_trading_names", total_trading_names.to_string())
+            .with_attr("trading_names_capped", "true");
+    }
+
     org.add_evidence(ev);
     result.push(org);
 
@@ -162,6 +178,8 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
 /// touch lower since a name match is fuzzier than an exact ABN lookup. Entries
 /// missing a name or ABN are skipped; an empty/absent `Names` array is a no-op.
 /// `query` is the original search term, recorded in evidence for provenance.
+/// If the total matches exceed MAX_NAME_HITS, a seed entity is emitted with
+/// truncation evidence so the operator knows what was capped.
 pub(super) fn parse_name_results(
     data: &Value,
     query: &str,
@@ -172,6 +190,10 @@ pub(super) fn parse_name_results(
         Some(n) if !n.is_empty() => n,
         _ => return,
     };
+
+    let total_matches = names.len();
+    let matches_capped = total_matches > super::MAX_NAME_HITS;
+    let mut matched_count = 0usize;
 
     for entry in names.iter().take(super::MAX_NAME_HITS) {
         let abn = str_field(entry, "Abn").unwrap_or_default();
@@ -187,6 +209,8 @@ pub(super) fn parse_name_results(
         if name.is_empty() || abn.is_empty() {
             continue;
         }
+
+        matched_count += 1;
 
         let conf = match score {
             90..=100 => 0.90,
@@ -254,6 +278,23 @@ pub(super) fn parse_name_results(
             }
         }
     }
+
+    if matched_count == 0 {
+        return;
+    }
+
+    let mut seed = Entity::new(EntityKind::Organisation, query, 0.55, scan_id);
+    seed.tag("abr");
+    seed.tag("search-result");
+    let mut ev = Evidence::new(SRC, format!("ABR name search for '{query}'"))
+        .with_attr("matched_count", matched_count.to_string())
+        .with_attr("total_matches", total_matches.to_string());
+    if matches_capped {
+        ev = ev.with_attr("matches_capped", "true");
+        seed.tag("truncated");
+    }
+    seed.add_evidence(ev);
+    result.push(seed);
 }
 
 /// Read `key` from a JSON object as an owned `String`, treating an empty

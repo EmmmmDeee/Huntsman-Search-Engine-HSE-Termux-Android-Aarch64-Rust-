@@ -5,6 +5,7 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::modules::abn_lookup::parse::{parse_abn_result, parse_name_results};
+use crate::modules::abn_lookup::{MAX_NAME_HITS, MAX_TRADING_NAMES};
 
 #[test]
 fn accepts_org_and_abn() {
@@ -90,7 +91,7 @@ fn parse_name_search_response() {
         .iter()
         .filter(|e| e.kind == EntityKind::Organisation)
         .collect();
-    assert_eq!(orgs.len(), 2);
+    assert_eq!(orgs.len(), 3, "2 matches + 1 seed entity");
 }
 
 #[test]
@@ -117,7 +118,10 @@ fn name_results_are_not_truncated_at_the_old_cap_of_ten() {
         .iter()
         .filter(|e| e.kind == EntityKind::Organisation)
         .count();
-    assert_eq!(orgs, 12, "all 12 ranked candidates must emit, not just 10");
+    assert_eq!(
+        orgs, 13,
+        "all 12 ranked candidates must emit plus 1 seed entity, not just 10"
+    );
 }
 
 #[test]
@@ -294,5 +298,202 @@ fn max_timeout_covers_worst_case_retry_path() {
         AbnLookup.max_timeout_ms() >= worst_case,
         "budget {} < worst-case retry path {worst_case}ms",
         AbnLookup.max_timeout_ms()
+    );
+}
+
+#[test]
+fn trading_names_truncation_is_signaled() {
+    // Regression: when trading names exceed MAX_TRADING_NAMES, truncation
+    // must be surfaced in evidence so the operator knows the scan stopped at
+    // a hard cap.
+    let mut names = Vec::new();
+    for i in 0..30 {
+        names.push(format!("Trade Name {i}"));
+    }
+    let data = serde_json::json!({
+        "Abn": "19415776361",
+        "EntityName": "PARENTCO PTY LTD",
+        "EntityTypeCode": "PRV",
+        "AbnStatus": "Active",
+        "AddressState": "VIC",
+        "AddressPostcode": "3000",
+        "BusinessName": names
+    });
+
+    let mut result = ModuleResult::new();
+    parse_abn_result(&data, "test", &mut result);
+
+    let org = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Organisation && e.value == "PARENTCO PTY LTD")
+        .unwrap();
+
+    assert!(org.has_tag("truncated"), "org must be tagged 'truncated'");
+
+    let ev = &org.evidence[0];
+    assert_eq!(
+        ev.attributes.get("total_trading_names").map(String::as_str),
+        Some("30"),
+        "total_trading_names must reflect all trading names in response"
+    );
+    assert_eq!(
+        ev.attributes
+            .get("trading_names_capped")
+            .map(String::as_str),
+        Some("true"),
+        "trading_names_capped must be set when limit is hit"
+    );
+
+    let trading_names = result
+        .entities
+        .iter()
+        .filter(|e| {
+            e.kind == EntityKind::Organisation && e.tags.contains(&"business-name".to_string())
+        })
+        .count();
+    assert!(
+        trading_names <= MAX_TRADING_NAMES,
+        "trading names must be capped at MAX_TRADING_NAMES"
+    );
+}
+
+#[test]
+fn trading_names_no_truncation_when_under_cap() {
+    // No truncation flag when trading names stay below MAX_TRADING_NAMES.
+    let names: Vec<_> = (0..10).map(|i| format!("Trade Name {i}")).collect();
+    let data = serde_json::json!({
+        "Abn": "19415776361",
+        "EntityName": "PARENTCO PTY LTD",
+        "EntityTypeCode": "PRV",
+        "AbnStatus": "Active",
+        "AddressState": "VIC",
+        "AddressPostcode": "3000",
+        "BusinessName": names
+    });
+
+    let mut result = ModuleResult::new();
+    parse_abn_result(&data, "test", &mut result);
+
+    let org = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Organisation && e.value == "PARENTCO PTY LTD")
+        .unwrap();
+
+    assert!(
+        !org.has_tag("truncated"),
+        "org must not be tagged when under cap"
+    );
+
+    let ev = &org.evidence[0];
+    assert!(
+        !ev.attributes.contains_key("trading_names_capped"),
+        "trading_names_capped must be absent when not truncated"
+    );
+}
+
+#[test]
+fn name_search_truncation_is_signaled() {
+    // Regression: when name matches exceed MAX_NAME_HITS, truncation must be
+    // surfaced in evidence so the operator knows the scan stopped at a hard cap.
+    let entries: Vec<_> = (0..120)
+        .map(|i| {
+            serde_json::json!({
+                "Abn": format!("1941577636{i:02}"),
+                "Name": format!("CANDIDATE {i:03} PTY LTD"),
+                "NameType": "Entity Name",
+                "State": "VIC",
+                "Postcode": "3000",
+                "Score": 90
+            })
+        })
+        .collect();
+    let data = serde_json::json!({ "Names": entries });
+
+    let mut result = ModuleResult::new();
+    parse_name_results(&data, "CANDIDATE", "test", &mut result);
+
+    let seed = result
+        .entities
+        .iter()
+        .find(|e| {
+            e.kind == EntityKind::Organisation
+                && e.value == "CANDIDATE"
+                && e.tags.contains(&"search-result".to_string())
+        })
+        .unwrap();
+
+    assert!(seed.has_tag("truncated"), "seed must be tagged 'truncated'");
+
+    let ev = &seed.evidence[0];
+    assert_eq!(
+        ev.attributes.get("total_matches").map(String::as_str),
+        Some("120"),
+        "total_matches must reflect all matches in response"
+    );
+    assert_eq!(
+        ev.attributes.get("matches_capped").map(String::as_str),
+        Some("true"),
+        "matches_capped must be set when limit is hit"
+    );
+
+    let org_count = result
+        .entities
+        .iter()
+        .filter(|e| {
+            e.kind == EntityKind::Organisation && !e.tags.contains(&"search-result".to_string())
+        })
+        .count();
+    assert!(
+        org_count <= MAX_NAME_HITS,
+        "organisations must be capped at MAX_NAME_HITS"
+    );
+}
+
+#[test]
+fn name_search_no_truncation_when_under_cap() {
+    // No truncation flag when name matches stay below MAX_NAME_HITS.
+    let entries: Vec<_> = (0..50)
+        .map(|i| {
+            serde_json::json!({
+                "Abn": format!("1941577636{i:02}"),
+                "Name": format!("CANDIDATE {i:03} PTY LTD"),
+                "NameType": "Entity Name",
+                "State": "VIC",
+                "Postcode": "3000",
+                "Score": 90
+            })
+        })
+        .collect();
+    let data = serde_json::json!({ "Names": entries });
+
+    let mut result = ModuleResult::new();
+    parse_name_results(&data, "CANDIDATE", "test", &mut result);
+
+    let seed = result
+        .entities
+        .iter()
+        .find(|e| {
+            e.kind == EntityKind::Organisation
+                && e.value == "CANDIDATE"
+                && e.tags.contains(&"search-result".to_string())
+        })
+        .unwrap();
+
+    assert!(
+        !seed.has_tag("truncated"),
+        "seed must not be tagged when under cap"
+    );
+
+    let ev = &seed.evidence[0];
+    assert_eq!(
+        ev.attributes.get("total_matches").map(String::as_str),
+        Some("50"),
+        "total_matches must be present even when not capped"
+    );
+    assert!(
+        !ev.attributes.contains_key("matches_capped"),
+        "matches_capped must be absent when not truncated"
     );
 }
