@@ -225,3 +225,20 @@ use crate::core::entity::Evidence;
         );
         assert_eq!(results[0].rule_id, "AU-114");
     }
+
+    #[test]
+    fn au115_trackable_rf_device_fires_on_a_hardware_mac_in_a_sweep() {
+        // A universally-administered device (0x3C, U/L bit clear) alongside a
+        // randomized privacy address (0x36, U/L bit set) — both radar-tagged.
+        let mut hw = Entity::new(EntityKind::MacAddress, "3C:5A:B4:11:22:33", 0.8, "scan-au115");
+        hw.tag("bluetooth");
+        let mut rnd = Entity::new(EntityKind::MacAddress, "36:32:62:36:31:33", 0.8, "scan-au115");
+        rnd.tag("bluetooth");
+        let results = super::rule_au_115_trackable_rf_device(&[hw, rnd], "scan-au115", 0);
+        assert_eq!(
+            results.len(),
+            1,
+            "AU-115 must fire when a trackable hardware MAC is present in an RF sweep"
+        );
+        assert_eq!(results[0].rule_id, "AU-115");
+    }

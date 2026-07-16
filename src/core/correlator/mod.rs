@@ -409,6 +409,10 @@ const RULES: &[RuleFn] = &[
     // accounts no single secret spans (AU-047's blind spot), reported as one
     // credential-reuse blast radius.
     rule_au_114_credential_reuse_blast_radius,
+    // AU-115: an RF-observed (radar/WiGLE) sweep's trackable hardware devices —
+    // universally-administered MACs a real device broadcasts — separated from
+    // the randomized privacy addresses that rotate and can't be followed.
+    rule_au_115_trackable_rf_device,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

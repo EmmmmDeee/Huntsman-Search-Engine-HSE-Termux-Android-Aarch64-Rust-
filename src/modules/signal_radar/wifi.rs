@@ -65,18 +65,34 @@ pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> ModuleResult {
             e.tag(band);
         }
 
-        e.add_evidence(
-            Evidence::new(SRC, format!("Wi-Fi AP scan: {ssid}"))
-                .with_attr("ssid", ssid)
-                .with_attr("bssid", &ap.bssid)
-                .with_attr("rssi_dbm", ap.rssi.unwrap_or(0).to_string())
-                .with_attr("frequency_mhz", ap.frequency.unwrap_or(0).to_string())
-                .with_attr(
-                    "channel_width",
-                    ap.channel_width.as_deref().unwrap_or("unknown"),
-                )
-                .with_attr("timestamp", ap.timestamp.unwrap_or(0).to_string()),
-        );
+        let mut ev = Evidence::new(SRC, format!("Wi-Fi AP scan: {ssid}"))
+            .with_attr("ssid", ssid)
+            .with_attr("bssid", &ap.bssid)
+            .with_attr("rssi_dbm", ap.rssi.unwrap_or(0).to_string())
+            .with_attr("frequency_mhz", ap.frequency.unwrap_or(0).to_string())
+            .with_attr(
+                "channel_width",
+                ap.channel_width.as_deref().unwrap_or("unknown"),
+            )
+            .with_attr("timestamp", ap.timestamp.unwrap_or(0).to_string());
+
+        // OUI classification (parity with the WiGLE + Bluetooth paths): attribute
+        // the AP's vendor/device class from a real hardware BSSID, or flag a
+        // locally-administered BSSID as `randomized`. A randomized BSSID is a
+        // privacy/rotating address, not a fixed access point — the exact
+        // distinction AU-115 surfaces so it is never treated as a trackable pin.
+        if let Some(oui) = crate::util::oui::classify_mac(&ap.bssid) {
+            e.tag(format!("vendor:{}", oui.vendor));
+            e.tag(format!("device:{}", oui.class.as_str()));
+            let trackable = crate::util::oui::is_locally_administered(&ap.bssid) == Some(false);
+            e.tag(if trackable { "trackable" } else { "randomized" });
+            ev = ev
+                .with_attr("vendor", oui.vendor)
+                .with_attr("device_class", oui.class.as_str())
+                .with_attr("trackable", trackable.to_string());
+        }
+
+        e.add_evidence(ev);
 
         result.push(e);
     }

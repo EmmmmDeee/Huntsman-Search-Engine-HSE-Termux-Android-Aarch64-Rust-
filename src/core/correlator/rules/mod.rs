@@ -524,6 +524,7 @@ mod breach;
 pub(crate) mod breach_pii;
 mod broker;
 mod crypto;
+mod device_track;
 pub(crate) mod gap;
 mod geo;
 mod identity;
@@ -543,6 +544,7 @@ mod transitive;
 
 pub(super) use assoc::*;
 pub(super) use breach::*;
+pub(super) use device_track::*;
 // Narrow re-export at the enum's own `pub(in crate::core)` visibility — the
 // blanket glob above is only `pub(super)` (correlator-internal), which would
 // otherwise cap `Secret` there too and block `core::relation::builders` from
