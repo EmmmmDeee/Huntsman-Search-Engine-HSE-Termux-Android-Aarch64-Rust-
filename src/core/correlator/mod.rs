@@ -417,6 +417,11 @@ const RULES: &[RuleFn] = &[
     // broadcast persistent hardware MACs — a self-carried tracking fingerprint,
     // the bonded counterpart to AU-115's third-party trackable devices.
     rule_au_117_personal_device_constellation,
+    // AU-118: two distinct registrable domains in one scan whose brand labels
+    // are homoglyph/typo look-alikes — a phishing/brand-abuse domain standing up
+    // beside the genuine one (dnstwist at the correlation layer, across every
+    // discovered domain rather than only seed permutations).
+    rule_au_118_lookalike_domain_impersonation,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

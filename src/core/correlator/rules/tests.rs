@@ -285,3 +285,18 @@ use crate::core::entity::Evidence;
         );
         assert_eq!(results[0].rule_id, "AU-117");
     }
+
+    #[test]
+    fn au118_lookalike_domain_impersonation_fires() {
+        // paypal.com vs paypa1.com — a homoglyph phishing look-alike discovered
+        // in the same scan.
+        let real = Entity::new(EntityKind::Domain, "paypal.com", 0.8, "scan-au118");
+        let fake = Entity::new(EntityKind::Domain, "paypa1.com", 0.8, "scan-au118");
+        let results = super::rule_au_118_lookalike_domain_impersonation(&[real, fake], "scan-au118", 0);
+        assert_eq!(
+            results.len(),
+            1,
+            "AU-118 must fire on a homoglyph domain look-alike pair"
+        );
+        assert_eq!(results[0].rule_id, "AU-118");
+    }

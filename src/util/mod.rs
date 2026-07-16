@@ -11,6 +11,7 @@ pub mod cell_db;
 pub mod circuit_breaker;
 pub mod city_coords;
 pub mod ckan;
+pub mod confusable;
 pub mod curl;
 pub mod curl_client;
 pub mod diagnostics;

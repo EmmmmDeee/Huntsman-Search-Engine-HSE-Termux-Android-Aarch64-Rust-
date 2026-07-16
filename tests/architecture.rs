@@ -111,6 +111,12 @@ fn core_does_not_import_util_directly() {
                 // same classifier the WiGLE emit path already applies so the two
                 // never disagree on which addresses are real hardware.
                 && !line.contains("util::oui")
+                // Pure, offline look-alike/typosquat comparison for domain
+                // labels (homoglyph skeleton fold + Levenshtein; no I/O, no
+                // deps, no Unicode tables) — same leaf category as
+                // `util::oui`/`util::abn`. AU-118 uses it to flag a phishing /
+                // brand-impersonation domain standing up beside the genuine one.
+                && !line.contains("util::confusable")
                 && !line.contains("util::preflight")
                 && !line.contains("util::keys::signup_hint")
                 && !line.contains("util::oathnet::reset_budget")
