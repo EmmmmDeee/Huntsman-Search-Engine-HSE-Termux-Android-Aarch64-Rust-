@@ -31,7 +31,8 @@ use crate::core::{
 };
 use crate::util::termux::termux_cmd;
 
-use helpers::{accuracy_to_confidence, build_tower_device, mcc_to_centroid, query_opencellid};
+use crate::util::geo::cell_range_to_confidence;
+use helpers::{build_tower_device, mcc_to_centroid, query_opencellid};
 use types::TowerKey;
 
 const OPENCELLID_KEY_ENV: &str = "HUNTSMAN_OPENCELLID_KEY";
@@ -130,7 +131,7 @@ impl Module for CellIntel {
                 && let Some((lat, lon, range)) = query_opencellid(ctx, api, &key, radio).await
             {
                 let coords = format!("{lat:.6},{lon:.6}");
-                let confidence = accuracy_to_confidence(range);
+                let confidence = cell_range_to_confidence(range);
                 let mut e = Entity::new(EntityKind::Coordinates, &coords, confidence, &ctx.scan_id);
                 e.tag("geoint");
                 e.tag(crate::core::tags::CELL_TOWER);

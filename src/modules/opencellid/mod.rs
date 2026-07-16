@@ -315,7 +315,7 @@ fn emit_cell_entities(result: &mut ModuleResult, cell: &CellEntry, scan_id: &str
         return;
     }
     let coords = format!("{t_lat:.6},{t_lon:.6}");
-    let confidence = accuracy_to_confidence(cell.range.unwrap_or(5000));
+    let confidence = crate::util::geo::cell_range_to_confidence(cell.range.unwrap_or(5000));
     let mut geo = Entity::new(EntityKind::Coordinates, &coords, confidence, scan_id);
     geo.tag("geoint");
     geo.tag(crate::core::tags::CELL_TOWER);
@@ -329,16 +329,4 @@ fn emit_cell_entities(result: &mut ModuleResult, cell: &CellEntry, scan_id: &str
             .with_attr("source", "OpenCelliD"),
     );
     result.push(geo);
-}
-
-/// Map the reported accuracy radius (metres) to an entity confidence level.
-/// Tighter coverage → higher confidence. Identical scale to `cell_intel`.
-pub(super) fn accuracy_to_confidence(range_m: u64) -> f64 {
-    match range_m {
-        0..=100 => 0.85,
-        101..=500 => 0.75,
-        501..=2000 => 0.65,
-        2001..=10000 => 0.50,
-        _ => 0.35,
-    }
 }

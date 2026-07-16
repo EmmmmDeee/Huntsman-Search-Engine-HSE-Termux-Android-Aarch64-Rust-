@@ -75,6 +75,34 @@ pub fn is_valid_coords(lat: f64, lon: f64) -> bool {
         && !(lat == 0.0 && lon == 0.0)
 }
 
+/// Map a cell tower's reported accuracy radius (metres) to the confidence of the
+/// `Coordinates` entity derived from it: a tight range (≤100 m, a dense urban
+/// small-cell) is trusted at 0.85, widening to 0.35 for a >10 km rural
+/// macro-cell whose centroid could be far from the device.
+///
+/// Single-sourced here because three cell modules — `cell_intel` (OpenCelliD
+/// API), `cell_local` (on-device DB), and `opencellid` (area lookup) — all derive
+/// a tower-fix confidence from the same radius and MUST agree: the correlator
+/// would otherwise assign different confidence to identical tower-accuracy data
+/// depending on which module surfaced the tower.
+///
+/// ```
+/// use huntsman_search_engine::util::geo::cell_range_to_confidence;
+///
+/// assert_eq!(cell_range_to_confidence(50), 0.85);
+/// assert_eq!(cell_range_to_confidence(50_000), 0.35);
+/// ```
+#[must_use]
+pub fn cell_range_to_confidence(range_m: u64) -> f64 {
+    match range_m {
+        0..=100 => 0.85,
+        101..=500 => 0.75,
+        501..=2000 => 0.65,
+        2001..=10000 => 0.50,
+        _ => 0.35,
+    }
+}
+
 /// Compose a `"City, Region, Country"` address line from a geolocation record,
 /// dropping an empty middle component (region / state / province) so a record
 /// with only a city and country reads `"City, Country"` — never the

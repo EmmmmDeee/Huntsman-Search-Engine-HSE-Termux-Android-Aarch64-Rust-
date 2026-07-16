@@ -43,6 +43,23 @@ use super::*;
     }
 
     #[test]
+    fn cell_range_to_confidence_tiers_and_boundaries() {
+        // Every tier edge, so a retune of one band can't silently shift another.
+        // This single check replaces the three byte-identical copies that used
+        // to live in cell_intel / cell_local / opencellid (T2.126).
+        assert!((cell_range_to_confidence(0) - 0.85).abs() < 1e-9);
+        assert!((cell_range_to_confidence(100) - 0.85).abs() < 1e-9);
+        assert!((cell_range_to_confidence(101) - 0.75).abs() < 1e-9);
+        assert!((cell_range_to_confidence(500) - 0.75).abs() < 1e-9);
+        assert!((cell_range_to_confidence(501) - 0.65).abs() < 1e-9);
+        assert!((cell_range_to_confidence(2000) - 0.65).abs() < 1e-9);
+        assert!((cell_range_to_confidence(2001) - 0.50).abs() < 1e-9);
+        assert!((cell_range_to_confidence(10000) - 0.50).abs() < 1e-9);
+        assert!((cell_range_to_confidence(10001) - 0.35).abs() < 1e-9);
+        assert!((cell_range_to_confidence(50_000) - 0.35).abs() < 1e-9);
+    }
+
+    #[test]
     fn in_australia_box_covers_continent_and_tasmania_only() {
         assert!(is_in_australia(-27.4766, 153.0166)); // Brisbane
         assert!(is_in_australia(-33.8688, 151.2093)); // Sydney

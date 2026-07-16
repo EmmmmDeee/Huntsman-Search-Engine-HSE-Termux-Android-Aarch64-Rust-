@@ -104,19 +104,6 @@ pub(super) async fn query_opencellid(
     Some((lat, lon, data.range.unwrap_or(5000)))
 }
 
-/// Map a cell fix's accuracy radius (metres) to a coordinate confidence: a tight
-/// tower range (≤100 m, a dense urban small-cell) is trusted at 0.85, widening to
-/// 0.35 for a >10 km rural macro-cell whose centroid could be far from the device.
-pub(super) fn accuracy_to_confidence(range_m: u64) -> f64 {
-    match range_m {
-        0..=100 => 0.85,
-        101..=500 => 0.75,
-        501..=2000 => 0.65,
-        2001..=10000 => 0.50,
-        _ => 0.35,
-    }
-}
-
 /// `mcc`/`mnc` come as `"505"` on some Android versions and `505` on others.
 /// Normalise to string; missing -> empty.
 pub(super) fn json_to_str(v: &Option<serde_json::Value>) -> Cow<'_, str> {

@@ -1,4 +1,4 @@
-use super::{AreaResp, OpenCellId, accuracy_to_confidence};
+use super::{AreaResp, OpenCellId};
 use crate::core::module::{Module, ModuleCost};
 use crate::core::scan::{Target, TargetKind};
 
@@ -102,19 +102,8 @@ fn parse_missing_cells_key_defaults_empty() {
     assert_eq!(resp.cells.len(), 0);
 }
 
-#[test]
-fn confidence_bands_match_cell_intel_scale() {
-    // Boundaries at each tier edge.
-    assert!((accuracy_to_confidence(0) - 0.85).abs() < 1e-9);
-    assert!((accuracy_to_confidence(100) - 0.85).abs() < 1e-9);
-    assert!((accuracy_to_confidence(101) - 0.75).abs() < 1e-9);
-    assert!((accuracy_to_confidence(500) - 0.75).abs() < 1e-9);
-    assert!((accuracy_to_confidence(501) - 0.65).abs() < 1e-9);
-    assert!((accuracy_to_confidence(2000) - 0.65).abs() < 1e-9);
-    assert!((accuracy_to_confidence(2001) - 0.50).abs() < 1e-9);
-    assert!((accuracy_to_confidence(10000) - 0.50).abs() < 1e-9);
-    assert!((accuracy_to_confidence(10001) - 0.35).abs() < 1e-9);
-}
+// The tower-range → confidence tiers are single-sourced in `util::geo`
+// (`cell_range_to_confidence`) and exhaustively boundary-tested there (T2.126).
 
 #[test]
 fn cell_entry_optional_fields_default_to_none() {

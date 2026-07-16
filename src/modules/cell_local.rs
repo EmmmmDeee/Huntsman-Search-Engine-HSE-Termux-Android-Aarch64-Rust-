@@ -112,7 +112,7 @@ impl Module for CellLocal {
             // ── Coordinates entity ────────────────────────────────────────────
             if crate::util::geo::is_valid_coords(cell.lat, cell.lon) {
                 let coords = format!("{:.6},{:.6}", cell.lat, cell.lon);
-                let conf = accuracy_to_confidence(cell.range_m as u64);
+                let conf = crate::util::geo::cell_range_to_confidence(cell.range_m as u64);
                 let mut geo = Entity::new(EntityKind::Coordinates, &coords, conf, &ctx.scan_id);
                 geo.tag("geoint");
                 geo.tag(crate::core::tags::CELL_TOWER);
@@ -128,20 +128,6 @@ impl Module for CellLocal {
         }
 
         Ok(result)
-    }
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-/// Convert a cell tower's reported accuracy radius to a confidence score.
-/// Mirrors the same function in `cell_intel` for consistent output.
-fn accuracy_to_confidence(range_m: u64) -> f64 {
-    match range_m {
-        0..=100 => 0.85,
-        101..=500 => 0.75,
-        501..=2000 => 0.65,
-        2001..=10000 => 0.50,
-        _ => 0.35,
     }
 }
 
@@ -181,12 +167,6 @@ mod tests {
         assert_eq!(CellLocal.max_timeout_ms(), 5_000);
     }
 
-    #[test]
-    fn accuracy_to_confidence_tiers() {
-        assert!((accuracy_to_confidence(50) - 0.85).abs() < 1e-6);
-        assert!((accuracy_to_confidence(300) - 0.75).abs() < 1e-6);
-        assert!((accuracy_to_confidence(1000) - 0.65).abs() < 1e-6);
-        assert!((accuracy_to_confidence(5000) - 0.50).abs() < 1e-6);
-        assert!((accuracy_to_confidence(50_000) - 0.35).abs() < 1e-6);
-    }
+    // The tower-range → confidence tiers are single-sourced in `util::geo`
+    // (`cell_range_to_confidence`) and tested there (T2.126).
 }

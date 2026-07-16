@@ -1,7 +1,5 @@
 use super::CellIntel;
-use super::helpers::{
-    accuracy_to_confidence, build_tower_device, json_to_str, mcc_to_centroid, parse_cells_survey,
-};
+use super::helpers::{build_tower_device, json_to_str, mcc_to_centroid, parse_cells_survey};
 use crate::core::entity::EntityKind;
 use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
@@ -166,15 +164,9 @@ fn json_to_str_handles_all_variants() {
 }
 
 // ---- Geolocation helper tests (from cell_locate) ----
-
-#[test]
-fn accuracy_to_confidence_tiers() {
-    assert!((accuracy_to_confidence(50) - 0.85).abs() < 1e-6);
-    assert!((accuracy_to_confidence(300) - 0.75).abs() < 1e-6);
-    assert!((accuracy_to_confidence(1000) - 0.65).abs() < 1e-6);
-    assert!((accuracy_to_confidence(5000) - 0.50).abs() < 1e-6);
-    assert!((accuracy_to_confidence(50000) - 0.35).abs() < 1e-6);
-}
+// The tower-range → confidence tiers are now single-sourced in `util::geo`
+// (`cell_range_to_confidence`) and tested there (T2.126); this module no longer
+// keeps its own copy of that mapping or its test.
 
 #[test]
 fn mcc_us_maps_to_us_centroid() {
