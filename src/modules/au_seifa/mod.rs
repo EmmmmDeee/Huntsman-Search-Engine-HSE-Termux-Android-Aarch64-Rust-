@@ -29,12 +29,12 @@ use serde_json::{Map, Value};
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::geo::parse_coords;
-use crate::util::http::{RequestBuilderExt, UA_BROWSER, read_text, urlencode};
+use crate::util::http::{RequestBuilderExt, UA_BROWSER, http_status_error, read_text, urlencode};
 
 const SRC: &str = "au_seifa";
 /// ABS SEIFA 2016 ArcGIS service, SA2 layer (id 2) — carries all four indexes.
@@ -108,7 +108,7 @@ impl Module for AuSeifa {
             "{URL}?geometry={geom}&geometryType=esriGeometryPoint&inSR=4326\
              &spatialRel=esriSpatialRelIntersects&outFields=*&returnGeometry=false&f=json"
         );
-        let Some(attrs) = fetch_attrs(ctx, &url).await else {
+        let Some(attrs) = fetch_attrs(ctx, &url).await? else {
             return Ok(result);
         };
         assemble(&target.value, &attrs, &ctx.scan_id, &mut result);
@@ -116,22 +116,28 @@ impl Module for AuSeifa {
     }
 }
 
-/// Fetch the SA2 SEIFA feature's attributes for the point. `None` on a miss.
-async fn fetch_attrs(ctx: &ModuleContext, url: &str) -> Option<Map<String, Value>> {
+/// Fetch the SA2 SEIFA feature's attributes for the point. `Ok(None)` is the
+/// genuine "no SA2 coverage here" answer (a 200 with an empty `features`
+/// array — e.g. an offshore point). Every other failure — transport error,
+/// non-2xx (this ArcGIS endpoint has no distinguishable "not found" status,
+/// only 200-with-empty-array; a 403 is a documented WAF-block failure mode),
+/// body-read, or JSON-decode failure — propagates as `Err` instead of
+/// collapsing into the same `None` as the genuine miss.
+async fn fetch_attrs(ctx: &ModuleContext, url: &str) -> Result<Option<Map<String, Value>>> {
     // The ABS WAF 403s a request with no User-Agent (cf. the AU registry scrapers).
     let resp = ctx
         .http
         .get(url)
         .header("User-Agent", UA_BROWSER)
         .send_tagged(SRC)
-        .await
-        .ok()?;
+        .await?;
     if !resp.status().is_success() {
-        return None;
+        return Err(http_status_error(SRC, resp).await);
     }
-    let body = read_text(SRC, resp).await.ok()?;
-    let parsed: QueryResp = serde_json::from_str(&body).ok()?;
-    parsed.features.into_iter().next().map(|f| f.attributes)
+    let body = read_text(SRC, resp).await?;
+    let parsed: QueryResp = serde_json::from_str(&body)
+        .map_err(|e| Error::module(SRC, format!("parsing SEIFA response: {e}")))?;
+    Ok(parsed.features.into_iter().next().map(|f| f.attributes))
 }
 
 /// Build entities from the SA2 SEIFA attributes: the coordinate enriched with
