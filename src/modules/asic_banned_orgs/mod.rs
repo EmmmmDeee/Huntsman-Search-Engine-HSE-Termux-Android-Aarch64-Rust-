@@ -83,13 +83,43 @@ impl Module for AsicBannedOrgs {
         }
 
         let records = ckan_query(ctx, name).await?;
+        let mut matched_count = 0usize;
         for rec in records
             .iter()
             .filter(|r| record_name_matches(r, &tokens))
             .take(MAX_HITS)
         {
+            matched_count += 1;
             emit_banned_org(rec, &ctx.scan_id, &mut result);
         }
+
+        if matched_count == 0 {
+            return Ok(result);
+        }
+
+        // Signal if results were truncated.
+        let total_matches = records
+            .iter()
+            .filter(|r| record_name_matches(r, &tokens))
+            .count();
+        let matches_capped = total_matches > MAX_HITS;
+
+        let mut seed = Entity::new(EntityKind::Organisation, name, 0.55, &ctx.scan_id);
+        seed.tag("asic");
+        seed.tag("search-result");
+        let mut ev = Evidence::new(
+            SRC,
+            format!("ASIC Banned & Disqualified Organisations search for '{name}'"),
+        )
+        .with_attr("matched_count", matched_count.to_string())
+        .with_attr("total_matches", total_matches.to_string());
+        if matches_capped {
+            ev = ev.with_attr("matches_capped", "true");
+            seed.tag("truncated");
+        }
+        seed.add_evidence(ev);
+        result.push(seed);
+
         Ok(result)
     }
 }
