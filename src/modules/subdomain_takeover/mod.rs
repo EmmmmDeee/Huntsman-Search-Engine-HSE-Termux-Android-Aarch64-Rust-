@@ -12,7 +12,7 @@ use async_trait::async_trait;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -25,6 +25,16 @@ pub struct SubdomainTakeover;
 /// provider, the human-readable service name, and the HTTP body marker that
 /// proves the resource is unclaimed (`None` ⇒ prove via NXDOMAIN instead).
 type Fingerprint = (&'static str, &'static str, Option<&'static str>);
+
+/// True when a CNAME-lookup failure is a genuine "server answered, no CNAME
+/// here" (NXDOMAIN / NoRecordsFound) — the correct clean miss. False for
+/// every other `NetError` kind (`Timeout`, `Io`, `Busy`, `NoConnections`,
+/// `Proto`, an unrelated `ResponseCode`), which must propagate as a real
+/// resolution failure instead of being read as "no CNAME". **Pure** — unit
+/// tested directly against synthetic `NetError` values, no live DNS (Rule 3).
+fn is_genuine_no_cname(e: &hickory_resolver::net::NetError) -> bool {
+    e.is_nx_domain() || e.is_no_records_found()
+}
 
 /// The fingerprints whose CNAME pattern is a substring of `cname_target`, in
 /// table order. **Pure** — the pattern-matching half of detection, split out so
@@ -114,23 +124,34 @@ impl Module for SubdomainTakeover {
 
         let resolver = crate::util::dns::shared_resolver();
         // Resolve the CNAME chain and take the first CNAME answer, normalised to
-        // a trailing-dot-free lower-case host. A lookup error (NXDOMAIN, no
-        // CNAME) collapses to `None` and short-circuits below.
-        let cname = resolver
+        // a trailing-dot-free lower-case host. Only a genuine "server answered,
+        // no CNAME here" (NXDOMAIN / NoRecordsFound) is the correct clean miss;
+        // every other NetError (Timeout, Io, Busy, NoConnections, Proto, an
+        // unrelated ResponseCode) is a real resolution failure and must not
+        // read as "no CNAME" — this module's sole evidence-producing path is
+        // gated on this one lookup, so swallowing its failure silently zeroes
+        // the whole module's output for the rest of the scan.
+        let cname_target = match resolver
             .lookup(&domain, hickory_resolver::proto::rr::RecordType::CNAME)
             .await
-            .ok()
-            .and_then(|lookup| {
-                lookup.answers().iter().find_map(|record| {
-                    if let hickory_resolver::proto::rr::RData::CNAME(ref c) = record.data {
-                        Some(c.0.to_ascii().trim_end_matches('.').to_lowercase())
-                    } else {
-                        None
-                    }
-                })
-            });
+        {
+            Ok(lookup) => lookup.answers().iter().find_map(|record| {
+                if let hickory_resolver::proto::rr::RData::CNAME(ref c) = record.data {
+                    Some(c.0.to_ascii().trim_end_matches('.').to_lowercase())
+                } else {
+                    None
+                }
+            }),
+            Err(e) if is_genuine_no_cname(&e) => None,
+            Err(e) => {
+                return Err(Error::module(
+                    SRC,
+                    format!("CNAME lookup for {domain} failed: {e}"),
+                ));
+            }
+        };
 
-        let Some(cname_target) = cname else {
+        let Some(cname_target) = cname_target else {
             return Ok(result);
         };
 

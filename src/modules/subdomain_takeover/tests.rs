@@ -97,3 +97,73 @@ use super::*;
         assert!(!e.evidence[0].attributes.contains_key("cname_target"));
         assert!(e.has_tag("takeover:Heroku"));
     }
+
+    // ── is_genuine_no_cname (pure, T2.151) ──────────────────────────────
+    //
+    // T2.151 regression: process() previously discarded EVERY NetError kind
+    // (Timeout, Io, Busy, NoConnections, Proto, an unrelated ResponseCode)
+    // into the same `None` as a genuine "server answered, no CNAME here" —
+    // silently zeroing the module's sole evidence-producing path on any
+    // resolver hiccup. Only NXDOMAIN/NoRecordsFound is the correct clean
+    // miss. Constructed against real hickory_resolver::net types — no live
+    // DNS (Rule 3): the trivially-constructible unit-variant failures prove
+    // the negative case, and a genuine NoRecordsFound(NXDomain) proves the
+    // positive.
+
+    #[test]
+    fn is_genuine_no_cname_false_for_real_transport_and_protocol_failures() {
+        use hickory_resolver::net::NetError;
+        for e in [
+            NetError::Timeout,
+            NetError::Busy,
+            NetError::NoConnections,
+            NetError::Message("synthetic proto failure"),
+        ] {
+            assert!(
+                !is_genuine_no_cname(&e),
+                "{e:?} is a real resolution failure, not a genuine 'no CNAME' answer"
+            );
+        }
+    }
+
+    #[test]
+    fn is_genuine_no_cname_true_for_nxdomain_and_no_records_found() {
+        use hickory_resolver::net::{DnsError, NetError, NoRecords};
+        use hickory_resolver::proto::op::{Query, ResponseCode};
+        use hickory_resolver::proto::rr::{Name, RecordType};
+
+        let query = Query::query(Name::root(), RecordType::CNAME);
+        let nxdomain = NetError::Dns(DnsError::NoRecordsFound(NoRecords::new(
+            query.clone(),
+            ResponseCode::NXDomain,
+        )));
+        assert!(
+            is_genuine_no_cname(&nxdomain),
+            "a genuine NXDOMAIN must read as 'no CNAME', not a failure"
+        );
+
+        // NoError-with-empty-answer (the domain exists but has no CNAME) is
+        // likewise a genuine clean miss, distinct from NXDOMAIN.
+        let no_records = NetError::Dns(DnsError::NoRecordsFound(NoRecords::new(
+            query,
+            ResponseCode::NoError,
+        )));
+        assert!(
+            is_genuine_no_cname(&no_records),
+            "a NoError/no-records answer must also read as 'no CNAME'"
+        );
+    }
+
+    #[test]
+    fn is_genuine_no_cname_false_for_an_unrelated_response_code() {
+        // A server-side error response code (e.g. SERVFAIL/REFUSED) is a real
+        // outage/misconfiguration signal, not a "no CNAME" answer.
+        use hickory_resolver::net::{DnsError, NetError};
+        use hickory_resolver::proto::op::ResponseCode;
+
+        let servfail = NetError::Dns(DnsError::ResponseCode(ResponseCode::ServFail));
+        assert!(
+            !is_genuine_no_cname(&servfail),
+            "a SERVFAIL response code must not read as 'no CNAME'"
+        );
+    }
