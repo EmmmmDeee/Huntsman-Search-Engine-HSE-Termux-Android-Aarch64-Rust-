@@ -266,3 +266,22 @@ use crate::core::entity::Evidence;
         );
         assert_eq!(results[0].rule_id, "AU-116");
     }
+
+    #[test]
+    fn au117_personal_device_constellation_fires_on_a_bonded_kit() {
+        // Two paired (bond:bonded) Bluetooth devices; one broadcasts a persistent
+        // universally-administered MAC (0x3C) — a self-carried hardware fingerprint.
+        let mut car = Entity::new(EntityKind::MacAddress, "3C:5A:B4:11:22:33", 0.8, "scan-au117");
+        car.tag("bluetooth");
+        car.tag("bond:bonded");
+        let mut buds = Entity::new(EntityKind::MacAddress, "36:32:62:36:31:33", 0.8, "scan-au117");
+        buds.tag("bluetooth");
+        buds.tag("bond:bonded");
+        let results = super::rule_au_117_personal_device_constellation(&[car, buds], "scan-au117", 0);
+        assert_eq!(
+            results.len(),
+            1,
+            "AU-117 must fire on a bonded kit with a trackable member"
+        );
+        assert_eq!(results[0].rule_id, "AU-117");
+    }

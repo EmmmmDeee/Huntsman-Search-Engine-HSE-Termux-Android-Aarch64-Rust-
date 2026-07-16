@@ -413,6 +413,10 @@ const RULES: &[RuleFn] = &[
     // universally-administered MACs a real device broadcasts — separated from
     // the randomized privacy addresses that rotate and can't be followed.
     rule_au_115_trackable_rf_device,
+    // AU-117: the operator's OWN bonded (paired) Bluetooth kit whose members
+    // broadcast persistent hardware MACs — a self-carried tracking fingerprint,
+    // the bonded counterpart to AU-115's third-party trackable devices.
+    rule_au_117_personal_device_constellation,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
