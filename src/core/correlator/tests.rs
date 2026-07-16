@@ -3153,6 +3153,19 @@ fn au075_named_associate_from_breach_record() {
 }
 
 #[test]
+fn au075_non_breach_parent_is_not_a_named_associate() {
+    // A live phone scan mislabeled a search/crawl "parent" DOMAIN relationship
+    // ("parent" = wikipedia.org) as a breached relative. A non-breach source
+    // must never produce a named-associate finding.
+    let mut e = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    e.add_evidence(Evidence::new("search_engines", "serp").with_attr("parent", "wikipedia.org"));
+    assert!(
+        super::rules::rule_au_075_named_associate(&[e], "s", 0).is_empty(),
+        "a search-sourced domain 'parent' is not a breach-record associate"
+    );
+}
+
+#[test]
 fn au090_jurisdiction_two_sources_agree_is_high() {
     let mut e = Entity::new(EntityKind::Person, "Cindy Haynes", 0.9, "s");
     e.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("state", "QLD"));

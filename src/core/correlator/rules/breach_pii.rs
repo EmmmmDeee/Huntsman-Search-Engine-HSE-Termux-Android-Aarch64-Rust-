@@ -96,31 +96,22 @@ fn scan_evidence<'a>(entities: &'a [Entity], keys: &[&str]) -> Vec<(String, &'a 
 /// source(s) (geocode)" for a bare AU mobile. Allow-list (default-deny) so a
 /// newly added enrichment source can never leak in.
 ///
-/// `see_know` (SeekNow) is included deliberately: [`super::source_family`] files
-/// it under `"presence"`, so a `source_family == "breach"` gate would silently
-/// drop real SeekNow breach localities. This is the `ev.source` analogue of
-/// AU-001's tag-based `BREACH_SOURCES` (`breach.rs`) — keep the two in sync when
-/// a breach module is added. Pure.
+/// Delegates to the canonical provider-family taxonomy ([`super::source_family`],
+/// which substring-matches the breach/stealer/leak corpora — `hibp`, `dehashed`,
+/// `oathnet*`, `xposed*`, `leakcheck`, `leakix`, `snusbase`, `intelx`, `pwned*`,
+/// `hudsonrock`, and any `*breach*` / `*stealer*` source) so this predicate can
+/// never drift from the rest of the correlator — with ONE correction:
+/// `source_family` files `see_know` (SeekNow, a rich breach source) under
+/// `"presence"` (its name matches a presence needle first), so it is added back
+/// explicitly, or real SeekNow breach localities/addresses would silently
+/// vanish. Every non-breach enricher that leaks the same attributes — `geocode`,
+/// `photon`, `search_engines`, and the AU registries (`au_property`,
+/// `au_electoral`, `abn_lookup`, `au_people`) — is classified non-breach by
+/// `source_family` and so is correctly rejected. Pure.
 fn is_breach_source(name: &str) -> bool {
-    matches!(
-        name,
-        "oathnet_pro"
-            | "see_know"
-            | "dehashed"
-            | "hudsonrock"
-            | "hibp"
-            | "xposed_or_not"
-            | "intelx"
-            | "leakix"
-            | "psbdmp"
-            | "comb_search"
-            | "osintcat"
-            | "niamonx"
-            | "pwned_passwords"
-            | "emailrep"
-            | "seon"
-            | "breach_directory"
-    )
+    super::source_family(name) == "breach"
+        || name.eq_ignore_ascii_case("see_know")
+        || name.eq_ignore_ascii_case("see-know")
 }
 
 // ── AU-073 — Subject date of birth ───────────────────────────────────────────
@@ -227,6 +218,11 @@ pub(in crate::core::correlator) fn rule_au_073_subject_date_of_birth(
     // dob → (distinct sources, uids), both ordered for determinism.
     let mut by_dob: BTreeMap<String, SourcesAndUids> = BTreeMap::new();
     for (raw, source, uid) in scan_evidence(entities, DOB_KEYS) {
+        // Only a genuine breach/stealer record is a "breach record source" for a
+        // DOB (see `is_breach_source`).
+        if !is_breach_source(source) {
+            continue;
+        }
         let Some(dob) = normalise_dob(&raw) else {
             continue;
         };
@@ -375,6 +371,11 @@ pub(in crate::core::correlator) fn rule_au_074_au_government_id_exposure(
         // (masked value, sources, uids) per distinct underlying value.
         let mut found: BTreeMap<String, SourcesAndUids> = BTreeMap::new();
         for (raw, source, uid) in scan_evidence(entities, gid.keys) {
+            // A government ID is a "breach record" disclosure only from a genuine
+            // breach/stealer source (see `is_breach_source`).
+            if !is_breach_source(source) {
+                continue;
+            }
             if gid.validate.is_some_and(|v| !v(&raw)) {
                 continue; // key matched but the value fails its checksum/format
             }
@@ -441,6 +442,13 @@ pub(in crate::core::correlator) fn rule_au_075_named_associate(
     let mut assoc: BTreeMap<(String, &'static str), SourcesAndUids> = BTreeMap::new();
     for &(key, relation) in ASSOCIATE_KEYS {
         for (raw, source, uid) in scan_evidence(entities, &[key]) {
+            // Only a genuine breach/stealer record names an associate; a
+            // search/crawl "parent" (a DOMAIN parent, e.g. "wikipedia.org")
+            // otherwise mislabels an unrelated site as a breached relative (see
+            // `is_breach_source`).
+            if !is_breach_source(source) {
+                continue;
+            }
             // A plausible person name: at least two letters, contains a letter,
             // not a lone token like "self"/"n/a".
             let name = raw.trim();
@@ -1313,6 +1321,11 @@ pub(in crate::core::correlator) fn rule_au_104_bank_account_exposure(
     // institution -> (distinct sources, uids).
     let mut by_bank: BTreeMap<&'static str, SourcesAndUids> = BTreeMap::new();
     for (raw, source, uid) in scan_evidence(entities, BSB_KEYS) {
+        // A BSB/account exposure counts only from a genuine breach/stealer
+        // source (see `is_breach_source`).
+        if !is_breach_source(source) {
+            continue;
+        }
         if let Some(bank) = crate::util::bsb::bsb_institution(&raw) {
             let entry = by_bank.entry(bank).or_default();
             entry.0.insert(source.to_string());
@@ -1420,6 +1433,18 @@ pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
     // Pass 1 — plaintext secrets, and the digest bridge for the uncommon ones.
     for e in entities {
         for ev in &e.evidence {
+            // A reused secret spans a "breach" only via a genuine breach/stealer
+            // record — one from an allow-listed source, or one carrying an
+            // explicit breach-db name attribute (see `is_breach_source`). This
+            // stops a non-breach source's stray password attribute from being
+            // counted as a distinct breach.
+            if !is_breach_source(&ev.source)
+                && !["dbname", "breach", "source_db"]
+                    .iter()
+                    .any(|k| ev.attributes.contains_key(*k))
+            {
+                continue;
+            }
             let breach = breach_of(ev);
             for k in PLAINTEXT_PW_KEYS {
                 if let Some(v) = ev.attributes.get(*k) {
@@ -1451,6 +1476,18 @@ pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
     // collision and is skipped (offline `crack_common`).
     for e in entities {
         for ev in &e.evidence {
+            // A reused secret spans a "breach" only via a genuine breach/stealer
+            // record — one from an allow-listed source, or one carrying an
+            // explicit breach-db name attribute (see `is_breach_source`). This
+            // stops a non-breach source's stray password attribute from being
+            // counted as a distinct breach.
+            if !is_breach_source(&ev.source)
+                && !["dbname", "breach", "source_db"]
+                    .iter()
+                    .any(|k| ev.attributes.contains_key(*k))
+            {
+                continue;
+            }
             let breach = breach_of(ev);
             for k in HASH_PW_KEYS {
                 if let Some(v) = ev.attributes.get(*k) {
