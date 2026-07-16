@@ -24,6 +24,13 @@ use crate::core::{
 
 const SRC: &str = "dns_axfr";
 
+/// Cap on answer records parsed from a single AXFR response message. A very
+/// large zone advertises more records in `ANCOUNT` than this parser walks (and
+/// AXFR itself may span multiple TCP messages this module only reads the
+/// first of), so the zone's TRUE record count can exceed what is actually
+/// turned into `Domain` subdomain entities.
+const MAX_ANSWER_RECORDS: usize = 500;
+
 pub struct DnsAxfr;
 
 #[async_trait]
@@ -119,7 +126,7 @@ impl Module for DnsAxfr {
             };
 
             match attempt_axfr(&ns_ip, &domain).await {
-                Ok(records) if !records.is_empty() => {
+                Ok((records, ancount)) if !records.is_empty() => {
                     result.extend(records.iter().map(|record| {
                         let mut e = Entity::new(EntityKind::Domain, record, 0.80, &ctx.scan_id);
                         e.tag("subdomain");
@@ -146,6 +153,11 @@ impl Module for DnsAxfr {
                         .with_attr("nameserver", ns_host)
                         .with_attr("record_count", records.len().to_string()),
                     );
+                    // A large zone can advertise more answer records than this
+                    // single-message parser walks, or span multiple AXFR
+                    // messages this module only reads the first of — signal
+                    // when the emitted subdomains are a partial zone inventory.
+                    mark_axfr_truncation(&mut zone_e, ancount);
                     result.push(zone_e);
                     break;
                 }
@@ -157,7 +169,12 @@ impl Module for DnsAxfr {
     }
 }
 
-async fn attempt_axfr(ns_ip: &str, domain: &str) -> std::io::Result<Vec<String>> {
+/// Attempt a zone transfer. Returns the parsed in-zone subdomains AND the
+/// server-advertised `ANCOUNT` (the true number of answer records in this
+/// message) so the caller can detect when `ANCOUNT` exceeds
+/// [`MAX_ANSWER_RECORDS`] — i.e. when this parser's single-message read did
+/// not capture every record the server actually sent.
+async fn attempt_axfr(ns_ip: &str, domain: &str) -> std::io::Result<(Vec<String>, usize)> {
     let addr = format!("{ns_ip}:53");
     let mut stream =
         tokio::time::timeout(std::time::Duration::from_secs(5), TcpStream::connect(&addr))
@@ -189,12 +206,12 @@ async fn attempt_axfr(ns_ip: &str, domain: &str) -> std::io::Result<Vec<String>>
 
     let rcode = buf[3] & 0x0F;
     if rcode != 0 {
-        return Ok(records);
+        return Ok((records, 0));
     }
 
     let ancount = u16::from_be_bytes([buf[6], buf[7]]) as usize;
     if ancount == 0 {
-        return Ok(records);
+        return Ok((records, 0));
     }
 
     // Parse answer records for domain names (simplified parser)
@@ -221,7 +238,7 @@ async fn attempt_axfr(ns_ip: &str, domain: &str) -> std::io::Result<Vec<String>>
     // case differences between the queried name and the returned record don't
     // drop legitimate records.
     let zone = domain.to_lowercase();
-    for _ in 0..ancount.min(500) {
+    for _ in 0..ancount.min(MAX_ANSWER_RECORDS) {
         if pos + 12 > read {
             break;
         }
@@ -255,7 +272,31 @@ async fn attempt_axfr(ns_ip: &str, domain: &str) -> std::io::Result<Vec<String>>
         }
     }
 
-    Ok(records)
+    Ok((records, ancount))
+}
+
+/// Signal on the zone entity when the server advertised more answer records
+/// (`ancount`) than this single-message parser can walk
+/// ([`MAX_ANSWER_RECORDS`]). **Pure** (no network/IO): a large zone split
+/// across multiple AXFR messages, or one whose first message alone exceeds the
+/// parse cap, means the emitted subdomain set is a PARTIAL zone inventory —
+/// the operator must know this is not the complete zone. No-op when the
+/// server's advertised count is within the cap.
+fn mark_axfr_truncation(zone_entity: &mut Entity, ancount: usize) {
+    if ancount <= MAX_ANSWER_RECORDS {
+        return;
+    }
+    zone_entity.tag("truncated");
+    zone_entity.add_evidence(
+        Evidence::new(
+            SRC,
+            format!(
+                "AXFR response advertised {ancount} answer record(s); only the first {MAX_ANSWER_RECORDS} were parsed"
+            ),
+        )
+        .with_attr("total_dns_records", ancount.to_string())
+        .with_attr("dns_records_capped", "true"),
+    );
 }
 
 fn build_axfr_query(domain: &str) -> Vec<u8> {

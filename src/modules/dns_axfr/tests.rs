@@ -63,6 +63,35 @@ fn module_metadata_full() {
     assert!(m.produces().contains(&EntityKind::Domain));
 }
 
+#[test]
+fn mark_axfr_truncation_flags_only_when_ancount_exceeds_cap() {
+    // Regression: a zone whose server-advertised ANCOUNT exceeds
+    // MAX_ANSWER_RECORDS means this single-message parser only captured a
+    // PARTIAL zone inventory; the operator must be told.
+    let mut zone_e = Entity::new(EntityKind::Domain, "example.com", 0.95, "s");
+
+    // At or under the cap: no signal.
+    mark_axfr_truncation(&mut zone_e, MAX_ANSWER_RECORDS);
+    assert!(!zone_e.has_tag("truncated"), "must not flag at or under the cap");
+    assert!(zone_e.evidence.is_empty(), "must not add evidence when not truncated");
+
+    // Over the cap: tagged + dedicated evidence with the true total.
+    let ancount = MAX_ANSWER_RECORDS + 137;
+    mark_axfr_truncation(&mut zone_e, ancount);
+    assert!(zone_e.has_tag("truncated"), "zone entity must be tagged 'truncated'");
+    let ev = zone_e.evidence.last().unwrap();
+    assert_eq!(
+        ev.attributes.get("total_dns_records").map(String::as_str),
+        Some(ancount.to_string().as_str()),
+        "total_dns_records must reflect the server-advertised ANCOUNT"
+    );
+    assert_eq!(
+        ev.attributes.get("dns_records_capped").map(String::as_str),
+        Some("true"),
+        "dns_records_capped must be set when the cap is hit"
+    );
+}
+
 // ── Property tests: wire parsers never panic / loop on hostile bytes ─────────
 // An AXFR response is supplied by the remote DNS server (attacker-controlled).
 // `extract_name` decompresses DNS names — the classic infinite-loop (compression
