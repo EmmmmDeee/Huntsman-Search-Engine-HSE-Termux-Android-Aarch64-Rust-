@@ -173,7 +173,11 @@ impl Module for ExaSearch {
             "contents": { "text": { "max_characters": 1000 } }
         });
 
-        let resp = match ctx
+        // A transport failure to the Exa API is a real outage, not "no results
+        // for this query" — propagate it instead of silently reporting an empty
+        // search. (A genuine zero-hit search still arrives as a 2xx with an empty
+        // `results` array, handled below.)
+        let resp = ctx
             .http
             .post(BASE_URL)
             .header("x-api-key", key)
@@ -181,14 +185,7 @@ impl Module for ExaSearch {
             .json(&body)
             .timeout(Duration::from_secs(15))
             .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::debug!(error = %e, "exa_search request failed");
-                return Ok(ModuleResult::new());
-            }
-        };
+            .await?;
 
         // 401/403/429 → note_keyed_error + Err; 404 → clean miss; other
         // non-2xx → Err via http_status_error. Previously a 500 (server error)
@@ -197,10 +194,12 @@ impl Module for ExaSearch {
             return Ok(ModuleResult::new());
         };
 
-        let parsed: ExaResponse = match crate::util::http::json_scanned(resp, SRC).await {
-            Ok(v) => v,
-            Err(_) => return Ok(ModuleResult::new()),
-        };
+        // The status is already validated 2xx, so a JSON parse failure here is a
+        // malformed body from a live endpoint (an error/HTML page behind a 200) —
+        // a real outage, not an empty result set. Propagate it.
+        let parsed: ExaResponse = crate::util::http::json_scanned(resp, SRC)
+            .await
+            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
 
         let mut result = ModuleResult::new();
         let mut seen_domains = std::collections::HashSet::new();

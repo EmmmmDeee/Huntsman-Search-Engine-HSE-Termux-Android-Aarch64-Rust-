@@ -125,14 +125,25 @@ impl Module for GithubCodeSearch {
             }
             return Ok(ModuleResult::new());
         }
-        if !status.is_success() {
+        // 422 is GitHub's "unprocessable query" — a search term it cannot index
+        // (too short, only punctuation, unsupported qualifier). That is a
+        // genuine clean miss, not an outage, so it stays an empty result.
+        if status.as_u16() == 422 {
             return Ok(ModuleResult::new());
         }
+        // Any OTHER non-2xx (5xx outage, unexpected 4xx) is a real failure of the
+        // primary search, not "no code matched" — surface it instead of a silent
+        // empty result. The 403/429 rate-limit degrade above is intentionally
+        // preserved.
+        if !status.is_success() {
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
+        }
 
-        let body: SearchResp = match crate::util::http::json_scanned(resp, SRC).await {
-            Ok(b) => b,
-            Err(_) => return Ok(ModuleResult::new()),
-        };
+        // Status is a validated 2xx here, so a parse failure is a malformed body
+        // from a live endpoint — an outage, not an empty result set.
+        let body: SearchResp = crate::util::http::json_scanned(resp, SRC)
+            .await
+            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
 
         if body.items.is_empty() {
             return Ok(ModuleResult::new());

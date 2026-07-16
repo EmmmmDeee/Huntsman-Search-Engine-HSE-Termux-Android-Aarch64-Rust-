@@ -86,13 +86,18 @@ impl Module for Pgp {
             "https://keyserver.ubuntu.com/pks/lookup?op=index&options=mr&exact=on&search={}",
             urlencode(email)
         );
-        let resp = match ctx.http.get(&url).send().await {
-            Ok(r) => r,
-            Err(_) => return Ok(result), // network hiccup → quiet, not fatal
-        };
-        // 404 / no-keys is the clean "no PGP key for this email" signal.
-        if !resp.status().is_success() {
+        let resp = ctx.http.get(&url).send().await?;
+        // 404 is the keyserver's clean "no PGP key for this email" signal — keep
+        // it as an empty result. But a transport error (propagated above) or any
+        // OTHER non-2xx (5xx outage, 429 throttle, proxy error page) is a real
+        // keyserver failure, not an absence of keys: surfacing it instead of a
+        // silent empty stops a keyserver outage from masquerading as "this email
+        // has no PGP key."
+        if resp.status().as_u16() == 404 {
             return Ok(result);
+        }
+        if !resp.status().is_success() {
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
         let Some(body) = read_body_capped(resp, BODY_CAP).await else {
             return Ok(result);
