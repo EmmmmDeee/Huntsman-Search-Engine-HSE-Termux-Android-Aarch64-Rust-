@@ -141,26 +141,16 @@ impl Module for Keybase {
             urlencode(username)
         );
 
-        let resp = ctx
-            .http
-            .get(&url)
-            .header("Accept", "application/json")
-            .send()
-            .await;
-
-        let resp = match resp {
-            Ok(r) => r,
-            Err(_) => return Ok(ModuleResult::new()),
-        };
-
-        if !resp.status().is_success() {
-            return Ok(ModuleResult::new());
-        }
-
-        let body: KbResp = match crate::util::http::json_scanned(resp, SRC).await {
-            Ok(b) => b,
-            Err(_) => return Ok(ModuleResult::new()),
-        };
+        // A genuine "no such user" is a 200 body carrying `status.code != 0`
+        // (Keybase never 404s a `user/lookup`), which `build_entities` already
+        // maps to an empty result. So every failure `fetch_json` surfaces —
+        // transport error, non-2xx status, or malformed JSON — is a real source
+        // outage, not a clean miss. Propagate it via `?` instead of collapsing
+        // all three into the same silent empty result a real "user absent"
+        // produces, matching how sibling single-fetch modules (`urlscan`,
+        // `npm_author`, …) already handle the primitive. Contract pinned by
+        // `util::http::tests::fetch_json_propagates_a_non_2xx_status_as_err_not_a_silent_default`.
+        let body: KbResp = crate::util::http::fetch_json(&ctx.http, SRC, &url).await?;
 
         let mut result = ModuleResult::new();
         result.entities = build_entities(body, username, &ctx.scan_id);
