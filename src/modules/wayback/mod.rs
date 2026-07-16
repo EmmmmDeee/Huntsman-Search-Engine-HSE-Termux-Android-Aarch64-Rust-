@@ -143,6 +143,55 @@ fn archive_url(timestamp: &str, original: &str) -> String {
     format!("https://web.archive.org/web/{timestamp}id_/{original}")
 }
 
+/// Select the contact-adjacent snapshots to mine from CDX rows, returning the
+/// capped `(timestamp, original_url)` selection **and** the total number of
+/// contact-adjacent snapshots the archive actually holds (before the
+/// [`MAX_CONTACT_SNAPSHOTS`] cap). **Pure** (no network/IO). The first CDX row
+/// is the column header and is skipped. The total lets the caller signal
+/// truncation when more archived contact pages exist than were mined — each
+/// un-mined page is potential email/phone/leaked-key evidence never surfaced.
+fn select_contact_snapshots(rows: &[Row]) -> (Vec<(String, String)>, usize) {
+    let all: Vec<(String, String)> = rows
+        .iter()
+        .skip(1)
+        .filter_map(|r| {
+            let ts = r.0.first()?.clone();
+            let orig = r.0.get(1)?.clone();
+            is_contact_path(&orig).then_some((ts, orig))
+        })
+        .collect();
+    let total = all.len();
+    let selected = all.into_iter().take(MAX_CONTACT_SNAPSHOTS).collect();
+    (selected, total)
+}
+
+/// Mark contact-mining truncation on the archive seed entity. **Pure** (no IO):
+/// when the archive holds more contact-adjacent snapshots than the
+/// [`MAX_CONTACT_SNAPSHOTS`] mining cap, tag the seed `truncated` and record the
+/// true total in a dedicated evidence line, so the operator knows more archived
+/// contact pages exist than were mined for emails/phones/leaked keys. A no-op
+/// when the total is within the cap.
+fn mark_contact_truncation(seed: &mut Entity, total_contact_snapshots: usize) {
+    if total_contact_snapshots <= MAX_CONTACT_SNAPSHOTS {
+        return;
+    }
+    seed.tag("truncated");
+    seed.add_evidence(
+        Evidence::new(
+            SRC,
+            format!(
+                "Wayback contact mining capped: {total_contact_snapshots} archived contact page(s) available, mined {MAX_CONTACT_SNAPSHOTS}"
+            ),
+        )
+        .with_attr(
+            "total_contact_snapshots",
+            total_contact_snapshots.to_string(),
+        )
+        .with_attr("contact_snapshots_mined", MAX_CONTACT_SNAPSHOTS.to_string())
+        .with_attr("contact_snapshots_capped", "true"),
+    );
+}
+
 /// Scan an already-fetched archived-page body for a leaked API key via the
 /// universal `found_keys`/`key_harvest` classifier — the same one
 /// `web_crawler`/`username_search` run over their own fetched bodies — and
@@ -186,7 +235,7 @@ fn mine_keys_from_body(
 ///
 /// Returns an empty vec when the CDX query fails or no contact pages
 /// are archived — failures here must not abort the main snapshot query.
-async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> Vec<Entity> {
+async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> (Vec<Entity>, usize) {
     let cdx_url = format!(
         "https://web.archive.org/cdx/search/cdx?url={}/*&output=json\
          &fl=timestamp,original&filter=statuscode:200\
@@ -196,27 +245,15 @@ async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> Vec<
 
     let rows: Vec<Row> = match fetch_json(&ctx.http, SRC, &cdx_url).await {
         Ok(r) => r,
-        Err(_) => return Vec::new(),
+        Err(_) => return (Vec::new(), 0),
     };
 
-    // Skip header row, filter to contact-adjacent paths, take the cap.
-    let contact_snapshots: Vec<(String, String)> = rows
-        .iter()
-        .skip(1)
-        .filter_map(|r| {
-            let ts = r.0.first()?.clone();
-            let orig = r.0.get(1)?.clone();
-            if is_contact_path(&orig) {
-                Some((ts, orig))
-            } else {
-                None
-            }
-        })
-        .take(MAX_CONTACT_SNAPSHOTS)
-        .collect();
+    // Skip header row, filter to contact-adjacent paths, cap the fetch set —
+    // but keep the true total so the caller can signal truncation.
+    let (contact_snapshots, total_contact_snapshots) = select_contact_snapshots(&rows);
 
     if contact_snapshots.is_empty() {
-        return Vec::new();
+        return (Vec::new(), total_contact_snapshots);
     }
 
     let mut entities: Vec<Entity> = Vec::new();
@@ -294,7 +331,7 @@ async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> Vec<
         tokio::time::sleep(std::time::Duration::from_millis(INTER_SNAPSHOT_MS)).await;
     }
 
-    entities
+    (entities, total_contact_snapshots)
 }
 
 #[async_trait]
@@ -370,7 +407,15 @@ impl Module for Wayback {
 
         // ── Pass 2: mine historical contacts from archived pages ──────────────
         if !ctx.cancel.is_cancelled() {
-            for e in mine_contacts(&domain, &ctx.scan_id, ctx).await {
+            let (contact_entities, total_contact_snapshots) =
+                mine_contacts(&domain, &ctx.scan_id, ctx).await;
+            // Signal on the archive seed when more archived contact pages exist
+            // than the mining cap fetched — the un-mined pages are potential
+            // email/phone/leaked-key evidence the operator should know about.
+            if let Some(seed) = result.entities.first_mut() {
+                mark_contact_truncation(seed, total_contact_snapshots);
+            }
+            for e in contact_entities {
                 result.push(e);
             }
         }

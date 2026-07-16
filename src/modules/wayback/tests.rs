@@ -109,6 +109,78 @@ use super::*;
     }
 
     #[test]
+    fn select_contact_snapshots_caps_but_reports_true_total() {
+        // 15 archived contact pages + 5 non-contact pages. Only 10 are mined,
+        // but the true total (15) must be reported so truncation can be signaled.
+        let mut rows = vec![row(&["timestamp", "original"])]; // header
+        for i in 0..15 {
+            rows.push(row(&[
+                "20200101000000",
+                &format!("http://example.com/contact/{i}"),
+            ]));
+        }
+        for i in 0..5 {
+            rows.push(row(&["20210101000000", &format!("http://example.com/blog/{i}")]));
+        }
+        let (selected, total) = select_contact_snapshots(&rows);
+        assert_eq!(total, 15, "total must count ALL contact snapshots, not the cap");
+        assert_eq!(
+            selected.len(),
+            MAX_CONTACT_SNAPSHOTS,
+            "the mined selection is capped at MAX_CONTACT_SNAPSHOTS"
+        );
+    }
+
+    #[test]
+    fn select_contact_snapshots_under_cap_returns_all() {
+        let rows = [
+            row(&["timestamp", "original"]),
+            row(&["20200101000000", "http://example.com/about"]),
+            row(&["20200102000000", "http://example.com/team"]),
+            row(&["20200103000000", "http://example.com/blog/x"]), // non-contact, ignored
+        ];
+        let (selected, total) = select_contact_snapshots(&rows);
+        assert_eq!(total, 2);
+        assert_eq!(selected.len(), 2);
+    }
+
+    #[test]
+    fn mark_contact_truncation_flags_only_when_over_cap() {
+        // Regression (T2.141): the archive seed must be tagged `truncated` and
+        // carry the true total ONLY when more archived contact pages exist than
+        // the mining cap fetched.
+        let rows = [
+            row(&["timestamp", "statuscode"]),
+            row(&["20200101000000", "200"]),
+        ];
+        let mut seed = build_entity(EntityKind::Domain, "example.com", &rows, "s").unwrap();
+
+        // Exactly at the cap → no truncation.
+        mark_contact_truncation(&mut seed, MAX_CONTACT_SNAPSHOTS);
+        assert!(!seed.has_tag("truncated"), "must not flag at or under the cap");
+
+        // Over the cap → tag + dedicated evidence line with the true total.
+        let total = MAX_CONTACT_SNAPSHOTS + 23;
+        mark_contact_truncation(&mut seed, total);
+        assert!(seed.has_tag("truncated"), "seed must be tagged 'truncated'");
+        let ev = seed.evidence.last().unwrap();
+        assert_eq!(
+            ev.attributes.get("total_contact_snapshots").map(String::as_str),
+            Some(total.to_string().as_str()),
+            "total_contact_snapshots must reflect the full archive count"
+        );
+        assert_eq!(
+            ev.attributes.get("contact_snapshots_mined").map(String::as_str),
+            Some(MAX_CONTACT_SNAPSHOTS.to_string().as_str())
+        );
+        assert_eq!(
+            ev.attributes.get("contact_snapshots_capped").map(String::as_str),
+            Some("true"),
+            "contact_snapshots_capped must be set when the cap is hit"
+        );
+    }
+
+    #[test]
     fn module_metadata() {
         let m = Wayback;
         assert_eq!(m.name(), "wayback");
