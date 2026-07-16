@@ -19,7 +19,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::urlencode;
+use crate::util::http::{fetch_json, urlencode};
 
 pub(super) const SRC: &str = "keybase";
 
@@ -141,31 +141,32 @@ impl Module for Keybase {
             urlencode(username)
         );
 
-        let resp = ctx
-            .http
-            .get(&url)
-            .header("Accept", "application/json")
-            .send()
-            .await;
-
-        let resp = match resp {
-            Ok(r) => r,
-            Err(_) => return Ok(ModuleResult::new()),
-        };
-
-        if !resp.status().is_success() {
-            return Ok(ModuleResult::new());
-        }
-
-        let body: KbResp = match crate::util::http::json_scanned(resp, SRC).await {
-            Ok(b) => b,
-            Err(_) => return Ok(ModuleResult::new()),
-        };
-
         let mut result = ModuleResult::new();
-        result.entities = build_entities(body, username, &ctx.scan_id);
+        result.entities = lookup(&ctx.http, &url, username, &ctx.scan_id).await?;
         Ok(result)
     }
+}
+
+/// Fetch a Keybase `user/lookup` response and map it to entities. Split from
+/// [`Keybase::process`] as a URL-taking seam so the transport-failure contract is
+/// unit-testable against an unreachable host.
+///
+/// A transport failure, a non-2xx, or a JSON parse error surfaces as a real
+/// module `Err` (via [`fetch_json`], which also harvests any leaked API keys from
+/// the body) — never `Ok(empty)`. keybase.io answers a known user with HTTP 200
+/// and signals an *unknown* user with a non-zero `status.code`, which
+/// [`build_entities`] maps to a clean empty result. So an unreachable host or a
+/// non-2xx is a genuine outage the operator must be able to tell apart from "no
+/// Keybase identity for this username" — previously all three failure modes were
+/// swallowed into that same empty result, hiding an outage as an honest miss.
+async fn lookup(
+    client: &reqwest::Client,
+    url: &str,
+    username: &str,
+    scan_id: &str,
+) -> Result<Vec<Entity>> {
+    let body: KbResp = fetch_json(client, SRC, url).await?;
+    Ok(build_entities(body, username, scan_id))
 }
 
 /// Pure profile→entity mapping for a Keybase `user/lookup` response. Owns the

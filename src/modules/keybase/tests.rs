@@ -16,6 +16,21 @@ fn module_metadata() {
     assert!(!Keybase.description().is_empty());
 }
 
+#[tokio::test]
+async fn lookup_surfaces_transport_failure_as_error() {
+    // T2.128 regression: a keybase.io outage / unreachable host previously folded
+    // into Ok(empty) — indistinguishable from a genuine "no Keybase identity for
+    // this username", silently dropping every linked-account / PGP / proof pivot.
+    // Port 1 has nothing listening (connection refused): a real transport failure
+    // that must now surface as a module Err, not a clean miss.
+    let client = reqwest::Client::new();
+    let out = lookup(&client, "http://127.0.0.1:1/", "alice", "scan").await;
+    assert!(
+        out.is_err(),
+        "an unreachable keybase host must surface as Err, not Ok(empty)"
+    );
+}
+
 #[test]
 fn parse_response() {
     let raw = r#"{
