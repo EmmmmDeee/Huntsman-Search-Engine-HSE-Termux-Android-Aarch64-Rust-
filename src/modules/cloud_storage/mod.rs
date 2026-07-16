@@ -18,7 +18,7 @@ use tokio::sync::Semaphore;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -81,22 +81,34 @@ impl Module for CloudStorage {
 
         let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
         let mut set = tokio::task::JoinSet::new();
+        let mut total_probes = 0usize;
         for (provider, name) in probes {
             if ctx.cancel.is_cancelled() {
                 break;
             }
             let sem = Arc::clone(&sem);
             let http = ctx.http.clone();
+            total_probes += 1;
             set.spawn(async move {
-                let _permit = sem.acquire_owned().await.ok()?;
+                let Ok(_permit) = sem.acquire_owned().await else {
+                    return ProbeOutcome::TransportFailed;
+                };
                 probe(&http, provider, &name).await
             });
         }
 
+        // Transport-level failures (timeout, connection error, a panicked/
+        // aborted task) are tracked separately from a genuine NotFound, so a
+        // total outage across every probe can be told apart from "none of
+        // these 36 candidate buckets exist" (mirrors
+        // domainsdb::all_zones_failed_transport, T2.134).
         let mut findings: Vec<Finding> = Vec::new();
+        let mut transport_failures = 0usize;
         while let Some(joined) = set.join_next().await {
-            if let Ok(Some(f)) = joined {
-                findings.push(f);
+            match joined {
+                Ok(ProbeOutcome::Found(f)) => findings.push(f),
+                Ok(ProbeOutcome::NotFound) => {}
+                Ok(ProbeOutcome::TransportFailed) | Err(_) => transport_failures += 1,
             }
         }
         // Deterministic, most-severe-first.
@@ -106,6 +118,15 @@ impl Module for CloudStorage {
                 .cmp(&a.access.severity())
                 .then_with(|| a.url.cmp(&b.url))
         });
+
+        if all_probes_failed_transport(transport_failures, total_probes, findings.len()) {
+            return Err(Error::module(
+                SRC,
+                "every cloud-storage probe failed at the transport level (no network \
+                 reachable to s3/gcs/azure/digitalocean?) — cannot determine whether the \
+                 subject has exposed buckets",
+            ));
+        }
 
         for f in findings {
             result.push(f.into_entity(&ctx.scan_id));
@@ -269,20 +290,32 @@ impl Finding {
 
 // ── Probe ───────────────────────────────────────────────────────────────────
 
+/// Outcome of probing one (provider, name) candidate: a confirmed finding
+/// (private or public bucket), a genuine `NotFound` (the HEAD answered with a
+/// real HTTP status, response-confirmed absent), or a transport-level failure
+/// (timeout, connection error) that never got a real answer at all. Kept
+/// distinct from `NotFound` so a total outage across every probe can be told
+/// apart from "none of these candidate buckets exist".
+enum ProbeOutcome {
+    Found(Finding),
+    NotFound,
+    TransportFailed,
+}
+
 /// Probe one (provider, name): a `HEAD` to classify existence, then — only for a
 /// public S3-style bucket — a `GET` to read and parse the object listing.
-async fn probe(http: &reqwest::Client, provider: Provider, name: &str) -> Option<Finding> {
+async fn probe(http: &reqwest::Client, provider: Provider, name: &str) -> ProbeOutcome {
     let url = provider.url(name);
-    let head = tokio::time::timeout(PROBE_TIMEOUT, http.head(&url).send_tagged(SRC))
-        .await
-        .ok()?
-        .ok()?;
+    let head = match tokio::time::timeout(PROBE_TIMEOUT, http.head(&url).send_tagged(SRC)).await {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(_)) | Err(_) => return ProbeOutcome::TransportFailed,
+    };
     let access = match provider.existence(head.status().as_u16()) {
-        Existence::NotFound => return None,
+        Existence::NotFound => return ProbeOutcome::NotFound,
         Existence::Private => Access::Private,
         Existence::Public => fetch_listing(http, provider, &url).await,
     };
-    Some(Finding {
+    ProbeOutcome::Found(Finding {
         provider,
         bucket: name.to_string(),
         url,
@@ -317,6 +350,21 @@ async fn fetch_listing(http: &reqwest::Client, provider: Provider, url: &str) ->
 }
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
+
+/// True when every cloud-storage probe failed at the transport level and
+/// nothing was found — the "no network reachable to any provider" state that
+/// must surface as an `Err` rather than masquerade as "none of these
+/// candidate buckets exist". A probe that answered at all (even a genuine
+/// NotFound) reached the server, so any answer keeps this `false`. Pure —
+/// unit-tested off the counters. Mirrors `domainsdb::all_zones_failed_transport`
+/// (T2.134).
+fn all_probes_failed_transport(
+    transport_failures: usize,
+    total_probes: usize,
+    found: usize,
+) -> bool {
+    found == 0 && total_probes > 0 && transport_failures == total_probes
+}
 
 /// The registrable label of a domain/org value: lowercase, `www.` stripped,
 /// first dotted label, kept to `[a-z0-9-]`.

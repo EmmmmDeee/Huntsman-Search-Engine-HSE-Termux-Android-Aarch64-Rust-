@@ -110,3 +110,25 @@ async fn module_metadata() {
     assert!(m.accepts(&Target::new(TargetKind::Organisation, "Acme Corp")));
     assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
 }
+
+#[test]
+fn all_probes_failed_transport_only_on_total_outage_with_no_hits() {
+    // Regression (T2.156): distinguishes a total transport outage across
+    // every (provider, name) probe from legitimate "none of these candidate
+    // buckets exist" or a partial-failure case. Mirrors
+    // domainsdb::all_zones_failed_transport_only_on_total_outage_with_no_hits.
+
+    // Every probe failed at the transport level AND nothing was found → outage.
+    assert!(all_probes_failed_transport(36, 36, 0));
+
+    // Some probes failed but at least one genuinely resolved → not an outage
+    // (partial real evidence, keep it).
+    assert!(!all_probes_failed_transport(35, 36, 1));
+
+    // No transport failures at all, just a legitimate all-NotFound sweep.
+    assert!(!all_probes_failed_transport(0, 36, 0));
+
+    // Degenerate: no probes spawned (e.g. cancelled immediately) must not
+    // spuriously report an outage.
+    assert!(!all_probes_failed_transport(0, 0, 0));
+}
