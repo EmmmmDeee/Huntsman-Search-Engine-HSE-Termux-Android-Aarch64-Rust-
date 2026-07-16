@@ -48,7 +48,25 @@ fn deserialises_matches() {
     let json = r#"{"total": 1, "matches": [{"ip":"8.8.8.8","portinfo":{"port":53}}]}"#;
     let resp: ZoomResp = serde_json::from_str(json).unwrap();
     assert_eq!(resp.matches.len(), 1);
+    assert_eq!(resp.total, 1);
     assert_eq!(vstr(&resp.matches[0], "ip").as_deref(), Some("8.8.8.8"));
+}
+
+#[test]
+fn deserialises_total_when_it_exceeds_the_fetched_page() {
+    // A broad dork: ZoomEye's own total (5000) vastly exceeds one page=1
+    // fetch's matches — this is exactly the discarded signal the truncation
+    // fix depends on.
+    let json = r#"{"total": 5000, "matches": [{"ip":"8.8.8.8"}]}"#;
+    let resp: ZoomResp = serde_json::from_str(json).unwrap();
+    assert_eq!(resp.total, 5000);
+    assert_eq!(resp.matches.len(), 1);
+}
+
+#[test]
+fn total_defaults_to_zero_when_absent() {
+    let resp: ZoomResp = serde_json::from_str(r#"{"matches": []}"#).unwrap();
+    assert_eq!(resp.total, 0);
 }
 
 #[test]
@@ -148,6 +166,48 @@ fn port_detail_annotates_label_with_app_and_banner_when_present() {
         port_detail(&serde_json::json!({"portinfo": {}}), "80"),
         None
     );
+}
+
+#[test]
+fn mark_match_truncation_flags_only_when_total_exceeds_shown() {
+    // Regression: ZoomEye's own total is the true universe (a broad dork can
+    // index thousands of hosts) — a match count that hit MAX_MATCHES (or a
+    // single-page fetch that never saw the rest) must not read as exhaustive.
+    let mut e = Entity::new(EntityKind::IpAddress, "8.8.8.8", 0.60, "s");
+
+    // total == shown: not capped, but the true total is still worth recording.
+    mark_match_truncation(&mut e, 3, 3);
+    assert!(!e.has_tag("truncated"), "must not flag when total == shown");
+    let ev = &e.evidence[0];
+    assert_eq!(
+        ev.attributes.get("total_matches").map(String::as_str),
+        Some("3")
+    );
+    assert!(!ev.attributes.contains_key("matches_capped"));
+
+    // total > shown: genuinely truncated.
+    let mut e2 = Entity::new(EntityKind::IpAddress, "8.8.8.8", 0.60, "s");
+    mark_match_truncation(&mut e2, 5000, 50);
+    assert!(e2.has_tag("truncated"), "seed must be tagged 'truncated'");
+    let ev2 = &e2.evidence[0];
+    assert_eq!(
+        ev2.attributes.get("total_matches").map(String::as_str),
+        Some("5000")
+    );
+    assert_eq!(
+        ev2.attributes.get("matches_capped").map(String::as_str),
+        Some("true")
+    );
+}
+
+#[test]
+fn mark_match_truncation_is_a_no_op_when_total_is_unknown() {
+    // total == 0 means ZoomEye didn't report a total (the field was absent),
+    // not that zero matches exist — no fabricated evidence.
+    let mut e = Entity::new(EntityKind::IpAddress, "8.8.8.8", 0.60, "s");
+    mark_match_truncation(&mut e, 0, 5);
+    assert!(!e.has_tag("truncated"));
+    assert!(e.evidence.is_empty());
 }
 
 #[test]

@@ -52,6 +52,11 @@ struct ZoomResp {
     /// `{"error": …}` body with no matches, which deserialises to empty here.
     #[serde(default)]
     matches: Vec<Value>,
+    /// ZoomEye's own total-hit count for the dork — the true universe (a
+    /// broad dork can index thousands of hosts), independent of both the
+    /// single page=1 fetch and the client-side [`MAX_MATCHES`] cap.
+    #[serde(default)]
+    total: u64,
 }
 
 pub struct ZoomEye;
@@ -244,27 +249,71 @@ impl Module for ZoomEye {
             }
         }
 
-        // For an IP target, fold the exposed service surface onto the seed entity.
-        if matches!(target.kind, TargetKind::IpAddress) && !ports.is_empty() {
+        // ZoomEye's own `total` hit count vs. what this single page=1 fetch
+        // actually processed. A broad dork can index thousands of hosts, and
+        // `total` can exceed both the page size and MAX_MATCHES — signaling
+        // this requires a seed entity to exist even when there's no port
+        // surface to report (the domain-dork case never had one at all).
+        let shown = body.matches.len().min(MAX_MATCHES);
+        let capped = body.total as usize > shown;
+
+        // For an IP target, fold the exposed service surface onto the seed
+        // entity — created whenever there's a port surface to report OR the
+        // dork was truncated, so the truncation signal is never dropped.
+        if matches!(target.kind, TargetKind::IpAddress) && (!ports.is_empty() || capped) {
             let mut e = target.to_entity(0.60, &ctx.scan_id);
             e.tag(SRC);
             for label in &ports {
                 e.tag(format!("port:{label}"));
             }
-            let mut ev = Evidence::new(SRC, format!("ZoomEye: {} exposed service(s)", ports.len()))
-                .with_attr("ports", ports.join(", "));
-            if !port_details.is_empty() {
-                // Full-fidelity policy (mirrors `webserver_banner`): a
-                // detected app/banner reaches the operator verbatim, paired
-                // with its port label so it stays traceable to one service.
-                ev = ev.with_attr("service_details", port_details.join("; "));
+            if !ports.is_empty() {
+                let mut ev =
+                    Evidence::new(SRC, format!("ZoomEye: {} exposed service(s)", ports.len()))
+                        .with_attr("ports", ports.join(", "));
+                if !port_details.is_empty() {
+                    // Full-fidelity policy (mirrors `webserver_banner`): a
+                    // detected app/banner reaches the operator verbatim, paired
+                    // with its port label so it stays traceable to one service.
+                    ev = ev.with_attr("service_details", port_details.join("; "));
+                }
+                e.add_evidence(ev);
             }
-            e.add_evidence(ev);
+            mark_match_truncation(&mut e, body.total, shown);
+            result.push(e);
+        } else if matches!(target.kind, TargetKind::Domain) && capped {
+            // No dedicated seed entity exists for a domain dork otherwise —
+            // create one solely to carry the truncation signal.
+            let mut e = target.to_entity(0.50, &ctx.scan_id);
+            e.tag(SRC);
+            e.tag("search-result");
+            mark_match_truncation(&mut e, body.total, shown);
             result.push(e);
         }
 
         Ok(result)
     }
+}
+
+/// Signal on the seed entity when ZoomEye's own `total` hit count exceeds
+/// `shown` (what this single page=1 fetch actually processed, already capped
+/// at [`MAX_MATCHES`]). **Pure**. Always records the true `total` as evidence
+/// when it's known (`total > 0`) — even under the cap, transparency about the
+/// full universe is useful — but only tags `truncated` and sets
+/// `matches_capped` when the fetched set is genuinely a partial view.
+fn mark_match_truncation(entity: &mut Entity, total: u64, shown: usize) {
+    if total == 0 {
+        return;
+    }
+    let mut ev = Evidence::new(
+        SRC,
+        format!("ZoomEye reported {total} total match(es); {shown} processed"),
+    )
+    .with_attr("total_matches", total.to_string());
+    if total as usize > shown {
+        ev = ev.with_attr("matches_capped", "true");
+        entity.tag("truncated");
+    }
+    entity.add_evidence(ev);
 }
 
 /// A trimmed, non-empty string field at the top level of a match document.
