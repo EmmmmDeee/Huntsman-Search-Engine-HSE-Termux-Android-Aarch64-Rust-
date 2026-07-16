@@ -96,7 +96,8 @@ async fn gaming_profile_live_resolves_real_accounts() {
     };
 
     // Roblox account id 1 is the canonical "Roblox" handle — a stable live hit.
-    let roblox = roblox_lookup(&ctx, "Roblox").await;
+    let (roblox, roblox_failure) = roblox_lookup(&ctx, "Roblox").await;
+    assert!(roblox_failure.is_none(), "a live resolve must not hard-fail");
     assert!(
         roblox.iter().any(|e| e.kind == EntityKind::Username
             && e.value.eq_ignore_ascii_case("Roblox")
@@ -111,7 +112,8 @@ async fn gaming_profile_live_resolves_real_accounts() {
     );
 
     // "Notch" is the canonical original Minecraft account — a stable live hit.
-    let minecraft = minecraft_lookup(&ctx, "Notch").await;
+    let (minecraft, minecraft_failure) = minecraft_lookup(&ctx, "Notch").await;
+    assert!(minecraft_failure.is_none(), "a live resolve must not hard-fail");
     assert!(
         minecraft.iter().any(|e| e.kind == EntityKind::Username
             && e.value.eq_ignore_ascii_case("Notch")
@@ -123,5 +125,118 @@ async fn gaming_profile_live_resolves_real_accounts() {
         "gaming_profile live: roblox={} entities, minecraft={} entities",
         roblox.len(),
         minecraft.len()
+    );
+}
+
+// -- roblox_lookup_at / minecraft_lookup_at failure contract (T2.157) -------
+
+/// One-shot local HTTP server answering with `status` + `body`. Mirrors the
+/// pgp / sanctions_ofac / app_links / au_seifa test pattern.
+async fn serve_once(status: u16, body: &'static str) -> std::net::SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 2048];
+        let _ = sock.read(&mut buf).await;
+        let reason = if status == 200 { "OK" } else { "Error" };
+        let head = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let _ = sock.write_all(head.as_bytes()).await;
+        let _ = sock.write_all(body.as_bytes()).await;
+        let _ = sock.flush().await;
+    });
+    addr
+}
+
+fn test_ctx() -> ModuleContext {
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    ModuleContext {
+        scan_id: "t".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    }
+}
+
+#[tokio::test]
+async fn roblox_lookup_surfaces_transport_failure_as_error() {
+    // T2.157 regression: the primary exact-username resolve's transport/
+    // status/parse failure previously collapsed into a bare empty Vec,
+    // indistinguishable from a genuine "no such Roblox handle". Port 1:
+    // connection refused.
+    let ctx = test_ctx();
+    let (entities, failure) = roblox_lookup_at(&ctx, "someuser", "http://127.0.0.1:1").await;
+    assert!(entities.is_empty());
+    assert!(
+        failure.is_some(),
+        "an unreachable Roblox host must report a hard failure, not a silent empty batch"
+    );
+}
+
+#[tokio::test]
+async fn roblox_lookup_surfaces_a_5xx_as_error() {
+    let addr = serve_once(503, "upstream down").await;
+    let ctx = test_ctx();
+    let (entities, failure) =
+        roblox_lookup_at(&ctx, "someuser", &format!("http://{addr}")).await;
+    assert!(entities.is_empty());
+    assert!(failure.is_some(), "a 5xx must report a hard failure");
+}
+
+#[tokio::test]
+async fn roblox_lookup_keeps_the_genuine_no_match_as_a_clean_miss() {
+    // The genuine negative must be preserved: a 200 with `{"data":[]}` is
+    // Roblox's real "no such handle" answer, never a failure.
+    let addr = serve_once(200, r#"{"data":[]}"#).await;
+    let ctx = test_ctx();
+    let (entities, failure) =
+        roblox_lookup_at(&ctx, "someuser", &format!("http://{addr}")).await;
+    assert!(entities.is_empty());
+    assert!(
+        failure.is_none(),
+        "a genuine empty-data resolve must stay a clean miss, not a hard failure"
+    );
+}
+
+#[tokio::test]
+async fn minecraft_lookup_surfaces_transport_failure_as_error() {
+    let ctx = test_ctx();
+    let (entities, failure) = minecraft_lookup_at(&ctx, "someuser", "http://127.0.0.1:1").await;
+    assert!(entities.is_empty());
+    assert!(
+        failure.is_some(),
+        "an unreachable Mojang host must report a hard failure, not a silent empty batch"
+    );
+}
+
+#[tokio::test]
+async fn minecraft_lookup_surfaces_a_5xx_as_error() {
+    let addr = serve_once(503, "upstream down").await;
+    let ctx = test_ctx();
+    let (entities, failure) =
+        minecraft_lookup_at(&ctx, "someuser", &format!("http://{addr}")).await;
+    assert!(entities.is_empty());
+    assert!(failure.is_some(), "a 5xx must report a hard failure");
+}
+
+#[tokio::test]
+async fn minecraft_lookup_keeps_a_404_as_the_clean_no_account_miss() {
+    // Mojang's real "no such Java account" answer is a 404 — must stay a
+    // clean miss, never a hard failure.
+    let addr = serve_once(404, "not found").await;
+    let ctx = test_ctx();
+    let (entities, failure) =
+        minecraft_lookup_at(&ctx, "someuser", &format!("http://{addr}")).await;
+    assert!(entities.is_empty());
+    assert!(
+        failure.is_none(),
+        "a genuine 404 must stay a clean miss, not a hard failure"
     );
 }
