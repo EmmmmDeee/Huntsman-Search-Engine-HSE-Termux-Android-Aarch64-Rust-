@@ -4,10 +4,7 @@ use crate::core::scan::{Target, TargetKind};
 use super::{
     DnsIntel,
     constants::SUBDOMAINS,
-    helpers::{
-        VERIFICATION_VENDORS, reverse_ip, soa_rname_to_email, unescape_dns_label,
-        verification_vendor,
-    },
+    helpers::{VERIFICATION_VENDORS, reverse_ip, soa_rname_to_email, verification_vendor},
 };
 
 // -- DnsIntel accepts --------------------------------------------------
@@ -31,20 +28,12 @@ fn rejects_email() {
 }
 
 // -- DNS resolution tests -------------------------------------------------
-
-#[test]
-fn soa_rname_decodes() {
-    assert_eq!(
-        soa_rname_to_email("hostmaster.example.com"),
-        "hostmaster@example.com"
-    );
-    assert_eq!(
-        soa_rname_to_email("admin.sub.example.org"),
-        "admin@sub.example.org"
-    );
-    assert_eq!(soa_rname_to_email(""), "");
-    assert_eq!(soa_rname_to_email("notanemail"), "");
-}
+//
+// The decoder's own unit tests (standard/subdomain/escaped/decimal/trailing-dot
+// coverage) live with the canonical implementation in `util::dns`; T2.125
+// consolidated the two former per-module copies onto it. What remains here is
+// dns_intel's OWN integration behaviour — that the SOA-derived address is gated
+// through `is_infrastructure_email` before it is emitted as a person.
 
 #[test]
 fn soa_admin_role_mailbox_is_gated_as_infrastructure() {
@@ -67,30 +56,6 @@ fn soa_admin_role_mailbox_is_gated_as_infrastructure() {
     assert!(!is_infrastructure_email(&soa_rname_to_email(
         "alice.personaldomain.org"
     )));
-}
-
-#[test]
-fn soa_rname_unescapes_dotted_local_part() {
-    // A literal dot in the mailbox local part is `\.`-escaped in the RNAME;
-    // the split must skip it AND the output must drop the backslash.
-    assert_eq!(
-        soa_rname_to_email(r"hostmaster\.ops.example.com"),
-        "hostmaster.ops@example.com"
-    );
-    // `\DDD` decimal escape (46 = '.') decodes the same way.
-    assert_eq!(
-        soa_rname_to_email(r"first\046last.example.org"),
-        "first.last@example.org"
-    );
-}
-
-#[test]
-fn unescape_dns_label_handles_literal_and_decimal_escapes() {
-    assert_eq!(unescape_dns_label(r"a\.b"), "a.b");
-    assert_eq!(unescape_dns_label(r"a\\b"), r"a\b");
-    assert_eq!(unescape_dns_label(r"x\046y"), "x.y"); // \046 = '.'
-    assert_eq!(unescape_dns_label("plain"), "plain");
-    assert_eq!(unescape_dns_label(r"trailing\"), "trailing"); // lone backslash dropped
 }
 
 #[test]

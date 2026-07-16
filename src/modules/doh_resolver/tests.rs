@@ -268,7 +268,7 @@ fn rtype_name_includes_soa() {
 fn soa_rname_standard_hostmaster() {
     assert_eq!(
         soa_rname_to_email("hostmaster.example.com"),
-        Some("hostmaster@example.com".to_string())
+        "hostmaster@example.com"
     );
 }
 
@@ -277,7 +277,7 @@ fn soa_rname_trailing_dot_stripped() {
     // Wire-format RNAME commonly carries a trailing dot.
     assert_eq!(
         soa_rname_to_email("hostmaster.example.com."),
-        Some("hostmaster@example.com".to_string())
+        "hostmaster@example.com"
     );
 }
 
@@ -286,14 +286,14 @@ fn soa_rname_escaped_dot_in_local_part() {
     // `john\.doe.example.com` → local-part is `john.doe`, domain is `example.com`.
     assert_eq!(
         soa_rname_to_email("john\\.doe.example.com"),
-        Some("john.doe@example.com".to_string())
+        "john.doe@example.com"
     );
 }
 
 #[test]
-fn soa_rname_single_label_returns_none() {
-    // No boundary dot found → domain part is absent → None.
-    assert_eq!(soa_rname_to_email("hostmaster"), None);
+fn soa_rname_single_label_returns_empty() {
+    // No boundary dot found → domain part is absent → empty string.
+    assert_eq!(soa_rname_to_email("hostmaster"), "");
 }
 
 #[test]
