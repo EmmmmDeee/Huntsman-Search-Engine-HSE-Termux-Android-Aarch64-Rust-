@@ -33,6 +33,7 @@ Guarantee (Rule 0.7 priority 1): correctness. Priority 2: evidence integrity. Pr
 - `[x]` T3.001 — AU-002 identity-cluster implausibility silent drop: surfaced as AU-002-REJECT finding (commit TBD)
 - `[x]` T3.002 — AU-092 rule_id reuse: conflict case distinguished as AU-092-CONFLICT instead of reusing AU-092 (commit TBD)
 - `[x]` T4.168 — AU-031 adjacency silent entity truncation: all neighbors now included in entity_uids (commit TBD)
+- `[x]` T4.169 — cross-scan-history recurrence evidence accumulation: summary was count-bearing, so re-scans of one subject piled up stale, contradictory snapshots (…"1 earlier"…"16 earlier"); summary is now count-free and dedups to one record (commit TBD)
 
 **Prior arcs:**
 
@@ -90,6 +91,8 @@ Per Rule 0.7 (priorities 1-5 are correctness, evidence integrity, safety, determ
 ---
 
 ## 8. Cycle Log
+
+**2026-07-16 15:40 UTC** — T4.169 fixed: cross-scan-history recurrence evidence (`core::engine::history`) embedded the prior-scan count in its summary string. The count rises every re-scan of a subject, so each scan produced a DIFFERENT `(source, summary)` key and the persist-time `Entity::absorb` dedup kept every snapshot — a re-scanned identifier accumulated stale, mutually-contradictory records (observed live: one seed had 16, reading "1 earlier"…"16 earlier" simultaneously). Fix: centralised a count-free `recurrence_summary()`; magnitude is carried by the existing `hub-entity` tag (AU-078 reads the tag, not the text) and the store-derived leverage degree — verified no consumer parses the count from this summary. Evidence integrity restored (Rule 0.7 priority 2); the module's documented idempotency now holds across re-scans, not just within one slice. Proven on a fresh DB: 6 scans across the non-hub→hub boundary → exactly 1 record + correct hub tag. +1 regression test (4993 total). Gate passing. Paired: SOLUTION_TREE.md.
 
 **2026-07-16 14:30 UTC** — T4.168 fixed: AU-031 adjacency rule (infra.rs) was silently truncating entity_uids to first 12 neighbors while reporting full count in description (lines 450-454). Now includes all neighbors per evidence integrity (Rule 0.7 priority 2). Removed unused AGG_SAMPLE constant. Tests updated to verify all 30 neighbors included. Gate passing.
 

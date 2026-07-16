@@ -124,7 +124,17 @@ Rationale: Trees and code are one artifact. Stale trees mislead the next develop
 - Tests updated to verify all 30 neighbors included when 30-way fan-out aggregates to one finding
 - Test coverage: 6 au031 tests passing (no regression)
 
-**Status:** ✓ Complete. T3/T4 quality gate passing (4992 tests).
+**Built:** cross-scan-history recurrence evidence no longer accumulates across re-scans
+
+- Modified `core::engine::history::link_cross_scan_history` to emit a count-free summary via a new centralised `recurrence_summary()` helper
+- Root cause: the summary embedded the prior-scan count (`"recorded in {prior} earlier scan(s)"`), which rises each re-scan; the differing string defeated the `(source, summary)` evidence dedup in `Entity::absorb`, so re-scans of one subject accumulated stale, mutually-contradictory snapshots (observed live: 16 records on one seed)
+- Rationale (Rule 0.7 priority 2 — Evidence Integrity): persisted evidence must not carry superseded, contradictory claims; the durable fact ("recurs across investigations") belongs in the summary, the volatile magnitude in the `hub-entity` tag
+- Verified safe: AU-078 reads the `hub-entity` tag (not the summary); dossier ranking reads `store.observation_count` (not the summary); no consumer parses this count
+- Hub signal preserved: `hub-entity` tag still set at HUB_THRESHOLD and merges as a deduped set
+- Proven on a fresh DB: 6 scans across the non-hub→hub boundary → exactly 1 recurrence record + correct hub tag (old code: one record per scan)
+- Test coverage: +1 regression test (`recurrence_evidence_carries_no_volatile_count_so_rescans_dedup`), 12 history tests passing
+
+**Status:** ✓ Complete. T3/T4 quality gate passing (4993 tests).
 
 ---
 
@@ -139,6 +149,8 @@ Rationale: Trees and code are one artifact. Stale trees mislead the next develop
 ---
 
 ## 5. Cycle Log
+
+**2026-07-16 15:40 UTC** — T4 quality deliverable: cross-scan-history recurrence evidence accumulation fixed (T4.169). Count-free summary via `recurrence_summary()`; re-scans now dedup to one record; hub magnitude preserved via tag. Root cause found from a live end-to-end run (a re-scanned seed had 16 stale snapshots). Gate passing. 4993 tests passing (+1 regression). Paired with PROBLEM_TREE.md §8.
 
 **2026-07-16 14:30 UTC** — T4 quality deliverable: AU-031 adjacency entity truncation fixed (T4.168). All neighbors now included in entity_uids per evidence integrity (Rule 0.7 priority 2). Gate passing. 4992 tests passing. Paired with PROBLEM_TREE.md §8.
 

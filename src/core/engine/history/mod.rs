@@ -29,8 +29,10 @@ const MAX_PROBES: usize = 48;
 
 /// Prior-scan count threshold at or above which an entity is classified as a
 /// "hub" — a high-leverage identifier that bridges three or more distinct
-/// investigations. Hub entities get a distinguishing tag and stronger evidence
-/// summary so both operators and the AU-078 correlator rule can prioritise them.
+/// investigations. Hub entities get the distinguishing `hub-entity` tag so both
+/// operators and the AU-078 correlator rule can prioritise them; the tag (not a
+/// count-bearing evidence summary — see [`recurrence_summary`]) is what carries the
+/// hub signal, so it survives cross-scan merges as a deduped set.
 const HUB_THRESHOLD: usize = 3;
 
 /// Max point-queries the co-occurrence pass may issue per scan. The pairing pass
@@ -97,16 +99,48 @@ pub(super) fn is_cross_scan_candidate(e: &Entity) -> bool {
     }
 }
 
+/// Build the recurrence-evidence summary. Deliberately carries NO prior-scan
+/// count.
+///
+/// The count is a monotonically-rising per-scan snapshot (`1`, then `2`, then `3`…
+/// as the subject is re-scanned). Embedding it in the summary defeated the
+/// `(source, summary)` evidence dedup in
+/// [`Entity::absorb`](crate::core::entity::Entity::absorb): every re-scan produced
+/// a DIFFERENT summary string, so the persist-time merge kept each as a distinct
+/// record and a frequently-scanned identifier accumulated a pile of stale,
+/// mutually-inconsistent snapshots (`…recorded in 1 earlier scan`, `…2…`, `…16…`),
+/// only the largest of which was current — an evidence-integrity regression and a
+/// breach of this module's documented idempotency contract. The durable fact — this
+/// identifier recurs across prior investigations — is what belongs in persisted
+/// evidence; the live magnitude is carried by the `hub-entity` tag (which AU-078
+/// reads and which merges as a deduped set) and by the store-derived
+/// `cross_scan_degree` leverage ranking, NEITHER of which reads this string. A
+/// stable summary ⇒ re-scan snapshots collapse to exactly one record.
+fn recurrence_summary(canonical: Option<&str>) -> String {
+    match canonical {
+        Some(canon) => format!(
+            "Canonical form '{canon}' also recorded in earlier scan(s) in the local \
+             intelligence database — a separator-variant handle that bridges investigations"
+        ),
+        None => "Also recorded in earlier scan(s) in the local intelligence database — this \
+             identifier recurs across investigations and bridges distinct cases"
+            .to_owned(),
+    }
+}
+
 /// Link this scan's findings to the local intelligence history.
 ///
 /// For each [`is_cross_scan_candidate`] identifier, ask the store whether any
 /// EARLIER scan recorded the same value (the entity isn't persisted for this scan
 /// yet, so any hit is genuinely prior). A recurrence earns a `cross-scan` tag and a
-/// [`CROSS_SCAN_SOURCE`] evidence record naming how many prior scans share it — the
-/// bridge that turns a pile of isolated scans into one connected intelligence base.
-/// Non-corroborating (never inflates confidence), bounded ([`MAX_PROBES`]),
-/// idempotent, and store errors are skipped (a history lookup must never fail a
-/// scan). Returns the number of entities bridged.
+/// count-free [`CROSS_SCAN_SOURCE`] evidence record (see [`recurrence_summary`] for
+/// why the prior-scan count is NOT embedded) — the bridge that turns a pile of
+/// isolated scans into one connected intelligence base. A 3+-prior-scan recurrence
+/// additionally earns the `hub-entity` tag, which is what carries the magnitude to
+/// AU-078 and the UI. Non-corroborating (never inflates confidence), bounded
+/// ([`MAX_PROBES`]), idempotent ACROSS re-scans (the stable summary dedups on merge,
+/// not just within one slice), and store errors are skipped (a history lookup must
+/// never fail a scan). Returns the number of entities bridged.
 pub(super) fn link_cross_scan_history(
     store: &dyn StoragePort,
     entities: &mut [Entity],
@@ -142,21 +176,13 @@ pub(super) fn link_cross_scan_history(
                                 canon_ids.iter().filter(|id| id.as_str() != scan_id).count();
                             if prior > 0 {
                                 e.tag("cross-scan");
-                                let summary = if prior >= HUB_THRESHOLD {
+                                if prior >= HUB_THRESHOLD {
                                     e.tag("hub-entity");
-                                    format!(
-                                        "High-leverage hub identifier: canonical form '{canon}' \
-                                         recorded in {prior} earlier investigation(s) — bridges \
-                                         multiple cases across handle-separator variants"
-                                    )
-                                } else {
-                                    format!(
-                                        "Canonical form '{canon}' also recorded in {prior} \
-                                         earlier scan(s) — separator-variant handle bridges \
-                                         investigations"
-                                    )
-                                };
-                                e.add_evidence(Evidence::new(CROSS_SCAN_SOURCE, summary));
+                                }
+                                e.add_evidence(Evidence::new(
+                                    CROSS_SCAN_SOURCE,
+                                    recurrence_summary(Some(&canon)),
+                                ));
                                 linked += 1;
                             }
                         }
@@ -183,21 +209,13 @@ pub(super) fn link_cross_scan_history(
                                 canon_ids.iter().filter(|id| id.as_str() != scan_id).count();
                             if prior_c > 0 {
                                 e.tag("cross-scan");
-                                let summary = if prior_c >= HUB_THRESHOLD {
+                                if prior_c >= HUB_THRESHOLD {
                                     e.tag("hub-entity");
-                                    format!(
-                                        "High-leverage hub identifier: canonical form '{canon}' \
-                                         recorded in {prior_c} earlier investigation(s) — bridges \
-                                         multiple cases across handle-separator variants"
-                                    )
-                                } else {
-                                    format!(
-                                        "Canonical form '{canon}' also recorded in {prior_c} \
-                                         earlier scan(s) — separator-variant handle bridges \
-                                         investigations"
-                                    )
-                                };
-                                e.add_evidence(Evidence::new(CROSS_SCAN_SOURCE, summary));
+                                }
+                                e.add_evidence(Evidence::new(
+                                    CROSS_SCAN_SOURCE,
+                                    recurrence_summary(Some(&canon)),
+                                ));
                                 linked += 1;
                             }
                         }
@@ -208,22 +226,15 @@ pub(super) fn link_cross_scan_history(
         }
         e.tag("cross-scan");
         // Hub detection: an identifier seen in 3+ distinct prior scans bridges
-        // multiple independent investigations. Tag it separately so the AU-078
-        // correlator rule and the UI can surface it as a high-leverage lead.
-        let summary = if prior >= HUB_THRESHOLD {
+        // multiple independent investigations. The `hub-entity` TAG (a deduped set
+        // under `Entity::absorb`) — not this evidence summary — carries the
+        // magnitude, so AU-078 and the UI still surface the high-leverage lead
+        // while the summary stays count-free and dedups to a single record across
+        // re-scans (see `recurrence_summary`).
+        if prior >= HUB_THRESHOLD {
             e.tag("hub-entity");
-            format!(
-                "High-leverage hub identifier: recorded in {prior} earlier investigations \
-                 in the local intelligence database — bridges multiple distinct cases and \
-                 should be prioritised for cross-investigation attribution"
-            )
-        } else {
-            format!(
-                "Also recorded in {prior} earlier scan(s) in the local intelligence database \
-                 — this identifier bridges investigations"
-            )
-        };
-        e.add_evidence(Evidence::new(CROSS_SCAN_SOURCE, summary));
+        }
+        e.add_evidence(Evidence::new(CROSS_SCAN_SOURCE, recurrence_summary(None)));
         linked += 1;
     }
     if linked > 0 {

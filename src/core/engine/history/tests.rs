@@ -108,6 +108,61 @@ fn bridges_a_finding_seen_in_an_earlier_scan_without_inflating_confidence() {
 }
 
 #[test]
+fn recurrence_evidence_carries_no_volatile_count_so_rescans_dedup() {
+    // Regression: the recurrence summary embedded the prior-scan count ("…recorded
+    // in 1 earlier scan", "…2…", "…16…"). Because that count rises every time the
+    // same subject is re-scanned, each scan produced a DIFFERENT summary string,
+    // defeating the `(source, summary)` dedup in `Entity::absorb`: a re-scanned
+    // identifier accumulated a pile of stale, superseded, mutually-inconsistent
+    // snapshots in its persisted evidence (only the largest count current). The
+    // summary is now count-free, so it is byte-identical across scans and the
+    // persist-time merge collapses re-scan snapshots to exactly one record —
+    // honouring the module's documented idempotency contract ACROSS scans, not
+    // just within one slice. (The live magnitude is carried by the `hub-entity`
+    // tag and the store-derived leverage degree, neither of which reads this text.)
+    let store = InMemoryStore::new();
+    store
+        .upsert_entity(&ent(EntityKind::Phone, "+61400111222", 0.7, "prior-scan"))
+        .unwrap();
+
+    let mut entities = vec![ent(EntityKind::Phone, "+61400111222", 0.55, "this-scan")];
+    link_cross_scan_history(&store, &mut entities, "this-scan");
+
+    let ev = entities[0]
+        .evidence
+        .iter()
+        .find(|ev| ev.source == "cross_scan_history")
+        .expect("the bridged phone carries recurrence evidence");
+    // The crux: a non-canonical recurrence summary must embed NO digit — the only
+    // thing that varied per scan was the count, and that is exactly what defeated
+    // dedup. (Fails against the old inline `format!("…{prior} earlier scan(s)…")`,
+    // whose "1" is an ASCII digit; passes against the count-free summary.)
+    assert!(
+        !ev.summary.chars().any(|c| c.is_ascii_digit()),
+        "recurrence summary must not embed a volatile prior-scan count \
+         (it defeats (source, summary) evidence dedup across re-scans): {:?}",
+        ev.summary
+    );
+
+    // Consequence: two snapshots of that evidence merge to exactly one record.
+    let mut a = entities[0].clone();
+    a.merge(entities[0].clone());
+    let recurrence = a
+        .evidence
+        .iter()
+        .filter(|ev| {
+            ev.source == CROSS_SCAN_SOURCE
+                && !ev.summary.starts_with(COOCCURRENCE_MARKER)
+                && !ev.summary.starts_with(RELATION_RECALL_MARKER)
+        })
+        .count();
+    assert_eq!(
+        recurrence, 1,
+        "recurrence evidence must not accumulate across re-scan merges"
+    );
+}
+
+#[test]
 fn cooccurrence_bridges_a_pair_seen_together_before() {
     let store = InMemoryStore::new();
     // A PRIOR investigation recorded a phone and an email TOGETHER.
