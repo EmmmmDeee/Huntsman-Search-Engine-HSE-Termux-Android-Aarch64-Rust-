@@ -18,7 +18,7 @@ use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -81,6 +81,24 @@ struct UrlEntry {
     url_status: Option<String>,
     #[serde(default)]
     tags: Option<Vec<String>>,
+}
+
+/// Parse the host-level malicious-URL count out of a `query_status: "ok"`
+/// response. **Pure** (no network/IO). abuse.ch's own contract is that
+/// `query_status: "ok"` guarantees `url_count` is present and `>=1`; a
+/// missing or zero count is treated as the conservative floor of 1 rather
+/// than silently discarded, and an unparseable count — a real contract
+/// violation, distinct from the already-handled "no results" negative — is
+/// `Err` so the confirmed malicious-host finding is never silently dropped.
+fn parse_url_count(body: &UrlhausResp) -> Result<u64> {
+    match body.url_count.as_deref().map(str::parse::<u64>) {
+        Some(Ok(n)) if n > 0 => Ok(n),
+        Some(Ok(_)) | None => Ok(1),
+        Some(Err(e)) => Err(Error::module(
+            SRC,
+            format!("query_status=ok but url_count unparseable: {e}"),
+        )),
+    }
 }
 
 /// Build the malicious-host entity from an URLhaus `host` response. **Pure** (no
@@ -254,14 +272,7 @@ impl Module for UrlHaus {
             return Ok(ModuleResult::new());
         }
 
-        let url_count: u64 = body
-            .url_count
-            .as_deref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        if url_count == 0 {
-            return Ok(ModuleResult::new());
-        }
+        let url_count = parse_url_count(&body)?;
 
         let mut result = ModuleResult::new();
         result.push(build_threat_entity(

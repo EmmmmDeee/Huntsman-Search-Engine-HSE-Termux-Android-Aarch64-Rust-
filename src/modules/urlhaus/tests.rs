@@ -123,6 +123,41 @@ fn accepts_domain_and_ip() {
         assert_eq!(threats, "a,b,c,d,e,f,m,x,y,z");
     }
 
+    // -- parse_url_count failure contract (T2.164) --------------------------
+
+    #[test]
+    fn parse_url_count_surfaces_an_unparseable_count_as_error() {
+        // T2.164 regression: `.and_then(|s| s.parse().ok()).unwrap_or(0)`
+        // previously collapsed a real abuse.ch contract violation (ok, but
+        // url_count unparseable) into the same Ok(empty) as a genuine clean
+        // miss — silently discarding a confirmed malicious-host finding.
+        let body = resp(r#"{"query_status":"ok","url_count":"not-a-number"}"#);
+        let out = parse_url_count(&body);
+        assert!(
+            out.is_err(),
+            "an unparseable url_count on query_status=ok must surface as Err"
+        );
+    }
+
+    #[test]
+    fn parse_url_count_treats_missing_or_zero_as_the_conservative_floor() {
+        // query_status=="ok" guarantees a real positive finding even when
+        // abuse.ch omits/zeroes url_count — never silently discard it.
+        assert_eq!(parse_url_count(&resp(r#"{"query_status":"ok"}"#)).unwrap(), 1);
+        assert_eq!(
+            parse_url_count(&resp(r#"{"query_status":"ok","url_count":"0"}"#)).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn parse_url_count_keeps_a_real_count() {
+        assert_eq!(
+            parse_url_count(&resp(r#"{"query_status":"ok","url_count":"7"}"#)).unwrap(),
+            7
+        );
+    }
+
     #[test]
     fn no_urls_array_omits_url_aggregates() {
         // A host hit with a count but no per-URL array (abuse.ch can omit it).
