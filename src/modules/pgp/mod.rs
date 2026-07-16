@@ -16,11 +16,11 @@ use async_trait::async_trait;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{read_body_capped, urldecode, urlencode};
+use crate::util::http::{http_status_error, read_body_capped, urldecode, urlencode};
 
 const SRC: &str = "pgp";
 
@@ -77,30 +77,69 @@ impl Module for Pgp {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut result = ModuleResult::new();
         let email = target.value.trim();
         if !email.contains('@') {
-            return Ok(result);
+            return Ok(ModuleResult::new());
         }
         let url = format!(
             "https://keyserver.ubuntu.com/pks/lookup?op=index&options=mr&exact=on&search={}",
             urlencode(email)
         );
-        let resp = match ctx.http.get(&url).send().await {
-            Ok(r) => r,
-            Err(_) => return Ok(result), // network hiccup → quiet, not fatal
-        };
-        // 404 / no-keys is the clean "no PGP key for this email" signal.
-        if !resp.status().is_success() {
-            return Ok(result);
-        }
-        let Some(body) = read_body_capped(resp, BODY_CAP).await else {
-            return Ok(result);
-        };
-
-        extract(&body, email, &ctx.scan_id, &mut result);
-        Ok(result)
+        lookup(&ctx.http, &url, email, &ctx.scan_id).await
     }
+}
+
+/// Query the HKP index and map it to entities, surfacing a genuine lookup failure
+/// as a module `Err` instead of swallowing it into an empty result. Split from
+/// [`Pgp::process`] as a client+URL-taking seam so the failure contract is
+/// unit-testable against a local server.
+///
+/// keyserver.ubuntu.com answers a genuine "no key for this email" with **HTTP
+/// 404** (live-confirmed) and a found key with `200`, so:
+///   * a `404` stays the clean "no PGP key" negative (`Ok`, empty);
+///   * a transport failure (connection refused / DNS / timeout) → `Err` (URL
+///     redacted via [`reqwest::Error::without_url`] — it carries the searched
+///     email in its query string);
+///   * any other non-2xx (5xx / 429 / 403) → `Err`;
+///   * a mid-stream body-read failure → `Err`.
+///
+/// Because most emails legitimately have no PGP key, "empty" is the common
+/// outcome — which is exactly why a masked keyserver outage was indistinguishable
+/// from an honest miss and silently dropped the owner-name / alternate-email /
+/// key-fingerprint pivots. A `200` whose body names no keys stays a clean empty
+/// naturally via [`extract`].
+async fn lookup(
+    client: &reqwest::Client,
+    url: &str,
+    email: &str,
+    scan_id: &str,
+) -> Result<ModuleResult> {
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| Error::module(SRC, e.without_url().to_string()))?;
+
+    let status = resp.status();
+    // 404 is the keyserver's genuine "no key for this email" — the clean miss.
+    if status.as_u16() == 404 {
+        return Ok(ModuleResult::new());
+    }
+    // Every OTHER non-2xx (5xx / 429 / 403) is a real outage/throttle, not a
+    // negative answer — surface it instead of masking it as "no PGP key".
+    if !status.is_success() {
+        return Err(http_status_error(SRC, resp).await);
+    }
+    let Some(body) = read_body_capped(resp, BODY_CAP).await else {
+        return Err(Error::module(
+            SRC,
+            "transport error reading keyserver index body".to_string(),
+        ));
+    };
+
+    let mut result = ModuleResult::new();
+    extract(&body, email, scan_id, &mut result);
+    Ok(result)
 }
 
 /// Parse an HKP machine-readable index body into entities. Pure of I/O so it is

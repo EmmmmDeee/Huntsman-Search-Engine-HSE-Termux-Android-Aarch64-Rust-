@@ -115,3 +115,72 @@ use super::*;
             "duplicate name across UIDs must be emitted once"
         );
     }
+
+    // -- lookup failure contract (T2.133) ----------------------------
+
+    /// One-shot local HTTP server answering with `status` + `body`. Mirrors the
+    /// chain_intel / geocode / opencellid test pattern.
+    async fn serve_once(status: u16, body: &'static str) -> std::net::SocketAddr {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let reason = if status == 200 { "OK" } else { "Error" };
+            let head = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(body.as_bytes()).await;
+            let _ = sock.flush().await;
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn lookup_surfaces_transport_failure_as_error() {
+        // T2.133 regression: a keyserver outage / unreachable host previously
+        // folded into Ok(empty) — indistinguishable from a genuine "no PGP key
+        // for this email" (the common outcome), silently dropping the owner-name
+        // / alternate-email / key-fingerprint pivots. Port 1 has nothing
+        // listening (connection refused): a real transport failure → Err.
+        let client = reqwest::Client::new();
+        let out = lookup(&client, "http://127.0.0.1:1/", "x@y.com", "scan").await;
+        assert!(
+            out.is_err(),
+            "an unreachable keyserver must surface as Err, not a swallowed empty result"
+        );
+    }
+
+    #[tokio::test]
+    async fn lookup_keeps_404_as_the_clean_no_key_miss() {
+        // The legitimate negative MUST be preserved: keyserver.ubuntu.com answers
+        // a genuine "no key for this email" with 404 → a clean empty (Ok), never
+        // an error, so the fix surfaces outages without turning the common
+        // no-key case into noise.
+        let addr = serve_once(404, "not found").await;
+        let client = reqwest::Client::new();
+        let out = lookup(&client, &format!("http://{addr}/"), "x@y.com", "scan").await;
+        assert!(
+            matches!(out, Ok(ref r) if r.entities.is_empty()),
+            "a 404 must stay a clean no-key miss (Ok, empty), not an Err"
+        );
+    }
+
+    #[tokio::test]
+    async fn lookup_surfaces_a_5xx_as_error() {
+        // A 5xx is a real outage, NOT a negative answer — it must not read as
+        // "no PGP key". Previously every non-2xx was swallowed alike.
+        let addr = serve_once(503, "upstream down").await;
+        let client = reqwest::Client::new();
+        let out = lookup(&client, &format!("http://{addr}/"), "x@y.com", "scan").await;
+        assert!(
+            out.is_err(),
+            "a 5xx must surface as Err, not a swallowed empty result"
+        );
+    }
