@@ -1,6 +1,76 @@
 use super::*;
 use crate::util::geo::parse_coords;
 
+// -- forward_fetch failure contract (T2.131) -------------------------
+
+/// One-shot local HTTP server answering with `status` + `body`. Mirrors the
+/// chain_intel / sanctions_ofac test pattern.
+async fn serve_once(status: u16, body: &'static str) -> std::net::SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 2048];
+        let _ = sock.read(&mut buf).await;
+        let reason = if status == 200 { "OK" } else { "Error" };
+        let head = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let _ = sock.write_all(head.as_bytes()).await;
+        let _ = sock.write_all(body.as_bytes()).await;
+        let _ = sock.flush().await;
+    });
+    addr
+}
+
+#[tokio::test]
+async fn forward_fetch_surfaces_total_failure_when_transport_and_curl_both_fail() {
+    // T2.131 regression: forward() previously returned Ok(empty) when the reqwest
+    // call AND the curl fallback both failed — indistinguishable from "address
+    // not resolvable", silently dropping the coordinate anchor downstream geo
+    // enrichers depend on. Port 1 has nothing listening: reqwest is refused, and
+    // curl against the same host is refused too, so the lookup cannot execute and
+    // must now surface as an Err (mirrors reverse()).
+    let client = reqwest::Client::new();
+    let out = forward_fetch(&client, "http://127.0.0.1:1/").await;
+    assert!(
+        out.is_err(),
+        "a total transport+curl failure must surface as Err, not a swallowed empty result"
+    );
+}
+
+#[tokio::test]
+async fn forward_fetch_keeps_an_empty_array_as_a_clean_no_match() {
+    // The legitimate negative MUST be preserved: a 200 with an empty JSON array
+    // is Nominatim's honest "no match", an empty Vec (Ok), NOT an error — so the
+    // fix surfaces outages without turning "address not resolvable" into noise.
+    let addr = serve_once(200, "[]").await;
+    let client = reqwest::Client::new();
+    let out = forward_fetch(&client, &format!("http://{addr}/")).await;
+    assert!(
+        matches!(out, Ok(ref v) if v.is_empty()),
+        "a 200 empty array must stay a clean no-match (Ok, empty), got {:?}",
+        out.is_ok()
+    );
+}
+
+#[tokio::test]
+async fn forward_fetch_surfaces_parse_failure_on_a_200_garbage_body() {
+    // A 200 whose body is not the expected JSON (truncation / contract change) is
+    // a real anomaly, not "no match" — previously swallowed via unwrap_or_default.
+    let addr = serve_once(200, "definitely not json <<<>>>").await;
+    let client = reqwest::Client::new();
+    let out = forward_fetch(&client, &format!("http://{addr}/")).await;
+    assert!(
+        out.is_err(),
+        "a 200 with an unparseable body must surface as Err, not a swallowed empty result"
+    );
+}
+
 // -- acceptance tests (from forward_geocode) -------------------------
 
 #[test]

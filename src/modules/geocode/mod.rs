@@ -114,6 +114,60 @@ impl Module for Geocode {
     }
 }
 
+/// Nominatim requires a valid, identifying `User-Agent` (usage policy) — a
+/// missing/generic UA is rejected. Shared by the forward fetch and its curl
+/// fallback.
+const NOMINATIM_UA: &str = "huntsman-search-engine/1.0 (+https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-)";
+
+/// Fetch and parse a Nominatim forward-geocode response, surfacing a genuine
+/// execution failure as a module `Err` rather than swallowing it into an empty
+/// result — the failure handling `reverse()` already has and `forward()`
+/// previously diverged from.
+///
+/// A reqwest transport error or a non-2xx falls back to a curl fetch (Nominatim
+/// intermittently blocks the reqwest User-Agent but answers curl); only when
+/// **both** paths fail is the lookup unexecutable → `Err`. A `200` that parses
+/// to an empty array stays the clean "address not resolvable" negative
+/// (`Ok(vec![])`); a `200` whose body does not parse is a real anomaly (`Err`,
+/// not a silent empty). Split out as a client+URL-taking seam so the contract is
+/// unit-testable against a local server. `json_scanned` still harvests any
+/// leaked API keys from the body (RULE 3); its `String` error (PII-free — a
+/// serde/body-cap note, never the address-bearing URL) is wrapped here.
+async fn forward_fetch(client: &reqwest::Client, url: &str) -> Result<Vec<NominatimResult>> {
+    let resp = client
+        .get(url)
+        .header("User-Agent", NOMINATIM_UA)
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => crate::util::http::json_scanned(r, SRC)
+            .await
+            .map_err(|e| Error::module(SRC, e)),
+        outcome => match crate::util::curl::fetch(url, crate::MODULE_TIMEOUT_MS).await {
+            Some(body) => {
+                serde_json::from_str(&body).map_err(|e| Error::module(SRC, e.to_string()))
+            }
+            // Both the reqwest call and the curl fallback failed — the lookup
+            // could not execute. Surface it (like reverse()) instead of a
+            // swallowed empty result the operator can't tell from "not found".
+            // The message carries no URL (it embeds the address being searched).
+            None => Err(match outcome {
+                Ok(r) => Error::module(
+                    SRC,
+                    format!(
+                        "nominatim returned HTTP {} and the curl fallback failed",
+                        r.status()
+                    ),
+                ),
+                Err(_) => Error::module(
+                    SRC,
+                    "nominatim transport error and the curl fallback failed".to_string(),
+                ),
+            }),
+        },
+    }
+}
+
 impl Geocode {
     // ── Forward geocode: Address → Coordinates ──────────────────────
 
@@ -128,28 +182,7 @@ impl Geocode {
             urlencode(addr)
         );
 
-        let resp = ctx
-            .http
-            .get(&url)
-            .header(
-                "User-Agent",
-                "huntsman-search-engine/1.0 (+https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-)",
-            )
-            .send()
-            .await;
-
-        let results: Vec<NominatimResult> = match resp {
-            Ok(r) if r.status().is_success() => crate::util::http::json_scanned(r, SRC)
-                .await
-                .unwrap_or_default(),
-            _ => {
-                if let Some(body) = crate::util::curl::fetch(&url, crate::MODULE_TIMEOUT_MS).await {
-                    serde_json::from_str(&body).unwrap_or_default()
-                } else {
-                    return Ok(ModuleResult::new());
-                }
-            }
-        };
+        let results: Vec<NominatimResult> = forward_fetch(&ctx.http, &url).await?;
 
         let mut result = ModuleResult::new();
 
