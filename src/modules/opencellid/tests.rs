@@ -1,6 +1,87 @@
-use super::{AreaResp, OpenCellId};
-use crate::core::module::{Module, ModuleCost};
+use super::{AreaResp, OpenCellId, fetch_opencellid};
+use crate::core::module::{Module, ModuleContext, ModuleCost};
 use crate::core::scan::{Target, TargetKind};
+
+// -- fetch_opencellid failure contract (T2.132) ----------------------
+
+fn live_ctx() -> ModuleContext {
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    ModuleContext {
+        scan_id: "test".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    }
+}
+
+/// One-shot local HTTP server answering with `status` + `body`. Mirrors the
+/// chain_intel / geocode / sanctions_ofac test pattern.
+async fn serve_once(status: u16, body: &'static str) -> std::net::SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 2048];
+        let _ = sock.read(&mut buf).await;
+        let reason = if status == 200 { "OK" } else { "Error" };
+        let head = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let _ = sock.write_all(head.as_bytes()).await;
+        let _ = sock.write_all(body.as_bytes()).await;
+        let _ = sock.flush().await;
+    });
+    addr
+}
+
+#[tokio::test]
+async fn fetch_opencellid_surfaces_transport_failure_as_error() {
+    // T2.132 regression: both process_area and process_tower previously turned a
+    // .send() transport error into Ok(empty) — indistinguishable from "tower/area
+    // not in the crowdsourced DB", silently reporting "no location found" for this
+    // geoint module. Port 1 has nothing listening (connection refused): a real
+    // transport failure that must now surface as a module Err.
+    let ctx = live_ctx();
+    let out: Result<Option<AreaResp>, _> =
+        fetch_opencellid(&ctx, "test-key", "http://127.0.0.1:1/").await;
+    assert!(
+        out.is_err(),
+        "an unreachable opencellid host must surface as Err, not a swallowed empty result"
+    );
+}
+
+#[tokio::test]
+async fn fetch_opencellid_surfaces_parse_failure_on_a_200_garbage_body() {
+    // A 200 whose body is not the expected JSON is a real anomaly, not "no towers".
+    let addr = serve_once(200, "definitely not json <<<>>>").await;
+    let ctx = live_ctx();
+    let out: Result<Option<AreaResp>, _> =
+        fetch_opencellid(&ctx, "test-key", &format!("http://{addr}/")).await;
+    assert!(
+        out.is_err(),
+        "a 200 with an unparseable body must surface as Err, not a swallowed empty result"
+    );
+}
+
+#[tokio::test]
+async fn fetch_opencellid_maps_non_2xx_to_a_noted_clean_miss() {
+    // The non-2xx path is PRESERVED: the key is reported to the pool inside the
+    // seam and the scan result stays a clean empty (Ok(None)), never an Err — so
+    // a rejected/throttled key surfaces via the pool, not as scan noise.
+    let addr = serve_once(429, "rate limited").await;
+    let ctx = live_ctx();
+    let out: Result<Option<AreaResp>, _> =
+        fetch_opencellid(&ctx, "test-key", &format!("http://{addr}/")).await;
+    assert!(
+        matches!(out, Ok(None)),
+        "a non-2xx must stay a clean Ok(None) (key noted to the pool), not an Err"
+    );
+}
 
 #[test]
 fn module_metadata() {

@@ -167,6 +167,55 @@ fn parse_tower_id(value: &str) -> Option<(i64, i64, i64, i64)> {
     Some((mcc, mnc, lac, cid))
 }
 
+/// Issue one OpenCelliD GET and decode its JSON body as `T`, surfacing a genuine
+/// fetch failure as a module `Err` instead of swallowing it into an empty result
+/// — so a network outage to opencellid.org is told apart from a legitimate
+/// "tower/area not in the crowdsourced database" for this geoint (tower-placement)
+/// module. Shared by both `process_area` and `process_tower`.
+///
+///   * transport failure → `Err` (URL redacted via [`reqwest::Error::without_url`]
+///     — it carries the `key={api_key}` query param);
+///   * a non-2xx status → the key is reported to the pool (`note_keyed_error`) and
+///     `Ok(None)` returned — the pool report IS the operator signal, so this stays
+///     a clean empty scan result, not an error;
+///   * a `200` whose body does not parse → `Err` (a real anomaly, previously
+///     swallowed);
+///   * a `200` that parses → `Ok(Some(data))`.
+///
+/// The body-level OpenCelliD `{"error":...}`-on-`200` bad-key shape is checked by
+/// the caller on the decoded value (its field differs per endpoint). Split out as
+/// a ctx+URL-taking seam so the failure contract is unit-testable against a local
+/// server. `json_scanned` still harvests any leaked API keys from the body
+/// (RULE 3); its `String` parse error (PII-free) is wrapped here.
+async fn fetch_opencellid<T: serde::de::DeserializeOwned>(
+    ctx: &ModuleContext,
+    api_key: &str,
+    url: &str,
+) -> Result<Option<T>> {
+    let resp = ctx
+        .http
+        .get(url)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| crate::core::error::Error::module(SRC, e.without_url().to_string()))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        // A present key that gets rejected/throttled must be reported to the
+        // pool, or a dead/throttled key silently degrades every future scan with
+        // no operator-visible signal and no chance to rotate. The report is the
+        // signal, so the scan result stays a clean empty (Ok(None)), not an Err.
+        crate::util::http::note_keyed_error(status.as_u16(), SRC, api_key, ctx);
+        return Ok(None);
+    }
+
+    crate::util::http::json_scanned(resp, SRC)
+        .await
+        .map(Some)
+        .map_err(|e| crate::core::error::Error::module(SRC, e))
+}
+
 /// Coordinates → towers (getInArea).
 async fn process_area(target: &Target, ctx: &ModuleContext, api_key: &str) -> Result<ModuleResult> {
     let (lat, lon) = parse_coords(&target.value)?;
@@ -184,28 +233,9 @@ async fn process_area(target: &Target, ctx: &ModuleContext, api_key: &str) -> Re
         urlencode(&bbox),
     );
 
-    let resp = ctx
-        .http
-        .get(&url)
-        .header("Accept", "application/json")
-        .send()
-        .await;
-
-    let Ok(resp) = resp else {
+    let Some(data): Option<AreaResp> = fetch_opencellid(ctx, api_key, &url).await? else {
+        // Non-2xx: the key was already reported to the pool inside the seam.
         return Ok(ModuleResult::new());
-    };
-    let status = resp.status();
-    if !status.is_success() {
-        // A present key that gets rejected/throttled must be reported to the
-        // pool, or a dead/throttled key silently degrades every future scan
-        // with no operator-visible signal and no chance to rotate.
-        crate::util::http::note_keyed_error(status.as_u16(), SRC, api_key, ctx);
-        return Ok(ModuleResult::new());
-    }
-
-    let data: AreaResp = match crate::util::http::json_scanned(resp, SRC).await {
-        Ok(d) => d,
-        Err(_) => return Ok(ModuleResult::new()),
     };
     if data.error.is_some() {
         // See `CellEntry::error`'s doc comment — a body-level key failure
@@ -242,26 +272,9 @@ async fn process_tower(
         cid,
     );
 
-    let resp = ctx
-        .http
-        .get(&url)
-        .header("Accept", "application/json")
-        .send()
-        .await;
-
-    let Ok(resp) = resp else {
+    let Some(cell): Option<CellEntry> = fetch_opencellid(ctx, api_key, &url).await? else {
+        // Non-2xx: the key was already reported to the pool inside the seam.
         return Ok(ModuleResult::new());
-    };
-    let status = resp.status();
-    if !status.is_success() {
-        // Same reporting rationale as `process_area` above.
-        crate::util::http::note_keyed_error(status.as_u16(), SRC, api_key, ctx);
-        return Ok(ModuleResult::new());
-    }
-
-    let cell: CellEntry = match crate::util::http::json_scanned(resp, SRC).await {
-        Ok(d) => d,
-        Err(_) => return Ok(ModuleResult::new()),
     };
     if cell.error.is_some() {
         // See `CellEntry::error`'s doc comment.
