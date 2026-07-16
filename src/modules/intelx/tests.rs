@@ -191,6 +191,33 @@ fn result_resp_terminal_status_parsing() {
 }
 
 #[test]
+fn mark_records_truncation_flags_only_at_or_over_max_results() {
+    // Regression: IntelX's own hit-count total is unavailable (statistics=0
+    // on the result URL, ResultResp carries no total field), so a record
+    // count that reached MAX_RESULTS=50 is the only available signal that
+    // surplus matches exist beyond what was fetched.
+    let mut entity = Entity::new(crate::core::entity::EntityKind::Email, "a@b.com", 0.86, "s");
+
+    // Below the cap: no signal.
+    mark_records_truncation(&mut entity, MAX_RESULTS as usize - 1);
+    assert!(!entity.has_tag("truncated"), "must not flag below the cap");
+    assert!(entity.evidence.is_empty());
+
+    // At the cap: tagged + dedicated evidence.
+    mark_records_truncation(&mut entity, MAX_RESULTS as usize);
+    assert!(
+        entity.has_tag("truncated"),
+        "seed must be tagged 'truncated'"
+    );
+    let ev = entity.evidence.last().unwrap();
+    assert_eq!(
+        ev.attributes.get("records_capped").map(String::as_str),
+        Some("true"),
+        "records_capped must be set when the count reaches MAX_RESULTS"
+    );
+}
+
+#[test]
 fn record_tolerates_missing_and_human_bucket() {
     let r: ResultResp =
         serde_json::from_str(r#"{"status":2,"records":[{"bucketh":"Public Leaks","media":1}]}"#)

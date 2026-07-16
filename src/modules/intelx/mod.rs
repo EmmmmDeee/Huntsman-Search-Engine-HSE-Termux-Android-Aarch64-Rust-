@@ -52,7 +52,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::core::{
-    entity::Evidence,
+    entity::{Entity, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
@@ -174,6 +174,29 @@ pub(crate) fn exposure_tags(
         }
     }
     out
+}
+
+/// Signal on the seed entity when the accumulated record count hit
+/// [`MAX_RESULTS`] — the server-side cap IntelX enforces via `maxresults` in
+/// the Phase-1 body and `limit` in the Phase-2 result URL. **Pure**. Unlike
+/// the sibling precedent fixes (sanctions_ofac/comb_search/virustotal), the
+/// TRUE total match count is unavailable here: the result URL hard-codes
+/// `statistics=0` and `ResultResp` carries no total field, so the only
+/// available signal is a boolean — the record count reached the ceiling,
+/// meaning surplus matches may exist beyond what was fetched. No-op when the
+/// count is strictly below the cap.
+fn mark_records_truncation(entity: &mut Entity, record_count: usize) {
+    if (record_count as u32) < MAX_RESULTS {
+        return;
+    }
+    entity.tag("truncated");
+    entity.add_evidence(
+        Evidence::new(
+            SRC,
+            format!("IntelX record count reached the {MAX_RESULTS}-result cap"),
+        )
+        .with_attr("records_capped", "true"),
+    );
 }
 
 /// The Intelligence X selector a target kind maps to, or `None` for a kind
@@ -478,6 +501,11 @@ impl Module for IntelX {
             ev = ev.with_attr("latest_record", d);
         }
         entity.add_evidence(ev);
+
+        // IntelX's own hit-count total is unavailable (statistics=0), so a
+        // record count that hit MAX_RESULTS is the only available signal that
+        // surplus matches may exist beyond what was fetched.
+        mark_records_truncation(&mut entity, all_records.len());
 
         let mut result = ModuleResult::new();
         result.push(entity);
