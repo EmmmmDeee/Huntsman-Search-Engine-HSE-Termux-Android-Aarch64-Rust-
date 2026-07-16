@@ -124,14 +124,28 @@ impl Module for AsicPersons {
         // `ModuleResult::or_hard_failure` — a total data.gov.au outage no longer
         // reads as "this person is in none of ASIC's people registers".
         let mut hard_failure: Option<Error> = None;
+        // Per-register truncation: CKAN's own `total` is the true full-text
+        // match count, independent of the <=MAX_HITS records actually fetched
+        // (line ~188 sends limit=MAX_HITS to the API). A common name can
+        // plausibly exceed MAX_HITS matches in a national register, silently
+        // dropping genuine adverse findings past position 100 unless surfaced.
+        let mut capped: Vec<(&str, u64)> = Vec::new();
         match banned {
-            Ok(records) => {
+            Ok((records, total)) => {
+                let mut matched = 0usize;
                 for rec in records
                     .iter()
                     .filter(|r| record_name_matches(r, "BD_PER_NAME", &tokens))
                     .take(MAX_HITS)
                 {
+                    matched += 1;
                     emit_banned(rec, &ctx.scan_id, &mut result);
+                }
+                if matched > 0
+                    && let Some(t) = total
+                    && t as usize > MAX_HITS
+                {
+                    capped.push(("banned", t));
                 }
             }
             Err(e) => {
@@ -139,13 +153,21 @@ impl Module for AsicPersons {
             }
         }
         match advisers {
-            Ok(records) => {
+            Ok((records, total)) => {
+                let mut matched = 0usize;
                 for rec in records
                     .iter()
                     .filter(|r| record_name_matches(r, "ADV_NAME", &tokens))
                     .take(MAX_HITS)
                 {
+                    matched += 1;
                     emit_adviser(rec, &ctx.scan_id, &mut result);
+                }
+                if matched > 0
+                    && let Some(t) = total
+                    && t as usize > MAX_HITS
+                {
+                    capped.push(("adviser", t));
                 }
             }
             Err(e) => {
@@ -153,13 +175,21 @@ impl Module for AsicPersons {
             }
         }
         match credit {
-            Ok(records) => {
+            Ok((records, total)) => {
+                let mut matched = 0usize;
                 for rec in records
                     .iter()
                     .filter(|r| record_name_matches(r, "CRED_REP_NAME", &tokens))
                     .take(MAX_HITS)
                 {
+                    matched += 1;
                     emit_credit_rep(rec, &ctx.scan_id, &mut result);
+                }
+                if matched > 0
+                    && let Some(t) = total
+                    && t as usize > MAX_HITS
+                {
+                    capped.push(("credit", t));
                 }
             }
             Err(e) => {
@@ -167,8 +197,42 @@ impl Module for AsicPersons {
             }
         }
 
+        if !capped.is_empty() {
+            push_truncation_seed(&target.value, &capped, &ctx.scan_id, &mut result);
+        }
+
         result.or_hard_failure(hard_failure)
     }
+}
+
+/// Emit a seed `Person` entity for `full_name`, tagged `truncated`, carrying
+/// per-register total match counts and capped flags — one `total_*`/`*_capped`
+/// evidence-attribute pair per register that hit [`MAX_HITS`]. `capped` holds
+/// `(register_label, true_ckan_total)` for every register whose full-text
+/// match count exceeded what was fetched, so the operator knows a common name
+/// plausibly has more adverse findings than were surfaced.
+fn push_truncation_seed(
+    full_name: &str,
+    capped: &[(&str, u64)],
+    scan_id: &str,
+    result: &mut ModuleResult,
+) {
+    let mut seed = Entity::new(EntityKind::Person, full_name, 0.50, scan_id);
+    seed.tag("au");
+    seed.tag("asic");
+    seed.tag("search-result");
+    seed.tag("truncated");
+    let mut ev = Evidence::new(
+        SRC,
+        format!("ASIC people-register search for `{full_name}` truncated at MAX_HITS"),
+    );
+    for (register, total) in capped {
+        ev = ev
+            .with_attr(format!("total_{register}_matches"), total.to_string())
+            .with_attr(format!("{register}_records_capped"), "true");
+    }
+    seed.add_evidence(ev);
+    result.push(seed);
 }
 
 /// Query one CKAN datastore resource by free-text name, via the shared CKAN
@@ -184,7 +248,7 @@ async fn ckan_query(
     ctx: &ModuleContext,
     resource_id: &str,
     name: &str,
-) -> Result<Vec<Map<String, Value>>> {
+) -> Result<(Vec<Map<String, Value>>, Option<u64>)> {
     let url = datastore_search_url(CKAN_BASE, resource_id, name, MAX_HITS);
     let resp: CkanResp = fetch_json(&ctx.http, SRC, &url).await?;
     if resp.success == Some(false) {
@@ -193,7 +257,10 @@ async fn ckan_query(
             "CKAN datastore_search returned success=false (bad resource id or portal error)",
         ));
     }
-    Ok(resp.result.map(|r| r.records).unwrap_or_default())
+    Ok(resp
+        .result
+        .map(|r| (r.records, r.total))
+        .unwrap_or_default())
 }
 
 /// Lower-cased alphabetic name tokens (≥2 chars) of a full name.

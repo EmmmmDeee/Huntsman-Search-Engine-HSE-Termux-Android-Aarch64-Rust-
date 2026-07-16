@@ -168,6 +168,47 @@ async fn single_token_name_makes_no_request() {
 }
 
 #[test]
+fn truncation_seed_carries_per_register_totals_and_capped_flags() {
+    // Regression: when a register's CKAN `total` exceeds MAX_HITS, the seed
+    // Person must be tagged `truncated` and carry that register's true total
+    // + a capped flag — an operator must know a common name plausibly has
+    // more adverse findings than were fetched.
+    let mut result = ModuleResult::new();
+    push_truncation_seed(
+        "Bill Abbott",
+        &[("banned", 250), ("adviser", 175)],
+        "scan",
+        &mut result,
+    );
+    let seed = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Person && e.has_tag("search-result"))
+        .expect("truncation seed");
+    assert!(seed.has_tag("truncated"));
+    assert_eq!(seed.value, "Bill Abbott");
+    let ev = &seed.evidence[0];
+    assert_eq!(
+        ev.attributes.get("total_banned_matches").map(String::as_str),
+        Some("250")
+    );
+    assert_eq!(
+        ev.attributes.get("banned_records_capped").map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        ev.attributes.get("total_adviser_matches").map(String::as_str),
+        Some("175")
+    );
+    assert_eq!(
+        ev.attributes.get("adviser_records_capped").map(String::as_str),
+        Some("true")
+    );
+    // The register that was NOT capped must not appear.
+    assert!(!ev.attributes.contains_key("total_credit_matches"));
+}
+
+#[test]
 fn is_free_keyless_corporate_module() {
     let m = AsicPersons;
     assert!(matches!(m.cost(), crate::core::module::ModuleCost::Free));
