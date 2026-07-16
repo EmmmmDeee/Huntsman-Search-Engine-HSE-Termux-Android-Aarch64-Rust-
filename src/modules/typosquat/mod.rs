@@ -35,7 +35,7 @@ static SEEN_REGISTRABLE: std::sync::LazyLock<Mutex<std::collections::HashSet<Str
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -137,6 +137,7 @@ impl Module for Typosquat {
         if candidates.is_empty() {
             return Ok(result);
         }
+        let total_candidates = candidates.len();
 
         let resolver = shared_resolver();
         let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
@@ -144,7 +145,9 @@ impl Module for Typosquat {
         for (candidate, technique) in candidates {
             let sem = Arc::clone(&sem);
             set.spawn(async move {
-                let _permit = sem.acquire_owned().await.ok()?;
+                let Ok(_permit) = sem.acquire_owned().await else {
+                    return LookupOutcome::TransportFail;
+                };
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(3),
                     resolver.lookup_ip(candidate.as_str()),
@@ -153,9 +156,14 @@ impl Module for Typosquat {
                 {
                     Ok(Ok(lookup)) => {
                         let ips: Vec<String> = lookup.iter().map(|ip| ip.to_string()).collect();
-                        (!ips.is_empty()).then_some((candidate, technique, ips.join(", ")))
+                        if ips.is_empty() {
+                            LookupOutcome::CleanMiss
+                        } else {
+                            LookupOutcome::Hit(candidate, technique, ips.join(", "))
+                        }
                     }
-                    _ => None,
+                    Ok(Err(e)) if is_genuine_no_record(&e) => LookupOutcome::CleanMiss,
+                    _ => LookupOutcome::TransportFail,
                 }
             });
         }
@@ -163,12 +171,18 @@ impl Module for Typosquat {
         // Collect, then sort for deterministic output (JoinSet completes in
         // network order). Candidates are unique, so the ordering is total.
         let mut hits: Vec<(String, &'static str, String)> = Vec::new();
+        let mut transport_failures = 0usize;
         while let Some(joined) = set.join_next().await {
-            if let Ok(Some(hit)) = joined {
-                hits.push(hit);
+            match joined {
+                Ok(LookupOutcome::Hit(candidate, technique, ips)) => {
+                    hits.push((candidate, technique, ips));
+                }
+                Ok(LookupOutcome::TransportFail) | Err(_) => transport_failures += 1,
+                Ok(LookupOutcome::CleanMiss) => {}
             }
         }
         hits.sort_by(|a, b| a.0.cmp(&b.0));
+        let found = hits.len();
 
         for (candidate, technique, ips) in hits {
             let mut e = Entity::new(EntityKind::Domain, &candidate, 0.55, &ctx.scan_id);
@@ -187,8 +201,47 @@ impl Module for Typosquat {
             );
             result.push(e);
         }
+
+        if all_candidates_failed_transport(transport_failures, total_candidates, found) {
+            return Err(Error::module(
+                SRC,
+                "every typosquat DNS lookup failed at the transport level — cannot determine whether any lookalike of this domain is registered",
+            ));
+        }
+
         Ok(result)
     }
+}
+
+/// The classified outcome of one candidate's DNS resolution attempt.
+enum LookupOutcome {
+    /// A registered lookalike — resolves to at least one IP.
+    Hit(String, &'static str, String),
+    /// A genuine negative: the server answered and the candidate is not
+    /// registered (NXDOMAIN/no records), or answered with an empty IP set.
+    CleanMiss,
+    /// The lookup never got a genuine answer from a DNS server — timeout,
+    /// I/O error, busy resolver, no connections, an unrelated response code,
+    /// or a task join failure.
+    TransportFail,
+}
+
+/// True only for a genuine "not registered" answer (NXDOMAIN / no records
+/// found) — distinct from a transport/protocol-level DNS failure.
+fn is_genuine_no_record(e: &hickory_resolver::net::NetError) -> bool {
+    e.is_nx_domain() || e.is_no_records_found()
+}
+
+/// True only when every candidate lookup failed at the transport level (no
+/// genuine DNS answer, not even an authoritative NXDOMAIN) and nothing was
+/// found — a genuine total outage, distinguished from candidates that
+/// legitimately came back unregistered.
+fn all_candidates_failed_transport(
+    transport_failures: usize,
+    total_candidates: usize,
+    found: usize,
+) -> bool {
+    found == 0 && total_candidates > 0 && transport_failures == total_candidates
 }
 
 /// Generate up to `cap` registered-domain-shaped lookalike permutations of
