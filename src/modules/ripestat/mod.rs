@@ -20,7 +20,7 @@ use serde::de::DeserializeOwned;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -104,45 +104,62 @@ impl Module for RipeStat {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
+        let mut hard_failure: Option<Error> = None;
         let resource = target.value.trim();
 
         match target.kind {
-            TargetKind::IpAddress => {
-                if let Some(ni) = stat::<NetworkInfo>(ctx, "network-info", resource).await {
-                    result.entities.extend(build_asns(&ni, &ctx.scan_id));
-                }
-            }
-            TargetKind::Asn => {
-                if let Some(ao) = stat::<AsOverview>(ctx, "as-overview", resource).await {
-                    result.entities.extend(build_org(&ao, &ctx.scan_id));
-                }
-            }
+            TargetKind::IpAddress => match stat::<NetworkInfo>(ctx, "network-info", resource).await
+            {
+                Ok(ni) => result.entities.extend(build_asns(&ni, &ctx.scan_id)),
+                Err(e) => hard_failure = Some(e),
+            },
+            TargetKind::Asn => match stat::<AsOverview>(ctx, "as-overview", resource).await {
+                Ok(ao) => result.entities.extend(build_org(&ao, &ctx.scan_id)),
+                Err(e) => hard_failure = Some(e),
+            },
             _ => return Ok(result),
         }
 
-        if let Some(ac) = stat::<AbuseContact>(ctx, "abuse-contact-finder", resource).await {
-            result
+        match stat::<AbuseContact>(ctx, "abuse-contact-finder", resource).await {
+            Ok(ac) => result
                 .entities
-                .extend(build_abuse(&ac.abuse_contacts, &ctx.scan_id));
+                .extend(build_abuse(&ac.abuse_contacts, &ctx.scan_id)),
+            Err(e) => {
+                hard_failure.get_or_insert(e);
+            }
         }
-        Ok(result)
+        result.or_hard_failure(hard_failure)
     }
 }
 
-/// Fetch + unwrap a RIPEstat endpoint's `data` object. `None` on any transport
-/// or parse failure — best-effort, never fatal.
+/// Fetch + unwrap a RIPEstat endpoint's `data` object against the real
+/// `stat.ripe.net` API.
 async fn stat<T: DeserializeOwned + Default>(
     ctx: &ModuleContext,
     endpoint: &str,
     resource: &str,
-) -> Option<T> {
+) -> Result<T> {
+    stat_at(ctx, endpoint, resource, "https://stat.ripe.net").await
+}
+
+/// Fetch + unwrap a RIPEstat endpoint's `data` object. A genuine empty answer
+/// (e.g. an unannounced IP's empty `asns`) decodes cleanly via `StatResp`'s
+/// `Default`; `Err` propagates any real transport, non-2xx, or parse failure
+/// so the caller can distinguish an outage from a real negative. `base` is
+/// URL-injectable so tests can exercise the failure contract against a local
+/// server instead of the live API.
+async fn stat_at<T: DeserializeOwned + Default>(
+    ctx: &ModuleContext,
+    endpoint: &str,
+    resource: &str,
+    base: &str,
+) -> Result<T> {
     let url = format!(
-        "https://stat.ripe.net/data/{endpoint}/data.json?resource={}",
+        "{base}/data/{endpoint}/data.json?resource={}",
         urlencode(resource)
     );
     fetch_json::<StatResp<T>>(&ctx.http, SRC, &url)
         .await
-        .ok()
         .map(|r| r.data)
 }
 
