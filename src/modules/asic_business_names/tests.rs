@@ -1,4 +1,5 @@
 use super::*;
+use crate::modules::asic_business_names::MAX_HITS;
 
 const REC: &str = r#"{
   "BN_NAME":"A Cut Above Painting & Texture Coating","BN_STATUS":"Registered",
@@ -90,6 +91,67 @@ fn is_free_keyless_corporate_module() {
     assert!(!m.attack_techniques().is_empty());
     assert!(m.accepts(&Target::new(TargetKind::Organisation, "Acme Plumbing")));
     assert!(!m.accepts(&Target::new(TargetKind::FullName, "Jane Citizen")));
+}
+
+/// Build a truncation seed the same way `process()` does, so the seed's
+/// tag/evidence contract is verified without a live CKAN query.
+fn build_seed(name: &str, matched_count: usize, total_matches: usize) -> Entity {
+    let matches_capped = total_matches > MAX_HITS;
+    let mut seed = Entity::new(EntityKind::Organisation, name, 0.55, "test");
+    seed.tag("au");
+    seed.tag("asic");
+    seed.tag("search-result");
+    let mut ev = Evidence::new(SRC, format!("ASIC Business Names search for `{name}`"))
+        .with_attr("matched_count", matched_count.to_string())
+        .with_attr("total_matches", total_matches.to_string());
+    if matches_capped {
+        ev = ev.with_attr("matches_capped", "true");
+        seed.tag("truncated");
+    }
+    seed.add_evidence(ev);
+    seed
+}
+
+#[test]
+fn search_seed_carries_counts_without_truncation_under_cap() {
+    // A result set below MAX_HITS still surfaces the total, but is not flagged
+    // truncated — the operator sees these are ALL the registrations.
+    let seed = build_seed("cut above painting", 12, 12);
+    assert!(seed.has_tag("search-result"));
+    assert!(!seed.has_tag("truncated"), "must not flag when under cap");
+    let ev = &seed.evidence[0];
+    assert_eq!(ev.attributes.get("total_matches").map(String::as_str), Some("12"));
+    assert_eq!(ev.attributes.get("matched_count").map(String::as_str), Some("12"));
+    assert!(
+        !ev.attributes.contains_key("matches_capped"),
+        "matches_capped must be absent when not truncated"
+    );
+}
+
+#[test]
+fn search_seed_signals_truncation_when_total_exceeds_cap() {
+    // Regression (T2.140): when the register returns more than MAX_HITS matches,
+    // the seed must be tagged `truncated` and carry the true total so a
+    // due-diligence operator knows the emitted set was capped.
+    let total = MAX_HITS + 37;
+    let seed = build_seed("smith", MAX_HITS, total);
+    assert!(seed.has_tag("truncated"), "seed must be tagged 'truncated'");
+    let ev = &seed.evidence[0];
+    assert_eq!(
+        ev.attributes.get("total_matches").map(String::as_str),
+        Some(total.to_string().as_str()),
+        "total_matches must reflect the full match count"
+    );
+    assert_eq!(
+        ev.attributes.get("matched_count").map(String::as_str),
+        Some(MAX_HITS.to_string().as_str()),
+        "matched_count is capped at MAX_HITS"
+    );
+    assert_eq!(
+        ev.attributes.get("matches_capped").map(String::as_str),
+        Some("true"),
+        "matches_capped must be set when the cap is hit"
+    );
 }
 
 /// Live end-to-end proof against the REAL ASIC Business Names dataset — no mock.
