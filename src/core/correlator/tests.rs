@@ -8330,7 +8330,7 @@ fn au080_recurring_cooccurrence_link_fires_on_tagged_pair() {
     // The co-occurrence summary format exactly matches COOCCURRENCE_MARKER prefix.
     a.add_evidence(Evidence::new(
         "cross_scan_history",
-        "Co-occurred with `bob@example.com` across 2 earlier scan(s) in the local \
+        "Co-occurred with `bob@example.com` in earlier scan(s) in the local \
          intelligence database — a recurring association that bridges investigations"
             .to_string(),
     ));
@@ -8348,7 +8348,7 @@ fn au080_recurring_cooccurrence_link_fires_on_tagged_pair() {
     let mut a2 = Entity::new(EntityKind::Email, "alice2@example.com", 0.9, "s");
     a2.add_evidence(Evidence::new(
         "cross_scan_history",
-        "Co-occurred with `bob2@example.com` across 3 earlier scan(s) in the local \
+        "Co-occurred with `bob2@example.com` in earlier scan(s) in the local \
          intelligence database — a recurring association that bridges investigations"
             .to_string(),
     ));

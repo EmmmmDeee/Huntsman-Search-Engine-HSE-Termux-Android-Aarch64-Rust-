@@ -246,14 +246,22 @@ pub(super) fn link_cross_scan_history(
     linked
 }
 
-/// Build the co-occurrence message naming `partner` and the `shared` prior-scan
-/// count. Centralised so the summary written in the mutation phase and the
-/// idempotency probe in [`endpoint_has_cooccurrence`] can't drift; the
-/// [`COOCCURRENCE_MARKER`] prefix is what the probe keys on.
-fn cooccurrence_summary(partner: &str, shared: usize) -> String {
+/// Build the co-occurrence message naming `partner`. Deliberately carries NO
+/// prior-scan count: like the recurrence summary (see [`recurrence_summary`]), the
+/// count rises every re-scan the pair recurs in, so embedding it in the summary
+/// produced a fresh `(source, summary)` key each scan and defeated the evidence
+/// dedup in [`Entity::absorb`](crate::core::entity::Entity::absorb) — the pair's
+/// persisted evidence accumulated stale, contradictory snapshots (`across 1 earlier
+/// scan`, `2`, …, capped by [`MAX_PRIOR_SCANS_PER_ENTITY`]). The magnitude is
+/// carried by the `hub-cooccurrence` tag (which drives AU-080's severity and merges
+/// as a deduped set); AU-080 no longer reads a count from this text. Centralised so
+/// the summary written in the mutation phase and the idempotency probe in
+/// [`endpoint_has_cooccurrence`] can't drift; the [`COOCCURRENCE_MARKER`] prefix and
+/// the backtick-delimited partner are what the probe (and AU-080) key on.
+fn cooccurrence_summary(partner: &str) -> String {
     format!(
-        "Co-occurred with `{partner}` across {shared} earlier scan(s) in the local \
-         intelligence database — a recurring association that bridges investigations"
+        "Co-occurred with `{partner}` in earlier scan(s) in the local intelligence \
+         database — a recurring association that bridges investigations"
     )
 }
 
@@ -407,7 +415,7 @@ pub(super) fn link_cross_scan_cooccurrence(
         }
         e.add_evidence(Evidence::new(
             CROSS_SCAN_SOURCE,
-            cooccurrence_summary(&partner_value, shared),
+            cooccurrence_summary(&partner_value),
         ));
         if gained_first {
             linked += 1;
@@ -456,15 +464,21 @@ fn is_identity_relation(kind: RelationKind) -> bool {
     )
 }
 
-/// Build the relation-recall message naming the prior relationship `kind`, the
-/// `partner` value, and the `shared` prior-scan count. Centralised so the summary
-/// written in the mutation phase and the idempotency probe in
-/// [`endpoint_has_relation_recall`] can't drift; the [`RELATION_RECALL_MARKER`]
-/// prefix plus the kind string is what the probe keys on.
-fn relation_recall_summary(kind: &str, partner: &str, shared: usize) -> String {
+/// Build the relation-recall message naming the prior relationship `kind` and the
+/// `partner` value. Deliberately carries NO prior-scan count: the count rises every
+/// re-scan the link recurs in, so embedding it produced a fresh `(source, summary)`
+/// key each scan and defeated the evidence dedup in
+/// [`Entity::absorb`](crate::core::entity::Entity::absorb), accumulating stale,
+/// contradictory snapshots in the entity's persisted evidence (see
+/// [`recurrence_summary`] and [`cooccurrence_summary`] for the same class). No
+/// consumer parses a count from this text — the `cross-scan-relation` tag is what
+/// the metrics/leads passes read. Centralised so the summary written in the mutation
+/// phase and the idempotency probe in [`endpoint_has_relation_recall`] can't drift;
+/// the [`RELATION_RECALL_MARKER`] prefix plus the kind string is what the probe keys on.
+fn relation_recall_summary(kind: &str, partner: &str) -> String {
     format!(
-        "Previously linked ({kind}) to `{partner}` across {shared} earlier scan(s) in the \
-         local intelligence database — a known connection that bridges investigations"
+        "Previously linked ({kind}) to `{partner}` in earlier scan(s) in the local \
+         intelligence database — a known connection that bridges investigations"
     )
 }
 
@@ -514,10 +528,12 @@ pub(super) fn link_cross_scan_relations(
     scan_id: &str,
 ) -> usize {
     // ── Read phase ───────────────────────────────────────────────────────────
-    // Plan (endpoint_index, kind_str, partner_value, shared_prior_scans). The kind
-    // is carried as its `&'static str` form so nothing borrows the per-iteration
-    // relation list and the plan key is `Hash`/`Eq` without changing `RelationKind`.
-    let mut planned: Vec<(usize, &'static str, String, usize)> = Vec::new();
+    // Plan (endpoint_index, kind_str, partner_value). The kind is carried as its
+    // `&'static str` form so nothing borrows the per-iteration relation list and the
+    // plan key is `Hash`/`Eq` without changing `RelationKind`. The shared prior-scan
+    // count is intentionally NOT planned: the recall summary is count-free (see
+    // `relation_recall_summary`) so re-scans dedup to one record.
+    let mut planned: Vec<(usize, &'static str, String)> = Vec::new();
     let mut probes = 0usize;
 
     for (i, e) in entities.iter().enumerate() {
@@ -578,17 +594,19 @@ pub(super) fn link_cross_scan_relations(
 
         // Deterministic, bounded recall set: tuple-sorted by (kind, partner value),
         // then capped. The key is unique, so the trailing count never affects order.
+        // The count itself is discarded — the recall summary is count-free so re-scans
+        // dedup to one record (the `_shared` binding documents the deliberate drop).
         let mut recall_list: Vec<((&'static str, String), usize)> = recalled.into_iter().collect();
         recall_list.sort();
         recall_list.truncate(MAX_RECALLED_RELATIONS_PER_ENTITY);
-        for ((kind, partner_value), shared) in recall_list {
-            planned.push((i, kind, partner_value, shared));
+        for ((kind, partner_value), _shared) in recall_list {
+            planned.push((i, kind, partner_value));
         }
     }
 
     // ── Mutation phase ───────────────────────────────────────────────────────
     let mut linked = 0usize;
-    for (idx, kind, partner_value, shared) in planned {
+    for (idx, kind, partner_value) in planned {
         let e = &mut entities[idx];
         if endpoint_has_relation_recall(e, kind, &partner_value) {
             continue; // idempotent: already carries this recalled relationship
@@ -597,7 +615,7 @@ pub(super) fn link_cross_scan_relations(
         e.tag("cross-scan-relation");
         e.add_evidence(Evidence::new(
             CROSS_SCAN_SOURCE,
-            relation_recall_summary(kind, &partner_value, shared),
+            relation_recall_summary(kind, &partner_value),
         ));
         if gained_first {
             linked += 1;

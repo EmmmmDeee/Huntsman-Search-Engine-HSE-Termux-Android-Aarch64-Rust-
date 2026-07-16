@@ -305,13 +305,10 @@ fn idempotency_probes_match_the_delimited_partner_token_not_a_substring() {
     // summary writes (`` `{partner}` `` for co-occurrence; `({kind})` + `` `{partner}` ``
     // for relation recall).
     let mut e = Entity::new(EntityKind::Email, "hub@example.com", 0.7, "s");
+    e.add_evidence(Evidence::new(CROSS_SCAN_SOURCE, cooccurrence_summary("alice2")));
     e.add_evidence(Evidence::new(
         CROSS_SCAN_SOURCE,
-        cooccurrence_summary("alice2", 1),
-    ));
-    e.add_evidence(Evidence::new(
-        CROSS_SCAN_SOURCE,
-        relation_recall_summary("subdomain_of", "bob2", 1),
+        relation_recall_summary("subdomain_of", "bob2"),
     ));
 
     // The exact recorded partners are still found (idempotency preserved)…
@@ -412,6 +409,80 @@ fn relation_recall_surfaces_a_prior_linked_connection() {
             && ev.summary.contains("located_at")
             && ev.summary.contains(&prior_addr.value)),
         "the recall names the relationship kind and the prior partner value"
+    );
+}
+
+#[test]
+fn cooccurrence_and_relation_recall_evidence_carry_no_volatile_count() {
+    // Regression (sibling of the recurrence fix): the co-occurrence and
+    // relation-recall summaries embedded the shared prior-scan count
+    // ("across N earlier scan(s)"). That count rises as the pair/link recurs across
+    // re-scans, so each scan produced a different (source, summary) key and the
+    // persist-time dedup in `Entity::absorb` kept every snapshot — a re-scanned
+    // pair/link accumulated stale, contradictory records (bounded by
+    // MAX_PRIOR_SCANS_PER_ENTITY, still an evidence-integrity regression). Both
+    // summaries are now count-free (magnitude is the `hub-cooccurrence` /
+    // `cross-scan-relation` tag), so the count-introducing `across ` token is gone
+    // and re-scans dedup to one record each. (Fails against the old
+    // `across {shared} earlier scan(s)` summaries; passes against the fix.)
+
+    // ── Co-occurrence ────────────────────────────────────────────────────────
+    let store = InMemoryStore::new();
+    store
+        .upsert_entity(&ent(EntityKind::Phone, "+61400111222", 0.7, "prior"))
+        .unwrap();
+    store
+        .upsert_entity(&ent(EntityKind::Email, "jane@example.com", 0.7, "prior"))
+        .unwrap();
+    let mut pair = vec![
+        ent(EntityKind::Phone, "+61400111222", 0.55, "now"),
+        ent(EntityKind::Email, "jane@example.com", 0.55, "now"),
+    ];
+    link_cross_scan_cooccurrence(&store, &mut pair, "now");
+    for e in &pair {
+        let ev = e
+            .evidence
+            .iter()
+            .find(|ev| ev.summary.starts_with(COOCCURRENCE_MARKER))
+            .expect("co-occurrence evidence present");
+        assert!(
+            !ev.summary.contains("across "),
+            "co-occurrence summary must not embed the count-introducing `across N`: {:?}",
+            ev.summary
+        );
+    }
+
+    // ── Relation recall ──────────────────────────────────────────────────────
+    let store = InMemoryStore::new();
+    let phone = ent(EntityKind::Phone, "+61400111222", 0.7, "prior");
+    let addr = ent(
+        EntityKind::Address,
+        "42 Wallaby Way, Brisbane QLD 4000",
+        0.7,
+        "prior",
+    );
+    store.upsert_entity(&phone).unwrap();
+    store.upsert_entity(&addr).unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            phone.uid.clone(),
+            addr.uid.clone(),
+            RelationKind::LocatedAt,
+            0.7,
+            "prior",
+        ))
+        .unwrap();
+    let mut now = vec![ent(EntityKind::Phone, "+61400111222", 0.55, "now")];
+    link_cross_scan_relations(&store, &mut now, "now");
+    let ev = now[0]
+        .evidence
+        .iter()
+        .find(|ev| ev.summary.starts_with(RELATION_RECALL_MARKER))
+        .expect("relation-recall evidence present");
+    assert!(
+        !ev.summary.contains("across "),
+        "relation-recall summary must not embed the count-introducing `across N`: {:?}",
+        ev.summary
     );
 }
 

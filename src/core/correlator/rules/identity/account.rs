@@ -1267,14 +1267,6 @@ pub(in crate::core::correlator) fn rule_au_080_recurring_cooccurrence_link(
                 continue;
             }
 
-            // Parse shared scan count from "... across {n} earlier scan(s)..."
-            let shared: usize = after_prefix[backtick_end + 1..]
-                .trim_start()
-                .strip_prefix("across ")
-                .and_then(|s| s.split_whitespace().next())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(1);
-
             let is_hub =
                 entity.has_tag("hub-cooccurrence") || partner_e.has_tag("hub-cooccurrence");
             let severity = if is_hub {
@@ -1290,8 +1282,8 @@ pub(in crate::core::correlator) fn rule_au_080_recurring_cooccurrence_link(
                 rule_name: "Recurring co-occurrence identity association".into(),
                 severity,
                 description: format!(
-                    "{} '{}' and {} '{}' have appeared together in {shared} prior \
-                     investigation(s) — a recurring structural association in the local \
+                    "{} '{}' and {} '{}' have appeared together in earlier \
+                     investigations — a recurring structural association in the local \
                      intelligence database that bridges cases{}",
                     entity.kind,
                     entity.value,

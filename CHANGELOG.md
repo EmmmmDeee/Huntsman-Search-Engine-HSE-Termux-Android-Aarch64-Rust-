@@ -21,6 +21,7 @@ All notable changes to this project are documented here. Format per [Keep a Chan
 - AU-092 rule_id reuse: breach-locality-footprint-conflict findings now use distinct "AU-092-CONFLICT" to prevent evidence integrity violation of using same rule_id for fundamentally different claims (agreement vs disagreement)
 - AU-031 adjacency silent entity truncation: rule now includes all neighbors in entity_uids instead of silently truncating to first 12 (AGG_SAMPLE) when reporting fan-out aggregates
 - Cross-scan-history recurrence evidence accumulation: the summary embedded the prior-scan count, so re-scanning one subject accumulated stale, contradictory snapshots ("recorded in 1 earlier scan" … "16 earlier") in its persisted evidence; the summary is now count-free and re-scans dedup to a single record (hub magnitude preserved via the `hub-entity` tag)
+- Cross-scan co-occurrence and relation-recall evidence accumulation (same class): both summaries embedded a rising "across N earlier scan(s)" count and accumulated stale records across re-scans; both are now count-free with magnitude carried by the `hub-cooccurrence` / `cross-scan-relation` tags (AU-080 severity is unchanged — driven by the tag, not the count)
 
 ---
 

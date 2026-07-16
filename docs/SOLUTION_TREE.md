@@ -134,7 +134,15 @@ Rationale: Trees and code are one artifact. Stale trees mislead the next develop
 - Proven on a fresh DB: 6 scans across the non-hub→hub boundary → exactly 1 recurrence record + correct hub tag (old code: one record per scan)
 - Test coverage: +1 regression test (`recurrence_evidence_carries_no_volatile_count_so_rescans_dedup`), 12 history tests passing
 
-**Status:** ✓ Complete. T3/T4 quality gate passing (4993 tests).
+**Built:** cross-scan co-occurrence + relation-recall evidence no longer accumulates (completes the T4.169 class)
+
+- Modified `link_cross_scan_cooccurrence` and `link_cross_scan_relations` to emit count-free summaries (`cooccurrence_summary(partner)`, `relation_recall_summary(kind, partner)`)
+- Root cause: both embedded a rising `shared` prior-scan count ("across N earlier scan(s)"), defeating the same `(source, summary)` dedup — stale records accumulated (bounded by MAX_PRIOR_SCANS_PER_ENTITY=8)
+- Verified safe: relation-recall is consumed only via the `cross-scan-relation` tag (metrics/leads); AU-080's severity is driven by the `hub-cooccurrence` tag, so its count-parse was removed and its description de-counted
+- Magnitude preserved via `hub-cooccurrence` / `cross-scan-relation` tags (unchanged tagging logic)
+- Test coverage: +1 regression test (`cooccurrence_and_relation_recall_evidence_carry_no_volatile_count`), 13 history tests + AU-080 test passing
+
+**Status:** ✓ Complete. T3/T4 quality gate passing (4994 tests); selftest 9/9.
 
 ---
 
@@ -149,6 +157,8 @@ Rationale: Trees and code are one artifact. Stale trees mislead the next develop
 ---
 
 ## 5. Cycle Log
+
+**2026-07-16 16:05 UTC** — T4 quality deliverable: cross-scan co-occurrence + relation-recall evidence accumulation fixed (T4.170), completing the class opened by T4.169. Both sibling summaries made count-free; AU-080 count-parse removed (severity from tag). Gate passing. 4994 tests (+1 regression); selftest 9/9. Paired with PROBLEM_TREE.md §8.
 
 **2026-07-16 15:40 UTC** — T4 quality deliverable: cross-scan-history recurrence evidence accumulation fixed (T4.169). Count-free summary via `recurrence_summary()`; re-scans now dedup to one record; hub magnitude preserved via tag. Root cause found from a live end-to-end run (a re-scanned seed had 16 stale snapshots). Gate passing. 4993 tests passing (+1 regression). Paired with PROBLEM_TREE.md §8.
 

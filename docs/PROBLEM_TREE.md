@@ -34,6 +34,7 @@ Guarantee (Rule 0.7 priority 1): correctness. Priority 2: evidence integrity. Pr
 - `[x]` T3.002 — AU-092 rule_id reuse: conflict case distinguished as AU-092-CONFLICT instead of reusing AU-092 (commit TBD)
 - `[x]` T4.168 — AU-031 adjacency silent entity truncation: all neighbors now included in entity_uids (commit TBD)
 - `[x]` T4.169 — cross-scan-history recurrence evidence accumulation: summary was count-bearing, so re-scans of one subject piled up stale, contradictory snapshots (…"1 earlier"…"16 earlier"); summary is now count-free and dedups to one record (commit TBD)
+- `[x]` T4.170 — same accumulation class in the two sibling passes: co-occurrence + relation-recall summaries embedded a rising `shared` count ("across N earlier scan(s)"); made count-free (magnitude via hub-cooccurrence / cross-scan-relation tags), AU-080 updated to stop parsing the count (commit TBD)
 
 **Prior arcs:**
 
@@ -91,6 +92,8 @@ Per Rule 0.7 (priorities 1-5 are correctness, evidence integrity, safety, determ
 ---
 
 ## 8. Cycle Log
+
+**2026-07-16 16:05 UTC** — T4.170 fixed: completed the cross-scan evidence-accumulation class opened by T4.169. The two sibling passes — `link_cross_scan_cooccurrence` and `link_cross_scan_relations` (`core::engine::history`) — embedded a rising `shared` prior-scan count in their summaries ("across N earlier scan(s)"), defeating the same `(source, summary)` dedup at persist and accumulating stale records (bounded by MAX_PRIOR_SCANS_PER_ENTITY=8, but still an integrity regression). Fix: both summaries are now count-free; magnitude is carried by the `hub-cooccurrence` and `cross-scan-relation` tags. Verified no count consumer breaks — relation-recall is tag-consumed only (metrics/leads); AU-080's severity comes from the `hub-cooccurrence` tag, so its count-parse was removed and its description de-counted. +1 regression test (4994 total). Gate passing; selftest 9/9. Paired: SOLUTION_TREE.md.
 
 **2026-07-16 15:40 UTC** — T4.169 fixed: cross-scan-history recurrence evidence (`core::engine::history`) embedded the prior-scan count in its summary string. The count rises every re-scan of a subject, so each scan produced a DIFFERENT `(source, summary)` key and the persist-time `Entity::absorb` dedup kept every snapshot — a re-scanned identifier accumulated stale, mutually-contradictory records (observed live: one seed had 16, reading "1 earlier"…"16 earlier" simultaneously). Fix: centralised a count-free `recurrence_summary()`; magnitude is carried by the existing `hub-entity` tag (AU-078 reads the tag, not the text) and the store-derived leverage degree — verified no consumer parses the count from this summary. Evidence integrity restored (Rule 0.7 priority 2); the module's documented idempotency now holds across re-scans, not just within one slice. Proven on a fresh DB: 6 scans across the non-hub→hub boundary → exactly 1 record + correct hub tag. +1 regression test (4993 total). Gate passing. Paired: SOLUTION_TREE.md.
 
