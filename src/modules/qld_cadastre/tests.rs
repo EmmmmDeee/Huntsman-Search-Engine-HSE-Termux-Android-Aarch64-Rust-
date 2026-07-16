@@ -119,7 +119,7 @@ use super::*;
         let f2 = Feature {
             attributes: attrs(&[("lotplan", "13RP123456"), ("locality", "NUNDAH")]),
         };
-        let out = build_all_features("-27.4766,153.0166", &[f1, f2], "s");
+        let out = build_all_features("-27.4766,153.0166", &[f1, f2], false, "s");
         // BOTH parcels' lot/plans must survive (carried as `lotplan:` tags on the
         // per-parcel entities; the engine's value-merge later unions them). The
         // previous `.next()`-only path dropped the second parcel entirely.
@@ -130,6 +130,87 @@ use super::*;
         assert!(
             out.iter().any(|e| e.has_tag("lotplan:13RP123456")),
             "second parcel must be emitted (previously dropped)"
+        );
+    }
+
+    #[test]
+    fn build_all_features_signals_truncation_when_over_max_features() {
+        // Regression: a strata/stacked-cadastre point intersecting more than
+        // MAX_FEATURES=8 polygons must not read as an exhaustive parcel list —
+        // the primary Coordinates entity must be tagged `truncated` with the
+        // true total.
+        let features: Vec<Feature> = (0..9)
+            .map(|i| Feature {
+                attributes: attrs(&[
+                    ("lotplan", &format!("{i}RP123456")),
+                    ("locality", "NUNDAH"),
+                ]),
+            })
+            .collect();
+        let out = build_all_features("-27.4766,153.0166", &features, false, "s");
+        let seed = out
+            .iter()
+            .find(|e| e.kind == EntityKind::Coordinates)
+            .expect("primary Coordinates entity");
+        assert!(seed.has_tag("truncated"), "seed must be tagged 'truncated'");
+        let ev = seed.evidence.last().unwrap();
+        assert_eq!(
+            ev.attributes.get("total_features").map(String::as_str),
+            Some("9"),
+            "total_features must reflect all intersecting features, not just the capped 8"
+        );
+        assert_eq!(
+            ev.attributes.get("features_capped").map(String::as_str),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn build_all_features_under_cap_is_not_flagged() {
+        let f1 = Feature {
+            attributes: attrs(&[("lotplan", "12RP123456"), ("locality", "NUNDAH")]),
+        };
+        let out = build_all_features("-27.4766,153.0166", &[f1], false, "s");
+        let seed = out
+            .iter()
+            .find(|e| e.kind == EntityKind::Coordinates)
+            .expect("primary Coordinates entity");
+        assert!(!seed.has_tag("truncated"), "must not flag when under cap");
+    }
+
+    #[test]
+    fn build_all_features_signals_arcgis_exceeded_transfer_limit_even_under_client_cap() {
+        // ArcGIS's own server-side maxRecordCount can truncate BEFORE this
+        // module ever sees the surplus, even when the returned feature count
+        // is itself below MAX_FEATURES — a distinct truncation source from the
+        // client-side .take(MAX_FEATURES) cap.
+        let f1 = Feature {
+            attributes: attrs(&[("lotplan", "12RP123456"), ("locality", "NUNDAH")]),
+        };
+        let out = build_all_features("-27.4766,153.0166", &[f1], true, "s");
+        let seed = out
+            .iter()
+            .find(|e| e.kind == EntityKind::Coordinates)
+            .expect("primary Coordinates entity");
+        assert!(seed.has_tag("truncated"));
+        assert_eq!(
+            seed.evidence
+                .last()
+                .unwrap()
+                .attributes
+                .get("arcgis_exceeded_transfer_limit")
+                .map(String::as_str),
+            Some("true")
+        );
+        // The client-side cap was NOT hit (1 feature <= MAX_FEATURES), so this
+        // flag must be absent even though the seed is still truncated.
+        assert!(
+            !seed
+                .evidence
+                .last()
+                .unwrap()
+                .attributes
+                .contains_key("features_capped")
         );
     }
 
@@ -163,4 +244,19 @@ use super::*;
             r.features[0].attributes.get("lotplan"),
             Some(&Value::String("12RP123456".into()))
         );
+        assert!(!r.exceeded_transfer_limit);
+    }
+
+    #[test]
+    fn parse_response_reads_exceeded_transfer_limit_true() {
+        let raw = r#"{"features":[],"exceededTransferLimit":true}"#;
+        let r: QueryResp = serde_json::from_str(raw).unwrap();
+        assert!(r.exceeded_transfer_limit);
+    }
+
+    #[test]
+    fn parse_response_defaults_exceeded_transfer_limit_when_absent() {
+        let raw = r#"{"features":[]}"#;
+        let r: QueryResp = serde_json::from_str(raw).unwrap();
+        assert!(!r.exceeded_transfer_limit);
     }
