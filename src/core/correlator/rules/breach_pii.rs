@@ -81,6 +81,48 @@ fn scan_evidence<'a>(entities: &'a [Entity], keys: &[&str]) -> Vec<(String, &'a 
     out
 }
 
+/// Genuine breach / stealer-log evidence sources: the collection modules that
+/// import **leaked** records carrying structured PII (name, DOB, address,
+/// gov-ID, credentials). A breach-PII rule MUST consult this before counting an
+/// evidence record's `source` as a "breach record source" or labelling a value
+/// breach-sourced.
+///
+/// The geo and AU-registry *enrichment* passes attach the SAME
+/// `state`/`postcode`/`suburb`/`city`/`street` attributes these rules key on — a
+/// reverse geocode (`geocode` / `photon`), and registry enrichers such as
+/// `au_property` / `au_electoral` / `abn_lookup` / `au_people` — so without this
+/// gate a reverse-geocoded or registry-sourced locality was assembled and
+/// mislabelled, e.g. a live phone scan produced "assembled from 1 breach record
+/// source(s) (geocode)" for a bare AU mobile. Allow-list (default-deny) so a
+/// newly added enrichment source can never leak in.
+///
+/// `see_know` (SeekNow) is included deliberately: [`super::source_family`] files
+/// it under `"presence"`, so a `source_family == "breach"` gate would silently
+/// drop real SeekNow breach localities. This is the `ev.source` analogue of
+/// AU-001's tag-based `BREACH_SOURCES` (`breach.rs`) — keep the two in sync when
+/// a breach module is added. Pure.
+fn is_breach_source(name: &str) -> bool {
+    matches!(
+        name,
+        "oathnet_pro"
+            | "see_know"
+            | "dehashed"
+            | "hudsonrock"
+            | "hibp"
+            | "xposed_or_not"
+            | "intelx"
+            | "leakix"
+            | "psbdmp"
+            | "comb_search"
+            | "osintcat"
+            | "niamonx"
+            | "pwned_passwords"
+            | "emailrep"
+            | "seon"
+            | "breach_directory"
+    )
+}
+
 // ── AU-073 — Subject date of birth ───────────────────────────────────────────
 
 /// The canonical DOB evidence-attribute-key vocabulary — also the single
@@ -482,6 +524,12 @@ pub(in crate::core::correlator) fn rule_au_090_au_jurisdiction(
     // canonical AU state code → (distinct sources, uids), ordered for determinism.
     let mut by_state: BTreeMap<&'static str, SourcesAndUids> = BTreeMap::new();
     for (raw, source, uid) in scan_evidence(entities, JURISDICTION_KEYS) {
+        // Only a genuine breach/stealer record may be counted as a "breach
+        // record source" — a geocode/registry enricher carries the same `state`
+        // attribute but is not a leaked record (see `is_breach_source`).
+        if !is_breach_source(source) {
+            continue;
+        }
         let Some(state) = crate::util::address_au::state_code(&raw) else {
             continue; // not a recognisable Australian state/territory
         };
@@ -594,6 +642,11 @@ pub(in crate::core::correlator) fn rule_au_091_au_postcode_locality(
     let mut by_pc: BTreeMap<String, (&'static str, BTreeSet<String>, BTreeSet<String>)> =
         BTreeMap::new();
     for (raw, source, uid) in scan_evidence(entities, POSTCODE_KEYS) {
+        // Same gate as AU-090: a geocode/registry `postcode` attribute is not a
+        // breach record and must not be counted as one (see `is_breach_source`).
+        if !is_breach_source(source) {
+            continue;
+        }
         let Some((pc, state)) = au_postcode_and_state(&raw) else {
             continue;
         };
@@ -648,12 +701,23 @@ pub(in crate::core::correlator) fn rule_au_091_au_postcode_locality(
 /// map. Pure over the evidence attributes.
 fn breach_field_states(entities: &[Entity]) -> BTreeMap<&'static str, BTreeSet<String>> {
     let mut states: BTreeMap<&'static str, BTreeSet<String>> = BTreeMap::new();
-    for (raw, _source, uid) in scan_evidence(entities, JURISDICTION_KEYS) {
+    // Only genuine breach/stealer records form the "breach record" location
+    // class (AU-092's crosscheck side, AU-098's consensus vote). A geocode /
+    // registry `state`/`postcode` attribute is already represented by the
+    // coordinate/address class and must not double-vote here as breach (see
+    // `is_breach_source`).
+    for (raw, source, uid) in scan_evidence(entities, JURISDICTION_KEYS) {
+        if !is_breach_source(source) {
+            continue;
+        }
         if let Some(state) = crate::util::address_au::state_code(&raw) {
             states.entry(state).or_default().insert(uid.to_string());
         }
     }
-    for (raw, _source, uid) in scan_evidence(entities, POSTCODE_KEYS) {
+    for (raw, source, uid) in scan_evidence(entities, POSTCODE_KEYS) {
+        if !is_breach_source(source) {
+            continue;
+        }
         if let Some((_pc, state)) = au_postcode_and_state(&raw) {
             states.entry(state).or_default().insert(uid.to_string());
         }
@@ -837,6 +901,15 @@ pub(in crate::core::correlator) fn rule_au_093_au_address_from_breach(
     let mut by_addr: BTreeMap<String, (bool, BTreeSet<String>, BTreeSet<String>)> = BTreeMap::new();
     for e in entities {
         for ev in &e.evidence {
+            // THE PROVEN DEFECT: a reverse-geocode record (`geocode`/`photon`)
+            // or a registry enricher carries the same suburb/state/postcode
+            // attributes as a real leaked address record. Skip the whole record
+            // unless it is a genuine breach source, so a geocoded suburb is never
+            // assembled and reported as a "dwelling-grade" breach address (see
+            // `is_breach_source`).
+            if !is_breach_source(&ev.source) {
+                continue;
+            }
             let attrs = &ev.attributes;
             let Some(suburb) =
                 record_attr(attrs, SUBURB_KEYS).filter(|s| s.chars().any(char::is_alphabetic))
