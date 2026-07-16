@@ -129,6 +129,7 @@ impl Module for CombSearch {
         let mut seen_secret: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut seen_email: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut matched = 0usize;
+        let mut secrets_capped = false;
 
         for line in &resp.lines {
             let Some((identity, secret)) = split_line(line) else {
@@ -165,6 +166,7 @@ impl Module for CombSearch {
             }
 
             if seen_secret.len() >= MAX_SECRETS {
+                secrets_capped = true;
                 continue;
             }
             // Classify the secret: drop capture sentinels, skip mis-stored
@@ -215,14 +217,18 @@ impl Module for CombSearch {
         let mut seed = target.to_entity(seed_confidence(target.kind), &ctx.scan_id);
         seed.tag(tags::BREACH);
         seed.tag("comb");
-        seed.add_evidence(
-            Evidence::new(
-                SRC,
-                format!("{matched} leaked credential line(s) in the COMB compilation"),
-            )
-            .with_attr("matched_lines", matched.to_string())
-            .with_attr("source", "proxynova-comb"),
-        );
+        let mut ev = Evidence::new(
+            SRC,
+            format!("{matched} leaked credential line(s) in the COMB compilation"),
+        )
+        .with_attr("matched_lines", matched.to_string())
+        .with_attr("source", "proxynova-comb")
+        .with_attr("secrets_captured", seen_secret.len().to_string());
+        if secrets_capped {
+            ev = ev.with_attr("secrets_capped", "true");
+            seed.tag("truncated");
+        }
+        seed.add_evidence(ev);
         result.push(seed);
 
         Ok(result)

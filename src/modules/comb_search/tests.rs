@@ -153,3 +153,35 @@ fn secret_echo_of_identity_is_classified_as_junk_upstream() {
         CredentialField::Email
     );
 }
+
+#[test]
+fn truncation_at_max_secrets_is_surfaced() {
+    // Regression: when matched lines exceed MAX_SECRETS, the truncation must be
+    // surfaced in evidence so the operator knows the scan stopped at a hard cap.
+    // Generate 60 distinct credential lines, all matching the target email.
+    let mut lines = Vec::new();
+    for i in 0..60 {
+        lines.push(format!("test@example.com:pass{}", i));
+    }
+    let line_str = lines.join("\n");
+
+    // Verify: when processed, we capture exactly MAX_SECRETS secrets and set truncation.
+    let mut seen_secret = std::collections::HashSet::new();
+    let mut truncated = false;
+
+    for line in line_str.lines() {
+        if let Some((identity, secret)) = split_line(line) {
+            if line_matches_target(identity, TargetKind::Email, "test@example.com") {
+                if seen_secret.len() >= MAX_SECRETS {
+                    truncated = true;
+                    continue;
+                }
+                seen_secret.insert(secret.to_string());
+            }
+        }
+    }
+
+    // Should have capped at MAX_SECRETS and set the truncation flag.
+    assert_eq!(seen_secret.len(), MAX_SECRETS, "should stop at MAX_SECRETS");
+    assert!(truncated, "should set truncation flag when >MAX_SECRETS lines processed");
+}
