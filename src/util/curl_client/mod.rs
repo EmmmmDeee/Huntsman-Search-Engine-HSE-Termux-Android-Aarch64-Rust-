@@ -62,7 +62,7 @@ impl AuthScheme {
 /// and the struct is `Send + Sync` (only contains plain integers
 /// and `&'static str`/`AuthScheme` data).
 pub struct CurlClient {
-    /// Provider name (`"seek_now"`, `"oathnet"`) used in error
+    /// Module name (`"see_know"`, `"oathnet"`) used in error
     /// messages so the `Module::process` failure log says which API
     /// timed out.
     module: &'static str,

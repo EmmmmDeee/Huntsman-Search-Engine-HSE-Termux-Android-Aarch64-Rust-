@@ -13,6 +13,9 @@ use super::enterprise_config::ENTERPRISE;
 // Embedded fallback: the single-source-of-truth default lives in `util::keys`.
 const HARDCODED_KEY: &str = crate::util::keys::SEEKNOW_DEFAULT_KEY;
 
+// Module name for error reporting — must match modules::see_know's registered name.
+const MODULE_NAME: &str = "see_know";
+
 /// Per-process response cache backed by the shared
 /// [`ResponseCache`] primitive (cap [`ENTERPRISE`]`.cache_size` — sized to
 /// comfortably hold every distinct endpoint × query a single scan
@@ -31,7 +34,7 @@ pub(super) static RESPONSE_CACHE: ResponseCache<Vec<Value>> =
 // 78s outer (curl < outer so curl's own exit code is observed), paired with an
 // 80s module max_timeout in `modules::see_know`.
 pub(super) static CLIENT: CurlClient = CurlClient::new(
-    "seek_now",
+    MODULE_NAME,
     AuthScheme::XApiKey,
     ENTERPRISE.curl_timeout_secs,
     ENTERPRISE.tokio_timeout_millis,
@@ -218,7 +221,7 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
     // auth/quota marker cannot disable the provider for the whole scan. A body that
     // looks like JSON but won't parse is genuine schema drift → surfaced as an error.
     let value: Value =
-        serde_json::from_str(body).map_err(|e| Error::module("seek_now", e.to_string()))?;
+        serde_json::from_str(body).map_err(|e| Error::module(MODULE_NAME, e.to_string()))?;
     match classify_terminal(&value) {
         Some(Terminal::Auth) => {
             mark_key_invalid(body);
@@ -233,7 +236,8 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
         // empty result — see `Terminal::RateLimited`'s doc comment for why
         // this must NOT latch `mark_quota_exhausted()`.
         Some(Terminal::RateLimited) => Err(Error::RateLimited(format!(
-            "seek_now: {}",
+            "{}: {}",
+            MODULE_NAME,
             body.chars().take(120).collect::<String>()
         ))),
         None => Ok(value),
