@@ -34,7 +34,7 @@ use serde_json::Value;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -46,10 +46,20 @@ const SRC: &str = "onyphe";
 
 #[derive(Deserialize, Default)]
 struct OnypheResp {
-    /// ONYPHE signals success with `error: 0`; any other value (no results,
-    /// rate-limit, plan limit) means "no usable data".
+    /// ONYPHE signals success with `error: 0`. Per ONYPHE's documented
+    /// error-code table (0=Success, 1=Unknown error, 2=Invalid API key
+    /// format, 3/19=No API key given, 4=Rate limit reached, 5=Client not
+    /// allowed, 17=Target not allowed, 18=License/plan not allowed), a
+    /// genuine "no data for this selector" answer is ALWAYS `error:0,
+    /// results:[]` — any nonzero value is a real API-level failure (bad/
+    /// missing key, throttling, plan restriction, or an unclassified
+    /// anomaly), never a legitimate absence signal.
     #[serde(default)]
     error: i64,
+    /// ONYPHE's human-readable status/error message, when present — carried
+    /// into the error message on a nonzero `error` for operator diagnosability.
+    #[serde(default)]
+    text: String,
     #[serde(default)]
     results: Vec<Value>,
 }
@@ -165,8 +175,8 @@ impl Module for Onyphe {
                 .map_err(|e| crate::core::error::Error::module(SRC, e))?;
         };
 
-        // error != 0 ⇒ no results / rate-limited / plan limit — treat as empty.
-        if body.error != 0 || body.results.is_empty() {
+        check_onyphe_error(&body)?;
+        if body.results.is_empty() {
             return Ok(ModuleResult::new());
         }
 
@@ -184,6 +194,26 @@ impl Module for Onyphe {
             &ctx.scan_id,
         ))
     }
+}
+
+/// Check an ONYPHE summary response for a real API-level failure. Per
+/// ONYPHE's documented error-code table (0=Success, 1=Unknown error,
+/// 2=Invalid API key format, 3/19=No API key given, 4=Rate limit reached,
+/// 5=Client not allowed, 17=Target not allowed, 18=License/plan not
+/// allowed), a genuine "no data for this selector" answer is ALWAYS
+/// `error:0, results:[]` — any nonzero value is a real failure and must
+/// propagate as `Err` instead of being read as a clean miss. Pure —
+/// unit-tested directly without live network.
+fn check_onyphe_error(body: &OnypheResp) -> Result<()> {
+    if body.error == 0 {
+        return Ok(());
+    }
+    let msg = if body.text.is_empty() {
+        format!("onyphe api error code {}", body.error)
+    } else {
+        format!("onyphe api error code {}: {}", body.error, body.text)
+    };
+    Err(Error::module(SRC, msg))
 }
 
 /// Pure entity extraction over the ONYPHE summary `results` documents — unit-

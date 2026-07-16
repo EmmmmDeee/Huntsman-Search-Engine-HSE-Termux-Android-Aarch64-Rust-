@@ -51,11 +51,56 @@ fn deserialises_summary_and_flags_success() {
 }
 
 #[test]
-fn nonzero_error_is_treated_as_no_data() {
-    // ONYPHE returns error != 0 for "no results" / rate-limit / plan limit.
+fn nonzero_error_deserialises() {
+    // Struct-level only: a nonzero `error` (e.g. 2 = Invalid API key format)
+    // decodes as expected. See check_onyphe_error_* below for the T2.158
+    // runtime contract — a nonzero error is now always a real Err, not a
+    // "no data" clean miss (no ONYPHE error code legitimately means absence).
     let resp: OnypheResp = serde_json::from_str(r#"{"error": 2, "results": []}"#).unwrap();
     assert_ne!(resp.error, 0);
     assert!(resp.results.is_empty());
+}
+
+// -- check_onyphe_error failure contract (T2.158) ---------------------------
+
+#[test]
+fn check_onyphe_error_surfaces_a_nonzero_error_code() {
+    // T2.158 regression: `error != 0 || results.is_empty()` previously folded
+    // every ONYPHE API-level failure (bad key, rate-limit, plan restriction,
+    // unknown) into the same Ok(empty) as a genuine "no data" answer — the
+    // module's own doc comment factually (and incorrectly) claimed all of
+    // these mean "no usable data".
+    let body = OnypheResp {
+        error: 4, // rate limit reached
+        text: "Rate limit reached".to_string(),
+        results: Vec::new(),
+    };
+    let out = check_onyphe_error(&body);
+    assert!(out.is_err(), "a nonzero error code must surface as Err");
+}
+
+#[test]
+fn check_onyphe_error_includes_the_text_field_when_present() {
+    let body = OnypheResp {
+        error: 2,
+        text: "Invalid API key format".to_string(),
+        results: Vec::new(),
+    };
+    let err = check_onyphe_error(&body).unwrap_err();
+    assert!(format!("{err}").contains("Invalid API key format"));
+}
+
+#[test]
+fn check_onyphe_error_keeps_error_zero_as_a_clean_ok() {
+    // The genuine negative must be preserved: error:0 (success) is never a
+    // failure, regardless of whether results is empty — that split happens
+    // separately in process() after this check passes.
+    let body = OnypheResp {
+        error: 0,
+        text: String::new(),
+        results: Vec::new(),
+    };
+    assert!(check_onyphe_error(&body).is_ok());
 }
 
 #[test]
