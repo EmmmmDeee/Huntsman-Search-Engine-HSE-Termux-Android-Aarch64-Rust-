@@ -163,3 +163,142 @@ fn screen_reports_true_total_without_truncating_below_the_cap() {
     }
 }
 
+// -- fetch_sdn_list failure contract (T2.150) -------------------------------
+
+// Serialise the tests below: they all mutate the process-global CACHE, which
+// is shared across every test in this binary (mirrors util::found_keys's
+// TEST_LOCK / util::see_know's BUDGET_TEST_LOCK for the same reason). An
+// async-aware Mutex is required here (unlike those precedents) because the
+// guard must stay held across `fetch_sdn_list`'s `.await` points.
+static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// One-shot local HTTP server answering with `status` + `body`. Mirrors the
+/// pgp / chain_intel / geocode / opencellid test pattern.
+async fn serve_once(status: u16, body: &'static str) -> std::net::SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 2048];
+        let _ = sock.read(&mut buf).await;
+        let reason = if status == 200 { "OK" } else { "Error" };
+        let head = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let _ = sock.write_all(head.as_bytes()).await;
+        let _ = sock.write_all(body.as_bytes()).await;
+        let _ = sock.flush().await;
+    });
+    addr
+}
+
+fn test_ctx() -> ModuleContext {
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    ModuleContext {
+        scan_id: "t".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    }
+}
+
+#[tokio::test]
+async fn fetch_sdn_list_cold_cache_and_transport_failure_surfaces_err() {
+    // T2.150 regression: fetch_sdn_list previously swallowed every transport
+    // failure into an empty Vec, indistinguishable from "the SDN list
+    // genuinely contains no sanctioned entities" — silently blinding
+    // sanctions screening for the whole scan (CACHE is process-global, shared
+    // across every target). A COLD cache (nothing to gracefully degrade to)
+    // with an unreachable host (port 1: connection refused) must now surface
+    // Err, not a fabricated empty result.
+    let _guard = TEST_LOCK.lock().await;
+    *CACHE.write().unwrap() = None;
+    let ctx = test_ctx();
+
+    let out = fetch_sdn_list(&ctx, "http://127.0.0.1:1/").await;
+    assert!(
+        out.is_err(),
+        "a cold cache with an unreachable SDN host must surface Err"
+    );
+    assert!(
+        CACHE.read().unwrap().is_none(),
+        "a failed fetch must not fabricate a cache entry"
+    );
+}
+
+#[tokio::test]
+async fn fetch_sdn_list_cold_cache_and_5xx_surfaces_err() {
+    // A 5xx is a real outage on a static bulk-download endpoint with no
+    // legitimate "not found" status — it must not read as "no sanctions data".
+    let _guard = TEST_LOCK.lock().await;
+    *CACHE.write().unwrap() = None;
+    let ctx = test_ctx();
+    let addr = serve_once(503, "upstream down").await;
+
+    let out = fetch_sdn_list(&ctx, &format!("http://{addr}/")).await;
+    assert!(out.is_err(), "a 5xx with a cold cache must surface Err");
+}
+
+#[tokio::test]
+async fn fetch_sdn_list_warms_cache_then_degrades_to_stale_on_later_failure() {
+    // The documented outage-tolerance behavior must survive the fix: once the
+    // cache holds a usable (even TTL-expired) list, a later failed re-fetch
+    // gracefully degrades to Ok(stale list) rather than erroring — a
+    // transient outage must not blind screening when a previous good fetch
+    // exists to fall back on.
+    let _guard = TEST_LOCK.lock().await;
+    *CACHE.write().unwrap() = None;
+    let ctx = test_ctx();
+
+    // A real fetch of a minimal, valid SDN row warms the cache.
+    let addr = serve_once(
+        200,
+        "2674,\"ABBAS, Abu\",\"individual\",\"SDGT\",\"Director\",-0- ,-0- ,-0- ,-0- ,-0- ,-0- ,\"remark\"\n",
+    )
+    .await;
+    let warm = fetch_sdn_list(&ctx, &format!("http://{addr}/")).await;
+    assert!(warm.is_ok(), "a healthy fetch must succeed and populate the cache");
+    assert!(!warm.unwrap().is_empty());
+
+    // Age the cache entry past the TTL so the next call re-attempts a fetch
+    // instead of short-circuiting on the freshness check.
+    {
+        let mut w = CACHE.write().unwrap();
+        if let Some((_, records)) = w.take() {
+            *w = Some((
+                Instant::now() - std::time::Duration::from_secs(LIST_CACHE_TTL_SECS + 1),
+                records,
+            ));
+        }
+    }
+
+    // The stale-but-present cache + a fresh unreachable host → graceful
+    // degrade to Ok(stale), NOT Err.
+    let degraded = fetch_sdn_list(&ctx, "http://127.0.0.1:1/").await;
+    assert!(
+        matches!(degraded, Ok(ref r) if !r.is_empty()),
+        "a failed re-fetch with a usable stale cache must degrade to Ok(cached), not Err: {degraded:?}"
+    );
+}
+
+#[tokio::test]
+async fn fetch_sdn_list_keeps_2xx_empty_body_as_a_clean_ok() {
+    // The genuine negative must be preserved: a 200 with an empty/unmatched
+    // body is a real (if unusual) answer, not a failure — stays Ok, never Err.
+    let _guard = TEST_LOCK.lock().await;
+    *CACHE.write().unwrap() = None;
+    let ctx = test_ctx();
+    let addr = serve_once(200, "").await;
+
+    let out = fetch_sdn_list(&ctx, &format!("http://{addr}/")).await;
+    assert!(
+        matches!(out, Ok(ref r) if r.is_empty()),
+        "a 2xx empty body is a genuine (if unusual) answer, not a failure: {out:?}"
+    );
+}
+

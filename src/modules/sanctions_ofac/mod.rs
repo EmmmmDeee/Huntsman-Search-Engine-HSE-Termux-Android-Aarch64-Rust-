@@ -62,7 +62,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{RequestBuilderExt, UA_BROWSER, read_text};
+use crate::util::http::{RequestBuilderExt, UA_BROWSER, http_status_error, read_text};
 
 mod parse;
 use parse::{SdnKind, SdnRecord, humanise_name, name_tokens, parse_sdn_csv, record_name_matches};
@@ -103,50 +103,59 @@ type SdnCache = Option<(Instant, Vec<SdnRecord>)>;
 /// `search_engines::health`'s liveness-sweep cache.
 static CACHE: LazyLock<RwLock<SdnCache>> = LazyLock::new(|| RwLock::new(None));
 
-async fn fetch_sdn_list(ctx: &ModuleContext) -> Vec<SdnRecord> {
+/// The cached list, if any, regardless of TTL freshness — the graceful-degrade
+/// fallback on a failed fetch so a transient outage doesn't blind screening.
+fn stale_cache() -> Option<Vec<SdnRecord>> {
+    CACHE
+        .read()
+        .ok()
+        .and_then(|g| g.as_ref().map(|(_, r)| r.clone()))
+}
+
+/// Fetch (or return the cached) SDN list from `url` (always [`SDN_URL`] in
+/// production; parameterized so a local server can exercise the failure
+/// contract in tests, mirroring `pgp::lookup`). On a failed re-fetch, degrades
+/// to a stale cached list when one exists (an unchanged transient-outage
+/// tolerance) — but a COLD cache (nothing to degrade to) now surfaces as a
+/// real `Err` instead of silently returning an empty list indistinguishable
+/// from "no sanctions data exists". `SDN_URL` is a static bulk-download
+/// endpoint with no query parameters: there is no legitimate "not found"
+/// status for it, so every non-2xx/transport/body-read failure here is a
+/// genuine outage.
+async fn fetch_sdn_list(ctx: &ModuleContext, url: &str) -> Result<Vec<SdnRecord>> {
     if let Ok(guard) = CACHE.read()
         && let Some((fetched_at, records)) = guard.as_ref()
         && fetched_at.elapsed().as_secs() < LIST_CACHE_TTL_SECS
     {
-        return records.clone();
+        return Ok(records.clone());
     }
 
-    let Ok(resp) = ctx
+    let resp = match ctx
         .http
-        .get(SDN_URL)
+        .get(url)
         .header("User-Agent", UA_BROWSER)
         .send_tagged(SRC)
         .await
-    else {
-        // A network failure degrades to the previous cached list (even if
-        // stale) rather than an empty result, so a transient outage doesn't
-        // silently blind sanctions screening for the rest of this TTL window.
-        return CACHE
-            .read()
-            .ok()
-            .and_then(|g| g.as_ref().map(|(_, r)| r.clone()))
-            .unwrap_or_default();
+    {
+        Ok(r) => r,
+        Err(e) => return stale_cache().ok_or(e),
     };
     if !resp.status().is_success() {
-        return CACHE
-            .read()
-            .ok()
-            .and_then(|g| g.as_ref().map(|(_, r)| r.clone()))
-            .unwrap_or_default();
+        if let Some(records) = stale_cache() {
+            return Ok(records);
+        }
+        return Err(http_status_error(SRC, resp).await);
     }
-    let Ok(body) = read_text(SRC, resp).await else {
-        return CACHE
-            .read()
-            .ok()
-            .and_then(|g| g.as_ref().map(|(_, r)| r.clone()))
-            .unwrap_or_default();
+    let body = match read_text(SRC, resp).await {
+        Ok(b) => b,
+        Err(e) => return stale_cache().ok_or(e),
     };
 
     let records = parse_sdn_csv(&body);
     if let Ok(mut w) = CACHE.write() {
         *w = Some((Instant::now(), records.clone()));
     }
-    records
+    Ok(records)
 }
 
 /// Map one matched SDN record to its entity, if its kind has a matching
@@ -291,7 +300,7 @@ impl Module for SanctionsOfac {
             return Ok(result);
         }
 
-        let records = fetch_sdn_list(ctx).await;
+        let records = fetch_sdn_list(ctx, SDN_URL).await?;
         result.entities = screen(&records, &tokens, &ctx.scan_id);
         Ok(result)
     }
