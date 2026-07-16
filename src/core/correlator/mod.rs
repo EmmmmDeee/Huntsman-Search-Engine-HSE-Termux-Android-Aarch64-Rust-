@@ -628,6 +628,10 @@ const RELATION_RULES: &[RelationRuleFn] = &[
     rule_au_109_shared_registrant,
     rule_au_110_shared_hosting_ip,
     rule_au_113_direct_connect_origin_candidate,
+    // AU-116: the multi-hop transitive closure of the infrastructure graph — a
+    // hosting footprint chained across ≥2 IPs that no single-shared-host rule
+    // (AU-110) can see; the infra analogue of AU-060's identity closure.
+    rule_au_116_infrastructure_pivot_closure,
 ];
 
 /// `(entity-only rule count, graph-aware relation rule count)` — the live,

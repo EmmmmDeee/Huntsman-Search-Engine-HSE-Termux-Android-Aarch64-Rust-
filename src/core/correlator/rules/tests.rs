@@ -242,3 +242,27 @@ use crate::core::entity::Evidence;
         );
         assert_eq!(results[0].rule_id, "AU-115");
     }
+
+    #[test]
+    fn au116_transitive_infrastructure_closure_fires() {
+        use crate::core::relation::{Relation, RelationKind};
+        // a.com → IP1 ← b.com → IP2 ← c.com: three owners chained across two IPs,
+        // a footprint no single-shared-host rule can see.
+        let a = Entity::new(EntityKind::Domain, "a.com", 0.8, "scan-au116");
+        let b = Entity::new(EntityKind::Domain, "b.com", 0.8, "scan-au116");
+        let c = Entity::new(EntityKind::Domain, "c.com", 0.8, "scan-au116");
+        let ip1 = Entity::new(EntityKind::IpAddress, "203.0.113.1", 0.8, "scan-au116");
+        let ip2 = Entity::new(EntityKind::IpAddress, "203.0.113.2", 0.8, "scan-au116");
+        let mk = |f: &Entity, t: &Entity| {
+            Relation::new(f.uid.clone(), t.uid.clone(), RelationKind::ResolvesTo, 0.8, "scan-au116")
+        };
+        let rels = [mk(&a, &ip1), mk(&b, &ip1), mk(&b, &ip2), mk(&c, &ip2)];
+        let ents = [a, b, c, ip1, ip2];
+        let results = super::rule_au_116_infrastructure_pivot_closure(&ents, &rels, "scan-au116", 0);
+        assert_eq!(
+            results.len(),
+            1,
+            "AU-116 must fire on a multi-server infrastructure chain"
+        );
+        assert_eq!(results[0].rule_id, "AU-116");
+    }
