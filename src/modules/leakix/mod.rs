@@ -84,6 +84,8 @@ fn build_exposure_entity(kind: EntityKind, value: &str, body: &HostResp, scan_id
     // Open ports across services, sorted + deduplicated.
     let ports: std::collections::BTreeSet<i64> =
         body.services.iter().filter_map(|e| e.port).collect();
+    let total_ports = ports.len();
+    let ports_capped = total_ports > MAX_PORTS;
     let port_str = ports
         .iter()
         .take(MAX_PORTS)
@@ -106,6 +108,11 @@ fn build_exposure_entity(kind: EntityKind, value: &str, body: &HostResp, scan_id
     }
     if !port_str.is_empty() {
         ev = ev.with_attr("ports", port_str);
+        ev = ev.with_attr("total_ports", total_ports.to_string());
+        if ports_capped {
+            ev = ev.with_attr("ports_capped", "true");
+            entity.tag("truncated");
+        }
     }
     // Most-recent and earliest timestamps across all events.
     if let Some(t) = all().filter_map(|e| e.time.as_deref()).max() {
