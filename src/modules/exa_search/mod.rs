@@ -165,41 +165,8 @@ impl Module for ExaSearch {
             _ => return Ok(ModuleResult::new()),
         };
 
-        let body = json!({
-            "query": query,
-            "num_results": NUM_RESULTS,
-            "type": "neural",
-            "use_autoprompt": true,
-            "contents": { "text": { "max_characters": 1000 } }
-        });
-
-        let resp = match ctx
-            .http
-            .post(BASE_URL)
-            .header("x-api-key", key)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .timeout(Duration::from_secs(15))
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::debug!(error = %e, "exa_search request failed");
-                return Ok(ModuleResult::new());
-            }
-        };
-
-        // 401/403/429 → note_keyed_error + Err; 404 → clean miss; other
-        // non-2xx → Err via http_status_error. Previously a 500 (server error)
-        // would incorrectly mark the key exhausted — fixed by this helper.
-        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
+        let Some(parsed) = fetch_exa(ctx, BASE_URL, key, &query).await? else {
             return Ok(ModuleResult::new());
-        };
-
-        let parsed: ExaResponse = match crate::util::http::json_scanned(resp, SRC).await {
-            Ok(v) => v,
-            Err(_) => return Ok(ModuleResult::new()),
         };
 
         let mut result = ModuleResult::new();
@@ -324,6 +291,55 @@ fn mine_snippet(text: &str, scan_id: &str, source_url: &str, result: &mut Module
 static PHONE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(r"\+?\d[\d\s\-().]{6,18}\d").expect("constant phone regex")
 });
+
+/// Fetch and parse one Exa `/search` response. Split from [`ExaSearch::process`]
+/// as a ctx+URL-taking seam so the failure contract is unit-testable against a
+/// local server (mirrors the chain_intel / api_key_probe test pattern).
+///
+/// Every failure of the sole primary lookup surfaces as a module `Err` rather
+/// than a swallowed empty result:
+///   * a transport failure (connection refused / DNS / timeout) — URL redacted,
+///     it carries the `x-api-key` — via [`reqwest::Error::without_url`];
+///   * a key rejection / 5xx / other non-2xx via `keyed_ok_or_404`;
+///   * a 200 whose body does not parse (truncated / contract change).
+///
+/// A `404` stays the clean "no matches" negative (`Ok(None)`). `json_scanned`
+/// also harvests any leaked API keys from the body (RULE 3); its parse/read
+/// failure is a PII-free `String` (a serde message or body-cap note, never the
+/// key-bearing URL), wrapped into a module `Error` here.
+async fn fetch_exa(
+    ctx: &ModuleContext,
+    url: &str,
+    key: &str,
+    query: &str,
+) -> Result<Option<ExaResponse>> {
+    let body = json!({
+        "query": query,
+        "num_results": NUM_RESULTS,
+        "type": "neural",
+        "use_autoprompt": true,
+        "contents": { "text": { "max_characters": 1000 } }
+    });
+    let resp = ctx
+        .http
+        .post(url)
+        .header("x-api-key", key)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|e| crate::core::error::Error::module(SRC, e.without_url().to_string()))?;
+
+    let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
+        return Ok(None);
+    };
+
+    crate::util::http::json_scanned(resp, SRC)
+        .await
+        .map(Some)
+        .map_err(|e| crate::core::error::Error::module(SRC, e))
+}
 
 #[cfg(test)]
 mod tests {
