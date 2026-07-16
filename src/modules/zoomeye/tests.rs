@@ -73,6 +73,26 @@ fn total_defaults_to_zero_when_absent() {
 fn error_body_deserialises_to_empty_matches() {
     let resp: ZoomResp = serde_json::from_str(r#"{"error":"invalid key","status":401}"#).unwrap();
     assert!(resp.matches.is_empty());
+    assert_eq!(resp.error.as_deref(), Some("invalid key"));
+}
+
+// -- check_zoomeye_error failure contract (T2.167) ---------------------
+
+#[test]
+fn check_zoomeye_error_surfaces_a_body_level_auth_failure() {
+    // T2.167 regression: a 200 whose body is `{"error": …}` (auth/quota
+    // failure) deserialises to an empty `matches` array with no distinct
+    // signal, so it previously read identically to a genuine "nothing
+    // indexed for this selector" clean miss.
+    let body: ZoomResp = serde_json::from_str(r#"{"error":"invalid key","status":401}"#).unwrap();
+    let err = check_zoomeye_error(&body).unwrap_err();
+    assert!(format!("{err}").contains("invalid key"));
+}
+
+#[test]
+fn check_zoomeye_error_keeps_a_genuine_empty_result_as_a_clean_ok() {
+    let body: ZoomResp = serde_json::from_str(r#"{"matches":[],"total":0}"#).unwrap();
+    assert!(check_zoomeye_error(&body).is_ok());
 }
 
 #[test]

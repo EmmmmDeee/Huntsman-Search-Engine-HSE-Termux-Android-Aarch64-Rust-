@@ -30,7 +30,7 @@ use serde_json::Value;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -48,6 +48,13 @@ const MAX_IPS: usize = 32;
 
 #[derive(Deserialize, Default)]
 struct ZoomResp {
+    /// ZoomEye signals an auth/quota failure as a plain HTTP 200 whose body
+    /// is `{"error": …}` with no `matches` key — every other field is
+    /// naturally absent (`#[serde(default)]`) on this shape, so checking
+    /// `error.is_some()` right after a successful deserialize is the only
+    /// way to detect it (see `process`).
+    #[serde(default)]
+    error: Option<String>,
     /// ZoomEye returns `matches` on success; an auth/quota error returns a
     /// `{"error": …}` body with no matches, which deserialises to empty here.
     #[serde(default)]
@@ -57,6 +64,17 @@ struct ZoomResp {
     /// single page=1 fetch and the client-side [`MAX_MATCHES`] cap.
     #[serde(default)]
     total: u64,
+}
+
+/// Check a ZoomEye response for a body-level auth/quota error — a real
+/// failure the server signaled inside an otherwise-200 body, never a
+/// legitimate "nothing indexed" negative (which has no `error` key at all).
+/// Pure — unit-tested directly without live network.
+fn check_zoomeye_error(body: &ZoomResp) -> Result<()> {
+    match &body.error {
+        Some(msg) => Err(Error::module(SRC, format!("ZoomEye API error: {msg}"))),
+        None => Ok(()),
+    }
 }
 
 pub struct ZoomEye;
@@ -160,6 +178,16 @@ impl Module for ZoomEye {
             }
             break json_decode(SRC, resp).await?;
         };
+
+        // A 200 whose body is `{"error": …}` (auth/quota failure) must not
+        // read as a genuine "nothing indexed" clean miss — this file's own
+        // status-level auth handling above already burns the key and hard-
+        // errors for a literal 401/403 status, so the body-level equivalent
+        // gets the same treatment for consistency.
+        if body.error.is_some() {
+            crate::util::http::note_keyed_error(401, SRC, key, ctx);
+        }
+        check_zoomeye_error(&body)?;
 
         if body.matches.is_empty() {
             return Ok(ModuleResult::new());
