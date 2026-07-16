@@ -216,18 +216,35 @@ impl Module for AuGeo {
         // Resolve every layer concurrently (join_all preserves LAYERS order).
         let resolved = join_all(LAYERS.iter().map(|spec| query_layer(ctx, &geom, spec))).await;
 
+        // A point outside a given layer's coverage is `Ok(None)`; a real ABS
+        // outage (host down, WAF 403, non-2xx) is `Err`. Tolerate partial
+        // failures and genuine misses — but if EVERY layer hard-failed, the ABS
+        // service is down, so surface that instead of silently reporting the
+        // point as having no Australian geography (cf. the total-failure
+        // surfacing in au_unclaimed / api_key_probe).
+        if !resolved.is_empty() && resolved.iter().all(Result::is_err) {
+            return Err(resolved
+                .into_iter()
+                .find_map(Result::err)
+                .expect("all-Err implies at least one Err"));
+        }
+        let resolved: Vec<Option<(String, String, Option<String>)>> =
+            resolved.into_iter().map(|r| r.ok().flatten()).collect();
+
         assemble(&target.value, &resolved, &ctx.scan_id, &mut result);
         Ok(result)
     }
 }
 
-/// Query one ASGS layer for the polygon containing the point. `None` on a miss
-/// (transport error, non-2xx, no covering feature) — never a scan error.
+/// Query one ASGS layer for the polygon containing the point. `Ok(None)` is a
+/// genuine miss (a 200 with no feature covering the point); `Err` is a real ABS
+/// outage (transport failure or non-2xx, incl. the WAF's 403). The caller
+/// tolerates a partial failure but surfaces a total one.
 async fn query_layer(
     ctx: &ModuleContext,
     geom: &str,
     spec: &LayerSpec,
-) -> Option<(String, String, Option<String>)> {
+) -> Result<Option<(String, String, Option<String>)>> {
     let url = format!(
         "{BASE}/{}/MapServer/0/query?geometry={geom}&geometryType=esriGeometryPoint\
          &inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=*&returnGeometry=false&f=json",
@@ -240,13 +257,12 @@ async fn query_layer(
         .get(&url)
         .header("User-Agent", UA_BROWSER)
         .send_tagged(SRC)
-        .await
-        .ok()?;
+        .await?;
     if !resp.status().is_success() {
-        return None;
+        return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
-    let body = read_text(SRC, resp).await.ok()?;
-    parse_feature(&body, spec.name_field, spec.code_field)
+    let body = read_text(SRC, resp).await?;
+    Ok(parse_feature(&body, spec.name_field, spec.code_field))
 }
 
 /// Extract `(name, code, state)` from a layer-query response's first feature.

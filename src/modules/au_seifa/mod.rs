@@ -108,7 +108,7 @@ impl Module for AuSeifa {
             "{URL}?geometry={geom}&geometryType=esriGeometryPoint&inSR=4326\
              &spatialRel=esriSpatialRelIntersects&outFields=*&returnGeometry=false&f=json"
         );
-        let Some(attrs) = fetch_attrs(ctx, &url).await else {
+        let Some(attrs) = fetch_attrs(ctx, &url).await? else {
             return Ok(result);
         };
         assemble(&target.value, &attrs, &ctx.scan_id, &mut result);
@@ -116,22 +116,28 @@ impl Module for AuSeifa {
     }
 }
 
-/// Fetch the SA2 SEIFA feature's attributes for the point. `None` on a miss.
-async fn fetch_attrs(ctx: &ModuleContext, url: &str) -> Option<Map<String, Value>> {
+/// Fetch the SA2 SEIFA feature's attributes for the point. `Ok(None)` is a
+/// genuine miss — a 200 response whose feature set does not cover the point
+/// (e.g. an offshore coordinate). `Err` is a real ABS outage: a transport
+/// failure, a non-2xx (the WAF answers a UA-less or throttled request with
+/// 403), or a malformed body. Collapsing the two — as the previous
+/// `.ok()?`/`return None` chain did — reported an ABS outage as "this point has
+/// no SEIFA coverage," the honest-failure defect class.
+async fn fetch_attrs(ctx: &ModuleContext, url: &str) -> Result<Option<Map<String, Value>>> {
     // The ABS WAF 403s a request with no User-Agent (cf. the AU registry scrapers).
     let resp = ctx
         .http
         .get(url)
         .header("User-Agent", UA_BROWSER)
         .send_tagged(SRC)
-        .await
-        .ok()?;
+        .await?;
     if !resp.status().is_success() {
-        return None;
+        return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
-    let body = read_text(SRC, resp).await.ok()?;
-    let parsed: QueryResp = serde_json::from_str(&body).ok()?;
-    parsed.features.into_iter().next().map(|f| f.attributes)
+    let body = read_text(SRC, resp).await?;
+    let parsed: QueryResp = serde_json::from_str(&body)
+        .map_err(|e| crate::core::error::Error::module(SRC, e.to_string()))?;
+    Ok(parsed.features.into_iter().next().map(|f| f.attributes))
 }
 
 /// Build entities from the SA2 SEIFA attributes: the coordinate enriched with
