@@ -173,9 +173,14 @@ fn sol_balance_response_deserialises() {
 }
 
 #[test]
-fn sol_balance_response_missing_result_degrades_cleanly() {
+fn sol_balance_response_missing_result_deserialises_to_none() {
+    // Struct-level only: a body with neither `result` nor `error` decodes to
+    // both fields None. See enrich_sol_surfaces_a_malformed_body_instead_of_a_silent_none
+    // for the T2.155 runtime contract — this shape is now a real Err, not a
+    // clean degrade.
     let resp: SolBalanceResp = serde_json::from_str(r#"{"jsonrpc":"2.0","id":1}"#).unwrap();
     assert!(resp.result.is_none());
+    assert!(resp.error.is_none());
 }
 
 #[test]
@@ -413,4 +418,76 @@ async fn enrich_esplora_parses_a_real_shaped_body_into_enrichment() {
     assert_eq!(enr.received, Some(200_000_000));
     assert_eq!(enr.tx_count, Some(8), "7 chain + 1 mempool");
     assert_eq!(enr.unit, "BTC");
+}
+
+// -- enrich_sol_at failure contract (T2.155) ---------------------------------
+
+#[test]
+fn sol_balance_response_decodes_a_jsonrpc_error_envelope() {
+    let resp: SolBalanceResp = serde_json::from_str(
+        r#"{"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid param"},"id":1}"#,
+    )
+    .unwrap();
+    assert!(resp.error.is_some(), "an RPC error envelope must decode into the error field");
+    assert!(resp.result.is_none());
+}
+
+#[tokio::test]
+async fn enrich_sol_surfaces_a_jsonrpc_error_envelope_instead_of_a_silent_none() {
+    // T2.155 regression: a JSON-RPC error envelope (HTTP 200, application-level
+    // failure) previously decoded to result:None and was silently treated
+    // identically to a legitimate empty balance — but getBalance has no such
+    // legitimate shape; a shape-only-validated SOL address reaching the RPC
+    // with an invalid param must surface as Err, not a hollow None.
+    let body = r#"{"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid param"},"id":1}"#;
+    let addr = serve_once(200, body).await;
+    crate::util::circuit_breaker::record_success("127.0.0.1");
+    let ctx = live_ctx();
+    let out = enrich_sol_at(&ctx, "SoLanaAddr111", &format!("http://{addr}")).await;
+    assert!(
+        out.is_err(),
+        "a JSON-RPC error envelope must surface as Err, not Ok(None)"
+    );
+    crate::util::circuit_breaker::record_success("127.0.0.1");
+}
+
+#[tokio::test]
+async fn enrich_sol_surfaces_a_malformed_body_instead_of_a_silent_none() {
+    // Neither result nor error present — not a documented getBalance shape.
+    let addr = serve_once(200, r#"{"jsonrpc":"2.0","id":1}"#).await;
+    crate::util::circuit_breaker::record_success("127.0.0.1");
+    let ctx = live_ctx();
+    let out = enrich_sol_at(&ctx, "SoLanaAddr111", &format!("http://{addr}")).await;
+    assert!(
+        out.is_err(),
+        "a body with neither result nor error must surface as Err"
+    );
+    crate::util::circuit_breaker::record_success("127.0.0.1");
+}
+
+#[tokio::test]
+async fn enrich_sol_zero_balance_is_a_genuine_ok_not_an_error() {
+    // The genuine negative must be preserved: an unfunded/never-used pubkey
+    // returns result.value = Some(0) on success — a real, distinguishable
+    // clean answer, never an Err.
+    let body = r#"{"jsonrpc":"2.0","result":{"context":{"slot":1},"value":0},"id":1}"#;
+    let addr = serve_once(200, body).await;
+    crate::util::circuit_breaker::record_success("127.0.0.1");
+    let ctx = live_ctx();
+    let enr = enrich_sol_at(&ctx, "SoLanaAddr111", &format!("http://{addr}"))
+        .await
+        .expect("a genuine zero-balance success must be Ok")
+        .expect("must yield Some(Enrichment)");
+    assert_eq!(enr.balance, 0);
+    assert_eq!(enr.unit, "SOL");
+}
+
+#[tokio::test]
+async fn enrich_sol_surfaces_a_5xx_as_error() {
+    let addr = serve_once(503, "upstream down").await;
+    crate::util::circuit_breaker::record_success("127.0.0.1");
+    let ctx = live_ctx();
+    let out = enrich_sol_at(&ctx, "SoLanaAddr111", &format!("http://{addr}")).await;
+    assert!(out.is_err(), "a 5xx must surface as Err");
+    crate::util::circuit_breaker::record_success("127.0.0.1");
 }

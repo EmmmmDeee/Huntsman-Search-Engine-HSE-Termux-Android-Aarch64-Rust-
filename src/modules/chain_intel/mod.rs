@@ -41,7 +41,7 @@ use serde::Deserialize;
 use crate::core::{
     crypto::{chain_label, classify_crypto_address},
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -103,11 +103,18 @@ struct BlockscoutCounters {
 }
 
 /// Solana JSON-RPC `getBalance` response: `{"result":{"value":<lamports>}}`
-/// (plus a `context` object this module doesn't need).
+/// on success (plus a `context` object this module doesn't need), or
+/// `{"jsonrpc":"2.0","error":{...},"id":1}` on an application-level RPC
+/// error (e.g. an invalid param — `classify_crypto_address` validates SOL
+/// addresses shape-only, so a malformed-but-plausible pubkey can reach the
+/// RPC and legitimately trigger this). A successful `getBalance` call always
+/// populates `result.value` (0 for an unfunded pubkey); there is no
+/// legitimate "neither result nor error" response shape for this method.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct SolBalanceResp {
     result: Option<SolBalanceResult>,
+    error: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, Default)]
@@ -413,9 +420,15 @@ fn blockscout_tag_labels(tags: &[BlockscoutTag]) -> Vec<String> {
 /// only; see the module doc for why `tx_count`/`received` are never populated
 /// for SOL rather than estimated from a bounded `getSignaturesForAddress` call.
 async fn enrich_sol(ctx: &ModuleContext, addr: &str) -> Result<Option<Enrichment>> {
+    enrich_sol_at(ctx, addr, "https://api.mainnet-beta.solana.com").await
+}
+
+/// `enrich_sol`'s implementation, parameterized on the RPC endpoint so a local
+/// server can exercise the failure contract in tests (mirrors `pgp::lookup`).
+async fn enrich_sol_at(ctx: &ModuleContext, addr: &str, url: &str) -> Result<Option<Enrichment>> {
     let resp = ctx
         .http
-        .post("https://api.mainnet-beta.solana.com")
+        .post(url)
         .header("Content-Type", "application/json")
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
@@ -429,10 +442,21 @@ async fn enrich_sol(ctx: &ModuleContext, addr: &str) -> Result<Option<Enrichment
         return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
     let body: SolBalanceResp = crate::util::http::json_decode(SRC, resp).await?;
-    // A well-formed RPC reply that simply carries no balance (`result`/`value`
-    // absent) is an honest "nothing to enrich", distinct from the failures above.
+    // A JSON-RPC error envelope (HTTP 200, application-level failure — e.g.
+    // an invalid param from a shape-only-validated address) is a real
+    // failure, never a legitimate empty balance; getBalance always populates
+    // result.value (0 for an unfunded pubkey) on genuine success.
+    if let Some(err) = body.error {
+        return Err(Error::module(
+            SRC,
+            format!("solana getBalance RPC error: {err}"),
+        ));
+    }
     let Some(balance) = body.result.and_then(|r| r.value) else {
-        return Ok(None);
+        return Err(Error::module(
+            SRC,
+            "solana getBalance: response had neither result nor error",
+        ));
     };
     Ok(Some(Enrichment {
         unit: "SOL",
