@@ -8,6 +8,7 @@ use super::*;
             visited: HashSet::new(),
             queue: VecDeque::new(),
             pages_fetched: 0,
+            transport_failures: 0,
             disallow_rules: Vec::new(),
             result: ModuleResult::new(),
             external_domains: HashSet::new(),
@@ -22,6 +23,7 @@ use super::*;
             internal_links: 0,
             external_links: 0,
             notable_pages: Vec::new(),
+            config_leak_probe_transport_failures: 0,
         }
     }
 
@@ -474,4 +476,29 @@ use super::*;
             found,
             "a >200-char poolable key must survive the tokenizer's length gate"
         );
+    }
+
+    // -- all_paths_failed_transport (T2.165) ---------------------------------
+    //
+    // Pure-fold-function-only tier (matching cloud_storage/social_probe): at
+    // ~100 fanned-out endpoints, a real local-server integration test adds
+    // network-mocking complexity without exercising anything the pure
+    // predicate doesn't already cover — the `ProbeOutcome`
+    // classification itself (Hit/CleanMiss/TransportFail per attempt) mirrors
+    // the already-covered `app_links`/`gaming_profile` failure-contract shape
+    // one call at a time.
+
+    #[test]
+    fn all_paths_failed_transport_only_on_total_outage_with_no_hits() {
+        // T2.165 regression: every path probe's `_ => None`/`.ok()?` chain
+        // previously collapsed a timeout/transport error into the same
+        // outcome as a genuine 200-but-not-a-leak answer, so a total probe
+        // outage read identically to "checked ~100 paths, none present".
+        assert!(all_paths_failed_transport(107, 107, 0));
+        // Mixed: some paths genuinely answered, not a total outage.
+        assert!(!all_paths_failed_transport(10, 107, 0));
+        // Any real hit, even alongside transport failures, is not an outage.
+        assert!(!all_paths_failed_transport(106, 107, 1));
+        // The vacuous case must never be a false outage.
+        assert!(!all_paths_failed_transport(0, 0, 0));
     }

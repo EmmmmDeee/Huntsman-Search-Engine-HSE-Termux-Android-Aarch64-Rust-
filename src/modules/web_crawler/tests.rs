@@ -175,6 +175,7 @@ use super::*;
             visited: HashSet::new(),
             queue: VecDeque::new(),
             pages_fetched: 3,
+            transport_failures: 0,
             disallow_rules: Vec::new(),
             result: ModuleResult::new(),
             external_domains: set(&["zeta.example", "alpha.example", "mid.example"]),
@@ -192,6 +193,7 @@ use super::*;
             internal_links: 0,
             external_links: 0,
             notable_pages: Vec::new(),
+            config_leak_probe_transport_failures: 0,
         };
 
         build_entities(
@@ -252,4 +254,25 @@ use super::*;
             .map(|e| e.value.as_str())
             .collect();
         assert_eq!(tracking_ids, vec!["UA-111", "UA-999"]);
+    }
+
+    // -- crawl_seed_never_reached failure contract (T2.165) ------------------
+
+    #[test]
+    fn crawl_seed_never_reached_only_on_total_outage_with_no_leak_evidence() {
+        // T2.165 regression: a Url target skips `resolve_seed` entirely (only
+        // Domain targets go through it), so the main crawl loop's fetch was
+        // the FIRST network contact — and its `Err(e) => { ...; continue; }`
+        // arm previously left the transport-failure count untracked, so a
+        // totally unreachable seed produced the same "0 pages, 0 links"
+        // Domain/Url entities as a genuine empty-but-answered crawl.
+        assert!(crawl_seed_never_reached(0, 1, true));
+        // A real answered page (even 0 links found) is a genuine clean scan.
+        assert!(!crawl_seed_never_reached(1, 0, true));
+        // No pages fetched but also no transport failures recorded (e.g. every
+        // link was robots-disallowed or binary) is not a transport outage.
+        assert!(!crawl_seed_never_reached(0, 0, true));
+        // The sibling config-leak probe found real evidence — mirrors
+        // domainsdb's "partial evidence survives a sibling failure" rule.
+        assert!(!crawl_seed_never_reached(0, 1, false));
     }

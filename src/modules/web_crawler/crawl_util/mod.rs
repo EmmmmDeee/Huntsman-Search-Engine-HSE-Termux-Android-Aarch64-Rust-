@@ -125,6 +125,36 @@ const CONFIG_LEAK_PATHS: &[&str] = &[
 /// list of (service_name, raw_key_value) found in the body).
 pub(super) type LeakHit = (String, usize, Vec<(&'static str, String)>);
 
+/// The classified outcome of one config-leak path probe.
+enum ProbeOutcome {
+    Hit(LeakHit),
+    /// A genuine negative: the server answered (200/non-200/HTML body) and
+    /// the path is not a leaked config file.
+    CleanMiss,
+    /// The probe never got a genuine answer — timeout, connect/transport
+    /// error, or a mid-stream body-read failure.
+    TransportFail,
+}
+
+/// The outcome of a full [`probe_config_leaks`] sweep.
+pub(super) struct LeakProbeResult {
+    pub(super) hits: Vec<LeakHit>,
+    pub(super) transport_failures: usize,
+    pub(super) total: usize,
+}
+
+/// True only when every path probe failed at the transport level (no
+/// genuine response, not even a real non-200) and nothing was found — a
+/// genuine total outage, distinguished from paths that legitimately
+/// answered with a real negative.
+pub(super) fn all_paths_failed_transport(
+    transport_failures: usize,
+    total: usize,
+    found: usize,
+) -> bool {
+    found == 0 && total > 0 && transport_failures == total
+}
+
 /// Probe ~100 common config-file paths in parallel for exposed secrets.
 ///
 /// Returns the (path, byte_count, services_found) tuples for any paths
@@ -138,7 +168,7 @@ pub(super) async fn probe_config_leaks(
     http: &reqwest::Client,
     seed_url: &str,
     domain: &str,
-) -> Vec<LeakHit> {
+) -> LeakProbeResult {
     use tokio::sync::Semaphore;
     use tokio::task::JoinSet;
 
@@ -150,7 +180,7 @@ pub(super) async fn probe_config_leaks(
 
     let timeout = Duration::from_millis(3000);
     let sem = std::sync::Arc::new(Semaphore::new(16));
-    let mut set: JoinSet<Option<LeakHit>> = JoinSet::new();
+    let mut set: JoinSet<ProbeOutcome> = JoinSet::new();
 
     for path in CONFIG_LEAK_PATHS {
         let url = format!("{host_root}{path}");
@@ -159,13 +189,15 @@ pub(super) async fn probe_config_leaks(
         let path_static = *path;
         let domain_owned = domain.to_string();
         set.spawn(async move {
-            let _permit = sem.acquire_owned().await.ok()?;
-            let resp = tokio::time::timeout(timeout, http.get(&url).send())
-                .await
-                .ok()?
-                .ok()?;
+            let Ok(_permit) = sem.acquire_owned().await else {
+                return ProbeOutcome::TransportFail;
+            };
+            let resp = match tokio::time::timeout(timeout, http.get(&url).send()).await {
+                Ok(Ok(r)) => r,
+                _ => return ProbeOutcome::TransportFail,
+            };
             if resp.status().as_u16() != 200 {
-                return None;
+                return ProbeOutcome::CleanMiss;
             }
             let ct = resp
                 .headers()
@@ -174,19 +206,22 @@ pub(super) async fn probe_config_leaks(
                 .unwrap_or("")
                 .to_string();
             if ct.contains("text/html") && !path_static.ends_with(".html") {
-                return None;
+                return ProbeOutcome::CleanMiss;
             }
             // Cap the (untrusted) body at 1 MB while reading — `read_body_capped`
             // streams and stops, so an oversize page is bounded in memory instead
             // of fully buffered by `resp.text()` and then rejected. A body that
             // hits the cap (len == 1 MB) is treated as "too big", as before.
             const STATIC_BODY_CAP: usize = 1_000_000;
-            let body = crate::util::http::read_body_capped(resp, STATIC_BODY_CAP).await?;
+            let Some(body) = crate::util::http::read_body_capped(resp, STATIC_BODY_CAP).await
+            else {
+                return ProbeOutcome::TransportFail;
+            };
             if body.len() < 10 || body.len() >= STATIC_BODY_CAP {
-                return None;
+                return ProbeOutcome::CleanMiss;
             }
             if body.contains("<html") || body.contains("<!DOCTYPE") {
-                return None;
+                return ProbeOutcome::CleanMiss;
             }
             tracing::info!(
                 domain = %domain_owned, path = path_static, bytes = body.len(),
@@ -211,17 +246,24 @@ pub(super) async fn probe_config_leaks(
                 &body,
                 &format!("config_leak:{domain_owned}{path_static}"),
             );
-            Some((path_static.to_string(), body.len(), found))
+            ProbeOutcome::Hit((path_static.to_string(), body.len(), found))
         });
     }
 
-    let mut results = Vec::new();
+    let mut hits = Vec::new();
+    let mut transport_failures = 0usize;
     while let Some(joined) = set.join_next().await {
-        if let Ok(Some(r)) = joined {
-            results.push(r);
+        match joined {
+            Ok(ProbeOutcome::Hit(h)) => hits.push(h),
+            Ok(ProbeOutcome::TransportFail) | Err(_) => transport_failures += 1,
+            Ok(ProbeOutcome::CleanMiss) => {}
         }
     }
-    results
+    LeakProbeResult {
+        hits,
+        transport_failures,
+        total: CONFIG_LEAK_PATHS.len(),
+    }
 }
 
 pub(super) async fn resolve_seed(http: &reqwest::Client, domain: &str) -> Result<String> {

@@ -66,6 +66,11 @@ pub(super) struct CrawlState {
     pub(super) visited: HashSet<String>,
     pub(super) queue: VecDeque<(String, u32)>,
     pages_fetched: usize,
+    /// Count of main-crawl fetch attempts that never got a genuine response
+    /// (transport error or a mid-stream body-read failure) — distinct from a
+    /// real non-2xx/non-HTML answer, which is a legitimate skip, not a
+    /// transport failure. See `crawl_seed_never_reached`.
+    transport_failures: usize,
     disallow_rules: Vec<String>,
     pub(super) result: ModuleResult,
     // Aggregated discovery
@@ -85,6 +90,11 @@ pub(super) struct CrawlState {
     internal_links: usize,
     external_links: usize,
     pub(super) notable_pages: Vec<String>,
+    /// Nonzero only when every config-leak-probe path failed at the
+    /// transport level (see `all_paths_failed_transport`) — surfaced as an
+    /// evidence attribute so a total probe outage is distinguishable from a
+    /// genuine "no leaked config files" clean scan.
+    config_leak_probe_transport_failures: usize,
 }
 
 #[async_trait]
@@ -176,6 +186,7 @@ impl Module for WebCrawler {
             visited: HashSet::with_capacity(MAX_PAGES),
             queue: VecDeque::with_capacity(MAX_PAGES),
             pages_fetched: 0,
+            transport_failures: 0,
             disallow_rules: Vec::new(),
             result: ModuleResult::new(),
             external_domains: HashSet::new(),
@@ -190,10 +201,22 @@ impl Module for WebCrawler {
             internal_links: 0,
             external_links: 0,
             notable_pages: Vec::new(),
+            config_leak_probe_transport_failures: 0,
         };
 
         fetch_robots(&ctx.http, &seed_url, &mut state.disallow_rules).await;
-        let leaks = probe_config_leaks(&ctx.http, seed_url.as_str(), &domain).await;
+        let leak_probe = probe_config_leaks(&ctx.http, seed_url.as_str(), &domain).await;
+        let leaks = leak_probe.hits;
+        if all_paths_failed_transport(leak_probe.transport_failures, leak_probe.total, leaks.len())
+        {
+            // Total transport outage on the config-leak probe alone must not
+            // abort the whole module — the main BFS crawl below can still
+            // succeed. Surface it as a visible tag/attr instead so the
+            // operator can tell "confirmed clean" from "never actually
+            // checked", mirroring the domain-leaky tag mechanism below.
+            state.frameworks.insert("config-leak-probe-failed");
+            state.config_leak_probe_transport_failures = leak_probe.transport_failures;
+        }
 
         // Convert each discovered key into an ApiKey entity so it shows up
         // in the operator's scan results and triggers AU-021 correlation.
@@ -264,12 +287,19 @@ impl Module for WebCrawler {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::debug!(url = %url, error = %e, "web_crawler: fetch failed");
+                    state.transport_failures += 1;
                     continue;
                 }
             };
 
             let status = resp.status();
             if status.as_u16() == 429 || status.as_u16() == 503 {
+                // Throttled/unavailable, not a real content answer — and with
+                // no retry, a Url target's single-seed queue silently ends
+                // the crawl here. Count it alongside genuine transport
+                // failures so a total-outage run is still distinguishable
+                // from a real "nothing crawlable" clean scan.
+                state.transport_failures += 1;
                 tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
                 continue;
             }
@@ -300,6 +330,10 @@ impl Module for WebCrawler {
             // mid-codepoint panic at the boundary (web_crawler runs under
             // catch_unwind, where such a panic would silently void all findings).
             let Some(body) = crate::util::http::read_body_capped(resp, BODY_CAP).await else {
+                // A mid-stream read failure after a real response was
+                // obtained — a genuine transport failure, not a "nothing
+                // here" answer.
+                state.transport_failures += 1;
                 continue;
             };
 
@@ -335,6 +369,20 @@ impl Module for WebCrawler {
             }
         }
 
+        if crawl_seed_never_reached(
+            state.pages_fetched,
+            state.transport_failures,
+            leaks.is_empty(),
+        ) {
+            return Err(Error::module(
+                SRC,
+                format!(
+                    "{domain}: seed fetch never succeeded (transport failure) — 0/{} attempts reached the host",
+                    state.transport_failures
+                ),
+            ));
+        }
+
         build_entities(
             &domain,
             &base_host,
@@ -353,6 +401,21 @@ use crawl_util::*;
 
 mod hydration;
 use hydration::extract_hydration_entities;
+
+/// True only when the main BFS crawl never fetched a single page, every
+/// attempt that was made failed at the transport level (not a real non-2xx/
+/// non-HTML answer), and the sibling config-leak probe found no evidence
+/// either — a genuine total outage, distinguished from a real "crawled
+/// nothing interesting" clean scan. Mirrors domainsdb's "partial evidence
+/// survives a sibling failure" rule: the config-leak probe's real findings
+/// (if any) are preserved even when the main crawl's seed fetch failed.
+fn crawl_seed_never_reached(
+    pages_fetched: usize,
+    transport_failures: usize,
+    leaks_empty: bool,
+) -> bool {
+    pages_fetched == 0 && transport_failures > 0 && leaks_empty
+}
 
 fn build_entities(
     domain: &str,
@@ -437,6 +500,12 @@ fn build_entities(
     ev = ev.with_attr("subdomains_found", state.subdomains.len().to_string());
     ev = ev.with_attr("emails_found", state.emails.len().to_string());
     ev = ev.with_attr("phones_found", state.phones.len().to_string());
+    if state.config_leak_probe_transport_failures > 0 {
+        ev = ev.with_attr(
+            "config_leak_probe_transport_failures",
+            state.config_leak_probe_transport_failures.to_string(),
+        );
+    }
 
     if !missing_headers.is_empty() {
         ev = ev.with_attr("missing_security_headers", missing_headers.join(", "));
