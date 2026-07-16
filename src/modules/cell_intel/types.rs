@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 use serde::Deserialize;
 
-use super::helpers::json_to_str;
+use crate::util::cell::{mcc_mnc_str, resolve_lac, tower_id};
 
 #[derive(Deserialize)]
 pub(super) struct Cell {
@@ -40,7 +40,7 @@ impl<'a> TowerKey<'a> {
     /// minimum keys (no MCC or no CID) — the survey skip condition, defined
     /// once. `lac` falls back to `tac` (LTE reports `tac`).
     pub(super) fn from_cell(cell: &'a Cell) -> Option<Self> {
-        let mcc = json_to_str(&cell.mcc);
+        let mcc = mcc_mnc_str(&cell.mcc);
         if mcc.is_empty() {
             return None;
         }
@@ -48,10 +48,10 @@ impl<'a> TowerKey<'a> {
         if cid == 0 {
             return None;
         }
-        let mnc = json_to_str(&cell.mnc);
-        let lac = cell.lac.or(cell.tac).unwrap_or(0);
+        let mnc = mcc_mnc_str(&cell.mnc);
+        let lac = resolve_lac(cell.lac, cell.tac);
         let ctype = cell.cell_type.as_deref().unwrap_or("unknown");
-        let tower_id = format!("{mcc}-{mnc}-{lac}-{cid}");
+        let tower_id = tower_id(&mcc, &mnc, lac, cid);
         Some(Self {
             mcc,
             mnc,

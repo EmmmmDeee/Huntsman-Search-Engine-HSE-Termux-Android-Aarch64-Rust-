@@ -1,5 +1,5 @@
 use super::CellIntel;
-use super::helpers::{build_tower_device, json_to_str, mcc_to_centroid, parse_cells_survey};
+use super::helpers::{build_tower_device, mcc_to_centroid, parse_cells_survey};
 use crate::core::entity::EntityKind;
 use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
@@ -141,27 +141,9 @@ fn missing_type_defaults_to_unknown() {
     assert!(r.entities[0].evidence[0].summary.contains("unknown"));
 }
 
-// ---- json_to_str tests (from both modules) ----
-
-#[test]
-fn json_to_str_handles_all_variants() {
-    use std::borrow::Cow;
-
-    // String value
-    let s = Some(serde_json::Value::String("505".into()));
-    assert_eq!(json_to_str(&s), Cow::Borrowed("505"));
-
-    // Number value
-    let n = Some(serde_json::json!(310));
-    assert_eq!(json_to_str(&n).as_ref(), "310");
-
-    // Null value
-    let null = Some(serde_json::Value::Null);
-    assert_eq!(json_to_str(&null), Cow::Borrowed(""));
-
-    // None
-    assert_eq!(json_to_str(&None), Cow::Borrowed(""));
-}
+// The MCC/MNC string-or-number coercion, tower-id format, and LAC/TAC fallback
+// are single-sourced in `util::cell` (`mcc_mnc_str`/`tower_id`/`resolve_lac`)
+// and tested there (T2.127); this module no longer keeps its own copies.
 
 // ---- Geolocation helper tests (from cell_locate) ----
 // The tower-range → confidence tiers are now single-sourced in `util::geo`

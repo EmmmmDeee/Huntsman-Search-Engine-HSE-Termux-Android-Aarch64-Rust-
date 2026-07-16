@@ -88,7 +88,7 @@ impl Module for CellLocal {
 
         let mut result = ModuleResult::new();
         for cell in &cells {
-            let tower_id = format!("{}-{}-{}-{}", cell.mcc, cell.mnc, cell.lac, cell.cid);
+            let tower_id = crate::util::cell::tower_id(cell.mcc, cell.mnc, cell.lac, cell.cid);
 
             // ── DeviceId entity ──────────────────────────────────────────────
             let mut device = Entity::new(EntityKind::DeviceId, &tower_id, 0.78, &ctx.scan_id);

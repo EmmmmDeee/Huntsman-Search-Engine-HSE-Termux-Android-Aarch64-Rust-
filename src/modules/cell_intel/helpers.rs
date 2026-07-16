@@ -1,7 +1,6 @@
-//! Pure helper functions: entity building, OpenCelliD query, confidence
-//! mapping, MCC table, and JSON normalisation.
-
-use std::borrow::Cow;
+//! Pure helper functions: entity building, OpenCelliD query, and the MCC
+//! country-centroid table. The cell-tower identity vocabulary (tower-id format,
+//! MCC/MNC coercion, LAC/TAC fallback) is single-sourced in `util::cell`.
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -44,9 +43,9 @@ pub(super) async fn query_opencellid(
     radio: &str,
 ) -> Option<(f64, f64, u64)> {
     // URL-encode every interpolated value (consistent with censys). mcc/mnc
-    // come from json_to_str of arbitrary cellinfo JSON; a malformed value with
-    // a `&`/space would otherwise corrupt the query string. Numeric codes
-    // (the normal case) pass through unchanged.
+    // come from util::cell::mcc_mnc_str of arbitrary cellinfo JSON; a malformed
+    // value with a `&`/space would otherwise corrupt the query string. Numeric
+    // codes (the normal case) pass through unchanged.
     let url = format!(
         "https://opencellid.org/cell/get?key={}&mcc={}&mnc={}&lac={}&cellid={}&radio={}&format=json",
         urlencode(api_key),
@@ -102,16 +101,6 @@ pub(super) async fn query_opencellid(
     }
 
     Some((lat, lon, data.range.unwrap_or(5000)))
-}
-
-/// `mcc`/`mnc` come as `"505"` on some Android versions and `505` on others.
-/// Normalise to string; missing -> empty.
-pub(super) fn json_to_str(v: &Option<serde_json::Value>) -> Cow<'_, str> {
-    match v {
-        Some(serde_json::Value::String(s)) => Cow::Borrowed(s.as_str()),
-        Some(serde_json::Value::Number(n)) => Cow::Owned(n.to_string()),
-        _ => Cow::Borrowed(""),
-    }
 }
 
 /// Coarse country fix from a cell's **Mobile Country Code**: `(lat, lon, ISO)` at

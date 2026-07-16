@@ -283,7 +283,7 @@ fn emit_cell_entities(result: &mut ModuleResult, cell: &CellEntry, scan_id: &str
     let Some(cid) = cell.cid else { return };
 
     let radio = cell.radio.as_deref().unwrap_or("unknown");
-    let tower_id = format!("{mcc}-{mnc}-{lac}-{cid}");
+    let tower_id = crate::util::cell::tower_id(mcc, mnc, lac, cid);
 
     // DeviceId entity
     let mut device = Entity::new(EntityKind::DeviceId, &tower_id, 0.78, scan_id);
