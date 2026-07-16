@@ -42,6 +42,7 @@ pub mod oathnet_batch;
 pub mod osint_providers;
 pub mod oui;
 pub mod phone;
+pub mod place_grain;
 pub mod postcode_au;
 pub mod preflight;
 pub mod probe_confidence;

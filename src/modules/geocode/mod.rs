@@ -122,6 +122,15 @@ impl Geocode {
         if addr.is_empty() || addr.len() <= 2 {
             return Ok(ModuleResult::new());
         }
+        // A bare country name geocodes to the country CENTROID — the middle of
+        // the whole nation, not the subject's location — yet it arrives as a
+        // precise-looking fix and cascades into the geo-convergence rules (a
+        // coarse carrier-country signal inventing a street-level location, as a
+        // live +61 phone scan reproduced). Refuse to mint a coordinate from it;
+        // a finer address (street / suburb / comma-qualified) still geocodes.
+        if crate::util::place_grain::is_bare_country(addr) {
+            return Ok(ModuleResult::new());
+        }
 
         let url = format!(
             "https://nominatim.openstreetmap.org/search?q={}&format=json&limit=1&addressdetails=1",

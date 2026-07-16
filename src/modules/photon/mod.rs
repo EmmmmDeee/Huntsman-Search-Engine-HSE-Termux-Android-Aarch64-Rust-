@@ -77,6 +77,13 @@ impl Photon {
         if addr.len() <= 2 {
             return Ok(ModuleResult::new());
         }
+        // A bare country name geocodes to the country centroid — not a subject
+        // location — and cascades into the geo-convergence rules. Refuse it here
+        // too, matching `geocode` (see `util::place_grain`); a finer address
+        // still resolves normally.
+        if crate::util::place_grain::is_bare_country(addr) {
+            return Ok(ModuleResult::new());
+        }
 
         let url = format!(
             "https://photon.komoot.io/api/?q={}&limit=1",
