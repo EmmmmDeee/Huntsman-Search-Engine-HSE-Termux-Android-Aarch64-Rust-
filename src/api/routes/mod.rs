@@ -388,6 +388,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // `hse serve` restart, so "what was around me earlier" doesn't
         // require remembering a session id.
         .route("/radar/history", get(scan_handlers::radar_history))
+        .route("/radar/recurring", get(scan_handlers::radar_recurring))
         .route(
             "/scans/import",
             // Raise this route's body cap from axum's 2 MB default to the import

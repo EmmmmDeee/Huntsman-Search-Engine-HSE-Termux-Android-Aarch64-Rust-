@@ -819,6 +819,75 @@ pub async fn radar_history(
     }
 }
 
+/// `GET /api/v1/radar/recurring?min=2&limit=100` — cross-sweep persistent-device
+/// review. Walks the radar sweep history (`radar_history`) and reports the
+/// devices that recur across ≥`min` distinct sweeps, counting ONLY
+/// universally-administered (real hardware) MACs the operator's phone is NOT
+/// bonded to — a randomized privacy address rotates and can't recur, and the
+/// operator's own paired kit (AU-117) is not a foreign tail. What survives is an
+/// UNKNOWN persistent device seen across multiple sweeps: a fixed installation
+/// the operator keeps passing, or a device that tracks their movement. This is
+/// the counter-surveillance view a single per-scan correlation can never give —
+/// it needs the whole sweep history. All analysis is the pure, offline
+/// [`crate::core::radar_track`] primitive.
+pub async fn radar_recurring(
+    State(s): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    use crate::core::entity::EntityKind;
+    use crate::core::radar_track::{Sweep, SweepObservation, recurring_devices};
+
+    let limit: usize = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .clamp(1, 1000);
+    let min_sweeps: usize = params.get("min").and_then(|v| v.parse().ok()).unwrap_or(2);
+
+    let scans = match s.store.radar_history(limit) {
+        Ok(v) => v,
+        Err(e) => return internal_error(&e),
+    };
+
+    let mut sweeps: Vec<Sweep> = Vec::with_capacity(scans.len());
+    for scan in &scans {
+        // A single unreadable sweep must not abort the whole review.
+        let Ok(entities) = s.store.entities_for_scan(&scan.id) else {
+            continue;
+        };
+        let devices: Vec<SweepObservation> = entities
+            .iter()
+            .filter(|e| {
+                e.kind == EntityKind::MacAddress
+                    && (e.has_tag("bluetooth") || e.has_tag(crate::core::tags::WIFI_AP))
+            })
+            .map(|e| {
+                let name = e
+                    .evidence
+                    .iter()
+                    .find_map(|ev| {
+                        ev.attributes
+                            .get("name")
+                            .or_else(|| ev.attributes.get("ssid"))
+                    })
+                    .map(String::to_string);
+                SweepObservation {
+                    mac: e.value.clone(),
+                    name,
+                    bonded: e.has_tag("bond:bonded"),
+                }
+            })
+            .collect();
+        sweeps.push(Sweep {
+            scan_id: scan.id.clone(),
+            ts: scan.started_at,
+            devices,
+        });
+    }
+
+    ok_list("devices", recurring_devices(&sweeps, min_sweeps))
+}
+
 /// `GET /api/v1/plan?value=<seed>` — forward-only scan-plan PREVIEW.
 pub async fn plan_preview(
     Query(params): Query<std::collections::HashMap<String, String>>,

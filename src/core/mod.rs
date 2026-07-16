@@ -35,6 +35,7 @@ pub mod path;
 pub mod pivot;
 pub mod port;
 pub mod profiles;
+pub mod radar_track;
 pub mod relation;
 pub mod resolve;
 pub mod roi;
