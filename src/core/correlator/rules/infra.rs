@@ -370,8 +370,6 @@ pub(in crate::core::correlator) fn rule_au_031_malicious_adjacency(
     /// A flagged node with more than this many distinct benign neighbours is
     /// shared hosting/CDN/ESP: emit one aggregate, not one row per neighbour.
     const FANOUT_CAP: usize = 8;
-    /// Benign uids to carry on an aggregate finding (the full count is in text).
-    const AGG_SAMPLE: usize = 12;
 
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
     let bad_reason = |e: &Entity| -> Option<&'static str> {
@@ -447,9 +445,11 @@ pub(in crate::core::correlator) fn rule_au_031_malicious_adjacency(
             } else {
                 Severity::Medium
             };
+            // Include ALL neighbours in entity_uids per evidence integrity (Rule 0.7
+            // priority 2). The description shows the full count; the entity_uids
+            // must also be complete so operators can follow up on all linked entities.
             let mut uids: Vec<String> = neighbours
                 .keys()
-                .take(AGG_SAMPLE)
                 .map(std::string::ToString::to_string)
                 .collect();
             uids.push(bad.uid.clone());

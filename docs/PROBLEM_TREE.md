@@ -32,6 +32,7 @@ Guarantee (Rule 0.7 priority 1): correctness. Priority 2: evidence integrity. Pr
 
 - `[x]` T3.001 — AU-002 identity-cluster implausibility silent drop: surfaced as AU-002-REJECT finding (commit TBD)
 - `[x]` T3.002 — AU-092 rule_id reuse: conflict case distinguished as AU-092-CONFLICT instead of reusing AU-092 (commit TBD)
+- `[x]` T4.168 — AU-031 adjacency silent entity truncation: all neighbors now included in entity_uids (commit TBD)
 
 **Prior arcs:**
 
@@ -89,6 +90,8 @@ Per Rule 0.7 (priorities 1-5 are correctness, evidence integrity, safety, determ
 ---
 
 ## 8. Cycle Log
+
+**2026-07-16 14:30 UTC** — T4.168 fixed: AU-031 adjacency rule (infra.rs) was silently truncating entity_uids to first 12 neighbors while reporting full count in description (lines 450-454). Now includes all neighbors per evidence integrity (Rule 0.7 priority 2). Removed unused AGG_SAMPLE constant. Tests updated to verify all 30 neighbors included. Gate passing.
 
 **2026-07-16 14:15 UTC** — T3.002 fixed: AU-092 breach-locality-footprint-conflict case (lines 758-773) distinguished with separate rule_id "AU-092-CONFLICT" instead of reusing "AU-092". Per Rule 0.7 priority 2 (Evidence Integrity), fundamentally different claims (corroboration vs conflict) must not share the same rule_id. Evidence integrity preserved: operator can now distinguish agreement from disagreement cases. Tests updated. Gate passing. Paired: SOLUTION_TREE.md.
 

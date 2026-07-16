@@ -115,7 +115,16 @@ Rationale: Trees and code are one artifact. Stale trees mislead the next develop
 - Tests updated to verify AU-092-CONFLICT fires on conflict detection
 - Test coverage: 4 au092 tests passing (no regression from prior 3)
 
-**Status:** ✓ Complete. T3 quality gate passing (4992 tests).
+**Built:** AU-031 adjacency all neighbors in entity_uids
+
+- Modified `rule_au_031_malicious_adjacency` (infra.rs lines 450-470) to include all neighbors in entity_uids instead of silently truncating to first 12
+- Rationale: Description reported neighbors.len() (all neighbors) but entity_uids only carried AGG_SAMPLE=12 per evidence integrity (Rule 0.7 priority 2)
+- Evidence integrity preserved: operators can now follow up on ALL linked entities, not just first 12
+- Removed unused AGG_SAMPLE constant (line 374)
+- Tests updated to verify all 30 neighbors included when 30-way fan-out aggregates to one finding
+- Test coverage: 6 au031 tests passing (no regression)
+
+**Status:** ✓ Complete. T3/T4 quality gate passing (4992 tests).
 
 ---
 
@@ -130,6 +139,8 @@ Rationale: Trees and code are one artifact. Stale trees mislead the next develop
 ---
 
 ## 5. Cycle Log
+
+**2026-07-16 14:30 UTC** — T4 quality deliverable: AU-031 adjacency entity truncation fixed (T4.168). All neighbors now included in entity_uids per evidence integrity (Rule 0.7 priority 2). Gate passing. 4992 tests passing. Paired with PROBLEM_TREE.md §8.
 
 **2026-07-16 14:15 UTC** — T3 quality deliverables complete: AU-002 and AU-092 fixed (T3.001, T3.002). Correlator evidence integrity strengthened per Rule 0.7 priority 2. Gate passing (cargo fmt, clippy, doc, test). 4992 tests passing. Paired with PROBLEM_TREE.md §8.
 

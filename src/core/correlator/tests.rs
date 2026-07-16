@@ -2025,6 +2025,18 @@ fn au031_aggregates_high_fanout_shared_infra() {
     assert!(r[0].description.contains("30 entities"));
     assert!(r[0].description.contains("shared infrastructure"));
     assert!(r[0].entity_uids.contains(&bad.uid));
+    // All 30 benign entities plus the bad entity must be included (evidence integrity).
+    assert_eq!(
+        r[0].entity_uids.len(),
+        31,
+        "AU-031 must include all 30 benign entities plus the bad entity"
+    );
+    for e in &entities[1..] {
+        assert!(
+            r[0].entity_uids.contains(&e.uid),
+            "AU-031 entity_uids must include all benign entities"
+        );
+    }
 
     // Deterministic across input orderings (BTreeMap-keyed).
     let mut shuffled = rels.clone();
