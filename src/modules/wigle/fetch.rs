@@ -178,21 +178,26 @@ pub(super) struct DetailResp {
     pub(super) results: Vec<Network>,
 }
 
+/// Fetch one BSSID's detail record for `kind` (wifi/cell/bt). `Ok(None)` is
+/// the genuine WiGLE "no such network" answer (a 404, per `util::wigle::get`);
+/// every other failure — rate-limit, auth, other non-2xx, transport, or a
+/// body-read/JSON-decode failure — propagates as `Err` instead of collapsing
+/// into the same `None`, so the caller can tell a real outage apart from a
+/// confirmed absence. Mirrors the sibling `wifi_intel::wigle::query_wigle_detail`,
+/// which already gets this right against the same `util::wigle::get` helper.
 pub(super) async fn fetch_detail(
     http: &reqwest::Client,
     user: &str,
     token: &str,
     bssid: &str,
     kind: NetworkKind,
-) -> Option<DetailResp> {
-    // Shared WiGLE auth + status classification; this fetcher swallows every
-    // non-success outcome (404/auth/rate-limit/other) into None, as before.
+) -> crate::core::error::Result<Option<DetailResp>> {
     let url = crate::util::wigle::detail_url(bssid, kind.as_str());
-    let resp = crate::util::wigle::get(http, user, token, &url, SRC)
-        .await
-        .ok()
-        .flatten()?;
+    let Some(resp) = crate::util::wigle::get(http, user, token, &url, SRC).await? else {
+        return Ok(None);
+    };
     crate::util::http::json_scanned::<DetailResp>(resp, SRC)
         .await
-        .ok()
+        .map(Some)
+        .map_err(|e| crate::core::error::Error::module(SRC, e))
 }

@@ -618,6 +618,17 @@ pub(super) fn is_generic_ssid(s: &str) -> bool {
     GENERIC.is_match(&s.to_lowercase())
 }
 
+/// True when every one of the 3 WiGLE record-type sub-fetches (wifi/cell/
+/// bluetooth) failed at the transport/auth/rate-limit/parse level — the "WiGLE
+/// unreachable or credentials bad" state that must surface as an `Err` rather
+/// than masquerade as "this BSSID was never observed by WiGLE". Any kind that
+/// genuinely answered (even a clean miss) keeps this `false`. Pure —
+/// unit-tested off the counter. Mirrors `domainsdb::all_zones_failed_transport`
+/// (T2.134).
+fn bssid_lookup_all_failed_transport(transport_failures: usize, total_kinds: usize) -> bool {
+    total_kinds > 0 && transport_failures == total_kinds
+}
+
 pub(super) const GENERIC_SSIDS: &[&str] = &[
     "linksys", "netgear", "default", "dlink", "tp-link", "tplink", "asus", "xfinity", "spectrum",
     "att", "optimum", "cox", "telstra", "optus", "vodafone", "nbn", "iinet", "eduroam", "guest",
@@ -633,18 +644,34 @@ impl Wigle {
         bssid: &str,
         ctx: &ModuleContext,
     ) -> Result<ModuleResult> {
-        for kind in [NetworkKind::Wifi, NetworkKind::Cell, NetworkKind::Bluetooth] {
-            if let Some(body) = fetch_detail(&ctx.http, user, token, bssid, kind).await
-                && body.success == Some(true)
-                && !body.results.is_empty()
-            {
-                return Ok(emit_bssid_entities(
-                    bssid,
-                    kind,
-                    &body.results,
-                    &ctx.scan_id,
-                ));
+        const KINDS: [NetworkKind; 3] =
+            [NetworkKind::Wifi, NetworkKind::Cell, NetworkKind::Bluetooth];
+        // Track transport/auth/rate-limit/parse failures separately from a
+        // genuine per-kind miss (404, or answered-empty), so a total outage
+        // across all 3 record types can be told apart from a BSSID genuinely
+        // never observed by WiGLE on any of them (mirrors domainsdb's
+        // all_zones_failed_transport, T2.134).
+        let mut transport_failures = 0usize;
+        for kind in KINDS {
+            match fetch_detail(&ctx.http, user, token, bssid, kind).await {
+                Ok(Some(body)) if body.success == Some(true) && !body.results.is_empty() => {
+                    return Ok(emit_bssid_entities(
+                        bssid,
+                        kind,
+                        &body.results,
+                        &ctx.scan_id,
+                    ));
+                }
+                Ok(_) => {}
+                Err(_) => transport_failures += 1,
             }
+        }
+        if bssid_lookup_all_failed_transport(transport_failures, KINDS.len()) {
+            return Err(crate::core::error::Error::module(
+                SRC,
+                "WiGLE detail lookup failed on all 3 record types (wifi/cell/bluetooth) — \
+                 transport/auth/rate-limit error, not a confirmed absence",
+            ));
         }
         Ok(ModuleResult::new())
     }

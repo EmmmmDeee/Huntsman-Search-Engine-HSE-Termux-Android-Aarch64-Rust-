@@ -873,3 +873,24 @@ async fn get_with_retry_gives_up_after_one_retry_on_a_persistent_429() {
         "must classify as RateLimited so the shared circuit breaker paces it correctly: {err:?}"
     );
 }
+
+#[test]
+fn bssid_lookup_all_failed_transport_only_on_total_outage() {
+    // Regression (T2.152): fetch_detail's swallowed transport/auth/rate-limit/
+    // parse failures previously collapsed into the same `None` as a genuine
+    // "this BSSID was never observed by WiGLE" across all 3 record types
+    // (wifi/cell/bluetooth) — indistinguishable from bad credentials, a WiGLE
+    // outage, or a persistent 429. Mirrors
+    // domainsdb::all_zones_failed_transport_only_on_total_outage_with_no_hits.
+
+    // All 3 kinds failed at the transport level → total outage.
+    assert!(bssid_lookup_all_failed_transport(3, 3));
+
+    // Only some kinds failed — the others genuinely answered (even empty) →
+    // not an outage.
+    assert!(!bssid_lookup_all_failed_transport(2, 3));
+    assert!(!bssid_lookup_all_failed_transport(0, 3));
+
+    // No kinds attempted (degenerate) must not spuriously report an outage.
+    assert!(!bssid_lookup_all_failed_transport(0, 0));
+}
