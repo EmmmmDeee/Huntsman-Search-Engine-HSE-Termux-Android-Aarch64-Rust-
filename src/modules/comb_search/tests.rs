@@ -161,7 +161,7 @@ fn truncation_at_max_secrets_is_surfaced() {
     // Generate 60 distinct credential lines, all matching the target email.
     let mut lines = Vec::new();
     for i in 0..60 {
-        lines.push(format!("test@example.com:pass{}", i));
+        lines.push(format!("test@example.com:pass{i}"));
     }
     let line_str = lines.join("\n");
 
@@ -171,11 +171,12 @@ fn truncation_at_max_secrets_is_surfaced() {
 
     for line in line_str.lines() {
         if let Some((identity, secret)) = split_line(line) {
-            if line_matches_target(identity, TargetKind::Email, "test@example.com") {
-                if seen_secret.len() >= MAX_SECRETS {
-                    truncated = true;
-                    continue;
-                }
+            if !line_matches_target(identity, TargetKind::Email, "test@example.com") {
+                continue;
+            }
+            if seen_secret.len() >= MAX_SECRETS {
+                truncated = true;
+            } else {
                 seen_secret.insert(secret.to_string());
             }
         }
