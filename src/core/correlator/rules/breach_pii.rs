@@ -1000,6 +1000,39 @@ pub(in crate::core::correlator) fn rule_au_098_residency_consensus(
         return Vec::new(); // a single class is the single-signal rules' job
     }
 
+    // Spatial consistency check: if the coordinate class supports consensus, verify
+    // those coordinates are spatially clustered (within 300 km) — matching the
+    // audit's geo_consistency definition. Scattered coordinates (>300 km apart)
+    // shouldn't declare consensus even if other classes agree on the state.
+    if agreeing.contains(&"coordinate") {
+        let consensus_coords: Vec<(f64, f64)> = entities
+            .iter()
+            .filter(|e| {
+                e.kind == EntityKind::Coordinates && super::geo::coord_state(e) == Some(consensus)
+            })
+            .filter_map(|e| crate::util::geohash::parse_coords(&e.value))
+            .collect();
+
+        // Check pairwise distances: if any pair exceeds 300 km, coordinates are scattered.
+        if consensus_coords.len() > 1 {
+            let mut max_distance: f64 = 0.0;
+            for i in 0..consensus_coords.len() {
+                for j in (i + 1)..consensus_coords.len() {
+                    let dist = crate::util::geohash::haversine_km(
+                        consensus_coords[i].0,
+                        consensus_coords[i].1,
+                        consensus_coords[j].0,
+                        consensus_coords[j].1,
+                    );
+                    max_distance = max_distance.max(dist);
+                    if max_distance > 300.0 {
+                        return Vec::new(); // coordinates too scattered for consensus
+                    }
+                }
+            }
+        }
+    }
+
     // Dissenting minority states (supported by a class, but not the consensus).
     let minority: Vec<&str> = support
         .keys()
