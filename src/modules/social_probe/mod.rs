@@ -21,7 +21,7 @@ use async_trait::async_trait;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -329,6 +329,7 @@ impl Module for SocialProbe {
         let mut result = ModuleResult::new();
         let mut found_count = 0u32;
         let mut checked_count = 0u32;
+        let mut transport_failures = 0u32;
         let mut found_platforms: Vec<&str> = Vec::new();
 
         let platforms = match target.kind {
@@ -361,6 +362,10 @@ impl Module for SocialProbe {
                 !platform.negative_patterns.is_empty(),
             )
             .await;
+
+            if code == 0 {
+                transport_failures += 1;
+            }
 
             let body_blocks = !platform.negative_patterns.is_empty()
                 && platform.negative_patterns.iter().any(|p| body.contains(p));
@@ -440,8 +445,23 @@ impl Module for SocialProbe {
             result.push(summary);
         }
 
+        if all_platforms_failed_transport(transport_failures, checked_count, found_count) {
+            return Err(Error::module(
+                SRC,
+                "every social_probe platform request failed at the transport level (no network reachable?) — cannot determine whether the subject has social profiles",
+            ));
+        }
+
         Ok(result)
     }
+}
+
+/// True only when every platform request failed at the transport level (curl
+/// never got a real HTTP status back) and nothing was found — a genuine
+/// total outage, distinguished from platforms that legitimately answered
+/// with a real negative (403/404/500/soft-404 body block).
+fn all_platforms_failed_transport(transport_failures: u32, checked: u32, found: u32) -> bool {
+    found == 0 && checked > 0 && transport_failures == checked
 }
 
 /// Whether a completed probe run should echo the target back as a corroborating

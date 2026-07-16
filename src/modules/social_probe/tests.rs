@@ -195,3 +195,21 @@ fn build_target_summary_stamps_platforms_count_for_au011() {
         "platforms_count must equal the confirmed-platform count so AU-011 can count it"
     );
 }
+
+// -- all_platforms_failed_transport failure contract (T2.162) ---------------
+
+#[test]
+fn all_platforms_failed_transport_only_on_total_outage_with_no_hits() {
+    // T2.162 regression: every fetch_with_status call collapsing to the
+    // code==0 transport-failure sentinel (curl unreachable/DNS-down/offline)
+    // previously read identically to 34/34 platforms genuinely answering a
+    // real negative (403/404/500/soft-404 body block).
+    assert!(all_platforms_failed_transport(34, 34, 0));
+    // Mixed: some platforms genuinely answered, not a total outage.
+    assert!(!all_platforms_failed_transport(10, 34, 0));
+    // Any real hit, even alongside transport failures, is not an outage.
+    assert!(!all_platforms_failed_transport(33, 34, 1));
+    // The vacuous case (nothing checked, e.g. an empty target) must never be
+    // a false outage.
+    assert!(!all_platforms_failed_transport(0, 0, 0));
+}
