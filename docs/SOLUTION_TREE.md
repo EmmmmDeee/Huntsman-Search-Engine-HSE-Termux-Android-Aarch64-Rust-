@@ -105,7 +105,17 @@ Rationale: Trees and code are one artifact. Stale trees mislead the next develop
 - Tests updated to verify AU-002-REJECT fires on implausibility
 - Test coverage: 3 au002 tests passing
 
-**Status:** ✓ Complete. T3 quality gate passing.
+**Built:** AU-092 breach-locality-footprint-conflict case distinguished with separate rule_id
+
+- Modified `rule_au_092_breach_locality_footprint_crosscheck` (lines 758-773) to use "AU-092-CONFLICT" instead of "AU-092"
+- Rationale: Same rule_id must not be used for fundamentally different claims per Rule 0.7 priority 2
+  - "AU-092" (lines 736-756): corroboration case — breach locality coordinates agree with footprint
+  - "AU-092-CONFLICT" (lines 758-773): conflict case — breach locality coordinates disagree with footprint
+- Evidence integrity: operator can now clearly distinguish agreement from disagreement in findings
+- Tests updated to verify AU-092-CONFLICT fires on conflict detection
+- Test coverage: 4 au092 tests passing (no regression from prior 3)
+
+**Status:** ✓ Complete. T3 quality gate passing (4992 tests).
 
 ---
 
@@ -120,6 +130,8 @@ Rationale: Trees and code are one artifact. Stale trees mislead the next develop
 ---
 
 ## 5. Cycle Log
+
+**2026-07-16 14:15 UTC** — T3 quality deliverables complete: AU-002 and AU-092 fixed (T3.001, T3.002). Correlator evidence integrity strengthened per Rule 0.7 priority 2. Gate passing (cargo fmt, clippy, doc, test). 4992 tests passing. Paired with PROBLEM_TREE.md §8.
 
 **2026-07-16 13:57 UTC** — Autonomous cycle infrastructure initialized. Paired with PROBLEM_TREE.md §8. Project state: P0-P2 defects closed (T2.136-T2.165 error surfacing, see_know module name, AU-098 geo-consensus), Rule 0-0.7 baseline established, 242 tests passing, gate passing. No open defects remain. CAP work correctly deferred per Rule 0.7. See gap_register.md for detailed work log.
 

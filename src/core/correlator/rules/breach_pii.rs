@@ -756,7 +756,7 @@ pub(in crate::core::correlator) fn rule_au_092_breach_locality_footprint_crossch
         }
     } else {
         Correlation {
-            rule_id: "AU-092".into(),
+            rule_id: "AU-092-CONFLICT".into(),
             rule_name: "Breach locality conflicts with footprint".into(),
             severity: Severity::Medium,
             description: format!(

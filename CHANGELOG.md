@@ -13,10 +13,12 @@ All notable changes to this project are documented here. Format per [Keep a Chan
 ### Changed
 
 - AU-002 rule now surfaces MAX_PER_KIND limit-exceeded cases as Medium-severity rejection findings instead of silent drops
+- AU-092 rule now distinguishes conflict case with separate rule_id "AU-092-CONFLICT" (was previously reusing "AU-092")
 
 ### Fixed
 
 - AU-002 silent drop when entity counts exceed plausibility limits: now signals rejection per Rule 0.7 priority 2 (Evidence Integrity)
+- AU-092 rule_id reuse: breach-locality-footprint-conflict findings now use distinct "AU-092-CONFLICT" to prevent evidence integrity violation of using same rule_id for fundamentally different claims (agreement vs disagreement)
 
 ---
 

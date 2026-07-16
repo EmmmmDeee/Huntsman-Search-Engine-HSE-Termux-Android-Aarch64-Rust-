@@ -31,6 +31,7 @@ Guarantee (Rule 0.7 priority 1): correctness. Priority 2: evidence integrity. Pr
 **Recent (this arc):**
 
 - `[x]` T3.001 — AU-002 identity-cluster implausibility silent drop: surfaced as AU-002-REJECT finding (commit TBD)
+- `[x]` T3.002 — AU-092 rule_id reuse: conflict case distinguished as AU-092-CONFLICT instead of reusing AU-092 (commit TBD)
 
 **Prior arcs:**
 
@@ -88,6 +89,8 @@ Per Rule 0.7 (priorities 1-5 are correctness, evidence integrity, safety, determ
 ---
 
 ## 8. Cycle Log
+
+**2026-07-16 14:15 UTC** — T3.002 fixed: AU-092 breach-locality-footprint-conflict case (lines 758-773) distinguished with separate rule_id "AU-092-CONFLICT" instead of reusing "AU-092". Per Rule 0.7 priority 2 (Evidence Integrity), fundamentally different claims (corroboration vs conflict) must not share the same rule_id. Evidence integrity preserved: operator can now distinguish agreement from disagreement cases. Tests updated. Gate passing. Paired: SOLUTION_TREE.md.
 
 **2026-07-16 14:XX UTC** — T3.001 fixed: AU-002 identity-cluster implausibility rejection now surfaced as AU-002-REJECT finding (Medium severity) instead of silent drop. Per Rule 0.7 priority 2 (Evidence Integrity) and T2 quality doctrine, operator informed of rejected candidates. Tests updated. Gate passing. Paired: SOLUTION_TREE.md.
 
