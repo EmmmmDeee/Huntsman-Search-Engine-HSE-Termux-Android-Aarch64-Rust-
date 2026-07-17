@@ -555,108 +555,15 @@ impl ScanEngine {
         // thread: CancellationToken is not 'static and cannot be moved.
         let cancelled = ctx.cancel.is_cancelled();
         let scan = tokio::task::spawn_blocking(move || -> Result<Scan> {
-            // Persist the scan's entities in a single transaction. On the common
-            // path (every entity is new or a clean GREATEST-merge) this collapses
-            // N per-entity commits into one WAL fsync — a material win on
-            // low-power aarch64 where each commit is the dominant cost. The batch
-            // is all-or-nothing, so on any error we fall back to per-entity
-            // upserts: this salvages whatever is persistable and recovers the
-            // granular `first_err`, preserving the prior continue-on-error
-            // resilience semantics (partial persist → Complete-with-error;
-            // nothing persisted → Failed).
             // Mint ApiKey entities for every FOREIGN key identified in this scan's
-            // endpoint responses (deduped by value across all modules; our own auth
-            // keys already excluded by the sink). This guarantees leaked third-party
-            // keys land in the graph + dossier no matter which module surfaced the
-            // data — not only the breach pools that scan their own record fields.
-            // They are merged THROUGH `entity_map` by UID (not appended to the batch)
-            // so a key a specialised module already emitted with richer
-            // tags/evidence is GREATEST-merged, never duplicated or blindly
-            // overwritten.
-            let mut entity_map = entity_map;
-            for e in crate::core::hooks::drain_found_keys(&scan.id) {
-                match entity_map.get_mut(&e.uid) {
-                    Some(existing) => existing.merge(e),
-                    None => {
-                        entity_map.insert(e.uid.clone(), e);
-                    }
-                }
-            }
-            let mut entities: Vec<Entity> = entity_map.into_values().collect();
-            // Codebase-wide address-locality consolidation. The UID merge above
-            // dedups by exact normalised value, so "X, NSW" and "X, NSW 2582" (one
-            // place at two granularities) survive as two Address entities — which
-            // double-counts the location in the geo correlations. This runs once,
-            // AFTER every module (APIs included) and every expansion round has
-            // contributed, folding such variants into the most-specific one. It is
-            // the engine-level backstop to the per-module dedup in `search_engines`.
-            consolidate_address_localities(&mut entities);
-            // Free, offline cross-angle confirmation: a shared-surname
-            // family-candidate whose postcode resolves into the subject's confirmed
-            // area is corroborated by a SECOND independent signal (the subject's
-            // own GPS fix) and promoted from a lone candidate to a reliable
-            // relative — so every scan's geo-confirmed family reads as reliable,
-            // not 0.3 noise. Runs after consolidation so it sees the final set.
-            promote_geo_corroborated_family(&mut entities);
-            // People-centric companion (free, offline): a SAME-NAME breach/stealer
-            // candidate whose locality resolves to the subject's confirmed metro is
-            // the subject's own record (same name AND same place), so it is lifted
-            // out of namesake quarantine into the graded, correlatable set — the
-            // finalise application of the per-round reconsideration pass.
-            promote_breach_candidate_geo_corroborated(&mut entities);
-            // Precision complement (free, offline): a same-surname family-candidate
-            // a whole region away from the subject's confirmed fix shares only the
-            // name, so it is tagged `geo-discordant` to demote it in the leads —
-            // telling the real local family from interstate look-alikes. Tag-only,
-            // so it never inflates confidence; runs after promotion (the two bands
-            // are disjoint, but a corroborated relative is then never re-examined).
-            flag_geo_discordant_namesakes(&mut entities);
-            // Local intelligence flywheel: tag any specific personal identifier
-            // (phone/email/handle/named person/precise address) that ALSO appears
-            // in an earlier scan in the store — a cross-investigation bridge recall
-            // (seed-centric) never makes. Runs before persist so a hit is genuinely
-            // prior; provenance only, so it never inflates confidence.
-            history::link_cross_scan_history(store.as_ref(), &mut entities, &scan.id);
-            // Co-occurrence flywheel: when two specific identifiers that appeared TOGETHER
-            // in an earlier scan both reappear now, tag the recurring association — a
-            // stronger, data-driven historical link than single-value recurrence. Same
-            // contract: before persist, provenance-only, never inflates confidence.
-            history::link_cross_scan_cooccurrence(store.as_ref(), &mut entities, &scan.id);
-            // Relation recall: when a reappearing identifier was SEMANTICALLY linked
-            // (located_at / identified_by / alias_of / associated_with / registered_by)
-            // to something in a prior scan, surface that known connection now — pulling
-            // a past conclusion forward as a lead, often to an entity not even present
-            // this scan. Same contract: before persist, provenance-only, never inflates.
-            history::link_cross_scan_relations(store.as_ref(), &mut entities, &scan.id);
-            // Determinism: normalise each entity's evidence/tags ordering before
-            // persist, so concurrent dispatch's completion-order merging can't leak
-            // into the stored/exported result (see `Entity::canonicalize_order`).
-            for e in &mut entities {
-                e.canonicalize_order();
-            }
+            // endpoint responses, run the finalise-time offline enrichment passes,
+            // then persist the batch (falling back to per-entity upserts on a
+            // rolled-back transaction) — see each phase helper's own doc comment.
+            let mut entities = merge_found_keys_and_flatten(&scan.id, entity_map);
+            apply_finalise_enrichment_passes(store.as_ref(), &scan.id, &mut entities);
             let total = entities.len();
-            let (persisted, first_err): (usize, Option<String>) = match store
-                .upsert_entities_batch(&entities)
-            {
-                Ok(n) => (n, None),
-                Err(batch_err) => {
-                    warn!(scan_id = %scan.id, error = %batch_err, "batch entity persist rolled back; falling back to per-entity upserts");
-                    let mut persisted = 0usize;
-                    let mut first_err: Option<String> = None;
-                    for entity in &entities {
-                        match store.upsert_entity(entity) {
-                            Ok(()) => persisted += 1,
-                            Err(e) => {
-                                warn!(scan_id = %scan.id, entity_uid = %entity.uid, error = %e, "entity persist failed");
-                                if first_err.is_none() {
-                                    first_err = Some(e.to_string());
-                                }
-                            }
-                        }
-                    }
-                    (persisted, first_err)
-                }
-            };
+            let (persisted, first_err) =
+                persist_entities_with_fallback(store.as_ref(), &scan.id, &entities);
             let entity_count = persisted;
             let failed = total - persisted;
 
@@ -706,254 +613,22 @@ impl ScanEngine {
             store.upsert_scan(&scan)?;
 
             // Derive + persist the typed entity-relation edges (attribution
-            // graph): the lineage edges captured during expansion plus the
-            // structural edges derived from the persisted entity set. The
-            // lineage-free structural set (structural/colocation/resolution/
-            // registration/name-lineage) is derived identically here and on the
-            // import paths via `derive_all`, so a live scan and an imported
-            // dossier can't drift on which edges a finished scan carries.
-            // Best-effort: a relation that fails to persist is logged, never
-            // fatal to the scan.
-            {
-                // Bounded derivation: stop starting new passes past the budget
-                // so a pathological (max_entities-filled) graph can't run the
-                // super-linear pass chain for minutes and get SIGKILLed before
-                // the dossier is written. Partial relations still persist.
-                let derive_deadline =
-                    Some(Instant::now() + crate::core::relation::DERIVE_BUDGET);
-                let derived =
-                    crate::core::relation::derive_all_within(&entities, &scan.id, derive_deadline);
-                if !lineage_relations.is_empty() || !derived.is_empty() {
-                    let mut rel_persisted = 0usize;
-                    for r in lineage_relations.iter().chain(derived.iter()) {
-                        match store.upsert_relation(r) {
-                            Ok(()) => rel_persisted += 1,
-                            Err(e) => warn!(scan_id = %scan.id, relation = %r.id, error = %e, "relation persist failed"),
-                        }
-                    }
-                    info!(
-                        scan_id = %scan.id,
-                        lineage = lineage_relations.len(),
-                        derived = derived.len(),
-                        persisted = rel_persisted,
-                        "entity relations persisted"
-                    );
-                }
-            }
+            // graph), then run the authoritative finalise-time correlation pass
+            // over the persisted scan — see each phase helper's own doc comment.
+            derive_and_persist_relations(store.as_ref(), &scan.id, &entities, &lineage_relations);
+            run_finalise_correlation_and_emit(&store, &emitter, &scan.id, &mut emitted_corr);
 
-            // Authoritative finalise-time correlation pass. Runs the full rule
-            // set (entity + graph-aware relation rules) over the persisted scan,
-            // persists every firing, and emits `CorrelationFound` only for
-            // correlations not already streamed live during ingestion (deduped
-            // via `emitted_corr`). The `CorrelationsDone` count is the
-            // authoritative total for the scan.
-            // Guarded against a rule panicking on adversarial persisted data: a
-            // panic here would otherwise unwind the whole finalise block, losing
-            // the terminal `ScanComplete` event and the harvested key pool. A
-            // caught panic (or a returned error) degrades to "no finalise
-            // correlations," exactly as the live incremental pass does.
-            if let Some(firings) = guarded_finalise_correlation(&scan.id, || {
-                crate::core::correlator::Correlator::new(Arc::clone(&store)).run(&scan.id)
-            }) {
-                for c in &firings {
-                    if emitted_corr.insert(correlation_key(c)) {
-                        emitter.emit(
-                            &scan.id,
-                            EventKind::CorrelationFound {
-                                correlation: c.clone(),
-                            },
-                        );
-                    }
-                }
-                emitter.emit(
-                    &scan.id,
-                    EventKind::CorrelationsDone {
-                        count: firings.len(),
-                    },
-                );
-            }
-
-            // ── Cross-scan pathway-template learning (C1 universal linking) ──
-            // Generalise this scan's confirmed connections into direction-
-            // canonical routes. A route a *prior* scan already proved is credited
-            // here as historically corroborated (the engine-level AU-065 finding —
-            // it is storage-dependent, so it can't be a pure correlator rule);
-            // then every route this scan produced is recorded, so a link learned
-            // once lifts every later scan. A *fragile* single-pathway link (the
-            // AU-063 gap) whose route shape is proven in ≥2 prior scans is the
-            // engine-level AU-066 finding: accumulated cross-scan knowledge is the
-            // orthogonal pathway that fills the gap, and its endpoints are queued
-            // (`xscan_boost`) for the conservative boost below. Best-effort: a
-            // storage hiccup never aborts a finalised scan.
-            let mut xscan_boost: HashMap<String, String> = HashMap::new();
-            if let (Ok(ents), Ok(rels)) = (
-                store.entities_for_scan(&scan.id),
-                store.relations_for_scan(&scan.id),
-            ) {
-                // The fragile single-route identity pairs (a<b) — exactly AU-063's
-                // notion of an uncorroborated link, via the shared detector so the
-                // gap the lead flags is the gap the engine fills.
-                let fragile: HashSet<(String, String)> =
-                    crate::core::correlator::single_route_identity_links(&ents, &rels)
-                        .into_iter()
-                        .map(|l| (l.a_uid, l.b_uid))
-                        .collect();
-                for ct in crate::core::relation::connection_templates(&ents, &rels, 4) {
-                    let prior = store.pathway_template_count(&ct.template).unwrap_or(0);
-                    if prior >= 1 {
-                        let mut uids: std::collections::BTreeSet<String> =
-                            std::collections::BTreeSet::new();
-                        for (f, t) in &ct.pairs {
-                            uids.insert(f.clone());
-                            uids.insert(t.clone());
-                        }
-                        let c = crate::core::correlator::Correlation::new(
-                            "AU-065",
-                            "Cross-scan corroborated route",
-                            crate::core::correlator::Severity::Medium,
-                            format!(
-                                "the route [{}] connecting {} identity pair(s) here was \
-                                 confirmed in {} prior scan(s) — a historically proven \
-                                 attribution pattern, not a one-off",
-                                ct.template,
-                                ct.pairs.len(),
-                                prior,
-                            ),
-                            uids.into_iter().collect::<Vec<_>>(),
-                            scan.id.as_str(),
-                            crate::core::entity::unix_now(),
-                        );
-                        if store.upsert_correlation(&c).is_ok()
-                            && emitted_corr.insert(correlation_key(&c))
-                        {
-                            emitter.emit(
-                                &scan.id,
-                                EventKind::CorrelationFound { correlation: c },
-                            );
-                        }
-                    }
-                    // AU-066 — cross-scan route fills a single-pathway gap. A
-                    // fragile link whose route shape is proven in ≥2 PRIOR scans
-                    // (stricter than AU-065's ≥1, to keep the gap-fill conservative)
-                    // is corroborated by the proven attribution method itself: the
-                    // accumulated cross-scan pathway is the orthogonal route the
-                    // AU-063 gap was missing. Its endpoints are queued for the boost.
-                    if prior >= 2 {
-                        for (f, t) in &ct.pairs {
-                            if !fragile.contains(&(f.clone(), t.clone())) {
-                                continue; // only fragile (single-route) links are gaps to fill
-                            }
-                            let reason = format!(
-                                "the single-pathway link's route shape [{}] was independently \
-                                 confirmed in {prior} prior scans — the proven attribution method \
-                                 is the orthogonal pathway that fills the single-route gap",
-                                ct.template,
-                            );
-                            let c = crate::core::correlator::Correlation::new(
-                                "AU-066",
-                                "Cross-scan route fills single-pathway gap",
-                                crate::core::correlator::Severity::Medium,
-                                reason.clone(),
-                                vec![f.clone(), t.clone()],
-                                scan.id.as_str(),
-                                crate::core::entity::unix_now(),
-                            );
-                            if store.upsert_correlation(&c).is_ok()
-                                && emitted_corr.insert(correlation_key(&c))
-                            {
-                                emitter.emit(
-                                    &scan.id,
-                                    EventKind::CorrelationFound { correlation: c },
-                                );
-                            }
-                            xscan_boost
-                                .entry(f.clone())
-                                .or_insert_with(|| reason.clone());
-                            xscan_boost.entry(t.clone()).or_insert(reason);
-                        }
-                    }
-                    let _ = store.record_pathway_template(&ct.template);
-                }
-            }
-
-            // ── Corroboration boosts: confirmed links strengthen the entities ──
-            // Two orthogonal corroboration signals feed back into the entity set so
-            // the scan's OUTPUT reflects what its own analysis established:
-            //   • multipath (C2): a link AU-062 proved via ≥2 edge-disjoint,
-            //     source-orthogonal IN-SCAN routes — robust to any one source going
-            //     dark (built on the SAME detector the rule uses).
-            //   • cross-scan (AU-066): a fragile single-route link whose route shape
-            //     is proven in ≥2 PRIOR scans — accumulated knowledge fills the gap.
-            // Both tag + evidence-stamp only the identity ENDPOINTS, are idempotent
-            // via their tags, and use unscored ("other") evidence sources so they
-            // never feed back to inflate the in-scan orthogonality measure.
-            // Best-effort and conditional: the single re-persist runs only when a
-            // boost actually fires and never aborts a finalised scan.
-            {
-                let mut boosted_any = false;
-                if let Ok(rels) = store.relations_for_scan(&scan.id) {
-                    boosted_any |= promote_multipath_corroborated(&mut entities, &rels) > 0;
-                }
-                boosted_any |= promote_cross_scan_corroborated(&mut entities, &xscan_boost) > 0;
-                if boosted_any {
-                    let boosted: Vec<Entity> = entities
-                        .iter_mut()
-                        .filter(|e| {
-                            e.has_tag("multipath-corroborated")
-                                || e.has_tag("cross-scan-corroborated")
-                        })
-                        .map(|e| {
-                            e.canonicalize_order();
-                            e.clone()
-                        })
-                        .collect();
-                    match store.upsert_entities_batch(&boosted) {
-                        Ok(n) => info!(
-                            scan_id = %scan.id,
-                            boosted = n,
-                            "corroboration-boosted identities re-persisted (confirmed links strengthened the scan)"
-                        ),
-                        Err(e) => warn!(
-                            scan_id = %scan.id,
-                            error = %e,
-                            "corroboration boost re-persist failed (non-fatal)"
-                        ),
-                    }
-                }
-            }
-
-            // Persist the key pool to disk after every scan. Keys discovered
-            // during this scan (from breach data, page bodies, entity values)
-            // are permanently stored with full provenance metadata.
-            let pool = crate::util::key_pool::global_pool();
-            if let Err(e) = crate::util::key_pool::save_pool(&pool) {
-                warn!("failed to save key pool after scan: {e}");
-            }
-
-            // Scan-boundary WAL checkpoint: fold the WAL into the main DB and
-            // truncate the -wal file back to zero. Bounds the on-disk/mmap WAL
-            // footprint between scans under a long-lived `serve`/`live` process
-            // (the 'everything bounded' invariant). Best-effort — a busy
-            // checkpoint just defers to the next scan boundary.
-            if let Err(e) = store.checkpoint_truncate() {
-                warn!(scan_id = %scan.id, error = %e, "WAL checkpoint deferred (busy)");
-            }
-
-            // Bound the events table during long-lived serve/live/radar processes
-            // (otherwise pruned only at startup). Best-effort + same retention
-            // policy as the startup prune — a busy prune just defers to the next
-            // scan boundary.
-            if let Err(e) = store.prune_events(
-                crate::core::port::EVENTS_RETENTION_SECS,
-                crate::core::port::EVENTS_MAX_ROWS,
-            ) {
-                warn!(scan_id = %scan.id, error = %e, "events prune deferred");
-            }
-            // Same bound for the inter-scan cache — a long-lived process scanning
-            // many distinct targets would otherwise grow `raw_archive` unbounded.
-            if let Err(e) = store.prune_raw_archive(crate::core::port::RAW_ARCHIVE_MAX_ROWS) {
-                warn!(scan_id = %scan.id, error = %e, "raw_archive prune deferred");
-            }
+            // Cross-scan pathway-template learning (C1 universal linking), then
+            // the corroboration-boost feedback pass, then end-of-scan
+            // housekeeping — see each phase helper's own doc comment.
+            let xscan_boost = learn_cross_scan_pathway_templates(
+                store.as_ref(),
+                &emitter,
+                &scan.id,
+                &mut emitted_corr,
+            );
+            apply_corroboration_boosts(store.as_ref(), &scan.id, &mut entities, &xscan_boost);
+            run_finalise_housekeeping(store.as_ref(), &scan.id);
 
             emitter.emit(
                 &scan.id,
@@ -1968,6 +1643,326 @@ pub(crate) const LOCAL_PASSIVE_MODULES: &[&str] = &[
     "local_net",
     "signal_radar",
 ];
+
+// ── `finalise_scan` phase helpers ───────────────────────────────────────────
+// Pure code motion out of `ScanEngine::finalise_scan`'s `spawn_blocking`
+// closure: each function is one of that pipeline's cohesive, sequentially-run
+// phases, given exactly the state it reads/mutates. No behaviour changes —
+// same statements, same order, just named and independently navigable/
+// testable instead of inlined in one ~460-line closure.
+
+/// Phase 1: fold any `ApiKey` entities harvested during this scan's endpoint
+/// responses (deduped by value across all modules; own auth keys already
+/// excluded by the sink) into `entity_map` by UID — so a key a specialised
+/// module already emitted with richer tags/evidence is GREATEST-merged, never
+/// duplicated or blindly overwritten — then flatten to the working `Vec`.
+fn merge_found_keys_and_flatten(scan_id: &str, entity_map: HashMap<String, Entity>) -> Vec<Entity> {
+    let mut entity_map = entity_map;
+    for e in crate::core::hooks::drain_found_keys(scan_id) {
+        match entity_map.get_mut(&e.uid) {
+            Some(existing) => existing.merge(e),
+            None => {
+                entity_map.insert(e.uid.clone(), e);
+            }
+        }
+    }
+    entity_map.into_values().collect()
+}
+
+/// Phase 2: the sequential offline enrichment passes that run once, after
+/// every module and expansion round has contributed, before persist —
+/// address-locality consolidation (the engine-level backstop to the
+/// per-module dedup in `search_engines`), geo/breach-candidate corroboration
+/// promotion, geo-discordant namesake tagging, and the three cross-scan
+/// history/co-occurrence/relation-recall bridges — finishing with
+/// `canonicalize_order` so concurrent dispatch's completion-order merging
+/// can't leak into the stored/exported result.
+fn apply_finalise_enrichment_passes(
+    store: &dyn StoragePort,
+    scan_id: &str,
+    entities: &mut Vec<Entity>,
+) {
+    consolidate_address_localities(entities);
+    promote_geo_corroborated_family(entities);
+    promote_breach_candidate_geo_corroborated(entities);
+    flag_geo_discordant_namesakes(entities);
+    history::link_cross_scan_history(store, entities, scan_id);
+    history::link_cross_scan_cooccurrence(store, entities, scan_id);
+    history::link_cross_scan_relations(store, entities, scan_id);
+    for e in entities.iter_mut() {
+        e.canonicalize_order();
+    }
+}
+
+/// Phase 3: persist the scan's entities in a single transaction (collapsing N
+/// per-entity commits into one WAL fsync — a material win on low-power
+/// aarch64). All-or-nothing: on any error, fall back to per-entity upserts so
+/// whatever is persistable is salvaged and the granular `first_err` recovered.
+/// Returns `(persisted, first_err)`; the caller derives `failed` from
+/// `entities.len() - persisted`.
+fn persist_entities_with_fallback(
+    store: &dyn StoragePort,
+    scan_id: &str,
+    entities: &[Entity],
+) -> (usize, Option<String>) {
+    match store.upsert_entities_batch(entities) {
+        Ok(n) => (n, None),
+        Err(batch_err) => {
+            warn!(scan_id, error = %batch_err, "batch entity persist rolled back; falling back to per-entity upserts");
+            let mut persisted = 0usize;
+            let mut first_err: Option<String> = None;
+            for entity in entities {
+                match store.upsert_entity(entity) {
+                    Ok(()) => persisted += 1,
+                    Err(e) => {
+                        warn!(scan_id, entity_uid = %entity.uid, error = %e, "entity persist failed");
+                        if first_err.is_none() {
+                            first_err = Some(e.to_string());
+                        }
+                    }
+                }
+            }
+            (persisted, first_err)
+        }
+    }
+}
+
+/// Phase 4: derive the typed entity-relation edges (attribution graph) — the
+/// lineage edges captured during expansion plus the structural edges derived
+/// from the persisted entity set, identically to the import paths' `derive_all`
+/// so a live scan and an imported dossier can't drift on which edges a
+/// finished scan carries — and persist them. Bounded: derivation stops
+/// starting new passes past `DERIVE_BUDGET` so a pathological graph can't run
+/// the super-linear pass chain for minutes; partial relations still persist.
+/// Best-effort: a relation that fails to persist is logged, never fatal.
+fn derive_and_persist_relations(
+    store: &dyn StoragePort,
+    scan_id: &str,
+    entities: &[Entity],
+    lineage_relations: &[Relation],
+) {
+    let derive_deadline = Some(Instant::now() + crate::core::relation::DERIVE_BUDGET);
+    let derived = crate::core::relation::derive_all_within(entities, scan_id, derive_deadline);
+    if !lineage_relations.is_empty() || !derived.is_empty() {
+        let mut rel_persisted = 0usize;
+        for r in lineage_relations.iter().chain(derived.iter()) {
+            match store.upsert_relation(r) {
+                Ok(()) => rel_persisted += 1,
+                Err(e) => warn!(scan_id, relation = %r.id, error = %e, "relation persist failed"),
+            }
+        }
+        info!(
+            scan_id,
+            lineage = lineage_relations.len(),
+            derived = derived.len(),
+            persisted = rel_persisted,
+            "entity relations persisted"
+        );
+    }
+}
+
+/// Phase 5: the authoritative finalise-time correlation pass — runs the full
+/// rule set over the persisted scan, persists every firing, and emits
+/// `CorrelationFound` only for correlations not already streamed live during
+/// ingestion (deduped via `emitted_corr`); `CorrelationsDone`'s count is the
+/// authoritative total. Guarded against a rule panicking on adversarial
+/// persisted data — see [`guarded_finalise_correlation`]'s own doc comment.
+fn run_finalise_correlation_and_emit(
+    store: &Arc<dyn StoragePort>,
+    emitter: &EventEmitter,
+    scan_id: &str,
+    emitted_corr: &mut HashSet<String>,
+) {
+    if let Some(firings) = guarded_finalise_correlation(scan_id, || {
+        crate::core::correlator::Correlator::new(Arc::clone(store)).run(scan_id)
+    }) {
+        for c in &firings {
+            if emitted_corr.insert(correlation_key(c)) {
+                emitter.emit(
+                    scan_id,
+                    EventKind::CorrelationFound {
+                        correlation: c.clone(),
+                    },
+                );
+            }
+        }
+        emitter.emit(
+            scan_id,
+            EventKind::CorrelationsDone {
+                count: firings.len(),
+            },
+        );
+    }
+}
+
+/// Phase 6 (C1 universal linking): generalise this scan's confirmed
+/// connections into direction-canonical routes. A route a *prior* scan already
+/// proved is credited as historically corroborated (AU-065 — storage-
+/// dependent, so it can't be a pure correlator rule); a *fragile*
+/// single-pathway link (the AU-063 gap) whose route shape is proven in ≥2
+/// prior scans is AU-066: accumulated cross-scan knowledge fills the gap, and
+/// its endpoints are returned in `xscan_boost` for the caller's corroboration
+/// boost pass. Best-effort: a storage hiccup never aborts a finalised scan.
+fn learn_cross_scan_pathway_templates(
+    store: &dyn StoragePort,
+    emitter: &EventEmitter,
+    scan_id: &str,
+    emitted_corr: &mut HashSet<String>,
+) -> HashMap<String, String> {
+    let mut xscan_boost: HashMap<String, String> = HashMap::new();
+    if let (Ok(ents), Ok(rels)) = (
+        store.entities_for_scan(scan_id),
+        store.relations_for_scan(scan_id),
+    ) {
+        // The fragile single-route identity pairs (a<b) — exactly AU-063's
+        // notion of an uncorroborated link, via the shared detector so the
+        // gap the lead flags is the gap the engine fills.
+        let fragile: HashSet<(String, String)> =
+            crate::core::correlator::single_route_identity_links(&ents, &rels)
+                .into_iter()
+                .map(|l| (l.a_uid, l.b_uid))
+                .collect();
+        for ct in crate::core::relation::connection_templates(&ents, &rels, 4) {
+            let prior = store.pathway_template_count(&ct.template).unwrap_or(0);
+            if prior >= 1 {
+                let mut uids: std::collections::BTreeSet<String> =
+                    std::collections::BTreeSet::new();
+                for (f, t) in &ct.pairs {
+                    uids.insert(f.clone());
+                    uids.insert(t.clone());
+                }
+                let c = crate::core::correlator::Correlation::new(
+                    "AU-065",
+                    "Cross-scan corroborated route",
+                    crate::core::correlator::Severity::Medium,
+                    format!(
+                        "the route [{}] connecting {} identity pair(s) here was \
+                         confirmed in {} prior scan(s) — a historically proven \
+                         attribution pattern, not a one-off",
+                        ct.template,
+                        ct.pairs.len(),
+                        prior,
+                    ),
+                    uids.into_iter().collect::<Vec<_>>(),
+                    scan_id,
+                    crate::core::entity::unix_now(),
+                );
+                if store.upsert_correlation(&c).is_ok() && emitted_corr.insert(correlation_key(&c))
+                {
+                    emitter.emit(scan_id, EventKind::CorrelationFound { correlation: c });
+                }
+            }
+            // AU-066 — cross-scan route fills a single-pathway gap. A
+            // fragile link whose route shape is proven in ≥2 PRIOR scans
+            // (stricter than AU-065's ≥1, to keep the gap-fill conservative)
+            // is corroborated by the proven attribution method itself: the
+            // accumulated cross-scan pathway is the orthogonal route the
+            // AU-063 gap was missing. Its endpoints are queued for the boost.
+            if prior >= 2 {
+                for (f, t) in &ct.pairs {
+                    if !fragile.contains(&(f.clone(), t.clone())) {
+                        continue; // only fragile (single-route) links are gaps to fill
+                    }
+                    let reason = format!(
+                        "the single-pathway link's route shape [{}] was independently \
+                         confirmed in {prior} prior scans — the proven attribution method \
+                         is the orthogonal pathway that fills the single-route gap",
+                        ct.template,
+                    );
+                    let c = crate::core::correlator::Correlation::new(
+                        "AU-066",
+                        "Cross-scan route fills single-pathway gap",
+                        crate::core::correlator::Severity::Medium,
+                        reason.clone(),
+                        vec![f.clone(), t.clone()],
+                        scan_id,
+                        crate::core::entity::unix_now(),
+                    );
+                    if store.upsert_correlation(&c).is_ok()
+                        && emitted_corr.insert(correlation_key(&c))
+                    {
+                        emitter.emit(scan_id, EventKind::CorrelationFound { correlation: c });
+                    }
+                    xscan_boost
+                        .entry(f.clone())
+                        .or_insert_with(|| reason.clone());
+                    xscan_boost.entry(t.clone()).or_insert(reason);
+                }
+            }
+            let _ = store.record_pathway_template(&ct.template);
+        }
+    }
+    xscan_boost
+}
+
+/// Phase 7: two orthogonal corroboration signals feed back into the entity set
+/// so the scan's OUTPUT reflects what its own analysis established — multipath
+/// (C2: a link AU-062 proved via ≥2 edge-disjoint, source-orthogonal IN-SCAN
+/// routes) and cross-scan (AU-066: a fragile single-route link whose route
+/// shape is proven in ≥2 PRIOR scans). Both tag + evidence-stamp only the
+/// identity ENDPOINTS, are idempotent via their tags, and use unscored
+/// ("other") evidence sources so they never feed back to inflate the in-scan
+/// orthogonality measure. Best-effort and conditional: the single re-persist
+/// runs only when a boost actually fires.
+fn apply_corroboration_boosts(
+    store: &dyn StoragePort,
+    scan_id: &str,
+    entities: &mut [Entity],
+    xscan_boost: &HashMap<String, String>,
+) {
+    let mut boosted_any = false;
+    if let Ok(rels) = store.relations_for_scan(scan_id) {
+        boosted_any |= promote_multipath_corroborated(entities, &rels) > 0;
+    }
+    boosted_any |= promote_cross_scan_corroborated(entities, xscan_boost) > 0;
+    if boosted_any {
+        let boosted: Vec<Entity> = entities
+            .iter_mut()
+            .filter(|e| e.has_tag("multipath-corroborated") || e.has_tag("cross-scan-corroborated"))
+            .map(|e| {
+                e.canonicalize_order();
+                e.clone()
+            })
+            .collect();
+        match store.upsert_entities_batch(&boosted) {
+            Ok(n) => info!(
+                scan_id,
+                boosted = n,
+                "corroboration-boosted identities re-persisted (confirmed links strengthened the scan)"
+            ),
+            Err(e) => warn!(
+                scan_id,
+                error = %e,
+                "corroboration boost re-persist failed (non-fatal)"
+            ),
+        }
+    }
+}
+
+/// Phase 8: end-of-scan housekeeping, all best-effort and non-fatal — persist
+/// the key pool discovered during this scan to disk, checkpoint the WAL (fold
+/// it into the main DB and truncate, bounding the on-disk/mmap footprint
+/// between scans under a long-lived `serve`/`live` process), and bound the
+/// events table and inter-scan raw-response cache so a long-lived process
+/// scanning many targets doesn't grow either unbounded.
+fn run_finalise_housekeeping(store: &dyn StoragePort, scan_id: &str) {
+    let pool = crate::util::key_pool::global_pool();
+    if let Err(e) = crate::util::key_pool::save_pool(&pool) {
+        warn!("failed to save key pool after scan: {e}");
+    }
+    if let Err(e) = store.checkpoint_truncate() {
+        warn!(scan_id, error = %e, "WAL checkpoint deferred (busy)");
+    }
+    if let Err(e) = store.prune_events(
+        crate::core::port::EVENTS_RETENTION_SECS,
+        crate::core::port::EVENTS_MAX_ROWS,
+    ) {
+        warn!(scan_id, error = %e, "events prune deferred");
+    }
+    if let Err(e) = store.prune_raw_archive(crate::core::port::RAW_ARCHIVE_MAX_ROWS) {
+        warn!(scan_id, error = %e, "raw_archive prune deferred");
+    }
+}
 
 /// Run the authoritative finalise-time correlation pass under a panic guard.
 ///
