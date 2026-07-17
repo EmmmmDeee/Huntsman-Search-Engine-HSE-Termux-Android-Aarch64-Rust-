@@ -1,8 +1,14 @@
 //! GitHub code search — mine public repositories for email/username seeds.
 //!
-//! Endpoint: `GET https://api.github.com/search/code?q={seed}&per_page=10`
+//! Endpoint: `GET https://api.github.com/search/code?q={seed}&per_page=100`
 //! Auth:     Optional GitHub Personal Access Token (`github` key in key pool).
 //!           Without a key: 10 req/min unauthenticated. With a key: 30 req/min.
+//!
+//! The search page is the API maximum (100) so a single request surfaces as
+//! many repositories — hence owner accounts and repo URLs — as GitHub will
+//! return. The follow-up per-repo commit-email harvest hits the separate core
+//! rate limit, so it is bounded to the first `COMMIT_FETCH_CAP` repositories
+//! per seed to keep request volume flat regardless of the wider result page.
 //!
 //! MITRE ATT&CK: T1593.003 — Search: Code Repositories.
 //!
@@ -97,8 +103,13 @@ impl Module for GithubCodeSearch {
         }
 
         let token = ctx.key_opt("HUNTSMAN_GITHUB_TOKEN");
+        // Request the API's maximum page size: the search itself is ONE request
+        // regardless of `per_page`, so widening it from 10 to 100 yields up to
+        // 10× more repositories — and therefore owner `Username` pivots and repo
+        // URLs (all built with no extra network call by `build_repo_entities`) —
+        // at zero additional search-request or rate-limit cost.
         let url = format!(
-            "{API}/search/code?q={}&per_page=10",
+            "{API}/search/code?q={}&per_page=100",
             crate::util::http::urlencode(seed),
         );
 
@@ -151,6 +162,16 @@ impl Module for GithubCodeSearch {
 
         let mut result = ModuleResult::new();
         let mut seen_repos: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Every discovered repo gets its owner/URL entities for free, but the
+        // per-repo commit-email harvest below is a SEPARATE request against
+        // GitHub's core rate limit (60/hr unauthenticated). Widening the search
+        // page to 100 must not fan that out to 100 commit calls per seed and
+        // exhaust the limit for the rest of the scan — so the commit harvest is
+        // bounded to the first `COMMIT_FETCH_CAP` distinct repos (the most
+        // relevant, since the search returns best-match order), keeping per-seed
+        // request volume the same as before the page widened.
+        const COMMIT_FETCH_CAP: usize = 10;
+        let mut commit_fetches = 0usize;
 
         for item in &body.items {
             let full_name = item
@@ -166,7 +187,13 @@ impl Module for GithubCodeSearch {
             result.extend(build_repo_entities(item, seed, target.kind, &ctx.scan_id));
 
             // Fetch recent commits for the repo to harvest author emails.
-            // Best-effort: skip on any error (rate limit, private repo).
+            // Best-effort: skip on any error (rate limit, private repo). Bounded
+            // to COMMIT_FETCH_CAP repos per seed to hold the core-API rate-limit
+            // cost flat as the search page widened.
+            if commit_fetches >= COMMIT_FETCH_CAP {
+                continue;
+            }
+            commit_fetches += 1;
             let commits_url = format!("{API}/repos/{full_name}/commits?per_page=5");
             let mut creq = ctx
                 .http
