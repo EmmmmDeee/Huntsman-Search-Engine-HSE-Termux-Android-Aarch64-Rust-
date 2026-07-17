@@ -6493,8 +6493,9 @@ fn au_103_silent_with_no_device_signals() {
 fn au_057_two_brisbane_coords_produce_synthesised_fix() {
     use super::rules::rule_au_057_synthesised_location_fix;
 
-    // Two Brisbane coordinates both at confidence 0.70 → AU-057 fires with
-    // a synthesised point between them; severity is Medium (2 inputs).
+    // Two Brisbane coordinates both at confidence 0.70, both person-anchoring
+    // sources → AU-057 fires with a synthesised point between them; severity is
+    // Medium (2 inputs).
     let ents = vec![
         {
             let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.70, "scan");
@@ -6503,7 +6504,7 @@ fn au_057_two_brisbane_coords_produce_synthesised_fix() {
         },
         {
             let mut e = Entity::new(EntityKind::Coordinates, "-27.4766,153.0166", 0.70, "scan");
-            e.add_evidence(Evidence::new("ip_geo", "Brisbane suburb fix".to_string()));
+            e.add_evidence(Evidence::new("photon", "Brisbane suburb fix".to_string()));
             e
         },
     ];
@@ -6548,7 +6549,7 @@ fn au_057_low_confidence_coords_do_not_fire() {
         },
         {
             let mut e = Entity::new(EntityKind::Coordinates, "-27.4766,153.0166", 0.55, "scan");
-            e.add_evidence(Evidence::new("ip_geo", "Brisbane suburb fix".to_string()));
+            e.add_evidence(Evidence::new("photon", "Brisbane suburb fix".to_string()));
             e
         },
     ];
@@ -6561,7 +6562,7 @@ fn au_057_three_coords_produce_high_severity() {
 
     let ents: Vec<Entity> = [
         ("-27.4698,153.0251", "geocode"),
-        ("-27.4766,153.0166", "ip_geo"),
+        ("-27.4766,153.0166", "photon"),
         ("-27.4750,153.0200", "wigle"),
     ]
     .iter()
@@ -6574,6 +6575,120 @@ fn au_057_three_coords_produce_high_severity() {
     let out = rule_au_057_synthesised_location_fix(&ents, "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].severity, super::Severity::High);
+}
+
+#[test]
+fn au_057_ignores_infrastructure_only_coordinates() {
+    use super::rules::rule_au_057_synthesised_location_fix;
+
+    // Regression: a live phone scan showed a residential `ip_geo` fix (no
+    // person-anchoring source at all — ip_geo is IP/ISP infrastructure, not a
+    // subject sighting) sitting at exactly the 0.60 confidence floor and fusing
+    // into AU-057's median at full footing. With only ONE genuine anchor
+    // present, the rule must not fire at all (falls below the 2-candidate
+    // floor once the infrastructure fix is excluded).
+    let ents = vec![
+        {
+            let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.70, "scan");
+            e.add_evidence(Evidence::new("geocode", "Brisbane CBD fix".to_string()));
+            e
+        },
+        {
+            let mut e = Entity::new(EntityKind::Coordinates, "-27.4900,153.0400", 0.60, "scan");
+            e.add_evidence(Evidence::new(
+                "ip_geo",
+                "residential IP geolocation".to_string(),
+            ));
+            e
+        },
+    ];
+    assert!(
+        rule_au_057_synthesised_location_fix(&ents, "scan", 0).is_empty(),
+        "an infrastructure-only (ip_geo) fix must never count toward the 'confirmed \
+         coordinates' AU-057 needs to synthesise a primary location"
+    );
+}
+
+#[test]
+fn au_057_excludes_infrastructure_coordinate_from_a_real_fix() {
+    use super::rules::rule_au_057_synthesised_location_fix;
+
+    // Two genuine anchors fire correctly; a THIRD infrastructure-only (ip_geo)
+    // coordinate must be excluded from the fix entirely — not merely ignored in
+    // the weighting, but absent from entity_uids and the reported count.
+    let ents = vec![
+        {
+            let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.70, "scan");
+            e.add_evidence(Evidence::new("geocode", "Brisbane CBD fix".to_string()));
+            e
+        },
+        {
+            let mut e = Entity::new(EntityKind::Coordinates, "-27.4766,153.0166", 0.70, "scan");
+            e.add_evidence(Evidence::new("photon", "Brisbane suburb fix".to_string()));
+            e
+        },
+        {
+            let mut e = Entity::new(EntityKind::Coordinates, "10.0,10.0", 0.90, "scan");
+            e.add_evidence(Evidence::new("ip_geo", "unrelated hosting IP".to_string()));
+            e
+        },
+    ];
+    let out = rule_au_057_synthesised_location_fix(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert!(
+        out[0].description.contains("2 confirmed"),
+        "the ip_geo entity must not count: {}",
+        out[0].description
+    );
+    assert_eq!(
+        out[0].entity_uids.len(),
+        2,
+        "the ip_geo entity must not appear in entity_uids"
+    );
+    assert!(
+        out[0]
+            .description
+            .contains("primary location near Brisbane, QLD"),
+        "the fix must stay anchored on Brisbane, unpulled by the far ip_geo point: {}",
+        out[0].description
+    );
+}
+
+#[test]
+fn au_057_precision_weighting_favours_the_finer_source() {
+    use super::rules::rule_au_057_synthesised_location_fix;
+
+    // A precise Brisbane geocode fix vs. a coarse phone-carrier fix on the far
+    // side of the continent (Perth), at EQUAL confidence. Naive confidence-only
+    // weighting would place the median roughly halfway between the two cities;
+    // precision-aware weighting must keep it anchored close to the geocoded
+    // point, because a phone-carrier inference (~100 km class radius) is far
+    // less spatially precise than a street geocode (~40 m class radius).
+    let ents = vec![
+        {
+            let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.70, "scan");
+            e.add_evidence(Evidence::new("geocode", "Brisbane CBD fix".to_string()));
+            e
+        },
+        {
+            let mut e = Entity::new(EntityKind::Coordinates, "-31.9523,115.8613", 0.70, "scan");
+            e.add_evidence(Evidence::new(
+                "phone_carrier_geo",
+                "carrier market inference".to_string(),
+            ));
+            e
+        },
+    ];
+    let out = rule_au_057_synthesised_location_fix(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert!(
+        out[0]
+            .description
+            .contains("primary location near Brisbane, QLD"),
+        "precision weighting must keep the fix anchored near the geocoded point, \
+         not pulled toward the coarse carrier inference: {}",
+        out[0].description
+    );
 }
 
 // ─── AU-058 tests ─────────────────────────────────────────────────────────────

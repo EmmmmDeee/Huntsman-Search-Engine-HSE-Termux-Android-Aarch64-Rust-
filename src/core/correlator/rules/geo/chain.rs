@@ -351,12 +351,24 @@ pub(in crate::core::correlator) fn rule_au_030_geo_convergence_score(
 
 /// AU-057 — Synthesised location fix (weighted geometric median).
 ///
-/// Collects all confirmed (`confidence ≥ 0.60`) `Coordinates` entities, weights
-/// each by its confidence, and computes the
+/// Collects confirmed (`confidence ≥ 0.60`) **person-anchored** `Coordinates`
+/// entities ([`is_infrastructure_geo`] — the same admissibility gate AU-052/053/059
+/// already use, so a hosting IP, a map POI, or a bare IP/WHOIS-derived fix can
+/// never enter the subject's "primary location" here either), weights each by
+/// its confidence AND its source's real-world spatial precision
+/// ([`precision_weight_multiplier`] — a GPS/geocode fix pulls harder than a
+/// phone-carrier or search-snippet fix at equal confidence), and computes the
 /// [`crate::util::geometry::weighted_geometric_median`] — the point that
-/// minimises the confidence-weighted sum of great-circle distances to all
-/// inputs. This converts the qualitative "sources agree" assertion from
-/// AU-017/AU-030 into a single computable best-estimate lat/lon.
+/// minimises the weighted sum of great-circle distances to all inputs. This
+/// converts the qualitative "sources agree" assertion from AU-017/AU-030 into a
+/// single computable best-estimate lat/lon.
+///
+/// Before this gate existed, a live phone scan reproduced the exact failure it
+/// prevents: a residential `ip_geo` fix (its own doc comment records "free
+/// IP-geo providers routinely miss residential geolocation by 30-80 km") sat at
+/// exactly the 0.60 floor and fused into this median at full, unweighted
+/// footing — a "primary location" synthesised partly from infrastructure noise,
+/// not a subject sighting.
 ///
 /// Requires ≥ 2 valid inputs; `High` at ≥ 3 inputs, `Medium` at 2.
 pub(in crate::core::correlator) fn rule_au_057_synthesised_location_fix(
@@ -368,6 +380,7 @@ pub(in crate::core::correlator) fn rule_au_057_synthesised_location_fix(
         entities_of_kind(entities, EntityKind::Coordinates)
             .into_iter()
             .filter(|e| e.confidence >= 0.60)
+            .filter(|e| !is_infrastructure_geo(e))
             .filter_map(|e| crate::util::geohash::parse_coords(&e.value).map(|ll| (e, ll)))
             .collect();
 
@@ -377,7 +390,11 @@ pub(in crate::core::correlator) fn rule_au_057_synthesised_location_fix(
 
     let weighted: Vec<((f64, f64), f64)> = candidates
         .iter()
-        .map(|(e, ll)| (*ll, e.confidence))
+        .map(|(e, ll)| {
+            let precision_bonus =
+                best_precision_radius_m(e).map_or(1.0, precision_weight_multiplier);
+            (*ll, e.confidence * precision_bonus)
+        })
         .collect();
 
     let Some((lat, lon)) = crate::util::geometry::weighted_geometric_median(&weighted) else {
