@@ -20,15 +20,18 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
     let resolver = shared_resolver();
     let domain = target.value.as_str();
     let dmarc_name = format!("_dmarc.{domain}");
+    // TLSRPT (RFC 8460) lives at `_smtp._tls.{domain}`, like DMARC at `_dmarc.`.
+    let tlsrpt_name = format!("_smtp._tls.{domain}");
     let mut entities: Vec<Entity> = Vec::new();
 
-    let (ips, mxs, nss, soa, txts, dmarc_txts) = tokio::join!(
+    let (ips, mxs, nss, soa, txts, dmarc_txts, tlsrpt_txts) = tokio::join!(
         resolver.lookup_ip(domain),
         resolver.mx_lookup(domain),
         resolver.ns_lookup(domain),
         resolver.soa_lookup(domain),
         resolver.txt_lookup(domain),
         resolver.txt_lookup(dmarc_name.as_str()),
+        resolver.txt_lookup(tlsrpt_name.as_str()),
     );
 
     // A + AAAA
@@ -388,7 +391,82 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
         }
     }
 
+    // TLSRPT (RFC 8460) at `_smtp._tls.{domain}` — its `rua=` names a published
+    // mail-security reporting contact (Email or https endpoint), the same class
+    // of OSINT pivot as DMARC `rua`.
+    if let Ok(lookup) = tlsrpt_txts {
+        let txts: Vec<String> = lookup
+            .answers()
+            .iter()
+            .filter_map(|record| match &record.data {
+                RData::TXT(txt_data) => Some(txt_data.to_string()),
+                _ => None,
+            })
+            .collect();
+        entities.extend(tlsrpt_entities(&txts, domain, &ctx.scan_id));
+    }
+
     Ok(entities)
+}
+
+/// Map `_smtp._tls` TXT record strings into TLSRPT reporting-contact entities.
+/// `mailto:` destinations become `Email` entities tagged `tlsrpt-report`;
+/// `http(s)://` collection endpoints become `Domain` leads for their host. A
+/// domain has at most one valid TLSRPT record (first `v=TLSRPTv1` wins).
+///
+/// Shares the pure [`crate::util::tlsrpt`] parser with `doh_resolver` (one
+/// definition, no drift) AND the same `is_infrastructure_email` gate, so both
+/// DNS transports surface the identical contact set — a provider desk
+/// (`sts-reports@google.com`) is dropped rather than clustered as the subject,
+/// matching how this module already gates its DMARC/SOA email emission.
+/// **Pure** (no network/IO), unit-tested directly.
+pub(super) fn tlsrpt_entities(txts: &[String], domain: &str, scan_id: &str) -> Vec<Entity> {
+    let mut out = Vec::new();
+    for raw in txts {
+        let txt = raw.trim_matches('"');
+        let Some(parsed) = crate::util::tlsrpt::parse(txt) else {
+            continue;
+        };
+        for addr in &parsed.emails {
+            if crate::util::domains::is_infrastructure_email(addr) {
+                continue;
+            }
+            let mut e = Entity::new(EntityKind::Email, addr, 0.72, scan_id);
+            e.tag("dns");
+            e.tag("tlsrpt-report");
+            e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("TLSRPT (SMTP-TLS) report address for {domain}"),
+                )
+                .with_attr("record_type", "TLSRPT")
+                .with_attr("parent_domain", domain),
+            );
+            out.push(e);
+        }
+        for url in &parsed.urls {
+            if let Some(host) = crate::util::url_util::host_from_url(url)
+                && host.contains('.')
+                && host != domain
+            {
+                let mut d = Entity::new(EntityKind::Domain, &host, 0.58, scan_id);
+                d.tag("dns");
+                d.tag("tlsrpt-report");
+                d.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("TLSRPT (SMTP-TLS) reporting endpoint host for {domain}"),
+                    )
+                    .with_attr("record_type", "TLSRPT")
+                    .with_attr("rua", url.as_str()),
+                );
+                out.push(d);
+            }
+        }
+        // Only one TLSRPT record is valid per domain (first `v=TLSRPTv1` wins).
+        break;
+    }
+    out
 }
 
 /// CAA record inspection (RFC 8659).

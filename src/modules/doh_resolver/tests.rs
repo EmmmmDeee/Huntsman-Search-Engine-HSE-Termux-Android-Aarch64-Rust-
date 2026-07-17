@@ -501,3 +501,59 @@ fn caa_entities_empty_when_no_caa_records() {
     // Only unparseable answers → no policy entity fabricated.
     assert!(caa_entities(&[rec("cdn.example.net.")], "example.com", "s").is_empty());
 }
+
+// ── TLSRPT (RFC 8460, _smtp._tls.{domain} TXT) ──────────────────────────────
+
+#[test]
+fn tlsrpt_mailto_becomes_report_email() {
+    // A non-infra reporting mailbox surfaces (real live records like google.com's
+    // `sts-reports@google.com` sit on a provider domain and are gated below).
+    let out = tlsrpt_entities(
+        &[rec("v=TLSRPTv1;rua=mailto:tlsrpt@fabrikam.example")],
+        "fabrikam.example",
+        "s",
+    );
+    let email = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("TLSRPT rua mailto → Email");
+    assert_eq!(email.value, "tlsrpt@fabrikam.example");
+    assert!(email.has_tag("tlsrpt-report") && email.has_tag("dns"));
+}
+
+#[test]
+fn tlsrpt_infrastructure_mailbox_is_gated() {
+    // Parity with the dns_intel transport: a provider-domain reporting desk is
+    // filtered so the two DNS paths surface the identical contact set.
+    let out = tlsrpt_entities(
+        &[rec("v=TLSRPTv1;rua=mailto:sts-reports@google.com")],
+        "google.com",
+        "s",
+    );
+    assert!(out.iter().all(|e| e.kind != EntityKind::Email));
+}
+
+#[test]
+fn tlsrpt_https_endpoint_becomes_domain_lead() {
+    // Verbatim live shape from microsoft.com's _smtp._tls record.
+    let out = tlsrpt_entities(
+        &[rec(
+            "v=TLSRPTv1; rua=https://tlsrpt.azurewebsites.net/report",
+        )],
+        "microsoft.com",
+        "s",
+    );
+    let dom = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain)
+        .expect("TLSRPT rua https → Domain host");
+    assert_eq!(dom.value, "tlsrpt.azurewebsites.net");
+    assert!(dom.has_tag("tlsrpt-report"));
+}
+
+#[test]
+fn tlsrpt_ignores_non_tlsrpt_and_empty() {
+    assert!(tlsrpt_entities(&[rec("v=spf1 -all")], "x.com", "s").is_empty());
+    assert!(tlsrpt_entities(&[rec("v=TLSRPTv1;")], "x.com", "s").is_empty());
+    assert!(tlsrpt_entities(&[], "x.com", "s").is_empty());
+}

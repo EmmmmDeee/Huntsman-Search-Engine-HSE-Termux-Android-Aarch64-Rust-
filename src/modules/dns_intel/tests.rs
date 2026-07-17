@@ -8,7 +8,7 @@ use super::{
         VERIFICATION_VENDORS, reverse_ip, soa_rname_to_email, unescape_dns_label,
         verification_vendor,
     },
-    resolve::iodef_entities,
+    resolve::{iodef_entities, tlsrpt_entities},
 };
 
 // -- DnsIntel accepts --------------------------------------------------
@@ -112,6 +112,65 @@ fn iodef_rejects_malformed_and_unknown_schemes() {
     // A non-mailto/non-http scheme (or bare URN) yields nothing.
     assert!(iodef_entities("urn:example:report", "example.com", "s").is_empty());
     assert!(iodef_entities("", "example.com", "s").is_empty());
+}
+
+#[test]
+fn tlsrpt_mailto_becomes_report_email() {
+    use crate::core::entity::EntityKind;
+    // A non-infra reporting mailbox (real live TLSRPT records like google.com's
+    // `sts-reports@google.com` sit on a provider domain and are correctly gated
+    // by the infra filter below — so exercise the happy path with a corp domain).
+    let ents = tlsrpt_entities(
+        &["v=TLSRPTv1;rua=mailto:tlsrpt@fabrikam.example".to_string()],
+        "fabrikam.example",
+        "s",
+    );
+    let email = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("TLSRPT rua mailto → Email");
+    assert_eq!(email.value, "tlsrpt@fabrikam.example");
+    assert!(email.has_tag("tlsrpt-report") && email.has_tag("dns"));
+}
+
+#[test]
+fn tlsrpt_infrastructure_mailbox_is_gated() {
+    // Parity with DMARC/SOA gating: a provider-domain reporting desk (google.com
+    // is in the curated infra-mail set) must NOT be surfaced as a subject email.
+    let ents = tlsrpt_entities(
+        &["v=TLSRPTv1;rua=mailto:sts-reports@google.com".to_string()],
+        "google.com",
+        "s",
+    );
+    assert!(
+        ents.iter()
+            .all(|e| e.kind != crate::core::entity::EntityKind::Email),
+        "infrastructure reporting mailbox must be gated"
+    );
+}
+
+#[test]
+fn tlsrpt_https_endpoint_becomes_domain_lead() {
+    use crate::core::entity::EntityKind;
+    // Verbatim live shape from microsoft.com's _smtp._tls record.
+    let ents = tlsrpt_entities(
+        &["v=TLSRPTv1; rua=https://tlsrpt.azurewebsites.net/report".to_string()],
+        "microsoft.com",
+        "s",
+    );
+    let dom = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain)
+        .expect("TLSRPT rua https → Domain host");
+    assert_eq!(dom.value, "tlsrpt.azurewebsites.net");
+    assert!(dom.has_tag("tlsrpt-report"));
+}
+
+#[test]
+fn tlsrpt_ignores_non_tlsrpt_and_empty() {
+    assert!(tlsrpt_entities(&["v=spf1 -all".to_string()], "x.com", "s").is_empty());
+    assert!(tlsrpt_entities(&["v=TLSRPTv1;".to_string()], "x.com", "s").is_empty());
+    assert!(tlsrpt_entities(&[], "x.com", "s").is_empty());
 }
 
 #[test]

@@ -10,9 +10,10 @@
 //! dedicated `_dmarc.{domain}` TXT query (RFC 7489 §6.6.3), the ipv4hint/ipv6hint
 //! endpoint IPs from HTTPS/SVCB records (RFC 9460), and the authorised CAs +
 //! `iodef` security-contact from CAA records (RFC 8659) — the latter routed
-//! through the shared `dns_intel` iodef extractor. HTTPS and CAA are parsed from
-//! both the friendly presentation string and the raw RFC 3597 wire form the two
-//! resolvers respectively return.
+//! through the shared `dns_intel` iodef extractor — and the SMTP-TLS reporting
+//! contact from a `_smtp._tls.{domain}` TLSRPT record (RFC 8460). HTTPS and CAA
+//! are parsed from both the friendly presentation string and the raw RFC 3597
+//! wire form the two resolvers respectively return.
 //!
 //! CAA matters most on Termux: the hickory `dns_intel` module owns CAA over
 //! port-53, but that transport is frequently blocked on-device, so this DoH pass
@@ -320,6 +321,65 @@ fn caa_entities(records: &[DohRecord], domain: &str, scan_id: &str) -> Vec<Entit
     out
 }
 
+/// Build entities from a `_smtp._tls.{domain}` TLSRPT answer set (RFC 8460).
+/// The `rua=` destinations are a published mail-security contact — parallel to
+/// DMARC `rua`, and on Termux reachable only over this DoH transport when
+/// port-53 is blocked. A `mailto:` destination becomes an `Email` tagged
+/// `tlsrpt-report`; an `https:` collection endpoint becomes a `Domain` for its
+/// host (a recursable lead). Role/provider-infrastructure mailboxes are gated
+/// (`is_infrastructure_email`) so this DoH transport surfaces the SAME contact
+/// set as the hickory `dns_intel` path — a provider desk like
+/// `sts-reports@google.com` is not clustered as the subject. **Pure** (no
+/// network/IO).
+fn tlsrpt_entities(records: &[DohRecord], domain: &str, scan_id: &str) -> Vec<Entity> {
+    let mut out = Vec::new();
+    for rec in records {
+        let txt = unquote_txt(rec.data.trim());
+        let Some(parsed) = crate::util::tlsrpt::parse(&txt) else {
+            continue;
+        };
+        for addr in &parsed.emails {
+            if crate::util::domains::is_infrastructure_email(addr) {
+                continue;
+            }
+            let mut e = Entity::new(EntityKind::Email, addr, 0.68, scan_id);
+            e.tag("dns");
+            e.tag("tlsrpt-report");
+            e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("TLSRPT (SMTP-TLS) report address for {domain}"),
+                )
+                .with_attr("record_type", "TLSRPT")
+                .with_attr("domain", domain),
+            );
+            out.push(e);
+        }
+        for url in &parsed.urls {
+            if let Some(host) = crate::util::url_util::host_from_url(url)
+                && host.contains('.')
+                && host != domain
+            {
+                let mut d = Entity::new(EntityKind::Domain, &host, 0.58, scan_id);
+                d.tag("dns");
+                d.tag("tlsrpt-report");
+                d.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("TLSRPT (SMTP-TLS) reporting endpoint host for {domain}"),
+                    )
+                    .with_attr("record_type", "TLSRPT")
+                    .with_attr("rua", url.as_str()),
+                );
+                out.push(d);
+            }
+        }
+        // A domain has at most one valid TLSRPT record; the first wins.
+        break;
+    }
+    out
+}
+
 /// Resolve a target to the domain to query. **Pure**: a `Url` is reduced to its
 /// host; any other kind is trimmed. Returns `None` when nothing queryable remains.
 fn target_domain(kind: TargetKind, value: &str) -> Option<String> {
@@ -618,7 +678,7 @@ impl Module for DohResolver {
         "doh_resolver"
     }
     fn description(&self) -> &'static str {
-        "DNS-over-HTTPS via Cloudflare + Google (A/AAAA/MX/TXT/NS/CNAME/SOA/HTTPS + DMARC + CAA — free)"
+        "DNS-over-HTTPS via Cloudflare + Google (A/AAAA/MX/TXT/NS/CNAME/SOA/HTTPS + DMARC + CAA + TLSRPT — free)"
     }
     fn priority(&self) -> u8 {
         34
@@ -707,6 +767,18 @@ impl Module for DohResolver {
             result
                 .entities
                 .extend(caa_entities(&caa_records, &domain, &ctx.scan_id));
+        }
+
+        // TLSRPT (RFC 8460) lives at `_smtp._tls.{domain}` as a TXT record, like
+        // DMARC at `_dmarc.`. Its `rua=` names a published mail-security contact
+        // (Email or https endpoint) — another pivot lost on Termux without a DoH
+        // path, since the hickory transport that would resolve it is blocked.
+        if !ctx.cancel.is_cancelled() {
+            let tlsrpt_domain = format!("_smtp._tls.{domain}");
+            let tlsrpt_records = query_doh(&tlsrpt_domain, "TXT", &ctx.http).await;
+            result
+                .entities
+                .extend(tlsrpt_entities(&tlsrpt_records, &domain, &ctx.scan_id));
         }
         Ok(result)
     }
