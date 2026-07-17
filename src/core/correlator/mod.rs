@@ -422,6 +422,10 @@ const RULES: &[RuleFn] = &[
     // beside the genuine one (dnstwist at the correlation layer, across every
     // discovered domain rather than only seed permutations).
     rule_au_118_lookalike_domain_impersonation,
+    // AU-119: the subject's confirmed dating-platform profiles — a location-
+    // bearing personal-exposure surface the generic footprint rules bury in a
+    // list; surfaced on its own at a severity that reflects the exposure.
+    rule_au_119_dating_platform_exposure,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
