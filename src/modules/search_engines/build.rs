@@ -280,8 +280,20 @@ pub(super) fn build_entities(
             }
         }
 
-        // Extract organisation names from snippet text
-        for org in extract_organisations_from_text(&combined_text, &terms) {
+        // Extract organisation names from snippet text — gated on the SAME
+        // `result_names_the_subject` subject-relevance check as email/phone/
+        // address (it was the one snippet-miner left ungated). The org
+        // extractor's internal term filter accepts a single loose token match,
+        // so a `rhino.ryno23` scan minted the org "Discover Rhino Rack's range
+        // at Repco …" off a "Rhino Rack" product page that never named the
+        // subject — the token "rhino" collided with the brand. Requiring the
+        // distinctive last term (here "ryno23") rejects it.
+        let snippet_orgs = if result_names_the_subject {
+            extract_organisations_from_text(&combined_text, &terms)
+        } else {
+            Vec::new()
+        };
+        for org in snippet_orgs {
             let org_key = org.to_lowercase();
             if seen_domains.insert(format!("@org:{org_key}")) {
                 let mut e = Entity::new(EntityKind::Organisation, &org, 0.45, scan_id);

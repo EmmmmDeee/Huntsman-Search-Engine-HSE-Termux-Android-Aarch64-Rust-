@@ -169,6 +169,27 @@ fn extract_orgs_does_not_panic_on_non_ascii_lowercase_divergence() {
 }
 
 #[test]
+fn extract_orgs_requires_a_word_boundary_after_the_suffix() {
+    // Regression (live `rhino.ryno23` scan): " Inc" matched INSIDE "including",
+    // minting the garbage org "…Repco inc" from a prose snippet. The token
+    // "rhino" collided with the "Rhino Rack" brand and satisfied the term
+    // filter, so only the trailing word-boundary check stops it.
+    let terms = vec!["rhino".to_string()];
+    let text = "Discover Rhino Rack's range at Repco including pioneer platforms";
+    let orgs = extract_organisations_from_text(text, &terms);
+    assert!(
+        orgs.is_empty(),
+        "a mid-word ' Inc' in 'including' must not be an org, got {orgs:?}"
+    );
+    // A genuine suffix at a word boundary still extracts.
+    let real = extract_organisations_from_text("Rhino Rack Pty Ltd is listed", &terms);
+    assert!(
+        real.iter().any(|o| o.contains("Pty Ltd")),
+        "a real ' Pty Ltd' at a boundary must still extract, got {real:?}"
+    );
+}
+
+#[test]
 fn abn_validator_does_not_panic_on_leading_zero() {
     // Regression: an 11-digit candidate starting with '0' lifted from a
     // live search result used to overflow (0u32.wrapping_sub(1) * 10) and
