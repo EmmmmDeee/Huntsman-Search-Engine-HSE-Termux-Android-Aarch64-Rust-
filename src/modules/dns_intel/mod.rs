@@ -33,6 +33,9 @@ mod dkim;
 mod helpers;
 mod permute;
 mod resolve;
+// Re-exported so `doh_resolver` (the primary DNS transport on Termux) reuses the
+// same CAA `iodef`→entity mapping instead of duplicating it.
+pub(crate) use resolve::iodef_entities;
 mod resolve_batch;
 mod srv;
 #[cfg(test)]

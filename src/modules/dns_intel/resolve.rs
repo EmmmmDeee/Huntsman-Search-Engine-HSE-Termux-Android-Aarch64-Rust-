@@ -465,7 +465,12 @@ pub(super) async fn lookup_caa(target: &Target, ctx: &ModuleContext) -> Result<V
 /// recursable lead — the raw URL itself is retained on the CAA entity's
 /// evidence). Anything else (a bare URN, malformed value) yields nothing.
 /// **Pure** — no I/O, independently unit-tested.
-pub(super) fn iodef_entities(value: &str, domain: &str, scan_id: &str) -> Vec<Entity> {
+///
+/// `pub(crate)` so the DoH resolver (`doh_resolver`) — the PRIMARY DNS transport
+/// on Termux, where hickory's port-53 lookups are frequently blocked and this
+/// module never runs — reuses the exact same iodef→entity mapping rather than
+/// duplicating it, keeping CAA/iodef enumeration identical across both transports.
+pub(crate) fn iodef_entities(value: &str, domain: &str, scan_id: &str) -> Vec<Entity> {
     let value = value.trim();
     if let Some(addr) = value.strip_prefix("mailto:") {
         let addr = addr.trim();

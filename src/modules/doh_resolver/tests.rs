@@ -279,6 +279,8 @@ fn rtype_name_maps_handled_types() {
     assert_eq!(rtype_name(15), Some("MX"));
     assert_eq!(rtype_name(16), Some("TXT"));
     assert_eq!(rtype_name(2), Some("NS"));
+    assert_eq!(rtype_name(65), Some("HTTPS"));
+    assert_eq!(rtype_name(257), Some("CAA"));
     assert_eq!(rtype_name(99), None); // unmapped → caller falls back to queried type
 }
 
@@ -400,4 +402,102 @@ fn dmarc_txt_extracts_rua_and_ruf_reporting_addresses() {
     for e in out.iter().filter(|e| e.kind == EntityKind::Email) {
         assert!(e.has_tag("dmarc-reporting"));
     }
+}
+
+// ── CAA (RFC 8659, type 257) ────────────────────────────────────────────────
+// The wire strings below are verbatim live captures: cloudflare-dns returns the
+// raw RFC 3597 generic form, dns.google the presentation form.
+
+#[test]
+fn caa_parse_cloudflare_rfc3597_hex_issue_and_iodef() {
+    // `\# 22 00 05 issue letsencrypt.org` — flags=00, taglen=05, tag="issue".
+    let (tag, val) =
+        parse_caa_rdata(r"\# 22 00 05 69 73 73 75 65 6c 65 74 73 65 6e 63 72 79 70 74 2e 6f 72 67")
+            .expect("valid issue record");
+    assert_eq!(tag, "issue");
+    assert_eq!(val, "letsencrypt.org");
+
+    // `\# 38 00 05 iodef mailto:tls-abuse@cloudflare.com`.
+    let (tag, val) = parse_caa_rdata(
+        r"\# 38 00 05 69 6f 64 65 66 6d 61 69 6c 74 6f 3a 74 6c 73 2d 61 62 75 73 65 40 63 6c 6f 75 64 66 6c 61 72 65 2e 63 6f 6d",
+    )
+    .expect("valid iodef record");
+    assert_eq!(tag, "iodef");
+    assert_eq!(val, "mailto:tls-abuse@cloudflare.com");
+}
+
+#[test]
+fn caa_parse_google_presentation_form() {
+    assert_eq!(
+        parse_caa_rdata(r#"0 issue "letsencrypt.org""#),
+        Some(("issue".to_string(), "letsencrypt.org".to_string()))
+    );
+    assert_eq!(
+        parse_caa_rdata(r#"0 iodef "mailto:tls-abuse@cloudflare.com""#),
+        Some((
+            "iodef".to_string(),
+            "mailto:tls-abuse@cloudflare.com".to_string()
+        ))
+    );
+    // Issuer parameters after `;` are retained in the value (parity with dns_intel).
+    assert_eq!(
+        parse_caa_rdata(r#"0 issue "digicert.com; cansignhttpexchanges=yes""#),
+        Some((
+            "issue".to_string(),
+            "digicert.com; cansignhttpexchanges=yes".to_string()
+        ))
+    );
+}
+
+#[test]
+fn caa_parse_rejects_malformed_and_non_caa() {
+    assert_eq!(parse_caa_rdata(""), None);
+    assert_eq!(parse_caa_rdata("0 issue"), None); // no value token
+    assert_eq!(parse_caa_rdata("cdn.example.net."), None); // a stray CNAME answer
+    assert_eq!(parse_caa_rdata(r"\# 1 00"), None); // truncated: taglen missing
+    assert_eq!(parse_caa_rdata(r"\# 4 00 05 69 73"), None); // taglen 5 > available
+}
+
+#[test]
+fn caa_entities_aggregate_policy_and_surface_iodef_security_contact() {
+    // Mixed set across both wire forms — issue, issuewild, and an iodef mailto.
+    let records = vec![
+        rec(r#"0 issue "letsencrypt.org""#),
+        rec(r#"0 issuewild "digicert.com""#),
+        rec(
+            r"\# 38 00 05 69 6f 64 65 66 6d 61 69 6c 74 6f 3a 74 6c 73 2d 61 62 75 73 65 40 63 6c 6f 75 64 66 6c 61 72 65 2e 63 6f 6d",
+        ),
+    ];
+    let out = caa_entities(&records, "example.com", "s");
+
+    // One aggregated CAA policy Domain entity for the queried domain.
+    let policy = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain && e.value == "example.com")
+        .expect("CAA policy entity");
+    assert!(policy.has_tag("caa"));
+    let a = &policy.evidence[0].attributes;
+    assert_eq!(a.get("issue").map(String::as_str), Some("letsencrypt.org"));
+    assert_eq!(a.get("issuewild").map(String::as_str), Some("digicert.com"));
+    assert_eq!(
+        a.get("iodef").map(String::as_str),
+        Some("mailto:tls-abuse@cloudflare.com")
+    );
+
+    // The iodef mailto becomes a pivotable security-contact Email — the key
+    // Termux-parity win (routed via the shared dns_intel extractor).
+    let email = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("iodef security-contact email");
+    assert_eq!(email.value, "tls-abuse@cloudflare.com");
+    assert!(email.has_tag("security-contact"));
+    assert!(email.has_tag("iodef"));
+}
+
+#[test]
+fn caa_entities_empty_when_no_caa_records() {
+    assert!(caa_entities(&[], "example.com", "s").is_empty());
+    // Only unparseable answers → no policy entity fabricated.
+    assert!(caa_entities(&[rec("cdn.example.net.")], "example.com", "s").is_empty());
 }
