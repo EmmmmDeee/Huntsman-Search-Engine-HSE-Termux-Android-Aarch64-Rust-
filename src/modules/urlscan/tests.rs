@@ -202,3 +202,17 @@ use super::*;
         assert_eq!(es.iter().filter(|e| e.kind == EntityKind::IpAddress).count(), 1);
         assert!(have(EntityKind::Address, "US"));
     }
+
+    #[test]
+    fn build_query_uses_correct_field_and_max_page_size() {
+        // Page size is the keyless per-page maximum (100), verified live — a 10×
+        // enumeration widening over the former size=10/5 at no extra request cost.
+        let d = build_query(TargetKind::Domain, "github.com").unwrap();
+        assert!(d.contains("q=domain:\"github.com\"") && d.contains("size=100"));
+        let u = build_query(TargetKind::Url, "https://x.com/a").unwrap();
+        assert!(u.contains("q=page.url:") && u.contains("size=100"));
+        let i = build_query(TargetKind::IpAddress, "1.2.3.4").unwrap();
+        assert!(i.contains("q=page.ip:\"1.2.3.4\"") && i.contains("size=100"));
+        // A kind URLScan can't be keyed on yields no query.
+        assert!(build_query(TargetKind::Email, "a@b.com").is_none());
+    }
