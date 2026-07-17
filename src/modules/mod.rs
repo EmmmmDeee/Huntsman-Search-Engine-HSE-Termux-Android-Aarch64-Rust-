@@ -147,6 +147,7 @@ pub mod see_know;
 pub mod seon;
 pub mod shodan;
 pub mod signal_radar;
+pub mod sitemap;
 pub mod smtp_vrfy;
 pub mod social_location;
 pub mod social_probe;
@@ -398,6 +399,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(phone_intl::PhoneIntl),
             Arc::new(phone_au::PhoneAu),
             Arc::new(wayback::Wayback),
+            Arc::new(sitemap::Sitemap),
             Arc::new(device_sensors::DeviceSensors),
             Arc::new(cell_intel::CellIntel),
             Arc::new(cell_local::CellLocal),
