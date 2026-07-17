@@ -53,6 +53,22 @@ struct Event {
 struct EntityRef {
     #[serde(default)]
     roles: Vec<String>,
+    #[serde(default, rename = "vcardArray")]
+    vcard_array: Option<serde_json::Value>,
+    #[serde(default, rename = "publicIds")]
+    public_ids: Vec<PublicId>,
+}
+
+/// One RDAP `publicIds` entry. For the registrar entity this carries the
+/// `{"type":"IANA Registrar ID","identifier":"1910"}` pair — the canonical,
+/// numerically-stable registrar identifier (survives registrar rebrands), and
+/// public registry data rather than contact PII.
+#[derive(Deserialize)]
+struct PublicId {
+    #[serde(default, rename = "type")]
+    id_type: Option<String>,
+    #[serde(default)]
+    identifier: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -84,11 +100,79 @@ const SRC: &str = "rdap_domain";
 /// records and we don't want one module call to fan out into hundreds.
 const MAX_NS: usize = 16;
 
+/// Extract the registrar's *public* identity from the RDAP `entities` list:
+/// the organisation name (vCard `fn`) and the IANA Registrar ID (`publicIds`).
+///
+/// Returns `(registrar_name, iana_id)`, either side `None` when absent.
+///
+/// Both are public registry data — the registrar of record and its IANA number
+/// — **not** contact PII, so surfacing them respects the module's no-PII
+/// invariant. Extraction is gated strictly to the `registrar` role: a
+/// registrar-role vCard `fn` is always a company name, whereas a
+/// registrant/admin/tech vCard `fn` can be a natural person's name, which must
+/// never be surfaced. Reuses the shared `whois::vcard_field` parser (one
+/// definition, no drift). **Pure** (no network/IO).
+fn registrar_identity(body: &RdapResp) -> (Option<String>, Option<String>) {
+    let Some(reg) = body
+        .entities
+        .iter()
+        .find(|e| e.roles.iter().any(|r| r == "registrar"))
+    else {
+        return (None, None);
+    };
+    let name = reg
+        .vcard_array
+        .as_ref()
+        .and_then(|vc| crate::modules::whois::vcard_field(vc, "fn"))
+        .map(|s| s.trim().to_string())
+        .filter(|s| s.len() >= 3);
+    let iana = reg
+        .public_ids
+        .iter()
+        .find(|p| {
+            p.id_type
+                .as_deref()
+                .is_some_and(|t| t.to_ascii_lowercase().contains("iana registrar"))
+        })
+        .and_then(|p| p.identifier.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    (name, iana)
+}
+
+/// Build a registrar `Organisation` entity from the RDAP record — the
+/// registrar of record for the domain, a strong attribution/clustering pivot
+/// (domains held by the same owner routinely share a registrar). Carries the
+/// IANA Registrar ID as evidence when present. **Pure** (no network/IO);
+/// returns `None` when no usable registrar name is available.
+fn build_registrar_entity(
+    domain: &str,
+    name: &str,
+    iana: Option<&str>,
+    scan_id: &str,
+) -> Option<Entity> {
+    let name = name.trim();
+    if name.len() < 3 {
+        return None;
+    }
+    let mut oe = Entity::new(EntityKind::Organisation, name, 0.72, scan_id);
+    oe.tag("rdap");
+    oe.tag("registrar");
+    let mut ev = Evidence::new(SRC, format!("Registrar of record for {domain}"));
+    if let Some(id) = iana {
+        ev = ev.with_attr("iana_registrar_id", id);
+    }
+    oe.add_evidence(ev);
+    Some(oe)
+}
+
 /// Build the primary `Domain` entity from an RDAP record. **Pure** (no
 /// network/IO): slugifies the status phrases into `status:` tags, groups event
 /// dates by action into `event_<action>` attributes (RDAP can repeat an action,
 /// e.g. successive `transfer` events), surfaces the deduplicated contact *role*
-/// names (never raw PII), the DNSSEC delegation state, and the nameserver list.
+/// names (never raw PII), the registrar of record + its IANA ID, the DNSSEC
+/// delegation state, and the nameserver list.
 fn build_domain_entity(domain: &str, body: &RdapResp, scan_id: &str) -> Entity {
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -149,6 +233,17 @@ fn build_domain_entity(domain: &str, body: &RdapResp, scan_id: &str) -> Entity {
             "dnssec:unsigned"
         });
         ev = ev.with_attr("dnssec_signed", signed.to_string());
+    }
+    // Registrar of record — public registry identity (never contact PII). The
+    // IANA ID additionally becomes a `registrar-id:<n>` tag so the correlator
+    // can cluster same-registrar domains without parsing evidence text.
+    let (registrar_name, registrar_iana) = registrar_identity(body);
+    if let Some(name) = &registrar_name {
+        ev = ev.with_attr("registrar", name);
+    }
+    if let Some(iana) = &registrar_iana {
+        ev = ev.with_attr("registrar_iana_id", iana);
+        entity.tag(format!("registrar-id:{iana}"));
     }
     let ns_names: Vec<&str> = body
         .nameservers
@@ -261,7 +356,11 @@ impl Module for RdapDomain {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::IpAddress];
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Domain,
+            EntityKind::IpAddress,
+            EntityKind::Organisation,
+        ];
         KINDS
     }
 
@@ -299,6 +398,18 @@ impl Module for RdapDomain {
 
         let mut result = ModuleResult::new();
         result.push(build_domain_entity(domain, &body, &ctx.scan_id));
+
+        // Registrar of record → Organisation entity (parity with the `whois`
+        // module, which already emits this). A domain scan previously kept only
+        // the registrar *role* name ("registrar") but dropped WHICH registrar —
+        // losing a high-value attribution pivot the API hands over for free.
+        let (registrar_name, registrar_iana) = registrar_identity(&body);
+        if let Some(name) = &registrar_name
+            && let Some(oe) =
+                build_registrar_entity(domain, name, registrar_iana.as_deref(), &ctx.scan_id)
+        {
+            result.push(oe);
+        }
 
         result.extend(
             body.nameservers
