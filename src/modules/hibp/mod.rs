@@ -72,16 +72,27 @@ pub(super) struct Breach {
     pub(super) is_spam_list: Option<bool>,
     #[serde(default)]
     pub(super) is_subscription_free: Option<bool>,
+    // A stealer log or malware dump is a fundamentally different — and more
+    // severe — compromise class than a routine website breach: the credential
+    // was harvested off a victim's *own device* by info-stealer malware, so it
+    // implies live device compromise (browser-stored passwords, cookies,
+    // autofill) rather than a third-party site leaking its user table. HIBP
+    // carries these as first-class flags on every breach object; surface them.
+    #[serde(default)]
+    pub(super) is_stealer_log: Option<bool>,
+    #[serde(default)]
+    pub(super) is_malware: Option<bool>,
     #[serde(default)]
     pub(super) logo_path: Option<String>,
 }
 
 /// Full-fidelity [`Evidence`] for one HIBP breach. Surfaces **every** field the
 /// v3 API returns — title/description, the date trail (breach/added/modified),
-/// pwn_count, data classes, the logo, and the data-quality flags
-/// (verified/fabricated/sensitive/retired/spam/subscription-free) — so a
-/// breach-derived finding carries HIBP's complete characterisation, not just a
-/// name + date. **Pure** (no IO) and unit-tested directly.
+/// pwn_count, data classes, the logo, and the data-quality/severity flags
+/// (verified/fabricated/sensitive/retired/spam/subscription-free plus
+/// stealer-log/malware) — so a breach-derived finding carries HIBP's complete
+/// characterisation, not just a name + date. **Pure** (no IO) and unit-tested
+/// directly.
 fn breach_evidence(breach: &Breach) -> Evidence {
     let nonempty = |o: &Option<String>| o.as_deref().filter(|s| !s.is_empty()).map(str::to_string);
 
@@ -120,6 +131,8 @@ fn breach_evidence(breach: &Breach) -> Evidence {
         ("retired", breach.is_retired),
         ("spam_list", breach.is_spam_list),
         ("subscription_free", breach.is_subscription_free),
+        ("stealer_log", breach.is_stealer_log),
+        ("malware", breach.is_malware),
     ] {
         if let Some(b) = flag {
             ev = ev.with_attr(key, b.to_string());
@@ -143,6 +156,22 @@ fn tag_breach_quality(e: &mut Entity, breach: &Breach) {
     }
     if breach.is_retired == Some(true) {
         e.tag("breach-retired");
+    }
+    if breach.is_stealer_log == Some(true) {
+        // A stealer-log hit is device compromise (info-stealer malware harvested
+        // the credential off the victim's own machine), not a third-party site
+        // leaking its user table — a materially more severe class. Route it into
+        // the canonical `stealer-log` correlation machinery (exposure scoring,
+        // AU breach rules, lead extraction) that HudsonRock / niamonx feed, so a
+        // HIBP stealer-log hit escalates identically to a dedicated stealer-log
+        // module's hit rather than reading as a routine breach.
+        e.tag(tags::STEALER_LOG);
+    }
+    if breach.is_malware == Some(true) {
+        // Malware-sourced dump (e.g. an Emotet address-book harvest). A weaker
+        // signal than a full stealer log, so it stays a descriptive `breach-*`
+        // quality tag rather than escalating into stealer-log correlation.
+        e.tag("breach-malware");
     }
 }
 
