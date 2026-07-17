@@ -103,22 +103,34 @@ impl Module for BlueskyUser {
             return Ok(ModuleResult::new());
         }
 
-        // Try `{handle}.bsky.social` first (most common), then bare `{handle}`
-        // for custom-domain accounts.
-        let bsky_handle = format!("{handle}.bsky.social");
-        let url1 = format!("{API}?actor={}", crate::util::http::urlencode(&bsky_handle));
-        let url2 = format!("{API}?actor={}", crate::util::http::urlencode(handle));
-
-        // `fetch_json_or_absent`: Bluesky answers a non-existent handle with HTTP
-        // 400 "Profile not found" (not 404), so treat 400 as a clean negative —
-        // otherwise a name scan probing several non-existent handles would trip the
-        // engine breaker and suppress Bluesky for the real handles too.
-        let profile: Option<BskyProfile> = fetch_json_or_absent(&ctx.http, SRC, &url1).await?;
-        let profile = if profile.is_some() {
-            profile
-        } else {
-            fetch_json_or_absent(&ctx.http, SRC, &url2).await?
-        };
+        // Only issue requests that CAN succeed. An AT Protocol handle is a series
+        // of DNS labels; `getProfile` rejects a structurally-invalid `actor` with
+        // HTTP 400 "Invalid AT identifier". `fetch_json_or_absent` swallows that
+        // 400 as a clean miss (so it never trips the breaker), but the round-trip
+        // is still pure waste on every scan — and both candidate forms are
+        // guaranteed to fail for many usernames:
+        //   * url1 `{handle}.bsky.social` needs `handle` to be ONE valid DNS label
+        //     (so `_ryno_23`, with an underscore, can never form a valid handle).
+        //   * url2 bare `{handle}` is only a valid actor when `handle` is itself a
+        //     dotted custom-domain handle (`alice.dev`); a plain `alice` bare is
+        //     never a valid handle, so probing it always 400s.
+        // Gating each request on its own local validity check removes those doomed
+        // round-trips — the common plain-username path drops from two requests to
+        // one, and a non-handle-shaped username (underscores, etc.) issues none.
+        let mut profile: Option<BskyProfile> = None;
+        if is_valid_dns_label(handle) {
+            let bsky_handle = format!("{handle}.bsky.social");
+            let url1 = format!("{API}?actor={}", crate::util::http::urlencode(&bsky_handle));
+            // `fetch_json_or_absent`: Bluesky answers a non-existent (or invalid)
+            // handle with HTTP 400, not 404, so treat 400 as a clean negative —
+            // otherwise a name scan probing several missing handles would trip the
+            // engine breaker and suppress Bluesky for the real handles too.
+            profile = fetch_json_or_absent(&ctx.http, SRC, &url1).await?;
+        }
+        if profile.is_none() && is_custom_domain_handle(handle) {
+            let url2 = format!("{API}?actor={}", crate::util::http::urlencode(handle));
+            profile = fetch_json_or_absent(&ctx.http, SRC, &url2).await?;
+        }
 
         let Some(profile) = profile else {
             return Ok(ModuleResult::new());
@@ -128,6 +140,27 @@ impl Module for BlueskyUser {
         result.entities = build_entities(profile, &ctx.scan_id);
         Ok(result)
     }
+}
+
+/// True if `s` is a single valid DNS label per the AT Protocol handle grammar:
+/// 1–63 chars, ASCII alphanumerics and hyphens only, not starting or ending with
+/// a hyphen. **Pure.** Underscores (common in usernames — `_ryno_23`) are NOT
+/// permitted, so such a username can never form a valid `{s}.bsky.social` handle
+/// and the `.bsky.social` probe is skipped rather than issued and 400'd.
+fn is_valid_dns_label(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 63
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        && !s.starts_with('-')
+        && !s.ends_with('-')
+}
+
+/// True if `s` is a plausible dotted custom-domain AT handle (`alice.dev`): it
+/// contains a dot and EVERY dot-separated label is a valid DNS label. **Pure.**
+/// A plain single-token username (`alice`) is not a valid bare `actor`, so the
+/// bare-handle probe is issued only for domain-shaped inputs.
+fn is_custom_domain_handle(s: &str) -> bool {
+    s.contains('.') && s.split('.').all(is_valid_dns_label)
 }
 
 /// Pure profile→entity mapping. Separated so every branch is unit-testable.
@@ -423,5 +456,53 @@ mod tests {
             !u.has_tag("account-age"),
             "no account-age tag when createdAt is absent"
         );
+    }
+
+    #[test]
+    fn plain_username_is_a_valid_bsky_social_label_but_not_a_bare_handle() {
+        // `alice` → try `alice.bsky.social` (valid label) but NOT bare `alice`
+        // (not domain-shaped), so the doomed second request is skipped.
+        assert!(is_valid_dns_label("alice"));
+        assert!(is_valid_dns_label("rhino23"));
+        assert!(!is_custom_domain_handle("alice"));
+    }
+
+    #[test]
+    fn underscore_username_forms_no_valid_handle_at_all() {
+        // The exact case from a live scan: `_ryno_23.bsky.social` is rejected by
+        // getProfile as an "Invalid AT identifier" (underscores aren't DNS-label
+        // legal). Neither probe should be issued for it.
+        assert!(!is_valid_dns_label("_ryno_23"));
+        assert!(!is_custom_domain_handle("_ryno_23"));
+        assert!(!is_valid_dns_label("ryno_23"));
+        assert!(!is_valid_dns_label("under_score"));
+    }
+
+    #[test]
+    fn custom_domain_handle_is_probed_bare_not_as_bsky_social() {
+        // `alice.dev` → NOT a single label (has a dot), so the `.bsky.social`
+        // probe is skipped; it IS a valid custom-domain handle, so the bare
+        // request is issued.
+        assert!(!is_valid_dns_label("alice.dev"));
+        assert!(is_custom_domain_handle("alice.dev"));
+        assert!(is_custom_domain_handle("a.b.example.com"));
+    }
+
+    #[test]
+    fn dns_label_rejects_hyphen_edges_and_overlong_input() {
+        assert!(!is_valid_dns_label("-lead"));
+        assert!(!is_valid_dns_label("trail-"));
+        assert!(is_valid_dns_label("mid-dle"));
+        assert!(!is_valid_dns_label(""));
+        assert!(!is_valid_dns_label(&"a".repeat(64)));
+        assert!(is_valid_dns_label(&"a".repeat(63)));
+    }
+
+    #[test]
+    fn custom_domain_handle_rejects_an_invalid_label_segment() {
+        // A dot alone isn't enough — every segment must be a valid label.
+        assert!(!is_custom_domain_handle("bad_label.dev"));
+        assert!(!is_custom_domain_handle("ok.-bad"));
+        assert!(!is_custom_domain_handle(".leadingdot"));
     }
 }
