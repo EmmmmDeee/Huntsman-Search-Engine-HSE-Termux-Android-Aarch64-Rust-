@@ -1642,6 +1642,32 @@ impl ScanEngine {
                     self.emit_excluded(scan_id, entity, "non_routable_ip");
                     continue;
                 }
+                // Never recursively pivot a COARSE-tagged Coordinates entity — a
+                // country/region-level fix a module explicitly flagged as
+                // non-specific (e.g. `geo_intel`'s phone-prefix-to-country-centroid
+                // fallback). Dispatching it to Coordinates-consuming modules
+                // (offline ASGS/gazetteer lookups, reverse geocoders) snaps it to
+                // "the nearest locality" and manufactures a fresh, precise-looking
+                // named suburb + postcode from an admittedly imprecise input — a
+                // live phone scan reproduced exactly this: a country-centroid fix
+                // (tagged `coarse`) got ASGS-snapped to "Ghan, NT", then forward-
+                // geocoded into a VERIFIED-tier street address the subject has no
+                // connection to. A module can't self-guard against this: it only
+                // ever sees the bare (kind, value) Target, never the originating
+                // entity's tags, so the gate has to live here, at the one point
+                // that still has both. The entity itself is unaffected (its own
+                // confidence and the correlator's admissibility gates already
+                // decide whether it counts as evidence) — only further recursive
+                // expansion is stopped. The SAME discipline the codebase already
+                // applies to co-residence linking
+                // (`relation::builders::COARSE_ADDRESS_TAGS`) and cross-scan
+                // history bridging (`engine::history::is_cross_scan_candidate`);
+                // this closes the third, most consequential place a coarse geo fix
+                // was still treated as precise.
+                if tk == TargetKind::Coordinates && entity.has_tag(crate::core::tags::COARSE) {
+                    self.emit_excluded(scan_id, entity, "coarse_geo_not_pivoted");
+                    continue;
+                }
                 // Don't deep-expand *incidentally-discovered* haystack
                 // infrastructure — it maps a platform/CDN/provider's own estate,
                 // not the subject, and burns the round budget that should go to
