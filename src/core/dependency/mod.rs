@@ -36,6 +36,8 @@ use crate::core::entity::EntityKind;
 use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
 
+pub mod reachability;
+
 /// Every `TargetKind` variant — used by both the dispatch-index builder
 /// and the `consumes()` default-probe implementation in [`Module`].
 pub const ALL_TARGET_KINDS: &[TargetKind] = &[
