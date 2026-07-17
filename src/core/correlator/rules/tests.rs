@@ -300,3 +300,26 @@ use crate::core::entity::Evidence;
         );
         assert_eq!(results[0].rule_id, "AU-118");
     }
+
+    #[test]
+    fn au119_dating_platform_exposure_fires_on_confirmed_profiles() {
+        // Two body-marker-confirmed dating profiles → a personal-exposure finding.
+        let mk = |url: &str, platform: &str| {
+            let mut e = Entity::new(EntityKind::Url, url, 0.8, "scan-au119");
+            e.tag("cat:dating");
+            e.tag(format!("platform:{platform}"));
+            e.tag("verified-detection");
+            e
+        };
+        let ents = [
+            mk("https://tinder.com/@rhino", "Tinder"),
+            mk("https://badoo.com/@rhino", "Badoo"),
+        ];
+        let results = super::rule_au_119_dating_platform_exposure(&ents, "scan-au119", 0);
+        assert_eq!(
+            results.len(),
+            1,
+            "AU-119 must fire on confirmed dating-platform profiles"
+        );
+        assert_eq!(results[0].rule_id, "AU-119");
+    }
