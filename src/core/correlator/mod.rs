@@ -426,6 +426,10 @@ const RULES: &[RuleFn] = &[
     // bearing personal-exposure surface the generic footprint rules bury in a
     // list; surfaced on its own at a severity that reflects the exposure.
     rule_au_119_dating_platform_exposure,
+    // AU-120: the subject's confirmed subscription-creator / webcam / adult
+    // profiles — a deliberate, identity-linked (payment/KYC) footprint elevated
+    // above the generic account roster.
+    rule_au_120_monetized_creator_exposure,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

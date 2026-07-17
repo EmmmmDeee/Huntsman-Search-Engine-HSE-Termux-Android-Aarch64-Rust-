@@ -323,3 +323,20 @@ use crate::core::entity::Evidence;
         );
         assert_eq!(results[0].rule_id, "AU-119");
     }
+
+    #[test]
+    fn au120_monetized_creator_exposure_fires_on_confirmed_profiles() {
+        // A body-marker-confirmed subscription-creator profile → identity-linked
+        // exposure finding.
+        let mut e = Entity::new(EntityKind::Url, "https://onlyfans.com/rhino", 0.9, "scan-au120");
+        e.tag("cat:fans");
+        e.tag("platform:OnlyFans");
+        e.tag("verified-detection");
+        let results = super::rule_au_120_monetized_creator_exposure(&[e], "scan-au120", 0);
+        assert_eq!(
+            results.len(),
+            1,
+            "AU-120 must fire on a confirmed creator profile"
+        );
+        assert_eq!(results[0].rule_id, "AU-120");
+    }
