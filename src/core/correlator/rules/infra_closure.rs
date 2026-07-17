@@ -132,25 +132,29 @@ pub(in crate::core::correlator) fn rule_au_116_infrastructure_pivot_closure(
                 }
             }
             EntityKind::IpAddress => {
-                if comp.ip_seen.insert(e.value.trim().to_lowercase()) {
-                    comp.ip_count += 1;
-                }
+                // Count each distinct IP once. `insert` returns false for a
+                // duplicate, so `usize::from(bool)` adds 1 only on first sight —
+                // keeping the dedup side effect without a nested `if` (which
+                // newer clippy flags as collapsible into a side-effecting guard).
+                comp.ip_count += usize::from(comp.ip_seen.insert(e.value.trim().to_lowercase()));
             }
             _ => {}
         }
     }
 
-    let mut ordered: Vec<&Comp> = comps.values().collect();
+    // Keep only qualifying components — ≥3 distinct owners AND ≥2 IP nodes → a
+    // genuine multi-server chain, not a single shared host (AU-110's job) —
+    // BEFORE sorting, so the sort never touches the many single-node (0-domain)
+    // components a large graph produces.
+    let mut ordered: Vec<&Comp> = comps
+        .values()
+        .filter(|c| c.domains.len() >= MIN_DOMAINS && c.ip_count >= MIN_IPS)
+        .collect();
     ordered.sort_by(|a, b| a.domains.iter().next().cmp(&b.domains.iter().next()));
 
     let mut out = Vec::new();
     for comp in ordered {
         let d = comp.domains.len();
-        // ≥3 distinct owners AND ≥2 IP nodes → a genuine multi-server chain, not
-        // a single shared host (AU-110's job).
-        if d < MIN_DOMAINS || comp.ip_count < MIN_IPS {
-            continue;
-        }
         // entity_uids in entity order for a stable render.
         let uids: Vec<String> = entities
             .iter()

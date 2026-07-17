@@ -34,7 +34,12 @@ pub(super) async fn resolve_hosts_concurrently(
     _ctx: &ModuleContext,
 ) -> Vec<ResolvedHost> {
     let resolver = shared_resolver();
-    let sem = Arc::new(Semaphore::new(max_concurrent));
+    // Clamp the concurrency floor to 1: `Semaphore::new(0)` hands out no permits,
+    // so every spawned task would await `acquire_owned()` forever and `join_next()`
+    // would never complete — a hang. Callers pass a fixed non-zero constant today,
+    // but this is a shared primitive, so guard the invariant here rather than
+    // trusting every present and future caller.
+    let sem = Arc::new(Semaphore::new(max_concurrent.max(1)));
     let mut set = tokio::task::JoinSet::new();
 
     for host in candidates {
