@@ -694,12 +694,39 @@ mod prop {
                 render_full(&reversed, "scan-prop").unwrap(),
                 "full dossier leaked insertion order"
             );
+            // The debug bundle embeds an ENVIRONMENT snapshot whose
+            // `keys_present`/`keys_absent` lines come from `keys::load()`
+            // ($HOME/.huntsman.env) — ambient PROCESS state, not a function of
+            // the entities or their insertion order. Under cargo's parallel test
+            // execution a sibling test that isolates its own vault by mutating the
+            // global `$HOME` toggles what THIS test's two renders observe (a real
+            // CI flake: one render saw `HUNTSMAN_SHODAN_KEY`, the other did not).
+            // That is exactly the class of volatile field the `report.json`
+            // `exported_at` exclusion above already carves out, so strip those two
+            // lines before comparing — the property under test is entity-order
+            // independence, and every other line of the bundle is still asserted.
             prop_assert_eq!(
-                render_debug_bundle(&forward, "scan-prop").unwrap(),
-                render_debug_bundle(&reversed, "scan-prop").unwrap(),
+                strip_ambient_env_keys(&render_debug_bundle(&forward, "scan-prop").unwrap()),
+                strip_ambient_env_keys(&render_debug_bundle(&reversed, "scan-prop").unwrap()),
                 "debug bundle leaked insertion order"
             );
         }
+    }
+
+    /// Remove the two ambient, process-global key-inventory lines
+    /// (`keys_present:` / `keys_absent :`) from a debug bundle. Their content is
+    /// derived from `$HOME/.huntsman.env` via `keys::load()`, so under parallel
+    /// tests that mutate the global `$HOME` it is non-deterministic and unrelated
+    /// to the entity-insertion-order property under test.
+    fn strip_ambient_env_keys(bundle: &str) -> String {
+        bundle
+            .lines()
+            .filter(|l| {
+                let t = l.trim_start();
+                !t.starts_with("keys_present:") && !t.starts_with("keys_absent :")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
