@@ -127,6 +127,70 @@ fn unquote_txt_reconstructs_single_and_chunked_records() {
 }
 
 #[test]
+fn svcb_hints_from_friendly_presentation_string() {
+    // dns.google's form.
+    let out = parse_svcb_hints(
+        "1 . alpn=h3,h2 ipv4hint=104.16.132.229,104.16.133.229 ipv6hint=2606:4700::6810:84e5",
+    );
+    assert_eq!(
+        out,
+        vec![
+            "104.16.132.229".to_string(),
+            "104.16.133.229".to_string(),
+            "2606:4700::6810:84e5".to_string(),
+        ]
+    );
+    // No hints present → empty.
+    assert!(parse_svcb_hints("1 . alpn=h2").is_empty());
+}
+
+#[test]
+fn svcb_hints_from_raw_rfc3597_wire_form() {
+    // The EXACT bytes cloudflare-dns returned for cloudflare.com's HTTPS record
+    // (captured live): priority 1, root target, alpn h3/h2, then ipv4hint (key 4)
+    // = 104.16.132.229 / 104.16.133.229 and ipv6hint (key 6) = two v6 addresses.
+    let data = r"\# 61 00 01 00 00 01 00 06 02 68 33 02 68 32 00 04 00 08 68 10 84 e5 68 10 85 e5 00 06 00 20 26 06 47 00 00 00 00 00 00 00 00 00 68 10 84 e5 26 06 47 00 00 00 00 00 00 00 00 00 68 10 85 e5";
+    let out = parse_svcb_hints(data);
+    assert!(
+        out.contains(&"104.16.132.229".to_string()) && out.contains(&"104.16.133.229".to_string()),
+        "ipv4hint addresses must decode from the wire form: {out:?}"
+    );
+    assert!(
+        out.iter().any(|ip| ip.starts_with("2606:4700")),
+        "ipv6hint addresses must decode too: {out:?}"
+    );
+}
+
+#[test]
+fn svcb_wire_parser_is_panic_free_on_malformed_input() {
+    // Truncated, non-hex, empty, and over-length-claimed inputs must all just
+    // yield what parsed cleanly (or nothing) — never panic on the no-root target.
+    assert!(parse_svcb_hints(r"\# 4 00 01").is_empty()); // priority only, no params
+    assert!(parse_svcb_hints(r"\# 2 zz zz").is_empty()); // non-hex octets
+    assert!(parse_svcb_hints(r"\#").is_empty()); // empty body
+    assert!(parse_svcb_hints(r"\# 8 00 01 00 00 04 00 08 68").is_empty()); // vlen claims 8, only 1 byte
+}
+
+#[test]
+fn https_record_emits_hint_ip_entities() {
+    use crate::core::entity::EntityKind;
+    let out = run(
+        "HTTPS",
+        &["1 . alpn=h3,h2 ipv4hint=198.51.100.7 ipv6hint=2001:db8::1"],
+    );
+    let v4 = out
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress && e.value == "198.51.100.7")
+        .expect("ipv4hint → IpAddress entity");
+    assert!(v4.has_tag("https-hint") && v4.has_tag("svcb") && v4.has_tag("ipv4"));
+    let v6 = out
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress && e.value == "2001:db8::1")
+        .expect("ipv6hint → IpAddress entity");
+    assert!(v6.has_tag("https-hint") && v6.has_tag("ipv6"));
+}
+
+#[test]
 fn chunked_spf_record_parses_into_members() {
     // The whole point: a long SPF record split across two DoH chunks must
     // still yield its ip4 + include members (it would not with the old

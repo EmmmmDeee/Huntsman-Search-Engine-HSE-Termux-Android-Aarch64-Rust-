@@ -4,10 +4,13 @@
 //!   `GET https://cloudflare-dns.com/dns-query?name={domain}&type={type}`
 //!   `GET https://dns.google/resolve?name={domain}&type={type}`
 //!
-//! Queries A, AAAA, MX, TXT, NS, CNAME, SOA records. Extracts IPs from A/AAAA,
-//! mail servers from MX, nameservers from NS, SPF/DKIM from TXT, zone admin email
-//! and primary NS from SOA, and DMARC reporting addresses from a dedicated
-//! `_dmarc.{domain}` TXT query (RFC 7489 §6.6.3).
+//! Queries A, AAAA, MX, TXT, NS, CNAME, SOA, and HTTPS records. Extracts IPs
+//! from A/AAAA, mail servers from MX, nameservers from NS, SPF/DKIM from TXT,
+//! zone admin email and primary NS from SOA, DMARC reporting addresses from a
+//! dedicated `_dmarc.{domain}` TXT query (RFC 7489 §6.6.3), and the
+//! ipv4hint/ipv6hint endpoint IPs from HTTPS/SVCB records (RFC 9460) — parsed
+//! from both the friendly presentation string and the raw RFC 3597 wire form
+//! the two resolvers respectively return.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -54,12 +57,17 @@ fn rtype_name(t: u16) -> Option<&'static str> {
         15 => Some("MX"),
         16 => Some("TXT"),
         28 => Some("AAAA"),
+        65 => Some("HTTPS"),
         _ => None,
     }
 }
 
-/// The record types we query at the apex domain, in order.
-const RECORD_TYPES: &[&str] = &["A", "AAAA", "MX", "TXT", "NS", "CNAME", "SOA"];
+/// The record types we query at the apex domain, in order. `HTTPS` (RFC 9460,
+/// type 65) is queried last as a supplementary infrastructure pass; its
+/// `ipv4hint`/`ipv6hint` addresses either mark an existing serving IP as an
+/// HTTPS/SVCB endpoint (via a UID merge) or surface a net-new one — see the
+/// `"HTTPS"` arm of [`records_for_type`].
+const RECORD_TYPES: &[&str] = &["A", "AAAA", "MX", "TXT", "NS", "CNAME", "SOA", "HTTPS"];
 
 /// Reconstruct a TXT record's logical value from the DoH JSON presentation form.
 /// **Pure.** A TXT record is one or more character-strings; the resolvers return
@@ -94,6 +102,104 @@ fn unquote_txt(data: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Extract the `ipv4hint` / `ipv6hint` addresses from an HTTPS/SVCB record
+/// (RFC 9460) as returned in a DoH JSON `data` field. **Pure**, fully
+/// bounds-checked — malformed input yields whatever parsed cleanly, never a
+/// panic. Handles BOTH forms the two resolvers emit: dns.google's friendly
+/// presentation string (`1 . alpn=h3,h2 ipv4hint=A,B ipv6hint=C,D`), and
+/// cloudflare-dns's raw RFC 3597 generic form (`\# <len> <hex octets>`), which
+/// carries the SvcParams as binary and must be decoded on the wire.
+///
+/// The hint addresses are the origin/edge IPs a client is told to connect to —
+/// infrastructure that an A/AAAA lookup may not surface (e.g. an HTTP/3-only or
+/// ECH-fronted endpoint), so a new one is a real pivot.
+fn parse_svcb_hints(data: &str) -> Vec<String> {
+    let data = data.trim();
+    if let Some(hex_body) = data.strip_prefix(r"\#") {
+        return svcb_hints_from_wire(hex_body);
+    }
+    // Friendly presentation form: whitespace-separated params, comma-lists.
+    let mut out = Vec::new();
+    for tok in data.split_whitespace() {
+        if let Some(list) = tok
+            .strip_prefix("ipv4hint=")
+            .or_else(|| tok.strip_prefix("ipv6hint="))
+        {
+            out.extend(
+                list.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+            );
+        }
+    }
+    out
+}
+
+/// Parse the binary SVCB RDATA behind an RFC 3597 `\#`-prefixed generic record
+/// (the space-separated `<decimal length> <hex octets…>` body) and return the
+/// `ipv4hint` (SvcParamKey 4) and `ipv6hint` (key 6) addresses. Every read is
+/// length-checked, so a truncated or hostile record simply stops early. **Pure.**
+fn svcb_hints_from_wire(hex_body: &str) -> Vec<String> {
+    let mut toks = hex_body.split_whitespace();
+    // First token is the RFC 3597 decimal rdata length; we bound on the actual
+    // decoded bytes instead, so skip it. The rest are hex octets.
+    toks.next();
+    let mut bytes: Vec<u8> = Vec::new();
+    for t in toks {
+        match u8::from_str_radix(t, 16) {
+            Ok(b) => bytes.push(b),
+            Err(_) => return Vec::new(), // non-hex octet → malformed, bail
+        }
+    }
+
+    let mut out = Vec::new();
+    // SvcPriority (2 octets).
+    let mut i = 2usize;
+    if bytes.len() < i {
+        return out;
+    }
+    // TargetName: length-prefixed labels terminated by a zero-length octet.
+    while i < bytes.len() {
+        let label_len = bytes[i] as usize;
+        i += 1;
+        if label_len == 0 {
+            break; // root / end of name
+        }
+        i = i.saturating_add(label_len);
+        if i > bytes.len() {
+            return out;
+        }
+    }
+    // SvcParams: repeated (key:2, len:2, value:len).
+    while i + 4 <= bytes.len() {
+        let key = u16::from_be_bytes([bytes[i], bytes[i + 1]]);
+        let vlen = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
+        i += 4;
+        if i + vlen > bytes.len() {
+            break;
+        }
+        let value = &bytes[i..i + vlen];
+        match key {
+            4 => {
+                for c in value.chunks_exact(4) {
+                    out.push(std::net::Ipv4Addr::new(c[0], c[1], c[2], c[3]).to_string());
+                }
+            }
+            6 => {
+                for c in value.chunks_exact(16) {
+                    let mut o = [0u8; 16];
+                    o.copy_from_slice(c);
+                    out.push(std::net::Ipv6Addr::from(o).to_string());
+                }
+            }
+            _ => {}
+        }
+        i += vlen;
+    }
+    out
 }
 
 /// Resolve a target to the domain to query. **Pure**: a `Url` is reduced to its
@@ -151,6 +257,33 @@ fn records_for_type(
                             .with_attr("record_type", effective),
                     );
                     out.push(e);
+                }
+            }
+            "HTTPS" => {
+                // RFC 9460 HTTPS record: harvest its ipv4hint/ipv6hint addresses.
+                // A distinct `httpshint:` dedup key (NOT the A/AAAA `ip:` key) is
+                // used deliberately: for a CDN-fronted domain a hint typically
+                // REPEATS an A/AAAA IP, and emitting it here lets the engine merge
+                // it (same UID) into that IP's entity — stamping it `https-hint`/
+                // `svcb`, i.e. marking WHICH serving IPs speak the HTTPS/SVCB
+                // record (HTTP/3-capable, ECH-fronted) rather than discarding the
+                // fact. A hint that is NOT among the plain records is a genuinely
+                // new endpoint IP the A/AAAA lookup missed. Both are wins.
+                for ip in parse_svcb_hints(&rec.data) {
+                    if !ip.is_empty() && seen.insert(format!("httpshint:{ip}")) {
+                        let is_v6 = ip.contains(':');
+                        let mut e = Entity::new(EntityKind::IpAddress, &ip, 0.75, scan_id);
+                        e.tag("dns");
+                        e.tag(if is_v6 { "ipv6" } else { "ipv4" });
+                        e.tag("https-hint");
+                        e.tag("svcb");
+                        e.add_evidence(
+                            base(format!("HTTPS/SVCB record hint for {domain}"))
+                                .with_attr("record_type", "HTTPS")
+                                .with_attr("svcparam", if is_v6 { "ipv6hint" } else { "ipv4hint" }),
+                        );
+                        out.push(e);
+                    }
                 }
             }
             "MX" => {
