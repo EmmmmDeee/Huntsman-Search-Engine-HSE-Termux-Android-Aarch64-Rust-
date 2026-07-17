@@ -11,7 +11,12 @@
 //!      stage prefixes and suffixes, separator normalisation) and resolve
 //!      them. Recurses automatically across the whole scan — see `permute`'s
 //!      module doc.
-//!   4. *CAA inspection* — RFC 8659 Certification Authority Authorization.
+//!   4. *SRV service-discovery* — RFC 2782 `_service._proto.domain` records
+//!      (AD domain controllers, mail/collaboration, VoIP, …), apex-only. Each
+//!      resolved target host is a new Domain pivot. See `srv`'s module doc.
+//!   5. *DKIM selectors* — RFC 6376 `<selector>._domainkey.domain` probing for
+//!      mail-vendor attribution and weak-key surfacing, apex-only. See `dkim`.
+//!   6. *CAA inspection* — RFC 8659 Certification Authority Authorization.
 //!
 //! **IpAddress targets** (sequential):
 //!   1. *Reverse DNS* — PTR record lookup.
@@ -24,10 +29,12 @@
 
 mod brute;
 mod constants;
+mod dkim;
 mod helpers;
 mod permute;
 mod resolve;
 mod resolve_batch;
+mod srv;
 #[cfg(test)]
 mod tests;
 mod wildcard;
@@ -42,8 +49,10 @@ use crate::core::{
 };
 
 use self::brute::brute_subdomains;
+use self::dkim::dkim_enumerate;
 use self::permute::permute_subdomains;
 use self::resolve::{blocklist_check, lookup_caa, resolve_records, reverse_lookup};
+use self::srv::srv_enumerate;
 
 pub(super) const SRC: &str = "dns_intel";
 pub(super) const MAX_CONCURRENT_BRUTE: usize = 12;
@@ -139,7 +148,19 @@ async fn process_domain(target: &Target, ctx: &ModuleContext) -> Result<ModuleRe
     let permute_result = permute_subdomains(target, ctx).await?;
     result.extend(permute_result);
 
-    // 4. CAA record inspection
+    // 4. SRV service-discovery enumeration (apex-only; a no-op on subdomains).
+    // Exposes the concrete host:port of enterprise services — AD domain
+    // controllers, mail/collab, VoIP — each a new Domain pivot. See `srv` doc.
+    let srv_result = srv_enumerate(target, ctx).await?;
+    result.extend(srv_result);
+
+    // 5. DKIM selector enumeration (apex-only). Probes common selectors at
+    // <selector>._domainkey.<domain> to attribute the mail platform/vendor and
+    // surface weak signing keys. See `dkim` module doc.
+    let dkim_result = dkim_enumerate(target, ctx).await?;
+    result.extend(dkim_result);
+
+    // 6. CAA record inspection
     let caa_result = lookup_caa(target, ctx).await?;
     result.extend(caa_result);
 
