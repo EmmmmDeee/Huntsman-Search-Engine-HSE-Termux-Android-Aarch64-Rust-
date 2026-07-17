@@ -30,6 +30,7 @@ mod resolve;
 mod resolve_batch;
 #[cfg(test)]
 mod tests;
+mod wildcard;
 
 use async_trait::async_trait;
 

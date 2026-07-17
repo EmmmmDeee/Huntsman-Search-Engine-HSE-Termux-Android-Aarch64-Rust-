@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -7,6 +9,7 @@ use crate::core::{
 
 use super::constants::SUBDOMAINS;
 use super::resolve_batch::resolve_hosts_concurrently;
+use super::wildcard::detect_wildcard;
 use super::{MAX_CONCURRENT_BRUTE, SRC};
 
 /// Subdomain brute-force via the common-name dictionary.
@@ -25,7 +28,13 @@ pub(super) async fn brute_subdomains(target: &Target, ctx: &ModuleContext) -> Re
         .map(|sub| format!("{sub}.{parent}"))
         .collect();
 
-    let hits = resolve_hosts_concurrently(candidates, MAX_CONCURRENT_BRUTE, ctx).await;
+    // A wildcard-DNS zone (`*.parent A x.x.x.x`) makes every dictionary word
+    // "resolve" — reproduced live against blogspot.com, where two unrelated
+    // random labels both answered with the same IP. Detect it once up front
+    // and filter out any hit that is nothing more than that catch-all noise.
+    let wildcard_fp = detect_wildcard(&parent).await.map(Arc::new);
+
+    let hits = resolve_hosts_concurrently(candidates, MAX_CONCURRENT_BRUTE, wildcard_fp, ctx).await;
 
     let entities: Vec<Entity> = hits
         .into_iter()

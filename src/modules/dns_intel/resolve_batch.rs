@@ -6,10 +6,12 @@
 //! — so this is the ONE implementation both call (Rule 4: delegate, never
 //! duplicate) rather than each hand-rolling its own `JoinSet`/`Semaphore`/sort.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use tokio::sync::Semaphore;
 
+use super::wildcard::is_wildcard_noise;
 use crate::core::module::ModuleContext;
 use crate::util::dns::shared_resolver;
 
@@ -17,14 +19,18 @@ use crate::util::dns::shared_resolver;
 pub(super) type ResolvedHost = (String, String, usize);
 
 /// Resolve every `candidates` hostname concurrently (bounded to `max_concurrent`
-/// in flight), keep only the ones with at least one A/AAAA record, and return
-/// them sorted by hostname for deterministic output regardless of DNS
-/// completion order — `join_next()` yields in network-completion order
-/// (nondeterministic run-to-run), so this collects first and sorts after,
-/// matching the fixed-order resolution every other dns_intel pass produces.
+/// in flight), keep only the ones with at least one A/AAAA record that is NOT
+/// indistinguishable from `wildcard_fingerprint`'s catch-all noise (`None` when
+/// the caller's zone has no detected wildcard — the common case, and the only
+/// behaviour prior to wildcard detection existing), and return them sorted by
+/// hostname for deterministic output regardless of DNS completion order —
+/// `join_next()` yields in network-completion order (nondeterministic
+/// run-to-run), so this collects first and sorts after, matching the
+/// fixed-order resolution every other dns_intel pass produces.
 pub(super) async fn resolve_hosts_concurrently(
     candidates: Vec<String>,
     max_concurrent: usize,
+    wildcard_fingerprint: Option<Arc<BTreeSet<String>>>,
     _ctx: &ModuleContext,
 ) -> Vec<ResolvedHost> {
     let resolver = shared_resolver();
@@ -33,13 +39,22 @@ pub(super) async fn resolve_hosts_concurrently(
 
     for host in candidates {
         let sem = Arc::clone(&sem);
+        let fingerprint = wildcard_fingerprint.clone();
         set.spawn(async move {
             let _permit = sem.acquire_owned().await.ok()?;
             match resolver.lookup_ip(host.as_str()).await {
                 Ok(lookup) => {
-                    let ips: Vec<String> = lookup.iter().map(|ip| ip.to_string()).collect();
-                    let count = ips.len();
-                    let joined = ips.join(", ");
+                    let ip_set: BTreeSet<String> = lookup.iter().map(|ip| ip.to_string()).collect();
+                    if ip_set.is_empty() {
+                        return None;
+                    }
+                    if let Some(fp) = fingerprint.as_deref()
+                        && is_wildcard_noise(&ip_set, fp)
+                    {
+                        return None;
+                    }
+                    let count = ip_set.len();
+                    let joined = ip_set.into_iter().collect::<Vec<_>>().join(", ");
                     Some((host, joined, count))
                 }
                 Err(_) => None,

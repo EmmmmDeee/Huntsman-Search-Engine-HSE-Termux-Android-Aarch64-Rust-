@@ -28,6 +28,7 @@
 //! to mutate; `"api.example.com"` does).
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -37,6 +38,7 @@ use crate::core::{
 };
 
 use super::resolve_batch::resolve_hosts_concurrently;
+use super::wildcard::detect_wildcard;
 use super::{MAX_CONCURRENT_BRUTE, SRC};
 
 /// Environment / deployment-stage words commonly used as a subdomain-label
@@ -147,7 +149,12 @@ pub(super) async fn permute_subdomains(
         return Ok(Vec::new());
     }
 
-    let hits = resolve_hosts_concurrently(candidates, MAX_CONCURRENT_BRUTE, ctx).await;
+    // Same wildcard-DNS guard as `brute_subdomains` — these candidates are
+    // siblings of `label` under `rest`, so the zone to fingerprint is `rest`
+    // (matching the zone `brute_subdomains` would test if dispatched there).
+    let wildcard_fp = detect_wildcard(rest).await.map(Arc::new);
+
+    let hits = resolve_hosts_concurrently(candidates, MAX_CONCURRENT_BRUTE, wildcard_fp, ctx).await;
 
     let entities: Vec<Entity> = hits
         .into_iter()
