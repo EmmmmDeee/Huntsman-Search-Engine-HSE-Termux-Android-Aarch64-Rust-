@@ -1,11 +1,17 @@
-//! Unified DNS intelligence module — resolution, brute-force, CAA, reverse,
-//! and blocklist checks dispatched by target kind:
+//! Unified DNS intelligence module — resolution, brute-force, structural
+//! permutation, CAA, reverse, and blocklist checks dispatched by target kind:
 //!
 //! **Domain targets** (sequential):
 //!   1. *Resolution* — A / AAAA / MX / NS / SOA / TXT lookups via `tokio::join!`.
 //!   2. *Subdomain brute-force* — 146-label common-name dictionary, bounded
 //!      to 12 concurrent lookups.
-//!   3. *CAA inspection* — RFC 8659 Certification Authority Authorization.
+//!   3. *Structural permutation* — `altdns`-class enumeration: once a target
+//!      IS an already-discovered subdomain (≥3 labels), generate structural
+//!      siblings of its own leftmost label (numeric neighbours, environment/
+//!      stage prefixes and suffixes, separator normalisation) and resolve
+//!      them. Recurses automatically across the whole scan — see `permute`'s
+//!      module doc.
+//!   4. *CAA inspection* — RFC 8659 Certification Authority Authorization.
 //!
 //! **IpAddress targets** (sequential):
 //!   1. *Reverse DNS* — PTR record lookup.
@@ -19,7 +25,9 @@
 mod brute;
 mod constants;
 mod helpers;
+mod permute;
 mod resolve;
+mod resolve_batch;
 #[cfg(test)]
 mod tests;
 
@@ -33,6 +41,7 @@ use crate::core::{
 };
 
 use self::brute::brute_subdomains;
+use self::permute::permute_subdomains;
 use self::resolve::{blocklist_check, lookup_caa, resolve_records, reverse_lookup};
 
 pub(super) const SRC: &str = "dns_intel";
@@ -118,11 +127,18 @@ async fn process_domain(target: &Target, ctx: &ModuleContext) -> Result<ModuleRe
     let resolver_result = resolve_records(target, ctx).await?;
     result.extend(resolver_result);
 
-    // 2. Subdomain brute-force
+    // 2. Subdomain brute-force (generic common-name dictionary)
     let brute_result = brute_subdomains(target, ctx).await?;
     result.extend(brute_result);
 
-    // 3. CAA record inspection
+    // 3. Structural permutation of the CURRENT target's own leftmost label
+    // (a no-op on the bare apex; fires once this target is itself a discovered
+    // subdomain — including one the brute-force pass just found, or one the
+    // engine re-dispatches from a prior round). See `permute` module doc.
+    let permute_result = permute_subdomains(target, ctx).await?;
+    result.extend(permute_result);
+
+    // 4. CAA record inspection
     let caa_result = lookup_caa(target, ctx).await?;
     result.extend(caa_result);
 
