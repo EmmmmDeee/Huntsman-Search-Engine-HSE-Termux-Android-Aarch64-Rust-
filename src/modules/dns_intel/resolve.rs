@@ -446,7 +446,70 @@ pub(super) async fn lookup_caa(target: &Target, ctx: &ModuleContext) -> Result<V
     }
     entity.add_evidence(ev);
 
-    Ok(vec![entity])
+    // The `iodef` values (RFC 8659 §4.4) name WHERE certificate-issuance
+    // violations for this domain should be reported — a `mailto:` address or an
+    // `https://`/`http://` endpoint. That address is a real, published
+    // security/abuse contact the domain operator controls; surface it as a
+    // pivotable Email (and the reporting URL's host as a Domain lead) rather than
+    // burying it in a joined-string attribute the recursion can't traverse.
+    let mut out = vec![entity];
+    for value in &iodefs {
+        out.extend(iodef_entities(value, domain, &ctx.scan_id));
+    }
+    Ok(out)
+}
+
+/// Parse a CAA `iodef` property value into pivotable entities. `mailto:addr`
+/// yields an Email (the domain's designated cert-violation-reporting contact);
+/// an `http(s)://` value yields a Domain for the reporting endpoint's host (a
+/// recursable lead — the raw URL itself is retained on the CAA entity's
+/// evidence). Anything else (a bare URN, malformed value) yields nothing.
+/// **Pure** — no I/O, independently unit-tested.
+pub(super) fn iodef_entities(value: &str, domain: &str, scan_id: &str) -> Vec<Entity> {
+    let value = value.trim();
+    if let Some(addr) = value.strip_prefix("mailto:") {
+        let addr = addr.trim();
+        // Minimal sanity: a single `@`, a dot in the domain part, no whitespace —
+        // enough to reject a malformed value without duplicating a full validator.
+        let looks_like_email = addr.split('@').count() == 2
+            && !addr.chars().any(char::is_whitespace)
+            && addr.rsplit('@').next().is_some_and(|d| d.contains('.'));
+        if !looks_like_email {
+            return Vec::new();
+        }
+        let mut e = Entity::new(EntityKind::Email, addr, 0.75, scan_id);
+        e.tag("caa");
+        e.tag("iodef");
+        e.tag("security-contact");
+        e.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("CAA iodef reporting contact for {domain} (RFC 8659)"),
+            )
+            .with_attr("iodef", value)
+            .with_attr("role", "cert-issuance-violation-report"),
+        );
+        return vec![e];
+    }
+    if (value.starts_with("https://") || value.starts_with("http://"))
+        && let Some(host) = crate::util::url_util::host_from_url(value)
+        && host.contains('.')
+        && host != domain
+    {
+        let mut d = Entity::new(EntityKind::Domain, &host, 0.60, scan_id);
+        d.tag("caa");
+        d.tag("iodef");
+        d.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("CAA iodef reporting endpoint host for {domain} (RFC 8659)"),
+            )
+            .with_attr("iodef", value)
+            .with_attr("role", "cert-issuance-violation-report"),
+        );
+        return vec![d];
+    }
+    Vec::new()
 }
 
 /// PTR record lookup for IP → hostname mapping.

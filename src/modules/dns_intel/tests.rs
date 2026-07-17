@@ -8,6 +8,7 @@ use super::{
         VERIFICATION_VENDORS, reverse_ip, soa_rname_to_email, unescape_dns_label,
         verification_vendor,
     },
+    resolve::iodef_entities,
 };
 
 // -- DnsIntel accepts --------------------------------------------------
@@ -67,6 +68,50 @@ fn soa_admin_role_mailbox_is_gated_as_infrastructure() {
     assert!(!is_infrastructure_email(&soa_rname_to_email(
         "alice.personaldomain.org"
     )));
+}
+
+#[test]
+fn iodef_mailto_becomes_a_security_contact_email() {
+    use crate::core::entity::EntityKind;
+    let ents = iodef_entities("mailto:security@example.com", "example.com", "scan-iodef");
+    assert_eq!(ents.len(), 1);
+    let e = &ents[0];
+    assert_eq!(e.kind, EntityKind::Email);
+    assert_eq!(e.value, "security@example.com");
+    assert!(e.has_tag("iodef") && e.has_tag("security-contact") && e.has_tag("caa"));
+}
+
+#[test]
+fn iodef_https_endpoint_yields_a_domain_lead() {
+    use crate::core::entity::EntityKind;
+    // The reporting host is a pivotable Domain — but only when it differs from
+    // the target domain (a self-referential iodef adds no new lead).
+    let ents = iodef_entities(
+        "https://iodef.reporter.net/report",
+        "example.com",
+        "scan-iodef",
+    );
+    assert_eq!(ents.len(), 1);
+    assert_eq!(ents[0].kind, EntityKind::Domain);
+    // The full reporting-endpoint host is the lead (the engine's own expansion
+    // derives its registrable domain when it re-dispatches).
+    assert_eq!(ents[0].value, "iodef.reporter.net");
+    assert!(ents[0].has_tag("iodef"));
+
+    // Self-referential host (same registrable domain host) adds no new entity.
+    let self_ref = iodef_entities("https://example.com/report", "example.com", "scan-iodef");
+    assert!(self_ref.is_empty(), "iodef host == target adds no new lead");
+}
+
+#[test]
+fn iodef_rejects_malformed_and_unknown_schemes() {
+    // A malformed mailto (no domain dot, whitespace, or missing @) yields nothing.
+    assert!(iodef_entities("mailto:notanemail", "example.com", "s").is_empty());
+    assert!(iodef_entities("mailto:a@b", "example.com", "s").is_empty());
+    assert!(iodef_entities("mailto:a b@c.com", "example.com", "s").is_empty());
+    // A non-mailto/non-http scheme (or bare URN) yields nothing.
+    assert!(iodef_entities("urn:example:report", "example.com", "s").is_empty());
+    assert!(iodef_entities("", "example.com", "s").is_empty());
 }
 
 #[test]
