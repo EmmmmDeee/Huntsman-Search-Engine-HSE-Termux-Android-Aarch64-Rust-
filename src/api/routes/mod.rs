@@ -761,7 +761,7 @@ async fn favicon_handler() -> Response {
 const MANIFEST_JSON: &str = r##"{
   "name": "Huntsman Search Engine",
   "short_name": "Huntsman",
-  "description": "OSINT/GEOINT platform — runs entirely in Termux on Android, no root.",
+  "description": "All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition — SpiderFoot-inspired breadth, runs entirely in Termux on Android, no root.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
