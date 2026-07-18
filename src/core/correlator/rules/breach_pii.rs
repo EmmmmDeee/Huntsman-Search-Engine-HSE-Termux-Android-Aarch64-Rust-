@@ -248,7 +248,11 @@ pub(in crate::core::correlator) fn rule_au_073_subject_date_of_birth(
                     "Subject date of birth {dob}{} — asserted by {n} independent source(s) \
                      ({}); the strongest disambiguator from same-name namesakes",
                     age_from_dob(&dob, ts).map_or(String::new(), |age| format!(" (age {age})")),
-                    sources.iter().cloned().collect::<Vec<_>>().join(", ")
+                    sources
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 entity_uids: uids.into_iter().collect(),
                 scan_id: scan_id.into(),
@@ -569,7 +573,11 @@ pub(in crate::core::correlator) fn rule_au_090_au_jurisdiction(
                     "Subject's Australian jurisdiction {state} — asserted by {n} breach \
                      record source(s) ({}){note}; a residency/issuing-state geo anchor \
                      that cross-checks the address/coordinate footprint",
-                    sources.iter().cloned().collect::<Vec<_>>().join(", ")
+                    sources
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 entity_uids: uids.into_iter().collect(),
                 scan_id: scan_id.into(),
@@ -691,7 +699,11 @@ pub(in crate::core::correlator) fn rule_au_091_au_postcode_locality(
                     "Subject's Australian postcode {pc} ({state}){coord} — asserted by {n} \
                      breach record source(s) ({}){note}; a residential locality anchor finer \
                      than the state",
-                    sources.iter().cloned().collect::<Vec<_>>().join(", ")
+                    sources
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 entity_uids: uids.into_iter().collect(),
                 scan_id: scan_id.into(),
@@ -982,7 +994,11 @@ pub(in crate::core::correlator) fn rule_au_093_au_address_from_breach(
                     "Subject's Australian locality {addr}{coord} — assembled from {} breach \
                      record source(s) ({}); {grade}",
                     sources.len(),
-                    sources.iter().cloned().collect::<Vec<_>>().join(", ")
+                    sources
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 entity_uids: uids.into_iter().collect(),
                 scan_id: scan_id.into(),
@@ -1362,7 +1378,11 @@ pub(in crate::core::correlator) fn rule_au_104_bank_account_exposure(
                 format!(
                     "Subject banks with {bank} — an Australian BSB exposed across {n} source(s) \
                      ({}); {exposure}.",
-                    sources.iter().cloned().collect::<Vec<_>>().join(", ")
+                    sources
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
                 uids.into_iter().collect(),
                 scan_id,
@@ -1540,7 +1560,7 @@ pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
                     "A {kind} is reused across {n} distinct breaches ({}) — the subject reuses \
                      credentials, so one cracked secret opens every account (the credential-stuffing \
                      / account-takeover surface). MITRE T1110.004",
-                    breaches.iter().cloned().collect::<Vec<_>>().join(", ")
+                    breaches.iter().map(String::as_str).collect::<Vec<_>>().join(", ")
                 ),
                 uids.into_iter().collect(),
                 scan_id,

@@ -135,7 +135,7 @@ pub(in crate::core::correlator) fn is_infrastructure_geo(e: &Entity) -> bool {
         && !e
             .corroborating_sources()
             .iter()
-            .any(|s| ANCHORING_GEO_SOURCES.contains(s))
+            .any(|s| is_anchoring_geo_source(s))
 }
 
 /// The coordinates admissible to a *person's* geo footprint: confirmed

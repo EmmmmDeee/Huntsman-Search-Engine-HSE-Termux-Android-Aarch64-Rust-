@@ -464,16 +464,7 @@ pub(in crate::core::correlator) fn rule_au_038_verified_cross_platform_identity(
         format!(
             "Identity confirmed on {} distinct platforms: {}",
             hosts.len(),
-            hosts
-                .into_iter()
-                .enumerate()
-                .fold(String::new(), |mut acc, (i, s)| {
-                    if i > 0 {
-                        acc.push_str(", ");
-                    }
-                    acc.push_str(&s);
-                    acc
-                })
+            hosts.into_iter().collect::<Vec<_>>().join(", ")
         ),
         uids,
         scan_id,
