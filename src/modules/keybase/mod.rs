@@ -29,8 +29,14 @@ pub struct Keybase;
 pub(super) struct KbResp {
     #[serde(default)]
     pub(super) status: Option<KbStatus>,
+    /// The subject profile. The singular `?username=` endpoint returns `them`
+    /// as a **single object** (not an array — arrays only come from the plural
+    /// `?usernames=a,b` form this module never uses), so this must be a bare
+    /// `Option<KbUser>`. It was previously `Option<Vec<KbUser>>`, which made
+    /// serde fail every real lookup with "invalid type: map, expected a
+    /// sequence" — the module yielded nothing for all inputs.
     #[serde(default)]
-    pub(super) them: Option<Vec<KbUser>>,
+    pub(super) them: Option<KbUser>,
 }
 
 #[derive(Deserialize)]
@@ -170,7 +176,7 @@ pub(super) fn build_entities(body: KbResp, query_username: &str, scan_id: &str) 
     if body.status.as_ref().and_then(|s| s.code) != Some(0) {
         return Vec::new();
     }
-    let Some(user) = body.them.unwrap_or_default().into_iter().next() else {
+    let Some(user) = body.them else {
         return Vec::new();
     };
 
