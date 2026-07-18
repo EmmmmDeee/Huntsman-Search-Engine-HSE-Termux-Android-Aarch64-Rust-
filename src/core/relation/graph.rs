@@ -57,7 +57,7 @@ pub struct IdentityPath {
     pub min_confidence: f64,
 }
 
-/// The causal **light-cone** of an entity: the chain of `DerivedFrom` pivots
+/// The **derivation trail** of an entity: the chain of `DerivedFrom` pivots
 /// that led from the seed to it — `[entity, its expansion parent, …, root]`,
 /// each element being the entity whose expansion surfaced the next. Follows the
 /// `DerivedFrom` edge direction (`from_uid` = child → `to_uid` = parent) up

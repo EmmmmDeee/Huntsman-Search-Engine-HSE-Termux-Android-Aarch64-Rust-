@@ -1002,10 +1002,10 @@ fn merge_observed_at_takes_max() {
     assert_eq!(c.observed_at, 5000);
 }
 
-// ── Entity generation (expansion epoch) ─────────────────────────────────
+// ── Entity generation (expansion generation) ─────────────────────────────────
 
 #[test]
-fn expansion_timeline_counts_entities_per_epoch_in_order() {
+fn expansion_timeline_counts_entities_per_generation_in_order() {
     let mut ents = vec![
         email("a@x.com"),
         email("b@x.com"),
@@ -1014,58 +1014,61 @@ fn expansion_timeline_counts_entities_per_epoch_in_order() {
     ];
     ents[0].generation = 0;
     ents[1].generation = 0;
-    ents[2].generation = 2; // note: skips epoch 1
+    ents[2].generation = 2; // note: skips generation 1
     ents[3].generation = 2;
     let timeline = crate::core::entity::expansion_timeline(&ents);
-    // BTreeMap keeps epochs ordered; only populated epochs appear.
+    // BTreeMap keeps generations ordered; only populated generations appear.
     let pairs: Vec<(u32, usize)> = timeline.into_iter().collect();
     assert_eq!(pairs, vec![(0, 2), (2, 2)]);
 }
 
 #[test]
-fn redshift_discounts_c_effective_by_generation() {
+fn depth_decay_discounts_c_effective_by_generation() {
     let mut e = email("x@y.com");
     let base_c = e.c_effective(); // single source ⇒ c_effective == confidence
 
-    // base^0 = 1: a seed-round (epoch 0) entity is never discounted.
+    // base^0 = 1: a seed-round (generation 0) entity is never discounted.
     e.generation = 0;
-    assert!((e.c_effective_redshifted(0.9) - base_c).abs() < 1e-9);
+    assert!((e.c_effective_depth_decayed(0.9) - base_c).abs() < 1e-9);
 
-    // Each epoch multiplies by `base`: epoch 2 ⇒ ×base².
+    // Each generation multiplies by `base`: generation 2 ⇒ ×base².
     e.generation = 2;
-    assert!((e.c_effective_redshifted(0.9) - base_c * 0.9 * 0.9).abs() < 1e-9);
+    assert!((e.c_effective_depth_decayed(0.9) - base_c * 0.9 * 0.9).abs() < 1e-9);
 
     // base = 1.0 is a total no-op at any depth (the default-off behaviour).
     e.generation = 5;
-    assert!((e.c_effective_redshifted(1.0) - base_c).abs() < 1e-9);
+    assert!((e.c_effective_depth_decayed(1.0) - base_c).abs() < 1e-9);
 
     // The result stays clamped to [0, 1].
-    assert!((0.0..=1.0).contains(&e.c_effective_redshifted(0.5)));
+    assert!((0.0..=1.0).contains(&e.c_effective_depth_decayed(0.5)));
 }
 
 #[test]
 fn new_entity_starts_at_generation_zero() {
-    // Modules never know their round, so every freshly-built entity is epoch 0.
+    // Modules never know their round, so every freshly-built entity is generation 0.
     assert_eq!(email("x@y.com").generation, 0);
 }
 
 #[test]
-fn merge_preserves_the_earliest_epoch() {
+fn merge_preserves_the_earliest_generation() {
     // The load-bearing invariant: an entity first surfaced deep in expansion
-    // (engine-stamped, here generation 3) must NOT be reset to the seed epoch
+    // (engine-stamped, here generation 3) must NOT be reset to the seed generation
     // when a later round re-emits it via a module (which always carries the
     // default generation 0). merge folds `other` INTO the pre-existing entity,
-    // so `self`'s epoch is kept.
+    // so `self`'s generation is kept.
     let mut deep = email("x@y.com");
     deep.generation = 3;
     let reemit = email("x@y.com"); // module default: generation 0
     deep.merge(reemit);
-    assert_eq!(deep.generation, 3, "re-emission must not reset the epoch");
+    assert_eq!(
+        deep.generation, 3,
+        "re-emission must not reset the generation"
+    );
 }
 
 #[test]
 fn generation_serde_round_trips_and_defaults_for_legacy_rows() {
-    // New rows carry the epoch through data_json.
+    // New rows carry the generation through data_json.
     let mut e = email("x@y.com");
     e.generation = 2;
     let json = serde_json::to_string(&e).unwrap();
@@ -1078,7 +1081,10 @@ fn generation_serde_round_trips_and_defaults_for_legacy_rows() {
     let mut obj = legacy.as_object().unwrap().clone();
     obj.remove("generation");
     let recovered: Entity = serde_json::from_value(serde_json::Value::Object(obj)).unwrap();
-    assert_eq!(recovered.generation, 0, "legacy rows default to epoch 0");
+    assert_eq!(
+        recovered.generation, 0,
+        "legacy rows default to generation 0"
+    );
 }
 
 #[test]

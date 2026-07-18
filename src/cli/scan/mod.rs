@@ -414,15 +414,15 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         } else {
             println!();
         }
-        // Expansion timeline (the "inflation curve"): how the entity universe
-        // grew epoch by epoch outward from the seed singularity. Only shown when
-        // expansion actually reached beyond the seed round (more than one epoch
-        // present), so a plain depth-0 scan stays uncluttered.
+        // Expansion timeline: how the working graph grew generation by generation
+        // outward from the seed. Only shown when expansion actually reached beyond
+        // the seed round (more than one generation present), so a plain depth-0
+        // scan stays uncluttered.
         let timeline = crate::core::entity::expansion_timeline(&entities);
         if timeline.len() > 1 {
             let parts: Vec<String> = timeline
                 .iter()
-                .map(|(g, n)| format!("epoch {g}: {n}"))
+                .map(|(g, n)| format!("gen {g}: {n}"))
                 .collect();
             println!("  expansion: {}\n", parts.join("  ·  "));
         }

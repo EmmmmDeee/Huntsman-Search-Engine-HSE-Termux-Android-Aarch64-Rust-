@@ -1709,7 +1709,7 @@ async fn recall_prior_entities_pulls_and_tags_prior_scan_findings() {
 }
 
 /// Recalled prior-scan knowledge is injected before the seed round, so it is
-/// the epoch-0 "background" universe of THIS scan — its stored generation
+/// generation-0 background context for THIS scan — its stored generation
 /// (relative to a different scan's seed) is meaningless here and must be reset.
 #[tokio::test]
 async fn recall_resets_generation_to_zero() {
@@ -1738,16 +1738,16 @@ async fn recall_resets_generation_to_zero() {
         .expect("recall surfaces the prior deep lead");
     assert_eq!(
         got.generation, 0,
-        "a recalled node re-enters at epoch 0, not its prior-scan epoch"
+        "a recalled node re-enters at generation 0, not its prior-scan generation"
     );
 }
 
-/// The Big-Bang coordinate: expansion stamps every entity's `generation` (epoch)
-/// with the round it was first discovered — its distance in pivots from the seed
-/// singularity. A deterministic chain module emits exactly one successor per
-/// target, so the seed round yields an epoch-0 child, round 1 an epoch-1 child,
-/// round 2 an epoch-2 child. Merges preserve the earliest epoch, so a later
-/// round re-emitting an earlier entity never resets it.
+/// Expansion stamps every entity's `generation` with the round it was first
+/// discovered — its distance in pivots from the seed. A deterministic chain
+/// module emits exactly one successor per target, so the seed round yields a
+/// generation-0 child, round 1 a generation-1 child, round 2 a generation-2
+/// child. Merges preserve the earliest generation, so a later round re-emitting
+/// an earlier entity never resets it.
 struct ChainModule;
 
 #[async_trait::async_trait]
@@ -1824,19 +1824,23 @@ async fn expansion_stamps_entity_generation_per_round() {
 
     let ents = store.entities_for_scan(&scan_id).unwrap();
     let gen_of = |v: &str| ents.iter().find(|e| e.value == v).map(|e| e.generation);
-    // The seed's own anchor and its direct module output are epoch 0 (zero pivots).
-    assert_eq!(gen_of("seed"), Some(0), "seed anchor is epoch 0");
-    assert_eq!(gen_of("g0child"), Some(0), "seed-round child is epoch 0");
-    // Each expansion round is one pivot further out along the light-cone.
+    // The seed's own anchor and its direct module output are generation 0 (zero pivots).
+    assert_eq!(gen_of("seed"), Some(0), "seed anchor is generation 0");
+    assert_eq!(
+        gen_of("g0child"),
+        Some(0),
+        "seed-round child is generation 0"
+    );
+    // Each expansion round is one pivot further out along the derivation trail.
     assert_eq!(
         gen_of("g1child"),
         Some(1),
-        "first expansion child is epoch 1"
+        "first expansion child is generation 1"
     );
     assert_eq!(
         gen_of("g2child"),
         Some(2),
-        "second expansion child is epoch 2"
+        "second expansion child is generation 2"
     );
 }
 

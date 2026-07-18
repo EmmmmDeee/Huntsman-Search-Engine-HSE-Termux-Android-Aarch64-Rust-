@@ -147,13 +147,16 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
         "  Modules:   {} run, {} errored, {} deduped",
         scan.modules_run, scan.modules_errored, scan.modules_deduped
     );
-    // Expansion timeline — the scan's "inflation curve": how many entities were
-    // first surfaced in each epoch (generation) as the graph expanded outward
-    // from the seed singularity. Shown only when expansion reached beyond the
-    // seed round (more than one epoch present).
+    // Expansion timeline — the scan's expansion curve: how many entities were
+    // first surfaced in each generation as the working graph expanded outward
+    // from the seed. Shown only when expansion reached beyond the seed round
+    // (more than one generation present).
     let timeline = crate::core::entity::expansion_timeline(entities);
     if timeline.len() > 1 {
-        let parts: Vec<String> = timeline.iter().map(|(g, n)| format!("e{g}:{n}")).collect();
+        let parts: Vec<String> = timeline
+            .iter()
+            .map(|(g, n)| format!("gen{g}:{n}"))
+            .collect();
         println!("  Expansion: {}", parts.join(" → "));
     }
 
@@ -339,22 +342,22 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
     }
 
     print_connections(entities, relations);
-    print_expansion_lightcone(entities, relations);
+    print_derivation_trails(entities, relations);
     print_resolved_identities(entities, relations);
     print_connection_brokers(entities, relations);
 
     print_diagnostics(scan, entities, kind, value, &scan.id, store);
 }
 
-/// EXPANSION LIGHT-CONE — the causal chain of pivots that surfaced each of the
+/// DERIVATION TRAILS — the causal chain of pivots that surfaced each of the
 /// deepest findings, seed → … → entity. Where CONNECTIONS shows how identities
 /// link to each other, this shows how the SCAN itself REACHED a finding: which
-/// entity's expansion led to which, epoch by epoch out from the seed
-/// singularity. Reuses the [`crate::core::relation::provenance_chain`] primitive
-/// so the rendered path and the stored `DerivedFrom` lineage can never disagree.
-/// Only the entities expansion actually reached (epoch > 0) have a chain worth
+/// entity's expansion led to which, generation by generation out from the seed.
+/// Reuses the [`crate::core::relation::provenance_chain`] primitive so the
+/// rendered path and the stored `DerivedFrom` lineage can never disagree. Only
+/// the entities expansion actually reached (generation > 0) have a trail worth
 /// narrating; a seed-round find is trivially its own root.
-fn print_expansion_lightcone(entities: &[Entity], relations: &[Relation]) {
+fn print_derivation_trails(entities: &[Entity], relations: &[Relation]) {
     use std::collections::HashMap;
 
     let mut deep: Vec<&Entity> = entities.iter().filter(|e| e.generation > 0).collect();
@@ -384,11 +387,11 @@ fn print_expansion_lightcone(entities: &[Entity], relations: &[Relation]) {
 
     const SHOWN: usize = 12;
     println!(
-        "━━━ EXPANSION LIGHT-CONE ({}) — how the deepest leads were reached ━━━",
+        "━━━ DERIVATION TRAILS ({}) — how the deepest leads were reached ━━━",
         deep.len()
     );
     println!();
-    println!("  The pivot chain from the seed out to each finding (epoch = pivots from the seed):");
+    println!("  The pivot chain from the seed out to each finding (gen = pivots from the seed):");
     println!();
     for e in deep.iter().take(SHOWN) {
         // provenance_chain is entity→root; reverse it for a seed→entity reading.
@@ -400,7 +403,7 @@ fn print_expansion_lightcone(entities: &[Entity], relations: &[Relation]) {
             .map(label)
             .collect::<Vec<_>>()
             .join("  →  ");
-        println!("  [epoch {}] {}  ({})", e.generation, rendered, e.kind);
+        println!("  [gen {}] {}  ({})", e.generation, rendered, e.kind);
     }
     if let Some(note) = truncation_note(SHOWN, deep.len()) {
         println!("{note}");

@@ -685,16 +685,16 @@ impl ScanEngine {
     /// count so live streaming is the norm, not the exception.
     const INCREMENTAL_CORRELATE_MAX_ENTITIES: usize = 400;
 
-    /// Expansion-redshift base (see `feature.redshift`): each generation away
-    /// from the seed multiplies an entity's *expansion* confidence by this
+    /// Expansion depth-decay base (see `feature.depth_decay`): each generation
+    /// away from the seed multiplies an entity's *expansion* confidence by this
     /// factor — gen 1 ×0.75, gen 2 ×0.56, gen 3 ×0.42. Combined with the default
-    /// 0.20 expansion floor this sets a genuine "redshift horizon": a gen-3 lead
-    /// needs raw c_eff ≥ 0.20/0.75³ ≈ 0.47 to keep inflating, so a deep chain
+    /// 0.20 expansion floor this sets a genuine depth horizon: a gen-3 lead
+    /// needs raw c_eff ≥ 0.20/0.75³ ≈ 0.47 to keep expanding, so a deep chain
     /// must be well-corroborated to continue while seed-adjacent leads are
     /// untouched (gen 0 ×0.75⁰ = ×1). Only consulted when the opt-in policy is
     /// on; the stored/displayed confidence and every correlation/gate that reads
     /// plain `c_effective` are never touched.
-    const REDSHIFT_BASE: f64 = 0.75;
+    const DEPTH_DECAY_BASE: f64 = 0.75;
 
     /// Live cross-correlation during ingestion. Evaluates the entity rules
     /// against an in-memory snapshot of the working set (no store round-trip)
@@ -956,11 +956,11 @@ impl ScanEngine {
         for e in &mut out {
             e.corroboration = 0;
             // Recalled prior-scan knowledge is injected BEFORE the seed round —
-            // it is the pre-existing "background" universe present at epoch 0 of
-            // this scan, not something this scan's expansion reached. (The stored
-            // value was relative to a DIFFERENT scan's seed, so it is meaningless
-            // here.) A live module that re-discovers the entity deeper this scan
-            // still keeps 0, since merge preserves the earliest epoch.
+            // it is pre-existing background context, generation 0 of this scan,
+            // not something this scan's expansion reached. (The stored value was
+            // relative to a DIFFERENT scan's seed, so it is meaningless here.) A
+            // live module that re-discovers the entity deeper this scan still
+            // keeps 0, since merge preserves the earliest generation.
             e.generation = 0;
         }
         // Confidence desc, then uid asc as a total, deterministic tie-break: `out`
@@ -1094,7 +1094,7 @@ impl ScanEngine {
             }
             // New entities this probe surfaced are derived from the gap endpoint.
             // Gap-fill runs AFTER the planned expansion rounds, so its finds sit
-            // one epoch beyond the last round on the expansion light-cone.
+            // one generation beyond the last round in the derivation trail.
             let gap_generation = opts.depth.saturating_add(1);
             for uid in newly_inserted.drain(..) {
                 if let Some(child) = entity_map.get_mut(&uid) {
@@ -1153,14 +1153,14 @@ impl ScanEngine {
         // of the whole (up to `max_entities`-sized) entity_map needed per
         // candidate. Reusing the buffer avoids a per-candidate allocation.
         let mut newly_inserted: Vec<String> = Vec::new();
-        // Expansion redshift (opt-in `feature.redshift`, default off): when on,
-        // an entity's confidence FOR EXPANSION is discounted by its generation,
-        // so the recursion favours seed-adjacent leads and deep chains need more
-        // corroboration to keep inflating. Read once per scan; `None` ⇒ the
-        // expansion is byte-identical to today (plain `c_effective`).
-        let redshift_base: Option<f64> =
-            crate::util::settings::get_bool(crate::util::settings::REDSHIFT_FEATURE, false)
-                .then_some(Self::REDSHIFT_BASE);
+        // Expansion depth-decay (opt-in `feature.depth_decay`, default off): when
+        // on, an entity's confidence FOR EXPANSION is discounted by its
+        // generation, so the recursion favours seed-adjacent leads and deep chains
+        // need more corroboration to keep expanding. Read once per scan; `None` ⇒
+        // the expansion is byte-identical to today (plain `c_effective`).
+        let decay_base: Option<f64> =
+            crate::util::settings::get_bool(crate::util::settings::DEPTH_DECAY_FEATURE, false)
+                .then_some(Self::DEPTH_DECAY_BASE);
         for depth in 1..=opts.depth {
             // Refresh keys from the pool at the start of each round. Keys
             // discovered during the previous round (oathnet_pro breach data,
@@ -1264,10 +1264,10 @@ impl ScanEngine {
                 // the strategy weight, the convex premium) and `source_count()`
                 // twice. Computing each once per candidate trims redundant work in
                 // the hottest expansion loop on the constrained target. When the
-                // redshift policy is on, this single value is generation-discounted,
-                // so every downstream expansion decision (floor / rank / gate) sees
-                // the reddened confidence consistently.
-                let c_eff = expansion_confidence(entity, redshift_base);
+                // depth-decay policy is on, this single value is
+                // generation-discounted, so every downstream expansion decision
+                // (floor / rank / gate) sees the decayed confidence consistently.
+                let c_eff = expansion_confidence(entity, decay_base);
                 if c_eff < opts.effective_min_expand_confidence() {
                     self.emit_excluded(scan_id, entity, "below_min_expand_confidence");
                     continue;
@@ -1582,12 +1582,12 @@ impl ScanEngine {
                 // matching the `DerivedFrom` edge name.
                 for uid in newly_inserted.drain(..) {
                     if let Some(child) = entity_map.get_mut(&uid) {
-                        // Stamp the expansion epoch: this entity was first
-                        // surfaced in round `depth`, i.e. `depth` hops out from
-                        // the seed singularity along the expansion light-cone.
-                        // Only genuinely-new UIDs reach here (merges into an
-                        // existing, earlier entity are excluded), so this never
-                        // overwrites an earlier epoch.
+                        // Stamp the expansion generation: this entity was first
+                        // surfaced in round `depth`, i.e. `depth` pivots out from
+                        // the seed along its derivation trail. Only genuinely-new
+                        // UIDs reach here (merges into an existing, earlier entity
+                        // are excluded), so this never overwrites an earlier
+                        // generation.
                         child.generation = depth;
                         let child_conf = child.confidence;
                         relations.push(Relation::new(
@@ -1620,8 +1620,8 @@ impl ScanEngine {
                     let mut d = derived;
                     enrich_geospatial(&mut d);
                     // A Coordinates entity derived from a round-`depth` Address
-                    // belongs to that same expansion epoch (a merge into an
-                    // earlier-epoch entity still keeps that earlier value).
+                    // belongs to that same expansion generation (a merge into an
+                    // earlier-generation entity still keeps that earlier value).
                     d.generation = depth;
                     if let Some(existing) = entity_map.get_mut(&d.uid) {
                         existing.merge(d);

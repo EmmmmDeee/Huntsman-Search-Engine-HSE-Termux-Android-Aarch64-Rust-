@@ -1769,7 +1769,7 @@ fn collapse_to_max_confidence_keeps_the_strongest_of_duplicate_edges() {
     assert_eq!(collapsed[1].to_uid, "c");
 }
 
-// ── provenance_chain (expansion light-cone) ─────────────────────────────
+// ── provenance_chain (derivation trail) ─────────────────────────────────
 
 #[test]
 fn provenance_chain_walks_derivedfrom_back_to_the_root() {
@@ -1778,7 +1778,7 @@ fn provenance_chain_walks_derivedfrom_back_to_the_root() {
         Relation::new("child", "root", RelationKind::DerivedFrom, 0.9, "s"),
         Relation::new("grand", "child", RelationKind::DerivedFrom, 0.9, "s"),
     ];
-    // From the deepest node the light-cone walks back to the seed root.
+    // From the deepest node the trail walks back to the seed root.
     assert_eq!(
         provenance_chain("grand", &rels),
         vec!["grand", "child", "root"]

@@ -13,17 +13,17 @@ use super::StopReason;
 
 /// The effective confidence used for EXPANSION decisions (the floor gate, the
 /// ranking weight, and the wrong-identity/convex premiums): plain
-/// [`Entity::c_effective`], or — under the opt-in `feature.redshift` policy —
+/// [`Entity::c_effective`], or — under the opt-in `feature.depth_decay` policy —
 /// that value discounted by the entity's generation (distance in pivots from
-/// the seed). Pure. `redshift_base` is `None` when the policy is off (the
+/// the seed). Pure. `decay_base` is `None` when the policy is off (the
 /// default), giving behaviour byte-identical to a bare `entity.c_effective()`;
-/// `Some(base)` reddens deeper leads so the recursion favours seed-adjacent
+/// `Some(base)` discounts deeper leads so the recursion favours seed-adjacent
 /// ones. Centralised here so the loop applies the SAME value to every downstream
 /// expansion decision, and so the branch is unit-testable without touching the
 /// global settings the engine reads the toggle from.
-pub(super) fn expansion_confidence(entity: &Entity, redshift_base: Option<f64>) -> f64 {
-    match redshift_base {
-        Some(base) => entity.c_effective_redshifted(base),
+pub(super) fn expansion_confidence(entity: &Entity, decay_base: Option<f64>) -> f64 {
+    match decay_base {
+        Some(base) => entity.c_effective_depth_decayed(base),
         None => entity.c_effective(),
     }
 }
@@ -150,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn expansion_confidence_reddens_only_when_the_policy_is_on() {
+    fn expansion_confidence_decays_only_when_the_policy_is_on() {
         use crate::core::entity::{Entity, EntityKind};
         let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.8, "s");
         e.generation = 2;
@@ -160,9 +160,9 @@ mod tests {
 
         // Policy ON ⇒ the value the engine's floor/rank/gate see is the
         // generation-discounted one, strictly below the raw confidence.
-        let reddened = expansion_confidence(&e, Some(0.75));
-        assert!(reddened < e.c_effective());
-        assert!((reddened - e.c_effective_redshifted(0.75)).abs() < 1e-12);
+        let decayed = expansion_confidence(&e, Some(0.75));
+        assert!(decayed < e.c_effective());
+        assert!((decayed - e.c_effective_depth_decayed(0.75)).abs() < 1e-12);
 
         // A gen-0 (seed-round) entity is never discounted even with the policy on.
         let mut seed = Entity::new(EntityKind::Email, "z@y.com", 0.8, "s");
