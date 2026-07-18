@@ -5,9 +5,12 @@
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
 
+**All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
+SpiderFoot-inspired breadth without the daemon or the footprint.**
+
 Pure-Rust OSINT / GEOINT platform with **163 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
-dark-console Web UI, zero native dependencies.
+dark-console Web UI, zero native dependencies, keyless-first.
 
 ---
 
