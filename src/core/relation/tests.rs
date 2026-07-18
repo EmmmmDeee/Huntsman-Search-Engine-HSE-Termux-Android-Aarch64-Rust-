@@ -1768,3 +1768,41 @@ fn collapse_to_max_confidence_keeps_the_strongest_of_duplicate_edges() {
     assert_eq!(collapsed[0].to_uid, "b");
     assert_eq!(collapsed[1].to_uid, "c");
 }
+
+// ── provenance_chain (expansion light-cone) ─────────────────────────────
+
+#[test]
+fn provenance_chain_walks_derivedfrom_back_to_the_root() {
+    // root ← child ← grand: each DerivedFrom points child → parent.
+    let rels = vec![
+        Relation::new("child", "root", RelationKind::DerivedFrom, 0.9, "s"),
+        Relation::new("grand", "child", RelationKind::DerivedFrom, 0.9, "s"),
+    ];
+    // From the deepest node the light-cone walks back to the seed root.
+    assert_eq!(
+        provenance_chain("grand", &rels),
+        vec!["grand", "child", "root"]
+    );
+    // A root (no parent edge) is its own single-element chain.
+    assert_eq!(provenance_chain("root", &rels), vec!["root"]);
+    // A non-DerivedFrom edge is ignored by the walk.
+    let noise = vec![Relation::new(
+        "grand",
+        "x",
+        RelationKind::HostedOn,
+        0.9,
+        "s",
+    )];
+    assert_eq!(provenance_chain("grand", &noise), vec!["grand"]);
+}
+
+#[test]
+fn provenance_chain_is_cycle_safe() {
+    // A pathological a↔b DerivedFrom cycle must terminate, not loop forever.
+    let rels = vec![
+        Relation::new("a", "b", RelationKind::DerivedFrom, 0.5, "s"),
+        Relation::new("b", "a", RelationKind::DerivedFrom, 0.5, "s"),
+    ];
+    // a → b → (a already seen → stop).
+    assert_eq!(provenance_chain("a", &rels), vec!["a", "b"]);
+}

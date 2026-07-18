@@ -57,6 +57,45 @@ pub struct IdentityPath {
     pub min_confidence: f64,
 }
 
+/// The causal **light-cone** of an entity: the chain of `DerivedFrom` pivots
+/// that led from the seed to it — `[entity, its expansion parent, …, root]`,
+/// each element being the entity whose expansion surfaced the next. Follows the
+/// `DerivedFrom` edge direction (`from_uid` = child → `to_uid` = parent) up
+/// toward the seed, stopping at a root (an entity with no parent edge — the seed
+/// or a seed-round find) or if a cycle is ever detected. Deterministic: the
+/// FIRST `DerivedFrom` parent per child is used (relations are built in a
+/// deterministic order), so an entity carrying several derivation edges still
+/// yields a stable chain. Pure — the returned UIDs borrow from `relations`.
+///
+/// A returned chain of length 1 means the entity is a root (seed-round /
+/// generation 0): nothing derived it. Reverse the result for a seed→entity
+/// reading.
+#[must_use]
+pub fn provenance_chain<'a>(uid: &'a str, relations: &'a [Relation]) -> Vec<&'a str> {
+    // child → parent, keeping the FIRST DerivedFrom edge per child so the walk
+    // is stable when an entity has more than one derivation ancestor.
+    let mut parent: HashMap<&str, &str> = HashMap::new();
+    for r in relations
+        .iter()
+        .filter(|r| r.kind == RelationKind::DerivedFrom)
+    {
+        parent
+            .entry(r.from_uid.as_str())
+            .or_insert(r.to_uid.as_str());
+    }
+    let mut chain = vec![uid];
+    let mut seen: HashSet<&str> = HashSet::from([uid]);
+    let mut cur = uid;
+    while let Some(&p) = parent.get(cur) {
+        if !seen.insert(p) {
+            break; // cycle guard — DerivedFrom is acyclic, but never loop
+        }
+        chain.push(p);
+        cur = p;
+    }
+    chain
+}
+
 /// Identity-bearing entity kinds — the nodes a connection path links end to end.
 /// Intermediate nodes may be any kind (a domain, an IP, an address); only the
 /// two endpoints must be identities. Mirrors the AU-034/AU-060 identity notion.
