@@ -43,6 +43,12 @@ pub enum Command {
         // the value, not parsed by clap as an unknown short flag.
         #[arg(short, long, allow_hyphen_values = true)]
         value: Option<String>,
+        /// Batch mode: path to a file of seeds, one target per line (blank lines
+        /// and `#` comments ignored). Runs the SAME scan for every listed seed —
+        /// bulk-scan an IP / domain / email / username list. When set, `--value`
+        /// is ignored; each seed's findings are stored and exportable per scan_id.
+        #[arg(long, value_name = "PATH")]
+        input_file: Option<String>,
         /// Comma-separated allowlist of module names.
         #[arg(short, long)]
         modules: Option<String>,
