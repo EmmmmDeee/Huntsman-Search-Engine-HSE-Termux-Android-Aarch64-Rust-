@@ -34,20 +34,19 @@ pub(in crate::core::correlator) fn rule_au_016_breach_ip_geo_chain(
     }
     let mut uids: Vec<String> = breach_ips.iter().map(|e| e.uid.clone()).collect();
     uids.extend(linked.iter().map(|e| e.uid.clone()));
-    vec![Correlation {
-        rule_id: "AU-016".into(),
-        rule_name: "Breach IP → geolocation chain".into(),
-        severity: Severity::High,
-        description: format!(
+    vec![Correlation::new(
+        "AU-016",
+        "Breach IP → geolocation chain",
+        Severity::High,
+        format!(
             "{} breach IP(s) resolved to {} coordinate(s) via geolocation pipeline",
             breach_ips.len(),
             linked.len()
         ),
-        entity_uids: uids,
-        scan_id: scan_id.into(),
+        uids,
+        scan_id,
         ts,
-        rank: 0.0,
-    }]
+    )]
 }
 
 pub(in crate::core::correlator) fn rule_au_017_multi_geo_convergence(
@@ -109,20 +108,19 @@ pub(in crate::core::correlator) fn rule_au_017_multi_geo_convergence(
                 .iter()
                 .flat_map(|(e, _)| e.evidence.iter().map(|ev| ev.source.as_str()))
                 .collect();
-            Correlation {
-                rule_id: "AU-017".into(),
-                rule_name: "Multi-source geographic convergence".into(),
-                severity: Severity::High,
-                description: format!(
+            Correlation::new(
+                "AU-017",
+                "Multi-source geographic convergence",
+                Severity::High,
+                format!(
                     "{} coordinate entities converge within 0.5° (~55km), from {} source(s)",
                     cl.len(),
                     sources.len()
                 ),
-                entity_uids: uids,
-                scan_id: scan_id.into(),
+                uids,
+                scan_id,
                 ts,
-                rank: 0.0,
-            }
+            )
         })
         .collect()
 }
