@@ -1708,6 +1708,138 @@ async fn recall_prior_entities_pulls_and_tags_prior_scan_findings() {
     );
 }
 
+/// Recalled prior-scan knowledge is injected before the seed round, so it is
+/// the epoch-0 "background" universe of THIS scan — its stored generation
+/// (relative to a different scan's seed) is meaningless here and must be reset.
+#[tokio::test]
+async fn recall_resets_generation_to_zero() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+
+    let mut seed = Entity::new(EntityKind::Username, "recallgen", 0.9, "prior-scan");
+    seed.add_evidence(Evidence::new("anchor", "seed"));
+    let mut deep = Entity::new(EntityKind::Email, "deeplead@gmail.com", 0.8, "prior-scan");
+    deep.generation = 5; // was a deep pivot in the PRIOR scan
+    deep.add_evidence(Evidence::new("plant", "found deep in an earlier scan"));
+    store.upsert_entity(&seed).unwrap();
+    store.upsert_entity(&deep).unwrap();
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let engine = ScanEngine::new(vec![], store_port, bus);
+    let target = Target::new(TargetKind::Username, "recallgen");
+
+    let recalled = engine.recall_prior_entities(&target, "current-scan", true);
+    let got = recalled
+        .iter()
+        .find(|e| e.value == "deeplead@gmail.com")
+        .expect("recall surfaces the prior deep lead");
+    assert_eq!(
+        got.generation, 0,
+        "a recalled node re-enters at epoch 0, not its prior-scan epoch"
+    );
+}
+
+/// The Big-Bang coordinate: expansion stamps every entity's `generation` (epoch)
+/// with the round it was first discovered — its distance in pivots from the seed
+/// singularity. A deterministic chain module emits exactly one successor per
+/// target, so the seed round yields an epoch-0 child, round 1 an epoch-1 child,
+/// round 2 an epoch-2 child. Merges preserve the earliest epoch, so a later
+/// round re-emitting an earlier entity never resets it.
+struct ChainModule;
+
+#[async_trait::async_trait]
+impl Module for ChainModule {
+    fn name(&self) -> &'static str {
+        "chain"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Username)
+    }
+    fn produces(&self) -> &'static [EntityKind] {
+        const K: &[EntityKind] = &[EntityKind::Username];
+        K
+    }
+    async fn process(
+        &self,
+        target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        let mut r = crate::core::module::ModuleResult::new();
+        let next = match target.value.as_str() {
+            "seed" => Some("g0child"),
+            "g0child" => Some("g1child"),
+            "g1child" => Some("g2child"),
+            _ => None,
+        };
+        if let Some(n) = next {
+            let mut e = Entity::new(EntityKind::Username, n, 0.9, &ctx.scan_id);
+            e.tag("chain");
+            e.add_evidence(crate::core::entity::Evidence::new("chain", "synthetic"));
+            r.push(e);
+        }
+        Ok(r)
+    }
+}
+
+#[tokio::test]
+async fn expansion_stamps_entity_generation_per_round() {
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, _rx) = tokio::sync::broadcast::channel(256);
+    let engine = ScanEngine::new(vec![Arc::new(ChainModule)], store_port, bus.clone());
+
+    // depth 2 → rounds 1 and 2 run. Gates bypassed so the synthetic chain isn't
+    // pruned as a wrong-identity / low-confidence pivot, and ROI off so the
+    // adaptive-depth cutoff can't stop the chain early.
+    let opts = ScanOptions {
+        depth: 2,
+        expand_all_identities: true,
+        max_roi: false,
+        min_expand_confidence: 0.0,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Username, "seed");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("username", "seed"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let scan_id = scan.id.clone();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    engine.run(scan, target, ctx).await.unwrap();
+
+    let ents = store.entities_for_scan(&scan_id).unwrap();
+    let gen_of = |v: &str| ents.iter().find(|e| e.value == v).map(|e| e.generation);
+    // The seed's own anchor and its direct module output are epoch 0 (zero pivots).
+    assert_eq!(gen_of("seed"), Some(0), "seed anchor is epoch 0");
+    assert_eq!(gen_of("g0child"), Some(0), "seed-round child is epoch 0");
+    // Each expansion round is one pivot further out along the light-cone.
+    assert_eq!(
+        gen_of("g1child"),
+        Some(1),
+        "first expansion child is epoch 1"
+    );
+    assert_eq!(
+        gen_of("g2child"),
+        Some(2),
+        "second expansion child is epoch 2"
+    );
+}
+
 /// CONVENTIONS.md §5 determinism: `recall_prior_entities`'s cap (`MAX_ENTITIES`
 /// = 300, matched here) sorts by confidence and truncates — the WHICH-SURVIVES
 /// question, not just display order. Modules routinely stamp flat literal

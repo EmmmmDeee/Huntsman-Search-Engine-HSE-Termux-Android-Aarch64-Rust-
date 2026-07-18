@@ -943,6 +943,13 @@ impl ScanEngine {
         // above (which would otherwise floor a duplicate back up to 1).
         for e in &mut out {
             e.corroboration = 0;
+            // Recalled prior-scan knowledge is injected BEFORE the seed round —
+            // it is the pre-existing "background" universe present at epoch 0 of
+            // this scan, not something this scan's expansion reached. (The stored
+            // value was relative to a DIFFERENT scan's seed, so it is meaningless
+            // here.) A live module that re-discovers the entity deeper this scan
+            // still keeps 0, since merge preserves the earliest epoch.
+            e.generation = 0;
         }
         // Confidence desc, then uid asc as a total, deterministic tie-break: `out`
         // comes from a HashMap (`merged.into_values()`, randomised order) and the
@@ -1074,13 +1081,18 @@ impl ScanEngine {
                 }
             }
             // New entities this probe surfaced are derived from the gap endpoint.
+            // Gap-fill runs AFTER the planned expansion rounds, so its finds sit
+            // one epoch beyond the last round on the expansion light-cone.
+            let gap_generation = opts.depth.saturating_add(1);
             for uid in newly_inserted.drain(..) {
-                if let Some(child) = entity_map.get(&uid) {
+                if let Some(child) = entity_map.get_mut(&uid) {
+                    child.generation = gap_generation;
+                    let child_conf = child.confidence;
                     relations.push(Relation::new(
                         uid.as_str(),
                         probe.endpoint_uid.as_str(),
                         RelationKind::DerivedFrom,
-                        child.confidence,
+                        child_conf,
                         scan_id,
                     ));
                 }
@@ -1546,12 +1558,20 @@ impl ScanEngine {
                 // *derived from* the parent it was expanded out of (`parent_uid`),
                 // matching the `DerivedFrom` edge name.
                 for uid in newly_inserted.drain(..) {
-                    if let Some(child) = entity_map.get(&uid) {
+                    if let Some(child) = entity_map.get_mut(&uid) {
+                        // Stamp the expansion epoch: this entity was first
+                        // surfaced in round `depth`, i.e. `depth` hops out from
+                        // the seed singularity along the expansion light-cone.
+                        // Only genuinely-new UIDs reach here (merges into an
+                        // existing, earlier entity are excluded), so this never
+                        // overwrites an earlier epoch.
+                        child.generation = depth;
+                        let child_conf = child.confidence;
                         relations.push(Relation::new(
                             uid.as_str(),
                             parent_uid.as_str(),
                             RelationKind::DerivedFrom,
-                            child.confidence,
+                            child_conf,
                             scan_id,
                         ));
                     }
@@ -1576,6 +1596,10 @@ impl ScanEngine {
                 for derived in address_to_coords_pass(entity_map, scan_id) {
                     let mut d = derived;
                     enrich_geospatial(&mut d);
+                    // A Coordinates entity derived from a round-`depth` Address
+                    // belongs to that same expansion epoch (a merge into an
+                    // earlier-epoch entity still keeps that earlier value).
+                    d.generation = depth;
                     if let Some(existing) = entity_map.get_mut(&d.uid) {
                         existing.merge(d);
                     } else {

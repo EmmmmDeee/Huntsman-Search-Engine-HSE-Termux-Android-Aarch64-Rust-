@@ -1002,6 +1002,46 @@ fn merge_observed_at_takes_max() {
     assert_eq!(c.observed_at, 5000);
 }
 
+// ── Entity generation (expansion epoch) ─────────────────────────────────
+
+#[test]
+fn new_entity_starts_at_generation_zero() {
+    // Modules never know their round, so every freshly-built entity is epoch 0.
+    assert_eq!(email("x@y.com").generation, 0);
+}
+
+#[test]
+fn merge_preserves_the_earliest_epoch() {
+    // The load-bearing invariant: an entity first surfaced deep in expansion
+    // (engine-stamped, here generation 3) must NOT be reset to the seed epoch
+    // when a later round re-emits it via a module (which always carries the
+    // default generation 0). merge folds `other` INTO the pre-existing entity,
+    // so `self`'s epoch is kept.
+    let mut deep = email("x@y.com");
+    deep.generation = 3;
+    let reemit = email("x@y.com"); // module default: generation 0
+    deep.merge(reemit);
+    assert_eq!(deep.generation, 3, "re-emission must not reset the epoch");
+}
+
+#[test]
+fn generation_serde_round_trips_and_defaults_for_legacy_rows() {
+    // New rows carry the epoch through data_json.
+    let mut e = email("x@y.com");
+    e.generation = 2;
+    let json = serde_json::to_string(&e).unwrap();
+    let back: Entity = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.generation, 2);
+
+    // A legacy row persisted before the field existed has no `generation` key;
+    // #[serde(default)] must decode it to 0 (no storage migration needed).
+    let legacy = serde_json::to_value(&e).unwrap();
+    let mut obj = legacy.as_object().unwrap().clone();
+    obj.remove("generation");
+    let recovered: Entity = serde_json::from_value(serde_json::Value::Object(obj)).unwrap();
+    assert_eq!(recovered.generation, 0, "legacy rows default to epoch 0");
+}
+
 #[test]
 fn merge_raw_value_is_order_independent() {
     // Same UID (case-insensitive email), differing only in display spelling.

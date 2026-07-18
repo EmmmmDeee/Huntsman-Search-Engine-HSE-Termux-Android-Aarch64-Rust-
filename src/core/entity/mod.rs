@@ -396,6 +396,17 @@ pub struct Entity {
     pub tags: Vec<String>,
     /// Scan ID this entity was first seen in.
     pub scan_id: String,
+    /// Expansion **generation** (epoch): how many recursive expansion rounds
+    /// from the seed this entity was first discovered — its distance from the
+    /// "singularity". `0` = the seed round (directly from the queried subject),
+    /// `N` = surfaced by pivoting on a generation-`N-1` entity, i.e. `N` hops
+    /// out along the expansion light-cone. Engine-assigned (modules always
+    /// create at `0`); the engine stamps a genuinely-new entity with the round
+    /// it was born in, and `merge` preserves the EARLIEST epoch an entity
+    /// entered the graph. Rides in `data_json` — old rows deserialize to `0`
+    /// via `#[serde(default)]`, so no storage migration is needed.
+    #[serde(default)]
+    pub generation: u32,
 }
 
 impl Entity {
@@ -422,6 +433,10 @@ impl Entity {
             evidence: Vec::new(),
             tags: Vec::new(),
             scan_id: scan_id.into(),
+            // Modules never know their expansion round, so every freshly-built
+            // entity starts at the seed epoch; the engine re-stamps a
+            // genuinely-new entity with the round it was actually born in.
+            generation: 0,
         }
     }
 
@@ -779,6 +794,7 @@ impl Entity {
     /// - `corroboration` += other.corroboration  — only increases
     /// - `observed_at`  = max(self, other)        — most recent wins
     /// - `raw_value`    = min(self, other)        — deterministic display value
+    /// - `generation`   = preserved (self's)      — earliest epoch wins
     /// - `evidence` merged, de-duplicated by `(source, summary)`
     /// - `tags` unioned (de-duplicated)
     ///
@@ -838,6 +854,15 @@ impl Entity {
             .saturating_add(other.corroboration)
             .max(1);
         self.observed_at = u64::max(self.observed_at, other.observed_at);
+        // `generation` is deliberately NOT merged here: it is engine-assigned in
+        // monotonic round order (a genuinely-new entity is stamped with the round
+        // it was born in AFTER insertion), while every module-built `other` still
+        // carries the meaningless default `0`. Taking a min would let a later
+        // round's re-emission (`other.generation == 0`) reset an existing entity's
+        // real epoch back to the seed. Keeping `self`'s value preserves the
+        // earliest epoch the entity actually entered the graph — the invariant the
+        // engine relies on (merges only ever fold `other` INTO the pre-existing,
+        // earlier-or-equal entity).
         // Deduplicate evidence by (source, summary) to prevent accumulation
         // across live mode iterations or re-scans — a repeated observation by the
         // SAME source with the SAME summary is the same record, not new
