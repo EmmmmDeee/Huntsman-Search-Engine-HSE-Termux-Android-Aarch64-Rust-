@@ -1,22 +1,27 @@
 //! GitLab user lookup. Free, no key — the official public REST API.
 //!
 //! Endpoint: `GET https://gitlab.com/api/v4/users?username={username}`
-//! Returns a JSON array (0 or 1 element for an exact username query):
+//! Returns a JSON array (0 or 1 element for an exact username query). The
+//! UNAUTHENTICATED response is the basic public view (confirmed live):
 //!
 //! ```json
-//! [{"id":1,"username":"alice","name":"Alice Smith",
-//!   "bio":"…","website_url":"https://alice.dev",
-//!   "location":"Sydney, AU","organization":"Acme Corp",
-//!   "twitter":"alicetw","linkedin":"aliceli"}]
+//! [{"id":1,"username":"alice","name":"Alice Smith","state":"active",
+//!   "avatar_url":"https://…","web_url":"https://gitlab.com/alice",
+//!   "public_email":"alice@example.com"}]
 //! ```
+//!
+//! The richer fields (`bio`, `location`, `organization`, `twitter`, `linkedin`,
+//! `website_url`, `created_at`) are NOT returned without an authentication token
+//! — the struct keeps them (`#[serde(default)]`) so a keyed deployment still
+//! populates them, but a keyless scan realistically gets username + name +
+//! `public_email`. That public email is the high-value pivot this module now
+//! surfaces (it was previously dropped).
 //!
 //! Why it earns a place in the keyless-API set: GitLab is a major code-hosting
 //! platform independent of GitHub — a confirmed account here is in the **code**
-//! source family (separate from GitHub, npmjs, crates.io) so it adds genuine
+//! source family (separate from GitHub, npmjs, crates.io), adding genuine
 //! cross-service diversity to AU-045 multi-service identity confirmation and the
-//! AU-062 multi-pathway corroboration rule. The profile exposes `twitter`,
-//! `linkedin`, `website_url`, `location`, and `organization` for direct
-//! cross-platform pivoting. Official, stable, keyless for public profiles.
+//! AU-062 multi-pathway corroboration rule. Official, stable, keyless.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -39,6 +44,11 @@ pub(super) struct GlUser {
     pub(super) username: String,
     #[serde(default)]
     pub(super) name: Option<String>,
+    /// The account's PUBLIC email — the one rich field the unauthenticated
+    /// `/users?username=` endpoint actually returns (confirmed live), and a
+    /// direct, high-confidence contact pivot the module previously dropped.
+    #[serde(default)]
+    pub(super) public_email: Option<String>,
     #[serde(default)]
     pub(super) bio: Option<String>,
     #[serde(default)]
@@ -150,6 +160,29 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
     }
     u.add_evidence(ev);
     result.push(u);
+
+    // Public email — the account owner's self-published contact address (the one
+    // rich field the keyless endpoint returns). A confirmed, directly-pivotable
+    // Email, so it carries high confidence.
+    if let Some(email) = user
+        .public_email
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| e.contains('@') && e.len() >= 5)
+    {
+        let mut em = Entity::new(EntityKind::Email, email, 0.85, scan_id);
+        em.tag("gitlab");
+        em.tag("public-profile");
+        em.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("Public email from GitLab profile of '{}'", user.username),
+            )
+            .with_attr("source_field", "public_email")
+            .with_attr("gitlab_user", &user.username),
+        );
+        result.push(em);
+    }
 
     // Real name → Person (non-placeholder, ≥ 2 tokens).
     if let Some(name) = user.name.as_deref()
@@ -331,6 +364,7 @@ mod tests {
         GlUser {
             username: username.to_string(),
             name: name.map(str::to_string),
+            public_email: None,
             bio: None,
             website_url: website.map(str::to_string),
             location: location.map(str::to_string),
@@ -411,5 +445,29 @@ mod tests {
         let ents = build_entities(user, "scan-gl-007");
         assert_eq!(ents.len(), 1, "only Username when no optional fields");
         assert_eq!(ents[0].kind, EntityKind::Username);
+    }
+
+    #[test]
+    fn emits_public_email_the_keyless_endpoint_actually_returns() {
+        // `public_email` is the one rich field the unauthenticated
+        // /users?username= response carries (confirmed live) — it must surface as
+        // a high-confidence Email, not be dropped.
+        let mut user = make_user("gluser", None, None, None, None, None);
+        user.public_email = Some("dev@example.com".to_string());
+        let ents = build_entities(user, "scan-gl-email");
+        let em = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Email && e.value == "dev@example.com")
+            .expect("public_email → Email entity");
+        assert!(em.has_tag("gitlab") && em.has_tag("public-profile"));
+        assert!((em.confidence - 0.85).abs() < 0.01);
+        // A blank / malformed public_email is not surfaced.
+        let mut u2 = make_user("gluser", None, None, None, None, None);
+        u2.public_email = Some(String::new());
+        assert!(
+            build_entities(u2, "s")
+                .iter()
+                .all(|e| e.kind != EntityKind::Email)
+        );
     }
 }
