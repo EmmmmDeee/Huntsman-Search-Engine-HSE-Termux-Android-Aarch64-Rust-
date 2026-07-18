@@ -78,6 +78,9 @@ impl Module for Gravatar {
             EntityKind::Url,
             EntityKind::Address,
             EntityKind::Coordinates,
+            // Owner-published `emails[]` and `company` (employer).
+            EntityKind::Email,
+            EntityKind::Organisation,
         ];
         KINDS
     }
@@ -270,6 +273,66 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
             .filter(|u| u.starts_with("http"))
         {
             push(result, EntityKind::Url, u, 0.55, &tags);
+        }
+    }
+
+    // Owner-published additional emails — distinct contact addresses (e.g. a work
+    // address alongside the hashed lookup email), a direct high-value pivot.
+    for gm in &entry.emails {
+        if let Some(addr) = gm
+            .value
+            .as_deref()
+            .map(str::trim)
+            .filter(|e| e.contains('@') && e.len() >= 5)
+        {
+            let mut e = Entity::new(EntityKind::Email, addr, 0.82, scan_id);
+            e.tag(SRC);
+            e.tag("public-profile");
+            let mut mev = ev.clone().with_attr("source_field", "emails");
+            if gm.primary.as_deref() == Some("true") {
+                mev = mev.with_attr("primary", "true");
+            }
+            e.add_evidence(mev);
+            result.push(e);
+        }
+    }
+
+    // Employer → Organisation, carrying the job title as evidence when present.
+    if let Some(company) = entry
+        .company
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| c.len() >= 2)
+    {
+        let mut o = Entity::new(EntityKind::Organisation, company, 0.60, scan_id);
+        o.tag(SRC);
+        o.tag("employer");
+        let mut oev = ev.clone().with_attr("source_field", "company");
+        if let Some(jt) = entry.job_title.as_deref().filter(|s| !s.is_empty()) {
+            oev = oev.with_attr("job_title", jt);
+        }
+        o.add_evidence(oev);
+        result.push(o);
+    }
+
+    // Contact channels → the contact URL(s) the owner published (contact form,
+    // etc.). Only http(s) values become Url leads.
+    for ci in &entry.contact_info {
+        if let Some(val) = ci
+            .value
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| v.starts_with("http"))
+        {
+            let mut u = Entity::new(EntityKind::Url, val, 0.60, scan_id);
+            u.tag(SRC);
+            u.tag("contact");
+            u.add_evidence(
+                ev.clone()
+                    .with_attr("source_field", "contactInfo")
+                    .with_attr("contact_type", ci.kind.as_deref().unwrap_or("contact")),
+            );
+            result.push(u);
         }
     }
 }
