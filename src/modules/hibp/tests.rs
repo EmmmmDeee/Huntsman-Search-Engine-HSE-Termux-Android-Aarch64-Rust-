@@ -174,6 +174,23 @@ fn tag_breach_quality_clean_breach_gets_no_quality_tags() {
 }
 
 #[test]
+fn paste_deser_live_shape() {
+    // Verbatim shape of a live `/pasteaccount/{email}` response (confirmed with a
+    // real key): the module must decode Source/Title/Date/EmailCount.
+    let json = r#"[{"Id":"X5VHhh4q","Source":"Pastebin","Title":"nmd",
+        "Date":"2014-11-28T06:11:00Z","EmailCount":245}]"#;
+    let pastes: Vec<Paste> = serde_json::from_str(json).unwrap();
+    assert_eq!(pastes.len(), 1);
+    assert_eq!(pastes[0].source.as_deref(), Some("Pastebin"));
+    assert_eq!(pastes[0].title.as_deref(), Some("nmd"));
+    assert_eq!(pastes[0].email_count, Some(245));
+    // A minimal paste (only Source) still decodes.
+    let minimal: Vec<Paste> = serde_json::from_str(r#"[{"Source":"AdHocUrl"}]"#).unwrap();
+    assert_eq!(minimal[0].source.as_deref(), Some("AdHocUrl"));
+    assert!(minimal[0].email_count.is_none());
+}
+
+#[test]
 fn breach_deser_stealer_log_and_malware_flags() {
     // The v3 breach schema carries `IsStealerLog` / `IsMalware` on every breach
     // object (confirmed live via the /breaches catalog: e.g. TelegramStealerLogs,

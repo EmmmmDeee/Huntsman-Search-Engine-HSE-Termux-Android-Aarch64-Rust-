@@ -2,6 +2,8 @@
 //!
 //! Endpoints:
 //!   GET /api/v3/breachedaccount/{email}  — breaches containing this email
+//!   GET /api/v3/pasteaccount/{email}     — public pastes (Pastebin, …) the
+//!                                          email appeared in (the "paste" half)
 //!   GET /api/v3/breaches?domain={domain} — breaches affecting a domain
 //!
 //! Rate limit: 10 req/min on the basic subscription. The module
@@ -175,6 +177,22 @@ fn tag_breach_quality(e: &mut Entity, breach: &Breach) {
     }
 }
 
+/// One HIBP paste hit (`GET /pasteaccount/{email}`): the email address appeared
+/// in a public paste (Pastebin, …) — frequently a credential/dox dump. Fields
+/// per the v3 API.
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub(super) struct Paste {
+    #[serde(default)]
+    pub(super) source: Option<String>,
+    #[serde(default)]
+    pub(super) title: Option<String>,
+    #[serde(default)]
+    pub(super) date: Option<String>,
+    #[serde(default)]
+    pub(super) email_count: Option<u64>,
+}
+
 // ── Module impl ─────────────────────────────────────────────────────
 
 pub struct Hibp;
@@ -227,6 +245,12 @@ impl Module for Hibp {
             TargetKind::Email => {
                 self.query_breached_account(key, target, ctx, &mut result)
                     .await?;
+                // The module bills itself a "breach + paste oracle" — deliver the
+                // paste half too. Best-effort: a paste-endpoint failure must not
+                // sink the (already-collected) breach findings.
+                if let Err(e) = self.query_pastes(key, target, ctx, &mut result).await {
+                    tracing::debug!(target: "huntsman::hibp", error = %e, "paste lookup failed (breach results retained)");
+                }
             }
             TargetKind::Domain => {
                 self.query_domain_breaches(key, target, ctx, &mut result)
@@ -505,6 +529,74 @@ impl Hibp {
             }
         }
 
+        Ok(())
+    }
+
+    /// GET /api/v3/pasteaccount/{email} — the public pastes (Pastebin, …) an
+    /// address appeared in. A paste is distinct from a site breach: it is
+    /// frequently a credential / dox dump, so it is its own exposure signal
+    /// (`tags::PASTE_EXPOSED`), surfaced on the SAME Email entity (UID-merged
+    /// with any breach hit). This is the "paste" half of the module's own
+    /// "breach + paste oracle" billing, previously never delivered.
+    async fn query_pastes(
+        &self,
+        key: &str,
+        target: &Target,
+        ctx: &ModuleContext,
+        result: &mut ModuleResult,
+    ) -> Result<()> {
+        let email = urlencode(target.value.trim());
+        let url = format!("{BASE_URL}/pasteaccount/{email}");
+        let pastes: Vec<Paste> = match self.api_get(key, &url, ctx).await? {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        if pastes.is_empty() {
+            return Ok(());
+        }
+
+        let mut sources: Vec<&str> = pastes.iter().filter_map(|p| p.source.as_deref()).collect();
+        sources.sort_unstable();
+        sources.dedup();
+        let latest = pastes
+            .iter()
+            .filter_map(|p| p.date.as_deref())
+            .max()
+            .unwrap_or("");
+        let max_emails = pastes
+            .iter()
+            .filter_map(|p| p.email_count)
+            .max()
+            .unwrap_or(0);
+        let titles: Vec<&str> = pastes
+            .iter()
+            .filter_map(|p| p.title.as_deref())
+            .filter(|t| !t.is_empty())
+            .take(5)
+            .collect();
+
+        let mut e = Entity::new(EntityKind::Email, target.value.trim(), 0.65, &ctx.scan_id);
+        e.tag("hibp");
+        e.tag(tags::PASTE_EXPOSED);
+        let mut ev = Evidence::new(
+            SRC,
+            format!(
+                "Found in {} public paste(s) (sources: {})",
+                pastes.len(),
+                sources.join(", ")
+            ),
+        )
+        .with_attr("paste_count", pastes.len().to_string())
+        .with_attr("paste_sources", sources.join(", "))
+        .with_attr("max_paste_email_count", max_emails.to_string());
+        if !latest.is_empty() {
+            ev = ev.with_attr("latest_paste_date", latest);
+        }
+        if !titles.is_empty() {
+            ev = ev.with_attr("paste_titles", titles.join(" | "));
+        }
+        e.add_evidence(ev);
+        result.push(e);
         Ok(())
     }
 }
