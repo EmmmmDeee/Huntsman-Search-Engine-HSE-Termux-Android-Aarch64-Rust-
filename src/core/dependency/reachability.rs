@@ -172,13 +172,6 @@ pub fn fully_wired(
     Ok(modules.len())
 }
 
-/// True iff a probe `Target` of `kind` is accepted by at least one module — a
-/// kind with zero consumers is a dead seed. Convenience over the graph index.
-#[must_use]
-pub fn kind_has_consumer(graph: &ModuleGraph, kind: TargetKind) -> bool {
-    !graph.modules_for(kind).is_empty()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
