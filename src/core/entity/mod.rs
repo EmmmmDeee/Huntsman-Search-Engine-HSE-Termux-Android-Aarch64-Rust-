@@ -570,6 +570,23 @@ impl Entity {
         multiplicative.max(agreement).clamp(0.0, 1.0)
     }
 
+    /// [`Self::c_effective`] discounted by expansion **redshift**: each
+    /// generation (pivot) away from the seed multiplies confidence by `base`
+    /// (`0 < base ≤ 1`), so a finding `N` hops out is scaled by `base^N`. A
+    /// gen-0 (seed-round) entity is unchanged (`base^0 = 1`), and `base = 1.0`
+    /// is a total no-op at any depth. Models the intuition that every pivot adds
+    /// drift, so seed-adjacent leads are inherently more trustworthy than distant
+    /// ones — the further light travels from the source, the more it reddens.
+    ///
+    /// Pure; `base` is supplied by the caller. Only consulted when the opt-in
+    /// `feature.redshift` expansion policy is enabled (default off), so the raw
+    /// [`Self::c_effective`] every correlation/display/gate reads is untouched
+    /// unless an operator deliberately turns the policy on.
+    #[inline]
+    pub fn c_effective_redshifted(&self, base: f64) -> f64 {
+        (self.c_effective() * base.powf(f64::from(self.generation))).clamp(0.0, 1.0)
+    }
+
     /// Derived classification tier from [`Self::c_effective`]: `Verified` at
     /// ≥ [`Classification::VERIFIED_MIN`] (0.75), `Probable` at ≥
     /// [`Classification::PROBABLE_MIN`] (0.40), else `Candidate`.

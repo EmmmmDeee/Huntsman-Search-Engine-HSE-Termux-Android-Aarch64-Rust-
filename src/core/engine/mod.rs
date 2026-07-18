@@ -70,7 +70,8 @@ use enrich::{
     tag_breach_sector, tag_platform_infra,
 };
 use expansion::{
-    apply_roi_cutoff, budget_check, cmp_expansion_candidates, correlation_key, visit_key,
+    apply_roi_cutoff, budget_check, cmp_expansion_candidates, correlation_key,
+    expansion_confidence, visit_key,
 };
 use timeout::resolve_timeout;
 // Used only by the dispatch-related tests retained in this file.
@@ -684,6 +685,17 @@ impl ScanEngine {
     /// count so live streaming is the norm, not the exception.
     const INCREMENTAL_CORRELATE_MAX_ENTITIES: usize = 400;
 
+    /// Expansion-redshift base (see `feature.redshift`): each generation away
+    /// from the seed multiplies an entity's *expansion* confidence by this
+    /// factor — gen 1 ×0.75, gen 2 ×0.56, gen 3 ×0.42. Combined with the default
+    /// 0.20 expansion floor this sets a genuine "redshift horizon": a gen-3 lead
+    /// needs raw c_eff ≥ 0.20/0.75³ ≈ 0.47 to keep inflating, so a deep chain
+    /// must be well-corroborated to continue while seed-adjacent leads are
+    /// untouched (gen 0 ×0.75⁰ = ×1). Only consulted when the opt-in policy is
+    /// on; the stored/displayed confidence and every correlation/gate that reads
+    /// plain `c_effective` are never touched.
+    const REDSHIFT_BASE: f64 = 0.75;
+
     /// Live cross-correlation during ingestion. Evaluates the entity rules
     /// against an in-memory snapshot of the working set (no store round-trip)
     /// and streams any newly-fired correlation immediately, persisting it as it
@@ -1141,6 +1153,14 @@ impl ScanEngine {
         // of the whole (up to `max_entities`-sized) entity_map needed per
         // candidate. Reusing the buffer avoids a per-candidate allocation.
         let mut newly_inserted: Vec<String> = Vec::new();
+        // Expansion redshift (opt-in `feature.redshift`, default off): when on,
+        // an entity's confidence FOR EXPANSION is discounted by its generation,
+        // so the recursion favours seed-adjacent leads and deep chains need more
+        // corroboration to keep inflating. Read once per scan; `None` ⇒ the
+        // expansion is byte-identical to today (plain `c_effective`).
+        let redshift_base: Option<f64> =
+            crate::util::settings::get_bool(crate::util::settings::REDSHIFT_FEATURE, false)
+                .then_some(Self::REDSHIFT_BASE);
         for depth in 1..=opts.depth {
             // Refresh keys from the pool at the start of each round. Keys
             // discovered during the previous round (oathnet_pro breach data,
@@ -1243,8 +1263,11 @@ impl ScanEngine {
                 // up to four times below (the floor check, the wrong-identity gate,
                 // the strategy weight, the convex premium) and `source_count()`
                 // twice. Computing each once per candidate trims redundant work in
-                // the hottest expansion loop on the constrained target.
-                let c_eff = entity.c_effective();
+                // the hottest expansion loop on the constrained target. When the
+                // redshift policy is on, this single value is generation-discounted,
+                // so every downstream expansion decision (floor / rank / gate) sees
+                // the reddened confidence consistently.
+                let c_eff = expansion_confidence(entity, redshift_base);
                 if c_eff < opts.effective_min_expand_confidence() {
                     self.emit_excluded(scan_id, entity, "below_min_expand_confidence");
                     continue;

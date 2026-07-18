@@ -1023,6 +1023,27 @@ fn expansion_timeline_counts_entities_per_epoch_in_order() {
 }
 
 #[test]
+fn redshift_discounts_c_effective_by_generation() {
+    let mut e = email("x@y.com");
+    let base_c = e.c_effective(); // single source ⇒ c_effective == confidence
+
+    // base^0 = 1: a seed-round (epoch 0) entity is never discounted.
+    e.generation = 0;
+    assert!((e.c_effective_redshifted(0.9) - base_c).abs() < 1e-9);
+
+    // Each epoch multiplies by `base`: epoch 2 ⇒ ×base².
+    e.generation = 2;
+    assert!((e.c_effective_redshifted(0.9) - base_c * 0.9 * 0.9).abs() < 1e-9);
+
+    // base = 1.0 is a total no-op at any depth (the default-off behaviour).
+    e.generation = 5;
+    assert!((e.c_effective_redshifted(1.0) - base_c).abs() < 1e-9);
+
+    // The result stays clamped to [0, 1].
+    assert!((0.0..=1.0).contains(&e.c_effective_redshifted(0.5)));
+}
+
+#[test]
 fn new_entity_starts_at_generation_zero() {
     // Modules never know their round, so every freshly-built entity is epoch 0.
     assert_eq!(email("x@y.com").generation, 0);
