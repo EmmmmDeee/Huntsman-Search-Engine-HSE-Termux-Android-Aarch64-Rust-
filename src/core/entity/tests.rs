@@ -1005,6 +1005,24 @@ fn merge_observed_at_takes_max() {
 // ── Entity generation (expansion epoch) ─────────────────────────────────
 
 #[test]
+fn expansion_timeline_counts_entities_per_epoch_in_order() {
+    let mut ents = vec![
+        email("a@x.com"),
+        email("b@x.com"),
+        email("c@x.com"),
+        email("d@x.com"),
+    ];
+    ents[0].generation = 0;
+    ents[1].generation = 0;
+    ents[2].generation = 2; // note: skips epoch 1
+    ents[3].generation = 2;
+    let timeline = crate::core::entity::expansion_timeline(&ents);
+    // BTreeMap keeps epochs ordered; only populated epochs appear.
+    let pairs: Vec<(u32, usize)> = timeline.into_iter().collect();
+    assert_eq!(pairs, vec![(0, 2), (2, 2)]);
+}
+
+#[test]
 fn new_entity_starts_at_generation_zero() {
     // Modules never know their round, so every freshly-built entity is epoch 0.
     assert_eq!(email("x@y.com").generation, 0);

@@ -147,6 +147,15 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
         "  Modules:   {} run, {} errored, {} deduped",
         scan.modules_run, scan.modules_errored, scan.modules_deduped
     );
+    // Expansion timeline — the scan's "inflation curve": how many entities were
+    // first surfaced in each epoch (generation) as the graph expanded outward
+    // from the seed singularity. Shown only when expansion reached beyond the
+    // seed round (more than one epoch present).
+    let timeline = crate::core::entity::expansion_timeline(entities);
+    if timeline.len() > 1 {
+        let parts: Vec<String> = timeline.iter().map(|(g, n)| format!("e{g}:{n}")).collect();
+        println!("  Expansion: {}", parts.join(" → "));
+    }
 
     // Exposure Index — the calibrated 0–100 headline (with its transparent
     // breakdown) an operator reads first, aggregated from the breach/sensitive-PII/

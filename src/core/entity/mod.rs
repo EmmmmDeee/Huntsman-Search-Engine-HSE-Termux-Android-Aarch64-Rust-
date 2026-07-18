@@ -1388,6 +1388,22 @@ pub fn evidence_sources(entities: &[Entity]) -> std::collections::BTreeSet<&str>
         .collect()
 }
 
+/// The **expansion timeline**: how many entities were first discovered in each
+/// expansion epoch ([`Entity::generation`]), ordered from the seed outward.
+/// Epoch 0 is the seed round (found directly by scanning the subject); each
+/// later epoch is one pivot further out along the expansion light-cone. The
+/// shape of this distribution is the scan's "inflation curve" — the entity
+/// universe growing round by round, then thinning as leads are exhausted or
+/// pruned. Pure; returns a `BTreeMap` so epochs are already in order.
+#[must_use]
+pub fn expansion_timeline(entities: &[Entity]) -> std::collections::BTreeMap<u32, usize> {
+    let mut hist = std::collections::BTreeMap::new();
+    for e in entities {
+        *hist.entry(e.generation).or_insert(0) += 1;
+    }
+    hist
+}
+
 /// Current Unix timestamp in seconds.
 #[inline]
 pub fn unix_now() -> u64 {
