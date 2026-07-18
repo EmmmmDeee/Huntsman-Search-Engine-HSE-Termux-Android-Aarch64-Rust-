@@ -1,4 +1,10 @@
-//! OFAC Specially Designated Nationals (SDN) sanctions screening — keyless.
+//! OFAC sanctions screening — SDN + Consolidated (non-SDN) lists, keyless.
+//!
+//! Screens against BOTH official OFAC lists: the Specially Designated Nationals
+//! (SDN) list (full blocking) AND the Consolidated (non-SDN) list — the
+//! sectoral/FSE/PLC/ISA designations that are sanctions but not full SDN
+//! blocking. Both share the same CSV schema, so both feed one screening set;
+//! screening SDN alone silently missed every consolidated-list designation.
 //!
 //! A `FullName`/`Organisation` target → whether the U.S. Treasury's Office of
 //! Foreign Assets Control has that name on its sanctions list, with the
@@ -9,8 +15,9 @@
 //! Australia, extended here to a global, official U.S. government list.
 //!
 //! # Data source
-//! `GET https://sanctionslistservice.ofac.treas.gov/api/download/SDN.CSV` —
-//! OFAC's Sanctions List Service. No auth, no API key, no published rate
+//! `GET .../api/download/SDN.CSV` and `.../CONS_PRIM.CSV` on
+//! `sanctionslistservice.ofac.treas.gov` — OFAC's Sanctions List Service (the
+//! SDN and Consolidated lists respectively). No auth, no API key, no published rate
 //! limit; bulk/automated download is the OFFICIAL intended use (Treasury
 //! recommends pulling the whole file and refreshing wholesale, not polling
 //! per query). A U.S. federal government work — not subject to domestic
@@ -69,6 +76,12 @@ use parse::{SdnKind, SdnRecord, humanise_name, name_tokens, parse_sdn_csv, recor
 
 const SRC: &str = "sanctions_ofac";
 const SDN_URL: &str = "https://sanctionslistservice.ofac.treas.gov/api/download/SDN.CSV";
+/// OFAC's SECOND list — the Consolidated (non-SDN) sanctions list (sectoral
+/// sanctions, FSE, NS-ISA, PLC, … designations that are NOT full SDN blocking
+/// but ARE sanctions). Same CSV schema as SDN.CSV (verified live), so the same
+/// parser handles it. Screening against SDN alone silently missed every
+/// consolidated-list designation.
+const CONS_URL: &str = "https://sanctionslistservice.ofac.treas.gov/api/download/CONS_PRIM.CSV";
 
 /// How long the in-process parsed-list cache is trusted before a re-download.
 /// OFAC updates the SDN list irregularly (typically at most a few times a
@@ -103,6 +116,33 @@ type SdnCache = Option<(Instant, Vec<SdnRecord>)>;
 /// `search_engines::health`'s liveness-sweep cache.
 static CACHE: LazyLock<RwLock<SdnCache>> = LazyLock::new(|| RwLock::new(None));
 
+/// The previous cached list (even if stale) — the degradation target when a
+/// re-download fails, so a transient outage doesn't blind screening for the TTL.
+fn cached_or_default() -> Vec<SdnRecord> {
+    CACHE
+        .read()
+        .ok()
+        .and_then(|g| g.as_ref().map(|(_, r)| r.clone()))
+        .unwrap_or_default()
+}
+
+/// Fetch + parse ONE OFAC CSV list. Returns `None` on any transport / non-2xx /
+/// body-read failure so the caller can decide how to degrade.
+async fn fetch_one_list(ctx: &ModuleContext, url: &str) -> Option<Vec<SdnRecord>> {
+    let resp = ctx
+        .http
+        .get(url)
+        .header("User-Agent", UA_BROWSER)
+        .send_tagged(SRC)
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body = read_text(SRC, resp).await.ok()?;
+    Some(parse_sdn_csv(&body))
+}
+
 async fn fetch_sdn_list(ctx: &ModuleContext) -> Vec<SdnRecord> {
     if let Ok(guard) = CACHE.read()
         && let Some((fetched_at, records)) = guard.as_ref()
@@ -111,38 +151,18 @@ async fn fetch_sdn_list(ctx: &ModuleContext) -> Vec<SdnRecord> {
         return records.clone();
     }
 
-    let Ok(resp) = ctx
-        .http
-        .get(SDN_URL)
-        .header("User-Agent", UA_BROWSER)
-        .send_tagged(SRC)
-        .await
-    else {
-        // A network failure degrades to the previous cached list (even if
-        // stale) rather than an empty result, so a transient outage doesn't
-        // silently blind sanctions screening for the rest of this TTL window.
-        return CACHE
-            .read()
-            .ok()
-            .and_then(|g| g.as_ref().map(|(_, r)| r.clone()))
-            .unwrap_or_default();
+    // Primary SDN (full-blocking) list. A failure degrades to the previous
+    // cached set rather than blinding screening.
+    let Some(mut records) = fetch_one_list(ctx, SDN_URL).await else {
+        return cached_or_default();
     };
-    if !resp.status().is_success() {
-        return CACHE
-            .read()
-            .ok()
-            .and_then(|g| g.as_ref().map(|(_, r)| r.clone()))
-            .unwrap_or_default();
+    // Consolidated (non-SDN / sectoral) list — same schema, supplementary. A
+    // failure here is non-fatal: keep the SDN-only set rather than blocking the
+    // whole screen on the secondary list.
+    if let Some(cons) = fetch_one_list(ctx, CONS_URL).await {
+        records.extend(cons);
     }
-    let Ok(body) = read_text(SRC, resp).await else {
-        return CACHE
-            .read()
-            .ok()
-            .and_then(|g| g.as_ref().map(|(_, r)| r.clone()))
-            .unwrap_or_default();
-    };
 
-    let records = parse_sdn_csv(&body);
     if let Ok(mut w) = CACHE.write() {
         *w = Some((Instant::now(), records.clone()));
     }
