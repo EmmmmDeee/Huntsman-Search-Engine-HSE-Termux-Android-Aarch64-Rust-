@@ -1,7 +1,7 @@
 //! Wayback Machine CDX API — historical snapshots of a domain, plus
 //! historical contact extraction from archived pages.
 //!
-//! Free, no key. Two CDX queries are issued:
+//! Free, no key. Three CDX queries are issued:
 //!
 //! 1. **Snapshot summary** (`fl=timestamp,statuscode`, `collapse=urlkey`,
 //!    `limit=1000`) — records the archived-URL count and the
@@ -21,6 +21,12 @@
 //!    Wirecard, OCCRP shell companies) where the current site shows
 //!    different or no contacts but earlier versions are preserved in
 //!    the archive, applied here to credentials instead of just contacts.
+//!
+//! 3. **Historical subdomain recovery** (`url=*.{domain}`, `fl=original`,
+//!    `collapse=urlkey`) — the CDX domain-match pass. Reduces every archived
+//!    URL to its host and emits the distinct DECOMMISSIONED subdomains no live
+//!    CT/DNS source will ever return (they no longer resolve) as `Domain`
+//!    pivots tagged `archived`/`wayback-historical`. No page fetches.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -40,6 +46,11 @@ const SRC: &str = "wayback";
 /// Maximum archived contact-page snapshots to fetch per scan.
 /// Each fetch is one network round-trip to archive.org.
 const MAX_CONTACT_SNAPSHOTS: usize = 10;
+
+/// Cap on historical subdomains surfaced from the CDX domain-match pass. A
+/// long-lived domain can accrue hundreds of archived hostnames; this bounds
+/// graph expansion while still recovering the salient decommissioned names.
+const MAX_HISTORICAL_SUBDOMAINS: usize = 60;
 
 /// Body read cap per snapshot fetch. 32 KB is more than enough for a
 /// contact page; anything larger is almost certainly a binary or video.
@@ -121,6 +132,48 @@ fn build_entity(kind: EntityKind, value: &str, rows: &[Row], scan_id: &str) -> O
     }
     entity.add_evidence(ev);
     Some(entity)
+}
+
+/// Recover historical subdomains of `domain` from a CDX domain-match response
+/// (`fl=original`). **Pure** (no network/IO): each row's original URL is reduced
+/// to its host, kept only when it is a real subdomain of `domain` (the apex echo
+/// is dropped), then deduplicated and sorted (BTreeSet) so the output is stable
+/// across runs, and capped at [`MAX_HISTORICAL_SUBDOMAINS`].
+///
+/// Live CT/DNS sources only return names that still resolve; the Wayback
+/// domain-match is the canonical way to recover DECOMMISSIONED subdomains no
+/// live source will ever surface — sourced from real archived hostnames, never
+/// synthesised. The first row is the CDX column header and is skipped.
+fn historical_subdomains(rows: &[Row], domain: &str, scan_id: &str) -> Vec<Entity> {
+    let domain = domain.trim().to_lowercase();
+    if domain.is_empty() {
+        return Vec::new();
+    }
+    let suffix = format!(".{domain}");
+    let hosts: std::collections::BTreeSet<String> = rows
+        .iter()
+        .skip(1) // CDX column header
+        .filter_map(|r| r.0.first())
+        .filter_map(|orig| crate::util::url_util::host_from_url(orig))
+        // A real subdomain of the seed — never the apex echo, never an
+        // unrelated host the query might return.
+        .filter(|h| h != &domain && h.ends_with(&suffix))
+        .collect();
+
+    hosts
+        .into_iter()
+        .take(MAX_HISTORICAL_SUBDOMAINS)
+        .map(|host| {
+            let mut e = Entity::new(EntityKind::Domain, &host, 0.55, scan_id);
+            e.tag("archived");
+            e.tag("wayback-historical");
+            e.add_evidence(Evidence::new(
+                SRC,
+                format!("Historical subdomain of {domain} recovered from the Wayback CDX archive"),
+            ));
+            e
+        })
+        .collect()
 }
 
 /// True when `url` contains a path keyword associated with contact / team
@@ -339,9 +392,11 @@ impl Module for Wayback {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        // Two CDX queries + up to MAX_CONTACT_SNAPSHOTS page fetches with
-        // INTER_SNAPSHOT_MS gaps: conservatively 10 × (300ms + 2s latency) = 23s.
-        // 30s gives headroom for slow archive responses.
+        // Three CDX queries (snapshot summary, contact mining, subdomain
+        // domain-match) + up to MAX_CONTACT_SNAPSHOTS page fetches with
+        // INTER_SNAPSHOT_MS gaps: conservatively 10 × (300ms + 2s latency) = 23s
+        // plus the extra fetch-free CDX GET. 30s gives headroom for slow archive
+        // responses.
         30_000
     }
 
@@ -372,6 +427,23 @@ impl Module for Wayback {
         if !ctx.cancel.is_cancelled() {
             for e in mine_contacts(&domain, &ctx.scan_id, ctx).await {
                 result.push(e);
+            }
+        }
+
+        // ── Pass 3: recover DECOMMISSIONED subdomains via CDX domain-match ─────
+        // `url=*.{domain}` triggers CDX matchType=domain (the domain + every
+        // archived subdomain). No page fetches — just the archived hostname list
+        // — so this is the cheap, high-value attack-surface pass that live CT/DNS
+        // sources structurally cannot provide.
+        if !ctx.cancel.is_cancelled() {
+            let sub_url = format!(
+                "https://web.archive.org/cdx/search/cdx?url=*.{}&output=json&fl=original&collapse=urlkey&limit=5000",
+                urlencode(&domain)
+            );
+            if let Ok(sub_rows) = fetch_json::<Vec<Row>>(&ctx.http, SRC, &sub_url).await {
+                for e in historical_subdomains(&sub_rows, &domain, &ctx.scan_id) {
+                    result.push(e);
+                }
             }
         }
 
