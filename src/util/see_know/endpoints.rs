@@ -183,8 +183,7 @@ pub async fn search_deep(key: &str, query: &str, query_type: &str) -> Result<Vec
     const TRANSPORT_RETRY_ATTEMPTS: u32 = 2;
     let mut attempt = 0u32;
     loop {
-        match post_json_with_fallback("/search/deep", key, &body, &archive_endpoint, query).await
-        {
+        match post_json_with_fallback("/search/deep", key, &body, &archive_endpoint, query).await {
             Ok(resp) => {
                 let items = extract_items(&resp);
                 if !items.is_empty() {

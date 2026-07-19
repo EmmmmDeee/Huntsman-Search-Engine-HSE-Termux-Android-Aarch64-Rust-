@@ -98,10 +98,7 @@ pub(super) fn all_base_urls() -> Vec<String> {
 
     // Add secondary/fallback domains only if they're different from the primary
     // (e.g., if HUNTSMAN_SEEKNOW_BASE override is set to one of these, we skip dupes).
-    let fallbacks = [
-        "https://see-know.icu/api/v1",
-        "https://see-know.xyz/api/v1",
-    ];
+    let fallbacks = ["https://see-know.icu/api/v1", "https://see-know.xyz/api/v1"];
     for fallback in &fallbacks {
         if !urls.contains(&fallback.to_string()) {
             urls.push(fallback.to_string());
@@ -312,7 +309,8 @@ pub(super) async fn post_json_with_fallback(
             Err(e) => {
                 let err_str = e.to_string();
                 // Auth errors are terminal — no point trying other domains.
-                if err_str.contains("401") || err_str.contains("Unauthorized")
+                if err_str.contains("401")
+                    || err_str.contains("Unauthorized")
                     || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
                 {
                     return Err(e);
@@ -356,7 +354,8 @@ pub(super) async fn get_json_with_fallback(
             Err(e) => {
                 let err_str = e.to_string();
                 // Auth errors are terminal — no point trying other domains.
-                if err_str.contains("401") || err_str.contains("Unauthorized")
+                if err_str.contains("401")
+                    || err_str.contains("Unauthorized")
                     || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
                 {
                     return Err(e);
@@ -391,7 +390,8 @@ pub(super) async fn get_raw_with_fallback(endpoint_path: &str, key: &str) -> Res
             Err(e) => {
                 let err_str = e.to_string();
                 // Auth errors are terminal — no point trying other domains.
-                if err_str.contains("401") || err_str.contains("Unauthorized")
+                if err_str.contains("401")
+                    || err_str.contains("Unauthorized")
                     || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
                 {
                     return Err(e);
