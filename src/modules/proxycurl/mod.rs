@@ -98,6 +98,9 @@ impl Module for Proxycurl {
             EntityKind::Phone,
             EntityKind::Organisation,
             EntityKind::Url,
+            // The LinkedIn vanity handle (public_identifier) as a cross-platform
+            // identity pivot.
+            EntityKind::Username,
         ];
         KINDS
     }

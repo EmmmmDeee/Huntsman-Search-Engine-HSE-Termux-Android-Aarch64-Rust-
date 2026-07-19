@@ -224,6 +224,21 @@ fn email_domain_extracts_registrable() {
 
 // ── The core: build_entities maps every field, with no waste ─────────
 #[test]
+fn build_entities_mints_the_vanity_handle_as_a_username() {
+    // The `public_identifier` (`/in/{slug}`) is a cross-platform identity pivot,
+    // not just the Person's `linkedin_id` attribute — it must also surface as a
+    // platform-prefixed Username so BFS can pivot on the handle.
+    let r = build_entities(&full_profile(), &target(), "scan");
+    let handle = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Username)
+        .expect("vanity handle surfaces as a Username");
+    assert_eq!(handle.value, "linkedin:jane-doe");
+    assert!(handle.has_tag("linkedin") && handle.has_tag("proxycurl"));
+}
+
+#[test]
 fn build_entities_extracts_full_profile() {
     use crate::core::entity::Entity;
     let r = build_entities(&full_profile(), &target(), "scan");
