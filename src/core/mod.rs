@@ -9,6 +9,7 @@ pub mod cancel;
 pub mod classifier;
 pub mod classify_module;
 pub mod community;
+pub mod confidence;
 pub mod convex;
 pub mod coref;
 pub mod correlator;

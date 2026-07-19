@@ -34,18 +34,20 @@ pub(super) fn discover_steam_pivots(result: &ModuleResult) -> Vec<String> {
 
 /// Generalised prefix-based ID collector. Iterates extracted Username
 /// entities, strips the prefix, validates the rest with `validator`,
-/// and dedupes preserving first-seen order.
+/// and dedupes preserving first-seen order using O(1) HashSet lookup.
 fn discover_prefixed_ids(
     result: &ModuleResult,
     prefix: &str,
     validator: fn(&str) -> bool,
 ) -> Vec<String> {
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
     let mut ids: Vec<String> = Vec::new();
     for e in &result.entities {
         if matches!(e.kind, EntityKind::Username)
             && let Some(rest) = e.value.strip_prefix(prefix)
             && validator(rest)
-            && !ids.iter().any(|x| x == rest)
+            && seen.insert(rest)
         {
             ids.push(rest.to_string());
         }
