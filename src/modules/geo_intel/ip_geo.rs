@@ -138,6 +138,7 @@ fn tag_country(e: &mut Entity, country_code: Option<&str>, lat: f64, lon: f64) {
 /// errored, the coordinates are absent/invalid, or `geo_untrusted` (the IP's
 /// location is infrastructure, not the subject) — in that case the `asn` is
 /// also withheld, since it isn't trustworthy for the subject either.
+#[must_use]
 pub(super) fn build_ipapico_entity(
     data: &IpApiCoResp,
     ip: &str,
@@ -193,6 +194,7 @@ pub(super) fn build_ipapico_entity(
 /// Build the freeipapi.com `Coordinates` entity. **Pure.** `None` when the
 /// coordinates are absent/invalid, `geo_untrusted`, or the IP is flagged a
 /// proxy (an anonymiser exit's location is not the subject's).
+#[must_use]
 pub(super) fn build_freeipapi_entity(
     data: &FreeIpApiResp,
     ip: &str,

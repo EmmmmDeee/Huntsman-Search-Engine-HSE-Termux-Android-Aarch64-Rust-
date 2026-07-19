@@ -71,6 +71,7 @@ pub(super) const MAX_IOC_TAGS: usize = 16;
 /// capped, deterministically-ordered (`BTreeSet`) attribute lists, takes the
 /// **max** analyst confidence and the **outer** first/last-seen window across
 /// the batch, and records the hit count. Caller guarantees `iocs` is non-empty.
+#[must_use]
 pub(super) fn build_ioc_entity(
     kind: EntityKind,
     term: &str,

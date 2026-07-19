@@ -226,6 +226,7 @@ impl Geocode {
 /// `candidate`) so it sits below the 0.50 expansion floor and is quarantined
 /// from confirmed correlations — an ambiguous address string can't drag an
 /// AU-focused scan off-region. Pure (no I/O); the caller attaches evidence.
+#[must_use]
 pub(super) fn build_forward_entity(lat: f64, lon: f64, coords: &str, scan_id: &str) -> Entity {
     let in_au = crate::util::geo::is_in_australia(lat, lon);
     let confidence = if in_au { 0.70 } else { 0.40 };
@@ -274,6 +275,7 @@ pub(super) fn au_relevance(lat: f64, lon: f64, addr: Option<&NominatimAddr>) -> 
 
 /// Build the reverse-geocode Address entity, shaping confidence and tags by
 /// [`au_relevance`]. Pure (no I/O) so the AU-gating is unit-tested directly.
+#[must_use]
 pub(super) fn build_reverse_entity(
     lat: f64,
     lon: f64,

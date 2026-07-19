@@ -177,6 +177,7 @@ pub(super) fn push_oathnet_entity(
 /// whole stranger-laden page) means the dossier reflects the subject's own
 /// records. Attributes are aggregated additively (order-preserving, deduplicated)
 /// so multiple hits and aliases are all retained, never overwritten.
+#[must_use]
 pub(super) fn breach_parent_entity(
     target: &Target,
     scan_id: &str,

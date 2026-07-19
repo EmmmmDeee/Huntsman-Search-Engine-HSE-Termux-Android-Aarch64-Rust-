@@ -185,6 +185,7 @@ pub(super) fn primary_entities(
 
 /// A non-primary same-name item: surfaced as a low-confidence candidate so a
 /// namesake is visible (with its id + description) but never pivots.
+#[must_use]
 pub(super) fn candidate_entity(
     hit: &super::types::SearchHit,
     seed: TargetKind,

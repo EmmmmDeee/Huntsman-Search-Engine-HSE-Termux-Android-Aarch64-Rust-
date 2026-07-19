@@ -134,6 +134,7 @@ fn flatten_record(item: &Value) -> Value {
 ///
 /// The per-record identity/credential detail is surfaced separately by
 /// [`extract_records`], which quarantines strangers independently.
+#[must_use]
 pub(super) fn build_breach_entity(
     kind: EntityKind,
     value: &str,
