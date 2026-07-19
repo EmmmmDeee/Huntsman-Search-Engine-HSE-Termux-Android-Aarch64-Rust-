@@ -1,10 +1,14 @@
 //! AbuseIPDB — IP abuse/threat reputation + resolved-domain / ISP discovery.
 //!
-//! Queries the AbuseIPDB v2 `/check` API for abuse confidence score, report
-//! count, usage type, Tor flag, ISP, and the IP's resolved `domain` and
-//! reverse-DNS `hostnames`. Emits the abuse-scored IP, each associated Domain
-//! (a first-class DNS / cert / WHOIS pivot the module previously discarded),
-//! and the ISP as an Organisation. Key-gated (`HUNTSMAN_ABUSEIPDB_KEY`).
+//! Queries the AbuseIPDB v2 `/check` API (with `&verbose`) for abuse confidence
+//! score, report count, usage type, Tor flag, ISP, the IP's resolved `domain`
+//! and reverse-DNS `hostnames`, plus the verbose payload: the most-recent report
+//! timestamp, the whitelist flag, and the per-report category array. Emits the
+//! abuse-scored IP (with a deterministic top-category summary + recency in
+//! evidence, and a `whitelisted` tag when flagged), each associated Domain (a
+//! first-class DNS / cert / WHOIS pivot the module previously discarded), and
+//! the ISP as an Organisation. The raw free-text report comment is never
+//! surfaced. Key-gated (`HUNTSMAN_ABUSEIPDB_KEY`).
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -126,15 +130,21 @@ fn build_entities(data: &AbuseData, ip: &str, scan_id: &str) -> Vec<Entity> {
     }) {
         ip_entity.tag("hosting");
     }
+    // AbuseIPDB's own false-positive flag: a whitelisted IP with a residual
+    // score is very likely benign infrastructure, not a real threat.
+    if data.is_whitelisted == Some(true) {
+        ip_entity.tag("whitelisted");
+    }
 
-    let ev = [
+    let mut ev = [
         ("isp", data.isp.as_deref()),
         ("usage_type", data.usage_type.as_deref()),
         ("country_code", data.country_code.as_deref()),
         ("domain", data.domain.as_deref()),
+        ("last_reported_at", data.last_reported_at.as_deref()),
     ]
     .into_iter()
-    .filter_map(|(key, value)| value.map(|v| (key, v)))
+    .filter_map(|(key, value)| value.filter(|v| !v.is_empty()).map(|v| (key, v)))
     .fold(
         Evidence::new(
             SRC,
@@ -147,6 +157,13 @@ fn build_entities(data: &AbuseData, ip: &str, scan_id: &str) -> Vec<Entity> {
         .with_attr("total_reports", data.total_reports.unwrap_or(0).to_string()),
         |ev, (key, v)| ev.with_attr(key, v),
     );
+    // Per-report category breakdown (SSH, Port Scan, Web App Attack, …) — the
+    // paid-for `&verbose` payload that materially sharpens triage over a bare
+    // score. The raw free-text report comment is never surfaced.
+    let category_summary = summarize_categories(&data.reports);
+    if !category_summary.is_empty() {
+        ev = ev.with_attr("report_categories", category_summary);
+    }
     ip_entity.add_evidence(ev);
 
     let mut out = vec![ip_entity];
@@ -215,6 +232,82 @@ struct AbuseData {
     /// Reverse-DNS hostnames the IP resolves to (`hostnames` field).
     #[serde(default)]
     hostnames: Vec<String>,
+    /// Timestamp of the most recent abuse report — recency of abuse, a far
+    /// sharper triage signal than a bare confidence score. `&verbose` field.
+    #[serde(rename = "lastReportedAt", default)]
+    last_reported_at: Option<String>,
+    /// AbuseIPDB's false-positive suppression flag — a whitelisted IP (major
+    /// CDN/DNS resolver) with a residual score is very likely a false positive.
+    #[serde(rename = "isWhitelisted", default)]
+    is_whitelisted: Option<bool>,
+    /// The per-report array `&verbose` returns and the module was paying for,
+    /// then discarding. Only the numeric `categories` are modelled — the
+    /// free-text `comment` is deliberately never read, let alone emitted.
+    #[serde(default)]
+    reports: Vec<Report>,
+}
+
+#[derive(Deserialize)]
+struct Report {
+    #[serde(default)]
+    categories: Vec<u16>,
+}
+
+/// Map an AbuseIPDB numeric report-category id to its label. `None` for an
+/// unknown id (taxonomy drift) so it is summarised as `other` rather than a bare
+/// number. Source: AbuseIPDB's published category taxonomy.
+fn abuse_category_label(id: u16) -> Option<&'static str> {
+    Some(match id {
+        1 => "DNS Compromise",
+        2 => "DNS Poisoning",
+        3 => "Fraud Orders",
+        4 => "DDoS Attack",
+        5 => "FTP Brute-Force",
+        6 => "Ping of Death",
+        7 => "Phishing",
+        8 => "Fraud VoIP",
+        9 => "Open Proxy",
+        10 => "Web Spam",
+        11 => "Email Spam",
+        12 => "Blog Spam",
+        13 => "VPN IP",
+        14 => "Port Scan",
+        15 => "Hacking",
+        16 => "SQL Injection",
+        17 => "Spoofing",
+        18 => "Brute-Force",
+        19 => "Bad Web Bot",
+        20 => "Exploited Host",
+        21 => "Web App Attack",
+        22 => "SSH",
+        23 => "IoT Targeted",
+        _ => return None,
+    })
+}
+
+/// Deterministic top-5 category summary across all reports, e.g.
+/// `"SSH:42, Brute-Force:30, Port Scan:12"`. Counts each category occurrence,
+/// then sorts by count desc with an ascending-id tie-break so the output is
+/// stable across runs regardless of report order. **Pure.** Empty when no
+/// report carries a category.
+fn summarize_categories(reports: &[Report]) -> String {
+    let mut counts: std::collections::BTreeMap<u16, usize> = std::collections::BTreeMap::new();
+    for r in reports {
+        for &c in &r.categories {
+            *counts.entry(c).or_default() += 1;
+        }
+    }
+    if counts.is_empty() {
+        return String::new();
+    }
+    let mut ranked: Vec<(u16, usize)> = counts.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    ranked
+        .into_iter()
+        .take(5)
+        .map(|(id, n)| format!("{}:{n}", abuse_category_label(id).unwrap_or("other")))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
