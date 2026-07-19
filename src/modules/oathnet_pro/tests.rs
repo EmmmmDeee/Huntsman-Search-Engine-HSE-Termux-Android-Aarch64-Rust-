@@ -383,6 +383,44 @@ use super::*;
     }
 
     #[test]
+    fn absence_sentinels_do_not_mint_country_employer_or_location_nodes() {
+        use serde_json::json;
+        // A breach page where rows carry the MySQL NULL-export marker `\N` (or a
+        // bracketed redaction) in employer/country/location must NOT mint shared
+        // nodes — else all those unrelated strangers fuse onto one Organisation/
+        // Address, a false positive.
+        let sentinel = json!({
+            "email": "a@example.com",
+            "employer": "\\N",
+            "country": "\\N",
+            "location": "[REDACTED]",
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&sentinel, "a@example.com", "scan", "oathnet.org:t", &mut seen, &mut result);
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Organisation),
+            "a \\N employer must not mint an Organisation node"
+        );
+
+        // Control: a REAL employer still mints the Organisation pivot.
+        let real = json!({ "email": "b@example.com", "employer": "Acme Pty Ltd" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&real, "b@example.com", "scan", "oathnet.org:t", &mut seen, &mut result);
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Organisation && e.value == "Acme Pty Ltd"),
+            "a real employer must still mint the Organisation pivot"
+        );
+    }
+
+    #[test]
     fn extract_breach_entities_non_target_row_tags_candidate() {
         use serde_json::json;
         // A row whose fields do NOT match the target: phone/person/country are

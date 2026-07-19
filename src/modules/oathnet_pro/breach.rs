@@ -7,6 +7,17 @@
 
 use super::*;
 use crate::util::extract::CredentialField;
+
+/// True for a value that is really an absence sentinel (`\N`, `NULL`, an empty/
+/// whitespace string, a redaction placeholder), not a datum — the SAME guard
+/// SeekNow/breach_rich already apply (`breach_rich::is_absent_marker`). Gating
+/// an emission on it stops a breach page where many rows carry `\N` employer or
+/// `NULL` country/location from minting one shared node that fuses all those
+/// unrelated strangers together — a false positive, the worst kind for an
+/// evidentiary tool.
+fn is_absent(s: &str) -> bool {
+    crate::util::json::is_null_sentinel(s) || crate::util::extract::is_placeholder_secret(s)
+}
 // ─── Entity extraction ─────────────────────────────────────────────────────
 
 pub(super) fn breach_evidence(item: &Value) -> Evidence {
@@ -393,6 +404,7 @@ pub(super) fn extract_breach_entities_with(
     }
 
     if let Some(country) = val_str(item, "country")
+        && !is_absent(&country)
         && seen.insert(format!("@country:{country}"))
     {
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(&country) {
@@ -440,8 +452,9 @@ pub(super) fn extract_breach_entities_with(
         // `val_str` rejects empty strings but not whitespace-only ones, so trim
         // each part and drop any that collapse to nothing — otherwise a blank
         // `state`/`postal` would leave a `", ,"` gap or a trailing `", "` in the
-        // composed value and degrade geocoding.
-        .filter(|s| !s.is_empty())
+        // composed value and degrade geocoding. Also drop an absence sentinel
+        // (`\N`/`NULL`/redaction) part so it can't fuse strangers into one address.
+        .filter(|s| !s.is_empty() && !is_absent(s))
         .collect::<Vec<&str>>()
         .join(", ");
         if addr.len() >= 4 && seen.insert(format!("@addr:{}", addr.to_lowercase())) {
@@ -474,7 +487,8 @@ pub(super) fn extract_breach_entities_with(
     // "US" that are already captured as the `country` evidence attribute.
     if let Some(loc) = val_str(item, "location") {
         let loc = loc.trim();
-        if loc.len() >= 4 && seen.insert(format!("@loc:{}", loc.to_lowercase())) {
+        if loc.len() >= 4 && !is_absent(loc) && seen.insert(format!("@loc:{}", loc.to_lowercase()))
+        {
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
                 let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.30, scan_id);
@@ -576,7 +590,10 @@ pub(super) fn extract_breach_entities_with(
     ] {
         if let Some(org) = val_str(item, k) {
             let org = org.trim();
-            if org.len() >= 2 && seen.insert(format!("@org:{}", org.to_ascii_lowercase())) {
+            if org.len() >= 2
+                && !is_absent(org)
+                && seen.insert(format!("@org:{}", org.to_ascii_lowercase()))
+            {
                 let mut oe = Entity::new(EntityKind::Organisation, org, 0.50, scan_id);
                 oe.tag("oathnet");
                 oe.tag("employer-field");
