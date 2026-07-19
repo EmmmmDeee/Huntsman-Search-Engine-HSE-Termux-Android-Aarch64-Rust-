@@ -20,7 +20,37 @@ fn make_author(
             .collect(),
         location: location.map(str::to_string),
         biography: biography.map(str::to_string),
+        profile: Vec::new(),
     }
+}
+
+#[test]
+fn emits_linked_accounts_as_platform_prefixed_usernames() {
+    let mut author = make_author("johndoe", None, vec![], vec![], None, None);
+    author.profile = vec![
+        CpanProfile {
+            name: Some("github".to_string()),
+            id: Some("jdoe".to_string()),
+        },
+        CpanProfile {
+            name: Some("twitter".to_string()),
+            id: Some("jdoe_perl".to_string()),
+        },
+        // Incomplete entries (missing id/name) must be skipped.
+        CpanProfile {
+            name: Some("stackoverflow".to_string()),
+            id: None,
+        },
+    ];
+    let ents = build_entities(author, "scan-cpan-prof");
+    let usernames: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username && e.has_tag("linked-account"))
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(usernames.contains(&"github:jdoe"));
+    assert!(usernames.contains(&"twitter:jdoe_perl"));
+    assert_eq!(usernames.len(), 2, "incomplete profile entries are skipped");
 }
 
 #[test]
@@ -145,6 +175,7 @@ fn empty_pauseid_returns_no_entities() {
         website: vec![],
         location: None,
         biography: None,
+        profile: Vec::new(),
     };
     assert!(build_entities(author, "scan-cpan-008").is_empty());
 }

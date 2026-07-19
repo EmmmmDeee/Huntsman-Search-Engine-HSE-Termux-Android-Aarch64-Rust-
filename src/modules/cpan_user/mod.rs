@@ -37,6 +37,18 @@ pub(super) struct CpanSite {
     pub(super) url: Option<String>,
 }
 
+/// A linked external account (`{name, id}`) MetaCPAN records for the author —
+/// GitHub, Twitter, Stack Overflow, … — each a cross-platform Username pivot.
+#[derive(Deserialize, Default)]
+pub(super) struct CpanProfile {
+    /// The platform name (`github`, `twitter`, `stackoverflow`, …).
+    #[serde(default)]
+    pub(super) name: Option<String>,
+    /// The author's handle / id on that platform.
+    #[serde(default)]
+    pub(super) id: Option<String>,
+}
+
 #[derive(Deserialize)]
 pub(super) struct CpanAuthor {
     /// CPAN/PAUSE login identifier (traditionally uppercase).
@@ -57,6 +69,9 @@ pub(super) struct CpanAuthor {
     /// Biography — may contain additional contact details.
     #[serde(default)]
     pub(super) biography: Option<String>,
+    /// Linked external accounts (github/twitter/…), previously decoded nowhere.
+    #[serde(default)]
+    pub(super) profile: Vec<CpanProfile>,
 }
 
 pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
@@ -149,6 +164,34 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
             );
             out.push(em);
         }
+    }
+
+    // Linked external accounts → platform-prefixed Username pivots
+    // (`{platform}:{id}`), mirroring the convention the social modules share.
+    for prof in &author.profile {
+        let (Some(platform), Some(id)) = (
+            prof.name
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            prof.id.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        ) else {
+            continue;
+        };
+        let mut u = Entity::new(
+            EntityKind::Username,
+            format!("{}:{id}", platform.to_lowercase()),
+            0.68,
+            scan_id,
+        );
+        u.tag("cpan");
+        u.tag("linked-account");
+        u.tag(platform.to_lowercase());
+        u.add_evidence(
+            ev().with_attr("source_field", "profile")
+                .with_attr("platform", platform),
+        );
+        out.push(u);
     }
 
     out
