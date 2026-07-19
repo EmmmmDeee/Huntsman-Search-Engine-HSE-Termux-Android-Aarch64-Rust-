@@ -20,8 +20,9 @@ pub(super) async fn recycle_entities(
 ) {
     let reliable = proven_live_engines();
 
-    let mut recycle_queries: Vec<String> = Vec::new();
-    let mut seen_queries: HashSet<String> = HashSet::new();
+    // Pre-allocate based on typical entity count (most pass the confidence filter).
+    let mut recycle_queries: Vec<String> = Vec::with_capacity((result.entities.len() / 2).max(4));
+    let mut seen_queries: HashSet<String> = HashSet::with_capacity(recycle_queries.capacity());
 
     for entity in &result.entities {
         if entity.confidence < 0.40 {
