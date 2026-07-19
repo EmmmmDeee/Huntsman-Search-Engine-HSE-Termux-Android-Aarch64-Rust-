@@ -79,6 +79,24 @@ pub(crate) fn vcard_field(vcard: &serde_json::Value, prop: &str) -> Option<Strin
     })
 }
 
+/// The real registrant-location parts (state, then country) for the Address
+/// geo-hint — each dropped if it is empty or a whois privacy-proxy placeholder.
+/// Uses the SAME single-sourced [`crate::core::validation::is_whois_privacy_placeholder`]
+/// guard the registrant name/org paths apply, rather than a narrow inline
+/// `redacted`/`privacy` substring check that let masked values like "Data
+/// Protected", "Withheld", or ".au statutory masking" through as a fake Address.
+/// **Pure** — unit-tested directly.
+pub(super) fn registrant_location_parts<'a>(
+    state: Option<&'a str>,
+    country: &'a str,
+) -> Vec<&'a str> {
+    [state, Some(country)]
+        .into_iter()
+        .flatten()
+        .filter(|p| !p.is_empty() && !crate::core::validation::is_whois_privacy_placeholder(p))
+        .collect()
+}
+
 /// Walk `entities` recursively, returning the first one whose `roles` list
 /// contains `role`.
 fn find_ip_entity<'a>(entities: &'a [RdapIpEntity], role: &str) -> Option<&'a RdapIpEntity> {
@@ -467,17 +485,11 @@ impl Module for Whois {
             }
         }
 
-        // Registrant address → Address entity (when available and not redacted).
+        // Registrant address → Address entity (when available and not a
+        // privacy-proxy placeholder — via the SAME shared guard the registrant
+        // name/org paths above use, not a narrow redacted/privacy substring test).
         if let Some(country) = &registrant_country {
-            let parts: Vec<&str> = [registrant_state.as_deref(), Some(country.as_str())]
-                .iter()
-                .filter_map(|p| *p)
-                .filter(|p| {
-                    !p.is_empty()
-                        && !p.to_lowercase().contains("redacted")
-                        && !p.to_lowercase().contains("privacy")
-                })
-                .collect();
+            let parts = registrant_location_parts(registrant_state.as_deref(), country);
             if !parts.is_empty() && parts.iter().any(|p| p.len() >= 2) {
                 let addr = parts.join(", ");
                 let mut ae = Entity::new(EntityKind::Address, &addr, 0.50, &_ctx.scan_id);
