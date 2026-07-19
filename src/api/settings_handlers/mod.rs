@@ -166,6 +166,83 @@ pub async fn settings_keys_get(
     .into_response()
 }
 
+/// Body for `POST /keys/pool/add` — a new key for a poolable service, with
+/// the same optional `notes`/`env` labels `hse keys add` accepts.
+#[derive(Deserialize)]
+pub struct KeysPoolAddRequest {
+    pub service: String,
+    pub key: String,
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub env: Option<String>,
+}
+
+/// `POST /api/v1/keys/pool/add` — add a NEW key to a service's rotation pool.
+/// The web Settings page's key editor (`settings/keys` PUT) already lets an
+/// operator set the PRIMARY `HUNTSMAN_*_KEY` env var for any service; this is
+/// the pool's own "add" (`hse keys add`), for operators who want to add a
+/// second/backup key for load-balancing across quota limits — previously the
+/// only way to do this was the CLI. Gated exactly like the sibling pool
+/// writes (`revoke`/`rotate`): loopback-only AND requires
+/// `--allow-key-write`.
+pub async fn keys_pool_add(
+    State(s): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(req): Json<KeysPoolAddRequest>,
+) -> impl IntoResponse {
+    if !s.allow_key_write {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "key writes disabled; restart with `hse serve --allow-key-write`"
+            })),
+        )
+            .into_response();
+    }
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "key writes are loopback-only" })),
+        )
+            .into_response();
+    }
+    let service = req.service.trim();
+    let key = req.key.trim();
+    if service.is_empty() || key.is_empty() {
+        return bad_request("service and key are required");
+    }
+    if !crate::util::service_defs::is_poolable_service(service) {
+        let names: Vec<&str> = crate::util::key_pool::service_defs()
+            .iter()
+            .map(|d| d.name)
+            .collect();
+        return bad_request(format!(
+            "'{service}' is not a poolable service — poolable services: {}",
+            names.join(", ")
+        ));
+    }
+    let pool = crate::util::key_pool::global_pool();
+    let mut entry = crate::util::key_pool::KeyEntry::new(key);
+    entry.notes = req.notes.clone();
+    entry.environment = req.env.clone();
+    if pool.add(service, entry) {
+        crate::util::key_pool::save_pool_best_effort(&pool);
+        tracing::info!(service, "key pool: added via web");
+        (
+            StatusCode::OK,
+            Json(json!({ "status": "added", "service": service, "count": pool.service_count(service) })),
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::OK,
+            Json(json!({ "status": "duplicate", "service": service })),
+        )
+            .into_response()
+    }
+}
+
 /// Body for `POST /keys/pool/revoke` — identify a pooled key by its non-secret
 /// short id (never the plaintext).
 #[derive(Deserialize)]
