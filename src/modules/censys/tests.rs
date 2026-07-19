@@ -181,6 +181,76 @@ fn full_host_yields_ip_coords_and_address() {
 }
 
 #[test]
+fn autonomous_system_yields_asn_org_and_reverse_dns_domains() {
+    let ents = build_entities(
+        &host(
+            r#"{ "result": {
+                "services": [{ "port": 443 }],
+                "autonomous_system": {
+                    "asn": 15169, "name": "GOOGLE",
+                    "description": "Google LLC", "country_code": "US"
+                },
+                "dns": { "reverse_dns": { "names": [
+                    "dns.google", "dns.google", "8.8.8.8", "no-dot", "dns.google."
+                ] } }
+            } }"#,
+        ),
+        "8.8.8.8",
+        "s",
+    );
+
+    let asn = of_kind(&ents, EntityKind::Asn).expect("AS<n> Asn entity");
+    assert_eq!(asn.value, "AS15169");
+    assert!(asn.has_tag("censys"));
+    assert_eq!(
+        asn.evidence[0]
+            .attributes
+            .get("country")
+            .map(String::as_str),
+        Some("US")
+    );
+
+    let org = of_kind(&ents, EntityKind::Organisation).expect("operator Organisation");
+    // Prefers `name` over `description`.
+    assert_eq!(org.value, "GOOGLE");
+
+    // Reverse-DNS names → one deduped Domain (IP-shaped + dotless + dup dropped).
+    let domains: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert_eq!(domains, ["dns.google"], "deduped, IP/dotless dropped");
+    assert!(
+        ents.iter()
+            .find(|e| e.kind == EntityKind::Domain)
+            .unwrap()
+            .has_tag("ptr")
+    );
+}
+
+#[test]
+fn zero_or_absent_asn_is_skipped_but_operator_org_survives() {
+    let ents = build_entities(
+        &host(
+            r#"{ "result": { "services": [],
+                "autonomous_system": { "asn": 0, "description": "Some Net" } } }"#,
+        ),
+        "1.2.3.4",
+        "s",
+    );
+    assert!(
+        of_kind(&ents, EntityKind::Asn).is_none(),
+        "a 0 ASN is skipped, never emitted as AS0"
+    );
+    // Falls back to `description` when `name` is absent.
+    assert_eq!(
+        of_kind(&ents, EntityKind::Organisation).unwrap().value,
+        "Some Net"
+    );
+}
+
+#[test]
 fn empty_host_yields_nothing() {
     // Neither services nor location → the builder short-circuits.
     let ents = build_entities(
