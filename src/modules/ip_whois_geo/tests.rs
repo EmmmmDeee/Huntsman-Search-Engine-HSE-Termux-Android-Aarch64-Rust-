@@ -135,6 +135,29 @@ use super::*;
     }
 
     #[test]
+    fn surfaces_region_code_and_isp_domain_previously_dropped() {
+        let body = resp(
+            r#"{
+                "success": true, "country": "Australia", "country_code": "AU",
+                "region": "Queensland", "region_code": "QLD", "city": "South Brisbane",
+                "latitude": -27.4766, "longitude": 153.0166,
+                "connection": { "isp": "Telstra", "org": "Telstra Corporation", "asn": 1221, "domain": "telstra.com" }
+            }"#,
+        );
+        let ents = build_entities(&body, "203.0.113.9", "s");
+        let coords = of_kind(&ents, EntityKind::Coordinates).expect("Coordinates");
+        let attr = |k: &str| coords.evidence[0].attributes.get(k).map(String::as_str);
+        assert_eq!(attr("region_code"), Some("QLD"));
+        assert_eq!(attr("isp_domain"), Some("telstra.com"));
+        // The ISP domain is also stamped on the Organisation attribution.
+        let org = of_kind(&ents, EntityKind::Organisation).expect("Organisation");
+        assert_eq!(
+            org.evidence[0].attributes.get("isp_domain").map(String::as_str),
+            Some("telstra.com")
+        );
+    }
+
+    #[test]
     fn coordinates_carry_the_originating_ip_for_login_ip_recognition() {
         // The module's own doc comment frames it as `ip_geo`'s "second-source"
         // corroborating partner, and `build_entities` explicitly filters CDN/
