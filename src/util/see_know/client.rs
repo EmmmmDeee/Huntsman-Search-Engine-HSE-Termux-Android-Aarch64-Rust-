@@ -87,6 +87,29 @@ pub(super) fn base_url() -> String {
     crate::util::endpoint_override::resolve("HUNTSMAN_SEEKNOW_BASE", "https://see-know.eu/api/v1")
 }
 
+/// All SeekNow base URLs in fallback order. The service intentionally rotates
+/// domains; fallback attempts exhaustively try all known domains before surfacing
+/// a network/connection error, allowing the scan to continue despite transient
+/// domain availability. Auth errors (invalid key, plan required) are NOT retried
+/// across domains — if the key is invalid on one, it's invalid on all.
+pub(super) fn all_base_urls() -> Vec<String> {
+    let primary = base_url();
+    let mut urls = vec![primary.clone()];
+
+    // Add secondary/fallback domains only if they're different from the primary
+    // (e.g., if HUNTSMAN_SEEKNOW_BASE override is set to one of these, we skip dupes).
+    let fallbacks = [
+        "https://see-know.icu/api/v1",
+        "https://see-know.xyz/api/v1",
+    ];
+    for fallback in &fallbacks {
+        if !urls.contains(&fallback.to_string()) {
+            urls.push(fallback.to_string());
+        }
+    }
+    urls
+}
+
 /// The SeekNow API key to use for a request: the per-scan context key `ctx_key`
 /// when the operator supplied one, otherwise the built-in default
 /// ([`crate::util::keys::resolve_or_default`]). Mirrors `oathnet::resolve_key`.
@@ -240,6 +263,7 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
     }
 }
 
+#[allow(dead_code)]
 pub(super) async fn get_json(url: &str, key: &str, endpoint: &str, query: &str) -> Result<Value> {
     let body = CLIENT.get(url, key).await?;
     // Retain the paid response verbatim BEFORE parsing/extraction — operator
@@ -250,6 +274,7 @@ pub(super) async fn get_json(url: &str, key: &str, endpoint: &str, query: &str) 
     parse_response(&body)
 }
 
+#[allow(dead_code)]
 pub(super) async fn post_json(
     url: &str,
     key: &str,
@@ -261,6 +286,131 @@ pub(super) async fn post_json(
     // Archive the raw paid response verbatim, filed under the queried value.
     crate::util::raw_archive::record("see-know", endpoint, query, &resp);
     parse_response(&resp)
+}
+
+/// POST with multi-domain fallback. Tries the primary domain first, then falls back
+/// to alternate domains on connection/network errors (not auth errors). Auth errors
+/// (invalid key, plan required) are NOT retried across domains — if the key is invalid,
+/// no domain will help, so we fail fast and avoid wasting domains.
+pub(super) async fn post_json_with_fallback(
+    endpoint_path: &str,
+    key: &str,
+    body: &str,
+    endpoint: &str,
+    query: &str,
+) -> Result<Value> {
+    let urls = all_base_urls();
+    let mut last_error = None;
+
+    for (idx, base) in urls.iter().enumerate() {
+        let url = format!("{base}{endpoint_path}");
+        match CLIENT.post_json(&url, key, body).await {
+            Ok(resp) => {
+                crate::util::raw_archive::record("see-know", endpoint, query, &resp);
+                return parse_response(&resp);
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                // Auth errors are terminal — no point trying other domains.
+                if err_str.contains("401") || err_str.contains("Unauthorized")
+                    || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
+                {
+                    return Err(e);
+                }
+                // For other errors (connection, DNS, timeout), try the next domain.
+                if idx < urls.len() - 1 {
+                    tracing::debug!(
+                        domain = base,
+                        endpoint = endpoint_path,
+                        "see_know POST failed — trying next domain"
+                    );
+                }
+                last_error = Some(e);
+            }
+        }
+    }
+
+    // Exhausted all domains; return the last error.
+    Err(last_error.unwrap_or_else(|| Error::module("see_know", "all domains exhausted")))
+}
+
+/// GET with multi-domain fallback. Tries the primary domain first, then falls back
+/// to alternate domains on connection/network errors (not auth errors).
+pub(super) async fn get_json_with_fallback(
+    endpoint_path: &str,
+    key: &str,
+    query_str: &str,
+    endpoint: &str,
+    query_value: &str,
+) -> Result<Value> {
+    let urls = all_base_urls();
+    let mut last_error = None;
+
+    for (idx, base) in urls.iter().enumerate() {
+        let url = format!("{base}{endpoint_path}?{query_str}");
+        match CLIENT.get(&url, key).await {
+            Ok(body) => {
+                crate::util::raw_archive::record("see-know", endpoint, query_value, &body);
+                return parse_response(&body);
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                // Auth errors are terminal — no point trying other domains.
+                if err_str.contains("401") || err_str.contains("Unauthorized")
+                    || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
+                {
+                    return Err(e);
+                }
+                // For other errors (connection, DNS, timeout), try the next domain.
+                if idx < urls.len() - 1 {
+                    tracing::debug!(
+                        domain = base,
+                        endpoint = endpoint_path,
+                        "see_know GET failed — trying next domain"
+                    );
+                }
+                last_error = Some(e);
+            }
+        }
+    }
+
+    // Exhausted all domains; return the last error.
+    Err(last_error.unwrap_or_else(|| Error::module("see_know", "all domains exhausted")))
+}
+
+/// Raw GET with multi-domain fallback (no parsing/archiving). Used for meta-queries
+/// like `/credits` that don't consume budget and shouldn't be archived.
+pub(super) async fn get_raw_with_fallback(endpoint_path: &str, key: &str) -> Result<String> {
+    let urls = all_base_urls();
+    let mut last_error = None;
+
+    for (idx, base) in urls.iter().enumerate() {
+        let url = format!("{base}{endpoint_path}");
+        match CLIENT.get(&url, key).await {
+            Ok(body) => return Ok(body),
+            Err(e) => {
+                let err_str = e.to_string();
+                // Auth errors are terminal — no point trying other domains.
+                if err_str.contains("401") || err_str.contains("Unauthorized")
+                    || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
+                {
+                    return Err(e);
+                }
+                // For other errors (connection, DNS, timeout), try the next domain.
+                if idx < urls.len() - 1 {
+                    tracing::debug!(
+                        domain = base,
+                        endpoint = endpoint_path,
+                        "see_know raw GET failed — trying next domain"
+                    );
+                }
+                last_error = Some(e);
+            }
+        }
+    }
+
+    // Exhausted all domains; return the last error.
+    Err(last_error.unwrap_or_else(|| Error::module("see_know", "all domains exhausted")))
 }
 
 /// Expose the hardcoded default key so tests can assert on it.
