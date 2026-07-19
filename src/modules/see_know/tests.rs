@@ -662,6 +662,105 @@ use crate::core::entity::Entity;
     }
 
     #[test]
+    fn domain_intel_subdomains_mint_only_the_targets_own_tree() {
+        use serde_json::json;
+        let item = json!({
+            "domain": "acme.com",
+            "subdomains": ["mail.acme.com", "vpn.acme.com", "evil.example.net"],
+        });
+        let has_dom = |r: &ModuleResult, v: &str| {
+            r.entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == v)
+        };
+
+        let (mut seen, mut result) = (HashSet::new(), ModuleResult::new());
+        extract_entities(
+            &item,
+            "acme.com",
+            "scan",
+            "domain_intel",
+            "k",
+            &mut seen,
+            &mut result,
+        );
+        assert!(has_dom(&result, "mail.acme.com"), "target subdomain minted");
+        assert!(has_dom(&result, "vpn.acme.com"), "target subdomain minted");
+        assert!(
+            !has_dom(&result, "evil.example.net"),
+            "a third-party host in the array must NOT be minted"
+        );
+        let sd = result
+            .entities
+            .iter()
+            .find(|e| e.value == "mail.acme.com")
+            .unwrap();
+        assert!(sd.has_tag("subdomain") && !sd.has_tag("breach"));
+
+        // Endpoint gate: the SAME record via a non-domain_intel endpoint mints
+        // no subdomains (only /domain/intel returns a subdomains array).
+        let (mut s2, mut r2) = (HashSet::new(), ModuleResult::new());
+        extract_entities(&item, "acme.com", "scan", "search", "k", &mut s2, &mut r2);
+        assert!(
+            !has_dom(&r2, "mail.acme.com"),
+            "subdomains are only minted for the domain_intel endpoint"
+        );
+    }
+
+    #[test]
+    fn discord_connected_accounts_mint_cross_platform_pivots() {
+        use serde_json::json;
+        let item = json!({
+            "discord_id": "80351110224678912",
+            "connected_accounts": [
+                { "type": "steam", "id": "76561197960287930", "name": "gaben" },
+                { "type": "twitch", "id": "44322889", "name": "ninja" },
+                { "type": "reddit", "name": "spez" },
+                // Junk shapes that must be ignored.
+                { "type": "", "name": "x" },
+                { "id": "no-type" },
+            ],
+        });
+        let has_u = |r: &ModuleResult, v: &str| {
+            r.entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username && e.value == v)
+        };
+        let (mut seen, mut result) = (HashSet::new(), ModuleResult::new());
+        extract_entities(
+            &item,
+            "80351110224678912",
+            "scan",
+            "discord_user",
+            "k",
+            &mut seen,
+            &mut result,
+        );
+        // Steam link → the pivot-feeding `steam:<id>` shape (fed to the steam pivot).
+        assert!(
+            has_u(&result, "steam:76561197960287930"),
+            "a steam connected_account must mint the steam:<id> pivot"
+        );
+        // Other platforms → `{type}:{handle}` (name preferred, id fallback).
+        assert!(has_u(&result, "twitch:ninja"), "twitch handle pivot");
+        assert!(has_u(&result, "reddit:spez"), "reddit handle pivot");
+        // Malformed entries must be ignored (no empty-type / no-handle nodes).
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username && e.value.starts_with(':')),
+            "an entry with an empty type must not mint a node"
+        );
+        let tw = result
+            .entities
+            .iter()
+            .find(|e| e.value == "twitch:ninja")
+            .unwrap();
+        assert!(tw.has_tag("discord-linked") && tw.has_tag("twitch"));
+    }
+
+    #[test]
     fn record_evidence_stamps_canonical_dbname_for_au105() {
         use serde_json::json;
         // AU-105 (credential reuse across breaches) groups records by the `dbname`

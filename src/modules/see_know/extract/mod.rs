@@ -308,6 +308,64 @@ pub(super) fn extract_entities(
             &["steam"],
         );
     }
+    // ── Discord connected_accounts → cross-platform identity pivots. ──
+    // Discord's `connected_accounts` (a.k.a. `connections`) array is its
+    // canonical cross-platform identity edge and the highest-yield artifact the
+    // discord/user endpoint returns. Each entry is `{type, id, name}`. A `steam`
+    // link mints the SAME `steam:<id>` Username the direct field does, so it
+    // plugs straight into the existing, already-tested steam pivot; every other
+    // platform mints a `{type}:{handle}` Username matching the breach_rich handle
+    // convention. Shape-gated (entry is an object with a short alnum `type` and
+    // an id/name) so an unrelated array named `connections` can't inject noise.
+    for arr_key in ["connected_accounts", "connections"] {
+        let Some(arr) = item.get(arr_key).and_then(Value::as_array) else {
+            continue;
+        };
+        for conn in arr {
+            let Some(obj) = conn.as_object() else {
+                continue;
+            };
+            let ty = obj
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if ty.is_empty() || !ty.chars().all(|c| c.is_ascii_alphanumeric()) {
+                continue;
+            }
+            let id = obj.get("id").and_then(Value::as_str).map(str::trim);
+            let name = obj.get("name").and_then(Value::as_str).map(str::trim);
+            // Steam link → the pivot-feeding `steam:<id>` shape when the id validates.
+            if ty == "steam"
+                && let Some(sid) = id.filter(|s| looks_like_steam_id(s))
+                && seen.insert(format!("@steam:{sid}"))
+            {
+                push_breach_entity(
+                    result,
+                    Entity::new(EntityKind::Username, format!("steam:{sid}"), 0.55, scan_id),
+                    &ev,
+                    &["steam", "discord-linked"],
+                );
+                continue;
+            }
+            // Any other platform → a `{type}:{handle}` Username pivot. Prefer the
+            // human handle (`name`); fall back to the numeric id.
+            let handle = name.filter(|s| !s.is_empty()).or(id);
+            if let Some(h) = handle.filter(|s| s.len() >= 2)
+                && seen.insert(format!("@{ty}:{}", h.to_lowercase()))
+            {
+                // Borrow `ty` for the tag slice (no per-entry allocation/leak).
+                let tags = [ty.as_str(), "discord-linked"];
+                push_breach_entity(
+                    result,
+                    Entity::new(EntityKind::Username, format!("{ty}:{h}"), 0.55, scan_id),
+                    &ev,
+                    &tags,
+                );
+            }
+        }
+    }
     // Leaked credentials were previously dropped entirely — capture them as
     // first-class Password entities (operator policy: never redacted). The full
     // record (including any hash) is already on `ev`, so nothing is lost even
@@ -498,6 +556,36 @@ pub(super) fn extract_entities(
     // valuable stays locked inside the evidence blob. Operator directive: "I
     // want everything. Maximum raw data."
     extract_rich_detail(item, scan_id, &ev, seen, result);
+
+    // ── /domain/intel subdomains → the target's OWN attack surface. ──
+    // Only the domain/intel response carries a `subdomains` array. Each is a
+    // first-class seed the dns_intel/cert_intel/crtsh/web_crawler modules fan out
+    // from — a paid domain-intel corpus may hold subdomains the free CT/DNS stack
+    // misses. Gated on `is_or_subdomain_of(sub, queried_domain)` so ONLY the
+    // target's own tree is minted, never a third-party host the record merely
+    // mentions (unlike the deliberately un-minted stealer URL host below). Not
+    // tagged `breach` — a subdomain is infrastructure, exactly like the `domain`
+    // field below. Pushed inside the quarantine range so a non-matching record's
+    // subdomains demote with the rest.
+    if endpoint == "domain_intel"
+        && let Some(subs) = item.get("subdomains").and_then(Value::as_array)
+    {
+        for sub in subs {
+            let Some(raw) = sub.as_str() else { continue };
+            let s = raw.trim().trim_end_matches('.').to_ascii_lowercase();
+            if crate::util::domains::looks_like_domain(&s)
+                && crate::util::domains::is_or_subdomain_of(&s, target_value)
+                && seen.insert(format!("@subdomain:{s}"))
+            {
+                let mut e = Entity::new(EntityKind::Domain, &s, 0.60, scan_id);
+                e.tag("see-know");
+                e.tag("subdomain");
+                e.tag("dns");
+                e.add_evidence(ev.clone());
+                result.push(e);
+            }
+        }
+    }
 
     // Quarantine a non-matching record's identity/credential/raw-detail entities
     // to CANDIDATE strength with a `candidate` tag — the same demotion
