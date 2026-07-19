@@ -65,6 +65,38 @@ use super::*;
     }
 
     #[test]
+    fn build_entities_suppresses_privacy_proxy_registrant_identity() {
+        // The GoDaddy/Namecheap privacy-proxy defaults must NOT become a real
+        // Person/Organisation/Address — the same placeholder string recurs across
+        // thousands of unrelated domains and would false-merge them onto one node.
+        let rec = record(
+            r#"{
+                "registrant": {
+                    "name": "Registration Private",
+                    "organization": "Domains By Proxy, LLC",
+                    "street1": "REDACTED FOR PRIVACY",
+                    "city": "Tempe", "state": "Arizona", "country": "UNITED STATES",
+                    "email": "abuse@godaddy.com"
+                }
+            }"#,
+        );
+        let es = build_entities(&rec, "example-target.com", "t");
+        assert!(
+            values(&es, EntityKind::Person).is_empty(),
+            "privacy-proxy registrant name must not become a Person"
+        );
+        assert!(
+            values(&es, EntityKind::Organisation).is_empty(),
+            "privacy-proxy org must not become an Organisation"
+        );
+        // A registrant real name still surfaces (regression guard).
+        let real = record(r#"{ "registrant": {"name": "Jordan Avery", "organization": "Avery Media Pty Ltd"} }"#);
+        let ok = build_entities(&real, "example-target.com", "t");
+        assert_eq!(values(&ok, EntityKind::Person), vec!["Jordan Avery"]);
+        assert_eq!(values(&ok, EntityKind::Organisation), vec!["Avery Media Pty Ltd"]);
+    }
+
+    #[test]
     fn build_entities_surfaces_registered_domain_pivot_when_it_differs() {
         let rec = record(r#"{ "domainName": "acme.com" }"#);
         // Queried a subdomain; registry holds the parent → pivot.

@@ -433,11 +433,7 @@ impl Module for Whois {
         // Registrant organisation → Organisation entity.
         if let Some(org) = &registrant_org {
             let org = org.trim();
-            if org.len() >= 3
-                && !org.eq_ignore_ascii_case("REDACTED FOR PRIVACY")
-                && !org.to_lowercase().contains("privacy")
-                && !org.to_lowercase().contains("redacted")
-            {
+            if org.len() >= 3 && !crate::core::validation::is_whois_privacy_placeholder(org) {
                 let mut oe = Entity::new(EntityKind::Organisation, org, 0.72, &_ctx.scan_id);
                 oe.tag("whois");
                 oe.tag(crate::core::tags::REGISTRANT);
@@ -458,10 +454,7 @@ impl Module for Whois {
             let name = name.trim();
             if name.len() >= 4
                 && name.contains(' ')
-                && !name.to_lowercase().contains("privacy")
-                && !name.to_lowercase().contains("redacted")
-                && !name.to_lowercase().contains("data protected")
-                && !name.to_lowercase().contains("not disclosed")
+                && !crate::core::validation::is_whois_privacy_placeholder(name)
             {
                 let mut pe = Entity::new(EntityKind::Person, name, 0.72, &_ctx.scan_id);
                 pe.tag("whois");
@@ -516,14 +509,8 @@ impl Module for Whois {
         }
 
         // Admin and tech contact names / organisations — same redaction filter
-        // as the registrant block above.
-        let is_redacted = |s: &str| {
-            let l = s.to_lowercase();
-            l.contains("privacy")
-                || l.contains("redacted")
-                || l.contains("data protected")
-                || l.contains("not disclosed")
-        };
+        // as the registrant block above (the shared, complete privacy-proxy guard).
+        let is_redacted = crate::core::validation::is_whois_privacy_placeholder;
         for (name_opt, role) in [(&admin_name, "admin"), (&tech_name, "tech")] {
             if let Some(name) = name_opt
                 .as_deref()

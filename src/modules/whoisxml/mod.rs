@@ -287,6 +287,7 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
         let Some(c) = contact else { continue };
 
         if let Some(org) = nonempty(&c.organization)
+            .filter(|o| !crate::core::validation::is_whois_privacy_placeholder(o))
             && seen.insert(format!("org:{}", org.to_lowercase()))
         {
             let mut e = Entity::new(EntityKind::Organisation, &org, 0.70, scan_id);
@@ -300,7 +301,8 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
             out.push(e);
         }
 
-        if let Some(name) = nonempty(&c.name)
+        if let Some(name) =
+            nonempty(&c.name).filter(|n| !crate::core::validation::is_whois_privacy_placeholder(n))
             && seen.insert(format!("person:{}", name.to_lowercase()))
         {
             let mut e = Entity::new(EntityKind::Person, &name, 0.60, scan_id);
@@ -328,8 +330,10 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
             }
         }
 
-        // WHOIS registrant location → low-confidence Address geo-hint.
+        // WHOIS registrant location → low-confidence Address geo-hint. A
+        // privacy-proxy address ("REDACTED FOR PRIVACY") is never the subject's.
         if let Some(loc) = contact_location(c)
+            .filter(|l| !crate::core::validation::is_whois_privacy_placeholder(l))
             && seen.insert(format!("addr:{}", loc.to_lowercase()))
         {
             let mut e = Entity::new(EntityKind::Address, &loc, 0.45, scan_id);
