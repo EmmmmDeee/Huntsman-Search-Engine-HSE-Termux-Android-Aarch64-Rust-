@@ -50,6 +50,24 @@ use super::*;
     }
 
     #[test]
+    fn proxy_ip_address_and_coordinates_are_both_proxy_tagged() {
+        // An anonymiser/VPN exit: the geolocation is the exit node, not the
+        // subject, so BOTH the Coordinates and the Address must carry the PROXY
+        // tag (the Address previously emitted the exit's city untagged).
+        let j = r#"{"ip":"1.2.3.4","country_code":"NL","country_name":"Netherlands","region_name":"North Holland","city_name":"Amsterdam","latitude":52.37,"longitude":4.89,"is_proxy":true}"#;
+        let r: Resp = serde_json::from_str(j).unwrap();
+        let es = build_entities(&r, "1.2.3.4", false, "t");
+        let addr = entity(&es, EntityKind::Address).expect("address");
+        assert!(
+            addr.tags.iter().any(|t| t == crate::core::tags::PROXY),
+            "proxy-exit address must be PROXY-tagged, got {:?}",
+            addr.tags
+        );
+        let coords = entity(&es, EntityKind::Coordinates).expect("coords");
+        assert!(coords.tags.iter().any(|t| t == crate::core::tags::PROXY));
+    }
+
+    #[test]
     fn build_entities_emits_asn_and_isp() {
         let r: Resp = serde_json::from_str(GATTON_JSON).unwrap();
         let es = build_entities(&r, "101.169.42.148", false, "t");

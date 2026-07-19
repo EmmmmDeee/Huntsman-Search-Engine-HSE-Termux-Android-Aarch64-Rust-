@@ -202,6 +202,12 @@ fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<E
         let mut ae = Entity::new(EntityKind::Address, &addr, 0.68, scan_id);
         ae.tag("ip2location");
         ae.tag(tags::GEOINT);
+        // An anonymiser/VPN exit's city is not the subject's location — tag it so
+        // it is filterable, exactly as the Coordinates above already are (the
+        // Address previously emitted the proxy-exit address untagged).
+        if data.is_proxy == Some(true) {
+            ae.tag(tags::PROXY);
+        }
         if is_au {
             ae.tag("country:AU");
         }
