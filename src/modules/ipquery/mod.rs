@@ -51,6 +51,8 @@ struct LocationBlock {
     #[serde(default)]
     state: Option<String>,
     #[serde(default)]
+    zipcode: Option<String>,
+    #[serde(default)]
     latitude: Option<f64>,
     #[serde(default)]
     longitude: Option<f64>,
@@ -241,6 +243,7 @@ fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
     if let Some(loc) = data.location.as_ref().filter(|_| trusted_geo) {
         let cc = loc.country_code.as_deref().unwrap_or("");
         let tz = loc.timezone.as_deref().unwrap_or("");
+        let zip = loc.zipcode.as_deref().unwrap_or("");
         let geo_ev = || {
             // The originating IP, recorded explicitly so a finalise pass can
             // robustly tie this coordinate back to its source IpAddress (e.g.
@@ -256,6 +259,11 @@ fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
             }
             if !tz.is_empty() {
                 ev = ev.with_attr("timezone", tz);
+            }
+            // Residential postcode — a finer geo grain than city/state, folded
+            // onto both the Coordinates and the Address (both carry geo_ev()).
+            if !zip.is_empty() {
+                ev = ev.with_attr("postcode", zip);
             }
             ev
         };
