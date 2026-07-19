@@ -141,6 +141,53 @@ fn outbound_high_risk_tagged_independently_of_inbound() {
 }
 
 #[test]
+fn whois_geolocation_yields_coordinates_and_address() {
+    let body = report(
+        r#"{
+            "status": 200,
+            "whois": { "data": [
+                { "as_no": 4766, "org_name": "KT Corp", "org_country_code": "kr",
+                  "city": "Seoul", "region": "Seoul", "latitude": 37.5665, "longitude": 126.978 }
+            ] }
+        }"#,
+    );
+    let ents = build_entities(&body, &ip_target("1.2.3.4"), "s");
+
+    let coord = of_kind(&ents, EntityKind::Coordinates).expect("valid lat/lon → Coordinates");
+    // Entity::new normalises Coordinates to 6-decimal lat,lon.
+    assert_eq!(coord.value, "37.566500,126.978000");
+    assert!(coord.has_tag("criminal_ip") && coord.has_tag("geoint"));
+
+    let addr = of_kind(&ents, EntityKind::Address).expect("city/region/country → Address");
+    // country code uppercased; the compose_address join drops no present part here.
+    assert_eq!(addr.value, "Seoul, Seoul, KR");
+    assert!(addr.has_tag("geoint"));
+}
+
+#[test]
+fn null_island_whois_coords_are_rejected_but_city_still_maps() {
+    // The API's `(0,0)` placeholder must never become an equatorial fix; a
+    // present city still yields an Address (with no region → two-part join).
+    let body = report(
+        r#"{
+            "status": 200,
+            "whois": { "data": [
+                { "org_country_code": "us", "city": "Ashburn", "latitude": 0.0, "longitude": 0.0 }
+            ] }
+        }"#,
+    );
+    let ents = build_entities(&body, &ip_target("1.2.3.4"), "s");
+    assert!(
+        of_kind(&ents, EntityKind::Coordinates).is_none(),
+        "null-island (0,0) must be rejected by is_valid_coords"
+    );
+    assert_eq!(
+        of_kind(&ents, EntityKind::Address).unwrap().value,
+        "Ashburn, US"
+    );
+}
+
+#[test]
 fn nonblank_filters_empty_and_whitespace_only() {
     assert_eq!(nonblank(Some("  AS13335 ")), Some("AS13335"));
     assert_eq!(nonblank(Some("x")), Some("x"));

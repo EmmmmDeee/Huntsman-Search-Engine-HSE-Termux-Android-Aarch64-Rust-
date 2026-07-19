@@ -104,6 +104,14 @@ struct WhoisRow {
     org_name: Option<String>,
     #[serde(default)]
     org_country_code: Option<String>,
+    #[serde(default)]
+    city: Option<String>,
+    #[serde(default)]
+    region: Option<String>,
+    #[serde(default)]
+    latitude: Option<f64>,
+    #[serde(default)]
+    longitude: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -144,10 +152,14 @@ fn nonblank(v: Option<&str>) -> Option<&str> {
 /// | `score.*`, `whois[0].*`, `port`, `vuln` | evidence attributes                   |
 /// | `whois[0].org_name` (non-blank)         | `Organisation` pivot                   |
 /// | `whois[0].as_no`                        | `Asn` pivot (`AS<n>`)                  |
+/// | `whois[0].latitude`/`longitude` (valid) | `Coordinates` pivot (`geoint`)        |
+/// | `whois[0].city`/`region`/country        | `Address` pivot (`geoint`)            |
 ///
 /// The subject is always emitted (the caller has already gated on a
-/// `status == 200` report); the Organisation/Asn pivots only when the whois
-/// block carries them.
+/// `status == 200` report); the Organisation/Asn/geo pivots only when the whois
+/// block carries them. A whois latitude/longitude is trusted only through
+/// [`crate::util::geo::is_valid_coords`], so the API's null-island `(0,0)`
+/// placeholder never becomes a spurious equatorial fix.
 fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
     let ip = target.value.trim();
     let mut out = Vec::new();
@@ -227,6 +239,34 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
             ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
             out.push(ae);
         }
+        // Whois geolocation → a real `Coordinates` fix (guarded so the API's
+        // `(0,0)` null-island placeholder is never trusted) plus a
+        // `City, Region, Country` `Address`. Both are IP-infrastructure geo, so
+        // they carry `geoint` and stay at modest confidence — the ASN operator's
+        // registered location, not proof of the subject's whereabouts.
+        if let (Some(lat), Some(lon)) = (w.latitude, w.longitude)
+            && crate::util::geo::is_valid_coords(lat, lon)
+        {
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            let mut ce = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+            ce.tag("criminal_ip");
+            ce.tag("geoint");
+            ce.add_evidence(Evidence::new(SRC, format!("Whois geolocation for {ip}")));
+            out.push(ce);
+        }
+        let city = nonblank(w.city.as_deref()).unwrap_or("");
+        if !city.is_empty() {
+            let region = nonblank(w.region.as_deref()).unwrap_or("");
+            let country = nonblank(w.org_country_code.as_deref())
+                .map(str::to_uppercase)
+                .unwrap_or_default();
+            let addr = crate::util::geo::compose_address(city, region, &country);
+            let mut ae = Entity::new(EntityKind::Address, &addr, 0.50, scan_id);
+            ae.tag("criminal_ip");
+            ae.tag("geoint");
+            ae.add_evidence(Evidence::new(SRC, format!("Whois location for {ip}")));
+            out.push(ae);
+        }
     }
 
     out
@@ -264,9 +304,17 @@ impl Module for CriminalIp {
         // Criminal IP is a paid threat-intel vendor (risk scoring + VPN/proxy/
         // tor/scanner classification), so beyond the Infrastructure default
         // (T1590.005 IP Addresses + T1596.005 Scan Databases) it is Search
-        // Closed Sources: Threat Intel Vendors (T1597.001). Also surfaces the
-        // ASN operator as an Organisation entity → T1591.002 Business Relationships.
-        &["T1590.005", "T1591.002", "T1596.005", "T1597.001"]
+        // Closed Sources: Threat Intel Vendors (T1597.001). Surfaces the ASN
+        // operator as an Organisation entity → T1591.002 Business Relationships,
+        // and the whois city/region/lat-lon as Address/Coordinates →
+        // T1591.001 Physical Locations.
+        &[
+            "T1590.005",
+            "T1591.001",
+            "T1591.002",
+            "T1596.005",
+            "T1597.001",
+        ]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
@@ -274,6 +322,8 @@ impl Module for CriminalIp {
             EntityKind::IpAddress,
             EntityKind::Organisation,
             EntityKind::Asn,
+            EntityKind::Coordinates,
+            EntityKind::Address,
         ];
         KINDS
     }

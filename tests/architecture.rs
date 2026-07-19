@@ -869,11 +869,18 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "ipqs → Victim Identity (Phone) + Email Addresses + IP Addresses + Scan Databases + Threat Intel Vendors"
     );
 
-    // criminal_ip: existing override adds T1591.002 for ASN operator Organisation.
+    // criminal_ip: override adds T1591.002 for the ASN operator Organisation and
+    // T1591.001 for the whois city/region/lat-lon → Address/Coordinates.
     assert_eq!(
         techniques("criminal_ip"),
-        vec!["T1590.005", "T1591.002", "T1596.005", "T1597.001"],
-        "criminal_ip → IP Addresses + Business Relationships + Scan Databases + Threat Intel Vendors"
+        vec![
+            "T1590.005",
+            "T1591.001",
+            "T1591.002",
+            "T1596.005",
+            "T1597.001"
+        ],
+        "criminal_ip → IP Addresses + Physical Locations + Business Relationships + Scan Databases + Threat Intel Vendors"
     );
 
     // device_sensors: Sensor default (T1592 Host Information) but GPS coordinates
