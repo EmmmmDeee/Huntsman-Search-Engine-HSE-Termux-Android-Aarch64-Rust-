@@ -50,6 +50,10 @@ pub(super) struct LpPerson {
     /// `false` when the account is deactivated or suspended.
     #[serde(default = "default_true")]
     pub(super) is_valid: bool,
+    /// The account's declared IANA time zone (e.g. `"Australia/Brisbane"`) — a
+    /// chronolocation lead, previously decoded nowhere.
+    #[serde(default)]
+    pub(super) time_zone: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -71,11 +75,24 @@ pub(super) fn build_entities(person: LpPerson, scan_id: &str) -> Vec<Entity> {
             .with_attr("profile_url", &profile_url)
     };
 
-    // Confirmed username on Launchpad.
+    // Confirmed username on Launchpad. Surface the declared IANA time zone as a
+    // chronolocation lead, and coarsely tag an Australia/* zone country:AU.
     let mut e = Entity::new(EntityKind::Username, handle, 0.85, scan_id);
     e.tag("launchpad");
     e.tag("public-profile");
-    e.add_evidence(ev());
+    let mut uev = ev();
+    if let Some(tz) = person
+        .time_zone
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        uev = uev.with_attr("time_zone", tz);
+        if tz.starts_with("Australia/") {
+            e.tag("country:AU");
+        }
+    }
+    e.add_evidence(uev);
     out.push(e);
 
     // Profile URL.

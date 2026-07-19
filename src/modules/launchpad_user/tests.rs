@@ -13,7 +13,47 @@ fn make_person(
         web_link: web_link.map(str::to_string),
         description: description.map(str::to_string),
         is_valid,
+        time_zone: None,
     }
+}
+
+#[test]
+fn surfaces_time_zone_and_coarse_au_tag_on_username() {
+    let mut p = make_person("alice", None, None, None, true);
+    p.time_zone = Some("Australia/Brisbane".to_string());
+    let ents = build_entities(p, "scan-lp-tz");
+    let u = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Username)
+        .expect("username");
+    assert_eq!(
+        u.evidence[0]
+            .attributes
+            .get("time_zone")
+            .map(String::as_str),
+        Some("Australia/Brisbane")
+    );
+    assert!(
+        u.has_tag("country:AU"),
+        "an Australia/* zone tags country:AU"
+    );
+
+    // A non-AU zone surfaces the attribute but no country:AU tag.
+    let mut q = make_person("bob", None, None, None, true);
+    q.time_zone = Some("Europe/Berlin".to_string());
+    let ents = build_entities(q, "scan-lp-tz2");
+    let u = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Username)
+        .expect("username");
+    assert_eq!(
+        u.evidence[0]
+            .attributes
+            .get("time_zone")
+            .map(String::as_str),
+        Some("Europe/Berlin")
+    );
+    assert!(!u.has_tag("country:AU"));
 }
 
 #[test]
