@@ -276,7 +276,9 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         if let Some(geo) = &data.geo
             && geo_val.is_none()
             && let (Some(lat), Some(lon)) = (geo.latitude, geo.longitude)
-            && (lat.abs() > 0.001 || lon.abs() > 0.001)
+            // Shared validator: finite, in-range, not Null Island — replaces the
+            // ad-hoc 0.001 band that let out-of-range / near-(0,0) junk through.
+            && crate::util::geo::is_valid_coords(lat, lon)
         {
             geo_val = Some((
                 lat,
@@ -476,8 +478,13 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         result.push(oe);
     }
 
-    // Geolocation → Coordinates + Address.
-    if let Some((lat, lon, country, city)) = geo_val {
+    // Geolocation → Coordinates + Address. Suppressed when the host IP is a
+    // CDN/anycast edge (the geo is the datacentre, not the subject) — parity
+    // with the 8 sibling IP-geo modules. ISP/ASN/cert Organisations above are
+    // unaffected.
+    if let Some((lat, lon, country, city)) = geo_val
+        && crate::core::validation::untrusted_ip_geo_reason(ip_str).is_none()
+    {
         let coord_str = format!("{lat:.6},{lon:.6}");
         let mut geo_e = Entity::new(EntityKind::Coordinates, &coord_str, 0.60, scan_id);
         geo_e.tag("netlas");
