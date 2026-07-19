@@ -218,8 +218,8 @@ pub fn store_api_credential(item: &Value, src: &str) {
     let mut entry = crate::util::key_pool::KeyEntry::new(&password);
     entry.notes = Some(format!(
         "{src} stealer: user={} url={}",
-        &crate::util::str_util::truncate_safe(&username, 30),
-        &crate::util::str_util::truncate_safe(&url, 60)
+        crate::util::str_util::truncate_safe(&username, 30),
+        crate::util::str_util::truncate_safe(&url, 60)
     ));
     if pool.add(service, entry) {
         crate::util::key_pool::save_pool_best_effort(&pool);

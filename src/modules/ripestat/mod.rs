@@ -174,10 +174,23 @@ fn build_asns(ni: &NetworkInfo, scan_id: &str) -> Vec<Entity> {
         let mut ce = Entity::new(EntityKind::Cidr, prefix, 0.70, scan_id);
         ce.tag(SRC);
         ce.tag("network-prefix");
-        ce.add_evidence(Evidence::new(
-            SRC,
-            "Covering prefix (RIPEstat network-info)",
-        ));
+        let mut ev = Evidence::new(SRC, "Covering prefix (RIPEstat network-info)");
+        // Stamp the announcing ASN — matching `bgpview`'s Cidr evidence, which
+        // already carries `asn`/`name` — so the prefix's origin network is on
+        // record even without a consuming attribution rule. Only when the
+        // origin is unambiguous (a single announcing ASN); a multi-origin
+        // (MOAS) prefix has no one owner to assert, so it stays unattributed
+        // rather than fabricating a single holder.
+        let mut origins = ni
+            .asns
+            .iter()
+            .filter(|a| !a.is_empty() && a.bytes().all(|b| b.is_ascii_digit()));
+        if let Some(asn) = origins.next()
+            && origins.next().is_none()
+        {
+            ev = ev.with_attr("asn", asn.as_str());
+        }
+        ce.add_evidence(ev);
         out.push(ce);
     }
     out

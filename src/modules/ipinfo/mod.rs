@@ -81,7 +81,17 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
             .into_iter()
             .filter_map(|(key, value)| value.map(|v| (key, v)))
             .fold(
-                Evidence::new(SRC, format!("IP geo for {ip}")),
+                Evidence::new(SRC, format!("IP geo for {ip}"))
+                    // The originating IP, recorded explicitly so a finalise pass
+                    // can robustly tie this coordinate back to its source
+                    // IpAddress (e.g. to recognise a person's breach login IP)
+                    // without parsing the summary string — mirrors `ip_geo`'s
+                    // identical attribute. Without it,
+                    // `person_login_ip_coords` (the shared definition
+                    // `best_au_location_estimate` and
+                    // `au_location_corroboration` both use) can never
+                    // recognise this provider's fix as a login-IP location.
+                    .with_attr("ip", ip),
                 |ev, (key, v)| ev.with_attr(key, v),
             );
             ce.add_evidence(ev);

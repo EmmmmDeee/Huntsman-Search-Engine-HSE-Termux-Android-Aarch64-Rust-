@@ -18,11 +18,18 @@ export const API = {
   modules:   ()=>API._req('/api/v1/modules'),
   engines:   ()=>API._req('/api/v1/engines/health'),
   scraperHealth: ()=>API._req('/api/v1/health/scrapers'),
+  // Per-module failure streaks this process (PROBLEM_TREE T2.7 / SOLUTION_TREE
+  // SOL-HEALTH-SIGNAL) — the same live dispatch-outcome data `hse doctor` reports.
+  // Complements scraperHealth (cross-scan, persisted) rather than replacing it.
+  moduleHealth: ()=>API._req('/api/v1/modules/health'),
   scans:     ()=>API._req('/api/v1/scans'),
   scan:      id=>API._req('/api/v1/scans/'+encodeURIComponent(id)),
   entities:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/entities'),
   correlations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/correlations'),
   relations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/relations'),
+  // Paired stealer-log credential rows (login+password+domain+machine, kept
+  // together) — powers the Stealer Logs Viewer sub-tab.
+  stealerRows: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/stealer-rows'),
   // Subject network: the seed hub + its connections grouped/ranked server-side
   // (people, identifiers, aliases, locations, infrastructure) — the analyst view.
   network:   id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/network'),
@@ -117,8 +124,17 @@ export const API = {
   //   radarSweep(): ONE autonomous sweep (kept for API back-compat; optional seed).
   radarLive: ()=>API._req('/api/v1/radar/live',{method:'POST'}),
   radarSweep: seed=>API._req('/api/v1/radar'+(seed?('?seed='+encodeURIComponent(seed)):''),{method:'POST'}),
+  // Historical review of past radar sweeps — sourced from the persisted scans
+  // table, so it survives a server restart (unlike the in-memory live-session
+  // list above). This is what makes "what was around me earlier" reviewable.
+  radarHistory: limit=>API._req('/api/v1/radar/history'+(limit?('?limit='+encodeURIComponent(limit)):'')),
   selftest:     ()=>API._req('/api/v1/selftest'),
   logsUrl:      ()=>'/api/v1/logs',
+  // One-click consolidated system self-diagnosis bundle (loopback-only):
+  // DETECTED ISSUES verdict + environment + self-test + module/engine/scraper
+  // health + recent scans + logs + source manifest — everything needed to
+  // repair the engine, in one downloadable file.
+  debugBundleUrl: ()=>'/api/v1/debug/bundle',
   updateStatus: ()=>API._req('/api/v1/update/status'),
   updateTrigger:()=>API._req('/api/v1/update/trigger',{method:'POST'}),
   // Cell-tower DB (backs Live Signal Radar / cell_intel geolocation).

@@ -29,72 +29,12 @@ use crate::core::{
     tags,
     validation::is_username_derived_name,
 };
-use crate::util::extract::EMAIL_RE;
 use crate::util::geo::is_valid_coords;
 use crate::util::see_know::val_str;
 use crate::util::target_match::TargetMatch;
 
 use super::SRC;
 use super::pivots::looks_like_steam_id;
-
-/// Matches `<@id>` and `<@!id>` Discord user-mention shapes.
-static MESSAGE_MENTION_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"<@!?(\d{17,20})>").expect("constant discord-mention regex")
-});
-
-/// Mine a `discord_messages` item's free-text `content` for embedded emails
-/// and emit each as a low-confidence `Email` entity (0.30 — below pivot floor).
-pub(super) fn extract_message_emails(
-    item: &Value,
-    scan_id: &str,
-    seen: &mut HashSet<String>,
-    result: &mut ModuleResult,
-) {
-    let Some(content) = val_str(item, "content") else {
-        return;
-    };
-    let ev = Evidence::new(SRC, "SeekNow discord_messages content")
-        .with_attr("source", "discord_messages");
-    for m in EMAIL_RE.find_iter(&content) {
-        let email = m.as_str().to_lowercase();
-        if seen.insert(email.clone()) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.30, scan_id);
-            e.tag("see-know");
-            e.tag("discord-message");
-            e.tag("weak-lead");
-            e.add_evidence(ev.clone());
-            result.push(e);
-        }
-    }
-}
-
-/// Mine a `discord_messages` item's free-text `content` for `<@id>` / `<@!id>`
-/// Discord user-mention snowflakes and emit each as a low-confidence `Username`
-/// entity (`discord:<id>`, 0.30 — below pivot floor).
-pub(super) fn extract_message_mentions(
-    item: &Value,
-    scan_id: &str,
-    seen: &mut HashSet<String>,
-    result: &mut ModuleResult,
-) {
-    let Some(content) = val_str(item, "content") else {
-        return;
-    };
-    let ev = Evidence::new(SRC, "SeekNow discord_messages content")
-        .with_attr("source", "discord_messages");
-    for caps in MESSAGE_MENTION_RE.captures_iter(&content) {
-        let id = &caps[1];
-        if seen.insert(format!("@discord:{id}")) {
-            let mut e = Entity::new(EntityKind::Username, format!("discord:{id}"), 0.30, scan_id);
-            e.tag("see-know");
-            e.tag("discord-message");
-            e.tag("weak-lead");
-            e.tag("mention");
-            e.add_evidence(ev.clone());
-            result.push(e);
-        }
-    }
-}
 
 /// Build an [`Evidence`] record that preserves EVERY field of the raw source
 /// record `item` as an attribute — full fidelity, nothing redacted or omitted
@@ -103,6 +43,13 @@ pub(super) fn extract_message_mentions(
 /// actual raw source record rather than just a module name + entity hash.
 fn record_evidence(item: &Value, dbname: &str, endpoint: &str, key_fp: &str) -> Evidence {
     let ev = Evidence::new(SRC, format!("SeekNow record from {dbname}"))
+        // `dbname` is the canonical breach-name attribute the credential-reuse
+        // correlator (AU-105) groups on; without it AU-105 falls back to the
+        // Evidence `source` FIELD (the module name) and collapses every SeekNow
+        // record into one pseudo-breach, so cross-breach reuse among a subject's
+        // SeekNow hits could never fire. `source` is retained (existing consumers
+        // read it) but is an attribute, not the field AU-105's fallback inspects.
+        .with_attr("dbname", dbname)
         .with_attr("source", dbname)
         // Provenance: which provider, which exact API key, and which endpoint
         // returned this record. Stamped on EVERY record so a finding always
@@ -113,7 +60,7 @@ fn record_evidence(item: &Value, dbname: &str, endpoint: &str, key_fp: &str) -> 
     let Some(obj) = item.as_object() else {
         return ev;
     };
-    obj.iter().fold(ev, |ev, (k, v)| {
+    let ev = obj.iter().fold(ev, |ev, (k, v)| {
         let val = match v {
             Value::Null => return ev,
             Value::String(s) => s.clone(),
@@ -129,7 +76,28 @@ fn record_evidence(item: &Value, dbname: &str, endpoint: &str, key_fp: &str) -> 
             k.as_str()
         };
         ev.with_attr(key, val)
-    })
+    });
+    // SeekNow labels the subject's self-reported postcode `postal`, but the
+    // AU-locality correlator (AU-091/AU-093, `rules/breach_pii.rs`) reads the
+    // canonical `postcode` key. Stamp it additively (the raw `postal` is left
+    // untouched for existing consumers) so a breach record's OWN postcode reaches
+    // the rule — a producer-side alias exactly like the `dbname` fix above.
+    // Deliberately NOT done by widening the rule's shared `POSTCODE_KEYS`:
+    // `postal` is also stamped by the IP-geo modules (`ip_geo`/`ipinfo`/
+    // `ip_whois_geo`) on network-derived `Coordinates`, a different evidentiary
+    // class that must not masquerade as self-reported breach PII. Skipped when
+    // the record already carries `postcode`, so a real value is never overridden.
+    if !obj.contains_key("postcode") {
+        let postal = match obj.get("postal") {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Null) | None => String::new(),
+            Some(other) => other.to_string(),
+        };
+        if !postal.is_empty() {
+            return ev.with_attr("postcode", postal);
+        }
+    }
+    ev
 }
 
 /// Normalized identity-demographic tags (`dob:` / `gender:` / `age:`) for the

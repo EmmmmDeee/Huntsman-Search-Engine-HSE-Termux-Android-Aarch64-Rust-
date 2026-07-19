@@ -26,21 +26,23 @@
 //! `au_property`, `geocode`). No mock: the JSON is fetched live from ASIC's own
 //! open dataset.
 
-use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use async_trait::async_trait;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{RequestBuilderExt, UA_BROWSER, read_text, urlencode};
+use crate::util::ckan::{Response as CkanResp, datastore_search_url, field_str};
+use crate::util::http::fetch_json;
 
 const SRC: &str = "asic_persons";
-const CKAN: &str = "https://data.gov.au/data/api/3/action/datastore_search";
+/// data.gov.au CKAN action base — `datastore_search` is appended by
+/// [`datastore_search_url`].
+const CKAN_BASE: &str = "https://data.gov.au/data/api/3/action";
 /// ASIC – Banned and Disqualified Persons dataset (data.gov.au resource).
 const BANNED_RES: &str = "741da9e3-7e0c-458e-830c-c518698e1788";
 /// ASIC – Financial Advisers dataset (data.gov.au resource).
@@ -53,18 +55,6 @@ const CREDIT_RES: &str = "999d9e92-df2c-4d6d-b580-321dcd205292";
 const MAX_HITS: usize = 100;
 
 pub struct AsicPersons;
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct CkanResp {
-    result: CkanResult,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct CkanResult {
-    records: Vec<Map<String, Value>>,
-}
 
 #[async_trait]
 impl Module for AsicPersons {
@@ -126,57 +116,84 @@ impl Module for AsicPersons {
             ckan_query(ctx, CREDIT_RES, &target.value),
         );
 
-        for rec in banned
-            .iter()
-            .filter(|r| record_name_matches(r, "BD_PER_NAME", &tokens))
-            .take(MAX_HITS)
-        {
-            emit_banned(rec, &ctx.scan_id, &mut result);
+        // The three registers are independent concurrent CKAN queries (T2.118),
+        // so this mirrors `niamonx`'s multi-endpoint fold (T2.114): the last
+        // hard failure across them is remembered, real evidence from any register
+        // that DID answer is always kept, and only a genuine zero-evidence
+        // outcome with at least one real failure surfaces as an error via
+        // `ModuleResult::or_hard_failure` — a total data.gov.au outage no longer
+        // reads as "this person is in none of ASIC's people registers".
+        let mut hard_failure: Option<Error> = None;
+        match banned {
+            Ok(records) => {
+                for rec in records
+                    .iter()
+                    .filter(|r| record_name_matches(r, "BD_PER_NAME", &tokens))
+                    .take(MAX_HITS)
+                {
+                    emit_banned(rec, &ctx.scan_id, &mut result);
+                }
+            }
+            Err(e) => {
+                hard_failure.get_or_insert(e);
+            }
         }
-        for rec in advisers
-            .iter()
-            .filter(|r| record_name_matches(r, "ADV_NAME", &tokens))
-            .take(MAX_HITS)
-        {
-            emit_adviser(rec, &ctx.scan_id, &mut result);
+        match advisers {
+            Ok(records) => {
+                for rec in records
+                    .iter()
+                    .filter(|r| record_name_matches(r, "ADV_NAME", &tokens))
+                    .take(MAX_HITS)
+                {
+                    emit_adviser(rec, &ctx.scan_id, &mut result);
+                }
+            }
+            Err(e) => {
+                hard_failure.get_or_insert(e);
+            }
         }
-        for rec in credit
-            .iter()
-            .filter(|r| record_name_matches(r, "CRED_REP_NAME", &tokens))
-            .take(MAX_HITS)
-        {
-            emit_credit_rep(rec, &ctx.scan_id, &mut result);
+        match credit {
+            Ok(records) => {
+                for rec in records
+                    .iter()
+                    .filter(|r| record_name_matches(r, "CRED_REP_NAME", &tokens))
+                    .take(MAX_HITS)
+                {
+                    emit_credit_rep(rec, &ctx.scan_id, &mut result);
+                }
+            }
+            Err(e) => {
+                hard_failure.get_or_insert(e);
+            }
         }
 
-        Ok(result)
+        result.or_hard_failure(hard_failure)
     }
 }
 
-/// Query a CKAN datastore resource by free-text name. Best-effort: any
-/// transport/parse failure yields no records, never a scan error.
-async fn ckan_query(ctx: &ModuleContext, resource_id: &str, name: &str) -> Vec<Map<String, Value>> {
-    let url = format!(
-        "{CKAN}?resource_id={resource_id}&limit=100&q={}",
-        urlencode(name)
-    );
-    let Ok(resp) = ctx
-        .http
-        .get(&url)
-        .header("User-Agent", UA_BROWSER)
-        .send_tagged(SRC)
-        .await
-    else {
-        return Vec::new();
-    };
-    if !resp.status().is_success() {
-        return Vec::new();
+/// Query one CKAN datastore resource by free-text name, via the shared CKAN
+/// envelope (T2.118). Returns the matched records, or a real `Error` when the
+/// register genuinely failed to answer — a transport error, non-2xx status, or
+/// unparseable body (propagated by `fetch_json` via `?`), or a CKAN application
+/// error (`success: false`, which CKAN returns with HTTP 200 on a bad resource
+/// id / offline datastore / rate-limit). Previously every one of these
+/// collapsed into an empty `Vec` indistinguishable from a genuine "not in this
+/// register"; `process()` now folds the three registers' results so a real
+/// outage surfaces instead (see its `or_hard_failure` fold).
+async fn ckan_query(
+    ctx: &ModuleContext,
+    resource_id: &str,
+    name: &str,
+) -> Result<Vec<Map<String, Value>>> {
+    let url = datastore_search_url(CKAN_BASE, resource_id, name, MAX_HITS);
+    let resp: CkanResp = fetch_json(&ctx.http, SRC, &url).await?;
+    if resp.success == Some(false) {
+        return Err(Error::module(
+            SRC,
+            "CKAN datastore_search returned success=false (bad resource id or portal error)",
+        ));
     }
-    let Ok(body) = read_text(SRC, resp).await else {
-        return Vec::new();
-    };
-    serde_json::from_str::<CkanResp>(&body)
-        .map(|r| r.result.records)
-        .unwrap_or_default()
+    Ok(resp.result.map(|r| r.records).unwrap_or_default())
 }
 
 /// Lower-cased alphabetic name tokens (≥2 chars) of a full name.
@@ -450,15 +467,12 @@ fn push_address(
 }
 
 /// A non-empty, non-`"null"` trimmed string field (JSON string or number).
+/// A usable ASIC field value: the shared CKAN [`field_str`] stringification
+/// (CONVENTIONS §4 — one stringifier, not a per-module copy) with this
+/// register's `"null"` sentinel filter on top (`field_str` only drops JSON
+/// null / empty, so the literal string `"null"` would otherwise pass through).
 fn field(rec: &Map<String, Value>, key: &str) -> Option<String> {
-    match rec.get(key)? {
-        Value::String(s) => {
-            let t = s.trim();
-            (!t.is_empty() && !t.eq_ignore_ascii_case("null")).then(|| t.to_string())
-        }
-        Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    }
+    field_str(rec, key).filter(|s| !s.eq_ignore_ascii_case("null"))
 }
 
 /// `"SURNAME, FIRSTNAME"` → `"Firstname Surname"` (title-cased); other forms are

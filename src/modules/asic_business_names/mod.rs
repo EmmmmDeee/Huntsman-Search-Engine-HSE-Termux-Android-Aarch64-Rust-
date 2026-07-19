@@ -11,21 +11,23 @@
 //! target's name tokens and capped, since trading names collide. No mock: the
 //! JSON is fetched live from ASIC's own dataset.
 
-use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use async_trait::async_trait;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{RequestBuilderExt, UA_BROWSER, read_text, urlencode};
+use crate::util::ckan::{Response as CkanResp, datastore_search_url, field_str};
+use crate::util::http::fetch_json;
 
 const SRC: &str = "asic_business_names";
-const CKAN: &str = "https://data.gov.au/data/api/3/action/datastore_search";
+/// data.gov.au CKAN action base — `datastore_search` is appended by
+/// [`datastore_search_url`].
+const CKAN_BASE: &str = "https://data.gov.au/data/api/3/action";
 /// ASIC – Business Names dataset (data.gov.au resource).
 const RES: &str = "55ad4b1c-5eeb-44ea-8b29-d410da431be3";
 /// Max matched registrations surfaced. Raised to the query `limit` so no genuine
@@ -34,18 +36,6 @@ const RES: &str = "55ad4b1c-5eeb-44ea-8b29-d410da431be3";
 const MAX_HITS: usize = 100;
 
 pub struct AsicBusinessNames;
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct CkanResp {
-    result: CkanResult,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct CkanResult {
-    records: Vec<Map<String, Value>>,
-}
 
 #[async_trait]
 impl Module for AsicBusinessNames {
@@ -98,7 +88,7 @@ impl Module for AsicBusinessNames {
             return Ok(result);
         }
 
-        let records = ckan_query(ctx, name).await;
+        let records = ckan_query(ctx, name).await?;
         let mut seen = std::collections::HashSet::new();
         for rec in records
             .iter()
@@ -112,27 +102,23 @@ impl Module for AsicBusinessNames {
     }
 }
 
-/// Query the Business Names datastore by free-text name. Best-effort.
-async fn ckan_query(ctx: &ModuleContext, name: &str) -> Vec<Map<String, Value>> {
-    let url = format!("{CKAN}?resource_id={RES}&limit=100&q={}", urlencode(name));
-    let Ok(resp) = ctx
-        .http
-        .get(&url)
-        .header("User-Agent", UA_BROWSER)
-        .send_tagged(SRC)
-        .await
-    else {
-        return Vec::new();
-    };
-    if !resp.status().is_success() {
-        return Vec::new();
+/// Query the Business Names datastore by free-text name, via the shared CKAN
+/// envelope (T2.118). Every real failure now surfaces instead of collapsing into
+/// an empty `Vec` indistinguishable from "no registration by this name":
+/// `fetch_json` propagates transport/status/parse failures via `?`, and a
+/// `success == Some(false)` envelope (returned by CKAN with HTTP 200 on a bad
+/// resource id / portal error) becomes an explicit `Error::module`. A genuine
+/// empty result set is still the honest clean miss.
+async fn ckan_query(ctx: &ModuleContext, name: &str) -> Result<Vec<Map<String, Value>>> {
+    let url = datastore_search_url(CKAN_BASE, RES, name, MAX_HITS);
+    let resp: CkanResp = fetch_json(&ctx.http, SRC, &url).await?;
+    if resp.success == Some(false) {
+        return Err(Error::module(
+            SRC,
+            "CKAN datastore_search returned success=false (bad resource id or portal error)",
+        ));
     }
-    let Ok(body) = read_text(SRC, resp).await else {
-        return Vec::new();
-    };
-    serde_json::from_str::<CkanResp>(&body)
-        .map(|r| r.result.records)
-        .unwrap_or_default()
+    Ok(resp.result.map(|r| r.records).unwrap_or_default())
 }
 
 /// Lower-cased alphanumeric name tokens (≥2 chars).
@@ -234,16 +220,12 @@ fn emit_business_name(
     }
 }
 
-/// A non-empty, non-`"null"` trimmed string field (JSON string or number).
+/// A usable ASIC field value: the shared CKAN [`field_str`] stringification
+/// (CONVENTIONS §4 — one stringifier, not a per-module copy) with this
+/// register's `"null"` sentinel filter on top (`field_str` only drops JSON
+/// null / empty, so the literal string `"null"` would otherwise pass through).
 fn field(rec: &Map<String, Value>, key: &str) -> Option<String> {
-    match rec.get(key)? {
-        Value::String(s) => {
-            let t = s.trim();
-            (!t.is_empty() && !t.eq_ignore_ascii_case("null")).then(|| t.to_string())
-        }
-        Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    }
+    field_str(rec, key).filter(|s| !s.eq_ignore_ascii_case("null"))
 }
 
 #[cfg(test)]

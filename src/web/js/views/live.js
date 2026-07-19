@@ -77,9 +77,41 @@ export function renderLiveSessions(sessions){
       <th class="text-right">Scans</th><th></th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
+/* Historical review of past radar sweeps — sourced from the persisted scans
+   table (GET /api/v1/radar/history), so it survives a server restart unlike
+   the "Active sessions" table above, which only shows what's still held in
+   memory. This is the surface that lets an operator reconstruct "what was
+   around me" after the fact, even having forgotten the session id. */
+export function renderRadarHistory(sweeps){
+  if (!sweeps.length){
+    return '<div class="empty-state"><h3>No radar sweeps yet</h3>'
+      + '<p>Every sweep the radar button or continuous radar ever queued is listed here, newest '
+      + 'first, once it runs — reviewable later even after a server restart.</p></div>';
+  }
+  const rows = sweeps.map(sw=>{
+    const seed = sw.target && sw.target.kind==='mac_address' ? 'local network' : 'ambient (GPS/RF)';
+    const dur = sw.finished_at && sw.started_at ? (sw.finished_at - sw.started_at) : null;
+    return `<tr>
+      <td>${esc(fmtDate(sw.started_at))}</td>
+      <td>${esc(seed)}</td>
+      <td>${statusPill(sw.status)}</td>
+      <td class="text-right">${dur==null?'<span class="text-muted">—</span>':(dur+'s')}</td>
+      <td class="text-right">${sw.entity_count||0}</td>
+      <td><a href="#/scaninfo?id=${attr(sw.id)}" class="btn btn-default btn-xs" title="Review this sweep's signals"><i class="glyphicon glyphicon-eye-open"></i>&nbsp;Review</a></td>
+    </tr>`;
+  }).join('');
+  return `<div class="table-responsive"><table class="table table-condensed table-striped">
+    <thead><tr><th>When</th><th>Seed</th><th>Status</th><th class="text-right">Duration</th>
+      <th class="text-right">Signals</th><th></th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
 export async function renderLive(v){
   const data = await API.liveList();
   const sessions = data.sessions || [];
+  // A history-fetch hiccup must never take down the whole Live view (the
+  // "Active sessions" panel above is the more critical, real-time surface).
+  let sweeps = [];
+  try { sweeps = (await API.radarHistory(50)).sweeps || []; } catch(_){}
   v.innerHTML = `
     <h2>Live Monitor <small class="text-muted">continuous re-scan of a target on an interval</small>
       <div class="pull-right"><button class="btn btn-default btn-sm" onclick="render()" title="Refresh"><i class="glyphicon glyphicon-refresh"></i></button></div>
@@ -137,6 +169,11 @@ export async function renderLive(v){
     <div class="panel panel-default">
       <div class="panel-heading"><b>Active sessions</b> <span class="badge">${sessions.length}</span></div>
       <div id="live-sessions">${renderLiveSessions(sessions)}</div>
+    </div>
+    <div class="panel panel-default">
+      <div class="panel-heading"><b><i class="glyphicon glyphicon-time"></i>&nbsp;Radar history</b> <span class="badge">${sweeps.length}</span>
+        <span class="text-muted" style="font-weight:400">— review past sweeps later, even after a restart</span></div>
+      <div id="radar-history">${renderRadarHistory(sweeps)}</div>
     </div>`;
   $('#live-start').addEventListener('click', async ()=>{
     const kind = $('#live-kind').value;

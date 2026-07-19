@@ -17,6 +17,89 @@ use super::*;
     }
 
     #[test]
+    fn build_search_url_appends_search_id_only_when_a_session_is_supplied() {
+        // The session id is threaded in explicitly (T2.11: it used to be read
+        // from a single-slot process-global a concurrent scan could clobber). No
+        // session ⇒ no `search_id`; a session ⇒ exactly that id, url-encoded.
+        let no_sess =
+            build_search_url("https://api", "/breach/search", "email", "a@b.com", 100, None);
+        assert_eq!(
+            no_sess,
+            "https://api/breach/search?email%5B%5D=a%40b.com&page_size=100&sort=indexed_at:desc"
+        );
+        assert!(
+            !no_sess.contains("search_id"),
+            "no session ⇒ no search_id param, got {no_sess}"
+        );
+
+        let with_sess = build_search_url(
+            "https://api",
+            "/breach/search",
+            "email",
+            "a@b.com",
+            100,
+            Some("sess/42"),
+        );
+        // Same base query, plus the session id appended and url-encoded (the `/`
+        // becomes %2F) so a raw session id can never break the query string.
+        assert_eq!(
+            with_sess,
+            "https://api/breach/search?email%5B%5D=a%40b.com&page_size=100&sort=indexed_at:desc&search_id=sess%2F42"
+        );
+    }
+
+    #[test]
+    fn enrich_with_breach_dates_stamps_from_the_rows_own_dbname_only() {
+        let items = vec![
+            json!({"dbname": "poshmark.com", "email": "a@x.com"}),
+            // A dbname with no dbname_info entry — untouched.
+            json!({"dbname": "unknown-db.com", "email": "b@x.com"}),
+            // Already carries its own breach_date — never overridden.
+            json!({"dbname": "poshmark.com", "email": "c@x.com", "breach_date": "1999-01-01"}),
+            // Not an object — passed through unchanged, no panic.
+            json!("not-an-object"),
+        ];
+        let mut dbname_info = std::collections::HashMap::new();
+        dbname_info.insert(
+            "poshmark.com".to_string(),
+            DbMeta {
+                breach_date: Some("2018-05-16".to_string()),
+            },
+        );
+        // wattpad.com has no BreachDate on this response — items from it must
+        // stay unenriched, not stamped with an empty/garbage value.
+        dbname_info.insert("wattpad.com".to_string(), DbMeta { breach_date: None });
+
+        let out = enrich_with_breach_dates(items, &dbname_info);
+
+        assert_eq!(
+            out[0].get("breach_date").and_then(Value::as_str),
+            Some("2018-05-16"),
+            "a row whose dbname has a BreachDate must be stamped"
+        );
+        assert!(
+            out[1].get("breach_date").is_none(),
+            "a row whose dbname has no dbname_info entry must stay unstamped"
+        );
+        assert_eq!(
+            out[2].get("breach_date").and_then(Value::as_str),
+            Some("1999-01-01"),
+            "a row's own pre-existing breach_date must never be overridden"
+        );
+        assert_eq!(out[3], json!("not-an-object"), "non-object rows pass through");
+    }
+
+    #[test]
+    fn enrich_with_breach_dates_is_a_no_op_when_dbname_info_is_empty() {
+        // The common case for non-breach-search endpoints (e.g. stealer search,
+        // which has no dbname_info block at all): items must be returned exactly
+        // as given, not merely "not stamped" but structurally untouched.
+        let items = vec![json!({"dbname": "x.com", "email": "a@x.com"})];
+        let out = enrich_with_breach_dates(items.clone(), &std::collections::HashMap::new());
+        assert_eq!(out, items);
+    }
+
+    #[test]
     fn budget_try_increment_enforces_a_finite_scan_cap() {
         // PROBLEM_TREE T2.11: oathnet's quota gate must be the atomic reserve
         // (`try_increment`/CAS), not the racy `remaining()`-then-`increment()` that
@@ -164,6 +247,35 @@ use super::*;
     }
 
     #[test]
+    fn top_dbnames_ties_break_alphabetically_not_by_hashmap_order() {
+        // 10 distinct dbnames, each appearing exactly once — a full tie at
+        // every rank. Without a deterministic tie-break, which 5 of the 10
+        // land in the top-5 cutoff (and in what order) depends on the
+        // process-random `HashMap` iteration order the counts are collected
+        // through, so two identical scans could report a different set of
+        // "top" breach databases for the same subject. With the fix, the
+        // result is always the alphabetically-first 5 — the same every call.
+        let items = vec![
+            json!({"dbname": "zebra"}),
+            json!({"dbname": "yankee"}),
+            json!({"dbname": "xray"}),
+            json!({"dbname": "whiskey"}),
+            json!({"dbname": "victor"}),
+            json!({"dbname": "uniform"}),
+            json!({"dbname": "tango"}),
+            json!({"dbname": "sierra"}),
+            json!({"dbname": "romeo"}),
+            json!({"dbname": "quebec"}),
+        ];
+        let top = top_dbnames(&items, 5);
+        assert_eq!(
+            top,
+            vec!["quebec", "romeo", "sierra", "tango", "uniform"],
+            "a full tie must resolve deterministically (alphabetically), not by HashMap iteration order"
+        );
+    }
+
+    #[test]
     fn distinct_field_aggregates_every_record_additively() {
         // Regression guard: a last-write-wins overwrite would keep only "GB" and
         // only the final name. The additive aggregator retains ALL distinct
@@ -204,6 +316,168 @@ use super::*;
         assert_eq!(Surface::Stealer.path(), paths::STEALER);
         assert_eq!(Surface::Breach.label(), "breach");
         assert_eq!(Surface::Stealer.label(), "stealer");
+    }
+
+    #[test]
+    fn surface_max_page_size_matches_the_documented_per_endpoint_ceiling() {
+        // docs/OATHNET_API_GUIDE.txt §11: Breach Search max 1000, V2 Stealer
+        // max 100 — they differ, so a shared batch page_size must be clamped
+        // per surface, not passed through uncapped.
+        assert_eq!(Surface::Breach.max_page_size(), 1000);
+        assert_eq!(Surface::Stealer.max_page_size(), 100);
+    }
+
+    #[test]
+    fn continuation_cursor_requires_both_has_more_and_a_real_cursor() {
+        assert_eq!(
+            continuation_cursor(true, Some("abc123".to_string())),
+            Some("abc123".to_string()),
+            "has_more + a cursor: continue"
+        );
+        assert_eq!(
+            continuation_cursor(true, None),
+            None,
+            "has_more but no cursor supplied: nothing to continue with"
+        );
+        assert_eq!(
+            continuation_cursor(false, Some("abc123".to_string())),
+            None,
+            "no more pages: a stray cursor must not force another fetch"
+        );
+        assert_eq!(continuation_cursor(false, None), None);
+    }
+
+    #[test]
+    fn search_data_deserialises_the_real_live_confirmed_envelope_shape() {
+        // Live-confirmed 2026-07-15 against the REAL
+        // `GET /service/v2/breach/search`: the pagination block is keyed
+        // "meta" (no underscore) and next_cursor is a SIBLING of it, not
+        // nested inside — NOT the shape `docs/OATHNET_API_GUIDE.txt` §3.1's
+        // illustrative example shows (data._meta with next_cursor nested
+        // inside it). This exact shape (trimmed to the pagination-relevant
+        // fields; the real response also carries dbname_info and a
+        // top-level, sibling-of-data `_meta.lookups.left_today` quota
+        // block) reproduces a real captured response, not a guess at the
+        // documented contract.
+        // Before this test existed, `search_data_deserialises_the_real_
+        // documented_envelope_shape` pinned the WRONG (doc-derived) shape
+        // and passed regardless — it validated the code against the same
+        // wrong reference the code itself was wrong against, so it could
+        // never have caught this bug.
+        let raw = json!({
+            "items": [{"email": "a@example.com"}, {"email": "b@example.com"}],
+            "meta": {
+                "count": 2,
+                "total": 1234,
+                "took_ms": 42,
+                "has_more": true,
+                "total_pages": 83,
+                "filter_id": "de0f31fbf94f7ad2c5916d06"
+            },
+            "next_cursor": "Wzc2NzYwOF0="
+        });
+        let sd: SearchData = serde_json::from_value(raw).expect("must deserialise");
+        assert_eq!(sd.items.len(), 2);
+        let meta = sd.meta.expect("meta must parse");
+        assert!(meta.has_more);
+        assert_eq!(
+            sd.next_cursor.as_deref(),
+            Some("Wzc2NzYwOF0="),
+            "next_cursor lives at the data level, a sibling of meta, not nested inside it"
+        );
+    }
+
+    #[test]
+    fn search_data_still_accepts_the_documented_underscore_meta_shape() {
+        // Defense-in-depth: `docs/OATHNET_API_GUIDE.txt` §3.1's illustrative
+        // `_meta`-nested shape was proven wrong for breach search (see the
+        // test above), but the alias is kept in case another surface
+        // (stealer, victims) or a future response variant genuinely uses
+        // it — this pins that the fallback path still works.
+        let raw = json!({
+            "items": [{"email": "a@example.com"}],
+            "_meta": {
+                "has_more": true,
+                "next_cursor": "sess_cursor_abc"
+            }
+        });
+        let sd: SearchData = serde_json::from_value(raw).expect("must deserialise");
+        let meta = sd.meta.expect("_meta alias must parse");
+        assert!(meta.has_more);
+        assert_eq!(
+            sd.next_cursor, None,
+            "no top-level next_cursor in this shape"
+        );
+        assert_eq!(
+            meta.next_cursor.as_deref(),
+            Some("sess_cursor_abc"),
+            "falls back to the nested location when no top-level cursor is present"
+        );
+    }
+
+    #[test]
+    fn search_data_defaults_meta_when_absent() {
+        // A final page (has_more: false) may omit meta's continuation
+        // fields entirely, or the whole block — must not fail to parse.
+        let raw = json!({"items": []});
+        let sd: SearchData = serde_json::from_value(raw).expect("must deserialise");
+        assert!(sd.items.is_empty());
+        assert!(sd.meta.is_none());
+        assert!(sd.next_cursor.is_none());
+    }
+
+    #[test]
+    fn real_quota_from_envelope_parses_the_real_live_confirmed_shape() {
+        // Verbatim (trimmed to the quota-relevant fields) from a real
+        // `GET /service/v2/breach/search` response captured live
+        // 2026-07-15 — a genuine top-level `_meta.lookups` block, not a
+        // guess at the documented contract.
+        let raw = json!({
+            "success": true,
+            "message": "V2-Breach-Search completed successfully",
+            "data": {"items": []},
+            "_meta": {
+                "user": {"plan": "Pro", "plan_type": "pro", "is_plan_active": true, "is_authenticated": true},
+                "lookups": {"used_today": 3, "left_today": 497, "daily_limit": 500, "is_unlimited": false},
+                "service": {"name": "V2 Breach Search"},
+                "performance": {"duration_ms": 25.14}
+            }
+        });
+        let env: Envelope = serde_json::from_value(raw).expect("must deserialise");
+        let q = real_quota_from_envelope(&env).expect("real quota must parse");
+        assert_eq!(q.used_today, 3);
+        assert_eq!(q.left_today, 497);
+        assert_eq!(q.daily_limit, Some(500));
+        assert!(!q.is_unlimited);
+    }
+
+    #[test]
+    fn real_quota_from_envelope_is_none_without_a_meta_block() {
+        let raw = json!({"success": true, "data": {"items": []}});
+        let env: Envelope = serde_json::from_value(raw).expect("must deserialise");
+        assert!(real_quota_from_envelope(&env).is_none());
+    }
+
+    #[test]
+    fn real_quota_updates_in_place_and_is_readable_via_the_public_getter() {
+        let q1 = RealQuota {
+            used_today: 3,
+            left_today: 497,
+            daily_limit: Some(500),
+            is_unlimited: false,
+        };
+        record_real_quota(q1);
+        assert_eq!(real_quota(), Some(q1));
+        // A later observation overwrites — the newest response is always
+        // the most accurate, never averaged/merged with a stale one.
+        let q2 = RealQuota {
+            used_today: 4,
+            left_today: 496,
+            daily_limit: Some(500),
+            is_unlimited: false,
+        };
+        record_real_quota(q2);
+        assert_eq!(real_quota(), Some(q2));
     }
 
     #[test]

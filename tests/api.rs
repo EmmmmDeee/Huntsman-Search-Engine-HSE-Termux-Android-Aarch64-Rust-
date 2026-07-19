@@ -323,6 +323,33 @@ async fn modules_graph_endpoint_returns_kinds_and_edges() {
 }
 
 #[tokio::test]
+async fn modules_health_endpoint_returns_shape_the_spa_panel_expects() {
+    // /api/v1/modules/health (PROBLEM_TREE T2.7 / SOLUTION_TREE
+    // SOL-HEALTH-SIGNAL) — per-module failure-streak data previously
+    // reachable only from `hse doctor`, now surfaced for the SPA panel.
+    // The underlying health state is a process-global shared across every
+    // test in this binary, so this only pins the wire shape (an array plus
+    // a matching count), not specific content.
+    let app = test_app("modules_health");
+    let resp = app.oneshot(get("/api/v1/modules/health")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let modules = json["modules"]
+        .as_array()
+        .expect("modules must be an array");
+    assert_eq!(
+        json["count"].as_u64().unwrap(),
+        modules.len() as u64,
+        "count must match the modules array length"
+    );
+    if let Some(first) = modules.first() {
+        assert!(first.get("name").is_some());
+        assert!(first.get("consecutive_failures").is_some());
+        assert!(first.get("last_success_at").is_some());
+    }
+}
+
+#[tokio::test]
 async fn scan_create_accepts_expansion_strategy_option() {
     // The CLI/API surface for ExpansionStrategy must round-trip through
     // the scan-create endpoint so the SPA can offer it as a setting.
@@ -982,6 +1009,48 @@ async fn dossier_upload_creates_a_complete_scan_with_entities() {
         .collect();
     assert!(values.contains(&"isaacfrost@gmail.com"));
     assert!(values.contains(&"Isaac Frost"));
+}
+
+#[tokio::test]
+async fn stealer_log_upload_persists_paired_rows_retrievable_via_stealer_rows_endpoint() {
+    // Wiring: a Stealerlogs-format upload must persist paired credential
+    // rows (login+password+machine, kept together) retrievable via the
+    // dedicated Stealer Logs Viewer endpoint — not just the flattened,
+    // unpaired Email/Username/Credential entities the generic entities
+    // endpoint already returns.
+    let app = test_app("stealer-rows");
+    let stealer = "Module: Stealerlogs\nVictims:\n  [1]\n    Log Id:\n      ea0621568ccd7fee2bd78e16f637727612aca78d4b3d1f6bf8175cf2ca8de831\n    Credentials:\n      [1]\n        Username:\n          jordanavery@gmail.com\n        Password:\n          Hunter2pass\n        Pwned At:\n          2026-05-20T21:00:00Z\n      [2]\n        Username:\n          javery\n        Password:\n          Hunter2pass\n        Pwned At:\n          2026-05-20T21:00:00Z\n    Domains:\n      [1]\n        acme-corp.com\n";
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/scans/import")
+        .header("content-type", "text/plain")
+        .header("x-hse-csrf", "1")
+        .body(Body::from(stealer))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let sid = json["scan_id"].as_str().expect("scan_id").to_string();
+
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{sid}/stealer-rows")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let out = body_json(resp).await;
+    let rows = out["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 2, "both credentials in the one victim block");
+    assert!(
+        rows.iter().any(|r| r["login"] == "jordanavery@gmail.com"
+            && r["password"] == "Hunter2pass"
+            && r["pwned_at"] == "2026-05-20T21:00:00Z"
+            && r["log_id"] == "ea0621568ccd7fee2bd78e16f637727612aca78d4b3d1f6bf8175cf2ca8de831"),
+        "login+password+pwned_at+log_id must survive paired in one row: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|r| r["login"] == "javery"),
+        "the second credential in the same victim block must also be a row: {rows:?}"
+    );
 }
 
 #[tokio::test]
@@ -1813,6 +1882,7 @@ async fn sub_resource_endpoints_404_for_unknown_scan() {
         "entities/filter?kind=email",
         "correlations",
         "relations",
+        "stealer-rows",
         "entities.csv",
         "events.history",
         "graph.gexf",
@@ -1831,6 +1901,7 @@ async fn sub_resource_endpoints_404_for_unknown_scan() {
         "entities/facets",
         "correlations",
         "relations",
+        "stealer-rows",
         "entities.csv",
         "events.history",
         "graph.gexf",
@@ -2077,6 +2148,11 @@ async fn spa_references_only_registered_api_endpoints() {
             "plan" => "/api/v1/plan?value=example.com".to_string(),
             // Cell-tower DB status — ungated GET, safe to probe with no side effects.
             "cells" => "/api/v1/cells/status".to_string(),
+            // System self-diagnosis bundle — loopback-gated and it also needs a
+            // `ConnectInfo` peer, so a bare probe GET reaches the handler and
+            // returns 403/500 (never the fallback 404), confirming the route is
+            // registered.
+            "debug" => "/api/v1/debug/bundle".to_string(),
             other => panic!(
                 "SPA references /api/v1/{other} but this test has no probe for it — \
                  add one and confirm the route is registered in src/api/routes.rs"
@@ -3067,4 +3143,82 @@ async fn bodyless_mutating_post_requires_csrf_header() {
         403,
         "with X-HSE-CSRF the request reaches the handler (404 for the missing scan)"
     );
+}
+
+// ── System self-diagnosis debug bundle ──────────────────────────────────────
+
+/// Build a GET request carrying a `ConnectInfo<SocketAddr>` peer, so the
+/// loopback-gated handlers (logs, system debug bundle) see a client address
+/// under `.oneshot()` — production supplies this via
+/// `into_make_service_with_connect_info`.
+fn get_with_peer(uri: &str, peer: &str) -> Request<Body> {
+    let mut req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+    let addr: std::net::SocketAddr = peer.parse().expect("valid socket addr");
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(addr));
+    req
+}
+
+#[tokio::test]
+async fn system_debug_bundle_is_loopback_gated() {
+    // The bundle embeds the TRACE log ring (scan targets / PII), so a
+    // non-loopback peer must be refused — the same gate `/logs` carries.
+    let app = test_app("sysdbg-gate");
+    let resp = app
+        .oneshot(get_with_peer("/api/v1/debug/bundle", "192.168.1.10:5555"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "non-loopback peer must be forbidden");
+}
+
+#[tokio::test]
+async fn system_debug_bundle_returns_the_diagnostic_artifact_on_loopback() {
+    let app = test_app("sysdbg-ok");
+    let resp = app
+        .oneshot(get_with_peer("/api/v1/debug/bundle", "127.0.0.1:5555"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(ct.starts_with("text/plain"), "content-type was {ct}");
+    let cd = resp
+        .headers()
+        .get("content-disposition")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        cd.contains("attachment") && cd.contains("hse-system-debug-"),
+        "download disposition was {cd}"
+    );
+    let bytes = axum::body::to_bytes(resp.into_body(), 50_000_000)
+        .await
+        .unwrap();
+    let body = String::from_utf8_lossy(&bytes);
+    // The consolidated artifact carries every top-level section — one file, the
+    // whole engine's diagnostic + validation state.
+    for header in [
+        "HUNTSMAN SYSTEM DEBUG BUNDLE",
+        "── DETECTED ISSUES",
+        "── ENVIRONMENT",
+        "── UPDATE STATUS ──",
+        "── DISABLED CAPABILITIES",
+        "── VALIDATION (SELF-TEST) ──",
+        "── MODULE HEALTH",
+        "── SEARCH-ENGINE LIVENESS",
+        "── SCRAPER HEALTH",
+        "── PROVIDER QUOTAS",
+        "── KEY POOL",
+        "── STORAGE HEALTH",
+        "── RECENT SCANS",
+        "── RECENT LOGS",
+        "── SOURCE FILES",
+    ] {
+        assert!(body.contains(header), "bundle missing section: {header}");
+    }
 }

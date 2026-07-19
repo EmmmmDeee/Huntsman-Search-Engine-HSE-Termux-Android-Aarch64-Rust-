@@ -25,11 +25,17 @@
 //!   FullName   → /search (auto-detect) — no add-on needed
 //!
 //! Single-origin presence checks (github/twitter/reddit/tiktok/roblox/xbox/
-//! minecraft) are deliberately NOT dispatched — the free `username_search`
-//! stack (600+ sites), `social_probe`, and `search_engines` scraping already
-//! cover those, so SeekNow's paid lookups go only to the broad `/search`,
-//! username-history aggregation, and cross-platform ID resolution. See the
-//! `endpoints` submodule (`FREE_COVERED_SINGLE_ORIGIN` / `effective_plan`).
+//! minecraft) ARE dispatched for every Username target, alongside the free
+//! `username_search` stack (600+ sites)/`social_probe`/`search_engines`
+//! scraping that also covers those platforms — the operator's maximisation
+//! directive means every endpoint adding platform-specific profile depth or
+//! breach context fires, with the per-scan budget cap as the only rate
+//! limiter, not a platform-presence filter. (An OLDER revision of this
+//! comment described a filter, `FREE_COVERED_SINGLE_ORIGIN`, that stripped
+//! these before dispatch — that filter was removed; the constant is kept
+//! `#[allow(dead_code)]` for documentation/future policy control, but
+//! `effective_plan()` no longer applies it. See the `endpoints` submodule's
+//! own, up-to-date doc comments.)
 //!
 //! Each scan spends up to HUNTSMAN_SEEKNOW_SCAN_CAP lookups (default 300,
 //! dynamically scaled up to 750 after the per-scan `/credits` probe —
@@ -59,9 +65,7 @@ mod extract;
 mod pivots;
 
 use endpoints::{dispatch_plan, effective_plan};
-use extract::{
-    extract_entities, extract_geo_entities, extract_message_emails, extract_message_mentions,
-};
+use extract::{extract_entities, extract_geo_entities};
 use pivots::{
     discover_discord_pivots, discover_steam_pivots, dispatch_discord_pivots, dispatch_steam_pivots,
 };
@@ -171,21 +175,37 @@ impl Module for SeekNow {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        // The name/auto `/search` path has a ~55s server cap and routinely
-        // takes 50–60s to return real data. The module budget must exceed both
-        // that cap and the 78s curl-client outer timeout so the engine does not
-        // abort see_know before the upstream responds. 80s gives headroom while
-        // staying bounded.
-        80_000
+        // Two independent worst cases share this one governor (the engine
+        // aborts the WHOLE process() call at this budget, covering however
+        // many sequential HTTP calls happen inside it — each individual curl
+        // call gets its own fresh 75s/78s allowance from `CLIENT`, so chaining
+        // calls doesn't starve either one; only their SUM matters here):
+        //
+        //  - the name/auto `/search` path alone: a ~55s server cap, routinely
+        //    50–60s to return real data (unaffected by the deep-search
+        //    fallback below — it's excluded for auto/name queries, see
+        //    `process`'s own comment on why).
+        //  - a TYPED query whose fast `/search` draws a blank, triggering the
+        //    `/search/deep` fallback: fast typed (~15s budgeted, well above
+        //    the ~5s FAQ-documented typical) + deep (~45s budgeted, above the
+        //    documented ~40s server cap) ≈ 60s combined.
+        //
+        // 110s covers the larger of the two with real headroom (the same
+        // cap-plus-headroom ratio the original single-call 80s budget used),
+        // without inviting the class of spurious-timeout evidentiary false
+        // negative this project has repeatedly had to fix elsewhere.
+        110_000
     }
 
     fn termux_timeout_cap_exempt(&self) -> bool {
-        // see_know's /search has a ~55s server-side cap and answers in 50–60s.
-        // The 45s Termux module cap would kill EVERY phone scan with a
-        // timeout-exit and zero data — silently wasting the operator's highest-
-        // priority paid source on the very platform HSE targets. As the operator
-        // explicitly enabled this key, keep its full (still-bounded) 80s budget
-        // on Termux too so the upstream response is actually awaited.
+        // see_know's /search has a ~55s server-side cap and answers in 50–60s,
+        // and a typed miss can now chain into a ~40s /search/deep fallback on
+        // top of that. The 45s Termux module cap would kill EVERY phone scan
+        // with a timeout-exit and zero data — silently wasting the operator's
+        // highest-priority paid source on the very platform HSE targets. As
+        // the operator explicitly enabled this key, keep its full (still-
+        // bounded) 110s budget on Termux too so the upstream response is
+        // actually awaited.
         true
     }
 
@@ -244,64 +264,64 @@ impl Module for SeekNow {
         let total = items.len();
 
         if total > 0 {
-            // `/search` on a broad seed (above all a `full_name` auto-detect,
-            // but also an address-adjacent phone/IP) can return rows for
-            // strangers who merely share a term with the target. Minting the
-            // 0.85 BREACH parent off raw `total` re-affirms the seed's own UID
-            // — merging via `absorb` (GREATEST semantics) straight into the
-            // pre-existing entity — even when NONE of the returned rows
-            // actually identify the subject. `search_subject_present` mirrors
-            // the same match gate `oathnet_pro::breach::breach_parent_entity`
-            // already applies to its parent; the per-record extraction below
-            // is unaffected — it demotes non-matching rows individually via
-            // `is_target` inside `extract_entities`.
-            if search_subject_present(v, &items) {
-                let mut parent = target.to_entity(0.85, &ctx.scan_id);
-                parent.tag(tags::BREACH);
-                parent.tag("see-know");
-                parent.add_evidence(
-                    Evidence::new(SRC, format!("SeekNow: {total} record(s) via /search"))
-                        .with_attr("hits", total.to_string())
-                        .with_attr("endpoint", "/api/v1/search")
-                        .with_attr("provider", "see-know.eu")
-                        .with_attr("api_key_origin", &key_fp),
-                );
-                result.push(parent);
-            }
-
-            // Each record yields at least one entity; reserve up front so the
-            // result vector doesn't repeatedly realloc as records are walked.
-            result.entities.reserve(total);
-
-            for item in &items {
-                extract_entities(
-                    item,
+            absorb_search_hits(
+                &items,
+                target,
+                v,
+                "/api/v1/search",
+                "search",
+                &key_fp,
+                &ctx.scan_id,
+                &mut seen,
+                &mut result,
+            );
+        } else if should_try_deep_search(total, qtype, ctx.cancel.is_cancelled()) {
+            // ── Query 1b: /search/deep fallback — fast search drew a blank ──
+            // Deep search trawls slower, higher-yield databases fast search
+            // skips (server cap ~40s vs. fast's ~5s typical) — the largest
+            // documented, previously-unwired SeekNow coverage gap
+            // (`docs/SEEKNOW_SETUP.md`: "HSE always calls fast /search, never
+            // deep"). Only worth the extra latency on a genuine miss (never
+            // spent when fast already found something) and only for TYPED
+            // queries (`qtype` non-empty) — the auto/name path already
+            // consumes most of this module's timeout budget on the fast call
+            // alone (see `max_timeout_ms`'s doc comment for the worst-case
+            // arithmetic this exclusion protects).
+            let deep_items = see_know::search_deep(key, v, qtype).await?;
+            if !deep_items.is_empty() {
+                absorb_search_hits(
+                    &deep_items,
+                    target,
                     v,
-                    &ctx.scan_id,
-                    "search",
+                    "/api/v1/search/deep",
+                    "search/deep",
                     &key_fp,
+                    &ctx.scan_id,
                     &mut seen,
                     &mut result,
                 );
-                store_api_credential(item, SRC);
-                extract_api_keys_from_item(item, &ctx.scan_id, SRC, &mut seen, &mut result);
             }
         }
 
         // ── Per-seed endpoint matrix: maximise SeekNow's UNIQUE coverage ──
         //
-        // Each target kind plans the relevant SeekNow endpoints, then
-        // `effective_plan` strips the single-origin presence checks the free
-        // username stack already covers, and the remainder dispatch
-        // concurrently (bounded by remaining scan + session budget). What
-        // actually runs:
+        // Each target kind plans the relevant SeekNow endpoints via
+        // `effective_plan` (an unfiltered pass-through of `plan_endpoints`
+        // — see the `endpoints` submodule's own doc comments for why the
+        // single-origin filter this comment used to describe was removed),
+        // and the whole plan dispatches concurrently (bounded by remaining
+        // scan + session budget). What actually runs:
         //
         // (breach + stealer + external records already arrived via the broad
-        // `/search` above; these add-ons only cover what `/search` does not):
+        // `/search` above; these add-ons cover what `/search` does not, PLUS
+        // the single-origin platform-presence checks — see below):
         //
         //   Email     → email-check (account/service existence map)
         //   Username  → social (multi-platform aggregate, 1 call),
-        //               username-history
+        //               github, twitter, reddit, tiktok, roblox, xbox,
+        //               minecraft (platform-specific profile depth beyond
+        //               what free `username_search`'s presence-only check
+        //               returns), username-history
         //               (+ discord/user + discord-to-roblox when the value
         //                parses as a Discord ID; + steam when a Steam ID —
         //                ID resolution, not single-site enumeration)
@@ -310,18 +330,15 @@ impl Module for SeekNow {
         //   IpAddress → network/ip
         //   FullName  → (none — `/search` auto-detect already covers it)
         //
-        // The single-origin github/twitter/reddit/tiktok/roblox/xbox/minecraft
-        // endpoints are filtered out — free `username_search` handles those, so
-        // paid quota isn't wasted re-confirming them.
-        //
         // Within each plan, calls run via `join_all` — the wall-time
         // collapses to the slowest single endpoint instead of summing
         // every call's latency. Budget gates inside util::see_know
         // turn no-quota calls into instant empty-vec returns.
         if !ctx.cancel.is_cancelled() && see_know::budget_remaining() {
-            // effective_plan() drops single-origin endpoints the free
-            // username stack already covers, so paid quota is spent only on
-            // breach / history / multi-platform aggregation and ID pivots.
+            // effective_plan() dispatches the FULL matrix, including the
+            // single-origin platform checks — the maximisation directive
+            // means SeekNow's platform-specific profile depth is worth the
+            // quota even where free coverage exists at presence-only depth.
             let plan = effective_plan(target.kind, v);
             let endpoint_results = dispatch_plan(key, v, &plan).await;
 
@@ -370,6 +387,76 @@ impl Module for SeekNow {
     }
 }
 
+/// Fold a non-empty universal-search result set (from either the fast
+/// `/search` or the [`see_know::search_deep`] fallback) into `result`: a
+/// subject-gated BREACH parent entity, then per-record extraction. Shared by
+/// both call sites so the fast/deep paths can never drift in how a hit is
+/// absorbed — only which endpoint produced it.
+///
+/// `endpoint_path` (e.g. `"/api/v1/search"`) names the exact API path in both
+/// the evidence summary and its `endpoint` attribute; `endpoint_label` (e.g.
+/// `"search"` / `"search/deep"`) is the short form `extract_entities` tags
+/// each derived entity's evidence with, matching the label convention the
+/// per-kind endpoint-matrix loop already uses for every other SeekNow call.
+///
+/// A broad seed (above all a `full_name` auto-detect, but also an
+/// address-adjacent phone/IP) can return rows for strangers who merely share a
+/// term with the target. Minting the 0.85 BREACH parent off the raw hit count
+/// re-affirms the seed's own UID — merging via `absorb` (GREATEST semantics)
+/// straight into the pre-existing entity — even when NONE of the returned
+/// rows actually identify the subject. `search_subject_present` mirrors the
+/// same match gate `oathnet_pro::breach::breach_parent_entity` already applies
+/// to its parent; the per-record extraction is unaffected — it demotes
+/// non-matching rows individually via `is_target` inside `extract_entities`.
+#[allow(clippy::too_many_arguments)]
+fn absorb_search_hits(
+    items: &[Value],
+    target: &Target,
+    target_value: &str,
+    endpoint_path: &str,
+    endpoint_label: &str,
+    key_fp: &str,
+    scan_id: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    let total = items.len();
+    if search_subject_present(target_value, items) {
+        let mut parent = target.to_entity(0.85, scan_id);
+        parent.tag(tags::BREACH);
+        parent.tag("see-know");
+        parent.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("SeekNow: {total} record(s) via {endpoint_path}"),
+            )
+            .with_attr("hits", total.to_string())
+            .with_attr("endpoint", endpoint_path)
+            .with_attr("provider", "see-know.eu")
+            .with_attr("api_key_origin", key_fp),
+        );
+        result.push(parent);
+    }
+
+    // Each record yields at least one entity; reserve up front so the result
+    // vector doesn't repeatedly realloc as records are walked.
+    result.entities.reserve(total);
+
+    for item in items {
+        extract_entities(
+            item,
+            target_value,
+            scan_id,
+            endpoint_label,
+            key_fp,
+            seen,
+            result,
+        );
+        store_api_credential(item, SRC);
+        extract_api_keys_from_item(item, scan_id, SRC, seen, result);
+    }
+}
+
 /// Maximum cross-platform identity-pivot hops per scan. Each hop resolves the
 /// IDs surfaced by the previous one; 3 covers the realistic chains
 /// (discord → roblox → steam, …) without unbounded fan-out, and the per-scan
@@ -395,9 +482,14 @@ async fn resolve_identity_pivots(
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
-    // Distinct IDs already dispatched, so a chain that loops back never
-    // re-resolves the same account. Namespaced by kind ("d:"/"s:") so a numeric
-    // collision across platforms can't suppress a real pivot.
+    // Distinct IDs actually DISPATCHED (not merely discovered), so a chain
+    // that loops back never re-resolves the same account. Namespaced by kind
+    // ("d:"/"s:") so a numeric collision across platforms can't suppress a
+    // real pivot. Only ids `dispatch_{discord,steam}_pivots` report as
+    // attempted are inserted (see their doc comments) — a discovered id the
+    // per-scan budget couldn't fit stays eligible for a later hop instead of
+    // being silently blacklisted for the rest of this seed's resolution
+    // despite never once being queried.
     let mut resolved: HashSet<String> = HashSet::new();
     for _hop in 0..MAX_PIVOT_HOPS {
         if !see_know::budget_remaining() {
@@ -405,11 +497,11 @@ async fn resolve_identity_pivots(
         }
         let discord: Vec<String> = discover_discord_pivots(result)
             .into_iter()
-            .filter(|id| resolved.insert(format!("d:{id}")))
+            .filter(|id| !resolved.contains(&format!("d:{id}")))
             .collect();
         let steam: Vec<String> = discover_steam_pivots(result)
             .into_iter()
-            .filter(|id| resolved.insert(format!("s:{id}")))
+            .filter(|id| !resolved.contains(&format!("s:{id}")))
             .collect();
         if discord.is_empty() && steam.is_empty() {
             break; // converged — no unresolved IDs left
@@ -417,10 +509,18 @@ async fn resolve_identity_pivots(
 
         let mut pivot_results: Vec<(&'static str, Vec<Value>)> = Vec::new();
         if !discord.is_empty() {
-            pivot_results.extend(dispatch_discord_pivots(key, discord).await);
+            let (items, attempted) = dispatch_discord_pivots(key, discord).await;
+            for id in attempted {
+                resolved.insert(format!("d:{id}"));
+            }
+            pivot_results.extend(items);
         }
         if !steam.is_empty() && see_know::budget_remaining() {
-            pivot_results.extend(dispatch_steam_pivots(key, steam).await);
+            let (items, attempted) = dispatch_steam_pivots(key, steam).await;
+            for id in attempted {
+                resolved.insert(format!("s:{id}"));
+            }
+            pivot_results.extend(items);
         }
 
         let before = result.entities.len();
@@ -457,10 +557,6 @@ fn extract_pivot_entities(
         for item in items {
             extract_entities(item, seed_value, scan_id, endpoint, key_fp, seen, result);
             extract_geo_entities(item, endpoint, scan_id, seen, result);
-            if *endpoint == "discord_messages" {
-                extract_message_emails(item, scan_id, seen, result);
-                extract_message_mentions(item, scan_id, seen, result);
-            }
             store_api_credential(item, SRC);
             extract_api_keys_from_item(item, scan_id, SRC, seen, result);
         }
@@ -475,6 +571,17 @@ fn extract_pivot_entities(
 fn search_subject_present(target_value: &str, items: &[Value]) -> bool {
     let match_ctx = TargetMatch::new(target_value);
     items.iter().any(|item| match_ctx.matches(item))
+}
+
+/// Whether the `/search/deep` fallback should fire after fast `/search`
+/// completed. `true` only for a genuine miss (`fast_total == 0`) on a TYPED
+/// query (`query_type` non-empty — the auto/name path is excluded; see
+/// `max_timeout_ms`'s doc comment for why chaining it there would risk the
+/// module's timeout budget) and only while the scan hasn't been cancelled.
+/// Pure function of the three decision inputs so the trigger policy is
+/// unit-testable without a live scan.
+fn should_try_deep_search(fast_total: usize, query_type: &str, cancelled: bool) -> bool {
+    fast_total == 0 && !query_type.is_empty() && !cancelled
 }
 
 /// True if a seed is junk that should never reach a SeekNow HTTP call — local

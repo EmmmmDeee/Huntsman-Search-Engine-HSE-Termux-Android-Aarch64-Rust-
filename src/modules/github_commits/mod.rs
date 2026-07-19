@@ -137,7 +137,14 @@ impl Module for GithubCommits {
         let resp = req.send_tagged(SRC).await?;
         // Search is best-effort and free: a 403/429 means "rate-limited", not a
         // scan error. Degrade to an empty result rather than failing the module.
-        if !resp.status().is_success() {
+        let status = resp.status();
+        if !status.is_success() {
+            // If a token was in play, the key pool must still learn a 401/403/429
+            // happened, or a dead/throttled token silently degrades every future
+            // scan with no operator-visible signal and no chance to rotate.
+            if let Some(token) = ctx.key_opt("HUNTSMAN_GITHUB_TOKEN") {
+                crate::util::http::note_keyed_error(status.as_u16(), "github", token, ctx);
+            }
             return Ok(ModuleResult::new());
         }
         // json_scanned: commit messages are free-form text that can carry leaked

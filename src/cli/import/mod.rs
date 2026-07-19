@@ -79,7 +79,7 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
                 output,
                 format!("Importing OathNet JSON export: query=\"{query}\", date={date}"),
             );
-            let sid = format!("import-{}", &crate::core::entity::unix_now().to_string());
+            let sid = format!("import-{}", crate::core::entity::unix_now());
             let (mut entities, stats) = parse_oathnet_json(&doc, &sid).await;
             deduplicate_by_uid(&mut entities);
             print_import_stats(&stats, entities.len(), output);
@@ -406,6 +406,57 @@ async fn persist_and_report(sid: &str, entities: &[crate::core::entity::Entity],
             format!("  Warning:   could not persist import: {e}"),
         ),
     }
+}
+
+/// Persist paired stealer-log credential rows for `sid`, best-effort — a
+/// failure here must never affect the entities `persist_and_report` already
+/// persisted. Called only by the Stealerlogs importer; a no-op when there's
+/// nothing to store.
+async fn persist_stealer_rows_best_effort(
+    sid: &str,
+    rows: &[crate::core::stealer_row::StealerRow],
+    output: &str,
+) {
+    if rows.is_empty() {
+        return;
+    }
+    use crate::core::StoragePort;
+    let store: std::sync::Arc<dyn StoragePort> =
+        match crate::storage::Store::open(&crate::default_db_path()) {
+            Ok(s) => std::sync::Arc::new(s),
+            Err(e) => {
+                note(
+                    output,
+                    format!("  Warning:   could not persist stealer rows: {e}"),
+                );
+                return;
+            }
+        };
+    match store.insert_stealer_rows_batch(sid, rows) {
+        Ok(n) => note(
+            output,
+            format!("  Stored:    {n} stealer credential row(s) for the Stealer Logs Viewer"),
+        ),
+        Err(e) => note(
+            output,
+            format!("  Warning:   could not persist stealer rows: {e}"),
+        ),
+    }
+}
+
+/// Web-upload counterpart to `entities_from_upload`, scoped to the paired
+/// stealer-log credential rows `entities_from_upload` itself discards (its
+/// signature returns `(entities, format_label)` and is destructured at many
+/// non-web call sites — CLI, tests — so it is deliberately not widened for
+/// this web-only need). Returns empty for any non-stealer body from a cheap
+/// format check alone; re-parses the body a second time only in the stealer
+/// case, an accepted, bounded, one-time-per-upload cost.
+pub(crate) fn stealer_rows_from_upload(body: &str) -> Vec<crate::core::stealer_row::StealerRow> {
+    let body = body.strip_prefix('\u{feff}').unwrap_or(body);
+    if !looks_like_stealerlogs(body) {
+        return Vec::new();
+    }
+    parse_stealerlogs(body, "").2
 }
 
 fn detect_and_create_api_key_entity(

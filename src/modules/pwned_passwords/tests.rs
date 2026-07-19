@@ -109,3 +109,64 @@ use crate::core::entity::EntityKind;
         let target = Target::new(TargetKind::Email, "x@y.com");
         assert!(build_entities(&target, 0, "5BAA6", "scan").is_empty());
     }
+
+    // ── fetch_range (T2.116): a non-2xx must not read as "not pwned" ────
+
+    /// A one-shot local HTTP server that always answers with `status` and
+    /// `body` — used to give `fetch_range` a real (not mocked) transport to
+    /// hit so its failure classification is exercised end to end (the same
+    /// pattern `ip_reputation::tests::serve_once` uses).
+    async fn serve_once(status: u16, body: &'static [u8]) -> std::net::SocketAddr {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let reason = if status == 200 { "OK" } else { "Error" };
+            let head = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(body).await;
+            let _ = sock.flush().await;
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn fetch_range_errors_on_a_rate_limit_status() {
+        // T2.116 regression: previously any non-2xx status silently became
+        // Ok(empty) — indistinguishable from "this credential was never
+        // seen in a breach."
+        let addr = serve_once(429, b"rate limited").await;
+        let client = reqwest::Client::new();
+        let res = fetch_range(&client, &format!("http://{addr}/")).await;
+        assert!(
+            res.is_err(),
+            "a 429 from the k-Anonymity range endpoint must propagate as an error"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_range_errors_on_a_server_outage_status() {
+        let addr = serve_once(503, b"upstream down").await;
+        let client = reqwest::Client::new();
+        let res = fetch_range(&client, &format!("http://{addr}/")).await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_range_returns_the_body_on_success() {
+        let body = b"011053FD0102E94D6AE2F8B83D76FAF94F6:5727\r\n";
+        let addr = serve_once(200, body).await;
+        let client = reqwest::Client::new();
+        let got = fetch_range(&client, &format!("http://{addr}/"))
+            .await
+            .expect("a 200 response must succeed");
+        assert!(got.contains("5727"));
+    }

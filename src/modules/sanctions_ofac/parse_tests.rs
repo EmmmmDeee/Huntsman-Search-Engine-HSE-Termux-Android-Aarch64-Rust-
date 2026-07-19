@@ -42,6 +42,7 @@ fn parse_individual_row_maps_correctly() {
     assert_eq!(rec.name, "ABBAS, Abu");
     assert_eq!(rec.kind, SdnKind::Individual);
     assert_eq!(rec.program, "SDGT");
+    assert_eq!(rec.title, "Director of PALESTINE LIBERATION FRONT - ABU ABBAS FACTION");
     assert!(rec.remarks.contains("DOB 10 Dec 1948"));
 }
 
@@ -53,6 +54,7 @@ fn parse_organisation_row_with_blank_type_maps_correctly() {
     assert_eq!(rec.name, "AEROCARIBBEAN AIRLINES");
     assert_eq!(rec.kind, SdnKind::Organisation);
     assert_eq!(rec.program, "CUBA");
+    assert_eq!(rec.title, "", "the -0- title placeholder must normalise to empty");
     assert_eq!(rec.remarks, "", "the -0- remarks placeholder must normalise to empty");
 }
 

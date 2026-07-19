@@ -59,7 +59,7 @@ fn parse_gravatar_response() {
     assert_eq!(r.entry.len(), 1);
     let e = &r.entry[0];
     assert_eq!(e.display_name.as_deref(), Some("John Doe"));
-    assert_eq!(e.location.as_deref(), Some("NYC"));
+    assert_eq!(e.current_location.as_deref(), Some("NYC"));
 }
 
 // ── build_phone_entities (pure extraction) ─────────────────────────

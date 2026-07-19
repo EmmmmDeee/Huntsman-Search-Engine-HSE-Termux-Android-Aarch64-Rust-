@@ -27,6 +27,35 @@ fn module_covers_queensland() {
     assert!(m.produces().contains(&EntityKind::Organisation));
 }
 
+// A genuine end-to-end exercise of the (T2.119-fixed) `process()` path against
+// the real QLD Public Trustee CKAN datastore — proving the primary fetch,
+// `success` check, parse, and entity extraction all work on live data and that
+// a healthy query returns `Ok` (never the new error path spuriously). Ignored
+// by default (hits the network); run manually with `--ignored`. Mirrors the
+// sibling ASIC modules' live tests.
+#[tokio::test]
+#[ignore = "hits the live data.qld.gov.au unclaimed-money datastore; run manually"]
+async fn au_unclaimed_live_finds_qld_records_for_a_common_surname() {
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = ModuleContext {
+        scan_id: "live".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let r = AuUnclaimed
+        .process(&Target::new(TargetKind::FullName, "John Smith"), &ctx)
+        .await
+        .expect("a healthy live QLD query must return Ok, not the T2.119 error path");
+    eprintln!("au_unclaimed live: {} entities", r.entities.len());
+    assert!(
+        !r.entities.is_empty(),
+        "the QLD unclaimed-money register holds many 'Smith' records — a live \
+         query should surface at least one entity"
+    );
+}
+
 // ── Queensland pass (folded in from the former `qld_unclaimed` module) ──────
 //
 // These pin that QLD's distinctive, richer capability survives the merge: joint

@@ -11,6 +11,7 @@ use crate::core::{
 
 mod archive; // `impl Store`: inter-scan entity cache (`raw_archive`)
 mod entities; // `impl Store`: entity persistence + FTS query
+mod stealer_rows; // `impl Store`: paired stealer-log credential row persistence
 mod templates; // `impl Store`: cross-scan pathway-template learning
 
 pub use entities::EvidenceAnomaly;
@@ -100,6 +101,25 @@ const SCHEMA_DDL: &str = "
             CREATE INDEX IF NOT EXISTS idx_events_scan   ON events(scan_id, id);
             CREATE INDEX IF NOT EXISTS idx_events_type   ON events(event_type, id);
             CREATE INDEX IF NOT EXISTS idx_relations_scan ON relations(scan_id);
+
+            -- Paired stealer-log credential rows (Stealer Logs Viewer,
+            -- `core::stealer_row::StealerRow`). Persisted ALONGSIDE the
+            -- generic entity graph, not instead of it: `entities` flattens a
+            -- credential into independent Email/Username/Credential rows for
+            -- correlation, which loses the login/password/domain pairing an
+            -- operator browsing a stolen-credential dump actually wants back.
+            CREATE TABLE IF NOT EXISTS stealer_rows (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id  TEXT NOT NULL,
+                log_id   TEXT,
+                domain   TEXT,
+                login    TEXT,
+                password TEXT,
+                pwned_at TEXT,
+                row_kind TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_stealer_rows_scan ON stealer_rows(scan_id);
+            CREATE INDEX IF NOT EXISTS idx_stealer_rows_log  ON stealer_rows(scan_id, log_id);
 
             -- Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN). Keyed by
             -- `module:target_kind:normalised_target` so a repeat scan of the
@@ -425,6 +445,43 @@ impl Store {
             collect_rows(rows, "list_scans")
         };
         Ok(deserialize_rows(raw, "list_scans"))
+    }
+
+    /// Chronological (newest-first) list of past **radar sweeps** — scans
+    /// whose target is one of `radar_scan_spec`'s two sentinel anchors
+    /// (`Coordinates "0,0"` or `MacAddress "00:00:00:00:00:00"`; the sensors
+    /// ignore the value, so it is never a real target). Filters at the SQL
+    /// layer with the same `json_extract` technique as
+    /// [`Store::latest_completed_scan`], so a deployment with thousands of
+    /// ordinary scans doesn't pay to deserialise every one just to find the
+    /// radar-tagged handful.
+    ///
+    /// Sourced entirely from the persisted `scans` table — unlike the
+    /// in-memory `LiveSession` bookkeeping (cleared on every restart), this
+    /// survives a `hse serve` restart, so an operator reviewing what was
+    /// around them earlier can do so without remembering a session id. This
+    /// is the query behind `GET /api/v1/radar/history`.
+    pub fn radar_history(&self, limit: usize) -> Result<Vec<Scan>> {
+        let raw: Vec<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached(
+                // The literal "0,0"/"00:00:00:00:00:00" `radar_scan_spec` passes
+                // to `Target::new` is NOT what ends up persisted: coordinate
+                // normalisation (`core::entity::normalise`) rounds to 6 decimal
+                // places, so the stored value is "0.000000,0.000000" — the MAC
+                // sentinel is already normalised-form (lowercase, colon-sep,
+                // all-zero) and passes through unchanged.
+                "SELECT data_json FROM scans
+                 WHERE (json_extract(data_json, '$.target.kind') = 'coordinates'
+                        AND json_extract(data_json, '$.target.value') = '0.000000,0.000000')
+                    OR (json_extract(data_json, '$.target.kind') = 'mac_address'
+                        AND json_extract(data_json, '$.target.value') = '00:00:00:00:00:00')
+                 ORDER BY started_at DESC, id DESC LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
+            collect_rows(rows, "radar_history")
+        };
+        Ok(deserialize_rows(raw, "radar_history"))
     }
 
     /// Return the most recent scan whose serialised status matches
@@ -762,6 +819,10 @@ impl crate::core::port::StoragePort for Store {
         Store::checkpoint_truncate(self)
     }
 
+    fn integrity_check(&self) -> Result<Vec<String>> {
+        Store::integrity_check(self)
+    }
+
     fn prune_events(&self, max_age_secs: u64, max_rows: usize) -> Result<usize> {
         Store::prune_events(self, max_age_secs, max_rows)
     }
@@ -780,6 +841,10 @@ impl crate::core::port::StoragePort for Store {
 
     fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
         Store::list_scans(self, limit)
+    }
+
+    fn radar_history(&self, limit: usize) -> Result<Vec<Scan>> {
+        Store::radar_history(self, limit)
     }
 
     fn delete_scan(&self, scan_id: &str) -> Result<bool> {
@@ -870,6 +935,21 @@ impl crate::core::port::StoragePort for Store {
 
     fn pathway_template_count(&self, template: &str) -> Result<u32> {
         Store::pathway_template_count(self, template)
+    }
+
+    fn insert_stealer_rows_batch(
+        &self,
+        scan_id: &str,
+        rows: &[crate::core::stealer_row::StealerRow],
+    ) -> Result<usize> {
+        Store::insert_stealer_rows_batch(self, scan_id, rows)
+    }
+
+    fn stealer_rows_for_scan(
+        &self,
+        scan_id: &str,
+    ) -> Result<Vec<crate::core::stealer_row::StealerRow>> {
+        Store::stealer_rows_for_scan(self, scan_id)
     }
 }
 

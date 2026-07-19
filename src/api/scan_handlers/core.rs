@@ -534,6 +534,11 @@ pub async fn scan_import(
     if entities.is_empty() {
         return bad_request("no verifiable entities were parsed from the upload");
     }
+    // Paired stealer-log credential rows (login+password+machine, kept
+    // together) for the Stealer Logs Viewer — empty for every non-stealer
+    // upload format. See `stealer_rows_from_upload`'s own doc for why this
+    // is a second, separate parse rather than a widened `entities_from_upload`.
+    let stealer_rows = crate::cli::import::stealer_rows_from_upload(&body);
 
     // A readable scan label: the strongest identity in the file, else a generic.
     let label = entities
@@ -570,6 +575,10 @@ pub async fn scan_import(
         match tokio::task::spawn_blocking(move || -> crate::core::error::Result<_> {
             store.upsert_scan(&scan)?;
             store.upsert_entities_batch(&entities)?;
+            // Best-effort: a stealer-row persistence hiccup must not fail an
+            // otherwise-successful import — the entity graph above already
+            // carries the same credentials, just unpaired.
+            let _ = store.insert_stealer_rows_batch(&sid2, &stealer_rows);
             // Device-safety bound: skip the O(n²) enrichment on a pathologically
             // large import (entities are already persisted above; nothing lost).
             if entities.len() > IMPORT_ENRICH_MAX_ENTITIES {
@@ -781,6 +790,33 @@ pub async fn radar_live(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         Json(json!({ "live_id": live_id, "status": "running", "mode": "radar" })),
     )
         .into_response()
+}
+
+/// `GET /api/v1/radar/history?limit=<n>` — chronological (newest-first) list
+/// of past radar sweeps for historical review.
+///
+/// Unlike `GET /api/v1/live` (which only shows sessions still held in the
+/// server's in-memory `LiveSession` map — cleared on every restart), this
+/// reads directly from the persisted `scans` table: every sweep a `radar`/
+/// `radar/live` call ever queued survives a restart here, so an operator
+/// reconstructing "what was around me" after the fact doesn't need to
+/// remember a session id — only that a radar sweep ran at some point. This
+/// is the sole purpose-built historical-review surface for the live radar
+/// feature (`docs/PROBLEM_TREE.md`/`docs/SOLUTION_TREE.md`: personal-safety
+/// / situational-awareness review under limited information).
+pub async fn radar_history(
+    State(s): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let limit: usize = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .clamp(1, 1000);
+    match s.store.radar_history(limit) {
+        Ok(scans) => ok_list("sweeps", scans),
+        Err(e) => internal_error(&e),
+    }
 }
 
 /// `GET /api/v1/plan?value=<seed>` — forward-only scan-plan PREVIEW.

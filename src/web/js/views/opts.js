@@ -82,13 +82,21 @@ export async function renderOpts(v){
       <div class="panel-heading"><b>Diagnostics</b></div>
       <div class="panel-body">
         <p class="text-muted" style="font-size:12px">
-          Validate every module and core feature, and download elaborate
-          verbose (TRACE-level) debug logs for the current server session.
+          One click captures the engine's <b>entire</b> diagnostic state in a
+          single self-diagnosing file &mdash; an auto-computed
+          <b>DETECTED&nbsp;ISSUES</b> verdict, the environment fingerprint, the
+          full self-test, live and cross-scan module / engine / scraper health,
+          the recent-scan index (with each failed scan's error), the verbose
+          log ring, and the source-file manifest. It is everything needed to
+          repair HSE, organised for offline debugging. Loopback-only (it
+          contains scan targets); secret-free (key names only, never values).
         </p>
         <p>
-          <button id="st-run" class="btn btn-primary btn-sm">Run self-test</button>
+          <a class="btn btn-primary btn-sm" href="${API.debugBundleUrl()}" download>Download full diagnostic bundle</a>
           &nbsp;
-          <a class="btn btn-default btn-sm" href="${API.logsUrl()}" download>Download debug log</a>
+          <button id="st-run" class="btn btn-default btn-sm">Run self-test</button>
+          &nbsp;
+          <a class="btn btn-link btn-sm" href="${API.logsUrl()}" download title="Just the raw TRACE log ring (a subset of the full bundle)">logs only</a>
           &nbsp;<span id="st-summary" class="text-muted" style="font-size:12px"></span>
         </p>
         <div id="st-results" style="margin-top:8px"></div>

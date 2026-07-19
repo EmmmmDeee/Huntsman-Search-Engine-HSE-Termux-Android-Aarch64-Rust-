@@ -24,7 +24,7 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::extract::looks_like_email;
-use crate::util::http::{fetch_json_or_404, urlencode};
+use crate::util::http::{fetch_json_probe, urlencode};
 
 const SRC: &str = "fediverse";
 
@@ -111,8 +111,10 @@ impl Module for Fediverse {
             urlencode(&format!("acct:{email}"))
         );
         // 404 (the overwhelming case for ordinary mail domains) → not a Fediverse
-        // account, a clean miss.
-        let Some(wf): Option<WebFinger> = fetch_json_or_404(&ctx.http, SRC, &url).await? else {
+        // account, a clean miss. A domain that is simply unreachable (runs no
+        // server, DNS/TLS/connection failure) is the SAME "no account here" miss,
+        // not a module error — `fetch_json_probe` folds both into `None`.
+        let Some(wf): Option<WebFinger> = fetch_json_probe(&ctx.http, SRC, &url).await else {
             return Ok(result);
         };
         if wf.links.is_empty() && wf.aliases.is_empty() {

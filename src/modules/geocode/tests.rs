@@ -164,3 +164,125 @@ fn au_relevance_no_country_code_falls_back_to_bounding_box() {
 fn au_relevance_no_country_code_outside_box_is_unknown() {
     assert_eq!(au_relevance(48.8566, 2.3522, None), AuRelevance::Unknown);
 }
+
+// -- T2.104: forward `/search?addressdetails=1` must parse the `address`
+// breakdown it requests, not silently discard it -----------------------
+
+#[test]
+fn nominatim_result_deserializes_the_requested_address_breakdown() {
+    // The forward request URL hardcodes `addressdetails=1`, so a real
+    // Nominatim `/search` response always carries this shape. Regression
+    // for T2.104: pre-fix, `NominatimResult` had no `address` field at all,
+    // so this line would fail to *compile*, not just assert wrong.
+    let json = serde_json::json!({
+        "lat": "-27.4766",
+        "lon": "153.0166",
+        "display_name": "Brisbane City, QLD, Australia",
+        "type": "city",
+        "address": {
+            "road": "George Street",
+            "house_number": "1",
+            "suburb": "Brisbane City",
+            "city": "Brisbane",
+            "state": "Queensland",
+            "postcode": "4000",
+            "country": "Australia",
+            "country_code": "au"
+        }
+    });
+    let r: NominatimResult = serde_json::from_value(json).unwrap();
+    let a = r.address.expect("address must deserialize, not be dropped");
+    assert_eq!(a.city.as_deref(), Some("Brisbane"));
+    assert_eq!(a.state.as_deref(), Some("Queensland"));
+    assert_eq!(a.postcode.as_deref(), Some("4000"));
+    assert_eq!(a.country_code.as_deref(), Some("au"));
+}
+
+#[test]
+fn nominatim_result_without_address_still_parses() {
+    // Some Nominatim deployments/results omit the block entirely (e.g. a
+    // coarse country-level hit) — must stay optional, never required.
+    let json = serde_json::json!({
+        "lat": "-27.4766",
+        "lon": "153.0166",
+        "display_name": "Australia",
+        "type": "country"
+    });
+    let r: NominatimResult = serde_json::from_value(json).unwrap();
+    assert!(r.address.is_none());
+}
+
+#[test]
+fn fold_address_attrs_surfaces_the_full_breakdown() {
+    let a = addr(serde_json::json!({
+        "road": "George Street",
+        "house_number": "1",
+        "suburb": "Brisbane City",
+        "city": "Brisbane",
+        "county": "Greater Brisbane",
+        "state": "Queensland",
+        "postcode": "4000",
+        "country": "Australia",
+        "country_code": "au"
+    }));
+    let ev = fold_address_attrs(Evidence::new(SRC, "test"), &a);
+    assert_eq!(
+        ev.attributes.get("city").map(String::as_str),
+        Some("Brisbane")
+    );
+    assert_eq!(
+        ev.attributes.get("state").map(String::as_str),
+        Some("Queensland")
+    );
+    assert_eq!(
+        ev.attributes.get("country").map(String::as_str),
+        Some("Australia")
+    );
+    assert_eq!(
+        ev.attributes.get("country_code").map(String::as_str),
+        Some("AU")
+    );
+    assert_eq!(
+        ev.attributes.get("postcode").map(String::as_str),
+        Some("4000")
+    );
+    assert_eq!(
+        ev.attributes.get("street").map(String::as_str),
+        Some("1 George Street")
+    );
+    assert_eq!(
+        ev.attributes.get("suburb").map(String::as_str),
+        Some("Brisbane City")
+    );
+    assert_eq!(
+        ev.attributes.get("county").map(String::as_str),
+        Some("Greater Brisbane")
+    );
+}
+
+#[test]
+fn fold_address_attrs_falls_back_through_city_town_village_municipality() {
+    let a = addr(serde_json::json!({ "village": "Nowhereville" }));
+    let ev = fold_address_attrs(Evidence::new(SRC, "test"), &a);
+    assert_eq!(
+        ev.attributes.get("city").map(String::as_str),
+        Some("Nowhereville")
+    );
+}
+
+#[test]
+fn fold_address_attrs_road_without_house_number_omits_the_number() {
+    let a = addr(serde_json::json!({ "road": "George Street" }));
+    let ev = fold_address_attrs(Evidence::new(SRC, "test"), &a);
+    assert_eq!(
+        ev.attributes.get("street").map(String::as_str),
+        Some("George Street")
+    );
+}
+
+#[test]
+fn fold_address_attrs_empty_address_adds_no_attrs() {
+    let a = addr(serde_json::json!({}));
+    let ev = fold_address_attrs(Evidence::new(SRC, "test"), &a);
+    assert!(ev.attributes.is_empty());
+}

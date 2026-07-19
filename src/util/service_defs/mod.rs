@@ -47,6 +47,11 @@ pub enum KeyPlacement {
     Header(&'static str),
     BasicAuth,
     BearerAuth,
+    /// A header carrying a custom scheme prefix directly followed by the key
+    /// (header name, prefix) — e.g. OpenSanctions' `Authorization: ApiKey
+    /// <key>`. Distinct from `BearerAuth`, which is hardcoded to the literal
+    /// `bearer` scheme and can't express a different prefix word.
+    HeaderPrefixed(&'static str, &'static str),
 }
 
 static SERVICE_DEFS: &[ServiceDef] = &[
@@ -598,6 +603,19 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         rate_limit_reset_secs: 60,
         probe_parser: None,
     },
+    // OpenSanctions — sanctions/PEP/watchlist screening (OFAC, UN, EU, DFAT
+    // AU, 400+ sources). /statements is free to call (no quota charge) but
+    // still requires a valid key, so it validates without spending a paid
+    // /match query.
+    ServiceDef {
+        name: "opensanctions",
+        env_var: "HUNTSMAN_OPENSANCTIONS_KEY",
+        category: "identity",
+        test_url: "https://api.opensanctions.org/statements",
+        key_header: KeyPlacement::HeaderPrefixed("Authorization", "ApiKey "),
+        rate_limit_reset_secs: 60,
+        probe_parser: None,
+    },
     // SeekNow (see-know.eu) — direct OathNet competitor with 5000 daily
     // lookups on premiumhq tier. Auth: `X-API-Key: <key>` — the server REJECTS
     // `Authorization: Bearer` with "Missing API key. Use X-API-Key" (see
@@ -623,6 +641,153 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.exa.ai/search",
         key_header: KeyPlacement::Header("x-api-key"),
         rate_limit_reset_secs: 5,
+        probe_parser: None,
+    },
+    // The following nine were confirmed live (module code + a real 2026-07-14
+    // GET probe against each host from this environment) to be genuine
+    // per-service API keys with ZERO key-pool integration: never poolable
+    // (`is_poolable_service` gates on this registry), invisible on the
+    // operator's key-health dashboard, and the documented
+    // `HUNTSMAN_X_KEY=a,b,c` multi-key convention silently breaking (the CSV
+    // split in `util/keys/io.rs` only runs for a registered `env_var`, so an
+    // operator following that convention here would send the literal
+    // comma-joined string as one broken credential). `github_user`/
+    // `github_code_search`/`github_commits`/`urlhaus` additionally needed a
+    // module-side fix (they swallowed 401/403/429 without ever calling
+    // `ctx.report_key_exhausted`); `trove_au`/`fullcontact`/`domainsdb`/
+    // `niamonx`/`osintcat` already reported correctly — for those five,
+    // registration alone turns their existing (previously no-op) reports into
+    // real pool state.
+    ServiceDef {
+        name: "github",
+        env_var: "HUNTSMAN_GITHUB_TOKEN",
+        category: "identity",
+        // GitHub's documented "get the authenticated user" endpoint — 200 for
+        // a valid token, 401 for an invalid/expired one, zero side effects.
+        test_url: "https://api.github.com/user",
+        key_header: KeyPlacement::BearerAuth,
+        rate_limit_reset_secs: 60,
+        probe_parser: None,
+    },
+    // abuse.ch's URLhaus. Confirmed live (2026-07-14, real requests from this
+    // environment against `modules/urlhaus/mod.rs`'s own base URL): no
+    // `Auth-Key` header → 401; a present-but-wrong `Auth-Key` → 404 (its real
+    // endpoints are POST-only, so this GET path doesn't cleanly echo the
+    // auth verdict a valid key would get). Either way the probe lands
+    // `Indeterminate`, never a false `Invalid` — the same safe trade-off
+    // `dehashed`'s omission note above documents for a POST-only API.
+    // abuse.ch's 2024 auth rollout unified URLhaus/ThreatFox/MalwareBazaar
+    // under one Auth-Key, which is why `urlhaus`'s own code falls back to
+    // `HUNTSMAN_THREATFOX_KEY` when no dedicated key is set — registered here
+    // as its own service so a *dedicated* URLhaus key still pools/rotates
+    // independently.
+    ServiceDef {
+        name: "urlhaus",
+        env_var: "HUNTSMAN_ABUSECH_KEY",
+        category: "threat_intel",
+        test_url: "https://urlhaus-api.abuse.ch/v1/",
+        key_header: KeyPlacement::Header("Auth-Key"),
+        rate_limit_reset_secs: 60,
+        probe_parser: None,
+    },
+    ServiceDef {
+        name: "hlrlookups",
+        env_var: "HUNTSMAN_HLR_KEY",
+        category: "identity",
+        // hlrlookups.com has no keyless account-status endpoint; the real
+        // lookup endpoint requires an MSISDN, so the probe uses a NANP
+        // fictional-use reserved number (+1-555-01xx, ITU/NANPA-reserved for
+        // testing — never a real subscriber) purely to exercise the auth
+        // header, not to look anyone up.
+        test_url: "https://api.hlrlookups.com/api/lookup?msisdn=%2B15555550100",
+        key_header: KeyPlacement::QueryParam("api_key"),
+        rate_limit_reset_secs: 300,
+        probe_parser: None,
+    },
+    ServiceDef {
+        name: "opencnam",
+        env_var: "HUNTSMAN_OPENCNAM_KEY",
+        category: "identity",
+        // Same reserved-number rationale as `hlrlookups` above. OpenCNAM's
+        // API additionally requires a (non-secret, hardcoded) `account_sid` —
+        // `modules/hlr_cnam/mod.rs` always sends `account_sid=huntsman`, so the
+        // probe mirrors that exact pairing.
+        test_url: "https://api.opencnam.com/v2/phone/+15555550100?account_sid=huntsman",
+        key_header: KeyPlacement::QueryParam("auth_token"),
+        rate_limit_reset_secs: 300,
+        probe_parser: None,
+    },
+    ServiceDef {
+        name: "trove_au",
+        env_var: "HUNTSMAN_TROVE_KEY",
+        category: "identity",
+        // The module's own real endpoint (National Library of Australia
+        // newspaper search), minimised to `n=1` — a genuine, cheap live query.
+        test_url: "https://api.trove.nla.gov.au/v3/result?q=test&zone=newspaper&encoding=json&n=1&reclevel=brief",
+        key_header: KeyPlacement::Header("X-API-KEY"),
+        rate_limit_reset_secs: 60,
+        probe_parser: None,
+    },
+    ServiceDef {
+        name: "fullcontact",
+        env_var: "HUNTSMAN_FULLCONTACT_KEY",
+        category: "identity",
+        // FullContact's enrichment endpoint is POST-only (`modules/fullcontact/
+        // mod.rs`), so — same reasoning as `urlhaus`/`dehashed` above — a
+        // GET-based probe safely lands `Indeterminate` rather than a false
+        // `Invalid`; it still confirms the pool integration (rotation,
+        // dashboard visibility, real `report_key_exhausted` effect) works.
+        test_url: "https://api.fullcontact.com/v3/person.enrich",
+        key_header: KeyPlacement::BearerAuth,
+        rate_limit_reset_secs: 300,
+        probe_parser: None,
+    },
+    ServiceDef {
+        name: "domainsdb",
+        env_var: "HUNTSMAN_DOMAINSDB_KEY",
+        category: "infrastructure",
+        // Confirmed live (2026-07-14): domainsdb.info's search endpoint does
+        // NOT actually verify a bearer token's authenticity — it 401s with NO
+        // `Authorization` header at all, but accepts ANY non-empty bearer
+        // value and returns a normal 200 (empty result set for a garbage
+        // token, same shape as a real zero-match search). A `domain=`-bearing
+        // test_url would therefore make the probe read a garbage key as
+        // `Valid` — a false positive, worse than the safe `Indeterminate`
+        // the POST-only services above accept. Omitting the required
+        // `domain` param sidesteps that: auth-presence is still checked
+        // first (no header → 401), but any present token then hits this
+        // param-validation 400 before the (unreliable) key check would ever
+        // matter — so this probe can only land `Indeterminate`, never a
+        // false `Valid` or a false `Invalid`. domainsdb.info made the key
+        // mandatory in 2025 (T2.48); the module's own doc comment ("free, no
+        // key") is now stale, corrected here.
+        test_url: "https://api.domainsdb.info/v1/domains/search?zone=com&limit=1",
+        key_header: KeyPlacement::BearerAuth,
+        rate_limit_reset_secs: 60,
+        probe_parser: None,
+    },
+    ServiceDef {
+        name: "niamonx",
+        env_var: "HUNTSMAN_NIAMONX_KEY",
+        category: "breach",
+        // NiamonX's PBS v1 search is POST-only (`modules/niamonx/mod.rs`'s own
+        // `BASE`) — same safe `Indeterminate`-only trade-off as `urlhaus`/
+        // `fullcontact`.
+        test_url: "https://dash.niamonx.io/api/v2/breaches_search",
+        key_header: KeyPlacement::Header("X-API-Key"),
+        rate_limit_reset_secs: 60,
+        probe_parser: None,
+    },
+    ServiceDef {
+        name: "osintcat",
+        env_var: "HUNTSMAN_OSINTCAT_KEY",
+        category: "breach",
+        // The module's own real GET endpoint (its own `BASE` constant) with a
+        // placeholder email — cheap, genuine live query; the probe only
+        // inspects the HTTP status, never reads/keeps the response body.
+        test_url: "https://www.osintcat.net/api/email-osint?query=test%40example.com",
+        key_header: KeyPlacement::Header("x-api-key"),
+        rate_limit_reset_secs: 60,
         probe_parser: None,
     },
 ];

@@ -447,15 +447,19 @@ pub(super) struct DispatchCx<'a> {
 }
 
 /// Mutable per-scan dispatch accumulators threaded through every module run: the
-/// working entity set (merged by uid), the run/skip/error/dedup tallies, and the
-/// paid-dedup ledger (each `module × normalised-target` fired at most once). One
-/// `&mut` borrow replaces three always-together out-parameters; the fields are
-/// borrowed separately at their use sites so the entity merge, the stat bump,
-/// and the ledger insert never contend.
+/// working entity set (merged by uid), the run/skip/error/dedup tallies, the
+/// paid-dedup ledger (each `module × normalised-target` fired at most once), and
+/// the UIDs of entities genuinely NEW this dispatch (never merged into an
+/// existing one) — lets a caller attribute lineage (`DerivedFrom`) without
+/// re-diffing the whole `entity_map` before and after. One `&mut` borrow
+/// replaces four always-together out-parameters; the fields are borrowed
+/// separately at their use sites so the entity merge, the stat bump, the
+/// ledger insert, and the new-uid record never contend.
 pub(super) struct DispatchState<'a> {
     pub(super) entity_map: &'a mut HashMap<String, Entity>,
     pub(super) stats: &'a mut ModuleStats,
     pub(super) dispatched: &'a mut DispatchLog,
+    pub(super) newly_inserted: &'a mut Vec<String>,
 }
 
 impl super::ScanEngine {
@@ -488,6 +492,7 @@ impl super::ScanEngine {
                 // A timeout carries no message to classify, so it's a soft
                 // failure: trips only after a streak (one slow round is transient).
                 super::circuit::record_soft_failure(name);
+                super::health::record_failure(name);
                 warn!(module = name, "timeout");
                 self.emit(
                     cx.scan_id,
@@ -530,6 +535,7 @@ impl super::ScanEngine {
                 // Feed the breaker: a rate-limit/quota message trips immediately;
                 // any other hard error counts toward the soft streak.
                 super::circuit::record_error(name, &e.to_string());
+                super::health::record_failure(name);
                 warn!(module = name, error = %e, "module error");
                 self.emit(
                     cx.scan_id,
@@ -548,8 +554,12 @@ impl super::ScanEngine {
                 // degrading provider, or resetting a soft-trip countdown), so the
                 // breaker's success path is skipped for replays. A replay is
                 // neither success nor failure to the breaker — it is invisible.
+                // `health::record_success` mirrors `circuit::record_success`'s
+                // recovery philosophy by design (see its own doc comment), so the
+                // same cache-replay exclusion applies to it too.
                 if !from_cache {
                     super::circuit::record_success(name);
+                    super::health::record_success(name);
                 }
                 let mut found = 0usize;
                 for mut entity in mr.entities.drain(..) {
@@ -599,6 +609,7 @@ impl super::ScanEngine {
                     if let Some(existing) = state.entity_map.get_mut(&entity.uid) {
                         existing.merge(entity);
                     } else {
+                        state.newly_inserted.push(entity.uid.clone());
                         state.entity_map.insert(entity.uid.clone(), entity);
                     }
                     found += 1;
@@ -1051,50 +1062,63 @@ impl super::ScanEngine {
             // where `finalise_module_result` stamps each admitted entity.
             let attack_techniques = module.attack_techniques();
 
-            // Re-set the foreign-key scan-scope ambient INSIDE the spawned task:
-            // tokio task-locals do NOT propagate across `spawn`, so without this the
-            // concurrent path's `scan_body` calls would land in the unscoped bucket
-            // and be lost at drain (PROBLEM_TREE T2.11). `with_scan` is the
-            // allow-listed pure `core → util::found_keys` leaf.
+            // Re-set the foreign-key scan-scope AND regional-search ambients
+            // INSIDE the spawned task: tokio task-locals do NOT propagate
+            // across `spawn`, so without this the concurrent path's
+            // `scan_body` calls would land in the unscoped bucket and be lost
+            // at drain, and `search_engines::regional_enabled()` would
+            // silently read the unscoped `false` default instead of this
+            // scan's actual setting (PROBLEM_TREE T2.11). Both `with_scan`
+            // and `with_regional` are allow-listed pure `core → util` leaves.
+            // `regional_enabled()` reads the CURRENT task's ambient — still
+            // valid here since dispatch runs on the same task `with_regional`
+            // was established on in `run_with_ledger`, right up to this spawn.
             let scope_sid = sid.to_string();
-            set.spawn(crate::util::found_keys::with_scan(scope_sid, async move {
-                let _permit = permit;
+            let regional_on = crate::util::regional::regional_enabled();
+            set.spawn(crate::util::found_keys::with_scan(
+                scope_sid,
+                crate::util::regional::with_regional(regional_on, async move {
+                    let _permit = permit;
 
-                log_module_dispatch(name, &target);
-                emitter.emit(
-                    &sid,
-                    EventKind::ModuleStart {
-                        module: name.into(),
-                    },
-                );
+                    log_module_dispatch(name, &target);
+                    emitter.emit(
+                        &sid,
+                        EventKind::ModuleStart {
+                            module: name.into(),
+                        },
+                    );
 
-                // `.instrument()` (not an ambient span) because a spawned task
-                // does NOT inherit the dispatcher's current span — without it the
-                // external HTTP logs from this concurrently-running module would
-                // be context-less. Carries {scan_id, module, target} for the same
-                // end-to-end trace the sequential path gets.
-                let result =
-                    run_module_guarded(module_timeout_ms, name, module_arc.process(&target, &ctx))
-                        .instrument(tracing::info_span!(
-                            "module",
-                            module = name,
-                            scan_id = %sid,
-                            target = %target.value
-                        ))
-                        .await;
+                    // `.instrument()` (not an ambient span) because a spawned task
+                    // does NOT inherit the dispatcher's current span — without it the
+                    // external HTTP logs from this concurrently-running module would
+                    // be context-less. Carries {scan_id, module, target} for the same
+                    // end-to-end trace the sequential path gets.
+                    let result = run_module_guarded(
+                        module_timeout_ms,
+                        name,
+                        module_arc.process(&target, &ctx),
+                    )
+                    .instrument(tracing::info_span!(
+                        "module",
+                        module = name,
+                        scan_id = %sid,
+                        target = %target.value
+                    ))
+                    .await;
 
-                if throttle_ms > 0 {
-                    sleep(Duration::from_millis(throttle_ms)).await;
-                }
+                    if throttle_ms > 0 {
+                        sleep(Duration::from_millis(throttle_ms)).await;
+                    }
 
-                DispatchOutcome {
-                    name,
-                    result,
-                    ttl_secs,
-                    cache_key,
-                    attack_techniques,
-                }
-            }));
+                    DispatchOutcome {
+                        name,
+                        result,
+                        ttl_secs,
+                        cache_key,
+                        attack_techniques,
+                    }
+                }),
+            ));
         }
 
         while let Some(joined) = set.join_next().await {

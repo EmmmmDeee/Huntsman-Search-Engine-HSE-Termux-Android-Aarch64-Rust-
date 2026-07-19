@@ -8,6 +8,7 @@
 //! | GET    | `/api/v1/version`                 | `version`                |
 //! | GET    | `/api/v1/modules`                 | `modules_list`           |
 //! | GET    | `/api/v1/modules/graph`           | `modules_graph` (v1.1+)  |
+//! | GET    | `/api/v1/modules/health`          | `modules_health`         |
 //! | GET    | `/api/v1/engines/health`          | `engines_health` (v1.3+) |
 //! | GET    | `/api/v1/health/scrapers`         | `scraper_health` (v1.13+) |
 //! | GET    | `/api/v1/keys/patterns`           | `keys_patterns` (v1.4+)  |
@@ -21,6 +22,7 @@
 //! | GET    | `/api/v1/scans/{id}/entities.csv` | `scan_entities_csv`      |
 //! | GET    | `/api/v1/scans/{id}/correlations` | `scan_correlations` (v0.4+) |
 //! | GET    | `/api/v1/scans/{id}/relations`    | `scan_relations`         |
+//! | GET    | `/api/v1/scans/{id}/stealer-rows` | `scan_stealer_rows` (v1.13+) |
 //! | GET    | `/api/v1/scans/{id}/audit`        | `scan_audit` (v1.3+)     |
 //! | GET    | `/api/v1/scans/{id}/events`       | `scan_events_sse` (SSE)  |
 //! | POST   | `/api/v1/live`                    | `live_create` (v0.5+)    |
@@ -229,6 +231,11 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         include_bytes!("../../web/js/scan_info/status.js"),
     ),
     (
+        "js/scan_info/stealer.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/stealer.js"),
+    ),
+    (
         "js/scan_info/timeline.js",
         "application/javascript",
         include_bytes!("../../web/js/scan_info/timeline.js"),
@@ -327,12 +334,17 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // ── modules ──
         .route("/modules", get(handlers::modules_list))
         .route("/modules/graph", get(handlers::modules_graph))
+        .route("/modules/health", get(handlers::modules_health))
         .route("/engines/health", get(handlers::engines_health))
         .route("/health/scrapers", get(handlers::scraper_health))
         .route("/stats", get(handlers::stats))
         // ── diagnostics: self-test + downloadable verbose logs ──
         .route("/selftest", get(handlers::selftest_run))
         .route("/logs", get(handlers::logs_download))
+        // One-click consolidated system self-diagnosis bundle (loopback-only):
+        // DETECTED ISSUES verdict + environment + self-test + module/engine/
+        // scraper health + recent scans + logs + source manifest, in one file.
+        .route("/debug/bundle", get(handlers::system_debug_bundle))
         // ── key-detector catalogue (v1.4+) ──
         .route("/keys/patterns", get(settings_handlers::keys_patterns))
         .route("/keys/status", get(settings_handlers::keys_status))
@@ -372,6 +384,11 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // Continuous autonomous radar: a zero-input live session that re-runs only
         // the on-device passive sensors, enumerating ambient signals in real time.
         .route("/radar/live", post(scan_handlers::radar_live))
+        // Historical review of past radar sweeps, sourced from the persisted
+        // `scans` table rather than in-memory session state — survives a
+        // `hse serve` restart, so "what was around me earlier" doesn't
+        // require remembering a session id.
+        .route("/radar/history", get(scan_handlers::radar_history))
         .route(
             "/scans/import",
             // Raise this route's body cap from axum's 2 MB default to the import
@@ -412,6 +429,12 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             get(scan_handlers::scan_correlations),
         )
         .route("/scans/{id}/relations", get(scan_handlers::scan_relations))
+        // Paired stealer-log credential rows (login+password+domain+machine,
+        // kept together) — powers the web UI Stealer Logs Viewer.
+        .route(
+            "/scans/{id}/stealer-rows",
+            get(scan_handlers::scan_stealer_rows),
+        )
         // Subject-centric relationship synthesis — powers the web UI Network view.
         .route("/scans/{id}/network", get(scan_handlers::scan_network))
         // People-centric co-reference resolution — scores which selectors name the

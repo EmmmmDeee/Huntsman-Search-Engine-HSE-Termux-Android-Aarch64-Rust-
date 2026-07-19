@@ -88,7 +88,23 @@ impl Module for DeHashed {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        &["T1589.001", "T1589.002", "T1589.003"]
+        // DeHashed's per-record extractor (this file, ip_address/ip/last_ip)
+        // plus the shared `breach_rich::extract_rich_detail` "maximum raw
+        // data" pass it runs (see `build.rs`'s call site) together mint the
+        // full breach-pool surface — the same set `see_know`/`oathnet_pro`
+        // declare for running the identical shared extractor — not just
+        // credentials/email/name. Declaring only three under-reports what
+        // every hit actually collects.
+        &[
+            "T1589.001", // Credentials — leaked passwords / hashes
+            "T1589.002", // Email Addresses
+            "T1589.003", // Employee Names — name / full_name → Person
+            "T1590.005", // IP Addresses — ip_address / ip / last_ip
+            "T1591.001", // Determine Physical Locations — address / coords / city-state
+            "T1591.002", // Business Relationships — company / employer / org
+            "T1592",     // Gather Victim Host Information — MAC / HWID / device_id
+            "T1593.001", // Social Media — telegram / facebook / instagram / … handles
+        ]
     }
 
     fn produces(&self) -> &'static [crate::core::entity::EntityKind] {

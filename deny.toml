@@ -34,6 +34,18 @@ allow = [
 # Require a high SPDX-detection confidence before accepting a license file.
 confidence-threshold = 0.9
 
+[licenses.private]
+# huntsman-search-engine itself (`publish = false`) carries a bespoke
+# proprietary LICENSE, not an SPDX-catalogued text — cargo-deny's confidence
+# scorer correctly can't match it to any known license template (score 0.29),
+# so it was flagged `unlicensed` and failing this check on every run. That's a
+# false positive on our own unpublished crate, not a real supply-chain gap:
+# `confidence-threshold` above exists to police THIRD-PARTY dependency
+# licensing, which this crate is not. `ignore = true` here skips license
+# scanning for crates that are not published to a registry (per `publish` in
+# Cargo.toml), which is exactly this crate and nothing else in the graph.
+ignore = true
+
 [bans]
 # A 277-crate graph carries a few benign duplicate versions (e.g. thiserror
 # 1.x/2.x during the ecosystem migration); surface them without failing. An

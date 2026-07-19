@@ -56,24 +56,33 @@ hse scan --kind email --value test@example.com --depth 1
 
 ## How SeekNow Works in HSE
 
-### The 24 SeekNow Endpoints (HSE Uses All)
+### SeekNow Endpoint Coverage: 18 of 24 documented endpoints wired
 
-SeekNow provides 24 endpoints across 6 categories. **HSE automatically routes to optimal endpoints** based on target type and available plan:
+SeekNow's own published API surface documents 24 endpoints across 6
+categories. HSE actually calls 18 of them — the table below states each
+one's real status honestly (verified 2026-07-15 against the actual
+dispatch code, not assumed from the vendor's docs):
 
-| Category | Endpoints | Credits | HSE Routing |
-|----------|-----------|---------|------------|
-| **Search** | `/search`, `/search/deep` | 1 each | Auto-selects fast vs. deep |
-| **Stealer Logs** | `/stealer` | 2 | Deep-mode searches |
-| **Social/Gaming** | `/username/{github,twitter,tiktok,reddit,social,history}`, `/discord/{user,to-roblox}`, `/gaming/{xbox,roblox,minecraft}` | 1 each | Username/Discord ID resolution |
-| **Network** | `/network/{ip,email-check,phone}` | 1 each | IP geolocation, email verification, phone OSINT |
-| **Domain** | `/domain/{intel,whois}` | 1 each | Domain intelligence & registration data |
-| **Enterprise** | `/enterprise/discord/{history,messages,export}` | 5 each | Discord history (Enterprise-only) |
-| **Meta** | `/credits`, `/status` | 0 each | Automatic (no budget consumed) |
+| Category | Endpoints | Credits | Status |
+|----------|-----------|---------|--------|
+| **Search** | `/search` | 1 | **Wired** — the universal call, dispatched for every target kind |
+| **Search** | `/search/deep` | 1 | **Wired** — fallback when fast `/search` draws a blank on a TYPED query (email/username/phone/domain/ip); never called for the auto/name path or after a fast HIT |
+| **Stealer Logs** | `/stealer` | 2 | Removed — live-verified 404 against the real API; its data still arrives via `/search`'s stealer-shaped response instead |
+| **Social/Gaming** | `/username/{github,twitter,tiktok,reddit,social,history}`, `/discord/{user,to-roblox}`, `/gaming/{xbox,roblox,minecraft}` | 1 each | **Wired** (9 endpoints) |
+| **Network** | `/network/{ip,email-check,phone}` | 1 each | **Wired** (3 endpoints) |
+| **Domain** | `/domain/{intel,whois}` | 1 each | **Wired** (2 endpoints) |
+| **Enterprise** | `/enterprise/discord/{history,messages,export}` | 5 each | Not implemented — Enterprise-plan-gated; never built |
+| **Meta** | `/credits` | 0 | **Wired** — used for quota probing (`hse doctor`, scan-cap scaling) |
+| **Meta** | `/status` | 0 | Not implemented — informational only, no entities to extract |
+
+Also wired but not part of the vendor's own documented 24: `/gaming/steam`
+(`gaming/steam?id=<SteamID64>`), dispatched for a target that resolves to a
+Steam64 ID.
 
 **Key advantages:**
 - **212M+ records** across 70+ data sources (Snusbase, LeakCheck, IntelX, Breachhub, etc.)
-- **Fast mode** (~5s typical) vs. **Deep mode** (~40s, max coverage)
-- **Unified authentication**: One API key for all 24 endpoints
+- **Fast mode** (~5s typical) — the only search mode HSE currently calls
+- **Unified authentication**: one API key for every wired endpoint
 - **99.97% uptime** SLA with rate-limit headers on every response
 - **Auto-retry logic**: Handles 429 (quota), 500 (server errors), timeouts
 
@@ -118,7 +127,7 @@ export HUNTSMAN_SEEKNOW_SCAN_CAP=250
 
 ### Automatic Data Extraction & Enrichment
 
-HSE extracts **17 entity types** from SeekNow responses across all 24 endpoints:
+HSE extracts **17 entity types** from SeekNow responses across the 18 wired endpoints:
 
 | Entity Type | Sources | Examples |
 |-------------|---------|----------|
@@ -395,7 +404,7 @@ Phase 2 (Free Expansion, Unlimited Parallelism)
 1. Discovers most entity types in one call
 2. Returns potential API keys early
 3. Feeds keys to unlock downstream paid modules
-4. 24 endpoints give overlapping coverage with OathNet (separate data sources)
+4. Its 18 wired endpoints give overlapping coverage with OathNet (separate data sources)
 
 ### The Force-Multiplication Loop
 
@@ -475,7 +484,11 @@ hse scan --kind email --value admin@mycompany.com --depth 3 --full
 **Q: What's the difference between `/search` and `/search/deep`?**
 - **Fast (~5s):** Local DB + low-latency sources, 212M+ records
 - **Deep (~40s):** Fast + slower high-yield databases, maximum coverage
-- HSE auto-selects based on target type and expansion depth
+- HSE calls fast `/search` first for every target; deep only fires as a
+  fallback when fast draws a genuine blank on a TYPED query (email, username,
+  phone, domain, or IP) — never spent on a fast HIT, and never chained after
+  the auto/name path (which already runs close to this module's timeout
+  budget on the fast call alone)
 
 **Q: How many credits do typical scans use?**
 - Single email lookup: 1–5 credits
@@ -492,7 +505,7 @@ hse scan --kind email --value admin@mycompany.com --depth 3 --full
 **Q: Can I use SeekNow without OathNet Pro?**
 - Yes, SeekNow is standalone
 - OathNet Pro is optional (overlapping data, separate quota)
-- SeekNow's 24 endpoints provide complete coverage alone
+- SeekNow's 18 wired endpoints provide broad coverage alone
 
 **Q: Are my API keys kept secret?**
 - ✅ Keys stored in `~/.huntsman.env` only (local disk)
@@ -573,5 +586,3 @@ SeekNow returns geolocation, ASN, breach mentions. Depth 2 auto-expands to relat
 3. ✅ Start scanning: `hse scan --kind email --value test@example.com --depth 1`
 
 **HSE automatically handles** endpoint routing, credit optimization, caching, archiving, error recovery, key extraction, and force-multiplier cascade.
-
-**Read next:** [API Key Hunting Guide](./API_KEY_HUNTING_GUIDE.md) — how the discovered-key cascade multiplies scanning power across all modules.

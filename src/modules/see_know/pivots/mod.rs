@@ -53,6 +53,37 @@ fn discover_prefixed_ids(
     ids
 }
 
+/// Prefix of `ids` that fits within `budget` for the discord dispatcher — up
+/// to two slots each (`discord_user` + `discord_to_roblox`; a trailing id
+/// with only one slot left still gets its `discord_user` call, so it counts
+/// as attempted). **Pure** so the exact truncation the dispatcher performs is
+/// unit-tested without a live call — the caller's resolved-id bookkeeping
+/// depends on this matching what [`dispatch_discord_pivots`] actually
+/// dispatches, so it is the single source of truth both read.
+pub(super) fn discord_attempt_slice(ids: &[String], budget: usize) -> &[String] {
+    let mut used = 0usize;
+    let mut n = 0usize;
+    for _ in ids {
+        if used >= budget {
+            break;
+        }
+        n += 1;
+        used += 1;
+        if used >= budget {
+            break;
+        }
+        used += 1;
+    }
+    &ids[..n]
+}
+
+/// Prefix of `ids` that fits within `budget` for the steam dispatcher — one
+/// slot each. **Pure**, mirroring [`discord_attempt_slice`].
+pub(super) fn steam_attempt_slice(ids: &[String], budget: usize) -> &[String] {
+    let n = ids.len().min(budget);
+    &ids[..n]
+}
+
 /// Concurrent discord/user + discord/to-roblox dispatch for every
 /// discovered Discord ID. Each ID consumes up to two budget slots;
 /// when the budget can fit only one of the pair the `discord_user`
@@ -61,21 +92,28 @@ fn discover_prefixed_ids(
 /// User and to-roblox calls are pushed to separate per-endpoint Vecs
 /// so each Vec is homogeneously typed for `join_all`; both vecs are
 /// then awaited concurrently via `tokio::join!`.
+///
+/// Returns the fetched items alongside exactly the ids that were actually
+/// dispatched (per [`discord_attempt_slice`]) — a budget-truncated prefix of
+/// `ids`, not all of `ids`. The caller must use this second list, not the
+/// input `ids`, to decide which ids are "resolved": before this existed, the
+/// caller marked every DISCOVERED id resolved regardless of whether the
+/// budget actually allowed dispatching it, so an id past the budget cutoff
+/// was silently blacklisted from every later hop despite never once being
+/// queried.
 pub(super) async fn dispatch_discord_pivots(
     key: &str,
     ids: Vec<String>,
-) -> Vec<(&'static str, Vec<Value>)> {
+) -> (Vec<(&'static str, Vec<Value>)>, Vec<String>) {
     let budget = see_know::scan_budget_remaining() as usize;
     if budget == 0 || ids.is_empty() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
+    let attempted = discord_attempt_slice(&ids, budget).to_vec();
     let mut user_futures = Vec::new();
     let mut roblox_futures = Vec::new();
     let mut used = 0usize;
-    for id in &ids {
-        if used >= budget {
-            break;
-        }
+    for id in &attempted {
         let id_for_user = id.clone();
         user_futures.push(async move {
             let items = see_know::discord_user(key, &id_for_user)
@@ -99,34 +137,33 @@ pub(super) async fn dispatch_discord_pivots(
     let (mut user_results, roblox_results) =
         tokio::join!(join_all(user_futures), join_all(roblox_futures));
     user_results.extend(roblox_results);
-    user_results
+    (user_results, attempted)
 }
 
-/// Concurrent gaming/steam dispatch for every discovered Steam ID.
-/// Mirrors the discord-pivot shape so the caller can compose both.
+/// Concurrent gaming/steam dispatch for every discovered Steam ID. Mirrors
+/// the discord-pivot shape so the caller can compose both, including
+/// returning the actually-attempted ids alongside the results — see
+/// [`dispatch_discord_pivots`]'s doc for why the caller needs this.
 pub(super) async fn dispatch_steam_pivots(
     key: &str,
     ids: Vec<String>,
-) -> Vec<(&'static str, Vec<Value>)> {
+) -> (Vec<(&'static str, Vec<Value>)>, Vec<String>) {
     let budget = see_know::scan_budget_remaining() as usize;
     if budget == 0 || ids.is_empty() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
-    let mut futures = Vec::new();
-    for id in &ids {
-        if futures.len() >= budget {
-            break;
-        }
-        let call = {
+    let attempted = steam_attempt_slice(&ids, budget).to_vec();
+    let futures: Vec<_> = attempted
+        .iter()
+        .map(|id| {
             let id = id.clone();
             async move {
                 let items = see_know::steam_profile(key, &id).await.unwrap_or_default();
                 ("steam", items)
             }
-        };
-        futures.push(call);
-    }
-    join_all(futures).await
+        })
+        .collect();
+    (join_all(futures).await, attempted)
 }
 
 /// Discord snowflake heuristic — 17 to 20 decimal digits, no leading

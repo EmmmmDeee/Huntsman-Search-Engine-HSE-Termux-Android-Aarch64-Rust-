@@ -753,13 +753,17 @@ use super::*;
         use crate::core::attack;
         let t = OathnetPro.attack_techniques();
         // Each claimed technique is backed by a concrete extractor: credentials,
-        // emails, employee names, network IPs, and physical-location addresses.
+        // emails, employee names, network IPs, physical-location addresses, and
+        // (via `breach.rs`'s own employer/company/organization/organisation/
+        // workplace fields, plus the shared `breach_rich` catch-all) Organisation
+        // entities.
         for id in [
             "T1589.001",
             "T1589.002",
             "T1589.003",
             "T1590.005",
             "T1591.001",
+            "T1591.002",
         ] {
             assert!(t.contains(&id), "oathnet_pro must claim {id}, got {t:?}");
             assert!(attack::technique(id).is_some(), "{id} must be catalogued");
@@ -1204,6 +1208,43 @@ use super::*;
         assert_eq!(
             ev.attributes.get("username").map(String::as_str),
             Some("subj99")
+        );
+    }
+
+    #[test]
+    fn breach_evidence_carries_breach_date_for_au019() {
+        use serde_json::json;
+        // `util::oathnet::search`'s enrich_with_breach_dates stamps a canonical
+        // `breach_date` onto a row from the response's sibling dbname_info block;
+        // breach_evidence must forward it so AU-019's temporal breach-cluster
+        // rule (which reads `breach_date` off breach-tagged entity evidence) can
+        // see oathnet-sourced hits. All oathnet_pro entities are breach-tagged
+        // (see push_oathnet_entity), so this is the whole gap — the rule already
+        // works once the attribute is present.
+        let item = json!({
+            "email": "subject@example.com",
+            "dbname": "poshmark.com",
+            "breach_date": "2018-05-16",
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "subject@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+        let email = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email)
+            .expect("email entity");
+        assert_eq!(
+            email.evidence[0].attributes.get("breach_date").map(String::as_str),
+            Some("2018-05-16"),
+            "breach_evidence must forward the row's breach_date to the canonical evidence attr"
         );
     }
 

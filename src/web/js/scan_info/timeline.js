@@ -14,6 +14,7 @@ export const TL_KIND = {
   first_seen:{ic:'glyphicon-eye-open',cl:'#5bc0de',lbl:'First seen'},
   last_seen:{ic:'glyphicon-eye-close',cl:'#777',lbl:'Last seen'},
   date_of_birth:{ic:'glyphicon-gift',cl:'#777',lbl:'Born'},
+  location_visited:{ic:'glyphicon-map-marker',cl:'#8e44ad',lbl:'Location'},
   event:{ic:'glyphicon-calendar',cl:'#777',lbl:'Event'},
 };
 export async function renderTimeline(host, id){
@@ -31,7 +32,16 @@ export async function renderTimeline(host, id){
   }
   const day = s => esc((s||'').slice(0,10));
   const span = events.length>1 ? ` · ${day(events[0].iso)} → ${day(events[events.length-1].iso)}` : '';
+  // The API already computes this headline (core::timeline::online_tenure +
+  // footprint_recency, same computation the CLI dossier renders) — surface
+  // it instead of discarding data.tenure/data.recency.
+  const tenure = data && data.tenure;
+  const recency = data && data.recency;
+  const tenureLine = tenure
+    ? `<p class="text-muted" style="font-size:12px;margin-bottom:10px">Online since <b>${day(tenure.earliest_iso)}</b> — ${tenure.span_years}y span, ${tenure.breach_count} breach exposure${tenure.breach_count===1?'':'s'}, footprint <b>${esc((recency&&recency.status)||'')}</b>.</p>`
+    : '';
   let html = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-time"></i>&nbsp;Footprint timeline</h4>
+    ${tenureLine}
     <p class="text-muted" style="font-size:12px;margin-bottom:10px"><b>${events.length}</b> dated event${events.length===1?'':'s'}, oldest first${span}.</p>
     <div class="tl">`;
   for (const ev of events){
@@ -46,6 +56,28 @@ export async function renderTimeline(host, id){
       </div>
     </div>`;
   }
-  host.innerHTML = html + '</div>';
+  html += '</div>';
+  // Movement path — the timeline's own `location_visited` fixes walked in
+  // chronological order (server-computed, `core::timeline::movement_path`).
+  // Only present with ≥2 dated location fixes (e.g. ≥2 geotagged photos with
+  // different capture times), so most scans simply won't show this panel.
+  const mv = data && data.movement;
+  if (mv && mv.legs && mv.legs.length){
+    html += `<h4><i class="glyphicon glyphicon-road"></i>&nbsp;Movement path</h4>
+      <p class="text-muted" style="font-size:12px;margin-bottom:10px"><b>${mv.locations_visited}</b> dated location fixes, <b>${mv.total_km.toFixed(1)} km</b> total straight-line distance.</p>
+      <div class="tl">`;
+    for (const leg of mv.legs){
+      html += `<div class="tl-item">
+        <div class="tl-dot" style="background:${TL_KIND.location_visited.cl}"></div>
+        <div class="tl-date">${day(leg.from_iso)} → ${day(leg.to_iso)}</div>
+        <div class="tl-body">
+          <span class="tl-badge" style="background:${TL_KIND.location_visited.cl}"><i class="glyphicon glyphicon-road"></i>&nbsp;${leg.distance_km.toFixed(1)} km</span>
+          ${esc(leg.from_coords)} → ${esc(leg.to_coords)}
+        </div>
+      </div>`;
+    }
+    html += '</div>';
+  }
+  host.innerHTML = html;
 }
 

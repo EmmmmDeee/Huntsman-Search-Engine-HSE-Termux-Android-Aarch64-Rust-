@@ -391,18 +391,10 @@ if [[ "${HSE_NO_PKG:-0}" != "1" ]]; then
         _apt "Installing packages" install -y rust binutils git clang make pkg-config openssl-tool curl \
             || die "package install failed — check $LOG_FILE for missing packages"
         ok "Packages installed: rust, binutils, git, clang, make, pkg-config, openssl-tool, curl"
-
-        # Optional: termux-api is needed for sensor modules (v0.6+).
-        if ! pkg show termux-api >/dev/null 2>&1; then
-            log_warn "termux-api package metadata unavailable"
-        elif ! command -v termux-info >/dev/null 2>&1; then
-            log_warn "termux-api is not installed — sensor modules (v0.6+) will no-op"
-            hint "Install later: pkg install termux-api"
-            hint "And install the Termux:API app from F-Droid for sensor access."
-        fi
     elif [[ "$OS" == "Linux" ]] && command -v apt-get >/dev/null 2>&1; then
         step "Installing apt packages (build-essential, git, pkg-config)"
-        sudo apt-get update -y && sudo apt-get install -y build-essential git pkg-config curl
+        sudo apt-get update -y && sudo apt-get install -y build-essential git pkg-config curl \
+            || die "apt package install failed — install build-essential, git, pkg-config, curl manually and re-run"
     elif [[ "$OS" == "Darwin" ]]; then
         step "macOS detected — ensuring Xcode CLT and rustup"
         if ! xcode-select -p >/dev/null 2>&1; then
@@ -508,22 +500,42 @@ clone_help() {
     hint "      HSE_REPO_URL=$token_url ./install.sh"
 }
 
+# One unified path for both a fresh install and an update, built on `git
+# fetch <ref>` + `checkout FETCH_HEAD` rather than `git clone --branch <ref>` /
+# `checkout origin/<ref>`. This matters because HSE_REF is documented to
+# accept a branch, a tag, OR a raw commit SHA, but the old two-path version
+# only actually worked for a branch: `git clone --branch` rejects a bare SHA
+# outright (it only resolves branches/tags), and on an EXISTING clone (which
+# `git clone --depth 1 --branch X` narrows to a single-branch fetch refspec,
+# `+refs/heads/X:refs/remotes/origin/X`) a later `git fetch origin <tag-or-
+# other-ref>` downloads the object fine but never creates `origin/<ref>` —
+# that name only exists for the one branch the refspec was narrowed to — so
+# `checkout -B "$HSE_REF" "origin/$HSE_REF"` died with "not a commit and a
+# branch ... cannot be created from it" for any HSE_REF other than the
+# original clone's branch. `FETCH_HEAD` is set correctly by `git fetch` for
+# a branch, a tag, or a SHA alike (empirically verified against a real repo
+# for all three, plus switching ref on an existing clone), so checking it
+# out directly removes the asymmetry instead of patching one branch of it.
+mkdir -p "$HSE_INSTALL_DIR"
 if [[ -d "$HSE_INSTALL_DIR/.git" ]]; then
     # Re-point origin at $HSE_REPO_URL first, so an SSH/token override
     # (HSE_REPO_URL=git@... ./install.sh) actually takes effect on a re-install
     # whose existing origin is the private HTTPS URL — otherwise the fetch
     # below would keep using the old, credential-gated remote.
     git -C "$HSE_INSTALL_DIR" remote set-url origin "$HSE_REPO_URL" 2>/dev/null || true
-    git -C "$HSE_INSTALL_DIR" fetch --depth 1 origin "$HSE_REF" \
-        || { clone_help; die "git fetch failed"; }
-    git -C "$HSE_INSTALL_DIR" checkout -B "$HSE_REF" "origin/$HSE_REF" \
-        || die "git checkout failed"
-    ok "Updated existing clone"
+    ACTION="Updated existing clone"
 else
-    git clone --depth 1 --branch "$HSE_REF" "$HSE_REPO_URL" "$HSE_INSTALL_DIR" \
-        || { clone_help; die "git clone failed"; }
-    ok "Cloned fresh"
+    git -C "$HSE_INSTALL_DIR" init -q \
+        || die "could not init $HSE_INSTALL_DIR"
+    git -C "$HSE_INSTALL_DIR" remote add origin "$HSE_REPO_URL" \
+        || die "could not configure origin remote"
+    ACTION="Cloned fresh"
 fi
+git -C "$HSE_INSTALL_DIR" fetch --depth 1 origin "$HSE_REF" \
+    || { clone_help; die "git fetch failed"; }
+git -C "$HSE_INSTALL_DIR" checkout -B "$HSE_REF" FETCH_HEAD \
+    || die "git checkout failed"
+ok "$ACTION"
 
 cd "$HSE_INSTALL_DIR"
 
@@ -796,12 +808,22 @@ BOOT
     fi
 
     # termux-api package + APK reminder. The package is the CLI tools;
-    # the APK from F-Droid is the actual sensor bridge.
+    # the APK from F-Droid is the actual sensor bridge. The single check here
+    # (moved from a now-removed, earlier duplicate in the package-install
+    # section above) always reports status, install-attempt or not — the old
+    # early copy only ever printed a warning and never installed anything,
+    # and both copies were gated on HSE_NO_PKG, so setting HSE_NO_PKG=1 left
+    # an operator with NO sensor-module warning at all when termux-api was
+    # missing. This one warns unconditionally when absent, and only attempts
+    # the actual install when package installs aren't suppressed.
     if ! command -v termux-info >/dev/null 2>&1; then
         if [[ "${HSE_NO_PKG:-0}" != "1" ]]; then
             pkg install -y termux-api 2>/dev/null \
                 && ok "Installed termux-api package" \
                 || log_warn "Could not install termux-api (sensor modules will no-op)"
+        else
+            log_warn "termux-api is not installed — sensor modules (v0.6+) will no-op"
+            hint "Install later: pkg install termux-api"
         fi
     else
         ok "termux-api CLI present"

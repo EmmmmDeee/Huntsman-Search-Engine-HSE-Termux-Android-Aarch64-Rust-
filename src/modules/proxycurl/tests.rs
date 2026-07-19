@@ -1,7 +1,7 @@
 use super::Proxycurl;
 use super::build::build_entities;
 use super::build::email_domain;
-use super::types::{DateField, Education, LinkedInProfile};
+use super::types::{Certification, DateField, Education, LinkedInProfile};
 use super::url::profile_url;
 use crate::core::{
     entity::EntityKind,
@@ -65,6 +65,10 @@ fn full_profile() -> LinkedInProfile {
         ],
         "education": [
             {"school": "University of Melbourne", "degree_name": "BSc", "field_of_study": "Computer Science"}
+        ],
+        "certifications": [
+            {"name": "AWS Certified Solutions Architect", "authority": "Amazon Web Services"},
+            {"name": "CISSP"}
         ],
         "personal_emails": ["jane@acme-corp.com", "jane@gmail.com", "jane@acme-corp.com"],
         "personal_numbers": ["+61412345678", "123"]
@@ -172,6 +176,39 @@ fn education_describe_combines_available_parts() {
 }
 
 #[test]
+fn certification_describe_combines_name_and_authority() {
+    let mk = |n: Option<&str>, a: Option<&str>| {
+        Certification {
+            name: n.map(String::from),
+            authority: a.map(String::from),
+        }
+        .describe()
+    };
+    assert_eq!(
+        mk(Some("CISSP"), Some("ISC2")).as_deref(),
+        Some("CISSP (ISC2)")
+    );
+    assert_eq!(mk(Some("CISSP"), None).as_deref(), Some("CISSP"));
+    assert_eq!(mk(None, Some("ISC2")), None); // no name → no entry
+}
+
+#[test]
+fn build_entities_omits_certifications_attr_when_absent() {
+    // A profile with no certifications must not carry an empty attr.
+    let profile: LinkedInProfile = serde_json::from_str(r#"{"full_name": "Jane Doe"}"#).unwrap();
+    let r = build_entities(&profile, &target(), "scan");
+    let person = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .expect("person entity");
+    assert!(
+        !person.evidence[0].attributes.contains_key("certifications"),
+        "no certifications field → no attr"
+    );
+}
+
+#[test]
 fn email_domain_extracts_registrable() {
     assert_eq!(
         email_domain("a@acme-corp.com").as_deref(),
@@ -227,6 +264,11 @@ fn build_entities_extracts_full_profile() {
     assert_eq!(
         ev.attributes.get("education").map(String::as_str),
         Some("University of Melbourne — BSc, Computer Science")
+    );
+    // Certifications the description() promised but the struct never parsed.
+    assert_eq!(
+        ev.attributes.get("certifications").map(String::as_str),
+        Some("AWS Certified Solutions Architect (Amazon Web Services); CISSP")
     );
 
     // Address from ≥2 location parts, with an uppercased country tag.

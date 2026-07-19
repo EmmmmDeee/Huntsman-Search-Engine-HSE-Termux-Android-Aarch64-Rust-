@@ -1,9 +1,9 @@
-use super::AuProperty;
 use super::parse::{
     PropertyRecord, dedup_entities, extract_postcode, extract_state, name_matches,
     parse_nsw_response, parse_qld_response, parse_vic_response, record_to_entities,
     state_capital_coords, strip_html,
 };
+use super::{AuProperty, all_legs_unreachable};
 use crate::core::entity::{Entity, EntityKind};
 use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
@@ -227,4 +227,61 @@ fn module_metadata_is_valid() {
     assert!(m.attack_techniques().contains(&"T1591.002"));
     assert!(m.attack_techniques().contains(&"T1589.003"));
     assert!(m.max_timeout_ms() > crate::MODULE_TIMEOUT_MS);
+}
+
+/// Adversarial-input coverage (PROBLEM_TREE T2.7): `au_property` was one of
+/// the two modules (alongside `au_electoral`) still missing the never-panics
+/// proptest already applied to `au_people`'s HTML parsers. `text` is the
+/// untrusted, scraped portal response; `full_name` is held to the project's
+/// synthetic placeholder since it originates from the operator's own typed
+/// scan target, not third-party bytes.
+mod prop {
+    use proptest::prelude::*;
+
+    use super::{parse_nsw_response, parse_qld_response, parse_vic_response};
+
+    proptest! {
+        #[test]
+        fn parse_nsw_response_never_panics(s in ".{0,256}") {
+            let _ = parse_nsw_response(&s, "Jordan Avery");
+        }
+
+        #[test]
+        fn parse_vic_response_never_panics(s in ".{0,256}") {
+            let _ = parse_vic_response(&s, "Jordan Avery");
+        }
+
+        #[test]
+        fn parse_qld_response_never_panics(s in ".{0,256}") {
+            let _ = parse_qld_response(&s, "Jordan Avery");
+        }
+    }
+}
+
+// ── `all_legs_unreachable` — the "every portal is down" vs "genuinely no
+// records" distinction (2026-07-14 live finding: NSW/VIC/QLD all now 404). ──
+
+#[test]
+fn all_legs_unreachable_true_when_every_leg_failed_and_nothing_found() {
+    // Regression: this is the REAL state confirmed live for NSW ELVIS, VIC
+    // MapShare WFS, and QLD titles search on 2026-07-14 — all three return
+    // 404 from live, reachable government servers. Before this fix,
+    // `process()` swallowed this into a silent `Ok(empty)`, indistinguishable
+    // from "this person genuinely has no property record."
+    assert!(all_legs_unreachable(false, false));
+}
+
+#[test]
+fn all_legs_unreachable_false_when_a_leg_responded_even_with_no_match() {
+    // A portal answered (any_leg_http_ok) but this particular name had no
+    // record there — a genuinely empty, honest result, not a failure.
+    assert!(!all_legs_unreachable(true, false));
+}
+
+#[test]
+fn all_legs_unreachable_false_when_entities_were_found() {
+    // Found something, regardless of the HTTP-status bookkeeping — never
+    // report a hard failure over a real result.
+    assert!(!all_legs_unreachable(false, true));
+    assert!(!all_legs_unreachable(true, true));
 }

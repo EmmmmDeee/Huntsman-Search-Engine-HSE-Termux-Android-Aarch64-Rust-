@@ -1,7 +1,7 @@
 use super::client::{build_client, build_client_with_trace};
 use super::fetch::{
-    JSON_BODY_CAP, fetch_json_or_404, fetch_json_or_absent, is_keyed_error_status, key_tail,
-    keyed_ok_or_404, retry_after_secs,
+    JSON_BODY_CAP, fetch_json, fetch_json_or_404, fetch_json_or_absent, fetch_json_probe,
+    is_keyed_error_status, key_tail, keyed_ok_or_404, parse_retry_after_secs, retry_after_secs,
 };
 use super::redact::{redact_credentials, redact_literal_secrets};
 use super::ssrf::{filter_public, redirect_to_private_ip};
@@ -66,6 +66,27 @@ async fn send_tagged_maps_transport_errors_to_the_module() {
     assert!(
         err.to_string().contains("test_mod"),
         "transport error must name the module: {err}"
+    );
+}
+
+#[tokio::test]
+async fn fetch_json_probe_treats_an_unreachable_domain_as_a_clean_miss() {
+    // A speculative well-known probe (fediverse/nostr) against an unreachable or
+    // nonexistent domain is a MISS, not a module error: `fetch_json_probe` folds
+    // the transport failure into `None`. The plain `fetch_json_or_404` would
+    // instead surface an `Err`, which the engine records as a `module_error` —
+    // exactly the false alarm a real scan produced when a discovered email's
+    // domain refused the probe connection. `.invalid` is RFC 6761-reserved, so
+    // resolution is a guaranteed failure regardless of network.
+    let out: Option<serde_json::Value> = fetch_json_probe(
+        &reqwest::Client::new(),
+        "test_mod",
+        "https://nonexistent.invalid/.well-known/webfinger?resource=acct:x@nonexistent.invalid",
+    )
+    .await;
+    assert!(
+        out.is_none(),
+        "an unreachable probe domain must be a clean miss (None), not an error"
     );
 }
 
@@ -215,6 +236,109 @@ async fn fetch_json_or_absent_maps_400_to_none_while_or_404_still_errors() {
         errored.is_err(),
         "400 must remain an error for the 404-only helper, got {errored:?}"
     );
+}
+
+#[tokio::test]
+async fn fetch_json_propagates_a_non_2xx_status_as_err_not_a_silent_default() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // `fetch_json` (unlike `fetch_json_or_404`/`fetch_json_or_absent`) has no
+    // absent-status list at all — every non-2xx status is an error. This is
+    // the exact contract callers rely on when they propagate it with a bare
+    // `?` instead of collapsing every `Err` into an empty success shape (the
+    // T2.115 defect class: psbdmp and ~9 other modules replaced `match {
+    // Ok(r) => r, Err(_) => return Ok(empty) }` with `fetch_json(...).await?`
+    // on the strength of this contract). A genuine fetch/status failure must
+    // surface as `Err`, never be silently indistinguishable from a real
+    // "nothing found" result.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 2048];
+        let _ = sock.read(&mut buf).await;
+        let body = b"{}";
+        let head = format!(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let _ = sock.write_all(head.as_bytes()).await;
+        let _ = sock.write_all(body).await;
+        let _ = sock.flush().await;
+    });
+
+    let client = build_client();
+    crate::util::circuit_breaker::record_success("127.0.0.1"); // isolate from parallel tests
+    let result: crate::core::error::Result<serde_json::Value> =
+        fetch_json(&client, "test_plain", &format!("http://{addr}/")).await;
+    assert!(
+        result.is_err(),
+        "fetch_json must propagate a non-2xx status as Err, got {result:?}"
+    );
+    // The 500 response above recorded a breaker failure for "127.0.0.1" —
+    // reset it so this test doesn't nudge an unrelated later test toward the
+    // shared host's FAILURE_THRESHOLD, symmetric with the isolation reset above.
+    crate::util::circuit_breaker::record_success("127.0.0.1");
+}
+
+#[tokio::test]
+async fn fetch_json_or_404_maps_404_to_none_but_propagates_5xx_as_err() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // The exact contract the nine Social profile modules (`bitbucket_user` +
+    // 8 others) rely on after T2.117: a genuine 404 is the platform's "no such
+    // user" clean miss (`Ok(None)`), while a 429/5xx/transport failure is a real
+    // outage that MUST surface as `Err` — never be collapsed into the same empty
+    // result as the clean miss (the fake-404 defect that
+    // `Ok(None) | Err(_) => return Ok(empty)` produced). Those modules' own
+    // `process()` hardcodes a live HTTPS host (no URL seam to mock), so the split
+    // they now depend on is pinned here at the primitive layer, hermetically, on
+    // loopback. Sibling of `fetch_json_propagates_a_non_2xx_status_as_err_...`
+    // above, which pins the no-absent-list `fetch_json` variant for the T2.115
+    // (psbdmp) case; this one pins the 404-is-absent `fetch_json_or_404` variant.
+    async fn serve_once(status: u16, reason: &'static str) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let body = b"{}";
+            let head = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(body).await;
+            let _ = sock.flush().await;
+        });
+        addr
+    }
+
+    let client = build_client();
+
+    // 404 → Ok(None): the genuine "not on this platform" clean miss stays a miss.
+    crate::util::circuit_breaker::record_success("127.0.0.1"); // isolate from parallel tests
+    let addr = serve_once(404, "Not Found").await;
+    let miss: crate::core::error::Result<Option<serde_json::Value>> =
+        fetch_json_or_404(&client, "test_404_miss", &format!("http://{addr}/")).await;
+    assert!(
+        matches!(miss, Ok(None)),
+        "a genuine 404 must map to Ok(None), got {miss:?}"
+    );
+
+    // 503 → Err: a real outage must NOT masquerade as the clean miss.
+    crate::util::circuit_breaker::record_success("127.0.0.1");
+    let addr = serve_once(503, "Service Unavailable").await;
+    let outage: crate::core::error::Result<Option<serde_json::Value>> =
+        fetch_json_or_404(&client, "test_404_outage", &format!("http://{addr}/")).await;
+    assert!(
+        outage.is_err(),
+        "a 503 must propagate as Err, not Ok(None), got {outage:?}"
+    );
+    // The 503 recorded a breaker failure for the shared loopback host — reset it
+    // so this test can't nudge a later parallel test toward FAILURE_THRESHOLD.
+    crate::util::circuit_breaker::record_success("127.0.0.1");
 }
 
 #[test]
@@ -386,6 +510,24 @@ fn retry_after_clamps_oversized_default_to_max() {
 #[test]
 fn retry_after_ignores_unparseable_header() {
     assert_eq!(retry_after_secs(&hdrs(Some("soon")), 7, 30), 7);
+}
+
+#[test]
+fn parse_retry_after_secs_matches_the_header_map_variant_it_was_extracted_from() {
+    // parse_retry_after_secs exists so a non-reqwest HTTP client (a raw curl
+    // subprocess) can honour a real Retry-After too — pin that it behaves
+    // identically to retry_after_secs given the equivalent extracted value,
+    // so the two never silently drift apart.
+    assert_eq!(parse_retry_after_secs(None, 5, 10), 5);
+    assert_eq!(parse_retry_after_secs(Some("3"), 5, 10), 3);
+    assert_eq!(parse_retry_after_secs(Some("600"), 5, 10), 10);
+    assert_eq!(parse_retry_after_secs(None, 99, 6), 6);
+    assert_eq!(parse_retry_after_secs(Some("soon"), 7, 30), 7);
+    assert_eq!(
+        parse_retry_after_secs(Some(" 12 "), 5, 30),
+        12,
+        "trims whitespace"
+    );
 }
 
 #[test]

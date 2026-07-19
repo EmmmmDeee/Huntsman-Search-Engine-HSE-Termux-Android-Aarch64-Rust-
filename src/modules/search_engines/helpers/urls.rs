@@ -59,6 +59,13 @@ pub(in crate::modules::search_engines) const ENGINE_DOMAINS: &[&str] = &[
     "dogpile.com",
     "swisscows.com",
     "system1.com",
+    // you.com's own CDN chrome (`<link rel="dns-prefetch"
+    // href="https://cdn.you.com"/>`) — a real live capture
+    // (`fetch/testdata/you_kylo4kylo.html`) showed this leaking through as a
+    // fake organic hit because `you.com` itself was never in this list (only
+    // its cousins were), even though the generic href-extraction pass reads
+    // ANY `href=` attribute, not just `<a>` result anchors.
+    "you.com",
     // MetaGer's own homepage/language-switcher/footer chrome — a real live
     // capture (`fetch/testdata/metager_kylo4kylo.html`) showed EVERY hit the
     // parser extracted from a genuine `eingabe=` response was one of these,

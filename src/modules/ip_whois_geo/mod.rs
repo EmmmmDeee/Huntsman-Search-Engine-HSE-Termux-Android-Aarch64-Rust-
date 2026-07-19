@@ -142,6 +142,17 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
         )
         .fold(
             Evidence::new(SRC, format!("IP geolocation for {ip}"))
+                // The originating IP, recorded explicitly so a finalise pass can
+                // robustly tie this coordinate back to its source IpAddress (e.g.
+                // to recognise a person's breach login IP) without parsing the
+                // summary string — mirrors `ip_geo`'s identical attribute, which
+                // this module is documented as the corroborating second source
+                // for. Without it, `person_login_ip_coords` (the shared
+                // definition `best_au_location_estimate` and
+                // `au_location_corroboration` both use) can never recognise this
+                // provider's fix as a login-IP location, silently excluding it
+                // from the person-location signal even on a genuine subject IP.
+                .with_attr("ip", ip)
                 .with_attr("latitude", lat.to_string())
                 .with_attr("longitude", lon.to_string())
                 .with_attr("source", "ipwho.is"),

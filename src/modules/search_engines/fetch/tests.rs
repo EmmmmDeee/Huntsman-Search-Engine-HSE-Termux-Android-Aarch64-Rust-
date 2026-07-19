@@ -157,6 +157,46 @@ use super::*;
         assert!(GoogleUrlIter::new("plain html").next().is_none());
     }
 
+    /// Adversarial-input coverage (PROBLEM_TREE T2.7): `result_parsers_never_
+    /// panic_on_adversarial_html` above covers a fixed, hand-picked battery of
+    /// hostile bytes; this adds the same randomized `proptest` never-panics
+    /// guarantee already applied to `au_people`/`au_electoral`/`au_property`'s
+    /// HTML parsers, exercising the full `.{0,256}` arbitrary-input space
+    /// rather than a fixed case list. `html` is the untrusted, scraped SERP
+    /// response.
+    mod prop {
+        use proptest::prelude::*;
+
+        use super::{CiteIter, GoogleUrlIter, HrefIter, external_link_count, parse_results};
+
+        proptest! {
+            #[test]
+            fn parse_results_never_panics(s in ".{0,256}") {
+                let _ = parse_results(&s, "fuzz", "q");
+            }
+
+            #[test]
+            fn href_iter_never_panics(s in ".{0,256}") {
+                let _ = HrefIter::new(&s).count();
+            }
+
+            #[test]
+            fn cite_iter_never_panics(s in ".{0,256}") {
+                let _ = CiteIter::new(&s).count();
+            }
+
+            #[test]
+            fn google_url_iter_never_panics(s in ".{0,256}") {
+                let _ = GoogleUrlIter::new(&s).count();
+            }
+
+            #[test]
+            fn external_link_count_never_panics(s in ".{0,256}") {
+                let _ = external_link_count(&s, "fuzz");
+            }
+        }
+    }
+
     /// Regression (real-execution derived): the EXACT 332-byte body Mojeek
     /// returned with HTTP 403 in a live 8/8-run sweep. It is < 500 bytes, so the
     /// old ordering returned `Unreachable` ("down") before `is_captcha_page` ran
@@ -520,5 +560,110 @@ use super::*;
             "the genuine instagram.com/kylo4k hit (a real match for the seed, \
              on the SAME platform as an excluded handle) must still survive: \
              {urls:?}"
+        );
+    }
+
+    /// The same real capture repeats each genuine result's own URL across 4
+    /// `<a href="…">` occurrences per card (a textless icon wrapper, a short
+    /// site-name anchor, a display-URL anchor, then the actual titled link
+    /// last). `extract_anchor_text` used to stop at the FIRST occurrence —
+    /// the textless icon wrapper — return empty, and fall back to a
+    /// fixed-width surrounding-text window. Confirmed against the unfixed
+    /// code (`git stash` on `helpers/text.rs` alone): that produced an
+    /// empty title for the Instagram result and, for the other 3, bled in
+    /// the PRECEDING card's own "Visit in Anonymous View" proxy-link label
+    /// instead of the real title — a genuine evidentiary defect, not a
+    /// cosmetic one. Pins the fix: every genuine result's real title (from
+    /// its own `<h2>`) is recovered, and none carry the unrelated
+    /// "Anonymous View" chrome text.
+    #[test]
+    fn parse_results_recovers_real_titles_not_the_preceding_cards_anonymous_view_label() {
+        let results = parse_results(GOLDEN_STARTPAGE_KYLO4KYLO, "startpage", "Kylo4kylo");
+        let by_url = |needle: &str| {
+            results.iter().find(|r| r.url.contains(needle)).unwrap_or_else(|| {
+                let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+                panic!("expected a result containing {needle:?}: {urls:?}")
+            })
+        };
+        assert_eq!(
+            by_url("instagram.com/kylo4k").title,
+            "(@kylo4k) • Instagram photos and videos"
+        );
+        assert_eq!(
+            by_url("youtube.com/watch?v=56pNU92SpcE").title,
+            "The Macau Exclusive - YouTube"
+        );
+        assert_eq!(
+            by_url("nexusmods.com/starwarsbattlefront22017").title,
+            "PM IA Baylan Skoll Kit for Vader at Star Wars - Nexus Mods"
+        );
+        assert_eq!(
+            by_url("utoronto.scholaris.ca").title,
+            "Collaborative Reflection Within An Online Environment"
+        );
+        for r in &results {
+            assert!(
+                !r.title.contains("Anonymous View"),
+                "no result's title should carry Startpage's own proxy-link \
+                 label bled in from a neighbouring card: {:?} -> {:?}",
+                r.url,
+                r.title
+            );
+        }
+    }
+
+    // `testdata/you_kylo4kylo.html` is a REAL you.com response, fetched live
+    // (2026-07-14) for `GET https://you.com/search?q=Kylo4kylo&tbm=youchat` —
+    // exactly `engines::EngineSpec::build_url` for `"you"` — and checked in
+    // verbatim (55 KB, unmodified). The seventh slice of the golden-fixture
+    // corpus. This capture disproves the module's own prior doc comment,
+    // which claimed you.com "exposes a classic /search HTML view with
+    // referrer-style result anchors": the real page is a Cloudflare-gated
+    // Next.js SPA (`__NEXT_DATA__` JSON payload only) with ZERO `<a
+    // href="…">` result anchors anywhere in the body — every genuine result
+    // is hydrated client-side by JS this engine never executes. The
+    // Cloudflare challenge loader (`/cdn-cgi/challenge-platform/…`) is
+    // present verbatim, matching an existing `BLOCK_VENDOR_SIGNATURES`
+    // fingerprint, so `is_captcha_page` correctly classifies this specimen
+    // as `Blocked` rather than a fabricated "empty" success. It ALSO
+    // surfaced a real, separate chrome-leak defect: the generic
+    // href-extraction pass reads ANY `href=` attribute, not just `<a>`
+    // result anchors, and this capture's `<link rel="dns-prefetch"
+    // href="https://cdn.you.com"/>` tag leaked through as a single fake
+    // organic hit because `you.com` was never in `ENGINE_DOMAINS` — the same
+    // false-positive defect class already fixed for MetaGer/Dogpile/
+    // Swisscows/Startpage. Fixed by adding `you.com` to `ENGINE_DOMAINS`.
+    // No PII: a public engine-chrome/challenge page for the project's own
+    // canonical test seed, containing no third-party personal data.
+    const GOLDEN_YOU_KYLO4KYLO: &str = include_str!("testdata/you_kylo4kylo.html");
+
+    /// Pins the block classification against the real capture: if
+    /// `BLOCK_VENDOR_SIGNATURES` ever regresses to no longer recognise this
+    /// exact Cloudflare challenge shape, this fails instead of silently
+    /// letting `fetch_and_parse` treat a real block as an honest "empty"
+    /// result (0 organic hits from `parse_results`, which would otherwise
+    /// look identical to a genuine no-match query).
+    #[test]
+    fn is_captcha_page_detects_a_real_youcom_cloudflare_challenge_capture() {
+        assert!(
+            is_captcha_page(GOLDEN_YOU_KYLO4KYLO),
+            "the real you.com capture's Cloudflare challenge loader must be \
+             detected as a block, not silently parsed as zero genuine results"
+        );
+    }
+
+    /// Pins the `ENGINE_DOMAINS` fix: the capture's own `dns-prefetch` link
+    /// to `cdn.you.com` must never leak through `parse_results` as a fake
+    /// organic hit. Git-stash-proven: reverting the `you.com` addition to
+    /// `ENGINE_DOMAINS` makes this fail (`https://cdn.you.com` reappears as
+    /// the sole "result"); restored, it passes.
+    #[test]
+    fn parse_results_excludes_youcoms_own_cdn_chrome() {
+        let results = parse_results(GOLDEN_YOU_KYLO4KYLO, "you", "Kylo4kylo");
+        assert!(
+            results.is_empty(),
+            "you.com's own cdn.you.com dns-prefetch link must not leak \
+             through as a fake organic result: {:?}",
+            results.iter().map(|r| &r.url).collect::<Vec<_>>()
         );
     }

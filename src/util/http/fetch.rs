@@ -248,6 +248,46 @@ pub async fn fetch_json_or_absent<T: DeserializeOwned>(
     fetch_json_inner(client, module, url, &[400, 404]).await
 }
 
+/// A *speculative well-known probe*: like [`fetch_json_or_404`], but ALSO treats
+/// an unreachable host (DNS failure, connection refused, TLS error, timeout,
+/// curl-fallback failure) as a clean miss (`None`) rather than an error.
+///
+/// This is for modules that probe an **arbitrary, caller-supplied domain** for a
+/// federation/discovery endpoint it almost certainly does not run — WebFinger
+/// (`fediverse`), NIP-05 (`nostr`), and the like. For such a probe, "the domain
+/// serves no such document" and "the domain is unreachable" are the *same*
+/// negative answer ("no account here"): the module found nothing, which is the
+/// expected outcome for the overwhelming majority of mail domains. Surfacing that
+/// as a `module_error` would inflate the scan's error count and trip the debug
+/// bundle's "errors silently shrink coverage" audit warning for a non-event —
+/// exactly the false alarm a real `full_name` scan produced when its discovered
+/// emails' domains (e.g. `onet.eu`) refused the probe connection.
+///
+/// It returns `Option<T>` (not `Result`) precisely because there is no error a
+/// caller could act on — a failed probe is a miss, full stop. The failure is
+/// logged at `debug` so it is still traceable in the verbose log ring without
+/// polluting the event stream. Do NOT use this for a module's OWN known API,
+/// where a transport error IS actionable (a real outage/rate-limit worth
+/// surfacing) — use [`fetch_json_or_404`] or [`fetch_json`] there.
+pub async fn fetch_json_probe<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    module: &'static str,
+    url: &str,
+) -> Option<T> {
+    match fetch_json_inner(client, module, url, &[404]).await {
+        Ok(opt) => opt,
+        Err(e) => {
+            tracing::debug!(
+                module,
+                url = %redact_credentials(url),
+                error = %e,
+                "well-known probe failed to reach the domain — treating as a clean miss"
+            );
+            None
+        }
+    }
+}
+
 /// Per-host circuit-breaker pre-check shared by the JSON fetch helpers: returns the
 /// parsed host (so the caller can later record the round-trip outcome) when the request
 /// may proceed, or a short-circuit `Err` when the host is in its failure cooldown. A
@@ -369,10 +409,24 @@ pub fn retry_after_secs(
     default_secs: u64,
     max_secs: u64,
 ) -> u64 {
-    headers
-        .get("retry-after")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok())
+    parse_retry_after_secs(
+        headers.get("retry-after").and_then(|v| v.to_str().ok()),
+        default_secs,
+        max_secs,
+    )
+}
+
+/// The delay-seconds parsing/clamping [`retry_after_secs`] does, extracted as
+/// a pure function over an already-extracted header VALUE string rather than
+/// a `reqwest::header::HeaderMap` — so a module whose HTTP client isn't
+/// reqwest (e.g. a raw `curl` subprocess with its own header-capture) can
+/// honour a real `Retry-After` too, instead of hand-rolling its own parse or
+/// ignoring the header entirely. See [`retry_after_secs`]'s own doc comment
+/// for why `max_secs` is mandatory (a module's own timeout budget, not a
+/// blanket ceiling).
+pub fn parse_retry_after_secs(value: Option<&str>, default_secs: u64, max_secs: u64) -> u64 {
+    value
+        .and_then(|s| s.trim().parse::<u64>().ok())
         .unwrap_or(default_secs)
         .min(max_secs)
 }

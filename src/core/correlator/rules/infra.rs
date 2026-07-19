@@ -612,7 +612,13 @@ const DNS_FRONTING_CDN_PROVIDERS: &[&str] = &[
 ///
 /// Not a certainty — a subject may run mail on infrastructure entirely
 /// separate from their web origin — so this is Medium, an operator pivot
-/// point rather than a confirmed unmasking.
+/// point rather than a confirmed unmasking. Sibling signal: AU-113 unmasks
+/// the same CDN-origin question from a direct-connect-subdomain angle
+/// instead of SPF (`rules::org`) — kept as two independent rules rather than
+/// merged, per the technique-diversity principle (TA0043): each is real
+/// evidence from a different angle, and either firing alone is still useful
+/// even when the other's precondition (an SPF record / a direct-connect
+/// subdomain) doesn't hold.
 pub(in crate::core::correlator) fn rule_au_111_cdn_origin_candidate(
     entities: &[Entity],
     scan_id: &str,
@@ -709,7 +715,8 @@ pub(in crate::core::correlator) fn rule_au_112_shared_cidr_infrastructure(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    use crate::util::spf::{Ipv4Cidr, Ipv6Cidr};
+    use crate::util::spf::Ipv4Cidr;
+    use crate::util::spf::Ipv6Cidr;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     enum Block {
@@ -717,7 +724,7 @@ pub(in crate::core::correlator) fn rule_au_112_shared_cidr_infrastructure(
         V6(Ipv6Cidr),
     }
 
-    let blocks: Vec<(&Entity, Block)> = entities
+    let mut blocks: Vec<(&Entity, Block)> = entities
         .iter()
         .filter(|e| e.kind == EntityKind::Cidr)
         .filter_map(|e| {
@@ -734,11 +741,16 @@ pub(in crate::core::correlator) fn rule_au_112_shared_cidr_infrastructure(
     if blocks.is_empty() {
         return Vec::new();
     }
+    // Deterministic (CONVENTIONS.md §5): `entities` order is not guaranteed
+    // stable across runs, so fix the iteration order explicitly rather than
+    // let it leak into which pair's Correlation is constructed first.
+    blocks.sort_by(|a, b| a.0.value.cmp(&b.0.value).then(a.0.uid.cmp(&b.0.uid)));
 
-    let ips: Vec<&Entity> = entities
+    let mut ips: Vec<&Entity> = entities
         .iter()
         .filter(|e| e.kind == EntityKind::IpAddress)
         .collect();
+    ips.sort_by(|a, b| a.value.cmp(&b.value).then(a.uid.cmp(&b.uid)));
 
     let mut out = Vec::new();
     for (block_entity, block) in &blocks {

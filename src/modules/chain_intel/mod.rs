@@ -68,12 +68,31 @@ struct EsploraStats {
     tx_count: u64,
 }
 
-/// Blockscout v2 `/addresses/<addr>` — current balance (wei) + reverse ENS name.
+/// Blockscout v2 `/addresses/<addr>` — current balance (wei) + reverse ENS name,
+/// plus Blockscout's own curated reputation signal: whether the address is
+/// flagged as a scam, its reputation verdict, a known entity/contract name,
+/// and any public tags analysts have attached to it (exchange, mixer, etc.).
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct BlockscoutAddress {
     coin_balance: Option<String>,
     ens_domain_name: Option<String>,
+    is_scam: Option<bool>,
+    reputation: Option<String>,
+    name: Option<String>,
+    public_tags: Vec<BlockscoutTag>,
+}
+
+/// One entry of Blockscout's `public_tags` array — a curated label the
+/// explorer's own operators/community have attached to the address (e.g.
+/// "exchange", "mixer"). `display_name` is the human-facing label;
+/// `label` is its machine-facing slug, kept as a fallback in case a tag
+/// only has one or the other set.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct BlockscoutTag {
+    label: Option<String>,
+    display_name: Option<String>,
 }
 
 /// Blockscout v2 `/addresses/<addr>/counters` — authoritative tx count.
@@ -122,6 +141,18 @@ struct Enrichment {
     tx_count: Option<u64>,
     /// Reverse ENS name (EVM only), e.g. `vitalik.eth`.
     ens: Option<String>,
+    /// Blockscout's own scam flag (EVM only — no equivalent on the other
+    /// sources this module calls).
+    is_scam: Option<bool>,
+    /// Blockscout's reputation verdict, e.g. `"ok"`/`"scam"` (EVM only).
+    reputation: Option<String>,
+    /// A known contract/entity name Blockscout has identified, e.g.
+    /// `"UniswapV2Router02"` (EVM only).
+    known_name: Option<String>,
+    /// Curated public tags Blockscout has attached to the address, e.g.
+    /// `["exchange"]` (EVM only). Empty when the source has none — never
+    /// fabricated.
+    public_tags: Vec<String>,
 }
 
 #[async_trait]
@@ -169,15 +200,24 @@ impl Module for ChainIntel {
             return Ok(result); // not a recognised address shape
         };
 
+        // Each supported chain has exactly one data source. A genuine failure of
+        // that source (transport error, non-2xx, unparseable body) is propagated
+        // as a real `Error` via `?`, so it is NEVER confused with either a
+        // recognised-but-unwired chain (a deliberate `Ok(None)` no-op) or a
+        // supported chain whose source honestly reported no data (`Ok(None)`) —
+        // the T2.122 distinction, which the former `Option`-returning enrichers
+        // (each `fetch_json(…).await.ok()?`) collapsed into one indistinguishable
+        // `None`.
         let enriched = match chain {
             "crypto_btc" => enrich_esplora(ctx, "https://blockstream.info/api", addr, "BTC").await,
             "crypto_ltc" => enrich_esplora(ctx, "https://litecoinspace.org/api", addr, "LTC").await,
             "crypto_eth" => enrich_eth(ctx, addr).await,
             "crypto_sol" => enrich_sol(ctx, addr).await,
             "crypto_doge" => enrich_doge(ctx, addr).await,
-            // Recognised but no free keyless explorer wired — clean no-op.
-            _ => None,
-        };
+            // Recognised but no free keyless explorer wired — a deliberate clean
+            // no-op, distinct from a source failure.
+            _ => Ok(None),
+        }?;
 
         let Some(enr) = enriched else {
             return Ok(result);
@@ -186,6 +226,7 @@ impl Module for ChainIntel {
         let mut e = Entity::new(EntityKind::CryptoAddress, addr, 0.80, &ctx.scan_id);
         e.tag("crypto-address");
         e.tag(format!("chain:{}", chain_label(chain)));
+        apply_scam_tags(&mut e, &enr);
         e.add_evidence(build_evidence(chain_label(chain), &enr));
         result.push(e);
 
@@ -227,6 +268,17 @@ fn format_units(amount: u128, decimals: u32) -> String {
     }
 }
 
+/// Tags the entity `MALICIOUS`/`THREAT_INTEL` when the source's own curated
+/// scam flag is `true` — never when it is absent or `false`, so a source
+/// that doesn't report a scam verdict at all can't be mistaken for a clean
+/// bill of health. Pure (no I/O) for unit testing.
+fn apply_scam_tags(entity: &mut Entity, e: &Enrichment) {
+    if e.is_scam == Some(true) {
+        entity.tag(crate::core::tags::MALICIOUS);
+        entity.tag(crate::core::tags::THREAT_INTEL);
+    }
+}
+
 /// Build enrichment evidence, emitting only the fields the source provided. The
 /// activity verdict prefers the precise tx-count signal; absent that, it falls
 /// back to a coarser funded/empty signal from the balance — never claiming more
@@ -257,39 +309,67 @@ fn build_evidence(chain: &str, e: &Enrichment) -> Evidence {
     if let Some(ens) = &e.ens {
         ev = ev.with_attr("ens_name", ens);
     }
+    if let Some(name) = &e.known_name {
+        ev = ev.with_attr("known_name", name);
+    }
+    if let Some(reputation) = &e.reputation {
+        ev = ev.with_attr("reputation", reputation);
+    }
+    if let Some(is_scam) = e.is_scam {
+        ev = ev.with_attr("is_scam", is_scam.to_string());
+    }
+    if !e.public_tags.is_empty() {
+        ev = ev.with_attr("public_tags", e.public_tags.join(", "));
+    }
     ev
 }
 
 /// Esplora-compatible enrichment (BTC, LTC) — both report 8-decimal coins.
+/// `Err` on a genuine source failure (transport/non-2xx/unparseable body,
+/// propagated by `fetch_json`); `Ok(Some(..))` on a real address (Esplora
+/// returns zeroed stats for an unused-but-valid address, so there is no
+/// "empty" `Ok(None)` case here). See [`ChainIntel::process`] for why this
+/// distinction matters (T2.122).
 async fn enrich_esplora(
     ctx: &ModuleContext,
     api_base: &str,
     addr: &str,
     unit: &'static str,
-) -> Option<Enrichment> {
+) -> Result<Option<Enrichment>> {
     let url = format!("{api_base}/address/{addr}");
-    let a: EsploraAddress = fetch_json(&ctx.http, SRC, &url).await.ok()?;
+    let a: EsploraAddress = fetch_json(&ctx.http, SRC, &url).await?;
     let received = a.chain_stats.funded_txo_sum.max(0) as u128;
     let spent = a.chain_stats.spent_txo_sum.max(0) as u128;
-    Some(Enrichment {
+    Ok(Some(Enrichment {
         unit,
         decimals: 8,
         balance: received.saturating_sub(spent),
         received: Some(received),
         tx_count: Some(a.chain_stats.tx_count + a.mempool_stats.tx_count),
         ens: None,
-    })
+        is_scam: None,
+        reputation: None,
+        known_name: None,
+        public_tags: Vec::new(),
+    }))
 }
 
-async fn enrich_eth(ctx: &ModuleContext, addr: &str) -> Option<Enrichment> {
+/// EVM (ETH) enrichment via Blockscout. `Err` on a genuine failure of the
+/// primary address call (propagated by `fetch_json`); `Ok(None)` when that call
+/// succeeds but returns no parseable `coin_balance` (a real answer with nothing
+/// to enrich, not a source failure). The second `counters` call for `tx_count`
+/// stays best-effort — its own failure must not drop the balance/ENS already in
+/// hand. See [`ChainIntel::process`] for the T2.122 distinction.
+async fn enrich_eth(ctx: &ModuleContext, addr: &str) -> Result<Option<Enrichment>> {
     let base = "https://eth.blockscout.com/api/v2/addresses";
-    let a: BlockscoutAddress = fetch_json(&ctx.http, SRC, &format!("{base}/{addr}"))
-        .await
-        .ok()?;
-    let balance: u128 = a
+    let a: BlockscoutAddress = fetch_json(&ctx.http, SRC, &format!("{base}/{addr}")).await?;
+    let Some(balance) = a
         .coin_balance
         .as_deref()
-        .and_then(|s| s.trim().parse().ok())?;
+        .and_then(|s| s.trim().parse::<u128>().ok())
+    else {
+        return Ok(None);
+    };
     // tx count is a second, best-effort call — its absence must not drop the
     // balance/ENS we already have.
     let tx_count =
@@ -298,20 +378,41 @@ async fn enrich_eth(ctx: &ModuleContext, addr: &str) -> Option<Enrichment> {
             .ok()
             .and_then(|c| c.transactions_count)
             .and_then(|s| s.trim().parse::<u64>().ok());
-    Some(Enrichment {
+    Ok(Some(Enrichment {
         unit: "ETH",
         decimals: 18,
         balance,
         received: None, // Blockscout balance endpoint doesn't expose lifetime received.
         tx_count,
         ens: a.ens_domain_name.filter(|s| !s.is_empty()),
-    })
+        is_scam: a.is_scam,
+        reputation: a.reputation.filter(|s| !s.is_empty()),
+        known_name: a.name.filter(|s| !s.is_empty()),
+        public_tags: blockscout_tag_labels(&a.public_tags),
+    }))
+}
+
+/// Reduces Blockscout's `public_tags` array down to display strings, preferring
+/// each tag's human-facing `display_name` and falling back to its machine
+/// `label` slug only when `display_name` is absent — never emitting a blank
+/// entry for a tag with neither field set.
+fn blockscout_tag_labels(tags: &[BlockscoutTag]) -> Vec<String> {
+    tags.iter()
+        .filter_map(|t| {
+            t.display_name
+                .as_deref()
+                .or(t.label.as_deref())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
+        .collect()
 }
 
 /// Solana enrichment via the public JSON-RPC's `getBalance` method — balance
 /// only; see the module doc for why `tx_count`/`received` are never populated
 /// for SOL rather than estimated from a bounded `getSignaturesForAddress` call.
-async fn enrich_sol(ctx: &ModuleContext, addr: &str) -> Option<Enrichment> {
+async fn enrich_sol(ctx: &ModuleContext, addr: &str) -> Result<Option<Enrichment>> {
     let resp = ctx
         .http
         .post("https://api.mainnet-beta.solana.com")
@@ -323,36 +424,47 @@ async fn enrich_sol(ctx: &ModuleContext, addr: &str) -> Option<Enrichment> {
             "params": [addr]
         }))
         .send_tagged(SRC)
-        .await
-        .ok()?;
+        .await?;
     if !resp.status().is_success() {
-        return None;
+        return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
-    let body: SolBalanceResp = crate::util::http::json_decode(SRC, resp).await.ok()?;
-    let balance = body.result?.value?;
-    Some(Enrichment {
+    let body: SolBalanceResp = crate::util::http::json_decode(SRC, resp).await?;
+    // A well-formed RPC reply that simply carries no balance (`result`/`value`
+    // absent) is an honest "nothing to enrich", distinct from the failures above.
+    let Some(balance) = body.result.and_then(|r| r.value) else {
+        return Ok(None);
+    };
+    Ok(Some(Enrichment {
         unit: "SOL",
         decimals: 9,
         balance: u128::from(balance),
         received: None,
         tx_count: None,
         ens: None,
-    })
+        is_scam: None,
+        reputation: None,
+        known_name: None,
+        public_tags: Vec::new(),
+    }))
 }
 
 /// Dogecoin enrichment via BlockCypher (see module doc for why this source,
 /// not `dogechain.info`, was chosen).
-async fn enrich_doge(ctx: &ModuleContext, addr: &str) -> Option<Enrichment> {
+async fn enrich_doge(ctx: &ModuleContext, addr: &str) -> Result<Option<Enrichment>> {
     let url = format!("https://api.blockcypher.com/v1/doge/main/addrs/{addr}/balance");
-    let b: BlockcypherBalance = fetch_json(&ctx.http, SRC, &url).await.ok()?;
-    Some(Enrichment {
+    let b: BlockcypherBalance = fetch_json(&ctx.http, SRC, &url).await?;
+    Ok(Some(Enrichment {
         unit: "DOGE",
         decimals: 8,
         balance: u128::from(b.balance),
         received: Some(u128::from(b.total_received)),
         tx_count: Some(b.n_tx),
         ens: None,
-    })
+        is_scam: None,
+        reputation: None,
+        known_name: None,
+        public_tags: Vec::new(),
+    }))
 }
 
 #[cfg(test)]

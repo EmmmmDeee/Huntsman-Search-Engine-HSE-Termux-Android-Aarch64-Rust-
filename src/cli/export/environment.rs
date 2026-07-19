@@ -1,5 +1,20 @@
 //! Environment fingerprint for the debug bundle.
 
+/// Whether a working `curl` is on `PATH` (a `curl --version` that exits 0).
+/// `search_engines`, `social_probe`, and `oathnet` shell out to it, so its
+/// absence silently returns nothing from a whole class of modules — the single
+/// most common "why did this find nothing?" cause on a fresh Termux install.
+/// Single-sourced so the environment fingerprint and the system bundle's
+/// issue-detector agree on one detection.
+pub(super) fn curl_present() -> bool {
+    std::process::Command::new("curl")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 /// Environment fingerprint for the debug bundle: the build, host, module set,
 /// and key-PRESENCE (names only — never values) under which a scan ran. This is
 /// what makes "why did module X find nothing?" answerable from the artifact
@@ -11,7 +26,7 @@
 /// listed, never their values. Per-process-stable (version, target, registry,
 /// key presence don't change mid-process), so it does not break the bundle's
 /// byte-determinism for a fixed host.
-pub(super) fn render_environment() -> String {
+pub(super) fn render_environment(curl: bool) -> String {
     use std::fmt::Write as _;
     let loaded = crate::util::keys::load();
     let mut present: Vec<&str> = loaded
@@ -37,13 +52,6 @@ pub(super) fn render_environment() -> String {
         .map(|(c, n)| format!("{c} {n}"))
         .collect::<Vec<_>>()
         .join(", ");
-
-    let curl = std::process::Command::new("curl")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
 
     let mut s = String::new();
     let _ = writeln!(s, "\n── ENVIRONMENT (reconstructable scan context) ──");

@@ -26,6 +26,20 @@ const KEY_ENV: &str = "HUNTSMAN_NETLAS_KEY";
 
 pub struct Netlas;
 
+// No top-level `count`/total field: investigated (2026-07-14, T2.100) after a
+// systematic sweep for the T2.97-99 "parsed but never read" class flagged one
+// here too. Unlike those three, this one does NOT reproduce as a real dropped-
+// evidence bug — Netlas's `GET /api/responses/` (the exact endpoint this
+// module calls) never returns a match-total field; the total lives only on
+// the separate `GET /api/responses_count/` endpoint this module doesn't call.
+// A `count` field was previously declared and deserialized here regardless
+// (always `None` against the real API — `#[serde(default)]` silently no-ops
+// on the ever-absent key), which is worse than harmless: it invited exactly
+// the false "surface it like psbdmp's total_matches" fix this investigation
+// almost made. Deliberately not calling `responses_count/` to manufacture a
+// real value either — that's a second network round-trip against the
+// operator's key quota, a real behaviour/cost change, not a mechanical
+// evidence-disclosure fix.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct NetlasResp {
@@ -209,8 +223,9 @@ impl Module for Netlas {
 /// network shell owns auth/transport, this owns the response→entity mapping
 /// (unit-testable without a key). Accumulates host facts across `body.items`,
 /// then emits the IP entity — carrying the port/JARM/SSL/CVE/tech/ISP evidence
-/// plus the previously-dropped `ssl_issuer` (issuing CA), `http_title` and
-/// `http_status` — the ISP and cert-subject Organisations, the geo
+/// plus the previously-dropped `ssl_issuer` (issuing CA), `http_title`,
+/// `http_status`, and `result_count` (the query's total Netlas match count) —
+/// the ISP and cert-subject Organisations, the geo
 /// Coordinates/Address, the SAN Domains, and the SSL/HTTP-extracted Emails.
 /// `target_value` is the queried value used as the IP fallback; an empty item
 /// set yields an empty result.
@@ -407,6 +422,14 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
     }
     if let Some(isp) = &isp_val {
         ev = ev.with_attr("isp", isp);
+    }
+    // Total number of indexed responses Netlas matched for this query — the
+    // top-level `count`, distinct from the returned `items` page (which the
+    // `fields=*` request caps). Surfacing it tells an investigator how much of
+    // the host's Netlas footprint the returned page represents, i.e. whether the
+    // results were truncated. Decoded but previously dropped.
+    if let Some(total) = body.count {
+        ev = ev.with_attr("result_count", total.to_string());
     }
     ip_entity.add_evidence(ev);
     result.push(ip_entity);

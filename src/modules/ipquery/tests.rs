@@ -73,3 +73,30 @@ use super::*;
         assert!(addr.tags.iter().any(|t| t == "country:AU"));
         assert_eq!(addr.value, "Gatton, Queensland, Australia");
     }
+
+    #[test]
+    fn coordinates_carry_the_originating_ip_for_login_ip_recognition() {
+        // Like `ip_geo`, this module's Coordinates fix only emits once
+        // `untrusted_geo_reason` clears the IP (CDN/anycast/VPN/Tor/proxy/
+        // datacenter all suppressed, per `build_suppresses_geo_for_anonymiser_
+        // keeps_infrastructure` — the module's own doc comment states admitting
+        // untrusted coords "poisons identity-location correlation"), and uses
+        // the same recalibrated-confidence `coarse_provider_coords` helper — a
+        // sibling in the same IP-geolocation family as `ip_geo`. The
+        // correlator's shared `person_login_ip_coords` (used by
+        // `best_au_location_estimate` and `au_location_corroboration`) only
+        // recognises a Coordinates fix as tied to a subject's breach/stealer
+        // login IP when its evidence carries an `ip` attribute equal to that IP.
+        let d = resp(RESIDENTIAL);
+        let es = build_geo_isp_entities("203.0.113.9", &d, "t");
+        let coords = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Coordinates)
+            .expect("coords");
+        assert_eq!(
+            coords.evidence[0].attributes.get("ip").map(String::as_str),
+            Some("203.0.113.9"),
+            "Coordinates evidence must carry the originating IP so \
+             person_login_ip_coords can recognise this as a login-IP fix"
+        );
+    }

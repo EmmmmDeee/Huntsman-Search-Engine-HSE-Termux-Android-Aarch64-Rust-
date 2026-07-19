@@ -10,6 +10,13 @@
 //! `{ "count": N, "data": [ { "id": "...", "date": "...", "tags": "..." }, … ] }`.
 //! Each `id` maps to `https://pastebin.com/<id>` — emitted as a `Url` the
 //! `web_crawler` can then fetch and re-scan.
+//!
+//! `fetch_json`'s `Err` (transport failure, non-2xx status, or a malformed
+//! body) propagates as a real module error rather than being folded into an
+//! empty result — a real, previously-observed failure mode: a live scan
+//! recorded this endpoint averaging 0/152 ok (see [`Psbdmp::max_timeout_ms`]),
+//! which used to read as "no pastes for this term" on every one of those 152
+//! scans instead of "the source was down."
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -95,10 +102,7 @@ impl Module for Psbdmp {
             return Ok(result);
         }
         let url = format!("https://psbdmp.ws/api/v3/search/{}", urlencode(term));
-        let resp: SearchResp = match fetch_json(&ctx.http, SRC, &url).await {
-            Ok(r) => r,
-            Err(_) => return Ok(result),
-        };
+        let resp: SearchResp = fetch_json(&ctx.http, SRC, &url).await?;
         extract(&resp, term, target.kind, &ctx.scan_id, &mut result);
         Ok(result)
     }
@@ -126,6 +130,13 @@ fn seed_entity_kind(kind: TargetKind) -> Option<EntityKind> {
 /// and its temporal anchor and identity-level breach correlation can see it — not
 /// just the orphan paste URLs AU-043 counts. The module doc-comment's "marks the
 /// seed as paste-exposed" promise is now actually fulfilled.
+///
+/// The response's own `count` field (the server's authoritative match total) was
+/// previously parsed and silently discarded — only the locally deduped `data.len()`
+/// ever reached evidence. When the server reports more matches than this response
+/// actually carried, that gap is now surfaced as a `total_matches` attribute (and
+/// folded into the summary) rather than quietly understating the subject's real
+/// paste exposure.
 fn extract(
     resp: &SearchResp,
     term: &str,
@@ -177,19 +188,46 @@ fn extract(
     if paste_count == 0 {
         return;
     }
+    // The API's own `count` is the server's authoritative match total, distinct
+    // from `paste_count` (this response's `data` entries after id-dedup). They
+    // usually agree, but when the server reports MORE matches than this response
+    // actually carried (truncation/pagination upstream), silently keeping only
+    // `paste_count` would understate the subject's real exposure. Surface the
+    // disagreement honestly instead of either discarding `count` (data loss) or
+    // replacing `paste_count` with it (asserting URLs we never actually saw).
+    let total_matches = (resp.count as usize).max(paste_count);
     // The seed identity itself, re-emitted paste-exposed so the exposure attaches
     // to the subject (merges by value into the target entity), carrying the count
     // and the temporal anchor that the Url-only emission discarded.
     if let Some(seed_kind) = seed_entity_kind(kind) {
-        let summary = match earliest {
-            Some(d) => format!("{term} appears in {paste_count} public paste(s); earliest {d}"),
-            None => format!("{term} appears in {paste_count} public paste(s)"),
+        let summary = match (earliest, total_matches > paste_count) {
+            (Some(d), true) => format!(
+                "{term} appears in {paste_count} public paste(s) ({total_matches} reported by source); earliest {d}"
+            ),
+            (Some(d), false) => {
+                format!("{term} appears in {paste_count} public paste(s); earliest {d}")
+            }
+            (None, true) => {
+                format!(
+                    "{term} appears in {paste_count} public paste(s) ({total_matches} reported by source)"
+                )
+            }
+            (None, false) => format!("{term} appears in {paste_count} public paste(s)"),
         };
         let mut ev = Evidence::new(SRC, summary)
             .with_attr("search_term", term)
             .with_attr("paste_count", paste_count.to_string());
+        if total_matches > paste_count {
+            ev = ev.with_attr("total_matches", total_matches.to_string());
+        }
         if let Some(d) = earliest {
             ev = ev.with_attr("earliest_paste", d);
+            // Also stamp the canonical `breach_date` key AU-019's temporal
+            // breach-cluster rule reads (rules/breach.rs) — the seed is
+            // `breach`-tagged, so without this alias its earliest-exposure date
+            // is invisible to the 30-day coordinated-compromise clustering and
+            // its pastes can never cluster with HIBP/IntelX/xposed_or_not hits.
+            ev = ev.with_attr("breach_date", d);
         }
         let mut seed = Entity::new(seed_kind, term, 0.55, scan_id);
         seed.tag(SRC);

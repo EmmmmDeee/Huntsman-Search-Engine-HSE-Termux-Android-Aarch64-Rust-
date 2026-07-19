@@ -121,11 +121,30 @@ fn build_queries_fullname_handles_multibyte_initial() {
 
 #[test]
 fn build_queries_fullname_pure_fn_matches_dispatch() {
-    // The extracted pure helper must produce exactly what the FullName
-    // dispatch arm produces (verbatim extraction, no behaviour change).
+    // The extracted pure helper must produce exactly what the FullName arm of
+    // `build_queries_base` produces (verbatim extraction, no behaviour
+    // change). `build_queries` itself is a **superset**: it additionally
+    // appends the exposure-dork pass (`queries::exposure`), which now covers
+    // FullName too — asserted separately below, not folded into this
+    // verbatim-extraction check.
     let direct = build_queries_fullname("Jordan Lee Meyer");
+    let base =
+        super::queries::build_queries_base(&Target::new(TargetKind::FullName, "Jordan Lee Meyer"));
+    assert_eq!(direct, base);
+
+    // `build_queries` = base + the exposure dorks (FullName is now covered by
+    // `fullname_exposure`, no longer silently empty).
     let viadispatch = build_queries(&Target::new(TargetKind::FullName, "Jordan Lee Meyer"));
-    assert_eq!(direct, viadispatch);
+    assert!(
+        viadispatch.len() > base.len(),
+        "the full dispatch must add the FullName exposure dorks on top of the base set"
+    );
+    assert!(
+        viadispatch
+            .iter()
+            .any(|s| s.contains("truepeoplesearch.com")),
+        "exposure dorks must be present in the full dispatch: {viadispatch:?}"
+    );
 
     // Single-token name → only the two base dorks, no first/last expansion.
     let single = build_queries_fullname("Jordan");
@@ -215,6 +234,44 @@ fn regional_dorks_are_minimal_and_region_scoped() {
     assert!(dd.len() <= 2, "AU-default augmentation must stay minimal");
     // An empty value never produces dorks.
     assert!(regional_dorks(&Target::new(TargetKind::Username, "")).is_empty());
+}
+
+#[tokio::test]
+async fn build_queries_reads_the_per_scan_regional_ambient() {
+    // PROBLEM_TREE T2.11: `regional_enabled()` used to read a process-global
+    // `AtomicBool` shared unkeyed across `hse serve`'s concurrent scans — a
+    // concurrently-started scan could silently flip another in-flight scan's
+    // query building. It now reads `util::regional`'s per-scan task-local
+    // ambient, so this proves the WIRING end-to-end: `build_queries` (the
+    // actual toggle consumer, via `search_engines::regional_enabled()`)
+    // produces MORE queries when scoped `true` than when scoped `false` (or
+    // unscoped, which degrades to `false`), for the same AU-region-signalled
+    // target — and, critically, that two overlapping scopes never leak into
+    // each other, mirroring `found_keys`'s own concurrent-isolation proof.
+    let t = Target::new(TargetKind::Phone, "+61 2 9374 4000");
+
+    let neutral = build_queries(&t);
+    let regional = crate::util::regional::with_regional(true, async { build_queries(&t) }).await;
+    assert!(
+        regional.len() > neutral.len(),
+        "regional=true must add AU dorks on top of the geo-neutral base: \
+         neutral={neutral:?} regional={regional:?}"
+    );
+
+    // Nested/overlapping scopes (standing in for two concurrent `hse serve`
+    // scans) never contaminate each other.
+    crate::util::regional::with_regional(true, async {
+        assert_eq!(build_queries(&t).len(), regional.len(), "outer scope=true");
+        let inner_off =
+            crate::util::regional::with_regional(false, async { build_queries(&t) }).await;
+        assert_eq!(inner_off.len(), neutral.len(), "inner scope=false");
+        assert_eq!(
+            build_queries(&t).len(),
+            regional.len(),
+            "outer scope=true must be unaffected after the inner scope exited"
+        );
+    })
+    .await;
 }
 
 #[test]
@@ -719,6 +776,28 @@ fn extract_anchor_text_missing_href() {
     assert!(title.is_empty());
 }
 
+/// A real Startpage capture repeats a result's own URL across 4 `<a href="…">`
+/// occurrences per card: a textless icon wrapper, a short site-name anchor, a
+/// display-URL anchor, then the actual titled link last. The former
+/// first-occurrence-only scan hit the textless icon wrapper and returned
+/// empty, forcing the caller to fall back to a fixed-width surrounding-text
+/// window that (for this exact markup shape) bled in the PRECEDING result's
+/// own "Visit in Anonymous View" label instead of this result's real title.
+/// Regression: the real title, the last non-empty occurrence, must be
+/// returned directly.
+#[test]
+fn extract_anchor_text_skips_textless_occurrences_to_find_the_real_title() {
+    let html = concat!(
+        r#"<a href="https://example.com/x" class="favicon-link"></a>"#,
+        r#"<a href="https://example.com/x" class="wgl-site-title">Example</a>"#,
+        r#"<a href="https://example.com/x" class="wgl-display-url">https://example.com/x</a>"#,
+        r#"<a class="result-title" href="https://example.com/x">"#,
+        r#"<h2>The Real Result Title</h2></a>"#,
+    );
+    let title = extract_anchor_text(html, "https://example.com/x", 200);
+    assert_eq!(title, "The Real Result Title");
+}
+
 #[test]
 fn captcha_detection_datadome() {
     let body = "<html><body>Please enable JS \
@@ -934,6 +1013,89 @@ fn people_search_name_extraction_requires_on_target_relation() {
     assert!(
         persons.iter().any(|p| p.to_lowercase().contains("haigen")),
         "the on-target name IS extracted: {persons:?}"
+    );
+}
+
+#[test]
+fn address_corroboration_cannot_reach_verified_on_a_surname_placename_collision() {
+    // Live-reproduced from a real "Brett Lawnton" scan's debug bundle
+    // (2026-07-15): "Lawnton" is both the subject's surname AND a real
+    // Brisbane, QLD suburb (postcode 4501). Every real-estate/reverse-lookup
+    // page ABOUT the suburb satisfies `result_names_the_subject` (the surname
+    // string appears, because it IS the suburb name) even though none of these
+    // pages are actually about the subject. ~99 such hits pushed the resulting
+    // "Lawnton, QLD" address entity to corroboration=99, class=VERIFIED in the
+    // real scan. All evidence on this path shares one literal source string
+    // ("search_engines"), so `source_count()` is always 1 and `c_effective()`
+    // equals the raw (capped) `confidence` — repetition alone must never be
+    // able to cross `Classification::VERIFIED_MIN` (0.75).
+    let target = Target::new(TargetKind::FullName, "Brett Lawnton");
+    let mk = |n: usize| SearchResult {
+        url: format!("https://view.com.au/property/qld/lawnton-4501/listing-{n}/"),
+        title: "Property for sale".to_string(),
+        snippet: "Located in Lawnton, QLD 4501".to_string(),
+        engine: "brave",
+        query: "Brett Lawnton".to_string(),
+    };
+    let results: Vec<SearchResult> = (0..99).map(mk).collect();
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    let addr = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Address && e.value.to_lowercase().contains("lawnton"))
+        .expect("the suburb-collision address must still be extracted (it's real AU place data)");
+    assert!(
+        addr.corroboration >= 50,
+        "sanity: this test must actually exercise heavy repetition, got corroboration={}",
+        addr.corroboration
+    );
+    assert!(
+        addr.c_effective() < crate::core::entity::Classification::VERIFIED_MIN,
+        "99 same-source-type hits, all about the SUBURB not the subject, must not reach \
+         Verified via pure repetition: c_effective={} corroboration={}",
+        addr.c_effective(),
+        addr.corroboration
+    );
+}
+
+#[test]
+fn address_corroboration_counts_each_result_once_despite_two_extracted_variants() {
+    // Found in review of the fix above: `extract_addresses_from_text` deliberately
+    // emits BOTH a bare "City, STATE" and a more specific postcode-qualified
+    // "City, STATE 1234" for the SAME underlying locality when a snippet's text
+    // contains both (its own pass 3: the postcode form is "a more-specific
+    // variant of a matched City, STATE"), and `normalise_address_key`
+    // deliberately collapses both to the same dedup key. Without a per-result
+    // dedup, ONE search result yielding both variants would be counted as TWO
+    // independent corroborations (create + immediate self-merge) — silently
+    // doubling `corroboration` and the confidence-bump count for a single real
+    // hit. Two results, each with a snippet that yields both variants, must
+    // produce EXACTLY corroboration=2 (one per real result), not 4.
+    let target = Target::new(TargetKind::FullName, "Brett Lawnton");
+    let mk = |n: usize| SearchResult {
+        url: format!("https://view.com.au/property/qld/lawnton-4501/listing-{n}/"),
+        title: "Property for sale".to_string(),
+        snippet: "Located in Lawnton, QLD 4501".to_string(),
+        engine: "brave",
+        query: "Brett Lawnton".to_string(),
+    };
+    let results: Vec<SearchResult> = (0..2).map(mk).collect();
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    let addr = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Address && e.value.to_lowercase().contains("lawnton"))
+        .expect("the address must still be extracted");
+    assert_eq!(
+        addr.corroboration, 2,
+        "2 real search results, each yielding a bare + postcode-qualified variant of the \
+         SAME address, must count as 2 corroborations, not 4 (one per variant per result): {addr:?}"
+    );
+    // The postcode-qualified (more informative) variant must be the one kept.
+    assert!(
+        addr.value.to_lowercase().contains("4501")
+            || addr.raw_value.to_lowercase().contains("4501"),
+        "the postcode-qualified variant should be preferred when both are present: {addr:?}"
     );
 }
 

@@ -9,16 +9,19 @@ use super::budget::{budget_try_increment, is_key_invalid, mark_key_invalid};
 use super::client::{
     base_url, cache_get, cache_put, get_json, is_auth_error, post_json, typed_cache_key,
 };
+use super::enterprise_config::ENTERPRISE;
 
 /// Retry pacing for a transient see-know.eu rate-limit response
 /// (`Error::RateLimited`, distinct from true quota exhaustion — see
-/// `client::Terminal::RateLimited`'s doc comment). 3 attempts (the initial
-/// call plus 2 retries), doubling 2s → 4s, capped at 8s, jittered so several
-/// concurrently-dispatched endpoint calls that all get rate-limited at once
-/// don't all retry in lockstep. These are the same figures a prior,
-/// never-wired `RETRY_STRATEGY` constant in `orchestration.rs` already
-/// specified — reused here now that they have a real, live call site.
-const RATE_LIMIT_BACKOFF: BackoffPolicy = BackoffPolicy::new(3, 2_000, 8_000, true);
+/// `client::Terminal::RateLimited`'s doc comment). [`ENTERPRISE`]`.max_retries`
+/// attempts (the initial call plus 2 retries), doubling 2s → 4s, capped at
+/// 8s, jittered so several concurrently-dispatched endpoint calls that all
+/// get rate-limited at once don't all retry in lockstep. These are the same
+/// figures a prior, never-wired `RETRY_STRATEGY` constant in
+/// `orchestration.rs` already specified — reused here now that they have a
+/// real, live call site.
+const RATE_LIMIT_BACKOFF: BackoffPolicy =
+    BackoffPolicy::new(ENTERPRISE.max_retries, 2_000, 8_000, true);
 
 /// Max records per the see-know.eu Universal Search spec (`limit`, default 100,
 /// **max 500**). Requested in full — the standing directive is to use
@@ -126,6 +129,89 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
                     query_type,
                     attempt,
                     "see_know /search errored — retrying once"
+                );
+            }
+        }
+    }
+}
+
+/// Deep search via `POST /api/v1/search/deep` — trawls slower, higher-yield
+/// databases beyond the fast index's local-DB/low-latency sources (server cap
+/// ~40s per `docs/SEEKNOW_SETUP.md`'s troubleshooting section, vs. `/search`'s
+/// ~5s typical for a typed query). Same request contract as [`search`] —
+/// identical body shape via [`build_search_body`], same 1-credit cost; the
+/// see-know.eu docs list the two endpoints side by side with no differing
+/// parameters, only depth of corpus searched (`docs/SEEKNOW_SETUP.md`'s own
+/// FAQ: "Fast: Local DB + low-latency sources… Deep: Fast + slower high-yield
+/// databases, maximum coverage").
+///
+/// Callers should reserve this for a confirmed EMPTY [`search`] result: it
+/// costs the same credit but roughly 8x the latency, so calling it after a
+/// fast HIT would waste both quota and wall-time for zero additional coverage
+/// — this was never wired before (`docs/SEEKNOW_SETUP.md`: "HSE always calls
+/// fast `/search`, never deep"), the single largest documented, unimplemented
+/// coverage gap in the SeekNow integration.
+pub async fn search_deep(key: &str, query: &str, query_type: &str) -> Result<Vec<Value>> {
+    // Separate cache namespace from `search` (`typed_cache_key` prefixes on
+    // `path`) — fast and deep results for the same query never collide, and a
+    // deep hit is cached independently so a repeat lookup this scan doesn't
+    // re-pay the ~40s latency.
+    let ck = typed_cache_key("search_deep", query, query_type);
+    if let Some(cached) = cache_get(&ck) {
+        return Ok(cached);
+    }
+    if is_key_invalid() || !budget_try_increment() {
+        return Ok(Vec::new());
+    }
+    let url = format!("{}/search/deep", base_url());
+    let body = build_search_body(query, query_type, SEARCH_LIMIT);
+    let archive_endpoint = if query_type.is_empty() {
+        "search-deep".to_string()
+    } else {
+        format!("search-deep-{query_type}")
+    };
+    // A single attempt on empty — a genuine deep-search miss, unlike fast
+    // `/search`'s documented "server-side cap race on the name/auto path"
+    // quirk that specifically justifies its own empty-result retry; there is
+    // no equivalent documented flakiness for the deep path, and retrying an
+    // already-~40s call would double the worst-case latency for no evidenced
+    // benefit. Transport errors and rate-limits ARE still retried/backed-off
+    // (mirrors `get_path`'s resilience contract for flaky mobile networks —
+    // every other endpoint gets the same protection).
+    const TRANSPORT_RETRY_ATTEMPTS: u32 = 2;
+    let mut attempt = 0u32;
+    loop {
+        match post_json(&url, key, &body, &archive_endpoint, query).await {
+            Ok(resp) => {
+                let items = extract_items(&resp);
+                if !items.is_empty() {
+                    cache_put(ck, items.clone());
+                }
+                return Ok(items);
+            }
+            Err(Error::RateLimited(msg)) => {
+                if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
+                    return Err(Error::RateLimited(msg));
+                }
+                let delay = RATE_LIMIT_BACKOFF.delay(attempt);
+                tracing::debug!(
+                    query_type,
+                    attempt = attempt + 1,
+                    delay_ms = delay.as_millis() as u64,
+                    "see_know /search/deep rate-limited — backing off"
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+            Err(e) => {
+                attempt += 1;
+                if attempt >= TRANSPORT_RETRY_ATTEMPTS {
+                    return Err(e);
+                }
+                tracing::debug!(
+                    query_type,
+                    attempt,
+                    "see_know /search/deep errored — retrying once"
                 );
             }
         }

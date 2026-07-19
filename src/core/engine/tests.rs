@@ -900,10 +900,12 @@ async fn cache_replay_does_not_feed_the_circuit_breaker_success_path() {
     let mut entity_map: HashMap<String, Entity> = HashMap::new();
     let mut stats = ModuleStats::default();
     let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
     let mut state = DispatchState {
         entity_map: &mut entity_map,
         stats: &mut stats,
         dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
     };
 
     // ── Replay path: the streak MUST survive ────────────────────────────────
@@ -1706,6 +1708,44 @@ async fn recall_prior_entities_pulls_and_tags_prior_scan_findings() {
     );
 }
 
+/// CONVENTIONS.md §5 determinism: `recall_prior_entities`'s cap (`MAX_ENTITIES`
+/// = 300, matched here) sorts by confidence and truncates — the WHICH-SURVIVES
+/// question, not just display order. Modules routinely stamp flat literal
+/// confidences, so exact ties at the cutoff are realistic, and the entities'
+/// starting order (a `HashMap`'s randomised-per-process iteration order in the
+/// real caller) must not change which 300 survive. More than 300 identically-
+/// confident entities, fed in forward vs. reversed order, must truncate to the
+/// IDENTICAL surviving set.
+#[test]
+fn rank_recalled_and_cap_truncation_is_order_independent_on_ties() {
+    use crate::core::entity::{Entity, EntityKind};
+
+    let forward: Vec<Entity> = (0..305)
+        .map(|i| {
+            Entity::new(
+                EntityKind::Email,
+                format!("user{i}@example-real.com"),
+                0.7,
+                "s",
+            )
+        })
+        .collect();
+    let mut reversed = forward.clone();
+    reversed.reverse();
+
+    let a = rank_recalled_and_cap(forward, 300);
+    let b = rank_recalled_and_cap(reversed, 300);
+
+    assert_eq!(a.len(), 300);
+    assert_eq!(b.len(), 300);
+    let a_uids: Vec<&str> = a.iter().map(|e| e.uid.as_str()).collect();
+    let b_uids: Vec<&str> = b.iter().map(|e| e.uid.as_str()).collect();
+    assert_eq!(
+        a_uids, b_uids,
+        "the surviving 300 entities must be identical regardless of incoming order"
+    );
+}
+
 /// Recall's confidence-DESC sort must carry a total, deterministic tie-break so
 /// equal-confidence nodes come back in a fixed order — otherwise WHICH of them
 /// survive the internal `truncate(MAX_ENTITIES)` boundary cut is decided by
@@ -1713,6 +1753,9 @@ async fn recall_prior_entities_pulls_and_tags_prior_scan_findings() {
 /// into the persisted working set. The tie-break is `uid` ascending, so a run of
 /// same-confidence recalled entities must emerge uid-sorted, identically on every
 /// call even though each call rebuilds the `merged` map (fresh random seed).
+/// Complements [`rank_recalled_and_cap_truncation_is_order_independent_on_ties`]
+/// above (pure-function unit test) with the same property proven end-to-end
+/// through the real `ScanEngine`/store recall path.
 #[tokio::test]
 async fn recall_prior_entities_tie_breaks_equal_confidence_by_uid() {
     use crate::core::entity::{Entity, EntityKind, Evidence};
@@ -1981,10 +2024,12 @@ async fn admitted_entities_are_stamped_with_their_modules_attack_techniques() {
         let mut entity_map: HashMap<String, Entity> = HashMap::new();
         let mut stats = ModuleStats::default();
         let mut dispatched: DispatchLog = DispatchLog::new();
+        let mut newly_inserted: Vec<String> = Vec::new();
         let mut state = DispatchState {
             entity_map: &mut entity_map,
             stats: &mut stats,
             dispatched: &mut dispatched,
+            newly_inserted: &mut newly_inserted,
         };
 
         engine
@@ -2115,10 +2160,12 @@ async fn concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_s
     let mut entity_map: HashMap<String, Entity> = HashMap::new();
     let mut stats = ModuleStats::default();
     let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
     let mut state = DispatchState {
         entity_map: &mut entity_map,
         stats: &mut stats,
         dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
     };
 
     engine
@@ -2181,6 +2228,68 @@ fn rank_enrichment_leverage_orders_join_keys_by_cross_scan_degree() {
     let top1 = rank_enrichment_leverage(&store, &candidates, 1);
     assert_eq!(top1.len(), 1);
     assert_eq!(top1[0].value, "jane@example.com");
+}
+
+/// C7 (forensic determinism): `checkpoint_entities` is the mid-scan durability
+/// path — hit at every productive round boundary, far more often than the
+/// bare-events-log recovery path a prior fix in this same session already
+/// canonicalised. Without canonicalising here too, a scan interrupted after
+/// reaching even one checkpoint (routine on Termux/Android) would read back
+/// through `entities_for_scan`'s ordinary table path — which never
+/// canonicalises — so concurrent dispatch's completion-order merging could
+/// leak into the checkpointed/exported result.
+///
+/// The two evidence sources are already merged into ONE in-memory entity
+/// before `checkpoint_entities` is ever called (mirroring
+/// `entity_map.values().cloned().collect()`'s real shape) — that in-memory
+/// merge order is exactly what varies run-to-run under concurrent dispatch,
+/// so the fixture carries the two sources in opposite orders and proves the
+/// checkpointed, stored order is canonical either way.
+#[tokio::test]
+async fn checkpoint_entities_canonicalizes_evidence_order_regardless_of_arrival_order() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::test_support::InMemoryStore;
+
+    let mut zzz_then_aaa = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-a");
+    zzz_then_aaa.add_evidence(Evidence::new("zzz_module", "seen"));
+    zzz_then_aaa.add_evidence(Evidence::new("aaa_module", "seen"));
+    let mut aaa_then_zzz = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-a");
+    aaa_then_zzz.add_evidence(Evidence::new("aaa_module", "seen"));
+    aaa_then_zzz.add_evidence(Evidence::new("zzz_module", "seen"));
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let store_a: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let engine_a = ScanEngine::new(vec![], store_a.clone(), bus.clone());
+    engine_a.checkpoint_entities("scan-a", &mut [zzz_then_aaa]);
+
+    let store_b: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let engine_b = ScanEngine::new(vec![], store_b.clone(), bus);
+    engine_b.checkpoint_entities("scan-a", &mut [aaa_then_zzz]);
+
+    let recovered_a = store_a.entities_for_scan("scan-a").unwrap();
+    let recovered_b = store_b.entities_for_scan("scan-a").unwrap();
+    assert_eq!(recovered_a.len(), 1);
+    assert_eq!(recovered_b.len(), 1);
+    let sources_a: Vec<&str> = recovered_a[0]
+        .evidence
+        .iter()
+        .map(|ev| ev.source.as_str())
+        .collect();
+    let sources_b: Vec<&str> = recovered_b[0]
+        .evidence
+        .iter()
+        .map(|ev| ev.source.as_str())
+        .collect();
+    assert_eq!(
+        sources_a, sources_b,
+        "checkpointed evidence order must be canonicalised, not leak arrival order: \
+         {sources_a:?} vs {sources_b:?}"
+    );
+    assert_eq!(
+        sources_a,
+        ["aaa_module", "zzz_module"],
+        "canonical order is lexicographic by source, per Entity::canonicalize_order"
+    );
 }
 
 #[test]

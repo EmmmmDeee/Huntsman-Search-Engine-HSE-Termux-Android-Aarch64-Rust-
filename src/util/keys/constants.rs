@@ -50,6 +50,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_TROVE_KEY",
     // OSINT orchestration APIs
     "HUNTSMAN_SEON_KEY",
+    "HUNTSMAN_OPENSANCTIONS_KEY",
     "HUNTSMAN_EPIEOS_KEY",
     "HUNTSMAN_PROXYCURL_KEY",
     "HUNTSMAN_OPENCORP_KEY",
@@ -118,6 +119,9 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
         }
         "HUNTSMAN_PROXYCURL_KEY" => "Proxycurl — paid, https://nubela.co/proxycurl",
         "HUNTSMAN_SEON_KEY" => "SEON — free trial at https://seon.io",
+        "HUNTSMAN_OPENSANCTIONS_KEY" => {
+            "OpenSanctions — free trial/nonprofit key at https://www.opensanctions.org/api/"
+        }
         "HUNTSMAN_EPIEOS_KEY" => "Epieos — https://epieos.com",
         "HUNTSMAN_SEEKNOW_KEY" => "SeekNow (see-know.eu) — https://see-know.eu",
         "HUNTSMAN_OATHNET_KEY" => "OathNet — https://oathnet.org",
@@ -156,38 +160,35 @@ pub const WIGLE_DEFAULT_USER: &str = "AID4493a33e2df9d07ab9666a27c8aead17";
 /// WiGLE API token (HTTP Basic password).
 pub const WIGLE_DEFAULT_TOKEN: &str = "1aedb7ad0171ff3d6be5a844cca5d977";
 /// SeekNow key — the current embedded default, supplied directly by the
-/// operator. **Confirmed DEAD against `see-know.icu` (2026-07-13, this build
-/// environment):** a real `POST /search` and `GET /credits` against `.icu`
-/// both returned `{"error":"invalid_api_key"}` via the actual production
-/// `see_know` client code path (not just a raw probe). **`base_url()`'s
-/// default has since been corrected (2026-07-14, T2.89) from `.icu` back to
-/// `.eu`** — the vendor's own stated domain everywhere else in this
-/// codebase, corroborated by a real operator's freshly-generated SeekNow
-/// export whose footer names the platform's own domain as `see-know.eu`,
-/// and by that same operator's real device failing to resolve `.icu` via
-/// DNS entirely (`curl exited 6`) while a different provider succeeded in
-/// the same scan. This key's live status against `.eu` is **not yet
-/// re-verified** (this sandbox's outbound proxy currently blocks both
-/// domains) — until the operator rotates in a key confirmed live against
-/// `.eu` (`hse doctor`'s "SeekNow account" section reports this status),
-/// every zero-config install's highest-priority paid source may return
-/// nothing.
-pub const SEEKNOW_DEFAULT_KEY: &str = "seek-fd18f1db9afdce325c90b8d0d27e8ebc02af489c95d0a9eb";
+/// operator (2026-07-14). Not live-verified from this build environment:
+/// this sandbox's outbound proxy blocks `see-know.eu`/`see-know.icu`
+/// outright, so a live `POST /search`/`GET /credits` probe could not be run
+/// here. The prior default (below, now superseded) was confirmed DEAD
+/// against `.icu`; verify this new key with `hse doctor`'s "SeekNow
+/// account" section (or the next live scan's `see_know` module status) on
+/// the operator's own device, which has no such proxy restriction.
+pub const SEEKNOW_DEFAULT_KEY: &str = "seek-0b493c7c9dc117aef21e8866760466481122a47029561ab0";
 /// SeekNow key that has been ROTATED OUT — kept only so a stale env file written
 /// by a previous build upgrades to [`SEEKNOW_DEFAULT_KEY`]. Never used as a live
-/// default. Was the prior embedded default (Enterprise plan, 5,000 daily
-/// credits, live-verified HTTP 200 at the time it was set).
-pub const SEEKNOW_SUPERSEDED_KEY: &str = "seek-62650f9a36e446fc3b1c1bcdf32a825048e608160e0fd0a4";
+/// default. Was the prior embedded default; confirmed DEAD against
+/// `see-know.icu` (2026-07-13) — `.eu` status was never re-verified before
+/// being superseded.
+pub const SEEKNOW_SUPERSEDED_KEY: &str = "seek-fd18f1db9afdce325c90b8d0d27e8ebc02af489c95d0a9eb";
+/// Earlier retired SeekNow key — also upgraded in place to the current default.
+/// Was the prior embedded default (Enterprise plan, 5,000 daily credits,
+/// live-verified HTTP 200 at the time it was set).
+pub(super) const SEEKNOW_SUPERSEDED_KEY_2: &str =
+    "seek-62650f9a36e446fc3b1c1bcdf32a825048e608160e0fd0a4";
 /// Earlier retired SeekNow key — also upgraded in place to the current default.
 /// Verified DEAD (HTTP 401 invalid_api_key) at the time it was retired.
-pub(super) const SEEKNOW_SUPERSEDED_KEY_2: &str =
+pub(super) const SEEKNOW_SUPERSEDED_KEY_3: &str =
     "seek-f419aa7ab831864149892e5145f6bc65dbb336e6ca94b4bc";
 /// Earlier retired SeekNow key — also upgraded in place to the current default.
-pub(super) const SEEKNOW_SUPERSEDED_KEY_3: &str =
+pub(super) const SEEKNOW_SUPERSEDED_KEY_4: &str =
     "seek-4b33b63d408dd7149765da4e76384ce91fd9f6df518f9a25";
 /// Prior embedded default (free-tier `seek-b4a9…`), rotated out in favour of the
 /// enterprise key above.
-pub(super) const SEEKNOW_SUPERSEDED_KEY_4: &str =
+pub(super) const SEEKNOW_SUPERSEDED_KEY_5: &str =
     "seek-b4a9cd56f7e95bc6ea30b17925f482514a07a52e7ab0961a";
 
 /// API keys embedded in the build so a fresh install works zero-config.
@@ -212,6 +213,7 @@ pub(super) const SUPERSEDED: &[(&str, &str)] = &[
     ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY_2),
     ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY_3),
     ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY_4),
+    ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY_5),
 ];
 
 /// Resolve an API key: the context-supplied key when present and non-empty,

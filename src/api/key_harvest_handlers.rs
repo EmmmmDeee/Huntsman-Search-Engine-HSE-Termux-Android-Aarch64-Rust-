@@ -132,8 +132,13 @@ fn pool_block() -> Value {
 }
 
 /// The `accounts` section: live SeekNow + WiGLE probes (identical calls to
-/// `hse doctor`'s) plus OathNet's process-local budget/quota snapshot (no
-/// live account endpoint exists for OathNet — see `util::oathnet`'s doc).
+/// `hse doctor`'s) plus OathNet's process-local budget/quota snapshot.
+/// OathNet has no dedicated account-status endpoint to probe (unlike
+/// SeekNow's free `/credits`), but every real search response carries the
+/// account's ACTUAL daily quota state for free in a top-level `_meta`
+/// block (live-confirmed 2026-07-15 — see [`crate::util::oathnet::
+/// RealQuota`]) — `real_quota` below surfaces the most recent one this
+/// process has observed, `None` until the first search succeeds.
 async fn accounts_block() -> Value {
     let loaded = keys::load();
 
@@ -158,14 +163,25 @@ async fn accounts_block() -> Value {
         }),
     };
 
-    // ── OathNet: process-local budget/quota (no live account endpoint) ──
+    // ── OathNet: process-local budget/quota, plus the real provider quota
+    // passively observed on the last successful search response (if any
+    // has happened yet this process) ──
     let oathnet_budget = crate::util::oathnet::budget_snapshot();
+    let real_quota = crate::util::oathnet::real_quota().map(|q| {
+        json!({
+            "used_today": q.used_today,
+            "left_today": q.left_today,
+            "daily_limit": q.daily_limit,
+            "is_unlimited": q.is_unlimited,
+        })
+    });
     let oathnet = json!({
         "quota_exhausted": crate::util::oathnet::is_quota_exhausted(),
         "scan_used": oathnet_budget.scan_used,
         "scan_cap": oathnet_budget.scan_cap,
         "session_used": oathnet_budget.session_used,
         "session_cap": oathnet_budget.session_cap,
+        "real_quota": real_quota,
     });
 
     // ── WiGLE: /profile/user ──
@@ -246,6 +262,10 @@ mod tests {
         assert!(a["seeknow"]["invalid"].is_boolean());
         assert!(a["oathnet"]["quota_exhausted"].is_boolean());
         assert!(a["oathnet"].get("scan_cap").is_some());
+        // `real_quota` is `null` until a real OathNet search succeeds this
+        // process (none has, in this unit test) — the key present-with-null
+        // is the well-formed "not observed yet" state, not an omission.
+        assert!(a["oathnet"]["real_quota"].is_null());
         assert!(a["wigle"].get("verified").is_some());
     }
 }

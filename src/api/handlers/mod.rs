@@ -295,6 +295,39 @@ pub async fn engines_health() -> Json<Value> {
     }))
 }
 
+/// Shape a module-health snapshot into the `GET /api/v1/modules/health` wire
+/// JSON. Split out of the handler so the mapping is unit-testable without
+/// depending on the live process-global health state — that state is shared
+/// across the whole test binary (mirrors why `cli::doctor::format_module_health`
+/// takes a plain [`crate::core::engine::ModuleHealth`] rather than reading the
+/// global directly).
+pub(crate) fn module_health_json(unhealthy: &[crate::core::engine::ModuleHealth]) -> Value {
+    let modules: Vec<Value> = unhealthy
+        .iter()
+        .map(|h| {
+            json!({
+                "name": h.name,
+                "consecutive_failures": h.consecutive_failures,
+                "last_success_at": h.last_success_at,
+            })
+        })
+        .collect();
+    let count = modules.len();
+    json!({ "modules": modules, "count": count })
+}
+
+/// `GET /api/v1/modules/health` — every module currently showing a failure
+/// streak this process, worst-first (`PROBLEM_TREE` T2.7 / `SOLUTION_TREE`
+/// SOL-HEALTH-SIGNAL). Empty `modules: []` on a freshly-started or fully
+/// healthy process — mirrors `hse doctor`'s "quiet unless something's
+/// actually wrong" behaviour, the same live dispatch-outcome data that
+/// backs it, just reachable from the web/API surface instead of only the CLI.
+pub async fn modules_health() -> Json<Value> {
+    Json(module_health_json(
+        &crate::core::engine::module_health_report(),
+    ))
+}
+
 /// `GET /api/v1/health/scrapers` — per-source scraper health (`PROBLEM_TREE`
 /// T2.7 / `SOLUTION_TREE` SOL-HEALTH-SIGNAL), the SPA counterpart of `hse
 /// doctor`'s "Scraper health" section: derived from the persisted
@@ -381,6 +414,140 @@ pub async fn logs_download(
     }
     let body = crate::util::log_capture::dump();
     let filename = format!("hse-debug-{}.log", crate::core::entity::unix_now());
+    (
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8".to_string(),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// `GET /api/v1/debug/bundle` — the consolidated **system self-diagnosis
+/// bundle**: one download that encompasses the whole engine's diagnostic +
+/// validation state (an auto-computed DETECTED ISSUES verdict, the environment
+/// fingerprint, the full self-test, live + cross-scan module/engine/scraper
+/// health, the recent-scan index with each failed scan's error, the recent
+/// verbose log ring, and the source-file manifest). It joins the otherwise-
+/// scattered `/health` · `/selftest` · `/modules/health` · `/engines/health` ·
+/// `/health/scrapers` · `/logs` surfaces into ONE artifact organised so the
+/// engine can be repaired from this one file. Backs the Settings page's
+/// "Download full diagnostic bundle" button.
+///
+/// **Loopback-only** — like [`logs_download`], the artifact embeds the TRACE
+/// log ring (scan targets + discovered PII), so under a LAN bind it must not
+/// stream to arbitrary peers. Secret-free otherwise (key NAMES only, never
+/// values).
+pub async fn system_debug_bundle(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    State(s): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "the system debug bundle is loopback-only" })),
+        )
+            .into_response();
+    }
+    // Validation runs against a throwaway temp DB (offline, side-effect-free).
+    let selftest = crate::selftest::run().await;
+    // Store reads are blocking — off the reactor (matches `scan_debug_bundle`).
+    let store = Arc::clone(&s.store);
+    let loaded = tokio::task::spawn_blocking(move || {
+        let scans = store.list_scans(200)?;
+        let events = store
+            .recent_module_outcome_events(crate::util::scraper_health::RECENT_EVENTS_WINDOW)?;
+        // Real on-disk DB health. An integrity check that can't even run is
+        // itself a problem, so fold the error into a problem row rather than
+        // dropping it. The `-wal` size is best-effort off the default path
+        // (`None` when overridden / absent — an honest omission, never a false
+        // "healthy").
+        let db_integrity = store
+            .integrity_check()
+            .unwrap_or_else(|e| vec![format!("integrity check could not run: {e}")]);
+        let wal_bytes = std::fs::metadata(format!("{}-wal", crate::default_db_path()))
+            .ok()
+            .map(|m| m.len());
+        Ok::<_, crate::core::error::Error>((scans, events, db_integrity, wal_bytes))
+    })
+    .await;
+    let (scans, events, db_integrity, wal_bytes) = match loaded {
+        Ok(Ok(tuple)) => tuple,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("debug-bundle query task failed: {e}")),
+    };
+    let scraper_events_checked = events.len();
+    let scraper_health = crate::util::scraper_health::aggregate_source_health(&events);
+    // One lock for body + count so the "N lines" header can't disagree with the
+    // dumped body (a line landing between two separate ring locks).
+    let (log_dump, log_lines) = crate::util::log_capture::dump_with_count();
+    // Update / build-freshness snapshot, read once under a poison-safe lock
+    // (mirrors `update_handlers::get_status`), preserving the `Error` payload.
+    let (update_commits_behind, update_last_checked, update_phase) = {
+        let info = s
+            .update_info
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let phase = match &info.phase {
+            crate::api::UpdatePhase::Idle => "idle".to_string(),
+            crate::api::UpdatePhase::Checking => "checking".to_string(),
+            crate::api::UpdatePhase::Applying => "applying".to_string(),
+            crate::api::UpdatePhase::Restarting => "restarting".to_string(),
+            crate::api::UpdatePhase::Error(msg) => format!("error: {msg}"),
+        };
+        (info.commits_behind, info.last_checked, phase)
+    };
+    // Value-free per-service key-pool summary (reuses `keys_status`'
+    // `summarize_pool`; never copies a key value). Mapped to the renderer's own
+    // owned type so `cli::export` stays self-contained.
+    let key_pool: Vec<crate::cli::export::KeyPoolSummary> =
+        super::settings_handlers::summarize_pool(&crate::util::key_pool::global_pool().snapshot())
+            .into_iter()
+            .map(|q| crate::cli::export::KeyPoolSummary {
+                service: q.service,
+                total: q.total,
+                active: q.active,
+                untested: q.untested,
+                rate_limited: q.rate_limited,
+                exhausted: q.exhausted,
+                invalid: q.invalid,
+                revoked: q.revoked,
+                avg_health: q.avg_health,
+            })
+            .collect();
+    let inputs = crate::cli::export::SystemDebugInputs {
+        selftest,
+        scans,
+        scraper_health,
+        scraper_events_checked,
+        log_dump,
+        log_lines,
+        key_pool,
+        db_integrity,
+        wal_bytes,
+        update_commits_behind,
+        update_last_checked,
+        update_phase,
+    };
+    // Render off the reactor too: it reads the log ring + spawns `curl` (via the
+    // environment fingerprint) — both blocking — and builds a potentially large
+    // string, so on the ~2-worker reactor it would otherwise stall peers.
+    let rendered = tokio::task::spawn_blocking(move || {
+        crate::cli::export::render_system_debug_bundle(&inputs)
+    })
+    .await;
+    let body = match rendered {
+        Ok(b) => b,
+        Err(e) => return internal_error(&format!("debug-bundle render task failed: {e}")),
+    };
+    let filename = format!("hse-system-debug-{}.txt", crate::core::entity::unix_now());
     (
         [
             (

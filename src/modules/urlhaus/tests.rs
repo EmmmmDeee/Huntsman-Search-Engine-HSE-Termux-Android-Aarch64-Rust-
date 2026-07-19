@@ -1,6 +1,32 @@
 use super::*;
 
 #[test]
+fn resolve_key_prefers_dedicated_urlhaus_key() {
+    let r = resolve_key(Some("uh-key"), Some("tf-key"));
+    assert_eq!(r, Some(("uh-key", "urlhaus")));
+}
+
+#[test]
+fn resolve_key_falls_back_to_threatfox_key() {
+    let r = resolve_key(None, Some("tf-key"));
+    assert_eq!(r, Some(("tf-key", "threatfox")));
+}
+
+#[test]
+fn resolve_key_treats_empty_primary_as_absent() {
+    // A present-but-empty env var (e.g. `HUNTSMAN_ABUSECH_KEY=`) must not win
+    // over a real fallback key, and must not itself be returned as "the key".
+    let r = resolve_key(Some(""), Some("tf-key"));
+    assert_eq!(r, Some(("tf-key", "threatfox")));
+}
+
+#[test]
+fn resolve_key_none_when_both_absent_or_empty() {
+    assert_eq!(resolve_key(None, None), None);
+    assert_eq!(resolve_key(Some(""), Some("")), None);
+}
+
+#[test]
 fn accepts_domain_and_ip() {
         let m = UrlHaus;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "x")));

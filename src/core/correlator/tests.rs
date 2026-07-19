@@ -7763,6 +7763,101 @@ fn au110_no_fire_on_shared_hosting_fanout() {
     );
 }
 
+// ── AU-113 — direct-connect origin-candidate unmasking (relation rule) ─────
+
+#[test]
+fn au113_fires_when_cdn_apex_has_a_direct_connect_sibling() {
+    // apex.com resolves ONLY to a Cloudflare edge; mail.apex.com (an MX
+    // sibling) resolves directly to a real, routable IP — a genuine
+    // origin-candidate lead.
+    let apex = Entity::new(EntityKind::Domain, "apex.com", 0.8, "s");
+    let cdn_ip = Entity::new(EntityKind::IpAddress, "104.16.5.5", 0.8, "s");
+    let mut mx = Entity::new(EntityKind::Domain, "mail.apex.com", 0.8, "s");
+    mx.tag("mx");
+    let origin_ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
+
+    let ents = vec![apex.clone(), cdn_ip.clone(), mx.clone(), origin_ip.clone()];
+    let rels = vec![resolves(&apex, &cdn_ip), resolves(&mx, &origin_ip)];
+
+    let r = rule_au_113_direct_connect_origin_candidate(&ents, &rels, "s", 0);
+    assert_eq!(
+        r.len(),
+        1,
+        "a CDN apex with a direct-connect sibling must fire: {r:?}"
+    );
+    assert_eq!(r[0].rule_id, "AU-113");
+    assert_eq!(r[0].severity, Severity::Medium);
+    assert!(r[0].entity_uids.contains(&apex.uid));
+    assert!(r[0].entity_uids.contains(&mx.uid));
+    assert!(r[0].entity_uids.contains(&origin_ip.uid));
+    assert!(r[0].description.contains("apex.com"));
+    assert!(r[0].description.contains("mail.apex.com"));
+    assert!(r[0].description.contains("45.33.32.156"));
+}
+
+#[test]
+fn au113_fires_for_a_direct_connect_subdomain_brute_hit() {
+    // cpanel.apex.org (subdomain + dns-brute, a direct-connect label) is the
+    // sibling here, instead of an MX record.
+    let apex = Entity::new(EntityKind::Domain, "apex.org", 0.8, "s");
+    let cdn_ip = Entity::new(EntityKind::IpAddress, "172.64.1.1", 0.8, "s");
+    let mut cpanel = Entity::new(EntityKind::Domain, "cpanel.apex.org", 0.8, "s");
+    cpanel.tag("subdomain");
+    cpanel.tag("dns-brute");
+    let origin_ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
+
+    let ents = vec![
+        apex.clone(),
+        cdn_ip.clone(),
+        cpanel.clone(),
+        origin_ip.clone(),
+    ];
+    let rels = vec![resolves(&apex, &cdn_ip), resolves(&cpanel, &origin_ip)];
+
+    let r = rule_au_113_direct_connect_origin_candidate(&ents, &rels, "s", 0);
+    assert_eq!(
+        r.len(),
+        1,
+        "a direct-connect dns-brute sibling must fire: {r:?}"
+    );
+    assert!(r[0].description.contains("cpanel.apex.org"));
+}
+
+#[test]
+fn au113_no_fire_when_apex_is_not_cdn_fronted() {
+    // apex.com resolves to an ordinary, non-CDN IP — nothing to unmask.
+    let apex = Entity::new(EntityKind::Domain, "apex.com", 0.8, "s");
+    let apex_ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
+    let mut mx = Entity::new(EntityKind::Domain, "mail.apex.com", 0.8, "s");
+    mx.tag("mx");
+    let mx_ip = Entity::new(EntityKind::IpAddress, "45.33.32.200", 0.8, "s");
+
+    let ents = vec![apex.clone(), apex_ip.clone(), mx.clone(), mx_ip.clone()];
+    let rels = vec![resolves(&apex, &apex_ip), resolves(&mx, &mx_ip)];
+
+    let r = rule_au_113_direct_connect_origin_candidate(&ents, &rels, "s", 0);
+    assert!(r.is_empty(), "a non-CDN apex has nothing to unmask: {r:?}");
+}
+
+#[test]
+fn au113_no_fire_when_sibling_also_resolves_to_a_cdn_edge() {
+    // Both apex and its MX sibling sit behind the CDN — no leak.
+    let apex = Entity::new(EntityKind::Domain, "apex.com", 0.8, "s");
+    let cdn_ip = Entity::new(EntityKind::IpAddress, "104.16.5.5", 0.8, "s");
+    let mut mx = Entity::new(EntityKind::Domain, "mail.apex.com", 0.8, "s");
+    mx.tag("mx");
+    let mx_cdn_ip = Entity::new(EntityKind::IpAddress, "104.16.9.9", 0.8, "s");
+
+    let ents = vec![apex.clone(), cdn_ip.clone(), mx.clone(), mx_cdn_ip.clone()];
+    let rels = vec![resolves(&apex, &cdn_ip), resolves(&mx, &mx_cdn_ip)];
+
+    let r = rule_au_113_direct_connect_origin_candidate(&ents, &rels, "s", 0);
+    assert!(
+        r.is_empty(),
+        "an equally CDN-fronted sibling leaks nothing: {r:?}"
+    );
+}
+
 // ─── AU-111 tests (CDN origin candidate) ──────────────────────────────────────
 
 fn cdn_fronted_domain(value: &str, provider: &str) -> Entity {
@@ -7828,6 +7923,41 @@ fn au111_does_not_fire_for_onprem_waf_appliances() {
     assert!(
         rule_au_111_cdn_origin_candidate(&[dom, ip], "s", 0).is_empty(),
         "an on-premise WAF appliance must not be treated as a DNS-fronting CDN"
+    );
+}
+
+#[test]
+fn au113_no_fire_for_a_generic_subdomain_or_unrelated_domain() {
+    // A generic subdomain (no mx tag, no direct-connect label) resolving
+    // off-CDN is not evidence of anything — deliberately narrow scope. A
+    // domain under a DIFFERENT registrable domain must not cross-match either.
+    let apex = Entity::new(EntityKind::Domain, "apex.com", 0.8, "s");
+    let cdn_ip = Entity::new(EntityKind::IpAddress, "104.16.5.5", 0.8, "s");
+    let mut generic = Entity::new(EntityKind::Domain, "assets.apex.com", 0.8, "s");
+    generic.tag("subdomain");
+    generic.tag("dns-brute");
+    let generic_ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
+    let other = Entity::new(EntityKind::Domain, "unrelated.net", 0.8, "s");
+    let other_ip = Entity::new(EntityKind::IpAddress, "45.33.32.200", 0.8, "s");
+
+    let ents = vec![
+        apex.clone(),
+        cdn_ip.clone(),
+        generic.clone(),
+        generic_ip.clone(),
+        other.clone(),
+        other_ip.clone(),
+    ];
+    let rels = vec![
+        resolves(&apex, &cdn_ip),
+        resolves(&generic, &generic_ip),
+        resolves(&other, &other_ip),
+    ];
+
+    let r = rule_au_113_direct_connect_origin_candidate(&ents, &rels, "s", 0);
+    assert!(
+        r.is_empty(),
+        "a generic subdomain label / unrelated domain must not fire: {r:?}"
     );
 }
 
@@ -8483,5 +8613,235 @@ fn correlator_budget_stops_starting_new_rules_past_the_deadline() {
     assert!(
         evaluate_relation_rules_on(&ents, &[], "s", 0, past).is_empty(),
         "an elapsed budget must stop the relation-rule pass immediately"
+    );
+}
+
+#[test]
+fn readme_correlator_rule_count_matches_the_registry() {
+    // The README's headline "N correlator rules" is hand-maintained and had
+    // drifted badly (it read 74 / "AU-001 through AU-086" against a real total of
+    // 110 / AU-112). Pin it to the live dispatch tables — `RULES` (entity rules)
+    // plus `RELATION_RULES` (graph-aware rules) — so adding a rule without
+    // updating the README fails CI, the same guard the module count already has.
+    // Lives here (a `core::correlator` unit test) because both tables are private
+    // to this module; the integration `tests/architecture.rs` can't see them.
+    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+        .expect("README.md must exist at the crate root");
+    let n = RULES.len() + RELATION_RULES.len();
+    let idx = readme
+        .find("correlator rules")
+        .expect("README must state the correlator rule count as 'N correlator rules'");
+    // The integer immediately preceding "correlator rules" (commas stripped).
+    let stated: usize = readme[..idx]
+        .trim_end()
+        .rsplit(|c: char| !c.is_ascii_digit() && c != ',')
+        .next()
+        .unwrap_or_default()
+        .replace(',', "")
+        .parse()
+        .expect("a numeric rule count must immediately precede 'correlator rules' in README");
+    assert_eq!(
+        stated,
+        n,
+        "README says {stated} correlator rules but the registry dispatches {n} \
+         (RULES {} + RELATION_RULES {}); update the count in README.md",
+        RULES.len(),
+        RELATION_RULES.len()
+    );
+}
+
+// ─── Bench-only entry points (F.3 / SOL-F3) ────────────────────────────────
+//
+// `bench_synthetic_entities`/`bench_correlate_entities` are wholly new `pub`
+// surface added solely so `benches/correlation_pass.rs` (a separate
+// compilation unit that only sees this crate's public API) can reach the
+// `pub(crate)` correlation pass. Git-stash-provable: the pre-fix tree has
+// neither function, so these tests fail to compile against it — the
+// strongest possible regression signal for wholly new code, the same
+// precedent the 2026-07-14 cargo-fuzz cycle established for
+// `fuzz_entry_parse_der`.
+
+/// Canonical JSON encoding of an entity set for equality comparison, with
+/// every live-clock field zeroed first: each `Entity::observed_at` and every
+/// `Evidence::recorded_at` in its evidence chain.
+///
+/// Both are stamped from the real wall clock (`unix_now()`, inside
+/// `Entity::new`/`Evidence::new`) — `bench_synthetic_entities` calls both for
+/// every entity it builds, so despite its own doc comment's "pure and
+/// deterministic (no RNG)" claim, two calls a moment apart legitimately
+/// produce different `observed_at`/`recorded_at` whenever they straddle a
+/// real second boundary. This is the identical bug class
+/// [`ts_blind_json`] fixes for `Correlation` just below (see its doc
+/// comment for the live-reproduced CI failure this whole family of fixes
+/// responds to) — found by checking this file's OTHER full-JSON-equality
+/// determinism test for the same latent flakiness rather than assuming it
+/// was fine, and confirmed real the same way: forcing a real 1.1s sleep
+/// between two calls reliably fails the raw (pre-fix) comparison here too.
+fn ts_blind_entities_json(ents: &[Entity]) -> String {
+    let blinded: Vec<Entity> = ents
+        .iter()
+        .cloned()
+        .map(|mut e| {
+            e.observed_at = 0;
+            for ev in &mut e.evidence {
+                ev.recorded_at = 0;
+            }
+            e
+        })
+        .collect();
+    serde_json::to_string(&blinded).unwrap()
+}
+
+#[test]
+fn bench_synthetic_entities_yields_exactly_n_deterministic_entities() {
+    for &n in &[0usize, 1, 4, 37, 200] {
+        let a = bench_synthetic_entities(n);
+        let b = bench_synthetic_entities(n);
+        assert_eq!(
+            a.len(),
+            n,
+            "bench_synthetic_entities({n}) must yield exactly n entities"
+        );
+        // Neither `Entity` nor `Correlation` derive `PartialEq` (large,
+        // evolving structs — see e.g. line ~366's precedent), so compare via
+        // their canonical JSON encoding, same as this file already does
+        // elsewhere for structural equality — `ts`-blind, see
+        // `ts_blind_entities_json`'s own doc comment for why.
+        assert_eq!(
+            ts_blind_entities_json(&a),
+            ts_blind_entities_json(&b),
+            "bench_synthetic_entities is documented pure/deterministic (no RNG) — \
+             two calls at the same n must produce identical entities (bar the real \
+             wall-clock observed_at/recorded_at stamps), or bench-to-bench \
+             comparisons and the perf-guard ratio assertion it also feeds \
+             (core::correlator::perf) would be meaningless"
+        );
+    }
+}
+
+#[test]
+fn bench_synthetic_entities_is_ts_blind_deterministic_across_a_real_second_boundary() {
+    // Same forced-race technique as `bench_correlate_entities_is_ts_blind_
+    // deterministic_across_a_real_second_boundary` just below — see its doc
+    // comment for why a real sleep past a real clock boundary, not a
+    // mocked/injected clock.
+    let a = bench_synthetic_entities(200);
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    let b = bench_synthetic_entities(200);
+
+    assert_ne!(
+        a.first().map(|e| e.observed_at),
+        b.first().map(|e| e.observed_at),
+        "this test's whole point is to force a real second-boundary crossing \
+         between the two calls — if observed_at didn't move, the sleep isn't \
+         doing its job and this test isn't actually proving anything"
+    );
+    assert_eq!(
+        ts_blind_entities_json(&a),
+        ts_blind_entities_json(&b),
+        "entity content must stay identical even when the two calls land in \
+         different wall-clock seconds"
+    );
+}
+
+/// Canonical JSON encoding of a correlation set for equality comparison,
+/// with every `ts` zeroed first.
+///
+/// `ts` is stamped from the real wall clock (`unix_now()`, called fresh
+/// inside `evaluate_rules` on every invocation) — it legitimately differs
+/// between two calls made a moment apart, whenever they happen to straddle
+/// a real second boundary. That's correct behaviour for a field that
+/// records *when* a correlation fired, not a determinism defect in the
+/// rules themselves. Live-reproduced on 2026-07-15: a real GitHub Actions
+/// run failed `bench_correlate_entities_matches_the_internal_pass_and_is_
+/// deterministic` with `left`/`right` differing in exactly one respect —
+/// every one of 106 findings carried `ts=1784092984` on one side and
+/// `ts=1784092985` on the other (rule firings, descriptions, entity_uids,
+/// ranks, and ordering were all byte-identical) — because the runner was
+/// briefly slow enough for two back-to-back calls to cross a real second.
+/// The property this file actually needs to guarantee — that the RULES'
+/// decisions (which fire, on which entities, in which order, ranked how)
+/// are a pure function of the input — holds regardless; comparing through
+/// this `ts`-blind view is what actually tests that, without also
+/// asserting something about the OS clock that was never the point.
+/// Neither `Correlation` nor `Entity` derive `PartialEq` (see this file's
+/// header comment), so equality is still via canonical JSON, same
+/// precedent as every other struct-equality check here — just of a
+/// `ts`-blind clone rather than the raw value.
+fn ts_blind_json(corrs: &[Correlation]) -> String {
+    let blinded: Vec<Correlation> = corrs
+        .iter()
+        .cloned()
+        .map(|mut c| {
+            c.ts = 0;
+            c
+        })
+        .collect();
+    serde_json::to_string(&blinded).unwrap()
+}
+
+#[test]
+fn bench_correlate_entities_matches_the_internal_pass_and_is_deterministic() {
+    let ents = bench_synthetic_entities(200);
+    // Delegates straight to `correlate_entities` — must produce byte-identical
+    // output (bar the real wall-clock `ts`, see `ts_blind_json`) to calling
+    // the internal pass directly, not a divergent copy.
+    let via_bench = bench_correlate_entities(&ents, "scan");
+    let via_internal = correlate_entities(&ents, "scan");
+    assert_eq!(
+        ts_blind_json(&via_bench),
+        ts_blind_json(&via_internal),
+        "bench_correlate_entities must be a pure delegation to correlate_entities, \
+         not an independently-drifting copy"
+    );
+    // Determinism-by-construction (docs/CONVENTIONS.md §5): running the pass
+    // twice over the same input must yield identical rule decisions — the
+    // property the criterion bench and the perf module's
+    // `pass_is_subquadratic` guard both implicitly rely on when comparing
+    // timings/ratios across runs.
+    let again = bench_correlate_entities(&ents, "scan");
+    assert_eq!(
+        ts_blind_json(&via_bench),
+        ts_blind_json(&again),
+        "the correlation pass must be deterministic across repeated calls on \
+         identical input"
+    );
+    assert!(
+        !bench_correlate_entities(&ents, "scan").is_empty(),
+        "the representative synthetic set (shared handles, breach/stealer tags) \
+         must exercise at least one firing rule, or the bench would be timing an \
+         early-exit no-op rather than real correlation work"
+    );
+}
+
+#[test]
+fn bench_correlate_entities_is_ts_blind_deterministic_across_a_real_second_boundary() {
+    // Directly, reliably reproduces the 2026-07-15 live CI failure above
+    // instead of relying on the two calls happening to straddle a wall-clock
+    // second by luck: sleeps a real 1.1s (guaranteeing `unix_now()`, which
+    // truncates to whole seconds, advances by at least one full second
+    // between the calls) and confirms `ts` DOES genuinely differ — proving
+    // this test is actually exercising the race, not accidentally passing —
+    // while the `ts`-blind view stays equal. A real sleep past a real clock
+    // boundary, not a mocked/injected clock: the same "exercise real
+    // behaviour, don't fake it" discipline this file uses for its other
+    // timing-sensitive coverage.
+    let ents = bench_synthetic_entities(200);
+    let first = correlate_entities(&ents, "scan");
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    let second = correlate_entities(&ents, "scan");
+
+    assert_ne!(
+        first.first().map(|c| c.ts),
+        second.first().map(|c| c.ts),
+        "this test's whole point is to force a real second-boundary crossing \
+         between the two calls — if ts didn't move, the sleep isn't doing its \
+         job and this test isn't actually proving anything"
+    );
+    assert_eq!(
+        ts_blind_json(&first),
+        ts_blind_json(&second),
+        "rule firings/attribution/ranking must stay identical even when the \
+         two calls land in different wall-clock seconds"
     );
 }

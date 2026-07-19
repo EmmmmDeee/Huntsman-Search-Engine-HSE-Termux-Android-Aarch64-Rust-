@@ -101,3 +101,75 @@ fn meaningful_tag_keeps_threat_categories_drops_noise() {
             assert!(!is_meaningful_tag(noise), "{noise:?} should be noise");
         }
     }
+
+    // ── T2.111: transport/parse failures must surface, not vanish ──────
+    //
+    // Before this fix, `run_otx`/`run_tor_check` discarded every `Err` with
+    // a bare `return`, and `process()` always returned `Ok(result)` — a
+    // total outage was indistinguishable from a clean "nothing found".
+    // `process()` now folds `hard_failure` through the shared
+    // `ModuleResult::or_hard_failure` (T2.114 centralised this exact
+    // combinator out of this module so `niamonx` could reuse it instead of
+    // duplicating it) — its decision-table regression tests now live beside
+    // it in `core::module::tests`, not here.
+
+    /// A one-shot local HTTP server that always answers with `status` and
+    /// `body` — used to give `fetch_exit_set` a real (not mocked) transport
+    /// to hit so its failure classification is exercised end to end.
+    async fn serve_once(status: u16, body: &'static [u8]) -> std::net::SocketAddr {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let reason = if status == 200 { "OK" } else { "Error" };
+            let head = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(body).await;
+            let _ = sock.flush().await;
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn fetch_exit_set_errors_on_non_success_status() {
+        // Regression: previously a non-2xx status silently became `None`.
+        let addr = serve_once(503, b"upstream down").await;
+        let client = reqwest::Client::new();
+        let res = fetch_exit_set(&client, &format!("http://{addr}/")).await;
+        assert!(
+            res.is_err(),
+            "a 503 from the Tor exit-list host must propagate as an error"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_exit_set_errors_on_empty_exit_list_body() {
+        // Regression: an empty/garbage body (zero ExitAddress lines)
+        // previously also silently became `None`, identical to a real
+        // outage AND identical to "genuinely no exits" — now it errors
+        // explicitly instead of masquerading as either.
+        let addr = serve_once(200, b"not an exit list\n").await;
+        let client = reqwest::Client::new();
+        let res = fetch_exit_set(&client, &format!("http://{addr}/")).await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_exit_set_parses_real_shaped_body_on_success() {
+        let body = b"ExitNode ABCDEF\nPublished 2026-07-14 00:00:00\nLastStatus 2026-07-14 00:00:00\nExitAddress 198.51.100.7 2026-07-14 00:00:00\n";
+        let addr = serve_once(200, body).await;
+        let client = reqwest::Client::new();
+        let set = fetch_exit_set(&client, &format!("http://{addr}/"))
+            .await
+            .expect("a well-formed body must parse");
+        assert!(set.contains("198.51.100.7"));
+        assert_eq!(set.len(), 1);
+    }

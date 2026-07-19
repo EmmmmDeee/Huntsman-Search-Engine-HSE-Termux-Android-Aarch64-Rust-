@@ -15,7 +15,6 @@
 mod tests;
 
 use async_trait::async_trait;
-use md5::{Digest, Md5};
 use serde::Deserialize;
 
 use crate::core::{
@@ -24,6 +23,13 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
+// The Gravatar request-hash + response schema are the shared Gravatar API
+// contract, single-sourced in `util::gravatar` (T2.124) — imported here under
+// this module's established local names so the entity-building body and its
+// tests are unchanged. Only `Entry`/`Profile`/`hash` are named; the nested
+// `Name`/`UrlEntry`/`PhotoEntry` are reached through field access, never by
+// name, so importing them would be an unused import.
+use crate::util::gravatar::{Entry as ProfileEntry, Profile as ProfileResp, hash as gravatar_hash};
 use crate::util::http::RequestBuilderExt;
 use crate::util::http::urlencode;
 
@@ -63,48 +69,9 @@ pub(super) struct NumverifyResp {
     pub(super) line_type: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Gravatar response types
-// ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-pub(super) struct ProfileResp {
-    pub(super) entry: Vec<ProfileEntry>,
-}
-
-#[derive(Deserialize)]
-pub(super) struct ProfileEntry {
-    #[serde(rename = "displayName")]
-    pub(super) display_name: Option<String>,
-    #[serde(rename = "preferredUsername")]
-    pub(super) preferred_username: Option<String>,
-    #[serde(default)]
-    pub(super) name: Option<NameField>,
-    #[serde(default)]
-    pub(super) urls: Vec<UrlEntry>,
-    #[serde(rename = "currentLocation")]
-    pub(super) location: Option<String>,
-    #[serde(rename = "aboutMe")]
-    pub(super) about_me: Option<String>,
-    #[serde(default)]
-    pub(super) photos: Option<Vec<PhotoEntry>>,
-}
-
-#[derive(Deserialize)]
-pub(super) struct NameField {
-    pub(super) formatted: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub(super) struct UrlEntry {
-    pub(super) value: Option<String>,
-    pub(super) title: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub(super) struct PhotoEntry {
-    pub(super) value: Option<String>,
-}
+// The Gravatar response types (`ProfileResp`/`ProfileEntry` and the nested
+// name/url/photo shapes) are the shared `util::gravatar` contract, imported
+// above — see that module for why they are single-sourced (T2.124).
 
 // ---------------------------------------------------------------------------
 // Evidence source constant
@@ -312,17 +279,6 @@ pub(super) fn build_phone_entities(
 // Email path: Gravatar (free, no key)
 // ---------------------------------------------------------------------------
 
-/// The Gravatar lookup hash for an email: MD5 of the email in CANONICAL form —
-/// trimmed and lowercased, per the gravatar.com spec. Hashing the raw value
-/// (`Jane.Doe@Example.com `) is a guaranteed 404 for any address carrying
-/// capitals or surrounding whitespace — the address never resolves to its real
-/// Gravatar. Pure.
-fn gravatar_hash(email: &str) -> String {
-    let mut hasher = Md5::new();
-    hasher.update(email.trim().to_lowercase().as_bytes());
-    hex::encode(hasher.finalize())
-}
-
 async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
     if !target.value.contains('@') {
         return Ok(ModuleResult::new());
@@ -405,7 +361,7 @@ pub(super) fn build_email_entities(
     {
         ev = ev.with_attr("name", n);
     }
-    if let Some(loc) = entry.location.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(loc) = entry.current_location.as_deref().filter(|s| !s.is_empty()) {
         ev = ev.with_attr("location", loc);
     }
     if let Some(bio) = entry.about_me.as_deref().filter(|s| !s.is_empty()) {
@@ -413,8 +369,7 @@ pub(super) fn build_email_entities(
     }
     if let Some(avatar) = entry
         .photos
-        .as_ref()
-        .and_then(|p| p.first())
+        .first()
         .and_then(|p| p.value.as_deref())
         .filter(|s| !s.is_empty())
     {
@@ -460,7 +415,7 @@ pub(super) fn build_email_entities(
         ));
         result.push(ue);
     }
-    if let Some(loc) = entry.location.as_deref()
+    if let Some(loc) = entry.current_location.as_deref()
         && loc.len() >= 3
     {
         let mut ae = Entity::new(EntityKind::Address, loc, 0.55, scan_id);

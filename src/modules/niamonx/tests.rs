@@ -71,6 +71,18 @@ fn pbs_v1_found_with_blocks_tags_breach_and_pivots_names() {
     emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s");
     assert!(entity.has_tag("breach"));
     assert!(entity.has_tag("niamonx:breach:exampleleak"));
+    // The breach-block evidence carries the canonical `breach_date` key AU-019's
+    // temporal breach-cluster rule reads (mirroring the PBS-v2 path), taken from
+    // `first_seen` — without it a PBS-v1 hit could never date-cluster.
+    let block_ev = entity
+        .evidence
+        .iter()
+        .find(|e| e.attributes.contains_key("blocks_total"))
+        .expect("PBS-v1 breach-block evidence must be present");
+    assert_eq!(
+        block_ev.attributes.get("breach_date").map(String::as_str),
+        Some("2019-01-01")
+    );
     // One Email pivot + one Person pivot.
     assert!(
         result
@@ -172,6 +184,20 @@ fn module_metadata() {
     assert_eq!(m.cost(), crate::core::module::ModuleCost::KeyGated);
     assert!(!m.attack_techniques().is_empty());
     assert!(m.produces().contains(&EntityKind::Email));
+}
+
+#[test]
+fn attack_techniques_include_employee_names_for_the_pbs_v1_name_pivot() {
+    use crate::core::attack;
+    let t = NiamonX.attack_techniques();
+    // The Breach-category default (Credentials + Email Addresses) omits
+    // Employee Names, but PBS v1's meta.names corroboration mints Person
+    // entities (process()'s name-pivot loop) — the same pattern
+    // dehashed/see_know/oathnet_pro declare T1589.003 for.
+    for id in ["T1589.001", "T1589.002", "T1589.003"] {
+        assert!(t.contains(&id), "niamonx must claim {id}, got {t:?}");
+        assert!(attack::technique(id).is_some(), "{id} must be catalogued");
+    }
 }
 
 #[test]

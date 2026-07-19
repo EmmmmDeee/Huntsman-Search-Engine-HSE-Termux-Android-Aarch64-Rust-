@@ -211,6 +211,16 @@ impl Module for NiamonX {
         ModuleCategory::Breach
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Breach default covers Credentials (T1589.001) + Email Addresses
+        // (T1589.002), but PBS v1's `meta.names` corroboration also mints
+        // Person entities (see `produces()`/`process()` below) → T1589.003
+        // Employee Names, which the default omits. Same pattern as
+        // `dehashed`/`see_know`/`oathnet_pro` declaring it for their own
+        // name-field Person extraction.
+        &["T1589.001", "T1589.002", "T1589.003"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         // Domain is accepted as input but no Domain pivot entity is ever emitted.
         // Person is emitted from PBS v1 meta.names corroboration.
@@ -244,24 +254,43 @@ impl Module for NiamonX {
         let mut entity = target.to_entity(0.80, &ctx.scan_id);
         entity.tag(SRC);
 
+        // The last genuine transport/parse failure seen across the three
+        // independent endpoints (T2.114). Real evidence from any endpoint is
+        // never discarded because a *different* endpoint failed — see
+        // `ModuleResult::or_hard_failure` below.
+        let mut hard_failure: Option<Error> = None;
         match r1 {
             Ok(r) => emit_pbs_v1(r, &mut entity, &mut result, query, &ctx.scan_id),
-            Err(e) => warn!(error = %e, "niamonx pbs_v1 failed"),
+            Err(e) => {
+                warn!(error = %e, "niamonx pbs_v1 failed");
+                hard_failure = Some(e);
+            }
         }
         match r2 {
             Ok(r) => emit_pbs_v2(r, &mut entity, &mut result, query, &ctx.scan_id),
-            Err(e) => warn!(error = %e, "niamonx pbs_v2 failed"),
+            Err(e) => {
+                warn!(error = %e, "niamonx pbs_v2 failed");
+                hard_failure.get_or_insert(e);
+            }
         }
         match r3 {
             Ok(r) => emit_ulp(r, &mut entity, &mut result, query, &ctx.scan_id),
-            Err(e) => warn!(error = %e, "niamonx ulp failed"),
+            Err(e) => {
+                warn!(error = %e, "niamonx ulp failed");
+                hard_failure.get_or_insert(e);
+            }
         }
 
         // Only emit the entity when at least one endpoint contributed evidence.
         if !entity.evidence.is_empty() {
             result.push(entity);
         }
-        Ok(result)
+        // All three endpoints failing (e.g. a revoked API key, or a full
+        // dash.niamonx.io outage) previously read as "nothing found on any of
+        // the three PBS/ULP surfaces" — indistinguishable from a genuine
+        // triple-negative. Surface it as a real error instead, unless at
+        // least one endpoint already produced real evidence.
+        result.or_hard_failure(hard_failure)
     }
 }
 
@@ -398,6 +427,13 @@ fn emit_pbs_v1(
             .with_attr("blocks_total", meta.blocks_total.to_string());
             if let Some(first_seen) = &meta.first_seen {
                 ev = ev.with_attr("first_seen", first_seen);
+                // Mirror the PBS-v2 path's canonical `breach_date` key (see the
+                // `.with_attr("breach_date", …)` in emit_pbs_v2): the entity is
+                // `breach`-tagged, so AU-019's temporal breach-cluster rule
+                // (rules/breach.rs) reads `breach_date`, not `first_seen`. Its
+                // absence here left every PBS-v1 breach hit unable to
+                // date-cluster despite carrying an earliest-exposure date.
+                ev = ev.with_attr("breach_date", first_seen);
             }
             if let Some(last_seen) = &meta.last_seen {
                 ev = ev.with_attr("last_seen", last_seen);

@@ -8,25 +8,34 @@ use crate::util::curl_client::{AuthScheme, CurlClient};
 use crate::util::response_cache::ResponseCache;
 
 use super::budget::{mark_key_invalid, mark_quota_exhausted};
+use super::enterprise_config::ENTERPRISE;
 
 // Embedded fallback: the single-source-of-truth default lives in `util::keys`.
 const HARDCODED_KEY: &str = crate::util::keys::SEEKNOW_DEFAULT_KEY;
 
 /// Per-process response cache backed by the shared
-/// [`ResponseCache`] primitive (cap 1024 — sized to comfortably hold
-/// every distinct endpoint × query a single scan generates).
-pub(super) static RESPONSE_CACHE: ResponseCache<Vec<Value>> = ResponseCache::new(1024);
+/// [`ResponseCache`] primitive (cap [`ENTERPRISE`]`.cache_size` — sized to
+/// comfortably hold every distinct endpoint × query a single scan
+/// generates).
+pub(super) static RESPONSE_CACHE: ResponseCache<Vec<Value>> =
+    ResponseCache::new(ENTERPRISE.cache_size);
 
 /// Shared curl-subprocess client. `X-API-Key` auth (per the see-know.eu spec —
 /// the server rejects `Authorization: Bearer` with "Missing API key. Use
-/// X-API-Key"), 75s curl timeout, 78s outer tokio timeout.
+/// X-API-Key"), [`ENTERPRISE`]`.curl_timeout_secs` curl timeout,
+/// `.tokio_timeout_millis` outer tokio timeout.
 // The name/auto `/search` path has a server-side cap of ~55s and routinely
 // responds in 50–60s with real data. The previous 12s curl / 15s outer budget
 // guaranteed a timeout-exit (curl 28) on every name search, surfacing as an
 // opaque "curl failed" with zero entities. Budget above the cap: 75s curl,
 // 78s outer (curl < outer so curl's own exit code is observed), paired with an
 // 80s module max_timeout in `modules::see_know`.
-pub(super) static CLIENT: CurlClient = CurlClient::new("seek_now", AuthScheme::XApiKey, 75, 78_000);
+pub(super) static CLIENT: CurlClient = CurlClient::new(
+    "seek_now",
+    AuthScheme::XApiKey,
+    ENTERPRISE.curl_timeout_secs,
+    ENTERPRISE.tokio_timeout_millis,
+);
 
 /// Cache key combining endpoint path, normalised query, and query
 /// type (when applicable). Disambiguates the universal /search path

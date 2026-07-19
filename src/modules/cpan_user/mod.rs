@@ -203,9 +203,11 @@ impl Module for CpanUser {
             "https://fastapi.metacpan.org/v1/author/{}",
             urlencode(&handle.to_ascii_uppercase())
         );
-        let author: CpanAuthor = match fetch_json_or_404(&ctx.http, SRC, &url).await {
-            Ok(Some(a)) => a,
-            Ok(None) | Err(_) => return Ok(ModuleResult::new()),
+        // 404 (`Ok(None)`) = genuine "no such author" clean miss; every other
+        // failure (429/5xx/transport) propagates via `?` instead of a fake 404
+        // (T2.117 — `fetch_json_or_404`'s split is pinned in `util::http::tests`).
+        let Some(author) = fetch_json_or_404::<CpanAuthor>(&ctx.http, SRC, &url).await? else {
+            return Ok(ModuleResult::new());
         };
         if !author.pauseid.eq_ignore_ascii_case(handle) {
             return Ok(ModuleResult::new());

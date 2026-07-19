@@ -1,5 +1,5 @@
-//! Cell tower scanner for signal_radar — reads `termux-telephony-cellinfo`
-//! and `termux-telephony-signalstrength` in parallel.
+//! Cell tower scanner for signal_radar — reads `termux-telephony-cellinfo`,
+//! which already carries per-cell `dbm`/signal data (see [`Cell::dbm`]).
 
 use serde::Deserialize;
 

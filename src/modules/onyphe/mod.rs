@@ -272,6 +272,40 @@ fn extract_entities(
             result.push(ie);
         }
 
+        // ── Threat-list hits ─────────────────────────────────────────────
+        // ONYPHE's `threatlist` category records that `value` appears on a
+        // named third-party block/threat list, with optional descriptive
+        // `tag`s (e.g. "Scanner", "SSH"). Both fields were already parsed
+        // into the raw `Value` for every other category above but never read
+        // back out for `threatlist` specifically — this module's own
+        // top-of-file doc comment claims "threatlist classification is
+        // surfaced", but until this fix no code path read either field, so
+        // every threat-list hit ONYPHE returned was silently dropped.
+        if category == "threatlist" {
+            let list_name = vstr(r, "threatlist");
+            let list_tags = vstrs(r, "tag");
+            if (list_name.is_some() || !list_tags.is_empty())
+                && seen.insert(format!(
+                    "@threat:{}:{}",
+                    list_name.as_deref().unwrap_or(""),
+                    list_tags.join(",").to_lowercase()
+                ))
+            {
+                let mut te = target.to_entity(0.6, scan_id);
+                te.tag(crate::core::tags::THREAT_INTEL);
+                te.tag(crate::core::tags::MALICIOUS);
+                let mut tev = Evidence::new(SRC, format!("ONYPHE threatlist hit: {value}"));
+                if let Some(name) = &list_name {
+                    tev = tev.with_attr("threatlist", name);
+                }
+                if !list_tags.is_empty() {
+                    tev = tev.with_attr("tags", list_tags.join(", "));
+                }
+                te.add_evidence(tev);
+                result.push(te);
+            }
+        }
+
         // ── Resolutions: hostnames / subdomains / domains ───────────────
         // Every DISTINCT in-scope resolution is emitted — no per-module cap.
         // Each host is a real BFS expansion pivot AND a record in the output;

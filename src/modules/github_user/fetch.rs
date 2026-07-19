@@ -107,7 +107,7 @@ pub(super) async fn fetch_ssh_keys(login: &str, ctx: &ModuleContext, result: &mu
 }
 
 pub(super) async fn fetch_orgs(
-    http: &reqwest::Client,
+    ctx: &ModuleContext,
     username: &str,
     token: Option<&str>,
 ) -> Vec<String> {
@@ -115,7 +115,8 @@ pub(super) async fn fetch_orgs(
         "https://api.github.com/users/{}/orgs",
         crate::util::http::urlencode(username)
     );
-    let mut req = http
+    let mut req = ctx
+        .http
         .get(&url)
         .header("User-Agent", crate::util::http::UA_OSINT)
         .header("Accept", "application/vnd.github+json");
@@ -125,7 +126,14 @@ pub(super) async fn fetch_orgs(
     let Ok(resp) = req.send().await else {
         return Vec::new();
     };
-    if !resp.status().is_success() {
+    let status = resp.status();
+    if !status.is_success() {
+        // A present token that gets rejected/throttled must be reported to the
+        // pool, or a dead/throttled token silently degrades every future scan
+        // with no operator-visible signal and no chance to rotate.
+        if let Some(t) = token {
+            crate::util::http::note_keyed_error(status.as_u16(), "github", t, ctx);
+        }
         return Vec::new();
     }
     // Capped read (32 MiB) for the needle scan below — an uncapped `text()`
@@ -140,7 +148,7 @@ pub(super) async fn fetch_orgs(
 }
 
 pub(super) async fn fetch_gists(
-    http: &reqwest::Client,
+    ctx: &ModuleContext,
     username: &str,
     token: Option<&str>,
 ) -> Vec<String> {
@@ -148,7 +156,8 @@ pub(super) async fn fetch_gists(
         "https://api.github.com/users/{}/gists?per_page=30",
         crate::util::http::urlencode(username)
     );
-    let mut req = http
+    let mut req = ctx
+        .http
         .get(&url)
         .header("User-Agent", crate::util::http::UA_OSINT)
         .header("Accept", "application/vnd.github+json");
@@ -158,7 +167,12 @@ pub(super) async fn fetch_gists(
     let Ok(resp) = req.send().await else {
         return Vec::new();
     };
-    if !resp.status().is_success() {
+    let status = resp.status();
+    if !status.is_success() {
+        // Same reporting rationale as `fetch_orgs` above.
+        if let Some(t) = token {
+            crate::util::http::note_keyed_error(status.as_u16(), "github", t, ctx);
+        }
         return Vec::new();
     }
     // Capped read (32 MiB) for the needle scan below — an uncapped `text()`

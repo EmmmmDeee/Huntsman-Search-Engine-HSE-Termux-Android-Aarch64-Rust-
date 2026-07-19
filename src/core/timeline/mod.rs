@@ -44,6 +44,14 @@ pub enum TimelineEventKind {
     LastSeen,
     /// Person date of birth.
     DateOfBirth,
+    /// A geolocated observation instant — currently `exif_geo`'s `shot_time`
+    /// (the EXIF `DateTimeOriginal`/`DateTime` tag) tied to the photo's
+    /// extracted `Coordinates` entity: proof the subject (or their device)
+    /// was physically at that place at that time. The movement/timeline geo
+    /// signal `PROBLEM_TREE` C5/C1(c) name as remaining — two or more of
+    /// these across a scan chart where the subject has actually been, not
+    /// just where they claim to live.
+    LocationVisited,
     /// Anything date-like we recognised but can't classify more precisely.
     Generic,
 }
@@ -66,6 +74,7 @@ impl TimelineEventKind {
             Self::FirstSeen => "first_seen",
             Self::LastSeen => "last_seen",
             Self::DateOfBirth => "date_of_birth",
+            Self::LocationVisited => "location_visited",
             Self::Generic => "event",
         }
     }
@@ -103,9 +112,22 @@ pub struct TimelineEvent {
 /// `structured_id`'s decoded UUIDv1 timestamp) — before this match gained
 /// them, none mapped to anything, so `TimelineEventKind::AccountCreated` was
 /// unreachable dead code and every one of these dates was silently absent
-/// from the timeline. `birth_date`/`death_date` (`wikidata`'s Wikidata-claim
+/// from the timeline. The same fix originally landed only 1 of `structured_id`'s
+/// 4 timestamp-embedding ID decoders: `objectid_created_date`/`ulid_created_date`/
+/// `ksuid_created_date` (MongoDB ObjectID, ULID, KSUID — `structured_id::emit_creation`,
+/// the sibling code path to the UUIDv1 case right beside it in the same module)
+/// were left out of this match, so 3 of the module's 4 decoded creation dates
+/// stayed silently dropped from the timeline even after `uuid_created_date` was
+/// fixed. `birth_date`/`death_date` (`wikidata`'s Wikidata-claim
 /// dates) and `verified_at` (`mastodon_user`'s profile-field verification
-/// timestamp) were equally live and equally unmatched.
+/// timestamp) were equally live and equally unmatched. `shot_time`
+/// (`exif_geo`'s `DateTimeOriginal`/`DateTime` EXIF tag, stamped on every
+/// entity a photo yields — including its extracted `Coordinates`) was the
+/// same story: defined nowhere in this match, so a photo's capture instant
+/// was silently dropped from the timeline even when its GPS location made it
+/// there. Recognising it closes the C5/C1(c) "movement/timeline geo" gap:
+/// dated `Coordinates` events are exactly what tells the footprint timeline
+/// *where* the subject was, not just *when* something about them happened.
 fn classify(attr_key: &str) -> Option<TimelineEventKind> {
     use TimelineEventKind::*;
     let kind = match attr_key.to_ascii_lowercase().as_str() {
@@ -117,11 +139,15 @@ fn classify(attr_key: &str) -> Option<TimelineEventKind> {
         | "joined_at"
         | "discord_created_date"
         | "discord_created_unix_ms"
-        | "uuid_created_date" => AccountCreated,
+        | "uuid_created_date"
+        | "objectid_created_date"
+        | "ulid_created_date"
+        | "ksuid_created_date" => AccountCreated,
         "expires" | "expire_secs" => Expiry,
         "first_seen" | "first_seen_iso" | "first_pulse_created" => FirstSeen,
         "last_seen" | "last_seen_iso" | "last_updated" | "last_update" | "updated" => LastSeen,
         "date_of_birth" | "birth_date" => DateOfBirth,
+        "shot_time" => LocationVisited,
         "start_date" | "review_date" | "end_date" | "date" | "timestamp" | "death_date"
         | "verified_at" => Generic,
         _ => return None,
@@ -299,6 +325,93 @@ pub fn footprint_recency(latest_ts: i64, now_unix: i64) -> FootprintRecency {
     }
 }
 
+/// One leg of a reconstructed movement path — the straight-line hop between
+/// two consecutive [`TimelineEventKind::LocationVisited`] fixes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MovementLeg {
+    pub from_iso: String,
+    pub from_coords: String,
+    pub to_iso: String,
+    pub to_coords: String,
+    /// Great-circle distance between the two fixes ([`crate::util::geo::haversine_km`]).
+    pub distance_km: f64,
+}
+
+/// A reconstructed movement path: the subject's (or their device's) dated
+/// location fixes, walked in chronological order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Movement {
+    pub legs: Vec<MovementLeg>,
+    /// Sum of every leg's `distance_km` — the total great-circle distance
+    /// covered across all fixes. **Not** a real travel distance (no road/route
+    /// modelling, just point-to-point straight lines), so callers should label
+    /// it accordingly.
+    pub total_km: f64,
+    /// Count of location fixes the path was built from (`legs.len() + 1`).
+    pub locations_visited: usize,
+}
+
+/// Reconstruct a chronological movement path from a [`reconstruct`]ed
+/// timeline's [`TimelineEventKind::LocationVisited`] events — "the subject's
+/// device was physically at A on date 1, then B on date 2, C km apart".
+///
+/// The C5/C1(c) "movement/timeline geo" capability's path-reconstruction
+/// increment: `LocationVisited` events already exist (currently sourced from
+/// `exif_geo`'s `shot_time`, tied to the photo's extracted `Coordinates`
+/// entity), and multiple photos taken at different times/places are exactly
+/// the evidence a movement path is built from. This is a thin, pure fold over
+/// already-reconstructed events — no new data source, no new module.
+///
+/// `events` is expected pre-sorted oldest-first (as [`reconstruct`] returns
+/// it); this function does not re-sort, so a caller passing already-sorted
+/// events gets a deterministic, chronological path. Events whose
+/// `entity_value` does not parse as a coordinate (defensive — every current
+/// `LocationVisited` producer emits a `Coordinates` entity, but the mapping is
+/// keyed on evidence-attribute name, not entity kind, so this stays honest
+/// rather than assuming) are skipped rather than breaking the chain.
+///
+/// Returns `None` when fewer than two parseable fixes exist — a single
+/// location is a point, not a path, and fabricating a one-node "movement"
+/// would misstate what was actually observed.
+#[must_use]
+pub fn movement_path(events: &[TimelineEvent]) -> Option<Movement> {
+    let fixes: Vec<&TimelineEvent> = events
+        .iter()
+        .filter(|e| e.kind == TimelineEventKind::LocationVisited)
+        .collect();
+    let mut legs = Vec::new();
+    let mut total_km = 0.0;
+    let mut located = 0usize;
+    let mut prev: Option<(&TimelineEvent, f64, f64)> = None;
+    for fix in fixes {
+        let Some(here) = crate::util::geo::coords::parse(&fix.entity_value) else {
+            continue;
+        };
+        let (lat, lon) = (here.lat, here.lon);
+        located += 1;
+        if let Some((prev_ev, prev_lat, prev_lon)) = prev {
+            let km = crate::util::geo::haversine_km(prev_lat, prev_lon, lat, lon);
+            total_km += km;
+            legs.push(MovementLeg {
+                from_iso: prev_ev.iso.clone(),
+                from_coords: prev_ev.entity_value.clone(),
+                to_iso: fix.iso.clone(),
+                to_coords: fix.entity_value.clone(),
+                distance_km: km,
+            });
+        }
+        prev = Some((fix, lat, lon));
+    }
+    if located < 2 {
+        return None;
+    }
+    Some(Movement {
+        legs,
+        total_km,
+        locations_visited: located,
+    })
+}
+
 // ─── Dependency-free date parsing ────────────────────────────────────────────
 
 /// Days from the civil date 1970-01-01 to `y-m-d` (Howard Hinnant's algorithm).
@@ -323,8 +436,13 @@ fn is_leap(y: i64) -> bool {
 /// Parse a date-ish string into `(unix_seconds, normalised_iso)`.
 ///
 /// Accepts: Unix seconds (10 digits), Unix milliseconds (13 digits), bare year
-/// (`1998`), `YYYY-MM-DD`, `YYYY/MM/DD`, and `YYYY-MM-DDTHH:MM:SS[Z]`. Anything
-/// else (or an out-of-range field) returns `None` so callers skip it cleanly.
+/// (`1998`), `YYYY-MM-DD`, `YYYY/MM/DD`, `YYYY:MM:DD` (the EXIF
+/// `DateTimeOriginal`/`DateTime` tag's own separator — `exif_geo`'s `shot_time`
+/// evidence attribute is stamped verbatim from the file, so the timeline parser
+/// must speak the format the source actually uses, not a normalised one), and
+/// `YYYY-MM-DDTHH:MM:SS[Z]` (or the EXIF form's `YYYY:MM:DD HH:MM:SS`).
+/// Anything else (or an out-of-range field) returns `None` so callers skip it
+/// cleanly.
 pub fn parse_date(raw: &str) -> Option<(i64, String)> {
     let s = raw.trim();
     if s.is_empty() {
@@ -352,10 +470,16 @@ pub fn parse_date(raw: &str) -> Option<(i64, String)> {
         Some((d, t)) => (d, Some(t)),
         None => (s, None),
     };
+    // `:` is EXIF's own date separator (`DateTimeOriginal`/`DateTime`:
+    // `"2019:03:15 08:30:00"`) — safe to accept here because `date_part` is
+    // already isolated from any `HH:MM:SS` time component by the `split_once`
+    // above, so there is no ambiguity with the time's own colons.
     let sep = if date_part.contains('-') {
         '-'
     } else if date_part.contains('/') {
         '/'
+    } else if date_part.contains(':') {
+        ':'
     } else {
         return None;
     };

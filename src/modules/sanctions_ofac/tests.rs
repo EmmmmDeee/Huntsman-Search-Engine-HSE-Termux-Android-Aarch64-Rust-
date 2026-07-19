@@ -30,6 +30,7 @@ fn individual_record() -> SdnRecord {
         name: "ABBAS, Abu".to_string(),
         kind: SdnKind::Individual,
         program: "SDGT".to_string(),
+        title: "Director of PALESTINE LIBERATION FRONT".to_string(),
         remarks: "DOB 10 Dec 1948; Director of PALESTINE LIBERATION FRONT.".to_string(),
     }
 }
@@ -40,6 +41,7 @@ fn organisation_record() -> SdnRecord {
         name: "AEROCARIBBEAN AIRLINES".to_string(),
         kind: SdnKind::Organisation,
         program: "CUBA".to_string(),
+        title: String::new(),
         remarks: String::new(),
     }
 }
@@ -50,6 +52,7 @@ fn vessel_record() -> SdnRecord {
         name: "MAR AZUL".to_string(),
         kind: SdnKind::Vessel,
         program: "CUBA".to_string(),
+        title: String::new(),
         remarks: String::new(),
     }
 }
@@ -65,7 +68,19 @@ fn individual_hit_emits_person_with_reordered_name_and_caution() {
     let attrs = &e.evidence[0].attributes;
     assert!(attrs.contains_key("caution"));
     assert_eq!(attrs.get("program").map(String::as_str), Some("SDGT"));
+    assert_eq!(
+        attrs.get("title").map(String::as_str),
+        Some("Director of PALESTINE LIBERATION FRONT")
+    );
     assert!(attrs.get("remarks").is_some_and(|r| r.contains("DOB 10 Dec 1948")));
+}
+
+#[test]
+fn hit_with_blank_title_omits_title_attribute() {
+    let e = build_entity(&organisation_record(), "s").expect("organisation should emit an entity");
+    // organisation_record() has an empty title (the -0- placeholder normalises
+    // to "") — the attribute must be absent, not present-and-empty.
+    assert!(!e.evidence[0].attributes.contains_key("title"));
 }
 
 #[test]

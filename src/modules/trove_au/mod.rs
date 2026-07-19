@@ -96,6 +96,13 @@ impl Module for TroveAu {
     fn max_timeout_ms(&self) -> u64 {
         8_000
     }
+    fn cache_ttl_secs(&self) -> u64 {
+        // Historical newspaper-archive search results are stable within a
+        // day (new articles land far slower than a scan's re-run cadence);
+        // trove_au is one of C9's own named motivating examples for the
+        // inter-scan cache (finite key-gated query allowance).
+        86_400
+    }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let key = match ctx.key_opt(KEY_ENV) {

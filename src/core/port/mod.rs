@@ -46,6 +46,10 @@ pub trait StoragePort: Send + Sync {
     fn upsert_scan(&self, scan: &Scan) -> Result<()>;
     fn get_scan(&self, id: &str) -> Result<Option<Scan>>;
     fn list_scans(&self, limit: usize) -> Result<Vec<Scan>>;
+    /// Chronological (newest-first) list of past radar sweeps — scans whose
+    /// target is one of the radar endpoints' sentinel anchors. See
+    /// `crate::storage::Store::radar_history` for the full rationale.
+    fn radar_history(&self, limit: usize) -> Result<Vec<Scan>>;
     fn delete_scan(&self, scan_id: &str) -> Result<bool>;
 
     // ── Entities ───────────────────────────────────────────────────────────
@@ -132,12 +136,44 @@ pub trait StoragePort: Send + Sync {
         Ok(0)
     }
 
+    // ── Stealer-log credential rows (Stealer Logs Viewer) ───────────────────
+    /// Persist paired stealer-log credential rows for one scan/import.
+    /// Best-effort, called only from the stealer-log importer. Default no-op
+    /// for test doubles; the SQLite `Store` persists to `stealer_rows`.
+    fn insert_stealer_rows_batch(
+        &self,
+        _scan_id: &str,
+        _rows: &[crate::core::stealer_row::StealerRow],
+    ) -> Result<usize> {
+        Ok(0)
+    }
+
+    /// Every persisted stealer-log credential row for a scan, insertion
+    /// order. Default empty for test doubles; the SQLite `Store` reads
+    /// `stealer_rows`.
+    fn stealer_rows_for_scan(
+        &self,
+        _scan_id: &str,
+    ) -> Result<Vec<crate::core::stealer_row::StealerRow>> {
+        Ok(Vec::new())
+    }
+
     // ── Maintenance ─────────────────────────────────────────────────────────
     /// Bound the backing store's write-ahead footprint at a safe boundary
     /// (e.g. a completed scan). Default is a no-op for backends without a
     /// WAL; the SQLite store truncates its `-wal` file. Best-effort.
     fn checkpoint_truncate(&self) -> Result<()> {
         Ok(())
+    }
+
+    /// Run the backing store's integrity check, returning the check rows —
+    /// exactly `["ok"]` for a healthy database, or one or more problem
+    /// descriptions for a corrupt one. Default `["ok"]` for backends without a
+    /// verifier (test doubles); the SQLite store runs `PRAGMA integrity_check`.
+    /// Surfaced by the system debug bundle so on-disk corruption — invisible to
+    /// every other health signal — reaches the DETECTED ISSUES verdict.
+    fn integrity_check(&self) -> Result<Vec<String>> {
+        Ok(vec!["ok".to_string()])
     }
 
     /// Bound the `events` table: delete rows older than `max_age_secs` and

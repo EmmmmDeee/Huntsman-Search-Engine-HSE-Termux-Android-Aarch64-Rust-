@@ -443,6 +443,163 @@ pub(in crate::core::correlator) fn rule_au_110_shared_hosting_ip(
     out
 }
 
+/// Direct-connect service subdomains that commonly bypass a CDN's proxying —
+/// the same leak vector `SOLUTION_TREE` SOL-NETINT names (control-panel/mail
+/// endpoints are rarely proxied, since doing so would break TLS-cert or
+/// protocol assumptions those services depend on). Deliberately narrow: a
+/// generic subdomain (`assets.`, `cdn.`) resolving off-CDN is not evidence of
+/// anything — it may simply not be the site's primary origin.
+const DIRECT_CONNECT_LABELS: &[&str] = &["cpanel", "ftp", "mail", "webmail", "dev"];
+
+/// True when `host`'s leftmost label is a known direct-connect service label.
+fn has_direct_connect_label(host: &str) -> bool {
+    host.split('.')
+        .next()
+        .is_some_and(|label| DIRECT_CONNECT_LABELS.contains(&label))
+}
+
+/// AU-113 — CDN origin-candidate unmasking via a non-proxied sibling.
+///
+/// A site fronted by a CDN/anycast edge (Cloudflare, etc.) hides its true
+/// origin IP from a direct `A`/`AAAA` lookup of the apex — but an MX record or
+/// a direct-connect service subdomain (`cpanel.`/`ftp.`/`mail.`/`webmail.`/
+/// `dev.`) is commonly left unproxied, since CDN-proxying those would break
+/// mail delivery or the service's own TLS/protocol assumptions. When such a
+/// sibling, under the SAME registrable domain as a CDN-fronted apex, resolves
+/// to a real (non-CDN, routable) IP, that IP is a strong candidate for the
+/// site's actual origin — the whole point of CDN-fronting is defeated once the
+/// origin is known (direct DDoS, WAF bypass, precise geolocation).
+///
+/// Requires:
+/// 1. An **apex** `Domain` entity (its value equals its own registrable
+///    domain — the registered site itself, not a subdomain) whose resolved
+///    IP(s) are ALL CDN/anycast edges. No apex resolution on record → nothing
+///    to compare against, skipped.
+/// 2. A **sibling** `Domain` entity under the same registrable domain, tagged
+///    `mx` (an MX record target) or both `subdomain` + `dns-brute` with a
+///    direct-connect label, that resolves to at least one non-CDN,
+///    routable IP.
+///
+/// One correlation per (apex, sibling) pair with a genuine origin-candidate
+/// IP. Severity Medium — a strong lead, not a confirmed unmasking (the
+/// sibling's IP may be a distinct backend, not the apex's own origin).
+/// Deterministic: registrable-domain groups and sibling/candidate lists sorted.
+/// Sibling signal: AU-111 (`rules::infra`) unmasks the same CDN-origin
+/// question from an SPF-authorised-mail-sender angle instead of a
+/// direct-connect subdomain — kept independent per the technique-diversity
+/// principle (TA0043), not merged; see AU-111's own doc comment.
+pub(in crate::core::correlator) fn rule_au_113_direct_connect_origin_candidate(
+    entities: &[Entity],
+    relations: &[Relation],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+
+    // Domain uid -> resolved IP entities (Domain --ResolvesTo--> IpAddress).
+    let mut domain_ips: HashMap<&str, Vec<&Entity>> = HashMap::new();
+    for r in relations
+        .iter()
+        .filter(|r| r.kind == RelationKind::ResolvesTo)
+    {
+        let (Some(&dom), Some(&ip)) = (
+            by_uid.get(r.from_uid.as_str()),
+            by_uid.get(r.to_uid.as_str()),
+        ) else {
+            continue;
+        };
+        if dom.kind != EntityKind::Domain || ip.kind != EntityKind::IpAddress {
+            continue;
+        }
+        domain_ips.entry(r.from_uid.as_str()).or_default().push(ip);
+    }
+
+    // Domain entities grouped by registrable domain.
+    let mut groups: HashMap<String, Vec<&Entity>> = HashMap::new();
+    for e in entities.iter().filter(|e| e.kind == EntityKind::Domain) {
+        if let Some(reg) = crate::util::domains::registrable_domain(&e.value) {
+            groups.entry(reg).or_default().push(e);
+        }
+    }
+    let mut regs: Vec<&String> = groups.keys().collect();
+    regs.sort_unstable();
+
+    let mut out = Vec::new();
+    for reg in regs {
+        let members = &groups[reg];
+        let Some(apex) = members.iter().find(|d| &d.value == reg) else {
+            continue;
+        };
+        let Some(apex_ips) = domain_ips.get(apex.uid.as_str()) else {
+            continue;
+        };
+        if apex_ips.is_empty()
+            || !apex_ips
+                .iter()
+                .all(|ip| crate::core::validation::is_cdn_edge_ip(&ip.value))
+        {
+            continue; // apex isn't (fully) CDN-fronted — nothing to unmask.
+        }
+        let mut apex_ip_labels: Vec<&str> = apex_ips.iter().map(|ip| ip.value.as_str()).collect();
+        apex_ip_labels.sort_unstable();
+
+        let mut siblings: Vec<&&Entity> = members
+            .iter()
+            .filter(|d| d.uid != apex.uid)
+            .filter(|d| {
+                d.has_tag("mx")
+                    || (d.has_tag("subdomain")
+                        && d.has_tag("dns-brute")
+                        && has_direct_connect_label(&d.value))
+            })
+            .collect();
+        siblings.sort_unstable_by(|a, b| a.value.cmp(&b.value));
+
+        for sib in siblings {
+            let Some(sib_ips) = domain_ips.get(sib.uid.as_str()) else {
+                continue;
+            };
+            let mut candidate_ips: Vec<&&Entity> = sib_ips
+                .iter()
+                .filter(|ip| {
+                    !crate::core::validation::is_cdn_edge_ip(&ip.value)
+                        && !crate::core::validation::is_non_routable_ip(&ip.value)
+                })
+                .collect();
+            if candidate_ips.is_empty() {
+                continue;
+            }
+            candidate_ips.sort_unstable_by(|a, b| a.value.cmp(&b.value));
+            let candidate_labels: Vec<&str> =
+                candidate_ips.iter().map(|ip| ip.value.as_str()).collect();
+
+            let mut uids: Vec<String> = Vec::with_capacity(2 + candidate_ips.len());
+            uids.push(apex.uid.clone());
+            uids.push(sib.uid.clone());
+            uids.extend(candidate_ips.iter().map(|ip| ip.uid.clone()));
+
+            out.push(Correlation::new(
+                "AU-113",
+                "CDN origin-candidate — non-proxied sibling leaks the real IP",
+                Severity::Medium,
+                format!(
+                    "{} is fronted by a CDN/anycast edge ({}), but its sibling {} \
+                     resolves directly to {} — a candidate for the site's true \
+                     origin IP, bypassing the CDN's protection.",
+                    apex.value,
+                    apex_ip_labels.join(", "),
+                    sib.value,
+                    candidate_labels.join(", ")
+                ),
+                uids,
+                scan_id,
+                ts,
+            ));
+        }
+    }
+    out
+}
+
 /// AU-087 — Shared organisational email domain (institutional / professional affiliation).
 ///
 /// Groups confirmed `Email` entities by their domain and fires when two or more

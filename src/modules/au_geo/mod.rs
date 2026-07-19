@@ -328,6 +328,17 @@ fn assemble(
     coord_e.tag("au");
     coord_e.tag("geoint");
     coord_e.tag("asgs");
+    // `coord_state()` (core::correlator::rules::geo) prefers an `au-state:XX`
+    // tag over its own coarse rectangular-bbox fallback — without this tag the
+    // exact ABS point-in-polygon state answer above is discarded and AU-056/
+    // AU-085 jurisdiction cross-checks silently re-derive a less precise one.
+    if let Some(code) = state
+        .as_deref()
+        .and_then(crate::util::address_au::state_code)
+    {
+        coord_e.tag(format!("au-state:{code}"));
+        coord_e.tag("country:AU");
+    }
     coord_e.add_evidence(roll_up);
     result.push(coord_e);
 }

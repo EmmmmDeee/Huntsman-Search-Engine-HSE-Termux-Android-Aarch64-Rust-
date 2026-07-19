@@ -16,8 +16,6 @@
 //! default from `max_timeout_ms` so a slow mobile network still completes.
 
 use async_trait::async_trait;
-use md5::{Digest, Md5};
-use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -25,78 +23,15 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+// The Gravatar request-hash + response schema are the shared Gravatar API
+// contract, single-sourced in `util::gravatar` (T2.124) — imported here under
+// this module's established local names so its body and tests are unchanged.
+use crate::util::gravatar::{Entry, Profile as GravatarResp, hash as gravatar_hash};
 use crate::util::http::fetch_json_or_404;
 
 const SRC: &str = "gravatar";
 
 pub struct Gravatar;
-
-/// Top-level Gravatar profile response: `{ "entry": [ { … } ] }`.
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct GravatarResp {
-    entry: Vec<Entry>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct Entry {
-    hash: Option<String>,
-    #[serde(rename = "profileUrl")]
-    profile_url: Option<String>,
-    #[serde(rename = "preferredUsername")]
-    preferred_username: Option<String>,
-    #[serde(rename = "thumbnailUrl")]
-    thumbnail_url: Option<String>,
-    #[serde(rename = "displayName")]
-    display_name: Option<String>,
-    name: Option<Name>,
-    #[serde(rename = "aboutMe")]
-    about_me: Option<String>,
-    #[serde(rename = "currentLocation")]
-    current_location: Option<String>,
-    #[serde(default)]
-    accounts: Vec<Account>,
-    #[serde(default)]
-    urls: Vec<UrlEntry>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct Name {
-    formatted: Option<String>,
-    #[serde(rename = "givenName")]
-    given_name: Option<String>,
-    #[serde(rename = "familyName")]
-    family_name: Option<String>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct Account {
-    /// Stable platform slug, e.g. `twitter`, `github`.
-    shortname: Option<String>,
-    domain: Option<String>,
-    username: Option<String>,
-    url: Option<String>,
-    /// Gravatar serialises this as the string `"true"`/`"false"`.
-    verified: Option<String>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct UrlEntry {
-    value: Option<String>,
-    title: Option<String>,
-}
-
-/// The Gravatar profile-request hash: MD5 of the email lowercased and trimmed
-/// (the documented Gravatar identifier). Pure, so it is unit-testable.
-fn gravatar_hash(email: &str) -> String {
-    let normalised = email.trim().to_ascii_lowercase();
-    let digest = Md5::digest(normalised.as_bytes());
-    hex::encode(digest)
-}
 
 #[async_trait]
 impl Module for Gravatar {
@@ -148,31 +83,44 @@ impl Module for Gravatar {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut result = ModuleResult::new();
         let email = target.value.trim();
         if !email.contains('@') {
-            return Ok(result);
+            return Ok(ModuleResult::new());
         }
         let hash = gravatar_hash(email);
         let url = format!("https://gravatar.com/{hash}.json");
 
-        // "No public profile" reaches us several ways: a 404, or a 200 whose
-        // body is the literal `"User not found"` (the shape Gravatar returns on
-        // the curl fallback) or otherwise isn't a `GravatarResp`. None of these
-        // is an operational error — they all mean the email has no Gravatar, a
-        // clean miss. Only an unparseable body was previously propagated via `?`
-        // as a spurious module error; fold it into the empty-result path.
-        let resp: GravatarResp = match fetch_json_or_404(&ctx.http, SRC, &url).await {
-            Ok(Some(r)) => r,
-            Ok(None) | Err(_) => return Ok(result),
-        };
-        let Some(entry) = resp.entry.into_iter().next() else {
-            return Ok(result);
-        };
-
-        extract_entry(&entry, &hash, &ctx.scan_id, &mut result);
-        Ok(result)
+        let fetched = fetch_json_or_404(&ctx.http, SRC, &url).await;
+        resolve_profile(fetched, &hash, &ctx.scan_id)
     }
+}
+
+/// Turn the profile fetch's raw outcome into `process()`'s return value.
+///
+/// `Ok(None)` is Gravatar's own live "no such profile" signal — a genuine
+/// HTTP 404 (reconfirmed live 2026-07-15 against a random unregistered
+/// email; `fetch_json_or_404` maps a 404 straight to `None` before any body
+/// is even read) — and stays the ordinary, honest empty success. Every
+/// `Err` (a non-2xx status such as 429/5xx, or a transport failure even the
+/// curl fallback could not rescue) is a genuine operational failure, not a
+/// clean miss, and must propagate — surfacing as a real `ModuleError` event
+/// and feeding the T2.7 health-signal streak — instead of silently
+/// masquerading as "this email has no Gravatar profile" (T2.112: the
+/// previous `Ok(None) | Err(_) => return Ok(result)` collapsed both into the
+/// same empty result, making a real outage indistinguishable from a clean
+/// negative). Pure (no I/O), so it is unit-testable without a live server,
+/// unlike `process()` itself, whose URL is hardcoded to gravatar.com.
+fn resolve_profile(
+    fetched: Result<Option<GravatarResp>>,
+    hash: &str,
+    scan_id: &str,
+) -> Result<ModuleResult> {
+    let mut result = ModuleResult::new();
+    let Some(entry) = fetched?.and_then(|r| r.entry.into_iter().next()) else {
+        return Ok(result);
+    };
+    extract_entry(&entry, hash, scan_id, &mut result);
+    Ok(result)
 }
 
 /// Turn a Gravatar profile entry into entities. Pure of I/O so it is unit-tested
@@ -293,7 +241,7 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
             .or(acct.domain.as_deref())
             .unwrap_or("account")
             .trim();
-        let verified = acct.verified.as_deref() == Some("true");
+        let verified = acct.verified == Some(true);
         let mut tags: Vec<&str> = vec![platform, "gravatar-pivot"];
         if verified {
             tags.push("verified");
