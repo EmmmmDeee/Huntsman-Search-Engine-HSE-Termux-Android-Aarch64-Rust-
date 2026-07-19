@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -66,7 +66,7 @@ fn build_solar_entity(
     results: &SsResults,
     scan_id: &str,
 ) -> Entity {
-    let mut entity = Entity::new(EntityKind::Coordinates, coord, 0.55, scan_id);
+    let mut entity = Entity::new(EntityKind::Coordinates, coord, confidence::MEDIUM_HIGH, scan_id);
     entity.tag("sunrise-sunset");
     entity.tag("chronolocation");
     entity.tag("geoint");

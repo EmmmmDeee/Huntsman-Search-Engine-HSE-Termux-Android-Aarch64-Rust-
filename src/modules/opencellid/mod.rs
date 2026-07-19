@@ -21,7 +21,7 @@ mod tests;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -335,10 +335,10 @@ fn emit_cell_entities(result: &mut ModuleResult, cell: &CellEntry, scan_id: &str
 /// Tighter coverage → higher confidence. Identical scale to `cell_intel`.
 pub(super) fn accuracy_to_confidence(range_m: u64) -> f64 {
     match range_m {
-        0..=100 => 0.85,
-        101..=500 => 0.75,
-        501..=2000 => 0.65,
-        2001..=10000 => 0.50,
+        0..=100 => confidence::HIGH_PLUSPLUS_PLUS,
+        101..=500 => confidence::VERY_HIGH,
+        501..=2000 => confidence::HIGH,
+        2001..=10000 => confidence::MEDIUM,
         _ => 0.35,
     }
 }

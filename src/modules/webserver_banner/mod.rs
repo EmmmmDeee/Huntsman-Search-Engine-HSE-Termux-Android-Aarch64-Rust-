@@ -14,7 +14,7 @@
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -107,7 +107,7 @@ impl Module for WebserverBanner {
                 continue;
             }
 
-            let mut entity = banner_entity(target, &host, 0.85, &ctx.scan_id);
+            let mut entity = banner_entity(target, &host, confidence::HIGH_PLUSPLUS_PLUS, &ctx.scan_id);
             entity.tag(crate::core::tags::WEB);
             apply_stack_tags(&mut entity, &captured);
 

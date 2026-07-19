@@ -1,6 +1,6 @@
 //! Parsing helpers: HTML stripping, name matching, record extraction, entity building.
 
-use crate::core::entity::{Entity, EntityKind, Evidence};
+use crate::core::{confidence, entity::{Entity, EntityKind, Evidence}};
 
 pub(super) const SRC: &str = "au_property";
 
@@ -173,7 +173,7 @@ pub(crate) fn record_to_entities(rec: &PropertyRecord, scan_id: &str) -> Vec<Ent
         state_capital_coords(rec.state)
     }) {
         let coord_value = format!("{lat:.4},{lon:.4}");
-        let mut coord = Entity::new(EntityKind::Coordinates, &coord_value, 0.60, scan_id);
+        let mut coord = Entity::new(EntityKind::Coordinates, &coord_value, confidence::MEDIUM_PLUS, scan_id);
         coord.add_evidence(evid.with_attr("derived_from", "suburb_centroid"));
         coord.tag(format!("au-state:{}", rec.state));
         coord.tag("country:AU");

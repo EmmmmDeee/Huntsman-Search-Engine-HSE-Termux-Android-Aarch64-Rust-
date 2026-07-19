@@ -9,7 +9,7 @@
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -136,10 +136,10 @@ impl Module for CellLocal {
 /// Mirrors the same function in `cell_intel` for consistent output.
 fn accuracy_to_confidence(range_m: u64) -> f64 {
     match range_m {
-        0..=100 => 0.85,
-        101..=500 => 0.75,
-        501..=2000 => 0.65,
-        2001..=10000 => 0.50,
+        0..=100 => confidence::HIGH_PLUSPLUS_PLUS,
+        101..=500 => confidence::VERY_HIGH,
+        501..=2000 => confidence::HIGH,
+        2001..=10000 => confidence::MEDIUM,
         _ => 0.35,
     }
 }
@@ -182,10 +182,10 @@ mod tests {
 
     #[test]
     fn accuracy_to_confidence_tiers() {
-        assert!((accuracy_to_confidence(50) - 0.85).abs() < 1e-6);
-        assert!((accuracy_to_confidence(300) - 0.75).abs() < 1e-6);
-        assert!((accuracy_to_confidence(1000) - 0.65).abs() < 1e-6);
-        assert!((accuracy_to_confidence(5000) - 0.50).abs() < 1e-6);
+        assert!((accuracy_to_confidence(50) - confidence::HIGH_PLUSPLUS_PLUS).abs() < 1e-6);
+        assert!((accuracy_to_confidence(300) - confidence::VERY_HIGH).abs() < 1e-6);
+        assert!((accuracy_to_confidence(1000) - confidence::HIGH).abs() < 1e-6);
+        assert!((accuracy_to_confidence(5000) - confidence::MEDIUM).abs() < 1e-6);
         assert!((accuracy_to_confidence(50_000) - 0.35).abs() < 1e-6);
     }
 }

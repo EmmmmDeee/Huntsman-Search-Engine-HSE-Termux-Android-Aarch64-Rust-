@@ -20,7 +20,7 @@
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -188,7 +188,7 @@ fn build_rdap_entities(body: &RdapResp, ip: &str, scan_id: &str) -> Vec<Entity> 
             },
         );
 
-    let mut entity = Entity::new(EntityKind::IpAddress, ip, 0.90, scan_id);
+    let mut entity = Entity::new(EntityKind::IpAddress, ip, confidence::VERY_HIGH_PLUS, scan_id);
     entity.tag("rdap");
     if let Some(c) = body.country.as_deref().filter(|c| !c.is_empty()) {
         entity.tag(format!("country:{}", c.to_uppercase()));
@@ -315,7 +315,7 @@ fn build_bgp_ip_entities(body: &IpResp, ip: &str, scan_id: &str) -> Vec<Entity> 
     };
 
     let asn_num_str = asn_num.to_string();
-    let mut e = Entity::new(EntityKind::Asn, format!("AS{asn_num}"), 0.88, scan_id);
+    let mut e = Entity::new(EntityKind::Asn, format!("AS{asn_num}"), confidence::EXPERT, scan_id);
     e.tag("announcing");
     let mut ev =
         Evidence::new(SRC, format!("ASN announcing {ip}")).with_attr("asn_number", &asn_num_str);
@@ -387,7 +387,7 @@ fn build_asn_entities(body: &AsnResp, asn: u64, scan_id: &str) -> Vec<Entity> {
         .filter(|s| !s.trim().is_empty())
         .or_else(|| data.name.as_deref().filter(|s| !s.trim().is_empty()));
     if let Some(name) = operator_name {
-        let mut oe = Entity::new(EntityKind::Organisation, name, 0.70, scan_id);
+        let mut oe = Entity::new(EntityKind::Organisation, name, confidence::HIGH_PLUS, scan_id);
         oe.tag("bgpview");
         oe.tag("asn-operator");
         oe.add_evidence(
@@ -416,7 +416,7 @@ fn build_asn_entities(body: &AsnResp, asn: u64, scan_id: &str) -> Vec<Entity> {
         .as_deref()
         .filter(|w| w.starts_with("http://") || w.starts_with("https://"))
     {
-        let mut u = Entity::new(EntityKind::Url, w, 0.75, scan_id);
+        let mut u = Entity::new(EntityKind::Url, w, confidence::VERY_HIGH, scan_id);
         u.tag("asn-website");
         u.add_evidence(
             Evidence::new(SRC, format!("Website of {asn_label}")).with_attr("asn", &asn_str),

@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -218,11 +218,11 @@ fn emit_nip05(
     // converges with an npub-seeded scan. NIP-05 is domain-bound and live, so it
     // is the higher-confidence path.
     if let Some(ref npub) = npub {
-        emit_identity(npub, hex, 0.85, 0.85, &ev, scan_id, result);
+        emit_identity(npub, hex, confidence::HIGH_PLUSPLUS_PLUS, confidence::HIGH_PLUSPLUS_PLUS, &ev, scan_id, result);
     } else {
         // Encoding cannot fail for a 64-hex key, but never drop the pubkey if it
         // somehow does.
-        let mut pk = Entity::new(EntityKind::Other("nostr-pubkey".into()), hex, 0.85, scan_id);
+        let mut pk = Entity::new(EntityKind::Other("nostr-pubkey".into()), hex, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
         pk.tag("nostr");
         pk.tag("nostr-pubkey");
         pk.add_evidence(ev.clone());
@@ -231,7 +231,7 @@ fn emit_nip05(
 
     // The seed email is a confirmed Nostr identity (GREATEST-merge only ever
     // adds the tag/evidence, never lowers existing confidence).
-    let mut seed = Entity::new(EntityKind::Email, email, 0.80, scan_id);
+    let mut seed = Entity::new(EntityKind::Email, email, confidence::HIGH_PLUSPLUS, scan_id);
     seed.tag("nostr");
     seed.tag("nip05");
     seed.add_evidence(ev.clone());
@@ -265,7 +265,7 @@ fn emit_nip05(
             let mut r = Entity::new(
                 EntityKind::Other("nostr-relay".into()),
                 relay,
-                0.55,
+                confidence::MEDIUM_HIGH,
                 scan_id,
             );
             r.tag("nostr");

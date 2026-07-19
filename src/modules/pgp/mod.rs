@@ -14,7 +14,7 @@
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -150,7 +150,7 @@ fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResu
             && name.trim().contains(' ')
             && seen_person.insert(name.to_lowercase())
         {
-            let mut e = Entity::new(EntityKind::Person, name.trim(), 0.65, scan_id);
+            let mut e = Entity::new(EntityKind::Person, name.trim(), confidence::HIGH, scan_id);
             e.tag(SRC);
             e.add_evidence(ev());
             result.push(e);
@@ -168,7 +168,7 @@ fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResu
             // Alternate emails bound to the same key are the high-value pivot;
             // the queried email itself adds nothing new as a standalone entity.
             if lower.contains('@') && lower != query_lower && seen_email.insert(lower) {
-                let mut e = Entity::new(EntityKind::Email, email, 0.70, scan_id);
+                let mut e = Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
                 e.tag(SRC);
                 e.tag("pgp-linked");
                 e.add_evidence(ev());
@@ -188,7 +188,7 @@ fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResu
             continue;
         }
         let value = format!("pgp:{}", fp.to_lowercase());
-        let mut cred = Entity::new(EntityKind::Credential, &value, 0.85, scan_id);
+        let mut cred = Entity::new(EntityKind::Credential, &value, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
         cred.tag("pgp-key");
         cred.tag("public-key");
         cred.tag(SRC);

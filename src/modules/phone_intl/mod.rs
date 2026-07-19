@@ -17,7 +17,7 @@ mod tests;
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -325,7 +325,7 @@ impl Module for PhoneIntl {
 
         // Re-emit canonical E.164 form so downstream entities dedupe.
         let canonical = format!("+{digits}");
-        let mut entity = Entity::new(EntityKind::Phone, &canonical, 0.85, &ctx.scan_id);
+        let mut entity = Entity::new(EntityKind::Phone, &canonical, confidence::HIGH_PLUSPLUS_PLUS, &ctx.scan_id);
         entity.tag("e164");
         entity.tag(format!("country:{iso}"));
         entity.add_evidence(
@@ -353,7 +353,7 @@ impl Module for PhoneIntl {
 /// national `202-555-0100` begins with `202`, which would otherwise match `20`
 /// (Egypt) — so without an explicit marker any attribution is a guess. The old
 /// code stripped the `+` and matched regardless, fabricating a wrong country
-/// and a bogus `+2025550100` canonical at 0.85 confidence: a false GEOINT lead.
+/// and a bogus `+2025550100` canonical at confidence::HIGH_PLUSPLUS_PLUS confidence: a false GEOINT lead.
 /// A national/ambiguous number is simply out of this offline parser's scope.
 ///
 /// ```

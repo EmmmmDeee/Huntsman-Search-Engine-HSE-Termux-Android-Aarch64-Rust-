@@ -20,6 +20,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -289,7 +290,7 @@ pub(super) fn build_entities(
     }
 
     // Display name → Person when it looks like a real name (≥2 words).
-    if let Some(mut p) = profile_kit::person_from_name(&user.display_name, 0.55, scan_id) {
+    if let Some(mut p) = profile_kit::person_from_name(&user.display_name, confidence::MEDIUM_HIGH, scan_id) {
         p.tag("stackoverflow");
         p.tag("derived");
         p.add_evidence(
@@ -309,7 +310,7 @@ pub(super) fn build_entities(
     if let Some(ref link) = user.link
         && link.starts_with("http")
     {
-        let mut url_e = Entity::new(EntityKind::Url, link, 0.75, scan_id);
+        let mut url_e = Entity::new(EntityKind::Url, link, confidence::VERY_HIGH, scan_id);
         url_e.tag("stackoverflow");
         url_e.add_evidence(Evidence::new(
             SRC,
@@ -320,7 +321,7 @@ pub(super) fn build_entities(
 
     // Personal website URL + Domain.
     if let Some(ref site) = user.website_url {
-        for mut e in profile_kit::website_url_and_domain(site, 0.70, 0.62, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(site, confidence::HIGH_PLUS, 0.62, scan_id) {
             e.tag("stackoverflow");
             match e.kind {
                 EntityKind::Domain => {

@@ -9,7 +9,7 @@ mod tests;
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -171,7 +171,7 @@ pub(super) fn build_practitioner_entities(
 ) -> Vec<Entity> {
     let mut out = Vec::with_capacity(practitioners.len());
     for (name, profession, reg_no) in practitioners {
-        let mut person = Entity::new(EntityKind::Person, name, 0.70, scan_id);
+        let mut person = Entity::new(EntityKind::Person, name, confidence::HIGH_PLUS, scan_id);
         person.tag("ahpra");
         person.tag("health-practitioner");
         if !profession.is_empty() {

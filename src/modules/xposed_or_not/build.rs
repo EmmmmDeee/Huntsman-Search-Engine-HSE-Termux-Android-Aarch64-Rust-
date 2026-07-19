@@ -1,6 +1,6 @@
 //! Pure result-building helpers for XposedOrNot breach data.
 
-use crate::core::{entity::Evidence, module::ModuleResult, scan::Target, tags};
+use crate::core::{confidence, entity::Evidence, module::ModuleResult, scan::Target, tags};
 
 use super::types::{AnalyticsResp, BreachDetail};
 
@@ -32,16 +32,16 @@ pub(super) const NOTABLE_BREACHES: &[&str] = &[
 /// Map a breach hit-count to the exposure entity's confidence.
 ///
 /// One or two appearances already confirm the email is real and leaked
-/// (0.80); each further breach raises corroboration toward a 0.95 ceiling. A
+/// (confidence::HIGH_PLUSPLUS); each further breach raises corroboration toward a confidence::VERY_HIGH_PLUSPLUS ceiling. A
 /// zero count is 0.0 — the caller treats that as "no finding" and emits
 /// nothing.
 pub(super) fn confidence_for_count(count: usize) -> f64 {
     match count {
         0 => 0.0,
-        1..=2 => 0.80,
-        3..=5 => 0.85,
+        1..=2 => confidence::HIGH_PLUSPLUS,
+        3..=5 => confidence::HIGH_PLUSPLUS_PLUS,
         6..=9 => 0.92,
-        _ => 0.95,
+        _ => confidence::VERY_HIGH_PLUSPLUS,
     }
 }
 

@@ -103,7 +103,7 @@ use super::*;
         let coords = of_kind(&ents, EntityKind::Coordinates).expect("Coordinates entity");
         // ip_whois_geo formats coords to 6 dp directly.
         assert_eq!(coords.value, "-27.476600,153.016600");
-        assert!((coords.confidence - 0.55).abs() < 1e-9);
+        assert!((coords.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
         assert!(coords.has_tag("geoint"));
         assert!(coords.has_tag("country:AU"), "country code is uppercased");
         assert!(coords.has_tag("au-state:QLD"), "Brisbane → QLD box");
@@ -270,7 +270,7 @@ use super::*;
 
         let dom = of_kind(&ents, EntityKind::Domain).expect("Domain entity from connection.domain");
         assert_eq!(dom.value, "cloudflare.com");
-        assert!((dom.confidence - 0.55).abs() < 1e-9);
+        assert!((dom.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
         assert!(dom.has_tag("geoint"));
         assert!(dom.has_tag("derived"));
         assert!(dom.has_tag("ip-whois"));

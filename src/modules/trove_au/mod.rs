@@ -10,7 +10,7 @@ mod tests;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -171,7 +171,7 @@ fn build_entities(
         return result;
     }
 
-    let mut org = Entity::new(EntityKind::Organisation, target_value, 0.65, scan_id);
+    let mut org = Entity::new(EntityKind::Organisation, target_value, confidence::HIGH, scan_id);
     org.tag("trove");
     org.tag("newspaper-archive");
     let mut ev = Evidence::new(
@@ -205,7 +205,7 @@ fn build_entities(
         {
             continue;
         }
-        let mut url_e = Entity::new(EntityKind::Url, u, 0.55, scan_id);
+        let mut url_e = Entity::new(EntityKind::Url, u, confidence::MEDIUM_HIGH, scan_id);
         url_e.tag("trove");
         url_e.tag("newspaper-archive");
         url_e.tag("source-document");

@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
 };
@@ -18,7 +18,7 @@ use super::types::{Cell, OpenCellidResp, TowerKey};
 /// `parse_cells_survey` test helper so the two can never drift in their tags or
 /// evidence-attribute set (they were previously byte-identical copies).
 pub(super) fn build_tower_device(cell: &Cell, key: &TowerKey, scan_id: &str) -> Entity {
-    let mut e = Entity::new(EntityKind::DeviceId, &key.tower_id, 0.80, scan_id);
+    let mut e = Entity::new(EntityKind::DeviceId, &key.tower_id, confidence::HIGH_PLUSPLUS, scan_id);
     e.tag(crate::core::tags::CELL_TOWER);
     e.tag(format!("radio:{}", key.ctype));
     e.add_evidence(
@@ -105,14 +105,14 @@ pub(super) async fn query_opencellid(
 }
 
 /// Map a cell fix's accuracy radius (metres) to a coordinate confidence: a tight
-/// tower range (≤100 m, a dense urban small-cell) is trusted at 0.85, widening to
+/// tower range (≤100 m, a dense urban small-cell) is trusted at confidence::HIGH_PLUSPLUS_PLUS, widening to
 /// 0.35 for a >10 km rural macro-cell whose centroid could be far from the device.
 pub(super) fn accuracy_to_confidence(range_m: u64) -> f64 {
     match range_m {
-        0..=100 => 0.85,
-        101..=500 => 0.75,
-        501..=2000 => 0.65,
-        2001..=10000 => 0.50,
+        0..=100 => confidence::HIGH_PLUSPLUS_PLUS,
+        101..=500 => confidence::VERY_HIGH,
+        501..=2000 => confidence::HIGH,
+        2001..=10000 => confidence::MEDIUM,
         _ => 0.35,
     }
 }

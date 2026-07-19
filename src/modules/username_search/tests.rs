@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::confidence;
 
     #[test]
     fn zero_hits_is_inconclusive_only_when_mostly_blocked() {
@@ -124,10 +125,10 @@ use super::*;
             c_status < c_body,
             "status-only confidence {c_status} must rank below body-marker {c_body}"
         );
-        // …but still above the engine's 0.50 expand floor so it remains pivotable.
+        // …but still above the engine's confidence::MEDIUM expand floor so it remains pivotable.
         assert!(
-            c_status > 0.50,
-            "status-only hit {c_status} must stay above the 0.50 expand floor"
+            c_status > confidence::MEDIUM,
+            "status-only hit {c_status} must stay above the confidence::MEDIUM expand floor"
         );
     }
 

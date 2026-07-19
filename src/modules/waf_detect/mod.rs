@@ -16,7 +16,7 @@
 use async_trait::async_trait;
 use reqwest::header::HeaderMap;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -86,8 +86,8 @@ impl Module for WafDetect {
         // Entity confidence tracks the strongest layer detected.
         let score = match detections[0].confidence {
             Confidence::High => 0.9,
-            Confidence::Medium => 0.75,
-            Confidence::Low => 0.55,
+            Confidence::Medium => confidence::VERY_HIGH,
+            Confidence::Low => confidence::MEDIUM_HIGH,
         };
         let mut e = Entity::new(EntityKind::Domain, &host, score, &ctx.scan_id);
         for d in &detections {

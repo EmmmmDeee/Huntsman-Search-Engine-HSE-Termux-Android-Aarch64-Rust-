@@ -2,7 +2,7 @@
 
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
 };
@@ -34,10 +34,10 @@ pub(super) fn wifi_band(freq_mhz: Option<i64>) -> Option<&'static str> {
 /// Confidence from RSSI (dBm): stronger signal = more reliable observation.
 pub(super) fn rssi_confidence(rssi: Option<i64>) -> f64 {
     match rssi {
-        Some(r) if r >= -50 => 0.90,
-        Some(r) if r >= -71 => 0.75,
-        Some(r) if r >= -86 => 0.60,
-        _ => 0.45,
+        Some(r) if r >= -50 => confidence::VERY_HIGH_PLUS,
+        Some(r) if r >= -71 => confidence::VERY_HIGH,
+        Some(r) if r >= -86 => confidence::MEDIUM_PLUS,
+        _ => confidence::LOW_MEDIUM,
     }
 }
 
@@ -105,7 +105,7 @@ pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> ModuleResult {
         // sits well below the BSSID's own, since a name is easier to spoof or
         // duplicate than a hardware address.
         if !ssid.is_empty() && ssid != "<hidden>" {
-            let mut se = Entity::new(EntityKind::Ssid, ssid, 0.55, scan_id);
+            let mut se = Entity::new(EntityKind::Ssid, ssid, confidence::MEDIUM_HIGH, scan_id);
             se.tag(crate::core::tags::WIFI_AP);
             se.tag("device-sensor");
 

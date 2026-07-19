@@ -16,7 +16,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -99,7 +99,7 @@ fn build_threat_entity(
 ) -> Entity {
     use std::collections::{BTreeMap, BTreeSet};
 
-    let mut entity = Entity::new(kind, host, 0.90, scan_id);
+    let mut entity = Entity::new(kind, host, confidence::VERY_HIGH_PLUS, scan_id);
     entity.tag(crate::core::tags::MALICIOUS);
     entity.tag("urlhaus");
 

@@ -30,7 +30,7 @@ use serde_json::{Map, Value};
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -286,7 +286,7 @@ fn emit_banned(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResul
         }
     }
 
-    let mut p = Entity::new(EntityKind::Person, &person_name, 0.60, scan_id);
+    let mut p = Entity::new(EntityKind::Person, &person_name, confidence::MEDIUM_PLUS, scan_id);
     p.tag("au");
     p.tag("asic");
     p.tag("asic-banned");
@@ -336,7 +336,7 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResu
         }
     }
 
-    let mut p = Entity::new(EntityKind::Person, &person_name, 0.60, scan_id);
+    let mut p = Entity::new(EntityKind::Person, &person_name, confidence::MEDIUM_PLUS, scan_id);
     p.tag("au");
     p.tag("asic");
     p.tag("asic-financial-adviser");
@@ -408,7 +408,7 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResu
         let is_self = n == norm_name(&raw_name);
         let is_licensee = licensee.as_deref().is_some_and(|l| n == norm_name(l));
         if !is_self && !is_licensee && crate::util::abn::looks_like_company(&appby) {
-            let mut org = Entity::new(EntityKind::Organisation, &appby, 0.60, scan_id);
+            let mut org = Entity::new(EntityKind::Organisation, &appby, confidence::MEDIUM_PLUS, scan_id);
             org.tag("au");
             org.tag("asic");
             org.tag("authorised-rep-firm");
@@ -483,7 +483,7 @@ fn emit_credit_rep(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleR
         }
     }
 
-    let mut p = Entity::new(EntityKind::Person, &person_name, 0.60, scan_id);
+    let mut p = Entity::new(EntityKind::Person, &person_name, confidence::MEDIUM_PLUS, scan_id);
     p.tag("au");
     p.tag("asic");
     p.tag("asic-credit-rep");
@@ -495,7 +495,7 @@ fn emit_credit_rep(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleR
         let n = a.chars().filter(char::is_ascii_digit).count();
         n == 11 || n == 9
     }) {
-        let mut e = Entity::new(EntityKind::AbnAcn, &id, 0.60, scan_id);
+        let mut e = Entity::new(EntityKind::AbnAcn, &id, confidence::MEDIUM_PLUS, scan_id);
         e.tag("au");
         e.tag("asic");
         e.tag("asic-credit-rep");
@@ -545,7 +545,7 @@ fn push_address(
     // Address and Coordinates tags so this register participates in the AU
     // geo/jurisdiction correlators like every other AU module.
     let sc = crate::util::address_au::state_code(&addr);
-    let mut a = Entity::new(EntityKind::Address, &addr, 0.55, scan_id);
+    let mut a = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM_HIGH, scan_id);
     a.tag("au");
     a.tag("asic");
     a.tag(tag);
@@ -566,7 +566,7 @@ fn push_address(
     // exactly as the sibling AU register modules do.
     if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
         let coord_val = format!("{lat:.4},{lon:.4}");
-        let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+        let mut c = Entity::new(EntityKind::Coordinates, &coord_val, confidence::LOW_MEDIUM, scan_id);
         c.tag("au");
         c.tag("asic");
         c.tag("addr-derived");

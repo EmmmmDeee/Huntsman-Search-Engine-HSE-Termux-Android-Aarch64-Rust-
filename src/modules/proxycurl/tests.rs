@@ -3,7 +3,7 @@ use super::build::build_entities;
 use super::build::email_domain;
 use super::types::{Certification, DateField, Education, LinkedInProfile};
 use super::url::profile_url;
-use crate::core::{
+use crate::core::{confidence, 
     entity::EntityKind,
     module::{Module, ModuleCost},
     scan::{Target, TargetKind},
@@ -306,7 +306,7 @@ fn build_entities_extracts_full_profile() {
         .find(|e| e.value == "University of Melbourne")
         .unwrap();
     assert!(uni.has_tag("education"));
-    assert_eq!(uni.confidence, 0.55);
+    assert_eq!(uni.confidence, confidence::MEDIUM_HIGH);
     assert_eq!(
         uni.evidence[0].attributes.get("degree").map(String::as_str),
         Some("BSc")

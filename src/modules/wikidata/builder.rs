@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     scan::TargetKind,
 };
@@ -138,7 +138,7 @@ pub(super) fn primary_entities(
     // Coordinate location (P625) → Coordinates entity for geo correlators.
     if let Some((lat, lon)) = claim_p625(entity) {
         let coord_val = format!("{lat:.6},{lon:.6}");
-        let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.65, scan_id);
+        let mut c = Entity::new(EntityKind::Coordinates, &coord_val, confidence::HIGH, scan_id);
         c.tag(SRC);
         c.tag("wikidata");
         c.tag("geoint");

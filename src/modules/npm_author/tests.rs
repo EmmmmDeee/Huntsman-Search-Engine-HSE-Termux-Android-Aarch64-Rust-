@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
     #[test]
@@ -126,7 +127,7 @@ use super::*;
     fn co_maintainer_username_is_emitted_but_subject_not_duplicated() {
         // Same fixture as above: `bob`'s handle should now surface as its own
         // Username entity (co-maintainer), while `alice` — the subject — is not
-        // duplicated via this path (she's already emitted once at 0.88 by the
+        // duplicated via this path (she's already emitted once at confidence::EXPERT by the
         // final confirmed-on-npm block).
         let body = search(
             r#"{"objects":[{"package":{"name":"pkg",
@@ -144,7 +145,7 @@ use super::*;
             .find(|e| e.value == "bob")
             .expect("bob co-maintainer username entity");
         assert!(bob.has_tag("npm") && bob.has_tag("co-maintainer"));
-        assert_eq!(bob.confidence, 0.55);
+        assert_eq!(bob.confidence, confidence::MEDIUM_HIGH);
         assert_eq!(
             bob.evidence[0].attributes.get("package").map(String::as_str),
             Some("pkg")
@@ -154,7 +155,7 @@ use super::*;
             .into_iter()
             .find(|e| e.value == "alice")
             .expect("alice subject username entity");
-        assert_eq!(alice.confidence, 0.88);
+        assert_eq!(alice.confidence, confidence::EXPERT);
         assert!(!alice.has_tag("co-maintainer"));
     }
 

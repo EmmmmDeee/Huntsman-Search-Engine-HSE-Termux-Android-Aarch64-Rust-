@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -45,16 +45,16 @@ struct MylnikovData {
 fn confidence_for_range(range: Option<f64>) -> f64 {
     // Untrusted JSON: a negative / NaN / absurd range is not a tight fix.
     // `f64 as u64` saturates (negative & NaN → 0), which would otherwise score
-    // such a value the *highest* (0.75); clamp to the wide default first so a
+    // such a value the *highest* (confidence::VERY_HIGH); clamp to the wide default first so a
     // malformed range degrades to low confidence, not high.
     let metres = match range {
         Some(r) if r.is_finite() && r >= 0.0 => r,
         _ => 5000.0,
     };
     match metres as u64 {
-        0..=200 => 0.75,
-        201..=1000 => 0.65,
-        1001..=5000 => 0.50,
+        0..=200 => confidence::VERY_HIGH,
+        201..=1000 => confidence::HIGH,
+        1001..=5000 => confidence::MEDIUM,
         _ => 0.35,
     }
 }

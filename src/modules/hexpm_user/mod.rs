@@ -29,7 +29,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::profile_kit;
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -113,7 +113,7 @@ pub(super) fn build_entities(user: HexUser, scan_id: &str) -> Vec<Entity> {
     out.push(e);
 
     // Profile URL.
-    let mut u = Entity::new(EntityKind::Url, &profile_url, 0.80, scan_id);
+    let mut u = Entity::new(EntityKind::Url, &profile_url, confidence::HIGH_PLUSPLUS, scan_id);
     u.tag("hexpm");
     u.add_evidence(ev());
     out.push(u);

@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
 #[test]
@@ -14,11 +15,11 @@ fn otx_confidence_graduates_with_pulse_corroboration() {
         "many corroborating pulses are stronger than a few"
     );
     assert!(
-        (otx_confidence(1) - 0.55).abs() < 1e-9,
+        (otx_confidence(1) - confidence::MEDIUM_HIGH).abs() < 1e-9,
         "a single pulse is a lead, not the former flat 0.72"
     );
     assert!(
-        otx_confidence(50) <= 0.80,
+        otx_confidence(50) <= confidence::HIGH_PLUSPLUS,
         "OTX pulse counts are not fully independent — the top tier stays bounded"
     );
 }

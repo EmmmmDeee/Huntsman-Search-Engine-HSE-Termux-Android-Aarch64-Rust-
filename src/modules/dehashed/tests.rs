@@ -1,7 +1,7 @@
 use super::DeHashed;
 use super::build::{balance_str, build_breach_entity, db_names, extract_records, selector_for};
 use super::types::DehashedResp;
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind},
     module::{Module, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
@@ -132,7 +132,7 @@ fn aggregates_hits_top_databases_and_balance_from_v2_arrays() {
     .expect("exact `email` selector with a positive total emits a headline");
     assert_eq!(e.kind, EntityKind::Email);
     assert!(e.has_tag(tags::BREACH) && e.has_tag("dehashed"));
-    assert!((e.confidence - 0.88).abs() < 1e-9);
+    assert!((e.confidence - confidence::EXPERT).abs() < 1e-9);
     assert_eq!(attr(&e, "hits"), Some("900")); // server total, not len
     assert_eq!(attr(&e, "returned"), Some("3"));
     assert_eq!(attr(&e, "selector"), Some("email"));
@@ -158,7 +158,7 @@ fn count_only_response_omits_optional_aggregates() {
 
 #[test]
 fn name_headline_is_gated_on_a_real_subject_match() {
-    // A broad `name:` search returns same-name STRANGERS. The 0.88 breach-presence
+    // A broad `name:` search returns same-name STRANGERS. The confidence::EXPERT breach-presence
     // headline merges onto the engine's pre-seeded subject anchor, so it must NOT
     // be minted off a page that contains no record actually matching the subject
     // — nor off a bare count with no rows to verify (`oathnet_pro`'s gate). The

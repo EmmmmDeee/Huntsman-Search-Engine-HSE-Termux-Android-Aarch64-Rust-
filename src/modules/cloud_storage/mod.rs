@@ -16,7 +16,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Semaphore;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -38,7 +38,7 @@ const KEY_SAMPLE: usize = 25;
 /// finding's key sample — slightly below the 0.9 bucket-root confidence since
 /// each is a derived pivot (a joined URL) rather than the directly-observed
 /// listing itself.
-const OBJECT_KEY_CONFIDENCE: f64 = 0.85;
+const OBJECT_KEY_CONFIDENCE: f64 = confidence::HIGH_PLUSPLUS_PLUS;
 
 pub struct CloudStorage;
 

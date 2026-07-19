@@ -28,7 +28,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -153,7 +153,7 @@ pub(super) fn build_entities(
 ) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
-    let mut u = Entity::new(EntityKind::Username, &data.name, 0.90, scan_id);
+    let mut u = Entity::new(EntityKind::Username, &data.name, confidence::VERY_HIGH_PLUS, scan_id);
     u.tag("reddit");
     if data.verified == Some(true) {
         u.tag("verified");
@@ -209,7 +209,7 @@ pub(super) fn build_entities(
         // Extract ALL URLs from the bio; also emit the host as a Domain entity.
         for link in crate::util::extract::urls(&bio) {
             let link = link.as_str();
-            let mut url_e = Entity::new(EntityKind::Url, link, 0.70, scan_id);
+            let mut url_e = Entity::new(EntityKind::Url, link, confidence::HIGH_PLUS, scan_id);
             url_e.tag("reddit");
             url_e.tag("personal-site");
             url_e.add_evidence(
@@ -222,7 +222,7 @@ pub(super) fn build_entities(
                 && host.contains('.')
                 && host != "reddit.com"
             {
-                let mut d = Entity::new(EntityKind::Domain, &host, 0.65, scan_id);
+                let mut d = Entity::new(EntityKind::Domain, &host, confidence::HIGH, scan_id);
                 d.tag("reddit");
                 d.tag("derived");
                 d.tag("personal-site");
@@ -331,7 +331,7 @@ fn submitted_entities(body: &str, username: &str, scan_id: &str) -> Vec<Entity> 
     subreddits
         .into_iter()
         .map(|sub| {
-            let mut org = Entity::new(EntityKind::Organisation, &sub, 0.40, scan_id);
+            let mut org = Entity::new(EntityKind::Organisation, &sub, confidence::LOW, scan_id);
             org.tag("subreddit");
             org.add_evidence(
                 Evidence::new("reddit_user", format!("u/{username} posts in r/{sub}"))

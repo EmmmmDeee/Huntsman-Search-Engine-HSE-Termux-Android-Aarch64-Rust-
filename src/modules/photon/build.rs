@@ -1,6 +1,6 @@
 //! Pure entity-building helpers for Photon geocoder results.
 
-use crate::core::entity::{Entity, EntityKind, Evidence};
+use crate::core::{confidence, entity::{Entity, EntityKind, Evidence}};
 use crate::util::str_util::nonempty;
 
 use super::types::{Feature, Props};
@@ -46,7 +46,7 @@ pub(super) fn build_forward(addr: &str, feature: &Feature, scan_id: &str) -> Opt
     }
     let coords = format!("{lat:.6},{lon:.6}");
 
-    let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.60, scan_id);
+    let mut e = Entity::new(EntityKind::Coordinates, &coords, confidence::MEDIUM_PLUS, scan_id);
     e.tag("photon");
     e.tag("geocoded");
     let mut ev = Evidence::new(SRC, format!("Photon geocoded \"{addr}\" -> {coords}"))
@@ -88,7 +88,7 @@ pub(super) fn build_reverse(lat: f64, lon: f64, props: &Props, scan_id: &str) ->
     }
     let display = parts.join(", ");
 
-    let mut ae = Entity::new(EntityKind::Address, &display, 0.70, scan_id);
+    let mut ae = Entity::new(EntityKind::Address, &display, confidence::HIGH_PLUS, scan_id);
     ae.tag("photon");
     ae.tag("reverse-geocoded");
     ae.tag("geoint");

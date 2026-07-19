@@ -33,9 +33,9 @@
 //!   * T1589.003 — Employee Names (confirms legal name, nickname variants)
 //!
 //! Confidence model:
-//!   * Address with suburb + state: 0.55 (single-source, AU register quality)
-//!   * Phone number: 0.50 (listed, unverified)
-//!   * Name variant confirmation: 0.60 (exact match in directory)
+//!   * Address with suburb + state: confidence::MEDIUM_HIGH (single-source, AU register quality)
+//!   * Phone number: confidence::MEDIUM (listed, unverified)
+//!   * Name variant confirmation: confidence::MEDIUM_PLUS (exact match in directory)
 //!
 //! Orthogonal to `au_unclaimed` and `abn_lookup` — those mine business/govt
 //! registers; this mines residential directories. Together they triangulate
@@ -56,7 +56,7 @@ use std::sync::LazyLock;
 use async_trait::async_trait;
 use regex::Regex;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -151,7 +151,7 @@ pub(super) fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<
 
     // Mine emails.
     out.extend(page_emails(&stripped).into_iter().map(|email| {
-        let mut e = Entity::new(EntityKind::Email, &email, 0.45, scan_id);
+        let mut e = Entity::new(EntityKind::Email, &email, confidence::LOW_MEDIUM, scan_id);
         e.tag(SRC);
         e.tag("au-directory");
         e.tag("tps-au");
@@ -183,7 +183,7 @@ static RELATIVES_SECTION_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// keeps only well-formed capitalised name runs **ending in the subject's
 /// surname** — the family the operator is after — which also rejects the page
 /// chrome ("View Profile", "Background Check", suburb names). Each is emitted
-/// below the 0.50 expansion floor (0.45) so a relative is recorded and linked
+/// below the confidence::MEDIUM expansion floor (confidence::LOW_MEDIUM) so a relative is recorded and linked
 /// but never auto-pivoted into its own sub-scan. Pure.
 pub(super) fn parse_relatives(html: &str, full_name: &str, scan_id: &str) -> Vec<Entity> {
     let text = strip_html(html);
@@ -286,7 +286,7 @@ pub(super) fn parse_relatives(html: &str, full_name: &str, scan_id: &str) -> Vec
             if name.len() < 5 || name_lc == subject_lc || !seen.insert(name_lc) {
                 continue;
             }
-            let mut e = Entity::new(EntityKind::Person, &name, 0.45, scan_id);
+            let mut e = Entity::new(EntityKind::Person, &name, confidence::LOW_MEDIUM, scan_id);
             e.tag(SRC);
             e.tag("au-directory");
             e.tag("relatives");

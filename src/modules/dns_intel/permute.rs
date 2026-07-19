@@ -30,7 +30,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::ModuleContext,
@@ -159,7 +159,7 @@ pub(super) async fn permute_subdomains(
     let entities: Vec<Entity> = hits
         .into_iter()
         .map(|(resolved_host, ips_joined, count)| {
-            let mut e = Entity::new(EntityKind::Domain, &resolved_host, 0.75, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Domain, &resolved_host, confidence::VERY_HIGH, &ctx.scan_id);
             e.tag("subdomain");
             e.tag("dns-permute");
             e.add_evidence(

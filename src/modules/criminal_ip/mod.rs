@@ -11,7 +11,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -152,7 +152,7 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
     let ip = target.value.trim();
     let mut out = Vec::new();
 
-    let mut entity = target.to_entity(0.88, scan_id);
+    let mut entity = target.to_entity(confidence::EXPERT, scan_id);
     entity.tag("criminal_ip");
     if let Some(s) = &body.score {
         if s.inbound.as_deref().is_some_and(risk_is_high) {
@@ -215,14 +215,14 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
 
     if let Some(w) = body.whois.as_ref().and_then(|w| w.data.first()) {
         if let Some(org) = nonblank(w.org_name.as_deref()) {
-            let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, scan_id);
+            let mut oe = Entity::new(EntityKind::Organisation, org, confidence::HIGH, scan_id);
             oe.tag("criminal_ip");
             oe.add_evidence(Evidence::new(SRC, format!("IP org for {ip}")));
             out.push(oe);
         }
         if let Some(asn) = w.as_no {
             let asn_str = format!("AS{asn}");
-            let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, scan_id);
+            let mut ae = Entity::new(EntityKind::Asn, &asn_str, confidence::HIGH_PLUSPLUS, scan_id);
             ae.tag("criminal_ip");
             ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
             out.push(ae);

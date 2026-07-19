@@ -25,7 +25,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -253,7 +253,7 @@ impl Module for EmployerPivot {
                     if !seen_phone.insert(ph.clone()) {
                         return None;
                     }
-                    let mut e = Entity::new(EntityKind::Phone, &ph, 0.65, &ctx.scan_id);
+                    let mut e = Entity::new(EntityKind::Phone, &ph, confidence::HIGH, &ctx.scan_id);
                     e.tag("business");
                     e.tag("employer-pivot");
                     e.tag("country:AU");
@@ -275,7 +275,7 @@ impl Module for EmployerPivot {
                     if !seen_email.insert(em.clone()) {
                         return None;
                     }
-                    let mut e = Entity::new(EntityKind::Email, &em, 0.70, &ctx.scan_id);
+                    let mut e = Entity::new(EntityKind::Email, &em, confidence::HIGH_PLUS, &ctx.scan_id);
                     e.tag("business");
                     e.tag("employer-pivot");
                     e.add_evidence(
@@ -295,7 +295,7 @@ impl Module for EmployerPivot {
                     if !seen_url.insert(url.clone()) {
                         return None;
                     }
-                    let mut e = Entity::new(EntityKind::Url, &url, 0.55, &ctx.scan_id);
+                    let mut e = Entity::new(EntityKind::Url, &url, confidence::MEDIUM_HIGH, &ctx.scan_id);
                     e.tag("employer-pivot");
                     e.tag("social-profile");
                     e.add_evidence(

@@ -25,7 +25,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -98,7 +98,7 @@ fn build_entity(kind: EntityKind, value: &str, rows: &[Row], scan_id: &str) -> O
         10,
     );
 
-    let mut entity = Entity::new(kind, value, 0.80, scan_id);
+    let mut entity = Entity::new(kind, value, confidence::HIGH_PLUSPLUS, scan_id);
     entity.tag("archived");
     let mut ev = Evidence::new(
         SRC,
@@ -179,7 +179,7 @@ fn mine_keys_from_body(
 
 /// Build the `Url` entity for a freshly-discovered archived contact-adjacent
 /// page, or `None` when `original_url` was already emitted this scan
-/// (dedup tracked via `seen_urls`). Confidence is modest (0.55) — this only
+/// (dedup tracked via `seen_urls`). Confidence is modest (confidence::MEDIUM_HIGH) — this only
 /// proves the page was once archived, not that it is live today. **Pure**
 /// (no network/IO), so — like `mine_keys_from_body` — it is exercised
 /// directly by tests without mocking HTTP.
@@ -193,7 +193,7 @@ fn mine_url_entity(
     if !seen_urls.insert(original_url.to_string()) {
         return None;
     }
-    let mut u = Entity::new(EntityKind::Url, original_url, 0.55, scan_id);
+    let mut u = Entity::new(EntityKind::Url, original_url, confidence::MEDIUM_HIGH, scan_id);
     u.tag("wayback-historical");
     u.tag(crate::core::tags::SEARCH_DISCOVERED);
     let ev = Evidence::new(
@@ -290,7 +290,7 @@ async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> Vec<
                 continue;
             }
             if seen_emails.insert(email.clone()) {
-                let mut e = Entity::new(EntityKind::Email, &email, 0.70, scan_id);
+                let mut e = Entity::new(EntityKind::Email, &email, confidence::HIGH_PLUS, scan_id);
                 e.tag("wayback-historical");
                 e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 let ev = Evidence::new(
@@ -307,7 +307,7 @@ async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> Vec<
 
         for phone in crate::util::extract::phones(&body) {
             if seen_phones.insert(phone.clone()) {
-                let mut e = Entity::new(EntityKind::Phone, &phone, 0.65, scan_id);
+                let mut e = Entity::new(EntityKind::Phone, &phone, confidence::HIGH, scan_id);
                 e.tag("wayback-historical");
                 e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 let ev = Evidence::new(

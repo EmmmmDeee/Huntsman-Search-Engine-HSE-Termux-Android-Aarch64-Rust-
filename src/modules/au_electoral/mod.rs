@@ -34,7 +34,7 @@
 //!   * Confirmed enrolment with division + suburb: 0.72 (electoral roll is
 //!     compulsory and address-verified; higher than directory sources)
 //!   * Division only (no suburb resolved): 0.58
-//!   * Address from division centroid lookup: 0.65 (derived, not raw)
+//!   * Address from division centroid lookup: confidence::HIGH (derived, not raw)
 //!
 //! The module is AU-restricted: it only accepts `FullName` targets and only
 //! emits when the division geography maps inside Australia.
@@ -47,7 +47,7 @@ mod tests;
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},

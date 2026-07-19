@@ -3,7 +3,7 @@
 //!
 //! Stage 1: hlrlookup.com — live HLR status, MCC/MNC, ported/roaming flags.
 //! Stage 2: OpenCNAM — CNAM subscriber name registered on the PSTN.
-//! Pivot: CNAM name → Person entity (confidence 0.55).
+//! Pivot: CNAM name → Person entity (confidence confidence::MEDIUM_HIGH).
 
 #[cfg(test)]
 mod tests;
@@ -11,7 +11,7 @@ mod tests;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -147,7 +147,7 @@ impl Module for HlrCnam {
 fn build_hlr_entities(hlr: &HlrResp, number: &str, scan_id: &str) -> Vec<Entity> {
     let mut out = Vec::new();
 
-    let mut phone = Entity::new(EntityKind::Phone, number, 0.85, scan_id);
+    let mut phone = Entity::new(EntityKind::Phone, number, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
     phone.tag("hlr-verified");
     if hlr.ported == Some(true) {
         phone.tag("ported");
@@ -220,7 +220,7 @@ fn build_hlr_entities(hlr: &HlrResp, number: &str, scan_id: &str) -> Vec<Entity>
 /// tied to the exact PSTN number the lookup resolved.
 fn build_cnam_person(cnam: &CnamResp, number: &str, scan_id: &str) -> Option<Entity> {
     let name = cnam.name.as_deref().filter(|n| n.len() >= 2)?;
-    let mut person = Entity::new(EntityKind::Person, name, 0.55, scan_id);
+    let mut person = Entity::new(EntityKind::Person, name, confidence::MEDIUM_HIGH, scan_id);
     person.tag("cnam");
     person.tag("pstn-subscriber");
     let mut ev = Evidence::new(SRC, format!("CNAM subscriber name for {number}"))

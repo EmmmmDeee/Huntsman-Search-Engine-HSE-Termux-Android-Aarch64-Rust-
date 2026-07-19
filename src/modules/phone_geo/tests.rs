@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 use data::{
     AREA_CODE_TABLES, au_carrier, country_name, identify_carrier, lookup_area_code, uk_carrier,
@@ -206,7 +207,7 @@ fn uk_carrier_maps_prefixes_with_full_fields() {
     let ee = uk_carrier("7400").unwrap();
     assert_eq!(ee.carrier, "EE");
     assert_eq!(ee.country, "United Kingdom");
-    assert_eq!(ee.confidence, 0.40);
+    assert_eq!(ee.confidence, confidence::LOW);
     assert_eq!(ee.network_hint, "mobile");
 
     assert_eq!(uk_carrier("7410").unwrap().carrier, "Vodafone UK");

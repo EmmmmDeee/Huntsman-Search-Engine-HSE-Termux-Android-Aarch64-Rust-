@@ -37,7 +37,7 @@
 //! match against a global, several-thousand-row list carries a real
 //! false-positive risk — wrongly implying a person is sanctioned is a serious
 //! harm. Mitigations:
-//!   1. Confidence is **0.50** — deliberately BELOW the 0.60 the AU registers
+//!   1. Confidence is **confidence::MEDIUM** — deliberately BELOW the confidence::MEDIUM_PLUS the AU registers
 //!      use for an equivalent single-source adverse-register hit
 //!      (`asic_persons`/`asic_banned_orgs`), because this source's collision
 //!      risk is objectively higher (a global name pool vs. a national
@@ -63,7 +63,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -95,11 +95,11 @@ const LIST_CACHE_TTL_SECS: u64 = 12 * 60 * 60;
 
 /// Confidence for a bare, single-source name-hit — see the module doc's
 /// misattribution-risk section for why this is deliberately below the AU
-/// registers' 0.60 precedent.
-const HIT_CONFIDENCE: f64 = 0.50;
+/// registers' confidence::MEDIUM_PLUS precedent.
+const HIT_CONFIDENCE: f64 = confidence::MEDIUM;
 // Compile-time pin: a careless future edit must not silently raise this back
-// to (or above) the AU registers' 0.60 without revisiting the rationale above.
-const _: () = assert!(HIT_CONFIDENCE < 0.60);
+// to (or above) the AU registers' confidence::MEDIUM_PLUS without revisiting the rationale above.
+const _: () = assert!(HIT_CONFIDENCE < confidence::MEDIUM_PLUS);
 
 /// Cap on emitted hits per query — a very common name could match dozens of
 /// distinct SDN entries; beyond this it reads as noise rather than a lead

@@ -28,6 +28,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -42,12 +43,12 @@ const SRC: &str = "gaming_profile";
 /// handle. A unique-handle platform match with a live public profile — on par
 /// with `github_user`'s profile confidence, a notch below it because gaming
 /// handles collide across people more often than dev handles.
-const ROBLOX_CONF: f64 = 0.90;
+const ROBLOX_CONF: f64 = confidence::VERY_HIGH_PLUS;
 
 /// Confidence for a Minecraft (Java) account that resolves EXACTLY from the
 /// target handle. Slightly below Roblox: Mojang confirms only existence + UUID,
 /// not a rich profile, though a Java account being paid makes the hit solid.
-const MINECRAFT_CONF: f64 = 0.85;
+const MINECRAFT_CONF: f64 = confidence::HIGH_PLUSPLUS_PLUS;
 
 /// Max characters of a Roblox bio carried as evidence — bounds graph/log size
 /// while preserving the lead.

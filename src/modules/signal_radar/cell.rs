@@ -3,7 +3,7 @@
 
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
 };
@@ -64,7 +64,7 @@ pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> ModuleResult {
         let tech = tech_tag(cell.cell_type.as_deref());
         let registered = cell.registered.unwrap_or(false);
 
-        let mut e = Entity::new(EntityKind::DeviceId, &tower_id, 0.75, scan_id);
+        let mut e = Entity::new(EntityKind::DeviceId, &tower_id, confidence::VERY_HIGH, scan_id);
         e.tag(crate::core::tags::CELL_TOWER);
         e.tag(tech);
         if registered {

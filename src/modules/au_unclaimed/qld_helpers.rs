@@ -10,7 +10,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::{Map, Value};
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     scan::{Target, TargetKind},
 };
@@ -290,10 +290,10 @@ pub(super) fn records_to_entities(
         // (0.32). The `find_conf` for the non-geo `unclaimed_money` finding /
         // company Organisation keeps its full weight: those are real records,
         // not coarse geo.
-        // Non-exact surname-only matches must stay below the 0.50 expansion
+        // Non-exact surname-only matches must stay below the confidence::MEDIUM expansion
         // floor so unrelated family members (e.g. "MS DAWN BAMFORD") never
         // trigger pivots when scanning a specific individual.
-        let (addr_conf, find_conf) = if exact { (0.38, 0.60) } else { (0.32, 0.35) };
+        let (addr_conf, find_conf) = if exact { (0.38, confidence::MEDIUM_PLUS) } else { (0.32, 0.35) };
 
         // Geo pivot when we have a usable postcode; otherwise a plain finding.
         // Borrow `pc` (don't move it) so the owner-Person pass below can still read
@@ -352,7 +352,7 @@ pub(super) fn records_to_entities(
         // graph has people to connect. The relation layer then binds them: the
         // shared surname links relatives from ANY seed angle (free), and a joint
         // record's co-owners are linked explicitly via the declared `co_owner`
-        // attribute. Family-candidate Persons stay below the 0.50 expansion floor
+        // attribute. Family-candidate Persons stay below the confidence::MEDIUM expansion floor
         // (find_conf 0.35) so a relative is recorded and connected but never
         // pivot-scanned as if they were the subject; an exact register hit on the
         // seed merges with the name_intel subject anchor by its title-cased value.
@@ -361,9 +361,9 @@ pub(super) fn records_to_entities(
             // Exactness is PER-PERSON, not per-record: on a joint "HAYLEY & CURT"
             // record seeded with "Curt", Curt is the exact subject while Hayley is
             // a surname-only family candidate — so each co-owner is judged on its
-            // own name, and a family candidate stays below the 0.50 pivot floor.
+            // own name, and a family candidate stays below the confidence::MEDIUM pivot floor.
             let person_exact = owner_matches_full_name(person, seed);
-            let pconf = if person_exact { 0.60 } else { 0.35 };
+            let pconf = if person_exact { confidence::MEDIUM_PLUS } else { 0.35 };
             let mut p = Entity::new(EntityKind::Person, person, pconf, scan_id);
             p.tag(SRC);
             p.tag("unclaimed-money");
@@ -453,7 +453,7 @@ pub(super) fn records_to_entities(
 /// (`"Maleny, QLD 4552, Australia"`). These are *candidate* localities (the
 /// owner is in one of them), so confidence is low and they carry a
 /// `candidate-suburb` tag; the engine surfaces them as enumeration without
-/// auto-expanding (below the 0.50 floor). Pure: takes the already-fetched map.
+/// auto-expanding (below the confidence::MEDIUM floor). Pure: takes the already-fetched map.
 pub(super) fn suburbs_to_entities(
     pc_localities: &[(String, Vec<Locality>)],
     scan_id: &str,

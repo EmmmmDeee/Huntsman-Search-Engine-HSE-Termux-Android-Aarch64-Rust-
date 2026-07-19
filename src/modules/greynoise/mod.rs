@@ -24,7 +24,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -125,9 +125,9 @@ fn build_entities_from_signal(sig: &Signal, ip: &str, scan_id: &str) -> Vec<Enti
     }
 
     let confidence = match sig.classification {
-        Some("malicious") => 0.80,
-        Some("benign") => 0.70,
-        _ => 0.55,
+        Some("malicious") => confidence::HIGH_PLUSPLUS,
+        Some("benign") => confidence::HIGH_PLUS,
+        _ => confidence::MEDIUM_HIGH,
     };
 
     let mut entity = Entity::new(EntityKind::IpAddress, ip, confidence, scan_id);

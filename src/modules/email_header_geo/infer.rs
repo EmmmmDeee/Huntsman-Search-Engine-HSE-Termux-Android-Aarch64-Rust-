@@ -1,5 +1,6 @@
 //! Pure domain-to-geography inference helpers.
 
+use crate::core::confidence;
 use super::tables::{CCTLD_REGIONS, REGIONAL_PROVIDERS};
 
 /// A region inferred from an email domain, with the confidence and the human
@@ -11,7 +12,7 @@ pub(super) struct DomainGeo {
 }
 
 /// Infer a region from an email domain's **country-code TLD** (`.com.au` → AU,
-/// etc.). AU ccTLDs are weighted `0.52` — deliberately above the 0.50 expansion
+/// etc.). AU ccTLDs are weighted `0.52` — deliberately above the confidence::MEDIUM expansion
 /// floor so the inferred region feeds the geo-correlation chain — versus `0.48`
 /// for other ccTLDs. `None` when the domain carries no recognised ccTLD.
 pub(super) fn infer_geo_from_email_domain(domain: &str) -> Option<DomainGeo> {

@@ -23,7 +23,7 @@
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::EntityKind,
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -47,13 +47,13 @@ pub(super) const SRC: &str = "gleif_lei";
 pub(super) const MAX_RECORDS: usize = 100;
 
 // Confidence tiers, aligned with the gov/corporate band and the noisy-OR
-// expansion floor (0.50): exact name matches pivot immediately; loose candidates
+// expansion floor (confidence::MEDIUM): exact name matches pivot immediately; loose candidates
 // stay below the floor so they're surfaced but inert unless independently
 // corroborated.
-pub(super) const ORG_EXACT: f64 = 0.85;
-pub(super) const ORG_CANDIDATE: f64 = 0.45;
-pub(super) const ABN_CONF: f64 = 0.88;
-pub(super) const ADDR_CONF: f64 = 0.60;
+pub(super) const ORG_EXACT: f64 = confidence::HIGH_PLUSPLUS_PLUS;
+pub(super) const ORG_CANDIDATE: f64 = confidence::LOW_MEDIUM;
+pub(super) const ABN_CONF: f64 = confidence::EXPERT;
+pub(super) const ADDR_CONF: f64 = confidence::MEDIUM_PLUS;
 
 pub struct GleifLei;
 

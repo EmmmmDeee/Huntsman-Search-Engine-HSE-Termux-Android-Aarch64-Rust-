@@ -14,7 +14,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -62,7 +62,7 @@ const MAX_PORTS: usize = 20;
 /// timestamps), and raises the `leak` / `ssh-exposed` tags. Caller guarantees the
 /// response carries at least one service or leak event.
 fn build_exposure_entity(kind: EntityKind, value: &str, body: &HostResp, scan_id: &str) -> Entity {
-    let mut entity = Entity::new(kind, value, 0.88, scan_id);
+    let mut entity = Entity::new(kind, value, confidence::EXPERT, scan_id);
     entity.tag("leakix");
     if !body.leaks.is_empty() {
         entity.tag("leak");

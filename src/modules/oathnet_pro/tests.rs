@@ -417,7 +417,7 @@ use super::*;
         // The exact junk pattern from the "Jordan Avery" name scan: a breach
         // row for a stranger (a bank employee) returned by the broad search. The
         // email AND its domain must be demoted to candidate — previously they
-        // were emitted at full 0.70/0.55 confidence with no `candidate` tag,
+        // were emitted at full confidence::HIGH_PLUS/confidence::MEDIUM_HIGH confidence with no `candidate` tag,
         // which is what flooded the result with 88% junk.
         let item = json!({
             "email": "hlaura@blackhawkbank.com",
@@ -533,7 +533,7 @@ use super::*;
     #[test]
     fn breach_parent_is_honest_about_whether_the_subject_appears() {
         use serde_json::json;
-        // A `full_name` page of pure strangers must NOT mint a 0.85
+        // A `full_name` page of pure strangers must NOT mint a confidence::HIGH_PLUSPLUS_PLUS
         // breach-tagged subject node: the engine pre-seeds a subject anchor, so
         // that parent would merge a false "breach hit" — plus a 50-stranger
         // name/country dump — onto it. Zero matching rows => None.
@@ -571,7 +571,7 @@ use super::*;
         let parent = breach_parent_entity(&target, "scan", &matching, page.len())
             .expect("subject present => parent emitted");
         assert_eq!(parent.value, "Ali Kareem");
-        assert!((parent.confidence - 0.85).abs() < 1e-9);
+        assert!((parent.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 1e-9);
         assert!(parent.has_tag("breach") && parent.has_tag("oathnet-pro"));
         let ev = parent.evidence.first().expect("parent evidence");
         assert_eq!(ev.attributes.get("hits").map(String::as_str), Some("1"));
@@ -713,7 +713,7 @@ use super::*;
             "exact name is the target, not a candidate"
         );
         assert!(
-            (d.confidence - 0.70).abs() < 1e-9,
+            (d.confidence - confidence::HIGH_PLUS).abs() < 1e-9,
             "target person at full conf"
         );
     }

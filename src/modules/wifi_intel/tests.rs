@@ -75,7 +75,7 @@ fn parses_three_aps_with_all_fields() {
     let ap0 = &r.entities[0];
     assert_eq!(ap0.kind, EntityKind::MacAddress);
     assert_eq!(ap0.value, "aa:bb:cc:dd:ee:ff");
-    assert!((ap0.confidence - 0.95).abs() < 1e-6);
+    assert!((ap0.confidence - confidence::VERY_HIGH_PLUSPLUS).abs() < 1e-6);
     assert!(ap0.has_tag(crate::core::tags::WIFI_AP));
     assert_eq!(ap0.scan_id, "scan-001");
 

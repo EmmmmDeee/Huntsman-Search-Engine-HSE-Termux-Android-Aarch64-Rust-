@@ -15,7 +15,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -161,7 +161,7 @@ impl Module for EmailRep {
 /// the actionable, suspicious case and is what gets tagged.
 pub(super) fn build_email_entity(target: &Target, body: &RepResp, scan_id: &str) -> Entity {
     let email = target.value.trim();
-    let mut entity = target.to_entity(0.85, scan_id);
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS_PLUS, scan_id);
     entity.tag("emailrep");
 
     let mut ev = Evidence::new(SRC, format!("EmailRep report for {email}"));

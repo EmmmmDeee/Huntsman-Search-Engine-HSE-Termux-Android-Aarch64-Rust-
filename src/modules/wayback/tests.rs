@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
     #[test]
@@ -60,7 +61,7 @@ use super::*;
         let e = build_entity(EntityKind::Domain, "example.com", &rows, "s").unwrap();
         assert_eq!(e.kind, EntityKind::Domain);
         assert!(e.has_tag("archived"));
-        assert!((e.confidence - 0.80).abs() < 1e-9);
+        assert!((e.confidence - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
         assert_eq!(attr(&e, "snapshot_count"), Some("3")); // header excluded
         assert_eq!(attr(&e, "first_seen"), Some("20140912153012"));
         assert_eq!(attr(&e, "first_seen_iso"), Some("2014-09-12 15:30:12 UTC"));
@@ -193,7 +194,7 @@ use super::*;
 
         assert_eq!(e.kind, EntityKind::Url);
         assert_eq!(e.value, original_url);
-        assert!((e.confidence - 0.55).abs() < 1e-9);
+        assert!((e.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
         assert!(e.has_tag("wayback-historical"));
         assert!(e.has_tag(crate::core::tags::SEARCH_DISCOVERED));
         assert_eq!(e.evidence[0].source, SRC);

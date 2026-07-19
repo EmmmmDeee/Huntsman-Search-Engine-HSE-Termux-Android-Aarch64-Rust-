@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use tracing::{debug, warn};
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -120,7 +120,7 @@ impl Module for OsintCat {
         let credits = user.email_osint_credits;
         debug!(balance = credits.current_balance, "osintcat credit check");
 
-        let mut entity = target.to_entity(0.75, &ctx.scan_id);
+        let mut entity = target.to_entity(confidence::VERY_HIGH, &ctx.scan_id);
         entity.tag(SRC);
 
         // Footprint — free endpoint.
@@ -223,7 +223,7 @@ fn emit_footprint(fp: &OcFootprintResponse, entity: &mut Entity, result: &mut Mo
                 if k.eq_ignore_ascii_case("username")
                     && let Some(uname) = v.as_str()
                 {
-                    let mut pivot = Entity::new(EntityKind::Username, uname, 0.70, &entity.scan_id);
+                    let mut pivot = Entity::new(EntityKind::Username, uname, confidence::HIGH_PLUS, &entity.scan_id);
                     pivot.tag("osintcat");
                     pivot.tag("footprint-pivot");
                     result.push(pivot);

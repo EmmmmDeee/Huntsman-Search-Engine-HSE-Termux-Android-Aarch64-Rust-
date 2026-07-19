@@ -60,7 +60,7 @@ use crate::core::entity::Entity;
         use serde_json::json;
         // T2.36-pattern regression: a broad `full_name` `/search` page of pure
         // term-sharing strangers must not read as "subject present" — the
-        // caller would otherwise mint a 0.85 BREACH parent that merges (via
+        // caller would otherwise mint a confidence::HIGH_PLUSPLUS_PLUS BREACH parent that merges (via
         // `absorb`, GREATEST semantics) straight onto the pre-seeded subject
         // anchor regardless of whether any row actually concerns them.
         let strangers: Vec<serde_json::Value> = (0..5)

@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
     fn entry(json: &str) -> DomainEntry {
@@ -71,7 +72,7 @@ use super::*;
         .unwrap();
         assert_eq!(e.kind, EntityKind::Domain);
         assert!(e.has_tag("domainsdb") && !e.has_tag("dead-domain") && !e.has_tag("broad-match"));
-        assert!((e.confidence - 0.55).abs() < 1e-9);
+        assert!((e.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
         let ev = &e.evidence[0];
         assert_eq!(
             ev.attributes.get("created").map(String::as_str),
@@ -102,7 +103,7 @@ use super::*;
         // A generic keyword (high `total`) → broad-match: tagged + 0.7× damped.
         let e = build_domain_entity(&entry(r#"{"domain":"john-smith.com"}"#), true, "s").unwrap();
         assert!(e.has_tag("broad-match"));
-        assert!((e.confidence - 0.55 * 0.7).abs() < 1e-9);
+        assert!((e.confidence - confidence::MEDIUM_HIGH * 0.7).abs() < 1e-9);
         // Dead + broad stacks both penalties.
         let dead = build_domain_entity(&entry(r#"{"domain":"x.com","isDead":"True"}"#), true, "s")
             .unwrap();

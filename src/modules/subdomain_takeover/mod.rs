@@ -10,7 +10,7 @@
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -45,7 +45,7 @@ fn matching_fingerprints(cname_target: &str) -> impl Iterator<Item = &'static Fi
 /// service as evidence. A blank `service` adds no `takeover:` tag and no
 /// `service` attr; a blank `cname_target` adds no `cname_target` attr.
 fn build_entities(domain: &str, cname_target: &str, service: &str, scan_id: &str) -> Vec<Entity> {
-    let mut e = Entity::new(EntityKind::Domain, domain, 0.90, scan_id);
+    let mut e = Entity::new(EntityKind::Domain, domain, confidence::VERY_HIGH_PLUS, scan_id);
     e.tag(crate::core::tags::VULNERABLE);
     e.tag("subdomain-takeover");
     if !service.is_empty() {

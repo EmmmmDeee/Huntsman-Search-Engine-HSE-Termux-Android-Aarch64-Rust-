@@ -1,4 +1,4 @@
-use crate::core::{entity::EntityKind, scan::Target, scan::TargetKind};
+use crate::core::{confidence, entity::EntityKind, scan::Target, scan::TargetKind};
 
 use super::{
     DeviceSensors,
@@ -109,7 +109,7 @@ fn network_fix_gets_lower_confidence() {
         "provider":"network"}"#;
     let r = parse_fix(json, "test");
     assert_eq!(r.entities.len(), 1);
-    assert!((r.entities[0].confidence - 0.65).abs() < 1e-6);
+    assert!((r.entities[0].confidence - confidence::HIGH).abs() < 1e-6);
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn gps_fix_gets_higher_confidence() {
     let json = br#"{"latitude":-27.4698,"longitude":153.0251,"accuracy":2.0,
         "provider":"gps"}"#;
     let r = parse_fix(json, "test");
-    assert!((r.entities[0].confidence - 0.90).abs() < 1e-6);
+    assert!((r.entities[0].confidence - confidence::VERY_HIGH_PLUS).abs() < 1e-6);
 }
 
 #[test]
@@ -192,7 +192,7 @@ fn accuracy_scales_confidence_below_provider_ceiling() {
     let ct = parse_fix(tight, "t").entities[0].confidence;
     let cw = parse_fix(wide, "t").entities[0].confidence;
     assert!(
-        (ct - 0.90).abs() < 1e-6,
+        (ct - confidence::VERY_HIGH_PLUS).abs() < 1e-6,
         "tight gps fix keeps ceiling: {ct}"
     );
     assert!(cw < ct, "wide fix ({cw}) must score below tight ({ct})");
@@ -233,7 +233,7 @@ fn missing_optional_fields_default_to_zero() {
     assert_eq!(ev.attributes.get("accuracy_m").unwrap(), "0");
     assert_eq!(ev.attributes.get("speed").unwrap(), "0");
     assert_eq!(ev.attributes.get("bearing").unwrap(), "0");
-    assert!((r.entities[0].confidence - 0.65).abs() < 1e-6);
+    assert!((r.entities[0].confidence - confidence::HIGH).abs() < 1e-6);
 }
 
 #[test]
@@ -257,8 +257,8 @@ fn negative_coordinates_handled() {
 
 #[test]
 fn fix_confidence_gps_ceiling() {
-    assert!((fix_confidence("gps", None) - 0.90).abs() < 1e-9);
-    assert!((fix_confidence("network", None) - 0.65).abs() < 1e-9);
+    assert!((fix_confidence("gps", None) - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
+    assert!((fix_confidence("network", None) - confidence::HIGH).abs() < 1e-9);
 }
 
 #[test]

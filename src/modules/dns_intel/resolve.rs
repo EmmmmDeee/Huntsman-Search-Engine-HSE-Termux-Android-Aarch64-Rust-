@@ -1,6 +1,6 @@
 use hickory_resolver::proto::rr::{RData, RecordType};
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::ModuleContext,
@@ -42,7 +42,7 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                 RData::AAAA(aaaa) => (aaaa.0.to_string(), "AAAA", "6"),
                 _ => return None,
             };
-            let mut e = Entity::new(EntityKind::IpAddress, &ip_str, 0.95, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::IpAddress, &ip_str, confidence::VERY_HIGH_PLUSPLUS, &ctx.scan_id);
             e.tag(if record_type == "A" { "ipv4" } else { "ipv6" });
             e.add_evidence(
                 Evidence::new(SRC, format!("{record_type} record for {domain}"))
@@ -66,7 +66,7 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
             if host.is_empty() {
                 return None;
             }
-            let mut e = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Domain, &host, confidence::HIGH_PLUSPLUS_PLUS, &ctx.scan_id);
             e.tag("mx");
             e.add_evidence(
                 Evidence::new(SRC, format!("MX record for {domain}"))
@@ -90,7 +90,7 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
             if host.is_empty() {
                 return None;
             }
-            let mut e = Entity::new(EntityKind::Domain, &host, 0.88, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Domain, &host, confidence::EXPERT, &ctx.scan_id);
             e.tag("ns");
             e.add_evidence(
                 Evidence::new(SRC, format!("NS record for {domain}"))
@@ -141,7 +141,7 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
         // still kept.
         if admin_email.contains('@') && !crate::util::domains::is_infrastructure_email(&admin_email)
         {
-            let mut em = Entity::new(EntityKind::Email, &admin_email, 0.70, &ctx.scan_id);
+            let mut em = Entity::new(EntityKind::Email, &admin_email, confidence::HIGH_PLUS, &ctx.scan_id);
             em.tag("dns-admin");
             em.add_evidence(
                 Evidence::new(SRC, format!("Zone admin for {domain}"))
@@ -167,7 +167,7 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
             })
             .collect();
         if !txts.is_empty() {
-            let mut dom = Entity::new(EntityKind::Domain, domain, 0.90, &ctx.scan_id);
+            let mut dom = Entity::new(EntityKind::Domain, domain, confidence::VERY_HIGH_PLUS, &ctx.scan_id);
             for t in &txts {
                 let t = t.trim_matches('"');
                 let b = t.as_bytes();
@@ -203,7 +203,7 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                         match member {
                             crate::util::spf::Member::Ip(ip) => {
                                 let mut ie =
-                                    Entity::new(EntityKind::IpAddress, ip, 0.75, &ctx.scan_id);
+                                    Entity::new(EntityKind::IpAddress, ip, confidence::VERY_HIGH, &ctx.scan_id);
                                 ie.tag("dns");
                                 ie.tag("spf");
                                 ie.add_evidence(
@@ -220,7 +220,7 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                             }
                             crate::util::spf::Member::Include(inc) => {
                                 let mut de =
-                                    Entity::new(EntityKind::Domain, inc, 0.65, &ctx.scan_id);
+                                    Entity::new(EntityKind::Domain, inc, confidence::HIGH, &ctx.scan_id);
                                 de.tag("dns");
                                 de.tag("spf-include");
                                 de.add_evidence(Evidence::new(
@@ -231,7 +231,7 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                             }
                             crate::util::spf::Member::Redirect(red) => {
                                 let mut de =
-                                    Entity::new(EntityKind::Domain, red, 0.65, &ctx.scan_id);
+                                    Entity::new(EntityKind::Domain, red, confidence::HIGH, &ctx.scan_id);
                                 de.tag("dns");
                                 de.tag("spf-redirect");
                                 de.add_evidence(Evidence::new(
@@ -242,7 +242,7 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                             }
                             crate::util::spf::Member::A(a_dom) => {
                                 let mut de =
-                                    Entity::new(EntityKind::Domain, a_dom, 0.65, &ctx.scan_id);
+                                    Entity::new(EntityKind::Domain, a_dom, confidence::HIGH, &ctx.scan_id);
                                 de.tag("dns");
                                 de.tag("spf-a");
                                 de.add_evidence(Evidence::new(
@@ -253,7 +253,7 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                             }
                             crate::util::spf::Member::Mx(mx_dom) => {
                                 let mut de =
-                                    Entity::new(EntityKind::Domain, mx_dom, 0.65, &ctx.scan_id);
+                                    Entity::new(EntityKind::Domain, mx_dom, confidence::HIGH, &ctx.scan_id);
                                 de.tag("dns");
                                 de.tag("spf-mx");
                                 de.add_evidence(Evidence::new(
@@ -307,7 +307,7 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
             };
 
             // Tag the domain entity with the DMARC policy and any issues.
-            let mut dom = Entity::new(EntityKind::Domain, domain, 0.90, &ctx.scan_id);
+            let mut dom = Entity::new(EntityKind::Domain, domain, confidence::VERY_HIGH_PLUS, &ctx.scan_id);
             dom.tag("dmarc");
             if let Some(p) = dmarc.policy {
                 dom.tag(p.tag());
@@ -503,7 +503,7 @@ pub(super) async fn lookup_caa(target: &Target, ctx: &ModuleContext) -> Result<V
         return Ok(Vec::new());
     }
 
-    let mut entity = Entity::new(EntityKind::Domain, domain, 0.85, &ctx.scan_id);
+    let mut entity = Entity::new(EntityKind::Domain, domain, confidence::HIGH_PLUSPLUS_PLUS, &ctx.scan_id);
     entity.tag("caa");
     let mut ev = Evidence::new(
         SRC,
@@ -560,7 +560,7 @@ pub(crate) fn iodef_entities(value: &str, domain: &str, scan_id: &str) -> Vec<En
         if !looks_like_email {
             return Vec::new();
         }
-        let mut e = Entity::new(EntityKind::Email, addr, 0.75, scan_id);
+        let mut e = Entity::new(EntityKind::Email, addr, confidence::VERY_HIGH, scan_id);
         e.tag("caa");
         e.tag("iodef");
         e.tag("security-contact");
@@ -579,7 +579,7 @@ pub(crate) fn iodef_entities(value: &str, domain: &str, scan_id: &str) -> Vec<En
         && host.contains('.')
         && host != domain
     {
-        let mut d = Entity::new(EntityKind::Domain, &host, 0.60, scan_id);
+        let mut d = Entity::new(EntityKind::Domain, &host, confidence::MEDIUM_PLUS, scan_id);
         d.tag("caa");
         d.tag("iodef");
         d.add_evidence(
@@ -622,7 +622,7 @@ pub(super) async fn reverse_lookup(target: &Target, ctx: &ModuleContext) -> Resu
             if host.is_empty() {
                 return None;
             }
-            let mut e = Entity::new(EntityKind::Domain, host, 0.85, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Domain, host, confidence::HIGH_PLUSPLUS_PLUS, &ctx.scan_id);
             e.tag(crate::core::tags::PTR);
             e.add_evidence(
                 Evidence::new(SRC, format!("PTR record for {ip}"))
@@ -666,7 +666,7 @@ pub(super) async fn blocklist_check(target: &Target, ctx: &ModuleContext) -> Res
         checked += 1;
     }
 
-    let mut entity = Entity::new(EntityKind::IpAddress, ip, 0.90, &ctx.scan_id);
+    let mut entity = Entity::new(EntityKind::IpAddress, ip, confidence::VERY_HIGH_PLUS, &ctx.scan_id);
     entity.tag("dnsbl-checked");
 
     if listed_on.is_empty() {

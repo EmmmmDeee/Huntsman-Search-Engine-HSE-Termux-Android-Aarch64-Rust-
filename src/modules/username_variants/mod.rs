@@ -18,7 +18,7 @@
 //! handle. Speculative additions (`jdoe1`, `jdoe_`) are intentionally *not*
 //! generated: they are noise.
 //!
-//! Variants are emitted as low-confidence *candidates* (0.42, below the 0.50
+//! Variants are emitted as low-confidence *candidates* (0.42, below the confidence::MEDIUM
 //! expansion floor) so a plain `--depth` scan never auto-spends API budget on a
 //! guessed handle. They still enrich the graph and feed the AU-034 handle-reuse
 //! correlator, and a variant only crosses the expansion floor if an independent
@@ -29,7 +29,7 @@ use std::collections::BTreeSet;
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -46,7 +46,7 @@ const MAX_VARIANTS: usize = 12;
 /// generate useful alternates and tend to be initials / noise.
 const MIN_HANDLE_LEN: usize = 4;
 
-/// Candidate confidence — deliberately below the 0.50 expansion floor so a
+/// Candidate confidence — deliberately below the confidence::MEDIUM expansion floor so a
 /// plain `--depth` scan never auto-spends on a guessed handle. The variant
 /// still enriches the graph and the AU-034 correlator, and only rises above the
 /// floor if an independent source corroborates it.

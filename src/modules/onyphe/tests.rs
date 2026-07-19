@@ -126,7 +126,7 @@ fn geoloc_subnet_emits_cidr_entity() {
         .find(|e| e.kind == EntityKind::Cidr)
         .expect("geoloc subnet must surface as a Cidr entity");
     assert_eq!(cidr.value, "8.8.8.0/24");
-    assert!(cidr.confidence >= 0.60 && cidr.confidence <= 0.70);
+    assert!(cidr.confidence >= confidence::MEDIUM_PLUS && cidr.confidence <= confidence::HIGH_PLUS);
     assert!(
         cidr.evidence.iter().any(|e| e.source == SRC),
         "cidr evidence must be attached"

@@ -27,7 +27,7 @@ use std::collections::BTreeSet;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -210,7 +210,7 @@ fn parse_assetlinks(body: &str, domain: &str, scan_id: &str, result: &mut Module
         let mut e = Entity::new(
             EntityKind::Other("android-app-id".into()),
             pkg,
-            0.80,
+            confidence::HIGH_PLUSPLUS,
             scan_id,
         );
         e.tag("app-links");
@@ -238,7 +238,7 @@ fn parse_assetlinks(body: &str, domain: &str, scan_id: &str, result: &mut Module
         result.push(e);
     }
     for site in &sites {
-        let mut e = Entity::new(EntityKind::Domain, site, 0.65, scan_id);
+        let mut e = Entity::new(EntityKind::Domain, site, confidence::HIGH, scan_id);
         e.tag("app-links");
         e.tag("delegated-domain");
         e.add_evidence(
@@ -284,7 +284,7 @@ fn parse_aasa(body: &str, domain: &str, scan_id: &str, result: &mut ModuleResult
         let mut e = Entity::new(
             EntityKind::Other("apple-app-id".into()),
             app_id,
-            0.80,
+            confidence::HIGH_PLUSPLUS,
             scan_id,
         );
         e.tag("app-links");
@@ -320,7 +320,7 @@ fn parse_aasa(body: &str, domain: &str, scan_id: &str, result: &mut ModuleResult
             let mut t = Entity::new(
                 EntityKind::Other("apple-team-id".into()),
                 team,
-                0.80,
+                confidence::HIGH_PLUSPLUS,
                 scan_id,
             );
             t.tag("app-links");

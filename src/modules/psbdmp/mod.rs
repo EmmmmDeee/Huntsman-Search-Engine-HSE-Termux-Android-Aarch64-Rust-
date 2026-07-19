@@ -21,7 +21,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -177,7 +177,7 @@ fn extract(
                 .with_attr("search_term", term),
             |ev, (key, v)| ev.with_attr(key, v),
         );
-        let mut e = Entity::new(EntityKind::Url, &url, 0.55, scan_id);
+        let mut e = Entity::new(EntityKind::Url, &url, confidence::MEDIUM_HIGH, scan_id);
         e.tag(SRC);
         e.tag(tags::PASTE_EXPOSED);
         e.add_evidence(ev);
@@ -229,7 +229,7 @@ fn extract(
             // its pastes can never cluster with HIBP/IntelX/xposed_or_not hits.
             ev = ev.with_attr("breach_date", d);
         }
-        let mut seed = Entity::new(seed_kind, term, 0.55, scan_id);
+        let mut seed = Entity::new(seed_kind, term, confidence::MEDIUM_HIGH, scan_id);
         seed.tag(SRC);
         seed.tag(tags::PASTE_EXPOSED);
         seed.tag(tags::BREACH);

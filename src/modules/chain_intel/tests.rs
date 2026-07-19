@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
 fn enr() -> Enrichment {
@@ -294,7 +295,7 @@ fn evidence_omits_blockscout_reputation_signals_when_absent() {
 
 #[test]
 fn apply_scam_tags_tags_malicious_and_threat_intel_only_when_flagged() {
-    let mut scam_entity = Entity::new(EntityKind::CryptoAddress, "0xdead", 0.80, "scan-1");
+    let mut scam_entity = Entity::new(EntityKind::CryptoAddress, "0xdead", confidence::HIGH_PLUSPLUS, "scan-1");
     let scam = Enrichment {
         is_scam: Some(true),
         ..enr()
@@ -310,7 +311,7 @@ fn apply_scam_tags_tags_malicious_and_threat_intel_only_when_flagged() {
     // False and absent must both be silent — a source explicitly saying
     // "not a scam" is not itself evidence worth a MALICIOUS tag, and an
     // absent verdict must never be treated as a positive one.
-    let mut clean_entity = Entity::new(EntityKind::CryptoAddress, "0xclean", 0.80, "scan-1");
+    let mut clean_entity = Entity::new(EntityKind::CryptoAddress, "0xclean", confidence::HIGH_PLUSPLUS, "scan-1");
     let clean = Enrichment {
         is_scam: Some(false),
         ..enr()
@@ -318,7 +319,7 @@ fn apply_scam_tags_tags_malicious_and_threat_intel_only_when_flagged() {
     apply_scam_tags(&mut clean_entity, &clean);
     assert!(!clean_entity.tags.contains(&crate::core::tags::MALICIOUS.to_string()));
 
-    let mut unknown_entity = Entity::new(EntityKind::CryptoAddress, "0xunknown", 0.80, "scan-1");
+    let mut unknown_entity = Entity::new(EntityKind::CryptoAddress, "0xunknown", confidence::HIGH_PLUSPLUS, "scan-1");
     apply_scam_tags(&mut unknown_entity, &enr());
     assert!(!unknown_entity.tags.contains(&crate::core::tags::MALICIOUS.to_string()));
 }

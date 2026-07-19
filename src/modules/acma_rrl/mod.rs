@@ -9,7 +9,7 @@ mod tests;
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -82,7 +82,7 @@ pub(super) fn build_licensee_entities(
 ) -> Vec<Entity> {
     let mut out = Vec::with_capacity(licences.len());
     for (name, lic_no, service) in licences {
-        let mut org = Entity::new(EntityKind::Organisation, name, 0.65, scan_id);
+        let mut org = Entity::new(EntityKind::Organisation, name, confidence::HIGH, scan_id);
         org.tag("acma");
         org.tag("radiocommunications-licensee");
         if !service.is_empty() {
@@ -232,7 +232,7 @@ impl Module for AcmaRrl {
         if !licences.is_empty()
             && let Some(abn) = extract_abn_from_html(&html)
         {
-            let mut abn_entity = Entity::new(EntityKind::AbnAcn, &abn, 0.70, &ctx.scan_id);
+            let mut abn_entity = Entity::new(EntityKind::AbnAcn, &abn, confidence::HIGH_PLUS, &ctx.scan_id);
             abn_entity.tag("acma");
             let note = if licences.len() == 1 {
                 format!("ABN for {} from ACMA RRL", licences[0].0)

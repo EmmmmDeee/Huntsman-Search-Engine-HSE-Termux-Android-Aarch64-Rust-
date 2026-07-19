@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
     #[test]
     fn accepts_domain_and_ip() {
@@ -21,7 +22,7 @@ use super::*;
         assert_eq!(e.kind, EntityKind::Domain);
         assert_eq!(e.value, "mail.example.com");
         assert!(e.has_tag("subdomain") && e.has_tag("securitytrails"));
-        assert!((e.confidence - 0.88).abs() < 1e-9);
+        assert!((e.confidence - confidence::EXPERT).abs() < 1e-9);
         assert_eq!(ev_attr(&e, "parent_domain"), Some("example.com"));
         assert_eq!(ev_attr(&e, "total_subdomains"), Some("42"));
     }

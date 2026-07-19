@@ -19,7 +19,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -83,8 +83,8 @@ struct VtStats {
 /// entity is always element 0; passive-DNS pivots (`IpAddress`/`Domain`)
 /// follow.
 ///
-/// Confidence scales with the malicious detection ratio (0.50 baseline → 0.95 at
-/// 100% malicious); a thin/empty stats block stays at the 0.50 baseline.
+/// Confidence scales with the malicious detection ratio (confidence::MEDIUM baseline → confidence::VERY_HIGH_PLUSPLUS at
+/// 100% malicious); a thin/empty stats block stays at the confidence::MEDIUM baseline.
 fn build_entities(target: &Target, attrs: &VtAttributes, scan_id: &str) -> Vec<Entity> {
     let stats = attrs.last_analysis_stats.as_ref();
     let malicious = stats.map_or(0, |s| s.malicious);
@@ -94,9 +94,9 @@ fn build_entities(target: &Target, attrs: &VtAttributes, scan_id: &str) -> Vec<E
     });
 
     let confidence = if total > 0 {
-        0.50 + (malicious as f64 / total as f64) * 0.45
+        confidence::MEDIUM + (malicious as f64 / total as f64) * confidence::LOW_MEDIUM
     } else {
-        0.50
+        confidence::MEDIUM
     };
 
     let mut e = Entity::new(

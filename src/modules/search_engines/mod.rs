@@ -34,9 +34,9 @@
 //!   - FullName: professional profile + document discovery
 //!
 //! Entity production:
-//!   - Domain (subdomains at 0.70, external at 0.45) → triggers 15+ modules
-//!   - Email (from snippet text at 0.60) → triggers breach + identity stack
-//!   - Phone (from snippet text at 0.55) → triggers numverify, phone_intl
+//!   - Domain (subdomains at confidence::HIGH_PLUS, external at confidence::LOW_MEDIUM) → triggers 15+ modules
+//!   - Email (from snippet text at confidence::MEDIUM_PLUS) → triggers breach + identity stack
+//!   - Phone (from snippet text at confidence::MEDIUM_HIGH) → triggers numverify, phone_intl
 
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -63,7 +63,7 @@ use queries::{build_queries, detect_region, generate_username_variants};
 use async_trait::async_trait;
 use futures::StreamExt;
 
-use crate::core::{
+use crate::core::{confidence, 
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
 };

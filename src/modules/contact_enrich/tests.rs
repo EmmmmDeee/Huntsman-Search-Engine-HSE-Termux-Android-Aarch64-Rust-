@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
 #[test]
@@ -104,7 +105,7 @@ fn valid_phone_yields_tagged_entity_with_evidence() {
     assert_eq!(addr.kind, EntityKind::Address);
     assert_eq!(addr.value, "Novato");
     assert!(
-        addr.confidence < 0.55,
+        addr.confidence < confidence::MEDIUM_HIGH,
         "below the Gravatar Address confidence"
     );
     assert!(

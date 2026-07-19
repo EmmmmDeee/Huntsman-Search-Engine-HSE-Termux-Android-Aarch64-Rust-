@@ -2,7 +2,7 @@
 //!
 //! These functions are free of HTTP transport and are unit-tested directly.
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     scan::Target,
     tags,
@@ -115,7 +115,7 @@ fn apply_account_aggregates(mut ev: Evidence, agg: &AccountAggregates) -> Eviden
 /// different provider, so it earns the same treatment rather than a new one.
 fn cnam_person_entity(cnam: &CnamDetails, phone: &str, scan_id: &str) -> Option<Entity> {
     let name = nonempty(&cnam.name).filter(|n| n.len() >= 2)?;
-    let mut person = Entity::new(EntityKind::Person, name, 0.55, scan_id);
+    let mut person = Entity::new(EntityKind::Person, name, confidence::MEDIUM_HIGH, scan_id);
     person.tag("seon");
     person.tag("cnam");
     person.tag("pstn-subscriber");
@@ -160,7 +160,7 @@ pub(super) fn build_email_entities(
 ) -> Vec<Entity> {
     let email = target.value.trim();
     let mut out = Vec::new();
-    let mut entity = target.to_entity(0.88, scan_id);
+    let mut entity = target.to_entity(confidence::EXPERT, scan_id);
     entity.tag("seon");
 
     let mut ev = Evidence::new(SRC, format!("SEON email enrichment for {email}"));
@@ -285,7 +285,7 @@ pub(super) fn build_email_entities(
 /// every real breach entry does, but a defensive `None` costs nothing).
 fn breach_domain_entity(breach: &Breach, scan_id: &str) -> Option<Entity> {
     let domain = breach.domain.as_deref().filter(|d| d.contains('.'))?;
-    let mut de = Entity::new(EntityKind::Domain, domain, 0.55, scan_id);
+    let mut de = Entity::new(EntityKind::Domain, domain, confidence::MEDIUM_HIGH, scan_id);
     de.tag(tags::BREACH);
     de.tag("seon");
     de.tag(tags::BREACH_DERIVED);
@@ -322,7 +322,7 @@ fn domain_registration_entities(reg: &DomainRegistration, who: &str, scan_id: &s
     };
 
     if let Some(domain) = nonempty(&reg.domain_name) {
-        let mut de = Entity::new(EntityKind::Domain, domain, 0.60, scan_id);
+        let mut de = Entity::new(EntityKind::Domain, domain, confidence::MEDIUM_PLUS, scan_id);
         de.tag("seon");
         de.tag(tags::REGISTRANT);
         de.add_evidence(ev());
@@ -345,7 +345,7 @@ fn domain_registration_entities(reg: &DomainRegistration, who: &str, scan_id: &s
         out.push(oe);
     }
     if let Some(phone) = nonempty(&reg.phone_number).filter(|p| !is_redacted(p)) {
-        let mut phe = Entity::new(EntityKind::Phone, phone, 0.65, scan_id);
+        let mut phe = Entity::new(EntityKind::Phone, phone, confidence::HIGH, scan_id);
         phe.tag("seon");
         phe.tag(tags::REGISTRANT);
         phe.add_evidence(ev());
@@ -365,7 +365,7 @@ fn domain_registration_entities(reg: &DomainRegistration, who: &str, scan_id: &s
     .collect();
     if addr_parts.len() >= 2 {
         let composed = addr_parts.join(", ");
-        let mut ae = Entity::new(EntityKind::Address, composed, 0.60, scan_id);
+        let mut ae = Entity::new(EntityKind::Address, composed, confidence::MEDIUM_PLUS, scan_id);
         ae.tag("seon");
         ae.tag(tags::REGISTRANT);
         ae.add_evidence(ev());
@@ -386,7 +386,7 @@ fn email_domain_entity(dd: &EmailDomainDetails, scan_id: &str) -> Option<Entity>
     if dd.free == Some(true) || dd.disposable == Some(true) {
         return None;
     }
-    let mut de = Entity::new(EntityKind::Domain, domain, 0.60, scan_id);
+    let mut de = Entity::new(EntityKind::Domain, domain, confidence::MEDIUM_PLUS, scan_id);
     de.tag("seon");
     let mut ev = Evidence::new(SRC, format!("SEON email domain details for {domain}"));
     if let Some(r) = dd.registered {
@@ -417,7 +417,7 @@ pub(super) fn build_phone_entities(
 ) -> Vec<Entity> {
     let phone = target.value.trim();
     let mut out = Vec::new();
-    let mut entity = target.to_entity(0.88, scan_id);
+    let mut entity = target.to_entity(confidence::EXPERT, scan_id);
     entity.tag("seon");
 
     let mut ev = Evidence::new(SRC, format!("SEON phone enrichment for {phone}"));

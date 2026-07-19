@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
 const SCAN: &str = "scan-pk-001";
@@ -61,7 +62,7 @@ fn person_rejected_for_placeholder() {
 
 #[test]
 fn website_emits_url_and_domain_for_third_party_host() {
-    let ents = website_url_and_domain("https://alice.dev", 0.70, 0.62, SCAN);
+    let ents = website_url_and_domain("https://alice.dev", confidence::HIGH_PLUS, 0.62, SCAN);
     assert_eq!(ents.len(), 2);
     assert_eq!(ents[0].kind, EntityKind::Url);
     assert_eq!(ents[0].value, "https://alice.dev");
@@ -72,15 +73,15 @@ fn website_emits_url_and_domain_for_third_party_host() {
 #[test]
 fn website_excludes_platform_host_domain_but_keeps_url() {
     // A GitHub link is a `Url` pointer, never a personal `Domain`.
-    let ents = website_url_and_domain("https://github.com/alice", 0.70, 0.62, SCAN);
+    let ents = website_url_and_domain("https://github.com/alice", confidence::HIGH_PLUS, 0.62, SCAN);
     assert_eq!(ents.len(), 1);
     assert_eq!(ents[0].kind, EntityKind::Url);
 }
 
 #[test]
 fn website_returns_empty_for_non_http() {
-    assert!(website_url_and_domain("ftp://alice.dev", 0.70, 0.62, SCAN).is_empty());
-    assert!(website_url_and_domain("alice.dev", 0.70, 0.62, SCAN).is_empty());
+    assert!(website_url_and_domain("ftp://alice.dev", confidence::HIGH_PLUS, 0.62, SCAN).is_empty());
+    assert!(website_url_and_domain("alice.dev", confidence::HIGH_PLUS, 0.62, SCAN).is_empty());
 }
 
 // ── location_address ─────────────────────────────────────────────────────────

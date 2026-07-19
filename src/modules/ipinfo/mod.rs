@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -104,7 +104,7 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
     let country = data.country.as_deref().unwrap_or("");
     if !city.is_empty() {
         let addr = crate::util::geo::compose_address(city, region, country);
-        let mut ae = Entity::new(EntityKind::Address, &addr, 0.60, scan_id);
+        let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM_PLUS, scan_id);
         ae.tag("ipinfo");
         // Postal/ZIP narrows the address below city granularity — surface it as
         // evidence (it refines, but does not redefine, the address identity).
@@ -119,7 +119,7 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
     if let Some(org) = &data.org
         && !org.is_empty()
     {
-        let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, scan_id);
+        let mut oe = Entity::new(EntityKind::Organisation, org, confidence::HIGH, scan_id);
         oe.tag("ipinfo");
         oe.add_evidence(Evidence::new(SRC, format!("Org for {ip}")));
         out.push(oe);
@@ -136,7 +136,7 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
         && !hostname.is_empty()
         && hostname.contains('.')
     {
-        let mut de = Entity::new(EntityKind::Domain, hostname, 0.70, scan_id);
+        let mut de = Entity::new(EntityKind::Domain, hostname, confidence::HIGH_PLUS, scan_id);
         de.tag("ipinfo");
         de.tag(tags::PTR);
         de.add_evidence(Evidence::new(SRC, format!("Hostname for {ip}")));

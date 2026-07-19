@@ -23,6 +23,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -84,7 +85,7 @@ fn build_entities(body: &UserResp, scan_id: &str) -> Vec<Entity> {
     let mut result = Vec::new();
 
     // The confirmed-on-crates.io username.
-    let mut u = Entity::new(EntityKind::Username, &user.login, 0.88, scan_id);
+    let mut u = Entity::new(EntityKind::Username, &user.login, confidence::EXPERT, scan_id);
     u.tag("crates-io");
     u.tag("code");
     let mut ev = Evidence::new(SRC, format!("crates.io registry account '{}'", user.login))
@@ -110,7 +111,7 @@ fn build_entities(body: &UserResp, scan_id: &str) -> Vec<Entity> {
 
     // Real name → Person (handle→identity).
     if let Some(name) = user.name.as_deref()
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.70, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::HIGH_PLUS, scan_id)
     {
         p.tag("crates-io");
         p.tag("derived");
@@ -145,7 +146,7 @@ fn build_entities(body: &UserResp, scan_id: &str) -> Vec<Entity> {
         // so the url field is nearly always `https://github.com/{handle}`.
         // Emitting the Username directly saves one expansion round-trip.
         if let Some(gh_user) = github_username_from_url(link) {
-            let mut g = Entity::new(EntityKind::Username, gh_user, 0.80, scan_id);
+            let mut g = Entity::new(EntityKind::Username, gh_user, confidence::HIGH_PLUSPLUS, scan_id);
             g.tag("github");
             g.tag("crates-io-pivot");
             g.add_evidence(

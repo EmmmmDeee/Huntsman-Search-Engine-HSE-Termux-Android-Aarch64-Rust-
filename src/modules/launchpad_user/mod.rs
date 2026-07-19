@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::profile_kit;
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -72,7 +72,7 @@ pub(super) fn build_entities(person: LpPerson, scan_id: &str) -> Vec<Entity> {
     };
 
     // Confirmed username on Launchpad.
-    let mut e = Entity::new(EntityKind::Username, handle, 0.85, scan_id);
+    let mut e = Entity::new(EntityKind::Username, handle, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
     e.tag("launchpad");
     e.tag("public-profile");
     e.add_evidence(ev());

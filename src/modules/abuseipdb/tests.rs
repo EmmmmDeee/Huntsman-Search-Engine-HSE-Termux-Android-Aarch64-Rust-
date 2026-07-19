@@ -21,22 +21,22 @@ async fn module_metadata() {
 #[test]
 fn confidence_formula_score_zero() {
     let score: u32 = 0;
-    let conf = 0.60 + (score as f64 / 100.0) * 0.35;
-    assert!((conf - 0.60).abs() < 1e-9);
+    let conf = confidence::MEDIUM_PLUS + (score as f64 / 100.0) * 0.35;
+    assert!((conf - confidence::MEDIUM_PLUS).abs() < 1e-9);
 }
 
 #[test]
 fn confidence_formula_score_80() {
     let score: u32 = 80;
-    let conf = 0.60 + (score as f64 / 100.0) * 0.35;
-    assert!((conf - 0.88).abs() < 1e-9);
+    let conf = confidence::MEDIUM_PLUS + (score as f64 / 100.0) * 0.35;
+    assert!((conf - confidence::EXPERT).abs() < 1e-9);
 }
 
 #[test]
 fn confidence_formula_score_100() {
     let score: u32 = 100;
-    let conf = 0.60 + (score as f64 / 100.0) * 0.35;
-    assert!((conf - 0.95).abs() < 1e-9);
+    let conf = confidence::MEDIUM_PLUS + (score as f64 / 100.0) * 0.35;
+    assert!((conf - confidence::VERY_HIGH_PLUSPLUS).abs() < 1e-9);
 }
 
 #[test]

@@ -19,6 +19,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -153,7 +154,7 @@ fn build_asns(ni: &NetworkInfo, scan_id: &str) -> Vec<Entity> {
         .iter()
         .filter(|a| a.chars().all(|c| c.is_ascii_digit()) && !a.is_empty())
         .map(|a| {
-            let mut e = Entity::new(EntityKind::Asn, format!("AS{a}"), 0.75, scan_id);
+            let mut e = Entity::new(EntityKind::Asn, format!("AS{a}"), confidence::VERY_HIGH, scan_id);
             e.tag(SRC);
             let mut ev = Evidence::new(SRC, "Announcing ASN (RIPEstat network-info)");
             if let Some(p) = &ni.prefix {
@@ -171,7 +172,7 @@ fn build_asns(ni: &NetworkInfo, scan_id: &str) -> Vec<Entity> {
         .map(str::trim)
         .filter(|p| p.contains('/'))
     {
-        let mut ce = Entity::new(EntityKind::Cidr, prefix, 0.70, scan_id);
+        let mut ce = Entity::new(EntityKind::Cidr, prefix, confidence::HIGH_PLUS, scan_id);
         ce.tag(SRC);
         ce.tag("network-prefix");
         let mut ev = Evidence::new(SRC, "Covering prefix (RIPEstat network-info)");
@@ -203,7 +204,7 @@ fn build_org(ao: &AsOverview, scan_id: &str) -> Option<Entity> {
         .as_deref()
         .map(str::trim)
         .filter(|h| h.len() >= 2)?;
-    let mut e = Entity::new(EntityKind::Organisation, holder, 0.70, scan_id);
+    let mut e = Entity::new(EntityKind::Organisation, holder, confidence::HIGH_PLUS, scan_id);
     e.tag(SRC);
     e.tag("network-holder");
     e.add_evidence(Evidence::new(SRC, "Network holder (RIPEstat as-overview)"));
@@ -222,7 +223,7 @@ fn build_abuse(contacts: &[String], scan_id: &str) -> Vec<Entity> {
         // suppress it so it can't pollute the identity cluster.
         .filter(|c| !crate::util::domains::is_infrastructure_email(c))
         .map(|c| {
-            let mut e = Entity::new(EntityKind::Email, c, 0.50, scan_id);
+            let mut e = Entity::new(EntityKind::Email, c, confidence::MEDIUM, scan_id);
             e.tag(SRC);
             e.tag("abuse-contact");
             e.add_evidence(Evidence::new(SRC, "Registered abuse contact (RIPEstat)"));

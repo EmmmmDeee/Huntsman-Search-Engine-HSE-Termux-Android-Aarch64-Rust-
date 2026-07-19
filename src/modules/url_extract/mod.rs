@@ -21,7 +21,7 @@
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -32,7 +32,7 @@ const SRC: &str = "url_extract";
 
 /// Confidence of the extracted domain. High — the URL that contains it was
 /// already an observed entity, so the host is a proven fact, not a guess.
-const DOMAIN_CONF: f64 = 0.80;
+const DOMAIN_CONF: f64 = confidence::HIGH_PLUSPLUS;
 
 pub struct UrlExtract;
 

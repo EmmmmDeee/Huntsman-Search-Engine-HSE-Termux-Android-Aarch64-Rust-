@@ -15,7 +15,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -126,7 +126,7 @@ fn asn_prefix_entities(data: &BgpPrefixData, asn_num: &str, scan_id: &str) -> Ve
             if cidr.is_empty() || !cidr.contains('/') {
                 return None;
             }
-            let mut e = Entity::new(EntityKind::Cidr, cidr, 0.70, scan_id);
+            let mut e = Entity::new(EntityKind::Cidr, cidr, confidence::HIGH_PLUS, scan_id);
             e.tag("bgp-prefix");
             let mut ev = Evidence::new(SRC, format!("AS{asn_num} announces {cidr}"))
                 .with_attr("asn", asn_num)
@@ -153,7 +153,7 @@ fn ip_entities(data: &BgpIpData, ip: &str, scan_id: &str) -> Vec<Entity> {
         if !host.contains('.') || !seen_ptr.insert(host.clone()) {
             return None;
         }
-        let mut e = Entity::new(EntityKind::Domain, &host, 0.65, scan_id);
+        let mut e = Entity::new(EntityKind::Domain, &host, confidence::HIGH, scan_id);
         e.tag("ptr");
         e.add_evidence(Evidence::new(SRC, format!("PTR record for {ip}")));
         Some(e)
@@ -168,7 +168,7 @@ fn ip_entities(data: &BgpIpData, ip: &str, scan_id: &str) -> Vec<Entity> {
             continue;
         };
         let asn_label = format!("AS{}", asn.asn);
-        let mut asn_e = Entity::new(EntityKind::Asn, &asn_label, 0.80, scan_id);
+        let mut asn_e = Entity::new(EntityKind::Asn, &asn_label, confidence::HIGH_PLUSPLUS, scan_id);
         let name = nonempty(&asn.name).unwrap_or("");
         let mut ev = Evidence::new(SRC, format!("{ip} in AS{} ({name})", asn.asn))
             .with_attr("asn", asn.asn.to_string());
@@ -178,7 +178,7 @@ fn ip_entities(data: &BgpIpData, ip: &str, scan_id: &str) -> Vec<Entity> {
         if let Some(cidr) = nonempty(&prefix.prefix).filter(|c| c.contains('/')) {
             ev = ev.with_attr("prefix", cidr);
             // Emit the covering CIDR as a scannable entity, not just evidence.
-            let mut ce = Entity::new(EntityKind::Cidr, cidr, 0.75, scan_id);
+            let mut ce = Entity::new(EntityKind::Cidr, cidr, confidence::VERY_HIGH, scan_id);
             ce.tag("bgp-prefix");
             ce.add_evidence(Evidence::new(SRC, format!("Covering prefix for {ip}")));
             asn_and_cidr.push(ce);

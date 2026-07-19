@@ -10,7 +10,7 @@
 
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
 };
@@ -46,7 +46,7 @@ pub(super) fn parse_bt_json(stdout: &[u8], scan_id: &str) -> ModuleResult {
         let bt_type = dev.bt_type.as_deref().unwrap_or("unknown");
         let bond_state = dev.bond_state.as_deref().unwrap_or("unknown");
 
-        let mut e = Entity::new(EntityKind::MacAddress, &dev.address, 0.80, scan_id);
+        let mut e = Entity::new(EntityKind::MacAddress, &dev.address, confidence::HIGH_PLUSPLUS, scan_id);
         e.tag("bluetooth");
         e.tag(format!("bt-{}", bt_type.to_lowercase()));
         e.tag(format!("bond:{}", bond_state.to_lowercase()));

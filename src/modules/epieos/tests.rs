@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
 fn email_target() -> Target {
@@ -144,7 +145,7 @@ fn profile_picture_is_emitted_as_url_entity() {
         .find(|e| e.kind == EntityKind::Url && e.value == "https://lh3.googleusercontent.com/p")
         .expect("profile_picture should be emitted as a Url entity");
     assert!(pic.has_tag("epieos") && pic.has_tag("google-avatar"));
-    assert_eq!(pic.confidence, 0.55);
+    assert_eq!(pic.confidence, confidence::MEDIUM_HIGH);
 
     // The anchor's evidence attr is unchanged — the Url is additive.
     let anchor = es.iter().find(|e| e.kind == EntityKind::Email).unwrap();

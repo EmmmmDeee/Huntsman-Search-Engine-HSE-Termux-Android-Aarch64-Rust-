@@ -26,7 +26,7 @@ pub use account::{WigleAccountStatus, account_status, is_unverified, refresh_acc
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -272,7 +272,7 @@ impl Module for Wigle {
 
         // ── Primary: Coordinates entity with WiFi corroboration ─────
         let mut coords_entity =
-            Entity::new(EntityKind::Coordinates, &target.value, 0.85, &ctx.scan_id);
+            Entity::new(EntityKind::Coordinates, &target.value, confidence::HIGH_PLUSPLUS_PLUS, &ctx.scan_id);
         coords_entity.tag("wigle");
         coords_entity.tag("wifi-observed");
         if let Some((lat, lon)) = crate::util::geohash::parse_coords(&target.value)
@@ -374,7 +374,7 @@ impl Module for Wigle {
             if !top_postcode.is_empty() {
                 addr_str = format!("{addr_str} {top_postcode}");
             }
-            let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.65, &ctx.scan_id);
+            let mut addr = Entity::new(EntityKind::Address, &addr_str, confidence::HIGH, &ctx.scan_id);
             addr.tag("wigle");
             addr.tag("wifi-derived");
             addr.add_evidence(
@@ -516,7 +516,7 @@ fn wifi_ap_entities(
         let (clat, clon) = ap.unwrap_or((qlat, qlon));
         let coord_val = format!("{clat:.6},{clon:.6}");
 
-        let mut e = Entity::new(EntityKind::MacAddress, mac, 0.60, scan_id);
+        let mut e = Entity::new(EntityKind::MacAddress, mac, confidence::MEDIUM_PLUS, scan_id);
         e.tag("wigle");
         e.tag(crate::core::tags::WIFI_AP);
         let mut ev = Evidence::new(SRC, format!("WiFi AP near {query_label}"))
@@ -535,7 +535,7 @@ fn wifi_ap_entities(
         // only when WiGLE gave a real per-AP position (no phantom from the
         // query-point fallback).
         if let Some((alat, alon)) = ap {
-            let mut ce = Entity::new(EntityKind::Coordinates, &coord_val, 0.70, scan_id);
+            let mut ce = Entity::new(EntityKind::Coordinates, &coord_val, confidence::HIGH_PLUS, scan_id);
             ce.tag("wigle");
             ce.tag("wifi-observed");
             ce.tag("geoint");

@@ -23,7 +23,7 @@
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
@@ -198,7 +198,7 @@ impl Module for DeHashed {
         let mut result = ModuleResult::new();
         // The breach-presence headline is emitted ONLY when the response is
         // attributable to the subject — a bare `name:` count, or a page of
-        // same-name strangers, yields `None` rather than a false 0.88 hit on the
+        // same-name strangers, yields `None` rather than a false confidence::EXPERT hit on the
         // engine's pre-seeded subject anchor (see `build_breach_entity`).
         if let Some(headline) = build_breach_entity(
             target.kind.to_entity_kind(),

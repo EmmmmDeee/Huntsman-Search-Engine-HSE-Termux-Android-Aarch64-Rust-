@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::profile_kit;
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -134,7 +134,7 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
     out.push(e);
 
     // MetaCPAN profile URL.
-    let mut u = Entity::new(EntityKind::Url, &profile_url, 0.80, scan_id);
+    let mut u = Entity::new(EntityKind::Url, &profile_url, confidence::HIGH_PLUSPLUS, scan_id);
     u.tag("cpan");
     u.add_evidence(ev());
     out.push(u);
@@ -153,7 +153,7 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
 
     // Public email addresses — all of them (the author's own contact details).
     for email in author.email.iter().filter(|e| e.contains('@')) {
-        let mut em = Entity::new(EntityKind::Email, email.trim(), 0.80, scan_id);
+        let mut em = Entity::new(EntityKind::Email, email.trim(), confidence::HIGH_PLUSPLUS, scan_id);
         em.tag("cpan");
         em.add_evidence(
             Evidence::new(SRC, format!("Public email from CPAN profile of '{handle}'"))
@@ -164,7 +164,7 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
 
     // Personal websites → URL + Domain — all of them (the author's own sites).
     for site in author.website.iter().map(String::as_str) {
-        for mut e in profile_kit::website_url_and_domain(site, 0.70, 0.62, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(site, confidence::HIGH_PLUS, 0.62, scan_id) {
             e.tag("cpan");
             if e.kind == EntityKind::Domain {
                 e.tag("derived");
@@ -233,7 +233,7 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
         && !(*lat == 0.0 && *lon == 0.0)
     {
         let coord_val = format!("{lat:.4},{lon:.4}");
-        let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.40, scan_id);
+        let mut c = Entity::new(EntityKind::Coordinates, &coord_val, confidence::LOW, scan_id);
         c.tag("cpan");
         c.tag("geoint");
         c.tag("self-asserted");

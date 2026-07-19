@@ -5,7 +5,7 @@
 //! (22, 80, 443) on each ARP IP via non-blocking TCP connect with a
 //! 500 ms timeout per host/port — no root, no raw sockets.
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
 };
@@ -48,7 +48,7 @@ pub(super) fn parse_arp(content: &str, scan_id: &str) -> ModuleResult {
         }
 
         // IP entity
-        let mut ip_e = Entity::new(EntityKind::IpAddress, ip, 0.85, scan_id);
+        let mut ip_e = Entity::new(EntityKind::IpAddress, ip, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
         ip_e.tag("lan-host");
         ip_e.add_evidence(
             Evidence::new(SRC, format!("ARP neighbour on {dev}"))
@@ -59,7 +59,7 @@ pub(super) fn parse_arp(content: &str, scan_id: &str) -> ModuleResult {
         result.push(ip_e);
 
         // MAC entity
-        let mut mac_e = Entity::new(EntityKind::MacAddress, mac, 0.85, scan_id);
+        let mut mac_e = Entity::new(EntityKind::MacAddress, mac, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
         mac_e.tag("arp-neighbor");
         mac_e.tag("lan");
         mac_e.add_evidence(

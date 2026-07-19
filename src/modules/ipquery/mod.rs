@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -144,7 +144,7 @@ impl Module for IpQuery {
         let risk = data.risk.as_ref();
         let risk_score = risk.and_then(|r| r.risk_score).unwrap_or(0);
 
-        let mut ip_entity = target.to_entity(0.80, &ctx.scan_id);
+        let mut ip_entity = target.to_entity(confidence::HIGH_PLUSPLUS, &ctx.scan_id);
         ip_entity.tag("ipquery");
         [
             (risk.and_then(|r| r.is_vpn), tags::VPN),
@@ -292,7 +292,7 @@ fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
             out.push(ae);
         }
         if let Some(org) = isp.org.as_deref().filter(|s| !s.is_empty()) {
-            let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, scan_id);
+            let mut oe = Entity::new(EntityKind::Organisation, org, confidence::HIGH, scan_id);
             oe.tag("ipquery");
             oe.add_evidence(Evidence::new(SRC, format!("ISP org for {ip}")));
             out.push(oe);

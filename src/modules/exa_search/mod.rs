@@ -24,7 +24,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -210,7 +210,7 @@ impl Module for ExaSearch {
             }
 
             // Emit the URL as its own entity — feeds web_crawler.
-            let mut url_entity = Entity::new(EntityKind::Url, &r.url, 0.70, &ctx.scan_id);
+            let mut url_entity = Entity::new(EntityKind::Url, &r.url, confidence::HIGH_PLUS, &ctx.scan_id);
             url_entity.tag("exa-search");
             url_entity.tag(tags::EXTERNAL);
             let mut ev = Evidence::new(
@@ -263,7 +263,7 @@ impl Module for ExaSearch {
             if let Some(host) = crate::util::url_util::host_from_url(&r.url)
                 && seen_domains.insert(host.clone())
             {
-                let mut d = Entity::new(EntityKind::Domain, &host, 0.65, &ctx.scan_id);
+                let mut d = Entity::new(EntityKind::Domain, &host, confidence::HIGH, &ctx.scan_id);
                 d.tag("exa-search");
                 d.tag(tags::EXTERNAL);
                 d.add_evidence(
@@ -290,7 +290,7 @@ fn mine_snippet(text: &str, scan_id: &str, source_url: &str, result: &mut Module
     // Email regex — same shape as web_crawler::extract_emails.
     for cap in EMAIL_RE.find_iter(text) {
         let email = cap.as_str().to_lowercase();
-        let mut e = Entity::new(EntityKind::Email, &email, 0.60, scan_id);
+        let mut e = Entity::new(EntityKind::Email, &email, confidence::MEDIUM_PLUS, scan_id);
         e.tag("exa-search");
         e.tag("web-scraped");
         e.add_evidence(
@@ -309,7 +309,7 @@ fn mine_snippet(text: &str, scan_id: &str, source_url: &str, result: &mut Module
         if digits.chars().filter(char::is_ascii_digit).count() < 7 {
             continue;
         }
-        let mut p = Entity::new(EntityKind::Phone, &digits, 0.55, scan_id);
+        let mut p = Entity::new(EntityKind::Phone, &digits, confidence::MEDIUM_HIGH, scan_id);
         p.tag("exa-search");
         p.tag("web-scraped");
         p.add_evidence(

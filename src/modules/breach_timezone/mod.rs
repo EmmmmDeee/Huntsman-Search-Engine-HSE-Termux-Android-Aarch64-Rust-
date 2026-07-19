@@ -11,7 +11,7 @@
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -20,7 +20,7 @@ use crate::core::{
 
 const SRC: &str = "breach_timezone";
 const MIN_TIMESTAMPS: usize = 5;
-const MIN_CONCENTRATION: f64 = 0.70;
+const MIN_CONCENTRATION: f64 = confidence::HIGH_PLUS;
 
 pub struct BreachTimezone;
 
@@ -186,7 +186,7 @@ fn infer_timezone(hours: &[u32]) -> Option<TimezoneInference> {
     Some(TimezoneInference {
         utc_offset: best_offset,
         region,
-        confidence: confidence.min(0.60),
+        confidence: confidence.min(confidence::MEDIUM_PLUS),
         concentration,
     })
 }

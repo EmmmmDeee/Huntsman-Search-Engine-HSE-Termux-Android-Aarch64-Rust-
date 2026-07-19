@@ -2,6 +2,7 @@ use super::XposedOrNot;
 use super::build::{NOTABLE_BREACHES, build_result, confidence_for_count};
 use super::types::{AnalyticsBreaches, AnalyticsResp, BreachDetail};
 use crate::core::{
+    confidence,
     entity::EntityKind,
     module::Module,
     scan::{Target, TargetKind},
@@ -48,10 +49,10 @@ fn populated_response_yields_breach_tagged_email() {
 
 #[test]
 fn confidence_scales_with_breach_count() {
-    assert!((confidence_for_count(1) - 0.80).abs() < 1e-9);
-    assert!((confidence_for_count(4) - 0.85).abs() < 1e-9);
+    assert!((confidence_for_count(1) - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
+    assert!((confidence_for_count(4) - confidence::HIGH_PLUSPLUS_PLUS).abs() < 1e-9);
     assert!((confidence_for_count(8) - 0.92).abs() < 1e-9);
-    assert!((confidence_for_count(10) - 0.95).abs() < 1e-9);
+    assert!((confidence_for_count(10) - confidence::VERY_HIGH_PLUSPLUS).abs() < 1e-9);
 }
 
 #[test]

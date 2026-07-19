@@ -29,7 +29,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::profile_kit;
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -88,7 +88,7 @@ pub(super) fn build_entities(user: HfUser, scan_id: &str) -> Vec<Entity> {
     };
 
     // Confirmed username entity.
-    let mut e = Entity::new(EntityKind::Username, handle, 0.88, scan_id);
+    let mut e = Entity::new(EntityKind::Username, handle, confidence::EXPERT, scan_id);
     e.tag("huggingface");
     e.tag("public-profile");
     e.add_evidence(ev());
@@ -115,7 +115,7 @@ pub(super) fn build_entities(user: HfUser, scan_id: &str) -> Vec<Entity> {
         if display.trim().is_empty() {
             continue;
         }
-        let mut o = Entity::new(EntityKind::Organisation, display.trim(), 0.55, scan_id);
+        let mut o = Entity::new(EntityKind::Organisation, display.trim(), confidence::MEDIUM_HIGH, scan_id);
         o.tag("huggingface");
         o.tag("org-member");
         o.add_evidence(ev().with_attr("org_handle", &org.name));

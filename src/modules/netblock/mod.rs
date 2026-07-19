@@ -16,7 +16,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -82,7 +82,7 @@ impl Module for Netblock {
 
         let block = target.value.trim();
         result.extend(hosts.into_iter().map(|ip| {
-            let mut e = Entity::new(EntityKind::IpAddress, &ip, 0.70, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::IpAddress, &ip, confidence::HIGH_PLUS, &ctx.scan_id);
             e.tag("netblock-member");
             e.add_evidence(
                 Evidence::new(SRC, format!("Host {ip} in network block {block}"))
@@ -93,7 +93,7 @@ impl Module for Netblock {
         if truncated {
             // Surface the cap on the parent so the operator knows the sweep was
             // bounded (the block has `total` addresses; only MAX_HOSTS emitted).
-            let mut e = Entity::new(EntityKind::Cidr, block, 0.80, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Cidr, block, confidence::HIGH_PLUSPLUS, &ctx.scan_id);
             e.tag("truncated");
             e.add_evidence(
                 Evidence::new(

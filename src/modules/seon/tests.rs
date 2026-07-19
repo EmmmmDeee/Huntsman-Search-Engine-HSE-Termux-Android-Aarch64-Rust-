@@ -3,7 +3,7 @@ use super::{
     entity_builders::{build_email_entities, build_phone_entities},
     types::{SeonEmailResp, SeonPhoneResp},
 };
-use crate::core::{
+use crate::core::{confidence, 
     entity::EntityKind,
     module::{Module, ModuleCost},
     scan::{Target, TargetKind},
@@ -551,7 +551,7 @@ fn phone_emits_a_cnam_person_pivot() {
     assert_eq!(person.value, "Jordan Avery");
     assert!(person.has_tag("cnam"));
     assert!(person.has_tag("pstn-subscriber"));
-    assert!((person.confidence - 0.55).abs() < 1e-9);
+    assert!((person.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
 }
 
 #[test]

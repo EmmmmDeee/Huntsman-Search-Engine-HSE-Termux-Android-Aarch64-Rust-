@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -104,7 +104,7 @@ fn classify_element(tags: &std::collections::HashMap<String, String>) -> &'stati
 fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<Entity> {
     let mut out = Vec::new();
 
-    let mut summary = Entity::new(EntityKind::Coordinates, coord, 0.70, scan_id);
+    let mut summary = Entity::new(EntityKind::Coordinates, coord, confidence::HIGH_PLUS, scan_id);
     summary.tag("overpass");
     summary.tag("geoint");
     // Attempt to parse the query coordinates for state tagging.
@@ -152,7 +152,7 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
             && crate::util::geo::is_valid_coords(nlat, nlon)
         {
             let node_coords = format!("{nlat:.6},{nlon:.6}");
-            let mut ce = Entity::new(EntityKind::Coordinates, &node_coords, 0.55, scan_id);
+            let mut ce = Entity::new(EntityKind::Coordinates, &node_coords, confidence::MEDIUM_HIGH, scan_id);
             ce.tag("overpass");
             ce.tag("geoint");
             ce.tag(format!("infra:{category}"));

@@ -1,4 +1,4 @@
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     module::{ModuleContext, ModuleResult},
 };
@@ -36,7 +36,7 @@ pub(super) fn ssh_key_entities(keys: &[SshKey], scan_id: &str, login: &str) -> V
     keys.iter()
         .filter_map(|key| {
             let fp = key.key.as_deref().and_then(ssh_fingerprint)?;
-            let mut e = Entity::new(EntityKind::Credential, &fp, 0.85, scan_id);
+            let mut e = Entity::new(EntityKind::Credential, &fp, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
             e.tag("ssh-key");
             e.tag("public-key");
             e.tag("github");

@@ -15,7 +15,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -176,7 +176,7 @@ fn build_registrar_entity(
 fn build_domain_entity(domain: &str, body: &RdapResp, scan_id: &str) -> Entity {
     use std::collections::{BTreeMap, BTreeSet};
 
-    let mut entity = Entity::new(EntityKind::Domain, domain, 0.88, scan_id);
+    let mut entity = Entity::new(EntityKind::Domain, domain, confidence::EXPERT, scan_id);
     entity.tag("rdap");
     let mut ev = Evidence::new(SRC, format!("RDAP record for {domain}"));
 
@@ -269,7 +269,7 @@ fn build_ns_ip_entities(domain: &str, ns: &Nameserver, scan_id: &str) -> Vec<Ent
         .filter(|ip| !ip.trim().is_empty())
         .filter_map(|ip| {
             let addr: std::net::IpAddr = ip.trim().parse().ok()?;
-            let mut e = Entity::new(EntityKind::IpAddress, addr.to_string(), 0.80, scan_id);
+            let mut e = Entity::new(EntityKind::IpAddress, addr.to_string(), confidence::HIGH_PLUSPLUS, scan_id);
             e.tag("rdap-ns-glue");
             e.add_evidence(
                 Evidence::new(SRC, format!("RDAP nameserver glue for {domain}"))
@@ -287,7 +287,7 @@ fn build_ns_entity(domain: &str, name: &str, scan_id: &str) -> Option<Entity> {
     if name.trim().is_empty() {
         return None;
     }
-    let mut ns = Entity::new(EntityKind::Domain, name, 0.80, scan_id);
+    let mut ns = Entity::new(EntityKind::Domain, name, confidence::HIGH_PLUSPLUS, scan_id);
     ns.tag("rdap-ns");
     ns.tag("ns");
     ns.add_evidence(

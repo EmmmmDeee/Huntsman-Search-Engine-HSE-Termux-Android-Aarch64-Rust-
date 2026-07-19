@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
     #[test]
@@ -89,8 +90,8 @@ use super::*;
         let coords = of_kind(&ents, EntityKind::Coordinates).expect("Coordinates entity");
         // coarse_provider_coords formats raw to 4 dp; Entity::new normalises to 6.
         assert_eq!(coords.value, "-27.467900,153.028100");
-        // Residential (no proxy/hosting/mobile) → 0.60.
-        assert!((coords.confidence - 0.60).abs() < 1e-9);
+        // Residential (no proxy/hosting/mobile) → confidence::MEDIUM_PLUS.
+        assert!((coords.confidence - confidence::MEDIUM_PLUS).abs() < 1e-9);
         assert!(coords.has_tag("geoint"));
         assert!(coords.has_tag("country:AU"));
         assert!(coords.has_tag("au-relevant"), "shared coarse builder tags AU box");
@@ -148,7 +149,7 @@ use super::*;
                 "as":"AS13335 Cloudflare","org":"Cloudflare Inc",
                 "mobile":false,"proxy":true,"hosting":true}"#,
         );
-        let ents = build_entities(&body, "203.0.55.55", "s");
+        let ents = build_entities(&body, "203.confidence::MEDIUM_HIGH.55", "s");
 
         let coords = of_kind(&ents, EntityKind::Coordinates).expect("Coordinates entity");
         // hosting/proxy → 0.35.
@@ -174,8 +175,8 @@ use super::*;
             .into_iter()
             .find(|e| e.kind == EntityKind::Coordinates)
             .expect("Coordinates entity");
-        // mobile → 0.50.
-        assert!((coords.confidence - 0.50).abs() < 1e-9);
+        // mobile → confidence::MEDIUM.
+        assert!((coords.confidence - confidence::MEDIUM).abs() < 1e-9);
         assert!(coords.has_tag("mobile"));
         assert!(coords.has_tag("au-state:NSW"), "Sydney → NSW box");
     }

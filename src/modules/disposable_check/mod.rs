@@ -12,7 +12,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -27,7 +27,7 @@ const SRC: &str = "disposable_check";
 /// it anchors no durable identity, so it should not pull expansion toward it.
 const DISPOSABLE_CONFIDENCE: f64 = 0.20;
 /// Confidence for an address on a legitimate (non-throwaway) provider.
-const LEGIT_CONFIDENCE: f64 = 0.75;
+const LEGIT_CONFIDENCE: f64 = confidence::VERY_HIGH;
 
 /// debounce.io returns its boolean verdict as the JSON *string* `"true"` /
 /// `"false"`, not a bare bool — hence `String`, parsed via [`is_disposable`].
@@ -138,7 +138,7 @@ impl Module for DisposableCheck {
         if !disposable && let Some(domain) = email.split('@').nth(1) {
             let domain = domain.trim().to_ascii_lowercase();
             if !domain.is_empty() && !is_freemail(&domain) {
-                let mut de = Entity::new(EntityKind::Domain, &domain, 0.70, &ctx.scan_id);
+                let mut de = Entity::new(EntityKind::Domain, &domain, confidence::HIGH_PLUS, &ctx.scan_id);
                 de.tag("email-domain");
                 de.add_evidence(
                     Evidence::new(

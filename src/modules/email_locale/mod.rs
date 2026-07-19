@@ -9,7 +9,7 @@
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -83,7 +83,7 @@ impl Module for EmailLocale {
             )
             .with_attr("cctld", domain.rsplit('.').next().unwrap_or(""))
             .with_attr("locale", locale_code);
-            let mut ae = Entity::new(EntityKind::Address, country, 0.40, &ctx.scan_id);
+            let mut ae = Entity::new(EntityKind::Address, country, confidence::LOW, &ctx.scan_id);
             ae.tag("geoint");
             ae.tag(crate::core::tags::COARSE);
             ae.tag("cctld-inferred");

@@ -16,7 +16,7 @@
 //!   * T1591.001 — Determine Physical Locations (registered office address)
 //!
 //! Confidence model:
-//!   * Exact name match in ASIC register: 0.80 (official govt source)
+//!   * Exact name match in ASIC register: confidence::HIGH_PLUSPLUS (official govt source)
 //!   * ACN emitted for downstream abn_lookup: 0.82
 //!   * Address from registered office: 0.72
 //!
@@ -34,7 +34,7 @@
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -109,7 +109,7 @@ fn build_director_entities(
     .with_attr("register", "ASIC");
 
     // Organisation entity.
-    let mut org = Entity::new(EntityKind::Organisation, company_name, 0.80, scan_id);
+    let mut org = Entity::new(EntityKind::Organisation, company_name, confidence::HIGH_PLUSPLUS, scan_id);
     org.tag(SRC);
     org.tag("asic");
     org.tag("au-company");

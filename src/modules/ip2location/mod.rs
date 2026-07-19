@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -228,7 +228,7 @@ fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<E
     if let Some(as_name) = &data.as_name
         && !as_name.is_empty()
     {
-        let mut oe = Entity::new(EntityKind::Organisation, as_name, 0.65, scan_id);
+        let mut oe = Entity::new(EntityKind::Organisation, as_name, confidence::HIGH, scan_id);
         oe.tag("ip2location");
         oe.add_evidence(Evidence::new(SRC, format!("ISP for {ip}")));
         out.push(oe);

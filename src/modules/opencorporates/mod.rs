@@ -30,7 +30,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -67,7 +67,7 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
 
     let mut out = Vec::new();
 
-    let mut entity = Entity::new(EntityKind::Organisation, name, 0.75, scan_id);
+    let mut entity = Entity::new(EntityKind::Organisation, name, confidence::VERY_HIGH, scan_id);
     entity.tag("opencorporates");
     if co.jurisdiction_code.as_deref() == Some("au") {
         entity.tag("country:AU");
@@ -120,7 +120,7 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
     if let Some(addr) = co.registered_address_in_full.as_deref().map(str::trim)
         && addr.len() >= MIN_ADDRESS_LEN
     {
-        let mut ae = Entity::new(EntityKind::Address, addr, 0.70, scan_id);
+        let mut ae = Entity::new(EntityKind::Address, addr, confidence::HIGH_PLUS, scan_id);
         ae.tag("opencorporates");
         ae.tag("registered-address");
         ae.tag("validated");
@@ -165,7 +165,7 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
         && !num.is_empty()
         && co.jurisdiction_code.as_deref() == Some("au")
     {
-        let mut acn = Entity::new(EntityKind::AbnAcn, num, 0.80, scan_id);
+        let mut acn = Entity::new(EntityKind::AbnAcn, num, confidence::HIGH_PLUSPLUS, scan_id);
         acn.tag("opencorporates");
         acn.tag("company-number");
         acn.add_evidence(

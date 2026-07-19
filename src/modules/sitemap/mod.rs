@@ -25,7 +25,7 @@
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -281,7 +281,7 @@ impl Module for Sitemap {
                 if !seen_urls.insert(url.clone()) {
                     continue;
                 }
-                let mut e = Entity::new(EntityKind::Url, &url, 0.75, &ctx.scan_id);
+                let mut e = Entity::new(EntityKind::Url, &url, confidence::VERY_HIGH, &ctx.scan_id);
                 e.tag("sitemap");
                 e.tag("sitemap-url");
                 e.add_evidence(

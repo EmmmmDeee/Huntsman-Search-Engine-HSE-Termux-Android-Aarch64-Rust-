@@ -119,7 +119,7 @@ use super::*;
         // as a Domain entity is the fix: the entity now matches what was
         // actually confirmed.
         let t = Target::new(TargetKind::Url, "https://onlyfans.com/rob_dorito");
-        let e = banner_entity(&t, "onlyfans.com", 0.85, "scan1");
+        let e = banner_entity(&t, "onlyfans.com", confidence::HIGH_PLUSPLUS_PLUS, "scan1");
         assert_eq!(e.kind, EntityKind::Domain);
         assert_eq!(e.value, "onlyfans.com");
     }
@@ -129,12 +129,12 @@ use super::*;
         // These ARE the exact value HEADed, so re-emitting them verbatim via
         // `to_entity()` is correct — only the Url case needs rebasing.
         let t = Target::new(TargetKind::Domain, "example.com");
-        let e = banner_entity(&t, "example.com", 0.85, "scan1");
+        let e = banner_entity(&t, "example.com", confidence::HIGH_PLUSPLUS_PLUS, "scan1");
         assert_eq!(e.kind, EntityKind::Domain);
         assert_eq!(e.value, "example.com");
 
         let t = Target::new(TargetKind::IpAddress, "1.2.3.4");
-        let e = banner_entity(&t, "1.2.3.4", 0.85, "scan1");
+        let e = banner_entity(&t, "1.2.3.4", confidence::HIGH_PLUSPLUS_PLUS, "scan1");
         assert_eq!(e.kind, EntityKind::IpAddress);
         assert_eq!(e.value, "1.2.3.4");
     }

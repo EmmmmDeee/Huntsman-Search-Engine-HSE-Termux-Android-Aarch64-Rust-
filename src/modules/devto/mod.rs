@@ -24,6 +24,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -127,7 +128,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
     // Confirmed-on-dev.to username.
-    let mut u = Entity::new(EntityKind::Username, &user.username, 0.88, scan_id);
+    let mut u = Entity::new(EntityKind::Username, &user.username, confidence::EXPERT, scan_id);
     u.tag("devto");
     let mut ev = Evidence::new(SRC, format!("Dev.to account '{}'", user.username))
         .with_attr("profile_url", format!("https://dev.to/{}", user.username));
@@ -197,7 +198,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
 
     // Personal website URL + Domain extraction.
     if let Some(ref site) = user.website_url {
-        for mut e in profile_kit::website_url_and_domain(site, 0.72, 0.65, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(site, 0.72, confidence::HIGH, scan_id) {
             e.tag("devto");
             match e.kind {
                 EntityKind::Domain => {
@@ -272,7 +273,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
         }
         for link in crate::util::extract::urls(bio) {
             let link = link.as_str();
-            let mut url_e = Entity::new(EntityKind::Url, link, 0.60, scan_id);
+            let mut url_e = Entity::new(EntityKind::Url, link, confidence::MEDIUM_PLUS, scan_id);
             url_e.tag("devto");
             url_e.add_evidence(
                 Evidence::new(SRC, format!("Link in Dev.to bio of '{}'", user.username))
@@ -317,7 +318,7 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "devuser");
         assert!(u.is_some(), "must emit Username entity");
-        assert!((u.unwrap().confidence - 0.88).abs() < 0.01);
+        assert!((u.unwrap().confidence - confidence::EXPERT).abs() < 0.01);
         assert!(u.unwrap().has_tag("devto"));
     }
 

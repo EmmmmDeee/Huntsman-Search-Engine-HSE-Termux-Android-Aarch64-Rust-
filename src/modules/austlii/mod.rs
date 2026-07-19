@@ -9,7 +9,7 @@ mod tests;
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -144,7 +144,7 @@ fn build_entities(links: &[(String, String)], target: &Target, scan_id: &str) ->
     let mut result = ModuleResult::new();
 
     for (doc_url, title) in links.iter().take(MAX_DOCS) {
-        let mut url_ent = Entity::new(EntityKind::Url, doc_url, 0.70, scan_id);
+        let mut url_ent = Entity::new(EntityKind::Url, doc_url, confidence::HIGH_PLUS, scan_id);
         url_ent.tag("court-judgment");
         url_ent.tag("austlii");
         url_ent.add_evidence(
@@ -156,7 +156,7 @@ fn build_entities(links: &[(String, String)], target: &Target, scan_id: &str) ->
     }
 
     if links.len() >= 2 && matches!(target.kind, TargetKind::Organisation) {
-        let mut org = Entity::new(EntityKind::Organisation, target.value.trim(), 0.55, scan_id);
+        let mut org = Entity::new(EntityKind::Organisation, target.value.trim(), confidence::MEDIUM_HIGH, scan_id);
         org.tag("legal-record");
         org.tag("austlii");
         org.add_evidence(

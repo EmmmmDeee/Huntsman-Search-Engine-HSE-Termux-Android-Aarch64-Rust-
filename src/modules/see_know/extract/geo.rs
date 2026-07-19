@@ -3,6 +3,7 @@
 //! Parses lat/lon coordinate fields and emits the Coordinates lead. Reaches
 //! the parent extractor's helpers and imports via `use super::*`.
 
+use crate::core::confidence;
 use super::*;
 
 /// Geo-conscious extraction — surface coordinates, timezones, and
@@ -36,7 +37,7 @@ pub(in crate::modules::see_know) fn extract_geo_entities(
     {
         let coord_val = format!("{la:.5},{lo:.5}");
         if seen.insert(format!("@coord:{coord_val}")) {
-            let mut e = Entity::new(EntityKind::Coordinates, &coord_val, 0.75, scan_id);
+            let mut e = Entity::new(EntityKind::Coordinates, &coord_val, confidence::VERY_HIGH, scan_id);
             e.tag("see-know");
             e.tag(format!("via:{endpoint}"));
             e.add_evidence(
@@ -55,7 +56,7 @@ pub(in crate::modules::see_know) fn extract_geo_entities(
             && loc.len() >= 3
             && seen.insert(format!("@loc:{}", loc.to_lowercase()))
         {
-            let mut e = Entity::new(EntityKind::Address, &loc, 0.55, scan_id);
+            let mut e = Entity::new(EntityKind::Address, &loc, confidence::MEDIUM_HIGH, scan_id);
             e.tag("see-know");
             e.tag(format!("via:{endpoint}"));
             e.tag("geo-hint");
@@ -74,7 +75,7 @@ pub(in crate::modules::see_know) fn extract_geo_entities(
     {
         // Timezones don't have their own EntityKind; surface as evidence
         // on a low-confidence Address so the correlator can join.
-        let mut e = Entity::new(EntityKind::Address, format!("tz:{tz}"), 0.40, scan_id);
+        let mut e = Entity::new(EntityKind::Address, format!("tz:{tz}"), confidence::LOW, scan_id);
         e.tag("see-know");
         e.tag("timezone");
         e.tag(format!("via:{endpoint}"));
@@ -89,7 +90,7 @@ pub(in crate::modules::see_know) fn extract_geo_entities(
         if let Some(asn) = val_str(item, "asn")
             && seen.insert(format!("@asn:{asn}"))
         {
-            let mut e = Entity::new(EntityKind::Asn, &asn, 0.75, scan_id);
+            let mut e = Entity::new(EntityKind::Asn, &asn, confidence::VERY_HIGH, scan_id);
             e.tag("see-know");
             e.add_evidence(Evidence::new(SRC, "ASN from SeekNow /network/ip"));
             result.push(e);
@@ -99,7 +100,7 @@ pub(in crate::modules::see_know) fn extract_geo_entities(
             .or_else(|| val_str(item, "company"))
             && seen.insert(format!("@org:{}", org.to_lowercase()))
         {
-            let mut e = Entity::new(EntityKind::Organisation, &org, 0.65, scan_id);
+            let mut e = Entity::new(EntityKind::Organisation, &org, confidence::HIGH, scan_id);
             e.tag("see-know");
             e.add_evidence(Evidence::new(SRC, "Organisation from SeekNow /network/ip"));
             result.push(e);
@@ -121,7 +122,7 @@ pub(in crate::modules::see_know) fn extract_geo_entities(
         if parts.len() >= 2 {
             let addr = parts.join(", ");
             if seen.insert(format!("@whois-addr:{}", addr.to_lowercase())) {
-                let mut e = Entity::new(EntityKind::Address, &addr, 0.70, scan_id);
+                let mut e = Entity::new(EntityKind::Address, &addr, confidence::HIGH_PLUS, scan_id);
                 e.tag("see-know");
                 e.tag("whois-registrant");
                 e.add_evidence(Evidence::new(SRC, "Domain WHOIS registrant address"));
