@@ -214,12 +214,59 @@ fn build_hlr_entities(hlr: &HlrResp, number: &str, scan_id: &str) -> Vec<Entity>
     out
 }
 
+/// True if a CNAM "subscriber name" is an OpenCNAM carrier/placeholder value
+/// rather than a real identity — the strings returned for unmatched, prepaid,
+/// VoIP, or toll-free numbers (`WIRELESS CALLER`, `UNAVAILABLE`, `TOLL FREE`,
+/// `PRIVATE`, a `V#######` carrier code) or the queried number echoed back as
+/// the name. Emitting one as a `Person` both fabricates an identity and — since
+/// these strings recur verbatim across every unmatched number — risks
+/// false-merging unrelated phone numbers onto a single bogus person node.
+fn is_cnam_placeholder(name: &str, number: &str) -> bool {
+    let n = name.trim();
+    // The queried number echoed back as the "name" is not an identity: a value
+    // with no alphabetic character (all digits / punctuation), or one whose
+    // digits equal the looked-up number's digits.
+    let name_digits: String = n.chars().filter(char::is_ascii_digit).collect();
+    if !n.chars().any(char::is_alphabetic) && !name_digits.is_empty() {
+        return true;
+    }
+    let num_digits: String = number.chars().filter(char::is_ascii_digit).collect();
+    if name_digits.len() >= 7 && name_digits == num_digits {
+        return true;
+    }
+    let l = n.to_ascii_lowercase();
+    const MARKERS: &[&str] = &[
+        "wireless caller",
+        "unavailable",
+        "toll free",
+        "toll-free",
+        "unknown",
+        "cell phone",
+        "cellular",
+        "no name",
+        "not available",
+        "restricted",
+        "anonymous",
+        "private",
+    ];
+    if MARKERS.iter().any(|m| l.contains(m)) {
+        return true;
+    }
+    // A `V` + all-digits carrier code (e.g. "V1234567").
+    l.strip_prefix('v')
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Map a CNAM response to a PSTN-subscriber `Person`. **Pure** (no network/IO).
-/// Returns `None` when no usable subscriber name is present. The number CNAM
-/// echoed back (`number`) is preserved as evidence so the subscriber name stays
-/// tied to the exact PSTN number the lookup resolved.
+/// Returns `None` when no usable subscriber name is present, or when the name is
+/// an [`is_cnam_placeholder`] carrier string rather than a real identity.
+/// The number CNAM echoed back (`number`) is preserved as evidence so the
+/// subscriber name stays tied to the exact PSTN number the lookup resolved.
 fn build_cnam_person(cnam: &CnamResp, number: &str, scan_id: &str) -> Option<Entity> {
     let name = cnam.name.as_deref().filter(|n| n.len() >= 2)?;
+    if is_cnam_placeholder(name, number) {
+        return None;
+    }
     let mut person = Entity::new(EntityKind::Person, name, 0.55, scan_id);
     person.tag("cnam");
     person.tag("pstn-subscriber");
