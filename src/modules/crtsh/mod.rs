@@ -13,12 +13,11 @@ use std::collections::HashSet;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::http::RequestBuilderExt;
 use crate::util::http::urlencode;
 
 const SRC: &str = "crtsh";
@@ -293,20 +292,15 @@ impl Module for CrtSh {
 
         let url = format!("https://crt.sh/?q={}&output=json", urlencode(&query));
 
-        let resp = ctx
-            .http
-            .get(&url)
-            .header("Accept", "application/json")
-            .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
-            .send_tagged(SRC)
-            .await?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(Error::module(SRC, format!("HTTP {status}")));
-        }
-
-        let entries: Vec<CrtEntry> = crate::util::http::json_decode(SRC, resp).await?;
+        // Route through the shared `fetch_json`: crt.sh always answers 200 with a
+        // JSON array, matching fetch_json's error-on-non-2xx contract. On a reqwest
+        // transport failure, `fetch_json_inner` automatically retries via the
+        // system curl binary using the OS OpenSSL/CA store rather than rustls's
+        // bundled webpki-roots — recovering the exact TLS/connect failure class the
+        // module's telemetry documents on Termux/DC IPs, plus gaining the shared
+        // circuit breaker. crtsh was the one keyless subdomain source excluded from
+        // this Termux-friendly escape hatch every other fetch_json module has.
+        let entries: Vec<CrtEntry> = crate::util::http::fetch_json(&ctx.http, SRC, &url).await?;
 
         let mut result = ModuleResult::new();
         result.entities = build_entities(&entries, &target.value, &ctx.scan_id);
