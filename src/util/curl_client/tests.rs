@@ -92,6 +92,29 @@ use super::*;
     }
 
     #[test]
+    fn split_status_separates_the_body_from_the_trailing_code() {
+        // Normal JSON body + trailing status line.
+        assert_eq!(
+            split_status("{\"a\":1}\n200"),
+            ("{\"a\":1}".to_string(), 200)
+        );
+        // A body with INTERNAL newlines is preserved (only the LAST line is the code).
+        assert_eq!(
+            split_status("line1\nline2\n503"),
+            ("line1\nline2".to_string(), 503)
+        );
+        // Empty body, only the code line.
+        assert_eq!(split_status("\n404"), (String::new(), 404));
+        // No newline, only a bare code (empty-body edge).
+        assert_eq!(split_status("500"), (String::new(), 500));
+        // No code at all → status 0 (transient), body preserved verbatim.
+        assert_eq!(
+            split_status("just text, no code"),
+            ("just text, no code".to_string(), 0)
+        );
+    }
+
+    #[test]
     fn auth_scheme_equality_and_clone() {
         let a = AuthScheme::Bearer;
         let b = a;

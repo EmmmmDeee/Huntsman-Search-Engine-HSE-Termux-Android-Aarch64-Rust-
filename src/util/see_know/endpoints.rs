@@ -288,7 +288,6 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
     // exhausted credits, latching the shared budget and silently abandoning
     // SeekNow for every remaining endpoint call in the scan with zero
     // backoff or retry.
-    const TRANSPORT_RETRY_ATTEMPTS: u32 = 2;
     let mut attempt = 0u32;
     loop {
         match get_json(&url, key, path, archive_query).await {
@@ -297,6 +296,11 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
                 cache_put(ck.clone(), items.clone());
                 return Ok(items);
             }
+            // Both transient classes — a burst rate-limit AND a 5xx/no-response
+            // (now surfaced as `RateLimited` by `client::classify_status`) — pace
+            // through the SAME `RATE_LIMIT_BACKOFF` (bounded by
+            // `ENTERPRISE.max_retries`), so the whole retry budget lives in one
+            // place instead of the old split policy.
             Err(Error::RateLimited(msg)) => {
                 if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
                     return Err(Error::RateLimited(msg));
@@ -306,17 +310,27 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
                     path,
                     attempt = attempt + 1,
                     delay_ms = delay.as_millis() as u64,
-                    "see_know GET rate-limited — backing off"
+                    "see_know GET transient (rate-limit/5xx) — backing off"
                 );
                 tokio::time::sleep(delay).await;
                 attempt += 1;
             }
+            // A plain transport error (connection drop on a flaky mobile link)
+            // now ALSO backs off on that shared budget rather than the old
+            // zero-delay double-shot — a genuine drop recovers on a paced retry.
             Err(e) => {
-                attempt += 1;
-                if attempt >= TRANSPORT_RETRY_ATTEMPTS {
+                if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
                     return Err(e);
                 }
-                tracing::debug!(path, attempt, "see_know GET errored — retrying once");
+                let delay = RATE_LIMIT_BACKOFF.delay(attempt);
+                tracing::debug!(
+                    path,
+                    attempt = attempt + 1,
+                    delay_ms = delay.as_millis() as u64,
+                    "see_know GET transport error — backing off"
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
             }
         }
     }

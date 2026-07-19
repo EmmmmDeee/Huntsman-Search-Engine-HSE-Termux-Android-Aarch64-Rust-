@@ -5,8 +5,8 @@ use super::budget::{
     scan_budget_remaining, set_scan_cap_override, should_probe_quota,
 };
 use super::client::{
-    CLIENT, CLIENT_FAST, HARDCODED_KEY_FOR_TESTS, cache_get, cache_key, cache_put, is_auth_error,
-    key_fingerprint, parse_response, resolve_key, typed_cache_key,
+    CLIENT, CLIENT_FAST, HARDCODED_KEY_FOR_TESTS, cache_get, cache_key, cache_put, classify_status,
+    is_auth_error, key_fingerprint, parse_response, resolve_key, typed_cache_key,
 };
 use super::endpoints::{
     CreditsOutcome, CreditsProbe, SEARCH_LIMIT, build_search_body, classify_credits_probe,
@@ -50,6 +50,42 @@ fn client_timeout_budget_exceeds_name_search_server_cap() {
 #[test]
 fn resolve_key_uses_provided_when_non_empty() {
     assert_eq!(resolve_key(Some("my-key")), "my-key");
+}
+
+#[test]
+fn classify_status_diverts_5xx_and_no_response_to_transient_retry() {
+    use crate::core::error::Error;
+    // A 5xx (with either an HTML error page or a JSON error body) is a transient
+    // upstream failure → RateLimited, so the retry loops back off and retry it,
+    // instead of the old behaviour where the HTML page parsed to an empty miss
+    // and the paid call was silently lost.
+    assert!(
+        matches!(
+            classify_status("<html>503 Bad Gateway</html>", 503),
+            Err(Error::RateLimited(_))
+        ),
+        "a 503 must be retryable-transient, not an empty miss"
+    );
+    assert!(
+        matches!(
+            classify_status(r#"{"error":"upstream"}"#, 500),
+            Err(Error::RateLimited(_))
+        ),
+        "a 500 with a JSON body must still be retryable-transient"
+    );
+    // curl reporting no HTTP response at all (status 0) is transient too.
+    assert!(matches!(classify_status("", 0), Err(Error::RateLimited(_))));
+    // A 2xx-empty body is a GENUINE miss — parse_response yields Ok, no retry.
+    assert!(
+        classify_status("", 200).is_ok(),
+        "a 200 empty result is a real miss, not retried"
+    );
+    // A 4xx JSON body is NOT diverted — it keeps parse_response's existing
+    // classification (a 404/400 miss here) rather than being treated transient.
+    assert!(
+        classify_status(r#"{"total":0}"#, 404).is_ok(),
+        "a 4xx JSON body keeps parse_response's classification"
+    );
 }
 
 #[test]

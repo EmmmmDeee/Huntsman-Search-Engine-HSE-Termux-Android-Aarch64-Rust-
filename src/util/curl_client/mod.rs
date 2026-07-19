@@ -147,15 +147,37 @@ impl CurlClient {
     /// Issue a `GET <url>` with the configured auth header.
     /// Returns the response body on success (curl exit 0).
     pub async fn get(&self, url: &str, key: &str) -> Result<String> {
-        self.exec(url, key, None).await
+        self.exec(url, key, None).await.map(|(body, _)| body)
     }
 
     /// Issue a `POST <url>` with `application/json` body.
     pub async fn post_json(&self, url: &str, key: &str, body: &str) -> Result<String> {
+        self.exec(url, key, Some(body)).await.map(|(body, _)| body)
+    }
+
+    /// Like [`get`](Self::get) but ALSO returns the final HTTP status code, so a
+    /// caller can distinguish a transient upstream `5xx`/CDN `502` (retryable)
+    /// from a genuine empty/`4xx` result. The body is identical to `get`'s — the
+    /// trailing `\n<code>` `-w` line is stripped before it is returned, so a
+    /// consumer that `serde_json::from_str`s the body never sees the status.
+    /// Status `0` means curl reported no HTTP response (e.g. a connection reset
+    /// after connect).
+    pub async fn get_with_status(&self, url: &str, key: &str) -> Result<(String, u16)> {
+        self.exec(url, key, None).await
+    }
+
+    /// [`post_json`](Self::post_json) variant returning the final HTTP status
+    /// alongside the body. See [`get_with_status`](Self::get_with_status).
+    pub async fn post_json_with_status(
+        &self,
+        url: &str,
+        key: &str,
+        body: &str,
+    ) -> Result<(String, u16)> {
         self.exec(url, key, Some(body)).await
     }
 
-    async fn exec(&self, url: &str, key: &str, post_body: Option<&str>) -> Result<String> {
+    async fn exec(&self, url: &str, key: &str, post_body: Option<&str>) -> Result<(String, u16)> {
         let secs = self.curl_timeout_secs.to_string();
         let auth_header = self.auth.header_line(key);
 
@@ -196,6 +218,11 @@ impl CurlClient {
                 body,
             ]);
         }
+        // Append the final HTTP status on its own trailing line so a caller can
+        // distinguish a transient upstream 5xx from a genuine empty result. It is
+        // written to stdout AFTER the body; [`split_status`] strips it back off so
+        // the returned body is byte-identical to the pre-status behaviour.
+        cmd.args(["-w", "\n%{http_code}"]);
         cmd.args(["--", url]);
         cmd.kill_on_drop(true);
 
@@ -232,7 +259,29 @@ impl CurlClient {
         // hard failure — full-fidelity policy. Downstream `serde_json` still
         // validates the JSON structure, so a genuinely malformed body is caught
         // there, not silently here.
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        let raw = String::from_utf8_lossy(&output.stdout).into_owned();
+        Ok(split_status(&raw))
+    }
+}
+
+/// Split curl's `-w '\n%{http_code}'` output into `(body, status)`. The status
+/// is the final line; everything before the last newline is the body (any
+/// internal newlines preserved). A missing/unparseable code yields status `0`
+/// ("no HTTP response observed"), which callers treat as transient. Pure, so
+/// the split — the one place a mistake could corrupt every paid-API body — is
+/// unit-tested directly.
+fn split_status(raw: &str) -> (String, u16) {
+    match raw.rsplit_once('\n') {
+        Some((body, code)) => (body.to_string(), code.trim().parse().unwrap_or(0)),
+        // No newline at all: curl wrote only the code (empty body) or nothing.
+        None => {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit()) {
+                (String::new(), trimmed.parse().unwrap_or(0))
+            } else {
+                (raw.to_string(), 0)
+            }
+        }
     }
 }
 

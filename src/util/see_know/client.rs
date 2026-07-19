@@ -253,15 +253,33 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
     }
 }
 
+/// Route a raw see-know `(body, status)` to either a retryable-transient error
+/// or the normal body parse. A 5xx (a one-off gateway/CDN 502/503) or status `0`
+/// (curl saw no HTTP response) is returned as [`Error::RateLimited`] so the
+/// endpoint retry loops back off and retry it — see-know.eu is the operator's
+/// highest-priority paid source, and a one-off upstream 5xx was previously
+/// indistinguishable from "no results" (the HTML error page parsed to an empty
+/// [`Value::Null`]) and silently lost. A 2xx-empty result and a 4xx JSON body
+/// (including the `invalid_api_key`/`plan_required` auth latch) keep their exact
+/// [`parse_response`] classification — only the transient class is diverted.
+pub(super) fn classify_status(body: &str, status: u16) -> Result<Value> {
+    if status == 0 || (500..600).contains(&status) {
+        return Err(Error::RateLimited(format!(
+            "seek_now: HTTP {status} transient upstream failure"
+        )));
+    }
+    parse_response(body)
+}
+
 pub(super) async fn get_json(url: &str, key: &str, endpoint: &str, query: &str) -> Result<Value> {
     // The fast GET endpoints use the tighter-budgeted CLIENT_FAST (see its doc).
-    let body = CLIENT_FAST.get(url, key).await?;
+    let (body, status) = CLIENT_FAST.get_with_status(url, key).await?;
     // Retain the paid response verbatim BEFORE parsing/extraction — operator
     // policy: purchased data is kept in absolute completeness until manually
     // deleted (see `util::raw_archive`). `endpoint`/`query` name the saved file
     // so it's obvious what was looked up. Empty bodies are skipped by the archive.
     crate::util::raw_archive::record("see-know", endpoint, query, &body);
-    parse_response(&body)
+    classify_status(&body, status)
 }
 
 pub(super) async fn post_json(
@@ -271,10 +289,10 @@ pub(super) async fn post_json(
     endpoint: &str,
     query: &str,
 ) -> Result<Value> {
-    let resp = CLIENT.post_json(url, key, body).await?;
+    let (resp, status) = CLIENT.post_json_with_status(url, key, body).await?;
     // Archive the raw paid response verbatim, filed under the queried value.
     crate::util::raw_archive::record("see-know", endpoint, query, &resp);
-    parse_response(&resp)
+    classify_status(&resp, status)
 }
 
 /// Expose the hardcoded default key so tests can assert on it.
