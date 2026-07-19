@@ -51,6 +51,20 @@ pub(super) struct HostResp {
     #[serde(default)]
     pub(super) country_code: Option<String>,
     #[serde(default)]
+    pub(super) city: Option<String>,
+    /// Shodan's own geolocation of the host. When present and real (guarded by
+    /// [`crate::util::geo::is_valid_coords`]), this is a far better fix than the
+    /// country centroid the module used to fall back to — the paid record's
+    /// highest-precision location signal, previously discarded.
+    #[serde(default)]
+    pub(super) latitude: Option<f64>,
+    #[serde(default)]
+    pub(super) longitude: Option<f64>,
+    /// Registrable domains Shodan associates with the host's hostnames
+    /// (`["google.com", …]`) — apex-domain pivots the module used to drop.
+    #[serde(default)]
+    pub(super) domains: Vec<String>,
+    #[serde(default)]
     pub(super) os: Option<String>,
     /// Shodan's host classification tags (`compromised`, `malware`,
     /// `honeypot`, `self-signed`, `vpn`, `cloud`, `cdn`, …). The free
@@ -298,145 +312,206 @@ impl Shodan {
             return Ok(());
         };
         let body: HostResp = crate::util::http::json_decode(SRC, resp).await?;
-
-        let mut entity = target_entity(ip, &ctx.scan_id);
-        entity.tag("shodan");
-        if !body.vulns.is_empty() {
-            entity.tag(crate::core::tags::VULNERABLE);
-        }
-        if let Some(c) = body.country_code.as_deref() {
-            entity.tag(format!("country:{}", c.to_uppercase()));
-        }
-        if let Some(os) = body.os.as_deref() {
-            entity.tag(format!("os:{os}"));
-        }
-
-        let mut ev = [
-            ("org", body.org.as_deref()),
-            ("isp", body.isp.as_deref()),
-            ("asn", body.asn.as_deref()),
-            ("country", body.country_name.as_deref()),
-            ("country_code", body.country_code.as_deref()),
-            ("os", body.os.as_deref()),
-            ("last_update", body.last_update.as_deref()),
-        ]
-        .into_iter()
-        .filter_map(|(key, value)| value.map(|v| (key, v)))
-        .fold(
-            Evidence::new(SRC, format!("Shodan host record for {ip}")),
-            |ev, (key, v)| ev.with_attr(key, v),
-        );
-        if !body.ports.is_empty() {
-            let mut ports = body.ports;
-            ports.sort_unstable();
-            ev = ev
-                .with_attr("port_count", ports.len().to_string())
-                .with_attr(
-                    "open_ports",
-                    // Full-fidelity policy: every open port of the target host.
-                    ports
-                        .iter()
-                        .map(u32::to_string)
-                        .collect::<Vec<_>>()
-                        .join(","),
-                );
-        }
-        if !body.vulns.is_empty() {
-            ev = ev
-                .with_attr("vuln_count", body.vulns.len().to_string())
-                .with_attr(
-                    "top_vulns",
-                    // Full-fidelity policy: every CVE reported for the target host.
-                    body.vulns
-                        .iter()
-                        .map(String::as_str)
-                        .collect::<Vec<_>>()
-                        .join(","),
-                );
-        }
-        // Host classification tags — parity with the free InternetDB path
-        // (evidence attr + per-tag `shodan:<tag>` entity tag so graph rules can
-        // pivot on `compromised`/`malware`/`honeypot`/… without parsing the CSV).
-        if !body.tags.is_empty() {
-            ev = ev.with_attr("tags", body.tags.join(","));
-            body.tags
-                .iter()
-                .for_each(|t| entity.tag(format!("shodan:{t}")));
-        }
-        entity.add_evidence(ev);
-        result.push(entity);
-
-        // Each PTR hostname becomes a Domain entity.
-        result.extend(
-            body.hostnames
-                .into_iter()
-                .filter(|host| !host.is_empty())
-                .map(|host| {
-                    let mut d = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
-                    d.tag("shodan");
-                    d.tag(tags::PTR);
-                    d.add_evidence(
-                        Evidence::new(SRC, format!("Hostname known for {ip}")).with_attr("ip", ip),
-                    );
-                    d
-                }),
-        );
-
-        let org_lc = body
-            .org
-            .as_deref()
-            .map(|s| s.trim().to_ascii_lowercase())
-            .filter(|s| !s.is_empty());
-        if let Some(org) = &body.org
-            && !org.is_empty()
-        {
-            let mut oe = Entity::new(EntityKind::Organisation, org, 0.70, &ctx.scan_id);
-            oe.tag("shodan");
-            oe.add_evidence(Evidence::new(SRC, format!("Organisation for {ip}")));
-            result.push(oe);
-        }
-        // ISP is a distinct OSINT pivot when it differs from org (e.g. org="AWS
-        // EC2", isp="Amazon.com" — the provider layer above the customer org).
-        if let Some(isp) = &body.isp {
-            let isp = isp.trim();
-            let isp_lc = isp.to_ascii_lowercase();
-            if !isp.is_empty() && org_lc.as_deref() != Some(isp_lc.as_str()) {
-                let mut ie = Entity::new(EntityKind::Organisation, isp, 0.65, &ctx.scan_id);
-                ie.tag("shodan");
-                ie.tag("isp");
-                ie.add_evidence(Evidence::new(SRC, format!("ISP for {ip}")));
-                result.push(ie);
-            }
-        }
-        if let Some(asn) = &body.asn
-            && !asn.is_empty()
-        {
-            let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, &ctx.scan_id);
-            ae.tag("shodan");
-            ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
-            result.push(ae);
-        }
-        if let Some(country) = &body.country_name
-            && !country.is_empty()
-        {
-            if let Some((lat, lon)) = crate::util::city_coords::city_coords(country) {
-                let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, &ctx.scan_id);
-                c.tag("shodan");
-                c.tag("addr-derived");
-                c.tag("geoint");
-                c.add_evidence(Evidence::new(SRC, format!("Geocode of country for {ip}")));
-                result.push(c);
-            }
-            let mut addr = Entity::new(EntityKind::Address, country, 0.55, &ctx.scan_id);
-            addr.tag("shodan");
-            addr.tag("geoint");
-            addr.add_evidence(Evidence::new(SRC, format!("Country for {ip}")));
-            result.push(addr);
-        }
-
+        result.extend(build_paid_entities(ip, body, &ctx.scan_id));
         Ok(())
     }
+}
+
+/// Map a decoded paid Shodan host record to its entities. **Pure** (no
+/// network/IO), so the coordinate-precedence (real host fix over country
+/// centroid), the null-island guard, and the domain/ASN/org pivots are all
+/// unit-testable directly. Mirrors the pure-`build_entities` convention used by
+/// the sibling IP modules (`ipinfo`, `criminal_ip`).
+fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
+    let mut result: Vec<Entity> = Vec::new();
+
+    let mut entity = target_entity(ip, scan_id);
+    entity.tag("shodan");
+    if !body.vulns.is_empty() {
+        entity.tag(crate::core::tags::VULNERABLE);
+    }
+    if let Some(c) = body.country_code.as_deref() {
+        entity.tag(format!("country:{}", c.to_uppercase()));
+    }
+    if let Some(os) = body.os.as_deref() {
+        entity.tag(format!("os:{os}"));
+    }
+
+    let mut ev = [
+        ("org", body.org.as_deref()),
+        ("isp", body.isp.as_deref()),
+        ("asn", body.asn.as_deref()),
+        ("city", body.city.as_deref()),
+        ("country", body.country_name.as_deref()),
+        ("country_code", body.country_code.as_deref()),
+        ("os", body.os.as_deref()),
+        ("last_update", body.last_update.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| value.map(|v| (key, v)))
+    .fold(
+        Evidence::new(SRC, format!("Shodan host record for {ip}")),
+        |ev, (key, v)| ev.with_attr(key, v),
+    );
+    if !body.ports.is_empty() {
+        let mut ports = body.ports;
+        ports.sort_unstable();
+        ev = ev
+            .with_attr("port_count", ports.len().to_string())
+            .with_attr(
+                "open_ports",
+                // Full-fidelity policy: every open port of the target host.
+                ports
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+    }
+    if !body.vulns.is_empty() {
+        ev = ev
+            .with_attr("vuln_count", body.vulns.len().to_string())
+            .with_attr(
+                "top_vulns",
+                // Full-fidelity policy: every CVE reported for the target host.
+                body.vulns
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+    }
+    // Host classification tags — parity with the free InternetDB path
+    // (evidence attr + per-tag `shodan:<tag>` entity tag so graph rules can
+    // pivot on `compromised`/`malware`/`honeypot`/… without parsing the CSV).
+    if !body.tags.is_empty() {
+        ev = ev.with_attr("tags", body.tags.join(","));
+        body.tags
+            .iter()
+            .for_each(|t| entity.tag(format!("shodan:{t}")));
+    }
+    entity.add_evidence(ev);
+    result.push(entity);
+
+    // Each PTR hostname becomes a Domain entity.
+    result.extend(
+        body.hostnames
+            .into_iter()
+            .filter(|host| !host.is_empty())
+            .map(|host| {
+                let mut d = Entity::new(EntityKind::Domain, &host, 0.85, scan_id);
+                d.tag("shodan");
+                d.tag(tags::PTR);
+                d.add_evidence(
+                    Evidence::new(SRC, format!("Hostname known for {ip}")).with_attr("ip", ip),
+                );
+                d
+            }),
+    );
+
+    // Registrable domains Shodan ties to the host — apex-domain pivots
+    // distinct from the PTR hostnames above (`google.com` vs `dns.google`).
+    result.extend(
+        body.domains
+            .into_iter()
+            .filter(|dom| !dom.is_empty())
+            .map(|dom| {
+                let mut d = Entity::new(EntityKind::Domain, &dom, 0.80, scan_id);
+                d.tag("shodan");
+                d.add_evidence(
+                    Evidence::new(SRC, format!("Domain associated with {ip}")).with_attr("ip", ip),
+                );
+                d
+            }),
+    );
+
+    let org_lc = body
+        .org
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
+    if let Some(org) = &body.org
+        && !org.is_empty()
+    {
+        let mut oe = Entity::new(EntityKind::Organisation, org, 0.70, scan_id);
+        oe.tag("shodan");
+        oe.add_evidence(Evidence::new(SRC, format!("Organisation for {ip}")));
+        result.push(oe);
+    }
+    // ISP is a distinct OSINT pivot when it differs from org (e.g. org="AWS
+    // EC2", isp="Amazon.com" — the provider layer above the customer org).
+    if let Some(isp) = &body.isp {
+        let isp = isp.trim();
+        let isp_lc = isp.to_ascii_lowercase();
+        if !isp.is_empty() && org_lc.as_deref() != Some(isp_lc.as_str()) {
+            let mut ie = Entity::new(EntityKind::Organisation, isp, 0.65, scan_id);
+            ie.tag("shodan");
+            ie.tag("isp");
+            ie.add_evidence(Evidence::new(SRC, format!("ISP for {ip}")));
+            result.push(ie);
+        }
+    }
+    if let Some(asn) = &body.asn
+        && !asn.is_empty()
+    {
+        let mut ae = Entity::new(EntityKind::Asn, asn, 0.80, scan_id);
+        ae.tag("shodan");
+        ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
+        result.push(ae);
+    }
+    // Prefer Shodan's own host coordinates (guarded so the `(0,0)`
+    // placeholder is never trusted) over the coarse country centroid — a
+    // real per-host fix, not a whole-country approximation.
+    let real_coords = match (body.latitude, body.longitude) {
+        (Some(lat), Some(lon)) if crate::util::geo::is_valid_coords(lat, lon) => Some((lat, lon)),
+        _ => None,
+    };
+    if let Some((lat, lon)) = real_coords {
+        let coord_val = format!("{lat:.4},{lon:.4}");
+        let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.60, scan_id);
+        c.tag("shodan");
+        c.tag("geoint");
+        c.add_evidence(Evidence::new(
+            SRC,
+            format!("Shodan host coordinates for {ip}"),
+        ));
+        result.push(c);
+    }
+    if let Some(country) = &body.country_name
+        && !country.is_empty()
+    {
+        // Country centroid only as a fallback — never in addition to a real
+        // fix, which would plant a second, coarser coordinate for one host.
+        if real_coords.is_none()
+            && let Some((lat, lon)) = crate::util::city_coords::city_coords(country)
+        {
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+            c.tag("shodan");
+            c.tag("addr-derived");
+            c.tag("geoint");
+            c.add_evidence(Evidence::new(SRC, format!("Geocode of country for {ip}")));
+            result.push(c);
+        }
+        // City sharpens the address when Shodan carries it ("City, Country");
+        // otherwise the country alone, as before.
+        let addr_val = match body
+            .city
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(city) => crate::util::geo::compose_address(city, "", country),
+            None => country.clone(),
+        };
+        let mut addr = Entity::new(EntityKind::Address, &addr_val, 0.55, scan_id);
+        addr.tag("shodan");
+        addr.tag("geoint");
+        addr.add_evidence(Evidence::new(SRC, format!("Location for {ip}")));
+        result.push(addr);
+    }
+
+    result
 }
 
 /// Helper to build an IP entity from a raw IP string.
