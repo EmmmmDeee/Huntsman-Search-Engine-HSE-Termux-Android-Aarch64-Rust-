@@ -646,8 +646,8 @@ fn attack_overrides_attribute_collection_modules_precisely() {
     // `breach_rich` pass and does not need that pass's broader technique set.
     assert_eq!(
         techniques("intelx"),
-        vec!["T1589.001", "T1589.002", "T1589.003"],
-        "intelx → Credentials + Email Addresses + Employee Names"
+        vec!["T1589.001", "T1589.002", "T1589.003", "T1597.002"],
+        "intelx → Credentials + Email Addresses + Employee Names + Purchase Technical Data"
     );
     assert!(
         techniques("intelx").contains(&"T1589.003"),
@@ -672,8 +672,9 @@ fn attack_overrides_attribute_collection_modules_precisely() {
             "T1591.002",
             "T1592",
             "T1593.001",
+            "T1597.002",
         ],
-        "dehashed → the full shared breach_rich extraction surface"
+        "dehashed → the full shared breach_rich surface, from a purchased data feed"
     );
 
     // WiGLE: Geo category (T1591.001 Physical Locations) but also surfaces

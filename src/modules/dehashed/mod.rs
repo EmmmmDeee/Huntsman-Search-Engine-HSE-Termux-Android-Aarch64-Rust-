@@ -104,6 +104,7 @@ impl Module for DeHashed {
             "T1591.002", // Business Relationships — company / employer / org
             "T1592",     // Gather Victim Host Information — MAC / HWID / device_id
             "T1593.001", // Social Media — telegram / facebook / instagram / … handles
+            "T1597.002", // Purchase Technical Data — a paid, closed breach-data feed
         ]
     }
 

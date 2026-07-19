@@ -110,6 +110,7 @@ impl Module for OathnetPro {
             "T1590.005", // IP Addresses
             "T1591.001", // Determine Physical Locations — street / city / state address
             "T1591.002", // Business Relationships — company / employer / org
+            "T1597.002", // Purchase Technical Data — a paid, closed breach/stealer pool
         ]
     }
 

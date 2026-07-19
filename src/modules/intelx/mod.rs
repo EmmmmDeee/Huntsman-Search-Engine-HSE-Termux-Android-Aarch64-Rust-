@@ -235,8 +235,9 @@ impl Module for IntelX {
     fn attack_techniques(&self) -> &'static [&'static str] {
         // Breach default covers Credentials (T1589.001) + Email Addresses
         // (T1589.002). IntelX also surfaces real-name Person entities →
-        // T1589.003 Employee Names, which the Breach default omits.
-        &["T1589.001", "T1589.002", "T1589.003"]
+        // T1589.003 Employee Names, which the Breach default omits — and is a
+        // paid, closed intelligence archive → T1597.002 Purchase Technical Data.
+        &["T1589.001", "T1589.002", "T1589.003", "T1597.002"]
     }
 
     fn produces(&self) -> &'static [crate::core::entity::EntityKind] {

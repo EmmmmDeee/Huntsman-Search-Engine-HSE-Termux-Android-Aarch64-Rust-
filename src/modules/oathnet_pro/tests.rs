@@ -867,6 +867,7 @@ use super::*;
             "T1590.005",
             "T1591.001",
             "T1591.002",
+            "T1597.002",
         ] {
             assert!(t.contains(&id), "oathnet_pro must claim {id}, got {t:?}");
             assert!(attack::technique(id).is_some(), "{id} must be catalogued");

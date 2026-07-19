@@ -132,6 +132,7 @@ impl Module for SeekNow {
             "T1591.002", // Business Relationships — company / employer / org
             "T1592",     // Gather Victim Host Information — MAC / HWID / hostname / device_id
             "T1593.001", // Social Media — telegram / facebook / instagram / … handles
+            "T1597.002", // Purchase Technical Data — a paid, closed breach/OSINT corpus
         ]
     }
 

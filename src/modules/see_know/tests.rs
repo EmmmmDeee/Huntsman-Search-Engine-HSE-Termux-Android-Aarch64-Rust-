@@ -1127,6 +1127,7 @@ use crate::core::entity::Entity;
             "T1591.002", // Business Relationships
             "T1592",     // Host Information (device fingerprints)
             "T1593.001", // Social Media
+            "T1597.002", // Purchase Technical Data (paid closed corpus)
         ] {
             assert!(t.contains(&id), "see_know must claim {id}");
             assert!(attack::technique(id).is_some(), "{id} must be catalogued");

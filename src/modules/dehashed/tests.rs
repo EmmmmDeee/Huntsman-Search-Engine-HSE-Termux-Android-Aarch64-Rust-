@@ -69,6 +69,7 @@ fn attack_techniques_reflect_the_full_shared_breach_rich_extraction() {
         "T1591.002",
         "T1592",
         "T1593.001",
+        "T1597.002",
     ] {
         assert!(t.contains(&id), "dehashed must claim {id}, got {t:?}");
         assert!(attack::technique(id).is_some(), "{id} must be catalogued");
