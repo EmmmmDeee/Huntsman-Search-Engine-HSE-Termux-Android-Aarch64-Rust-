@@ -229,6 +229,7 @@ impl Module for NiamonX {
             EntityKind::Username,
             EntityKind::Phone,
             EntityKind::Person,
+            EntityKind::Url,
         ];
         KINDS
     }
@@ -668,6 +669,25 @@ fn emit_ulp(
             pivot.tag(SRC);
             pivot.tag("ulp-pivot");
             result.push(pivot);
+        }
+
+        // The login `url` is where the credentials were captured — the most
+        // actionable pivot in a stealer record (mirrors
+        // oathnet_pro::stealer::extract_stealer_entities' identical field).
+        // Emit it as a first-class Url. Its host is deliberately NOT also
+        // minted as a Domain: a stealer-log host is a third-party service the
+        // subject merely has an account on, not a domain they own — minting
+        // it would spawn subdomain-proliferation noise and misdirect
+        // dns/cert/wayback expansion onto the *platform's* infrastructure.
+        if let Some(u) = record.url.as_deref() {
+            let u = u.trim();
+            if u.starts_with("http") && u.contains('.') {
+                let mut pivot = Entity::new(EntityKind::Url, u, 0.55, scan_id);
+                pivot.tag(SRC);
+                pivot.tag("ulp-pivot");
+                pivot.tag("credential-url");
+                result.push(pivot);
+            }
         }
     }
 }

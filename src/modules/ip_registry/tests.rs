@@ -269,8 +269,8 @@ fn asn_record_yields_registry_contacts_and_website() {
             "website": "https://about.google" } }"#,
     );
     let ents = build_asn_entities(&body, 15169, "s");
-    // registry ASN + admin email + abuse email + website URL
-    assert_eq!(ents.len(), 4);
+    // registry ASN + operator org + admin email + abuse email + website URL
+    assert_eq!(ents.len(), 5);
 
     let asn = of_kind(&ents, EntityKind::Asn).unwrap();
     assert_eq!(asn.value, "AS15169");
@@ -280,6 +280,11 @@ fn asn_record_yields_registry_contacts_and_website() {
     assert_eq!(attr("name"), Some("Google LLC"));
     assert_eq!(attr("rir"), Some("ARIN"));
     assert_eq!(attr("allocated"), Some("2000-03-30"));
+
+    let org = of_kind(&ents, EntityKind::Organisation).unwrap();
+    assert_eq!(org.value, "Google LLC");
+    assert!(org.has_tag("bgpview"));
+    assert!(org.has_tag("asn-operator"));
 
     let emails: Vec<&str> = ents
         .iter()

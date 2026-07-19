@@ -401,6 +401,74 @@ fn extract_cell_intel_emits_coordinates_for_towers_with_position() {
 }
 
 #[test]
+fn extract_cell_intel_emits_address_from_city_region_country_consensus() {
+    let resp = Resp {
+        success: Some(true),
+        result_count: Some(3),
+        total_results: Some(3),
+        results: vec![
+            Network {
+                ssid: None,
+                netid: None,
+                encryption: None,
+                lastupdt: None,
+                trilat: None,
+                trilong: None,
+                city: Some("Nundah".into()),
+                region: Some("Queensland".into()),
+                country: Some("AU".into()),
+                postalcode: Some("4012".into()),
+            },
+            Network {
+                ssid: None,
+                netid: None,
+                encryption: None,
+                lastupdt: None,
+                trilat: None,
+                trilong: None,
+                city: Some("Nundah".into()),
+                region: Some("Queensland".into()),
+                country: Some("AU".into()),
+                postalcode: Some("4012".into()),
+            },
+            Network {
+                ssid: None,
+                netid: None,
+                encryption: None,
+                lastupdt: None,
+                trilat: None,
+                trilong: None,
+                city: Some("Brisbane".into()),
+                region: Some("Queensland".into()),
+                country: Some("AU".into()),
+                postalcode: Some("4000".into()),
+            },
+        ],
+    };
+    let mut r = ModuleResult::new();
+    extract_cell_intel(&resp, "-27.4766,153.0166", "test-scan", &mut r);
+    let addrs: Vec<_> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address)
+        .collect();
+    assert_eq!(
+        addrs.len(),
+        1,
+        "one consensus Address entity, not one per observation"
+    );
+    let addr = addrs[0];
+    // Nundah wins the city mode 2-1 over Brisbane; region/country/postcode
+    // follow the Nundah records too.
+    assert!(addr.value.contains("Nundah"));
+    assert!(addr.value.contains("Queensland"));
+    assert!(addr.value.contains("AU"));
+    assert!(addr.value.contains("4012"));
+    assert!(addr.has_tag("wigle"));
+    assert!(addr.has_tag("cell-derived"));
+}
+
+#[test]
 fn extract_bluetooth_intel_emits_at_most_three_mac_entities() {
     let mut results = Vec::new();
     for i in 0..5 {
@@ -470,6 +538,45 @@ fn emit_ssid_entities_surfaces_all_admitted_location_fixes() {
         coords, 15,
         "every admitted SSID location fix is emitted, not capped below the admission gate"
     );
+}
+
+#[test]
+fn emit_ssid_entities_emits_address_from_city_region_country_consensus() {
+    // Reuses the resp_deserializes_with_full_fields fixture shape (Nundah,
+    // Queensland, AU, 4012) across all matched networks so the mode()
+    // consensus has real city/region/country/postalcode to agree on.
+    let results: Vec<Network> = (0..3)
+        .map(|i| Network {
+            ssid: Some("HaigenHomeWiFi".to_string()),
+            netid: Some(format!("AA:BB:CC:DD:EE:{i:02X}")),
+            encryption: None,
+            lastupdt: None,
+            trilat: Some(-27.4766 - f64::from(i) * 0.001),
+            trilong: Some(153.0166 + f64::from(i) * 0.001),
+            city: Some("Nundah".to_string()),
+            region: Some("Queensland".to_string()),
+            country: Some("AU".to_string()),
+            postalcode: Some("4012".to_string()),
+        })
+        .collect();
+    let r = emit_ssid_entities("HaigenHomeWiFi", &results, "test-scan");
+    let addrs: Vec<_> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address)
+        .collect();
+    assert_eq!(
+        addrs.len(),
+        1,
+        "one consensus Address entity, not one per observation"
+    );
+    let addr = addrs[0];
+    assert!(addr.value.contains("Nundah"));
+    assert!(addr.value.contains("Queensland"));
+    assert!(addr.value.contains("AU"));
+    assert!(addr.value.contains("4012"));
+    assert!(addr.has_tag("wigle"));
+    assert!(addr.has_tag("ssid-located"));
 }
 
 #[test]

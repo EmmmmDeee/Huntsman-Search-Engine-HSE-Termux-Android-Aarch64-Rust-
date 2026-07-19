@@ -225,6 +225,26 @@ pub(super) fn build_entities(
             }),
     );
 
+    // ── Organisations (alma maters) — degree and field of study ───────────
+    // Lower confidence than the employer loop above: a school attended in the
+    // past is a weaker "current relationship" signal than a listed employer.
+    result.extend(profile.education.iter().take(MAX_LISTED).filter_map(|edu| {
+        let school = nonempty(&edu.school).filter(|s| s.chars().count() >= 2)?;
+        let mut oe = Entity::new(EntityKind::Organisation, school, 0.55, scan_id);
+        oe.tag("proxycurl");
+        oe.tag("linkedin");
+        oe.tag("education");
+        let mut ev = Evidence::new(SRC, format!("Educational institution: {school}"));
+        if let Some(degree) = nonempty(&edu.degree_name) {
+            ev = ev.with_attr("degree", degree);
+        }
+        if let Some(field) = nonempty(&edu.field_of_study) {
+            ev = ev.with_attr("field_of_study", field);
+        }
+        oe.add_evidence(ev);
+        Some(oe)
+    }));
+
     // ── Personal website URL ──────────────────────────────────────────────
     if let Some(url) = profile
         .website_url

@@ -55,10 +55,11 @@ pub(super) const MIN_ADDRESS_LEN: usize = 5;
 /// Map one OpenCorporates company record to its entities. **Pure** (no
 /// network/IO): always yields the `Organisation` (tagged with jurisdiction /
 /// active status and all present registry fields as evidence), and additionally
-/// a `validated` `Address` entity when a usable registered address is present and
-/// an `AbnAcn` company-number entity for AU registrations. `total` is the
-/// search's full match count, carried on the org evidence. Returns an empty `Vec`
-/// for a record with no usable name.
+/// a `validated` `Address` entity when a usable registered address is present, a
+/// pivotable `Url` entity for the record's own OpenCorporates profile page when
+/// present, and an `AbnAcn` company-number entity for AU registrations. `total`
+/// is the search's full match count, carried on the org evidence. Returns an
+/// empty `Vec` for a record with no usable name.
 pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) -> Vec<Entity> {
     let Some(name) = co.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) else {
         return Vec::new();
@@ -147,6 +148,17 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
             ));
             out.push(c);
         }
+    }
+
+    if let Some(url) = co.opencorporates_url.as_deref().filter(|u| !u.is_empty()) {
+        let mut ue = Entity::new(EntityKind::Url, url, 0.68, scan_id);
+        ue.tag("opencorporates");
+        ue.tag("profile-url");
+        ue.add_evidence(Evidence::new(
+            SRC,
+            format!("OpenCorporates profile URL for {name}"),
+        ));
+        out.push(ue);
     }
 
     if let Some(num) = co.company_number.as_deref()
@@ -244,10 +256,12 @@ pub(super) struct OcOfficerCompany {
 }
 
 /// Map one OpenCorporates officer record to entities. **Pure** (no network/IO):
-/// emits the `Organisation` the person directs (if usable), an `AbnAcn` for AU
-/// registrations, and a corroborating `Person` entity carrying the officer name
-/// and position as evidence. `total` is the officer-search hit count. Returns
-/// an empty `Vec` when neither the officer name nor the company name is usable.
+/// emits the `Organisation` the person directs (if usable), a pivotable `Url`
+/// entity for that company's own OpenCorporates profile page when present, an
+/// `AbnAcn` for AU registrations, and a corroborating `Person` entity carrying
+/// the officer name and position as evidence. `total` is the officer-search hit
+/// count. Returns an empty `Vec` when neither the officer name nor the company
+/// name is usable.
 pub(super) fn build_officer_entities(
     officer: &OcOfficer,
     total: u64,
@@ -293,6 +307,17 @@ pub(super) fn build_officer_entities(
             }
             org.add_evidence(ev);
             out.push(org);
+
+            if let Some(url) = co.opencorporates_url.as_deref().filter(|u| !u.is_empty()) {
+                let mut ue = Entity::new(EntityKind::Url, url, 0.68, scan_id);
+                ue.tag("opencorporates");
+                ue.tag("profile-url");
+                ue.add_evidence(Evidence::new(
+                    SRC,
+                    format!("OpenCorporates profile URL for {name}"),
+                ));
+                out.push(ue);
+            }
 
             if let Some(num) = co.company_number.as_deref()
                 && !num.is_empty()
@@ -425,6 +450,7 @@ impl Module for OpenCorporates {
             EntityKind::Coordinates,
             // Person: emitted from officer search (FullName targets only).
             EntityKind::Person,
+            EntityKind::Url,
         ];
         KINDS
     }

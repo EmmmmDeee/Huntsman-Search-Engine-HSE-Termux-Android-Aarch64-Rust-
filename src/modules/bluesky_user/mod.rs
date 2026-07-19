@@ -83,6 +83,9 @@ impl Module for BlueskyUser {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
+        // Also emits `Other("bluesky-did")`, which cannot appear in a `const`
+        // slice (it owns a `String`); the canonical pivots are the username,
+        // derived person, bio email/URL, and custom-domain handle.
         const KINDS: &[EntityKind] = &[
             EntityKind::Username,
             EntityKind::Person,
@@ -200,6 +203,31 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
     }
     u.add_evidence(ev.clone());
     result.push(u);
+
+    // Canonical AT Protocol DID → its own pivotable entity, `Other(_)` (not
+    // `Username`, matching the precedent set by nostr's pubkey): a raw DID fed
+    // into username-enumeration modules (github_user, reddit_user, …) would
+    // produce noisy, doomed lookups. `Other(_)` is never re-dispatched as a
+    // scan target, so it is a searchable, correlatable identity with no scan
+    // noise.
+    if let Some(ref did) = profile.did
+        && !did.is_empty()
+    {
+        let mut d = Entity::new(EntityKind::Other("bluesky-did".into()), did, 0.85, scan_id);
+        d.tag("bluesky");
+        d.tag("did");
+        d.add_evidence(
+            Evidence::new(
+                SRC,
+                format!(
+                    "Canonical AT Protocol DID for Bluesky account '{}'",
+                    profile.handle
+                ),
+            )
+            .with_attr("did", did),
+        );
+        result.push(d);
+    }
 
     // Custom-domain handle → Domain entity. An AT Protocol custom-domain
     // handle means the user controls that domain's DNS TXT record — a
@@ -410,13 +438,48 @@ mod tests {
     }
 
     #[test]
+    fn did_is_promoted_to_its_own_other_kind_entity() {
+        let p = make_profile("alice.bsky.social", None, None);
+        let ents = build_entities(p, "scan-bsky-010");
+        let d = ents.iter().find(|e| {
+            e.kind == EntityKind::Other("bluesky-did".into()) && e.value == "did:plc:abc123"
+        });
+        assert!(
+            d.is_some(),
+            "DID must be promoted to its own Other(\"bluesky-did\") entity, not just folded into evidence"
+        );
+        assert!(d.unwrap().has_tag("bluesky"));
+        assert!(d.unwrap().has_tag("did"));
+        // Must not be emitted as Username — a raw DID fed into username
+        // enumeration modules would produce noisy, doomed lookups.
+        assert!(
+            !ents
+                .iter()
+                .any(|e| e.kind == EntityKind::Username && e.value == "did:plc:abc123"),
+            "DID must never be emitted as a Username entity"
+        );
+    }
+
+    #[test]
+    fn no_did_entity_when_did_absent() {
+        let mut p = make_profile("alice.bsky.social", None, None);
+        p.did = None;
+        let ents = build_entities(p, "scan-bsky-011");
+        assert!(
+            ents.iter()
+                .all(|e| e.kind != EntityKind::Other("bluesky-did".into())),
+            "no DID entity when did is absent from the profile"
+        );
+    }
+
+    #[test]
     fn no_entities_beyond_username_and_profile_url_for_empty_profile() {
         let p = make_profile("quiet.bsky.social", None, None);
         let ents = build_entities(p, "scan-bsky-007");
         assert_eq!(
             ents.len(),
-            2,
-            "username + profile URL only when no optional fields"
+            3,
+            "username + did + profile URL only when no optional fields"
         );
     }
 

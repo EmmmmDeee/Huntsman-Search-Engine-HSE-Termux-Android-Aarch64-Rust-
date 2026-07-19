@@ -129,6 +129,19 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
     }
     if let Some(pic) = nonempty(&body.profile_picture) {
         ev = ev.with_attr("profile_picture", pic);
+        // Surface the avatar as a first-class pivot — a `Url` entity, not just
+        // an evidence attr. It was deserialized and then confined to evidence,
+        // same as `google_id` was before it got the Username treatment above.
+        if pic.starts_with("http") {
+            let mut pe = Entity::new(EntityKind::Url, pic, 0.55, scan_id);
+            pe.tag("epieos");
+            pe.tag("google-avatar");
+            pe.add_evidence(Evidence::new(
+                SRC,
+                format!("Google profile picture for {email}"),
+            ));
+            out.push(pe);
+        }
     }
     let skype = body.skype.as_ref();
     if let Some(h) = skype.and_then(|s| nonempty(&s.handle)) {
@@ -313,6 +326,7 @@ impl Module for Epieos {
             EntityKind::Email,
             EntityKind::Person,
             EntityKind::Username,
+            EntityKind::Url,
             EntityKind::Address,
             EntityKind::Coordinates,
         ];

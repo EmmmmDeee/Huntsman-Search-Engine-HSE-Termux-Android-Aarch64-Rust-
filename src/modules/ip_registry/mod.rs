@@ -377,6 +377,25 @@ fn build_asn_entities(body: &AsnResp, asn: u64, scan_id: &str) -> Vec<Entity> {
     entity.add_evidence(ev);
     result.push(entity);
 
+    // Operator organisation — the entity that holds the ASN, a high-value
+    // attribution pivot (ASNs/blocks held by the same operator cluster).
+    // Mirrors `build_registrant_org`'s RDAP promotion, sourced from BGPView
+    // instead: prefer the full legible name, fall back to the registry handle.
+    let operator_name = data
+        .description_short
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| data.name.as_deref().filter(|s| !s.trim().is_empty()));
+    if let Some(name) = operator_name {
+        let mut oe = Entity::new(EntityKind::Organisation, name, 0.70, scan_id);
+        oe.tag("bgpview");
+        oe.tag("asn-operator");
+        oe.add_evidence(
+            Evidence::new(SRC, format!("Operator of {asn_label}")).with_attr("asn", &asn_str),
+        );
+        result.push(oe);
+    }
+
     result.extend(contact_emails(
         data.email_contacts.as_deref(),
         "admin",

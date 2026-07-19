@@ -272,7 +272,43 @@ pub(super) fn build_phone_entities(
     );
     entity.add_evidence(ev);
 
-    vec![entity]
+    let mut result = vec![entity];
+
+    // A Numverify `location` reflects the phone's registration/porting
+    // record, not necessarily the subject's current physical location —
+    // tagged distinctly and at a lower confidence than the Gravatar
+    // `current_location` -> Address promotion below.
+    if let Some(loc) = body.location.as_deref()
+        && loc.trim().len() >= 3
+    {
+        let mut ae = Entity::new(EntityKind::Address, loc, 0.40, scan_id);
+        ae.tag("numverify");
+        ae.tag("geoint");
+        ae.tag("phone-registration");
+        if let Some(sc) = crate::util::address_au::state_code(loc) {
+            ae.tag(format!("au-state:{sc}"));
+            ae.tag("country:AU");
+        }
+        ae.add_evidence(Evidence::new(
+            SRC,
+            format!("Numverify location for {}", target.value),
+        ));
+        if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.35, scan_id);
+            c.tag("numverify");
+            c.tag("addr-derived");
+            c.tag("geoint");
+            c.add_evidence(Evidence::new(
+                SRC,
+                format!("Geocode of Numverify location for {}", target.value),
+            ));
+            result.push(c);
+        }
+        result.push(ae);
+    }
+
+    result
 }
 
 // ---------------------------------------------------------------------------

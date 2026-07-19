@@ -123,6 +123,42 @@ use super::*;
     }
 
     #[test]
+    fn co_maintainer_username_is_emitted_but_subject_not_duplicated() {
+        // Same fixture as above: `bob`'s handle should now surface as its own
+        // Username entity (co-maintainer), while `alice` — the subject — is not
+        // duplicated via this path (she's already emitted once at 0.88 by the
+        // final confirmed-on-npm block).
+        let body = search(
+            r#"{"objects":[{"package":{"name":"pkg",
+                "maintainers":[
+                    {"username":"alice","email":"alice@example.com"},
+                    {"username":"bob","email":"bob@example.com"}
+                ]}}],"total":1}"#,
+        );
+        let ents = build_entities(&body, "alice", "s");
+        let usernames = values(&ents, EntityKind::Username);
+        assert_eq!(usernames, vec!["bob", "alice"]);
+
+        let bob = of_kind(&ents, EntityKind::Username)
+            .into_iter()
+            .find(|e| e.value == "bob")
+            .expect("bob co-maintainer username entity");
+        assert!(bob.has_tag("npm") && bob.has_tag("co-maintainer"));
+        assert_eq!(bob.confidence, 0.55);
+        assert_eq!(
+            bob.evidence[0].attributes.get("package").map(String::as_str),
+            Some("pkg")
+        );
+
+        let alice = of_kind(&ents, EntityKind::Username)
+            .into_iter()
+            .find(|e| e.value == "alice")
+            .expect("alice subject username entity");
+        assert_eq!(alice.confidence, 0.88);
+        assert!(!alice.has_tag("co-maintainer"));
+    }
+
+    #[test]
     fn usernameless_record_email_is_kept() {
         // A record with an email but no username is treated as the subject's.
         let body = search(

@@ -12,8 +12,8 @@ use crate::util::str_util::nonempty;
 use super::{
     HIGH_RISK_SCORE, SRC,
     types::{
-        AccountAggregates, Breach, CnamDetails, DomainRegistration, RiskScores, SeonEmailData,
-        SeonFraudHistory, SeonPhoneData,
+        AccountAggregates, Breach, CnamDetails, DomainRegistration, EmailDomainDetails, RiskScores,
+        SeonEmailData, SeonFraudHistory, SeonPhoneData,
     },
 };
 
@@ -266,6 +266,15 @@ pub(super) fn build_email_entities(
             .flat_map(|reg| domain_registration_entities(reg, email, scan_id)),
     );
 
+    // The enriched email's own domain as a first-class Domain pivot — SEON
+    // parses it (`email_domain_details.domain`) but it was previously only
+    // ever attached as an evidence attribute on the Email entity above.
+    out.extend(
+        data.email_domain_details
+            .as_ref()
+            .and_then(|dd| email_domain_entity(dd, scan_id)),
+    );
+
     out
 }
 
@@ -366,6 +375,39 @@ fn domain_registration_entities(reg: &DomainRegistration, who: &str, scan_id: &s
     out
 }
 
+/// A `Domain` entity for the enriched email's own domain
+/// (`email_domain_details.domain`) — mirrors `breach_domain_entity`'s and
+/// `domain_registration_entities`' identical string-to-`Domain` pattern.
+/// Guarded against freemail/disposable domains (`free`/`disposable`) so a
+/// shared provider like Gmail or a throwaway domain isn't minted as a
+/// first-class pivot node alongside the genuinely email-specific ones.
+fn email_domain_entity(dd: &EmailDomainDetails, scan_id: &str) -> Option<Entity> {
+    let domain = nonempty(&dd.domain)?;
+    if dd.free == Some(true) || dd.disposable == Some(true) {
+        return None;
+    }
+    let mut de = Entity::new(EntityKind::Domain, domain, 0.60, scan_id);
+    de.tag("seon");
+    let mut ev = Evidence::new(SRC, format!("SEON email domain details for {domain}"));
+    if let Some(r) = dd.registered {
+        ev = ev.with_attr("registered", r.to_string());
+    }
+    if let Some(r) = nonempty(&dd.registrar_name) {
+        ev = ev.with_attr("registrar_name", r);
+    }
+    if let Some(c) = nonempty(&dd.created) {
+        ev = ev.with_attr("created", c);
+    }
+    if let Some(v) = dd.valid_mx {
+        ev = ev.with_attr("valid_mx", v.to_string());
+    }
+    if let Some(w) = dd.website_exists {
+        ev = ev.with_attr("website_exists", w.to_string());
+    }
+    de.add_evidence(ev);
+    Some(de)
+}
+
 /// Build entities from a SEON **phone** enrichment: the enriched phone (carrier,
 /// line type, geo) plus a `Url` for any messaging-app profile link. Pure.
 pub(super) fn build_phone_entities(
@@ -439,6 +481,22 @@ pub(super) fn build_phone_entities(
             .as_ref()
             .and_then(|pcd| nonempty(&pcd.carrier))
             .and_then(|c| carrier_entity(c, phone, scan_id)),
+    );
+
+    // HLR-reported ported-to carrier → a second Organisation pivot, distinct
+    // from the provider-reported carrier above — a number ported to a new
+    // network is a genuinely different Organisation, not a duplicate. Must
+    // stay AFTER the provider_carrier_details push above so any caller that
+    // finds the first Organisation still gets the provider-reported one.
+    out.extend(
+        data.hlr_details
+            .as_ref()
+            .and_then(|h| nonempty(&h.ported_carrier))
+            .and_then(|c| carrier_entity(c, phone, scan_id))
+            .map(|mut oe| {
+                oe.tag("ported-carrier");
+                oe
+            }),
     );
 
     // CNAM Caller-ID-Name → Person pivot (consistent with hlr_cnam).

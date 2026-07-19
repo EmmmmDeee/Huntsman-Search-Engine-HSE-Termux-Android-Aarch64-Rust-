@@ -170,6 +170,7 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
     let mut seen_emails: HashSet<String> = HashSet::new();
     let mut seen_urls: HashSet<String> = HashSet::new();
     let mut seen_domains: HashSet<String> = HashSet::new();
+    let mut seen_usernames: HashSet<String> = HashSet::new();
     let mut package_names: Vec<String> = Vec::new();
 
     let push_email =
@@ -230,6 +231,24 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
                 }
                 url_e.add_evidence(ev);
                 result.push(url_e);
+            }
+
+            // Co-maintainer/co-author handles: every OTHER npm username on the
+            // record (the subject's own is already emitted below), so a
+            // co-maintainer isn't silently dropped the way their email would be.
+            if let Some(u) = person.username.as_deref()
+                && !is_subject
+                && seen_usernames.insert(u.to_lowercase())
+            {
+                let uname = u.to_lowercase();
+                let mut uname_e = Entity::new(EntityKind::Username, &uname, 0.55, scan_id);
+                uname_e.tag("npm");
+                uname_e.tag("co-maintainer");
+                uname_e.add_evidence(
+                    Evidence::new(SRC, format!("npm co-maintainer of {pkg_name}"))
+                        .with_attr("package", pkg_name),
+                );
+                result.push(uname_e);
             }
         }
 

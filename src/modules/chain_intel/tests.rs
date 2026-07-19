@@ -324,6 +324,60 @@ fn apply_scam_tags_tags_malicious_and_threat_intel_only_when_flagged() {
 }
 
 #[test]
+fn known_name_entity_mints_organisation_tagged_via_apply_scam_tags() {
+    // Same "Fake Uniswap" / is_scam:true fixture as
+    // `blockscout_address_deserialises_scam_reputation_name_and_tags` — proves
+    // the curated `known_name` label parsed there is minted as a first-class
+    // Organisation entity here, not left stranded in evidence text only (the
+    // gap: `ens_domain_name` got this treatment, `known_name` never did).
+    let e = Enrichment {
+        known_name: Some("Fake Uniswap".into()),
+        is_scam: Some(true),
+        ..enr()
+    };
+    let org = known_name_entity("Fake Uniswap", "0xdeadbeef", &e, "scan-1")
+        .expect("a well-formed known_name label must mint an entity");
+    assert_eq!(org.kind, EntityKind::Organisation);
+    assert_eq!(org.value, "Fake Uniswap");
+    assert!(org.tags.contains(&SRC.to_string()));
+    assert!(org.tags.contains(&"known-name".to_string()));
+    // apply_scam_tags gating: is_scam:true must carry through onto the new
+    // entity exactly like it does for the sibling CryptoAddress entity.
+    assert!(org.tags.contains(&crate::core::tags::MALICIOUS.to_string()));
+    assert!(
+        org.tags
+            .contains(&crate::core::tags::THREAT_INTEL.to_string())
+    );
+    assert_eq!(org.evidence.len(), 1);
+    let ev = &org.evidence[0];
+    assert_eq!(ev.attributes.get("known_name").unwrap(), "Fake Uniswap");
+    assert_eq!(ev.attributes.get("address").unwrap(), "0xdeadbeef");
+}
+
+#[test]
+fn known_name_entity_omits_scam_tags_when_not_flagged() {
+    // A clean (non-scam) known_name label must still mint the Organisation —
+    // just without the MALICIOUS/THREAT_INTEL tags apply_scam_tags gates on.
+    let e = Enrichment {
+        known_name: Some("UniswapV2Router02".into()),
+        is_scam: None,
+        ..enr()
+    };
+    let org = known_name_entity("UniswapV2Router02", "0xrouter", &e, "scan-1").unwrap();
+    assert_eq!(org.value, "UniswapV2Router02");
+    assert!(!org.tags.contains(&crate::core::tags::MALICIOUS.to_string()));
+    assert!(!org.tags.contains(&crate::core::tags::THREAT_INTEL.to_string()));
+}
+
+#[test]
+fn known_name_entity_is_none_for_blank_or_too_short_label() {
+    let e = enr();
+    assert!(known_name_entity("", "0xaddr", &e, "scan-1").is_none());
+    assert!(known_name_entity("   ", "0xaddr", &e, "scan-1").is_none());
+    assert!(known_name_entity("a", "0xaddr", &e, "scan-1").is_none());
+}
+
+#[test]
 fn format_units_zero_and_minimal() {
     // Zero balance → "0" with any decimal scale.
     assert_eq!(format_units(0, 8), "0");

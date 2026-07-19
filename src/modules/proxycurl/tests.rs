@@ -297,9 +297,27 @@ fn build_entities_extracts_full_profile() {
     assert_eq!(phones.len(), 1);
     assert_eq!(phones[0].value, "+61412345678");
 
-    // Organisations: both employers; current one tagged; job LOCATION kept.
+    // Organisations: both employers plus the alma mater; current employer
+    // tagged; job LOCATION kept; school carries degree/field_of_study.
     let orgs = by(EntityKind::Organisation);
-    assert_eq!(orgs.len(), 2);
+    assert_eq!(orgs.len(), 3);
+    let uni = orgs
+        .iter()
+        .find(|e| e.value == "University of Melbourne")
+        .unwrap();
+    assert!(uni.has_tag("education"));
+    assert_eq!(uni.confidence, 0.55);
+    assert_eq!(
+        uni.evidence[0].attributes.get("degree").map(String::as_str),
+        Some("BSc")
+    );
+    assert_eq!(
+        uni.evidence[0]
+            .attributes
+            .get("field_of_study")
+            .map(String::as_str),
+        Some("Computer Science")
+    );
     let atlassian = orgs.iter().find(|e| e.value == "Atlassian").unwrap();
     assert!(atlassian.has_tag("current-employer"));
     assert_eq!(

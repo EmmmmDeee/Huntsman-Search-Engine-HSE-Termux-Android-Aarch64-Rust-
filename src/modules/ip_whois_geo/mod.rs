@@ -57,6 +57,8 @@ struct Connection {
     org: Option<String>,
     #[serde(default, rename = "asn")]
     asn_num: Option<u64>,
+    #[serde(default)]
+    domain: Option<String>,
 }
 
 /// Map a decoded ipwho.is record to its entities. **Pure** (no network/IO), so
@@ -225,6 +227,23 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
         result.push(ae);
     }
 
+    if let Some(conn) = &data.connection
+        && let Some(domain) = conn.domain.as_deref().filter(|s| !s.is_empty())
+    {
+        // The ASN/ISP's own registered domain (e.g. "cloudflare.com" for
+        // AS13335) — a distinct signal from the Organisation name a few
+        // lines up: it's a pivotable identifier in its own right (WHOIS,
+        // cert transparency, etc.), not just a display label.
+        let mut de = Entity::new(EntityKind::Domain, domain, 0.55, scan_id);
+        de.tag("geoint");
+        de.tag("derived");
+        de.tag("ip-whois");
+        de.add_evidence(
+            Evidence::new(SRC, format!("IP org domain for {ip}")).with_attr("domain", domain),
+        );
+        result.push(de);
+    }
+
     result
 }
 
@@ -256,6 +275,7 @@ impl Module for IpWhois {
             EntityKind::Address,
             EntityKind::Asn,
             EntityKind::Organisation,
+            EntityKind::Domain,
         ];
         KINDS
     }

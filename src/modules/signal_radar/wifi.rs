@@ -95,6 +95,27 @@ pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> ModuleResult {
         e.add_evidence(ev);
 
         result.push(e);
+
+        // The SSID is a WiGLE-geolocatable pivot in its own right (a network
+        // name search can surface every place that SSID was ever seen), so it
+        // earns its own Ssid entity alongside the BSSID's MacAddress entity —
+        // mirrors the precedent in `cli::import::push_ssids`. Skipped for the
+        // hidden-network placeholder (`ap.ssid` is `None`, defaulted to
+        // `"<hidden>"` above) and for an empty string; a real SSID confidence
+        // sits well below the BSSID's own, since a name is easier to spoof or
+        // duplicate than a hardware address.
+        if !ssid.is_empty() && ssid != "<hidden>" {
+            let mut se = Entity::new(EntityKind::Ssid, ssid, 0.55, scan_id);
+            se.tag(crate::core::tags::WIFI_AP);
+            se.tag("device-sensor");
+
+            se.add_evidence(
+                Evidence::new(SRC, format!("Wi-Fi network name: {ssid}"))
+                    .with_attr("bssid", &ap.bssid),
+            );
+
+            result.push(se);
+        }
     }
 
     result

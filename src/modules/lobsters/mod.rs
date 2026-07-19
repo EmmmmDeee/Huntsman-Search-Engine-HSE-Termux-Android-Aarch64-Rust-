@@ -171,6 +171,33 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
         result.push(g);
     }
 
+    // "Invited by" — the account that vouched for/invited the target. Same
+    // Username shape as the cross-platform pivots above, but this is a
+    // same-platform vouching relationship, not a confirmed cross-platform
+    // identity match, so it gets a lower confidence and a distinct tag
+    // (deliberately not "lobsters-pivot", which downstream consumers treat
+    // as a cross-service claim).
+    if let Some(ref inviter) = user.invited_by_user {
+        let inviter = inviter.trim();
+        if !inviter.is_empty() {
+            let mut inv = Entity::new(EntityKind::Username, inviter, 0.70, scan_id);
+            inv.tag("lobsters");
+            inv.tag("lobsters-invited-by");
+            inv.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!(
+                        "Lobste.rs account '{}' was invited by '{}'",
+                        user.username, inviter
+                    ),
+                )
+                .with_attr("source_field", "invited_by_user")
+                .with_attr("lobsters_user", &user.username),
+            );
+            result.push(inv);
+        }
+    }
+
     if let Some(ref tw) = user.twitter_username
         && !tw.is_empty()
     {
@@ -347,6 +374,21 @@ mod tests {
         assert!(
             gh.unwrap().has_tag("github"),
             "pivot entity must carry 'github' tag"
+        );
+    }
+
+    #[test]
+    fn emits_invited_by_username_pivot() {
+        let mut user = make_user("devuser", 500, None, None, None);
+        user.invited_by_user = Some("founder".to_string());
+        let entities = build_entities(user, "scan-lob-006");
+        let inv = entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Username && e.value == "founder")
+            .expect("must emit invited-by username pivot");
+        assert!(
+            inv.has_tag("lobsters-invited-by"),
+            "pivot entity must carry 'lobsters-invited-by' tag"
         );
     }
 

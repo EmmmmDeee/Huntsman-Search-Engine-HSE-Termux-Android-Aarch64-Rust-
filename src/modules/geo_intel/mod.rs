@@ -61,7 +61,7 @@ impl Module for GeoIntel {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Coordinates];
+        const KINDS: &[EntityKind] = &[EntityKind::Coordinates, EntityKind::Asn];
         KINDS
     }
 

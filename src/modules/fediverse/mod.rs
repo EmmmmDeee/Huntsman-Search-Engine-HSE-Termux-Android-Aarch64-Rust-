@@ -178,6 +178,20 @@ fn extract_webfinger(
         }
     }
 
+    // `aliases` are additional self-referential URIs WebFinger asserts for the
+    // same subject — sibling data to the typed `rel` links above, but untyped
+    // (no `rel`/`type` to confirm which is the profile page vs. the actor), so
+    // each is still a URL pivot, just at a confidence below the typed
+    // actor/profile-page tiers.
+    for alias in wf.aliases.iter().filter(|a| a.starts_with("http")) {
+        let mut url_e = Entity::new(EntityKind::Url, alias.as_str(), 0.70, scan_id);
+        url_e.tag("fediverse");
+        url_e.tag("mastodon");
+        url_e.tag("webfinger-alias");
+        url_e.add_evidence(ev.clone());
+        result.push(url_e);
+    }
+
     // The local username — a pivot into the free username stack.
     if local.len() >= 2 {
         let mut u = Entity::new(EntityKind::Username, local, 0.68, scan_id);

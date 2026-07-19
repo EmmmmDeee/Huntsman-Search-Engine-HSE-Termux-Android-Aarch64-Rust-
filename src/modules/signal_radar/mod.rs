@@ -85,6 +85,7 @@ impl Module for SignalRadar {
             EntityKind::IpAddress,
             EntityKind::Coordinates,
             EntityKind::DeviceId,
+            EntityKind::Ssid,
         ];
         KINDS
     }

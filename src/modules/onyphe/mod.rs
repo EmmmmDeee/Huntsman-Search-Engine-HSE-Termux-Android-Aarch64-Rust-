@@ -99,6 +99,7 @@ impl Module for Onyphe {
             EntityKind::Asn,
             EntityKind::Organisation,
             EntityKind::Domain,
+            EntityKind::Cidr,
         ];
         KINDS
     }
@@ -259,6 +260,19 @@ fn extract_entities(
             let mut oe = Entity::new(EntityKind::Organisation, &org, 0.55, scan_id);
             oe.add_evidence(ev());
             result.push(oe);
+        }
+
+        // ── Subnet (geoloc CIDR) ─────────────────────────────────────────
+        // ONYPHE's `geoloc` category also carries the covering `subnet` for
+        // the resolved IP. It's a secondary field on a geoloc document, not
+        // an authoritative BGP-sourced prefix (cf. bgpview/ripestat's 0.70-
+        // 0.80), so confidence is pinned lower in the unverified range.
+        if let Some(subnet) = vstr(r, "subnet").filter(|s| s.contains('/'))
+            && seen.insert(format!("@cidr:{subnet}"))
+        {
+            let mut ne = Entity::new(EntityKind::Cidr, &subnet, 0.65, scan_id);
+            ne.add_evidence(ev());
+            result.push(ne);
         }
 
         // ── Resolved IPs (domain target) ────────────────────────────────

@@ -189,7 +189,11 @@ impl Module for ChainIntel {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::CryptoAddress, EntityKind::Username];
+        const KINDS: &[EntityKind] = &[
+            EntityKind::CryptoAddress,
+            EntityKind::Username,
+            EntityKind::Organisation,
+        ];
         KINDS
     }
 
@@ -248,6 +252,18 @@ impl Module for ChainIntel {
                 result.push(u);
             }
         }
+
+        // Blockscout's curated known-name label identifies a named
+        // contract/entity (e.g. a phishing clone squatting on a legitimate
+        // protocol's name) straight from the SAME response as the ENS name
+        // above — the same class of identity pivot, so it earns the same
+        // first-class-entity treatment instead of being left in evidence
+        // text only.
+        if let Some(name) = &enr.known_name
+            && let Some(org) = known_name_entity(name, addr, &enr, &ctx.scan_id)
+        {
+            result.push(org);
+        }
         Ok(result)
     }
 }
@@ -277,6 +293,32 @@ fn apply_scam_tags(entity: &mut Entity, e: &Enrichment) {
         entity.tag(crate::core::tags::MALICIOUS);
         entity.tag(crate::core::tags::THREAT_INTEL);
     }
+}
+
+/// Mints Blockscout's curated known-name label (e.g. `"Fake Uniswap"`) as a
+/// first-class `Organisation` entity, mirroring the reverse-ENS handle's
+/// treatment a few lines up in `process()` — both are named-identity signals
+/// pulled from the same Blockscout response, so neither should be left
+/// stranded in evidence text only. `None` for a blank/too-short label (same
+/// `len() >= 2` guard the ENS handle uses) so a degenerate name can't mint a
+/// junk entity. Reuses [`apply_scam_tags`] so a scam-flagged label carries the
+/// exact same `MALICIOUS`/`THREAT_INTEL` gating as the `CryptoAddress` entity
+/// does. Pure (no I/O) for unit testing.
+fn known_name_entity(name: &str, addr: &str, e: &Enrichment, scan_id: &str) -> Option<Entity> {
+    let name = name.trim();
+    if name.len() < 2 {
+        return None;
+    }
+    let mut org = Entity::new(EntityKind::Organisation, name, 0.70, scan_id);
+    org.tag(SRC);
+    org.tag("known-name");
+    apply_scam_tags(&mut org, e);
+    org.add_evidence(
+        Evidence::new(SRC, format!("Blockscout known-name label for {addr}"))
+            .with_attr("known_name", name)
+            .with_attr("address", addr),
+    );
+    Some(org)
 }
 
 /// Build enrichment evidence, emitting only the fields the source provided. The

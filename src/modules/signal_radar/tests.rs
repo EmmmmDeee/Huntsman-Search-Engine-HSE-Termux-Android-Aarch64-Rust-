@@ -11,7 +11,9 @@ fn wifi_parse_valid_aps() {
         {"bssid":"11:22:33:44:55:66","ssid":"WeakAP","rssi":-80,"frequency":5180,"channel_width":"40","timestamp":2000}
     ]"#;
     let result = wifi::parse_scan(json, "test-scan");
-    assert_eq!(result.len(), 2);
+    // 2 APs, each with a non-empty SSID → 2 MacAddress entities + 2 Ssid
+    // entities (one Ssid pushed right after its AP's MacAddress entity).
+    assert_eq!(result.len(), 4);
 
     let ap1 = &result.entities[0];
     assert_eq!(ap1.kind, EntityKind::MacAddress);
@@ -24,7 +26,19 @@ fn wifi_parse_valid_aps() {
     );
     assert!(ap1.has_tag("band:2.4GHz"), "expected 2.4GHz band tag");
 
-    let ap2 = &result.entities[1];
+    let ssid1 = &result.entities[1];
+    assert_eq!(ssid1.kind, EntityKind::Ssid);
+    assert_eq!(ssid1.value, "TestNet");
+    assert!(
+        (ssid1.confidence - 0.55).abs() < 0.01,
+        "confidence={}",
+        ssid1.confidence
+    );
+    assert!(ssid1.has_tag(crate::core::tags::WIFI_AP));
+    assert!(ssid1.has_tag("device-sensor"));
+
+    let ap2 = &result.entities[2];
+    assert_eq!(ap2.kind, EntityKind::MacAddress);
     // rssi -80 → confidence 0.60
     assert!(
         (ap2.confidence - 0.60).abs() < 0.01,
@@ -32,6 +46,10 @@ fn wifi_parse_valid_aps() {
         ap2.confidence
     );
     assert!(ap2.has_tag("band:5GHz"), "expected 5GHz band tag");
+
+    let ssid2 = &result.entities[3];
+    assert_eq!(ssid2.kind, EntityKind::Ssid);
+    assert_eq!(ssid2.value, "WeakAP");
 }
 
 #[test]
@@ -43,7 +61,13 @@ fn wifi_skip_placeholder_bssids() {
         {"bssid":"AA:BB:CC:DD:EE:FF","ssid":"Good","rssi":-40,"frequency":2437}
     ]"#;
     let result = wifi::parse_scan(json, "test-scan");
-    assert_eq!(result.len(), 1);
+    // Only the last AP survives the placeholder/empty-BSSID filter, and its
+    // non-empty SSID ("Good") mints a second, Ssid entity alongside its
+    // MacAddress entity.
+    assert_eq!(result.len(), 2);
+    assert_eq!(result.entities[0].kind, EntityKind::MacAddress);
+    assert_eq!(result.entities[1].kind, EntityKind::Ssid);
+    assert_eq!(result.entities[1].value, "Good");
 }
 
 #[test]
