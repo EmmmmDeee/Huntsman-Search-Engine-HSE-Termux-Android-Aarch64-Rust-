@@ -7,7 +7,7 @@
 
 use super::helpers::*;
 use super::{extract_family_names, is_confirmed_profile, is_social_host};
-use crate::core::module::ModuleResult;
+use crate::core::{confidence, module::ModuleResult};
 
 pub(super) fn build_entities(
     target: &Target,
@@ -66,6 +66,7 @@ pub(super) fn build_entities(
     if !location_seed {
         let engines_hit: HashSet<&str> = results.iter().map(|r| r.engine).collect();
         let queries_run: HashSet<&str> = results.iter().map(|r| r.query.as_str()).collect();
+        // 0.82: Search re-affirmation of seed identity (2-engine discovery boost)
         let mut parent = target.to_entity(0.82, scan_id);
         parent.tag("search-enriched");
         let mut engines_list: Vec<&str> = engines_hit.iter().copied().collect();
@@ -105,7 +106,7 @@ pub(super) fn build_entities(
             .unwrap_or(1);
 
         if is_subdomain && seen_domains.insert(host.clone()) {
-            let mut e = Entity::new(EntityKind::Domain, &host, 0.70, scan_id);
+            let mut e = Entity::new(EntityKind::Domain, &host, confidence::HIGH_PLUS, scan_id);
             e.corroboration = n_engines;
             e.tag(tags::SUBDOMAIN);
             e.tag(tags::SEARCH_DISCOVERED);
@@ -139,7 +140,7 @@ pub(super) fn build_entities(
             && !crate::core::scan::is_noncentral_domain(&domain)
             && seen_domains.insert(domain.clone())
         {
-            let mut e = Entity::new(EntityKind::Domain, &domain, 0.45, scan_id);
+            let mut e = Entity::new(EntityKind::Domain, &domain, confidence::LOW_MEDIUM, scan_id);
             e.corroboration = n_engines;
             e.tag(tags::EXTERNAL);
             e.tag(tags::SEARCH_DISCOVERED);
@@ -196,7 +197,7 @@ pub(super) fn build_entities(
                     continue;
                 }
                 if seen_emails.insert(email.clone()) {
-                    let mut e = Entity::new(EntityKind::Email, &email, 0.60, scan_id);
+                    let mut e = Entity::new(EntityKind::Email, &email, confidence::MEDIUM_PLUS, scan_id);
                     e.tag(tags::WEB_SCRAPED);
                     e.tag(tags::SEARCH_DISCOVERED);
                     e.add_evidence(
@@ -219,14 +220,14 @@ pub(super) fn build_entities(
                     .iter_mut()
                     .find(|e| e.kind == EntityKind::Email && e.value == email)
                 {
-                    existing.confidence = (existing.confidence + 0.10).min(0.85);
+                    existing.confidence = (existing.confidence + 0.10).min(confidence::HIGH_PLUSPLUS_PLUS);
                     existing.corroboration = existing.corroboration.saturating_add(1);
                 }
             }
 
             for phone in extract_phones_from_text(&combined_text) {
                 if seen_phones.insert(phone.clone()) {
-                    let mut e = Entity::new(EntityKind::Phone, &phone, 0.55, scan_id);
+                    let mut e = Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM_HIGH, scan_id);
                     e.tag(tags::WEB_SCRAPED);
                     e.tag(tags::SEARCH_DISCOVERED);
                     e.add_evidence(
@@ -248,7 +249,7 @@ pub(super) fn build_entities(
                     .iter_mut()
                     .find(|e| e.kind == EntityKind::Phone && e.value == phone)
                 {
-                    existing.confidence = (existing.confidence + 0.12).min(0.80);
+                    existing.confidence = (existing.confidence + 0.12).min(confidence::HIGH_PLUSPLUS);
                     existing.corroboration = existing.corroboration.saturating_add(1);
                 }
             }
@@ -257,7 +258,7 @@ pub(super) fn build_entities(
         // Extract ABN/ACN numbers from snippet text
         for (num, kind_label) in extract_abn_acn_from_text(&combined_text) {
             if seen_domains.insert(format!("@abn:{num}")) {
-                let mut e = Entity::new(EntityKind::AbnAcn, &num, 0.65, scan_id);
+                let mut e = Entity::new(EntityKind::AbnAcn, &num, confidence::HIGH, scan_id);
                 e.tag(tags::SEARCH_DISCOVERED);
                 e.tag(kind_label);
                 e.add_evidence(
@@ -296,7 +297,7 @@ pub(super) fn build_entities(
         for org in snippet_orgs {
             let org_key = org.to_lowercase();
             if seen_domains.insert(format!("@org:{org_key}")) {
-                let mut e = Entity::new(EntityKind::Organisation, &org, 0.45, scan_id);
+                let mut e = Entity::new(EntityKind::Organisation, &org, confidence::LOW_MEDIUM, scan_id);
                 e.tag(tags::SEARCH_DISCOVERED);
                 e.add_evidence(build_search_evidence(r));
                 result.push(e);
@@ -373,14 +374,14 @@ pub(super) fn build_entities(
         for addr in snippet_addresses {
             let addr_key = format!("@addr:{}", normalise_address_key(&addr));
             let has_postcode = has_postcode(&addr);
-            let base_conf = if has_postcode { 0.55 } else { 0.45 };
-            // Cap for multi-source merge: postcode-qualified can reach 0.70;
-            // bare city+state is capped lower at 0.65. Both stay strictly below
+            let base_conf = if has_postcode { confidence::MEDIUM_HIGH } else { confidence::LOW_MEDIUM };
+            // Cap for multi-source merge: postcode-qualified can reach HIGH_PLUS;
+            // bare city+state is capped lower at HIGH. Both stay strictly below
             // `Classification::VERIFIED_MIN` (0.75) — pure repetition of the
             // same source type must land at most in the Probable range, never
             // Verified (see this block's header comment for the live "Brett
             // Lawnton" case that crossed 0.75 via repetition alone).
-            let corr_cap = if has_postcode { 0.70 } else { 0.65 };
+            let corr_cap = if has_postcode { confidence::HIGH_PLUS } else { confidence::HIGH };
             if seen_domains.insert(addr_key.clone()) {
                 let mut e = Entity::new(EntityKind::Address, &addr, base_conf, scan_id);
                 e.tag(tags::SEARCH_DISCOVERED);
@@ -449,7 +450,7 @@ pub(super) fn build_entities(
             // generic suburb / real-estate-listing page, not the subject's PII.
             // A live "Haigen Bamford" scan flooded with dozens of
             // realestate.com.au / domain.com.au / suburb-profile pages this way.
-            // Demote these to a quarantined candidate (below the 0.50 expansion
+            // Demote these to a quarantined candidate (below the MEDIUM expansion
             // floor, excluded from confirmed correlation) so they neither inflate
             // results nor recurse into more suburb spam — unless the URL is a
             // confirmed profile, which is identity-bearing regardless of seed.
@@ -461,11 +462,11 @@ pub(super) fn build_entities(
             // wrong-identity match: quarantine it like a generic-location hit.
             let offtarget_repo = is_offtarget_repo_url(&r.url, &terms);
             let base = if confirmed {
-                0.85
+                confidence::HIGH_PLUSPLUS_PLUS
             } else if location_seed || offtarget_repo {
-                0.30
+                0.30 // Quarantine level for candidate filtering
             } else {
-                0.50
+                confidence::MEDIUM
             };
             let mut e = Entity::new(EntityKind::Url, &r.url, base, scan_id);
             // Credit cross-ENGINE agreement, like the domain branch does: a URL
@@ -540,7 +541,7 @@ pub(super) fn build_entities(
                     .iter()
                     .any(|t| t.len() >= 3 && name_key.split_whitespace().any(|w| w == t));
                 if on_target && seen_domains.insert(format!("@person:{name_key}")) {
-                    let mut e = Entity::new(EntityKind::Person, &name, 0.50, scan_id);
+                    let mut e = Entity::new(EntityKind::Person, &name, confidence::MEDIUM, scan_id);
                     e.tag(tags::SEARCH_DISCOVERED);
                     e.tag("people-search");
                     e.add_evidence(build_search_evidence(r));
@@ -578,7 +579,7 @@ pub(super) fn build_entities(
                 let mut e = Entity::new(
                     EntityKind::Url,
                     &snippet_url,
-                    if confirmed { 0.80 } else { 0.40 },
+                    if confirmed { confidence::HIGH_PLUSPLUS } else { confidence::LOW },
                     scan_id,
                 );
                 e.tag(tags::SEARCH_DISCOVERED);
@@ -639,7 +640,7 @@ pub(super) fn build_entities(
     for (name, source_url) in &family {
         let key = format!("@person:{}", name.to_lowercase());
         if seen_domains.insert(key) {
-            let mut e = Entity::new(EntityKind::Person, name, 0.45, scan_id);
+            let mut e = Entity::new(EntityKind::Person, name, confidence::LOW_MEDIUM, scan_id);
             e.tag(tags::SEARCH_DISCOVERED);
             e.tag("family-member");
             e.add_evidence(
@@ -670,7 +671,7 @@ pub(super) fn build_entities(
                 // minimum base confidence is now 0.42 so no address falls below
                 // this gate. The corroboration bypass (>= 2) is kept for any
                 // edge-case address emitted at a lower confidence by other modules.
-                e.kind == EntityKind::Address && (e.confidence >= 0.40 || e.corroboration >= 2)
+                e.kind == EntityKind::Address && (e.confidence >= confidence::LOW || e.corroboration >= 2)
             })
             .map(|e| (e.value.clone(), e.confidence, e.corroboration))
             .collect();
@@ -678,14 +679,15 @@ pub(super) fn build_entities(
             if let Some((lat, lon)) = known_city_coords(addr) {
                 let coords = format!("{lat:.4},{lon:.4}");
                 if seen_coords.insert(coords.clone()) {
-                    // Floor at 0.55: a city match from a search snippet is city-
+                    // Floor at MEDIUM_HIGH: a city match from a search snippet is city-
                     // level precision, comparable to a forward geocode (geocode.rs
-                    // emits 0.70 for AU). We use 0.55 as the minimum (not 0.45×0.82
-                    // which could sink to 0.37) with a corroboration lift and a cap
-                    // at 0.72 (just below the Verified 0.75 threshold — it remains
-                    // Probable until a more-authoritative source corroborates).
+                    // emits HIGH_PLUS for AU). We use MEDIUM_HIGH as the minimum (not
+                    // LOW_MEDIUM×0.82 which could sink to 0.37) with a corroboration
+                    // lift and a cap at 0.72 (just below the Verified VERY_HIGH
+                    // threshold — it remains Probable until a more-authoritative
+                    // source corroborates).
                     let corr_boost = (*corr as f64 - 1.0).max(0.0) * 0.05;
-                    let geo_conf = (conf.max(0.55) + corr_boost).min(0.72);
+                    let geo_conf = (conf.max(confidence::MEDIUM_HIGH) + corr_boost).min(0.72);
                     let mut ce = Entity::new(EntityKind::Coordinates, &coords, geo_conf, scan_id);
                     ce.tag("geoint");
                     ce.tag("search-geocoded");
