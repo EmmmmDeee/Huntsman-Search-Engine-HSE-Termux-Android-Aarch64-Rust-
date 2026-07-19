@@ -116,7 +116,7 @@ impl Module for StackoverflowUser {
     }
 
     fn description(&self) -> &'static str {
-        "Stack Overflow account lookup (display name, location, website) via public API"
+        "Stack Overflow account recon — resolves display name, location, and website via public API"
     }
 
     fn priority(&self) -> u8 {

@@ -61,7 +61,7 @@ impl Module for BlueskyUser {
     }
 
     fn description(&self) -> &'static str {
-        "Bluesky account lookup (display name, bio, custom-domain handle) via public AppView API"
+        "Bluesky account recon — unmasks display name, bio, and custom-domain handle via the public AppView API"
     }
 
     fn priority(&self) -> u8 {

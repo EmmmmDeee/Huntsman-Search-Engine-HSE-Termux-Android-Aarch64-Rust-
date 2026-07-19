@@ -29,7 +29,7 @@ impl Module for LocalNet {
         "local_net"
     }
     fn description(&self) -> &'static str {
-        "Local network discovery via ARP table and network interfaces"
+        "Local network sweep — enumerates hosts from the ARP table and network interfaces"
     }
     fn priority(&self) -> u8 {
         58

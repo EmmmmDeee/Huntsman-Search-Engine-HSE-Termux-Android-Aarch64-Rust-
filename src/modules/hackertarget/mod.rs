@@ -126,7 +126,7 @@ impl Module for HackerTarget {
     }
 
     fn description(&self) -> &'static str {
-        "Free subdomain + reverse-IP + reverse-DNS via hackertarget.com"
+        "hackertarget.com recon (free) — enumerates subdomains and pivots reverse-IP and reverse-DNS"
     }
 
     fn priority(&self) -> u8 {

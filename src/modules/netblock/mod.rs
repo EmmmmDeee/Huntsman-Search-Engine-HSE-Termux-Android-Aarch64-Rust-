@@ -40,7 +40,7 @@ impl Module for Netblock {
     }
 
     fn description(&self) -> &'static str {
-        "Expand a CIDR network block into its host IP addresses for sweeping"
+        "Netblock expansion — enumerates a CIDR block into its host IP addresses for sweeping"
     }
 
     fn priority(&self) -> u8 {

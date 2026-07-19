@@ -48,7 +48,7 @@ impl Module for WifiIntel {
     }
 
     fn description(&self) -> &'static str {
-        "WiFi AP survey and BSSID geolocation via Termux + WiGLE"
+        "WiFi AP survey — sweeps nearby access points via Termux and geolocates each BSSID through WiGLE"
     }
 
     fn priority(&self) -> u8 {

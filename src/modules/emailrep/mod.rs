@@ -84,7 +84,7 @@ impl Module for EmailRep {
         "emailrep"
     }
     fn description(&self) -> &'static str {
-        "Email reputation scoring — breach exposure, blacklists, and social profiles"
+        "Email reputation recon — correlates breach exposure, blacklists, and linked social profiles into a reputation score"
     }
     fn priority(&self) -> u8 {
         90

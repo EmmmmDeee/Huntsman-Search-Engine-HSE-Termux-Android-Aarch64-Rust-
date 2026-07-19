@@ -200,7 +200,7 @@ impl Module for Overpass {
         "overpass"
     }
     fn description(&self) -> &'static str {
-        "OpenStreetMap infrastructure query — cell towers, substations, cameras near coordinates"
+        "OpenStreetMap infrastructure probe — enumerates cell towers, substations, and cameras near coordinates"
     }
     fn priority(&self) -> u8 {
         15

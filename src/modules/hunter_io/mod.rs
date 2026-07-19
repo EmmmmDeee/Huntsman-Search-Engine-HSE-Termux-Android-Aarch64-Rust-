@@ -104,7 +104,7 @@ impl Module for HunterIo {
     }
 
     fn description(&self) -> &'static str {
-        "Email-finder: enumerate addresses associated with a target domain"
+        "Email-finder recon — enumerates addresses associated with a target domain for onward pivoting"
     }
 
     fn category(&self) -> ModuleCategory {

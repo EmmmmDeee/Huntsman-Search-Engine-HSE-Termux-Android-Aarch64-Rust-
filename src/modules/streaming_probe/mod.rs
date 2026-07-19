@@ -71,11 +71,7 @@ impl Module for StreamingProbe {
     }
 
     fn description(&self) -> &'static str {
-        "Webcam, fan-subscription, and adult-video platform identity discovery \
-         across ~40 sites including international platforms: Russia (Runetki, Boosty), \
-         France (Mym), Germany (MyDirtyHobby), Eastern Europe (Cherry.tv, 4Based), \
-         LGBTQ+ (JustForFans), Spanish LATAM (OhMyFans), Japan (Iwara), \
-         and the English-language mainstream (Chaturbate, OnlyFans, Fansly, Pornhub, …)."
+        "Webcam, fan-subscription, and adult-video identity sweep across ~40 sites including international platforms: Russia (Runetki, Boosty), France (Mym), Germany (MyDirtyHobby), Eastern Europe (Cherry.tv, 4Based), LGBTQ+ (JustForFans), Spanish LATAM (OhMyFans), Japan (Iwara), and the English-language mainstream (Chaturbate, OnlyFans, Fansly, Pornhub, …)."
     }
 
     fn is_passive(&self) -> bool {

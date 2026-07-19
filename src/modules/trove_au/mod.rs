@@ -67,7 +67,7 @@ impl Module for TroveAu {
     }
 
     fn description(&self) -> &'static str {
-        "National Library of Australia Trove: newspaper archive mentions for organisations and ABNs"
+        "National Library of Australia Trove recon — sweeps the newspaper archive for organisation and ABN mentions"
     }
 
     fn priority(&self) -> u8 {

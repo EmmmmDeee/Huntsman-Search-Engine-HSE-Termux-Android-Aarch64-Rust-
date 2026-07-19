@@ -94,7 +94,7 @@ impl Module for Wikidata {
     }
 
     fn description(&self) -> &'static str {
-        "Wikidata knowledge-graph entity resolution (free, keyless)"
+        "Wikidata recon — resolves an entity against the open knowledge graph (free, keyless)"
     }
 
     fn priority(&self) -> u8 {

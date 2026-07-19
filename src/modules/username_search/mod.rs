@@ -81,7 +81,7 @@ impl Module for UsernameSearch {
     }
 
     fn description(&self) -> &'static str {
-        "Maigret-style username enumeration across 150+ sites (social, dev, gaming, music, video, dating, …) with category tagging."
+        "Maigret-style username enumeration — sweeps a handle across 150+ sites (social, dev, gaming, music, video, dating, …) with category tagging"
     }
 
     fn is_passive(&self) -> bool {

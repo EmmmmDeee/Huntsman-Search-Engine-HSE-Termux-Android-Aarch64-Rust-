@@ -73,7 +73,7 @@ impl Module for DnsIntel {
     }
 
     fn description(&self) -> &'static str {
-        "DNS intelligence: resolution, subdomain brute-force, blocklist, reverse DNS, and CAA"
+        "DNS intelligence sweep — resolution, subdomain brute-force, blocklist checks, reverse DNS, and CAA enumeration"
     }
 
     fn priority(&self) -> u8 {

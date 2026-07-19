@@ -149,7 +149,7 @@ impl Module for BitbucketUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Bitbucket Cloud profile: display name, website, location via public API v2 (free)"
+        "Bitbucket Cloud profile recon — harvests display name, website, and location via public API v2 (free)"
     }
     fn priority(&self) -> u8 {
         97

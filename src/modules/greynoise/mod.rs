@@ -246,7 +246,7 @@ impl Module for GreyNoise {
     }
 
     fn description(&self) -> &'static str {
-        "GreyNoise IP reputation: internet noise and RIOT classification (paid v3/ip lookup when keyed)"
+        "GreyNoise IP reputation — classifies internet noise and RIOT status (paid v3/ip lookup when keyed)"
     }
 
     fn priority(&self) -> u8 {

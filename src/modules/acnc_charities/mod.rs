@@ -82,7 +82,7 @@ impl Module for AcncCharities {
     }
 
     fn description(&self) -> &'static str {
-        "Australian Charities & Not-for-profits Commission register lookup (free, keyless)"
+        "ACNC charities recon — sweeps the Australian Charities & Not-for-profits Commission register for an entity (free, keyless)"
     }
 
     fn priority(&self) -> u8 {

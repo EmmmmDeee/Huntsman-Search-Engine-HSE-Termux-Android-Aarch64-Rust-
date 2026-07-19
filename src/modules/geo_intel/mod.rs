@@ -37,7 +37,7 @@ impl Module for GeoIntel {
     }
 
     fn description(&self) -> &'static str {
-        "Free-API IP geolocation (ipapi.co, freeipapi.com) and E.164 phone prefix lookup"
+        "Free-API geolocation recon — geolocates an IP via ipapi.co and freeipapi.com and resolves E.164 phone prefixes"
     }
 
     fn priority(&self) -> u8 {

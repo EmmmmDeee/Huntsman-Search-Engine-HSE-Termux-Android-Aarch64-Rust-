@@ -212,7 +212,7 @@ impl Module for ThreatFox {
     }
 
     fn description(&self) -> &'static str {
-        "abuse.ch ThreatFox IOC reputation check for domains and IPs"
+        "abuse.ch ThreatFox recon — probes domains and IPs against ThreatFox IOC reputation"
     }
 
     fn priority(&self) -> u8 {

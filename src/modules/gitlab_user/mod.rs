@@ -72,7 +72,7 @@ impl Module for GitlabUser {
     }
 
     fn description(&self) -> &'static str {
-        "GitLab account lookup (name, bio, Twitter/LinkedIn pivots, org, location) via public API"
+        "GitLab account recon (public API) — harvests name, bio, org, location, and Twitter/LinkedIn pivots"
     }
 
     fn priority(&self) -> u8 {

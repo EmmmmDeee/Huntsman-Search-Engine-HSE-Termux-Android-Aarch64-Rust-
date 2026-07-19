@@ -277,7 +277,7 @@ impl Module for Epieos {
         "epieos"
     }
     fn description(&self) -> &'static str {
-        "Email-to-identity: Google profile, Maps reviews, Skype handle via Epieos"
+        "Email-to-identity unmasking via Epieos — surfaces Google profile, Maps reviews, and Skype handle from an email"
     }
     fn priority(&self) -> u8 {
         92

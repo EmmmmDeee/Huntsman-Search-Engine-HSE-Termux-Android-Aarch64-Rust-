@@ -53,7 +53,7 @@ impl Module for HlrCnam {
     }
 
     fn description(&self) -> &'static str {
-        "HLR live phone status (ported/roaming/MCC-MNC) + CNAM subscriber name lookup"
+        "HLR live-status probe — resolves a phone's ported/roaming/MCC-MNC state and cross-links CNAM subscriber name"
     }
 
     fn priority(&self) -> u8 {

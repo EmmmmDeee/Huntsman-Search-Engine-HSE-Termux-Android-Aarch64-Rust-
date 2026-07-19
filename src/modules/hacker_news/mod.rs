@@ -59,7 +59,7 @@ impl Module for HackerNews {
     }
 
     fn description(&self) -> &'static str {
-        "Hacker News account lookup (karma, created, bio) via the official public API"
+        "Hacker News account recon — resolves a handle to karma, created date, and bio via the official public API"
     }
 
     fn priority(&self) -> u8 {

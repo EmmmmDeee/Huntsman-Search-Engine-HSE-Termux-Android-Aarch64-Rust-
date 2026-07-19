@@ -26,7 +26,7 @@ impl Module for AbuseIpDb {
         SRC
     }
     fn description(&self) -> &'static str {
-        "AbuseIPDB IP reputation — abuse confidence score and report history"
+        "AbuseIPDB reputation recon — pivots an IP to its abuse-confidence score and community report history"
     }
     fn priority(&self) -> u8 {
         52

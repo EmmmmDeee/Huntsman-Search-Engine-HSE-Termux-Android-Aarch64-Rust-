@@ -66,7 +66,7 @@ impl Module for CombSearch {
     }
 
     fn description(&self) -> &'static str {
-        "Free leaked-credential search via the public COMB index (no API key)"
+        "COMB credential sweep — free leaked-credential search across the public COMB index (no API key)"
     }
 
     fn priority(&self) -> u8 {

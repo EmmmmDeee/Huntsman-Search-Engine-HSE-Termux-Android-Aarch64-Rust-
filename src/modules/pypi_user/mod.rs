@@ -248,7 +248,7 @@ impl Module for PypiUser {
     }
 
     fn description(&self) -> &'static str {
-        "PyPI author lookup: owned packages, email, real name, homepage (Python ecosystem, free)"
+        "PyPI author recon — enumerates owned packages, email, real name, and homepage across the Python ecosystem (free)"
     }
 
     fn priority(&self) -> u8 {

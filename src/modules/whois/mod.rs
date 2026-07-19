@@ -198,7 +198,7 @@ impl Module for Whois {
     }
 
     fn description(&self) -> &'static str {
-        "WHOIS registration data and contact extraction"
+        "WHOIS recon — harvests registration data and extracts registrant contacts from the raw record"
     }
 
     fn priority(&self) -> u8 {

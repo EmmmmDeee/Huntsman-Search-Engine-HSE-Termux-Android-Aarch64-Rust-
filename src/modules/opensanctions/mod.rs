@@ -86,7 +86,7 @@ impl Module for OpenSanctions {
     }
 
     fn description(&self) -> &'static str {
-        "OpenSanctions sanctions/PEP/watchlist screening — OFAC, UN, EU, DFAT (AU) and 400+ global sources"
+        "OpenSanctions screening — cross-checks sanctions/PEP/watchlist exposure across OFAC, UN, EU, DFAT (AU), and 400+ global sources"
     }
 
     fn priority(&self) -> u8 {

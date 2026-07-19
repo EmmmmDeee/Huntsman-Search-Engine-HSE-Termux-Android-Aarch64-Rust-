@@ -108,7 +108,7 @@ impl Module for PwnedPasswords {
         "pwned_passwords"
     }
     fn description(&self) -> &'static str {
-        "HIBP Pwned Passwords k-Anonymity check for credential breach exposure"
+        "HIBP Pwned Passwords recon — k-Anonymity check that surfaces a credential's breach exposure without transmitting it"
     }
     fn priority(&self) -> u8 {
         115

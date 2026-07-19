@@ -75,7 +75,7 @@ impl Module for PortScan {
     }
 
     fn description(&self) -> &'static str {
-        "Active TCP-connect scan of common service ports on an IP (open ports + web URLs)"
+        "Active TCP-connect sweep — probes common service ports on an IP to surface open ports and live web URLs"
     }
 
     fn priority(&self) -> u8 {

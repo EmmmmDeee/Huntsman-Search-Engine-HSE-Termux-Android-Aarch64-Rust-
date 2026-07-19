@@ -88,7 +88,7 @@ impl Module for MastodonUser {
     }
 
     fn description(&self) -> &'static str {
-        "Mastodon / Fediverse account lookup across top instances via public v1 API"
+        "Mastodon / Fediverse account recon — sweeps top instances to unmask an account via the public v1 API"
     }
 
     fn priority(&self) -> u8 {

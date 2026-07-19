@@ -92,7 +92,7 @@ impl Module for SeekNow {
     }
 
     fn description(&self) -> &'static str {
-        "SeekNow (see-know.eu) — full 18-endpoint OSINT/breach pool with discord/gaming pivots"
+        "SeekNow (see-know.eu) — sweeps the full 18-endpoint OSINT/breach pool with discord and gaming pivots"
     }
 
     fn priority(&self) -> u8 {

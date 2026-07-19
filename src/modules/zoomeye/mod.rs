@@ -63,7 +63,7 @@ impl Module for ZoomEye {
     }
 
     fn description(&self) -> &'static str {
-        "ZoomEye host/service search: exposed ports, banners, geoloc, ASN/operator for an IP or domain (key-gated)"
+        "ZoomEye host/service recon — enumerates exposed ports, banners, geoloc, and ASN/operator for an IP or domain (key-gated)"
     }
 
     fn priority(&self) -> u8 {

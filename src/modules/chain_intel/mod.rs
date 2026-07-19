@@ -162,7 +162,7 @@ impl Module for ChainIntel {
     }
 
     fn description(&self) -> &'static str {
-        "Cryptocurrency wallet enrichment — on-chain balance, activity & ENS (BTC/LTC/ETH/SOL/DOGE, free)"
+        "Cryptocurrency wallet enrichment — correlates on-chain balance, activity & ENS (BTC/LTC/ETH/SOL/DOGE, free)"
     }
 
     fn priority(&self) -> u8 {

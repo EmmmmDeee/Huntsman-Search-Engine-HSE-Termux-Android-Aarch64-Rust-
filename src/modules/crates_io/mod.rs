@@ -185,7 +185,7 @@ impl Module for CratesIo {
     }
 
     fn description(&self) -> &'static str {
-        "crates.io registry user lookup (real name + linked GitHub) via the official API"
+        "crates.io registry recon — resolves a user to real name and linked GitHub via the official API"
     }
 
     fn priority(&self) -> u8 {

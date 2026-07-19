@@ -82,7 +82,7 @@ impl Module for IpQuery {
         "ipquery"
     }
     fn description(&self) -> &'static str {
-        "Free IP risk assessment + geolocation via ipquery.io (no key, unlimited)"
+        "ipquery.io recon — resolves an IP to risk assessment and geolocation (free, no key, unlimited)"
     }
     fn priority(&self) -> u8 {
         27

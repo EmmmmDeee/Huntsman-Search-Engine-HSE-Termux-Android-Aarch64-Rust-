@@ -269,7 +269,7 @@ impl Module for CpanUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "CPAN/MetaCPAN author profile: name, emails, websites, blog, linked accounts, location (Perl ecosystem, free)"
+        "CPAN/MetaCPAN author recon — harvests name, emails, websites, blog, linked accounts, and location to pivot across the Perl ecosystem (free)"
     }
     fn priority(&self) -> u8 {
         55

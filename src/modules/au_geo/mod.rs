@@ -171,7 +171,7 @@ impl Module for AuGeo {
     }
 
     fn description(&self) -> &'static str {
-        "Australian geography from a coordinate (postcode, suburb, LGA, federal & state electorate) via ABS ASGS"
+        "Australian geolocation recon — resolves a coordinate to postcode, suburb, LGA, and federal & state electorate via ABS ASGS"
     }
 
     fn priority(&self) -> u8 {

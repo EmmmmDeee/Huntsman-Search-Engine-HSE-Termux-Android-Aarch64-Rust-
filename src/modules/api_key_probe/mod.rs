@@ -32,7 +32,7 @@ impl Module for ApiKeyProbe {
     }
 
     fn description(&self) -> &'static str {
-        "Identify, validate, and catalog API keys across OSINT services"
+        "API key probe — identifies, validates, and catalogs API keys across OSINT services"
     }
 
     fn priority(&self) -> u8 {

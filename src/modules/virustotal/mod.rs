@@ -203,7 +203,7 @@ impl Module for VirusTotal {
         SRC
     }
     fn description(&self) -> &'static str {
-        "VirusTotal domain/IP/URL reputation and detection ratios"
+        "VirusTotal recon — correlates domain/IP/URL reputation and engine detection ratios"
     }
     fn priority(&self) -> u8 {
         55

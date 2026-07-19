@@ -46,7 +46,7 @@ impl Module for CertIntel {
     }
 
     fn description(&self) -> &'static str {
-        "Certificate intelligence: CT log search and live TLS probe"
+        "Certificate intelligence — sweeps CT logs and fingerprints a host via live TLS probe"
     }
 
     fn priority(&self) -> u8 {

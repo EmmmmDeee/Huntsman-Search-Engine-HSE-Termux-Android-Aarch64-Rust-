@@ -165,7 +165,7 @@ impl Module for UsernameVariants {
     }
 
     fn description(&self) -> &'static str {
-        "Derive alternate-handle variants (separator swaps, de-decoration) from a username to feed username search"
+        "Handle-variant recon — derives alternate handles (separator swaps, de-decoration) from a username to feed username search"
     }
 
     fn priority(&self) -> u8 {

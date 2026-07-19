@@ -46,7 +46,7 @@ impl Module for IpRegistry {
     }
 
     fn description(&self) -> &'static str {
-        "IP registration and ASN data via RDAP and BGPView"
+        "IP registration recon — resolves registration and ASN data via RDAP and BGPView"
     }
 
     fn priority(&self) -> u8 {

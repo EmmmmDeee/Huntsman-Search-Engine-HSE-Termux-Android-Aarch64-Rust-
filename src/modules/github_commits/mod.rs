@@ -80,7 +80,7 @@ impl Module for GithubCommits {
     }
 
     fn description(&self) -> &'static str {
-        "Email → real name + GitHub account via commit-author search (free, no key)"
+        "GitHub commit-author search (free, no key) — pivots an email to a real name and GitHub account"
     }
 
     fn priority(&self) -> u8 {

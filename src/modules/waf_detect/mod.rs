@@ -34,7 +34,7 @@ impl Module for WafDetect {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Detect WAF/CDN providers from HTTP response header & cookie fingerprints"
+        "WAF/CDN recon — fingerprints providers from HTTP response header and cookie signatures"
     }
     fn priority(&self) -> u8 {
         30

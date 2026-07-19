@@ -37,7 +37,7 @@ impl Module for Censys {
         "censys"
     }
     fn description(&self) -> &'static str {
-        "Censys host search: open ports, services, and location data"
+        "Censys host recon — surfaces open ports, running services, and location data"
     }
     fn priority(&self) -> u8 {
         78

@@ -94,7 +94,7 @@ impl Module for WebCrawler {
     }
 
     fn description(&self) -> &'static str {
-        "Recursive web crawler with framework fingerprinting"
+        "Recursive web-crawler recon — sweeps a site and fingerprints its underlying framework"
     }
 
     fn priority(&self) -> u8 {

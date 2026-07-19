@@ -165,7 +165,7 @@ impl Module for Sitemap {
     }
 
     fn description(&self) -> &'static str {
-        "Owner-published sitemap.xml / robots.txt Sitemap enumeration → Url entities"
+        "Owner-published sitemap.xml / robots.txt Sitemap enumeration — harvests Url entities"
     }
 
     fn priority(&self) -> u8 {

@@ -70,7 +70,7 @@ impl Module for EmailCanonical {
     }
 
     fn description(&self) -> &'static str {
-        "Normalise an email to its canonical mailbox (Gmail dots, +tag subaddressing) so identity fragments merge"
+        "Email canonicalisation — normalises to the canonical mailbox (Gmail dots, +tag subaddressing) so fragmented identities merge"
     }
 
     fn priority(&self) -> u8 {

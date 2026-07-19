@@ -48,7 +48,7 @@ impl Module for NumVerify {
     }
 
     fn description(&self) -> &'static str {
-        "NumVerify phone validation — live carrier, line type & region (key-gated)"
+        "NumVerify phone validation — probes live carrier, line type, and region (key-gated)"
     }
 
     fn priority(&self) -> u8 {

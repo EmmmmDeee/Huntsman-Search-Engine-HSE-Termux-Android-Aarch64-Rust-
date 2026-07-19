@@ -277,7 +277,7 @@ impl Module for PhoneIntl {
     }
 
     fn description(&self) -> &'static str {
-        "Offline phone number country and format analysis"
+        "Offline phone-number recon — fingerprints country and format from a number with no external lookup"
     }
 
     fn priority(&self) -> u8 {

@@ -169,7 +169,7 @@ impl Module for GiteaUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Gitea.com profile: name, email, website, location via Gitea API v1 (free)"
+        "Gitea.com profile recon (free) — harvests name, email, website, and location via Gitea API v1"
     }
     fn priority(&self) -> u8 {
         98

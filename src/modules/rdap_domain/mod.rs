@@ -325,7 +325,7 @@ impl Module for RdapDomain {
     }
 
     fn description(&self) -> &'static str {
-        "RDAP registry record lookup for domain registration data"
+        "RDAP registry recon — pulls a domain's authoritative registration record from registry data"
     }
 
     fn priority(&self) -> u8 {

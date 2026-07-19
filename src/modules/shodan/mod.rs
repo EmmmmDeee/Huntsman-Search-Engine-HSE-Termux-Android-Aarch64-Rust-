@@ -91,7 +91,7 @@ impl Module for Shodan {
         "shodan"
     }
     fn description(&self) -> &'static str {
-        "Shodan host intelligence — free InternetDB plus paid API when keyed"
+        "Shodan host intelligence — probes free InternetDB, escalating to the paid API when keyed"
     }
     fn priority(&self) -> u8 {
         105

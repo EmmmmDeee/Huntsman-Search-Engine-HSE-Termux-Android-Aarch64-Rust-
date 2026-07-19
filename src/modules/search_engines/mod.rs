@@ -372,7 +372,7 @@ impl Module for SearchEngines {
     }
 
     fn description(&self) -> &'static str {
-        "Multi-engine OSINT dork search across 17 engines"
+        "Multi-engine dork recon — sweeps OSINT queries across 17 search engines"
     }
 
     fn priority(&self) -> u8 {

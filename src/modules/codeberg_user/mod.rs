@@ -66,7 +66,7 @@ impl Module for CodebergUser {
     }
 
     fn description(&self) -> &'static str {
-        "Codeberg account lookup (name, bio, website, location) via public Forgejo API"
+        "Codeberg account recon — enumerates name, bio, website, and location via the public Forgejo API"
     }
 
     fn priority(&self) -> u8 {

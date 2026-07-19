@@ -63,7 +63,7 @@ impl Module for AuUnclaimed {
     }
 
     fn description(&self) -> &'static str {
-        "Australian unclaimed money register (QLD Public Trustee) — name → address/owner/organisation pivot"
+        "Australian unclaimed-money register recon (QLD Public Trustee) — pivots a name to address, owner, and organisation leads"
     }
 
     fn priority(&self) -> u8 {

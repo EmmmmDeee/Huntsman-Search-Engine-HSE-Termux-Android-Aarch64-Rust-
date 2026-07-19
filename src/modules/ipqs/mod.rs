@@ -177,7 +177,7 @@ impl Module for IpQs {
         "ipqs"
     }
     fn description(&self) -> &'static str {
-        "IP, email, and phone quality scoring"
+        "IPQS quality scoring — probes an IP, email, and phone for fraud and risk signals"
     }
     fn priority(&self) -> u8 {
         100

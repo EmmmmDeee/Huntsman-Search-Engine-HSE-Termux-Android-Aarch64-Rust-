@@ -31,8 +31,7 @@ impl Module for CellLocal {
     }
 
     fn description(&self) -> &'static str {
-        "Local OpenCelliD database: query imported cell towers near a coordinate \
-         (no API calls; run hse cells import first)"
+        "Local OpenCelliD recon — queries imported cell towers near a coordinate offline (no API calls; run hse cells import first)"
     }
 
     fn priority(&self) -> u8 {

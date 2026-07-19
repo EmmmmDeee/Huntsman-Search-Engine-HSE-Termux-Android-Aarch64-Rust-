@@ -44,7 +44,7 @@ impl Module for AsicBannedOrgs {
     }
 
     fn description(&self) -> &'static str {
-        "ASIC Banned & Disqualified Organisations register (keyless) — org name → ban status, ACN, period"
+        "ASIC Banned & Disqualified Organisations recon (keyless) — pivots an org name to ban status, ACN, and period"
     }
 
     fn priority(&self) -> u8 {

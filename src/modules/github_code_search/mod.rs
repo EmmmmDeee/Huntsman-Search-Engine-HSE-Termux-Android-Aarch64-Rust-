@@ -59,7 +59,7 @@ impl Module for GithubCodeSearch {
     }
 
     fn description(&self) -> &'static str {
-        "GitHub code search — find repositories containing the seed email/username and pivot to owner accounts and commit emails"
+        "GitHub code search — surfaces repositories bearing the seed email/username and pivots to owner accounts and commit emails"
     }
 
     fn priority(&self) -> u8 {

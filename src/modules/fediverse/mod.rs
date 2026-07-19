@@ -53,7 +53,7 @@ impl Module for Fediverse {
     }
 
     fn description(&self) -> &'static str {
-        "Fediverse/Mastodon account discovery via WebFinger (email-shaped handle → profile)"
+        "Fediverse/Mastodon account discovery — resolves an email-shaped handle to its profile via WebFinger"
     }
 
     fn priority(&self) -> u8 {

@@ -41,7 +41,7 @@ impl Module for Photon {
         "photon"
     }
     fn description(&self) -> &'static str {
-        "Photon geocoder (Komoot) — independent forward/reverse geocoding for corroboration"
+        "Photon geocoder (Komoot) — independent forward/reverse geocoding to corroborate and cross-check location fixes"
     }
     fn priority(&self) -> u8 {
         20

@@ -204,7 +204,7 @@ impl Module for Hibp {
     }
 
     fn description(&self) -> &'static str {
-        "Have I Been Pwned — definitive breach + paste oracle (API v3)"
+        "Have I Been Pwned — the definitive breach & paste oracle; surfaces an email's exposure across known corpora (API v3)"
     }
 
     fn priority(&self) -> u8 {

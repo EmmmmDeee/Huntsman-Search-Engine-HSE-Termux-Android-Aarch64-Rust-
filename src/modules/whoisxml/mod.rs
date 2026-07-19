@@ -110,7 +110,7 @@ impl Module for WhoisXml {
     }
 
     fn description(&self) -> &'static str {
-        "Structured WHOIS (registrant, contacts, dates, NS) via whoisxmlapi.com"
+        "Structured WHOIS via whoisxmlapi.com — surfaces registrant, contacts, registration dates, and nameservers as parsed fields"
     }
 
     fn category(&self) -> ModuleCategory {

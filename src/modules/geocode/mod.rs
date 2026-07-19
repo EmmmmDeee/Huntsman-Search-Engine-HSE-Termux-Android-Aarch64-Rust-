@@ -81,7 +81,7 @@ impl Module for Geocode {
     }
 
     fn description(&self) -> &'static str {
-        "Bidirectional geocoding via OpenStreetMap Nominatim (Address \u{2194} Coordinates)"
+        "Bidirectional geocoding via OpenStreetMap Nominatim — resolves Address ↔ Coordinates both ways"
     }
 
     fn priority(&self) -> u8 {

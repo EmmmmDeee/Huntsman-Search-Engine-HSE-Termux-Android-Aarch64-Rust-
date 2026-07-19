@@ -96,7 +96,7 @@ impl Module for OpenCellId {
     }
 
     fn description(&self) -> &'static str {
-        "OpenCelliD: enumerate towers near a coordinate (getInArea) or geolocate a tower by ID (cell/get)"
+        "OpenCelliD recon — enumerates towers near a coordinate (getInArea) or geolocates a tower by ID (cell/get)"
     }
 
     fn priority(&self) -> u8 {

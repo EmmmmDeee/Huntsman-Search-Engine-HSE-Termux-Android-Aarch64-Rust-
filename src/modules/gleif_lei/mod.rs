@@ -64,7 +64,7 @@ impl Module for GleifLei {
     }
 
     fn description(&self) -> &'static str {
-        "GLEIF Global Legal Entity Identifier (LEI) lookup (free, keyless)"
+        "GLEIF recon (free, keyless) — resolves a Global Legal Entity Identifier (LEI) to its registered entity"
     }
 
     fn priority(&self) -> u8 {

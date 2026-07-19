@@ -78,7 +78,7 @@ impl Module for RedditUser {
     }
 
     fn description(&self) -> &'static str {
-        "Reddit account lookup (karma, created, verified, bio) via the official public API"
+        "Reddit account recon via the official public API — surfaces karma, creation date, verified status, and bio"
     }
 
     fn priority(&self) -> u8 {

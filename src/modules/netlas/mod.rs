@@ -150,7 +150,7 @@ impl Module for Netlas {
     }
 
     fn description(&self) -> &'static str {
-        "Netlas host intelligence: open ports, JARM, SSL-cert email extraction, CVEs, ISP"
+        "Netlas host intelligence — fingerprints open ports, JARM, SSL-cert email extraction, CVEs, and ISP"
     }
 
     fn priority(&self) -> u8 {

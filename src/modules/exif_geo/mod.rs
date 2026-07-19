@@ -85,7 +85,7 @@ impl Module for ExifGeo {
     }
 
     fn description(&self) -> &'static str {
-        "Extract GPS coordinates + camera metadata from image URLs via EXIF parsing"
+        "EXIF geolocation — parses image URLs to extract GPS coordinates and camera metadata for geolocation"
     }
 
     fn priority(&self) -> u8 {

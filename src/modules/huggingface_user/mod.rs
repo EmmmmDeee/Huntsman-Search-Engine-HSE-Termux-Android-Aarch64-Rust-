@@ -133,7 +133,7 @@ impl Module for HuggingfaceUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Hugging Face profile: handle, fullname, account-created date, orgs (free)"
+        "Hugging Face profile recon (free) — harvests handle, fullname, account-created date, and org affiliations"
     }
     fn priority(&self) -> u8 {
         52

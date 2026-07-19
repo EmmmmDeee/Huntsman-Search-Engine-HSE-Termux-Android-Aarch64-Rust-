@@ -81,7 +81,7 @@ impl Module for Seon {
         "seon"
     }
     fn description(&self) -> &'static str {
-        "SEON email/phone enrichment — fraud score, breach exposure, WHOIS-style registrant PII"
+        "SEON email/phone enrichment — surfaces fraud score, breach exposure, and WHOIS-style registrant PII"
     }
     fn priority(&self) -> u8 {
         95

@@ -240,7 +240,7 @@ impl Module for CriminalIp {
         "criminal_ip"
     }
     fn description(&self) -> &'static str {
-        "IP risk scoring and threat classification"
+        "Criminal IP recon — scores IP risk and surfaces threat classification"
     }
     fn priority(&self) -> u8 {
         103

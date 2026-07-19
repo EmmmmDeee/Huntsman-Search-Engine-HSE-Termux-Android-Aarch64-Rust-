@@ -29,7 +29,7 @@ impl Module for SocialLocation {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Extract self-reported location from social profile pages (GitHub, etc.)"
+        "Social geolocation recon — surfaces self-reported location from social profile pages (GitHub, etc.)"
     }
     fn priority(&self) -> u8 {
         15

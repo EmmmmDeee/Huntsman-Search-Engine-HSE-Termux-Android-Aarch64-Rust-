@@ -304,7 +304,7 @@ impl Module for Wayback {
     }
 
     fn description(&self) -> &'static str {
-        "Internet Archive Wayback Machine: history lookup + historical contact extraction"
+        "Internet Archive Wayback Machine recon — enumerates snapshot history and extracts historical contact intel"
     }
 
     fn priority(&self) -> u8 {

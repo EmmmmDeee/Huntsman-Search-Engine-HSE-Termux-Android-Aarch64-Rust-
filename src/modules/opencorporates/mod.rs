@@ -378,7 +378,7 @@ impl Module for OpenCorporates {
         "opencorporates"
     }
     fn description(&self) -> &'static str {
-        "OpenCorporates global company/director search (AU-restricted for AbnAcn lookups)"
+        "OpenCorporates recon — enumerates global company and director records (AU-restricted for AbnAcn lookups)"
     }
     fn priority(&self) -> u8 {
         // Government / public-records band (110-118): company registry, dispatched

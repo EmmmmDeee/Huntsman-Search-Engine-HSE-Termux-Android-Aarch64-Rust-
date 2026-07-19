@@ -119,7 +119,7 @@ impl Module for DomainsDb {
         "domainsdb"
     }
     fn description(&self) -> &'static str {
-        "Domain registration search via domainsdb.info (free, no key)"
+        "Domain-registration recon via domainsdb.info — sweeps registered domains for infrastructure pivots (free, no key)"
     }
     fn priority(&self) -> u8 {
         19

@@ -93,7 +93,7 @@ impl Module for NpmAuthor {
     }
 
     fn description(&self) -> &'static str {
-        "npm registry author lookup (packages + maintainer email) via the official API"
+        "npm registry author recon — harvests an author's packages and maintainer email via the official API"
     }
 
     fn priority(&self) -> u8 {

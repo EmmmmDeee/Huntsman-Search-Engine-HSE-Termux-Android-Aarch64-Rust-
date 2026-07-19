@@ -79,7 +79,7 @@ impl Module for DisposableCheck {
         "disposable_check"
     }
     fn description(&self) -> &'static str {
-        "Disposable/throwaway email detection via debounce.io (free, unlimited)"
+        "Disposable email recon — flags throwaway addresses via debounce.io (free, unlimited)"
     }
     fn priority(&self) -> u8 {
         97

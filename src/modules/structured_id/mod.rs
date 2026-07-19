@@ -48,7 +48,7 @@ impl Module for StructuredId {
     }
 
     fn description(&self) -> &'static str {
-        "Offline decode of structured IDs (UUIDv1 → MAC + time, MongoDB ObjectID → time)"
+        "Offline structured-ID decode — unmasks UUIDv1 to MAC + time and MongoDB ObjectID to time"
     }
 
     fn priority(&self) -> u8 {

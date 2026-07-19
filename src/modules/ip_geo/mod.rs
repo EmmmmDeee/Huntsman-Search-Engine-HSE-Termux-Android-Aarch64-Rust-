@@ -222,7 +222,7 @@ impl Module for IpGeo {
     }
 
     fn description(&self) -> &'static str {
-        "IP geolocation, ISP, proxy and hosting detection"
+        "IP geolocation recon — geolocates an IP and fingerprints ISP, proxy, and hosting infrastructure"
     }
 
     fn priority(&self) -> u8 {

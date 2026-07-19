@@ -35,7 +35,7 @@ impl Module for EmailHeaderGeo {
     }
 
     fn description(&self) -> &'static str {
-        "Extract geographic signals from email domain infrastructure patterns"
+        "Email infrastructure geolocation — surfaces geographic signals from email domain infrastructure patterns"
     }
 
     fn priority(&self) -> u8 {

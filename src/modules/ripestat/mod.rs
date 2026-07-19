@@ -63,7 +63,7 @@ impl Module for RipeStat {
     }
 
     fn description(&self) -> &'static str {
-        "RIPEstat IP/ASN intelligence — ASN, network holder & abuse-contact email (free)"
+        "RIPEstat IP/ASN recon — resolves ASN, network holder, and abuse-contact email (free)"
     }
 
     fn priority(&self) -> u8 {

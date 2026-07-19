@@ -148,7 +148,7 @@ impl Module for SecurityTrails {
         "securitytrails"
     }
     fn description(&self) -> &'static str {
-        "Subdomain enumeration and reverse IP lookup via SecurityTrails"
+        "SecurityTrails recon — enumerates subdomains and pivots via reverse IP lookup"
     }
     fn priority(&self) -> u8 {
         45

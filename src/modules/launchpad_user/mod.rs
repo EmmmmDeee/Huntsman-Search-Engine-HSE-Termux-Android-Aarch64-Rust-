@@ -117,7 +117,7 @@ impl Module for LaunchpadUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Launchpad profile: display name, bio, email (Ubuntu/Debian ecosystem, free)"
+        "Launchpad profile recon — harvests display name, bio, and email across the Ubuntu/Debian ecosystem (free)"
     }
     fn priority(&self) -> u8 {
         53

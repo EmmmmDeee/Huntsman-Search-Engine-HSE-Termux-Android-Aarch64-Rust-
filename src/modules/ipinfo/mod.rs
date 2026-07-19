@@ -154,7 +154,7 @@ impl Module for IpInfo {
         "ipinfo"
     }
     fn description(&self) -> &'static str {
-        "IP intelligence via ipinfo.io (free, 50K/month, no key)"
+        "ipinfo.io IP intelligence — geolocates and enriches an IP address (free, 50K/month, no key)"
     }
     fn priority(&self) -> u8 {
         25

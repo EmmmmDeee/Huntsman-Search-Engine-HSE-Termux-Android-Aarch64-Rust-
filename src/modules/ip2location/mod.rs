@@ -55,7 +55,7 @@ impl Module for Ip2Location {
         "ip2location"
     }
     fn description(&self) -> &'static str {
-        "Suburb-precision IP geolocation via ip2location.io (free, 1K/day)"
+        "ip2location.io geolocation recon (free, 1K/day) — geolocates an IP to suburb precision"
     }
     fn priority(&self) -> u8 {
         26

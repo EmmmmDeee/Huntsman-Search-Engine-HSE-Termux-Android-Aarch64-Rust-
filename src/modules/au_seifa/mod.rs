@@ -65,7 +65,7 @@ impl Module for AuSeifa {
     }
 
     fn description(&self) -> &'static str {
-        "Australian socio-economic profile from a coordinate (SEIFA disadvantage/advantage indexes + area population) via ABS"
+        "Australian socio-economic profiling — geolocates a coordinate to its SEIFA disadvantage/advantage indexes and area population via ABS"
     }
 
     fn priority(&self) -> u8 {

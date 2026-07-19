@@ -71,8 +71,7 @@ impl Module for AuElectoral {
     }
 
     fn description(&self) -> &'static str {
-        "AEC and state electoral commission enrolment lookups — confirms residential \
-         electoral division (suburb/state) for an AU full-name seed"
+        "AEC and state electoral-commission recon — confirms residential electoral division (suburb/state) for an AU full-name seed via enrolment lookups"
     }
 
     fn accepts(&self, t: &Target) -> bool {

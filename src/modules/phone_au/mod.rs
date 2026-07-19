@@ -208,7 +208,7 @@ impl Module for PhoneAu {
     }
 
     fn description(&self) -> &'static str {
-        "Offline Australian phone line-type & geographic-region classifier"
+        "Offline Australian phone classifier — resolves line type and geographic region"
     }
 
     fn priority(&self) -> u8 {

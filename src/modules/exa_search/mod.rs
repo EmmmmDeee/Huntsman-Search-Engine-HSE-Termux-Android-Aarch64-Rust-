@@ -69,7 +69,7 @@ impl Module for ExaSearch {
     }
 
     fn description(&self) -> &'static str {
-        "Exa AI neural search — semantic web search for entity discovery"
+        "Exa AI neural search — semantic web sweep for entity discovery and lead surfacing"
     }
 
     fn priority(&self) -> u8 {

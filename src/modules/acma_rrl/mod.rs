@@ -151,7 +151,7 @@ impl Module for AcmaRrl {
     }
 
     fn description(&self) -> &'static str {
-        "ACMA Radiocommunications Register: licence holders by organisation name, ABN, or coordinates"
+        "ACMA Radiocommunications Register recon — enumerates licence holders by organisation name, ABN, or coordinates"
     }
 
     fn priority(&self) -> u8 {

@@ -90,7 +90,7 @@ impl Module for ContactEnrich {
     }
 
     fn description(&self) -> &'static str {
-        "Contact validation: phone via Numverify, email via Gravatar"
+        "Contact validation recon — verifies phone via Numverify and email via Gravatar"
     }
 
     fn priority(&self) -> u8 {

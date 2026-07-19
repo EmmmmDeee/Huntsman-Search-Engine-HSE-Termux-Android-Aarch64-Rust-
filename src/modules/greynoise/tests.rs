@@ -16,7 +16,7 @@ use super::*;
         assert_eq!(m.priority(), 30);
         assert_eq!(
             m.description(),
-            "GreyNoise IP reputation: internet noise and RIOT classification (paid v3/ip lookup when keyed)"
+            "GreyNoise IP reputation — classifies internet noise and RIOT status (paid v3/ip lookup when keyed)"
         );
         // Free by default (Community tier); a configured key upgrades to the
         // paid v3/ip lookup instead of gating the module off entirely.

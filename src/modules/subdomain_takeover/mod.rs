@@ -71,7 +71,7 @@ impl Module for SubdomainTakeover {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Detect subdomain takeover via dangling CNAME fingerprinting"
+        "Subdomain-takeover recon — fingerprints dangling CNAMEs to unmask hijackable subdomains"
     }
     fn priority(&self) -> u8 {
         40

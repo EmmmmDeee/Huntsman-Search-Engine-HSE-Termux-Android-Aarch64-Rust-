@@ -30,7 +30,7 @@ impl Module for BreachTimezone {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Infer timezone from breach/stealer timestamp clustering"
+        "Timezone triangulation — infers a target's timezone from clustering of breach/stealer timestamps"
     }
     fn priority(&self) -> u8 {
         7

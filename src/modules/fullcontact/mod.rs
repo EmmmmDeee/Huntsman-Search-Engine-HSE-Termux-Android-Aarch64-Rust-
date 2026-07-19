@@ -79,7 +79,7 @@ impl Module for FullContact {
     }
 
     fn description(&self) -> &'static str {
-        "FullContact person enrichment — email/phone → name, employer, location, socials"
+        "FullContact enrichment — pivots an email/phone to name, employer, location, and social accounts"
     }
 
     fn priority(&self) -> u8 {

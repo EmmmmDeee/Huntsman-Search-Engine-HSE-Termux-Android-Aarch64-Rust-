@@ -173,7 +173,7 @@ impl Module for HexpmUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "hex.pm profile: email, fullname, account age, GitHub/X handles via Elixir/Erlang registry (free)"
+        "hex.pm profile recon (free) — surfaces email, fullname, account age, and GitHub/X handles from the Elixir/Erlang registry"
     }
     fn priority(&self) -> u8 {
         51

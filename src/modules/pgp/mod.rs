@@ -37,7 +37,7 @@ impl Module for Pgp {
     }
 
     fn description(&self) -> &'static str {
-        "PGP keyserver lookup (email → owner name + alternate emails via HKP index)"
+        "PGP keyserver recon — pivots an email to owner name and alternate emails via the HKP index"
     }
 
     fn priority(&self) -> u8 {

@@ -69,7 +69,7 @@ impl Module for Lobsters {
     }
 
     fn description(&self) -> &'static str {
-        "Lobste.rs account lookup (karma, bio, GitHub/Twitter cross-links) via public JSON API"
+        "Lobste.rs account recon — surfaces karma, bio, and GitHub/Twitter cross-links via the public JSON API"
     }
 
     fn priority(&self) -> u8 {

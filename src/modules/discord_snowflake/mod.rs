@@ -51,7 +51,7 @@ impl Module for DiscordSnowflake {
     }
 
     fn description(&self) -> &'static str {
-        "Offline Discord account-creation date decoded from a snowflake ID (no API/key)"
+        "Discord snowflake decode — offline recovery of an account-creation date from a snowflake ID (no API/key)"
     }
 
     fn priority(&self) -> u8 {

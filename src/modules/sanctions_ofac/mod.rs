@@ -219,7 +219,7 @@ impl Module for SanctionsOfac {
     }
 
     fn description(&self) -> &'static str {
-        "OFAC Specially Designated Nationals sanctions list (keyless) — name → sanctions hit, program, remarks"
+        "OFAC Specially Designated Nationals recon (keyless) — pivots a name to sanctions hit, program, and remarks"
     }
 
     fn priority(&self) -> u8 {

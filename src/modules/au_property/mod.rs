@@ -77,9 +77,7 @@ impl Module for AuProperty {
     }
 
     fn description(&self) -> &'static str {
-        "Australian property and land title register searches — finds registered \
-         ownership records (suburb/state/postcode) for a full-name seed via NSW, \
-         VIC, and QLD public cadastral portals"
+        "Australian property & land-title recon — pivots a full-name seed to registered ownership records (suburb/state/postcode) across the NSW, VIC, and QLD public cadastral portals"
     }
 
     fn accepts(&self, t: &Target) -> bool {

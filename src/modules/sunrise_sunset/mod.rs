@@ -134,7 +134,7 @@ impl Module for SunriseSunset {
         "sunrise_sunset"
     }
     fn description(&self) -> &'static str {
-        "Solar phase timestamps for chronolocation of imagery"
+        "Solar-phase recon — resolves sunrise/sunset timestamps to chronolocate imagery"
     }
     fn priority(&self) -> u8 {
         10

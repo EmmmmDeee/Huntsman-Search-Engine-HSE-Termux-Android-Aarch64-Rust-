@@ -173,7 +173,7 @@ impl Module for Wigle {
         "wigle"
     }
     fn description(&self) -> &'static str {
-        "WiGLE wireless intel — WiFi + cell tower + Bluetooth beacon observations by coords / BSSID"
+        "WiGLE wireless intel — pulls WiFi, cell-tower, and Bluetooth beacon observations by coords or BSSID to geolocate signals"
     }
     fn priority(&self) -> u8 {
         // Geolocation FINALISER — dispatched last so it resolves the coordinates,

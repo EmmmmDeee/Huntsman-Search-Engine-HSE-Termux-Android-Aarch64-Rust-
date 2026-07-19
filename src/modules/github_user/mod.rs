@@ -43,7 +43,7 @@ impl Module for GithubUser {
     }
 
     fn description(&self) -> &'static str {
-        "GitHub profile, repos, and social metadata lookup"
+        "GitHub profile recon — harvests repos, bio, and social metadata to pivot a username outward"
     }
 
     fn priority(&self) -> u8 {

@@ -65,7 +65,7 @@ impl Module for UrlExtract {
     }
 
     fn description(&self) -> &'static str {
-        "Extract the host domain or IP from a URL so the full domain/IP intelligence stack is seeded next round"
+        "URL dissection — extracts the host domain or IP to seed the full domain/IP intelligence stack next round"
     }
 
     fn priority(&self) -> u8 {

@@ -61,7 +61,7 @@ impl Module for DevTo {
     }
 
     fn description(&self) -> &'static str {
-        "Dev.to account lookup (name, bio, GitHub/Twitter pivots, location) via public API"
+        "Dev.to account recon — enumerates name, bio, location, and GitHub/Twitter pivots via the public API"
     }
 
     fn priority(&self) -> u8 {

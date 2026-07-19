@@ -244,7 +244,7 @@ impl Module for CrtSh {
     }
 
     fn description(&self) -> &'static str {
-        "Certificate Transparency log search via crt.sh (free, no key)"
+        "crt.sh recon — sweeps Certificate Transparency logs to enumerate subdomains (free, no key)"
     }
 
     fn priority(&self) -> u8 {

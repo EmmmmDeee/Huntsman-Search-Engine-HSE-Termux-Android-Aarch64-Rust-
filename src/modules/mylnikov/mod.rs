@@ -97,7 +97,7 @@ impl Module for Mylnikov {
         "mylnikov"
     }
     fn description(&self) -> &'static str {
-        "Mylnikov free BSSID-to-coordinates WiFi geolocation"
+        "Mylnikov WiFi geolocation — triangulates a BSSID to coordinates (free)"
     }
     fn priority(&self) -> u8 {
         17

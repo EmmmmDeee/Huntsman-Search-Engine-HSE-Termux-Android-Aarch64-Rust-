@@ -32,7 +32,7 @@ fn module_name_and_priority() {
 fn module_description() {
     assert_eq!(
         CellIntel.description(),
-        "Cell tower survey and geolocation via Termux + OpenCelliD"
+        "Cell-tower survey & geolocation — sweeps nearby towers via Termux and geolocates them against OpenCelliD"
     );
 }
 

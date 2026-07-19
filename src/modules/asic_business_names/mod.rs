@@ -44,7 +44,7 @@ impl Module for AsicBusinessNames {
     }
 
     fn description(&self) -> &'static str {
-        "ASIC Business Names register (keyless) — business/trading name → ABN, status, state, registration date"
+        "ASIC Business Names recon (keyless) — pivots a business/trading name to ABN, status, state, and registration date"
     }
 
     fn priority(&self) -> u8 {

@@ -63,7 +63,7 @@ impl Module for AsicPersons {
     }
 
     fn description(&self) -> &'static str {
-        "ASIC people registers (banned & disqualified, financial advisers, credit/finance-broker representatives) — name → regulatory status, licensee, disciplinary action, address (keyless)"
+        "ASIC people-registers recon (keyless) — pivots a name across banned & disqualified, financial advisers, and credit/finance-broker representatives to regulatory status, licensee, disciplinary action, and address"
     }
 
     fn priority(&self) -> u8 {

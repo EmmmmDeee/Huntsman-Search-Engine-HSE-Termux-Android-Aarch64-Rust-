@@ -678,7 +678,7 @@ impl Module for DohResolver {
         "doh_resolver"
     }
     fn description(&self) -> &'static str {
-        "DNS-over-HTTPS via Cloudflare + Google (A/AAAA/MX/TXT/NS/CNAME/SOA/HTTPS + DMARC + CAA + TLSRPT — free)"
+        "DNS-over-HTTPS resolution via Cloudflare + Google — sweeps A/AAAA/MX/TXT/NS/CNAME/SOA/HTTPS plus DMARC, CAA, and TLSRPT (free)"
     }
     fn priority(&self) -> u8 {
         34

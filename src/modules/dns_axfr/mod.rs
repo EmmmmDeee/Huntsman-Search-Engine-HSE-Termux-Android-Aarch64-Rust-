@@ -33,7 +33,7 @@ impl Module for DnsAxfr {
     }
 
     fn description(&self) -> &'static str {
-        "Attempt DNS zone transfer (AXFR) for complete subdomain enumeration"
+        "DNS zone-transfer (AXFR) probe — attempts a full AXFR to enumerate every subdomain in one sweep"
     }
 
     fn priority(&self) -> u8 {

@@ -63,7 +63,7 @@ impl Module for Onyphe {
     }
 
     fn description(&self) -> &'static str {
-        "ONYPHE cyber-defence search: IP/domain geoloc, ASN, resolutions, threat tags (key-gated)"
+        "ONYPHE cyber-defence sweep — surfaces IP/domain geoloc, ASN, resolutions, and threat tags (key-gated)"
     }
 
     fn priority(&self) -> u8 {

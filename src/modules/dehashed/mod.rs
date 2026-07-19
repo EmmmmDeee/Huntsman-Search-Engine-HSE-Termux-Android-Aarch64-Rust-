@@ -59,7 +59,7 @@ impl Module for DeHashed {
         "dehashed"
     }
     fn description(&self) -> &'static str {
-        "Breach record search across leaked databases"
+        "DeHashed recon — searches breach records across leaked databases"
     }
     fn priority(&self) -> u8 {
         118

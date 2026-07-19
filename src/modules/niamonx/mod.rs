@@ -185,7 +185,7 @@ impl Module for NiamonX {
     }
 
     fn description(&self) -> &'static str {
-        "NiamonX PBS v1/v2 breach search and ULP infostealer lookup"
+        "NiamonX recon — sweeps PBS v1/v2 breach corpora and ULP infostealer records"
     }
 
     fn priority(&self) -> u8 {

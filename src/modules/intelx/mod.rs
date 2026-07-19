@@ -209,7 +209,7 @@ impl Module for IntelX {
         "intelx"
     }
     fn description(&self) -> &'static str {
-        "Intelligence X selector search across breach, paste, and darknet data"
+        "Intelligence X selector search — sweeps breach, paste, and darknet corpora to surface a selector's footprint"
     }
     fn priority(&self) -> u8 {
         116

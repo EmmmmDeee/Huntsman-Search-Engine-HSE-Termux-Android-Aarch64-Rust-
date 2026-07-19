@@ -85,7 +85,7 @@ impl Module for Typosquat {
     }
 
     fn description(&self) -> &'static str {
-        "Generate and resolve typosquat/lookalike domain permutations (registered ones only)"
+        "Typosquat recon — generates lookalike domain permutations and resolves the registered ones to surface active impostors"
     }
 
     fn priority(&self) -> u8 {

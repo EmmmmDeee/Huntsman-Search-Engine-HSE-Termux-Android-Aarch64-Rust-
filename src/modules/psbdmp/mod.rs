@@ -56,7 +56,7 @@ impl Module for Psbdmp {
     }
 
     fn description(&self) -> &'static str {
-        "psbdmp.ws paste-dump exposure search (email/username/domain → pastes)"
+        "psbdmp.ws paste-dump recon — sweeps email, username, or domain for exposure across leaked pastes"
     }
 
     fn priority(&self) -> u8 {

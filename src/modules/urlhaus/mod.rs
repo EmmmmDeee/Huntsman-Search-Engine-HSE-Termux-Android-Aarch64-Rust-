@@ -177,7 +177,7 @@ impl Module for UrlHaus {
     }
 
     fn description(&self) -> &'static str {
-        "Abuse.ch URLhaus malware URL threat check"
+        "abuse.ch URLhaus recon — probes a URL against the malware-URL threat corpus"
     }
 
     fn priority(&self) -> u8 {

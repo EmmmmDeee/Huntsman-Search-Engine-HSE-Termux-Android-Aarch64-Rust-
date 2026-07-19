@@ -32,7 +32,7 @@ fn module_name_and_priority() {
 fn description_is_set() {
     assert_eq!(
         WifiIntel.description(),
-        "WiFi AP survey and BSSID geolocation via Termux + WiGLE"
+        "WiFi AP survey — sweeps nearby access points via Termux and geolocates each BSSID through WiGLE"
     );
 }
 

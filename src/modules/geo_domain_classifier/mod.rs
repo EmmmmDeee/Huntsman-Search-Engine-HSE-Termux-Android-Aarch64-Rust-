@@ -30,7 +30,7 @@ impl Module for GeoDomainClassifier {
     }
 
     fn description(&self) -> &'static str {
-        "Infer country/region from geo-indicative domain names and TLDs"
+        "Geo-domain classifier — infers country/region from geo-indicative domain names and TLDs"
     }
 
     fn priority(&self) -> u8 {

@@ -80,7 +80,7 @@ impl Module for OsintCat {
     }
 
     fn description(&self) -> &'static str {
-        "OsintCat email footprint, breach, and deep-osint enrichment"
+        "OsintCat enrichment — sweeps an email footprint for breach and deep-osint intelligence"
     }
 
     fn priority(&self) -> u8 {

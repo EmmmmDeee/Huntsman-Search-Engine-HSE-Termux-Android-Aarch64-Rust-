@@ -61,7 +61,7 @@ impl Module for Nostr {
     }
 
     fn description(&self) -> &'static str {
-        "Nostr identity resolution (npub → pubkey offline decode; NIP-05 name@domain → pubkey + relays)"
+        "Nostr identity resolution — offline-decodes an npub to its pubkey and resolves NIP-05 name@domain to pubkey plus relays"
     }
 
     fn priority(&self) -> u8 {

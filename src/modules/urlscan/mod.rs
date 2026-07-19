@@ -126,7 +126,7 @@ impl Module for UrlScan {
     }
 
     fn description(&self) -> &'static str {
-        "URLScan.io domain intelligence: recent scans, IPs, and verdicts"
+        "URLScan.io domain recon — surfaces recent scans, resolved IPs, and verdicts"
     }
 
     fn priority(&self) -> u8 {

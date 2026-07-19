@@ -99,7 +99,7 @@ impl Module for Keybase {
         "keybase"
     }
     fn description(&self) -> &'static str {
-        "Keybase identity graph — linked accounts, PGP keys, and cryptographic proofs"
+        "Keybase identity-graph recon — cross-links linked accounts, PGP keys, and cryptographic proofs"
     }
     fn priority(&self) -> u8 {
         100

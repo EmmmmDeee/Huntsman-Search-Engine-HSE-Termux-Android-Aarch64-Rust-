@@ -50,7 +50,7 @@ impl Module for WebserverBanner {
     }
 
     fn description(&self) -> &'static str {
-        "HTTP header fingerprinting and tech stack detection"
+        "HTTP header fingerprinting — probes response banners to unmask the web server and detect the underlying tech stack"
     }
 
     fn priority(&self) -> u8 {

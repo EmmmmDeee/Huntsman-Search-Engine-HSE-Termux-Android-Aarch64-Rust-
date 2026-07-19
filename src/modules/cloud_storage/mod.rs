@@ -43,7 +43,7 @@ impl Module for CloudStorage {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Probe S3/GCS/Azure/DigitalOcean for exposed buckets derived from the target name"
+        "Cloud-bucket sweep — probes S3/GCS/Azure/DigitalOcean for exposed buckets derived from the target name"
     }
     fn priority(&self) -> u8 {
         25

@@ -43,7 +43,7 @@ impl Module for EmailParse {
     }
 
     fn description(&self) -> &'static str {
-        "Extract domain and derive usernames from email local part"
+        "Email dissection — splits out the host domain and derives candidate usernames from the local part for onward pivoting"
     }
 
     fn priority(&self) -> u8 {

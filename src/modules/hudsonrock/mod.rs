@@ -66,7 +66,7 @@ impl Module for HudsonRock {
     }
 
     fn description(&self) -> &'static str {
-        "Free stealer-log lookup via HudsonRock Cavalier"
+        "HudsonRock Cavalier recon (free) — sweeps stealer-log corpora for a target's infostealer exposure"
     }
 
     fn priority(&self) -> u8 {

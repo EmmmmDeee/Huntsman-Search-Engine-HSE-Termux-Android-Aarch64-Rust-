@@ -32,7 +32,7 @@ impl Module for BgpView {
         SRC
     }
     fn description(&self) -> &'static str {
-        "BGPView ASN prefix enumeration and IP-to-ASN mapping"
+        "BGPView recon — enumerates ASN prefixes and resolves IP-to-ASN mappings"
     }
     fn priority(&self) -> u8 {
         35

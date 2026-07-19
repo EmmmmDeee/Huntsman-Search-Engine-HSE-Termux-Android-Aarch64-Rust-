@@ -63,7 +63,7 @@ impl Module for PhoneGeo {
     }
 
     fn description(&self) -> &'static str {
-        "Phone area-code city/region and mobile-carrier regional geo inference (offline)"
+        "Offline phone geo inference — triangulates area-code city/region and mobile-carrier regional footprint"
     }
 
     fn priority(&self) -> u8 {

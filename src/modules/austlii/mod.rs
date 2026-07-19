@@ -82,7 +82,7 @@ impl Module for AustLii {
     }
 
     fn description(&self) -> &'static str {
-        "AustLII: Australian court judgments and legislation references for a name or organisation"
+        "AustLII recon — surfaces Australian court judgments and legislation references tied to a name or organisation"
     }
 
     fn priority(&self) -> u8 {

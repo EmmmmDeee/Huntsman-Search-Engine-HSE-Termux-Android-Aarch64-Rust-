@@ -67,7 +67,7 @@ impl Module for AuBusinessId {
     }
 
     fn description(&self) -> &'static str {
-        "Offline ABN/ACN decode — classify company vs non-company, derive the embedded ACN pivot"
+        "Offline ABN/ACN decode — classifies company vs non-company and derives the embedded ACN pivot"
     }
 
     fn priority(&self) -> u8 {

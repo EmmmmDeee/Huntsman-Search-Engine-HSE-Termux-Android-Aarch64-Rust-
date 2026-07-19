@@ -93,7 +93,7 @@ impl Module for AppLinks {
     }
 
     fn description(&self) -> &'static str {
-        "Domain → mobile-app attribution (Android package + signing cert, Apple Team ID + bundle, delegated domains) via app-linkage well-knowns"
+        "Domain-to-mobile-app attribution — pivots a domain via app-linkage well-knowns to Android package + signing cert, Apple Team ID + bundle, and delegated domains"
     }
 
     fn priority(&self) -> u8 {

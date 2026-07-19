@@ -26,7 +26,7 @@ impl Module for EmailLocale {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Infer locale/country from email local-part naming conventions"
+        "Email locale inference — triangulates locale/country from email local-part naming conventions"
     }
     fn priority(&self) -> u8 {
         91

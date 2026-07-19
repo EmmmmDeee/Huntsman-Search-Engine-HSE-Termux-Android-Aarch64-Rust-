@@ -115,7 +115,7 @@ impl Module for CodewarsUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Codewars profile: real name, clan/org, city via public kata-platform API (free)"
+        "Codewars profile recon — surfaces real name, clan/org, and city via the public kata-platform API (free)"
     }
     fn priority(&self) -> u8 {
         49

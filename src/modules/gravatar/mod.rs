@@ -40,7 +40,7 @@ impl Module for Gravatar {
     }
 
     fn description(&self) -> &'static str {
-        "Gravatar public profile enrichment (email → name, accounts, URLs, location)"
+        "Gravatar public-profile enrichment — pivots an email to name, accounts, URLs, and location"
     }
 
     fn priority(&self) -> u8 {

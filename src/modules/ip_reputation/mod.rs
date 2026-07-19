@@ -175,7 +175,7 @@ impl Module for IpReputation {
     }
 
     fn description(&self) -> &'static str {
-        "IP reputation: AlienVault OTX threat intel, passive DNS, and Tor exit relay check"
+        "IP reputation recon — correlates AlienVault OTX threat intel, passive DNS, and Tor exit-relay status"
     }
 
     fn priority(&self) -> u8 {

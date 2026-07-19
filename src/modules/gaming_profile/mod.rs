@@ -99,7 +99,7 @@ impl Module for GamingProfile {
     }
 
     fn description(&self) -> &'static str {
-        "Free gaming-platform profile lookup (Roblox, Minecraft) via each platform's public API"
+        "Gaming-platform profile recon (free) — enumerates Roblox and Minecraft accounts via each platform's public API"
     }
 
     fn priority(&self) -> u8 {

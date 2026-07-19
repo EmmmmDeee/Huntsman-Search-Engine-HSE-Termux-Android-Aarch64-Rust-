@@ -235,7 +235,7 @@ impl Module for IpWhois {
     }
 
     fn description(&self) -> &'static str {
-        "HTTPS IP geolocation via ipwho.is (second source for geo-cluster correlation)"
+        "ipwho.is geolocation recon (HTTPS) — second source for geo-cluster correlation of an IP"
     }
 
     fn priority(&self) -> u8 {

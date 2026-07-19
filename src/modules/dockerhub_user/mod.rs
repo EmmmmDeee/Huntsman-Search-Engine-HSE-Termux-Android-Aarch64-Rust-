@@ -137,7 +137,7 @@ impl Module for DockerhubUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Docker Hub profile: fullname, company, location, website, gravatar email (free)"
+        "Docker Hub profile recon — harvests fullname, company, location, website, and gravatar email to pivot a user (free)"
     }
     fn priority(&self) -> u8 {
         50

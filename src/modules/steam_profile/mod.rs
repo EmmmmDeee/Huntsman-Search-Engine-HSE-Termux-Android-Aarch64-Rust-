@@ -39,7 +39,7 @@ impl Module for SteamProfile {
     }
 
     fn description(&self) -> &'static str {
-        "Free Steam profile lookup (SteamID64 / vanity → real name, location) via public XML"
+        "Free Steam profile recon — resolves SteamID64 / vanity to real name and location via public XML"
     }
 
     fn priority(&self) -> u8 {

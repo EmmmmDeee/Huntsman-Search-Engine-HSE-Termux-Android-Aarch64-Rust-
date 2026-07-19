@@ -153,7 +153,7 @@ impl Module for QldCadastre {
         "qld_cadastre"
     }
     fn description(&self) -> &'static str {
-        "Queensland DCDB cadastre — lot/plan, locality and tenure for coordinates inside QLD"
+        "Queensland DCDB cadastre recon — resolves coordinates inside QLD to lot/plan, locality, and tenure"
     }
     fn priority(&self) -> u8 {
         18

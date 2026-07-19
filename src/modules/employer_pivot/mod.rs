@@ -47,7 +47,7 @@ impl Module for EmployerPivot {
     }
 
     fn description(&self) -> &'static str {
-        "Pivot from employer-domain email or domain to business address via contact pages"
+        "Employer pivot — resolves an employer-domain email or domain to a business address via contact-page harvesting"
     }
 
     fn priority(&self) -> u8 {

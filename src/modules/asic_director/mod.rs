@@ -248,7 +248,7 @@ impl Module for AsicDirector {
     }
 
     fn description(&self) -> &'static str {
-        "ASIC company directors register — find director appointments for a full name and pivot to company ACN/address"
+        "ASIC company-directors recon — surfaces director appointments for a full name and pivots to company ACN/address"
     }
 
     fn priority(&self) -> u8 {

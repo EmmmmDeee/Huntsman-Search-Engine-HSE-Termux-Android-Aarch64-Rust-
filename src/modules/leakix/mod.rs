@@ -139,7 +139,7 @@ impl Module for LeakIx {
         "leakix"
     }
     fn description(&self) -> &'static str {
-        "Host and domain exposure event analysis"
+        "LeakIX exposure recon — correlates host and domain exposure events to surface leaks"
     }
     fn priority(&self) -> u8 {
         102

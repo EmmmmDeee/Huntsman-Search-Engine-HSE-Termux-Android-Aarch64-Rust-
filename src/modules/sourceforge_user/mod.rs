@@ -188,7 +188,7 @@ impl Module for SourceforgeUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "SourceForge profile: real name, homepage, social links, account age via SF REST API (free)"
+        "SourceForge profile recon — harvests real name, homepage, social links, and account age via SF REST API (free)"
     }
     fn priority(&self) -> u8 {
         94

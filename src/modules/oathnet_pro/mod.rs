@@ -59,7 +59,7 @@ impl Module for OathnetPro {
     }
 
     fn description(&self) -> &'static str {
-        "Full-spectrum breach, stealer & OSINT intelligence via OathNet API"
+        "OathNet API recon — full-spectrum breach, stealer, and OSINT intelligence sweep"
     }
 
     fn priority(&self) -> u8 {

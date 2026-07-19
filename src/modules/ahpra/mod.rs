@@ -104,7 +104,7 @@ impl Module for Ahpra {
     }
 
     fn description(&self) -> &'static str {
-        "AHPRA practitioner register: registered health practitioners by name or organisation"
+        "AHPRA practitioner-register recon — enumerates registered health practitioners by name or organisation"
     }
 
     fn priority(&self) -> u8 {

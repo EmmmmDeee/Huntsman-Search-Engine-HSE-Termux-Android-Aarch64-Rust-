@@ -197,7 +197,7 @@ impl Module for RubygemsUser {
     }
 
     fn description(&self) -> &'static str {
-        "RubyGems gem owner profile: real name, homepage, GitHub pivot (Ruby ecosystem, free)"
+        "RubyGems owner recon — surfaces real name, homepage, and a GitHub pivot across the Ruby ecosystem (free)"
     }
 
     fn priority(&self) -> u8 {

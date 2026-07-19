@@ -348,7 +348,7 @@ impl Module for AuPeople {
     }
 
     fn description(&self) -> &'static str {
-        "Australian people-finder — White Pages AU + True People Search AU for residential address, phone and name confirmation"
+        "Australian people-finder — sweeps White Pages AU + True People Search AU to confirm a name against residential address and phone"
     }
 
     fn priority(&self) -> u8 {
