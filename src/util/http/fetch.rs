@@ -323,6 +323,16 @@ fn record_breaker_outcome(host: Option<&str>, status: reqwest::StatusCode) {
     }
 }
 
+/// A reqwest transport error worth one bounded retry: a connection failure or a
+/// timeout — the transient blips a healthy host recovers from on a second try.
+/// A protocol/decode/redirect/body error is NOT transient and fails immediately
+/// (retrying it would only waste a round-trip). This gates the single keyed-GET
+/// retry so a healthy host doesn't lose a target's result — or burn a
+/// circuit-breaker failure — on one connect/timeout hiccup.
+fn transport_is_transient(e: &reqwest::Error) -> bool {
+    e.is_timeout() || e.is_connect()
+}
+
 /// Read, scan for leaked API keys, and JSON-decode a successful response body — the
 /// shared success tail of the JSON fetch helpers.
 async fn decode_json_body<T: DeserializeOwned>(resp: reqwest::Response, module: &str) -> Result<T> {
@@ -566,13 +576,28 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
     // error (a key header can't be replayed through the curl path), so a send failure is
     // surfaced directly after recording the breaker failure.
     let host = breaker_gate(module, url)?;
-    let resp = match ctx.http.get(url).header(header_name, key).send().await {
-        Ok(resp) => resp,
-        Err(e) => {
-            if let Some(h) = host.as_deref() {
-                circuit_breaker::record_failure(h, crate::core::entity::unix_now());
+    // One bounded retry of the idempotent GET on a transient connect/timeout
+    // blip — the same failure class the non-keyed curl fallback rescues, extended
+    // to every keyed provider at this shared chokepoint. A key header can't be
+    // replayed through the curl path (hence no curl fallback here), but a plain
+    // re-send is safe and costs one round-trip. The transient first failure does
+    // NOT record a breaker failure; only a non-transient error or a failed retry
+    // does, so a single hiccup on a healthy host neither loses the result nor
+    // trips the breaker.
+    let mut attempt: u8 = 0;
+    let resp = loop {
+        match ctx.http.get(url).header(header_name, key).send().await {
+            Ok(resp) => break resp,
+            Err(e) => {
+                if attempt == 0 && transport_is_transient(&e) {
+                    attempt += 1;
+                    continue;
+                }
+                if let Some(h) = host.as_deref() {
+                    circuit_breaker::record_failure(h, crate::core::entity::unix_now());
+                }
+                return Err(Error::module(module, redact_credentials(&e.to_string())));
             }
-            return Err(Error::module(module, redact_credentials(&e.to_string())));
         }
     };
     record_breaker_outcome(host.as_deref(), resp.status());
@@ -628,6 +653,29 @@ mod tests {
         let mut buf: Vec<u8> = vec![1, 2, 3, 4];
         assert!(append_capped(&mut buf, b"more", 4));
         assert_eq!(buf, vec![1, 2, 3, 4], "nothing appended past a full buffer");
+    }
+
+    #[tokio::test]
+    async fn transport_is_transient_flags_a_connect_refusal() {
+        // A connection to a just-closed local port is a real connect error —
+        // exactly the transient class the keyed retry should re-send on. Bind a
+        // listener to grab a free port, then drop it so the port is closed.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let err = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .expect_err("connecting to a closed port must fail");
+        assert!(
+            super::transport_is_transient(&err),
+            "a connect refusal must classify as transient: {err:?}"
+        );
     }
 
     use proptest::prelude::*;
