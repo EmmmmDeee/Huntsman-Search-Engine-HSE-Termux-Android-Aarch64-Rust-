@@ -28,6 +28,7 @@ pub mod gravatar;
 pub mod hashcat;
 pub mod html;
 pub mod http;
+pub mod identity;
 pub mod json;
 pub mod key_harvest;
 pub mod key_pool;

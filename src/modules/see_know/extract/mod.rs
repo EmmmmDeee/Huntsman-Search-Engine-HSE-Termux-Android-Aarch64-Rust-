@@ -100,54 +100,6 @@ fn record_evidence(item: &Value, dbname: &str, endpoint: &str, key_fp: &str) -> 
     ev
 }
 
-/// Normalized identity-demographic tags (`dob:` / `gender:` / `age:`) for the
-/// subject node, read across the key spellings the providers use for the same
-/// datum. Returned in a stable order; empty when the record carries no
-/// demographics. The caller stamps these on the Person so the subject's
-/// headline surfaces its demographics as first-class, queryable tags.
-fn identity_tags(item: &Value) -> Vec<String> {
-    let mut tags = Vec::new();
-    // Date of birth — one canonical `dob:` tag from whichever key holds it.
-    if let Some(dob) = val_str(item, "date_birth")
-        .or_else(|| val_str(item, "birthdate"))
-        .or_else(|| val_str(item, "date_of_birth"))
-        .or_else(|| val_str(item, "dob"))
-    {
-        let d = dob.trim();
-        if !d.is_empty() {
-            tags.push(format!("dob:{d}"));
-        }
-    }
-    // Gender — collapse the obvious spellings to a single uppercase initial so
-    // `gender:M` from one record merges with `gender:male` from another.
-    if let Some(g) = val_str(item, "gender") {
-        let gt = g.trim();
-        if !gt.is_empty() {
-            let norm = match gt.to_ascii_lowercase().as_str() {
-                "m" | "male" => "M",
-                "f" | "female" => "F",
-                _ => gt,
-            };
-            tags.push(format!("gender:{norm}"));
-        }
-    }
-    // Age — a number or a numeric string; skip a placeholder/zero.
-    let age = item.get("age").map(|a| {
-        if a.is_number() {
-            a.to_string()
-        } else {
-            a.as_str().unwrap_or("").trim().to_string()
-        }
-    });
-    if let Some(a) = age
-        && !a.is_empty()
-        && a != "0"
-    {
-        tags.push(format!("age:{a}"));
-    }
-    tags
-}
-
 pub(super) fn extract_entities(
     item: &Value,
     target_value: &str,
@@ -232,7 +184,7 @@ pub(super) fn extract_entities(
         // the raw-record evidence the full-field fold already carries. The
         // dossier headline then reads "Ali Kareem [dob:…] [gender:M]" directly,
         // and the tags merge by UID across every record that re-states them.
-        for tag in identity_tags(item) {
+        for tag in crate::util::identity::identity_tags(item) {
             person.tag(tag);
         }
         push_breach_entity(result, person, &ev, &[]);

@@ -374,11 +374,16 @@ pub(super) fn extract_breach_entities_with(
             && !is_username_derived_name(t)
             && seen.insert(t.to_lowercase())
         {
+            // Parity with SeekNow: stamp the record's demographics (DOB / gender
+            // / age) as normalized first-class tags on the Person, so OathNet's
+            // subject nodes filter/merge on the same signals SeekNow's do.
+            let id_tags = crate::util::identity::identity_tags(item);
+            let id_refs: Vec<&str> = id_tags.iter().map(String::as_str).collect();
             push_oathnet_entity(
                 result,
                 Entity::new(EntityKind::Person, t, 0.70, scan_id),
                 &ev,
-                &[],
+                &id_refs,
                 is_target_row,
             );
         }
@@ -525,6 +530,23 @@ pub(super) fn extract_breach_entities_with(
             ),
             &ev,
             &["discord"],
+            is_target_row,
+        );
+    }
+
+    // SteamID64 — parity with SeekNow's identity handling. OathNet shares the
+    // same V2 breach schema, so leaked SteamID64s appear here too; gate them by
+    // the shared strict heuristic and mint the same `steam:<id>` Username pivot
+    // (which feeds the gaming-endpoint expansion) instead of discarding them.
+    if let Some(sid) = val_str_or_coerce(item, &["steam_id", "steamid", "steam_id64"])
+        && crate::util::identity::looks_like_steam_id(&sid)
+        && seen.insert(format!("@steam:{sid}"))
+    {
+        push_oathnet_entity(
+            result,
+            Entity::new(EntityKind::Username, format!("steam:{sid}"), 0.60, scan_id),
+            &ev,
+            &["steam"],
             is_target_row,
         );
     }

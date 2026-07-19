@@ -186,6 +186,71 @@ use super::*;
     }
 
     #[test]
+    fn person_carries_demographics_and_steam_id_pivots() {
+        use serde_json::json;
+        // Parity with SeekNow: a breach row with a real name + demographics + a
+        // valid SteamID64. Today the Person carries neither demographic tag and
+        // the SteamID64 is discarded entirely.
+        let item = json!({
+            "email": "jane.roe@example.com",
+            "full_name": "Jane Roe",
+            "gender": "female",
+            "date_birth": "1990-01-01",
+            "steam_id": "76561197960287930"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "jane.roe@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+
+        let person = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Person && e.value == "Jane Roe")
+            .expect("Person entity from full_name");
+        assert!(
+            person.has_tag("gender:F"),
+            "gender must be normalized + stamped on the Person"
+        );
+        assert!(
+            person.has_tag("dob:1990-01-01"),
+            "dob must be stamped on the Person"
+        );
+
+        let steam = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Username && e.value == "steam:76561197960287930")
+            .expect("SteamID64 must mint a steam:<id> Username pivot");
+        assert!(steam.has_tag("steam"));
+
+        // A 16-digit (invalid) steam id must NOT pivot — the strict shared gate.
+        let mut seen2 = HashSet::new();
+        let mut result2 = ModuleResult::new();
+        extract_breach_entities(
+            &json!({ "steam_id": "7656119796028793" }),
+            "x",
+            "scan",
+            "oathnet.org:test",
+            &mut seen2,
+            &mut result2,
+        );
+        assert!(
+            !result2
+                .entities
+                .iter()
+                .any(|e| e.value.starts_with("steam:")),
+            "an invalid SteamID64 must not pivot"
+        );
+    }
+
+    #[test]
     fn extract_stealer_entities_characterization() {
         use serde_json::json;
         let item = json!({
