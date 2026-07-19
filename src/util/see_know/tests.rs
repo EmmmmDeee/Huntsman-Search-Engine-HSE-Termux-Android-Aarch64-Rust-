@@ -5,7 +5,7 @@ use super::budget::{
     scan_budget_remaining, set_scan_cap_override, should_probe_quota,
 };
 use super::client::{
-    CLIENT, HARDCODED_KEY_FOR_TESTS, cache_get, cache_key, cache_put, is_auth_error,
+    CLIENT, CLIENT_FAST, HARDCODED_KEY_FOR_TESTS, cache_get, cache_key, cache_put, is_auth_error,
     key_fingerprint, parse_response, resolve_key, typed_cache_key,
 };
 use super::endpoints::{
@@ -34,6 +34,17 @@ fn client_timeout_budget_exceeds_name_search_server_cap() {
         CLIENT.outer_timeout_ms(),
         CLIENT.curl_timeout_secs()
     );
+    // The fast-GET client must be TIGHTER than the /search client: the fast
+    // endpoints answer in ~2-5s, so a hung GET must fail well before it burns the
+    // module's whole per-scan timeout budget on /search's 75s ceiling. Its outer
+    // timeout still exceeds its curl ceiling so curl's own exit code surfaces.
+    assert!(
+        CLIENT_FAST.curl_timeout_secs() < CLIENT.curl_timeout_secs(),
+        "fast-GET curl budget ({}s) must be tighter than /search's ({}s)",
+        CLIENT_FAST.curl_timeout_secs(),
+        CLIENT.curl_timeout_secs()
+    );
+    assert!(CLIENT_FAST.outer_timeout_ms() > CLIENT_FAST.curl_timeout_secs() * 1000);
 }
 
 #[test]

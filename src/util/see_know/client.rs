@@ -37,6 +37,19 @@ pub(super) static CLIENT: CurlClient = CurlClient::new(
     ENTERPRISE.tokio_timeout_millis,
 );
 
+/// Tighter-budgeted client for the FAST single-parameter GET endpoints
+/// (`network/*`, `gaming/*`, `username/*`, `domain/*`, `discord/*`) — used by
+/// [`get_json`]. Those answer in ~2–5 s, so they must not inherit [`CLIENT`]'s
+/// wide 75 s ceiling (sized for the slow `/search` name path): a single hung GET
+/// would otherwise burn up to 75 s of the module's per-scan timeout budget before
+/// failing. `POST /search`/`/search/deep` keep the wide [`CLIENT`].
+pub(super) static CLIENT_FAST: CurlClient = CurlClient::new(
+    "seek_now",
+    AuthScheme::XApiKey,
+    ENTERPRISE.get_timeout_secs,
+    ENTERPRISE.get_tokio_timeout_millis,
+);
+
 /// Cache key combining endpoint path, normalised query, and query
 /// type (when applicable). Disambiguates the universal /search path
 /// — auto-detect ("") and typed ("email") on the same value previously
@@ -241,7 +254,8 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
 }
 
 pub(super) async fn get_json(url: &str, key: &str, endpoint: &str, query: &str) -> Result<Value> {
-    let body = CLIENT.get(url, key).await?;
+    // The fast GET endpoints use the tighter-budgeted CLIENT_FAST (see its doc).
+    let body = CLIENT_FAST.get(url, key).await?;
     // Retain the paid response verbatim BEFORE parsing/extraction — operator
     // policy: purchased data is kept in absolute completeness until manually
     // deleted (see `util::raw_archive`). `endpoint`/`query` name the saved file
