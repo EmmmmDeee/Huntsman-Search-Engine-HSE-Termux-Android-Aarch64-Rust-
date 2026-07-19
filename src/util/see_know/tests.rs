@@ -1,8 +1,8 @@
 use serde_json::json;
 
 use super::budget::{
-    budget_increment, budget_snapshot, is_quota_exhausted, reset_budget, scan_budget_remaining,
-    set_scan_cap_override,
+    budget_increment, budget_snapshot, is_quota_exhausted, release_quota_probe, reset_budget,
+    scan_budget_remaining, set_scan_cap_override, should_probe_quota,
 };
 use super::client::{
     CLIENT, HARDCODED_KEY_FOR_TESTS, cache_get, cache_key, cache_put, is_auth_error,
@@ -329,6 +329,27 @@ fn scan_budget_remaining_decreases_with_increments() {
         start,
         after + 1,
         "increment must consume exactly one credit"
+    );
+    reset_budget();
+}
+
+#[test]
+fn a_failed_quota_probe_releases_the_latch_so_a_later_seed_re_probes() {
+    let _guard = BUDGET_TEST_LOCK.lock();
+    reset_budget(); // clears the one-shot QUOTA_PROBED latch
+    // First caller claims the one-shot probe; a concurrent duplicate is refused.
+    assert!(should_probe_quota(), "first caller wins the probe claim");
+    assert!(
+        !should_probe_quota(),
+        "the latch blocks a duplicate concurrent probe"
+    );
+    // The probe the claim guarded FAILED (transient blip) → release the latch.
+    release_quota_probe();
+    // A later seed must now be able to re-probe, instead of the whole scan
+    // running pinned to the un-scaled default cap after one blip.
+    assert!(
+        should_probe_quota(),
+        "after a failed probe releases the latch, a later seed re-probes"
     );
     reset_budget();
 }
