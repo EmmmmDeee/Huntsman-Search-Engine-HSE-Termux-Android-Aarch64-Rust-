@@ -31,6 +31,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -71,7 +72,7 @@ const LAYERS: &[LayerSpec] = &[
         kind: "au-postcode",
         attr_key: "au_postcode",
         label: "postcode",
-        conf: 0.90,
+        conf: confidence::VERY_HIGH_PLUS,
     },
     LayerSpec {
         path: "SAL",
@@ -80,7 +81,7 @@ const LAYERS: &[LayerSpec] = &[
         kind: "au-suburb",
         attr_key: "au_suburb",
         label: "suburb/locality",
-        conf: 0.88,
+        conf: confidence::EXPERT,
     },
     LayerSpec {
         path: "LGA",
@@ -89,7 +90,7 @@ const LAYERS: &[LayerSpec] = &[
         kind: "au-lga",
         attr_key: "au_lga",
         label: "local government area",
-        conf: 0.90,
+        conf: confidence::VERY_HIGH_PLUS,
     },
     LayerSpec {
         path: "CED",
@@ -98,7 +99,7 @@ const LAYERS: &[LayerSpec] = &[
         kind: "au-federal-electorate",
         attr_key: "au_federal_electorate",
         label: "federal electoral division",
-        conf: 0.90,
+        conf: confidence::VERY_HIGH_PLUS,
     },
     LayerSpec {
         path: "SED",
@@ -107,7 +108,7 @@ const LAYERS: &[LayerSpec] = &[
         kind: "au-state-electorate",
         attr_key: "au_state_electorate",
         label: "state electoral division",
-        conf: 0.88,
+        conf: confidence::EXPERT,
     },
     LayerSpec {
         path: "RA",
@@ -116,7 +117,7 @@ const LAYERS: &[LayerSpec] = &[
         kind: "au-remoteness",
         attr_key: "au_remoteness",
         label: "remoteness area",
-        conf: 0.88,
+        conf: confidence::EXPERT,
     },
     LayerSpec {
         path: "SA2",
@@ -125,7 +126,7 @@ const LAYERS: &[LayerSpec] = &[
         kind: "au-sa2",
         attr_key: "au_sa2",
         label: "statistical area level 2",
-        conf: 0.85,
+        conf: confidence::HIGH_PLUSPLUS_PLUS,
     },
     LayerSpec {
         path: "SA4",
@@ -134,7 +135,7 @@ const LAYERS: &[LayerSpec] = &[
         kind: "au-sa4",
         attr_key: "au_sa4",
         label: "statistical area level 4",
-        conf: 0.85,
+        conf: confidence::HIGH_PLUSPLUS_PLUS,
     },
     LayerSpec {
         // The finest ASGS unit carries a land-use category (Residential /
@@ -146,7 +147,7 @@ const LAYERS: &[LayerSpec] = &[
         kind: "au-land-use",
         attr_key: "au_land_use",
         label: "mesh-block land use",
-        conf: 0.85,
+        conf: confidence::HIGH_PLUSPLUS_PLUS,
     },
 ];
 
@@ -340,7 +341,7 @@ fn assemble(
     }
     // Enrich the seed coordinate (GREATEST-merge folds this onto the existing
     // Coordinates entity, only ever adding tags/evidence).
-    let mut coord_e = Entity::new(EntityKind::Coordinates, coord, 0.85, scan_id);
+    let mut coord_e = Entity::new(EntityKind::Coordinates, coord, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
     coord_e.tag("au");
     coord_e.tag("geoint");
     coord_e.tag("asgs");

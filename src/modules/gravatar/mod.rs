@@ -18,6 +18,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -171,7 +172,7 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
                 .filter(|d| d.trim().contains(' '))
         });
     if let Some(name) = name.map(|n| n.trim().to_string()).filter(|n| n.len() >= 3) {
-        push(result, EntityKind::Person, &name, 0.70, &[]);
+        push(result, EntityKind::Person, &name, confidence::HIGH_PLUS, &[]);
     }
 
     // Preferred username — a strong pivot into the free username stack.
@@ -181,7 +182,7 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
         .map(str::trim)
         .filter(|u| u.len() >= 2)
     {
-        push(result, EntityKind::Username, u, 0.65, &[]);
+        push(result, EntityKind::Username, u, confidence::HIGH, &[]);
     }
 
     // Location — geo-hint the geocoders can resolve.
@@ -191,14 +192,14 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
         .map(str::trim)
         .filter(|l| l.len() >= 2)
     {
-        push(result, EntityKind::Address, loc, 0.60, &["geo-hint"]);
+        push(result, EntityKind::Address, loc, confidence::MEDIUM_PLUS, &["geo-hint"]);
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
             let coord_val = format!("{lat:.4},{lon:.4}");
             push(
                 result,
                 EntityKind::Coordinates,
                 &coord_val,
-                0.50,
+                confidence::MEDIUM,
                 &["addr-derived", "geoint"],
             );
         }
@@ -210,7 +211,7 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
         .flatten()
         .map(str::trim)
         .filter(|u| u.starts_with("http"))
-        .for_each(|u| push(result, EntityKind::Url, u, 0.60, &[]));
+        .for_each(|u| push(result, EntityKind::Url, u, confidence::MEDIUM_PLUS, &[]));
 
     // Personal URLs the owner listed — each carries the owner's self-asserted
     // link label (`title`, e.g. "Blog"/"Portfolio") as `link_title` evidence,
@@ -222,7 +223,7 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
             .map(str::trim)
             .filter(|v| v.starts_with("http"))
         {
-            let mut e = Entity::new(EntityKind::Url, val, 0.60, scan_id);
+            let mut e = Entity::new(EntityKind::Url, val, confidence::MEDIUM_PLUS, scan_id);
             e.tag(SRC);
             let mut prov = ev.clone();
             if let Some(t) = u.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
@@ -255,7 +256,7 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
             .map(str::trim)
             .filter(|u| !u.is_empty())
         {
-            let conf = if verified { 0.65 } else { 0.55 };
+            let conf = if verified { confidence::HIGH } else { confidence::MEDIUM_HIGH };
             let mut e = Entity::new(EntityKind::Username, uname, conf, scan_id);
             e.tag(SRC);
             tags.iter().for_each(|t| e.tag(*t));
@@ -272,7 +273,7 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
             .map(str::trim)
             .filter(|u| u.starts_with("http"))
         {
-            push(result, EntityKind::Url, u, 0.55, &tags);
+            push(result, EntityKind::Url, u, confidence::MEDIUM_HIGH, &tags);
         }
     }
 
@@ -304,7 +305,7 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
         .map(str::trim)
         .filter(|c| c.len() >= 2)
     {
-        let mut o = Entity::new(EntityKind::Organisation, company, 0.60, scan_id);
+        let mut o = Entity::new(EntityKind::Organisation, company, confidence::MEDIUM_PLUS, scan_id);
         o.tag(SRC);
         o.tag("employer");
         let mut oev = ev.clone().with_attr("source_field", "company");
@@ -324,7 +325,7 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
             .map(str::trim)
             .filter(|v| v.starts_with("http"))
         {
-            let mut u = Entity::new(EntityKind::Url, val, 0.60, scan_id);
+            let mut u = Entity::new(EntityKind::Url, val, confidence::MEDIUM_PLUS, scan_id);
             u.tag(SRC);
             u.tag("contact");
             u.add_evidence(

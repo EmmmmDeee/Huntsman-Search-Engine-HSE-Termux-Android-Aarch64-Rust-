@@ -9,7 +9,7 @@ use futures::StreamExt;
 use super::fetch::fetch_one;
 use super::helpers::*;
 use super::{ENGINE_CONCURRENCY, engine_enabled, is_social_host, proven_live_engines};
-use crate::core::module::{ModuleContext, ModuleResult};
+use crate::core::{confidence, module::{ModuleContext, ModuleResult}};
 
 pub(super) async fn recycle_entities(
     ctx: &ModuleContext,
@@ -25,7 +25,7 @@ pub(super) async fn recycle_entities(
     let mut seen_queries: HashSet<String> = HashSet::with_capacity(recycle_queries.capacity());
 
     for entity in &result.entities {
-        if entity.confidence < 0.40 {
+        if entity.confidence < confidence::LOW {
             continue;
         }
         let q = match entity.kind {
@@ -41,18 +41,18 @@ pub(super) async fn recycle_entities(
                 Some(format!("\"{}\" address OR location OR city", entity.value))
             }
             EntityKind::Person => Some(format!("\"{}\" address OR email OR phone", entity.value)),
-            EntityKind::Address if entity.confidence >= 0.40 => Some(format!(
+            EntityKind::Address if entity.confidence >= confidence::LOW => Some(format!(
                 "\"{}\" name OR resident OR owner OR phone",
                 entity.value
             )),
             EntityKind::Phone => Some(format!("\"{}\" name OR address OR owner", entity.value)),
-            EntityKind::Domain if entity.confidence >= 0.55 => {
+            EntityKind::Domain if entity.confidence >= confidence::MEDIUM_HIGH => {
                 let domain = &entity.value;
                 Some(format!(
                     "\"{domain}\" location OR address OR city OR suburb"
                 ))
             }
-            EntityKind::Organisation if entity.confidence >= 0.50 => {
+            EntityKind::Organisation if entity.confidence >= confidence::MEDIUM => {
                 Some(format!("\"{}\" address OR ABN OR location", entity.value))
             }
             _ => None,
@@ -138,7 +138,7 @@ pub(super) async fn recycle_entities(
                     .split_whitespace()
                     .last()
                     .is_some_and(|t| t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()));
-                let base_conf = if has_postcode { 0.55 } else { 0.45 };
+                let base_conf = if has_postcode { confidence::MEDIUM_HIGH } else { confidence::LOW_MEDIUM };
                 let mut e = Entity::new(EntityKind::Address, &addr, base_conf, &scan_id);
                 e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 e.tag("recycled");
@@ -173,7 +173,7 @@ pub(super) async fn recycle_entities(
                 continue;
             }
             if seen_emails.insert(email.clone()) {
-                let mut e = Entity::new(EntityKind::Email, &email, 0.55, &scan_id);
+                let mut e = Entity::new(EntityKind::Email, &email, confidence::MEDIUM_HIGH, &scan_id);
                 e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 e.tag("recycled");
                 e.add_evidence(recycled_evidence(r, "Email", &email, &combined));
@@ -183,7 +183,7 @@ pub(super) async fn recycle_entities(
 
         for phone in extract_phones_from_text(&combined) {
             if seen_phones.insert(phone.clone()) {
-                let mut e = Entity::new(EntityKind::Phone, &phone, 0.50, &scan_id);
+                let mut e = Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM, &scan_id);
                 e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 e.tag("recycled");
                 e.add_evidence(recycled_evidence(r, "Phone", &phone, &combined));
@@ -473,7 +473,7 @@ pub(super) fn extract_username_pivots(results: &[SearchResult], target: &Target)
 ///   banners and gamertag-only display names like `ZMKCR (@ZMKCR)`).
 /// - Duplicates are deduplicated by lowercase key within one call.
 ///
-/// Confidence: 0.65 — social title is a near-certain identity disclosure, but
+/// Confidence: confidence::HIGH — social title is a near-certain identity disclosure, but
 /// display names are not always real names (gamertags, aliases).
 pub(super) fn extract_display_names_from_titles(
     results: &[SearchResult],
@@ -507,7 +507,7 @@ pub(super) fn extract_display_names_from_titles(
         }
         let key = raw_name.to_lowercase();
         if seen.insert(key) {
-            let mut e = Entity::new(EntityKind::Person, &raw_name, 0.65, scan_id);
+            let mut e = Entity::new(EntityKind::Person, &raw_name, confidence::HIGH, scan_id);
             e.tag("derived");
             e.tag("social-name");
             e.tag(crate::core::tags::SEARCH_DISCOVERED);
@@ -529,12 +529,12 @@ pub(super) fn extract_display_names_from_titles(
 ///
 /// Two signals are combined:
 ///
-/// **Signal 1 — result URL is a bio aggregator or messaging host** (0.70 / 0.65
+/// **Signal 1 — result URL is a bio aggregator or messaging host** (confidence::HIGH_PLUS / confidence::HIGH
 /// conf): a search engine returned `https://linktr.ee/slug` as a top result.
 /// Only emitted when at least one seed term appears in the title+snippet to
 /// confirm the page is about the target.
 ///
-/// **Signal 2 — bio URL appears in SERP text** (0.65 / 0.60 conf): the SERP
+/// **Signal 2 — bio URL appears in SERP text** (confidence::HIGH / confidence::MEDIUM_PLUS conf): the SERP
 /// snippet or title contains text like `linktr.ee/slug` (with or without
 /// `https://`). The URL is reconstructed with an `https://` prefix.
 ///
@@ -565,7 +565,7 @@ pub(super) fn extract_bio_aggregator_urls(
         if is_bio || is_msg {
             let url_str = r.url.trim_end_matches('/').to_string();
             if seen.insert(url_str.to_lowercase()) {
-                let conf = if is_msg { 0.65 } else { 0.70 };
+                let conf = if is_msg { confidence::HIGH } else { confidence::HIGH_PLUS };
                 let tag = if is_msg {
                     "messaging-profile"
                 } else {
@@ -603,7 +603,7 @@ pub(super) fn extract_bio_aggregator_urls(
             let reconstructed = format!("https://{slug_host}/{slug}");
             if seen.insert(reconstructed.to_lowercase()) {
                 let is_messaging = MESSAGING_DIRECT_HOSTS.contains(&slug_host);
-                let conf = if is_messaging { 0.60 } else { 0.65 };
+                let conf = if is_messaging { confidence::MEDIUM_PLUS } else { confidence::HIGH };
                 let tag = if is_messaging {
                     "messaging-profile"
                 } else {

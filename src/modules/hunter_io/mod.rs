@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -244,7 +245,7 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
 
     // ── Organisation entity (if Hunter resolved one for the domain) ──
     if let Some(org) = nonempty(&data.organization) {
-        let mut e = Entity::new(EntityKind::Organisation, &org, 0.70, scan_id);
+        let mut e = Entity::new(EntityKind::Organisation, &org, confidence::HIGH_PLUS, scan_id);
         e.tag("hunter-io");
         let mut ev = Evidence::new(
             SRC,
@@ -268,7 +269,7 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
     if let Some(dom) = &canonical
         && seen.insert(format!("dom:{}", dom.to_lowercase()))
     {
-        let mut e = Entity::new(EntityKind::Domain, dom, 0.60, scan_id);
+        let mut e = Entity::new(EntityKind::Domain, dom, confidence::MEDIUM_PLUS, scan_id);
         e.tag("hunter-io");
         e.tag("org-domain");
         e.add_evidence(
@@ -307,7 +308,7 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
             continue;
         }
 
-        let email_conf = if synthesised { 0.40 } else { conf };
+        let email_conf = if synthesised { confidence::LOW } else { conf };
         let mut ee = Entity::new(EntityKind::Email, &addr, email_conf, scan_id);
         ee.tag("hunter-io");
         ee.tag("email-finder");
@@ -344,7 +345,7 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
         // ── Person entity if Hunter has a name attached ──
         if let (Some(first), Some(last)) = (&first, &last) {
             let full = format!("{first} {last}");
-            let mut pe = Entity::new(EntityKind::Person, &full, email_conf.min(0.75), scan_id);
+            let mut pe = Entity::new(EntityKind::Person, &full, email_conf.min(confidence::VERY_HIGH), scan_id);
             pe.tag("hunter-io");
             pe.tag("email-attribution");
             let mut pev = Evidence::new(SRC, format!("Hunter.io attributed {addr} to {full}"))
@@ -365,7 +366,7 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
             if let Some(uri) = nonempty(&src.uri)
                 && seen.insert(format!("url:{}", uri.to_lowercase()))
             {
-                let mut e = Entity::new(EntityKind::Url, &uri, 0.45, scan_id);
+                let mut e = Entity::new(EntityKind::Url, &uri, confidence::LOW_MEDIUM, scan_id);
                 e.tag("hunter-io");
                 e.tag("email-source");
                 e.add_evidence(
@@ -377,7 +378,7 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
             if let Some(d) = nonempty(&src.domain)
                 && seen.insert(format!("dom:{}", d.to_lowercase()))
             {
-                let mut e = Entity::new(EntityKind::Domain, &d, 0.40, scan_id);
+                let mut e = Entity::new(EntityKind::Domain, &d, confidence::LOW, scan_id);
                 e.tag("hunter-io");
                 e.tag("email-source");
                 e.add_evidence(
@@ -398,7 +399,7 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
             };
             if v.starts_with("http") {
                 if seen.insert(format!("url:{}", v.to_lowercase())) {
-                    let mut e = Entity::new(EntityKind::Url, &v, 0.55, scan_id);
+                    let mut e = Entity::new(EntityKind::Url, &v, confidence::MEDIUM_HIGH, scan_id);
                     e.tag("hunter-io");
                     e.tag("social-profile");
                     e.add_evidence(
@@ -411,7 +412,7 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
             } else {
                 let handle = format!("{network}:{v}");
                 if seen.insert(format!("user:{}", handle.to_lowercase())) {
-                    let mut e = Entity::new(EntityKind::Username, &handle, 0.55, scan_id);
+                    let mut e = Entity::new(EntityKind::Username, &handle, confidence::MEDIUM_HIGH, scan_id);
                     e.tag("hunter-io");
                     e.tag("social-profile");
                     e.add_evidence(
@@ -477,11 +478,11 @@ fn apply_email_pattern(pattern: &str, first: &str, last: &str, domain: &str) -> 
 /// shouldn't outrank a missing field).
 fn confidence_from_hunter_score(score: Option<u8>) -> f64 {
     match score {
-        Some(c) if c >= 90 => 0.85,
-        Some(c) if c >= 70 => 0.70,
-        Some(c) if c >= 40 => 0.55,
-        Some(c) if c > 0 => 0.45,
-        _ => 0.50,
+        Some(c) if c >= 90 => confidence::HIGH_PLUSPLUS_PLUS,
+        Some(c) if c >= 70 => confidence::HIGH_PLUS,
+        Some(c) if c >= 40 => confidence::MEDIUM_HIGH,
+        Some(c) if c > 0 => confidence::LOW_MEDIUM,
+        _ => confidence::MEDIUM,
     }
 }
 

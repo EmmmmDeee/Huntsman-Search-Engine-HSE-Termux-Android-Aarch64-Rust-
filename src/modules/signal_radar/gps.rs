@@ -3,6 +3,7 @@
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
 };
@@ -28,10 +29,10 @@ fn is_valid_fix(lat: f64, lon: f64) -> bool {
 
 /// Confidence for an on-device location fix.
 ///
-/// Provider sets the ceiling (GPS 0.90, network 0.65); accuracy radius
+/// Provider sets the ceiling (GPS confidence::VERY_HIGH_PLUS, network confidence::HIGH); accuracy radius
 /// scales it down for imprecise fixes.
 fn fix_confidence(provider: &str, accuracy_m: Option<f64>) -> f64 {
-    let ceiling: f64 = if provider == "gps" { 0.90 } else { 0.65 };
+    let ceiling: f64 = if provider == "gps" { confidence::VERY_HIGH_PLUS } else { confidence::HIGH };
     match accuracy_m {
         Some(a) if a > 0.0 => {
             let scaled = if a <= 20.0 {
@@ -45,7 +46,7 @@ fn fix_confidence(provider: &str, accuracy_m: Option<f64>) -> f64 {
             } else {
                 ceiling - 0.35
             };
-            scaled.clamp(0.30, 0.90)
+            scaled.clamp(0.30, confidence::VERY_HIGH_PLUS)
         }
         _ => ceiling,
     }
@@ -143,7 +144,6 @@ pub(super) async fn scan_gps(scan_id: &str) -> ModuleResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::entity::EntityKind;
 
     // ── is_valid_fix ──────────────────────────────────────────────────────────
 
@@ -170,35 +170,35 @@ mod tests {
     #[test]
     fn fix_confidence_gps_no_accuracy_returns_ceiling() {
         let c = fix_confidence("gps", None);
-        assert!((c - 0.90).abs() < 1e-9, "gps ceiling = {c}");
+        assert!((c - confidence::VERY_HIGH_PLUS).abs() < 1e-9, "gps ceiling = {c}");
     }
 
     #[test]
     fn fix_confidence_network_no_accuracy_returns_ceiling() {
         let c = fix_confidence("network", None);
-        assert!((c - 0.65).abs() < 1e-9, "network ceiling = {c}");
+        assert!((c - confidence::HIGH).abs() < 1e-9, "network ceiling = {c}");
     }
 
     #[test]
     fn fix_confidence_gps_accuracy_tiers() {
-        assert!((fix_confidence("gps", Some(10.0)) - 0.90).abs() < 1e-9);
-        assert!((fix_confidence("gps", Some(20.0)) - 0.90).abs() < 1e-9);
-        assert!((fix_confidence("gps", Some(50.0)) - 0.85).abs() < 1e-9);
-        assert!((fix_confidence("gps", Some(200.0)) - 0.75).abs() < 1e-9);
-        assert!((fix_confidence("gps", Some(1000.0)) - 0.65).abs() < 1e-9);
-        assert!((fix_confidence("gps", Some(5000.0)) - 0.55).abs() < 1e-9);
+        assert!((fix_confidence("gps", Some(10.0)) - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
+        assert!((fix_confidence("gps", Some(20.0)) - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
+        assert!((fix_confidence("gps", Some(50.0)) - confidence::HIGH_PLUSPLUS_PLUS).abs() < 1e-9);
+        assert!((fix_confidence("gps", Some(200.0)) - confidence::VERY_HIGH).abs() < 1e-9);
+        assert!((fix_confidence("gps", Some(1000.0)) - confidence::HIGH).abs() < 1e-9);
+        assert!((fix_confidence("gps", Some(5000.0)) - confidence::MEDIUM_HIGH).abs() < 1e-9);
     }
 
     #[test]
     fn fix_confidence_network_large_radius_clamps_to_floor() {
-        // network ceiling 0.65 − 0.35 = 0.30, which is the clamp floor.
+        // network ceiling confidence::HIGH − 0.35 = 0.30, which is the clamp floor.
         assert!((fix_confidence("network", Some(5000.0)) - 0.30).abs() < 1e-9);
     }
 
     #[test]
     fn fix_confidence_zero_accuracy_falls_through_to_ceiling() {
         // a = 0.0 does not satisfy `a > 0.0`; falls through to the `_ =>` arm.
-        assert!((fix_confidence("gps", Some(0.0)) - 0.90).abs() < 1e-9);
+        assert!((fix_confidence("gps", Some(0.0)) - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
     }
 
     // ── parse_fix ─────────────────────────────────────────────────────────────

@@ -24,6 +24,7 @@ use std::collections::HashSet;
 use serde_json::Value;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
     tags,
@@ -179,7 +180,7 @@ pub(super) fn extract_entities(
         if crate::util::extract::looks_like_email(&lower) && seen.insert(lower) {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Email, &email, 0.70, scan_id),
+                Entity::new(EntityKind::Email, &email, confidence::HIGH_PLUS, scan_id),
                 &ev,
                 &[],
             );
@@ -190,7 +191,7 @@ pub(super) fn extract_entities(
         if lower.len() >= 3 && seen.insert(lower) {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Username, &uname, 0.65, scan_id),
+                Entity::new(EntityKind::Username, &uname, confidence::HIGH, scan_id),
                 &ev,
                 &[],
             );
@@ -205,9 +206,9 @@ pub(super) fn extract_entities(
         let phone_lower = phone.to_lowercase();
         if seen.insert(phone_lower.clone()) {
             let conf = if phone_lower == target_value.to_lowercase() {
-                0.70
+                confidence::HIGH_PLUS
             } else {
-                0.55
+                confidence::MEDIUM_HIGH
             };
             push_breach_entity(
                 result,
@@ -226,7 +227,7 @@ pub(super) fn extract_entities(
         && !is_username_derived_name(name.trim())
         && seen.insert(name.to_lowercase())
     {
-        let mut person = Entity::new(EntityKind::Person, name.trim(), 0.65, scan_id);
+        let mut person = Entity::new(EntityKind::Person, name.trim(), confidence::HIGH, scan_id);
         // Surface the record's identity demographics (DOB / gender / age) as
         // normalized first-class tags on the subject node, not only buried in
         // the raw-record evidence the full-field fold already carries. The
@@ -249,7 +250,7 @@ pub(super) fn extract_entities(
         {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id),
+                Entity::new(EntityKind::IpAddress, &ip, confidence::MEDIUM_PLUS, scan_id),
                 &ev,
                 &["geolocation-lead"],
             );
@@ -261,7 +262,7 @@ pub(super) fn extract_entities(
     {
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(&country) {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, confidence::LOW_MEDIUM, scan_id);
             c.tag("addr-derived");
             c.tag("geoint");
             c.tag("breach");
@@ -271,7 +272,7 @@ pub(super) fn extract_entities(
         }
         push_breach_entity(
             result,
-            Entity::new(EntityKind::Address, &country, 0.55, scan_id),
+            Entity::new(EntityKind::Address, &country, confidence::MEDIUM_HIGH, scan_id),
             &ev,
             &[],
         );
@@ -284,7 +285,7 @@ pub(super) fn extract_entities(
             Entity::new(
                 EntityKind::Username,
                 format!("discord:{did}"),
-                0.60,
+                confidence::MEDIUM_PLUS,
                 scan_id,
             ),
             &ev,
@@ -303,7 +304,7 @@ pub(super) fn extract_entities(
     {
         push_breach_entity(
             result,
-            Entity::new(EntityKind::Username, format!("steam:{sid}"), 0.60, scan_id),
+            Entity::new(EntityKind::Username, format!("steam:{sid}"), confidence::MEDIUM_PLUS, scan_id),
             &ev,
             &["steam"],
         );
@@ -330,7 +331,7 @@ pub(super) fn extract_entities(
             // than mint a junk Password (the same fix as oathnet_pro's breach path).
             crate::util::extract::CredentialField::Email => {
                 if seen.insert(format!("@pw-email:{}", p.to_lowercase())) {
-                    let mut e = Entity::new(EntityKind::Email, p, 0.45, scan_id);
+                    let mut e = Entity::new(EntityKind::Email, p, confidence::LOW_MEDIUM, scan_id);
                     e.tag("see-know");
                     e.tag("recovered-from-password");
                     e.add_evidence(ev.clone());
@@ -369,7 +370,7 @@ pub(super) fn extract_entities(
                     let tag_refs: Vec<&str> = tags.iter().map(String::as_str).collect();
                     push_breach_entity(
                         result,
-                        Entity::new(EntityKind::Password, p, 0.75, scan_id),
+                        Entity::new(EntityKind::Password, p, confidence::VERY_HIGH, scan_id),
                         &ev,
                         &tag_refs,
                     );
@@ -425,7 +426,7 @@ pub(super) fn extract_entities(
             && u.contains('.')
             && seen.insert(format!("@url:{}", u.to_lowercase()))
         {
-            let mut e = Entity::new(EntityKind::Url, u, 0.60, scan_id);
+            let mut e = Entity::new(EntityKind::Url, u, confidence::MEDIUM_PLUS, scan_id);
             e.tag("see-know");
             e.tag("stealer");
             e.add_evidence(ev.clone());
@@ -436,7 +437,7 @@ pub(super) fn extract_entities(
         if let Some(uname) = val_str(item, "username") {
             let cred_val = format!("{uname}@{url}");
             if seen.insert(format!("@cred:{}", cred_val.to_lowercase())) {
-                let mut e = Entity::new(EntityKind::Credential, &cred_val, 0.60, scan_id);
+                let mut e = Entity::new(EntityKind::Credential, &cred_val, confidence::MEDIUM_PLUS, scan_id);
                 e.tag("see-know");
                 e.tag("stealer");
                 e.add_evidence(ev.clone());
@@ -478,7 +479,7 @@ pub(super) fn extract_entities(
         && crate::util::domains::looks_like_domain(&domain)
         && seen.insert(domain.to_lowercase())
     {
-        let mut e = Entity::new(EntityKind::Domain, &domain, 0.55, scan_id);
+        let mut e = Entity::new(EntityKind::Domain, &domain, confidence::MEDIUM_HIGH, scan_id);
         e.tag("see-know");
         // Same quarantine as the identity block above (this push lands after it,
         // so it is demoted here rather than by the range pass).

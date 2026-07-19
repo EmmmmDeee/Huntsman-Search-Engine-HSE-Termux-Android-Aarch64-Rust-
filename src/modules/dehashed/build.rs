@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use serde_json::Value;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
     scan::TargetKind,
@@ -118,7 +119,7 @@ fn flatten_record(item: &Value) -> Value {
 /// `None` when nothing in the response is attributable to the subject. **Pure**
 /// (no network/IO).
 ///
-/// No-fabrication gate. The engine pre-seeds a subject anchor, so minting a 0.88
+/// No-fabrication gate. The engine pre-seeds a subject anchor, so minting a confidence::EXPERT
 /// `breach`-tagged headline that doesn't reflect the subject would merge a false
 /// "breach hit" straight onto that anchor — the exact failure `oathnet_pro`'s
 /// `breach_parent_entity` guards against by returning `None` on a zero-match
@@ -157,12 +158,12 @@ pub(super) fn build_breach_entity(
             .collect();
         (matching.len() as u64, matching)
     };
-    // Gate: never mint the 0.88 breach headline off a subject-less response.
+    // Gate: never mint the confidence::EXPERT breach headline off a subject-less response.
     if hits == 0 {
         return None;
     }
 
-    let mut entity = Entity::new(kind, value, 0.88, scan_id);
+    let mut entity = Entity::new(kind, value, confidence::EXPERT, scan_id);
     entity.tag(tags::BREACH);
     entity.tag("dehashed");
 
@@ -287,7 +288,7 @@ pub(super) fn extract_records(
             if crate::util::extract::looks_like_email(&lower) && seen.insert(lower) {
                 push_breach_entity(
                     result,
-                    Entity::new(EntityKind::Email, &email, 0.70, scan_id),
+                    Entity::new(EntityKind::Email, &email, confidence::HIGH_PLUS, scan_id),
                     &ev,
                     &[],
                 );
@@ -298,7 +299,7 @@ pub(super) fn extract_records(
             if lower.len() >= 3 && seen.insert(lower) {
                 push_breach_entity(
                     result,
-                    Entity::new(EntityKind::Username, &uname, 0.65, scan_id),
+                    Entity::new(EntityKind::Username, &uname, confidence::HIGH, scan_id),
                     &ev,
                     &[],
                 );
@@ -311,7 +312,7 @@ pub(super) fn extract_records(
             if phone.len() >= 7 && seen.insert(phone.to_lowercase()) {
                 push_breach_entity(
                     result,
-                    Entity::new(EntityKind::Phone, &phone, 0.60, scan_id),
+                    Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM_PLUS, scan_id),
                     &ev,
                     &[],
                 );
@@ -327,7 +328,7 @@ pub(super) fn extract_records(
             {
                 push_breach_entity(
                     result,
-                    Entity::new(EntityKind::Person, name.trim(), 0.65, scan_id),
+                    Entity::new(EntityKind::Person, name.trim(), confidence::HIGH, scan_id),
                     &ev,
                     &[],
                 );
@@ -338,7 +339,7 @@ pub(super) fn extract_records(
                 if crate::util::preflight::is_public_ip(&ip) && seen.insert(ip.clone()) {
                     push_breach_entity(
                         result,
-                        Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id),
+                        Entity::new(EntityKind::IpAddress, &ip, confidence::MEDIUM_PLUS, scan_id),
                         &ev,
                         &["geolocation-lead"],
                     );
@@ -380,7 +381,7 @@ pub(super) fn extract_records(
                     let tag_refs: Vec<&str> = tags.iter().map(String::as_str).collect();
                     push_breach_entity(
                         result,
-                        Entity::new(EntityKind::Password, h, 0.55, scan_id),
+                        Entity::new(EntityKind::Password, h, confidence::MEDIUM_HIGH, scan_id),
                         &ev,
                         &tag_refs,
                     );
@@ -391,7 +392,7 @@ pub(super) fn extract_records(
                     {
                         push_breach_entity(
                             result,
-                            Entity::new(EntityKind::Password, pt, 0.60, scan_id),
+                            Entity::new(EntityKind::Password, pt, confidence::MEDIUM_PLUS, scan_id),
                             &ev,
                             &["cracked", "weak-password", "from-hash"],
                         );
@@ -414,7 +415,7 @@ pub(super) fn extract_records(
                     if seen.insert(format!("@pw-email:{lower}")) {
                         push_breach_entity(
                             result,
-                            Entity::new(EntityKind::Email, p, 0.45, scan_id),
+                            Entity::new(EntityKind::Email, p, confidence::LOW_MEDIUM, scan_id),
                             &ev,
                             &["recovered-from-password"],
                         );
@@ -424,7 +425,7 @@ pub(super) fn extract_records(
                     if p.chars().count() >= 4 && seen.insert(format!("@pw:{}", p.to_lowercase())) {
                         push_breach_entity(
                             result,
-                            Entity::new(EntityKind::Password, p, 0.60, scan_id),
+                            Entity::new(EntityKind::Password, p, confidence::MEDIUM_PLUS, scan_id),
                             &ev,
                             &["plaintext-password"],
                         );
