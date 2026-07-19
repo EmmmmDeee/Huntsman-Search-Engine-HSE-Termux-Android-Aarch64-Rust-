@@ -191,6 +191,54 @@ async fn traced_client_sends_x_huntsman_trace_header() {
 }
 
 #[tokio::test]
+async fn client_transparently_decompresses_a_gzip_encoded_response() {
+    use std::io::Write as _;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // What the client must read back AFTER reqwest decompresses the body. If gzip
+    // auto-decoding is off (the `gzip` feature or `.gzip(true)` missing), the
+    // client would try to JSON-parse the raw gzip bytes and this fails.
+    let json = r#"{"marker":"gzip-decoded-ok","n":42}"#;
+    // gzip-compress it — flate2 is already a direct dependency (see `cli::cells`).
+    let gz = {
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(json.as_bytes()).unwrap();
+        e.finish().unwrap()
+    };
+    assert!(
+        gz != json.as_bytes(),
+        "sanity: the served body is actually compressed"
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 2048];
+        let _ = sock.read(&mut buf).await;
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+            gz.len()
+        );
+        let _ = sock.write_all(head.as_bytes()).await;
+        let _ = sock.write_all(&gz).await;
+        let _ = sock.flush().await;
+    });
+
+    let client = build_client();
+    crate::util::circuit_breaker::record_success("127.0.0.1"); // isolate from parallel breaker state
+    let v: serde_json::Value = fetch_json(&client, "test_gzip", &format!("http://{addr}/"))
+        .await
+        .expect("fetch_json must transparently decode a Content-Encoding: gzip body");
+    assert_eq!(
+        v["marker"], "gzip-decoded-ok",
+        "reqwest must decompress the gzip response body before parsing"
+    );
+    assert_eq!(v["n"], 42);
+    crate::util::circuit_breaker::record_success("127.0.0.1");
+}
+
+#[tokio::test]
 async fn fetch_json_or_absent_maps_400_to_none_while_or_404_still_errors() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

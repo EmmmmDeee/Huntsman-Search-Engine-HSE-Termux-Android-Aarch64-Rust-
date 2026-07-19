@@ -72,7 +72,14 @@ hex                = "0.4"
 # target. The self-contained ring + webpki-roots stack here works identically on
 # Termux/Linux/CI. A 0.13 move must re-create that with `rustls-no-provider` + a
 # hand-built ClientConfig, and be validated on-device first.
-reqwest            = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# `gzip`: request + transparently decompress gzip responses on every reqwest
+# fetch (the free + intel-API cluster). curl's paid-API transport gets the same
+# via `--compressed`. Safe against decompression bombs because the fetch layer
+# streams the DECOMPRESSED body and errors past `JSON_BODY_CAP` (32 MiB) — unlike
+# curl's `--max-filesize`, which bounds the compressed transfer — so the reqwest
+# cap already caps the expanded size. Pulls `async-compression`/`flate2`
+# (flate2 already in-tree via tower-http's `compression-gzip` + `cli::cells`).
+reqwest            = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "gzip"] }
 # Pinned to 0.39 ON PURPOSE — do NOT bump to 0.40 without a toolchain audit.
 # 0.40 pulls `libsqlite3-sys` 0.38, whose build script uses the unstable
 # `cfg_select!` macro (rust-lang/rust#115585). That fails to compile on the
