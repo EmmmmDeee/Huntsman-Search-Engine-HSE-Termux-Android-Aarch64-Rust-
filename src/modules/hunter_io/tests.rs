@@ -117,6 +117,48 @@ use super::*;
     }
 
     #[test]
+    fn build_entities_emits_direct_phone_and_verification_status() {
+        let d = data(
+            r#"{
+                "organization": "Acme",
+                "emails": [
+                    {"value": "jane.doe@acme.com", "confidence": 95,
+                     "first_name": "Jane", "last_name": "Doe",
+                     "phone_number": "+1 (212) 555-1234",
+                     "verification": {"status": "valid", "date": "2026-01-02"}}
+                ]
+            }"#,
+        );
+        let es = build_entities(&d, "acme.com", "t");
+        // The direct-dial phone surfaces as a normalised E.164 Phone pivot.
+        let phone = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Phone)
+            .expect("phone entity");
+        assert_eq!(phone.value, "+12125551234");
+        // The deliverability verdict is stamped on the email evidence.
+        let email = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Email)
+            .expect("email entity");
+        assert_eq!(
+            email.evidence[0]
+                .attributes
+                .get("verification_status")
+                .map(String::as_str),
+            Some("valid")
+        );
+    }
+
+    #[test]
+    fn build_entities_ignores_a_too_short_phone_fragment() {
+        // Fewer than 7 digits is not a dialable number — no Phone entity.
+        let d = data(r#"{ "emails": [ {"value": "x@acme.com", "phone_number": "12345"} ] }"#);
+        let es = build_entities(&d, "acme.com", "t");
+        assert!(!es.iter().any(|e| e.kind == EntityKind::Phone));
+    }
+
+    #[test]
     fn build_entities_surfaces_canonical_domain_pivot() {
         let d = data(r#"{ "domain": "acme.io", "organization": "Acme" }"#);
         let es = build_entities(&d, "acme.com", "t");
