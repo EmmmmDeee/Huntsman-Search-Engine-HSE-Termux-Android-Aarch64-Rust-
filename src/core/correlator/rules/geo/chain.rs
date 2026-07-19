@@ -59,7 +59,9 @@ pub(in crate::core::correlator) fn rule_au_017_multi_geo_convergence(
     // form a cluster, so bail before parsing anything.
     if entities
         .iter()
-        .filter(|e| e.kind == EntityKind::Coordinates && e.confidence >= 0.50)
+        .filter(|e| {
+            e.kind == EntityKind::Coordinates && e.confidence >= 0.50 && !is_infrastructure_geo(e)
+        })
         .take(2)
         .count()
         < 2
@@ -70,9 +72,15 @@ pub(in crate::core::correlator) fn rule_au_017_multi_geo_convergence(
     // junk ("200,300") is dropped here rather than silently clustered. Each
     // surviving entity carries its (lat, lon) so the inner loop never re-parses.
     // Filter and parse fuse into one pass — no intermediate `coords` Vec.
+    // Infrastructure coordinates (a domain's hosting datacentre, a WHOIS
+    // registrant location) are NOT the subject's whereabouts, so they must not
+    // fuse into a "subject physically located here" convergence — parity with
+    // AU-030/AU-099 and the sibling geo rules.
     let mut parsed: Vec<(&Entity, (f64, f64))> = entities
         .iter()
-        .filter(|e| e.kind == EntityKind::Coordinates && e.confidence >= 0.50)
+        .filter(|e| {
+            e.kind == EntityKind::Coordinates && e.confidence >= 0.50 && !is_infrastructure_geo(e)
+        })
         .filter_map(|c| crate::util::geohash::parse_coords(&c.value).map(|ll| (c, ll)))
         .collect();
     // Deterministic clustering: the greedy single-link assignment below
@@ -367,7 +375,9 @@ pub(in crate::core::correlator) fn rule_au_057_synthesised_location_fix(
     let candidates: Vec<(&Entity, (f64, f64))> =
         entities_of_kind(entities, EntityKind::Coordinates)
             .into_iter()
-            .filter(|e| e.confidence >= 0.60)
+            // Exclude infrastructure coordinates: a synthesised "location fix" must
+            // come from the subject's own points, not a hosting/registrant datacentre.
+            .filter(|e| e.confidence >= 0.60 && !is_infrastructure_geo(e))
             .filter_map(|e| crate::util::geohash::parse_coords(&e.value).map(|ll| (e, ll)))
             .collect();
 

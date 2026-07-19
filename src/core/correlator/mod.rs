@@ -405,6 +405,11 @@ const RULES: &[RuleFn] = &[
     // network block also discovered this scan — shared hosting infrastructure,
     // reusing util::spf's CIDR-containment maths rather than duplicating it.
     rule_au_112_shared_cidr_infrastructure,
+    // AU-114: a confirmed Person/Organisation flagged on a sanctions / debarment
+    // / PEP list (opensanctions definitive match, Wikidata PEP signal) — the
+    // highest-consequence OSINT screening signal, graded Critical/High/Medium by
+    // the strongest flag. Surfaces what previously sat un-named in the graph.
+    rule_au_114_sanctions_exposure,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

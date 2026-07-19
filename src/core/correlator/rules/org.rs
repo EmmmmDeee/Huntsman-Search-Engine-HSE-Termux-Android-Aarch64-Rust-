@@ -996,3 +996,98 @@ pub(in crate::core::correlator) fn rule_au_107_breach_employer_affiliation(
         })
         .collect()
 }
+
+/// AU-114 — Subject flagged on a sanctions / debarment / PEP list.
+///
+/// A `Person`/`Organisation` an `opensanctions` definitive match (or Wikidata's
+/// PEP signal) escalates carries the `tags::SANCTIONED`, `tags::DEBARRED` and/or
+/// `tags::PEP` markers — among the highest-consequence signals an OSINT screen can
+/// surface — yet no correlation named them, so a designated-party hit never
+/// reached the ranked findings view (the producing entity sat in the graph, but
+/// the analyst had to notice the tag by hand). This rule reports one finding per
+/// flagged identity, at a severity graded by the strongest flag it carries:
+///   * sanctioned → CRITICAL (a designated party — OFAC/UN/EU/DFAT SDN, …),
+///   * debarred   → HIGH     (barred from public contracting),
+///   * PEP-only   → MEDIUM   (elevated due-diligence signal, not a determination).
+///
+/// Evidentiary care: fires only for a CONFIRMED (candidate-filtered) entity at or
+/// above the producers' definitive-match confidence floor, frames a PEP hit as a
+/// due-diligence lead rather than a finding of guilt, and surfaces the sanctions
+/// programme / source datasets from the entity's own evidence — consistent with
+/// the producers' "an OSINT signal, never a legal determination" doctrine.
+/// One finding per entity, so `entity_uids` is a single already-sorted uid.
+pub(in crate::core::correlator) fn rule_au_114_sanctions_exposure(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use crate::core::tags;
+    entities
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::Person | EntityKind::Organisation))
+        .filter(|e| e.confidence >= 0.55)
+        .filter_map(|e| {
+            let sanctioned = e.has_tag(tags::SANCTIONED);
+            let debarred = e.has_tag(tags::DEBARRED);
+            let pep = e.has_tag(tags::PEP);
+            if !(sanctioned || debarred || pep) {
+                return None;
+            }
+            // Strongest flag sets the severity and the headline; all present
+            // flags are enumerated in the description.
+            let (severity, headline) = if sanctioned {
+                (Severity::Critical, "matches a sanctions designation")
+            } else if debarred {
+                (Severity::High, "is debarred from public contracting")
+            } else {
+                (
+                    Severity::Medium,
+                    "is flagged as a politically-exposed person (elevated due diligence)",
+                )
+            };
+            let mut flags: Vec<&str> = Vec::new();
+            if sanctioned {
+                flags.push("sanctioned");
+            }
+            if debarred {
+                flags.push("debarred");
+            }
+            if pep {
+                flags.push("PEP");
+            }
+            // Surface the sanctions programme / source datasets / topics if the
+            // producing module recorded any of them on the entity's evidence.
+            let detail = e
+                .evidence
+                .iter()
+                .find_map(|ev| {
+                    ev.attributes
+                        .get("program_id")
+                        .or_else(|| ev.attributes.get("datasets"))
+                        .or_else(|| ev.attributes.get("topics"))
+                })
+                .map(|d| format!(" [{d}]"))
+                .unwrap_or_default();
+            let kind_label = if e.kind == EntityKind::Person {
+                "Person"
+            } else {
+                "Organisation"
+            };
+            Some(Correlation::new(
+                "AU-114",
+                "Sanctions / debarment / PEP exposure",
+                severity,
+                format!(
+                    "{kind_label} '{value}' {headline} (flags: {flags}){detail} — an \
+                     OSINT screening signal for analyst verification, not a legal \
+                     determination",
+                    value = e.value,
+                    flags = flags.join(", "),
+                ),
+                vec![e.uid.clone()],
+                scan_id,
+                ts,
+            ))
+        })
+        .collect()
+}
