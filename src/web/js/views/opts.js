@@ -422,7 +422,10 @@ export function cellsPanel(status){
           ? `<b>${status.total}</b> towers${byMcc?` &nbsp; ${byMcc}`:''}<br>
              ${li
                ? `<span class="text-muted" style="font-size:11px">Last import: <code>${esc(li.source_file)}</code> — ${li.row_count} rows, ${esc(fmtDate(li.imported_at))}</span>`
-               : '<span class="text-muted" style="font-size:11px">No import history.</span>'}`
+               : '<span class="text-muted" style="font-size:11px">No import history.</span>'}
+             ${li && li.is_stale
+               ? `<br><span class="label label-warning" style="white-space:normal">STALE — ${li.age_days}d since last import (&ge; ${li.stale_threshold_days}d). GEOINT cell-tower correlation is working from data that old; refresh below.</span>`
+               : ''}`
           : '<span class="text-muted">Not populated — import below to get started.</span>'}
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
