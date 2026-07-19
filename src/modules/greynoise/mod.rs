@@ -56,6 +56,10 @@ pub(crate) struct CommunityResp {
     /// Human-readable status message (e.g. "IP not observed scanning the internet").
     #[serde(default)]
     pub message: Option<String>,
+    /// Last time GreyNoise observed this IP (ISO-8601) — a recency signal that
+    /// tells the analyst whether a "malicious" classification is current or stale.
+    #[serde(default)]
+    pub last_seen: Option<String>,
 }
 
 /// The keyed `v3/ip/{ip}` response. A superset of [`CommunityResp`]'s fields
@@ -82,6 +86,8 @@ pub(crate) struct PaidResp {
     pub link: Option<String>,
     #[serde(default)]
     pub message: Option<String>,
+    #[serde(default)]
+    pub last_seen: Option<String>,
 }
 
 // ── Module ────────────────────────────────────────────────────────
@@ -99,6 +105,7 @@ struct Signal<'a> {
     name: Option<&'a str>,
     link: Option<&'a str>,
     message: Option<&'a str>,
+    last_seen: Option<&'a str>,
     /// An extra positive signal the community tier never sets (the paid
     /// tier's `seen`) — folded into the no-findings gate so a paid record
     /// that's `seen` but otherwise unclassified still surfaces, tagged
@@ -165,6 +172,8 @@ fn build_entities_from_signal(sig: &Signal, ip: &str, scan_id: &str) -> Vec<Enti
         // GreyNoise's own status text (e.g. the RIOT service description) —
         // surfaced as the API's words, not synthesised from the booleans.
         ("message", sig.message),
+        // Recency: whether a "malicious" verdict is current or long stale.
+        ("last_seen", sig.last_seen),
     ]
     .into_iter()
     .filter_map(|(key, value)| value.filter(|s| !s.is_empty()).map(|v| (key, v)))
@@ -203,6 +212,7 @@ fn build_entities(data: &CommunityResp, ip: &str, scan_id: &str) -> Vec<Entity> 
             name: data.name.as_deref(),
             link: data.link.as_deref(),
             message: data.message.as_deref(),
+            last_seen: data.last_seen.as_deref(),
             extra_signal: false,
         },
         ip,
@@ -222,6 +232,7 @@ fn build_paid_entities(data: &PaidResp, ip: &str, scan_id: &str) -> Vec<Entity> 
             name: data.name.as_deref(),
             link: data.link.as_deref(),
             message: data.message.as_deref(),
+            last_seen: data.last_seen.as_deref(),
             extra_signal: data.seen,
         },
         ip,
