@@ -359,7 +359,16 @@ pub(super) fn extract_entities(
                             .to_string(),
                         );
                     }
-                    if crate::util::hashcat::is_salted(p) {
+                    // Salted if the digest itself carries an appended salt OR the
+                    // record has a dedicated `salt` column (Snusbase-style schema).
+                    // Without the column check a fast MD5/SHA-1 shipped alongside a
+                    // separate salt was mis-tagged `crackable:fast` — overstating
+                    // exposure and inviting a bogus rainbow-table pivot. OathNet's
+                    // breach path already reads this field; SeekNow was the outlier
+                    // on its own schema.
+                    if crate::util::hashcat::is_salted(p)
+                        || val_str(item, "salt").is_some_and(|s| !s.trim().is_empty())
+                    {
                         tags.push("salted".to_string());
                     }
                     let cracked = crate::util::hashcat::crack_common(p);
@@ -388,6 +397,44 @@ pub(super) fn extract_entities(
                     break;
                 }
             }
+        }
+    }
+
+    // ── IBAN — a leaked bank-account number ───────────────────────────────
+    // Emit ONLY when the ISO 7064 mod-97 check digit validates (via the shared
+    // `util::extract::iban_is_valid`), so a redacted sentinel or a transcription
+    // error in the `iban` field never mints a bogus financial artifact — the same
+    // discipline OathNet's breach path already applies. Before this, SeekNow's
+    // `iban` field fell through to breach_rich's UNVALIDATED catch-all, minting an
+    // `Other("iban")` node for ANY string (bad check digit included); `iban` is
+    // now in `RICH_DETAIL_SKIP` so the catch-all no longer emits it unvalidated.
+    // No dedicated financial `EntityKind` exists, so it lands as `Other("iban")`
+    // tagged `financial` for the dossier/export.
+    if let Some(iban) = val_str(item, "iban") {
+        // Normalise (strip whitespace, upper-case) BEFORE validating: the shared
+        // `iban_is_valid` requires an all-alphanumeric body, and breach exports
+        // routinely store the grouped "GB82 WEST …" form — the same normalisation
+        // OathNet's validator wrapper applies. The DISPLAYED value keeps the
+        // trimmed original spacing, exactly as OathNet emits it.
+        let normalized: String = iban
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+            .to_ascii_uppercase();
+        if crate::util::extract::iban_is_valid(&normalized)
+            && seen.insert(format!("@iban:{normalized}"))
+        {
+            push_breach_entity(
+                result,
+                Entity::new(
+                    EntityKind::Other("iban".to_string()),
+                    iban.trim(),
+                    0.70,
+                    scan_id,
+                ),
+                &ev,
+                &["iban", "financial"],
+            );
         }
     }
 

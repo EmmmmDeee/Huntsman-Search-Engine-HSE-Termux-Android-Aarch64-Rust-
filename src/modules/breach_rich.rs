@@ -178,6 +178,11 @@ const RICH_DETAIL_SKIP: &[&str] = &[
     "log_id",
     "log",
     "salt",
+    // Validated + typed by each provider's own IBAN branch (OathNet's breach
+    // path, SeekNow's extract path) — the mod-97 check-digit gate there refuses a
+    // bad/redacted value. Skipped here so the UNVALIDATED catch-all can't also
+    // mint an `Other("iban")` financial artifact for any string.
+    "iban",
     "response_time_ms",
     "type",
     "success",

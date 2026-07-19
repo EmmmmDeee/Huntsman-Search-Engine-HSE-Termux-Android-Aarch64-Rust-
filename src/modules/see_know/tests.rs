@@ -598,6 +598,70 @@ use crate::core::entity::Entity;
     }
 
     #[test]
+    fn a_dedicated_salt_column_marks_a_fast_hash_salted() {
+        use serde_json::json;
+        // A fast MD5 shipped with a SEPARATE `salt` column (Snusbase-style schema)
+        // must be tagged `salted` — without the column check it was mis-classified
+        // as unsalted/rainbow-crackable, overstating exposure. Mirrors OathNet.
+        let hash = "a1b2c3d4e5f60718293a4b5c6d7e8f90"; // 32-hex, not a common pw
+        let item = json!({ "username": "u", "password_hash": hash, "salt": "deadbeef" });
+        let (mut seen, mut result) = (HashSet::new(), ModuleResult::new());
+        extract_entities(&item, "u", "scan", "search", "k", &mut seen, &mut result);
+        let h = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Password && e.value == hash)
+            .expect("the hash surfaces as a Password entity");
+        assert!(h.has_tag("hash:md5"), "still identified as md5");
+        assert!(
+            h.has_tag("salted"),
+            "a non-empty dedicated salt column must mark the hash salted"
+        );
+
+        // Control: the SAME hash with NO salt column stays unsalted.
+        let bare = json!({ "username": "u", "password_hash": hash });
+        let (mut s2, mut r2) = (HashSet::new(), ModuleResult::new());
+        extract_entities(&bare, "u", "scan", "search", "k", &mut s2, &mut r2);
+        let h2 = r2
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Password && e.value == hash)
+            .expect("hash entity");
+        assert!(
+            !h2.has_tag("salted"),
+            "no appended salt and no salt column ⇒ not salted"
+        );
+    }
+
+    #[test]
+    fn iban_field_is_validated_before_minting_a_financial_node() {
+        use serde_json::json;
+        let is_iban = |e: &crate::core::entity::Entity| {
+            matches!(&e.kind, EntityKind::Other(k) if k == "iban")
+        };
+        // A valid IBAN (canonical GB test value, in grouped form) mints a financial
+        // pivot; the grouped spacing must be normalised before the mod-97 check.
+        let valid = json!({ "username": "u", "iban": "GB82 WEST 1234 5698 7654 32" });
+        let (mut seen, mut result) = (HashSet::new(), ModuleResult::new());
+        extract_entities(&valid, "u", "scan", "search", "k", &mut seen, &mut result);
+        let iban = result
+            .entities
+            .iter()
+            .find(|e| is_iban(e))
+            .expect("a valid IBAN must mint an Other(\"iban\") node");
+        assert!(iban.has_tag("financial"), "a validated IBAN is tagged financial");
+
+        // A bad check digit must mint NOTHING — no bogus financial artifact.
+        let bad = json!({ "username": "u", "iban": "GB82 WEST 1234 5698 7654 99" });
+        let (mut s2, mut r2) = (HashSet::new(), ModuleResult::new());
+        extract_entities(&bad, "u", "scan", "search", "k", &mut s2, &mut r2);
+        assert!(
+            !r2.entities.iter().any(is_iban),
+            "an invalid IBAN must not mint a financial artifact"
+        );
+    }
+
+    #[test]
     fn record_evidence_stamps_canonical_dbname_for_au105() {
         use serde_json::json;
         // AU-105 (credential reuse across breaches) groups records by the `dbname`
