@@ -62,6 +62,54 @@ fn composes_person_and_org_and_social_handles() {
 }
 
 #[test]
+fn mines_github_tiktok_reddit_handles_as_username_pivots() {
+    let item = json!({
+        "github": "octocat",
+        "tiktok": "charlidamelio",
+        "reddit": "spez",
+    });
+    let r = run(&item, "see-know");
+    // First-class platform-prefixed Username pivots (resolvable by the
+    // github_user/reddit_user/… modules), not opaque catch-all nodes.
+    assert!(has(&r, EntityKind::Username, "github:octocat"));
+    assert!(has(&r, EntityKind::Username, "tiktok:charlidamelio"));
+    assert!(has(&r, EntityKind::Username, "reddit:spez"));
+    // And NOT duplicated as an unclassified Other("github") junk node.
+    assert!(
+        !r.entities
+            .iter()
+            .any(|e| matches!(&e.kind, EntityKind::Other(k) if k == "github")),
+        "github must be a Username pivot, not a catch-all Other node"
+    );
+}
+
+#[test]
+fn mines_bio_for_alternate_contacts() {
+    let item = json!({
+        "username": "u",
+        "bio": "book me at alt.contact@example.com or call +1 415 555 0132",
+    });
+    let r = run(&item, "see-know");
+    let email = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Email && e.value == "alt.contact@example.com")
+        .expect("an email embedded in the bio must be mined as an Email lead");
+    assert!(email.tags.iter().any(|t| t == "bio-mined"));
+    assert!(
+        r.entities.iter().any(|e| e.kind == EntityKind::Phone),
+        "a phone embedded in the bio must be mined as a Phone lead"
+    );
+    // The raw bio must NOT also appear as an unclassified Other("bio") node.
+    assert!(
+        !r.entities
+            .iter()
+            .any(|e| matches!(&e.kind, EntityKind::Other(k) if k == "bio")),
+        "bio is mined, not emitted verbatim as a catch-all node"
+    );
+}
+
+#[test]
 fn catch_all_surfaces_long_tail_scalars_but_skips_noise() {
     let item = json!({
         "gender": "M",

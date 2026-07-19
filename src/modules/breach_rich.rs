@@ -149,6 +149,11 @@ const RICH_DETAIL_SKIP: &[&str] = &[
     "linkedin",
     "vk",
     "snapchat",
+    "github",
+    "tiktok",
+    "reddit",
+    // Mined for alternate emails/phones in the rich pass, not emitted verbatim.
+    "bio",
     "city",
     "state",
     "region",
@@ -379,6 +384,14 @@ pub fn extract_rich_detail(
         ("linkedin", "linkedin"),
         ("vk", "vk"),
         ("snapchat", "snapchat"),
+        // github/tiktok/reddit are real handle columns in both providers' breach
+        // records; without these they fell to the catch-all as opaque
+        // `Other("github")` junk nodes instead of first-class Username pivots the
+        // github_user/reddit_user/etc. modules can resolve. Runs for SeekNow
+        // (every record) and OathNet's stealer path at zero extra API cost.
+        ("github", "github"),
+        ("tiktok", "tiktok"),
+        ("reddit", "reddit"),
     ] {
         if let Some(h) = val_str(item, k)
             && h.len() >= 2
@@ -392,6 +405,39 @@ pub fn extract_rich_detail(
                 source,
                 &[plat],
             );
+        }
+    }
+
+    // ── Free-text `bio` mining → alternate contact leads. ──
+    // A profile bio routinely carries an alternate email or phone the structured
+    // columns miss — a genuine new pivot (unlocks HIBP/emailrep/phone modules).
+    // Reuse the canonical scanner-grade extractors so "what an email/phone looks
+    // like in free text" has one definition engine-wide. Lower confidence than a
+    // structured field (inferred from prose). Shared here so BOTH breach providers
+    // gain it on every record routed through the rich pass; OathNet's own breach
+    // path mines bio separately, and the shared `seen` set dedups any overlap.
+    if let Some(bio) = val_str(item, "bio") {
+        for email in crate::util::extract::emails(&bio) {
+            if seen.insert(email.clone()) {
+                push_breach_entity(
+                    result,
+                    Entity::new(EntityKind::Email, &email, 0.50, scan_id),
+                    ev,
+                    source,
+                    &["bio-mined"],
+                );
+            }
+        }
+        for phone in crate::util::extract::phones(&bio) {
+            if seen.insert(format!("@bio-phone:{phone}")) {
+                push_breach_entity(
+                    result,
+                    Entity::new(EntityKind::Phone, &phone, 0.50, scan_id),
+                    ev,
+                    source,
+                    &["bio-mined"],
+                );
+            }
         }
     }
 
