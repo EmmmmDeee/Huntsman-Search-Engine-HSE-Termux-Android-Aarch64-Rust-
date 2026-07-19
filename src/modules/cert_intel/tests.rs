@@ -37,6 +37,42 @@ fn ct_log_discriminates_subdomain_from_co_hosted_confidence() {
 }
 
 #[test]
+fn ct_log_emits_rfc822_name_as_email_not_domain() {
+    // crt.sh returns rfc822Name SANs inline in `name_value`. An email address
+    // (`admin@example.com`) contains a dot, so the prior `.contains('.')`-only
+    // gate minted it as a bogus Domain entity. It must now surface as an Email
+    // pivot, and the co-listed real subdomain must still emit as a Domain.
+    let entries = vec![CrtEntry {
+        name_value: "api.example.com\nadmin@example.com".to_string(),
+        issuer_name: Some("Let's Encrypt".to_string()),
+        not_before: None,
+        not_after: None,
+        serial_number: None,
+    }];
+    let mut seen = std::collections::HashSet::new();
+    let out = ct_log_entities(&entries, "example.com", "s", &mut seen);
+
+    let email = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("rfc822Name SAN surfaced as an Email entity");
+    assert_eq!(email.value, "admin@example.com");
+    assert!(email.has_tag(tags::CT_LOG));
+    // The email must NEVER appear as a Domain (the false attribution being fixed).
+    assert!(
+        !out.iter()
+            .any(|e| e.kind == EntityKind::Domain && e.value.contains('@')),
+        "an email SAN must not be emitted as a Domain entity"
+    );
+    // The genuine subdomain is unaffected.
+    assert!(
+        out.iter()
+            .any(|e| e.kind == EntityKind::Domain && e.value == "api.example.com"),
+        "the co-listed real subdomain still emits as a Domain"
+    );
+}
+
+#[test]
 fn accepts_domain_and_ip() {
     let m = CertIntel;
     assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com")));
@@ -53,11 +89,13 @@ fn module_metadata() {
     assert!(!m.description().is_empty());
     assert!(!m.attack_techniques().is_empty());
     assert!(m.produces().contains(&EntityKind::Domain));
+    assert!(m.produces().contains(&EntityKind::Email));
 }
 
 #[test]
 fn extract_sans_from_empty() {
-    assert!(extract_sans_from_der(&[]).is_empty());
+    let s = extract_sans_from_der(&[]);
+    assert!(s.domains.is_empty() && s.emails.is_empty());
 }
 
 #[test]
@@ -97,7 +135,7 @@ fn extract_sans_deduplicates_and_sorts() {
     der.push(len);
     der.extend_from_slice(domain);
 
-    let sans = extract_sans_from_der(&der);
+    let sans = extract_sans_from_der(&der).domains;
     assert_eq!(sans.len(), 1);
     assert_eq!(sans[0], "sub.example.com");
 }
@@ -109,7 +147,41 @@ fn extract_sans_rejects_short_or_domainless_names() {
     let len = short.len() as u8;
     let mut der: Vec<u8> = vec![0x55, 0x1D, 0x11, 0x82, len];
     der.extend_from_slice(short);
-    assert!(extract_sans_from_der(&der).is_empty());
+    assert!(extract_sans_from_der(&der).domains.is_empty());
+}
+
+#[test]
+fn extract_sans_captures_rfc822_email_without_dropping_a_following_domain() {
+    // A GeneralNames sequence with an rfc822Name [1] (0x81) email FOLLOWED by a
+    // dNSName [2] (0x82) domain. Before the fix the loop broke on the 0x81 tag,
+    // dropping BOTH the email and every SAN after it. Now the email surfaces and
+    // the trailing domain is still extracted.
+    let email = b"admin@example.com";
+    let domain = b"mail.example.com";
+    let mut der: Vec<u8> = vec![0x55, 0x1D, 0x11];
+    der.push(0x81);
+    der.push(email.len() as u8);
+    der.extend_from_slice(email);
+    der.push(0x82);
+    der.push(domain.len() as u8);
+    der.extend_from_slice(domain);
+
+    let sans = extract_sans_from_der(&der);
+    assert_eq!(sans.emails, vec!["admin@example.com".to_string()]);
+    assert_eq!(
+        sans.domains,
+        vec!["mail.example.com".to_string()],
+        "a dNSName after an rfc822Name must not be dropped"
+    );
+}
+
+#[test]
+fn extract_sans_rejects_malformed_rfc822_value() {
+    // A 0x81 entry whose value is not a valid email must not mint an Email SAN.
+    let junk = b"not-an-email";
+    let mut der: Vec<u8> = vec![0x55, 0x1D, 0x11, 0x81, junk.len() as u8];
+    der.extend_from_slice(junk);
+    assert!(extract_sans_from_der(&der).emails.is_empty());
 }
 
 #[test]
@@ -128,7 +200,7 @@ fn extract_sans_output_is_lowercased() {
     let len = domain.len() as u8;
     let mut der: Vec<u8> = vec![0x55, 0x1D, 0x11, 0x82, len];
     der.extend_from_slice(domain);
-    let sans = extract_sans_from_der(&der);
+    let sans = extract_sans_from_der(&der).domains;
     assert_eq!(sans.len(), 1);
     assert_eq!(sans[0], "mail.example.com");
 }
@@ -187,7 +259,7 @@ fn real_cert_extracts_serial_not_version() {
 fn real_cert_extracts_all_three_sans() {
     // The SAN extension wraps the GeneralNames in OCTET STRING → SEQUENCE; the
     // scanner must descend through both to reach the dNSName (0x82) entries.
-    let sans = extract_sans_from_der(SELF_SIGNED_DER);
+    let sans = extract_sans_from_der(SELF_SIGNED_DER).domains;
     assert_eq!(
         sans,
         vec![
@@ -265,7 +337,8 @@ mod prop {
             // sanity-bounded — correctness on *valid* DER is covered by the
             // real-cert fixture tests above.
             let sans = extract_sans_from_der(&der);
-            prop_assert!(sans.iter().all(|s| s.len() <= 253));
+            prop_assert!(sans.domains.iter().all(|s| s.len() <= 253));
+            prop_assert!(sans.emails.iter().all(|s| s.len() <= 253));
             let _ = extract_field_from_der(&der, &[0x55, 0x04, 0x03], true);
             let _ = extract_field_from_der(&der, &[0x55, 0x04, 0x0A], false);
             let serial = extract_serial_hex(&der);
