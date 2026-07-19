@@ -435,3 +435,29 @@ fn multi_value_fields_surface_every_value() {
     assert!(has(&result, EntityKind::Password, "hunter2"));
     assert!(has(&result, EntityKind::Password, "letmein99"));
 }
+
+#[test]
+fn username_derived_name_is_not_minted_as_person() {
+    // A DeHashed record whose `name` is a doubled username
+    // ("rhino-ryno23 rhino-ryno23") clears the space + non-sentinel checks yet is
+    // a fabricated Person — the same pattern guarded for oathnet_pro/see_know. It
+    // must never be minted as an EntityKind::Person.
+    let entries = vec![entry_named(
+        "rhino-ryno23 rhino-ryno23",
+        json!("Collection#1"),
+    )];
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_records(
+        &entries,
+        "rhino-ryno23 rhino-ryno23",
+        "fp",
+        "s",
+        &mut seen,
+        &mut result,
+    );
+    assert!(
+        !has(&result, EntityKind::Person, "rhino-ryno23 rhino-ryno23"),
+        "a username-derived name must never be minted as a Person"
+    );
+}

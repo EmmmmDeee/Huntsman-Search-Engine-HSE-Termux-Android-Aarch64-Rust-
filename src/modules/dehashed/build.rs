@@ -322,6 +322,10 @@ pub(super) fn extract_records(
         {
             if name.trim().contains(' ')
                 && !crate::util::json::is_null_sentinel(&name)
+                // A doubled/slug username ("rhino-ryno23 rhino-ryno23") clears the
+                // space + non-sentinel checks yet is a fabricated Person — the same
+                // guard the oathnet_pro/see_know breach paths apply.
+                && !crate::core::validation::is_username_derived_name(name.trim())
                 && seen.insert(name.to_lowercase())
             {
                 push_breach_entity(

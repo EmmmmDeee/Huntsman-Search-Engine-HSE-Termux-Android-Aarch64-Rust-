@@ -161,6 +161,30 @@ fn sql_null_sentinel_names_are_not_composed_into_a_person() {
 }
 
 #[test]
+fn username_derived_names_are_not_composed_into_a_person() {
+    // Breach dumps store `full_name = "{username} {username}"` when only a handle
+    // is known; the shared first+last composer must not mint a Person from a
+    // doubled username or a hyphen+digit slug (observed live: a
+    // Person("rhino-ryno23 rhino-ryno23") expanded into a large child scan).
+    let doubled = run(
+        &json!({"first_name": "rhino-ryno23", "last_name": "rhino-ryno23"}),
+        "see-know",
+    );
+    assert!(!doubled.entities.iter().any(|e| e.kind == EntityKind::Person));
+    let half_slug = run(
+        &json!({"first_name": "rhino-ryno23", "last_name": "Smith"}),
+        "see-know",
+    );
+    assert!(!half_slug.entities.iter().any(|e| e.kind == EntityKind::Person));
+    // Positive control: a genuine hyphenated surname (no digit) still composes.
+    assert!(has(
+        &run(&json!({"first_name": "Mary", "last_name": "Smith-Jones"}), "see-know"),
+        EntityKind::Person,
+        "Mary Smith-Jones"
+    ));
+}
+
+#[test]
 fn hardware_serials_become_deviceid_without_duplicate_other_nodes() {
     // A globally-unique IMEI / hardware serial is a strong single-device anchor;
     // it must be typed as DeviceId (so AU-106 can link on it), and — because it

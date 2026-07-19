@@ -696,4 +696,36 @@ mod tests {
         extract_associates(&item, "Someone", "s", "fp", &mut seen, &mut result);
         assert!(result.entities.is_empty());
     }
+
+    #[test]
+    fn associates_reject_username_derived_and_null_pair_names() {
+        // A relationship-array element that is a doubled/slug username (breach
+        // `full_name = "{username} {username}"`) or the "\N \N" SQL-null pair must
+        // NOT be minted as a fabricated associate Person — the same guard the
+        // subject-name path applies. A real associate in the same array survives.
+        let item = json!({
+            "known_associates": ["rhino-ryno23 rhino-ryno23", "\\N \\N", "Jane Smith"],
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_associates(&item, "Kyle Diegmann", "s", "fp", &mut seen, &mut result);
+
+        let names: std::collections::BTreeSet<&str> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Person)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert!(
+            !names
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case("rhino-ryno23 rhino-ryno23")),
+            "doubled-username associate must be rejected, not minted as a Person"
+        );
+        assert!(
+            names.contains("Jane Smith"),
+            "a real associate in the same array is unaffected"
+        );
+        assert_eq!(names.len(), 1, "only the legitimate associate survives");
+    }
 }

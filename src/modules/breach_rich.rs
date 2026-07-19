@@ -293,6 +293,9 @@ pub fn extract_rich_detail(
         if full.len() >= 3
             && !is_absent_marker(f)
             && !is_absent_marker(l)
+            // Breach dumps store `full_name = "{username} {username}"` when only a
+            // handle is known; a doubled/slug username is not a real person.
+            && !crate::core::validation::is_username_derived_name(&full)
             && seen.insert(format!("@person:{}", full.to_lowercase()))
         {
             push_breach_entity(

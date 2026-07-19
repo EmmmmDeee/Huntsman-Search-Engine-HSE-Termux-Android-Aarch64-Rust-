@@ -449,9 +449,15 @@ fn emit_pbs_v1(
                 result.push(pivot);
             }
         }
-        // Corroborating names as Person pivots.
+        // Corroborating names as Person pivots. Some breach databases store
+        // `names = ["{username} {username}"]` (doubled/slug usernames) when no
+        // real name is available — the same schema the sibling see_know and
+        // oathnet_pro extractors guard against. Reject before it reaches the graph
+        // so a slug username is never minted as a fabricated Person.
         for name in meta.names.iter().flatten() {
-            if !name.eq_ignore_ascii_case(query) {
+            if !name.eq_ignore_ascii_case(query)
+                && !crate::core::validation::is_username_derived_name(name)
+            {
                 let mut pivot = Entity::new(EntityKind::Person, name, 0.65, scan_id);
                 pivot.tag(SRC);
                 pivot.tag("pbs-v1-pivot");
