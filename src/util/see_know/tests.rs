@@ -9,7 +9,8 @@ use super::client::{
     key_fingerprint, parse_response, resolve_key, typed_cache_key,
 };
 use super::endpoints::{
-    CreditsOutcome, SEARCH_LIMIT, build_search_body, extract_items, parse_credits_body,
+    CreditsOutcome, CreditsProbe, SEARCH_LIMIT, build_search_body, classify_credits_probe,
+    extract_items, parse_credits_body,
 };
 use crate::util::curl_client::AuthScheme;
 
@@ -631,6 +632,54 @@ fn credits_body_garbage_is_unparseable_not_auth_error() {
             matches!(parse_credits_body(body), CreditsOutcome::Unparseable),
             "body {body:?} must classify as Unparseable, not AuthError"
         );
+    }
+}
+
+// ── `credits_probe` outcome classification (hse doctor's actionable SeekNow
+//    diagnostic). A live Termux scan showed EVERY see_know call failing with
+//    `[seek_now] curl exited 6` (curl "could not resolve host"), then the
+//    circuit breaker cooling the module down — but the old `query_credits`
+//    dropped the curl detail (`.ok()?`), so `hse doctor` could only print the
+//    catch-all "could not reach SeekNow", never revealing the real cause was
+//    DNS host-resolution (typically carrier/ISP domain filtering), not a bad
+//    key. These pin the transport-vs-key distinction the new probe restores.
+
+#[test]
+fn credits_probe_maps_a_transport_failure_to_unreachable_with_the_curl_detail() {
+    // The exact string the curl client surfaces for a DNS failure — the module
+    // error the live bundle recorded. It must classify as Unreachable (a
+    // network problem) and preserve curl's own detail verbatim, NOT be reported
+    // as an invalid key.
+    let curl_dns_failure =
+        "curl exited 6: curl: (6) Could not resolve host: see-know.eu".to_string();
+    match classify_credits_probe(Err(curl_dns_failure.clone())) {
+        CreditsProbe::Unreachable(detail) => assert_eq!(detail, curl_dns_failure),
+        other => panic!("a transport failure must be Unreachable, got {other:?}"),
+    }
+}
+
+#[test]
+fn credits_probe_maps_a_good_body_to_ok_with_the_parsed_numbers() {
+    let body = r#"{"credits_remaining": 4200, "daily_limit": 5000}"#.to_string();
+    match classify_credits_probe(Ok(body)) {
+        CreditsProbe::Ok {
+            remaining,
+            daily_limit,
+        } => {
+            assert_eq!(remaining, 4200);
+            assert_eq!(daily_limit, Some(5000));
+        }
+        other => panic!("a valid credits body must be Ok, got {other:?}"),
+    }
+}
+
+#[test]
+fn credits_probe_maps_an_unrecognised_body_to_unparseable_not_unreachable() {
+    // Reachable host, but a body with no credits field: a schema/plan problem,
+    // distinct from both a transport failure and a dead key.
+    match classify_credits_probe(Ok("<html>200 but no json</html>".to_string())) {
+        CreditsProbe::Unparseable => {}
+        other => panic!("a reachable-but-unrecognised body must be Unparseable, got {other:?}"),
     }
 }
 

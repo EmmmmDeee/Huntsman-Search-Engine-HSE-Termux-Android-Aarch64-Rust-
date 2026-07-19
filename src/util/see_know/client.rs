@@ -69,7 +69,7 @@ pub(super) fn cache_put(key: String, items: Vec<Value>) {
     RESPONSE_CACHE.put(key, items);
 }
 
-pub(super) fn base_url() -> String {
+pub fn base_url() -> String {
     // Default corrected (2026-07-14) from `.icu` back to the vendor's own stated
     // domain, `.eu` — every other reference to SeekNow in this codebase (module
     // docs, error strings, `key_harvest::service_domains`, `service_defs`, the

@@ -43,13 +43,16 @@ pub use budget::{
     set_scan_cap_override, should_probe_quota,
 };
 
-// Key helpers
-pub use client::{key_fingerprint, resolve_key};
+// Key helpers + the resolved API base host (so `hse doctor` can show WHICH
+// host a failing probe tried — the single most useful fact when the failure is
+// DNS host-resolution, the observed live symptom).
+pub use client::{base_url, key_fingerprint, resolve_key};
 
 // Endpoint functions
 pub(crate) use endpoints::get_path;
 pub use endpoints::{
-    discord_to_roblox, discord_user, query_credits, search, search_deep, steam_profile,
+    CreditsProbe, credits_probe, discord_to_roblox, discord_user, query_credits, search,
+    search_deep, steam_profile,
 };
 
 /// Extract a string field from a JSON Value.
