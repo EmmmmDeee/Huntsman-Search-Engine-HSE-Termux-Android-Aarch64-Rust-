@@ -1154,3 +1154,43 @@ use crate::core::entity::Entity;
             "no row identified the subject — no BREACH parent should be minted"
         );
     }
+
+    #[test]
+    fn absorb_search_hits_extracts_geo_from_search_records() {
+        // Regression: `/search` and `/search/deep` are SeekNow's broadest,
+        // highest-yield calls, yet this absorption path used to skip
+        // `extract_geo_entities` (the per-endpoint dispatch path and the pivot
+        // path both already called it), silently dropping every coordinate /
+        // timezone / location lead from the module's single most productive
+        // endpoint. A `/search` record carrying a lat/lon pair must now mint a
+        // Coordinates lead so the downstream geocode/overpass/wigle correlators
+        // get it.
+        let target = Target::new(TargetKind::Email, "subject@example.com");
+        let items = vec![serde_json::json!({
+            "email": "subject@example.com",
+            "dbname": "examplebreach.com",
+            "latitude": 40.7128,
+            "longitude": -74.0060,
+        })];
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut result = ModuleResult::new();
+        absorb_search_hits(
+            &items,
+            &target,
+            "subject@example.com",
+            "/api/v1/search",
+            "search",
+            "see-know.eu:test",
+            "scan-1",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Coordinates && e.has_tag("via:search")),
+            "a Coordinates lead from the /search record must now be extracted — \
+             it was dropped before the geo wiring was added to absorb_search_hits"
+        );
+    }

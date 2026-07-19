@@ -454,6 +454,18 @@ fn absorb_search_hits(
         );
         store_api_credential(item, SRC);
         extract_api_keys_from_item(item, scan_id, SRC, seen, result);
+        // Geo-conscious extraction — coordinates/timezone/location on a record.
+        // `/search` and `/search/deep` are SeekNow's broadest, highest-yield
+        // calls (they auto-route into the stealer/network corpora), yet this
+        // absorption path was the ONLY one that skipped `extract_geo_entities`
+        // — the per-endpoint dispatch path and the pivot path both already call
+        // it. Coordinates, location bios, and timezone fields on these records
+        // were silently dropped, starving the downstream geocode/overpass/
+        // wigle/breach_timezone correlators of leads from the module's single
+        // most productive call. `endpoint_label` ("search"/"search/deep") keeps
+        // the endpoint-specific arms (ip_info/whois) inert while the generic
+        // lat/lon, location-string, and timezone extraction fires.
+        extract_geo_entities(item, endpoint_label, scan_id, seen, result);
     }
 }
 
