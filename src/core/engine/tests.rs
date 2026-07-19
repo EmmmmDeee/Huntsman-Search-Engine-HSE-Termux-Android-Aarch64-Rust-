@@ -1708,6 +1708,52 @@ async fn recall_prior_entities_pulls_and_tags_prior_scan_findings() {
     );
 }
 
+/// A role/provider mailbox (`dns@cloudflare.com`) admitted into the store by
+/// an older or now-gated code path must never be resurrected by recall — the
+/// live admission gate already refuses to mint one as a first-class Email
+/// entity (dns_intel's SOA-admin path, whois, ripestat, search_engines all
+/// agree), so recall replaying it forever regardless of that gate is the bug:
+/// a live `see-know.xyz` scan recalled `dns@cloudflare.com` at
+/// corroboration=396, glued together from 90+ unrelated domains' "Zone admin
+/// for X" evidence purely because the value is shared Cloudflare-wide. A
+/// genuine personal email must still recall normally.
+#[tokio::test]
+async fn recall_never_resurrects_a_role_mailbox_email() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+
+    let mut seed = Entity::new(EntityKind::Domain, "see-know.xyz", 0.9, "prior-scan");
+    seed.add_evidence(Evidence::new("anchor", "seed"));
+    let mut role = Entity::new(EntityKind::Email, "dns@cloudflare.com", 0.65, "prior-scan");
+    role.tag("dns-admin");
+    role.add_evidence(Evidence::new(
+        "dns_intel",
+        "Zone admin for unrelated-domain.com",
+    ));
+    let mut personal = Entity::new(EntityKind::Email, "owner@see-know.xyz", 0.8, "prior-scan");
+    personal.add_evidence(Evidence::new("whois", "Registrant contact"));
+    store.upsert_entity(&seed).unwrap();
+    store.upsert_entity(&role).unwrap();
+    store.upsert_entity(&personal).unwrap();
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let engine = ScanEngine::new(vec![], store_port, bus);
+    let target = Target::new(TargetKind::Domain, "see-know.xyz");
+
+    let recalled = engine.recall_prior_entities(&target, "current-scan", true);
+    assert!(
+        !recalled.iter().any(|e| e.value == "dns@cloudflare.com"),
+        "a role mailbox must never be recalled, no matter how it got into the store"
+    );
+    assert!(
+        recalled.iter().any(|e| e.value == "owner@see-know.xyz"),
+        "a genuine personal/registrant email must still recall normally"
+    );
+}
+
 /// CONVENTIONS.md §5 determinism: `recall_prior_entities`'s cap (`MAX_ENTITIES`
 /// = 300, matched here) sorts by confidence and truncates — the WHICH-SURVIVES
 /// question, not just display order. Modules routinely stamp flat literal
