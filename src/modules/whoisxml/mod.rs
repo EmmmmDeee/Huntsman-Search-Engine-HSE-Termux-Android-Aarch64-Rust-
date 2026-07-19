@@ -95,6 +95,8 @@ struct Contact {
     #[serde(default)]
     country_code: Option<String>,
     #[serde(default)]
+    city: Option<String>,
+    #[serde(default)]
     state: Option<String>,
 }
 
@@ -399,10 +401,11 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
     out
 }
 
-/// Compose a WHOIS contact's `state, country` into a single location string for
-/// an `Address` geo-hint. `None` when neither part is present.
+/// Compose a WHOIS contact's `city, state, country` into a single location string
+/// for an `Address` geo-hint. `None` when no part is present. A registrant `city`
+/// sharpens the hint from a state centroid to a city-grain lead.
 fn contact_location(c: &Contact) -> Option<String> {
-    let parts: Vec<String> = [nonempty(&c.state), nonempty(&c.country)]
+    let parts: Vec<String> = [nonempty(&c.city), nonempty(&c.state), nonempty(&c.country)]
         .into_iter()
         .flatten()
         .collect();

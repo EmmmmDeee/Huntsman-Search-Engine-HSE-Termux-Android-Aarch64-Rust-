@@ -157,6 +157,23 @@ use super::*;
     }
 
     #[test]
+    fn build_entities_includes_registrant_city_in_geo_hint() {
+        // A registrant `city` sharpens the Address geo-hint from a state centroid
+        // to a city-grain lead. `city` is present in WhoisXML output but was
+        // dropped before deserialization (absent from the Contact struct).
+        let rec = record(
+            r#"{ "registrant": {"name": "Jordan Avery", "city": "Brisbane", "state": "Queensland", "country": "Australia"} }"#,
+        );
+        let es = build_entities(&rec, "acme.com", "t");
+        let addr = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Address)
+            .expect("address geo-hint");
+        assert_eq!(addr.value, "Brisbane, Queensland, Australia");
+        assert!(addr.tags.iter().any(|t| t == "geo-hint"));
+    }
+
+    #[test]
     fn build_entities_emits_nameservers_deduped() {
         let rec = record(
             r#"{ "nameServers": {"hostNames": ["ns1.acme.com", "NS1.ACME.COM.", "ns2.acme.com"]} }"#,
