@@ -295,22 +295,26 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             let mut validated = 0u32;
             let mut active = 0u32;
             for (svc, entries) in &targets {
+                // Whether `service_defs` even defines a probe for this service —
+                // the difference between "no validator exists" and "the probe ran
+                // but was inconclusive" (a blocked/timed-out/5xx endpoint).
+                let known = crate::util::service_defs::find_service(svc).is_some();
                 for entry in entries {
                     print!("  {svc}: testing {}… ", char_prefix(&entry.value, 8));
-                    match key_pool::validate_key(svc, &entry.value).await {
+                    let outcome = key_pool::validate_key(svc, &entry.value).await;
+                    match outcome {
                         Some(true) => {
                             pool.mark_validated(svc, &entry.value, true);
-                            println!("ACTIVE");
                             active += 1;
                         }
                         Some(false) => {
                             pool.mark_validated(svc, &entry.value, false);
-                            println!("INVALID");
                         }
-                        None => {
-                            println!("UNKNOWN (no validator for service)");
-                        }
+                        // Indeterminate (or unknown service) — leave the stored
+                        // status untouched, exactly as `validate_key` intends.
+                        None => {}
                     }
+                    println!("{}", validation_label(known, outcome));
                     validated += 1;
                 }
             }
@@ -652,6 +656,26 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Human-readable status for one `hse keys validate` probe. `validate_key`
+/// returns `None` for TWO distinct reasons and the caller must tell them apart:
+/// either the service is unknown to `service_defs` (no probe is possible), or the
+/// probe ran but was INCONCLUSIVE — a transport failure, timeout, 429, or 5xx,
+/// which `validate_key` deliberately does not treat as a rejection. The old CLI
+/// printed "no validator for service" for both, so a KNOWN service whose endpoint
+/// was merely blocked/timed-out (e.g. `see_know` behind a denied egress → curl
+/// 56 / HTTP 502) was mislabelled as if no validator existed. `service_known`
+/// disambiguates. **Pure** — unit-tested directly.
+fn validation_label(service_known: bool, outcome: Option<bool>) -> &'static str {
+    match outcome {
+        Some(true) => "ACTIVE",
+        Some(false) => "INVALID",
+        None if service_known => {
+            "UNKNOWN (probe inconclusive — transport error / timeout / rate-limited; left unchanged)"
+        }
+        None => "UNKNOWN (no validator for service)",
+    }
 }
 
 /// Prune degraded low-value keys from `pool`. Pure over the passed-in pool (no

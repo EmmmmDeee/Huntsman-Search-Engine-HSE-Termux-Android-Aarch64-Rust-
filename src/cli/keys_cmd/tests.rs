@@ -1,5 +1,5 @@
 
-use super::{bank_row, char_prefix, mask_key, run_prune, run_tsv_import};
+use super::{bank_row, char_prefix, mask_key, run_prune, run_tsv_import, validation_label};
 
     fn vault_entry(service: &str, key: &str, count: u32) -> crate::util::key_vault::VaultEntry {
         crate::util::key_vault::VaultEntry {
@@ -162,4 +162,22 @@ use super::{bank_row, char_prefix, mask_key, run_prune, run_tsv_import};
         assert_eq!(run_prune(&pool, 0.5, 10, true), 1);
         assert_eq!(pool.total_keys(), 1, "--apply prunes the degraded key");
         assert_eq!(pool.next_key("shodan").as_deref(), Some("good"));
+    }
+
+    #[test]
+    fn validation_label_distinguishes_inconclusive_from_missing_validator() {
+        // A definitive verdict is unambiguous.
+        assert_eq!(validation_label(true, Some(true)), "ACTIVE");
+        assert_eq!(validation_label(true, Some(false)), "INVALID");
+        // None on a KNOWN service (e.g. see_know behind a blocked egress → the
+        // probe times out / 5xx) must NOT read as "no validator" — it is
+        // inconclusive, and the stored status is left unchanged.
+        let known = validation_label(true, None);
+        assert!(known.contains("inconclusive"), "got: {known}");
+        assert!(!known.contains("no validator"), "got: {known}");
+        // None on an UNKNOWN service genuinely has no validator.
+        assert_eq!(
+            validation_label(false, None),
+            "UNKNOWN (no validator for service)"
+        );
     }
