@@ -3,7 +3,8 @@ use super::{
     entity_builders::{build_email_entities, build_phone_entities},
     types::{SeonEmailResp, SeonPhoneResp},
 };
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::EntityKind,
     module::{Module, ModuleCost},
     scan::{Target, TargetKind},

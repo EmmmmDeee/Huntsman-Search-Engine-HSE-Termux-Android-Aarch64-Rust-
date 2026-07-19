@@ -1,6 +1,7 @@
 //! Pure entity-building helpers for GitHub code search results.
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     scan::TargetKind,
 };

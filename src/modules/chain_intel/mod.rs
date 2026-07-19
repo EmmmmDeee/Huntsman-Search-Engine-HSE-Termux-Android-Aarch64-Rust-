@@ -38,7 +38,8 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     crypto::{chain_label, classify_crypto_address},
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -227,7 +228,12 @@ impl Module for ChainIntel {
             return Ok(result);
         };
 
-        let mut e = Entity::new(EntityKind::CryptoAddress, addr, confidence::HIGH_PLUSPLUS, &ctx.scan_id);
+        let mut e = Entity::new(
+            EntityKind::CryptoAddress,
+            addr,
+            confidence::HIGH_PLUSPLUS,
+            &ctx.scan_id,
+        );
         e.tag("crypto-address");
         e.tag(format!("chain:{}", chain_label(chain)));
         apply_scam_tags(&mut e, &enr);
@@ -241,7 +247,12 @@ impl Module for ChainIntel {
         if let Some(ens) = &enr.ens {
             let handle = ens.strip_suffix(".eth").unwrap_or(ens);
             if handle.len() >= 2 && !handle.contains('.') {
-                let mut u = Entity::new(EntityKind::Username, handle, confidence::HIGH_PLUS, &ctx.scan_id);
+                let mut u = Entity::new(
+                    EntityKind::Username,
+                    handle,
+                    confidence::HIGH_PLUS,
+                    &ctx.scan_id,
+                );
                 u.tag(SRC);
                 u.tag("ens");
                 u.add_evidence(
@@ -309,7 +320,12 @@ fn known_name_entity(name: &str, addr: &str, e: &Enrichment, scan_id: &str) -> O
     if name.len() < 2 {
         return None;
     }
-    let mut org = Entity::new(EntityKind::Organisation, name, confidence::HIGH_PLUS, scan_id);
+    let mut org = Entity::new(
+        EntityKind::Organisation,
+        name,
+        confidence::HIGH_PLUS,
+        scan_id,
+    );
     org.tag(SRC);
     org.tag("known-name");
     apply_scam_tags(&mut org, e);

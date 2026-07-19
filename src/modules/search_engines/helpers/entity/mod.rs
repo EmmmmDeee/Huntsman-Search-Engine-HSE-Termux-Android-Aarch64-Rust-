@@ -2,8 +2,8 @@
 //!
 //! Reaches the other helper groups and shared imports through `use super::*`.
 
-use crate::core::confidence;
 use super::*;
+use crate::core::confidence;
 
 mod extractors;
 pub(in crate::modules::search_engines) use extractors::{
@@ -179,7 +179,11 @@ pub(in crate::modules::search_engines) fn score_username(
         score
     };
 
-    let confidence = if score >= 3 { confidence::MEDIUM_HIGH } else { 0.30 };
+    let confidence = if score >= 3 {
+        confidence::MEDIUM_HIGH
+    } else {
+        0.30
+    };
     (score, confidence)
 }
 

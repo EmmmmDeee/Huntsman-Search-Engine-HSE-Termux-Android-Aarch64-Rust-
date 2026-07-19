@@ -22,7 +22,8 @@ use async_trait::async_trait;
 use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -140,7 +141,12 @@ impl Module for PortScan {
             .map(|(p, svc)| format!("{p}/{svc}"))
             .collect::<Vec<_>>()
             .join(", ");
-        let mut ipe = Entity::new(EntityKind::IpAddress, host, confidence::VERY_HIGH, &ctx.scan_id);
+        let mut ipe = Entity::new(
+            EntityKind::IpAddress,
+            host,
+            confidence::VERY_HIGH,
+            &ctx.scan_id,
+        );
         ipe.tag("portscan");
         ipe.tag("active-probe");
         ipe.add_evidence(

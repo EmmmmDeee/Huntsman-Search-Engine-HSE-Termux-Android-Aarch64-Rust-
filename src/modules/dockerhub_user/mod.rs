@@ -16,7 +16,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::profile_kit;
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -56,14 +57,24 @@ pub(super) fn build_entities(user: DhUser, scan_id: &str) -> Vec<Entity> {
     };
 
     // Confirmed username.
-    let mut e = Entity::new(EntityKind::Username, handle, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
+    let mut e = Entity::new(
+        EntityKind::Username,
+        handle,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     e.tag("dockerhub");
     e.tag("public-profile");
     e.add_evidence(ev());
     out.push(e);
 
     // Profile URL.
-    let mut u = Entity::new(EntityKind::Url, &profile_url, confidence::HIGH_PLUSPLUS, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Url,
+        &profile_url,
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
     u.tag("dockerhub");
     u.add_evidence(ev());
     out.push(u);

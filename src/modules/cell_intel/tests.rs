@@ -2,9 +2,9 @@ use super::CellIntel;
 use super::helpers::{
     accuracy_to_confidence, build_tower_device, json_to_str, mcc_to_centroid, parse_cells_survey,
 };
-use crate::core::{confidence, entity::EntityKind};
 use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
+use crate::core::{confidence, entity::EntityKind};
 
 // ---- Module trait tests ----
 

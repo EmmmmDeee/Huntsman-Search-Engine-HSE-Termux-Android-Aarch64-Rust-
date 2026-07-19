@@ -1,6 +1,5 @@
 //! Pure domain-to-geography inference helpers.
 
-use crate::core::confidence;
 use super::tables::{CCTLD_REGIONS, REGIONAL_PROVIDERS};
 
 /// A region inferred from an email domain, with the confidence and the human

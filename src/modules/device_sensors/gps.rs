@@ -1,6 +1,7 @@
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
 };
@@ -32,7 +33,11 @@ pub(super) fn is_valid_fix(lat: f64, lon: f64) -> bool {
 /// Provider sets the ceiling (GPS confidence::VERY_HIGH_PLUS, network confidence::HIGH); accuracy radius
 /// scales it down for imprecise fixes.
 pub(super) fn fix_confidence(provider: &str, accuracy_m: Option<f64>) -> f64 {
-    let ceiling: f64 = if provider == "gps" { confidence::VERY_HIGH_PLUS } else { confidence::HIGH };
+    let ceiling: f64 = if provider == "gps" {
+        confidence::VERY_HIGH_PLUS
+    } else {
+        confidence::HIGH
+    };
     match accuracy_m {
         Some(a) if a > 0.0 => {
             let scaled = if a <= 20.0 {

@@ -128,7 +128,12 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
     // Confirmed-on-dev.to username.
-    let mut u = Entity::new(EntityKind::Username, &user.username, confidence::EXPERT, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        &user.username,
+        confidence::EXPERT,
+        scan_id,
+    );
     u.tag("devto");
     let mut ev = Evidence::new(SRC, format!("Dev.to account '{}'", user.username))
         .with_attr("profile_url", format!("https://dev.to/{}", user.username));

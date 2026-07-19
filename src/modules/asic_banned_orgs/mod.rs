@@ -15,7 +15,8 @@ use serde_json::{Map, Value};
 
 use async_trait::async_trait;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -157,7 +158,12 @@ fn emit_banned_org(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleR
         }
     }
 
-    let mut org = Entity::new(EntityKind::Organisation, &org_name, confidence::MEDIUM_PLUS, scan_id);
+    let mut org = Entity::new(
+        EntityKind::Organisation,
+        &org_name,
+        confidence::MEDIUM_PLUS,
+        scan_id,
+    );
     org.tag("au");
     org.tag("asic");
     org.tag("asic-banned");

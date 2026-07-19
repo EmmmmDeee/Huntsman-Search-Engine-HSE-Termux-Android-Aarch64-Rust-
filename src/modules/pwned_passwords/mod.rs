@@ -10,7 +10,8 @@
 use async_trait::async_trait;
 use sha1::{Digest, Sha1};
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},

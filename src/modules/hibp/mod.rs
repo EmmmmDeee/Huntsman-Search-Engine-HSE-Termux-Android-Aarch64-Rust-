@@ -20,7 +20,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -428,7 +429,12 @@ impl Hibp {
                 .domain
                 .as_deref()
                 .filter(|d| !d.is_empty() && d.contains('.'))?;
-            let mut de = Entity::new(EntityKind::Domain, domain, confidence::MEDIUM_HIGH, &ctx.scan_id);
+            let mut de = Entity::new(
+                EntityKind::Domain,
+                domain,
+                confidence::MEDIUM_HIGH,
+                &ctx.scan_id,
+            );
             de.tag(tags::BREACH);
             de.tag("hibp");
             de.tag(tags::BREACH_DERIVED);
@@ -478,7 +484,11 @@ impl Hibp {
         let total_pwns: u64 = breaches.iter().filter_map(|b| b.pwn_count).sum();
         let names: Vec<&str> = breaches.iter().map(|b| b.name.as_str()).collect();
 
-        let base_conf = if verified >= 2 { confidence::HIGH_PLUSPLUS } else { confidence::HIGH };
+        let base_conf = if verified >= 2 {
+            confidence::HIGH_PLUSPLUS
+        } else {
+            confidence::HIGH
+        };
 
         let mut domain_ent = Entity::new(
             EntityKind::Domain,
@@ -575,7 +585,12 @@ impl Hibp {
             .take(5)
             .collect();
 
-        let mut e = Entity::new(EntityKind::Email, target.value.trim(), confidence::HIGH, &ctx.scan_id);
+        let mut e = Entity::new(
+            EntityKind::Email,
+            target.value.trim(),
+            confidence::HIGH,
+            &ctx.scan_id,
+        );
         e.tag("hibp");
         e.tag(tags::PASTE_EXPOSED);
         let mut ev = Evidence::new(

@@ -22,7 +22,8 @@
 use async_trait::async_trait;
 use std::collections::HashSet;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -93,7 +94,12 @@ impl Module for EmailParse {
             // authoritative set. These leaked as standalone Domain entities and
             // drove the CRITICAL infrastructure-pollution an on-device scan flagged.
             if !is_freemail(&domain) && !crate::core::scan::is_noncentral_domain(&domain) {
-                let mut entity = Entity::new(EntityKind::Domain, &domain, confidence::HIGH_PLUSPLUS, &ctx.scan_id);
+                let mut entity = Entity::new(
+                    EntityKind::Domain,
+                    &domain,
+                    confidence::HIGH_PLUSPLUS,
+                    &ctx.scan_id,
+                );
                 entity.tag("derived");
                 entity.tag("email-domain");
                 entity.add_evidence(
@@ -191,7 +197,11 @@ impl Module for EmailParse {
                 // freemail check that skipped the Domain two blocks up.
                 let email_domain = target.value.split('@').nth(1).unwrap_or("").to_lowercase();
                 let is_corporate = !is_freemail(&email_domain);
-                let uname_conf = if is_corporate { confidence::HIGH_PLUS } else { confidence::MEDIUM_HIGH };
+                let uname_conf = if is_corporate {
+                    confidence::HIGH_PLUS
+                } else {
+                    confidence::MEDIUM_HIGH
+                };
                 // Sorted before emission so the HashSet's randomised iteration
                 // order never leaks into entity order (the same determinism-leak
                 // class fixed for `reddit_user`/`hacker_news`/`web_crawler`).
@@ -220,7 +230,11 @@ impl Module for EmailParse {
                     && parts[0].chars().all(char::is_alphabetic)
                     && parts[1].chars().all(char::is_alphabetic)
                 {
-                    let person_conf = if is_corporate { confidence::MEDIUM_HIGH } else { confidence::LOW_MEDIUM };
+                    let person_conf = if is_corporate {
+                        confidence::MEDIUM_HIGH
+                    } else {
+                        confidence::LOW_MEDIUM
+                    };
                     let name = format!("{} {}", capitalise(parts[0]), capitalise(parts[1]));
                     let mut pe = Entity::new(EntityKind::Person, &name, person_conf, &ctx.scan_id);
                     pe.tag("derived");

@@ -1,6 +1,7 @@
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
 };
@@ -49,7 +50,12 @@ pub(super) fn parse_conn(stdout: &[u8], scan_id: &str) -> ModuleResult {
         && bssid != "00:00:00:00:00:00"
         && bssid != "02:00:00:00:00:00"
     {
-        let mut e = Entity::new(EntityKind::MacAddress, bssid.as_str(), confidence::VERY_HIGH_PLUSPLUS, scan_id);
+        let mut e = Entity::new(
+            EntityKind::MacAddress,
+            bssid.as_str(),
+            confidence::VERY_HIGH_PLUSPLUS,
+            scan_id,
+        );
         e.tag("wifi-connected");
         e.tag("geolocatable");
         let mut bssid_ev = Evidence::new(SRC, format!("Connected to: {ssid}"))
@@ -76,7 +82,12 @@ pub(super) fn parse_conn(stdout: &[u8], scan_id: &str) -> ModuleResult {
         && !ip.is_empty()
         && ip != "0.0.0.0"
     {
-        let mut e = Entity::new(EntityKind::IpAddress, ip.as_str(), confidence::VERY_HIGH_PLUS, scan_id);
+        let mut e = Entity::new(
+            EntityKind::IpAddress,
+            ip.as_str(),
+            confidence::VERY_HIGH_PLUS,
+            scan_id,
+        );
         e.tag("local-wifi");
         let mut ip_ev = Evidence::new(SRC, format!("Local IP on {ssid}")).with_attr("ssid", ssid);
         if let Some(ref bssid) = info.bssid {

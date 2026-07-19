@@ -16,7 +16,8 @@ mod tests;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -229,7 +230,11 @@ impl Geocode {
 #[must_use]
 pub(super) fn build_forward_entity(lat: f64, lon: f64, coords: &str, scan_id: &str) -> Entity {
     let in_au = crate::util::geo::is_in_australia(lat, lon);
-    let confidence = if in_au { confidence::HIGH_PLUS } else { confidence::LOW };
+    let confidence = if in_au {
+        confidence::HIGH_PLUS
+    } else {
+        confidence::LOW
+    };
     let mut e = Entity::new(EntityKind::Coordinates, coords, confidence, scan_id);
     e.tag("geocoded");
     if in_au {

@@ -3,7 +3,8 @@ use super::build::build_entities;
 use super::build::email_domain;
 use super::types::{Certification, DateField, Education, LinkedInProfile};
 use super::url::profile_url;
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::EntityKind,
     module::{Module, ModuleCost},
     scan::{Target, TargetKind},

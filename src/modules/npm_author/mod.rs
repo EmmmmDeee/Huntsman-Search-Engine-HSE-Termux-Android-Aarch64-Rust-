@@ -23,7 +23,8 @@ use std::collections::HashSet;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -241,7 +242,12 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
                 && seen_usernames.insert(u.to_lowercase())
             {
                 let uname = u.to_lowercase();
-                let mut uname_e = Entity::new(EntityKind::Username, &uname, confidence::MEDIUM_HIGH, scan_id);
+                let mut uname_e = Entity::new(
+                    EntityKind::Username,
+                    &uname,
+                    confidence::MEDIUM_HIGH,
+                    scan_id,
+                );
                 uname_e.tag("npm");
                 uname_e.tag("co-maintainer");
                 uname_e.add_evidence(
@@ -261,7 +267,8 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
                 if (link.starts_with("http://") || link.starts_with("https://"))
                     && seen_urls.insert(link.to_string())
                 {
-                    let mut url_e = Entity::new(EntityKind::Url, link, confidence::MEDIUM_PLUS, scan_id);
+                    let mut url_e =
+                        Entity::new(EntityKind::Url, link, confidence::MEDIUM_PLUS, scan_id);
                     url_e.tag("npm");
                     url_e.tag("code");
                     let mut ev = Evidence::new(SRC, format!("npm package link ({pkg_name})"));

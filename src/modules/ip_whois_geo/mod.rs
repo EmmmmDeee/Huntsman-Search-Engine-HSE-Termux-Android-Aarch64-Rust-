@@ -12,7 +12,8 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -106,7 +107,12 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
         // particularly coarse (registrar address, not host
         // location) so this provider should rank below the
         // residential-DB-backed IP-geo modules.
-        let mut e = Entity::new(EntityKind::Coordinates, &coords, confidence::MEDIUM_HIGH, scan_id);
+        let mut e = Entity::new(
+            EntityKind::Coordinates,
+            &coords,
+            confidence::MEDIUM_HIGH,
+            scan_id,
+        );
         e.tag("geoint");
         if let Some(cc) = data.country_code.as_deref().filter(|c| !c.is_empty()) {
             e.tag(format!("country:{}", cc.to_uppercase()));
@@ -197,7 +203,12 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
         && let Some(org) = &conn.org
         && !org.is_empty()
     {
-        let mut e = Entity::new(EntityKind::Organisation, org, confidence::MEDIUM_PLUS, scan_id);
+        let mut e = Entity::new(
+            EntityKind::Organisation,
+            org,
+            confidence::MEDIUM_PLUS,
+            scan_id,
+        );
         let ev = [
             ("asn", conn.asn_num.map(|a| format!("AS{a}"))),
             (

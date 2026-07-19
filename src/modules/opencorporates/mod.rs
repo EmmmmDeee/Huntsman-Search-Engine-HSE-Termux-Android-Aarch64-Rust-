@@ -30,7 +30,8 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -67,7 +68,12 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
 
     let mut out = Vec::new();
 
-    let mut entity = Entity::new(EntityKind::Organisation, name, confidence::VERY_HIGH, scan_id);
+    let mut entity = Entity::new(
+        EntityKind::Organisation,
+        name,
+        confidence::VERY_HIGH,
+        scan_id,
+    );
     entity.tag("opencorporates");
     if co.jurisdiction_code.as_deref() == Some("au") {
         entity.tag("country:AU");

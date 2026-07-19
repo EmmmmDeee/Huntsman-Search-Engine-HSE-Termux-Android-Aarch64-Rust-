@@ -30,7 +30,8 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -218,11 +219,24 @@ fn emit_nip05(
     // converges with an npub-seeded scan. NIP-05 is domain-bound and live, so it
     // is the higher-confidence path.
     if let Some(ref npub) = npub {
-        emit_identity(npub, hex, confidence::HIGH_PLUSPLUS_PLUS, confidence::HIGH_PLUSPLUS_PLUS, &ev, scan_id, result);
+        emit_identity(
+            npub,
+            hex,
+            confidence::HIGH_PLUSPLUS_PLUS,
+            confidence::HIGH_PLUSPLUS_PLUS,
+            &ev,
+            scan_id,
+            result,
+        );
     } else {
         // Encoding cannot fail for a 64-hex key, but never drop the pubkey if it
         // somehow does.
-        let mut pk = Entity::new(EntityKind::Other("nostr-pubkey".into()), hex, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
+        let mut pk = Entity::new(
+            EntityKind::Other("nostr-pubkey".into()),
+            hex,
+            confidence::HIGH_PLUSPLUS_PLUS,
+            scan_id,
+        );
         pk.tag("nostr");
         pk.tag("nostr-pubkey");
         pk.add_evidence(ev.clone());

@@ -32,8 +32,9 @@ use std::collections::{HashSet, VecDeque};
 use async_trait::async_trait;
 use url::Url;
 
-use crate::core::{confidence, 
+use crate::core::{
     classifier::Classified,
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -204,7 +205,12 @@ impl Module for WebCrawler {
             domain_was_leaky = true;
             for (service, key_val) in keys {
                 let roi = crate::util::key_roi::classify(service);
-                let mut e = Entity::new(EntityKind::ApiKey, key_val, confidence::VERY_HIGH_PLUS, &ctx.scan_id);
+                let mut e = Entity::new(
+                    EntityKind::ApiKey,
+                    key_val,
+                    confidence::VERY_HIGH_PLUS,
+                    &ctx.scan_id,
+                );
                 e.tag("api-key");
                 e.tag("config-leak");
                 e.tag("web-crawler");
@@ -365,7 +371,12 @@ fn build_entities(
 ) {
     // For URL targets, emit the URL entity itself with crawl results
     if is_url_target {
-        let mut url_entity = Entity::new(EntityKind::Url, seed_url, confidence::VERY_HIGH_PLUS, scan_id);
+        let mut url_entity = Entity::new(
+            EntityKind::Url,
+            seed_url,
+            confidence::VERY_HIGH_PLUS,
+            scan_id,
+        );
         url_entity.tag(tags::WEB);
         url_entity.tag(tags::CRAWLED);
         for fw in &state.frameworks {
@@ -387,7 +398,12 @@ fn build_entities(
     }
 
     // Main domain entity with crawl summary
-    let mut entity = Entity::new(EntityKind::Domain, domain, confidence::VERY_HIGH_PLUS, scan_id);
+    let mut entity = Entity::new(
+        EntityKind::Domain,
+        domain,
+        confidence::VERY_HIGH_PLUS,
+        scan_id,
+    );
     entity.tag(tags::WEB);
     entity.tag(tags::CRAWLED);
 
@@ -514,7 +530,12 @@ fn build_entities(
     state
         .result
         .extend(tracking_ids.into_iter().map(|(id, provider)| {
-            let mut e = Entity::new(EntityKind::TrackingId, id.as_str(), confidence::HIGH_PLUSPLUS, scan_id);
+            let mut e = Entity::new(
+                EntityKind::TrackingId,
+                id.as_str(),
+                confidence::HIGH_PLUSPLUS,
+                scan_id,
+            );
             e.tag(tags::WEB_SCRAPED);
             e.tag("web-analytics");
             e.add_evidence(

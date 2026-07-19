@@ -23,7 +23,7 @@
 
 use async_trait::async_trait;
 
-use crate::core::{confidence, 
+use crate::core::{
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},

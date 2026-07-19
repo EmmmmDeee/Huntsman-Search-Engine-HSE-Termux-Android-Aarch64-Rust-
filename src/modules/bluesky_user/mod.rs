@@ -24,7 +24,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::profile_kit;
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -195,7 +196,12 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
     }
 
     // Confirmed-on-Bluesky username.
-    let mut u = Entity::new(EntityKind::Username, bare_handle, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        bare_handle,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     u.tag("bluesky");
     u.tag("social");
     if created_date.is_some() {
@@ -213,7 +219,12 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
     if let Some(ref did) = profile.did
         && !did.is_empty()
     {
-        let mut d = Entity::new(EntityKind::Other("bluesky-did".into()), did, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
+        let mut d = Entity::new(
+            EntityKind::Other("bluesky-did".into()),
+            did,
+            confidence::HIGH_PLUSPLUS_PLUS,
+            scan_id,
+        );
         d.tag("bluesky");
         d.tag("did");
         d.add_evidence(
@@ -249,7 +260,12 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
 
     // Profile URL on bsky.app.
     let profile_url = format!("https://bsky.app/profile/{}", profile.handle);
-    let mut url_e = Entity::new(EntityKind::Url, &profile_url, confidence::VERY_HIGH, scan_id);
+    let mut url_e = Entity::new(
+        EntityKind::Url,
+        &profile_url,
+        confidence::VERY_HIGH,
+        scan_id,
+    );
     url_e.tag("bluesky");
     url_e.add_evidence(Evidence::new(
         SRC,
@@ -312,7 +328,8 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
                         | "linkedin.com"
                 )
             {
-                let mut d = Entity::new(EntityKind::Domain, &host, confidence::MEDIUM_HIGH, scan_id);
+                let mut d =
+                    Entity::new(EntityKind::Domain, &host, confidence::MEDIUM_HIGH, scan_id);
                 d.tag("bluesky");
                 d.tag("derived");
                 d.add_evidence(

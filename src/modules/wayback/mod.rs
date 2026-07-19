@@ -25,7 +25,8 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -193,7 +194,12 @@ fn mine_url_entity(
     if !seen_urls.insert(original_url.to_string()) {
         return None;
     }
-    let mut u = Entity::new(EntityKind::Url, original_url, confidence::MEDIUM_HIGH, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Url,
+        original_url,
+        confidence::MEDIUM_HIGH,
+        scan_id,
+    );
     u.tag("wayback-historical");
     u.tag(crate::core::tags::SEARCH_DISCOVERED);
     let ev = Evidence::new(

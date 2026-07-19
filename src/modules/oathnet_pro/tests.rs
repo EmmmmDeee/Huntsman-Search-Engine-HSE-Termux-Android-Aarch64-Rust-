@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::confidence;
 
     #[test]
     fn extract_breach_entities_characterization() {

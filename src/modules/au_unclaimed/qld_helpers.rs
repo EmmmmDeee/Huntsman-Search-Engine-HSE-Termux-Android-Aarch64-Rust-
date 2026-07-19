@@ -10,7 +10,8 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::{Map, Value};
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     scan::{Target, TargetKind},
 };
@@ -293,7 +294,11 @@ pub(super) fn records_to_entities(
         // Non-exact surname-only matches must stay below the confidence::MEDIUM expansion
         // floor so unrelated family members (e.g. "MS DAWN BAMFORD") never
         // trigger pivots when scanning a specific individual.
-        let (addr_conf, find_conf) = if exact { (0.38, confidence::MEDIUM_PLUS) } else { (0.32, 0.35) };
+        let (addr_conf, find_conf) = if exact {
+            (0.38, confidence::MEDIUM_PLUS)
+        } else {
+            (0.32, 0.35)
+        };
 
         // Geo pivot when we have a usable postcode; otherwise a plain finding.
         // Borrow `pc` (don't move it) so the owner-Person pass below can still read
@@ -363,7 +368,11 @@ pub(super) fn records_to_entities(
             // a surname-only family candidate — so each co-owner is judged on its
             // own name, and a family candidate stays below the confidence::MEDIUM pivot floor.
             let person_exact = owner_matches_full_name(person, seed);
-            let pconf = if person_exact { confidence::MEDIUM_PLUS } else { 0.35 };
+            let pconf = if person_exact {
+                confidence::MEDIUM_PLUS
+            } else {
+                0.35
+            };
             let mut p = Entity::new(EntityKind::Person, person, pconf, scan_id);
             p.tag(SRC);
             p.tag("unclaimed-money");

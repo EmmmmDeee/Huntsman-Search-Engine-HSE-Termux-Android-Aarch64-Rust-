@@ -1,5 +1,5 @@
-use crate::core::confidence;
 use super::*;
+use crate::core::confidence;
 
 fn make_user(
     nickname: &str,

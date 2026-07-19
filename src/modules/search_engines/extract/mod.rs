@@ -9,7 +9,10 @@ use futures::StreamExt;
 use super::fetch::fetch_one;
 use super::helpers::*;
 use super::{ENGINE_CONCURRENCY, engine_enabled, is_social_host, proven_live_engines};
-use crate::core::{confidence, module::{ModuleContext, ModuleResult}};
+use crate::core::{
+    confidence,
+    module::{ModuleContext, ModuleResult},
+};
 
 pub(super) async fn recycle_entities(
     ctx: &ModuleContext,
@@ -138,7 +141,11 @@ pub(super) async fn recycle_entities(
                     .split_whitespace()
                     .last()
                     .is_some_and(|t| t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()));
-                let base_conf = if has_postcode { confidence::MEDIUM_HIGH } else { confidence::LOW_MEDIUM };
+                let base_conf = if has_postcode {
+                    confidence::MEDIUM_HIGH
+                } else {
+                    confidence::LOW_MEDIUM
+                };
                 let mut e = Entity::new(EntityKind::Address, &addr, base_conf, &scan_id);
                 e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 e.tag("recycled");
@@ -173,7 +180,8 @@ pub(super) async fn recycle_entities(
                 continue;
             }
             if seen_emails.insert(email.clone()) {
-                let mut e = Entity::new(EntityKind::Email, &email, confidence::MEDIUM_HIGH, &scan_id);
+                let mut e =
+                    Entity::new(EntityKind::Email, &email, confidence::MEDIUM_HIGH, &scan_id);
                 e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 e.tag("recycled");
                 e.add_evidence(recycled_evidence(r, "Email", &email, &combined));
@@ -565,7 +573,11 @@ pub(super) fn extract_bio_aggregator_urls(
         if is_bio || is_msg {
             let url_str = r.url.trim_end_matches('/').to_string();
             if seen.insert(url_str.to_lowercase()) {
-                let conf = if is_msg { confidence::HIGH } else { confidence::HIGH_PLUS };
+                let conf = if is_msg {
+                    confidence::HIGH
+                } else {
+                    confidence::HIGH_PLUS
+                };
                 let tag = if is_msg {
                     "messaging-profile"
                 } else {
@@ -603,7 +615,11 @@ pub(super) fn extract_bio_aggregator_urls(
             let reconstructed = format!("https://{slug_host}/{slug}");
             if seen.insert(reconstructed.to_lowercase()) {
                 let is_messaging = MESSAGING_DIRECT_HOSTS.contains(&slug_host);
-                let conf = if is_messaging { confidence::MEDIUM_PLUS } else { confidence::HIGH };
+                let conf = if is_messaging {
+                    confidence::MEDIUM_PLUS
+                } else {
+                    confidence::HIGH
+                };
                 let tag = if is_messaging {
                     "messaging-profile"
                 } else {

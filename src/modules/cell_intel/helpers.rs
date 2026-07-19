@@ -3,7 +3,8 @@
 
 use std::borrow::Cow;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
 };
@@ -18,7 +19,12 @@ use super::types::{Cell, OpenCellidResp, TowerKey};
 /// `parse_cells_survey` test helper so the two can never drift in their tags or
 /// evidence-attribute set (they were previously byte-identical copies).
 pub(super) fn build_tower_device(cell: &Cell, key: &TowerKey, scan_id: &str) -> Entity {
-    let mut e = Entity::new(EntityKind::DeviceId, &key.tower_id, confidence::HIGH_PLUSPLUS, scan_id);
+    let mut e = Entity::new(
+        EntityKind::DeviceId,
+        &key.tower_id,
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
     e.tag(crate::core::tags::CELL_TOWER);
     e.tag(format!("radio:{}", key.ctype));
     e.add_evidence(

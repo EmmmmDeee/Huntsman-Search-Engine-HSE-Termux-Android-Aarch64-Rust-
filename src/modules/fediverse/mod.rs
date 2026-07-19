@@ -17,7 +17,8 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -184,7 +185,12 @@ fn extract_webfinger(
     // each is still a URL pivot, just at a confidence below the typed
     // actor/profile-page tiers.
     for alias in wf.aliases.iter().filter(|a| a.starts_with("http")) {
-        let mut url_e = Entity::new(EntityKind::Url, alias.as_str(), confidence::HIGH_PLUS, scan_id);
+        let mut url_e = Entity::new(
+            EntityKind::Url,
+            alias.as_str(),
+            confidence::HIGH_PLUS,
+            scan_id,
+        );
         url_e.tag("fediverse");
         url_e.tag("mastodon");
         url_e.tag("webfinger-alias");

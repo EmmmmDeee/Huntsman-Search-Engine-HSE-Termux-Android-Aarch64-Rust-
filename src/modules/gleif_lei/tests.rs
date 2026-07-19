@@ -4,7 +4,8 @@ use super::{
     transform::records_to_entities,
     types::{GleifAddress, GleifEntity, GleifResp},
 };
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::EntityKind,
     module::{Module, ModuleCategory, ModuleCost},
     scan::{Target, TargetKind},

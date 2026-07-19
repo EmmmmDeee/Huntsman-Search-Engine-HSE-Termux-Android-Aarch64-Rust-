@@ -2,7 +2,8 @@
 //!
 //! These functions are free of HTTP transport and are unit-tested directly.
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     scan::Target,
     tags,
@@ -365,7 +366,12 @@ fn domain_registration_entities(reg: &DomainRegistration, who: &str, scan_id: &s
     .collect();
     if addr_parts.len() >= 2 {
         let composed = addr_parts.join(", ");
-        let mut ae = Entity::new(EntityKind::Address, composed, confidence::MEDIUM_PLUS, scan_id);
+        let mut ae = Entity::new(
+            EntityKind::Address,
+            composed,
+            confidence::MEDIUM_PLUS,
+            scan_id,
+        );
         ae.tag("seon");
         ae.tag(tags::REGISTRANT);
         ae.add_evidence(ev());

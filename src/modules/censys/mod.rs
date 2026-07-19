@@ -13,7 +13,8 @@ mod types;
 
 use async_trait::async_trait;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -166,7 +167,12 @@ fn build_entities(host: &HostResult, ip: &str, scan_id: &str) -> Vec<Entity> {
 
     // ── IP entity with service evidence ─────────────────────────
     if !host.services.is_empty() {
-        let mut entity = Entity::new(EntityKind::IpAddress, ip, confidence::VERY_HIGH_PLUS, scan_id);
+        let mut entity = Entity::new(
+            EntityKind::IpAddress,
+            ip,
+            confidence::VERY_HIGH_PLUS,
+            scan_id,
+        );
         entity.tag("censys");
 
         let mut ports: Vec<u16> = host.services.iter().filter_map(|s| s.port).collect();
@@ -243,7 +249,12 @@ fn build_entities(host: &HostResult, ip: &str, scan_id: &str) -> Vec<Entity> {
         && is_valid_coords(lat, lon)
     {
         let coord_str = format!("{lat:.6},{lon:.6}");
-        let mut geo = Entity::new(EntityKind::Coordinates, &coord_str, confidence::HIGH, scan_id);
+        let mut geo = Entity::new(
+            EntityKind::Coordinates,
+            &coord_str,
+            confidence::HIGH,
+            scan_id,
+        );
         geo.tag("geoint");
         geo.tag("censys");
         // Skip a blank country code (no `country:` tag for an empty string).

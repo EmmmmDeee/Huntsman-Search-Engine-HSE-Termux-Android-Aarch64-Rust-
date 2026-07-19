@@ -1,7 +1,8 @@
 use super::DeHashed;
 use super::build::{balance_str, build_breach_entity, db_names, extract_records, selector_for};
 use super::types::DehashedResp;
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind},
     module::{Module, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},

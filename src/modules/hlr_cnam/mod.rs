@@ -11,7 +11,8 @@ mod tests;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -147,7 +148,12 @@ impl Module for HlrCnam {
 fn build_hlr_entities(hlr: &HlrResp, number: &str, scan_id: &str) -> Vec<Entity> {
     let mut out = Vec::new();
 
-    let mut phone = Entity::new(EntityKind::Phone, number, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
+    let mut phone = Entity::new(
+        EntityKind::Phone,
+        number,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     phone.tag("hlr-verified");
     if hlr.ported == Some(true) {
         phone.tag("ported");

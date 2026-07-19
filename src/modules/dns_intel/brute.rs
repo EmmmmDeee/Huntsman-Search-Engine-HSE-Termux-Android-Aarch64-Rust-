@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::ModuleContext,
@@ -39,7 +40,12 @@ pub(super) async fn brute_subdomains(target: &Target, ctx: &ModuleContext) -> Re
     let entities: Vec<Entity> = hits
         .into_iter()
         .map(|(host, ips_joined, count)| {
-            let mut e = Entity::new(EntityKind::Domain, &host, confidence::HIGH_PLUSPLUS_PLUS, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Domain,
+                &host,
+                confidence::HIGH_PLUSPLUS_PLUS,
+                &ctx.scan_id,
+            );
             e.tag("subdomain");
             e.tag("dns-brute");
             e.add_evidence(

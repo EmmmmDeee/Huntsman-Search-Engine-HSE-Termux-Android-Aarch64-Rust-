@@ -20,7 +20,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -127,7 +128,12 @@ fn build_entities(coord: &str, attrs: &HashMap<String, Value>, scan_id: &str) ->
 
     if let Some(loc) = &locality {
         let addr_value = format!("{loc}, Queensland");
-        let mut addr = Entity::new(EntityKind::Address, &addr_value, confidence::MEDIUM_HIGH, scan_id);
+        let mut addr = Entity::new(
+            EntityKind::Address,
+            &addr_value,
+            confidence::MEDIUM_HIGH,
+            scan_id,
+        );
         addr.tag(SRC);
         addr.tag("cadastre-derived");
         addr.tag("country:AU");

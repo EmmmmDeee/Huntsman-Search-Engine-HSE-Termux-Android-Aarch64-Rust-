@@ -180,7 +180,12 @@ fn build_entities(data: &AbuseData, ip: &str, scan_id: &str) -> Vec<Entity> {
 
     // ISP / operator → Organisation pivot.
     if let Some(isp) = data.isp.as_deref().map(str::trim).filter(|s| s.len() >= 2) {
-        let mut o = Entity::new(EntityKind::Organisation, isp, confidence::MEDIUM_PLUS, scan_id);
+        let mut o = Entity::new(
+            EntityKind::Organisation,
+            isp,
+            confidence::MEDIUM_PLUS,
+            scan_id,
+        );
         o.tag("abuseipdb");
         o.tag("isp");
         o.add_evidence(

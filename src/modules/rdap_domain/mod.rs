@@ -15,7 +15,8 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -269,7 +270,12 @@ fn build_ns_ip_entities(domain: &str, ns: &Nameserver, scan_id: &str) -> Vec<Ent
         .filter(|ip| !ip.trim().is_empty())
         .filter_map(|ip| {
             let addr: std::net::IpAddr = ip.trim().parse().ok()?;
-            let mut e = Entity::new(EntityKind::IpAddress, addr.to_string(), confidence::HIGH_PLUSPLUS, scan_id);
+            let mut e = Entity::new(
+                EntityKind::IpAddress,
+                addr.to_string(),
+                confidence::HIGH_PLUSPLUS,
+                scan_id,
+            );
             e.tag("rdap-ns-glue");
             e.add_evidence(
                 Evidence::new(SRC, format!("RDAP nameserver glue for {domain}"))

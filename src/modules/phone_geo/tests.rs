@@ -1,5 +1,5 @@
-use crate::core::confidence;
 use super::*;
+use crate::core::confidence;
 use data::{
     AREA_CODE_TABLES, au_carrier, country_name, identify_carrier, lookup_area_code, uk_carrier,
 };

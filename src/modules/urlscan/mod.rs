@@ -17,7 +17,8 @@ use std::collections::BTreeSet;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -206,7 +207,11 @@ fn build_target_entity(
     total_matches: u64,
     scan_id: &str,
 ) -> Entity {
-    let confidence = if intel.any_malicious { confidence::EXPERT } else { confidence::HIGH_PLUS };
+    let confidence = if intel.any_malicious {
+        confidence::EXPERT
+    } else {
+        confidence::HIGH_PLUS
+    };
     let mut entity = target.to_entity(confidence, scan_id);
     entity.tag("urlscan");
     if intel.any_malicious {
@@ -315,7 +320,12 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
         ));
         let coord = crate::util::city_coords::city_coords(country).map(|(lat, lon)| {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, confidence::LOW, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::LOW,
+                scan_id,
+            );
             c.tag("urlscan");
             c.tag("addr-derived");
             c.tag("geoint");

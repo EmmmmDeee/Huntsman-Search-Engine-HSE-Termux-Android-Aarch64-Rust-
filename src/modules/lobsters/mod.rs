@@ -24,7 +24,8 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -129,7 +130,12 @@ impl Module for Lobsters {
 pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
-    let mut u = Entity::new(EntityKind::Username, &user.username, confidence::VERY_HIGH_PLUS, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        &user.username,
+        confidence::VERY_HIGH_PLUS,
+        scan_id,
+    );
     u.tag("lobsters");
     if user.is_moderator == Some(true) {
         u.tag("moderator");
@@ -180,7 +186,12 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
     if let Some(ref inviter) = user.invited_by_user {
         let inviter = inviter.trim();
         if !inviter.is_empty() {
-            let mut inv = Entity::new(EntityKind::Username, inviter, confidence::HIGH_PLUS, scan_id);
+            let mut inv = Entity::new(
+                EntityKind::Username,
+                inviter,
+                confidence::HIGH_PLUS,
+                scan_id,
+            );
             inv.tag("lobsters");
             inv.tag("lobsters-invited-by");
             inv.add_evidence(
@@ -233,7 +244,12 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
             None => (md, None),
         };
         if !local.is_empty() {
-            let mut m = Entity::new(EntityKind::Username, local, confidence::HIGH_PLUSPLUS, scan_id);
+            let mut m = Entity::new(
+                EntityKind::Username,
+                local,
+                confidence::HIGH_PLUSPLUS,
+                scan_id,
+            );
             m.tag("mastodon");
             m.tag("fediverse");
             m.tag("lobsters-pivot");

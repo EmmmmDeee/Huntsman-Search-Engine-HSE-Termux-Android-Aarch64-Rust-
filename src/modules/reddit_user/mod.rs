@@ -28,7 +28,8 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -153,7 +154,12 @@ pub(super) fn build_entities(
 ) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
-    let mut u = Entity::new(EntityKind::Username, &data.name, confidence::VERY_HIGH_PLUS, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        &data.name,
+        confidence::VERY_HIGH_PLUS,
+        scan_id,
+    );
     u.tag("reddit");
     if data.verified == Some(true) {
         u.tag("verified");

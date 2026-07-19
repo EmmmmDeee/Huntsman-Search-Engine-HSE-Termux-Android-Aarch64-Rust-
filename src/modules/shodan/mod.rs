@@ -16,7 +16,8 @@ mod tests;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -263,7 +264,12 @@ impl Shodan {
                         && !host.contains(char::is_whitespace)
                 })
                 .map(|host| {
-                    let mut d = Entity::new(EntityKind::Domain, host, confidence::HIGH_PLUSPLUS, &ctx.scan_id);
+                    let mut d = Entity::new(
+                        EntityKind::Domain,
+                        host,
+                        confidence::HIGH_PLUSPLUS,
+                        &ctx.scan_id,
+                    );
                     d.tag("shodan-internetdb");
                     d.tag("ptr");
                     d.add_evidence(
@@ -372,7 +378,12 @@ impl Shodan {
                 .into_iter()
                 .filter(|host| !host.is_empty())
                 .map(|host| {
-                    let mut d = Entity::new(EntityKind::Domain, &host, confidence::HIGH_PLUSPLUS_PLUS, &ctx.scan_id);
+                    let mut d = Entity::new(
+                        EntityKind::Domain,
+                        &host,
+                        confidence::HIGH_PLUSPLUS_PLUS,
+                        &ctx.scan_id,
+                    );
                     d.tag("shodan");
                     d.tag(tags::PTR);
                     d.add_evidence(
@@ -390,7 +401,12 @@ impl Shodan {
         if let Some(org) = &body.org
             && !org.is_empty()
         {
-            let mut oe = Entity::new(EntityKind::Organisation, org, confidence::HIGH_PLUS, &ctx.scan_id);
+            let mut oe = Entity::new(
+                EntityKind::Organisation,
+                org,
+                confidence::HIGH_PLUS,
+                &ctx.scan_id,
+            );
             oe.tag("shodan");
             oe.add_evidence(Evidence::new(SRC, format!("Organisation for {ip}")));
             result.push(oe);
@@ -401,7 +417,12 @@ impl Shodan {
             let isp = isp.trim();
             let isp_lc = isp.to_ascii_lowercase();
             if !isp.is_empty() && org_lc.as_deref() != Some(isp_lc.as_str()) {
-                let mut ie = Entity::new(EntityKind::Organisation, isp, confidence::HIGH, &ctx.scan_id);
+                let mut ie = Entity::new(
+                    EntityKind::Organisation,
+                    isp,
+                    confidence::HIGH,
+                    &ctx.scan_id,
+                );
                 ie.tag("shodan");
                 ie.tag("isp");
                 ie.add_evidence(Evidence::new(SRC, format!("ISP for {ip}")));
@@ -411,7 +432,12 @@ impl Shodan {
         if let Some(asn) = &body.asn
             && !asn.is_empty()
         {
-            let mut ae = Entity::new(EntityKind::Asn, asn, confidence::HIGH_PLUSPLUS, &ctx.scan_id);
+            let mut ae = Entity::new(
+                EntityKind::Asn,
+                asn,
+                confidence::HIGH_PLUSPLUS,
+                &ctx.scan_id,
+            );
             ae.tag("shodan");
             ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
             result.push(ae);
@@ -421,14 +447,24 @@ impl Shodan {
         {
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(country) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, confidence::LOW_MEDIUM, &ctx.scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::LOW_MEDIUM,
+                    &ctx.scan_id,
+                );
                 c.tag("shodan");
                 c.tag("addr-derived");
                 c.tag("geoint");
                 c.add_evidence(Evidence::new(SRC, format!("Geocode of country for {ip}")));
                 result.push(c);
             }
-            let mut addr = Entity::new(EntityKind::Address, country, confidence::MEDIUM_HIGH, &ctx.scan_id);
+            let mut addr = Entity::new(
+                EntityKind::Address,
+                country,
+                confidence::MEDIUM_HIGH,
+                &ctx.scan_id,
+            );
             addr.tag("shodan");
             addr.tag("geoint");
             addr.add_evidence(Evidence::new(SRC, format!("Country for {ip}")));
@@ -441,5 +477,10 @@ impl Shodan {
 
 /// Helper to build an IP entity from a raw IP string.
 pub(super) fn target_entity(ip: &str, scan_id: &str) -> Entity {
-    Entity::new(EntityKind::IpAddress, ip, confidence::VERY_HIGH_PLUS, scan_id)
+    Entity::new(
+        EntityKind::IpAddress,
+        ip,
+        confidence::VERY_HIGH_PLUS,
+        scan_id,
+    )
 }

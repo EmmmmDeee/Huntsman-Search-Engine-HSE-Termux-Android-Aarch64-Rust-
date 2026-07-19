@@ -13,7 +13,8 @@ mod tests;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -188,7 +189,12 @@ pub(super) fn build_entities(body: KbResp, query_username: &str, scan_id: &str) 
         .and_then(|b| b.username.as_deref())
         .unwrap_or(query_username);
 
-    let mut entity = Entity::new(EntityKind::Username, kb_username, confidence::VERY_HIGH_PLUS, scan_id);
+    let mut entity = Entity::new(
+        EntityKind::Username,
+        kb_username,
+        confidence::VERY_HIGH_PLUS,
+        scan_id,
+    );
     entity.tag("keybase");
 
     let proof_count = user.proofs_summary.as_ref().map_or(0, |p| p.all.len());
@@ -251,7 +257,12 @@ pub(super) fn build_entities(body: KbResp, query_username: &str, scan_id: &str) 
 
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, confidence::MEDIUM, scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::MEDIUM,
+                    scan_id,
+                );
                 c.tag("addr-derived");
                 c.tag("geoint");
                 c.tag("keybase");
@@ -321,7 +332,12 @@ pub(super) fn extract_proofs(
         match ptype {
             "twitter" | "github" | "reddit" | "hackernews" | "gitlab" | "mastodon" | "facebook"
             | "twitch" => {
-                let mut ue = Entity::new(EntityKind::Username, nametag, confidence::HIGH_PLUSPLUS, scan_id);
+                let mut ue = Entity::new(
+                    EntityKind::Username,
+                    nametag,
+                    confidence::HIGH_PLUSPLUS,
+                    scan_id,
+                );
                 ue.tag("keybase");
                 ue.tag("verified");
                 ue.tag(format!("platform:{ptype}"));
@@ -346,7 +362,8 @@ pub(super) fn extract_proofs(
                     .split('/')
                     .next()
                     .unwrap_or(nametag);
-                let mut de = Entity::new(EntityKind::Domain, domain, confidence::VERY_HIGH, scan_id);
+                let mut de =
+                    Entity::new(EntityKind::Domain, domain, confidence::VERY_HIGH, scan_id);
                 de.tag("keybase");
                 de.tag("verified");
                 de.tag("personal-site");
@@ -360,7 +377,8 @@ pub(super) fn extract_proofs(
                 result.push(de);
             }
             _ if nametag.contains('@') && nametag.contains('.') => {
-                let mut ee = Entity::new(EntityKind::Email, nametag, confidence::HIGH_PLUS, scan_id);
+                let mut ee =
+                    Entity::new(EntityKind::Email, nametag, confidence::HIGH_PLUS, scan_id);
                 ee.tag("keybase");
                 ee.tag(format!("proof:{ptype}"));
                 ee.add_evidence(

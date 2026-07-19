@@ -26,7 +26,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::profile_kit;
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -192,7 +193,12 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
     }
 
     // Confirmed-on-Mastodon username.
-    let mut u = Entity::new(EntityKind::Username, &acct.username, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        &acct.username,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     u.tag("mastodon");
     u.tag("fediverse");
     u.add_evidence(ev.clone());
@@ -273,7 +279,11 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
         // Field value may be plain text or HTML with an <a href="...">.
         let plain = crate::util::html::strip_html(&field.value);
         let conf_url = if verified { 0.82 } else { confidence::HIGH };
-        let conf_domain = if verified { confidence::HIGH_PLUSPLUS } else { 0.58 };
+        let conf_domain = if verified {
+            confidence::HIGH_PLUSPLUS
+        } else {
+            0.58
+        };
 
         // Extract href from the raw HTML value for the URL entity.
         let href = extract_href(&field.value);

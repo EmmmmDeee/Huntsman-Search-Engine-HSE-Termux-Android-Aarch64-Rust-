@@ -172,7 +172,13 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
                 .filter(|d| d.trim().contains(' '))
         });
     if let Some(name) = name.map(|n| n.trim().to_string()).filter(|n| n.len() >= 3) {
-        push(result, EntityKind::Person, &name, confidence::HIGH_PLUS, &[]);
+        push(
+            result,
+            EntityKind::Person,
+            &name,
+            confidence::HIGH_PLUS,
+            &[],
+        );
     }
 
     // Preferred username — a strong pivot into the free username stack.
@@ -192,7 +198,13 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
         .map(str::trim)
         .filter(|l| l.len() >= 2)
     {
-        push(result, EntityKind::Address, loc, confidence::MEDIUM_PLUS, &["geo-hint"]);
+        push(
+            result,
+            EntityKind::Address,
+            loc,
+            confidence::MEDIUM_PLUS,
+            &["geo-hint"],
+        );
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
             let coord_val = format!("{lat:.4},{lon:.4}");
             push(
@@ -256,7 +268,11 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
             .map(str::trim)
             .filter(|u| !u.is_empty())
         {
-            let conf = if verified { confidence::HIGH } else { confidence::MEDIUM_HIGH };
+            let conf = if verified {
+                confidence::HIGH
+            } else {
+                confidence::MEDIUM_HIGH
+            };
             let mut e = Entity::new(EntityKind::Username, uname, conf, scan_id);
             e.tag(SRC);
             tags.iter().for_each(|t| e.tag(*t));
@@ -305,7 +321,12 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
         .map(str::trim)
         .filter(|c| c.len() >= 2)
     {
-        let mut o = Entity::new(EntityKind::Organisation, company, confidence::MEDIUM_PLUS, scan_id);
+        let mut o = Entity::new(
+            EntityKind::Organisation,
+            company,
+            confidence::MEDIUM_PLUS,
+            scan_id,
+        );
         o.tag(SRC);
         o.tag("employer");
         let mut oev = ev.clone().with_attr("source_field", "company");

@@ -10,7 +10,8 @@
 use async_trait::async_trait;
 use std::collections::HashSet;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -48,7 +49,11 @@ fn build_hostsearch_entities(body: &str, domain: &str, scan_id: &str) -> Vec<Ent
 
         if !host.is_empty() && host.contains('.') && seen.insert(host.clone()) {
             let is_sub = crate::util::domains::is_or_subdomain_of(&host, domain);
-            let conf = if is_sub { confidence::VERY_HIGH } else { confidence::MEDIUM };
+            let conf = if is_sub {
+                confidence::VERY_HIGH
+            } else {
+                confidence::MEDIUM
+            };
             let mut e = Entity::new(EntityKind::Domain, &host, conf, scan_id);
             e.tag("hackertarget");
             if is_sub {
@@ -109,7 +114,8 @@ fn build_reverse_dns_entities(body: &str, ip: &str, scan_id: &str) -> Vec<Entity
         .filter_map(|line| {
             let domain = line.trim().trim_end_matches('.').to_lowercase();
             (!domain.is_empty() && domain.contains('.')).then(|| {
-                let mut e = Entity::new(EntityKind::Domain, &domain, confidence::HIGH_PLUS, scan_id);
+                let mut e =
+                    Entity::new(EntityKind::Domain, &domain, confidence::HIGH_PLUS, scan_id);
                 e.tag("hackertarget");
                 e.tag(tags::PTR);
                 e.add_evidence(Evidence::new(SRC, format!("Reverse DNS for {ip}")));

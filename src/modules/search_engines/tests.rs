@@ -3,9 +3,9 @@
 //! Split out of the module file (mechanical, behaviour-preserving) so the
 //! source reads as implementation; tests reach private items via `use super::*`.
 
-use crate::core::confidence;
 use super::queries::{Region, build_queries_fullname, regional_dorks};
 use super::*;
+use crate::core::confidence;
 
 #[test]
 fn primary_engine_order_floats_reliable_and_proven_engines_first() {

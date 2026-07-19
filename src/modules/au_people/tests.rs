@@ -1,5 +1,5 @@
-use crate::core::confidence;
 use super::*;
+use crate::core::confidence;
 
 #[test]
 fn accepts_two_token_fullname_only() {

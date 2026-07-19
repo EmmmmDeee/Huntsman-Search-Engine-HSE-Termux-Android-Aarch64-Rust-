@@ -135,7 +135,12 @@ pub(super) fn build_entities(
 ) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
-    let mut u = Entity::new(EntityKind::Username, &user.id, confidence::VERY_HIGH_PLUS, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        &user.id,
+        confidence::VERY_HIGH_PLUS,
+        scan_id,
+    );
     u.tag("hacker-news");
     let submissions = user.submitted.as_ref().map_or(0, Vec::len);
     let ev = [

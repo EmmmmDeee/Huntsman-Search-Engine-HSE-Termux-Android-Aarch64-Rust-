@@ -26,7 +26,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::sync::OnceCell;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -547,7 +548,12 @@ async fn run_tor_check(
         return Ok(());
     }
 
-    let mut entity = Entity::new(EntityKind::IpAddress, ip, confidence::VERY_HIGH_PLUSPLUS, &ctx.scan_id);
+    let mut entity = Entity::new(
+        EntityKind::IpAddress,
+        ip,
+        confidence::VERY_HIGH_PLUSPLUS,
+        &ctx.scan_id,
+    );
     entity.tag("tor-exit");
     entity.tag("anonymous-network");
     entity.add_evidence(

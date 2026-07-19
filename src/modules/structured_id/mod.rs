@@ -24,7 +24,8 @@
 
 use async_trait::async_trait;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence, unix_now},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -111,7 +112,12 @@ impl Module for StructuredId {
 
             // The node MAC is a real device fingerprint — emit it first-class.
             if let Some(m) = mac {
-                let mut me = Entity::new(EntityKind::MacAddress, &m, confidence::HIGH_PLUS, &ctx.scan_id);
+                let mut me = Entity::new(
+                    EntityKind::MacAddress,
+                    &m,
+                    confidence::HIGH_PLUS,
+                    &ctx.scan_id,
+                );
                 me.tag("uuid-v1");
                 me.tag("derived");
                 me.add_evidence(

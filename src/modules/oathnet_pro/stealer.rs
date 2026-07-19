@@ -7,8 +7,8 @@
 //! the parent's `Module` wiring. Reaches shared parent items through
 //! `use super::*`.
 
-use crate::core::confidence;
 use super::*;
+use crate::core::confidence;
 
 /// Apply the stealer-context tags (`oathnet-pro`, `stealer`, plus any
 /// `extra_tags` in order) and a cloned evidence record to `e`, then push it.
@@ -191,7 +191,12 @@ pub(super) fn extract_stealer_entities(
         if seen.insert(format!("@cred:{}", cred_val.to_lowercase())) {
             push_stealer_entity(
                 result,
-                Entity::new(EntityKind::Credential, &cred_val, confidence::MEDIUM_PLUS, scan_id),
+                Entity::new(
+                    EntityKind::Credential,
+                    &cred_val,
+                    confidence::MEDIUM_PLUS,
+                    scan_id,
+                ),
                 &ev,
                 &[],
             );

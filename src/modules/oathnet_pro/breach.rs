@@ -399,7 +399,12 @@ pub(super) fn extract_breach_entities_with(
     {
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(&country) {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, confidence::LOW_MEDIUM, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::LOW_MEDIUM,
+                scan_id,
+            );
             c.tag("addr-derived");
             c.tag("geoint");
             c.tag("breach");
@@ -412,7 +417,12 @@ pub(super) fn extract_breach_entities_with(
         }
         push_oathnet_entity(
             result,
-            Entity::new(EntityKind::Address, &country, confidence::MEDIUM_HIGH, scan_id),
+            Entity::new(
+                EntityKind::Address,
+                &country,
+                confidence::MEDIUM_HIGH,
+                scan_id,
+            ),
             &ev,
             &[],
             is_target_row,
@@ -449,7 +459,12 @@ pub(super) fn extract_breach_entities_with(
         if addr.len() >= 4 && seen.insert(format!("@addr:{}", addr.to_lowercase())) {
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, confidence::MEDIUM_HIGH, scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::MEDIUM_HIGH,
+                    scan_id,
+                );
                 c.tag("addr-derived");
                 c.tag("geoint");
                 c.tag("breach");
@@ -579,7 +594,8 @@ pub(super) fn extract_breach_entities_with(
         if let Some(org) = val_str(item, k) {
             let org = org.trim();
             if org.len() >= 2 && seen.insert(format!("@org:{}", org.to_ascii_lowercase())) {
-                let mut oe = Entity::new(EntityKind::Organisation, org, confidence::MEDIUM, scan_id);
+                let mut oe =
+                    Entity::new(EntityKind::Organisation, org, confidence::MEDIUM, scan_id);
                 oe.tag("oathnet");
                 oe.tag("employer-field");
                 push_oathnet_entity(result, oe, &ev, &[], is_target_row);

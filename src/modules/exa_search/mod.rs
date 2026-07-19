@@ -24,7 +24,8 @@ use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -210,7 +211,8 @@ impl Module for ExaSearch {
             }
 
             // Emit the URL as its own entity — feeds web_crawler.
-            let mut url_entity = Entity::new(EntityKind::Url, &r.url, confidence::HIGH_PLUS, &ctx.scan_id);
+            let mut url_entity =
+                Entity::new(EntityKind::Url, &r.url, confidence::HIGH_PLUS, &ctx.scan_id);
             url_entity.tag("exa-search");
             url_entity.tag(tags::EXTERNAL);
             let mut ev = Evidence::new(

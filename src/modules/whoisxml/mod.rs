@@ -18,7 +18,8 @@ use std::collections::HashSet;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -289,7 +290,12 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
         if let Some(org) = nonempty(&c.organization)
             && seen.insert(format!("org:{}", org.to_lowercase()))
         {
-            let mut e = Entity::new(EntityKind::Organisation, &org, confidence::HIGH_PLUS, scan_id);
+            let mut e = Entity::new(
+                EntityKind::Organisation,
+                &org,
+                confidence::HIGH_PLUS,
+                scan_id,
+            );
             e.tag("whoisxml");
             e.tag(format!("whois-{role}"));
             let mut ev = base_ev.clone().with_attr("contact_role", role);

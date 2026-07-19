@@ -9,7 +9,8 @@ mod tests;
 
 use async_trait::async_trait;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -232,7 +233,12 @@ impl Module for AcmaRrl {
         if !licences.is_empty()
             && let Some(abn) = extract_abn_from_html(&html)
         {
-            let mut abn_entity = Entity::new(EntityKind::AbnAcn, &abn, confidence::HIGH_PLUS, &ctx.scan_id);
+            let mut abn_entity = Entity::new(
+                EntityKind::AbnAcn,
+                &abn,
+                confidence::HIGH_PLUS,
+                &ctx.scan_id,
+            );
             abn_entity.tag("acma");
             let note = if licences.len() == 1 {
                 format!("ABN for {} from ACMA RRL", licences[0].0)

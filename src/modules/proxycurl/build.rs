@@ -4,7 +4,8 @@
 
 use std::collections::HashSet;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
     scan::Target,
@@ -37,7 +38,12 @@ pub(super) fn build_entities(
 
     // ── Person (the anchor) ───────────────────────────────────────────────
     if let Some(name) = profile.display_name() {
-        let mut pe = Entity::new(EntityKind::Person, &name, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
+        let mut pe = Entity::new(
+            EntityKind::Person,
+            &name,
+            confidence::HIGH_PLUSPLUS_PLUS,
+            scan_id,
+        );
         pe.tag("proxycurl");
         pe.tag("linkedin");
         let mut ev = Evidence::new(SRC, format!("LinkedIn profile: {name}"))
@@ -105,7 +111,12 @@ pub(super) fn build_entities(
     .collect();
     if loc_parts.len() >= 2 {
         let location = loc_parts.join(", ");
-        let mut ae = Entity::new(EntityKind::Address, &location, confidence::MEDIUM_PLUS, scan_id);
+        let mut ae = Entity::new(
+            EntityKind::Address,
+            &location,
+            confidence::MEDIUM_PLUS,
+            scan_id,
+        );
         ae.tag("proxycurl");
         ae.tag("linkedin");
         ae.tag("geoint");
@@ -201,7 +212,8 @@ pub(super) fn build_entities(
             .take(MAX_EXPERIENCES)
             .filter_map(|exp| {
                 let company = nonempty(&exp.company).filter(|c| c.chars().count() >= 2)?;
-                let mut oe = Entity::new(EntityKind::Organisation, company, confidence::HIGH, scan_id);
+                let mut oe =
+                    Entity::new(EntityKind::Organisation, company, confidence::HIGH, scan_id);
                 oe.tag("proxycurl");
                 oe.tag("linkedin");
                 let mut ev = Evidence::new(SRC, format!("Employer: {company}"));
@@ -230,7 +242,12 @@ pub(super) fn build_entities(
     // past is a weaker "current relationship" signal than a listed employer.
     result.extend(profile.education.iter().take(MAX_LISTED).filter_map(|edu| {
         let school = nonempty(&edu.school).filter(|s| s.chars().count() >= 2)?;
-        let mut oe = Entity::new(EntityKind::Organisation, school, confidence::MEDIUM_HIGH, scan_id);
+        let mut oe = Entity::new(
+            EntityKind::Organisation,
+            school,
+            confidence::MEDIUM_HIGH,
+            scan_id,
+        );
         oe.tag("proxycurl");
         oe.tag("linkedin");
         oe.tag("education");

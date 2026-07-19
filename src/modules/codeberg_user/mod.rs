@@ -147,7 +147,12 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
     }
 
     // Confirmed-on-Codeberg username.
-    let mut u = Entity::new(EntityKind::Username, &user.login, confidence::EXPERT, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        &user.login,
+        confidence::EXPERT,
+        scan_id,
+    );
     u.tag("codeberg");
     u.tag("code");
     u.add_evidence(ev.clone());

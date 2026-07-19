@@ -51,7 +51,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::Evidence,
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -394,7 +395,11 @@ impl Module for IntelX {
         // rides at lead strength and withholds the exposure tags (see
         // `exposure_tags`) rather than asserting a breach at full confidence.
         let is_text_search = intelx_selector(target.kind) == Some("text");
-        let confidence = if is_text_search { confidence::MEDIUM_HIGH } else { 0.86 };
+        let confidence = if is_text_search {
+            confidence::MEDIUM_HIGH
+        } else {
+            0.86
+        };
         let mut entity = target.to_entity(confidence, &ctx.scan_id);
         entity.tag("intelx");
         entity.tag(tags::EXTERNAL);

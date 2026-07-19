@@ -1,7 +1,8 @@
 //! Entity emission helpers for WiGLE observations.
 
 use super::*;
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
 };
@@ -39,7 +40,12 @@ pub(super) fn extract_cell_intel(
         let top = mode(&carriers);
         if !top.is_empty() {
             let total = resp.results.len();
-            let mut org = Entity::new(EntityKind::Organisation, top, confidence::MEDIUM_HIGH, scan_id);
+            let mut org = Entity::new(
+                EntityKind::Organisation,
+                top,
+                confidence::MEDIUM_HIGH,
+                scan_id,
+            );
             org.tag("wigle");
             org.tag("cell-carrier");
             org.add_evidence(
@@ -105,7 +111,12 @@ pub(super) fn extract_cell_intel(
         if !top_postcode.is_empty() {
             addr_str = format!("{addr_str} {top_postcode}");
         }
-        let mut addr = Entity::new(EntityKind::Address, &addr_str, confidence::MEDIUM_HIGH, scan_id);
+        let mut addr = Entity::new(
+            EntityKind::Address,
+            &addr_str,
+            confidence::MEDIUM_HIGH,
+            scan_id,
+        );
         addr.tag("wigle");
         addr.tag("cell-derived");
         addr.add_evidence(
@@ -193,7 +204,12 @@ pub(super) fn extract_bluetooth_intel(
         if mac.len() < 12 {
             return None;
         }
-        let mut e = Entity::new(EntityKind::MacAddress, mac, confidence::MEDIUM_HIGH, scan_id);
+        let mut e = Entity::new(
+            EntityKind::MacAddress,
+            mac,
+            confidence::MEDIUM_HIGH,
+            scan_id,
+        );
         e.tag("wigle");
         e.tag("bluetooth-beacon");
         let mut ev = Evidence::new(
@@ -254,7 +270,12 @@ pub(super) fn emit_bssid_entities(
     .collect();
     if parts.len() >= 2 {
         let addr_str = parts.join(", ");
-        let mut addr = Entity::new(EntityKind::Address, &addr_str, confidence::HIGH_PLUS, scan_id);
+        let mut addr = Entity::new(
+            EntityKind::Address,
+            &addr_str,
+            confidence::HIGH_PLUS,
+            scan_id,
+        );
         addr.tag("wigle");
         addr.tag(observation_tag);
         addr.add_evidence(
@@ -400,7 +421,12 @@ pub(super) fn emit_ssid_entities(ssid: &str, results: &[Network], scan_id: &str)
 
         // The matched access point's BSSID — ties the SSID to a concrete AP.
         if let Some(bssid) = net.netid.as_deref().filter(|b| !b.is_empty()) {
-            let mut m = Entity::new(EntityKind::MacAddress, bssid, confidence::HIGH_PLUS, scan_id);
+            let mut m = Entity::new(
+                EntityKind::MacAddress,
+                bssid,
+                confidence::HIGH_PLUS,
+                scan_id,
+            );
             m.tag("wigle");
             m.tag("ssid-match");
             m.add_evidence(

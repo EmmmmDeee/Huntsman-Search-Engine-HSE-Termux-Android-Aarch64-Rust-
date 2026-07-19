@@ -17,7 +17,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -444,7 +445,8 @@ fn emit_pbs_v1(
         // Corroborating emails as BFS pivots.
         for email in meta.emails.iter().flatten() {
             if !email.eq_ignore_ascii_case(query) {
-                let mut pivot = Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
+                let mut pivot =
+                    Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
                 pivot.tag(SRC);
                 pivot.tag("pbs-v1-pivot");
                 result.push(pivot);
@@ -580,7 +582,8 @@ fn emit_pbs_v2(
             .as_deref()
             .filter(|u| !u.eq_ignore_ascii_case(query))
         {
-            let mut pivot = Entity::new(EntityKind::Username, uname, confidence::HIGH_PLUS, scan_id);
+            let mut pivot =
+                Entity::new(EntityKind::Username, uname, confidence::HIGH_PLUS, scan_id);
             pivot.tag(SRC);
             pivot.tag("pbs-v2-pivot");
             result.push(pivot);

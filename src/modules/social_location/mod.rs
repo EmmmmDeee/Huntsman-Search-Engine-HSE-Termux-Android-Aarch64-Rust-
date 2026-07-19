@@ -11,7 +11,8 @@
 
 use async_trait::async_trait;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -94,7 +95,11 @@ impl Module for SocialLocation {
                 // (AU-052/AU-053) after the address→coordinates enrichment pass.
                 // Professional portals are set to confidence::MEDIUM_HIGH — the same tier as a
                 // search-discovered postcode-qualified address.
-                let conf = if is_professional { confidence::MEDIUM_HIGH } else { 0.52 };
+                let conf = if is_professional {
+                    confidence::MEDIUM_HIGH
+                } else {
+                    0.52
+                };
                 let mut e = Entity::new(EntityKind::Address, trimmed, conf, &ctx.scan_id);
                 e.tag("geoint");
                 if is_professional {

@@ -13,7 +13,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use std::collections::HashSet;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -175,7 +176,11 @@ fn ct_log_entities(
                 return None;
             }
             let is_sub = crate::util::domains::is_proper_subdomain_of(&name, parent);
-            let conf = if is_sub { confidence::EXPERT } else { confidence::LOW_MEDIUM };
+            let conf = if is_sub {
+                confidence::EXPERT
+            } else {
+                confidence::LOW_MEDIUM
+            };
             let mut e = Entity::new(EntityKind::Domain, &name, conf, scan_id);
             e.tag(tags::CT_LOG);
             if is_sub {
@@ -227,7 +232,12 @@ fn parse_certificate(
             if !is_sub || !seen_subs.insert(san_lower.clone()) {
                 return None;
             }
-            let mut sub = Entity::new(EntityKind::Domain, &san_lower, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
+            let mut sub = Entity::new(
+                EntityKind::Domain,
+                &san_lower,
+                confidence::HIGH_PLUSPLUS_PLUS,
+                scan_id,
+            );
             sub.tag(tags::SUBDOMAIN);
             sub.tag("tls-san");
             sub.add_evidence(

@@ -1,6 +1,6 @@
 use super::*;
-use crate::util::geo::parse_coords;
 use crate::core::confidence;
+use crate::util::geo::parse_coords;
 
 // -- acceptance tests (from forward_geocode) -------------------------
 

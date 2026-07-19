@@ -20,7 +20,8 @@
 
 use async_trait::async_trait;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -130,7 +131,11 @@ fn steam_lookup_url(v: &str) -> Option<(String, f64)> {
     // Vanity: an explicit `steam:` handle (strong context) or a plausibly-shaped
     // custom URL. A bare numeric (e.g. a phone/ID) is not a vanity.
     if prefixed || is_vanity_shaped(val) {
-        let conf = if prefixed { confidence::HIGH_PLUS } else { confidence::MEDIUM_PLUS };
+        let conf = if prefixed {
+            confidence::HIGH_PLUS
+        } else {
+            confidence::MEDIUM_PLUS
+        };
         return Some((
             format!("https://steamcommunity.com/id/{}?xml=1", urlencode(val)),
             conf,
@@ -263,7 +268,12 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
     // No cap: `util::extract::emails`/`urls` already dedupe internally.
     if let Some(bio) = extract_tag(xml, "summary") {
         for email in crate::util::extract::emails(&bio) {
-            let mut e = Entity::new(EntityKind::Email, &email, (conf - 0.15).max(confidence::LOW_MEDIUM), scan_id);
+            let mut e = Entity::new(
+                EntityKind::Email,
+                &email,
+                (conf - 0.15).max(confidence::LOW_MEDIUM),
+                scan_id,
+            );
             e.tag("steam");
             e.tag("public-profile");
             e.add_evidence(ev.clone().with_attr("source_field", "summary"));
@@ -271,7 +281,12 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
         }
         for link in crate::util::extract::urls(&bio) {
             let link = link.as_str();
-            let mut url_e = Entity::new(EntityKind::Url, link, (conf - 0.20).max(confidence::LOW), scan_id);
+            let mut url_e = Entity::new(
+                EntityKind::Url,
+                link,
+                (conf - 0.20).max(confidence::LOW),
+                scan_id,
+            );
             url_e.tag("steam");
             url_e.tag("personal-site");
             url_e.add_evidence(ev.clone().with_attr("source_field", "summary"));

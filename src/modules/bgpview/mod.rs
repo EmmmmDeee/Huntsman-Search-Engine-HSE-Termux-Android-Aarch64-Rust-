@@ -15,7 +15,8 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -168,7 +169,12 @@ fn ip_entities(data: &BgpIpData, ip: &str, scan_id: &str) -> Vec<Entity> {
             continue;
         };
         let asn_label = format!("AS{}", asn.asn);
-        let mut asn_e = Entity::new(EntityKind::Asn, &asn_label, confidence::HIGH_PLUSPLUS, scan_id);
+        let mut asn_e = Entity::new(
+            EntityKind::Asn,
+            &asn_label,
+            confidence::HIGH_PLUSPLUS,
+            scan_id,
+        );
         let name = nonempty(&asn.name).unwrap_or("");
         let mut ev = Evidence::new(SRC, format!("{ip} in AS{} ({name})", asn.asn))
             .with_attr("asn", asn.asn.to_string());

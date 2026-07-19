@@ -291,7 +291,12 @@ fn caa_entities(records: &[DohRecord], domain: &str, scan_id: &str) -> Vec<Entit
         return Vec::new();
     }
 
-    let mut entity = Entity::new(EntityKind::Domain, domain, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
+    let mut entity = Entity::new(
+        EntityKind::Domain,
+        domain,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     entity.tag("dns");
     entity.tag("caa");
     let mut ev = Evidence::new(
@@ -428,7 +433,12 @@ fn records_for_type(
             "A" | "AAAA" => {
                 let ip = rec.data.trim().trim_matches('"');
                 if !ip.is_empty() && seen.insert(format!("ip:{ip}")) {
-                    let mut e = Entity::new(EntityKind::IpAddress, ip, confidence::HIGH_PLUSPLUS, scan_id);
+                    let mut e = Entity::new(
+                        EntityKind::IpAddress,
+                        ip,
+                        confidence::HIGH_PLUSPLUS,
+                        scan_id,
+                    );
                     e.tag("dns");
                     e.tag(if effective == "A" { "ipv4" } else { "ipv6" });
                     e.add_evidence(
@@ -451,7 +461,8 @@ fn records_for_type(
                 for ip in parse_svcb_hints(&rec.data) {
                     if !ip.is_empty() && seen.insert(format!("httpshint:{ip}")) {
                         let is_v6 = ip.contains(':');
-                        let mut e = Entity::new(EntityKind::IpAddress, &ip, confidence::VERY_HIGH, scan_id);
+                        let mut e =
+                            Entity::new(EntityKind::IpAddress, &ip, confidence::VERY_HIGH, scan_id);
                         e.tag("dns");
                         e.tag(if is_v6 { "ipv6" } else { "ipv4" });
                         e.tag("https-hint");
@@ -499,8 +510,12 @@ fn records_for_type(
                         match member {
                             crate::util::spf::Member::Ip(ip) => {
                                 if seen.insert(format!("spf:{ip}")) {
-                                    let mut e =
-                                        Entity::new(EntityKind::IpAddress, ip, confidence::VERY_HIGH, scan_id);
+                                    let mut e = Entity::new(
+                                        EntityKind::IpAddress,
+                                        ip,
+                                        confidence::VERY_HIGH,
+                                        scan_id,
+                                    );
                                     e.tag("dns");
                                     e.tag("spf");
                                     e.add_evidence(Evidence::new(
@@ -512,7 +527,12 @@ fn records_for_type(
                             }
                             crate::util::spf::Member::Include(inc) => {
                                 if seen.insert(format!("spfinc:{inc}")) {
-                                    let mut e = Entity::new(EntityKind::Domain, inc, confidence::HIGH, scan_id);
+                                    let mut e = Entity::new(
+                                        EntityKind::Domain,
+                                        inc,
+                                        confidence::HIGH,
+                                        scan_id,
+                                    );
                                     e.tag("dns");
                                     e.tag("spf-include");
                                     e.add_evidence(Evidence::new(
@@ -524,7 +544,12 @@ fn records_for_type(
                             }
                             crate::util::spf::Member::Redirect(red) => {
                                 if seen.insert(format!("spfinc:{red}")) {
-                                    let mut e = Entity::new(EntityKind::Domain, red, confidence::HIGH, scan_id);
+                                    let mut e = Entity::new(
+                                        EntityKind::Domain,
+                                        red,
+                                        confidence::HIGH,
+                                        scan_id,
+                                    );
                                     e.tag("dns");
                                     e.tag("spf-redirect");
                                     e.add_evidence(Evidence::new(
@@ -558,8 +583,12 @@ fn records_for_type(
                                     // May have `!size` suffix: `dmarc@example.com!10m`.
                                     let addr = addr.split('!').next().unwrap_or(addr).trim();
                                     if addr.contains('@') && seen.insert(format!("dmarc:{addr}")) {
-                                        let mut e =
-                                            Entity::new(EntityKind::Email, addr, confidence::MEDIUM_PLUS, scan_id);
+                                        let mut e = Entity::new(
+                                            EntityKind::Email,
+                                            addr,
+                                            confidence::MEDIUM_PLUS,
+                                            scan_id,
+                                        );
                                         e.tag("dns");
                                         e.tag("dmarc-reporting");
                                         e.add_evidence(
@@ -584,7 +613,12 @@ fn records_for_type(
             "CNAME" => {
                 let cname = rec.data.trim().trim_end_matches('.');
                 if !cname.is_empty() && cname.contains('.') && seen.insert(format!("cn:{cname}")) {
-                    let mut e = Entity::new(EntityKind::Domain, cname, confidence::HIGH_PLUSPLUS, scan_id);
+                    let mut e = Entity::new(
+                        EntityKind::Domain,
+                        cname,
+                        confidence::HIGH_PLUSPLUS,
+                        scan_id,
+                    );
                     e.tag("dns");
                     e.tag("cname");
                     e.add_evidence(base(format!("CNAME for {domain}")));

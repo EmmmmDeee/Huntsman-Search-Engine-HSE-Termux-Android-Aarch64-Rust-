@@ -17,7 +17,8 @@ mod tests;
 
 use async_trait::async_trait;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -325,7 +326,12 @@ impl Module for PhoneIntl {
 
         // Re-emit canonical E.164 form so downstream entities dedupe.
         let canonical = format!("+{digits}");
-        let mut entity = Entity::new(EntityKind::Phone, &canonical, confidence::HIGH_PLUSPLUS_PLUS, &ctx.scan_id);
+        let mut entity = Entity::new(
+            EntityKind::Phone,
+            &canonical,
+            confidence::HIGH_PLUSPLUS_PLUS,
+            &ctx.scan_id,
+        );
         entity.tag("e164");
         entity.tag(format!("country:{iso}"));
         entity.add_evidence(

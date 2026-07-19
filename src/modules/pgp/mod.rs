@@ -14,7 +14,8 @@
 
 use async_trait::async_trait;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -188,7 +189,12 @@ fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResu
             continue;
         }
         let value = format!("pgp:{}", fp.to_lowercase());
-        let mut cred = Entity::new(EntityKind::Credential, &value, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
+        let mut cred = Entity::new(
+            EntityKind::Credential,
+            &value,
+            confidence::HIGH_PLUSPLUS_PLUS,
+            scan_id,
+        );
         cred.tag("pgp-key");
         cred.tag("public-key");
         cred.tag(SRC);

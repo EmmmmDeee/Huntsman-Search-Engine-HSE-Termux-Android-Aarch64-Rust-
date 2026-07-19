@@ -1,5 +1,5 @@
-use crate::core::confidence;
 use super::*;
+use crate::core::confidence;
 
 fn email_target() -> Target {
     Target::new(TargetKind::Email, "jane@example.com")

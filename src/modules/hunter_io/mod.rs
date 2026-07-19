@@ -245,7 +245,12 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
 
     // ── Organisation entity (if Hunter resolved one for the domain) ──
     if let Some(org) = nonempty(&data.organization) {
-        let mut e = Entity::new(EntityKind::Organisation, &org, confidence::HIGH_PLUS, scan_id);
+        let mut e = Entity::new(
+            EntityKind::Organisation,
+            &org,
+            confidence::HIGH_PLUS,
+            scan_id,
+        );
         e.tag("hunter-io");
         let mut ev = Evidence::new(
             SRC,
@@ -345,7 +350,12 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
         // ── Person entity if Hunter has a name attached ──
         if let (Some(first), Some(last)) = (&first, &last) {
             let full = format!("{first} {last}");
-            let mut pe = Entity::new(EntityKind::Person, &full, email_conf.min(confidence::VERY_HIGH), scan_id);
+            let mut pe = Entity::new(
+                EntityKind::Person,
+                &full,
+                email_conf.min(confidence::VERY_HIGH),
+                scan_id,
+            );
             pe.tag("hunter-io");
             pe.tag("email-attribution");
             let mut pev = Evidence::new(SRC, format!("Hunter.io attributed {addr} to {full}"))
@@ -412,7 +422,12 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
             } else {
                 let handle = format!("{network}:{v}");
                 if seen.insert(format!("user:{}", handle.to_lowercase())) {
-                    let mut e = Entity::new(EntityKind::Username, &handle, confidence::MEDIUM_HIGH, scan_id);
+                    let mut e = Entity::new(
+                        EntityKind::Username,
+                        &handle,
+                        confidence::MEDIUM_HIGH,
+                        scan_id,
+                    );
                     e.tag("hunter-io");
                     e.tag("social-profile");
                     e.add_evidence(

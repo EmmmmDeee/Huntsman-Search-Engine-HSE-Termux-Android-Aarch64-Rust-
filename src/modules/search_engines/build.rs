@@ -197,7 +197,8 @@ pub(super) fn build_entities(
                     continue;
                 }
                 if seen_emails.insert(email.clone()) {
-                    let mut e = Entity::new(EntityKind::Email, &email, confidence::MEDIUM_PLUS, scan_id);
+                    let mut e =
+                        Entity::new(EntityKind::Email, &email, confidence::MEDIUM_PLUS, scan_id);
                     e.tag(tags::WEB_SCRAPED);
                     e.tag(tags::SEARCH_DISCOVERED);
                     e.add_evidence(
@@ -220,14 +221,16 @@ pub(super) fn build_entities(
                     .iter_mut()
                     .find(|e| e.kind == EntityKind::Email && e.value == email)
                 {
-                    existing.confidence = (existing.confidence + 0.10).min(confidence::HIGH_PLUSPLUS_PLUS);
+                    existing.confidence =
+                        (existing.confidence + 0.10).min(confidence::HIGH_PLUSPLUS_PLUS);
                     existing.corroboration = existing.corroboration.saturating_add(1);
                 }
             }
 
             for phone in extract_phones_from_text(&combined_text) {
                 if seen_phones.insert(phone.clone()) {
-                    let mut e = Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM_HIGH, scan_id);
+                    let mut e =
+                        Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM_HIGH, scan_id);
                     e.tag(tags::WEB_SCRAPED);
                     e.tag(tags::SEARCH_DISCOVERED);
                     e.add_evidence(
@@ -249,7 +252,8 @@ pub(super) fn build_entities(
                     .iter_mut()
                     .find(|e| e.kind == EntityKind::Phone && e.value == phone)
                 {
-                    existing.confidence = (existing.confidence + 0.12).min(confidence::HIGH_PLUSPLUS);
+                    existing.confidence =
+                        (existing.confidence + 0.12).min(confidence::HIGH_PLUSPLUS);
                     existing.corroboration = existing.corroboration.saturating_add(1);
                 }
             }
@@ -297,7 +301,12 @@ pub(super) fn build_entities(
         for org in snippet_orgs {
             let org_key = org.to_lowercase();
             if seen_domains.insert(format!("@org:{org_key}")) {
-                let mut e = Entity::new(EntityKind::Organisation, &org, confidence::LOW_MEDIUM, scan_id);
+                let mut e = Entity::new(
+                    EntityKind::Organisation,
+                    &org,
+                    confidence::LOW_MEDIUM,
+                    scan_id,
+                );
                 e.tag(tags::SEARCH_DISCOVERED);
                 e.add_evidence(build_search_evidence(r));
                 result.push(e);
@@ -374,14 +383,22 @@ pub(super) fn build_entities(
         for addr in snippet_addresses {
             let addr_key = format!("@addr:{}", normalise_address_key(&addr));
             let has_postcode = has_postcode(&addr);
-            let base_conf = if has_postcode { confidence::MEDIUM_HIGH } else { confidence::LOW_MEDIUM };
+            let base_conf = if has_postcode {
+                confidence::MEDIUM_HIGH
+            } else {
+                confidence::LOW_MEDIUM
+            };
             // Cap for multi-source merge: postcode-qualified can reach HIGH_PLUS;
             // bare city+state is capped lower at HIGH. Both stay strictly below
             // `Classification::VERIFIED_MIN` (0.75) — pure repetition of the
             // same source type must land at most in the Probable range, never
             // Verified (see this block's header comment for the live "Brett
             // Lawnton" case that crossed 0.75 via repetition alone).
-            let corr_cap = if has_postcode { confidence::HIGH_PLUS } else { confidence::HIGH };
+            let corr_cap = if has_postcode {
+                confidence::HIGH_PLUS
+            } else {
+                confidence::HIGH
+            };
             if seen_domains.insert(addr_key.clone()) {
                 let mut e = Entity::new(EntityKind::Address, &addr, base_conf, scan_id);
                 e.tag(tags::SEARCH_DISCOVERED);
@@ -579,7 +596,11 @@ pub(super) fn build_entities(
                 let mut e = Entity::new(
                     EntityKind::Url,
                     &snippet_url,
-                    if confirmed { confidence::HIGH_PLUSPLUS } else { confidence::LOW },
+                    if confirmed {
+                        confidence::HIGH_PLUSPLUS
+                    } else {
+                        confidence::LOW
+                    },
                     scan_id,
                 );
                 e.tag(tags::SEARCH_DISCOVERED);
@@ -671,7 +692,8 @@ pub(super) fn build_entities(
                 // minimum base confidence is now 0.42 so no address falls below
                 // this gate. The corroboration bypass (>= 2) is kept for any
                 // edge-case address emitted at a lower confidence by other modules.
-                e.kind == EntityKind::Address && (e.confidence >= confidence::LOW || e.corroboration >= 2)
+                e.kind == EntityKind::Address
+                    && (e.confidence >= confidence::LOW || e.corroboration >= 2)
             })
             .map(|e| (e.value.clone(), e.confidence, e.corroboration))
             .collect();

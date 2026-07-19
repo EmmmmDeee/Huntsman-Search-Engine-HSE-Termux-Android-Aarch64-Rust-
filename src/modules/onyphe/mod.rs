@@ -32,7 +32,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -216,7 +217,8 @@ fn extract_entities(
         if !skip_coords
             && let Some((lat, lon)) = coords(r)
             && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
-            && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, confidence::MEDIUM_HIGH, scan_id)
+            && let Some(mut ce) =
+                crate::util::geo::coarse_provider_coords(lat, lon, confidence::MEDIUM_HIGH, scan_id)
         {
             if let Some(cc) = vstr(r, "country") {
                 ce.tag(format!("country:{}", cc.to_uppercase()));
@@ -233,7 +235,8 @@ fn extract_entities(
                 None => city,
             };
             if seen.insert(format!("@addr:{}", addr.to_lowercase())) {
-                let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM_HIGH, scan_id);
+                let mut ae =
+                    Entity::new(EntityKind::Address, &addr, confidence::MEDIUM_HIGH, scan_id);
                 ae.tag(crate::core::tags::GEOINT);
                 ae.add_evidence(ev());
                 result.push(ae);
@@ -257,7 +260,12 @@ fn extract_entities(
         if let Some(org) = vstr(r, "organization").filter(|o| o.len() >= 3)
             && seen.insert(format!("@org:{}", org.to_lowercase()))
         {
-            let mut oe = Entity::new(EntityKind::Organisation, &org, confidence::MEDIUM_HIGH, scan_id);
+            let mut oe = Entity::new(
+                EntityKind::Organisation,
+                &org,
+                confidence::MEDIUM_HIGH,
+                scan_id,
+            );
             oe.add_evidence(ev());
             result.push(oe);
         }

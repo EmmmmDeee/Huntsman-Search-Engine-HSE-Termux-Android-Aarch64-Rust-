@@ -28,7 +28,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::profile_kit;
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -140,7 +141,12 @@ pub(super) fn build_entities(
     };
 
     // Confirmed-on-PyPI username.
-    let mut u = Entity::new(EntityKind::Username, handle, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        handle,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     u.tag("pypi");
     u.tag("public-profile");
     // Report the TRUE owned-package total in the coverage note: sampling the
@@ -209,7 +215,9 @@ pub(super) fn build_entities(
             .into_iter()
             .flatten()
         {
-            if let Some(mut p) = profile_kit::person_from_name(raw_name, confidence::MEDIUM_HIGH, scan_id) {
+            if let Some(mut p) =
+                profile_kit::person_from_name(raw_name, confidence::MEDIUM_HIGH, scan_id)
+            {
                 p.tag("pypi");
                 p.tag("derived");
                 p.add_evidence(ev_base().with_attr("source_field", "author"));
@@ -226,7 +234,12 @@ pub(super) fn build_entities(
 
         // Home page → URL + Domain.
         if let Some(hp) = info.home_page.as_deref() {
-            for mut e in profile_kit::website_url_and_domain(hp, confidence::HIGH, confidence::MEDIUM_HIGH, scan_id) {
+            for mut e in profile_kit::website_url_and_domain(
+                hp,
+                confidence::HIGH,
+                confidence::MEDIUM_HIGH,
+                scan_id,
+            ) {
                 e.tag("pypi");
                 match e.kind {
                     EntityKind::Domain => e.tag("derived"),

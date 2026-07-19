@@ -38,7 +38,8 @@ mod tests;
 
 use async_trait::async_trait;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -121,7 +122,12 @@ impl Module for AuBusinessId {
                 );
                 result.push(e);
 
-                let mut acn_e = Entity::new(EntityKind::AbnAcn, &acn, confidence::HIGH_PLUSPLUS, &ctx.scan_id);
+                let mut acn_e = Entity::new(
+                    EntityKind::AbnAcn,
+                    &acn,
+                    confidence::HIGH_PLUSPLUS,
+                    &ctx.scan_id,
+                );
                 acn_e.tag(SRC);
                 acn_e.tag("acn-valid");
                 acn_e.tag("au-company");

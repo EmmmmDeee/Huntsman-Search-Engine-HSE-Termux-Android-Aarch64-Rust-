@@ -1,6 +1,7 @@
 use serde_json::Value;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::EntityKind,
     module::{ModuleCategory, ModuleCost},
     scan::{Target, TargetKind},

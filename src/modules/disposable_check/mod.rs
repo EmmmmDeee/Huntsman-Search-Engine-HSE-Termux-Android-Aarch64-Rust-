@@ -12,7 +12,8 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -138,7 +139,12 @@ impl Module for DisposableCheck {
         if !disposable && let Some(domain) = email.split('@').nth(1) {
             let domain = domain.trim().to_ascii_lowercase();
             if !domain.is_empty() && !is_freemail(&domain) {
-                let mut de = Entity::new(EntityKind::Domain, &domain, confidence::HIGH_PLUS, &ctx.scan_id);
+                let mut de = Entity::new(
+                    EntityKind::Domain,
+                    &domain,
+                    confidence::HIGH_PLUS,
+                    &ctx.scan_id,
+                );
                 de.tag("email-domain");
                 de.add_evidence(
                     Evidence::new(

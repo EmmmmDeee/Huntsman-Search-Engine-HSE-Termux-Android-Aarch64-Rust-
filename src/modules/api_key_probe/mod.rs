@@ -10,7 +10,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -189,7 +190,12 @@ impl Module for ApiKeyProbe {
                 _ => None,
             };
             if let Some(domain) = service_domain {
-                let mut d = Entity::new(EntityKind::Domain, domain, confidence::MEDIUM_PLUS, &ctx.scan_id);
+                let mut d = Entity::new(
+                    EntityKind::Domain,
+                    domain,
+                    confidence::MEDIUM_PLUS,
+                    &ctx.scan_id,
+                );
                 d.tag("api-key-derived");
                 d.tag(format!("service:{}", probe.service));
                 d.add_evidence(Evidence::new(

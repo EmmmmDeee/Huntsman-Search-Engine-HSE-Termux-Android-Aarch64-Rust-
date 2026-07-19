@@ -27,7 +27,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -183,7 +184,12 @@ fn assemble(coord: &str, attrs: &Map<String, Value>, scan_id: &str, result: &mut
 
     // Enrich the seed coordinate with the full profile (GREATEST-merge folds it
     // onto the existing Coordinates entity).
-    let mut coord_e = Entity::new(EntityKind::Coordinates, coord, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
+    let mut coord_e = Entity::new(
+        EntityKind::Coordinates,
+        coord,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     coord_e.tag("au");
     coord_e.tag("seifa");
     coord_e.tag("socioeconomic");

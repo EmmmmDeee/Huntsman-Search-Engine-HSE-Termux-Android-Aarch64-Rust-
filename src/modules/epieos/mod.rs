@@ -20,7 +20,8 @@ use std::collections::HashSet;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -115,7 +116,12 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
         // just an evidence attr. The id is a stable Google identity that the
         // cross-platform username rules can link on; it was deserialized and then
         // confined to evidence.
-        let mut g = Entity::new(EntityKind::Username, format!("google:{gid}"), confidence::HIGH, scan_id);
+        let mut g = Entity::new(
+            EntityKind::Username,
+            format!("google:{gid}"),
+            confidence::HIGH,
+            scan_id,
+        );
         g.tag("epieos");
         g.tag("platform:google");
         g.add_evidence(

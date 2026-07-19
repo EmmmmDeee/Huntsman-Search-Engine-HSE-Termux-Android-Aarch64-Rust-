@@ -1,5 +1,9 @@
 use super::{AreaResp, OpenCellId, accuracy_to_confidence};
-use crate::core::{confidence, module::{Module, ModuleCost}, scan::{Target, TargetKind}};
+use crate::core::{
+    confidence,
+    module::{Module, ModuleCost},
+    scan::{Target, TargetKind},
+};
 
 #[test]
 fn module_metadata() {

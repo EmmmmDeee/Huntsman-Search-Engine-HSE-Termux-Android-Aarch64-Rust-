@@ -1,5 +1,5 @@
-use crate::core::confidence;
 use super::*;
+use crate::core::confidence;
 
 #[test]
 fn accepts_phone_and_email() {

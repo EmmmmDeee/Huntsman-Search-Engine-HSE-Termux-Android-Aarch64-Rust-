@@ -15,7 +15,8 @@ use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -121,7 +122,12 @@ impl Module for DnsAxfr {
             match attempt_axfr(&ns_ip, &domain).await {
                 Ok(records) if !records.is_empty() => {
                     result.extend(records.iter().map(|record| {
-                        let mut e = Entity::new(EntityKind::Domain, record, confidence::HIGH_PLUSPLUS, &ctx.scan_id);
+                        let mut e = Entity::new(
+                            EntityKind::Domain,
+                            record,
+                            confidence::HIGH_PLUSPLUS,
+                            &ctx.scan_id,
+                        );
                         e.tag("subdomain");
                         e.tag("axfr");
                         e.add_evidence(
@@ -132,7 +138,12 @@ impl Module for DnsAxfr {
                         e
                     }));
 
-                    let mut zone_e = Entity::new(EntityKind::Domain, &domain, confidence::VERY_HIGH_PLUSPLUS, &ctx.scan_id);
+                    let mut zone_e = Entity::new(
+                        EntityKind::Domain,
+                        &domain,
+                        confidence::VERY_HIGH_PLUSPLUS,
+                        &ctx.scan_id,
+                    );
                     zone_e.tag("axfr-permitted");
                     zone_e.tag(crate::core::tags::VULNERABLE);
                     zone_e.add_evidence(

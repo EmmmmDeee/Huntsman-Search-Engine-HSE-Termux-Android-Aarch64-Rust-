@@ -290,7 +290,9 @@ pub(super) fn build_entities(
     }
 
     // Display name → Person when it looks like a real name (≥2 words).
-    if let Some(mut p) = profile_kit::person_from_name(&user.display_name, confidence::MEDIUM_HIGH, scan_id) {
+    if let Some(mut p) =
+        profile_kit::person_from_name(&user.display_name, confidence::MEDIUM_HIGH, scan_id)
+    {
         p.tag("stackoverflow");
         p.tag("derived");
         p.add_evidence(
@@ -321,7 +323,8 @@ pub(super) fn build_entities(
 
     // Personal website URL + Domain.
     if let Some(ref site) = user.website_url {
-        for mut e in profile_kit::website_url_and_domain(site, confidence::HIGH_PLUS, 0.62, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(site, confidence::HIGH_PLUS, 0.62, scan_id)
+        {
             e.tag("stackoverflow");
             match e.kind {
                 EntityKind::Domain => {

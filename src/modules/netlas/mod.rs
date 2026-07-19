@@ -13,7 +13,8 @@ mod tests;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -363,7 +364,12 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
 
     // Emit IP entity.
     let ip_str = ip_val.as_deref().unwrap_or(target_value);
-    let mut ip_entity = Entity::new(EntityKind::IpAddress, ip_str, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
+    let mut ip_entity = Entity::new(
+        EntityKind::IpAddress,
+        ip_str,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     ip_entity.tag("netlas");
     port_list.sort();
     port_list.dedup();
@@ -440,7 +446,12 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty());
     if let Some(isp) = isp_val.as_deref().filter(|s| s.len() >= 3) {
-        let mut org = Entity::new(EntityKind::Organisation, isp, confidence::MEDIUM_PLUS, scan_id);
+        let mut org = Entity::new(
+            EntityKind::Organisation,
+            isp,
+            confidence::MEDIUM_PLUS,
+            scan_id,
+        );
         org.tag("netlas");
         org.tag("isp");
         org.add_evidence(
@@ -462,7 +473,12 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         if org_lc.len() < 3 || isp_lc.as_deref() == Some(&org_lc) {
             continue;
         }
-        let mut oe = Entity::new(EntityKind::Organisation, cert_org.trim(), confidence::HIGH_PLUS, scan_id);
+        let mut oe = Entity::new(
+            EntityKind::Organisation,
+            cert_org.trim(),
+            confidence::HIGH_PLUS,
+            scan_id,
+        );
         oe.tag("netlas");
         oe.tag("ssl-subject-org");
         oe.add_evidence(
@@ -479,7 +495,12 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
     // Geolocation → Coordinates + Address.
     if let Some((lat, lon, country, city)) = geo_val {
         let coord_str = format!("{lat:.6},{lon:.6}");
-        let mut geo_e = Entity::new(EntityKind::Coordinates, &coord_str, confidence::MEDIUM_PLUS, scan_id);
+        let mut geo_e = Entity::new(
+            EntityKind::Coordinates,
+            &coord_str,
+            confidence::MEDIUM_PLUS,
+            scan_id,
+        );
         geo_e.tag("netlas");
         geo_e.tag("geoint");
         if !country.is_empty() {
@@ -499,7 +520,12 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
 
         if !city.is_empty() && !country.is_empty() {
             let addr_str = format!("{city}, {country}");
-            let mut addr = Entity::new(EntityKind::Address, &addr_str, confidence::MEDIUM_HIGH, scan_id);
+            let mut addr = Entity::new(
+                EntityKind::Address,
+                &addr_str,
+                confidence::MEDIUM_HIGH,
+                scan_id,
+            );
             addr.tag("netlas");
             addr.add_evidence(Evidence::new(SRC, format!("Netlas location for {ip_str}")));
             result.push(addr);

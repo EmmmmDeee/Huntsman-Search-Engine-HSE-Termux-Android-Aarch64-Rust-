@@ -12,7 +12,8 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -282,7 +283,12 @@ impl Module for IpQs {
                 .map(|s| s.trim().to_ascii_lowercase())
                 .filter(|s| s.len() >= 2);
             if let Some(org) = body.organization.as_deref().filter(|o| o.len() >= 2) {
-                let mut oe = Entity::new(EntityKind::Organisation, org, confidence::HIGH, &ctx.scan_id);
+                let mut oe = Entity::new(
+                    EntityKind::Organisation,
+                    org,
+                    confidence::HIGH,
+                    &ctx.scan_id,
+                );
                 oe.tag("ipqs");
                 oe.add_evidence(
                     Evidence::new(SRC, format!("IP operator for {value} via IPQS"))
@@ -295,7 +301,12 @@ impl Module for IpQs {
             if let Some(isp) = body.isp.as_deref().filter(|i| i.len() >= 2) {
                 let isp_lc = isp.trim().to_ascii_lowercase();
                 if org_lc.as_deref() != Some(&isp_lc) {
-                    let mut ie = Entity::new(EntityKind::Organisation, isp, confidence::MEDIUM_PLUS, &ctx.scan_id);
+                    let mut ie = Entity::new(
+                        EntityKind::Organisation,
+                        isp,
+                        confidence::MEDIUM_PLUS,
+                        &ctx.scan_id,
+                    );
                     ie.tag("ipqs");
                     ie.tag("isp");
                     ie.add_evidence(
@@ -307,7 +318,12 @@ impl Module for IpQs {
             }
             if let Some(asn_n) = body.asn.filter(|n| *n > 0) {
                 let asn_str = format!("AS{asn_n}");
-                let mut ae = Entity::new(EntityKind::Asn, &asn_str, confidence::HIGH_PLUSPLUS, &ctx.scan_id);
+                let mut ae = Entity::new(
+                    EntityKind::Asn,
+                    &asn_str,
+                    confidence::HIGH_PLUSPLUS,
+                    &ctx.scan_id,
+                );
                 ae.tag("ipqs");
                 ae.add_evidence(
                     Evidence::new(SRC, format!("ASN for {value} via IPQS")).with_attr("ip", value),
@@ -323,7 +339,12 @@ impl Module for IpQs {
             && let Some(carrier) = body.carrier.as_deref().filter(|c| c.len() >= 2)
         {
             {
-                let mut ce = Entity::new(EntityKind::Organisation, carrier, confidence::MEDIUM_PLUS, &ctx.scan_id);
+                let mut ce = Entity::new(
+                    EntityKind::Organisation,
+                    carrier,
+                    confidence::MEDIUM_PLUS,
+                    &ctx.scan_id,
+                );
                 ce.tag("ipqs");
                 ce.tag("carrier");
                 ce.add_evidence(

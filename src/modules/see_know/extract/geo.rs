@@ -3,8 +3,8 @@
 //! Parses lat/lon coordinate fields and emits the Coordinates lead. Reaches
 //! the parent extractor's helpers and imports via `use super::*`.
 
-use crate::core::confidence;
 use super::*;
+use crate::core::confidence;
 
 /// Geo-conscious extraction — surface coordinates, timezones, and
 /// location-bearing fields from any SeekNow endpoint response so the
@@ -37,7 +37,12 @@ pub(in crate::modules::see_know) fn extract_geo_entities(
     {
         let coord_val = format!("{la:.5},{lo:.5}");
         if seen.insert(format!("@coord:{coord_val}")) {
-            let mut e = Entity::new(EntityKind::Coordinates, &coord_val, confidence::VERY_HIGH, scan_id);
+            let mut e = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::VERY_HIGH,
+                scan_id,
+            );
             e.tag("see-know");
             e.tag(format!("via:{endpoint}"));
             e.add_evidence(
@@ -75,7 +80,12 @@ pub(in crate::modules::see_know) fn extract_geo_entities(
     {
         // Timezones don't have their own EntityKind; surface as evidence
         // on a low-confidence Address so the correlator can join.
-        let mut e = Entity::new(EntityKind::Address, format!("tz:{tz}"), confidence::LOW, scan_id);
+        let mut e = Entity::new(
+            EntityKind::Address,
+            format!("tz:{tz}"),
+            confidence::LOW,
+            scan_id,
+        );
         e.tag("see-know");
         e.tag("timezone");
         e.tag(format!("via:{endpoint}"));

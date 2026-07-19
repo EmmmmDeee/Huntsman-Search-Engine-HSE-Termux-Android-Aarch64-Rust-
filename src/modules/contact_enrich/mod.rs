@@ -444,7 +444,12 @@ pub(super) fn build_email_entities(
     if let Some(username) = entry.preferred_username.as_deref()
         && username.len() >= 3
     {
-        let mut ue = Entity::new(EntityKind::Username, username, confidence::HIGH_PLUS, scan_id);
+        let mut ue = Entity::new(
+            EntityKind::Username,
+            username,
+            confidence::HIGH_PLUS,
+            scan_id,
+        );
         ue.tag("gravatar");
         ue.add_evidence(Evidence::new(
             SRC,
@@ -468,7 +473,12 @@ pub(super) fn build_email_entities(
         ));
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, confidence::LOW_MEDIUM, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::LOW_MEDIUM,
+                scan_id,
+            );
             c.tag("gravatar");
             c.tag("addr-derived");
             c.tag("geoint");

@@ -181,7 +181,11 @@ pub mod zoomeye;
 
 use std::sync::Arc;
 
-use crate::core::{confidence, entity::{Entity, EntityKind, Evidence}, module::Module};
+use crate::core::{
+    confidence,
+    entity::{Entity, EntityKind, Evidence},
+    module::Module,
+};
 
 /// Reset the foreign-API-key sink at scan start. Re-exported here so
 /// `core/engine` can drive it without importing `util` directly — the same
@@ -210,7 +214,12 @@ pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
             // high-entropy tokens) but is a distinct artifact — emit it as a
             // chain-tagged CryptoAddress, never a foreign API key.
             if let Some(chain) = fk.service.strip_prefix("crypto_") {
-                let mut e = Entity::new(EntityKind::CryptoAddress, &fk.key, confidence::HIGH_PLUSPLUS, scan_id);
+                let mut e = Entity::new(
+                    EntityKind::CryptoAddress,
+                    &fk.key,
+                    confidence::HIGH_PLUSPLUS,
+                    scan_id,
+                );
                 e.tag("crypto-address");
                 e.tag("retrieved");
                 e.tag(format!("chain:{chain}"));

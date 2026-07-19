@@ -34,7 +34,8 @@
 
 use async_trait::async_trait;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -109,7 +110,12 @@ fn build_director_entities(
     .with_attr("register", "ASIC");
 
     // Organisation entity.
-    let mut org = Entity::new(EntityKind::Organisation, company_name, confidence::HIGH_PLUSPLUS, scan_id);
+    let mut org = Entity::new(
+        EntityKind::Organisation,
+        company_name,
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
     org.tag(SRC);
     org.tag("asic");
     org.tag("au-company");

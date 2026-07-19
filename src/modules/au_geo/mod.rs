@@ -341,7 +341,12 @@ fn assemble(
     }
     // Enrich the seed coordinate (GREATEST-merge folds this onto the existing
     // Coordinates entity, only ever adding tags/evidence).
-    let mut coord_e = Entity::new(EntityKind::Coordinates, coord, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
+    let mut coord_e = Entity::new(
+        EntityKind::Coordinates,
+        coord,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     coord_e.tag("au");
     coord_e.tag("geoint");
     coord_e.tag("asgs");

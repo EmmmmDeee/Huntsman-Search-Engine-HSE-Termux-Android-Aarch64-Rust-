@@ -18,7 +18,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::profile_kit;
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -97,7 +98,12 @@ pub(super) fn build_entities(user: BbUser, scan_id: &str) -> Vec<Entity> {
     out.push(e);
 
     // Profile URL.
-    let mut u = Entity::new(EntityKind::Url, &profile_url, confidence::HIGH_PLUSPLUS, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Url,
+        &profile_url,
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
     u.tag("bitbucket");
     u.add_evidence(ev());
     out.push(u);
@@ -113,7 +119,8 @@ pub(super) fn build_entities(user: BbUser, scan_id: &str) -> Vec<Entity> {
 
     // Personal website URL and derived domain.
     if let Some(site) = user.website.as_deref() {
-        for mut e in profile_kit::website_url_and_domain(site, confidence::HIGH_PLUS, 0.63, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(site, confidence::HIGH_PLUS, 0.63, scan_id)
+        {
             e.tag("bitbucket");
             if e.kind == EntityKind::Domain {
                 e.tag("derived");

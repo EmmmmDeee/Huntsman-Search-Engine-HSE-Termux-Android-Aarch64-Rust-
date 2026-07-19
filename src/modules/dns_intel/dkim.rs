@@ -19,7 +19,8 @@
 //! mail configuration published at the From: domain, so re-probing every
 //! discovered subdomain would be wasted queries. Pure DNS TXT, free, no keys.
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::ModuleContext,
@@ -105,7 +106,12 @@ pub(super) async fn dkim_enumerate(target: &Target, ctx: &ModuleContext) -> Resu
     // the vendors become tags (the attribution payload) and each selector is one
     // evidence line. Merging onto the domain rather than emitting a pivot per
     // selector keeps the graph clean — the value here is attribution, not fan-out.
-    let mut e = Entity::new(EntityKind::Domain, &domain, confidence::EXPERT, &ctx.scan_id);
+    let mut e = Entity::new(
+        EntityKind::Domain,
+        &domain,
+        confidence::EXPERT,
+        &ctx.scan_id,
+    );
     e.tag("dkim");
     e.tag("has-dkim");
     let mut weak_key = false;

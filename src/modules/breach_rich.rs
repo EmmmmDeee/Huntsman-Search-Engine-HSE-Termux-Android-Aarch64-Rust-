@@ -19,7 +19,8 @@ use std::collections::HashSet;
 
 use serde_json::Value;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
     tags,
@@ -382,7 +383,12 @@ pub fn extract_rich_detail(
         {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Username, format!("{plat}:{h}"), confidence::MEDIUM_HIGH, scan_id),
+                Entity::new(
+                    EntityKind::Username,
+                    format!("{plat}:{h}"),
+                    confidence::MEDIUM_HIGH,
+                    scan_id,
+                ),
                 ev,
                 source,
                 &[plat],
@@ -433,7 +439,12 @@ pub fn extract_rich_detail(
         if seen.insert(format!("@addr:{}", composed.to_lowercase())) {
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(&composed) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, confidence::LOW_MEDIUM, scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::LOW_MEDIUM,
+                    scan_id,
+                );
                 c.tag("addr-derived");
                 c.tag("geoint");
                 c.tag(tags::BREACH);
@@ -443,7 +454,12 @@ pub fn extract_rich_detail(
             }
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Address, &composed, confidence::MEDIUM_HIGH, scan_id),
+                Entity::new(
+                    EntityKind::Address,
+                    &composed,
+                    confidence::MEDIUM_HIGH,
+                    scan_id,
+                ),
                 ev,
                 source,
                 &["geo-hint", "composed-address"],

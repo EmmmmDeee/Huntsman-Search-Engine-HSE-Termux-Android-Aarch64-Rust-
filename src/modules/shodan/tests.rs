@@ -1,5 +1,5 @@
-use crate::core::confidence;
 use super::*;
+use crate::core::confidence;
 
 // ── Tests carried from paid-only shodan.rs ───────────────────────
 

@@ -16,7 +16,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Semaphore;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},

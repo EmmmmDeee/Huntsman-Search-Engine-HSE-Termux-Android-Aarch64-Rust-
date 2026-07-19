@@ -3,8 +3,8 @@
 //! Maps relative/household/associate fields to Person leads with kinship
 //! tags. Reaches parent helpers/imports via `use super::*`.
 
-use crate::core::confidence;
 use super::*;
+use crate::core::confidence;
 
 /// People-search relationship arrays SeekNow returns on a name / identity
 /// record, mapped to the relationship label stamped on each emitted Person.

@@ -28,7 +28,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -182,8 +183,12 @@ impl Module for ZoomEye {
             if !skip_coords
                 && let Some((lat, lon)) = coords(m)
                 && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
-                && let Some(mut ce) =
-                    crate::util::geo::coarse_provider_coords(lat, lon, confidence::MEDIUM_HIGH, &ctx.scan_id)
+                && let Some(mut ce) = crate::util::geo::coarse_provider_coords(
+                    lat,
+                    lon,
+                    confidence::MEDIUM_HIGH,
+                    &ctx.scan_id,
+                )
             {
                 if let Some(cc) = geo_country_code(m) {
                     ce.tag(format!("country:{}", cc.to_uppercase()));
@@ -196,7 +201,12 @@ impl Module for ZoomEye {
             if let Some(addr) = geo_address(m)
                 && seen.insert(format!("@addr:{}", addr.to_lowercase()))
             {
-                let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM_HIGH, &ctx.scan_id);
+                let mut ae = Entity::new(
+                    EntityKind::Address,
+                    &addr,
+                    confidence::MEDIUM_HIGH,
+                    &ctx.scan_id,
+                );
                 ae.tag(crate::core::tags::GEOINT);
                 ae.add_evidence(ev());
                 result.push(ae);
@@ -206,14 +216,20 @@ impl Module for ZoomEye {
             if let Some(asn) = geo_asn(m)
                 && seen.insert(asn.to_lowercase())
             {
-                let mut ae = Entity::new(EntityKind::Asn, &asn, confidence::VERY_HIGH, &ctx.scan_id);
+                let mut ae =
+                    Entity::new(EntityKind::Asn, &asn, confidence::VERY_HIGH, &ctx.scan_id);
                 ae.add_evidence(ev());
                 result.push(ae);
             }
             if let Some(org) = geo_org(m).filter(|o| o.len() >= 3)
                 && seen.insert(format!("@org:{}", org.to_lowercase()))
             {
-                let mut oe = Entity::new(EntityKind::Organisation, &org, confidence::MEDIUM_HIGH, &ctx.scan_id);
+                let mut oe = Entity::new(
+                    EntityKind::Organisation,
+                    &org,
+                    confidence::MEDIUM_HIGH,
+                    &ctx.scan_id,
+                );
                 oe.add_evidence(ev());
                 result.push(oe);
             }
@@ -236,7 +252,12 @@ impl Module for ZoomEye {
                 && ip != value
                 && seen.insert(format!("@ip:{ip}"))
             {
-                let mut ie = Entity::new(EntityKind::IpAddress, &ip, confidence::HIGH_PLUS, &ctx.scan_id);
+                let mut ie = Entity::new(
+                    EntityKind::IpAddress,
+                    &ip,
+                    confidence::HIGH_PLUS,
+                    &ctx.scan_id,
+                );
                 ie.tag(SRC);
                 ie.add_evidence(ev());
                 result.push(ie);

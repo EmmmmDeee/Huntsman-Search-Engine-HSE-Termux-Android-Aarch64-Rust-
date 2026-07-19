@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::core::{confidence, 
+use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},

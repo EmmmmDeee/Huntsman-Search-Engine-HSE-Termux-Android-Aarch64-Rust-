@@ -13,7 +13,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use tracing::{debug, warn};
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -223,7 +224,12 @@ fn emit_footprint(fp: &OcFootprintResponse, entity: &mut Entity, result: &mut Mo
                 if k.eq_ignore_ascii_case("username")
                     && let Some(uname) = v.as_str()
                 {
-                    let mut pivot = Entity::new(EntityKind::Username, uname, confidence::HIGH_PLUS, &entity.scan_id);
+                    let mut pivot = Entity::new(
+                        EntityKind::Username,
+                        uname,
+                        confidence::HIGH_PLUS,
+                        &entity.scan_id,
+                    );
                     pivot.tag("osintcat");
                     pivot.tag("footprint-pivot");
                     result.push(pivot);

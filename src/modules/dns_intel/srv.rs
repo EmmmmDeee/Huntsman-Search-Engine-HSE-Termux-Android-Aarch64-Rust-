@@ -22,7 +22,8 @@
 
 use hickory_resolver::proto::rr::{RData, RecordType};
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::ModuleContext,
@@ -105,7 +106,12 @@ pub(super) async fn srv_enumerate(target: &Target, ctx: &ModuleContext) -> Resul
     let entities: Vec<Entity> = hits
         .into_iter()
         .map(|(host, port, priority, weight, prefix, label)| {
-            let mut e = Entity::new(EntityKind::Domain, &host, confidence::HIGH_PLUSPLUS, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Domain,
+                &host,
+                confidence::HIGH_PLUSPLUS,
+                &ctx.scan_id,
+            );
             e.tag("srv");
             e.tag("dns-srv");
             e.add_evidence(

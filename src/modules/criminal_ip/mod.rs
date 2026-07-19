@@ -11,7 +11,8 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -222,7 +223,12 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
         }
         if let Some(asn) = w.as_no {
             let asn_str = format!("AS{asn}");
-            let mut ae = Entity::new(EntityKind::Asn, &asn_str, confidence::HIGH_PLUSPLUS, scan_id);
+            let mut ae = Entity::new(
+                EntityKind::Asn,
+                &asn_str,
+                confidence::HIGH_PLUSPLUS,
+                scan_id,
+            );
             ae.tag("criminal_ip");
             ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
             out.push(ae);

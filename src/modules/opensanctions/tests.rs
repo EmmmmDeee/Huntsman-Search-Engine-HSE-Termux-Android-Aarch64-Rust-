@@ -1,5 +1,6 @@
 use super::{OpenSanctions, entity_builders::build_entities, types::MatchResp};
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::EntityKind,
     module::{Module, ModuleCost},
     scan::{Target, TargetKind},
@@ -187,7 +188,7 @@ fn au_dfat_dataset_gets_the_au_sanctions_tag() {
             "caption":"Jordan Avery",
             "properties":{"topics":["sanction"]},
             "datasets":["au_dfat_sanctions", "un_sc_sanctions"],
-            "score":confidence::VERY_HIGH_PLUSPLUS,
+            "score":0.95,
             "match":true
         }]}}}"#,
     );
@@ -202,7 +203,7 @@ fn non_definitive_candidates_are_not_escalated() {
     // worse than missing coverage.
     let es = matches(
         r#"{"responses":{"q":{"results":[
-            {"id":"NK-a","caption":"Someone Else","properties":{"topics":["sanction"]},"score":confidence::MEDIUM_HIGH,"match":false},
+            {"id":"NK-a","caption":"Someone Else","properties":{"topics":["sanction"]},"score":0.55,"match":false},
             {"id":"NK-b","caption":"Another Person","properties":{"topics":["sanction"]},"score":0.72}
         ]}}}"#,
     );

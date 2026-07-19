@@ -63,7 +63,7 @@ use queries::{build_queries, detect_region, generate_username_variants};
 use async_trait::async_trait;
 use futures::StreamExt;
 
-use crate::core::{confidence, 
+use crate::core::{
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
 };

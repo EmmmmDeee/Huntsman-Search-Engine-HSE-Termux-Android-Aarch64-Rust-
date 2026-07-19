@@ -47,7 +47,7 @@ mod tests;
 
 use async_trait::async_trait;
 
-use crate::core::{confidence, 
+use crate::core::{
     entity::{Entity, EntityKind},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},

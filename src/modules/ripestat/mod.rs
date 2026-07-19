@@ -154,7 +154,12 @@ fn build_asns(ni: &NetworkInfo, scan_id: &str) -> Vec<Entity> {
         .iter()
         .filter(|a| a.chars().all(|c| c.is_ascii_digit()) && !a.is_empty())
         .map(|a| {
-            let mut e = Entity::new(EntityKind::Asn, format!("AS{a}"), confidence::VERY_HIGH, scan_id);
+            let mut e = Entity::new(
+                EntityKind::Asn,
+                format!("AS{a}"),
+                confidence::VERY_HIGH,
+                scan_id,
+            );
             e.tag(SRC);
             let mut ev = Evidence::new(SRC, "Announcing ASN (RIPEstat network-info)");
             if let Some(p) = &ni.prefix {
@@ -204,7 +209,12 @@ fn build_org(ao: &AsOverview, scan_id: &str) -> Option<Entity> {
         .as_deref()
         .map(str::trim)
         .filter(|h| h.len() >= 2)?;
-    let mut e = Entity::new(EntityKind::Organisation, holder, confidence::HIGH_PLUS, scan_id);
+    let mut e = Entity::new(
+        EntityKind::Organisation,
+        holder,
+        confidence::HIGH_PLUS,
+        scan_id,
+    );
     e.tag(SRC);
     e.tag("network-holder");
     e.add_evidence(Evidence::new(SRC, "Network holder (RIPEstat as-overview)"));

@@ -31,7 +31,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::profile_kit;
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -146,7 +147,8 @@ pub(super) fn build_entities(user: SfUser, scan_id: &str) -> Vec<Entity> {
     if let Some(site) = user.external_homepage.as_deref()
         && !site.trim().is_empty()
     {
-        for mut e in profile_kit::website_url_and_domain(site, confidence::HIGH_PLUS, 0.63, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(site, confidence::HIGH_PLUS, 0.63, scan_id)
+        {
             e.tag("sourceforge");
             if e.kind == EntityKind::Domain {
                 e.tag("derived");

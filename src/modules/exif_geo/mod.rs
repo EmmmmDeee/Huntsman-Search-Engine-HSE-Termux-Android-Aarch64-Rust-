@@ -49,7 +49,8 @@ mod tests;
 use async_trait::async_trait;
 use exif::{Reader, Tag};
 
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -235,7 +236,12 @@ impl Module for ExifGeo {
         //    above single-source IP-geo (confidence::MEDIUM_HIGH–confidence::MEDIUM_PLUS), below WiGLE consensus (confidence::HIGH_PLUSPLUS_PLUS).
         if let Some((lat, lon)) = gps {
             let coord_str = format!("{lat:.6},{lon:.6}");
-            let mut e = Entity::new(EntityKind::Coordinates, &coord_str, confidence::HIGH_PLUSPLUS, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Coordinates,
+                &coord_str,
+                confidence::HIGH_PLUSPLUS,
+                &ctx.scan_id,
+            );
             e.tag("geoint");
             e.tag("exif");
             e.tag("photo-derived");
@@ -253,7 +259,12 @@ impl Module for ExifGeo {
         //    usually the same person): the highest-value EXIF cross-correlation.
         //    Authoritative (camera firmware wrote it) → confidence::VERY_HIGH.
         if let Some(fp) = fingerprint {
-            let mut e = Entity::new(EntityKind::DeviceId, &fp, confidence::VERY_HIGH, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::DeviceId,
+                &fp,
+                confidence::VERY_HIGH,
+                &ctx.scan_id,
+            );
             e.tag("exif");
             e.tag("camera");
             e.tag("device-fingerprint");
@@ -269,7 +280,12 @@ impl Module for ExifGeo {
         //    identity) but NOT quarantined, so it correlates with same-named
         //    Person entities surfaced by search/breach modules.
         if let Some(name) = person_name {
-            let mut e = Entity::new(EntityKind::Person, &name, confidence::LOW_MEDIUM, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Person,
+                &name,
+                confidence::LOW_MEDIUM,
+                &ctx.scan_id,
+            );
             e.tag("exif");
             e.tag("photo-owner");
             e.add_evidence(evidence(format!(

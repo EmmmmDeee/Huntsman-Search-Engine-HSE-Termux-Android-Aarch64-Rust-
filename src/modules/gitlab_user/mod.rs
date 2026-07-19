@@ -27,7 +27,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::profile_kit;
-use crate::core::{confidence, 
+use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -148,7 +149,12 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
     // Confirmed-on-GitLab username.
-    let mut u = Entity::new(EntityKind::Username, &user.username, confidence::VERY_HIGH_PLUS, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        &user.username,
+        confidence::VERY_HIGH_PLUS,
+        scan_id,
+    );
     u.tag("gitlab");
     u.tag("code");
     let mut ev = Evidence::new(SRC, format!("GitLab account '{}'", user.username)).with_attr(
@@ -170,7 +176,12 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
         .map(str::trim)
         .filter(|e| e.contains('@') && e.len() >= 5)
     {
-        let mut em = Entity::new(EntityKind::Email, email, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
+        let mut em = Entity::new(
+            EntityKind::Email,
+            email,
+            confidence::HIGH_PLUSPLUS_PLUS,
+            scan_id,
+        );
         em.tag("gitlab");
         em.tag("public-profile");
         em.add_evidence(
@@ -205,7 +216,12 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
         && !org.trim().is_empty()
         && org.len() <= 200
     {
-        let mut o = Entity::new(EntityKind::Organisation, org.trim(), confidence::LOW_MEDIUM, scan_id);
+        let mut o = Entity::new(
+            EntityKind::Organisation,
+            org.trim(),
+            confidence::LOW_MEDIUM,
+            scan_id,
+        );
         o.tag("gitlab");
         o.tag("self-asserted");
         o.add_evidence(
@@ -225,7 +241,12 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
     {
         let tw_clean = tw.trim_start_matches('@');
         if !tw_clean.is_empty() {
-            let mut t = Entity::new(EntityKind::Username, tw_clean, confidence::HIGH_PLUSPLUS, scan_id);
+            let mut t = Entity::new(
+                EntityKind::Username,
+                tw_clean,
+                confidence::HIGH_PLUSPLUS,
+                scan_id,
+            );
             t.tag("twitter");
             t.tag("gitlab-pivot");
             t.add_evidence(
