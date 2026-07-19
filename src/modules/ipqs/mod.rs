@@ -23,10 +23,35 @@ use crate::util::http::{handle_keyed_error, urlencode};
 
 const KEY_ENV: &str = "HUNTSMAN_IPQS_KEY";
 
+/// True if an IPQS `success:false` `message` names a KEY / QUOTA failure rather
+/// than a merely-invalid target. IPQS returns HTTP 200 even on a dead/exhausted
+/// key (the failure is in-body), so without this a paid vendor's dead key is
+/// indistinguishable from a clean empty result on every IP/email/phone lookup.
+/// Pure + case-insensitive so it is unit-tested against the documented phrases
+/// without a live call.
+fn is_key_or_quota_failure(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    [
+        "unauthorized",
+        "permission",
+        "exceeded",
+        "insufficient credits",
+        "invalid api key",
+        "invalid key",
+    ]
+    .iter()
+    .any(|p| m.contains(p))
+}
+
 #[derive(Deserialize)]
 struct Common {
     #[serde(default)]
     success: Option<bool>,
+    /// The human message IPQS returns alongside `success:false` — distinguishes a
+    /// dead/exhausted key ("You have insufficient credits…", "Invalid API key")
+    /// from a genuinely invalid target ("Please enter a valid IP address").
+    #[serde(default)]
+    message: Option<String>,
     #[serde(default)]
     fraud_score: Option<i32>,
     #[serde(default)]
@@ -261,6 +286,18 @@ impl Module for IpQs {
             break crate::util::http::json_decode(SRC, resp).await?;
         };
         if body.success == Some(false) {
+            // success:false is EITHER a dead/exhausted key OR a genuinely invalid
+            // target. A key/quota failure must SURFACE (report + Err) so a paid
+            // vendor's dead key isn't silently swallowed as an empty result on
+            // every lookup; a bad-target message stays a clean empty Ok.
+            let msg = body.message.as_deref().unwrap_or_default();
+            if is_key_or_quota_failure(msg) {
+                ctx.report_key_exhausted(SRC, key, 401);
+                return Err(crate::core::error::Error::module(
+                    SRC,
+                    format!("ipqs key/quota failure: {msg}"),
+                ));
+            }
             return Ok(ModuleResult::new());
         }
 

@@ -309,8 +309,21 @@ impl Module for CriminalIp {
             }
             break crate::util::http::json_decode(SRC, resp).await?;
         };
-        if body.status != Some(200) {
-            return Ok(ModuleResult::new());
+        // Criminal IP reports auth/quota failures as an IN-BODY status on an
+        // HTTP 200, so a dead/exhausted key would otherwise be indistinguishable
+        // from a clean empty result. Surface 401/402/429 (report + Err) so the
+        // key rotates and the failure is visible; any other non-200 stays a
+        // genuine empty result.
+        match body.status {
+            Some(200) => {}
+            Some(code @ (401 | 402 | 429)) => {
+                ctx.report_key_exhausted(SRC, key, code as u16);
+                return Err(crate::core::error::Error::module(
+                    SRC,
+                    format!("criminal_ip in-body status {code} (key auth/quota failure)"),
+                ));
+            }
+            _ => return Ok(ModuleResult::new()),
         }
 
         let mut result = ModuleResult::new();
