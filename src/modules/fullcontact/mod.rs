@@ -49,8 +49,20 @@ struct FcResp {
 struct Details {
     locations: Vec<Located>,
     employment: Vec<Employment>,
+    /// Contact emails the enrichment resolved (`{value, label}`) — a direct
+    /// Email BFS pivot, previously decoded nowhere.
+    emails: Vec<LabeledValue>,
+    /// Contact phones the enrichment resolved (`{value, label}`).
+    phones: Vec<LabeledValue>,
     /// Map of network name (`twitter`, `linkedin`, …) → profile.
     profiles: BTreeMap<String, Profile>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct LabeledValue {
+    value: Option<String>,
+    label: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -125,6 +137,9 @@ impl Module for FullContact {
             EntityKind::Coordinates,
             EntityKind::Username,
             EntityKind::Url,
+            // Contact emails/phones the enrichment `details` resolve.
+            EntityKind::Email,
+            EntityKind::Phone,
         ];
         KINDS
     }
@@ -287,6 +302,39 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
             push(&mut out, EntityKind::Url, url, 0.55, &[net]);
         }
     });
+
+    // Contact emails/phones from the enrichment `details`. An email is validated
+    // with the shared `looks_like_email` gate (so a malformed value can't mint a
+    // bogus Email); a phone needs ≥7 digits (Entity::new normalises formatting).
+    // The FullContact label (work/home/…) is kept as an evidence attribute.
+    for lv in &r.details.emails {
+        let Some(v) = lv.value.as_deref().map(str::trim) else {
+            continue;
+        };
+        if !crate::util::extract::looks_like_email(&v.to_lowercase()) {
+            continue;
+        }
+        push(&mut out, EntityKind::Email, v, 0.70, &[]);
+        if let Some(label) = lv.label.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            && let Some(e) = out.last_mut()
+        {
+            e.tag(format!("label:{}", label.to_lowercase()));
+        }
+    }
+    for lv in &r.details.phones {
+        let Some(v) = lv.value.as_deref().map(str::trim) else {
+            continue;
+        };
+        if v.chars().filter(char::is_ascii_digit).count() < 7 {
+            continue;
+        }
+        push(&mut out, EntityKind::Phone, v, 0.65, &[]);
+        if let Some(label) = lv.label.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            && let Some(e) = out.last_mut()
+        {
+            e.tag(format!("label:{}", label.to_lowercase()));
+        }
+    }
     out
 }
 

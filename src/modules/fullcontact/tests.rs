@@ -47,6 +47,45 @@ use super::*;
     }
 
     #[test]
+    fn build_entities_emits_contact_emails_and_phones_from_details() {
+        // The enrichment `details.emails` / `details.phones` (previously decoded
+        // nowhere) are direct Email/Phone BFS pivots. A malformed email must be
+        // rejected by the shared gate; the FullContact label is kept as a tag.
+        let json = serde_json::json!({
+            "fullName": "Jordan Avery",
+            "details": {
+                "emails": [
+                    { "value": "jordan@acme.com", "label": "work" },
+                    { "value": "not-an-email" }
+                ],
+                "phones": [
+                    { "value": "+1 (212) 555-1234", "label": "mobile" },
+                    { "value": "12345" }
+                ]
+            }
+        });
+        let r: FcResp = serde_json::from_value(json).unwrap();
+        let es = build_entities(&r, "scan");
+        let has = |k: EntityKind, v: &str| es.iter().any(|e| e.kind == k && e.value == v);
+        assert!(has(EntityKind::Email, "jordan@acme.com"));
+        assert!(
+            !es.iter().any(|e| e.kind == EntityKind::Email && e.value == "not-an-email"),
+            "a malformed email value must be rejected"
+        );
+        assert!(has(EntityKind::Phone, "+12125551234"));
+        assert!(
+            !es.iter()
+                .any(|e| e.kind == EntityKind::Phone && e.value.contains("12345")),
+            "a sub-7-digit phone fragment must be rejected"
+        );
+        let email = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Email)
+            .expect("email");
+        assert!(email.has_tag("label:work"));
+    }
+
+    #[test]
     fn metadata_is_keygated_people() {
         let m = FullContact;
         assert_eq!(m.cost(), ModuleCost::KeyGated);
