@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -252,7 +252,7 @@ impl Module for NiamonX {
             fetch_ulp(&ctx.http, key, query, ulp_type, ctx),
         );
 
-        let mut entity = target.to_entity(0.80, &ctx.scan_id);
+        let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, &ctx.scan_id);
         entity.tag(SRC);
 
         // The last genuine transport/parse failure seen across the three
@@ -444,7 +444,7 @@ fn emit_pbs_v1(
         // Corroborating emails as BFS pivots.
         for email in meta.emails.iter().flatten() {
             if !email.eq_ignore_ascii_case(query) {
-                let mut pivot = Entity::new(EntityKind::Email, email, 0.70, scan_id);
+                let mut pivot = Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
                 pivot.tag(SRC);
                 pivot.tag("pbs-v1-pivot");
                 result.push(pivot);
@@ -453,7 +453,7 @@ fn emit_pbs_v1(
         // Corroborating names as Person pivots.
         for name in meta.names.iter().flatten() {
             if !name.eq_ignore_ascii_case(query) {
-                let mut pivot = Entity::new(EntityKind::Person, name, 0.65, scan_id);
+                let mut pivot = Entity::new(EntityKind::Person, name, confidence::HIGH, scan_id);
                 pivot.tag(SRC);
                 pivot.tag("pbs-v1-pivot");
                 result.push(pivot);
@@ -570,7 +570,7 @@ fn emit_pbs_v2(
             .as_deref()
             .filter(|e| !e.eq_ignore_ascii_case(query))
         {
-            let mut pivot = Entity::new(EntityKind::Email, email, 0.70, scan_id);
+            let mut pivot = Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
             pivot.tag(SRC);
             pivot.tag("pbs-v2-pivot");
             result.push(pivot);
@@ -580,13 +580,13 @@ fn emit_pbs_v2(
             .as_deref()
             .filter(|u| !u.eq_ignore_ascii_case(query))
         {
-            let mut pivot = Entity::new(EntityKind::Username, uname, 0.70, scan_id);
+            let mut pivot = Entity::new(EntityKind::Username, uname, confidence::HIGH_PLUS, scan_id);
             pivot.tag(SRC);
             pivot.tag("pbs-v2-pivot");
             result.push(pivot);
         }
         if let Some(phone) = &record.phone {
-            let mut pivot = Entity::new(EntityKind::Phone, phone, 0.70, scan_id);
+            let mut pivot = Entity::new(EntityKind::Phone, phone, confidence::HIGH_PLUS, scan_id);
             pivot.tag(SRC);
             pivot.tag("pbs-v2-pivot");
             result.push(pivot);
@@ -665,7 +665,7 @@ fn emit_ulp(
             } else {
                 EntityKind::Username
             };
-            let mut pivot = Entity::new(kind, login, 0.70, scan_id);
+            let mut pivot = Entity::new(kind, login, confidence::HIGH_PLUS, scan_id);
             pivot.tag(SRC);
             pivot.tag("ulp-pivot");
             result.push(pivot);
@@ -682,7 +682,7 @@ fn emit_ulp(
         if let Some(u) = record.url.as_deref() {
             let u = u.trim();
             if u.starts_with("http") && u.contains('.') {
-                let mut pivot = Entity::new(EntityKind::Url, u, 0.55, scan_id);
+                let mut pivot = Entity::new(EntityKind::Url, u, confidence::MEDIUM_HIGH, scan_id);
                 pivot.tag(SRC);
                 pivot.tag("ulp-pivot");
                 pivot.tag("credential-url");

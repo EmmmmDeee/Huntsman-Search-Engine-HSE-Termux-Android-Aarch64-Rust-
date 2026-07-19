@@ -36,7 +36,7 @@
 //! Messages, Instagram) strip EXIF on send, so URLs to those
 //! sources usually return empty. Photos hosted on personal
 //! websites, archive sites, and old social-platform uploads
-//! frequently retain GPS. Confidence is set conservatively (0.80)
+//! frequently retain GPS. Confidence is set conservatively (confidence::HIGH_PLUSPLUS)
 //! because EXIF GPS can be wrong by ±50 m on the originating
 //! device but is otherwise authoritative.
 
@@ -49,7 +49,7 @@ mod tests;
 use async_trait::async_trait;
 use exif::{Reader, Tag};
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -231,11 +231,11 @@ impl Module for ExifGeo {
             )
         };
 
-        // 1. Coordinates — GPS IFD. Empirically reliable to ~10–50 m; base 0.80,
-        //    above single-source IP-geo (0.55–0.60), below WiGLE consensus (0.85).
+        // 1. Coordinates — GPS IFD. Empirically reliable to ~10–50 m; base confidence::HIGH_PLUSPLUS,
+        //    above single-source IP-geo (confidence::MEDIUM_HIGH–confidence::MEDIUM_PLUS), below WiGLE consensus (confidence::HIGH_PLUSPLUS_PLUS).
         if let Some((lat, lon)) = gps {
             let coord_str = format!("{lat:.6},{lon:.6}");
-            let mut e = Entity::new(EntityKind::Coordinates, &coord_str, 0.80, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Coordinates, &coord_str, confidence::HIGH_PLUSPLUS, &ctx.scan_id);
             e.tag("geoint");
             e.tag("exif");
             e.tag("photo-derived");
@@ -251,9 +251,9 @@ impl Module for ExifGeo {
         // 2. DeviceId — a camera serial uniquely identifies one physical device,
         //    so the same serial across images links them to the same camera (and
         //    usually the same person): the highest-value EXIF cross-correlation.
-        //    Authoritative (camera firmware wrote it) → 0.75.
+        //    Authoritative (camera firmware wrote it) → confidence::VERY_HIGH.
         if let Some(fp) = fingerprint {
-            let mut e = Entity::new(EntityKind::DeviceId, &fp, 0.75, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::DeviceId, &fp, confidence::VERY_HIGH, &ctx.scan_id);
             e.tag("exif");
             e.tag("camera");
             e.tag("device-fingerprint");
@@ -265,11 +265,11 @@ impl Module for ExifGeo {
 
         // 3. Person — the owner/artist named in metadata. CameraOwnerName is set
         //    in-camera by the owner, so it is a real identity lead. Kept below the
-        //    0.50 expansion floor (a metadata name is a lead, not a confirmed
+        //    confidence::MEDIUM expansion floor (a metadata name is a lead, not a confirmed
         //    identity) but NOT quarantined, so it correlates with same-named
         //    Person entities surfaced by search/breach modules.
         if let Some(name) = person_name {
-            let mut e = Entity::new(EntityKind::Person, &name, 0.45, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Person, &name, confidence::LOW_MEDIUM, &ctx.scan_id);
             e.tag("exif");
             e.tag("photo-owner");
             e.add_evidence(evidence(format!(

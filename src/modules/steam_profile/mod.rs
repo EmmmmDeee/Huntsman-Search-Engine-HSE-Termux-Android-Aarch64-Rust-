@@ -20,7 +20,7 @@
 
 use async_trait::async_trait;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -124,13 +124,13 @@ fn steam_lookup_url(v: &str) -> Option<(String, f64)> {
     if val.len() == 17 && val.bytes().all(|b| b.is_ascii_digit()) && val.starts_with("7656119") {
         return Some((
             format!("https://steamcommunity.com/profiles/{val}?xml=1"),
-            0.85,
+            confidence::HIGH_PLUSPLUS_PLUS,
         ));
     }
     // Vanity: an explicit `steam:` handle (strong context) or a plausibly-shaped
     // custom URL. A bare numeric (e.g. a phone/ID) is not a vanity.
     if prefixed || is_vanity_shaped(val) {
-        let conf = if prefixed { 0.70 } else { 0.60 };
+        let conf = if prefixed { confidence::HIGH_PLUS } else { confidence::MEDIUM_PLUS };
         return Some((
             format!("https://steamcommunity.com/id/{}?xml=1", urlencode(val)),
             conf,
@@ -176,7 +176,7 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
         let mut p = Entity::new(
             EntityKind::Person,
             realname,
-            (conf - 0.13).max(0.45),
+            (conf - 0.13).max(confidence::LOW_MEDIUM),
             scan_id,
         );
         p.tag("steam");
@@ -200,7 +200,7 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
     {
         if let Some(mut p) = crate::modules::profile_kit::person_from_name(
             &persona,
-            (conf - 0.20).max(0.40),
+            (conf - 0.20).max(confidence::LOW),
             scan_id,
         ) {
             p.tag("steam");
@@ -215,7 +215,7 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
             let mut u = Entity::new(
                 EntityKind::Username,
                 &persona,
-                (conf - 0.05).max(0.50),
+                (conf - 0.05).max(confidence::MEDIUM),
                 scan_id,
             );
             u.tag("steam");
@@ -263,7 +263,7 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
     // No cap: `util::extract::emails`/`urls` already dedupe internally.
     if let Some(bio) = extract_tag(xml, "summary") {
         for email in crate::util::extract::emails(&bio) {
-            let mut e = Entity::new(EntityKind::Email, &email, (conf - 0.15).max(0.45), scan_id);
+            let mut e = Entity::new(EntityKind::Email, &email, (conf - 0.15).max(confidence::LOW_MEDIUM), scan_id);
             e.tag("steam");
             e.tag("public-profile");
             e.add_evidence(ev.clone().with_attr("source_field", "summary"));
@@ -271,7 +271,7 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
         }
         for link in crate::util::extract::urls(&bio) {
             let link = link.as_str();
-            let mut url_e = Entity::new(EntityKind::Url, link, (conf - 0.20).max(0.40), scan_id);
+            let mut url_e = Entity::new(EntityKind::Url, link, (conf - 0.20).max(confidence::LOW), scan_id);
             url_e.tag("steam");
             url_e.tag("personal-site");
             url_e.add_evidence(ev.clone().with_attr("source_field", "summary"));

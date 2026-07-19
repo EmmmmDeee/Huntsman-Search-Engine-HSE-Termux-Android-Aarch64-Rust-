@@ -24,7 +24,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -129,7 +129,7 @@ impl Module for Lobsters {
 pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
-    let mut u = Entity::new(EntityKind::Username, &user.username, 0.90, scan_id);
+    let mut u = Entity::new(EntityKind::Username, &user.username, confidence::VERY_HIGH_PLUS, scan_id);
     u.tag("lobsters");
     if user.is_moderator == Some(true) {
         u.tag("moderator");
@@ -180,7 +180,7 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
     if let Some(ref inviter) = user.invited_by_user {
         let inviter = inviter.trim();
         if !inviter.is_empty() {
-            let mut inv = Entity::new(EntityKind::Username, inviter, 0.70, scan_id);
+            let mut inv = Entity::new(EntityKind::Username, inviter, confidence::HIGH_PLUS, scan_id);
             inv.tag("lobsters");
             inv.tag("lobsters-invited-by");
             inv.add_evidence(
@@ -233,7 +233,7 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
             None => (md, None),
         };
         if !local.is_empty() {
-            let mut m = Entity::new(EntityKind::Username, local, 0.80, scan_id);
+            let mut m = Entity::new(EntityKind::Username, local, confidence::HIGH_PLUSPLUS, scan_id);
             m.tag("mastodon");
             m.tag("fediverse");
             m.tag("lobsters-pivot");
@@ -253,7 +253,7 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
             result.push(m);
         }
         if let Some(server) = server.filter(|s| s.contains('.')) {
-            let mut d = Entity::new(EntityKind::Domain, server, 0.60, scan_id);
+            let mut d = Entity::new(EntityKind::Domain, server, confidence::MEDIUM_PLUS, scan_id);
             d.tag("lobsters");
             d.tag("mastodon-homeserver");
             d.tag("derived");
@@ -275,7 +275,7 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
     // Bio: extract emails and URLs.
     if let Some(about) = user.about.as_deref() {
         for email in crate::util::extract::emails(about) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.75, scan_id);
+            let mut e = Entity::new(EntityKind::Email, &email, confidence::VERY_HIGH, scan_id);
             e.tag("lobsters");
             e.tag("public-profile");
             e.add_evidence(
@@ -290,7 +290,7 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
 
         for link in crate::util::extract::urls(about) {
             let link = link.as_str();
-            let mut url_e = Entity::new(EntityKind::Url, link, 0.70, scan_id);
+            let mut url_e = Entity::new(EntityKind::Url, link, confidence::HIGH_PLUS, scan_id);
             url_e.tag("lobsters");
             url_e.tag("personal-site");
             url_e.add_evidence(
@@ -303,7 +303,7 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
                 && host.contains('.')
                 && host != "lobste.rs"
             {
-                let mut d = Entity::new(EntityKind::Domain, &host, 0.65, scan_id);
+                let mut d = Entity::new(EntityKind::Domain, &host, confidence::HIGH, scan_id);
                 d.tag("lobsters");
                 d.tag("derived");
                 d.add_evidence(
@@ -360,7 +360,7 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "devuser");
         assert!(u.is_some(), "must emit Username entity for the account");
-        assert!((u.unwrap().confidence - 0.90).abs() < 0.01);
+        assert!((u.unwrap().confidence - confidence::VERY_HIGH_PLUS).abs() < 0.01);
     }
 
     #[test]

@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::profile_kit;
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -148,7 +148,7 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
     // Confirmed-on-GitLab username.
-    let mut u = Entity::new(EntityKind::Username, &user.username, 0.90, scan_id);
+    let mut u = Entity::new(EntityKind::Username, &user.username, confidence::VERY_HIGH_PLUS, scan_id);
     u.tag("gitlab");
     u.tag("code");
     let mut ev = Evidence::new(SRC, format!("GitLab account '{}'", user.username)).with_attr(
@@ -170,7 +170,7 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
         .map(str::trim)
         .filter(|e| e.contains('@') && e.len() >= 5)
     {
-        let mut em = Entity::new(EntityKind::Email, email, 0.85, scan_id);
+        let mut em = Entity::new(EntityKind::Email, email, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
         em.tag("gitlab");
         em.tag("public-profile");
         em.add_evidence(
@@ -205,7 +205,7 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
         && !org.trim().is_empty()
         && org.len() <= 200
     {
-        let mut o = Entity::new(EntityKind::Organisation, org.trim(), 0.45, scan_id);
+        let mut o = Entity::new(EntityKind::Organisation, org.trim(), confidence::LOW_MEDIUM, scan_id);
         o.tag("gitlab");
         o.tag("self-asserted");
         o.add_evidence(
@@ -225,7 +225,7 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
     {
         let tw_clean = tw.trim_start_matches('@');
         if !tw_clean.is_empty() {
-            let mut t = Entity::new(EntityKind::Username, tw_clean, 0.80, scan_id);
+            let mut t = Entity::new(EntityKind::Username, tw_clean, confidence::HIGH_PLUSPLUS, scan_id);
             t.tag("twitter");
             t.tag("gitlab-pivot");
             t.add_evidence(
@@ -254,7 +254,7 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
                 crate::util::http::urlencode(li_val)
             )
         };
-        let mut url_e = Entity::new(EntityKind::Url, &li_url, 0.70, scan_id);
+        let mut url_e = Entity::new(EntityKind::Url, &li_url, confidence::HIGH_PLUS, scan_id);
         url_e.tag("linkedin");
         url_e.tag("gitlab-pivot");
         url_e.add_evidence(
@@ -271,7 +271,7 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
     // Website URL + Domain. The Url and Domain carry distinct evidence, so the
     // kit's stable [Url, Domain] ordering is decorated per-kind.
     if let Some(site) = user.website_url.as_deref() {
-        for mut e in profile_kit::website_url_and_domain(site, 0.72, 0.65, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(site, 0.72, confidence::HIGH, scan_id) {
             match e.kind {
                 EntityKind::Domain => {
                     e.tag("gitlab");
@@ -383,7 +383,7 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "gluser");
         assert!(u.is_some(), "must emit Username entity");
-        assert!((u.unwrap().confidence - 0.90).abs() < 0.01);
+        assert!((u.unwrap().confidence - confidence::VERY_HIGH_PLUS).abs() < 0.01);
         assert!(u.unwrap().has_tag("gitlab") && u.unwrap().has_tag("code"));
     }
 
@@ -460,7 +460,7 @@ mod tests {
             .find(|e| e.kind == EntityKind::Email && e.value == "dev@example.com")
             .expect("public_email → Email entity");
         assert!(em.has_tag("gitlab") && em.has_tag("public-profile"));
-        assert!((em.confidence - 0.85).abs() < 0.01);
+        assert!((em.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
         // A blank / malformed public_email is not surfaced.
         let mut u2 = make_user("gluser", None, None, None, None, None);
         u2.public_email = Some(String::new());

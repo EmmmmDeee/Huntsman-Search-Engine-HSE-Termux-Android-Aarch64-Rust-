@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::profile_kit;
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -195,7 +195,7 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
     }
 
     // Confirmed-on-Bluesky username.
-    let mut u = Entity::new(EntityKind::Username, bare_handle, 0.85, scan_id);
+    let mut u = Entity::new(EntityKind::Username, bare_handle, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
     u.tag("bluesky");
     u.tag("social");
     if created_date.is_some() {
@@ -213,7 +213,7 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
     if let Some(ref did) = profile.did
         && !did.is_empty()
     {
-        let mut d = Entity::new(EntityKind::Other("bluesky-did".into()), did, 0.85, scan_id);
+        let mut d = Entity::new(EntityKind::Other("bluesky-did".into()), did, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
         d.tag("bluesky");
         d.tag("did");
         d.add_evidence(
@@ -249,7 +249,7 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
 
     // Profile URL on bsky.app.
     let profile_url = format!("https://bsky.app/profile/{}", profile.handle);
-    let mut url_e = Entity::new(EntityKind::Url, &profile_url, 0.75, scan_id);
+    let mut url_e = Entity::new(EntityKind::Url, &profile_url, confidence::VERY_HIGH, scan_id);
     url_e.tag("bluesky");
     url_e.add_evidence(Evidence::new(
         SRC,
@@ -259,7 +259,7 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
 
     // Real name → Person (≥2 whitespace-separated tokens, non-placeholder).
     if let Some(ref name) = profile.display_name
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.60, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::MEDIUM_PLUS, scan_id)
     {
         p.tag("bluesky");
         p.tag("derived");
@@ -276,7 +276,7 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
     // Bio — extract emails and URLs.
     if let Some(bio) = profile.description.as_deref() {
         for email in crate::util::extract::emails(bio) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.70, scan_id);
+            let mut e = Entity::new(EntityKind::Email, &email, confidence::HIGH_PLUS, scan_id);
             e.tag("bluesky");
             e.tag("public-profile");
             e.add_evidence(
@@ -312,7 +312,7 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
                         | "linkedin.com"
                 )
             {
-                let mut d = Entity::new(EntityKind::Domain, &host, 0.55, scan_id);
+                let mut d = Entity::new(EntityKind::Domain, &host, confidence::MEDIUM_HIGH, scan_id);
                 d.tag("bluesky");
                 d.tag("derived");
                 d.add_evidence(
@@ -359,7 +359,7 @@ mod tests {
             u.is_some(),
             "must strip .bsky.social and emit bare username"
         );
-        assert!((u.unwrap().confidence - 0.85).abs() < 0.01);
+        assert!((u.unwrap().confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
         assert!(u.unwrap().has_tag("bluesky"));
     }
 
@@ -376,7 +376,7 @@ mod tests {
         );
         assert!(d.unwrap().has_tag("custom-handle"));
         // Confidence should be high (controls DNS TXT for AT Protocol)
-        assert!(d.unwrap().confidence >= 0.80);
+        assert!(d.unwrap().confidence >= confidence::HIGH_PLUSPLUS);
     }
 
     #[test]

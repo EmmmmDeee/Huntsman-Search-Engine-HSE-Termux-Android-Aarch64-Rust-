@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -79,17 +79,17 @@ fn build_entities(data: &IpApiResp, ip: &str, scan_id: &str) -> Vec<Entity> {
 
     // Confidence scaled by IP type: hosting/proxy locations are
     // datacenter-level (low geo value), mobile IPs are cell-tower-level.
-    // Recalibrated downward from the old 0.45 / 0.60 / 0.70 trio — free
+    // Recalibrated downward from the old confidence::LOW_MEDIUM / confidence::MEDIUM_PLUS / confidence::HIGH_PLUS trio — free
     // IP-geo providers routinely miss residential geolocation by 30–80 km
     // even for "fixed" connections, which the prior confidence overstated;
     // a single overstated IP-geo hit was outranking a corroborated WiGLE
-    // WiFi fix at 0.85.
+    // WiFi fix at confidence::HIGH_PLUSPLUS_PLUS.
     let geo_conf = if data.hosting == Some(true) || data.proxy == Some(true) {
         0.35
     } else if data.mobile == Some(true) {
-        0.50
+        confidence::MEDIUM
     } else {
-        0.60
+        confidence::MEDIUM_PLUS
     };
     // `coarse_provider_coords` returns None for an implausible fix, so this
     // `if` is false in exactly the same cases the old `is_plausible_provider_coord`
@@ -170,7 +170,7 @@ fn build_entities(data: &IpApiResp, ip: &str, scan_id: &str) -> Vec<Entity> {
 
     // Emit Address entity from city/region/country — but NOT for a
     // hosting/datacenter or proxy IP: that "address" is the server's, never
-    // the subject's, and at 0.65 it outweighed genuine residential signals
+    // the subject's, and at confidence::HIGH it outweighed genuine residential signals
     // and seeded false identity-location correlations.
     let is_datacenter = data.hosting == Some(true) || data.proxy == Some(true);
     let city = data.city.as_deref().unwrap_or("");
@@ -178,7 +178,7 @@ fn build_entities(data: &IpApiResp, ip: &str, scan_id: &str) -> Vec<Entity> {
     let country = data.country.as_deref().unwrap_or("");
     if !is_datacenter && !city.is_empty() && !country.is_empty() {
         let addr = crate::util::geo::compose_address(city, region, country);
-        let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, scan_id);
+        let mut ae = Entity::new(EntityKind::Address, &addr, confidence::HIGH, scan_id);
         ae.tag("geoint");
         ae.add_evidence(Evidence::new(SRC, format!("IP address for {ip}")));
         result.push(ae);
@@ -193,7 +193,7 @@ fn build_entities(data: &IpApiResp, ip: &str, scan_id: &str) -> Vec<Entity> {
 
     // Emit reverse DNS domain if present in ISP name
     if let Some(org) = &data.org {
-        let mut e = Entity::new(EntityKind::Organisation, org, 0.65, scan_id);
+        let mut e = Entity::new(EntityKind::Organisation, org, confidence::HIGH, scan_id);
         let ev = [
             ("isp", data.isp.as_deref().filter(|s| !s.is_empty())),
             (

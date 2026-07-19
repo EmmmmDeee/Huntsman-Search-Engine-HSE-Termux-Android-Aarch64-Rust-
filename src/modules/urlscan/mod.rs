@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -206,7 +206,7 @@ fn build_target_entity(
     total_matches: u64,
     scan_id: &str,
 ) -> Entity {
-    let confidence = if intel.any_malicious { 0.88 } else { 0.70 };
+    let confidence = if intel.any_malicious { confidence::EXPERT } else { confidence::HIGH_PLUS };
     let mut entity = target.to_entity(confidence, scan_id);
     entity.tag("urlscan");
     if intel.any_malicious {
@@ -294,7 +294,7 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
             .iter()
             .filter(|ip| ip.parse::<std::net::IpAddr>().is_ok())
             .map(|ip| {
-                let mut e = Entity::new(EntityKind::IpAddress, ip, 0.65, scan_id);
+                let mut e = Entity::new(EntityKind::IpAddress, ip, confidence::HIGH, scan_id);
                 e.tag("urlscan");
                 e.add_evidence(Evidence::new(
                     SRC,
@@ -306,7 +306,7 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
 
     // Hosting countries → geo-hint Address + optional Coordinates.
     out.extend(intel.countries.iter().flat_map(|country| {
-        let mut e = Entity::new(EntityKind::Address, country, 0.50, scan_id);
+        let mut e = Entity::new(EntityKind::Address, country, confidence::MEDIUM, scan_id);
         e.tag("urlscan");
         e.tag("geoint");
         e.add_evidence(Evidence::new(
@@ -315,7 +315,7 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
         ));
         let coord = crate::util::city_coords::city_coords(country).map(|(lat, lon)| {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.40, scan_id);
+            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, confidence::LOW, scan_id);
             c.tag("urlscan");
             c.tag("addr-derived");
             c.tag("geoint");
@@ -337,7 +337,7 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
             .iter()
             .filter(|d| d.contains('.') && d.to_ascii_lowercase() != target_lc)
             .map(|d| {
-                let mut e = Entity::new(EntityKind::Domain, d, 0.55, scan_id);
+                let mut e = Entity::new(EntityKind::Domain, d, confidence::MEDIUM_HIGH, scan_id);
                 e.tag("urlscan");
                 e.tag("resolved-domain");
                 e.add_evidence(Evidence::new(
@@ -352,7 +352,7 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
     // urlscan observed for the target page becomes a pivot, never a capped subset
     // (the set is bounded by urlscan's own per-scan response).
     out.extend(intel.urls.iter().filter(|u| u.len() >= 4).map(|u| {
-        let mut e = Entity::new(EntityKind::Url, u, 0.50, scan_id);
+        let mut e = Entity::new(EntityKind::Url, u, confidence::MEDIUM, scan_id);
         e.tag("urlscan");
         e.add_evidence(Evidence::new(
             SRC,

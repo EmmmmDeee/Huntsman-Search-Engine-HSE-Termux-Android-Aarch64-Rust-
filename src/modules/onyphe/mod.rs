@@ -32,7 +32,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -216,7 +216,7 @@ fn extract_entities(
         if !skip_coords
             && let Some((lat, lon)) = coords(r)
             && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
-            && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, 0.55, scan_id)
+            && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, confidence::MEDIUM_HIGH, scan_id)
         {
             if let Some(cc) = vstr(r, "country") {
                 ce.tag(format!("country:{}", cc.to_uppercase()));
@@ -233,7 +233,7 @@ fn extract_entities(
                 None => city,
             };
             if seen.insert(format!("@addr:{}", addr.to_lowercase())) {
-                let mut ae = Entity::new(EntityKind::Address, &addr, 0.55, scan_id);
+                let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM_HIGH, scan_id);
                 ae.tag(crate::core::tags::GEOINT);
                 ae.add_evidence(ev());
                 result.push(ae);
@@ -250,14 +250,14 @@ fn extract_entities(
         }) && asn.len() > 2
             && seen.insert(asn.to_lowercase())
         {
-            let mut ae = Entity::new(EntityKind::Asn, &asn, 0.75, scan_id);
+            let mut ae = Entity::new(EntityKind::Asn, &asn, confidence::VERY_HIGH, scan_id);
             ae.add_evidence(ev());
             result.push(ae);
         }
         if let Some(org) = vstr(r, "organization").filter(|o| o.len() >= 3)
             && seen.insert(format!("@org:{}", org.to_lowercase()))
         {
-            let mut oe = Entity::new(EntityKind::Organisation, &org, 0.55, scan_id);
+            let mut oe = Entity::new(EntityKind::Organisation, &org, confidence::MEDIUM_HIGH, scan_id);
             oe.add_evidence(ev());
             result.push(oe);
         }
@@ -265,12 +265,12 @@ fn extract_entities(
         // ── Subnet (geoloc CIDR) ─────────────────────────────────────────
         // ONYPHE's `geoloc` category also carries the covering `subnet` for
         // the resolved IP. It's a secondary field on a geoloc document, not
-        // an authoritative BGP-sourced prefix (cf. bgpview/ripestat's 0.70-
-        // 0.80), so confidence is pinned lower in the unverified range.
+        // an authoritative BGP-sourced prefix (cf. bgpview/ripestat's confidence::HIGH_PLUS-
+        // confidence::HIGH_PLUSPLUS), so confidence is pinned lower in the unverified range.
         if let Some(subnet) = vstr(r, "subnet").filter(|s| s.contains('/'))
             && seen.insert(format!("@cidr:{subnet}"))
         {
-            let mut ne = Entity::new(EntityKind::Cidr, &subnet, 0.65, scan_id);
+            let mut ne = Entity::new(EntityKind::Cidr, &subnet, confidence::HIGH, scan_id);
             ne.add_evidence(ev());
             result.push(ne);
         }
@@ -281,7 +281,7 @@ fn extract_entities(
             && ip != value
             && seen.insert(ip.clone())
         {
-            let mut ie = Entity::new(EntityKind::IpAddress, &ip, 0.70, scan_id);
+            let mut ie = Entity::new(EntityKind::IpAddress, &ip, confidence::HIGH_PLUS, scan_id);
             ie.add_evidence(ev());
             result.push(ie);
         }
@@ -344,7 +344,7 @@ fn extract_entities(
                 {
                     continue;
                 }
-                let mut de = Entity::new(EntityKind::Domain, &h, 0.65, scan_id);
+                let mut de = Entity::new(EntityKind::Domain, &h, confidence::HIGH, scan_id);
                 de.tag("onyphe");
                 de.add_evidence(ev());
                 result.push(de);

@@ -16,7 +16,7 @@ mod tests;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::core::{
+use crate::core::{confidence, 
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -221,15 +221,15 @@ impl Geocode {
 
 /// Build the forward-geocode Coordinates entity, shaping confidence and tags by
 /// AU relevance of the resolved point (offline [`crate::util::geo::is_in_australia`]):
-/// a fix that lands in Australia is a strong on-region anchor (0.70,
-/// `au-relevant`); one abroad is demoted to a candidate (0.40, `off-region` +
-/// `candidate`) so it sits below the 0.50 expansion floor and is quarantined
+/// a fix that lands in Australia is a strong on-region anchor (confidence::HIGH_PLUS,
+/// `au-relevant`); one abroad is demoted to a candidate (confidence::LOW, `off-region` +
+/// `candidate`) so it sits below the confidence::MEDIUM expansion floor and is quarantined
 /// from confirmed correlations — an ambiguous address string can't drag an
 /// AU-focused scan off-region. Pure (no I/O); the caller attaches evidence.
 #[must_use]
 pub(super) fn build_forward_entity(lat: f64, lon: f64, coords: &str, scan_id: &str) -> Entity {
     let in_au = crate::util::geo::is_in_australia(lat, lon);
-    let confidence = if in_au { 0.70 } else { 0.40 };
+    let confidence = if in_au { confidence::HIGH_PLUS } else { confidence::LOW };
     let mut e = Entity::new(EntityKind::Coordinates, coords, confidence, scan_id);
     e.tag("geocoded");
     if in_au {
@@ -252,7 +252,7 @@ pub(super) enum AuRelevance {
     /// the code is absent) — a strong, on-region anchor.
     InAustralia,
     /// Resolved to a known country that is not Australia — a candidate-grade
-    /// lead that AU-focused correlation rules (confidence ≥ 0.50) must not
+    /// lead that AU-focused correlation rules (confidence ≥ confidence::MEDIUM) must not
     /// anchor on, so it can't pull an investigation off-region.
     OffRegion,
     /// Region could not be determined (no country code, not in the AU box) —
@@ -287,8 +287,8 @@ pub(super) fn build_reverse_entity(
 
     let confidence = match relevance {
         AuRelevance::InAustralia => 0.78,
-        AuRelevance::Unknown => 0.55,
-        AuRelevance::OffRegion => 0.40,
+        AuRelevance::Unknown => confidence::MEDIUM_HIGH,
+        AuRelevance::OffRegion => confidence::LOW,
     };
 
     let mut entity = Entity::new(EntityKind::Address, display, confidence, scan_id);

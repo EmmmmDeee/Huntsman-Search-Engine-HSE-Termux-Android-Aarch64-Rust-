@@ -34,7 +34,7 @@ fn pbs_v1_skips_not_found_status() {
         }),
     };
     let target = Target::new(TargetKind::Email, "x@y.com");
-    let mut entity = target.to_entity(0.80, "s");
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s");
     assert!(!entity.has_tag("breach"));
@@ -66,7 +66,7 @@ fn pbs_v1_found_with_blocks_tags_breach_and_pivots_names() {
         }),
     };
     let target = Target::new(TargetKind::Email, "x@y.com");
-    let mut entity = target.to_entity(0.80, "s");
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s");
     assert!(entity.has_tag("breach"));
@@ -117,7 +117,7 @@ fn ulp_emits_stealer_tag_and_pivots() {
         }),
     };
     let target = Target::new(TargetKind::Email, "victim@example.com");
-    let mut entity = target.to_entity(0.80, "s");
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     emit_ulp(resp, &mut entity, &mut result, "victim@example.com", "s");
     assert!(entity.has_tag("stealer-log"));
@@ -164,7 +164,7 @@ fn ulp_promotes_the_login_url_to_a_first_class_url_pivot() {
     // Login equals the query, so no Email/Username pivot fires — isolating the
     // Url pivot as the only entity this record can produce.
     let target = Target::new(TargetKind::Email, "victim@example.com");
-    let mut entity = target.to_entity(0.80, "s");
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     emit_ulp(resp, &mut entity, &mut result, "victim@example.com", "s");
     let url_pivot = result
@@ -213,7 +213,7 @@ fn ulp_recovers_the_login_on_username_and_ip_scans() {
             }),
         };
         let target = Target::new(kind, query);
-        let mut entity = target.to_entity(0.80, "s");
+        let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
         let mut result = ModuleResult::new();
         emit_ulp(resp, &mut entity, &mut result, query, "s");
         // The differing login is now promoted to a first-class Email pivot…
@@ -285,7 +285,7 @@ fn pbs_v2_found_with_records_tags_breach() {
         }),
     };
     let target = Target::new(TargetKind::Email, "victim@example.com");
-    let mut entity = target.to_entity(0.80, "s");
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     emit_pbs_v2(resp, &mut entity, &mut result, "victim@example.com", "s");
     assert!(entity.has_tag("breach"), "breach tag must be set on hit");
@@ -310,7 +310,7 @@ fn pbs_v2_zero_found_is_quiet() {
         }),
     };
     let target = Target::new(TargetKind::Email, "clean@example.com");
-    let mut entity = target.to_entity(0.80, "s");
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     emit_pbs_v2(resp, &mut entity, &mut result, "clean@example.com", "s");
     assert!(!entity.has_tag("breach"));
