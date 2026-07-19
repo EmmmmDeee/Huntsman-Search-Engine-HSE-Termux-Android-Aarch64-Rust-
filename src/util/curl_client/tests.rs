@@ -71,6 +71,27 @@ use super::*;
     }
 
     #[test]
+    fn paid_api_transport_requests_compression_but_the_ssrf_fetch_path_does_not() {
+        // Potentiation: every CurlClient call (SeekNow, OathNet, …) advertises
+        // Accept-Encoding via `--compressed`, so a paid API's JSON transfers
+        // ~4x smaller with a byte-identical decompressed body — a direct
+        // mobile-data / latency win on Termux.
+        assert!(
+            CLIENT_BASE_ARGS.contains(&"--compressed"),
+            "the trusted paid-API transport must request response compression"
+        );
+        // Security boundary: `--compressed` must NEVER leak onto the general
+        // SSRF fetch path, whose hosts can be attacker-influenced (web crawl)
+        // and whose `--max-filesize` cap bounds the COMPRESSED transfer — so a
+        // decompression bomb could blow past the intended memory cap there.
+        assert!(
+            !crate::util::curl::FETCH_HARDENING_ARGS.contains(&"--compressed"),
+            "the general (attacker-influenced) fetch path must stay uncompressed \
+             so --max-filesize keeps bounding a decompression-bomb"
+        );
+    }
+
+    #[test]
     fn auth_scheme_equality_and_clone() {
         let a = AuthScheme::Bearer;
         let b = a;

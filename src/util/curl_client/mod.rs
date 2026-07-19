@@ -34,6 +34,28 @@ use crate::core::error::{Error, Result};
 /// expects.
 const DEFAULT_UA: &str = crate::util::curl::UA_MOBILE;
 
+/// Static curl flags every [`CurlClient`] request carries, independent of the
+/// per-call timeout / auth / body.
+///
+/// `--compressed` is the potentiation: it advertises `Accept-Encoding`
+/// (gzip/br/zstd, whatever the local libcurl was built with) and curl
+/// transparently decompresses the response, so the body the caller receives is
+/// byte-for-byte identical while the on-wire transfer for a paid API's JSON
+/// (SeekNow breach dumps, OathNet records) shrinks ~4× — measured live, a RIPE
+/// JSON body went 4743→1138 bytes. On a metered Termux mobile link that is a
+/// direct data-cost and latency win on every paid call, and it never changes
+/// the archived bytes or the parsed entities.
+///
+/// Deliberately NOT folded into the general [`crate::util::curl::FETCH_HARDENING_ARGS`]
+/// SSRF fetch path: THAT path fetches attacker-influenceable hosts (web crawl,
+/// scan-target URLs), where `--max-filesize` bounds the *compressed* transfer,
+/// so a malicious server could ship a small compressed body that decompresses
+/// past the intended memory cap (a decompression-bomb vector). A [`CurlClient`]
+/// only ever targets a hardcoded, trusted paid-provider API base, so that risk
+/// does not apply here — which is exactly why compression is enabled on this
+/// transport and only this transport.
+const CLIENT_BASE_ARGS: &[&str] = &["-s", "-S", "-L", "--compressed"];
+
 /// How a provider's API key is presented on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthScheme {
@@ -138,6 +160,8 @@ impl CurlClient {
         let auth_header = self.auth.header_line(key);
 
         let mut cmd = Command::new("curl");
+        // Static transfer flags (`-s -S -L --compressed`) — silent-with-errors,
+        // follow redirects, and request/decompress a compressed response.
         // `-S`/`--show-error` alongside `-s`: silent mode alone suppresses BOTH
         // the progress meter AND curl's own fatal-error text, so a DNS/connect
         // failure previously surfaced as a bare "curl exited 6" with an empty
@@ -145,9 +169,10 @@ impl CurlClient {
         // code 6 means, never WHICH host or WHY. `-S` keeps the progress meter
         // suppressed but restores the one-line diagnostic ("curl: (6) Could not
         // resolve host: …") into stderr, which the failure branch below already
-        // captures and reports — so this is a pure debuggability fix, no output
-        // shape change on success.
-        cmd.args(["-s", "-S", "-L", "--max-time", &secs, "-A", DEFAULT_UA]);
+        // captures and reports. `--compressed` shrinks the paid-API JSON transfer
+        // ~4× with a byte-identical decompressed body (see [`CLIENT_BASE_ARGS`]).
+        cmd.args(CLIENT_BASE_ARGS);
+        cmd.args(["--max-time", &secs, "-A", DEFAULT_UA]);
         // Protocol/redirect/size hardening, single-sourced so this keyed-API
         // path and the free-function curl path can never drift apart.
         //
