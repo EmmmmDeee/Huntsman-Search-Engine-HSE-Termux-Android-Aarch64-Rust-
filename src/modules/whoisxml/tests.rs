@@ -97,6 +97,34 @@ use super::*;
     }
 
     #[test]
+    fn build_entities_emits_contact_telephone_as_a_phone_pivot() {
+        // The RFC-WHOIS `+CC.number` telephone field was decoded nowhere; it is a
+        // real contactability pivot. The dotted separator must normalise to E.164.
+        let rec = record(
+            r#"{ "registrant": {"name": "Jordan Avery", "telephone": "+1.2125551234"} }"#,
+        );
+        let es = build_entities(&rec, "example-target.com", "t");
+        assert_eq!(
+            values(&es, EntityKind::Phone),
+            vec!["+12125551234"],
+            "the RFC-WHOIS dotted telephone must surface as one E.164 Phone"
+        );
+    }
+
+    #[test]
+    fn build_entities_suppresses_privacy_placeholder_telephone() {
+        // A redacted telephone must never mint a Phone entity.
+        let rec = record(
+            r#"{ "registrant": {"name": "Jordan Avery", "telephone": "REDACTED FOR PRIVACY"} }"#,
+        );
+        let es = build_entities(&rec, "example-target.com", "t");
+        assert!(
+            values(&es, EntityKind::Phone).is_empty(),
+            "a privacy-placeholder telephone must not become a Phone"
+        );
+    }
+
+    #[test]
     fn build_entities_surfaces_registered_domain_pivot_when_it_differs() {
         let rec = record(r#"{ "domainName": "acme.com" }"#);
         // Queried a subdomain; registry holds the parent → pivot.

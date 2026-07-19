@@ -89,6 +89,8 @@ struct Contact {
     #[serde(default)]
     email: Option<String>,
     #[serde(default)]
+    telephone: Option<String>,
+    #[serde(default)]
     country: Option<String>,
     #[serde(default)]
     country_code: Option<String>,
@@ -144,6 +146,8 @@ impl Module for WhoisXml {
             EntityKind::Person,
             EntityKind::Organisation,
             EntityKind::Domain,
+            // Registrant/admin/tech contact telephone as a contactability pivot.
+            EntityKind::Phone,
             // Registrant/admin/tech WHOIS location (state, country) as a geo lead.
             EntityKind::Address,
             EntityKind::Coordinates,
@@ -327,6 +331,24 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
                 e.tag(format!("whois-{role}-email"));
                 e.add_evidence(base_ev.clone().with_attr("contact_role", role));
                 out.push(e);
+            }
+        }
+
+        // Contact telephone (RFC-WHOIS `+CC.number`) — a real contactability
+        // pivot, previously decoded nowhere. Skip privacy-placeholder values,
+        // and normalise the dotted separator (the shared E.164 scanner treats a
+        // space as a separator but not `.`) so each validated number is minted.
+        if let Some(tel) = nonempty(&c.telephone)
+            .filter(|t| !crate::core::validation::is_whois_privacy_placeholder(t))
+        {
+            for phone in crate::util::extract::phones(&tel.replace('.', " ")) {
+                if seen.insert(format!("phone:{phone}")) {
+                    let mut e = Entity::new(EntityKind::Phone, &phone, 0.65, scan_id);
+                    e.tag("whoisxml");
+                    e.tag(format!("whois-{role}"));
+                    e.add_evidence(base_ev.clone().with_attr("contact_role", role));
+                    out.push(e);
+                }
             }
         }
 
