@@ -410,6 +410,10 @@ const RULES: &[RuleFn] = &[
     // highest-consequence OSINT screening signal, graded Critical/High/Medium by
     // the strongest flag. Surfaces what previously sat un-named in the graph.
     rule_au_114_sanctions_exposure,
+    // AU-115: a personal Wi-Fi SSID that WiGLE geolocated (ssid-located
+    // Coordinates naming it) — a subject-owned network placing its owner, a
+    // high-value GEOINT lead previously surfaced by no correlation.
+    rule_au_115_personal_wifi_geolocated,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

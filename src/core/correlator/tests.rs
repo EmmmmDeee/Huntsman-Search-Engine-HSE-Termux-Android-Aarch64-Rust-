@@ -8225,6 +8225,43 @@ fn au114_does_not_fire_for_an_unflagged_or_low_confidence_entity() {
     );
 }
 
+// ─── AU-115 tests (personal Wi-Fi geolocated) ─────────────────────────────────
+
+#[test]
+fn au115_joins_an_ssid_to_its_wigle_geolocation() {
+    let ssid = Entity::new(EntityKind::Ssid, "Jordans_Home_5G", 0.85, "s");
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.72, "s");
+    coord.tag("wigle");
+    coord.tag("ssid-located");
+    coord.tag("geoint");
+    coord.add_evidence(
+        Evidence::new("wigle", "WiGLE SSID observed").with_attr("ssid", "Jordans_Home_5G"),
+    );
+    let r = rule_au_115_personal_wifi_geolocated(&[ssid.clone(), coord.clone()], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-115");
+    assert_eq!(r[0].severity, super::Severity::High);
+    assert!(r[0].description.contains("Jordans_Home_5G"));
+    assert!(r[0].entity_uids.contains(&ssid.uid));
+    assert!(r[0].entity_uids.contains(&coord.uid));
+}
+
+#[test]
+fn au115_requires_a_name_match_and_the_wigle_ssid_located_tag() {
+    let ssid = Entity::new(EntityKind::Ssid, "Jordans_Home_5G", 0.85, "s");
+    // A WiGLE ssid-located fix for a DIFFERENT network → no join.
+    let mut other = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.72, "s");
+    other.tag("ssid-located");
+    other.add_evidence(Evidence::new("wigle", "x").with_attr("ssid", "SomeoneElse"));
+    assert!(rule_au_115_personal_wifi_geolocated(&[ssid.clone(), other], "s", 0).is_empty());
+    // A matching name but a non-WiGLE coordinate (no ssid-located tag) must NOT
+    // fire — an IP-geo fix can't masquerade as a personal-network geolocation.
+    let mut ipgeo = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.6, "s");
+    ipgeo.tag("geoint");
+    ipgeo.add_evidence(Evidence::new("ip_geo", "x").with_attr("ssid", "Jordans_Home_5G"));
+    assert!(rule_au_115_personal_wifi_geolocated(&[ssid, ipgeo], "s", 0).is_empty());
+}
+
 // ─── AU-084 tests (cell tower dual-source) ────────────────────────────────────
 
 fn cell_tower(tower_id: &str, sources: &[&str]) -> Entity {
