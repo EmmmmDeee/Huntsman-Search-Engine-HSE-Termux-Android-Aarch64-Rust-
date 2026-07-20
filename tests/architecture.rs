@@ -1648,8 +1648,9 @@ fn readme_module_overview_count_matches_registry() {
     // "highlight" subtotals lower down are a deliberately CURATED subset, not the
     // registry total, so they are intentionally not checked here.)
     use huntsman_search_engine::core::module::ModuleCost;
+    let registry = huntsman_search_engine::modules::registry();
     let (mut free, mut key_gated_paid) = (0usize, 0usize);
-    for m in huntsman_search_engine::modules::registry().iter() {
+    for m in &registry {
         match m.cost() {
             ModuleCost::Free => free += 1,
             ModuleCost::KeyGated | ModuleCost::Paid => key_gated_paid += 1,
