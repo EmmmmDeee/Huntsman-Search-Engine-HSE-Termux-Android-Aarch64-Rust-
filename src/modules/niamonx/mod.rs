@@ -236,7 +236,6 @@ impl Module for NiamonX {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
         let query = &target.value;
-        let key = ctx.key(KEY_ENV)?;
         let ulp_type = match target.kind {
             TargetKind::Email => "email",
             TargetKind::Username => "username",
@@ -244,12 +243,46 @@ impl Module for NiamonX {
             _ => "auto",
         };
 
-        // All three endpoints are independent — run concurrently.
-        let (r1, r2, r3) = tokio::join!(
-            fetch_pbs_v1(&ctx.http, key, query, ctx),
-            fetch_pbs_v2(&ctx.http, key, query, ctx),
-            fetch_ulp(&ctx.http, key, query, ulp_type, ctx),
-        );
+        // Key cascade across the concurrent endpoint batch. The three endpoints
+        // share one key; if EVERY one fails AND that key was burned in the pool
+        // this call (a 401/403/429 routed through `note_keyed_error` marks it
+        // non-usable), rotate to the next usable pooled key and retry the whole
+        // batch — so one process() spends every credential the pool holds before
+        // reporting an outage. A partial success, or a non-key failure such as a
+        // transient 5xx, leaves the key usable and does NOT cascade, so keys are
+        // never churned on anything but a genuine key/quota failure. `tried` stops
+        // re-handing a burned key; single-key setups never enter the branch.
+        use crate::util::key_pool::KeyStatus;
+        let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut key = ctx.key(KEY_ENV)?.to_string();
+        let (r1, r2, r3) = loop {
+            tried.insert(key.clone());
+            // All three endpoints are independent — run concurrently.
+            let results = tokio::join!(
+                fetch_pbs_v1(&ctx.http, &key, query, ctx),
+                fetch_pbs_v2(&ctx.http, &key, query, ctx),
+                fetch_ulp(&ctx.http, &key, query, ulp_type, ctx),
+            );
+            let all_failed = results.0.is_err() && results.1.is_err() && results.2.is_err();
+            if all_failed {
+                let burned = matches!(
+                    crate::util::key_pool::global_pool().entry_status(SRC, &key),
+                    Some(
+                        KeyStatus::Invalid
+                            | KeyStatus::RateLimited
+                            | KeyStatus::Revoked
+                            | KeyStatus::Exhausted
+                    )
+                );
+                if burned
+                    && let Some(next) = ctx.next_pooled_key(SRC, &tried)
+                {
+                    key = next;
+                    continue;
+                }
+            }
+            break results;
+        };
 
         let mut entity = target.to_entity(0.80, &ctx.scan_id);
         entity.tag(SRC);
