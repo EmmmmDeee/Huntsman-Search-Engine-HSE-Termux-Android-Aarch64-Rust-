@@ -21,10 +21,7 @@ pub(super) fn join_or_dash<'a>(it: impl Iterator<Item = &'a String>) -> String {
 
 /// Default directory for auto-saved full dossiers: `$HOME/.huntsman/dossiers`.
 pub(crate) fn dossier_dir() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    std::path::PathBuf::from(home)
-        .join(".huntsman")
-        .join("dossiers")
+    crate::util::paths::subdir("dossiers")
 }
 
 /// Render and persist the full dossier for `sid` to

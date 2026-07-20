@@ -13,14 +13,7 @@ use rusqlite::{Connection, params};
 /// Falls back to `./cell_towers.db` when `$HOME` is unset.
 #[must_use]
 pub fn cell_db_path() -> PathBuf {
-    std::env::var("HOME").map_or_else(
-        |_| PathBuf::from("cell_towers.db"),
-        |home| {
-            let dir = PathBuf::from(&home).join(".huntsman");
-            let _ = std::fs::create_dir_all(&dir);
-            dir.join("cell_towers.db")
-        },
-    )
+    crate::util::paths::data_file("cell_towers.db")
 }
 
 // ── Connection helpers ──────────────────────────────────────────────────────

@@ -5,13 +5,9 @@ use std::path::PathBuf;
 use super::pool::{KeyPool, PoolData};
 
 pub fn pool_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let dir = PathBuf::from(home).join(".huntsman");
-    // 0700 (owner-only): `~/.huntsman` holds the key pool and intelligence DB, so
-    // a world-readable default-umask (0755) dir would let another local user
-    // enumerate its contents. The `key_pool.json` file itself is already 0600.
-    let _ = crate::util::atomic_file::create_dir_private(&dir);
-    dir.join("key_pool.json")
+    // `~/.huntsman` is created 0700 (owner-only) by `paths::data_file` so another
+    // local user can't enumerate it; the `key_pool.json` file itself is 0600.
+    crate::util::paths::data_file("key_pool.json")
 }
 
 pub fn load_pool() -> KeyPool {

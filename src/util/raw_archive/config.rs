@@ -34,6 +34,5 @@ pub(super) fn archive_dir() -> PathBuf {
     {
         return PathBuf::from(dir);
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".huntsman").join("raw")
+    crate::util::paths::subdir("raw")
 }

@@ -84,16 +84,11 @@ pub fn is_termux() -> bool {
 /// Termux: `$HOME/.huntsman/huntsman.db` (typically under `/data/data/com.termux/files/home`).
 /// Falls back to `./huntsman.db` if `$HOME` is unset.
 pub fn default_db_path() -> String {
-    std::env::var("HOME").map_or_else(
-        |_| "huntsman.db".to_string(),
-        |home| {
-            let dir = std::path::Path::new(&home).join(".huntsman");
-            // 0700 so the store + dossiers + key pool under ~/.huntsman aren't
-            // world-listable on a shared host (PROBLEM_TREE §7 S3).
-            let _ = crate::util::atomic_file::create_dir_private(&dir);
-            dir.join("huntsman.db").to_string_lossy().into_owned()
-        },
-    )
+    // `~/.huntsman` created 0700 (owner-only) by `paths::data_file` so the store +
+    // dossiers + key pool under it aren't world-listable (PROBLEM_TREE §7 S3).
+    crate::util::paths::data_file("huntsman.db")
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[cfg(test)]
