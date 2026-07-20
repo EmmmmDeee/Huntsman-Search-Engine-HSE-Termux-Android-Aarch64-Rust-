@@ -244,7 +244,7 @@ impl Module for ThreatFox {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) {
+        let initial_key = match ctx.key_opt(KEY_ENV) {
             Some(k) => k,
             None => return Ok(ModuleResult::new()),
         };
@@ -265,28 +265,45 @@ impl Module for ThreatFox {
 
         // ctx.http carries a 3 s default timeout (MODULE_TIMEOUT_MS);
         // override per-request to match this module's declared 12 s.
-        let mut retries = 2u8;
-        let parsed: Resp = loop {
-            if ctx.cancel.is_cancelled() {
-                return Ok(ModuleResult::new());
-            }
-            let resp = ctx
-                .http
-                .post("https://threatfox-api.abuse.ch/api/v1/")
-                .header("Auth-Key", key)
-                .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
-                .json(&body)
-                .send_tagged(SRC)
-                .await?;
-            let status = resp.status();
-            if !status.is_success() {
-                let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
-                    continue;
+        // Key cascade: begin on the hot-injected key and, on a terminal
+        // 401/403/429, rotate to the next usable pooled ThreatFox key and retry,
+        // so one process() call spends every credential the pool holds before it
+        // fails. `tried` stops a burned key being re-handed. (The in-body
+        // `rate_limited` status handled below is a transient per-request signal,
+        // not a key-death, so it deliberately does NOT cascade.)
+        let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut key = initial_key.to_string();
+        let parsed: Resp = 'cascade: loop {
+            tried.insert(key.clone());
+            let mut retries = 2u8;
+            loop {
+                if ctx.cancel.is_cancelled() {
+                    return Ok(ModuleResult::new());
                 }
-                return Err(crate::util::http::http_status_error(SRC, resp).await);
+                let resp = ctx
+                    .http
+                    .post("https://threatfox-api.abuse.ch/api/v1/")
+                    .header("Auth-Key", &key)
+                    .timeout(std::time::Duration::from_millis(self.max_timeout_ms()))
+                    .json(&body)
+                    .send_tagged(SRC)
+                    .await?;
+                let status = resp.status();
+                if !status.is_success() {
+                    let code = status.as_u16();
+                    if handle_keyed_error(code, resp.headers(), &mut retries, SRC, &key, ctx).await {
+                        continue;
+                    }
+                    if crate::util::http::is_keyed_error_status(code)
+                        && let Some(next) = ctx.next_pooled_key(SRC, &tried)
+                    {
+                        key = next;
+                        continue 'cascade;
+                    }
+                    return Err(crate::util::http::http_status_error(SRC, resp).await);
+                }
+                break 'cascade crate::util::http::json_decode(SRC, resp).await?;
             }
-            break crate::util::http::json_decode(SRC, resp).await?;
         };
 
         // abuse.ch's anonymous tier returns HTTP 200 + `query_status:

@@ -107,7 +107,7 @@ impl Module for ZoomEye {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) {
+        let initial_key = match ctx.key_opt(KEY_ENV) {
             Some(v) => v,
             None => return Ok(ModuleResult::new()),
         };
@@ -128,32 +128,47 @@ impl Module for ZoomEye {
             urlencode(&dork)
         );
 
-        let mut retries = 2u8;
-        let body: ZoomResp = loop {
-            if ctx.cancel.is_cancelled() {
-                return Ok(ModuleResult::new());
-            }
-            let resp = ctx
-                .http
-                .get(&url)
-                .header("API-KEY", key)
-                .header("Accept", "application/json")
-                .send_tagged(SRC)
-                .await?;
-
-            let status = resp.status();
-            // 404 = nothing indexed for this selector — a clean miss, not an error.
-            if status.as_u16() == 404 {
-                return Ok(ModuleResult::new());
-            }
-            if !status.is_success() {
-                let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
-                    continue;
+        // Key cascade: begin on the hot-injected key and, on a terminal
+        // 401/403/429, rotate to the next usable pooled ZoomEye key and retry, so
+        // one process() call spends every credential the pool holds before it
+        // fails. `tried` stops a burned key being re-handed.
+        let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut key = initial_key.to_string();
+        let body: ZoomResp = 'cascade: loop {
+            tried.insert(key.clone());
+            let mut retries = 2u8;
+            loop {
+                if ctx.cancel.is_cancelled() {
+                    return Ok(ModuleResult::new());
                 }
-                return Err(crate::util::http::http_status_error(SRC, resp).await);
+                let resp = ctx
+                    .http
+                    .get(&url)
+                    .header("API-KEY", &key)
+                    .header("Accept", "application/json")
+                    .send_tagged(SRC)
+                    .await?;
+
+                let status = resp.status();
+                // 404 = nothing indexed for this selector — a clean miss, not an error.
+                if status.as_u16() == 404 {
+                    return Ok(ModuleResult::new());
+                }
+                if !status.is_success() {
+                    let code = status.as_u16();
+                    if handle_keyed_error(code, resp.headers(), &mut retries, SRC, &key, ctx).await {
+                        continue;
+                    }
+                    if crate::util::http::is_keyed_error_status(code)
+                        && let Some(next) = ctx.next_pooled_key(SRC, &tried)
+                    {
+                        key = next;
+                        continue 'cascade;
+                    }
+                    return Err(crate::util::http::http_status_error(SRC, resp).await);
+                }
+                break 'cascade json_decode(SRC, resp).await?;
             }
-            break json_decode(SRC, resp).await?;
         };
 
         if body.matches.is_empty() {
