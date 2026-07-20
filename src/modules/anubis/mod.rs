@@ -47,7 +47,7 @@ fn build_entities(names: &[String], domain_base: &str, scan_id: &str) -> Vec<Ent
             if !seen.insert(name.clone()) {
                 return None;
             }
-            let is_sub = crate::util::recon::is_subdomain(&name, &base);
+            let is_sub = crate::util::domains::is_or_subdomain_of(&name, &base);
             // Off-base names are rare here (Anubis is keyed on the apex) but a
             // corrupt entry is retained as a low-confidence lead rather than
             // asserted as the subject's subdomain.

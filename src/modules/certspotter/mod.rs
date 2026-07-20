@@ -105,7 +105,7 @@ fn build_entities(entries: &[Issuance], domain_base: &str, scan_id: &str) -> Vec
             if !seen_domains.insert(name.clone()) {
                 return None;
             }
-            let is_sub = crate::util::recon::is_subdomain(&name, &base);
+            let is_sub = crate::util::domains::is_or_subdomain_of(&name, &base);
             let conf = if is_sub { 0.75 } else { 0.45 };
             let mut e = Entity::new(EntityKind::Domain, &name, conf, scan_id);
             e.tag(tags::CT_LOG);
