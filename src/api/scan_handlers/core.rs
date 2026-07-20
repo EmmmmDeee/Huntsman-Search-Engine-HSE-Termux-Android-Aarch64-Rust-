@@ -415,15 +415,22 @@ pub async fn scan_cancel(
 }
 
 pub async fn scan_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-    match s.store.list_scans(200) {
-        Ok(scans) => ok_list("scans", scans),
-        Err(e) => internal_error(&e),
+    // Off-reactor: list_scans(200) deserializes up to 200 rows under the global
+    // connection mutex — two concurrent inline calls could block both ~2 workers
+    // and starve SSE keep-alives / `/health`. Matches the sibling handlers.
+    let store = std::sync::Arc::clone(&s.store);
+    match tokio::task::spawn_blocking(move || store.list_scans(200)).await {
+        Ok(Ok(scans)) => ok_list("scans", scans),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
     }
 }
 
 pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> impl IntoResponse {
-    match s.store.get_scan(&id) {
-        Ok(Some(scan)) => (
+    // Off-reactor: synchronous SQLite read under the global connection mutex.
+    let store = std::sync::Arc::clone(&s.store);
+    match tokio::task::spawn_blocking(move || store.get_scan(&id)).await {
+        Ok(Ok(Some(scan))) => (
             StatusCode::OK,
             Json(serde_json::to_value(&scan).unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "failed to serialize scan to JSON value");
@@ -431,8 +438,9 @@ pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
             })),
         )
             .into_response(),
-        Ok(None) => not_found(),
-        Err(e) => internal_error(&e),
+        Ok(Ok(None)) => not_found(),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
     }
 }
 
