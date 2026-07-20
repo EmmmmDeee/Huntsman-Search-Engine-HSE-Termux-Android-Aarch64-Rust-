@@ -56,6 +56,7 @@ pub struct BatchCmd {
     pub no_stealer: bool,
     pub no_permute: bool,
     pub synthesize_emails: bool,
+    pub recurse_depth: u32,
     pub max: usize,
     pub page_size: u32,
     pub execute: bool,
@@ -92,6 +93,7 @@ pub async fn cmd_oathnet_batch(cmd: BatchCmd) -> Result<()> {
         include_stealer: !cmd.no_stealer,
         permute_handles: !cmd.no_permute,
         synthesize_emails: cmd.synthesize_emails,
+        recurse_depth: cmd.recurse_depth,
         max_queries: cmd.max,
     };
 

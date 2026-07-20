@@ -79,6 +79,18 @@ pub struct BatchOptions {
     /// Synthesise candidate emails (handle/role crossed with common providers).
     /// Explosive and speculative — off by default.
     pub synthesize_emails: bool,
+    /// How many extra levels to **recursively** expand derived query values
+    /// through the same per-kind fan-out (a derived `username` re-derives its own
+    /// handle permutations / candidate emails, a derived `domain` its role
+    /// emails, a synthesised email its own local-part username + domain, …).
+    ///
+    /// `0` (the default) keeps the precise single-level plan. Each extra level is
+    /// a bounded, cycle-safe breadth-first step — a value is never expanded twice —
+    /// so generation always terminates; but because it compounds with
+    /// `permute_handles` / `synthesize_emails` it is opt-in, and `max_queries`
+    /// remains the hard cap on the result. The recursion NEVER lowers precision of
+    /// the base plan — it only appends deeper derived queries after it.
+    pub recurse_depth: u32,
     /// Cap on the number of queries returned after de-duplication. `0` = no cap.
     pub max_queries: usize,
 }
@@ -89,6 +101,7 @@ impl Default for BatchOptions {
             include_stealer: true,
             permute_handles: true,
             synthesize_emails: false,
+            recurse_depth: 0,
             max_queries: 0,
         }
     }

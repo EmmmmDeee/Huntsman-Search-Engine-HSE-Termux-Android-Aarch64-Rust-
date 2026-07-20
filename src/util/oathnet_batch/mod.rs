@@ -18,6 +18,16 @@
 //! the `oathnet_pro` scan module via [`crate::util::oathnet`] (single source of
 //! truth) rather than re-encoded here.
 //!
+//! By default the fan-out is **single-level** (the seed and its direct
+//! derivations). [`BatchOptions::recurse_depth`] adds a fourth axis —
+//! **recursion** — feeding each level's derived, pivotable query values
+//! (`email` / `username` / `domain`) back through the same per-kind fan-out for
+//! `recurse_depth` extra levels. It is a bounded, cycle-safe breadth-first walk
+//! (a value is expanded at most once, tracked in a visited-set), so it always
+//! terminates; it is opt-in because it compounds with handle permutation and
+//! email synthesis, and it never lowers the base plan's precision — it only
+//! appends deeper derived queries after it.
+//!
 //! The generator is **pure** (no IO, no quota) so the full plan can be previewed
 //! for free and is exhaustively unit-testable; the CLI layer is what actually
 //! dispatches it (and is what spends OathNet credits).

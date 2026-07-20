@@ -543,6 +543,15 @@ pub enum Command {
         /// providers). Explosive — off by default.
         #[arg(long)]
         synthesize_emails: bool,
+        /// Recursively re-expand derived query values this many extra levels: a
+        /// derived username re-derives its own handles / candidate emails, a
+        /// derived domain its role emails, a synthesised email its own local-part
+        /// username + domain, and so on. Bounded and cycle-safe (a value is never
+        /// expanded twice), so it always terminates; `0` (default) keeps the
+        /// precise single-level plan. Compounds with `--synthesize-emails`, so use
+        /// `--max` to cap the result.
+        #[arg(long, default_value_t = 0)]
+        recurse_depth: u32,
         /// Cap the number of queries (after de-duplication). 0 = no cap.
         #[arg(long, default_value_t = 0)]
         max: usize,
