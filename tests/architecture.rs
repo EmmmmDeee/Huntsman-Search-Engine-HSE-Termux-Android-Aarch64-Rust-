@@ -1640,6 +1640,29 @@ fn readme_module_overview_count_matches_registry() {
          size ({n}); update README.md after adding/removing a module"
     );
 
+    // The heading's free/key-gated SPLIT is also authoritative and was previously
+    // unguarded — so it silently drifted (headline said "128 free, 34 paid" while
+    // the registry held a different split, and later edits compounded it). Tie the
+    // full split to the live cost() of every registered module so it can't rot
+    // again — the same no-silent-drift guard as the total above. (The per-category
+    // "highlight" subtotals lower down are a deliberately CURATED subset, not the
+    // registry total, so they are intentionally not checked here.)
+    use huntsman_search_engine::core::module::ModuleCost;
+    let (mut free, mut key_gated_paid) = (0usize, 0usize);
+    for m in huntsman_search_engine::modules::registry().iter() {
+        match m.cost() {
+            ModuleCost::Free => free += 1,
+            ModuleCost::KeyGated | ModuleCost::Paid => key_gated_paid += 1,
+        }
+    }
+    let split = format!("## Module Overview ({n} modules — {free} free, {key_gated_paid} key-gated/paid)");
+    assert!(
+        readme.contains(&split),
+        "README module-overview headline must cite the live free/key-gated split \
+         ({split:?}); update README.md after adding/removing a module or changing \
+         a module's cost()"
+    );
+
     // The heading check alone proved insufficient: the intro blurb and the
     // `hse modules` usage comment each carry their own hand-written count and
     // both rotted to a stale figure while the heading stayed correct. Sweep

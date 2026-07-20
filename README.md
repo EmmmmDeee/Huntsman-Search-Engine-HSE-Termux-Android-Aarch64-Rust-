@@ -159,9 +159,9 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ---
 
-## Module Overview (164 modules — 130 free, 34 key-gated/paid)
+## Module Overview (164 modules — 128 free, 36 key-gated/paid)
 
-> Grouped highlights below (all 159). The complete, always-current catalogue
+> A curated highlight of the modules below (not the full list). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run
 > `hse modules` or open the web UI's module wizard — never a static doc that
 > can drift from the registry.
