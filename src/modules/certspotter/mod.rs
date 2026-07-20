@@ -89,7 +89,6 @@ fn cert_evidence(entry: &Issuance, summary: &str) -> Evidence {
 /// frontier budget is the engine's, not this leaf module's (mirrors `crtsh`).
 fn build_entities(entries: &[Issuance], domain_base: &str, scan_id: &str) -> Vec<Entity> {
     let base = domain_base.trim().trim_end_matches('.').to_lowercase();
-    let dot_base = format!(".{base}");
     let mut seen_domains: HashSet<String> = HashSet::new();
     let mut seen_issuers: HashSet<String> = HashSet::new();
 
@@ -106,7 +105,7 @@ fn build_entities(entries: &[Issuance], domain_base: &str, scan_id: &str) -> Vec
             if !seen_domains.insert(name.clone()) {
                 return None;
             }
-            let is_sub = name == base || name.ends_with(&dot_base);
+            let is_sub = crate::util::recon::is_subdomain(&name, &base);
             let conf = if is_sub { 0.75 } else { 0.45 };
             let mut e = Entity::new(EntityKind::Domain, &name, conf, scan_id);
             e.tag(tags::CT_LOG);

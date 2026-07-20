@@ -25,6 +25,20 @@ pub fn host_key(kind: TargetKind, value: &str) -> Option<String> {
     }
 }
 
+/// True when `name` is `base` itself or a subdomain of it. Both are expected
+/// already lowercased (every collector dedups on the lowercased value before
+/// classifying), so this compares bytes directly. **Allocation-free**: rather
+/// than formatting a `.{base}` suffix per call — or precomputing one per
+/// collector — it checks the dot boundary in place, so `notexample.com` is
+/// correctly NOT a subdomain of `example.com` while `mail.example.com` is.
+#[must_use]
+pub fn is_subdomain(name: &str, base: &str) -> bool {
+    name == base
+        || (name.len() > base.len()
+            && name.ends_with(base)
+            && name.as_bytes()[name.len() - base.len() - 1] == b'.')
+}
+
 /// Sort discovered entities confidence-descending with a deterministic
 /// `uid`-ascending tie-break — the reproducible emission order every host-recon
 /// collector uses (Determinism Requirement: a `HashMap`/`HashSet`-seeded build
@@ -64,6 +78,20 @@ mod tests {
         assert_eq!(host_key(TargetKind::Domain, "   "), None);
         assert_eq!(host_key(TargetKind::Email, "a@x.com"), None);
         assert_eq!(host_key(TargetKind::Username, "bob"), None);
+    }
+
+    #[test]
+    fn is_subdomain_matches_only_on_a_dot_boundary() {
+        assert!(is_subdomain("example.com", "example.com"), "apex itself");
+        assert!(is_subdomain("mail.example.com", "example.com"));
+        assert!(is_subdomain("a.b.example.com", "example.com"), "deep sub");
+        // A name that merely ENDS with the base but not on a dot boundary is NOT
+        // a subdomain (the classic false positive this guards).
+        assert!(!is_subdomain("notexample.com", "example.com"));
+        assert!(!is_subdomain("example.com.evil.com", "example.com"));
+        assert!(!is_subdomain("other.org", "example.com"));
+        // Shorter-or-equal-length non-equal names can't be subdomains.
+        assert!(!is_subdomain("com", "example.com"));
     }
 
     #[test]

@@ -132,9 +132,6 @@ pub(crate) fn is_public_ca(org: &str) -> bool {
 /// attribution pivot.
 fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec<Entity> {
     let base = domain_base.trim().to_lowercase();
-    // Pre-compute the `.base` subdomain suffix once instead of re-formatting it
-    // for every name across every certificate.
-    let dot_base = format!(".{base}");
     let mut seen_domains: HashSet<String> = HashSet::new();
     let mut seen_emails: HashSet<String> = HashSet::new();
     let mut seen_issuers: HashSet<String> = HashSet::new();
@@ -164,7 +161,7 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
                 e.add_evidence(cert_evidence(entry, "Email in certificate SAN"));
                 Some(e)
             } else if name.contains('.') && seen_domains.insert(name.clone()) {
-                let is_sub = name == base || name.ends_with(&dot_base);
+                let is_sub = crate::util::recon::is_subdomain(&name, &base);
                 let conf = if is_sub { 0.75 } else { 0.45 };
                 let mut e = Entity::new(EntityKind::Domain, &name, conf, scan_id);
                 e.tag(tags::CT_LOG);

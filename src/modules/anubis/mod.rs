@@ -35,7 +35,6 @@ const SRC: &str = "anubis";
 /// engine's, not this leaf module's (mirrors `crtsh`/`certspotter`).
 fn build_entities(names: &[String], domain_base: &str, scan_id: &str) -> Vec<Entity> {
     let base = domain_base.trim().trim_end_matches('.').to_lowercase();
-    let dot_base = format!(".{base}");
     let mut seen: HashSet<String> = HashSet::new();
 
     let mut out: Vec<Entity> = names
@@ -48,7 +47,7 @@ fn build_entities(names: &[String], domain_base: &str, scan_id: &str) -> Vec<Ent
             if !seen.insert(name.clone()) {
                 return None;
             }
-            let is_sub = name == base || name.ends_with(&dot_base);
+            let is_sub = crate::util::recon::is_subdomain(&name, &base);
             // Off-base names are rare here (Anubis is keyed on the apex) but a
             // corrupt entry is retained as a low-confidence lead rather than
             // asserted as the subject's subdomain.
