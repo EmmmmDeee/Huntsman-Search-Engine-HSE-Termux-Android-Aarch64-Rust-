@@ -346,6 +346,24 @@ impl ModuleContext {
         self.keys.get(name).map(String::as_str)
     }
 
+    /// Fetch the next pooled key for `service` that isn't already in `tried` —
+    /// the in-scan **key cascade**. A keyed module whose current key hits a
+    /// terminal 401/403/429 records that value in `tried` and calls this to get
+    /// the next usable credential the pool holds, retrying the same request with
+    /// it. This spends every key the pool has for the service within one
+    /// `process()` call instead of stranding sibling keys until a later expansion
+    /// round re-injects one. Returns `None` once no untried, usable key remains.
+    ///
+    /// The caller seeds `tried` with the key it started on (the one hot-injected
+    /// into `ctx.keys`) so the cascade never re-hands the key that just failed.
+    pub fn next_pooled_key(
+        &self,
+        service: &str,
+        tried: &std::collections::HashSet<String>,
+    ) -> Option<String> {
+        crate::util::key_pool::global_pool().next_key_excluding(service, tried)
+    }
+
     /// Report that a key received a rate-limit (429) or auth failure (401/403).
     /// Marks the key in the global pool so subsequent scans rotate to the next one.
     pub fn report_key_exhausted(&self, service: &str, key_value: &str, status: u16) {

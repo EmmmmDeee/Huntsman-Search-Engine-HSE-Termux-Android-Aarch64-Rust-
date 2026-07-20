@@ -292,16 +292,22 @@ impl Module for Hibp {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = resolve_key(ctx.key_opt(KEY_ENV));
+        // The working key threads through every request this call makes: the
+        // cascade in `api_get` advances it to the next usable pooled key when one
+        // is exhausted, so a later request in the same process() starts from the
+        // last key that worked instead of re-probing a burned one.
+        let mut key = resolve_key(ctx.key_opt(KEY_ENV)).to_string();
+        // Keys already burned this call — seeded so the cascade never re-hands one.
+        let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut result = ModuleResult::new();
 
         match target.kind {
             TargetKind::Email => {
-                self.query_breached_account(key, target, ctx, &mut result)
+                self.query_breached_account(&mut key, &mut tried, target, ctx, &mut result)
                     .await?;
             }
             TargetKind::Domain => {
-                self.query_domain_breaches(key, target, ctx, &mut result)
+                self.query_domain_breaches(&mut key, &mut tried, target, ctx, &mut result)
                     .await?;
             }
             _ => {}
@@ -312,64 +318,81 @@ impl Module for Hibp {
 }
 
 impl Hibp {
+    /// GET `url` with the current working key, cascading to the next usable
+    /// pooled key on a terminal 401/403/429 so one call spends every HIBP
+    /// credential the pool holds before failing. `key` is the working key
+    /// (advanced in place when the cascade rotates); `tried` accumulates the
+    /// burned keys across every request in this process() so no key is re-probed.
     async fn api_get<T: serde::de::DeserializeOwned>(
         &self,
-        key: &str,
+        key: &mut String,
+        tried: &mut std::collections::HashSet<String>,
         url: &str,
         ctx: &ModuleContext,
     ) -> Result<Option<T>> {
-        let mut retries = 0u8;
-        loop {
-            if ctx.cancel.is_cancelled() {
-                return Ok(None);
-            }
-            let resp = ctx
-                .http
-                .get(url)
-                .header("hibp-api-key", key)
-                .header("Accept", "application/json")
-                .timeout(Duration::from_secs(15))
-                .send_tagged(SRC)
-                .await?;
+        'cascade: loop {
+            tried.insert(key.clone());
+            let mut retries = 0u8;
+            loop {
+                if ctx.cancel.is_cancelled() {
+                    return Ok(None);
+                }
+                let resp = ctx
+                    .http
+                    .get(url)
+                    .header("hibp-api-key", key.as_str())
+                    .header("Accept", "application/json")
+                    .timeout(Duration::from_secs(15))
+                    .send_tagged(SRC)
+                    .await?;
 
-            let status = resp.status().as_u16();
-            match status {
-                200 => {
-                    // Via json_scanned: the paid breach body is retained in the
-                    // raw archive and scanned for leaked keys (the "retain all
-                    // paid data" invariant), then deserialised.
-                    let data = crate::util::http::json_scanned::<T>(resp, SRC)
-                        .await
-                        .map_err(|e| Error::module(SRC, e))?;
-                    return Ok(Some(data));
-                }
-                404 => return Ok(None),
-                401 | 403 => {
-                    ctx.report_key_exhausted(SRC, key, status);
-                    return Err(Error::module(
-                        SRC,
-                        format!("HTTP {status}: invalid or expired API key"),
-                    ));
-                }
-                429 if retries < 3 => {
-                    // 60s module budget, up to 3 sleeps: cap each at 10s so the
-                    // retry chain stays within process()'s timeout.
-                    let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 7, 10);
-                    retries += 1;
-                    tokio::time::sleep(Duration::from_secs(retry_secs)).await;
-                    continue;
-                }
-                429 => {
-                    ctx.report_key_exhausted(SRC, key, status);
-                    let snippet = error_snippet(resp).await;
-                    return Err(Error::module(
-                        SRC,
-                        format!("HTTP 429 rate-limited after {retries} retries: {snippet}"),
-                    ));
-                }
-                _ => {
-                    let snippet = error_snippet(resp).await;
-                    return Err(Error::module(SRC, format!("HTTP {status}: {snippet}")));
+                let status = resp.status().as_u16();
+                match status {
+                    200 => {
+                        // Via json_scanned: the paid breach body is retained in the
+                        // raw archive and scanned for leaked keys (the "retain all
+                        // paid data" invariant), then deserialised.
+                        let data = crate::util::http::json_scanned::<T>(resp, SRC)
+                            .await
+                            .map_err(|e| Error::module(SRC, e))?;
+                        return Ok(Some(data));
+                    }
+                    404 => return Ok(None),
+                    401 | 403 => {
+                        ctx.report_key_exhausted(SRC, key, status);
+                        if let Some(next) = ctx.next_pooled_key(SRC, tried) {
+                            *key = next;
+                            continue 'cascade;
+                        }
+                        return Err(Error::module(
+                            SRC,
+                            format!("HTTP {status}: invalid or expired API key"),
+                        ));
+                    }
+                    429 if retries < 3 => {
+                        // 60s module budget, up to 3 sleeps: cap each at 10s so the
+                        // retry chain stays within process()'s timeout.
+                        let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 7, 10);
+                        retries += 1;
+                        tokio::time::sleep(Duration::from_secs(retry_secs)).await;
+                        continue;
+                    }
+                    429 => {
+                        ctx.report_key_exhausted(SRC, key, status);
+                        if let Some(next) = ctx.next_pooled_key(SRC, tried) {
+                            *key = next;
+                            continue 'cascade;
+                        }
+                        let snippet = error_snippet(resp).await;
+                        return Err(Error::module(
+                            SRC,
+                            format!("HTTP 429 rate-limited after {retries} retries: {snippet}"),
+                        ));
+                    }
+                    _ => {
+                        let snippet = error_snippet(resp).await;
+                        return Err(Error::module(SRC, format!("HTTP {status}: {snippet}")));
+                    }
                 }
             }
         }
@@ -378,14 +401,15 @@ impl Hibp {
     /// GET /api/v3/breachedaccount/{email}?truncateResponse=false
     async fn query_breached_account(
         &self,
-        key: &str,
+        key: &mut String,
+        tried: &mut std::collections::HashSet<String>,
         target: &Target,
         ctx: &ModuleContext,
         result: &mut ModuleResult,
     ) -> Result<()> {
         let email = urlencode(target.value.trim());
         let url = format!("{BASE_URL}/breachedaccount/{email}?truncateResponse=false");
-        let breaches: Vec<Breach> = match self.api_get(key, &url, ctx).await? {
+        let breaches: Vec<Breach> = match self.api_get(key, tried, &url, ctx).await? {
             Some(b) => b,
             None => return Ok(()),
         };
@@ -502,7 +526,7 @@ impl Hibp {
         // pure builder folds a `paste` tag + count/recency evidence onto the
         // Email and mints a Url pivot per URL-reconstructable paste.
         let paste_url = format!("{BASE_URL}/pasteaccount/{email}");
-        if let Some(pastes) = self.api_get::<Vec<Paste>>(key, &paste_url, ctx).await? {
+        if let Some(pastes) = self.api_get::<Vec<Paste>>(key, tried, &paste_url, ctx).await? {
             result.extend(paste_entities(&pastes, target.value.trim(), &ctx.scan_id));
         }
 
@@ -512,14 +536,15 @@ impl Hibp {
     /// GET /api/v3/breaches?domain={domain}
     async fn query_domain_breaches(
         &self,
-        key: &str,
+        key: &mut String,
+        tried: &mut std::collections::HashSet<String>,
         target: &Target,
         ctx: &ModuleContext,
         result: &mut ModuleResult,
     ) -> Result<()> {
         let domain = urlencode(target.value.trim());
         let url = format!("{BASE_URL}/breaches?domain={domain}");
-        let breaches: Vec<Breach> = match self.api_get(key, &url, ctx).await? {
+        let breaches: Vec<Breach> = match self.api_get(key, tried, &url, ctx).await? {
             Some(b) => b,
             None => return Ok(()),
         };
