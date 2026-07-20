@@ -211,20 +211,38 @@ async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result
         }
     }
 
-    // Dispatch in bounded-concurrency chunks. The generated queries are mutually
-    // independent (distinct surface/field/value), so within a chunk they run
-    // CONCURRENTLY — a decisive wall-clock win on the latency-bound mobile radio
-    // HSE targets, where a strictly sequential loop stalls one full round-trip
-    // per query. Concurrency is capped at `BATCH_CONCURRENCY` so a large plan
-    // can't stampede the paid API; the budget re-check between chunks preserves
-    // the sequential loop's early-stop-at-budget behaviour, and `oathnet::search`'s
-    // own atomic budget reservation is the hard ceiling within a chunk (an
-    // over-budget query short-circuits to an empty result with no network call).
-    'chunks: for chunk in plan.chunks(BATCH_CONCURRENCY) {
-        if !oathnet::has_budget() {
+    // Dispatch in bounded-concurrency chunks, each sized to the LIVE remaining
+    // budget. The generated queries are mutually independent (distinct
+    // surface/field/value), so within a chunk they run CONCURRENTLY — a decisive
+    // wall-clock win on the latency-bound mobile radio HSE targets, where a
+    // strictly sequential loop stalls one full round-trip per query. Concurrency
+    // is capped at `BATCH_CONCURRENCY` so a large plan can't stampede the paid API.
+    //
+    // The chunk is sized to `min(BATCH_CONCURRENCY, budget_remaining)` — NOT a flat
+    // `BATCH_CONCURRENCY` — because `oathnet::search` silently short-circuits an
+    // over-budget query to an empty result (no network call). Launching a flat
+    // chunk would let that surplus be counted as `dispatched` and would hide the
+    // "stopped at the budget" signal; sizing to the budget means every query in a
+    // chunk actually runs, so `dispatched` and `stopped_on_budget` stay accurate.
+    // The budget is re-read each iteration, so cached queries (which spend no
+    // budget) don't prematurely end the run.
+    let mut idx = 0usize;
+    while idx < plan.len() {
+        let remaining = {
+            let snap = oathnet::budget_snapshot();
+            let scan_left = snap.scan_cap.saturating_sub(snap.scan_used);
+            let session_left = snap.session_cap.saturating_sub(snap.session_used);
+            scan_left.min(session_left)
+        };
+        if remaining == 0 || oathnet::is_quota_exhausted() {
             stopped_on_budget = true;
-            break 'chunks;
+            break;
         }
+        let take = BATCH_CONCURRENCY
+            .min(remaining as usize)
+            .min(plan.len() - idx);
+        let chunk = &plan[idx..idx + take];
+        idx += take;
         let futures = chunk.iter().map(|q| {
             // Resolve this query's session synchronously into an owned value, then
             // move it into the async task — the shared `sessioned` map is only
