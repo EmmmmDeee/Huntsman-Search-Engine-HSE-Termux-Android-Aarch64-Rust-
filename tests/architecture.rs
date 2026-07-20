@@ -282,6 +282,14 @@ fn core_does_not_import_util_directly() {
                 && !line.contains("util::hashcat::is_common_password")
                 && !line.contains("util::hashcat::digests_of")
                 && !line.contains("util::hashcat::is_common_collision")
+                // Pure, dependency-free disjoint-set / union-find primitive (a
+                // flat parent `Vec<usize>` with path-halving; no state, no I/O,
+                // no deps), same leaf category as `util::geometry`. The
+                // credential-reuse (AU-121) and shared-infrastructure (AU-116)
+                // closure rules use it to compute connected components over
+                // handle/infra graphs; it is the single source of truth those
+                // rules and the diagnostics/relation clusterers all delegate to.
+                && !line.contains("util::union_find")
         })
         .collect();
     assert!(

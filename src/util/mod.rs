@@ -66,5 +66,6 @@ pub mod threat;
 pub mod timefmt;
 pub mod tlsrpt;
 pub mod uid;
+pub mod union_find;
 pub mod url_util;
 pub mod wigle;

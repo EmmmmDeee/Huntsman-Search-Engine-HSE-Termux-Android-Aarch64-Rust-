@@ -68,15 +68,8 @@ pub(in crate::core::correlator) fn rule_au_116_infrastructure_pivot_closure(
         return Vec::new();
     }
 
-    // Union-find over the infra nodes.
-    let mut parent: Vec<usize> = (0..nodes.len()).collect();
-    fn find(parent: &mut [usize], mut x: usize) -> usize {
-        while parent[x] != x {
-            parent[x] = parent[parent[x]];
-            x = parent[x];
-        }
-        x
-    }
+    // Union-find over the infra nodes — the canonical disjoint-set primitive.
+    let mut uf = crate::util::union_find::UnionFind::new(nodes.len());
     for r in relations {
         if r.confidence < MIN_CONF {
             continue;
@@ -101,10 +94,7 @@ pub(in crate::core::correlator) fn rule_au_116_infrastructure_pivot_closure(
         if benign_ip[a] || benign_ip[b] {
             continue;
         }
-        let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
-        if ra != rb {
-            parent[ra] = rb;
-        }
+        uf.union(a, b);
     }
 
     // Aggregate per component. Deterministic: BTreeSet members + BTreeMap keyed
@@ -117,7 +107,7 @@ pub(in crate::core::correlator) fn rule_au_116_infrastructure_pivot_closure(
     }
     let mut comps: HashMap<usize, Comp> = HashMap::new();
     for (i, e) in nodes.iter().enumerate() {
-        let root = find(&mut parent, i);
+        let root = uf.find(i);
         let comp = comps.entry(root).or_insert_with(|| Comp {
             domains: BTreeSet::new(),
             node_uids: BTreeSet::new(),

@@ -114,23 +114,12 @@ pub(in crate::core::correlator) fn rule_au_121_credential_reuse_blast_radius(
             }
         }
     }
-    let mut parent: Vec<usize> = (0..handle_list.len()).collect();
-    fn find(parent: &mut [usize], mut x: usize) -> usize {
-        while parent[x] != x {
-            parent[x] = parent[parent[x]]; // path-halving
-            x = parent[x];
-        }
-        x
-    }
+    let mut uf = crate::util::union_find::UnionFind::new(handle_list.len());
     for g in &groups {
         // Union every handle in this secret's set to the first one.
         let first = index[g.handles[0].as_str()];
         for h in &g.handles[1..] {
-            let a = find(&mut parent, first);
-            let b = find(&mut parent, index[h.as_str()]);
-            if a != b {
-                parent[a] = b;
-            }
+            uf.union(first, index[h.as_str()]);
         }
     }
 
@@ -149,7 +138,7 @@ pub(in crate::core::correlator) fn rule_au_121_credential_reuse_blast_radius(
     }
     let mut comps: HashMap<usize, Component> = HashMap::new();
     for g in &groups {
-        let root = find(&mut parent, index[g.handles[0].as_str()]);
+        let root = uf.find(index[g.handles[0].as_str()]);
         // Every handle in a given secret shares one root (we just unioned them).
         let comp = comps.entry(root).or_insert_with(|| Component {
             handles: BTreeSet::new(),

@@ -180,13 +180,7 @@ pub(super) fn cluster_coordinates(
     coords: &[(f64, f64, String, std::collections::HashSet<String>, f64)],
 ) -> Vec<CoordinateCluster> {
     const THRESHOLD_KM: f64 = 5.0;
-    let mut parent: Vec<usize> = (0..coords.len()).collect();
-    fn find(parent: &mut [usize], i: usize) -> usize {
-        if parent[i] != i {
-            parent[i] = find(parent, parent[i]);
-        }
-        parent[i]
-    }
+    let mut uf = crate::util::union_find::UnionFind::new(coords.len());
     for i in 0..coords.len() {
         for j in (i + 1)..coords.len() {
             let d = crate::util::geohash::haversine_km(
@@ -196,21 +190,14 @@ pub(super) fn cluster_coordinates(
                 coords[j].1,
             );
             if d <= THRESHOLD_KM {
-                let ri = find(&mut parent, i);
-                let rj = find(&mut parent, j);
-                if ri != rj {
-                    parent[ri] = rj;
-                }
+                uf.union(i, j);
             }
         }
     }
 
-    let mut groups: std::collections::BTreeMap<usize, Vec<usize>> =
-        std::collections::BTreeMap::new();
-    for i in 0..coords.len() {
-        let root = find(&mut parent, i);
-        groups.entry(root).or_default().push(i);
-    }
+    // `components()` groups indices by root in ascending order under a BTreeMap,
+    // exactly the single-linkage partition this pass builds.
+    let groups = uf.components();
 
     let mut clusters: Vec<CoordinateCluster> = groups
         .into_values()

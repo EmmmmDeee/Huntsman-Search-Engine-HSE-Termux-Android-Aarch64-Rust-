@@ -714,28 +714,18 @@ pub fn resolve_identity_clusters(
         }
     }
 
-    // Union-find with iterative path-halving — merge the endpoints of every link.
-    fn find(parent: &mut [usize], mut x: usize) -> usize {
-        while parent[x] != x {
-            parent[x] = parent[parent[x]];
-            x = parent[x];
-        }
-        x
-    }
-    let mut parent: Vec<usize> = (0..uids.len()).collect();
+    // Union-find over the interned uids — the canonical disjoint-set primitive.
+    // Merge the endpoints of every surviving link.
+    let mut uf = crate::util::union_find::UnionFind::new(uids.len());
     for p in &paths {
-        let a = find(&mut parent, index[p.from_uid.as_str()]);
-        let b = find(&mut parent, index[p.to_uid.as_str()]);
-        if a != b {
-            parent[a] = b;
-        }
+        uf.union(index[p.from_uid.as_str()], index[p.to_uid.as_str()]);
     }
 
     // Weakest-link confidence per component: the minimum link min_confidence
     // among every link whose endpoints landed in that component.
     let mut comp_conf: HashMap<usize, f64> = HashMap::new();
     for p in &paths {
-        let r = find(&mut parent, index[p.from_uid.as_str()]);
+        let r = uf.find(index[p.from_uid.as_str()]);
         let e = comp_conf.entry(r).or_insert(f64::INFINITY);
         *e = e.min(p.min_confidence);
     }
@@ -743,7 +733,7 @@ pub fn resolve_identity_clusters(
     // Group members by component root.
     let mut groups: HashMap<usize, Vec<&str>> = HashMap::new();
     for (i, &u) in uids.iter().enumerate() {
-        let r = find(&mut parent, i);
+        let r = uf.find(i);
         groups.entry(r).or_default().push(u);
     }
 
