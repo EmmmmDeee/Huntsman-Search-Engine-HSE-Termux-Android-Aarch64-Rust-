@@ -136,43 +136,6 @@ fn gen_domain(out: &mut Vec<BatchQuery>, opts: &BatchOptions, native: &'static s
     }
 }
 
-/// Generate the full, de-duplicated batch of OathNet queries for `value`
-/// interpreted as `kind`.
-///
-/// Returns an empty vec for a blank `value`, or for a `kind` OathNet does not
-/// index (per [`oathnet::selector_field`]). See the [module docs](crate::util::oathnet_batch)
-/// for the full list of guarantees the returned vec upholds.
-///
-/// # Examples
-///
-/// An email seed fans out across surfaces, derived fields, and handle shapes:
-///
-/// ```
-/// use huntsman_search_engine::util::oathnet_batch::{generate, BatchOptions, Surface};
-/// use huntsman_search_engine::core::scan::TargetKind;
-///
-/// let plan = generate(TargetKind::Email, "jane.doe@example.com", &BatchOptions::default());
-///
-/// // The seed is searched first, on both corpora.
-/// assert_eq!(plan[0].field, "email");
-/// assert_eq!(plan[0].value, "jane.doe@example.com");
-/// assert!(plan.iter().any(|q| q.surface == Surface::Stealer));
-///
-/// // The local part fans out into username handles — a "large array".
-/// assert!(plan.iter().any(|q| q.field == "username" && q.value == "jdoe"));
-/// assert!(plan.len() > 10);
-/// ```
-///
-/// `max_queries` caps the plan, keeping the highest-priority queries:
-///
-/// ```
-/// use huntsman_search_engine::util::oathnet_batch::{generate, BatchOptions};
-/// use huntsman_search_engine::core::scan::TargetKind;
-///
-/// let opts = BatchOptions { max_queries: 3, ..BatchOptions::default() };
-/// let plan = generate(TargetKind::Email, "jane.doe@example.com", &opts);
-/// assert_eq!(plan.len(), 3);
-/// ```
 /// One value's single-level fan-out: append every query the seed of kind `kind`
 /// with `value` (and native selector `native`) generates. This is the unit the
 /// recursive [`generate`] re-applies to each derived pivot value, so the
