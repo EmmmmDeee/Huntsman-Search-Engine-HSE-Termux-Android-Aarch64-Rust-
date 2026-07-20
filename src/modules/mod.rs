@@ -10,6 +10,7 @@ pub mod abuseipdb;
 pub mod acma_rrl;
 pub mod acnc_charities;
 pub mod ahpra;
+pub mod anubis;
 pub mod api_key_probe;
 pub mod app_links;
 pub mod asic_banned_orgs;
@@ -331,6 +332,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(cert_intel::CertIntel),
             Arc::new(crtsh::CrtSh),
             Arc::new(certspotter::CertSpotter),
+            Arc::new(anubis::Anubis),
             Arc::new(dns_intel::DnsIntel),
             Arc::new(dns_axfr::DnsAxfr),
             Arc::new(smtp_vrfy::SmtpVrfy),
