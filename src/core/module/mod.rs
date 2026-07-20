@@ -286,8 +286,8 @@ pub trait Module: Send + Sync {
     /// lives in one place. Override only when the category is too coarse for the
     /// module's actual technique (e.g. an *active* scanner sitting in the
     /// `Infrastructure` category maps to Active Scanning, not Search Open
-    /// Technical Databases). Returned IDs must exist in
-    /// [`crate::core::attack::RECONNAISSANCE`]; an architecture test enforces it.
+    /// Technical Databases). Returned IDs must exist in the ATT&CK catalogue
+    /// ([`crate::core::attack::technique`]); an architecture test enforces it.
     fn attack_techniques(&self) -> &'static [&'static str] {
         crate::core::attack::techniques_for_category(self.category())
     }

@@ -191,16 +191,26 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ### MITRE ATT&CK alignment (in the data, not a side report)
 
-Every module is mapped to the MITRE ATT&CK **Reconnaissance** tactic (TA0043)
-technique(s) it implements. That mapping is **woven into every scan**: as each
-finding is admitted, the engine stamps it inline with its producing module's
-technique(s) as `attack:<TECHNIQUE_ID>` tags (e.g. `attack:T1589.002` "Email
-Addresses"). So the technique that collected a datum travels with the datum —
-visible in the entity's `tags` in JSON output, on each entity in the full
-dossier (`hse export <id> --format full`) and `hse scan --output dossier`, and
-in the database — with no separate coverage report to reconcile. A finding
-corroborated by several modules carries all of their techniques (merges union
-the tags).
+The tool carries the **complete** MITRE ATT&CK Enterprise matrix as reference
+vocabulary — all 14 tactics and every current technique/sub-technique (v17.1),
+as pure static data (`src/core/attack/`), so any `Tnnnn[.nnn]` id the tool emits
+resolves to its canonical name and owning tactic. But HSE only *claims coverage*
+of the one tactic it actually performs: **Reconnaissance** (TA0043). Holding the
+whole framework while claiming one tactic is the invariant, not a contradiction —
+reference vocabulary is never a coverage assertion, so the per-scan coverage /
+gap report is computed against Reconnaissance alone and a technique HSE performs
+no collection for (e.g. `T1598` Phishing for Information) surfaces as a real,
+named gap.
+
+Every module is mapped to the Reconnaissance technique(s) it implements, and that
+mapping is **woven into every scan**: as each finding is admitted, the engine
+stamps it inline with its producing module's technique(s) as
+`attack:<TECHNIQUE_ID>` tags (e.g. `attack:T1589.002` "Email Addresses"). So the
+technique that collected a datum travels with the datum — visible in the entity's
+`tags` in JSON output, on each entity in the full dossier
+(`hse export <id> --format full`) and `hse scan --output dossier`, and in the
+database — with no separate coverage report to reconcile. A finding corroborated
+by several modules carries all of their techniques (merges union the tags).
 
 
 ## Web UI (dark-console, zero vendored UI framework)
