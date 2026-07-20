@@ -19,6 +19,7 @@
 //! | DELETE | `/api/v1/scans/{id}`              | `scan_delete`            |
 //! | POST   | `/api/v1/scans/{id}/rerun`        | `scan_rerun`             |
 //! | GET    | `/api/v1/scans/{id}/entities`     | `scan_entities`          |
+//! | GET    | `/api/v1/scans/{id}/diamond`      | `scan_diamond`           |
 //! | GET    | `/api/v1/scans/{id}/entities.csv` | `scan_entities_csv`      |
 //! | GET    | `/api/v1/scans/{id}/correlations` | `scan_correlations` (v0.4+) |
 //! | GET    | `/api/v1/scans/{id}/relations`    | `scan_relations`         |
@@ -415,6 +416,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             "/scans/{id}/entities/facets",
             get(scan_handlers::scan_entities_facets),
         )
+        .route("/scans/{id}/diamond", get(scan_handlers::scan_diamond))
         .route(
             "/scans/{id}/entities.csv",
             get(scan_export::scan_entities_csv),

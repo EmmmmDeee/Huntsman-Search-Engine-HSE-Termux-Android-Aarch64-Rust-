@@ -32,6 +32,54 @@ pub async fn scan_entities(
     }
 }
 
+/// `GET /api/v1/scans/{id}/diamond` — the scan's entities rolled up by **Diamond
+/// Model vertex** (`victim` / `infrastructure` / `capability`; `adversary` is a
+/// relational role the kind classifier never produces — see [`crate::core::diamond`]).
+/// Each vertex carries its total and a per-kind sub-breakdown, so the attribution
+/// structure — and the deterministic kind→vertex mapping behind it — is visible
+/// over a real scan graph. Honours `?include_candidates=…` exactly like
+/// `/entities`. This is the live consumer of `core::diamond`'s classifier.
+pub async fn scan_diamond(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    match tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await {
+        Ok(Ok(mut entities)) => {
+            if !super::wants_candidates(&params) {
+                entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+            }
+            let by_vertex = crate::core::diamond::partition_by_vertex(&entities);
+            let vertices: Vec<serde_json::Value> = by_vertex
+                .iter()
+                .map(|(vertex, ents)| {
+                    // Per-kind sub-breakdown within the vertex, kind-sorted for a
+                    // deterministic response (and so the debatable taxonomy calls
+                    // are inspectable against real output, not hidden in a total).
+                    let mut kind_counts: std::collections::BTreeMap<String, usize> =
+                        std::collections::BTreeMap::new();
+                    for e in ents {
+                        *kind_counts.entry(e.kind.to_string()).or_insert(0) += 1;
+                    }
+                    let kinds: Vec<serde_json::Value> = kind_counts
+                        .into_iter()
+                        .map(|(kind, count)| json!({ "kind": kind, "count": count }))
+                        .collect();
+                    json!({ "vertex": vertex.as_str(), "count": ents.len(), "kinds": kinds })
+                })
+                .collect();
+            Json(json!({ "vertices": vertices, "total": entities.len() })).into_response()
+        }
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
+    }
+}
+
 /// `GET /api/v1/scans/{a}/diff/{b}` — entity-level diff of scan `a` (baseline)
 /// vs scan `b`. The HTTP surface of `hse diff`: returns the `ScanDiff` JSON
 /// (`{ added, removed, common, confidence_shifts }`) computed by the shared

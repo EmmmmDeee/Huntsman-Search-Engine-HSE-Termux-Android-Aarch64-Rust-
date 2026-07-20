@@ -7,9 +7,18 @@
 //! *pivoting* across four vertices — Adversary, Capability, Infrastructure,
 //! Victim — which is exactly what the correlator's relation graph does. Tagging
 //! every entity with the vertex it populates turns a flat entity list into a
-//! Diamond-structured attribution picture, and it does so **objectively**: a
-//! vertex is a total, deterministic function of the entity's kind, requiring no
-//! analyst judgment (unlike the Admiralty source-reliability grade, which does).
+//! Diamond-structured attribution view.
+//!
+//! Scope, stated honestly: this is a **deterministic** classifier — the same
+//! kind always yields the same vertex, with no per-run analyst judgment. That is
+//! NOT the same as the *taxonomy* being objective: which vertex each kind belongs
+//! to is a modelling choice frozen into the match arms below, and a few are
+//! genuinely arguable (a `CryptoAddress` as Infrastructure vs Capability; a
+//! `Coordinates` as Infrastructure vs a Victim attribute). The
+//! `GET /scans/{id}/diamond` endpoint surfaces the per-kind breakdown precisely
+//! so those calls are inspectable against real output rather than hidden inside a
+//! vertex total. Determinism is the guarantee; correctness of the taxonomy is a
+//! reviewable convention, not a theorem.
 //!
 //! ## Mapping rationale (subject-centric adaptation)
 //!
