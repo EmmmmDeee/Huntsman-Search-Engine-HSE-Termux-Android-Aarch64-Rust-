@@ -75,11 +75,19 @@ pub(super) fn build_scan_from_request(req: ScanRequest) -> Result<(Scan, Target)
 /// `Some(404)` when no scan with `id` exists (or `Some(500)` on a store error),
 /// else `None`. Sub-resource handlers call this first so an unknown scan yields
 /// 404 rather than a misleading empty 200.
-pub(crate) fn scan_missing(s: &AppState, id: &str) -> Option<axum::response::Response> {
-    match s.store.get_scan(id) {
-        Ok(Some(_)) => None,
-        Ok(None) => Some(not_found()),
-        Err(e) => Some(internal_error(&e)),
+///
+/// The `get_scan` probe is synchronous SQLite under the global connection mutex,
+/// so it runs on the blocking pool — not inline on the ~2-worker async reactor
+/// where it would block a worker before each sub-resource handler's own
+/// `spawn_blocking` read.
+pub(crate) async fn scan_missing(s: &AppState, id: &str) -> Option<axum::response::Response> {
+    let store = std::sync::Arc::clone(&s.store);
+    let id = id.to_string();
+    match tokio::task::spawn_blocking(move || store.get_scan(&id)).await {
+        Ok(Ok(Some(_))) => None,
+        Ok(Ok(None)) => Some(not_found()),
+        Ok(Err(e)) => Some(internal_error(&e)),
+        Err(e) => Some(internal_error(&format!("query task failed: {e}"))),
     }
 }
 

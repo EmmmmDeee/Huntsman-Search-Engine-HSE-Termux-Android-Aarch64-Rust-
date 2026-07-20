@@ -22,7 +22,7 @@ pub async fn scan_entities_csv(
     Path(id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    if let Some(resp) = scan_missing(&s, &id) {
+    if let Some(resp) = scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
@@ -338,7 +338,7 @@ pub async fn scan_export_gexf(
     Path(id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    if let Some(resp) = scan_missing(&s, &id) {
+    if let Some(resp) = scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
@@ -376,7 +376,7 @@ pub async fn scan_debug_bundle(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = scan_missing(&s, &id) {
+    if let Some(resp) = scan_missing(&s, &id).await {
         return resp;
     }
     // Render off the async runtime: the debug bundle runs many queries, reads

@@ -957,7 +957,7 @@ pub async fn scan_events_history(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
     // Off-reactor: the per-scan event log can be large and the read is synchronous
