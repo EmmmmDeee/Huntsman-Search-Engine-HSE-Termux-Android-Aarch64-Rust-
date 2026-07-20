@@ -2,7 +2,7 @@
 //! per-scan correlator structurally cannot see.
 //!
 //! A single radar sweep is one snapshot: it can say "this hardware device is
-//! near me now" (AU-115) or "this is my own paired kit" (AU-117), but it cannot
+//! near me now" (AU-122) or "this is my own paired kit" (AU-117), but it cannot
 //! answer the question that actually matters for personal safety — *"is the SAME
 //! device following me across time and place?"*. That needs the history of every
 //! sweep, which the storage layer keeps (`radar_history`), not the single scan
@@ -10,7 +10,7 @@
 //!
 //! This module is the pure analysis: given a series of sweeps, it finds the
 //! devices that recur across ≥N of them. It counts ONLY:
-//!   * **universally-administered** MACs — a randomized privacy address (AU-115's
+//!   * **universally-administered** MACs — a randomized privacy address (AU-122's
 //!     "randomized" class) rotates every ~15 min, so "the same randomized MAC in
 //!     two sweeps" is impossible and its absence proves nothing; only a real,
 //!     persistent hardware address can meaningfully recur, and
@@ -23,7 +23,7 @@
 //! review list, ranked by how many sweeps each device appears in.
 //!
 //! Pure and offline (the only dependency is the same [`crate::util::oui`] U/L-bit
-//! classifier AU-115/AU-117 use), so it runs identically on-device and in CI.
+//! classifier AU-122/AU-117 use), so it runs identically on-device and in CI.
 
 use serde::Serialize;
 

@@ -81,7 +81,7 @@ pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> ModuleResult {
         // the AP's vendor/device class from a real hardware BSSID, or flag a
         // locally-administered BSSID as `randomized`. A randomized BSSID is a
         // privacy/rotating address, not a fixed access point — the exact
-        // distinction AU-115 surfaces so it is never treated as a trackable pin.
+        // distinction AU-122 surfaces so it is never treated as a trackable pin.
         if let Some(oui) = crate::util::oui::classify_mac(&ap.bssid) {
             e.tag(format!("vendor:{}", oui.vendor));
             e.tag(format!("device:{}", oui.class.as_str()));

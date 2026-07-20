@@ -105,7 +105,7 @@ fn core_does_not_import_util_directly() {
                 && !line.contains("util::spf::Ipv6Cidr")
                 // Pure, offline, dependency-free IEEE OUI classifier (a const
                 // vendor table + a U/L-bit test on the first octet; no I/O, no
-                // deps) — same leaf category as `util::spf`/`util::abn`. AU-115
+                // deps) — same leaf category as `util::spf`/`util::abn`. AU-122
                 // uses it to separate a trackable universally-administered MAC
                 // from a randomized privacy address in a radar/WiGLE sweep, the
                 // same classifier the WiGLE emit path already applies so the two

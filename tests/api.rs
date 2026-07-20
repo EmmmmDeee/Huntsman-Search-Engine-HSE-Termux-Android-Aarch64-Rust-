@@ -3227,7 +3227,7 @@ async fn system_debug_bundle_returns_the_diagnostic_artifact_on_loopback() {
 async fn radar_recurring_returns_devices_array() {
     // With an empty radar history the endpoint must still answer 200 with a
     // well-formed (empty) devices array — the cross-sweep persistent-device
-    // review surface (AU-115/117's temporal counterpart, core::radar_track).
+    // review surface (AU-122/117's temporal counterpart, core::radar_track).
     let app = test_app("radar-recurring");
     let resp = app.oneshot(get("/api/v1/radar/recurring")).await.unwrap();
     assert_eq!(resp.status(), 200);

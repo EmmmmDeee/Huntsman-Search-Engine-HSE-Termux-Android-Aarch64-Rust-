@@ -39,7 +39,7 @@ pub(super) static CLIENT: CurlClient = CurlClient::new(
 
 /// Tighter-budgeted client for the FAST single-parameter GET endpoints
 /// (`network/*`, `gaming/*`, `username/*`, `domain/*`, `discord/*`) — used by
-/// [`get_json`]. Those answer in ~2–5 s, so they must not inherit [`CLIENT`]'s
+/// [`get_json_with_fallback`]. Those answer in ~2–5 s, so they must not inherit [`CLIENT`]'s
 /// wide 75 s ceiling (sized for the slow `/search` name path): a single hung GET
 /// would otherwise burn up to 75 s of the module's per-scan timeout budget before
 /// failing. `POST /search`/`/search/deep` keep the wide [`CLIENT`].
@@ -291,32 +291,6 @@ pub(super) fn classify_status(body: &str, status: u16) -> Result<Value> {
     parse_response(body)
 }
 
-#[allow(dead_code)]
-pub(super) async fn get_json(url: &str, key: &str, endpoint: &str, query: &str) -> Result<Value> {
-    // The fast GET endpoints use the tighter-budgeted CLIENT_FAST (see its doc).
-    let (body, status) = CLIENT_FAST.get_with_status(url, key).await?;
-    // Retain the paid response verbatim BEFORE parsing/extraction — operator
-    // policy: purchased data is kept in absolute completeness until manually
-    // deleted (see `util::raw_archive`). `endpoint`/`query` name the saved file
-    // so it's obvious what was looked up. Empty bodies are skipped by the archive.
-    crate::util::raw_archive::record("see-know", endpoint, query, &body);
-    classify_status(&body, status)
-}
-
-#[allow(dead_code)]
-pub(super) async fn post_json(
-    url: &str,
-    key: &str,
-    body: &str,
-    endpoint: &str,
-    query: &str,
-) -> Result<Value> {
-    let (resp, status) = CLIENT.post_json_with_status(url, key, body).await?;
-    // Archive the raw paid response verbatim, filed under the queried value.
-    crate::util::raw_archive::record("see-know", endpoint, query, &resp);
-    classify_status(&resp, status)
-}
-
 /// POST with multi-domain fallback. Tries the primary domain first, then falls back
 /// to alternate domains on connection/network errors (not auth errors). Auth errors
 /// (invalid key, plan required) are NOT retried across domains — if the key is invalid,
@@ -333,11 +307,29 @@ pub(super) async fn post_json_with_fallback(
 
     for (idx, base) in urls.iter().enumerate() {
         let url = format!("{base}{endpoint_path}");
-        match CLIENT.post_json(&url, key, body).await {
-            Ok(resp) => {
-                crate::util::raw_archive::record("see-know", endpoint, query, &resp);
-                return parse_response(&resp);
-            }
+        // Route the (body, status) through `classify_status` so a 5xx / status-0
+        // transient upstream failure surfaces as `RateLimited` instead of being
+        // parsed as an empty "no results" body and silently lost.
+        match CLIENT.post_json_with_status(&url, key, body).await {
+            Ok((resp, status)) => match classify_status(&resp, status) {
+                Ok(value) => {
+                    crate::util::raw_archive::record("see-know", endpoint, query, &resp);
+                    return Ok(value);
+                }
+                // Transient upstream failure — a rotated domain may answer.
+                Err(e @ Error::RateLimited(_)) => {
+                    if idx < urls.len() - 1 {
+                        tracing::debug!(
+                            domain = base,
+                            endpoint = endpoint_path,
+                            "see_know POST transient (5xx/rate-limit) — trying next domain"
+                        );
+                    }
+                    last_error = Some(e);
+                }
+                // Auth / body classification is identical on every domain — terminal.
+                Err(e) => return Err(e),
+            },
             Err(e) => {
                 let err_str = e.to_string();
                 // Auth errors are terminal — no point trying other domains.
@@ -378,11 +370,34 @@ pub(super) async fn get_json_with_fallback(
 
     for (idx, base) in urls.iter().enumerate() {
         let url = format!("{base}{endpoint_path}?{query_str}");
-        match CLIENT.get(&url, key).await {
-            Ok(body) => {
-                crate::util::raw_archive::record("see-know", endpoint, query_value, &body);
-                return parse_response(&body);
-            }
+        // The fast GET endpoints use the tighter-budgeted CLIENT_FAST (see its
+        // doc), and route the (body, status) through `classify_status` so a 5xx
+        // / status-0 transient upstream failure is surfaced as `RateLimited`
+        // rather than parsed as an empty "no results" body.
+        match CLIENT_FAST.get_with_status(&url, key).await {
+            Ok((body, status)) => match classify_status(&body, status) {
+                Ok(value) => {
+                    crate::util::raw_archive::record("see-know", endpoint, query_value, &body);
+                    return Ok(value);
+                }
+                // A 5xx / status-0 / upstream rate-limit is transient — the
+                // service rotates domains, so a rotated host may still answer.
+                // Remember it and try the next domain; if all are exhausted the
+                // caller's backoff loop retries the whole fallback.
+                Err(e @ Error::RateLimited(_)) => {
+                    if idx < urls.len() - 1 {
+                        tracing::debug!(
+                            domain = base,
+                            endpoint = endpoint_path,
+                            "see_know GET transient (5xx/rate-limit) — trying next domain"
+                        );
+                    }
+                    last_error = Some(e);
+                }
+                // Auth / body classification (invalid key, plan required) is
+                // identical on every domain — terminal, don't waste the rotation.
+                Err(e) => return Err(e),
+            },
             Err(e) => {
                 let err_str = e.to_string();
                 // Auth errors are terminal — no point trying other domains.

@@ -67,7 +67,7 @@ pub(super) fn parse_bt_json(stdout: &[u8], scan_id: &str) -> ModuleResult {
         // radar pin carries the vendor + device class where the address is real
         // hardware, and is flagged `randomized` (not attributed to any vendor)
         // where it is a locally-administered privacy address. This is the signal
-        // AU-115 partitions on: a randomized MAC is a rotating throwaway, not a
+        // AU-122 partitions on: a randomized MAC is a rotating throwaway, not a
         // followable device, and must never be plotted as one.
         if let Some(oui) = crate::util::oui::classify_mac(&dev.address) {
             e.tag(format!("vendor:{}", oui.vendor));
