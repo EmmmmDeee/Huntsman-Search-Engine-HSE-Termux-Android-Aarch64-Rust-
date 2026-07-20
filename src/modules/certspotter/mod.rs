@@ -33,21 +33,6 @@ use crate::util::http::urlencode;
 
 const SRC: &str = "certspotter";
 
-/// The apex host to query, or `None` for a kind/URL we can't key on. **Pure**:
-/// a `Domain` is queried verbatim, a `Url` is reduced to its host. Unlike
-/// `crtsh`, Cert Spotter has no free-text email search, so `Email` is not
-/// accepted — its search key is always a hostname.
-fn build_host(kind: TargetKind, value: &str) -> Option<String> {
-    match kind {
-        TargetKind::Domain => {
-            let host = value.trim().trim_end_matches('.').to_lowercase();
-            (!host.is_empty() && host.contains('.')).then_some(host)
-        }
-        TargetKind::Url => crate::util::url_util::host_from_url(value).map(|h| h.to_lowercase()),
-        _ => None,
-    }
-}
-
 /// One issuance object from the `v1/issuances` array, expanded with `dns_names`
 /// and `issuer`. Every field is optional so a partial/renamed response degrades
 /// to fewer entities rather than a hard deserialize error.
@@ -157,14 +142,9 @@ fn build_entities(entries: &[Issuance], domain_base: &str, scan_id: &str) -> Vec
         Some(o)
     }));
 
-    // Confidence-descending, uid-ascending — a deterministic total tie-break so
-    // the emission order is reproducible (Determinism Requirement). No truncation.
-    out.sort_by(|a, b| {
-        b.confidence
-            .partial_cmp(&a.confidence)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.uid.cmp(&b.uid))
-    });
+    // Deterministic confidence-descending emission order (shared with the other
+    // host-recon collectors). No truncation.
+    crate::util::recon::sort_by_confidence_desc(&mut out);
     out
 }
 
@@ -214,7 +194,7 @@ impl Module for CertSpotter {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let Some(host) = build_host(target.kind, &target.value) else {
+        let Some(host) = crate::util::recon::host_key(target.kind, &target.value) else {
             return Ok(ModuleResult::new());
         };
 

@@ -37,18 +37,6 @@ fn produces_domains() {
 }
 
 #[test]
-fn build_host_keys_on_the_hostname() {
-    assert_eq!(build_host(TargetKind::Domain, "Example.COM"), Some("example.com".into()));
-    assert_eq!(build_host(TargetKind::Domain, "example.com."), Some("example.com".into()));
-    assert_eq!(
-        build_host(TargetKind::Url, "https://sub.example.com/p"),
-        Some("sub.example.com".into())
-    );
-    assert_eq!(build_host(TargetKind::Domain, "localhost"), None);
-    assert_eq!(build_host(TargetKind::Email, "a@x.com"), None);
-}
-
-#[test]
 fn null_body_deserialises_as_empty() {
     // The endpoint returns `null` (not `[]`) when it indexes nothing; the module
     // decodes through Option so that is a clean empty result.

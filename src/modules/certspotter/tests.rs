@@ -49,23 +49,6 @@ fn produces_declares_domain_and_organisation() {
 }
 
 #[test]
-fn build_host_keys_on_the_hostname() {
-    assert_eq!(build_host(TargetKind::Domain, "Example.COM"), Some("example.com".into()));
-    // Trailing dot (FQDN root) is stripped.
-    assert_eq!(build_host(TargetKind::Domain, "example.com."), Some("example.com".into()));
-    // A URL is reduced to its host.
-    assert_eq!(
-        build_host(TargetKind::Url, "https://sub.example.com/path?q=1"),
-        Some("sub.example.com".into())
-    );
-    // A bare label with no dot is not a queryable domain.
-    assert_eq!(build_host(TargetKind::Domain, "localhost"), None);
-    assert_eq!(build_host(TargetKind::Domain, "   "), None);
-    // A kind with no host key.
-    assert_eq!(build_host(TargetKind::Email, "a@x.com"), None);
-}
-
-#[test]
 fn issuance_deserialises_from_the_expanded_api_shape() {
     let json = r#"[
         {"id":"6295991939",

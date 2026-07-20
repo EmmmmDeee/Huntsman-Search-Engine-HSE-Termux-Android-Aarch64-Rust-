@@ -212,13 +212,8 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
     // netlas cert path documents. A prior `.take(10)` on issuers and a
     // `truncate(200)` here silently dropped genuine pivots (subdomains a popular
     // apex's CT history exposes, custom-PKI attribution orgs) with the total count
-    // surfaced nowhere.
-    out.sort_by(|a, b| {
-        b.confidence
-            .partial_cmp(&a.confidence)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.uid.cmp(&b.uid))
-    });
+    // surfaced nowhere. Ordering via the shared host-recon helper.
+    crate::util::recon::sort_by_confidence_desc(&mut out);
     out
 }
 

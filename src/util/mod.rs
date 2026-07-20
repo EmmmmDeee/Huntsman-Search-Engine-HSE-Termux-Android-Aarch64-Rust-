@@ -63,5 +63,6 @@ pub mod termux;
 pub mod threat;
 pub mod timefmt;
 pub mod uid;
+pub mod recon;
 pub mod url_util;
 pub mod wigle;
