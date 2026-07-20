@@ -65,3 +65,28 @@ use super::*;
         let dmode = std::fs::metadata(&nested).unwrap().permissions().mode();
         assert_eq!(dmode & 0o777, 0o700, "private dir must be owner-only");
     }
+
+    #[test]
+    fn create_dir_private_retightens_a_preexisting_loose_dir() {
+        // Regression guard: an UPGRADED install may already have ~/.huntsman at
+        // 0755 (older builds used a plain create_dir_all). `DirBuilder::mode()`
+        // only affects dirs it creates, so create_dir_private must re-tighten a
+        // pre-existing loose dir — otherwise the world-readable key vault / pool
+        // beneath it would stay traversable by another local UID.
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempdir().unwrap();
+        let loose = tmp.path().join("huntsman");
+        std::fs::create_dir(&loose).unwrap();
+        std::fs::set_permissions(&loose, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            std::fs::metadata(&loose).unwrap().permissions().mode() & 0o777,
+            0o755,
+            "precondition: dir starts world-listable"
+        );
+        create_dir_private(&loose).unwrap();
+        assert_eq!(
+            std::fs::metadata(&loose).unwrap().permissions().mode() & 0o777,
+            0o700,
+            "a pre-existing loose dir must be re-tightened to owner-only"
+        );
+    }

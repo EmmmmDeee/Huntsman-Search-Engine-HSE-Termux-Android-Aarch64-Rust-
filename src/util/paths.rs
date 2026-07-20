@@ -30,6 +30,11 @@ pub fn huntsman_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     let dir = PathBuf::from(home).join(".huntsman");
     // 0700 owner-only; best-effort so a read path still resolves on failure.
+    // `create_dir_private` also RE-TIGHTENS a pre-existing dir (an older install's
+    // `~/.huntsman` made 0755 by a plain `create_dir_all`), so the key pool /
+    // vault / intelligence DB beneath it stay unreadable to other local UIDs on
+    // the upgrade path — this centralises the unconditional 0700 the
+    // pre-consolidation `vault_path` used to run on every call.
     let _ = crate::util::atomic_file::create_dir_private(&dir);
     dir
 }

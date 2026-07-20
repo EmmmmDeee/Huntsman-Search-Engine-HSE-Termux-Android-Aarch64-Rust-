@@ -272,7 +272,23 @@ impl Module for NiamonX {
             )
         };
         let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut key = ctx.key(KEY_ENV)?.to_string();
+        let injected = ctx.key(KEY_ENV)?.to_string();
+        // Start from a FRESH pooled key when the injected key is ALREADY burned.
+        // `ctx.keys` persists across every target in a scan and is only gap-filled
+        // (never overwritten), so a key rate-limited/invalidated on an earlier
+        // target is still the injected key here — with a stale burned status. The
+        // fresh-burn gate below (`!is_burned(before)`) would then refuse to
+        // cascade, and every target after the first burn would silently return
+        // empty while a sibling key sat idle. Skipping the burned key up front
+        // (it's excluded via `tried`) fixes that; if no fresh key exists we fall
+        // back to the injected one and the single-key path is unchanged.
+        let mut key = if is_burned(crate::util::key_pool::global_pool().entry_status(SRC, &injected))
+        {
+            tried.insert(injected.clone());
+            ctx.next_pooled_key(SRC, &tried).unwrap_or(injected)
+        } else {
+            injected
+        };
         let (r1, r2, r3) = loop {
             tried.insert(key.clone());
             let before = crate::util::key_pool::global_pool().entry_status(SRC, &key);

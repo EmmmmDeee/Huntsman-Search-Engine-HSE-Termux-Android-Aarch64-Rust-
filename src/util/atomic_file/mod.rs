@@ -86,15 +86,25 @@ fn write_inner(tmp: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// Create `path` (and any missing parents) as a **private** directory — mode
 /// `0700` on unix, so the sensitive trees under `~/.huntsman` (dossiers, key
-/// pool, DB) aren't world-listable. Idempotent; plain `create_dir_all` off unix.
+/// pool, DB) aren't world-listable. Idempotent, and it guarantees `path` is
+/// `0700` **on return even when it already existed**: `DirBuilder::mode()` only
+/// sets the mode on components this call CREATES, so a pre-existing dir (e.g. an
+/// older install's `~/.huntsman` created world-listable at `0755` by a plain
+/// `create_dir_all`) would otherwise be left loose — the re-`set_permissions`
+/// below repairs it. Plain `create_dir_all` off unix.
 pub fn create_dir_private(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new()
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let created = std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
-            .create(path)
+            .create(path);
+        // Re-tighten a PRE-EXISTING dir to owner-only. Best-effort so a dir owned
+        // by another user can't turn a create success into an error; the create
+        // result is what callers observe.
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+        created
     }
     #[cfg(not(unix))]
     {
