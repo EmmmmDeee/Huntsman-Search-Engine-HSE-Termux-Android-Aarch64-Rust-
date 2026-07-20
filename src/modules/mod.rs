@@ -47,6 +47,7 @@ pub mod comb_search;
 pub mod contact_enrich;
 pub mod cpan_user;
 pub mod crates_io;
+pub mod certspotter;
 pub mod criminal_ip;
 pub mod crtsh;
 pub mod dehashed;
@@ -329,6 +330,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(wigle::Wigle),
             Arc::new(cert_intel::CertIntel),
             Arc::new(crtsh::CrtSh),
+            Arc::new(certspotter::CertSpotter),
             Arc::new(dns_intel::DnsIntel),
             Arc::new(dns_axfr::DnsAxfr),
             Arc::new(smtp_vrfy::SmtpVrfy),

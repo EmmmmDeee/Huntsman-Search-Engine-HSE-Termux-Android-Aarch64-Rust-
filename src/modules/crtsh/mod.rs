@@ -94,8 +94,10 @@ const PUBLIC_CA_ORG_PREFIXES: &[&str] = &[
 
 /// Extract the `O=` value from an X.509 Distinguished Name string such as
 /// `"C=US, O=Let's Encrypt, CN=E5"`.  Returns `None` when no O= field is
-/// present or the value is empty.
-fn parse_dn_org(dn: &str) -> Option<&str> {
+/// present or the value is empty. `pub(crate)` so the sibling `certspotter`
+/// Certificate-Transparency module reuses the identical issuer-org parsing
+/// rather than re-deriving it.
+pub(crate) fn parse_dn_org(dn: &str) -> Option<&str> {
     for segment in dn.split(',') {
         let seg = segment.trim();
         if let Some(rest) = seg.strip_prefix("O=") {
@@ -108,7 +110,9 @@ fn parse_dn_org(dn: &str) -> Option<&str> {
     None
 }
 
-fn is_public_ca(org: &str) -> bool {
+/// True when `org` is a well-known public CA whose name adds no OSINT signal.
+/// `pub(crate)` so `certspotter` shares the identical suppression list.
+pub(crate) fn is_public_ca(org: &str) -> bool {
     let lower = org.to_lowercase();
     PUBLIC_CA_ORG_PREFIXES
         .iter()
