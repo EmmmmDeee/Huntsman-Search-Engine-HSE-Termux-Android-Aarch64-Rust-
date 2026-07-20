@@ -34,6 +34,28 @@ use crate::core::error::{Error, Result};
 /// expects.
 const DEFAULT_UA: &str = crate::util::curl::UA_MOBILE;
 
+/// Static curl flags every [`CurlClient`] request carries, independent of the
+/// per-call timeout / auth / body.
+///
+/// `--compressed` is the potentiation: it advertises `Accept-Encoding`
+/// (gzip/br/zstd, whatever the local libcurl was built with) and curl
+/// transparently decompresses the response, so the body the caller receives is
+/// byte-for-byte identical while the on-wire transfer for a paid API's JSON
+/// (SeekNow breach dumps, OathNet records) shrinks ~4× — measured live, a RIPE
+/// JSON body went 4743→1138 bytes. On a metered Termux mobile link that is a
+/// direct data-cost and latency win on every paid call, and it never changes
+/// the archived bytes or the parsed entities.
+///
+/// Deliberately NOT folded into the general [`crate::util::curl::FETCH_HARDENING_ARGS`]
+/// SSRF fetch path: THAT path fetches attacker-influenceable hosts (web crawl,
+/// scan-target URLs), where `--max-filesize` bounds the *compressed* transfer,
+/// so a malicious server could ship a small compressed body that decompresses
+/// past the intended memory cap (a decompression-bomb vector). A [`CurlClient`]
+/// only ever targets a hardcoded, trusted paid-provider API base, so that risk
+/// does not apply here — which is exactly why compression is enabled on this
+/// transport and only this transport.
+const CLIENT_BASE_ARGS: &[&str] = &["-s", "-S", "-L", "--compressed"];
+
 /// How a provider's API key is presented on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthScheme {
@@ -125,19 +147,43 @@ impl CurlClient {
     /// Issue a `GET <url>` with the configured auth header.
     /// Returns the response body on success (curl exit 0).
     pub async fn get(&self, url: &str, key: &str) -> Result<String> {
-        self.exec(url, key, None).await
+        self.exec(url, key, None).await.map(|(body, _)| body)
     }
 
     /// Issue a `POST <url>` with `application/json` body.
     pub async fn post_json(&self, url: &str, key: &str, body: &str) -> Result<String> {
+        self.exec(url, key, Some(body)).await.map(|(body, _)| body)
+    }
+
+    /// Like [`get`](Self::get) but ALSO returns the final HTTP status code, so a
+    /// caller can distinguish a transient upstream `5xx`/CDN `502` (retryable)
+    /// from a genuine empty/`4xx` result. The body is identical to `get`'s — the
+    /// trailing `\n<code>` `-w` line is stripped before it is returned, so a
+    /// consumer that `serde_json::from_str`s the body never sees the status.
+    /// Status `0` means curl reported no HTTP response (e.g. a connection reset
+    /// after connect).
+    pub async fn get_with_status(&self, url: &str, key: &str) -> Result<(String, u16)> {
+        self.exec(url, key, None).await
+    }
+
+    /// [`post_json`](Self::post_json) variant returning the final HTTP status
+    /// alongside the body. See [`get_with_status`](Self::get_with_status).
+    pub async fn post_json_with_status(
+        &self,
+        url: &str,
+        key: &str,
+        body: &str,
+    ) -> Result<(String, u16)> {
         self.exec(url, key, Some(body)).await
     }
 
-    async fn exec(&self, url: &str, key: &str, post_body: Option<&str>) -> Result<String> {
+    async fn exec(&self, url: &str, key: &str, post_body: Option<&str>) -> Result<(String, u16)> {
         let secs = self.curl_timeout_secs.to_string();
         let auth_header = self.auth.header_line(key);
 
         let mut cmd = Command::new("curl");
+        // Static transfer flags (`-s -S -L --compressed`) — silent-with-errors,
+        // follow redirects, and request/decompress a compressed response.
         // `-S`/`--show-error` alongside `-s`: silent mode alone suppresses BOTH
         // the progress meter AND curl's own fatal-error text, so a DNS/connect
         // failure previously surfaced as a bare "curl exited 6" with an empty
@@ -145,9 +191,10 @@ impl CurlClient {
         // code 6 means, never WHICH host or WHY. `-S` keeps the progress meter
         // suppressed but restores the one-line diagnostic ("curl: (6) Could not
         // resolve host: …") into stderr, which the failure branch below already
-        // captures and reports — so this is a pure debuggability fix, no output
-        // shape change on success.
-        cmd.args(["-s", "-S", "-L", "--max-time", &secs, "-A", DEFAULT_UA]);
+        // captures and reports. `--compressed` shrinks the paid-API JSON transfer
+        // ~4× with a byte-identical decompressed body (see [`CLIENT_BASE_ARGS`]).
+        cmd.args(CLIENT_BASE_ARGS);
+        cmd.args(["--max-time", &secs, "-A", DEFAULT_UA]);
         // Protocol/redirect/size hardening, single-sourced so this keyed-API
         // path and the free-function curl path can never drift apart.
         //
@@ -171,6 +218,11 @@ impl CurlClient {
                 body,
             ]);
         }
+        // Append the final HTTP status on its own trailing line so a caller can
+        // distinguish a transient upstream 5xx from a genuine empty result. It is
+        // written to stdout AFTER the body; [`split_status`] strips it back off so
+        // the returned body is byte-identical to the pre-status behaviour.
+        cmd.args(["-w", "\n%{http_code}"]);
         cmd.args(["--", url]);
         cmd.kill_on_drop(true);
 
@@ -207,7 +259,29 @@ impl CurlClient {
         // hard failure — full-fidelity policy. Downstream `serde_json` still
         // validates the JSON structure, so a genuinely malformed body is caught
         // there, not silently here.
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        let raw = String::from_utf8_lossy(&output.stdout).into_owned();
+        Ok(split_status(&raw))
+    }
+}
+
+/// Split curl's `-w '\n%{http_code}'` output into `(body, status)`. The status
+/// is the final line; everything before the last newline is the body (any
+/// internal newlines preserved). A missing/unparseable code yields status `0`
+/// ("no HTTP response observed"), which callers treat as transient. Pure, so
+/// the split — the one place a mistake could corrupt every paid-API body — is
+/// unit-tested directly.
+fn split_status(raw: &str) -> (String, u16) {
+    match raw.rsplit_once('\n') {
+        Some((body, code)) => (body.to_string(), code.trim().parse().unwrap_or(0)),
+        // No newline at all: curl wrote only the code (empty body) or nothing.
+        None => {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit()) {
+                (String::new(), trimmed.parse().unwrap_or(0))
+            } else {
+                (raw.to_string(), 0)
+            }
+        }
     }
 }
 

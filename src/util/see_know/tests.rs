@@ -1,15 +1,16 @@
 use serde_json::json;
 
 use super::budget::{
-    budget_increment, budget_snapshot, is_quota_exhausted, reset_budget, scan_budget_remaining,
-    set_scan_cap_override,
+    budget_increment, budget_snapshot, is_quota_exhausted, release_quota_probe, reset_budget,
+    scan_budget_remaining, set_scan_cap_override, should_probe_quota,
 };
 use super::client::{
-    CLIENT, HARDCODED_KEY_FOR_TESTS, cache_get, cache_key, cache_put, is_auth_error,
-    key_fingerprint, parse_response, resolve_key, typed_cache_key,
+    CLIENT, CLIENT_FAST, HARDCODED_KEY_FOR_TESTS, cache_get, cache_key, cache_put, classify_status,
+    is_auth_error, key_fingerprint, parse_response, resolve_key, typed_cache_key,
 };
 use super::endpoints::{
-    CreditsOutcome, SEARCH_LIMIT, build_search_body, extract_items, parse_credits_body,
+    CreditsOutcome, CreditsProbe, SEARCH_LIMIT, build_search_body, classify_credits_probe,
+    extract_items, parse_credits_body,
 };
 use crate::util::curl_client::AuthScheme;
 
@@ -33,11 +34,58 @@ fn client_timeout_budget_exceeds_name_search_server_cap() {
         CLIENT.outer_timeout_ms(),
         CLIENT.curl_timeout_secs()
     );
+    // The fast-GET client must be TIGHTER than the /search client: the fast
+    // endpoints answer in ~2-5s, so a hung GET must fail well before it burns the
+    // module's whole per-scan timeout budget on /search's 75s ceiling. Its outer
+    // timeout still exceeds its curl ceiling so curl's own exit code surfaces.
+    assert!(
+        CLIENT_FAST.curl_timeout_secs() < CLIENT.curl_timeout_secs(),
+        "fast-GET curl budget ({}s) must be tighter than /search's ({}s)",
+        CLIENT_FAST.curl_timeout_secs(),
+        CLIENT.curl_timeout_secs()
+    );
+    assert!(CLIENT_FAST.outer_timeout_ms() > CLIENT_FAST.curl_timeout_secs() * 1000);
 }
 
 #[test]
 fn resolve_key_uses_provided_when_non_empty() {
     assert_eq!(resolve_key(Some("my-key")), "my-key");
+}
+
+#[test]
+fn classify_status_diverts_5xx_and_no_response_to_transient_retry() {
+    use crate::core::error::Error;
+    // A 5xx (with either an HTML error page or a JSON error body) is a transient
+    // upstream failure → RateLimited, so the retry loops back off and retry it,
+    // instead of the old behaviour where the HTML page parsed to an empty miss
+    // and the paid call was silently lost.
+    assert!(
+        matches!(
+            classify_status("<html>503 Bad Gateway</html>", 503),
+            Err(Error::RateLimited(_))
+        ),
+        "a 503 must be retryable-transient, not an empty miss"
+    );
+    assert!(
+        matches!(
+            classify_status(r#"{"error":"upstream"}"#, 500),
+            Err(Error::RateLimited(_))
+        ),
+        "a 500 with a JSON body must still be retryable-transient"
+    );
+    // curl reporting no HTTP response at all (status 0) is transient too.
+    assert!(matches!(classify_status("", 0), Err(Error::RateLimited(_))));
+    // A 2xx-empty body is a GENUINE miss — parse_response yields Ok, no retry.
+    assert!(
+        classify_status("", 200).is_ok(),
+        "a 200 empty result is a real miss, not retried"
+    );
+    // A 4xx JSON body is NOT diverted — it keeps parse_response's existing
+    // classification (a 404/400 miss here) rather than being treated transient.
+    assert!(
+        classify_status(r#"{"total":0}"#, 404).is_ok(),
+        "a 4xx JSON body keeps parse_response's classification"
+    );
 }
 
 #[test]
@@ -328,6 +376,27 @@ fn scan_budget_remaining_decreases_with_increments() {
         start,
         after + 1,
         "increment must consume exactly one credit"
+    );
+    reset_budget();
+}
+
+#[test]
+fn a_failed_quota_probe_releases_the_latch_so_a_later_seed_re_probes() {
+    let _guard = BUDGET_TEST_LOCK.lock();
+    reset_budget(); // clears the one-shot QUOTA_PROBED latch
+    // First caller claims the one-shot probe; a concurrent duplicate is refused.
+    assert!(should_probe_quota(), "first caller wins the probe claim");
+    assert!(
+        !should_probe_quota(),
+        "the latch blocks a duplicate concurrent probe"
+    );
+    // The probe the claim guarded FAILED (transient blip) → release the latch.
+    release_quota_probe();
+    // A later seed must now be able to re-probe, instead of the whole scan
+    // running pinned to the un-scaled default cap after one blip.
+    assert!(
+        should_probe_quota(),
+        "after a failed probe releases the latch, a later seed re-probes"
     );
     reset_budget();
 }
@@ -631,6 +700,54 @@ fn credits_body_garbage_is_unparseable_not_auth_error() {
             matches!(parse_credits_body(body), CreditsOutcome::Unparseable),
             "body {body:?} must classify as Unparseable, not AuthError"
         );
+    }
+}
+
+// ── `credits_probe` outcome classification (hse doctor's actionable SeekNow
+//    diagnostic). A live Termux scan showed EVERY see_know call failing with
+//    `[seek_now] curl exited 6` (curl "could not resolve host"), then the
+//    circuit breaker cooling the module down — but the old `query_credits`
+//    dropped the curl detail (`.ok()?`), so `hse doctor` could only print the
+//    catch-all "could not reach SeekNow", never revealing the real cause was
+//    DNS host-resolution (typically carrier/ISP domain filtering), not a bad
+//    key. These pin the transport-vs-key distinction the new probe restores.
+
+#[test]
+fn credits_probe_maps_a_transport_failure_to_unreachable_with_the_curl_detail() {
+    // The exact string the curl client surfaces for a DNS failure — the module
+    // error the live bundle recorded. It must classify as Unreachable (a
+    // network problem) and preserve curl's own detail verbatim, NOT be reported
+    // as an invalid key.
+    let curl_dns_failure =
+        "curl exited 6: curl: (6) Could not resolve host: see-know.eu".to_string();
+    match classify_credits_probe(Err(curl_dns_failure.clone())) {
+        CreditsProbe::Unreachable(detail) => assert_eq!(detail, curl_dns_failure),
+        other => panic!("a transport failure must be Unreachable, got {other:?}"),
+    }
+}
+
+#[test]
+fn credits_probe_maps_a_good_body_to_ok_with_the_parsed_numbers() {
+    let body = r#"{"credits_remaining": 4200, "daily_limit": 5000}"#.to_string();
+    match classify_credits_probe(Ok(body)) {
+        CreditsProbe::Ok {
+            remaining,
+            daily_limit,
+        } => {
+            assert_eq!(remaining, 4200);
+            assert_eq!(daily_limit, Some(5000));
+        }
+        other => panic!("a valid credits body must be Ok, got {other:?}"),
+    }
+}
+
+#[test]
+fn credits_probe_maps_an_unrecognised_body_to_unparseable_not_unreachable() {
+    // Reachable host, but a body with no credits field: a schema/plan problem,
+    // distinct from both a transport failure and a dead key.
+    match classify_credits_probe(Ok("<html>200 but no json</html>".to_string())) {
+        CreditsProbe::Unparseable => {}
+        other => panic!("a reachable-but-unrecognised body must be Unparseable, got {other:?}"),
     }
 }
 

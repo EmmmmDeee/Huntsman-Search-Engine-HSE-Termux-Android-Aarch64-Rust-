@@ -163,6 +163,59 @@ fn build_entities_emits_a_deterministic_jarm_fingerprint() {
 }
 
 #[test]
+fn build_entities_suppresses_geo_for_cdn_edge_but_keeps_isp() {
+    use crate::core::entity::EntityKind;
+    // A CDN/anycast edge IP (Cloudflare 104.16.0.1): the answering datacentre's
+    // geo is NOT the subject's location, so — as the 8 sibling IP-geo modules do
+    // — the Coordinates and Address must be suppressed. The infrastructure
+    // attribution (the ISP Organisation) is unaffected and must still emit.
+    let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "items": [{ "data": {
+            "ip": "104.16.0.1",
+            "isp": "Cloudflare, Inc.",
+            "geo": { "latitude": 37.7757, "longitude": -122.395, "country": "United States", "city": "San Francisco" }
+        }}]
+    }))
+    .unwrap();
+    let r = super::build_entities(&body, "104.16.0.1", "scan");
+    assert!(
+        !r.entities.iter().any(|e| e.kind == EntityKind::Coordinates),
+        "a CDN-edge IP's Coordinates must be suppressed"
+    );
+    assert!(
+        !r.entities.iter().any(|e| e.kind == EntityKind::Address),
+        "a CDN-edge IP's Address must be suppressed"
+    );
+    assert!(
+        r.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Organisation && e.has_tag("isp")),
+        "the ISP Organisation is infrastructure attribution and must still emit"
+    );
+}
+
+#[test]
+fn build_entities_rejects_out_of_range_coordinates() {
+    use crate::core::entity::EntityKind;
+    // Netlas geo occasionally carries out-of-range junk (lat/lon = 200). The
+    // shared is_valid_coords guard must reject it rather than emitting a
+    // Coordinates entity from a physically impossible fix (the old ad-hoc
+    // `abs() > 0.001` band let it straight through).
+    let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "items": [{ "data": {
+            "ip": "203.0.113.10",
+            "geo": { "latitude": 200.0, "longitude": 200.0, "country": "Nowhere", "city": "Nowhere" }
+        }}]
+    }))
+    .unwrap();
+    let r = super::build_entities(&body, "203.0.113.10", "scan");
+    assert!(
+        !r.entities.iter().any(|e| e.kind == EntityKind::Coordinates),
+        "out-of-range coordinates must be rejected by is_valid_coords"
+    );
+}
+
+#[test]
 fn netlas_query_by_kind() {
     use super::netlas_query;
     use crate::core::scan::Target;

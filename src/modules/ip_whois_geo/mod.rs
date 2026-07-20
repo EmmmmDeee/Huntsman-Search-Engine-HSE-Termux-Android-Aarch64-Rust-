@@ -37,6 +37,8 @@ struct Resp {
     #[serde(default)]
     region: Option<String>,
     #[serde(default)]
+    region_code: Option<String>,
+    #[serde(default)]
     city: Option<String>,
     #[serde(default)]
     latitude: Option<f64>,
@@ -58,6 +60,8 @@ struct Connection {
     org: Option<String>,
     #[serde(default, rename = "asn")]
     asn_num: Option<u64>,
+    /// The ISP/AS operator's registrable domain (e.g. `telstra.com`) — a
+    /// network-attribution lead, previously decoded nowhere.
     #[serde(default)]
     domain: Option<String>,
 }
@@ -128,10 +132,12 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
             ("country", data.country.as_deref()),
             ("country_code", data.country_code.as_deref()),
             ("region", data.region.as_deref()),
+            ("region_code", data.region_code.as_deref()),
             ("city", data.city.as_deref()),
             ("postal", data.postal.as_deref()),
             ("timezone", data.timezone_id.as_deref()),
             ("isp", conn.and_then(|c| c.isp.as_deref())),
+            ("isp_domain", conn.and_then(|c| c.domain.as_deref())),
         ]
         .into_iter()
         .filter_map(|(key, value)| {
@@ -214,6 +220,13 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
             (
                 "isp",
                 conn.isp
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .map(String::from),
+            ),
+            (
+                "isp_domain",
+                conn.domain
                     .as_deref()
                     .filter(|s| !s.is_empty())
                     .map(String::from),

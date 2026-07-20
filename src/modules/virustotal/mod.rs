@@ -28,6 +28,15 @@ use crate::core::{
 };
 
 const SRC: &str = "virustotal";
+
+/// VirusTotal's deterministic URL identifier: the unpadded base64url encoding
+/// of the exact URL string (VT's documented `/urls/{id}` scheme). **Pure**, so
+/// the id derivation is unit-tested without a live API.
+fn vt_url_id(url: &str) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(url.as_bytes())
+}
+
 /// VT's community reputation is a signed vote score; at/below this it is a
 /// negative-reputation signal worth a tag in its own right.
 const LOW_REPUTATION_THRESHOLD: i64 = -10;
@@ -216,7 +225,10 @@ impl Module for VirusTotal {
         10_000
     }
     fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress)
+        matches!(
+            t.kind,
+            TargetKind::Domain | TargetKind::IpAddress | TargetKind::Url
+        )
     }
 
     fn category(&self) -> ModuleCategory {
@@ -224,11 +236,10 @@ impl Module for VirusTotal {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        // The scanned entity (Domain or IpAddress), enriched in-place, plus
-        // passive-DNS pivots from last_dns_records: A/AAAA -> IpAddress,
-        // MX/NS/CNAME -> Domain. Both kinds are already covered by the pair
-        // below, so no new entry is needed for the pivots.
-        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::IpAddress];
+        // The scanned entity (Domain, IpAddress, or Url), enriched in-place,
+        // plus passive-DNS pivots from last_dns_records: A/AAAA -> IpAddress,
+        // MX/NS/CNAME -> Domain (the URL object carries no passive DNS).
+        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::IpAddress, EntityKind::Url];
         KINDS
     }
 
@@ -243,6 +254,14 @@ impl Module for VirusTotal {
             TargetKind::IpAddress => format!(
                 "https://www.virustotal.com/api/v3/ip_addresses/{}",
                 crate::util::http::urlencode(&target.value)
+            ),
+            // VT's URL object is addressed by the unpadded base64url of the URL;
+            // its last_analysis_stats/reputation are identical to the domain/IP
+            // objects, so build_entities decodes it unchanged (last_dns_records
+            // is simply absent for this object type).
+            TargetKind::Url => format!(
+                "https://www.virustotal.com/api/v3/urls/{}",
+                vt_url_id(target.value.trim())
             ),
             _ => return Ok(result),
         };

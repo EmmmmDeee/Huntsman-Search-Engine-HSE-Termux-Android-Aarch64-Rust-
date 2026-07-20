@@ -284,3 +284,24 @@ use super::*;
             .expect("operator Organisation");
         assert_eq!(org.value, "Google Public DNS");
     }
+
+#[test]
+fn last_seen_recency_flows_into_evidence() {
+    let body = resp(
+        r#"{
+            "ip": "9.9.9.9",
+            "noise": true,
+            "riot": false,
+            "classification": "malicious",
+            "last_seen": "2026-01-02"
+        }"#,
+    );
+    let ents = build_entities(&body, "9.9.9.9", "s");
+    let subject = of_kind(&ents, EntityKind::IpAddress).expect("subject IP entity");
+    let ev = &subject.evidence[0];
+    assert_eq!(
+        ev.attributes.get("last_seen").map(String::as_str),
+        Some("2026-01-02"),
+        "GreyNoise last_seen recency must surface in evidence"
+    );
+}

@@ -23,8 +23,14 @@ use super::{
 /// extraction already applies, reused here so a masked WHOIS-privacy domain
 /// registration doesn't mint a fake `John Doe`/`Privacy Inc` node.
 fn is_redacted(s: &str) -> bool {
-    let l = s.to_lowercase();
-    l.contains("privacy") || l.contains("redacted") || l.contains("data protected")
+    // Delegate to the single-sourced whois privacy-proxy guard rather than a
+    // 3-marker local subset. The old list missed GoDaddy's "Registration
+    // Private" registrant and "Domains By Proxy, LLC" proxy brand — masked
+    // strings that recur verbatim across thousands of domains and would
+    // otherwise mint a fabricated Person/Organisation the correlator can
+    // false-merge. The shared marker set is a strict superset, so every string
+    // the old check caught is still caught.
+    crate::core::validation::is_whois_privacy_placeholder(s)
 }
 
 /// Fraud score evidence + high-risk tagging — identical on both SEON paths

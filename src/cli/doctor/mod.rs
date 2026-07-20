@@ -314,21 +314,44 @@ pub(super) async fn cmd_doctor() -> Result<()> {
     // fresh process (like this one) that only ever calls `query_credits`
     // could never detect a dead key at all.
     println!("\nSeekNow account:");
+    // Print the host the probe will hit FIRST, so a resolution failure below is
+    // immediately actionable ("could not resolve see-know.eu" → check the domain
+    // + resolver), and an operator override is visible.
+    println!("  api base: {}", crate::util::see_know::base_url());
     let seeknow_key = crate::util::see_know::resolve_key(
         loaded
             .get(crate::util::see_know::KEY_ENV)
             .map(String::as_str),
     );
-    match crate::util::see_know::query_credits(seeknow_key).await {
-        Some((remaining, Some(limit))) => println!("  credits remaining: {remaining}/{limit}"),
-        Some((remaining, None)) => {
-            println!("  credits remaining: {remaining} (daily limit not reported by this plan)");
-        }
-        None if crate::util::see_know::is_key_invalid() => println!(
+    use crate::util::see_know::CreditsProbe;
+    match crate::util::see_know::credits_probe(seeknow_key).await {
+        CreditsProbe::Ok {
+            remaining,
+            daily_limit: Some(limit),
+        } => println!("  credits remaining: {remaining}/{limit}"),
+        CreditsProbe::Ok {
+            remaining,
+            daily_limit: None,
+        } => println!("  credits remaining: {remaining} (daily limit not reported by this plan)"),
+        CreditsProbe::InvalidKey => println!(
             "  INVALID — the configured key was rejected. Set a valid, plan-enabled key \
              via HUNTSMAN_SEEKNOW_KEY or the UI Settings panel."
         ),
-        None => println!("  could not reach SeekNow (network error or unexpected response)"),
+        // The observed live failure: `curl exited 6` (could not resolve host).
+        // Report it as a transport/DNS problem — NOT a key problem — with curl's
+        // own detail and the concrete next steps, so an on-device operator can
+        // fix it without guessing.
+        CreditsProbe::Unreachable(detail) => println!(
+            "  UNREACHABLE — could not connect to the SeekNow API host: {detail}\n    \
+             This is a network/DNS failure, not a key problem. If it reads \
+             'Could not resolve host', your carrier/ISP resolver may be filtering \
+             the domain — try a different DNS resolver, or point HUNTSMAN_SEEKNOW_BASE \
+             at a reachable https base for the same API."
+        ),
+        CreditsProbe::Unparseable => println!(
+            "  reachable, but the response carried no recognised credits field — the key \
+             may lack a paid plan, or the API schema changed."
+        ),
     }
 
     Ok(())

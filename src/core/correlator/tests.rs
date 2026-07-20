@@ -1836,10 +1836,18 @@ fn rule_016_does_not_chain_on_substring_ip_match() {
     );
 }
 
+// A coordinate anchored to a real person-fixing source (EXIF/device GPS), so it
+// passes the is_infrastructure_geo guard AU-017/AU-057 now share with AU-030/099.
+fn anchored_coord(value: &str, conf: f64) -> Entity {
+    let mut e = Entity::new(EntityKind::Coordinates, value, conf, "s");
+    e.add_evidence(crate::core::entity::Evidence::new("exif_geo", "photo GPS"));
+    e
+}
+
 #[test]
 fn rule_017_multi_geo_convergence_fires() {
-    let c1 = Entity::new(EntityKind::Coordinates, "-27.55,152.27", 0.60, "s");
-    let c2 = Entity::new(EntityKind::Coordinates, "-27.60,152.30", 0.65, "s");
+    let c1 = anchored_coord("-27.55,152.27", 0.60);
+    let c2 = anchored_coord("-27.60,152.30", 0.65);
     let firings = rule_au_017_multi_geo_convergence(&[c1, c2], "s", 0);
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].rule_id, "AU-017");
@@ -1848,10 +1856,43 @@ fn rule_017_multi_geo_convergence_fires() {
 
 #[test]
 fn rule_017_no_fire_for_distant_coords() {
-    let c1 = Entity::new(EntityKind::Coordinates, "-27.55,152.27", 0.60, "s");
-    let c2 = Entity::new(EntityKind::Coordinates, "-33.86,151.20", 0.65, "s");
+    let c1 = anchored_coord("-27.55,152.27", 0.60);
+    let c2 = anchored_coord("-33.86,151.20", 0.65);
     let firings = rule_au_017_multi_geo_convergence(&[c1, c2], "s", 0);
     assert!(firings.is_empty());
+}
+
+#[test]
+fn rule_017_excludes_infrastructure_coordinates() {
+    // Two hosting-datacentre coordinates within convergence distance must NOT
+    // fuse into a "subject physically located here" finding — parity with
+    // AU-030/AU-099. A bare IP-geo/hosting coordinate locates the infra, not the
+    // person. The same geometry, person-anchored, still fires (control).
+    let mut h1 = Entity::new(EntityKind::Coordinates, "-27.55,152.27", 0.60, "s");
+    h1.tag(crate::core::tags::HOSTING);
+    let mut h2 = Entity::new(EntityKind::Coordinates, "-27.60,152.30", 0.65, "s");
+    h2.tag(crate::core::tags::HOSTING);
+    assert!(
+        rule_au_017_multi_geo_convergence(&[h1, h2], "s", 0).is_empty(),
+        "infrastructure coordinates must not converge into a subject location"
+    );
+    // A bare coordinate with no anchoring source is also infrastructure.
+    let b1 = Entity::new(EntityKind::Coordinates, "-27.55,152.27", 0.60, "s");
+    let b2 = Entity::new(EntityKind::Coordinates, "-27.60,152.30", 0.65, "s");
+    assert!(rule_au_017_multi_geo_convergence(&[b1, b2], "s", 0).is_empty());
+    // Control: the same points, person-anchored, DO converge.
+    assert_eq!(
+        rule_au_017_multi_geo_convergence(
+            &[
+                anchored_coord("-27.55,152.27", 0.60),
+                anchored_coord("-27.60,152.30", 0.65)
+            ],
+            "s",
+            0
+        )
+        .len(),
+        1
+    );
 }
 
 #[test]
@@ -1863,9 +1904,9 @@ fn rule_017_clustering_is_order_independent() {
     // entities in HashMap (randomised) order, persisting conflicting AU-017
     // uid sets across rounds. Every permutation must now produce identical
     // firings.
-    let a = Entity::new(EntityKind::Coordinates, "0.00,0.00", 0.60, "s");
-    let b = Entity::new(EntityKind::Coordinates, "0.40,0.00", 0.60, "s");
-    let c = Entity::new(EntityKind::Coordinates, "0.80,0.00", 0.60, "s");
+    let a = anchored_coord("1.00,0.00", 0.60);
+    let b = anchored_coord("1.40,0.00", 0.60);
+    let c = anchored_coord("1.80,0.00", 0.60);
     let uid_sets = |ents: &[Entity]| -> Vec<Vec<String>> {
         rule_au_017_multi_geo_convergence(ents, "s", 0)
             .into_iter()
@@ -6504,7 +6545,7 @@ fn au_057_two_brisbane_coords_produce_synthesised_fix() {
         },
         {
             let mut e = Entity::new(EntityKind::Coordinates, "-27.4766,153.0166", 0.70, "scan");
-            e.add_evidence(Evidence::new("photon", "Brisbane suburb fix".to_string()));
+            e.add_evidence(Evidence::new("wigle", "Brisbane suburb fix".to_string()));
             e
         },
     ];
@@ -6578,116 +6619,26 @@ fn au_057_three_coords_produce_high_severity() {
 }
 
 #[test]
-fn au_057_ignores_infrastructure_only_coordinates() {
+fn au_057_excludes_infrastructure_coordinates() {
     use super::rules::rule_au_057_synthesised_location_fix;
-
-    // Regression: a live phone scan showed a residential `ip_geo` fix (no
-    // person-anchoring source at all — ip_geo is IP/ISP infrastructure, not a
-    // subject sighting) sitting at exactly the 0.60 confidence floor and fusing
-    // into AU-057's median at full footing. With only ONE genuine anchor
-    // present, the rule must not fire at all (falls below the 2-candidate
-    // floor once the infrastructure fix is excluded).
+    // Two IP-geo / hosting coordinates must NOT synthesise a subject "location
+    // fix" — they locate the datacentre. Parity with AU-030/AU-099/AU-017.
     let ents = vec![
         {
             let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.70, "scan");
-            e.add_evidence(Evidence::new("geocode", "Brisbane CBD fix".to_string()));
+            e.add_evidence(Evidence::new("ip_geo", "host city".to_string()));
             e
         },
         {
-            let mut e = Entity::new(EntityKind::Coordinates, "-27.4900,153.0400", 0.60, "scan");
-            e.add_evidence(Evidence::new(
-                "ip_geo",
-                "residential IP geolocation".to_string(),
-            ));
+            let mut e = Entity::new(EntityKind::Coordinates, "-27.4766,153.0166", 0.70, "scan");
+            e.tag(crate::core::tags::HOSTING);
+            e.add_evidence(Evidence::new("ip_registry", "host city".to_string()));
             e
         },
     ];
     assert!(
         rule_au_057_synthesised_location_fix(&ents, "scan", 0).is_empty(),
-        "an infrastructure-only (ip_geo) fix must never count toward the 'confirmed \
-         coordinates' AU-057 needs to synthesise a primary location"
-    );
-}
-
-#[test]
-fn au_057_excludes_infrastructure_coordinate_from_a_real_fix() {
-    use super::rules::rule_au_057_synthesised_location_fix;
-
-    // Two genuine anchors fire correctly; a THIRD infrastructure-only (ip_geo)
-    // coordinate must be excluded from the fix entirely — not merely ignored in
-    // the weighting, but absent from entity_uids and the reported count.
-    let ents = vec![
-        {
-            let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.70, "scan");
-            e.add_evidence(Evidence::new("geocode", "Brisbane CBD fix".to_string()));
-            e
-        },
-        {
-            let mut e = Entity::new(EntityKind::Coordinates, "-27.4766,153.0166", 0.70, "scan");
-            e.add_evidence(Evidence::new("photon", "Brisbane suburb fix".to_string()));
-            e
-        },
-        {
-            let mut e = Entity::new(EntityKind::Coordinates, "10.0,10.0", 0.90, "scan");
-            e.add_evidence(Evidence::new("ip_geo", "unrelated hosting IP".to_string()));
-            e
-        },
-    ];
-    let out = rule_au_057_synthesised_location_fix(&ents, "scan", 0);
-    assert_eq!(out.len(), 1);
-    assert!(
-        out[0].description.contains("2 confirmed"),
-        "the ip_geo entity must not count: {}",
-        out[0].description
-    );
-    assert_eq!(
-        out[0].entity_uids.len(),
-        2,
-        "the ip_geo entity must not appear in entity_uids"
-    );
-    assert!(
-        out[0]
-            .description
-            .contains("primary location near Brisbane, QLD"),
-        "the fix must stay anchored on Brisbane, unpulled by the far ip_geo point: {}",
-        out[0].description
-    );
-}
-
-#[test]
-fn au_057_precision_weighting_favours_the_finer_source() {
-    use super::rules::rule_au_057_synthesised_location_fix;
-
-    // A precise Brisbane geocode fix vs. a coarse phone-carrier fix on the far
-    // side of the continent (Perth), at EQUAL confidence. Naive confidence-only
-    // weighting would place the median roughly halfway between the two cities;
-    // precision-aware weighting must keep it anchored close to the geocoded
-    // point, because a phone-carrier inference (~100 km class radius) is far
-    // less spatially precise than a street geocode (~40 m class radius).
-    let ents = vec![
-        {
-            let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.70, "scan");
-            e.add_evidence(Evidence::new("geocode", "Brisbane CBD fix".to_string()));
-            e
-        },
-        {
-            let mut e = Entity::new(EntityKind::Coordinates, "-31.9523,115.8613", 0.70, "scan");
-            e.add_evidence(Evidence::new(
-                "phone_carrier_geo",
-                "carrier market inference".to_string(),
-            ));
-            e
-        },
-    ];
-    let out = rule_au_057_synthesised_location_fix(&ents, "scan", 0);
-    assert_eq!(out.len(), 1);
-    assert!(
-        out[0]
-            .description
-            .contains("primary location near Brisbane, QLD"),
-        "precision weighting must keep the fix anchored near the geocoded point, \
-         not pulled toward the coarse carrier inference: {}",
-        out[0].description
+        "infrastructure coordinates must not synthesise a subject location fix"
     );
 }
 
@@ -8279,6 +8230,137 @@ fn au112_does_not_fire_for_a_broad_ipv6_allocation() {
     let block = cidr_block("2001:db8::/32");
     let ip = plain_ip("2001:db8:1::42");
     assert!(rule_au_112_shared_cidr_infrastructure(&[block, ip], "s", 0).is_empty());
+}
+
+// ─── AU-114 tests (sanctions / debarment / PEP exposure) ──────────────────────
+
+fn flagged_person(name: &str, conf: f64, tag: &str) -> Entity {
+    let mut e = Entity::new(EntityKind::Person, name, conf, "s");
+    e.tag("opensanctions");
+    e.tag(tag);
+    e
+}
+
+#[test]
+fn au114_sanctioned_person_fires_critical() {
+    // A definitive opensanctions match carries tags::SANCTIONED at MATCH_CONF
+    // (0.60). The highest-consequence OSINT signal must surface as a Critical
+    // finding rather than sitting un-named in the graph.
+    let e = flagged_person(
+        "Designated Test Subject",
+        0.60,
+        crate::core::tags::SANCTIONED,
+    );
+    let r = rule_au_114_sanctions_exposure(std::slice::from_ref(&e), "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-114");
+    assert_eq!(r[0].severity, super::Severity::Critical);
+    assert!(r[0].description.contains("sanctions designation"));
+    assert!(r[0].description.contains("Designated Test Subject"));
+    assert_eq!(r[0].entity_uids, vec![e.uid]);
+}
+
+#[test]
+fn au114_debarred_only_fires_high() {
+    let e = flagged_person("Barred Vendor Pty", 0.60, crate::core::tags::DEBARRED);
+    let r = rule_au_114_sanctions_exposure(&[e], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].severity, super::Severity::High);
+    assert!(r[0].description.contains("debarred"));
+}
+
+#[test]
+fn au114_pep_only_fires_medium_and_frames_as_a_lead() {
+    // Wikidata's PEP signal (tags::PEP == "pep") is a due-diligence lead, not a
+    // determination — it must fire only Medium and never assert guilt.
+    let e = flagged_person("Public Office Holder", 0.72, crate::core::tags::PEP);
+    let r = rule_au_114_sanctions_exposure(&[e], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(r[0].description.contains("politically-exposed"));
+    assert!(
+        r[0].description.contains("not a legal determination"),
+        "a PEP finding must be framed as a signal, not a determination"
+    );
+}
+
+#[test]
+fn au114_takes_the_strongest_flag_when_several_are_present() {
+    // A subject both sanctioned AND debarred is graded by the strongest flag
+    // (Critical), with every flag enumerated in the description.
+    let mut e = flagged_person("Dual Flagged Entity", 0.60, crate::core::tags::SANCTIONED);
+    e.tag(crate::core::tags::DEBARRED);
+    let r = rule_au_114_sanctions_exposure(&[e], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].severity, super::Severity::Critical);
+    assert!(r[0].description.contains("sanctioned"));
+    assert!(r[0].description.contains("debarred"));
+}
+
+#[test]
+fn au114_surfaces_the_sanctions_programme_from_evidence() {
+    let mut e = flagged_person("Programme Listed", 0.60, crate::core::tags::SANCTIONED);
+    e.add_evidence(
+        Evidence::new("opensanctions", "OpenSanctions match").with_attr("program_id", "US-RUSHAR"),
+    );
+    let r = rule_au_114_sanctions_exposure(&[e], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert!(
+        r[0].description.contains("US-RUSHAR"),
+        "the sanctions programme must be surfaced from evidence, got {:?}",
+        r[0].description
+    );
+}
+
+#[test]
+fn au114_does_not_fire_for_an_unflagged_or_low_confidence_entity() {
+    // No risk tag → no finding.
+    let plain = Entity::new(EntityKind::Person, "Ordinary Person", 0.80, "s");
+    assert!(rule_au_114_sanctions_exposure(&[plain], "s", 0).is_empty());
+    // Flagged but below the 0.55 definitive-match floor → no finding (a weak,
+    // speculative person must never be asserted as sanctioned).
+    let weak = flagged_person("Weak Match", 0.40, crate::core::tags::SANCTIONED);
+    assert!(
+        rule_au_114_sanctions_exposure(&[weak], "s", 0).is_empty(),
+        "a sub-floor confidence entity must not fire a sanctions finding"
+    );
+}
+
+// ─── AU-115 tests (personal Wi-Fi geolocated) ─────────────────────────────────
+
+#[test]
+fn au115_joins_an_ssid_to_its_wigle_geolocation() {
+    let ssid = Entity::new(EntityKind::Ssid, "Jordans_Home_5G", 0.85, "s");
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.72, "s");
+    coord.tag("wigle");
+    coord.tag("ssid-located");
+    coord.tag("geoint");
+    coord.add_evidence(
+        Evidence::new("wigle", "WiGLE SSID observed").with_attr("ssid", "Jordans_Home_5G"),
+    );
+    let r = rule_au_115_personal_wifi_geolocated(&[ssid.clone(), coord.clone()], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-115");
+    assert_eq!(r[0].severity, super::Severity::High);
+    assert!(r[0].description.contains("Jordans_Home_5G"));
+    assert!(r[0].entity_uids.contains(&ssid.uid));
+    assert!(r[0].entity_uids.contains(&coord.uid));
+}
+
+#[test]
+fn au115_requires_a_name_match_and_the_wigle_ssid_located_tag() {
+    let ssid = Entity::new(EntityKind::Ssid, "Jordans_Home_5G", 0.85, "s");
+    // A WiGLE ssid-located fix for a DIFFERENT network → no join.
+    let mut other = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.72, "s");
+    other.tag("ssid-located");
+    other.add_evidence(Evidence::new("wigle", "x").with_attr("ssid", "SomeoneElse"));
+    assert!(rule_au_115_personal_wifi_geolocated(&[ssid.clone(), other], "s", 0).is_empty());
+    // A matching name but a non-WiGLE coordinate (no ssid-located tag) must NOT
+    // fire — an IP-geo fix can't masquerade as a personal-network geolocation.
+    let mut ipgeo = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.6, "s");
+    ipgeo.tag("geoint");
+    ipgeo.add_evidence(Evidence::new("ip_geo", "x").with_attr("ssid", "Jordans_Home_5G"));
+    assert!(rule_au_115_personal_wifi_geolocated(&[ssid, ipgeo], "s", 0).is_empty());
 }
 
 // ─── AU-084 tests (cell tower dual-source) ────────────────────────────────────

@@ -87,6 +87,39 @@ use super::*;
     }
 
     #[test]
+    fn build_announced_prefixes_emits_deduped_sorted_cidrs() {
+        let ap = AnnouncedPrefixes {
+            prefixes: vec![
+                AnnouncedPrefix {
+                    prefix: Some("8.8.8.0/24".into()),
+                },
+                AnnouncedPrefix {
+                    prefix: Some("  8.8.4.0/24 ".into()),
+                },
+                // Duplicate of the first (post-trim) — must collapse.
+                AnnouncedPrefix {
+                    prefix: Some("8.8.8.0/24".into()),
+                },
+                // Malformed / no mask — dropped, never a junk CIDR.
+                AnnouncedPrefix {
+                    prefix: Some("not-a-prefix".into()),
+                },
+                AnnouncedPrefix { prefix: None },
+            ],
+        };
+        let es = build_announced_prefixes(&ap, "scan");
+        let vals: Vec<&str> = es.iter().map(|e| e.value.as_str()).collect();
+        // Deduped to two, in sorted (deterministic) order — not API order.
+        assert_eq!(vals, ["8.8.4.0/24", "8.8.8.0/24"]);
+        assert!(
+            es.iter()
+                .all(|e| e.kind == EntityKind::Cidr
+                    && e.has_tag("ripestat")
+                    && e.has_tag("network-prefix"))
+        );
+    }
+
+    #[test]
     fn accepts_ip_and_asn_only() {
         assert!(RipeStat.accepts(&Target::new(TargetKind::IpAddress, "8.8.8.8")));
         assert!(RipeStat.accepts(&Target::new(TargetKind::Asn, "AS15169")));

@@ -2602,6 +2602,27 @@ async fn keys_pool_get_is_masked_and_revoke_is_write_gated() {
 }
 
 #[tokio::test]
+async fn keys_pool_add_is_write_gated() {
+    // Adding a new pooled key is a write — refused without --allow-key-write
+    // (test_app default), same policy as revoke/rotate. This is the web
+    // equivalent of `hse keys add`, previously CLI-only.
+    use std::net::SocketAddr;
+    let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    let app = test_app("keys-pool-add");
+    let mut post = Request::builder()
+        .method("POST")
+        .uri("/api/v1/keys/pool/add")
+        .header("content-type", "application/json")
+        .header("x-hse-csrf", "1")
+        .body(Body::from(r#"{"service":"shodan","key":"NEW-KEY-VALUE"}"#))
+        .unwrap();
+    post.extensions_mut()
+        .insert(axum::extract::ConnectInfo(loopback));
+    let resp = app.oneshot(post).await.unwrap();
+    assert_eq!(resp.status(), http::StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn keys_pool_rotate_is_write_gated() {
     // Rotation is a write — refused without --allow-key-write (test_app default),
     // never a silent no-op.

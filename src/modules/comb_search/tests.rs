@@ -1,6 +1,44 @@
 use super::*;
 
 #[test]
+fn password_evidence_carries_the_typed_email_key_for_reused_secret_join() {
+    // The reused-secret detector / AU-047 join on a typed `email`/`username`
+    // evidence attribute, NOT the raw `identity`. A COMB email target's password
+    // must therefore carry an `email` key so it can participate.
+    let target = Target::new(TargetKind::Email, "jordan@example.com");
+    let lines = vec!["jordan@example.com:hunter2longpw".to_string()];
+    let ents = build_entities_from_lines(&lines, &target, "s");
+    let pw = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Password)
+        .expect("password entity");
+    assert_eq!(
+        pw.evidence[0].attributes.get("email").map(String::as_str),
+        Some("jordan@example.com"),
+        "the password must carry the typed `email` reused-secret join key"
+    );
+}
+
+#[test]
+fn username_target_password_carries_the_typed_username_key() {
+    let target = Target::new(TargetKind::Username, "jordanx");
+    let lines = vec!["jordanx:s3cretpassword".to_string()];
+    let ents = build_entities_from_lines(&lines, &target, "s");
+    let pw = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Password)
+        .expect("password entity");
+    assert_eq!(
+        pw.evidence[0].attributes.get("username").map(String::as_str),
+        Some("jordanx")
+    );
+    assert!(
+        !pw.evidence[0].attributes.contains_key("email"),
+        "a bare-username account must not carry an `email` key"
+    );
+}
+
+#[test]
 fn split_line_splits_on_first_colon_only() {
     assert_eq!(split_line("user@x.com:pass:word"), Some(("user@x.com", "pass:word")));
     assert_eq!(split_line("alice:hunter2"), Some(("alice", "hunter2")));

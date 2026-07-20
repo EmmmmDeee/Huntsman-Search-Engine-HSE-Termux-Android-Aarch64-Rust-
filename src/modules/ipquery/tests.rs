@@ -75,6 +75,39 @@ use super::*;
     }
 
     #[test]
+    fn build_surfaces_the_postcode_on_both_geo_entities() {
+        // The `zipcode` field (previously decoded nowhere) is a finer geo grain
+        // than city/state and must surface as a `postcode` attribute on both the
+        // Coordinates and the Address (both fold in the shared geo_ev()).
+        let d = resp(
+            r#"{"location":{"country":"Australia","country_code":"AU","city":"Gatton","state":"Queensland","zipcode":"4343","latitude":-27.55,"longitude":152.27},"risk":{"is_datacenter":false}}"#,
+        );
+        let es = build_geo_isp_entities("203.0.113.9", &d, "t");
+        let coords = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Coordinates)
+            .expect("coords");
+        assert_eq!(
+            coords.evidence[0]
+                .attributes
+                .get("postcode")
+                .map(String::as_str),
+            Some("4343")
+        );
+        let addr = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Address)
+            .expect("address");
+        assert_eq!(
+            addr.evidence[0]
+                .attributes
+                .get("postcode")
+                .map(String::as_str),
+            Some("4343")
+        );
+    }
+
+    #[test]
     fn coordinates_carry_the_originating_ip_for_login_ip_recognition() {
         // Like `ip_geo`, this module's Coordinates fix only emits once
         // `untrusted_geo_reason` clears the IP (CDN/anycast/VPN/Tor/proxy/

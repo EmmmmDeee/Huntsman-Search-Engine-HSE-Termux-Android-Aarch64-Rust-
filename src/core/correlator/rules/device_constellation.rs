@@ -9,7 +9,7 @@
 //!
 //! Those paired devices matter for the operator's own OPSEC: each one that
 //! broadcasts a **universally-administered** MAC (a real, non-rotating hardware
-//! address — see AU-115 and the shared [`crate::util::oui`] classifier) is a
+//! address — see AU-122 and the shared [`crate::util::oui`] classifier) is a
 //! persistent identifier the operator PHYSICALLY CARRIES. Together they form a
 //! device constellation — a hardware fingerprint that recurs across every place
 //! and scan the operator's phone appears, and that a passive observer can use to
@@ -17,8 +17,8 @@
 //! names the persistently-trackable members, so the operator sees the fingerprint
 //! their own kit emits.
 //!
-//! It complements AU-115 (which partitions ALL observed MACs into trackable vs.
-//! randomized): AU-115 answers "which pins are followable devices"; AU-117
+//! It complements AU-122 (which partitions ALL observed MACs into trackable vs.
+//! randomized): AU-122 answers "which pins are followable devices"; AU-117
 //! answers "which of the followable ones are the operator's own, and therefore
 //! track the operator". Fires only when the operator's phone is bonded to ≥2
 //! devices and ≥1 of them is universally-administered (an actual exposure) —
@@ -91,7 +91,7 @@ pub(in crate::core::correlator) fn rule_au_117_personal_device_constellation(
             "the operator's phone is paired with {n} Bluetooth device{}, {trackable} of which \
              broadcast{} a persistent universally-administered MAC{vendor_clause} — a hardware \
              fingerprint the operator physically carries that recurs across every place and scan \
-             their phone appears, letting a passive observer re-identify the same person. AU-115 \
+             their phone appears, letting a passive observer re-identify the same person. AU-122 \
              flags these as trackable; being bonded, they track the OPERATOR.",
             if n == 1 { "" } else { "s" },
             if trackable == 1 { "s" } else { "" },
@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn au117_ignores_unbonded_devices() {
-        // A trackable device that is NOT bonded is a stranger's (AU-115's domain),
+        // A trackable device that is NOT bonded is a stranger's (AU-122's domain),
         // not part of the operator's constellation.
         let mine = bonded_bt("3C:5A:B4:11:22:33");
         let mut stranger = Entity::new(EntityKind::MacAddress, "3C:5A:B4:99:88:77", 0.8, "s");

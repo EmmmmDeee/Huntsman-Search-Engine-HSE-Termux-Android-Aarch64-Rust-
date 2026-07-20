@@ -552,11 +552,12 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "shodan → scan-db + IP info + physical location + org"
     );
     // Censys likewise: scan db (T1596.005) + IP info (T1590.005) + datacenter
-    // coordinates and city as physical location (T1591.001).
+    // coordinates and city as physical location (T1591.001) + the ASN operator
+    // as an Organisation (T1591.002 Business Relationships).
     assert_eq!(
         techniques("censys"),
-        vec!["T1590.005", "T1596.005", "T1591.001"],
-        "censys → scan-db + IP info + physical location"
+        vec!["T1590.005", "T1596.005", "T1591.001", "T1591.002"],
+        "censys → scan-db + IP info + physical location + org"
     );
 
     // ip_whois_geo is a passive geolocation API identical in surface to the
@@ -659,8 +660,8 @@ fn attack_overrides_attribute_collection_modules_precisely() {
     // `breach_rich` pass and does not need that pass's broader technique set.
     assert_eq!(
         techniques("intelx"),
-        vec!["T1589.001", "T1589.002", "T1589.003"],
-        "intelx → Credentials + Email Addresses + Employee Names"
+        vec!["T1589.001", "T1589.002", "T1589.003", "T1597.002"],
+        "intelx → Credentials + Email Addresses + Employee Names + Purchase Technical Data"
     );
     assert!(
         techniques("intelx").contains(&"T1589.003"),
@@ -685,8 +686,9 @@ fn attack_overrides_attribute_collection_modules_precisely() {
             "T1591.002",
             "T1592",
             "T1593.001",
+            "T1597.002",
         ],
-        "dehashed → the full shared breach_rich extraction surface"
+        "dehashed → the full shared breach_rich surface, from a purchased data feed"
     );
 
     // WiGLE: Geo category (T1591.001 Physical Locations) but also surfaces
@@ -883,11 +885,18 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "ipqs → Victim Identity (Phone) + Email Addresses + IP Addresses + Scan Databases + Threat Intel Vendors"
     );
 
-    // criminal_ip: existing override adds T1591.002 for ASN operator Organisation.
+    // criminal_ip: override adds T1591.002 for the ASN operator Organisation and
+    // T1591.001 for the whois city/region/lat-lon → Address/Coordinates.
     assert_eq!(
         techniques("criminal_ip"),
-        vec!["T1590.005", "T1591.002", "T1596.005", "T1597.001"],
-        "criminal_ip → IP Addresses + Business Relationships + Scan Databases + Threat Intel Vendors"
+        vec![
+            "T1590.005",
+            "T1591.001",
+            "T1591.002",
+            "T1596.005",
+            "T1597.001"
+        ],
+        "criminal_ip → IP Addresses + Physical Locations + Business Relationships + Scan Databases + Threat Intel Vendors"
     );
 
     // device_sensors: Sensor default (T1592 Host Information) but GPS coordinates

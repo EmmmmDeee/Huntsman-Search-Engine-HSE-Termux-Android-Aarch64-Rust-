@@ -138,6 +138,29 @@ export async function renderOpts(v){
   `;
 
   if (data.write_enabled) wireKeyEditor();
+  // Key-pool "Add" — previously CLI-only (`hse keys add`); the primary
+  // HUNTSMAN_*_KEY env var is editable above, this is the separate rotation
+  // POOL's own add, for a backup/second key per service.
+  const poolAddBtn = $('#pool-add-btn');
+  if (poolAddBtn) poolAddBtn.addEventListener('click', async()=>{
+    const service = ($('#pool-add-service').value||'').trim();
+    const key = ($('#pool-add-key').value||'').trim();
+    const notes = ($('#pool-add-notes').value||'').trim();
+    const msgEl = $('#pool-add-msg');
+    if (!service || !key){ alertify.error('Service and key value are required'); return; }
+    poolAddBtn.disabled = true;
+    msgEl.textContent = 'Adding…';
+    try {
+      const r = await API.poolAdd({service, key, notes: notes||undefined});
+      toast(r.status==='duplicate' ? 'Key already in pool' : `Key added to '${service}' pool`);
+      renderOpts($('#view'));
+    } catch(e){
+      alertify.error(e.message);
+      msgEl.textContent = '';
+    } finally {
+      poolAddBtn.disabled = false;
+    }
+  });
   // Key-pool revoke/rotate buttons (reference keys by non-secret id).
   $$('button[data-revoke]').forEach(b=>b.addEventListener('click', ()=>{
     const service = b.dataset.revoke, id = b.dataset.revokeId;
@@ -399,7 +422,10 @@ export function cellsPanel(status){
           ? `<b>${status.total}</b> towers${byMcc?` &nbsp; ${byMcc}`:''}<br>
              ${li
                ? `<span class="text-muted" style="font-size:11px">Last import: <code>${esc(li.source_file)}</code> — ${li.row_count} rows, ${esc(fmtDate(li.imported_at))}</span>`
-               : '<span class="text-muted" style="font-size:11px">No import history.</span>'}`
+               : '<span class="text-muted" style="font-size:11px">No import history.</span>'}
+             ${li && li.is_stale
+               ? `<br><span class="label label-warning" style="white-space:normal">STALE — ${li.age_days}d since last import (&ge; ${li.stale_threshold_days}d). GEOINT cell-tower correlation is working from data that old; refresh below.</span>`
+               : ''}`
           : '<span class="text-muted">Not populated — import below to get started.</span>'}
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -509,9 +535,9 @@ export function keyRow(k, writeEnabled){
    plaintext never reaches the browser — keys are referenced by a non-secret id.
    Import/export and rotation live in the `hse keys` CLI (shell-access-gated). */
 export function poolPanel(pool, writeEnabled){
-  if (!pool || !(pool.services||[]).length) return '';
+  const hasKeys = pool && (pool.services||[]).length;
   const tierBadge = s => `<span class="status-pill s-${s==='revoked'?'failed':(s==='active'?'complete':'pending')}">${esc(s)}</span>`;
-  const rows = pool.services.map(svc=>`
+  const rows = hasKeys ? pool.services.map(svc=>`
     <tr><td colspan="5" class="grp-row" style="font-weight:600">${esc(svc.service)}</td></tr>
     ${svc.keys.map(k=>`<tr data-svc="${attr(svc.service)}" data-id="${attr(k.id)}">
       <td><code>${esc(k.masked)}</code></td>
@@ -521,18 +547,28 @@ export function poolPanel(pool, writeEnabled){
       <td class="text-right">${(writeEnabled && k.status!=='revoked')
         ? `<button class="btn btn-default btn-xs" data-rotate="${attr(svc.service)}" data-rotate-id="${attr(k.id)}">Rotate</button>
            <button class="btn btn-danger btn-xs" data-revoke="${attr(svc.service)}" data-revoke-id="${attr(k.id)}">Revoke</button>` : ''}</td>
-    </tr>`).join('')}`).join('');
+    </tr>`).join('')}`).join('') : '';
   return `
     <div class="panel panel-default">
       <div class="panel-heading"><b>Key pool</b>
         <span class="text-muted pull-right" style="font-size:12px">multi-key per service · masked · loopback-only</span>
       </div>
       <div class="panel-body">
-        <p class="text-muted" style="font-size:12px">Keys discovered during scans or imported via <code>hse keys import-json</code>, grouped by service and environment. Revoke a compromised key here (retained for audit, never used again); raw values, import/export and rotation are in the <code>hse keys</code> CLI.</p>
-        <div class="table-responsive"><table class="table table-condensed">
-          <thead><tr><th>Key</th><th>Status</th><th>Env</th><th class="text-right">Usage</th><th></th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table></div>
+        <p class="text-muted" style="font-size:12px">Keys discovered during scans, added below, or imported via <code>hse keys import-json</code>, grouped by service and environment. Add a backup key for a service to rotate across when one hits a quota limit; revoke a compromised key (retained for audit, never used again). Raw-value export/import (<code>hse keys export</code>/<code>import-json</code>/<code>import-tsv</code>) stays CLI-only — it round-trips plaintext to a file.</p>
+        ${writeEnabled ? `
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+          <input id="pool-add-service" type="text" class="form-control input-sm" style="max-width:160px" placeholder="service (e.g. shodan)" autocomplete="off">
+          <input id="pool-add-key" type="password" class="form-control input-sm" style="max-width:260px" placeholder="key value" autocomplete="off">
+          <input id="pool-add-notes" type="text" class="form-control input-sm" style="max-width:160px" placeholder="notes (optional)" autocomplete="off">
+          <button id="pool-add-btn" class="btn btn-primary btn-sm">Add key</button>
+          <span id="pool-add-msg" class="text-muted" style="font-size:12px"></span>
+        </div>` : ''}
+        ${hasKeys
+          ? `<div class="table-responsive"><table class="table table-condensed">
+               <thead><tr><th>Key</th><th>Status</th><th>Env</th><th class="text-right">Usage</th><th></th></tr></thead>
+               <tbody>${rows}</tbody>
+             </table></div>`
+          : '<p class="text-muted" style="font-size:12px">No keys in the pool yet.</p>'}
       </div>
     </div>`;
 }

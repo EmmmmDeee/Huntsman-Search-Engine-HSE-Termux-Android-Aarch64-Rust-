@@ -100,6 +100,27 @@ pub(super) fn build_entities(
         result.push(pe);
     }
 
+    // ── LinkedIn vanity handle → Username pivot ───────────────────────────
+    // The `public_identifier` (the `/in/{slug}` handle) is a stable, cross-
+    // platform identity anchor in its own right — not merely a Person attribute
+    // — so mint it as a platform-prefixed Username the way the other social
+    // modules do, letting BFS pivot on the handle across sites.
+    if let Some(pid) = nonempty(&profile.public_identifier) {
+        let mut ue = Entity::new(
+            EntityKind::Username,
+            format!("linkedin:{pid}"),
+            0.80,
+            scan_id,
+        );
+        ue.tag("proxycurl");
+        ue.tag("linkedin");
+        ue.add_evidence(
+            Evidence::new(SRC, format!("LinkedIn vanity handle: {pid}"))
+                .with_attr("target", &target.value),
+        );
+        result.push(ue);
+    }
+
     // ── Address (needs ≥2 of city/state/country to be meaningful) ─────────
     let loc_parts: Vec<&str> = [
         nonempty(&profile.city),

@@ -31,6 +31,41 @@ pub fn is_placeholder_domain(host: &str) -> bool {
         )
 }
 
+/// True if a WHOIS contact string is a privacy-proxy / redaction placeholder
+/// rather than a real registrant identity — the generic `REDACTED FOR PRIVACY`
+/// masks, GoDaddy's `Registration Private` / `Domains By Proxy, LLC`,
+/// `WhoisGuard, Inc.`, `Contact Privacy Inc`, `Perfect Privacy, LLC`,
+/// `Withheld for Privacy`, the `.au` statutory-masking notice, and the GDPR
+/// family. Privacy protection is the DEFAULT on a large share of registered
+/// domains, and the SAME placeholder brand string recurs verbatim across
+/// thousands of unrelated domains — so emitting one as a Person/Organisation
+/// both fabricates an identity and risks the correlator FALSE-MERGING unrelated
+/// targets onto a single node. Centralised so every WHOIS contact call site
+/// applies the identical, complete guard.
+///
+/// Case-insensitive substring match. Deliberately does NOT match a bare
+/// `private` token: `... Private Limited` (India/Singapore/etc.) is a
+/// legitimate company suffix and must survive.
+#[must_use]
+pub fn is_whois_privacy_placeholder(s: &str) -> bool {
+    let l = s.to_ascii_lowercase();
+    const MARKERS: &[&str] = &[
+        "privacy",  // Contact Privacy, Perfect Privacy, PrivacyProtect, Withheld for Privacy
+        "redacted", // REDACTED FOR PRIVACY, Data Redacted
+        "data protected",
+        "not disclosed",
+        "registration private", // GoDaddy default registrant
+        "domains by proxy",     // GoDaddy proxy service
+        "whoisguard",           // Namecheap proxy service
+        "identity protection",  // Identity Protection Service
+        "statutory masking",    // .au registry redaction notice
+        "gdpr masked",
+        "withheld",    // Withheld for Privacy
+        "unavailable", // Name Unavailable / Currently Unavailable
+    ];
+    MARKERS.iter().any(|m| l.contains(m))
+}
+
 /// Host of a URL value is a [`is_placeholder_domain`]. Cheap hand-parse (no `url`
 /// crate dependency here): strips scheme, userinfo, port, and path/query/frag.
 pub(super) fn url_host_is_placeholder(u: &str) -> bool {

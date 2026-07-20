@@ -598,6 +598,169 @@ use crate::core::entity::Entity;
     }
 
     #[test]
+    fn a_dedicated_salt_column_marks_a_fast_hash_salted() {
+        use serde_json::json;
+        // A fast MD5 shipped with a SEPARATE `salt` column (Snusbase-style schema)
+        // must be tagged `salted` — without the column check it was mis-classified
+        // as unsalted/rainbow-crackable, overstating exposure. Mirrors OathNet.
+        let hash = "a1b2c3d4e5f60718293a4b5c6d7e8f90"; // 32-hex, not a common pw
+        let item = json!({ "username": "u", "password_hash": hash, "salt": "deadbeef" });
+        let (mut seen, mut result) = (HashSet::new(), ModuleResult::new());
+        extract_entities(&item, "u", "scan", "search", "k", &mut seen, &mut result);
+        let h = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Password && e.value == hash)
+            .expect("the hash surfaces as a Password entity");
+        assert!(h.has_tag("hash:md5"), "still identified as md5");
+        assert!(
+            h.has_tag("salted"),
+            "a non-empty dedicated salt column must mark the hash salted"
+        );
+
+        // Control: the SAME hash with NO salt column stays unsalted.
+        let bare = json!({ "username": "u", "password_hash": hash });
+        let (mut s2, mut r2) = (HashSet::new(), ModuleResult::new());
+        extract_entities(&bare, "u", "scan", "search", "k", &mut s2, &mut r2);
+        let h2 = r2
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Password && e.value == hash)
+            .expect("hash entity");
+        assert!(
+            !h2.has_tag("salted"),
+            "no appended salt and no salt column ⇒ not salted"
+        );
+    }
+
+    #[test]
+    fn iban_field_is_validated_before_minting_a_financial_node() {
+        use serde_json::json;
+        let is_iban = |e: &crate::core::entity::Entity| {
+            matches!(&e.kind, EntityKind::Other(k) if k == "iban")
+        };
+        // A valid IBAN (canonical GB test value, in grouped form) mints a financial
+        // pivot; the grouped spacing must be normalised before the mod-97 check.
+        let valid = json!({ "username": "u", "iban": "GB82 WEST 1234 5698 7654 32" });
+        let (mut seen, mut result) = (HashSet::new(), ModuleResult::new());
+        extract_entities(&valid, "u", "scan", "search", "k", &mut seen, &mut result);
+        let iban = result
+            .entities
+            .iter()
+            .find(|e| is_iban(e))
+            .expect("a valid IBAN must mint an Other(\"iban\") node");
+        assert!(iban.has_tag("financial"), "a validated IBAN is tagged financial");
+
+        // A bad check digit must mint NOTHING — no bogus financial artifact.
+        let bad = json!({ "username": "u", "iban": "GB82 WEST 1234 5698 7654 99" });
+        let (mut s2, mut r2) = (HashSet::new(), ModuleResult::new());
+        extract_entities(&bad, "u", "scan", "search", "k", &mut s2, &mut r2);
+        assert!(
+            !r2.entities.iter().any(is_iban),
+            "an invalid IBAN must not mint a financial artifact"
+        );
+    }
+
+    #[test]
+    fn domain_intel_subdomains_mint_only_the_targets_own_tree() {
+        use serde_json::json;
+        let item = json!({
+            "domain": "acme.com",
+            "subdomains": ["mail.acme.com", "vpn.acme.com", "evil.example.net"],
+        });
+        let has_dom = |r: &ModuleResult, v: &str| {
+            r.entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == v)
+        };
+
+        let (mut seen, mut result) = (HashSet::new(), ModuleResult::new());
+        extract_entities(
+            &item,
+            "acme.com",
+            "scan",
+            "domain_intel",
+            "k",
+            &mut seen,
+            &mut result,
+        );
+        assert!(has_dom(&result, "mail.acme.com"), "target subdomain minted");
+        assert!(has_dom(&result, "vpn.acme.com"), "target subdomain minted");
+        assert!(
+            !has_dom(&result, "evil.example.net"),
+            "a third-party host in the array must NOT be minted"
+        );
+        let sd = result
+            .entities
+            .iter()
+            .find(|e| e.value == "mail.acme.com")
+            .unwrap();
+        assert!(sd.has_tag("subdomain") && !sd.has_tag("breach"));
+
+        // Endpoint gate: the SAME record via a non-domain_intel endpoint mints
+        // no subdomains (only /domain/intel returns a subdomains array).
+        let (mut s2, mut r2) = (HashSet::new(), ModuleResult::new());
+        extract_entities(&item, "acme.com", "scan", "search", "k", &mut s2, &mut r2);
+        assert!(
+            !has_dom(&r2, "mail.acme.com"),
+            "subdomains are only minted for the domain_intel endpoint"
+        );
+    }
+
+    #[test]
+    fn discord_connected_accounts_mint_cross_platform_pivots() {
+        use serde_json::json;
+        let item = json!({
+            "discord_id": "80351110224678912",
+            "connected_accounts": [
+                { "type": "steam", "id": "76561197960287930", "name": "gaben" },
+                { "type": "twitch", "id": "44322889", "name": "ninja" },
+                { "type": "reddit", "name": "spez" },
+                // Junk shapes that must be ignored.
+                { "type": "", "name": "x" },
+                { "id": "no-type" },
+            ],
+        });
+        let has_u = |r: &ModuleResult, v: &str| {
+            r.entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username && e.value == v)
+        };
+        let (mut seen, mut result) = (HashSet::new(), ModuleResult::new());
+        extract_entities(
+            &item,
+            "80351110224678912",
+            "scan",
+            "discord_user",
+            "k",
+            &mut seen,
+            &mut result,
+        );
+        // Steam link → the pivot-feeding `steam:<id>` shape (fed to the steam pivot).
+        assert!(
+            has_u(&result, "steam:76561197960287930"),
+            "a steam connected_account must mint the steam:<id> pivot"
+        );
+        // Other platforms → `{type}:{handle}` (name preferred, id fallback).
+        assert!(has_u(&result, "twitch:ninja"), "twitch handle pivot");
+        assert!(has_u(&result, "reddit:spez"), "reddit handle pivot");
+        // Malformed entries must be ignored (no empty-type / no-handle nodes).
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username && e.value.starts_with(':')),
+            "an entry with an empty type must not mint a node"
+        );
+        let tw = result
+            .entities
+            .iter()
+            .find(|e| e.value == "twitch:ninja")
+            .unwrap();
+        assert!(tw.has_tag("discord-linked") && tw.has_tag("twitch"));
+    }
+
+    #[test]
     fn record_evidence_stamps_canonical_dbname_for_au105() {
         use serde_json::json;
         // AU-105 (credential reuse across breaches) groups records by the `dbname`
@@ -964,6 +1127,7 @@ use crate::core::entity::Entity;
             "T1591.002", // Business Relationships
             "T1592",     // Host Information (device fingerprints)
             "T1593.001", // Social Media
+            "T1597.002", // Purchase Technical Data (paid closed corpus)
         ] {
             assert!(t.contains(&id), "see_know must claim {id}");
             assert!(attack::technique(id).is_some(), "{id} must be catalogued");
@@ -1152,5 +1316,45 @@ use crate::core::entity::Entity;
                 .iter()
                 .any(|e| e.value == "subject@example.com" && e.has_tag(crate::core::tags::BREACH)),
             "no row identified the subject — no BREACH parent should be minted"
+        );
+    }
+
+    #[test]
+    fn absorb_search_hits_extracts_geo_from_search_records() {
+        // Regression: `/search` and `/search/deep` are SeekNow's broadest,
+        // highest-yield calls, yet this absorption path used to skip
+        // `extract_geo_entities` (the per-endpoint dispatch path and the pivot
+        // path both already called it), silently dropping every coordinate /
+        // timezone / location lead from the module's single most productive
+        // endpoint. A `/search` record carrying a lat/lon pair must now mint a
+        // Coordinates lead so the downstream geocode/overpass/wigle correlators
+        // get it.
+        let target = Target::new(TargetKind::Email, "subject@example.com");
+        let items = vec![serde_json::json!({
+            "email": "subject@example.com",
+            "dbname": "examplebreach.com",
+            "latitude": 40.7128,
+            "longitude": -74.0060,
+        })];
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut result = ModuleResult::new();
+        absorb_search_hits(
+            &items,
+            &target,
+            "subject@example.com",
+            "/api/v1/search",
+            "search",
+            "see-know.eu:test",
+            "scan-1",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Coordinates && e.has_tag("via:search")),
+            "a Coordinates lead from the /search record must now be extracted — \
+             it was dropped before the geo wiring was added to absorb_search_hits"
         );
     }

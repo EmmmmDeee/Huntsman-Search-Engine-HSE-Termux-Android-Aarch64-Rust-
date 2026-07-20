@@ -125,109 +125,134 @@ impl Module for CombSearch {
             return Ok(result);
         };
 
-        // Strict exact-match filter — COMB matches substrings, so discard every
-        // line whose identity is not EXACTLY this target before minting anything.
-        let mut seen_secret: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut seen_email: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut matched = 0usize;
-
-        for line in &resp.lines {
-            let Some((identity, secret)) = split_line(line) else {
-                continue;
-            };
-            if !line_matches_target(identity, target.kind, v) {
-                continue;
-            }
-            matched += 1;
-
-            // For a Domain target, the matched identity is an exposed ACCOUNT at
-            // the domain (a third party), surfaced as its own breach-tagged Email.
-            if target.kind == TargetKind::Domain
-                && identity.contains('@')
-                && seen_email.insert(identity.to_ascii_lowercase())
-            {
-                let mut e = Entity::new(
-                    EntityKind::Email,
-                    identity,
-                    DOMAIN_ACCOUNT_CONF,
-                    &ctx.scan_id,
-                );
-                e.tag(tags::BREACH);
-                e.tag("comb");
-                e.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!("Exposed account `{identity}` in COMB compilation"),
-                    )
-                    .with_attr("identity", identity)
-                    .with_attr("source", "proxynova-comb"),
-                );
-                result.push(e);
-            }
-
-            if seen_secret.len() >= MAX_SECRETS {
-                continue;
-            }
-            // Classify the secret: drop capture sentinels, skip mis-stored
-            // emails and junk where the "secret" merely echoes the identity.
-            match classify_credential_field(secret) {
-                CredentialField::Sentinel => continue,
-                CredentialField::Email => continue,
-                CredentialField::Secret => {}
-            }
-            if secret.eq_ignore_ascii_case(identity) {
-                // `user@x:user@x` — an echo, not a real password.
-                continue;
-            }
-            if !seen_secret.insert(secret.to_string()) {
-                continue;
-            }
-
-            let mut pw = Entity::new(
-                EntityKind::Password,
-                secret,
-                secret_confidence(target.kind),
-                &ctx.scan_id,
-            );
-            pw.tag(tags::BREACH);
-            pw.tag("credential");
-            pw.tag("comb");
-            // A username root is not a unique person; quarantine its secrets so
-            // they never corroborate the subject as confirmed.
-            if target.kind == TargetKind::Username {
-                pw.demote_to_candidate();
-            }
-            pw.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Leaked credential for `{identity}` in COMB compilation"),
-                )
-                .with_attr("identity", identity)
-                .with_attr("source", "proxynova-comb"),
-            );
-            result.push(pw);
+        for e in build_entities_from_lines(&resp.lines, target, &ctx.scan_id) {
+            result.push(e);
         }
-
-        if matched == 0 {
-            return Ok(result);
-        }
-
-        // Enrich the seed once with the aggregate exposure summary.
-        let mut seed = target.to_entity(seed_confidence(target.kind), &ctx.scan_id);
-        seed.tag(tags::BREACH);
-        seed.tag("comb");
-        seed.add_evidence(
-            Evidence::new(
-                SRC,
-                format!("{matched} leaked credential line(s) in the COMB compilation"),
-            )
-            .with_attr("matched_lines", matched.to_string())
-            .with_attr("source", "proxynova-comb"),
-        );
-        result.push(seed);
-
         Ok(result)
     }
+}
+
+/// Build the credential entities from the raw COMB `lines`. **Pure** (no
+/// network), so the exact-match attribution, the AU-047 typed-key stamping
+/// (`email`/`username`, the reused-secret join key) and the per-account/secret
+/// dedup are unit-tested directly off fixture lines. Returns nothing (not even
+/// the seed summary) when no line exactly matches the target.
+fn build_entities_from_lines(lines: &[String], target: &Target, scan_id: &str) -> Vec<Entity> {
+    let v = target.value.trim();
+    let mut out: Vec<Entity> = Vec::new();
+
+    // Strict exact-match filter — COMB matches substrings, so discard every
+    // line whose identity is not EXACTLY this target before minting anything.
+    let mut seen_secret: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_email: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut matched = 0usize;
+
+    for line in lines {
+        let Some((identity, secret)) = split_line(line) else {
+            continue;
+        };
+        if !line_matches_target(identity, target.kind, v) {
+            continue;
+        }
+        matched += 1;
+
+        // For a Domain target, the matched identity is an exposed ACCOUNT at
+        // the domain (a third party), surfaced as its own breach-tagged Email.
+        if target.kind == TargetKind::Domain
+            && identity.contains('@')
+            && seen_email.insert(identity.to_ascii_lowercase())
+        {
+            let mut e = Entity::new(EntityKind::Email, identity, DOMAIN_ACCOUNT_CONF, scan_id);
+            e.tag(tags::BREACH);
+            e.tag("comb");
+            e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("Exposed account `{identity}` in COMB compilation"),
+                )
+                .with_attr("identity", identity)
+                // The reused-secret detector / AU-047 join on a typed
+                // `email`/`username` key, not the raw `identity` — this
+                // account is an email at the target domain.
+                .with_attr("email", identity)
+                .with_attr("source", "proxynova-comb"),
+            );
+            out.push(e);
+        }
+
+        if seen_secret.len() >= MAX_SECRETS {
+            continue;
+        }
+        // Classify the secret: drop capture sentinels, skip mis-stored
+        // emails and junk where the "secret" merely echoes the identity.
+        match classify_credential_field(secret) {
+            CredentialField::Sentinel => continue,
+            CredentialField::Email => continue,
+            CredentialField::Secret => {}
+        }
+        if secret.eq_ignore_ascii_case(identity) {
+            // `user@x:user@x` — an echo, not a real password.
+            continue;
+        }
+        if !seen_secret.insert(secret.to_string()) {
+            continue;
+        }
+
+        let mut pw = Entity::new(
+            EntityKind::Password,
+            secret,
+            secret_confidence(target.kind),
+            scan_id,
+        );
+        pw.tag(tags::BREACH);
+        pw.tag("credential");
+        pw.tag("comb");
+        // A username root is not a unique person; quarantine its secrets so
+        // they never corroborate the subject as confirmed.
+        if target.kind == TargetKind::Username {
+            pw.demote_to_candidate();
+        }
+        // AU-047 / the `SharesSecretWith` link key on a TYPED `email` /
+        // `username` evidence attribute (not the raw `identity`), so stamp
+        // the account under its typed key. Without it a COMB-sourced password
+        // reused across ≥2 of the subject's accounts never participated in
+        // reused-secret detection. A Password entity is value-normalised, so
+        // the same secret found for several accounts accumulates all their
+        // typed keys onto one entity — exactly what the detector groups on.
+        let mut pw_ev = Evidence::new(
+            SRC,
+            format!("Leaked credential for `{identity}` in COMB compilation"),
+        )
+        .with_attr("identity", identity)
+        .with_attr("source", "proxynova-comb");
+        pw_ev = if identity.contains('@') {
+            pw_ev.with_attr("email", identity)
+        } else {
+            pw_ev.with_attr("username", identity)
+        };
+        pw.add_evidence(pw_ev);
+        out.push(pw);
+    }
+
+    if matched == 0 {
+        return out;
+    }
+
+    // Enrich the seed once with the aggregate exposure summary.
+    let mut seed = target.to_entity(seed_confidence(target.kind), scan_id);
+    seed.tag(tags::BREACH);
+    seed.tag("comb");
+    seed.add_evidence(
+        Evidence::new(
+            SRC,
+            format!("{matched} leaked credential line(s) in the COMB compilation"),
+        )
+        .with_attr("matched_lines", matched.to_string())
+        .with_attr("source", "proxynova-comb"),
+    );
+    out.push(seed);
+
+    out
 }
 
 /// Value-level admission: reject seeds too short / shapeless to match COMB

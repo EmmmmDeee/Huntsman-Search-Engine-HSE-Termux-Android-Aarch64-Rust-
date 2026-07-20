@@ -39,6 +39,12 @@ struct IpInfoResp {
     postal: Option<String>,
     #[serde(default)]
     timezone: Option<String>,
+    /// ipinfo.io flags anycast IPs (a single address announced from many sites).
+    /// Their `loc`/city is the geographic centroid of the announcement, not any
+    /// one host's real location — so it must not seed a subject Coordinates or
+    /// Address, exactly like the per-IP CDN/anycast-edge trust gate.
+    #[serde(default)]
+    anycast: Option<bool>,
 }
 
 /// Map an ipinfo.io record to its entities. **Pure** (no network/IO): yields up
@@ -46,6 +52,11 @@ struct IpInfoResp {
 /// city/region/country, an `Organisation` plus the leading `Asn` parsed out of
 /// the `org` string (`"AS15169 Google LLC"`), and the PTR `Domain` from a
 /// dotted `hostname`. Each is independent; absent/blank fields are skipped.
+///
+/// When ipinfo reports `anycast: true`, the geolocation is the centroid of a
+/// multi-site announcement rather than any host's real position, so the
+/// `Coordinates`/`Address` are suppressed — but the ASN/Organisation and PTR
+/// hostname (which describe the network, not a place) still emit.
 fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
     let mut out = Vec::new();
 
@@ -62,7 +73,12 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
         return out;
     }
 
-    if let Some(loc) = &data.loc {
+    // Response-level anycast flag: suppresses the place-based findings
+    // (Coordinates/Address) while leaving the network-based ones intact. This
+    // catches anycast IPs the static per-IP gate above doesn't enumerate.
+    let suppress_geo = data.anycast == Some(true);
+
+    if let Some(loc) = data.loc.as_ref().filter(|_| !suppress_geo) {
         let mut parts = loc.split(',');
         if let (Some(lat_s), Some(lon_s)) = (parts.next(), parts.next())
             && let (Ok(lat), Ok(lon)) = (lat_s.trim().parse::<f64>(), lon_s.trim().parse::<f64>())
@@ -103,7 +119,7 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
     let city = data.city.as_deref().unwrap_or("");
     let region = data.region.as_deref().unwrap_or("");
     let country = data.country.as_deref().unwrap_or("");
-    if !city.is_empty() {
+    if !city.is_empty() && !suppress_geo {
         let addr = crate::util::geo::compose_address(city, region, country);
         let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM_PLUS, scan_id);
         ae.tag("ipinfo");

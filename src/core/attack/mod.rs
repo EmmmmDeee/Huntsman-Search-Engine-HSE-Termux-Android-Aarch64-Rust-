@@ -9,14 +9,27 @@
 //! traced to the ATT&CK technique that produced it, and operators can report
 //! Reconnaissance *coverage* and gaps the way they would any ATT&CK assessment.
 //!
-//! This is a curated subset of TA0043 — only the techniques HSE's keyless,
-//! Termux-viable collection actually performs. It is **not** the full ATT&CK
-//! corpus (a ~mb STIX bundle the project deliberately avoids vendoring). Pure
-//! data + lookups; no I/O. A drift-guard test pins that every technique the
-//! module map references exists in the catalogue here, so the two can't diverge.
+//! This catalogues the **complete** Reconnaissance tactic (TA0043): all ten
+//! techniques and every sub-technique, so the tool holds the whole tactic rather
+//! than only the slice its own modules exercise. That completeness is what makes
+//! a *coverage* report honest — a technique HSE performs no collection for (e.g.
+//! `T1598` Phishing for Information) shows as a real, named gap instead of being
+//! silently absent from the vocabulary. It is deliberately scoped to TA0043: the
+//! other Enterprise tactics describe post-compromise adversary behaviour a
+//! passive OSINT collector does not perform, so claiming them would be a false
+//! coverage assertion — the one thing this evidentiary tool must never make.
+//! Pure data + lookups; no I/O (no ~mb STIX bundle is vendored). A drift-guard
+//! test pins that every technique the module map references exists here, and a
+//! completeness test pins that every real TA0043 id is present, so neither the
+//! catalogue nor the module map can silently drift.
 
 use crate::core::module::ModuleCategory;
 use serde::Serialize;
+
+/// The MITRE ATT&CK Enterprise tactic this catalogue represents in full.
+pub const TACTIC_ID: &str = "TA0043";
+/// Human-readable name of [`TACTIC_ID`].
+pub const TACTIC_NAME: &str = "Reconnaissance";
 
 /// One ATT&CK Reconnaissance technique (or sub-technique) HSE's collection maps
 /// to. `id` is the canonical ATT&CK identifier (`T1596.002`); sub-techniques
@@ -65,6 +78,14 @@ pub const RECONNAISSANCE: &[Technique] = &[
         name: "DNS",
     },
     Technique {
+        id: "T1590.003",
+        name: "Network Trust Dependencies",
+    },
+    Technique {
+        id: "T1590.004",
+        name: "Network Topology",
+    },
+    Technique {
         id: "T1590.005",
         name: "IP Addresses",
     },
@@ -85,6 +106,10 @@ pub const RECONNAISSANCE: &[Technique] = &[
         name: "Business Relationships",
     },
     Technique {
+        id: "T1591.003",
+        name: "Identify Business Tempo",
+    },
+    Technique {
         id: "T1591.004",
         name: "Identify Roles",
     },
@@ -99,6 +124,14 @@ pub const RECONNAISSANCE: &[Technique] = &[
     Technique {
         id: "T1592.002",
         name: "Software",
+    },
+    Technique {
+        id: "T1592.003",
+        name: "Firmware",
+    },
+    Technique {
+        id: "T1592.004",
+        name: "Client Configurations",
     },
     Technique {
         id: "T1593",
@@ -168,12 +201,50 @@ pub const RECONNAISSANCE: &[Technique] = &[
         id: "T1597.001",
         name: "Threat Intel Vendors",
     },
+    Technique {
+        id: "T1597.002",
+        name: "Purchase Technical Data",
+    },
+    Technique {
+        id: "T1598",
+        name: "Phishing for Information",
+    },
+    Technique {
+        id: "T1598.001",
+        name: "Spearphishing Service",
+    },
+    Technique {
+        id: "T1598.002",
+        name: "Spearphishing Attachment",
+    },
+    Technique {
+        id: "T1598.003",
+        name: "Spearphishing Link",
+    },
+    Technique {
+        id: "T1598.004",
+        name: "Spearphishing Voice",
+    },
 ];
 
 /// The catalogued technique with this ID, if any.
 #[must_use]
 pub fn technique(id: &str) -> Option<&'static Technique> {
     RECONNAISSANCE.iter().find(|t| t.id == id)
+}
+
+/// The complete-tactic techniques for which `is_covered` returns `false` — the
+/// honest Reconnaissance *gaps* for a coverage set (typically the union of every
+/// module's [`crate::core::module::Module::attack_techniques`]). Returned in the
+/// catalogue's sorted order. Because the catalogue is the full TA0043 tactic, a
+/// gap report built on this names exactly which techniques HSE performs no
+/// collection for, instead of quietly implying total coverage.
+#[must_use]
+pub fn uncovered(is_covered: impl Fn(&str) -> bool) -> Vec<&'static Technique> {
+    RECONNAISSANCE
+        .iter()
+        .filter(|t| !is_covered(t.id))
+        .collect()
 }
 
 /// The ATT&CK Reconnaissance technique IDs a module's functional

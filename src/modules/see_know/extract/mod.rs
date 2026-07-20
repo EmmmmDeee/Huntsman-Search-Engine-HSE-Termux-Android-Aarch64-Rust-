@@ -101,54 +101,6 @@ fn record_evidence(item: &Value, dbname: &str, endpoint: &str, key_fp: &str) -> 
     ev
 }
 
-/// Normalized identity-demographic tags (`dob:` / `gender:` / `age:`) for the
-/// subject node, read across the key spellings the providers use for the same
-/// datum. Returned in a stable order; empty when the record carries no
-/// demographics. The caller stamps these on the Person so the subject's
-/// headline surfaces its demographics as first-class, queryable tags.
-fn identity_tags(item: &Value) -> Vec<String> {
-    let mut tags = Vec::new();
-    // Date of birth — one canonical `dob:` tag from whichever key holds it.
-    if let Some(dob) = val_str(item, "date_birth")
-        .or_else(|| val_str(item, "birthdate"))
-        .or_else(|| val_str(item, "date_of_birth"))
-        .or_else(|| val_str(item, "dob"))
-    {
-        let d = dob.trim();
-        if !d.is_empty() {
-            tags.push(format!("dob:{d}"));
-        }
-    }
-    // Gender — collapse the obvious spellings to a single uppercase initial so
-    // `gender:M` from one record merges with `gender:male` from another.
-    if let Some(g) = val_str(item, "gender") {
-        let gt = g.trim();
-        if !gt.is_empty() {
-            let norm = match gt.to_ascii_lowercase().as_str() {
-                "m" | "male" => "M",
-                "f" | "female" => "F",
-                _ => gt,
-            };
-            tags.push(format!("gender:{norm}"));
-        }
-    }
-    // Age — a number or a numeric string; skip a placeholder/zero.
-    let age = item.get("age").map(|a| {
-        if a.is_number() {
-            a.to_string()
-        } else {
-            a.as_str().unwrap_or("").trim().to_string()
-        }
-    });
-    if let Some(a) = age
-        && !a.is_empty()
-        && a != "0"
-    {
-        tags.push(format!("age:{a}"));
-    }
-    tags
-}
-
 pub(super) fn extract_entities(
     item: &Value,
     target_value: &str,
@@ -233,7 +185,7 @@ pub(super) fn extract_entities(
         // the raw-record evidence the full-field fold already carries. The
         // dossier headline then reads "Ali Kareem [dob:…] [gender:M]" directly,
         // and the tags merge by UID across every record that re-states them.
-        for tag in identity_tags(item) {
+        for tag in crate::util::identity::identity_tags(item) {
             person.tag(tag);
         }
         push_breach_entity(result, person, &ev, &[]);
@@ -324,6 +276,64 @@ pub(super) fn extract_entities(
             &["steam"],
         );
     }
+    // ── Discord connected_accounts → cross-platform identity pivots. ──
+    // Discord's `connected_accounts` (a.k.a. `connections`) array is its
+    // canonical cross-platform identity edge and the highest-yield artifact the
+    // discord/user endpoint returns. Each entry is `{type, id, name}`. A `steam`
+    // link mints the SAME `steam:<id>` Username the direct field does, so it
+    // plugs straight into the existing, already-tested steam pivot; every other
+    // platform mints a `{type}:{handle}` Username matching the breach_rich handle
+    // convention. Shape-gated (entry is an object with a short alnum `type` and
+    // an id/name) so an unrelated array named `connections` can't inject noise.
+    for arr_key in ["connected_accounts", "connections"] {
+        let Some(arr) = item.get(arr_key).and_then(Value::as_array) else {
+            continue;
+        };
+        for conn in arr {
+            let Some(obj) = conn.as_object() else {
+                continue;
+            };
+            let ty = obj
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if ty.is_empty() || !ty.chars().all(|c| c.is_ascii_alphanumeric()) {
+                continue;
+            }
+            let id = obj.get("id").and_then(Value::as_str).map(str::trim);
+            let name = obj.get("name").and_then(Value::as_str).map(str::trim);
+            // Steam link → the pivot-feeding `steam:<id>` shape when the id validates.
+            if ty == "steam"
+                && let Some(sid) = id.filter(|s| looks_like_steam_id(s))
+                && seen.insert(format!("@steam:{sid}"))
+            {
+                push_breach_entity(
+                    result,
+                    Entity::new(EntityKind::Username, format!("steam:{sid}"), 0.55, scan_id),
+                    &ev,
+                    &["steam", "discord-linked"],
+                );
+                continue;
+            }
+            // Any other platform → a `{type}:{handle}` Username pivot. Prefer the
+            // human handle (`name`); fall back to the numeric id.
+            let handle = name.filter(|s| !s.is_empty()).or(id);
+            if let Some(h) = handle.filter(|s| s.len() >= 2)
+                && seen.insert(format!("@{ty}:{}", h.to_lowercase()))
+            {
+                // Borrow `ty` for the tag slice (no per-entry allocation/leak).
+                let tags = [ty.as_str(), "discord-linked"];
+                push_breach_entity(
+                    result,
+                    Entity::new(EntityKind::Username, format!("{ty}:{h}"), 0.55, scan_id),
+                    &ev,
+                    &tags,
+                );
+            }
+        }
+    }
     // Leaked credentials were previously dropped entirely — capture them as
     // first-class Password entities (operator policy: never redacted). The full
     // record (including any hash) is already on `ev`, so nothing is lost even
@@ -375,7 +385,16 @@ pub(super) fn extract_entities(
                             .to_string(),
                         );
                     }
-                    if crate::util::hashcat::is_salted(p) {
+                    // Salted if the digest itself carries an appended salt OR the
+                    // record has a dedicated `salt` column (Snusbase-style schema).
+                    // Without the column check a fast MD5/SHA-1 shipped alongside a
+                    // separate salt was mis-tagged `crackable:fast` — overstating
+                    // exposure and inviting a bogus rainbow-table pivot. OathNet's
+                    // breach path already reads this field; SeekNow was the outlier
+                    // on its own schema.
+                    if crate::util::hashcat::is_salted(p)
+                        || val_str(item, "salt").is_some_and(|s| !s.trim().is_empty())
+                    {
                         tags.push("salted".to_string());
                     }
                     let cracked = crate::util::hashcat::crack_common(p);
@@ -404,6 +423,44 @@ pub(super) fn extract_entities(
                     break;
                 }
             }
+        }
+    }
+
+    // ── IBAN — a leaked bank-account number ───────────────────────────────
+    // Emit ONLY when the ISO 7064 mod-97 check digit validates (via the shared
+    // `util::extract::iban_is_valid`), so a redacted sentinel or a transcription
+    // error in the `iban` field never mints a bogus financial artifact — the same
+    // discipline OathNet's breach path already applies. Before this, SeekNow's
+    // `iban` field fell through to breach_rich's UNVALIDATED catch-all, minting an
+    // `Other("iban")` node for ANY string (bad check digit included); `iban` is
+    // now in `RICH_DETAIL_SKIP` so the catch-all no longer emits it unvalidated.
+    // No dedicated financial `EntityKind` exists, so it lands as `Other("iban")`
+    // tagged `financial` for the dossier/export.
+    if let Some(iban) = val_str(item, "iban") {
+        // Normalise (strip whitespace, upper-case) BEFORE validating: the shared
+        // `iban_is_valid` requires an all-alphanumeric body, and breach exports
+        // routinely store the grouped "GB82 WEST …" form — the same normalisation
+        // OathNet's validator wrapper applies. The DISPLAYED value keeps the
+        // trimmed original spacing, exactly as OathNet emits it.
+        let normalized: String = iban
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+            .to_ascii_uppercase();
+        if crate::util::extract::iban_is_valid(&normalized)
+            && seen.insert(format!("@iban:{normalized}"))
+        {
+            push_breach_entity(
+                result,
+                Entity::new(
+                    EntityKind::Other("iban".to_string()),
+                    iban.trim(),
+                    0.70,
+                    scan_id,
+                ),
+                &ev,
+                &["iban", "financial"],
+            );
         }
     }
 
@@ -472,6 +529,36 @@ pub(super) fn extract_entities(
     // valuable stays locked inside the evidence blob. Operator directive: "I
     // want everything. Maximum raw data."
     extract_rich_detail(item, scan_id, &ev, seen, result);
+
+    // ── /domain/intel subdomains → the target's OWN attack surface. ──
+    // Only the domain/intel response carries a `subdomains` array. Each is a
+    // first-class seed the dns_intel/cert_intel/crtsh/web_crawler modules fan out
+    // from — a paid domain-intel corpus may hold subdomains the free CT/DNS stack
+    // misses. Gated on `is_or_subdomain_of(sub, queried_domain)` so ONLY the
+    // target's own tree is minted, never a third-party host the record merely
+    // mentions (unlike the deliberately un-minted stealer URL host below). Not
+    // tagged `breach` — a subdomain is infrastructure, exactly like the `domain`
+    // field below. Pushed inside the quarantine range so a non-matching record's
+    // subdomains demote with the rest.
+    if endpoint == "domain_intel"
+        && let Some(subs) = item.get("subdomains").and_then(Value::as_array)
+    {
+        for sub in subs {
+            let Some(raw) = sub.as_str() else { continue };
+            let s = raw.trim().trim_end_matches('.').to_ascii_lowercase();
+            if crate::util::domains::looks_like_domain(&s)
+                && crate::util::domains::is_or_subdomain_of(&s, target_value)
+                && seen.insert(format!("@subdomain:{s}"))
+            {
+                let mut e = Entity::new(EntityKind::Domain, &s, 0.60, scan_id);
+                e.tag("see-know");
+                e.tag("subdomain");
+                e.tag("dns");
+                e.add_evidence(ev.clone());
+                result.push(e);
+            }
+        }
+    }
 
     // Quarantine a non-matching record's identity/credential/raw-detail entities
     // to CANDIDATE strength with a `candidate` tag — the same demotion
@@ -634,5 +721,37 @@ mod tests {
         let mut result = ModuleResult::new();
         extract_associates(&item, "Someone", "s", "fp", &mut seen, &mut result);
         assert!(result.entities.is_empty());
+    }
+
+    #[test]
+    fn associates_reject_username_derived_and_null_pair_names() {
+        // A relationship-array element that is a doubled/slug username (breach
+        // `full_name = "{username} {username}"`) or the "\N \N" SQL-null pair must
+        // NOT be minted as a fabricated associate Person — the same guard the
+        // subject-name path applies. A real associate in the same array survives.
+        let item = json!({
+            "known_associates": ["rhino-ryno23 rhino-ryno23", "\\N \\N", "Jane Smith"],
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_associates(&item, "Kyle Diegmann", "s", "fp", &mut seen, &mut result);
+
+        let names: std::collections::BTreeSet<&str> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Person)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert!(
+            !names
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case("rhino-ryno23 rhino-ryno23")),
+            "doubled-username associate must be rejected, not minted as a Person"
+        );
+        assert!(
+            names.contains("Jane Smith"),
+            "a real associate in the same array is unaffected"
+        );
+        assert_eq!(names.len(), 1, "only the legitimate associate survives");
     }
 }

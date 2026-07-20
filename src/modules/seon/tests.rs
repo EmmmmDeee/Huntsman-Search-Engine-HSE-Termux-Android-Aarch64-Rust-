@@ -297,6 +297,28 @@ fn email_registrant_pii_skips_redacted_privacy_placeholders() {
 }
 
 #[test]
+fn email_registrant_pii_skips_godaddy_privacy_proxy_placeholders() {
+    // GoDaddy's default masked registrant ("Registration Private") and its proxy
+    // brand ("Domains By Proxy, LLC") contain none of the old local markers
+    // (privacy/redacted/data protected) — the too-narrow local guard let them
+    // through as a fabricated Person/Organisation. The shared whois guard lists
+    // both, so delegating to it rejects them while the real domain still surfaces.
+    let es = email(
+        r#"{"data":{"associated_domain_registrations":{"domains":[{
+            "domain_name":"masked2.example",
+            "full_name":"Registration Private",
+            "company_name":"Domains By Proxy, LLC"
+        }]}}}"#,
+    );
+    assert!(es.iter().all(|e| e.kind != EntityKind::Person));
+    assert!(es.iter().all(|e| e.kind != EntityKind::Organisation));
+    assert!(
+        es.iter()
+            .any(|e| e.kind == EntityKind::Domain && e.value == "masked2.example")
+    );
+}
+
+#[test]
 fn email_registrant_name_requires_a_real_full_name_not_a_handle() {
     // A single-token "name" (no space) is not admitted as a Person, mirroring
     // whois's own registrant-name guard.

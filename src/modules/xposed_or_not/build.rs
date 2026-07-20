@@ -181,7 +181,31 @@ fn attach_breach_detail_attrs(mut ev: Evidence, details: &[BreachDetail]) -> Evi
     if !descriptions.is_empty() {
         ev = ev.with_attr("breach_descriptions", descriptions.join(" | "));
     }
+    // The earliest confirmed exposure date across all breaches — the subject's
+    // first-known compromise, a temporal anchor previously computed nowhere.
+    // Full ISO dates sort lexicographically, so `min` is the earliest.
+    if let Some(earliest) = details
+        .iter()
+        .filter_map(|d| d.xposed_date.as_deref())
+        .map(str::trim)
+        .filter(|s| is_full_iso_date(s))
+        .min()
+    {
+        ev = ev.with_attr("earliest_breach_date", earliest);
+    }
     ev
+}
+
+/// True for a full `YYYY-MM-DD` calendar date (the only shape that sorts
+/// correctly as a string); a bare year or empty value is rejected.
+fn is_full_iso_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    s.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[..4].iter().all(u8::is_ascii_digit)
+        && b[5..7].iter().all(u8::is_ascii_digit)
+        && b[8..].iter().all(u8::is_ascii_digit)
 }
 
 /// Fetch breach analytics from the XposedOrNot analytics endpoint. Best-effort.

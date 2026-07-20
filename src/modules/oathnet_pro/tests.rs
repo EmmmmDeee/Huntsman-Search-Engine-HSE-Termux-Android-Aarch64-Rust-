@@ -187,6 +187,71 @@ use crate::core::confidence;
     }
 
     #[test]
+    fn person_carries_demographics_and_steam_id_pivots() {
+        use serde_json::json;
+        // Parity with SeekNow: a breach row with a real name + demographics + a
+        // valid SteamID64. Today the Person carries neither demographic tag and
+        // the SteamID64 is discarded entirely.
+        let item = json!({
+            "email": "jane.roe@example.com",
+            "full_name": "Jane Roe",
+            "gender": "female",
+            "date_birth": "1990-01-01",
+            "steam_id": "76561197960287930"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(
+            &item,
+            "jane.roe@example.com",
+            "scan",
+            "oathnet.org:test",
+            &mut seen,
+            &mut result,
+        );
+
+        let person = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Person && e.value == "Jane Roe")
+            .expect("Person entity from full_name");
+        assert!(
+            person.has_tag("gender:F"),
+            "gender must be normalized + stamped on the Person"
+        );
+        assert!(
+            person.has_tag("dob:1990-01-01"),
+            "dob must be stamped on the Person"
+        );
+
+        let steam = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Username && e.value == "steam:76561197960287930")
+            .expect("SteamID64 must mint a steam:<id> Username pivot");
+        assert!(steam.has_tag("steam"));
+
+        // A 16-digit (invalid) steam id must NOT pivot — the strict shared gate.
+        let mut seen2 = HashSet::new();
+        let mut result2 = ModuleResult::new();
+        extract_breach_entities(
+            &json!({ "steam_id": "7656119796028793" }),
+            "x",
+            "scan",
+            "oathnet.org:test",
+            &mut seen2,
+            &mut result2,
+        );
+        assert!(
+            !result2
+                .entities
+                .iter()
+                .any(|e| e.value.starts_with("steam:")),
+            "an invalid SteamID64 must not pivot"
+        );
+    }
+
+    #[test]
     fn extract_stealer_entities_characterization() {
         use serde_json::json;
         let item = json!({
@@ -380,6 +445,44 @@ use crate::core::confidence;
                 .iter()
                 .any(|e| e.kind == EntityKind::Credential),
             "the credential pivot is still emitted"
+        );
+    }
+
+    #[test]
+    fn absence_sentinels_do_not_mint_country_employer_or_location_nodes() {
+        use serde_json::json;
+        // A breach page where rows carry the MySQL NULL-export marker `\N` (or a
+        // bracketed redaction) in employer/country/location must NOT mint shared
+        // nodes — else all those unrelated strangers fuse onto one Organisation/
+        // Address, a false positive.
+        let sentinel = json!({
+            "email": "a@example.com",
+            "employer": "\\N",
+            "country": "\\N",
+            "location": "[REDACTED]",
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&sentinel, "a@example.com", "scan", "oathnet.org:t", &mut seen, &mut result);
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Organisation),
+            "a \\N employer must not mint an Organisation node"
+        );
+
+        // Control: a REAL employer still mints the Organisation pivot.
+        let real = json!({ "email": "b@example.com", "employer": "Acme Pty Ltd" });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&real, "b@example.com", "scan", "oathnet.org:t", &mut seen, &mut result);
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Organisation && e.value == "Acme Pty Ltd"),
+            "a real employer must still mint the Organisation pivot"
         );
     }
 
@@ -765,6 +868,7 @@ use crate::core::confidence;
             "T1590.005",
             "T1591.001",
             "T1591.002",
+            "T1597.002",
         ] {
             assert!(t.contains(&id), "oathnet_pro must claim {id}, got {t:?}");
             assert!(attack::technique(id).is_some(), "{id} must be catalogued");

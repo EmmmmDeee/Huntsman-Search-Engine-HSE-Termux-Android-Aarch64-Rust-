@@ -70,6 +70,7 @@ fn attack_techniques_reflect_the_full_shared_breach_rich_extraction() {
         "T1591.002",
         "T1592",
         "T1593.001",
+        "T1597.002",
     ] {
         assert!(t.contains(&id), "dehashed must claim {id}, got {t:?}");
         assert!(attack::technique(id).is_some(), "{id} must be catalogued");
@@ -434,4 +435,30 @@ fn multi_value_fields_surface_every_value() {
     assert!(has(&result, EntityKind::Email, "a.b@work.com"));
     assert!(has(&result, EntityKind::Password, "hunter2"));
     assert!(has(&result, EntityKind::Password, "letmein99"));
+}
+
+#[test]
+fn username_derived_name_is_not_minted_as_person() {
+    // A DeHashed record whose `name` is a doubled username
+    // ("rhino-ryno23 rhino-ryno23") clears the space + non-sentinel checks yet is
+    // a fabricated Person — the same pattern guarded for oathnet_pro/see_know. It
+    // must never be minted as an EntityKind::Person.
+    let entries = vec![entry_named(
+        "rhino-ryno23 rhino-ryno23",
+        json!("Collection#1"),
+    )];
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_records(
+        &entries,
+        "rhino-ryno23 rhino-ryno23",
+        "fp",
+        "s",
+        &mut seen,
+        &mut result,
+    );
+    assert!(
+        !has(&result, EntityKind::Person, "rhino-ryno23 rhino-ryno23"),
+        "a username-derived name must never be minted as a Person"
+    );
 }

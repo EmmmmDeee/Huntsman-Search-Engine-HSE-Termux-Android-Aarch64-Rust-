@@ -137,6 +137,45 @@ use super::*;
     }
 
     #[test]
+    fn anycast_flag_suppresses_geo_but_keeps_network_entities() {
+        // A public resolver on an anycast IP (8.8.8.8 is not in the static CDN
+        // gate, so the response `anycast: true` is what must catch it): the
+        // loc/city is a multi-site centroid, not a real place — drop Coordinates
+        // and Address, but keep the ASN/Organisation and PTR hostname.
+        let d = data(
+            r#"{"ip":"8.8.8.8","hostname":"dns.google","city":"Mountain View",
+                "region":"California","country":"US","loc":"37.4056,-122.0775",
+                "org":"AS15169 Google LLC","anycast":true}"#,
+        );
+        let ents = build_entities("8.8.8.8", &d, "s");
+        assert!(
+            one(&ents, EntityKind::Coordinates).is_none(),
+            "anycast geolocation is a centroid, not a subject location"
+        );
+        assert!(
+            one(&ents, EntityKind::Address).is_none(),
+            "anycast address is infrastructure, not the subject's"
+        );
+        // Network-describing entities survive the geo suppression.
+        assert_eq!(
+            one(&ents, EntityKind::Organisation).unwrap().value,
+            "AS15169 Google LLC"
+        );
+        assert_eq!(one(&ents, EntityKind::Asn).unwrap().value, "AS15169");
+        assert_eq!(one(&ents, EntityKind::Domain).unwrap().value, "dns.google");
+
+        // Counter-case: the identical record with anycast absent/false DOES
+        // yield the geo entities, proving the flag is what suppressed them.
+        let not_anycast = data(
+            r#"{"ip":"8.8.8.8","city":"Mountain View","region":"California",
+                "country":"US","loc":"37.4056,-122.0775","anycast":false}"#,
+        );
+        let ok = build_entities("8.8.8.8", &not_anycast, "s");
+        assert!(ok.iter().any(|e| e.kind == EntityKind::Coordinates));
+        assert!(ok.iter().any(|e| e.kind == EntityKind::Address));
+    }
+
+    #[test]
     fn null_island_loc_is_dropped() {
         // 0,0 (and sub-threshold magnitudes) is a placeholder, not a location.
         let ents = build_entities("1.2.3.4", &data(r#"{"loc":"0,0"}"#), "s");

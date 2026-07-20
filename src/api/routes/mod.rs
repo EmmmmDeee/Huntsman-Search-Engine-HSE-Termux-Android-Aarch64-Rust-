@@ -350,6 +350,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/keys/status", get(settings_handlers::keys_status))
         .route("/keys/harvest", get(key_harvest_handlers::keys_harvest))
         .route("/keys/pool", get(settings_handlers::keys_pool_get))
+        .route("/keys/pool/add", post(settings_handlers::keys_pool_add))
         .route(
             "/keys/pool/revoke",
             post(settings_handlers::keys_pool_revoke),

@@ -181,6 +181,49 @@ use super::*;
     }
 
     #[test]
+    fn child_entities_surface_announcing_asn_and_ptr_host() {
+        let r = results(
+            r#"{"results":[
+              {"page":{"domain":"example.com","ip":"93.184.216.34","asn":"AS15133","asnname":"EDGECAST","ptr":"93.184.216.34.example-cdn.net"}},
+              {"page":{"domain":"example.com","ip":"104.21.5.100","asn":"as13335","ptr":"example.com"}}
+            ]}"#,
+        );
+        let es = child_entities(&summarize(&r), "example.com", "s");
+        let have = |k: EntityKind, v: &str| es.iter().any(|e| e.kind == k && e.value == v);
+
+        // Announcing ASN → Asn pivot, re-emitted canonically (upper `AS` + digits)
+        // regardless of the source field's casing (`AS15133`, `as13335`).
+        assert!(have(EntityKind::Asn, "AS15133"));
+        assert!(have(EntityKind::Asn, "AS13335"));
+
+        // PTR host → Domain pivot (tagged `ptr`)…
+        let ptr = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Domain && e.value == "93.184.216.34.example-cdn.net")
+            .expect("PTR host surfaces as a Domain");
+        assert!(ptr.has_tag("ptr"));
+        // …but a PTR equal to the seed target is suppressed (no self-echo).
+        assert!(!have(EntityKind::Domain, "example.com"));
+    }
+
+    #[test]
+    fn malformed_asn_is_never_a_pivot() {
+        // A blank/garbage ASN field must not become an `AS`-junk entity.
+        let r = results(
+            r#"{"results":[
+              {"page":{"domain":"x.example","ip":"1.1.1.1","asn":"AS"}},
+              {"page":{"domain":"x.example","ip":"1.1.1.1","asn":"notanasn"}}
+            ]}"#,
+        );
+        let es = child_entities(&summarize(&r), "x.example", "s");
+        assert_eq!(
+            es.iter().filter(|e| e.kind == EntityKind::Asn).count(),
+            0,
+            "neither the empty `AS` nor a non-`AS<digits>` string is a valid ASN"
+        );
+    }
+
+    #[test]
     fn child_entities_surface_domains_and_urls_and_drop_seed_echo() {
         let r = results(
             r#"{"results":[

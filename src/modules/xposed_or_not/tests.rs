@@ -119,6 +119,42 @@ fn analytics_without_desc_omits_descriptions_attr() {
     assert!(!ev.attributes.contains_key("breach_descriptions"));
 }
 
+#[test]
+fn analytics_surfaces_the_earliest_full_iso_breach_date() {
+    // Across three breaches the earliest full YYYY-MM-DD date is the subject's
+    // first-known compromise; a bare-year value must not win (it is not a full
+    // date and would sort before any real date).
+    let breaches = vec!["A".into(), "B".into(), "C".into()];
+    let detail = |name: &str, date: Option<&str>| BreachDetail {
+        breach: Some(name.into()),
+        xposed_data: Some("Emails".into()),
+        xposed_records: Some(1000),
+        xposure_desc: None,
+        xposed_date: date.map(String::from),
+        password_risk: None,
+    };
+    let analytics = AnalyticsResp {
+        exposed_breaches: Some(AnalyticsBreaches {
+            breaches_details: Some(vec![
+                detail("A", Some("2015-03-10")),
+                detail("B", Some("2012-06-05")),
+                detail("C", Some("2019")), // bare year — not a full date, ignored
+            ]),
+        }),
+        pastes_summary: None,
+    };
+    let target = Target::new(TargetKind::Email, "a@b.com");
+    let r = build_result(&breaches, Some(&analytics), &target, "s");
+    let ev = &r.entities[0].evidence[0];
+    assert_eq!(
+        ev.attributes
+            .get("earliest_breach_date")
+            .map(String::as_str),
+        Some("2012-06-05"),
+        "the earliest full ISO date wins; a bare year is ignored"
+    );
+}
+
 // Keep NOTABLE_BREACHES referenced so the import is used
 #[test]
 fn notable_breaches_non_empty() {

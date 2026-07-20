@@ -5,7 +5,7 @@ use crate::core::entity::EntityKind;
 use crate::core::module::Module;
 use crate::core::module::{ModuleContext, ModuleCost};
 use crate::core::scan::{Target, TargetKind};
-use crate::util::geo::is_valid_coords;
+use crate::util::geo::is_plausible_provider_coord;
 
 #[test]
 fn accepts_ip_and_phone() {
@@ -111,14 +111,29 @@ async fn national_number_without_marker_yields_no_coordinate() {
 }
 
 #[test]
-fn ip_geo_uses_shared_coord_validator() {
-    // geo_intel now gates both IP sources on util::geo::is_valid_coords,
-    // so out-of-range / Null-Island fixes from a hostile or buggy API are
-    // rejected rather than becoming high-confidence Coordinates entities.
-    assert!(is_valid_coords(-27.4766, 153.0166));
-    assert!(!is_valid_coords(0.0, 0.0));
-    assert!(!is_valid_coords(999.0, 10.0));
-    assert!(!is_valid_coords(10.0, f64::NAN));
+fn ip_geo_rejects_the_null_island_band_not_just_exact_zero() {
+    // geo_intel now gates both coarse free-tier IP sources on the null-island
+    // BAND guard (is_plausible_provider_coord) — a near-(0,0) "unknown location"
+    // placeholder is rejected, not emitted as a 0.68-confidence GPS-grade fix
+    // that poisons AU-014 geo-clustering with a false Null-Island convergence.
+    let band: IpApiCoResp =
+        serde_json::from_str(r#"{"latitude":0.004,"longitude":0.004}"#).unwrap();
+    assert!(
+        build_ipapico_entity(&band, "1.2.3.4", false, "t").is_empty(),
+        "null-island band must be rejected, not just exact (0,0)"
+    );
+    let zero_lat: IpApiCoResp =
+        serde_json::from_str(r#"{"latitude":0.0,"longitude":151.0}"#).unwrap();
+    assert!(build_ipapico_entity(&zero_lat, "1.2.3.4", false, "t").is_empty());
+    let band2: FreeIpApiResp =
+        serde_json::from_str(r#"{"latitude":0.005,"longitude":-0.002}"#).unwrap();
+    assert!(build_freeipapi_entity(&band2, "1.2.3.4", false, "t").is_none());
+    // A real fix still passes; the shared helper draws the same line.
+    let real: IpApiCoResp =
+        serde_json::from_str(r#"{"latitude":-27.4766,"longitude":153.0166}"#).unwrap();
+    assert!(!build_ipapico_entity(&real, "1.2.3.4", false, "t").is_empty());
+    assert!(!is_plausible_provider_coord(0.004, 0.004));
+    assert!(is_plausible_provider_coord(-27.4766, 153.0166));
 }
 
 #[test]

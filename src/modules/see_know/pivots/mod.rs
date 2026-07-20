@@ -176,15 +176,11 @@ pub(super) fn looks_like_discord_id(s: &str) -> bool {
     (17..=20).contains(&len) && s.chars().all(|c| c.is_ascii_digit()) && !s.starts_with('0')
 }
 
-/// Steam ID64 heuristic — exactly 17 decimal digits, the public
-/// account universe always starts with "765611979..." (steamID64
-/// base = 76561197960265728). We don't enforce that prefix here so
-/// edge-case accounts still pivot, but the length + no-leading-zero
-/// pair is enough to reject usernames that happen to be 16-digit
-/// breach IDs.
-pub(super) fn looks_like_steam_id(s: &str) -> bool {
-    s.len() == 17 && s.chars().all(|c| c.is_ascii_digit()) && !s.starts_with('0')
-}
+/// Steam ID64 heuristic — exactly 17 decimal digits, no leading zero (the
+/// public account universe starts at steamID64 base 76561197960265728). Now a
+/// re-export of the shared [`crate::util::identity::looks_like_steam_id`] so
+/// SeekNow and OathNet gate their `steam:<id>` pivots by one identical rule.
+pub(super) use crate::util::identity::looks_like_steam_id;
 
 #[cfg(test)]
 mod tests {

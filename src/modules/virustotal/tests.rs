@@ -19,8 +19,40 @@ use super::*;
         assert_eq!(m.name(), "virustotal");
         assert!(m.accepts(&Target::new(TargetKind::Domain, "x.com")));
         assert!(m.accepts(&Target::new(TargetKind::IpAddress, "8.8.8.8")));
+        assert!(m.accepts(&Target::new(TargetKind::Url, "https://evil.example/x")));
         assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
         assert!(matches!(m.cost(), ModuleCost::KeyGated));
+    }
+
+    #[test]
+    fn vt_url_id_is_the_unpadded_base64url_of_the_url() {
+        // VT's documented identifier scheme: unpadded base64url of the exact URL.
+        // http://www.virustotal.com/gui/url -> known VT id (from VT's own docs).
+        assert_eq!(
+            vt_url_id("http://www.virustotal.com/gui/url"),
+            "aHR0cDovL3d3dy52aXJ1c3RvdGFsLmNvbS9ndWkvdXJs"
+        );
+        // No `=` padding is ever emitted (URL_SAFE_NO_PAD).
+        assert!(!vt_url_id("https://example.com/a").contains('='));
+    }
+
+    #[test]
+    fn url_object_stats_flag_the_url_entity() {
+        // The URL object's last_analysis_stats/reputation decode through the
+        // same build_entities; the scanned entity is a Url.
+        let target = Target::new(TargetKind::Url, "https://evil.example/login");
+        let e = build_all(
+            &target,
+            r#"{"data":{"attributes":{"last_analysis_stats":
+                {"malicious":6,"suspicious":2,"undetected":50,"harmless":4},"reputation":-20}}}"#,
+        )
+        .into_iter()
+        .next()
+        .unwrap();
+        assert_eq!(e.kind, EntityKind::Url);
+        assert!(e.has_tag(crate::core::tags::MALICIOUS));
+        assert!(e.has_tag("suspicious"));
+        assert!(e.has_tag("low-reputation"));
     }
 
     #[test]

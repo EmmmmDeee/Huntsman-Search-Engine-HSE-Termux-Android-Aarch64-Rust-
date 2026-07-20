@@ -99,6 +99,7 @@ export const API = {
   // Loopback-only; revoke also needs --allow-key-write. Plaintext never leaves
   // the device — the raw values come from `hse keys export` in the shell.
   poolGet:    ()=>API._req('/api/v1/keys/pool'),
+  poolAdd:    body=>API._req('/api/v1/keys/pool/add',{method:'POST',body}),
   poolRevoke: body=>API._req('/api/v1/keys/pool/revoke',{method:'POST',body}),
   poolRotate: body=>API._req('/api/v1/keys/pool/rotate',{method:'POST',body}),
   // Operator diagnostics: per-service key-pool health/quota + the detector

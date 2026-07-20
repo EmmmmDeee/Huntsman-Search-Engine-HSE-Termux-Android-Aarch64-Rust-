@@ -71,6 +71,50 @@ use super::*;
     }
 
     #[test]
+    fn paid_api_transport_requests_compression_but_the_ssrf_fetch_path_does_not() {
+        // Potentiation: every CurlClient call (SeekNow, OathNet, …) advertises
+        // Accept-Encoding via `--compressed`, so a paid API's JSON transfers
+        // ~4x smaller with a byte-identical decompressed body — a direct
+        // mobile-data / latency win on Termux.
+        assert!(
+            CLIENT_BASE_ARGS.contains(&"--compressed"),
+            "the trusted paid-API transport must request response compression"
+        );
+        // Security boundary: `--compressed` must NEVER leak onto the general
+        // SSRF fetch path, whose hosts can be attacker-influenced (web crawl)
+        // and whose `--max-filesize` cap bounds the COMPRESSED transfer — so a
+        // decompression bomb could blow past the intended memory cap there.
+        assert!(
+            !crate::util::curl::FETCH_HARDENING_ARGS.contains(&"--compressed"),
+            "the general (attacker-influenced) fetch path must stay uncompressed \
+             so --max-filesize keeps bounding a decompression-bomb"
+        );
+    }
+
+    #[test]
+    fn split_status_separates_the_body_from_the_trailing_code() {
+        // Normal JSON body + trailing status line.
+        assert_eq!(
+            split_status("{\"a\":1}\n200"),
+            ("{\"a\":1}".to_string(), 200)
+        );
+        // A body with INTERNAL newlines is preserved (only the LAST line is the code).
+        assert_eq!(
+            split_status("line1\nline2\n503"),
+            ("line1\nline2".to_string(), 503)
+        );
+        // Empty body, only the code line.
+        assert_eq!(split_status("\n404"), (String::new(), 404));
+        // No newline, only a bare code (empty-body edge).
+        assert_eq!(split_status("500"), (String::new(), 500));
+        // No code at all → status 0 (transient), body preserved verbatim.
+        assert_eq!(
+            split_status("just text, no code"),
+            ("just text, no code".to_string(), 0)
+        );
+    }
+
+    #[test]
     fn auth_scheme_equality_and_clone() {
         let a = AuthScheme::Bearer;
         let b = a;

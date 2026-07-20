@@ -6,6 +6,7 @@
 //!
 //!   * `network-info`         IP  → announcing ASN(s) + covering prefix
 //!   * `as-overview`          ASN → holder (the org that operates the network)
+//!   * `announced-prefixes`   ASN → every prefix the ASN announces (scannable CIDRs)
 //!   * `abuse-contact-finder` IP/ASN → the registered **abuse-contact email**
 //!
 //! The abuse contact is the standout: it turns an IP or ASN into an *email*, a
@@ -55,6 +56,18 @@ struct AsOverview {
 #[serde(default)]
 struct AbuseContact {
     abuse_contacts: Vec<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct AnnouncedPrefixes {
+    prefixes: Vec<AnnouncedPrefix>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct AnnouncedPrefix {
+    prefix: Option<String>,
 }
 
 #[async_trait]
@@ -116,6 +129,16 @@ impl Module for RipeStat {
             TargetKind::Asn => {
                 if let Some(ao) = stat::<AsOverview>(ctx, "as-overview", resource).await {
                     result.entities.extend(build_org(&ao, &ctx.scan_id));
+                }
+                // The prefixes the ASN actually announces — each a scannable
+                // CIDR the graph can expand into constituent host IPs, the same
+                // way `network-info`'s covering prefix is surfaced for an IP.
+                if let Some(ap) =
+                    stat::<AnnouncedPrefixes>(ctx, "announced-prefixes", resource).await
+                {
+                    result
+                        .entities
+                        .extend(build_announced_prefixes(&ap, &ctx.scan_id));
                 }
             }
             _ => return Ok(result),
@@ -219,6 +242,33 @@ fn build_org(ao: &AsOverview, scan_id: &str) -> Option<Entity> {
     e.tag("network-holder");
     e.add_evidence(Evidence::new(SRC, "Network holder (RIPEstat as-overview)"));
     Some(e)
+}
+
+/// Announced prefixes for an ASN → scannable `Cidr` entities. **Pure.**
+/// Deduplicated and emitted in a deterministic (sorted) order so the output
+/// never leaks the API's array ordering. Only well-formed `/`-bearing prefixes
+/// are kept — a malformed entry is dropped rather than becoming a junk CIDR.
+fn build_announced_prefixes(ap: &AnnouncedPrefixes, scan_id: &str) -> Vec<Entity> {
+    let prefixes: std::collections::BTreeSet<&str> = ap
+        .prefixes
+        .iter()
+        .filter_map(|p| p.prefix.as_deref())
+        .map(str::trim)
+        .filter(|p| p.contains('/'))
+        .collect();
+    prefixes
+        .into_iter()
+        .map(|prefix| {
+            let mut e = Entity::new(EntityKind::Cidr, prefix, 0.70, scan_id);
+            e.tag(SRC);
+            e.tag("network-prefix");
+            e.add_evidence(Evidence::new(
+                SRC,
+                "Announced prefix (RIPEstat announced-prefixes)",
+            ));
+            e
+        })
+        .collect()
 }
 
 /// Abuse-contact emails — an org-level infrastructure→identity edge, tagged so

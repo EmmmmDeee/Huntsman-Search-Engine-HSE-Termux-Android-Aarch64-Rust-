@@ -144,6 +144,106 @@ fn breach_evidence(breach: &Breach) -> Evidence {
     ev
 }
 
+/// One HIBP paste record (the `/pasteaccount` array element). Pastes are often
+/// the FIRST public appearance of a compromised credential, predating the
+/// aggregated breach record — surfaced under the same subscription key at zero
+/// extra key cost. The free-text `comment`/content is deliberately NOT modelled:
+/// only the metadata (source, id, date, count) becomes evidence/pivots.
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub(super) struct Paste {
+    #[serde(default)]
+    pub(super) source: Option<String>,
+    #[serde(default)]
+    pub(super) id: Option<String>,
+    #[serde(default)]
+    pub(super) title: Option<String>,
+    #[serde(default)]
+    pub(super) date: Option<String>,
+    #[serde(default)]
+    pub(super) email_count: Option<u64>,
+}
+
+/// Reconstruct the public URL for a paste when its source has a deterministic
+/// URL scheme. Only `Pastebin` (`https://pastebin.com/{id}`) is reconstructable
+/// today; any other source yields `None` rather than a fabricated URL.
+fn paste_url(paste: &Paste) -> Option<String> {
+    let id = paste
+        .id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    match paste.source.as_deref() {
+        Some("Pastebin") => Some(format!("https://pastebin.com/{id}")),
+        _ => None,
+    }
+}
+
+/// Build the entities for a set of HIBP pastes containing an email: the Email
+/// re-emitted with a `paste` tag + count/recency evidence (merged onto the
+/// breach Email by the engine), plus one `Url` pivot per URL-reconstructable
+/// paste. **Pure** (no IO) so the tag, the count evidence, and the Pastebin URL
+/// reconstruction are unit-tested directly. Empty input yields nothing.
+fn paste_entities(pastes: &[Paste], email: &str, scan_id: &str) -> Vec<Entity> {
+    if pastes.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+
+    let mut sources: Vec<&str> = pastes
+        .iter()
+        .filter_map(|p| p.source.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    sources.sort_unstable();
+    sources.dedup();
+    let latest = pastes
+        .iter()
+        .filter_map(|p| p.date.as_deref())
+        .filter(|s| !s.is_empty())
+        .max()
+        .unwrap_or("");
+
+    let mut e = Entity::new(EntityKind::Email, email, 0.70, scan_id);
+    e.tag(tags::BREACH);
+    e.tag("hibp");
+    e.tag("paste");
+    let mut ev = Evidence::new(SRC, format!("Appears in {} paste(s)", pastes.len()))
+        .with_attr("paste_count", pastes.len().to_string());
+    if !sources.is_empty() {
+        ev = ev.with_attr("paste_sources", sources.join(", "));
+    }
+    if !latest.is_empty() {
+        ev = ev.with_attr("latest_paste", latest);
+    }
+    e.add_evidence(ev);
+    out.push(e);
+
+    for paste in pastes {
+        if let Some(url) = paste_url(paste) {
+            let mut u = Entity::new(EntityKind::Url, &url, 0.55, scan_id);
+            u.tag("hibp");
+            u.tag("paste");
+            let mut ev = Evidence::new(SRC, format!("Paste containing {email}"));
+            if let Some(title) = paste.title.as_deref().filter(|s| !s.is_empty()) {
+                ev = ev.with_attr("title", title);
+            }
+            if let Some(date) = paste.date.as_deref().filter(|s| !s.is_empty()) {
+                ev = ev.with_attr("date", date);
+            }
+            // Scale of the leak: how many emails the paste exposed.
+            if let Some(n) = paste.email_count {
+                ev = ev.with_attr("email_count", n.to_string());
+            }
+            u.add_evidence(ev);
+            out.push(u);
+        }
+    }
+
+    out
+}
+
 /// Tag a breach-derived entity with HIBP's data-quality flags so the operator
 /// can filter low-trust breach intel (fabricated / spam-list) and flag
 /// sensitive/retired breaches. Only `Some(true)` flags emit a tag.
@@ -176,22 +276,6 @@ fn tag_breach_quality(e: &mut Entity, breach: &Breach) {
         // quality tag rather than escalating into stealer-log correlation.
         e.tag("breach-malware");
     }
-}
-
-/// One HIBP paste hit (`GET /pasteaccount/{email}`): the email address appeared
-/// in a public paste (Pastebin, …) — frequently a credential/dox dump. Fields
-/// per the v3 API.
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-pub(super) struct Paste {
-    #[serde(default)]
-    pub(super) source: Option<String>,
-    #[serde(default)]
-    pub(super) title: Option<String>,
-    #[serde(default)]
-    pub(super) date: Option<String>,
-    #[serde(default)]
-    pub(super) email_count: Option<u64>,
 }
 
 // ── Module impl ─────────────────────────────────────────────────────
@@ -228,9 +312,9 @@ impl Module for Hibp {
         // HIBP returns breach metadata on the input Email/Domain — it
         // does NOT emit standalone Credential entities (policy: leaked
         // passwords are redacted, only the fact of the breach surfaces
-        // as tags/evidence on the seed). Declaration is therefore
-        // limited to the corroborated seed kinds.
-        const KINDS: &[EntityKind] = &[EntityKind::Email, EntityKind::Domain];
+        // as tags/evidence on the seed). The paste oracle additionally
+        // mints a Url pivot per URL-reconstructable paste (e.g. Pastebin).
+        const KINDS: &[EntityKind] = &[EntityKind::Email, EntityKind::Domain, EntityKind::Url];
         KINDS
     }
 
@@ -244,14 +328,12 @@ impl Module for Hibp {
 
         match target.kind {
             TargetKind::Email => {
+                // `query_breached_account` delivers both halves of the module's
+                // "breach + paste oracle" billing: breaches, then (best-effort,
+                // same subscription key) the /pasteaccount pastes folded onto the
+                // same Email entity.
                 self.query_breached_account(key, target, ctx, &mut result)
                     .await?;
-                // The module bills itself a "breach + paste oracle" — deliver the
-                // paste half too. Best-effort: a paste-endpoint failure must not
-                // sink the (already-collected) breach findings.
-                if let Err(e) = self.query_pastes(key, target, ctx, &mut result).await {
-                    tracing::debug!(target: "huntsman::hibp", error = %e, "paste lookup failed (breach results retained)");
-                }
             }
             TargetKind::Domain => {
                 self.query_domain_breaches(key, target, ctx, &mut result)
@@ -454,6 +536,16 @@ impl Hibp {
             e.tag("address-exposed");
         }
 
+        // Paste oracle: the same subscription key authorises /pasteaccount at no
+        // extra key cost, and pastes are frequently the FIRST public appearance
+        // of a leaked credential. A 404 means no pastes (clean); on any hit, the
+        // pure builder folds a `paste` tag + count/recency evidence onto the
+        // Email and mints a Url pivot per URL-reconstructable paste.
+        let paste_url = format!("{BASE_URL}/pasteaccount/{email}");
+        if let Some(pastes) = self.api_get::<Vec<Paste>>(key, &paste_url, ctx).await? {
+            result.extend(paste_entities(&pastes, target.value.trim(), &ctx.scan_id));
+        }
+
         Ok(())
     }
 
@@ -539,79 +631,6 @@ impl Hibp {
             }
         }
 
-        Ok(())
-    }
-
-    /// GET /api/v3/pasteaccount/{email} — the public pastes (Pastebin, …) an
-    /// address appeared in. A paste is distinct from a site breach: it is
-    /// frequently a credential / dox dump, so it is its own exposure signal
-    /// (`tags::PASTE_EXPOSED`), surfaced on the SAME Email entity (UID-merged
-    /// with any breach hit). This is the "paste" half of the module's own
-    /// "breach + paste oracle" billing, previously never delivered.
-    async fn query_pastes(
-        &self,
-        key: &str,
-        target: &Target,
-        ctx: &ModuleContext,
-        result: &mut ModuleResult,
-    ) -> Result<()> {
-        let email = urlencode(target.value.trim());
-        let url = format!("{BASE_URL}/pasteaccount/{email}");
-        let pastes: Vec<Paste> = match self.api_get(key, &url, ctx).await? {
-            Some(p) => p,
-            None => return Ok(()),
-        };
-        if pastes.is_empty() {
-            return Ok(());
-        }
-
-        let mut sources: Vec<&str> = pastes.iter().filter_map(|p| p.source.as_deref()).collect();
-        sources.sort_unstable();
-        sources.dedup();
-        let latest = pastes
-            .iter()
-            .filter_map(|p| p.date.as_deref())
-            .max()
-            .unwrap_or("");
-        let max_emails = pastes
-            .iter()
-            .filter_map(|p| p.email_count)
-            .max()
-            .unwrap_or(0);
-        let titles: Vec<&str> = pastes
-            .iter()
-            .filter_map(|p| p.title.as_deref())
-            .filter(|t| !t.is_empty())
-            .take(5)
-            .collect();
-
-        let mut e = Entity::new(
-            EntityKind::Email,
-            target.value.trim(),
-            confidence::HIGH,
-            &ctx.scan_id,
-        );
-        e.tag("hibp");
-        e.tag(tags::PASTE_EXPOSED);
-        let mut ev = Evidence::new(
-            SRC,
-            format!(
-                "Found in {} public paste(s) (sources: {})",
-                pastes.len(),
-                sources.join(", ")
-            ),
-        )
-        .with_attr("paste_count", pastes.len().to_string())
-        .with_attr("paste_sources", sources.join(", "))
-        .with_attr("max_paste_email_count", max_emails.to_string());
-        if !latest.is_empty() {
-            ev = ev.with_attr("latest_paste_date", latest);
-        }
-        if !titles.is_empty() {
-            ev = ev.with_attr("paste_titles", titles.join(" | "));
-        }
-        e.add_evidence(ev);
-        result.push(e);
         Ok(())
     }
 }

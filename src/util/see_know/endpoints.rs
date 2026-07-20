@@ -290,7 +290,6 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
     // exhausted credits, latching the shared budget and silently abandoning
     // SeekNow for every remaining endpoint call in the scan with zero
     // backoff or retry. Connection errors also trigger domain fallback retries.
-    const TRANSPORT_RETRY_ATTEMPTS: u32 = 2;
     let mut attempt = 0u32;
     loop {
         match get_json_with_fallback(&endpoint_path, key, &qs, path, archive_query).await {
@@ -299,6 +298,11 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
                 cache_put(ck.clone(), items.clone());
                 return Ok(items);
             }
+            // Both transient classes — a burst rate-limit AND a 5xx/no-response
+            // (now surfaced as `RateLimited` by `client::classify_status`) — pace
+            // through the SAME `RATE_LIMIT_BACKOFF` (bounded by
+            // `ENTERPRISE.max_retries`), so the whole retry budget lives in one
+            // place instead of the old split policy.
             Err(Error::RateLimited(msg)) => {
                 if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
                     return Err(Error::RateLimited(msg));
@@ -308,17 +312,27 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
                     path,
                     attempt = attempt + 1,
                     delay_ms = delay.as_millis() as u64,
-                    "see_know GET rate-limited — backing off"
+                    "see_know GET transient (rate-limit/5xx) — backing off"
                 );
                 tokio::time::sleep(delay).await;
                 attempt += 1;
             }
+            // A plain transport error (connection drop on a flaky mobile link)
+            // now ALSO backs off on that shared budget rather than the old
+            // zero-delay double-shot — a genuine drop recovers on a paced retry.
             Err(e) => {
-                attempt += 1;
-                if attempt >= TRANSPORT_RETRY_ATTEMPTS {
+                if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
                     return Err(e);
                 }
-                tracing::debug!(path, attempt, "see_know GET errored — retrying once");
+                let delay = RATE_LIMIT_BACKOFF.delay(attempt);
+                tracing::debug!(
+                    path,
+                    attempt = attempt + 1,
+                    delay_ms = delay.as_millis() as u64,
+                    "see_know GET transport error — backing off"
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
             }
         }
     }
@@ -416,24 +430,93 @@ fn flatten_victims(victims: &[Value]) -> Vec<Value> {
 /// {"credits": {"remaining": 4200, "daily": 5000}}
 /// ```
 pub async fn query_credits(key: &str) -> Option<(u32, Option<u32>)> {
-    // Direct HTTP call with domain fallback — no budget gate, no archive (meta-query,
-    // not paid data). Tries all domains before giving up.
-    let body = get_raw_with_fallback("/credits", key).await.ok()?;
+    match credits_probe(key).await {
+        CreditsProbe::Ok {
+            remaining,
+            daily_limit,
+        } => Some((remaining, daily_limit)),
+        _ => None,
+    }
+}
+
+/// The distinguishable outcomes of the `/credits` diagnostic probe, for
+/// `hse doctor`'s SeekNow section. `query_credits` collapses this to `Option`
+/// for the budget-scaling / key-harvest callers that only need the number, but
+/// a human diagnosing "why is SeekNow returning nothing?" needs the *class* of
+/// failure — an unreachable API host (DNS/connect/timeout) is a completely
+/// different fix from a rejected key, which is different again from a reachable
+/// host returning an unrecognised body. A live Termux scan surfaced exactly
+/// this ambiguity: every `see_know` call failed with `[seek_now] curl exited 6`
+/// (curl's "could not resolve host"), then the circuit breaker cooled the
+/// module down — but `query_credits`'s `.ok()?` discarded the curl detail, so
+/// `hse doctor` could only report the catch-all "could not reach SeekNow",
+/// giving the operator no signal that the real cause was DNS-level host
+/// resolution (commonly carrier/ISP filtering of the domain), not a bad key or
+/// an exhausted plan.
+#[derive(Debug)]
+pub enum CreditsProbe {
+    /// The key works and the account has quota.
+    Ok {
+        remaining: u32,
+        daily_limit: Option<u32>,
+    },
+    /// A classified auth/plan rejection (`invalid_api_key` / `plan_required`).
+    /// [`mark_key_invalid`] has been latched.
+    InvalidKey,
+    /// The API host could not be reached at all — DNS resolution, connection,
+    /// or timeout failure. Carries curl's own one-line diagnostic (e.g.
+    /// `curl exited 6: curl: (6) Could not resolve host: see-know.eu`) so the
+    /// operator sees WHICH host failed and WHY. NOT a dead key — never latches
+    /// [`mark_key_invalid`].
+    Unreachable(String),
+    /// The host answered but the body carried no recognised `credits` field
+    /// (schema drift, or a plan whose `/credits` shape this parser doesn't
+    /// know). Reachable, so also not a confirmed dead key.
+    Unparseable,
+}
+
+/// Diagnostic probe of `GET /api/v1/credits`, classifying the outcome for
+/// `hse doctor`. Does NOT consume a budget slot. See [`CreditsProbe`] for why
+/// the transport-failure case is kept distinct from an auth rejection.
+pub async fn credits_probe(key: &str) -> CreditsProbe {
+    // Direct HTTP call with multi-domain fallback — no budget gate, no archive
+    // (meta-query, not paid data). Tries all known SeekNow domains (the service
+    // intentionally rotates domains) before giving up. The transport error is
+    // stringified and handed to the pure classifier so the Unreachable / auth /
+    // schema branches are all unit-testable without a live round-trip.
+    let result = get_raw_with_fallback("/credits", key)
+        .await
+        .map_err(|e| e.to_string());
+    classify_credits_probe(result)
+}
+
+/// Pure classification of a `/credits` fetch result into a [`CreditsProbe`].
+/// Split from the network call so every branch is unit-tested directly. The
+/// auth branch is the only one with a side effect — it latches
+/// [`mark_key_invalid`], matching the data-bearing `search`/`get_path` paths —
+/// so a confirmed-dead key is caught even when this probe is the first-ever
+/// call a process makes (`hse doctor`). Transport failures and unparseable
+/// bodies are NOT confirmed dead keys and never latch it.
+pub(super) fn classify_credits_probe(result: std::result::Result<String, String>) -> CreditsProbe {
+    let body = match result {
+        Ok(b) => b,
+        // Transport failure (curl non-zero exit): keep the detail so doctor can
+        // tell the operator it was DNS / connect / timeout, not a key problem.
+        Err(detail) => return CreditsProbe::Unreachable(detail),
+    };
     match parse_credits_body(&body) {
         CreditsOutcome::Data {
             remaining,
             daily_limit,
-        } => Some((remaining, daily_limit)),
-        // A genuine, classified auth rejection — latch it so `is_key_invalid()`
-        // reflects reality even when `query_credits` (not a data-bearing
-        // `search`/`get_path` call) is the first-ever call this process made.
+        } => CreditsProbe::Ok {
+            remaining,
+            daily_limit,
+        },
         CreditsOutcome::AuthError => {
             mark_key_invalid(&body);
-            None
+            CreditsProbe::InvalidKey
         }
-        // Network noise / an unrecognised schema — NOT a confirmed dead key,
-        // so this must never latch `mark_key_invalid`.
-        CreditsOutcome::Unparseable => None,
+        CreditsOutcome::Unparseable => CreditsProbe::Unparseable,
     }
 }
 

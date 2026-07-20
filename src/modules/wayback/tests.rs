@@ -90,6 +90,50 @@ use super::*;
     }
 
     #[test]
+    fn historical_subdomains_recovers_distinct_non_apex_hosts() {
+        // A CDX domain-match response (fl=original): header + archived URLs
+        // across subdomains, the apex, and duplicates.
+        let rows = [
+            row(&["original"]), // CDX column header
+            row(&["http://dev.example.com/index.html"]),
+            row(&["https://dev.example.com/login"]), // dup host, diff path
+            row(&["http://staging.example.com/"]),
+            row(&["http://api.example.com/"]),
+            row(&["https://example.com/"]),         // apex echo — dropped
+            row(&["http://unrelated.other.org/x"]), // not a subdomain — dropped
+        ];
+        let ents = historical_subdomains(&rows, "example.com", "s");
+        let hosts: Vec<&str> = ents.iter().map(|e| e.value.as_str()).collect();
+        // Distinct, sorted, apex + unrelated dropped, dup collapsed. (A `www.`
+        // host is deliberately absent: Entity::new canonicalises `www.x` → `x`,
+        // which would merge with the apex — a benign dedup, not a subdomain.)
+        assert_eq!(
+            hosts,
+            [
+                "api.example.com",
+                "dev.example.com",
+                "staging.example.com"
+            ]
+        );
+        assert!(
+            ents.iter()
+                .all(|e| e.kind == EntityKind::Domain
+                    && e.has_tag("archived")
+                    && e.has_tag("wayback-historical"))
+        );
+    }
+
+    #[test]
+    fn historical_subdomains_empty_or_header_only_yields_nothing() {
+        assert!(historical_subdomains(&[], "example.com", "s").is_empty());
+        let header = [row(&["original"])];
+        assert!(historical_subdomains(&header, "example.com", "s").is_empty());
+        // A blank domain never matches.
+        let rows = [row(&["original"]), row(&["http://x.example.com/"])];
+        assert!(historical_subdomains(&rows, "", "s").is_empty());
+    }
+
+    #[test]
     fn is_contact_path_matches_keywords() {
         assert!(is_contact_path("https://example.com/contact-us"));
         assert!(is_contact_path("https://example.com/about"));

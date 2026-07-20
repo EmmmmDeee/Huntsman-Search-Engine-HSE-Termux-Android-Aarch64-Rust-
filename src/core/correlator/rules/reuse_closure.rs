@@ -1,4 +1,4 @@
-//! AU-114 — Transitive credential-reuse blast radius.
+//! AU-121 — Transitive credential-reuse blast radius.
 //!
 //! AU-047 links the accounts a *single* reused secret was seen against. But
 //! secret reuse **chains**: secret A ties accounts {1, 2}, a *different* secret
@@ -32,7 +32,7 @@
 
 use super::*;
 
-/// AU-114 — Transitive credential-reuse blast radius.
+/// AU-121 — Transitive credential-reuse blast radius.
 ///
 /// Entity-only: builds a union-find over account handles joined by any shared
 /// secret (drawn from each secret's own breach-record evidence, the same
@@ -41,7 +41,7 @@ use super::*;
 /// carries every binding secret plus every in-scope `Email`/`Username` entity in
 /// the component, in entity order, so the SPA Correlations view can render the
 /// whole chain.
-pub(in crate::core::correlator) fn rule_au_114_credential_reuse_blast_radius(
+pub(in crate::core::correlator) fn rule_au_121_credential_reuse_blast_radius(
     entities: &[Entity],
     scan_id: &str,
     ts: u64,
@@ -237,7 +237,7 @@ pub(in crate::core::correlator) fn rule_au_114_credential_reuse_blast_radius(
         };
 
         out.push(Correlation::new(
-            "AU-114",
+            "AU-121",
             "Transitive credential-reuse blast radius",
             severity,
             format!(
@@ -287,9 +287,9 @@ mod tests {
             HASH_B,
             &[("username", "bob"), ("username", "carol")],
         );
-        let out = rule_au_114_credential_reuse_blast_radius(&[a, b], "s", 0);
+        let out = rule_au_121_credential_reuse_blast_radius(&[a, b], "s", 0);
         assert_eq!(out.len(), 1, "the transitive chain must fire once");
-        assert_eq!(out[0].rule_id, "AU-114");
+        assert_eq!(out[0].rule_id, "AU-121");
         assert_eq!(
             out[0].severity,
             Severity::Critical,
@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn au114_silent_when_one_secret_spans_the_whole_set() {
         // A single secret ties all three — that is exactly an AU-047 finding, not
-        // a transitive chain, so AU-114 must stay silent (no double-report).
+        // a transitive chain, so AU-121 must stay silent (no double-report).
         let a = secret_with(
             EntityKind::Password,
             HASH_A,
@@ -311,8 +311,8 @@ mod tests {
             ],
         );
         assert!(
-            rule_au_114_credential_reuse_blast_radius(&[a], "s", 0).is_empty(),
-            "a single-secret span is AU-047's job, not AU-114's"
+            rule_au_121_credential_reuse_blast_radius(&[a], "s", 0).is_empty(),
+            "a single-secret span is AU-047's job, not AU-121's"
         );
     }
 
@@ -330,7 +330,7 @@ mod tests {
             &[("username", "alice"), ("username", "bob")],
         );
         assert!(
-            rule_au_114_credential_reuse_blast_radius(&[a, b], "s", 0).is_empty(),
+            rule_au_121_credential_reuse_blast_radius(&[a, b], "s", 0).is_empty(),
             "two handles is a pair, not a blast radius"
         );
     }
@@ -349,7 +349,7 @@ mod tests {
             "c0rrect-h0rse-b4ttery-st4ple-9",
             &[("username", "bob"), ("username", "carol")],
         );
-        let out = rule_au_114_credential_reuse_blast_radius(&[a, b], "s", 0);
+        let out = rule_au_121_credential_reuse_blast_radius(&[a, b], "s", 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].severity, Severity::High);
     }

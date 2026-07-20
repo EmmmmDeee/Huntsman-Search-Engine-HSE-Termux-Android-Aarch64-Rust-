@@ -931,6 +931,28 @@ impl ScanEngine {
                         continue;
                     }
                 }
+                // Stale-admission gate: a role/provider mailbox (`dns@cloudflare.com`,
+                // `abuse@jomax.net`, …) is never minted as a first-class Email entity
+                // by a FRESH scan — every emitter (dns_intel's SOA-admin path, whois,
+                // ripestat, search_engines) already refuses it at admission, because
+                // the address is a shared registrar/DNS/CDN desk, not the subject's
+                // identity. But recall bypasses that admission gate entirely: it
+                // replays whatever the database already holds, so a role mailbox
+                // admitted under an OLDER/laxer version of the code (or discovered by
+                // a since-removed module) is resurrected forever, and — because the
+                // SAME literal address is shared across millions of unrelated
+                // domains — accumulates "Zone admin for X" evidence from every
+                // unrelated domain this project has ever scanned, ballooning into a
+                // VERIFIED, breach-tagged phantom (a live `see-know.xyz` scan
+                // recalled `dns@cloudflare.com` at corroboration=396, sourced from 90+
+                // domains with no connection to the scan target). A fresh scan will
+                // re-discover the CURRENT domain's own admin contact anyway with a
+                // clean single evidence bullet, so nothing is lost by refusing to
+                // recall the polluted historical node.
+                if e.kind == EntityKind::Email && crate::core::validation::is_role_mailbox(&e.value)
+                {
+                    continue;
+                }
                 e.scan_id = scan_id.to_string();
                 e.tag(crate::core::tags::RECALLED);
                 e.add_evidence(Evidence::new(

@@ -117,6 +117,58 @@ fn build_entities_surfaces_resolved_domains_and_isp() {
 }
 
 #[test]
+fn verbose_reports_surface_categories_recency_and_whitelist() {
+    let data: AbuseData = serde_json::from_str(
+        r#"{"abuseConfidenceScore":30,"totalReports":5,"isWhitelisted":true,
+            "lastReportedAt":"2024-05-01T12:00:00+00:00",
+            "reports":[
+                {"categories":[22,18]},
+                {"categories":[22,14]},
+                {"categories":[22]}
+            ]}"#,
+    )
+    .unwrap();
+    let ip = build_entities(&data, "1.2.3.4", "s")
+        .into_iter()
+        .find(|e| e.kind == EntityKind::IpAddress)
+        .unwrap();
+
+    // Whitelist flag → tag.
+    assert!(ip.has_tag("whitelisted"));
+
+    let a = &ip.evidence[0].attributes;
+    assert_eq!(
+        a.get("last_reported_at").map(String::as_str),
+        Some("2024-05-01T12:00:00+00:00")
+    );
+    // SSH(22) appears 3×, Brute-Force(18) + Port Scan(14) once each — deterministic
+    // count-desc, id-asc ordering maps ids to their taxonomy labels.
+    assert_eq!(
+        a.get("report_categories").map(String::as_str),
+        Some("SSH:3, Port Scan:1, Brute-Force:1")
+    );
+}
+
+#[test]
+fn summarize_categories_is_deterministic_and_maps_unknown_to_other() {
+    let reports = vec![
+        Report {
+            categories: vec![99, 14],
+        },
+        Report {
+            categories: vec![14, 99],
+        },
+    ];
+    // 14 (Port Scan) and 99 (unknown→other) each appear twice; id-asc tie-break
+    // puts 14 first regardless of input order.
+    assert_eq!(
+        summarize_categories(&reports),
+        "Port Scan:2, other:2"
+    );
+    assert!(summarize_categories(&[]).is_empty());
+}
+
+#[test]
 fn usage_type_datacenter_tags_ip_hosting() {
     let dc: AbuseData = serde_json::from_str(
         r#"{"abuseConfidenceScore":10,"usageType":"Data Center/Web Hosting/Transit","isp":"OVH"}"#,

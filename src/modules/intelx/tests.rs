@@ -130,6 +130,33 @@ fn bucket_family_collapses_dotted_names() {
 }
 
 #[test]
+fn earliest_breach_date_uses_leaks_family_only_and_gates_on_the_breach_tag() {
+    let rec = |bucket: &str, date: &str| Record {
+        bucket: Some(bucket.to_string()),
+        bucketh: None,
+        media: None,
+        date: Some(date.to_string()),
+    };
+    let records = vec![
+        rec("pastes", "2010-01-01"), // earlier, but NOT leaks-family
+        rec("leaks.public.general", "2019-05-13"), // earliest leaks record
+        rec("leaks.private.general", "2021-08-01"),
+        rec("darknet.tor", "2009-01-01"), // earlier, but not leaks
+    ];
+    // Earned the BREACH tag → earliest LEAKS date (paste/darknet ignored).
+    assert_eq!(
+        earliest_breach_date(&records, true),
+        Some("2019-05-13"),
+        "must pick the earliest leaks-family date, ignoring paste/darknet buckets"
+    );
+    // No BREACH tag (e.g. a text search) → no breach_date at all.
+    assert_eq!(earliest_breach_date(&records, false), None);
+    // No leaks-family records → None even when earned.
+    let non_leaks = vec![rec("pastes", "2015-01-01")];
+    assert_eq!(earliest_breach_date(&non_leaks, true), None);
+}
+
+#[test]
 fn text_search_withholds_the_strong_exposure_tags() {
     use crate::core::tags;
     use std::collections::BTreeSet;

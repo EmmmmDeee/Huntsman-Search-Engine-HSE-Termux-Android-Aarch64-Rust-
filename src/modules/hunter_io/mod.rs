@@ -88,6 +88,22 @@ struct HunterEmail {
     linkedin: Option<String>,
     #[serde(default)]
     twitter: Option<String>,
+    /// Direct-dial phone Hunter occasionally attaches to a person — a real
+    /// contactability pivot, previously decoded nowhere.
+    #[serde(default)]
+    phone_number: Option<String>,
+    /// The deliverability verdict Hunter records for the address (valid /
+    /// accept_all / webmail / disposable / …) and when it was last checked.
+    #[serde(default)]
+    verification: Option<HunterVerification>,
+}
+
+#[derive(Deserialize)]
+struct HunterVerification {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    date: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -148,6 +164,8 @@ impl Module for HunterIo {
             EntityKind::Url,
             // A LinkedIn/Twitter field when Hunter returns a bare handle.
             EntityKind::Username,
+            // A direct-dial phone Hunter attaches to a person.
+            EntityKind::Phone,
         ]
     }
 
@@ -336,6 +354,17 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
         if let Some(d) = nonempty(&entry.department) {
             ev = ev.with_attr("department", &d);
         }
+        // Deliverability verdict — surfaces whether the address is a live
+        // mailbox, a catch-all/webmail, or disposable (an evidentiary-weight
+        // signal), plus when Hunter last verified it.
+        if let Some(ver) = &entry.verification {
+            if let Some(s) = nonempty(&ver.status) {
+                ev = ev.with_attr("verification_status", &s);
+            }
+            if let Some(d) = nonempty(&ver.date) {
+                ev = ev.with_attr("verification_date", &d);
+            }
+        }
         if let Some(src) = entry.sources.first() {
             if let Some(uri) = nonempty(&src.uri) {
                 ev = ev.with_attr("source_url", &uri);
@@ -369,6 +398,24 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
             }
             pe.add_evidence(pev);
             out.push(pe);
+        }
+
+        // ── Direct-dial phone Hunter attached to the address ──
+        // Guard on digit count (≥7) so a formatted number mints one Phone while
+        // a stray fragment does not; Entity::new normalises the formatting.
+        if let Some(phone) = nonempty(&entry.phone_number) {
+            let digits: String = phone.chars().filter(char::is_ascii_digit).collect();
+            if digits.len() >= 7 && seen.insert(format!("phone:{digits}")) {
+                let mut phe = Entity::new(EntityKind::Phone, &phone, 0.60, scan_id);
+                phe.tag("hunter-io");
+                phe.tag("email-attribution");
+                phe.add_evidence(
+                    Evidence::new(SRC, format!("Hunter.io phone for {addr}"))
+                        .with_attr("email", &addr)
+                        .with_attr("domain", target_domain),
+                );
+                out.push(phe);
+            }
         }
 
         // ── Source pivots: every page Hunter saw the address on. ──

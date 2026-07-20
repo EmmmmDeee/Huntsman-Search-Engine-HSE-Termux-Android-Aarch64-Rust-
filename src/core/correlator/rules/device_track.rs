@@ -1,4 +1,4 @@
-//! AU-115 — Trackable RF device vs. privacy-randomized address.
+//! AU-122 — Trackable RF device vs. privacy-randomized address.
 //!
 //! A live signal-radar or WiGLE sweep plots every observed BLE / Wi-Fi MAC as a
 //! map pin — but the pins are not equal, and treating them alike is a real
@@ -31,14 +31,14 @@ use super::*;
 // tags can never disagree on which addresses are real hardware.
 use crate::util::oui;
 
-/// AU-115 — Trackable RF device vs. privacy-randomized address.
+/// AU-122 — Trackable RF device vs. privacy-randomized address.
 ///
 /// Entity-only: classifies every RF-observed `MacAddress` entity by the U/L bit
 /// and emits one correlation naming the trackable hardware devices (the pins a
 /// real device broadcasts) versus the randomized privacy addresses (rotated,
 /// unfollowable). `entity_uids` carries the trackable MACs — the actionable
 /// subset — in entity order for a stable render.
-pub(in crate::core::correlator) fn rule_au_115_trackable_rf_device(
+pub(in crate::core::correlator) fn rule_au_122_trackable_rf_device(
     entities: &[Entity],
     scan_id: &str,
     ts: u64,
@@ -106,7 +106,7 @@ pub(in crate::core::correlator) fn rule_au_115_trackable_rf_device(
     };
 
     vec![Correlation::new(
-        "AU-115",
+        "AU-122",
         "Trackable RF device present",
         Severity::Medium,
         format!(
@@ -138,9 +138,9 @@ mod tests {
         // but only the first is a followable device.
         let hw = rf_mac("3C:5A:B4:11:22:33", "bluetooth");
         let rnd = rf_mac("36:32:62:36:31:33", "bluetooth");
-        let out = rule_au_115_trackable_rf_device(&[hw.clone(), rnd.clone()], "s", 0);
+        let out = rule_au_122_trackable_rf_device(&[hw.clone(), rnd.clone()], "s", 0);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].rule_id, "AU-115");
+        assert_eq!(out[0].rule_id, "AU-122");
         assert_eq!(out[0].severity, Severity::Medium);
         assert!(
             out[0].entity_uids.contains(&hw.uid),
@@ -158,7 +158,7 @@ mod tests {
         let a = rf_mac("36:32:62:36:31:33", "bluetooth");
         let b = rf_mac("7A:11:22:33:44:55", "wifi-ap"); // 0x7A U/L bit set
         assert!(
-            rule_au_115_trackable_rf_device(&[a, b], "s", 0).is_empty(),
+            rule_au_122_trackable_rf_device(&[a, b], "s", 0).is_empty(),
             "an all-randomized sweep has no trackable device"
         );
     }
@@ -170,7 +170,7 @@ mod tests {
         let breach_bssid = Entity::new(EntityKind::MacAddress, "3C:5A:B4:11:22:33", 0.6, "s");
         let rnd = rf_mac("36:32:62:36:31:33", "bluetooth");
         assert!(
-            rule_au_115_trackable_rf_device(&[breach_bssid, rnd], "s", 0).is_empty(),
+            rule_au_122_trackable_rf_device(&[breach_bssid, rnd], "s", 0).is_empty(),
             "only RF-observed MACs count toward a vicinity device finding"
         );
     }

@@ -72,7 +72,9 @@ impl Module for CertIntel {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Domain];
+        // Domain from dNSName SANs / CT-log names; Email from rfc822Name SANs
+        // (S/MIME and client-auth certificates) and CT-log email entries.
+        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::Email];
         KINDS
     }
 
@@ -163,16 +165,36 @@ fn ct_log_entities(
     scan_id: &str,
     seen_subs: &mut HashSet<String>,
 ) -> Vec<Entity> {
+    let cert_ev = |entry: &CrtEntry, msg: String| {
+        Evidence::new(SRC, msg)
+            .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or("-"))
+            .with_attr("not_before", entry.not_before.as_deref().unwrap_or("-"))
+            .with_attr("not_after", entry.not_after.as_deref().unwrap_or("-"))
+            .with_attr(
+                "serial_number",
+                entry.serial_number.as_deref().unwrap_or("-"),
+            )
+            .with_attr("parent_domain", parent)
+    };
     entries
         .iter()
         .flat_map(|entry| entry.name_value.split('\n').map(move |name| (entry, name)))
         .filter_map(|(entry, name)| {
             let name = name.trim().trim_start_matches("*.").to_lowercase();
-            if name.is_empty()
-                || !name.contains('.')
-                || name == parent
-                || !seen_subs.insert(name.clone())
-            {
+            if name.is_empty() || name == parent || !seen_subs.insert(name.clone()) {
+                return None;
+            }
+            // An rfc822Name SAN — crt.sh returns these inline in `name_value` — is
+            // an email address, not a hostname. Emit it as an Email pivot rather
+            // than a bogus Domain like `admin@example.com` (which `.contains('.')`
+            // alone would have admitted); parity with the sibling crtsh module.
+            if crate::util::extract::looks_like_email(&name) {
+                let mut e = Entity::new(EntityKind::Email, &name, 0.70, scan_id);
+                e.tag(tags::CT_LOG);
+                e.add_evidence(cert_ev(entry, format!("Email in certificate SAN: {name}")));
+                return Some(e);
+            }
+            if !name.contains('.') {
                 return None;
             }
             let is_sub = crate::util::domains::is_proper_subdomain_of(&name, parent);
@@ -188,17 +210,7 @@ fn ct_log_entities(
             } else {
                 e.tag("co-hosted");
             }
-            e.add_evidence(
-                Evidence::new(SRC, format!("Certificate transparency: {name}"))
-                    .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or("-"))
-                    .with_attr("not_before", entry.not_before.as_deref().unwrap_or("-"))
-                    .with_attr("not_after", entry.not_after.as_deref().unwrap_or("-"))
-                    .with_attr(
-                        "serial_number",
-                        entry.serial_number.as_deref().unwrap_or("-"),
-                    )
-                    .with_attr("parent_domain", parent),
-            );
+            e.add_evidence(cert_ev(entry, format!("Certificate transparency: {name}")));
             Some(e)
         })
         .collect()
@@ -215,7 +227,10 @@ fn parse_certificate(
     result: &mut ModuleResult,
     seen_subs: &mut HashSet<String>,
 ) {
-    let sans = extract_sans_from_der(der);
+    let CertSans {
+        domains: sans,
+        emails: email_sans,
+    } = extract_sans_from_der(der);
 
     if !sans.is_empty() {
         let san_count = sans.len();
@@ -255,6 +270,22 @@ fn parse_certificate(
         }
     }
 
+    // rfc822Name SANs (S/MIME and client-auth certificates carry these) → Email
+    // pivots. Deduped across both cert paths via `seen_subs`; an email string can
+    // never collide with the hostnames the set also holds.
+    for email in &email_sans {
+        if !seen_subs.insert(email.clone()) {
+            continue;
+        }
+        let mut e = Entity::new(EntityKind::Email, email, 0.70, scan_id);
+        e.tag("tls-san");
+        e.add_evidence(
+            Evidence::new(SRC, format!("Email SAN on {target_domain} certificate"))
+                .with_attr("parent_domain", target_domain),
+        );
+        result.push(e);
+    }
+
     if let Some(issuer) = extract_field_from_der(der, &[0x55, 0x04, 0x03], true) {
         ev.attributes.insert("issuer".into(), issuer);
     }
@@ -292,8 +323,19 @@ fn der_tlv_len(der: &[u8], pos: usize) -> Option<(usize, usize)> {
     Some((2 + n, len))
 }
 
-fn extract_sans_from_der(der: &[u8]) -> Vec<String> {
-    let mut sans = Vec::new();
+/// The Subject Alternative Names a leaf certificate carries, split by
+/// GeneralName kind: dNSName (tag 2) hostnames and rfc822Name (tag 1) email
+/// addresses. Each is a distinct pivot type (Domain vs Email), so they are kept
+/// apart rather than flattened into one hostname list — a rfc822Name emitted as
+/// a Domain (`admin@example.com`) is a false attribution.
+#[derive(Default)]
+struct CertSans {
+    domains: Vec<String>,
+    emails: Vec<String>,
+}
+
+fn extract_sans_from_der(der: &[u8]) -> CertSans {
+    let mut out = CertSans::default();
     let san_oid: &[u8] = &[0x55, 0x1D, 0x11];
 
     for i in 0..der.len().saturating_sub(san_oid.len()) {
@@ -320,9 +362,11 @@ fn extract_sans_from_der(der: &[u8]) -> Vec<String> {
         let end = (pos + 4096).min(der.len());
         while pos + 2 <= end {
             let tag = der[pos];
-            // Only the two GeneralName tags the module cares about advance the
+            // Only the GeneralName tags the module cares about advance the
             // cursor; anything else ends the sequence (we've left the SAN value).
-            if tag != 0x82 && tag != 0x87 {
+            // rfc822Name [1] (0x81) is now consumed too — previously it broke the
+            // loop, silently dropping every SAN that followed an email entry.
+            if tag != 0x81 && tag != 0x82 && tag != 0x87 {
                 break;
             }
             let Some((hdr, len)) = der_tlv_len(der, pos) else {
@@ -332,22 +376,29 @@ fn extract_sans_from_der(der: &[u8]) -> Vec<String> {
             if len == 0 || value_end > end {
                 break;
             }
-            // dNSName [2] (0x82) → a Domain SAN; iPAddress [7] (0x87) is skipped.
-            if tag == 0x82
-                && let Ok(name) = std::str::from_utf8(&der[pos + hdr..value_end])
+            // dNSName [2] (0x82) → Domain; rfc822Name [1] (0x81) → Email;
+            // iPAddress [7] (0x87) is consumed but not surfaced.
+            if (tag == 0x82 || tag == 0x81)
+                && let Ok(value) = std::str::from_utf8(&der[pos + hdr..value_end])
             {
-                let name = name.trim();
-                if name.contains('.') && name.len() > 3 && name.len() <= 253 {
-                    sans.push(name.to_lowercase());
+                let value = value.trim().to_lowercase();
+                if tag == 0x82 {
+                    if value.contains('.') && value.len() > 3 && value.len() <= 253 {
+                        out.domains.push(value);
+                    }
+                } else if crate::util::extract::looks_like_email(&value) {
+                    out.emails.push(value);
                 }
             }
             pos = value_end;
         }
         break;
     }
-    sans.sort_unstable();
-    sans.dedup();
-    sans
+    out.domains.sort_unstable();
+    out.domains.dedup();
+    out.emails.sort_unstable();
+    out.emails.dedup();
+    out
 }
 
 fn extract_field_from_der(der: &[u8], oid: &[u8], first: bool) -> Option<String> {

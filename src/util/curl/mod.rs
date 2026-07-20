@@ -62,6 +62,15 @@ pub(crate) const CURL_MAX_DOWNLOAD_BYTES: &str = "33554432";
 /// redirects at 5, and bound the download via `--max-filesize` (see
 /// [`CURL_MAX_DOWNLOAD_BYTES`]). Single-sourced so the two invocations can never
 /// drift apart — each is a security property that must hold on both, or neither.
+///
+/// Plus one resilience flag: `--connect-timeout 15` bounds the TCP+TLS CONNECT
+/// phase alone. Without it, a stuck connect to an unreachable/blackholed host
+/// burns the whole `--max-time` budget (up to 75 s on the SeekNow client) before
+/// failing — dozens of dead endpoints in a scan then serialise into minutes of
+/// dead air on a flaky Termux link. 15 s is generous enough for a slow mobile or
+/// Tor/`HUNTSMAN_SEARCH_PROXY` circuit to establish, while still failing a truly
+/// dead host far below the total ceiling. It bounds only connect, so a
+/// legitimately slow *response* still gets the full `--max-time`.
 pub(crate) const FETCH_HARDENING_ARGS: &[&str] = &[
     "--proto",
     "=http,https",
@@ -71,6 +80,8 @@ pub(crate) const FETCH_HARDENING_ARGS: &[&str] = &[
     "5",
     "--max-filesize",
     CURL_MAX_DOWNLOAD_BYTES,
+    "--connect-timeout",
+    "15",
 ];
 
 /// Internal: run curl with full parameter control.

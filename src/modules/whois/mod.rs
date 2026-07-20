@@ -80,6 +80,24 @@ pub(crate) fn vcard_field(vcard: &serde_json::Value, prop: &str) -> Option<Strin
     })
 }
 
+/// The real registrant-location parts (state, then country) for the Address
+/// geo-hint — each dropped if it is empty or a whois privacy-proxy placeholder.
+/// Uses the SAME single-sourced [`crate::core::validation::is_whois_privacy_placeholder`]
+/// guard the registrant name/org paths apply, rather than a narrow inline
+/// `redacted`/`privacy` substring check that let masked values like "Data
+/// Protected", "Withheld", or ".au statutory masking" through as a fake Address.
+/// **Pure** — unit-tested directly.
+pub(super) fn registrant_location_parts<'a>(
+    state: Option<&'a str>,
+    country: &'a str,
+) -> Vec<&'a str> {
+    [state, Some(country)]
+        .into_iter()
+        .flatten()
+        .filter(|p| !p.is_empty() && !crate::core::validation::is_whois_privacy_placeholder(p))
+        .collect()
+}
+
 /// Walk `entities` recursively, returning the first one whose `roles` list
 /// contains `role`.
 fn find_ip_entity<'a>(entities: &'a [RdapIpEntity], role: &str) -> Option<&'a RdapIpEntity> {
@@ -439,11 +457,7 @@ impl Module for Whois {
         // Registrant organisation → Organisation entity.
         if let Some(org) = &registrant_org {
             let org = org.trim();
-            if org.len() >= 3
-                && !org.eq_ignore_ascii_case("REDACTED FOR PRIVACY")
-                && !org.to_lowercase().contains("privacy")
-                && !org.to_lowercase().contains("redacted")
-            {
+            if org.len() >= 3 && !crate::core::validation::is_whois_privacy_placeholder(org) {
                 let mut oe = Entity::new(EntityKind::Organisation, org, 0.72, &_ctx.scan_id);
                 oe.tag("whois");
                 oe.tag(crate::core::tags::REGISTRANT);
@@ -464,10 +478,7 @@ impl Module for Whois {
             let name = name.trim();
             if name.len() >= 4
                 && name.contains(' ')
-                && !name.to_lowercase().contains("privacy")
-                && !name.to_lowercase().contains("redacted")
-                && !name.to_lowercase().contains("data protected")
-                && !name.to_lowercase().contains("not disclosed")
+                && !crate::core::validation::is_whois_privacy_placeholder(name)
             {
                 let mut pe = Entity::new(EntityKind::Person, name, 0.72, &_ctx.scan_id);
                 pe.tag("whois");
@@ -480,17 +491,11 @@ impl Module for Whois {
             }
         }
 
-        // Registrant address → Address entity (when available and not redacted).
+        // Registrant address → Address entity (when available and not a
+        // privacy-proxy placeholder — via the SAME shared guard the registrant
+        // name/org paths above use, not a narrow redacted/privacy substring test).
         if let Some(country) = &registrant_country {
-            let parts: Vec<&str> = [registrant_state.as_deref(), Some(country.as_str())]
-                .iter()
-                .filter_map(|p| *p)
-                .filter(|p| {
-                    !p.is_empty()
-                        && !p.to_lowercase().contains("redacted")
-                        && !p.to_lowercase().contains("privacy")
-                })
-                .collect();
+            let parts = registrant_location_parts(registrant_state.as_deref(), country);
             if !parts.is_empty() && parts.iter().any(|p| p.len() >= 2) {
                 let addr = parts.join(", ");
                 let mut ae = Entity::new(
@@ -531,14 +536,8 @@ impl Module for Whois {
         }
 
         // Admin and tech contact names / organisations — same redaction filter
-        // as the registrant block above.
-        let is_redacted = |s: &str| {
-            let l = s.to_lowercase();
-            l.contains("privacy")
-                || l.contains("redacted")
-                || l.contains("data protected")
-                || l.contains("not disclosed")
-        };
+        // as the registrant block above (the shared, complete privacy-proxy guard).
+        let is_redacted = crate::core::validation::is_whois_privacy_placeholder;
         for (name_opt, role) in [(&admin_name, "admin"), (&tech_name, "tech")] {
             if let Some(name) = name_opt
                 .as_deref()

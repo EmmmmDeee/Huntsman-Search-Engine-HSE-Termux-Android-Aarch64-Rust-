@@ -144,6 +144,18 @@ pub(super) fn client_builder() -> reqwest::ClientBuilder {
             }
         }))
         .connect_timeout(CONNECT_TIMEOUT)
+        // Advertise + transparently decompress gzip on every fetch. reqwest adds
+        // `Accept-Encoding: gzip`, decodes the body, and strips the encoding
+        // headers, so callers see identical decompressed bytes while the wire
+        // transfer for a provider's JSON shrinks ~4× — a data-cost/latency win on
+        // a metered Termux link across the whole free + intel-API cluster (the
+        // curl paid-API transport gets the same via `--compressed`). Safe against
+        // a decompression bomb: `read_json_text`/`read_text` stream the
+        // DECOMPRESSED body and error past `JSON_BODY_CAP` (32 MiB), so the cap
+        // bounds the EXPANDED size here — unlike curl's `--max-filesize`, which
+        // is why compression is enabled unconditionally on this path but only for
+        // trusted hosts on the curl path.
+        .gzip(true)
         // Per-read inactivity backstop (NOT a total timeout — streaming bodies
         // are deliberately unbounded): a server that connects then stalls
         // mid-response can no longer hang an `await` forever. Generous (30 s) so

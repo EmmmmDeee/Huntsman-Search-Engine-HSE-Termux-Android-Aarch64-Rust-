@@ -295,3 +295,60 @@ fn tag_breach_quality_no_stealer_log_tag_for_ordinary_breach() {
     assert!(!e.tags.iter().any(|t| t == tags::STEALER_LOG));
     assert!(e.tags.iter().any(|t| t == "breach-malware"));
 }
+
+fn pastes(json: &str) -> Vec<Paste> {
+    serde_json::from_str(json).unwrap()
+}
+
+#[test]
+fn paste_entities_tags_email_and_reconstructs_pastebin_url() {
+    let ps = pastes(
+        r#"[
+            {"Source":"Pastebin","Id":"abc123","Title":"dump","Date":"2019-01-01T00:00:00Z","EmailCount":42},
+            {"Source":"AdHocUrl","Id":"http://example/x","Title":"other","Date":"2020-06-01T00:00:00Z","EmailCount":3}
+        ]"#,
+    );
+    let ents = paste_entities(&ps, "victim@example.com", "s");
+
+    let email = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("email entity carrying the paste signal");
+    assert!(email.has_tag("paste") && email.has_tag(tags::BREACH));
+    let a = &email.evidence[0].attributes;
+    assert_eq!(a.get("paste_count").map(String::as_str), Some("2"));
+    // Latest date across pastes is surfaced.
+    assert_eq!(
+        a.get("latest_paste").map(String::as_str),
+        Some("2020-06-01T00:00:00Z")
+    );
+
+    // Exactly one Url — only the Pastebin entry is URL-reconstructable.
+    let urls: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Url)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert_eq!(urls, ["https://pastebin.com/abc123"]);
+}
+
+#[test]
+fn paste_entities_empty_input_yields_nothing() {
+    assert!(paste_entities(&[], "x@y.com", "s").is_empty());
+}
+
+#[test]
+fn paste_url_only_reconstructs_pastebin() {
+    let p = pastes(r#"[{"Source":"Pastebin","Id":"XYZ"}]"#)
+        .pop()
+        .unwrap();
+    assert_eq!(paste_url(&p).as_deref(), Some("https://pastebin.com/XYZ"));
+    // Unknown source → no fabricated URL.
+    let q = pastes(r#"[{"Source":"SomeForum","Id":"XYZ"}]"#)
+        .pop()
+        .unwrap();
+    assert!(paste_url(&q).is_none());
+    // Missing id → no URL even for Pastebin.
+    let r = pastes(r#"[{"Source":"Pastebin"}]"#).pop().unwrap();
+    assert!(paste_url(&r).is_none());
+}

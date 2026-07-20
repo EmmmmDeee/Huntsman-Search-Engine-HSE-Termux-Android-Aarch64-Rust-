@@ -33,6 +33,26 @@ use crate::util::cell_db;
 
 use super::handlers::bad_request;
 
+/// Builds the `last_import` JSON block, including the same `is_stale`
+/// freshness signal `hse doctor` already prints (`cell_db::is_stale`) — until
+/// this was added, a browser-only Termux operator had no way to learn their
+/// local OpenCelliD dataset had gone stale (`STALE_THRESHOLD_DAYS`) without
+/// running the CLI's `doctor` subcommand.
+fn last_import_json(rec: &cell_db::ImportRecord, now: i64) -> serde_json::Value {
+    let stale = cell_db::is_stale(rec.imported_at, now);
+    let age_days = now.saturating_sub(rec.imported_at).max(0) / 86_400;
+    json!({
+        "imported_at": rec.imported_at,
+        "mcc": rec.mcc,
+        "source_file": rec.source_file,
+        "row_count": rec.row_count,
+        "duration_ms": rec.duration_ms,
+        "age_days": age_days,
+        "is_stale": stale,
+        "stale_threshold_days": cell_db::STALE_THRESHOLD_DAYS,
+    })
+}
+
 /// `GET /api/v1/cells/status` — DB stats (total towers, MCC breakdown, last
 /// import) plus whether an import triggered via `POST /cells/import` is
 /// currently running or last failed. Ungated: aggregate tower counts and a
@@ -70,15 +90,11 @@ pub async fn cells_status(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         .take(10)
         .map(|(mcc, count)| json!({ "mcc": mcc, "count": count }))
         .collect();
-    let last_import = cell_db::last_import(&conn).ok().flatten().map(|rec| {
-        json!({
-            "imported_at": rec.imported_at,
-            "mcc": rec.mcc,
-            "source_file": rec.source_file,
-            "row_count": rec.row_count,
-            "duration_ms": rec.duration_ms,
-        })
-    });
+    let now = crate::core::entity::unix_now() as i64;
+    let last_import = cell_db::last_import(&conn)
+        .ok()
+        .flatten()
+        .map(|rec| last_import_json(&rec, now));
 
     Json(json!({
         "present": true,
@@ -231,6 +247,38 @@ mod tests {
             !try_start_import(&m),
             "a second call while Running must be refused, not race a duplicate import"
         );
+    }
+
+    #[test]
+    fn last_import_json_flags_a_recent_import_as_fresh() {
+        let rec = cell_db::ImportRecord {
+            imported_at: 1_000_000,
+            mcc: Some(505),
+            source_file: "OCID_cells_mcc505.csv.gz".to_string(),
+            row_count: 42,
+            duration_ms: 10,
+        };
+        // One day later — well under STALE_THRESHOLD_DAYS.
+        let json = last_import_json(&rec, 1_000_000 + 86_400);
+        assert_eq!(json["is_stale"], false);
+        assert_eq!(json["age_days"], 1);
+    }
+
+    #[test]
+    fn last_import_json_flags_an_old_import_as_stale() {
+        let rec = cell_db::ImportRecord {
+            imported_at: 0,
+            mcc: None,
+            source_file: "OCID_cells_full.csv.gz".to_string(),
+            row_count: 1,
+            duration_ms: 1,
+        };
+        // 200 days later — past the 180-day threshold.
+        let now = i64::from(cell_db::STALE_THRESHOLD_DAYS) * 86_400 + 20 * 86_400;
+        let json = last_import_json(&rec, now);
+        assert_eq!(json["is_stale"], true);
+        assert_eq!(json["age_days"], 200);
+        assert_eq!(json["stale_threshold_days"], cell_db::STALE_THRESHOLD_DAYS);
     }
 
     #[test]

@@ -172,6 +172,79 @@ use super::*;
         assert!(of_kind(&ents, EntityKind::Url).is_none());
     }
 
+    // ── crate_url_entities (pure) ───────────────────────────────────────
+
+    fn crates_resp(json: &str) -> CratesResp {
+        serde_json::from_str(json).expect("valid CratesResp fixture")
+    }
+
+    #[test]
+    fn crate_urls_dedup_sort_and_extract_github_owner() {
+        let resp = crates_resp(
+            r#"{"crates":[
+                {"repository":"https://github.com/serde-rs/serde","homepage":"https://serde.rs","documentation":"https://docs.rs/serde"},
+                {"repository":"https://github.com/serde-rs/serde","homepage":"https://serde.rs"},
+                {"repository":"ssh://git@example/x","homepage":"ftp://nope"}
+            ]}"#,
+        );
+        let ents = crate_url_entities(&resp, "s");
+
+        // http(s) URLs only, deduped + sorted (BTreeSet order).
+        let urls: Vec<&str> = ents
+            .iter()
+            .filter(|e| e.kind == EntityKind::Url)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert_eq!(
+            urls,
+            [
+                "https://docs.rs/serde",
+                "https://github.com/serde-rs/serde",
+                "https://serde.rs"
+            ]
+        );
+        assert!(
+            ents.iter()
+                .filter(|e| e.kind == EntityKind::Url)
+                .all(|e| e.has_tag("crates-io") && e.has_tag("code"))
+        );
+        // The non-http repo/homepage are dropped (no ssh/ftp Url).
+        assert!(!urls.iter().any(|u| u.starts_with("ssh") || u.starts_with("ftp")));
+
+        // GitHub owner extracted from the source-repository URL → Username pivot.
+        let owners: Vec<&str> = ents
+            .iter()
+            .filter(|e| e.kind == EntityKind::Username)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert_eq!(owners, ["serde-rs"], "one deduped github owner");
+        assert!(
+            ents.iter()
+                .find(|e| e.kind == EntityKind::Username)
+                .unwrap()
+                .has_tag("github")
+        );
+    }
+
+    #[test]
+    fn empty_crate_listing_yields_nothing() {
+        assert!(crate_url_entities(&crates_resp(r#"{"crates":[]}"#), "s").is_empty());
+    }
+
+    #[test]
+    fn github_owner_extraction_handles_repo_and_rejects_junk() {
+        assert_eq!(
+            github_owner_from_url("https://github.com/serde-rs/serde"),
+            Some("serde-rs")
+        );
+        assert_eq!(
+            github_owner_from_url("https://github.com/dtolnay"),
+            Some("dtolnay")
+        );
+        assert!(github_owner_from_url("https://gitlab.com/x/y").is_none());
+        assert!(github_owner_from_url("https://github.com/").is_none());
+    }
+
     #[test]
     fn placeholder_name_is_not_promoted_to_person() {
         // A template/placeholder full name must never be promoted to a Person

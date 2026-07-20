@@ -110,6 +110,14 @@ struct PageInfo {
     country: Option<String>,
     #[serde(default)]
     server: Option<String>,
+    /// The announcing ASN of the scanned page's IP (`"AS13335"`) — the hosting
+    /// network operator, a pivot the module used to discard.
+    #[serde(default)]
+    asn: Option<String>,
+    /// The reverse-DNS (PTR) hostname of the page IP — a domain edge distinct
+    /// from `domain` (which is the requested host, not the resolved PTR).
+    #[serde(default)]
+    ptr: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -166,6 +174,8 @@ impl Module for UrlScan {
             // attack-surface pivots the module used to discard.
             EntityKind::Domain,
             EntityKind::Url,
+            // Announcing ASN of the scanned pages' IPs.
+            EntityKind::Asn,
         ];
         KINDS
     }
@@ -255,6 +265,10 @@ struct UrlScanIntel {
     domains: BTreeSet<String>,
     /// Distinct scanned page URLs.
     urls: BTreeSet<String>,
+    /// Announcing ASNs (`"AS13335"`) of the scanned pages' IPs.
+    asns: BTreeSet<String>,
+    /// Reverse-DNS (PTR) hostnames of the scanned pages' IPs.
+    ptrs: BTreeSet<String>,
     scan_count: usize,
     any_malicious: bool,
 }
@@ -277,6 +291,8 @@ fn summarize(results: &[ScanResult]) -> UrlScanIntel {
         servers: field(|p| p.server.as_deref()),
         domains: field(|p| p.domain.as_deref()),
         urls: field(|p| p.url.as_deref()),
+        asns: field(|p| p.asn.as_deref()),
+        ptrs: field(|p| p.ptr.as_deref()),
         scan_count: results.len(),
         any_malicious: results
             .iter()
@@ -286,8 +302,9 @@ fn summarize(results: &[ScanResult]) -> UrlScanIntel {
 }
 
 /// Child entities for a URLScan.io result: the resolved IPs, hosting countries,
-/// associated domains/subdomains, and scanned URLs. **Pure** (no IO) so the
-/// dedup, validity gates and target-echo suppression are unit-tested directly.
+/// associated domains/subdomains, scanned URLs, announcing ASNs, and reverse-DNS
+/// (PTR) hosts. **Pure** (no IO) so the dedup, validity gates and target-echo
+/// suppression are unit-tested directly.
 fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Vec<Entity> {
     let mut out: Vec<Entity> = Vec::new();
     let target_lc = target_value.trim().to_ascii_lowercase();
@@ -370,6 +387,54 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
         ));
         e
     }));
+
+    // Announcing ASNs of the scanned pages' IPs (`"AS13335"`). Validate the
+    // `AS<digits>` shape so a malformed/empty field never becomes a junk pivot,
+    // and re-emit canonically (`AS` + digits) regardless of source casing.
+    out.extend(
+        intel
+            .asns
+            .iter()
+            .filter_map(|a| {
+                a.strip_prefix("AS")
+                    .or_else(|| a.strip_prefix("as"))
+                    .filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+            })
+            .map(|digits| {
+                let asn = format!("AS{digits}");
+                let mut e = Entity::new(EntityKind::Asn, &asn, 0.55, scan_id);
+                e.tag("urlscan");
+                e.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Announcing ASN seen in URLScan.io scans of {target_value}"),
+                ));
+                e
+            }),
+    );
+
+    // Reverse-DNS (PTR) hostnames → Domain pivots, held to the same validity gate
+    // as resolved domains (dotted, non-IP, not the seed echo).
+    out.extend(
+        intel
+            .ptrs
+            .iter()
+            .map(|p| p.trim().trim_end_matches('.'))
+            .filter(|p| {
+                p.contains('.')
+                    && p.parse::<std::net::IpAddr>().is_err()
+                    && p.to_ascii_lowercase() != target_lc
+            })
+            .map(|p| {
+                let mut e = Entity::new(EntityKind::Domain, p, 0.55, scan_id);
+                e.tag("urlscan");
+                e.tag("ptr");
+                e.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Reverse-DNS host seen in URLScan.io scans of {target_value}"),
+                ));
+                e
+            }),
+    );
 
     out
 }

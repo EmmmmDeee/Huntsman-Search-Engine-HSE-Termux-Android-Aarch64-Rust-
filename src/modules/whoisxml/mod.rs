@@ -90,9 +90,13 @@ struct Contact {
     #[serde(default)]
     email: Option<String>,
     #[serde(default)]
+    telephone: Option<String>,
+    #[serde(default)]
     country: Option<String>,
     #[serde(default)]
     country_code: Option<String>,
+    #[serde(default)]
+    city: Option<String>,
     #[serde(default)]
     state: Option<String>,
 }
@@ -145,6 +149,8 @@ impl Module for WhoisXml {
             EntityKind::Person,
             EntityKind::Organisation,
             EntityKind::Domain,
+            // Registrant/admin/tech contact telephone as a contactability pivot.
+            EntityKind::Phone,
             // Registrant/admin/tech WHOIS location (state, country) as a geo lead.
             EntityKind::Address,
             EntityKind::Coordinates,
@@ -288,6 +294,7 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
         let Some(c) = contact else { continue };
 
         if let Some(org) = nonempty(&c.organization)
+            .filter(|o| !crate::core::validation::is_whois_privacy_placeholder(o))
             && seen.insert(format!("org:{}", org.to_lowercase()))
         {
             let mut e = Entity::new(
@@ -306,7 +313,8 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
             out.push(e);
         }
 
-        if let Some(name) = nonempty(&c.name)
+        if let Some(name) =
+            nonempty(&c.name).filter(|n| !crate::core::validation::is_whois_privacy_placeholder(n))
             && seen.insert(format!("person:{}", name.to_lowercase()))
         {
             let mut e = Entity::new(EntityKind::Person, &name, confidence::MEDIUM_PLUS, scan_id);
@@ -334,8 +342,28 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
             }
         }
 
-        // WHOIS registrant location → low-confidence Address geo-hint.
+        // Contact telephone (RFC-WHOIS `+CC.number`) — a real contactability
+        // pivot, previously decoded nowhere. Skip privacy-placeholder values,
+        // and normalise the dotted separator (the shared E.164 scanner treats a
+        // space as a separator but not `.`) so each validated number is minted.
+        if let Some(tel) = nonempty(&c.telephone)
+            .filter(|t| !crate::core::validation::is_whois_privacy_placeholder(t))
+        {
+            for phone in crate::util::extract::phones(&tel.replace('.', " ")) {
+                if seen.insert(format!("phone:{phone}")) {
+                    let mut e = Entity::new(EntityKind::Phone, &phone, 0.65, scan_id);
+                    e.tag("whoisxml");
+                    e.tag(format!("whois-{role}"));
+                    e.add_evidence(base_ev.clone().with_attr("contact_role", role));
+                    out.push(e);
+                }
+            }
+        }
+
+        // WHOIS registrant location → low-confidence Address geo-hint. A
+        // privacy-proxy address ("REDACTED FOR PRIVACY") is never the subject's.
         if let Some(loc) = contact_location(c)
+            .filter(|l| !crate::core::validation::is_whois_privacy_placeholder(l))
             && seen.insert(format!("addr:{}", loc.to_lowercase()))
         {
             let mut e = Entity::new(EntityKind::Address, &loc, confidence::LOW_MEDIUM, scan_id);
@@ -379,10 +407,11 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
     out
 }
 
-/// Compose a WHOIS contact's `state, country` into a single location string for
-/// an `Address` geo-hint. `None` when neither part is present.
+/// Compose a WHOIS contact's `city, state, country` into a single location string
+/// for an `Address` geo-hint. `None` when no part is present. A registrant `city`
+/// sharpens the hint from a state centroid to a city-grain lead.
 fn contact_location(c: &Contact) -> Option<String> {
-    let parts: Vec<String> = [nonempty(&c.state), nonempty(&c.country)]
+    let parts: Vec<String> = [nonempty(&c.city), nonempty(&c.state), nonempty(&c.country)]
         .into_iter()
         .flatten()
         .collect();

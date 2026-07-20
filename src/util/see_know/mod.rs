@@ -39,17 +39,20 @@ mod tests;
 // consumers (`api::handlers::stats`) keep working through the original path.
 pub use budget::{
     BudgetSnapshot, budget_remaining, budget_snapshot, is_key_invalid, is_quota_exhausted,
-    refresh_round_budget, reset_budget, scale_scan_cap_from_daily, scan_budget_remaining,
-    set_scan_cap_override, should_probe_quota,
+    refresh_round_budget, release_quota_probe, reset_budget, scale_scan_cap_from_daily,
+    scan_budget_remaining, set_scan_cap_override, should_probe_quota,
 };
 
-// Key helpers
-pub use client::{key_fingerprint, resolve_key};
+// Key helpers + the resolved API base host (so `hse doctor` can show WHICH
+// host a failing probe tried — the single most useful fact when the failure is
+// DNS host-resolution, the observed live symptom).
+pub use client::{base_url, key_fingerprint, resolve_key};
 
 // Endpoint functions
 pub(crate) use endpoints::get_path;
 pub use endpoints::{
-    discord_to_roblox, discord_user, query_credits, search, search_deep, steam_profile,
+    CreditsProbe, credits_probe, discord_to_roblox, discord_user, query_credits, search,
+    search_deep, steam_profile,
 };
 
 /// Extract a string field from a JSON Value.

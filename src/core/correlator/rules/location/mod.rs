@@ -855,6 +855,11 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
             a.0.c_effective()
                 .partial_cmp(&b.0.c_effective())
                 .unwrap_or(std::cmp::Ordering::Equal)
+                // Equal confidence: smaller UID wins (reverse compare → "greater"),
+                // matching the rung-5 login-IP and rung-6 phone selectors below.
+                // Without it `max_by` returns whichever tied coord iterated LAST,
+                // so the user-facing estimate flipped with HashMap-snapshot order.
+                .then_with(|| b.0.uid.cmp(&a.0.uid))
         });
     if let Some((e, (lat, lon))) = best_coord {
         return Some(AuLocationEstimate {

@@ -54,17 +54,23 @@ impl Module for Censys {
         // Censys host search is a scan/exposure database (T1596.005, alongside
         // T1590.005 IP Addresses — the Infrastructure default) that also emits
         // the host's data-centre coordinates + city/region as physical-location
-        // entities (T1591.001). Superset of the default — coverage cannot regress.
-        &["T1590.005", "T1596.005", "T1591.001"]
+        // entities (T1591.001) and the ASN operator as an Organisation
+        // (T1591.002 Business Relationships). Superset of the default —
+        // coverage cannot regress.
+        &["T1590.005", "T1596.005", "T1591.001", "T1591.002"]
     }
     fn produces(&self) -> &'static [EntityKind] {
         // Censys host search corroborates the IP and emits the host's
-        // Coordinates (data-centre lat/lon) and city/region/country
-        // as Address.
+        // Coordinates (data-centre lat/lon) and city/region/country as Address,
+        // plus the announcing ASN, its network-operator Organisation, and the
+        // reverse-DNS names as Domain pivots.
         const KINDS: &[EntityKind] = &[
             EntityKind::IpAddress,
             EntityKind::Coordinates,
             EntityKind::Address,
+            EntityKind::Asn,
+            EntityKind::Organisation,
+            EntityKind::Domain,
         ];
         KINDS
     }
@@ -151,6 +157,9 @@ impl Module for Censys {
 /// | `location.coordinates` (valid)          | `Coordinates` (+ `geoint`/`censys`) |
 /// | `location.country_code`                 | `country:<CC>` tag (uppercased)     |
 /// | `location.city` + `country` (valid geo) | `Address` (+ `censys`/`geoint`)     |
+/// | `autonomous_system.asn` (> 0)           | `Asn` (`AS<n>`, + `censys`)         |
+/// | `autonomous_system.name`/`.description` | `Organisation` (+ `censys`)         |
+/// | `dns.reverse_dns.names`                 | `Domain` pivots (+ `censys`/`ptr`)  |
 ///
 /// Returns empty when the host carries neither services nor a location (the
 /// caller previously short-circuited on this). The Coordinates AND the
@@ -159,7 +168,11 @@ impl Module for Censys {
 /// equally unreliable, so it yields neither — keeping placeholder junk out of the
 /// graph (false positives are worse than a missed lead here).
 fn build_entities(host: &HostResult, ip: &str, scan_id: &str) -> Vec<Entity> {
-    if host.services.is_empty() && host.location.is_none() {
+    if host.services.is_empty()
+        && host.location.is_none()
+        && host.autonomous_system.is_none()
+        && host.dns.is_none()
+    {
         return Vec::new();
     }
 
@@ -290,6 +303,70 @@ fn build_entities(host: &HostResult, ip: &str, scan_id: &str) -> Vec<Entity> {
             ae.tag("geoint");
             ae.add_evidence(Evidence::new(SRC, format!("Censys location for {ip}")));
             result.push(ae);
+        }
+    }
+
+    // ── ASN + network-operator Organisation ─────────────────────
+    // The authoritative attribution block: the announcing ASN and the org that
+    // operates it — the two pivots that drive the infrastructure/ownership
+    // correlators, matching shodan/criminal_ip/ipqs. A 0/absent AS is skipped.
+    if let Some(as_block) = &host.autonomous_system {
+        if let Some(asn) = as_block.asn.filter(|n| *n > 0) {
+            let asn_str = format!("AS{asn}");
+            let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, scan_id);
+            ae.tag("censys");
+            let mut ev = Evidence::new(SRC, format!("Announcing ASN for {ip}"));
+            if let Some(cc) = as_block
+                .country_code
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                ev = ev.with_attr("country", cc);
+            }
+            ae.add_evidence(ev);
+            result.push(ae);
+        }
+        // Operator name — prefer `name`, fall back to the longer `description`.
+        if let Some(org) = as_block
+            .name
+            .as_deref()
+            .or(as_block.description.as_deref())
+            .map(str::trim)
+            .filter(|s| s.len() >= 2)
+        {
+            let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, scan_id);
+            oe.tag("censys");
+            oe.add_evidence(Evidence::new(SRC, format!("Network operator for {ip}")));
+            result.push(oe);
+        }
+    }
+
+    // ── Reverse-DNS names → Domain pivots ───────────────────────
+    // Deduped; IP-shaped, dotless, and whitespace-bearing hosts dropped.
+    if let Some(rev) = host.dns.as_ref().and_then(|d| d.reverse_dns.as_ref()) {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for host_lc in rev
+            .names
+            .iter()
+            .map(|n| n.trim().trim_end_matches('.').to_ascii_lowercase())
+            .filter(|h| {
+                !h.is_empty()
+                    && h.contains('.')
+                    && h.parse::<std::net::IpAddr>().is_err()
+                    && !h.contains(char::is_whitespace)
+            })
+        {
+            if !seen.insert(host_lc.clone()) {
+                continue;
+            }
+            let mut d = Entity::new(EntityKind::Domain, &host_lc, 0.72, scan_id);
+            d.tag("censys");
+            d.tag("ptr");
+            d.add_evidence(
+                Evidence::new(SRC, format!("Reverse-DNS host for {ip}")).with_attr("ip", ip),
+            );
+            result.push(d);
         }
     }
 

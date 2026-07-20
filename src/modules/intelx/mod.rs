@@ -145,6 +145,28 @@ pub(crate) fn bucket_family(bucket: &str) -> &str {
     bucket.split('.').next().unwrap_or(bucket)
 }
 
+/// The earliest date across the **leaks-family** records — the breach's temporal
+/// anchor — or `None` unless `earned_breach` (the search actually earned the
+/// BREACH tag: a leaks-family, non-text-search hit). Kept distinct from the
+/// all-bucket `latest_record`, which includes paste/darknet mentions that are
+/// not the leak itself. **Pure.** ISO-8601 dates sort lexicographically, so the
+/// string `min` is the earliest.
+pub(crate) fn earliest_breach_date(records: &[Record], earned_breach: bool) -> Option<&str> {
+    if !earned_breach {
+        return None;
+    }
+    records
+        .iter()
+        .filter(|r| {
+            r.bucket
+                .as_deref()
+                .is_some_and(|b| bucket_family(b) == "leaks")
+        })
+        .filter_map(|r| r.date.as_deref())
+        .filter(|s| !s.is_empty())
+        .min()
+}
+
 /// The tags a set of bucket source-families warrants for a search, given whether
 /// the search ran as an **unscoped text query**. **Pure**, deterministic (input
 /// is an ordered `BTreeSet`).
@@ -236,8 +258,9 @@ impl Module for IntelX {
     fn attack_techniques(&self) -> &'static [&'static str] {
         // Breach default covers Credentials (T1589.001) + Email Addresses
         // (T1589.002). IntelX also surfaces real-name Person entities →
-        // T1589.003 Employee Names, which the Breach default omits.
-        &["T1589.001", "T1589.002", "T1589.003"]
+        // T1589.003 Employee Names, which the Breach default omits — and is a
+        // paid, closed intelligence archive → T1597.002 Purchase Technical Data.
+        &["T1589.001", "T1589.002", "T1589.003", "T1597.002"]
     }
 
     fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
@@ -459,6 +482,14 @@ impl Module for IntelX {
 
         let latest = all_records.iter().filter_map(|r| r.date.as_deref()).max();
 
+        // When this entity actually earned the BREACH tag (a leaks-family,
+        // non-text-search hit), stamp the EARLIEST leaks-family record date as a
+        // dedicated breach_date — a truer temporal anchor for the leak than
+        // latest_record, which spans every bucket (paste/darknet mentions
+        // included).
+        let breach_date =
+            earliest_breach_date(&all_records, entity.has_tag(crate::core::tags::BREACH));
+
         let match_kind = if is_text_search {
             " (unvalidated text match)"
         } else {
@@ -481,6 +512,9 @@ impl Module for IntelX {
         }
         if let Some(d) = latest {
             ev = ev.with_attr("latest_record", d);
+        }
+        if let Some(d) = breach_date {
+            ev = ev.with_attr("breach_date", d);
         }
         entity.add_evidence(ev);
 

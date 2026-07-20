@@ -45,6 +45,17 @@ pub fn should_probe_quota() -> bool {
         .is_ok()
 }
 
+/// Release the one-shot quota-probe latch [`should_probe_quota`] claimed, so a
+/// later seed re-probes. Call this ONLY when the probe the claim guarded
+/// actually FAILED (a transient DNS/timeout blip, or a not-yet-valid key):
+/// otherwise a single failed first probe pins the scan to the un-scaled default
+/// cap (≈60% under-provisioned on a large plan) for its entire life with no
+/// recovery short of a new scan. `/credits` is non-billable, so re-probing costs
+/// no quota. Left untouched on success, preserving "first caller wins".
+pub fn release_quota_probe() {
+    QUOTA_PROBED.store(false, Ordering::Release);
+}
+
 /// Scale the per-scan cap to the operator's actual daily allocation.
 ///
 /// Formula: `clamp(daily_limit / 20, 300, 2500)`.

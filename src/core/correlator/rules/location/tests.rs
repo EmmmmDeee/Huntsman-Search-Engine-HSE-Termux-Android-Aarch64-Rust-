@@ -138,3 +138,25 @@ use super::*;
         e.add_evidence(Evidence::new("wigle", "wifi sighting"));
         assert!(!is_infrastructure_geo(&e));
     }
+
+    #[test]
+    fn best_au_location_estimate_rung2_is_order_independent_on_a_confidence_tie() {
+        // Two equal-confidence AU person-anchored coordinates (Brisbane QLD vs
+        // Melbourne VIC), single-source so the rung-1 synergy gate stays closed and
+        // rung 2 (most-confident single coordinate) runs. On a c_effective tie
+        // `max_by` returns whichever coord iterated LAST, so before the UID
+        // tie-break the winning estimate — a user-facing dossier/export headline —
+        // flipped with the HashMap-snapshot order of the entity slice.
+        let bris = au_coord("-27.4698,153.0251", 0.70, "geocode", "QLD");
+        let melb = au_coord("-37.8136,144.9631", 0.70, "geocode", "VIC");
+        let fwd = best_au_location_estimate(&[bris.clone(), melb.clone()])
+            .expect("rung-2 coordinate estimate");
+        let rev =
+            best_au_location_estimate(&[melb, bris]).expect("rung-2 coordinate estimate");
+        assert_eq!(fwd.basis, "confirmed coordinate");
+        assert_eq!(
+            (fwd.lat, fwd.lon, fwd.state, fwd.uids),
+            (rev.lat, rev.lon, rev.state, rev.uids),
+            "the rung-2 coordinate winner must be order-independent on a confidence tie"
+        );
+    }

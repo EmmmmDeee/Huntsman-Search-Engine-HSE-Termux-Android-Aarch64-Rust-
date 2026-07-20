@@ -35,6 +35,12 @@ use super::*;
             has(["--max-filesize", CURL_MAX_DOWNLOAD_BYTES]),
             "download size not capped"
         );
+        // Connect phase bounded so a dead host fails fast instead of burning the
+        // whole --max-time budget.
+        assert!(
+            has(["--connect-timeout", "15"]),
+            "TCP connect phase not bounded"
+        );
     }
 
     // ── SSRF pin (B8: the security-critical path was untested) ─────────

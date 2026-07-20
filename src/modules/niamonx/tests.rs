@@ -99,6 +99,40 @@ fn pbs_v1_found_with_blocks_tags_breach_and_pivots_names() {
 }
 
 #[test]
+fn pbs_v1_suppresses_username_derived_name_pivots() {
+    // A breach `meta.names` entry that is a doubled/slug username
+    // ("rhino-ryno23 rhino-ryno23") is not a real person and must never be minted
+    // as a Person pivot — the shared `is_username_derived_name` guard (also used
+    // by see_know/oathnet_pro) suppresses it. A genuine hit is still present
+    // (blocks_total > 0), so the guard is what drops the pivot, not an empty hit.
+    let resp = PbsV1Response {
+        success: true,
+        data: Some(PbsV1Data {
+            status: Some("found".to_string()),
+            error: None,
+            meta: Some(PbsV1Meta {
+                blocks_total: 1,
+                emails: None,
+                names: Some(vec!["rhino-ryno23 rhino-ryno23".to_string()]),
+                first_seen: None,
+                last_seen: None,
+            }),
+            risk: None,
+            blocks: None,
+            rate: None,
+        }),
+    };
+    let target = Target::new(TargetKind::Email, "x@y.com");
+    let mut entity = target.to_entity(0.80, "s");
+    let mut result = ModuleResult::new();
+    emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s");
+    assert!(
+        !result.entities.iter().any(|e| e.kind == EntityKind::Person),
+        "a username-derived meta.names entry must not mint a Person pivot"
+    );
+}
+
+#[test]
 fn ulp_emits_stealer_tag_and_pivots() {
     let resp = UlpResponse {
         success: true,

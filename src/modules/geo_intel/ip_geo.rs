@@ -10,7 +10,7 @@ use crate::core::{
     module::{ModuleContext, ModuleResult},
     scan::Target,
 };
-use crate::util::geo::is_valid_coords;
+use crate::util::geo::is_plausible_provider_coord;
 use crate::util::http::fetch_json;
 
 use super::SRC;
@@ -151,10 +151,12 @@ pub(super) fn build_ipapico_entity(
     let Some((lat, lon)) = data.latitude.zip(data.longitude) else {
         return Vec::new();
     };
-    if !is_valid_coords(lat, lon) {
+    // Coarse free-tier IP-geo: reject the null-island BAND these providers emit
+    // as an "unknown location" placeholder, not just the exact (0,0) point.
+    if !is_plausible_provider_coord(lat, lon) {
         return Vec::new();
     }
-    let coords = format!("{lat:.6},{lon:.6}");
+    let coords = format!("{lat:.4},{lon:.4}");
     let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.68, scan_id);
     tag_country(&mut e, data.country_code.as_deref(), lat, lon);
 
@@ -205,10 +207,11 @@ pub(super) fn build_freeipapi_entity(
         return None;
     }
     let (lat, lon) = (data.latitude?, data.longitude?);
-    if !is_valid_coords(lat, lon) {
+    // Coarse free-tier IP-geo: reject the null-island BAND (see ipapi.co builder).
+    if !is_plausible_provider_coord(lat, lon) {
         return None;
     }
-    let coords = format!("{lat:.6},{lon:.6}");
+    let coords = format!("{lat:.4},{lon:.4}");
     let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.62, scan_id);
     tag_country(&mut e, data.country_code.as_deref(), lat, lon);
 

@@ -65,6 +65,66 @@ use super::*;
     }
 
     #[test]
+    fn build_entities_suppresses_privacy_proxy_registrant_identity() {
+        // The GoDaddy/Namecheap privacy-proxy defaults must NOT become a real
+        // Person/Organisation/Address — the same placeholder string recurs across
+        // thousands of unrelated domains and would false-merge them onto one node.
+        let rec = record(
+            r#"{
+                "registrant": {
+                    "name": "Registration Private",
+                    "organization": "Domains By Proxy, LLC",
+                    "street1": "REDACTED FOR PRIVACY",
+                    "city": "Tempe", "state": "Arizona", "country": "UNITED STATES",
+                    "email": "abuse@godaddy.com"
+                }
+            }"#,
+        );
+        let es = build_entities(&rec, "example-target.com", "t");
+        assert!(
+            values(&es, EntityKind::Person).is_empty(),
+            "privacy-proxy registrant name must not become a Person"
+        );
+        assert!(
+            values(&es, EntityKind::Organisation).is_empty(),
+            "privacy-proxy org must not become an Organisation"
+        );
+        // A registrant real name still surfaces (regression guard).
+        let real = record(r#"{ "registrant": {"name": "Jordan Avery", "organization": "Avery Media Pty Ltd"} }"#);
+        let ok = build_entities(&real, "example-target.com", "t");
+        assert_eq!(values(&ok, EntityKind::Person), vec!["Jordan Avery"]);
+        assert_eq!(values(&ok, EntityKind::Organisation), vec!["Avery Media Pty Ltd"]);
+    }
+
+    #[test]
+    fn build_entities_emits_contact_telephone_as_a_phone_pivot() {
+        // The RFC-WHOIS `+CC.number` telephone field was decoded nowhere; it is a
+        // real contactability pivot. The dotted separator must normalise to E.164.
+        let rec = record(
+            r#"{ "registrant": {"name": "Jordan Avery", "telephone": "+1.2125551234"} }"#,
+        );
+        let es = build_entities(&rec, "example-target.com", "t");
+        assert_eq!(
+            values(&es, EntityKind::Phone),
+            vec!["+12125551234"],
+            "the RFC-WHOIS dotted telephone must surface as one E.164 Phone"
+        );
+    }
+
+    #[test]
+    fn build_entities_suppresses_privacy_placeholder_telephone() {
+        // A redacted telephone must never mint a Phone entity.
+        let rec = record(
+            r#"{ "registrant": {"name": "Jordan Avery", "telephone": "REDACTED FOR PRIVACY"} }"#,
+        );
+        let es = build_entities(&rec, "example-target.com", "t");
+        assert!(
+            values(&es, EntityKind::Phone).is_empty(),
+            "a privacy-placeholder telephone must not become a Phone"
+        );
+    }
+
+    #[test]
     fn build_entities_surfaces_registered_domain_pivot_when_it_differs() {
         let rec = record(r#"{ "domainName": "acme.com" }"#);
         // Queried a subdomain; registry holds the parent → pivot.
@@ -93,6 +153,23 @@ use super::*;
             .find(|e| e.kind == EntityKind::Address)
             .expect("address geo-hint");
         assert_eq!(addr.value, "Queensland, Australia");
+        assert!(addr.tags.iter().any(|t| t == "geo-hint"));
+    }
+
+    #[test]
+    fn build_entities_includes_registrant_city_in_geo_hint() {
+        // A registrant `city` sharpens the Address geo-hint from a state centroid
+        // to a city-grain lead. `city` is present in WhoisXML output but was
+        // dropped before deserialization (absent from the Contact struct).
+        let rec = record(
+            r#"{ "registrant": {"name": "Jordan Avery", "city": "Brisbane", "state": "Queensland", "country": "Australia"} }"#,
+        );
+        let es = build_entities(&rec, "acme.com", "t");
+        let addr = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Address)
+            .expect("address geo-hint");
+        assert_eq!(addr.value, "Brisbane, Queensland, Australia");
         assert!(addr.tags.iter().any(|t| t == "geo-hint"));
     }
 

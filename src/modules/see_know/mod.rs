@@ -133,6 +133,7 @@ impl Module for SeekNow {
             "T1591.002", // Business Relationships — company / employer / org
             "T1592",     // Gather Victim Host Information — MAC / HWID / hostname / device_id
             "T1593.001", // Social Media — telegram / facebook / instagram / … handles
+            "T1597.002", // Purchase Technical Data — a paid, closed breach/OSINT corpus
         ]
     }
 
@@ -226,20 +227,28 @@ impl Module for SeekNow {
         // to the operator's actual plan allocation. Fires only on the first
         // target this scan (QUOTA_PROBED latch); subsequent seeds skip the
         // extra HTTP call. Does NOT consume a budget slot.
-        if see_know::should_probe_quota()
-            && !ctx.cancel.is_cancelled()
-            && let Some((remaining, daily_limit)) = see_know::query_credits(key).await
-        {
-            // No daily_limit field — estimate from remaining assuming
-            // typical mid-scan usage (≤25% spent so far).
-            let limit = daily_limit.unwrap_or_else(|| remaining.saturating_mul(4).min(500_000));
-            see_know::scale_scan_cap_from_daily(limit);
-            tracing::info!(
-                credits_remaining = remaining,
-                daily_limit = ?daily_limit,
-                scan_cap = see_know::scan_budget_remaining(),
-                "see_know quota probed — scan cap scaled to plan allocation"
-            );
+        if see_know::should_probe_quota() && !ctx.cancel.is_cancelled() {
+            match see_know::query_credits(key).await {
+                Some((remaining, daily_limit)) => {
+                    // No daily_limit field — estimate from remaining assuming
+                    // typical mid-scan usage (≤25% spent so far).
+                    let limit =
+                        daily_limit.unwrap_or_else(|| remaining.saturating_mul(4).min(500_000));
+                    see_know::scale_scan_cap_from_daily(limit);
+                    tracing::info!(
+                        credits_remaining = remaining,
+                        daily_limit = ?daily_limit,
+                        scan_cap = see_know::scan_budget_remaining(),
+                        "see_know quota probed — scan cap scaled to plan allocation"
+                    );
+                }
+                // The probe FAILED (transient DNS/timeout, or a not-yet-valid
+                // key). Release the one-shot latch so a later seed re-probes,
+                // instead of pinning the WHOLE scan to the un-scaled default cap
+                // (~60% under-provisioned on a large plan) after a single blip.
+                // `/credits` is non-billable, so re-probing costs no quota.
+                None => see_know::release_quota_probe(),
+            }
         }
 
         // Pre-flight skip — junk seeds (local domains, too-short usernames,
@@ -455,6 +464,18 @@ fn absorb_search_hits(
         );
         store_api_credential(item, SRC);
         extract_api_keys_from_item(item, scan_id, SRC, seen, result);
+        // Geo-conscious extraction — coordinates/timezone/location on a record.
+        // `/search` and `/search/deep` are SeekNow's broadest, highest-yield
+        // calls (they auto-route into the stealer/network corpora), yet this
+        // absorption path was the ONLY one that skipped `extract_geo_entities`
+        // — the per-endpoint dispatch path and the pivot path both already call
+        // it. Coordinates, location bios, and timezone fields on these records
+        // were silently dropped, starving the downstream geocode/overpass/
+        // wigle/breach_timezone correlators of leads from the module's single
+        // most productive call. `endpoint_label` ("search"/"search/deep") keeps
+        // the endpoint-specific arms (ip_info/whois) inert while the generic
+        // lat/lon, location-string, and timezone extraction fires.
+        extract_geo_entities(item, endpoint_label, scan_id, seen, result);
     }
 }
 

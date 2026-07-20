@@ -57,11 +57,13 @@ pub const WORKER_THREADS: usize = 2;
 /// realistic workload. Applied in `main` via a hand-built runtime.
 pub const MAX_BLOCKING_THREADS: usize = 16;
 
-// Live-mode tuning constants (used from v0.5+):
+/// Default seconds between `hse live` iterations (the `--interval` default and
+/// the API's live-request fallback). The only live-mode tuning constant that is
+/// actually wired: `--depth`/`--throttle` default to 0 (seed-only, un-throttled)
+/// per iteration by design, and there is no concurrency knob — the former
+/// `LIVE_MAX_DEPTH`/`LIVE_DEFAULT_THROTTLE_MS`/`LIVE_DEFAULT_CONCURRENT` were
+/// aspirational values that never matched a real default and never had a reader.
 pub const LIVE_DEFAULT_INTERVAL_SECS: u64 = 30;
-pub const LIVE_MAX_DEPTH: u32 = 5;
-pub const LIVE_DEFAULT_THROTTLE_MS: u64 = 100;
-pub const LIVE_DEFAULT_CONCURRENT: usize = 4;
 
 pub mod api;
 pub mod audit;

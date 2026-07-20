@@ -155,6 +155,75 @@ async fn keyed_ok_or_404_classifies_miss_success_and_error() {
     );
 }
 
+#[tokio::test]
+async fn fetch_keyed_json_retries_once_on_a_transient_timeout() {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::AsyncWriteExt;
+
+    // A server whose FIRST connection is held open without replying (so the
+    // client times out — a transient error) and whose SECOND connection is
+    // answered immediately with a 200 JSON body. Each connection is handled in
+    // its own task, so conn2 is served while conn1 is still being held — no
+    // head-of-line blocking, so the timing margin is generous (not flaky).
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let count = Arc::new(AtomicUsize::new(0));
+    let count_srv = count.clone();
+    tokio::spawn(async move {
+        loop {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let n = count_srv.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                if n == 0 {
+                    // Hold the first connection open past the client timeout,
+                    // then let it drop — the client sees a timeout, not a reply.
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    let _ = sock.shutdown().await;
+                } else {
+                    let body = r#"{"ok":true}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                }
+            });
+        }
+    });
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = crate::core::module::ModuleContext {
+        scan_id: "test".into(),
+        bus,
+        http: reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_millis(400))
+            .build()
+            .unwrap(),
+        keys: HashMap::from([("HUNTSMAN_TEST_KEY".to_string(), "k".to_string())]),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+
+    let body: Option<serde_json::Value> = super::fetch::fetch_keyed_json(
+        &ctx,
+        "test_mod",
+        &format!("http://{addr}/"),
+        "HUNTSMAN_TEST_KEY",
+        "x-api-key",
+    )
+    .await
+    .expect("the retry must recover the transient first-attempt timeout");
+    assert_eq!(body, Some(serde_json::json!({ "ok": true })));
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        2,
+        "exactly two connections: the timed-out first attempt + the retry"
+    );
+}
+
 #[test]
 fn curl_download_cap_mirrors_the_json_body_cap() {
     let curl_cap: usize = crate::util::curl::CURL_MAX_DOWNLOAD_BYTES
@@ -188,6 +257,54 @@ async fn traced_client_sends_x_huntsman_trace_header() {
         req.contains("x-huntsman-trace: scan-abc123"),
         "trace header missing; raw request was:\n{req}"
     );
+}
+
+#[tokio::test]
+async fn client_transparently_decompresses_a_gzip_encoded_response() {
+    use std::io::Write as _;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // What the client must read back AFTER reqwest decompresses the body. If gzip
+    // auto-decoding is off (the `gzip` feature or `.gzip(true)` missing), the
+    // client would try to JSON-parse the raw gzip bytes and this fails.
+    let json = r#"{"marker":"gzip-decoded-ok","n":42}"#;
+    // gzip-compress it — flate2 is already a direct dependency (see `cli::cells`).
+    let gz = {
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(json.as_bytes()).unwrap();
+        e.finish().unwrap()
+    };
+    assert!(
+        gz != json.as_bytes(),
+        "sanity: the served body is actually compressed"
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 2048];
+        let _ = sock.read(&mut buf).await;
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+            gz.len()
+        );
+        let _ = sock.write_all(head.as_bytes()).await;
+        let _ = sock.write_all(&gz).await;
+        let _ = sock.flush().await;
+    });
+
+    let client = build_client();
+    crate::util::circuit_breaker::record_success("127.0.0.1"); // isolate from parallel breaker state
+    let v: serde_json::Value = fetch_json(&client, "test_gzip", &format!("http://{addr}/"))
+        .await
+        .expect("fetch_json must transparently decode a Content-Encoding: gzip body");
+    assert_eq!(
+        v["marker"], "gzip-decoded-ok",
+        "reqwest must decompress the gzip response body before parsing"
+    );
+    assert_eq!(v["n"], 42);
+    crate::util::circuit_breaker::record_success("127.0.0.1");
 }
 
 #[tokio::test]

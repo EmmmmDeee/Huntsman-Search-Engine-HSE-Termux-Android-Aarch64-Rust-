@@ -405,17 +405,18 @@ const RULES: &[RuleFn] = &[
     // network block also discovered this scan — shared hosting infrastructure,
     // reusing util::spf's CIDR-containment maths rather than duplicating it.
     rule_au_112_shared_cidr_infrastructure,
-    // AU-114: the transitive closure of reused-secret links — a chain of
-    // accounts no single secret spans (AU-047's blind spot), reported as one
-    // credential-reuse blast radius.
-    rule_au_114_credential_reuse_blast_radius,
-    // AU-115: an RF-observed (radar/WiGLE) sweep's trackable hardware devices —
-    // universally-administered MACs a real device broadcasts — separated from
-    // the randomized privacy addresses that rotate and can't be followed.
-    rule_au_115_trackable_rf_device,
+    // AU-114: a confirmed Person/Organisation flagged on a sanctions / debarment
+    // / PEP list (opensanctions definitive match, Wikidata PEP signal) — the
+    // highest-consequence OSINT screening signal, graded Critical/High/Medium by
+    // the strongest flag. Surfaces what previously sat un-named in the graph.
+    rule_au_114_sanctions_exposure,
+    // AU-115: a personal Wi-Fi SSID that WiGLE geolocated (ssid-located
+    // Coordinates naming it) — a subject-owned network placing its owner, a
+    // high-value GEOINT lead previously surfaced by no correlation.
+    rule_au_115_personal_wifi_geolocated,
     // AU-117: the operator's OWN bonded (paired) Bluetooth kit whose members
     // broadcast persistent hardware MACs — a self-carried tracking fingerprint,
-    // the bonded counterpart to AU-115's third-party trackable devices.
+    // the bonded counterpart to AU-122's third-party trackable devices.
     rule_au_117_personal_device_constellation,
     // AU-118: two distinct registrable domains in one scan whose brand labels
     // are homoglyph/typo look-alikes — a phishing/brand-abuse domain standing up
@@ -430,6 +431,16 @@ const RULES: &[RuleFn] = &[
     // profiles — a deliberate, identity-linked (payment/KYC) footprint elevated
     // above the generic account roster.
     rule_au_120_monetized_creator_exposure,
+    // AU-121: the transitive closure of reused-secret links — a chain of
+    // accounts no single secret spans (AU-047's blind spot), reported as one
+    // credential-reuse blast radius. (Renumbered from AU-114 on merge — main's
+    // AU-114 is sanctions exposure.)
+    rule_au_121_credential_reuse_blast_radius,
+    // AU-122: an RF-observed (radar/WiGLE) sweep's trackable hardware devices —
+    // universally-administered MACs a real device broadcasts — separated from
+    // the randomized privacy addresses that rotate and can't be followed.
+    // (Renumbered from AU-115 on merge — main's AU-115 is personal-wifi-geo.)
+    rule_au_122_trackable_rf_device,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
