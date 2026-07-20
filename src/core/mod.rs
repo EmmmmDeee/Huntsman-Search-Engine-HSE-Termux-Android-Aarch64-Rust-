@@ -16,6 +16,7 @@ pub mod correlator;
 pub mod crypto;
 pub mod data_broker;
 pub mod dependency;
+pub mod diamond;
 pub mod diff;
 pub mod engine;
 pub mod entity;
