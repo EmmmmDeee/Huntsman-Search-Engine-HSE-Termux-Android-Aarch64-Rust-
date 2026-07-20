@@ -504,15 +504,28 @@ fn evaluate_rules_on(
 }
 
 /// Entities minus the `candidate`-tagged quarantine set — the view every
-/// correlation rule sees. Allocates a filtered copy because the rule fns take
-/// `&[Entity]`; correlation runs are infrequent and entity counts bounded, so
-/// the clone is negligible.
-fn confirmed_only(entities: &[Entity]) -> Vec<Entity> {
-    entities
+/// correlation rule sees. Returns a [`Cow`](std::borrow::Cow): when nothing is quarantined (the
+/// common case for a focused email/username/domain scan) the caller's slice is
+/// BORROWED, avoiding a full clone of the entity set — each [`Entity`] owns its
+/// `Vec<Evidence>`, so that clone is far from free on a large recalled graph and
+/// ran on every correlation round. Only when a `candidate` entity is actually
+/// present does it allocate the filtered copy. Both call sites pass `&confirmed`
+/// to a `&[Entity]` parameter, so deref coercion keeps them unchanged.
+fn confirmed_only(entities: &[Entity]) -> std::borrow::Cow<'_, [Entity]> {
+    if entities
         .iter()
-        .filter(|e| !e.has_tag(crate::core::tags::CANDIDATE))
-        .cloned()
-        .collect()
+        .all(|e| !e.has_tag(crate::core::tags::CANDIDATE))
+    {
+        std::borrow::Cow::Borrowed(entities)
+    } else {
+        std::borrow::Cow::Owned(
+            entities
+                .iter()
+                .filter(|e| !e.has_tag(crate::core::tags::CANDIDATE))
+                .cloned()
+                .collect(),
+        )
+    }
 }
 
 /// Evaluate the entity-only rules against an in-memory entity slice.
