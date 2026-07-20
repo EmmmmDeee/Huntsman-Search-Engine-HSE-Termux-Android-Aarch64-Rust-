@@ -7,12 +7,36 @@
 //! no quota spent); `--execute` dispatches it, bounded by the shared OathNet
 //! per-session budget so a batch can't silently blow the daily allowance.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::core::error::{Error, Result};
 use crate::core::scan::detect_kind;
 use crate::util::oathnet;
 use crate::util::oathnet_batch::{self, BatchOptions, BatchQuery};
+
+/// The set of (lowercased) query values worth initialising an OathNet search
+/// session for: exactly those that appear on **two or more** queries in the plan.
+///
+/// A session lets multiple calls on one query value collapse to a single billed
+/// lookup (the vendor's "#1 optimisation") — but `init_session` itself costs a
+/// network round-trip while billing no lookup, so it only pays off when a value
+/// is actually queried more than once (the breach+stealer PAIR the generator
+/// emits for every stealer-indexable selector). For a value queried only once,
+/// the single search costs exactly one lookup with or without a session, so the
+/// init POST is pure latency the batch run can drop — a real saving on the
+/// low-power mobile networks HSE targets. Pure and deterministic, so it is
+/// unit-tested directly without a live dispatch.
+fn values_worth_sessioning(plan: &[BatchQuery]) -> HashSet<String> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for q in plan {
+        *counts.entry(q.value.to_lowercase()).or_insert(0) += 1;
+    }
+    counts
+        .into_iter()
+        .filter(|(_, n)| *n >= 2)
+        .map(|(value, _)| value)
+        .collect()
+}
 
 /// Parsed `oathnet-batch` arguments (mirrors the clap `Command::OathnetBatch`
 /// variant; kept as a struct so the command body is testable in isolation).
@@ -163,6 +187,11 @@ async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result
     // value reuses the session this run already paid to initialise instead
     // of redundantly re-initing or silently picking up a foreign session.
     let mut sessioned: HashMap<String, Option<String>> = HashMap::new();
+    // Only values queried 2+ times get a session — for a singleton value the
+    // init POST would save no lookup and just cost a round-trip (see
+    // `values_worth_sessioning`). Computed once up front so the dispatch loop is
+    // a cheap set lookup per query.
+    let session_values = values_worth_sessioning(plan);
 
     for q in plan {
         if !oathnet::has_budget() {
@@ -170,7 +199,11 @@ async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result
             break;
         }
         let lower_value = q.value.to_lowercase();
-        let session_id = if let Some(sid) = sessioned.get(&lower_value) {
+        let session_id = if !session_values.contains(&lower_value) {
+            // Singleton value: skip the session-init round-trip entirely and
+            // query without one — the lookup cost is identical either way.
+            None
+        } else if let Some(sid) = sessioned.get(&lower_value) {
             sid.clone()
         } else {
             let sid = oathnet::init_session(key, &q.value).await;
@@ -265,4 +298,77 @@ async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::oathnet::Surface;
+    use crate::util::oathnet_batch::Origin;
+
+    fn q(surface: Surface, field: &'static str, value: &str) -> BatchQuery {
+        BatchQuery {
+            surface,
+            field,
+            value: value.to_string(),
+            origin: Origin::Seed,
+        }
+    }
+
+    #[test]
+    fn empty_plan_sessions_nothing() {
+        assert!(values_worth_sessioning(&[]).is_empty());
+    }
+
+    #[test]
+    fn singleton_value_is_not_sessioned() {
+        // One breach-only query for a value → a session would save no lookup.
+        let plan = vec![q(Surface::Breach, "phone", "+15551234567")];
+        assert!(values_worth_sessioning(&plan).is_empty());
+    }
+
+    #[test]
+    fn paired_value_is_sessioned() {
+        // The breach+stealer pair the generator emits for a login-indexable
+        // selector — the exact case a session collapses to one lookup.
+        let plan = vec![
+            q(Surface::Breach, "email", "a@b.com"),
+            q(Surface::Stealer, "email", "a@b.com"),
+        ];
+        let s = values_worth_sessioning(&plan);
+        assert_eq!(s.len(), 1);
+        assert!(s.contains("a@b.com"));
+    }
+
+    #[test]
+    fn multiplicity_is_counted_case_insensitively() {
+        // The dispatch loop keys sessions on the lowercased value, so the
+        // worth-sessioning test must agree: two differently-cased spellings of
+        // the same value are one value queried twice, hence worth a session.
+        let plan = vec![
+            q(Surface::Breach, "username", "Alice"),
+            q(Surface::Stealer, "username", "alice"),
+        ];
+        let s = values_worth_sessioning(&plan);
+        assert_eq!(s.len(), 1);
+        assert!(s.contains("alice"));
+        assert!(!s.contains("Alice"), "the set is keyed on the lowercased value");
+    }
+
+    #[test]
+    fn mixed_plan_sessions_only_the_repeated_values() {
+        let plan = vec![
+            // Repeated (breach+stealer) → sessioned.
+            q(Surface::Breach, "email", "a@b.com"),
+            q(Surface::Stealer, "email", "a@b.com"),
+            // Two distinct singletons → not sessioned.
+            q(Surface::Breach, "domain", "b.com"),
+            q(Surface::Breach, "phone", "+15551234567"),
+        ];
+        let s = values_worth_sessioning(&plan);
+        assert_eq!(s.len(), 1);
+        assert!(s.contains("a@b.com"));
+        assert!(!s.contains("b.com"));
+        assert!(!s.contains("+15551234567"));
+    }
 }
