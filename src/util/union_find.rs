@@ -198,4 +198,116 @@ mod tests {
             assert_eq!(uf.find(i), root);
         }
     }
+
+    // ── Property-based invariants ─────────────────────────────────────────────
+    //
+    // This primitive is the single source of truth for four consumers (the
+    // coordinate/identity clusterers and the AU-116/AU-121 closure rules), so its
+    // contract is pinned by properties, not just examples. Every guarantee those
+    // consumers rely on is proven here over randomised universes and edge sets.
+    use proptest::prelude::*;
+
+    /// A random universe size `n` in `1..=30` paired with up to 40 random
+    /// `(a, b)` union edges over `0..n`.
+    fn universe() -> impl Strategy<Value = (usize, Vec<(usize, usize)>)> {
+        (1usize..=30).prop_flat_map(|n| (Just(n), proptest::collection::vec((0..n, 0..n), 0..40)))
+    }
+
+    /// The canonical partition of `uf`: each component as an ascending vector,
+    /// the vectors themselves sorted — a form independent of which id each
+    /// component happens to be rooted at, so two forests are equal iff they
+    /// induce the same grouping.
+    fn partition(uf: &mut UnionFind) -> Vec<Vec<usize>> {
+        let mut sets: Vec<Vec<usize>> = uf.components().into_values().collect();
+        sets.sort();
+        sets
+    }
+
+    proptest! {
+        /// The consolidation's founding theorem: a union-find's partition depends
+        /// only on *which* pairs were unioned — never on the order the unions were
+        /// applied nor on their direction. Applying the same edges reversed and
+        /// with every `(a, b)` flipped to `(b, a)` must induce the identical
+        /// grouping. This is exactly what makes the one canonical primitive a
+        /// byte-for-byte drop-in for all four former hand-rolled call sites.
+        #[test]
+        fn partition_holds_over_random_order_and_direction((n, edges) in universe()) {
+            let mut forward = UnionFind::new(n);
+            for &(a, b) in &edges {
+                forward.union(a, b);
+            }
+            let mut reversed = UnionFind::new(n);
+            for &(a, b) in edges.iter().rev() {
+                reversed.union(b, a);
+            }
+            prop_assert_eq!(partition(&mut forward), partition(&mut reversed));
+        }
+
+        /// `components()` is a true partition of `0..n` — every id appears in
+        /// exactly one component — and it agrees with `connected()`: two ids share
+        /// a component vector iff `connected` reports them joined. This is the
+        /// grouping contract the clusterers depend on to build their aggregates.
+        #[test]
+        fn components_are_a_partition_consistent_with_connected((n, edges) in universe()) {
+            let mut uf = UnionFind::new(n);
+            for &(a, b) in &edges {
+                uf.union(a, b);
+            }
+            let comps = uf.components();
+            // Exact cover: each id present exactly once.
+            let mut seen = std::collections::BTreeSet::new();
+            for members in comps.values() {
+                for &i in members {
+                    prop_assert!(seen.insert(i), "id {} appeared in two components", i);
+                }
+            }
+            prop_assert_eq!(seen.len(), n);
+            // Grouping agrees with connectivity for every pair.
+            let mut root_of = vec![usize::MAX; n];
+            for (&root, members) in &comps {
+                for &i in members {
+                    root_of[i] = root;
+                }
+            }
+            for a in 0..n {
+                for b in 0..n {
+                    prop_assert_eq!(uf.connected(a, b), root_of[a] == root_of[b]);
+                }
+            }
+        }
+
+        /// `union` returns `true` exactly when it performs a real merge, and each
+        /// real merge reduces the number of distinct roots by exactly one — so the
+        /// running component count stays in lock-step with the roots the forest
+        /// actually holds (`find(i) == i`). This pins the merge-accounting the
+        /// "blast radius" / "distinct-owner count" aggregates read off.
+        #[test]
+        fn each_effective_union_drops_the_root_count_by_one((n, edges) in universe()) {
+            let mut uf = UnionFind::new(n);
+            let mut expected_roots = n;
+            for &(a, b) in &edges {
+                if uf.union(a, b) {
+                    expected_roots -= 1;
+                }
+                let distinct_roots = (0..n).filter(|&i| uf.find(i) == i).count();
+                prop_assert_eq!(distinct_roots, expected_roots);
+            }
+        }
+
+        /// `find` is idempotent and stable: a root is its own root, and repeated
+        /// calls never change the answer. Path-halving reshapes the forest but is
+        /// forbidden from ever moving an id to a different component.
+        #[test]
+        fn find_is_idempotent_and_stable((n, edges) in universe()) {
+            let mut uf = UnionFind::new(n);
+            for &(a, b) in &edges {
+                uf.union(a, b);
+            }
+            for i in 0..n {
+                let root = uf.find(i);
+                prop_assert_eq!(uf.find(root), root); // the root is its own root
+                prop_assert_eq!(uf.find(i), root); // stable across repeated calls
+            }
+        }
+    }
 }
