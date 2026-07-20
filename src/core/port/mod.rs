@@ -78,10 +78,32 @@ pub trait StoragePort: Send + Sync {
 
     // ── Relations (typed entity-to-entity edges) ────────────────────────────
     fn upsert_relation(&self, r: &Relation) -> Result<()>;
+    /// Persist many relations in a single transaction. The default loops
+    /// [`upsert_relation`](Self::upsert_relation) so in-memory / test impls
+    /// need no change; the SQLite store overrides it to avoid an autocommit
+    /// (BEGIN/COMMIT + fsync) per edge at finalise. Takes a slice so the
+    /// caller can fall back to per-relation persistence if the batch rolls back.
+    fn upsert_relations_batch(&self, rels: &[Relation]) -> Result<usize> {
+        for r in rels {
+            self.upsert_relation(r)?;
+        }
+        Ok(rels.len())
+    }
     fn relations_for_scan(&self, scan_id: &str) -> Result<Vec<Relation>>;
 
     // ── Events ─────────────────────────────────────────────────────────────
     fn insert_event(&self, event: &Event) -> Result<()>;
+    /// Insert many events in a single transaction. The default loops
+    /// [`insert_event`](Self::insert_event); the SQLite store overrides it so
+    /// the db-writer's coalesced ≤64-event drain commits once (one fsync on a
+    /// phone's flash filesystem) instead of once per event. Slice-taking so the
+    /// caller can fall back to per-event insertion on a batch rollback.
+    fn insert_events_batch(&self, events: &[Event]) -> Result<usize> {
+        for e in events {
+            self.insert_event(e)?;
+        }
+        Ok(events.len())
+    }
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>>;
 
     /// Recent `ModuleDone`/`ModuleError` outcome events across ALL scans,

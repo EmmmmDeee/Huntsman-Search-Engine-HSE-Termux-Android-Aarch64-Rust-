@@ -1813,17 +1813,32 @@ fn derive_and_persist_relations(
     let derive_deadline = Some(Instant::now() + crate::core::relation::DERIVE_BUDGET);
     let derived = crate::core::relation::derive_all_within(entities, scan_id, derive_deadline);
     if !lineage_relations.is_empty() || !derived.is_empty() {
-        let mut rel_persisted = 0usize;
-        for r in lineage_relations.iter().chain(derived.iter()) {
-            match store.upsert_relation(r) {
-                Ok(()) => rel_persisted += 1,
-                Err(e) => warn!(scan_id, relation = %r.id, error = %e, "relation persist failed"),
+        let lineage_n = lineage_relations.len();
+        let derived_n = derived.len();
+        // Persist the whole edge set in ONE transaction (one fsync at finalise
+        // instead of one autocommit per edge). `derived` is consumed to avoid a
+        // clone; only the small lineage set is cloned into the combined batch.
+        let all: Vec<Relation> = lineage_relations.iter().cloned().chain(derived).collect();
+        let rel_persisted = match store.upsert_relations_batch(&all) {
+            Ok(n) => n,
+            Err(e) => {
+                warn!(scan_id, error = %e, "relation batch persist failed — falling back to per-relation");
+                let mut n = 0usize;
+                for r in &all {
+                    match store.upsert_relation(r) {
+                        Ok(()) => n += 1,
+                        Err(e) => {
+                            warn!(scan_id, relation = %r.id, error = %e, "relation persist failed");
+                        }
+                    }
+                }
+                n
             }
-        }
+        };
         info!(
             scan_id,
-            lineage = lineage_relations.len(),
-            derived = derived.len(),
+            lineage = lineage_n,
+            derived = derived_n,
             persisted = rel_persisted,
             "entity relations persisted"
         );

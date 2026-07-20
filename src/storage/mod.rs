@@ -661,6 +661,36 @@ impl Store {
         Ok(())
     }
 
+    /// Batch-insert relations in ONE transaction (one autocommit → one fsync
+    /// instead of one per edge at finalise). All-or-nothing; the caller falls
+    /// back to per-relation [`Self::upsert_relation`] on error. Returns
+    /// `rels.len()`. Same `ON CONFLICT(id) DO NOTHING` idempotence as the
+    /// single-row path, so a re-scan re-deriving the same edge never duplicates.
+    pub fn upsert_relations_batch(&self, rels: &[Relation]) -> Result<usize> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        for r in rels {
+            let json = serde_json::to_string(r)?;
+            tx.prepare_cached(
+                "INSERT INTO relations(id, scan_id, from_uid, to_uid, kind, confidence, observed_at, data_json)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(id) DO NOTHING",
+            )?
+            .execute(params![
+                r.id,
+                r.scan_id,
+                r.from_uid,
+                r.to_uid,
+                r.kind.as_str(),
+                r.confidence,
+                r.observed_at as i64,
+                json,
+            ])?;
+        }
+        tx.commit()?;
+        Ok(rels.len())
+    }
+
     pub fn relations_for_scan(&self, scan_id: &str) -> Result<Vec<Relation>> {
         let raw: Vec<String> = {
             let conn = self.conn.lock();
@@ -773,6 +803,27 @@ impl Store {
         )?
         .execute(params![event.scan_id, event.ts as i64, event_type, json])?;
         Ok(())
+    }
+
+    /// Batch-insert events in ONE transaction. The db-writer coalesces up to 64
+    /// events per drain; committing them as 64 autocommit INSERTs meant 64
+    /// BEGIN/COMMIT + fsync round-trips on the phone's flash filesystem. All-or-
+    /// nothing; the caller falls back to per-event [`Self::insert_event`] on
+    /// error. Returns `events.len()`.
+    pub fn insert_events_batch(&self, events: &[Event]) -> Result<usize> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        for event in events {
+            let event_type = event.kind.event_type_str();
+            let json = serde_json::to_string(event)?;
+            tx.prepare_cached(
+                "INSERT INTO events(scan_id, ts, event_type, data_json)
+                 VALUES(?1, ?2, ?3, ?4)",
+            )?
+            .execute(params![event.scan_id, event.ts as i64, event_type, json])?;
+        }
+        tx.commit()?;
+        Ok(events.len())
     }
 
     pub fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {
@@ -905,12 +956,20 @@ impl crate::core::port::StoragePort for Store {
         Store::upsert_relation(self, r)
     }
 
+    fn upsert_relations_batch(&self, rels: &[Relation]) -> Result<usize> {
+        Store::upsert_relations_batch(self, rels)
+    }
+
     fn relations_for_scan(&self, scan_id: &str) -> Result<Vec<Relation>> {
         Store::relations_for_scan(self, scan_id)
     }
 
     fn insert_event(&self, event: &Event) -> Result<()> {
         Store::insert_event(self, event)
+    }
+
+    fn insert_events_batch(&self, events: &[Event]) -> Result<usize> {
+        Store::insert_events_batch(self, events)
     }
 
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {
