@@ -209,15 +209,24 @@ pub(super) async fn run_module_guarded(
     {
         Ok(timeout_result) => timeout_result,
         Err(payload) => {
-            let msg = payload
-                .downcast_ref::<&str>()
-                .map(|s| (*s).to_string())
-                .or_else(|| payload.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "module panicked".to_string());
+            let msg = panic_payload_to_string(&payload);
             warn!(module = name, %msg, "module panic contained");
             Ok(Err(Error::module(name, format!("panicked: {msg}"))))
         }
     }
+}
+
+/// Best-effort human-readable message from a caught panic payload — the
+/// `&str`/`String` cases `panic!`/`.unwrap()`/`.expect()` produce, or a
+/// generic fallback for anything else (a custom payload type via
+/// `panic_any`). Shared by every `catch_unwind` site in the engine so the
+/// extraction logic can't drift between them.
+pub(super) fn panic_payload_to_string(payload: &Box<dyn std::any::Any + Send>) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "panicked with a non-string payload".to_string())
 }
 
 /// What a spawned per-module task returns to the consumer loop.

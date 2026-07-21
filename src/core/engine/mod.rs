@@ -76,12 +76,12 @@ use expansion::{
 use timeout::resolve_timeout;
 // Used only by the dispatch-related tests retained in this file.
 #[cfg(test)]
-use crate::core::{error::Error, module::ModuleCost};
+use crate::core::module::ModuleCost;
 
 use crate::core::{
     dependency::ModuleGraph,
     entity::Entity,
-    error::Result,
+    error::{Error, Result},
     event::{Event, EventBus, EventKind},
     module::{Module, ModuleContext},
     port::StoragePort,
@@ -310,6 +310,83 @@ impl ScanEngine {
             ),
         )
         .await
+    }
+
+    /// Panic-safe wrapper around [`run`](Self::run): a panic anywhere in the
+    /// scan-dispatch path (not just inside a module's `process()`, which
+    /// `run_module_guarded` already contains — see `dispatch::run_module_guarded`)
+    /// is caught here, the scan is force-marked `Failed` and persisted, and the
+    /// panic is surfaced as an `Err` instead of unwinding into the caller's
+    /// spawned task and leaving the scan permanently stuck `Running`.
+    ///
+    /// Wrapping at this single top-level choke point (rather than each of the
+    /// three separate dispatch call sites — `dispatch_target_sequential`,
+    /// `run_paid_phase`/`spawn_free_phase` inside `dispatch_target_concurrent`)
+    /// avoids whack-a-mole: every path through the engine funnels through `run`/
+    /// `run_with_ledger`, so this guarantees no detached scan is ever left stuck
+    /// regardless of where inside the engine a panic originates. CLI callers
+    /// (`hse scan`/`hse radar`/`hse provision`) deliberately keep using the plain
+    /// `run`/`run_with_ledger` methods — a panic there gives the operator direct
+    /// terminal feedback already, so the extra persistence work is unnecessary.
+    pub async fn run_panic_safe(
+        &self,
+        scan: Scan,
+        target: Target,
+        ctx: ModuleContext,
+    ) -> Result<Scan> {
+        use futures::FutureExt;
+        let scan_id = scan.id.clone();
+        match std::panic::AssertUnwindSafe(self.run(scan, target, ctx))
+            .catch_unwind()
+            .await
+        {
+            Ok(result) => result,
+            Err(payload) => Err(self.force_fail_panicked_scan(&scan_id, &payload)),
+        }
+    }
+
+    /// Panic-safe wrapper around [`run_with_ledger`](Self::run_with_ledger) —
+    /// see [`run_panic_safe`](Self::run_panic_safe) for the rationale. Used by
+    /// `LiveScanner`'s detached poll loop, which owns a persistent ledger across
+    /// iterations.
+    pub async fn run_with_ledger_panic_safe(
+        &self,
+        scan: Scan,
+        target: Target,
+        ctx: ModuleContext,
+        dispatched: &mut DispatchLog,
+    ) -> Result<Scan> {
+        use futures::FutureExt;
+        let scan_id = scan.id.clone();
+        match std::panic::AssertUnwindSafe(self.run_with_ledger(scan, target, ctx, dispatched))
+            .catch_unwind()
+            .await
+        {
+            Ok(result) => result,
+            Err(payload) => Err(self.force_fail_panicked_scan(&scan_id, &payload)),
+        }
+    }
+
+    /// Force-marks `scan_id` `Failed` and persists it, then returns an `Error`
+    /// carrying the panic message. Best-effort: if the store read/write itself
+    /// fails, the scan record is left as-is (still better than panicking again
+    /// inside a panic handler) and only a warning is logged.
+    fn force_fail_panicked_scan(
+        &self,
+        scan_id: &str,
+        payload: &Box<dyn std::any::Any + Send>,
+    ) -> Error {
+        let msg = dispatch::panic_payload_to_string(payload);
+        warn!(scan_id = %scan_id, %msg, "scan dispatch panic contained — force-marking scan Failed");
+        if let Ok(Some(mut persisted)) = self.store.get_scan(scan_id) {
+            persisted.status = ScanStatus::Failed;
+            persisted.error = Some(format!("panicked: {msg}"));
+            persisted.finished_at = Some(crate::core::entity::unix_now());
+            if let Err(e) = self.store.upsert_scan(&persisted) {
+                warn!(scan_id = %scan_id, error = %e, "failed to persist panic-failed scan record");
+            }
+        }
+        Error::module("engine", format!("scan panicked: {msg}"))
     }
 
     async fn run_with_ledger_inner(

@@ -3023,3 +3023,105 @@ async fn scan_completion_fires_the_configured_webhook() {
         "webhook body must carry the seed target:\n{req}"
     );
 }
+
+/// A module whose `accepts()` panics on a real dispatch target — the exact
+/// bug class this test guards: only `Module::process()` is wrapped by
+/// `run_module_guarded`'s `catch_unwind`, so a panic in a per-target GATING
+/// call (`accepts()`, `cost()`, `cache_ttl_secs()`, ...), which every
+/// dispatch loop calls directly on the dispatching task, sits entirely
+/// outside that boundary. Must NOT panic for
+/// `crate::core::dependency::PROBE_VALUE` — `ScanEngine::new()` eagerly
+/// probes every module's `accepts()` against a synthetic value for every
+/// `TargetKind` at module-graph construction time (see
+/// `core::dependency::mod::build`), so an unconditional panic here would
+/// crash at graph-build, before this test ever reaches `run_panic_safe` —
+/// a real, distinct danger zone, but not the one under test.
+struct PanicsInAcceptsModule;
+
+#[async_trait::async_trait]
+impl Module for PanicsInAcceptsModule {
+    fn name(&self) -> &'static str {
+        "panics_in_accepts"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        // Only gate on `Username` — graph-build probes every OTHER
+        // `TargetKind` too, each with its own kind-specific normalisation
+        // of `PROBE_VALUE` (e.g. `Phone`'s digit-only strip), so comparing
+        // the probed value directly against the raw `PROBE_VALUE` constant
+        // would spuriously panic during construction for those kinds.
+        if t.kind != TargetKind::Username {
+            return false;
+        }
+        if t.value == crate::core::dependency::PROBE_VALUE {
+            return true;
+        }
+        panic!("kaboom in accepts() on a real dispatch target")
+    }
+    fn description(&self) -> &'static str {
+        "test-only: panics in accepts() to prove run_panic_safe's boundary"
+    }
+    async fn process(
+        &self,
+        _target: &Target,
+        _ctx: &ModuleContext,
+    ) -> Result<crate::core::module::ModuleResult> {
+        Ok(crate::core::module::ModuleResult::new())
+    }
+}
+
+#[tokio::test]
+async fn run_panic_safe_force_fails_a_scan_that_panics_outside_process() {
+    use crate::core::test_support::InMemoryStore;
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(
+        vec![Arc::new(PanicsInAcceptsModule)],
+        store_port,
+        bus.clone(),
+    );
+    let target = Target::new(TargetKind::Username, "seed");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("username", "seed"),
+        target.clone(),
+    );
+    let scan_id = scan.id.clone();
+    let ctx = ModuleContext {
+        scan_id: scan_id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+
+    let result = engine.run_panic_safe(scan, target, ctx).await;
+    assert!(
+        result.is_err(),
+        "a scan whose dispatch panics must surface as an Err, not silently vanish"
+    );
+
+    let persisted = store
+        .get_scan(&scan_id)
+        .unwrap()
+        .expect("the scan row must still exist");
+    assert_eq!(
+        persisted.status,
+        ScanStatus::Failed,
+        "a panicked scan must be force-marked Failed, never left stuck Running"
+    );
+    assert!(
+        persisted
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("kaboom in accepts()")),
+        "the persisted error should carry the panic message: {:?}",
+        persisted.error
+    );
+    assert!(
+        persisted.finished_at.is_some(),
+        "a force-failed scan must have finished_at set"
+    );
+}
