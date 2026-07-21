@@ -126,6 +126,40 @@ fn corroboration_needs_a_confirmed_subject_fix_and_proximity() {
 }
 
 #[test]
+fn radar_sentinel_never_anchors_a_subject_fix() {
+    // `hse radar` seeds every sweep with a sentinel Coordinates entity (0,0) at
+    // confidence 0.90 with `seed`/`subject` tags — high enough to clear
+    // SUBJECT_FIX_MIN on its own. Without the sentinel guard it would anchor
+    // every family-candidate proximity check on null island; a Cairns namesake
+    // ~9600 km from (0,0) would then wrongly read as "far from the subject" for
+    // the right reason but the wrong location, and a coincidental near-(0,0)
+    // resolution (there is none in AU postcodes, but the anchor itself is
+    // simply wrong) would corroborate nobody real.
+    let mut sentinel = Entity::new(
+        EntityKind::Coordinates,
+        crate::core::scan::RADAR_SENTINEL_COORD_RAW,
+        0.90,
+        "s",
+    );
+    sentinel.tag("seed");
+    sentinel.tag("subject");
+    let mut real_gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
+    real_gps.tag("geoint");
+
+    let fixes = subject_fixes(&[sentinel.clone(), real_gps.clone()]);
+    assert_eq!(
+        fixes.len(),
+        1,
+        "the sentinel must not become a second confirmed subject fix"
+    );
+    assert_eq!(fixes[0].uid, real_gps.uid);
+
+    // Sentinel-only (a MAC-radar sweep with no other geo source) must anchor
+    // nothing at all, not fall back to null island.
+    assert!(subject_fixes(&[sentinel]).is_empty());
+}
+
+#[test]
 fn discordant_namesake_is_the_far_complement_of_corroboration() {
     // Subject's confirmed GPS near Woodford, QLD (Brisbane catchment).
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
