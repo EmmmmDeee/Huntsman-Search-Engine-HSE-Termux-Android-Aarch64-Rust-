@@ -687,8 +687,13 @@ pub async fn scan_batch(
 pub(crate) fn radar_scan_spec(seed: Option<&str>) -> (Target, crate::core::scan::ScanOptions) {
     use crate::core::scan::TargetKind;
     let (kind, value) = match seed {
-        Some("mac" | "mac_address" | "bssid") => (TargetKind::MacAddress, "00:00:00:00:00:00"),
-        _ => (TargetKind::Coordinates, "0,0"),
+        Some("mac" | "mac_address" | "bssid") => {
+            (TargetKind::MacAddress, crate::core::scan::RADAR_SENTINEL_MAC)
+        }
+        _ => (
+            TargetKind::Coordinates,
+            crate::core::scan::RADAR_SENTINEL_COORD_RAW,
+        ),
     };
     let opts = crate::core::scan::ScanOptions {
         modules: Some(

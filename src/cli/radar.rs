@@ -111,7 +111,10 @@ pub(super) async fn cmd_radar(
         // with a sentinel coordinate. (A `Domain` seed is NOT accepted by the
         // sensors, so the sweep would dispatch nothing.) The seed is tagged `seed`
         // and excluded from the pivot phase below, so it contributes no noise.
-        let sweep_target = Target::new(crate::core::scan::TargetKind::Coordinates, "0,0");
+        let sweep_target = Target::new(
+            crate::core::scan::TargetKind::Coordinates,
+            crate::core::scan::RADAR_SENTINEL_COORD_RAW,
+        );
         let sweep_opts = ScanOptions {
             modules: Some(SENSOR_MODULES.iter().map(|s| (*s).to_string()).collect()),
             passive_only: true,
