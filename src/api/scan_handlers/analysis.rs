@@ -89,7 +89,9 @@ pub async fn scan_diamond(
 ///
 /// With `?format=navigator` it returns a MITRE ATT&CK **Navigator layer** JSON
 /// instead, so the coverage renders directly in the official ATT&CK Navigator.
-/// Honours `?include_candidates=…` exactly like `/entities`.
+/// With `?breakdown=entity_type` it returns a detailed per-technique breakdown
+/// by entity kind (e.g., which entity types carry each technique). Honours
+/// `?include_candidates=…` exactly like `/entities`.
 pub async fn scan_attack(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -117,6 +119,28 @@ pub async fn scan_attack(
             let coverage = crate::core::attack::coverage(&exercised);
             if params.get("format").map(String::as_str) == Some("navigator") {
                 return Json(crate::core::attack::navigator_layer(&coverage, &id)).into_response();
+            }
+            if params.get("breakdown").map(String::as_str) == Some("entity_type") {
+                // Breakdown by entity type: for each entity, extract its attack
+                // techniques and pair them with the entity's kind for aggregation.
+                let entity_techniques: Vec<(String, String)> = entities
+                    .iter()
+                    .flat_map(|e| {
+                        e.tags
+                            .iter()
+                            .filter_map(|t| t.strip_prefix("attack:").map(String::from))
+                            .map(move |tid| (e.kind.to_string(), tid))
+                    })
+                    .collect();
+                let by_type = crate::core::attack::coverage_by_entity_type(&entity_techniques);
+                return Json(json!({
+                    "tactic_id": coverage.tactic_id,
+                    "tactic_name": coverage.tactic_name,
+                    "coverage_fraction": coverage.coverage_fraction,
+                    "techniques": by_type,
+                    "uncovered": coverage.uncovered,
+                }))
+                .into_response();
             }
             Json(json!(coverage)).into_response()
         }
