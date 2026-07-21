@@ -67,12 +67,17 @@ use super::*;
     }
 
     #[test]
+    #[cfg(unix)]
     fn create_dir_private_retightens_a_preexisting_loose_dir() {
         // Regression guard: an UPGRADED install may already have ~/.huntsman at
         // 0755 (older builds used a plain create_dir_all). `DirBuilder::mode()`
         // only affects dirs it creates, so create_dir_private must re-tighten a
         // pre-existing loose dir — otherwise the world-readable key vault / pool
         // beneath it would stay traversable by another local UID.
+        //
+        // Unix-only: PermissionsExt::mode() doesn't exist on other platforms, and
+        // the 0700 guarantee this test pins is itself POSIX-permissions-only —
+        // matching the sibling `create_dir_private_is_0700` test's gating.
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempdir().unwrap();
         let loose = tmp.path().join("huntsman");

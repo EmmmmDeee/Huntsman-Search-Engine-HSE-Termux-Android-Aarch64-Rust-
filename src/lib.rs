@@ -82,7 +82,9 @@ pub fn is_termux() -> bool {
 /// Resolve the default database path, creating the parent directory if needed.
 ///
 /// Termux: `$HOME/.huntsman/huntsman.db` (typically under `/data/data/com.termux/files/home`).
-/// Falls back to `./huntsman.db` if `$HOME` is unset.
+/// Falls back to `./.huntsman/huntsman.db` if `$HOME` is unset (see
+/// [`crate::util::paths::huntsman_dir`] — the layout stays together under
+/// `.huntsman` rather than scattering a bare file into the CWD).
 pub fn default_db_path() -> String {
     // `~/.huntsman` created 0700 (owner-only) by `paths::data_file` so the store +
     // dossiers + key pool under it aren't world-listable (PROBLEM_TREE §7 S3).
