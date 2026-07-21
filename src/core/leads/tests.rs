@@ -375,7 +375,10 @@ fn structural_boost_composes_bridge_and_cut_vertex() {
     assert_eq!(structural_boost(Some(&(0.0, false))), 0.0);
     // Cut vertex alone earns the flat bonus; a pure bridge earns the full weight;
     // a node that is both sums them.
-    assert_eq!(structural_boost(Some(&(0.0, true))), STRUCT_CUT_VERTEX_BONUS);
+    assert_eq!(
+        structural_boost(Some(&(0.0, true))),
+        STRUCT_CUT_VERTEX_BONUS
+    );
     assert_eq!(structural_boost(Some(&(1.0, false))), STRUCT_BRIDGE_WEIGHT);
     assert_eq!(
         structural_boost(Some(&(1.0, true))),
@@ -422,7 +425,10 @@ fn recommend_lifts_a_lead_that_bridges_the_graph() {
     let bridge_lead = leads.iter().find(|l| l.value == "Erik Diegmann").unwrap();
     let pendant_lead = leads.iter().find(|l| l.value == "Otto Diegmann").unwrap();
 
-    assert!(bridge_lead.structural, "the bridging relative is a structural pivot");
+    assert!(
+        bridge_lead.structural,
+        "the bridging relative is a structural pivot"
+    );
     assert!(!pendant_lead.structural, "the plain pendant is not");
     assert!(
         bridge_lead.score > pendant_lead.score,

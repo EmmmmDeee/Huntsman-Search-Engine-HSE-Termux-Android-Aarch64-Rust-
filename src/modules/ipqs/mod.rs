@@ -290,7 +290,8 @@ impl Module for IpQs {
                 }
                 if !status.is_success() {
                     let code = status.as_u16();
-                    if handle_keyed_error(code, resp.headers(), &mut retries, SRC, &key, ctx).await {
+                    if handle_keyed_error(code, resp.headers(), &mut retries, SRC, &key, ctx).await
+                    {
                         continue;
                     }
                     if crate::util::http::is_keyed_error_status(code)

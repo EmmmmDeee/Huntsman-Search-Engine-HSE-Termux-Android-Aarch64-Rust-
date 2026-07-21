@@ -31,8 +31,7 @@ pub use fetch::{
     JSON_BODY_CAP, error_snippet, fetch_json, fetch_json_or_404, fetch_json_or_absent,
     fetch_json_probe, fetch_keyed_json, handle_keyed_error, http_status_error,
     is_auth_failure_400_body, is_keyed_error_status, keyed_ok_or_404, note_keyed_error,
-    parse_retry_after_secs,
-    read_body_capped, read_text, retry_after_secs,
+    parse_retry_after_secs, read_body_capped, read_text, retry_after_secs,
 };
 pub use keys::{scan_for_api_keys, scan_for_api_keys_with_source};
 pub(crate) use redact::redact_credentials;

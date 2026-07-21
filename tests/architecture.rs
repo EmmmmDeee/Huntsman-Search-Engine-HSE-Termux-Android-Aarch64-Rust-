@@ -1678,7 +1678,8 @@ fn readme_module_overview_count_matches_registry() {
             ModuleCost::KeyGated | ModuleCost::Paid => key_gated_paid += 1,
         }
     }
-    let split = format!("## Module Overview ({n} modules — {free} free, {key_gated_paid} key-gated/paid)");
+    let split =
+        format!("## Module Overview ({n} modules — {free} free, {key_gated_paid} key-gated/paid)");
     assert!(
         readme.contains(&split),
         "README module-overview headline must cite the live free/key-gated split \

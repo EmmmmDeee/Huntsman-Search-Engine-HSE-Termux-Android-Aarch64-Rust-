@@ -163,7 +163,8 @@ impl Module for Onyphe {
                 }
                 if !status.is_success() {
                     let code = status.as_u16();
-                    if handle_keyed_error(code, resp.headers(), &mut retries, SRC, &key, ctx).await {
+                    if handle_keyed_error(code, resp.headers(), &mut retries, SRC, &key, ctx).await
+                    {
                         continue;
                     }
                     // Terminal 401/403/429 (already burned by handle_keyed_error): cascade.

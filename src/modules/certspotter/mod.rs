@@ -112,7 +112,10 @@ fn build_entities(entries: &[Issuance], domain_base: &str, scan_id: &str) -> Vec
             if is_sub {
                 e.tag(tags::SUBDOMAIN);
             }
-            e.add_evidence(cert_evidence(entry, "Certificate Transparency issuance (Cert Spotter)"));
+            e.add_evidence(cert_evidence(
+                entry,
+                "Certificate Transparency issuance (Cert Spotter)",
+            ));
             Some(e)
         })
         .collect();

@@ -45,9 +45,18 @@ mod tests {
 
     #[test]
     fn host_key_normalises_a_domain() {
-        assert_eq!(host_key(TargetKind::Domain, "Example.COM"), Some("example.com".into()));
-        assert_eq!(host_key(TargetKind::Domain, "example.com."), Some("example.com".into()));
-        assert_eq!(host_key(TargetKind::Domain, "  sub.example.com  "), Some("sub.example.com".into()));
+        assert_eq!(
+            host_key(TargetKind::Domain, "Example.COM"),
+            Some("example.com".into())
+        );
+        assert_eq!(
+            host_key(TargetKind::Domain, "example.com."),
+            Some("example.com".into())
+        );
+        assert_eq!(
+            host_key(TargetKind::Domain, "  sub.example.com  "),
+            Some("sub.example.com".into())
+        );
     }
 
     #[test]

@@ -682,8 +682,8 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
             // ambiguous 400 it decides whether this is really an auth/key failure —
             // some providers answer a dead key with 400, not 401.
             let snippet = error_snippet(resp).await;
-            let keyed = is_keyed_error_status(code)
-                || (code == 400 && is_auth_failure_400_body(&snippet));
+            let keyed =
+                is_keyed_error_status(code) || (code == 400 && is_auth_failure_400_body(&snippet));
             // Burn the key on a key problem so the pool rotates past it next scan…
             if keyed {
                 ctx.report_key_exhausted(module, &key, code);

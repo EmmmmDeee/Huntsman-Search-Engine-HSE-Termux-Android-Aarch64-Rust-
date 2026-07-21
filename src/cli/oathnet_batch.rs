@@ -397,7 +397,10 @@ mod tests {
         let s = values_worth_sessioning(&plan);
         assert_eq!(s.len(), 1);
         assert!(s.contains("alice"));
-        assert!(!s.contains("Alice"), "the set is keyed on the lowercased value");
+        assert!(
+            !s.contains("Alice"),
+            "the set is keyed on the lowercased value"
+        );
     }
 
     #[test]

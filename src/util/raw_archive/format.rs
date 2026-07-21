@@ -111,10 +111,20 @@ mod format_tests {
         // End-to-end: the archive filename must split into exactly its 5 fields, so
         // the timestamp field is parseable by the pre-filter. A query that truncates
         // to a trailing separator must not shift the fields.
-        let name = build_filename("prov", "endpoint", "aaaaaaaaaa@bbbbbbbbbb", 1_700_000_000, 1);
+        let name = build_filename(
+            "prov",
+            "endpoint",
+            "aaaaaaaaaa@bbbbbbbbbb",
+            1_700_000_000,
+            1,
+        );
         let stem = name.strip_suffix(".json").unwrap();
         let fields: Vec<&str> = stem.split("__").collect();
-        assert_eq!(fields.len(), 5, "filename must have 5 '__'-delimited fields: {name}");
+        assert_eq!(
+            fields.len(),
+            5,
+            "filename must have 5 '__'-delimited fields: {name}"
+        );
         // The 4th field is the compact UTC stamp — it must start with a digit, not a
         // stray '_' bled in from a corrupted query field.
         assert!(

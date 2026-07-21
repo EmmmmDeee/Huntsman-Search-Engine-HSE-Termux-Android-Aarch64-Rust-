@@ -568,7 +568,10 @@ impl Hibp {
         // pure builder folds a `paste` tag + count/recency evidence onto the
         // Email and mints a Url pivot per URL-reconstructable paste.
         let paste_url = format!("{BASE_URL}/pasteaccount/{email}");
-        if let Some(pastes) = self.api_get::<Vec<Paste>>(key, tried, &paste_url, ctx).await? {
+        if let Some(pastes) = self
+            .api_get::<Vec<Paste>>(key, tried, &paste_url, ctx)
+            .await?
+        {
             result.extend(paste_entities(&pastes, target.value.trim(), &ctx.scan_id));
         }
 

@@ -54,6 +54,8 @@ pub mod scan;
 pub mod scraper_health;
 pub mod see_know;
 
+pub mod paths;
+pub mod recon;
 pub mod service_defs;
 pub mod settings;
 pub mod sim_anonymity;
@@ -66,8 +68,6 @@ pub mod threat;
 pub mod timefmt;
 pub mod tlsrpt;
 pub mod uid;
-pub mod paths;
-pub mod recon;
 pub mod union_find;
 pub mod url_util;
 pub mod wigle;

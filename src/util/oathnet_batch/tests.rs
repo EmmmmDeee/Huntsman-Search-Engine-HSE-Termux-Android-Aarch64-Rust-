@@ -424,7 +424,10 @@ fn recurse_depth_zero_is_byte_identical_to_the_single_level_plan() {
                 ..BatchOptions::default()
             },
         );
-        assert_eq!(default, explicit_zero, "recurse_depth 0 changed the {kind:?} plan");
+        assert_eq!(
+            default, explicit_zero,
+            "recurse_depth 0 changed the {kind:?} plan"
+        );
     }
 }
 
@@ -545,6 +548,10 @@ fn recursion_is_bounded_by_depth_not_runaway() {
     assert!(d2 >= d1, "depth is monotonic");
     // The derivation graph is finite, so a very deep bound converges — it must not
     // keep growing unboundedly (which would signal a broken cycle guard).
-    assert_eq!(d10, plan(20), "expansion converges — the cycle guard terminates it");
+    assert_eq!(
+        d10,
+        plan(20),
+        "expansion converges — the cycle guard terminates it"
+    );
     assert!(d10 >= d2);
 }
