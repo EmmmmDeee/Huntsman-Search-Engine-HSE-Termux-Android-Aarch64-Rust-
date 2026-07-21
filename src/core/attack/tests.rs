@@ -312,3 +312,69 @@ use super::*;
         assert_eq!(phishing["enabled"], false);
         assert_eq!(layer["gradient"]["maxValue"], 5);
     }
+
+    #[test]
+    fn every_entity_kind_maps_only_to_catalogued_techniques() {
+        // Entity-type mapping drift guard: every technique ID returned by
+        // techniques_for_entity_kind must exist in the catalogue for every
+        // EntityKind variant. Catches typos and removed techniques at the source.
+        use crate::core::entity::EntityKind;
+        let kinds = [
+            EntityKind::Person,
+            EntityKind::Email,
+            EntityKind::Phone,
+            EntityKind::Username,
+            EntityKind::Credential,
+            EntityKind::ApiKey,
+            EntityKind::Password,
+            EntityKind::IpAddress,
+            EntityKind::Domain,
+            EntityKind::Url,
+            EntityKind::Asn,
+            EntityKind::Cidr,
+            EntityKind::Address,
+            EntityKind::Coordinates,
+            EntityKind::Organisation,
+            EntityKind::AbnAcn,
+            EntityKind::MacAddress,
+            EntityKind::DeviceId,
+            EntityKind::Ssid,
+            EntityKind::TrackingId,
+            EntityKind::CryptoAddress,
+            EntityKind::Other("test".to_string()),
+        ];
+        for kind in kinds {
+            for id in techniques_for_entity_kind(&kind) {
+                assert!(
+                    technique(id).is_some(),
+                    "{:?} maps to unknown technique {id}",
+                    kind
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn entity_type_mapping_resolves_common_types_correctly() {
+        use crate::core::entity::EntityKind;
+        // Email addresses → T1589.002
+        assert!(techniques_for_entity_kind(&EntityKind::Email).contains(&"T1589.002"));
+        // Usernames → T1593.001 (Social Media) + T1589.003 (Employee Names)
+        let username_techniques = techniques_for_entity_kind(&EntityKind::Username);
+        assert!(username_techniques.contains(&"T1593.001"));
+        assert!(username_techniques.contains(&"T1589.003"));
+        // IP Addresses → T1590.005
+        assert!(techniques_for_entity_kind(&EntityKind::IpAddress).contains(&"T1590.005"));
+        // Domains → T1590.001 + T1596.002 + T1593.002 + T1594
+        let domain_techniques = techniques_for_entity_kind(&EntityKind::Domain);
+        assert!(domain_techniques.contains(&"T1590.001"));
+        assert!(domain_techniques.contains(&"T1596.002"));
+        assert!(domain_techniques.contains(&"T1593.002"));
+        assert!(domain_techniques.contains(&"T1594"));
+        // Credentials → T1589.001
+        assert!(techniques_for_entity_kind(&EntityKind::Credential).contains(&"T1589.001"));
+        // Addresses → T1591.001
+        assert!(techniques_for_entity_kind(&EntityKind::Address).contains(&"T1591.001"));
+        // Org Info → T1591
+        assert!(techniques_for_entity_kind(&EntityKind::Organisation).contains(&"T1591"));
+    }

@@ -33,6 +33,7 @@
 //! tactic, that every id the module map references exists in the catalogue, and
 //! that the catalogue stays sorted and duplicate-free.
 
+use crate::core::entity::EntityKind;
 use crate::core::module::ModuleCategory;
 use serde::Serialize;
 
@@ -4345,6 +4346,83 @@ pub fn techniques_for_category(cat: ModuleCategory) -> &'static [&'static str] {
         ModuleCategory::Geo => &["T1591.001"],
         // Uncategorised — no claimed ATT&CK mapping.
         ModuleCategory::Other => &[],
+    }
+}
+
+/// The ATT&CK Reconnaissance technique IDs an entity type commonly carries.
+/// Entity-type mapping refines module category mapping: an entity is tagged with
+/// both its module's category-level techniques (what the module collects) AND
+/// the entity-type-specific techniques (what kind of data the entity represents).
+/// This dual-layer tagging enables both broad coverage (per module) and precise
+/// technique attribution (per entity).
+///
+/// For example, a Username entity from a Social module gets tagged with both:
+/// - Category techniques: `T1593.001` (Social Media), `T1589.003` (Employee Names)
+/// - Entity techniques: `T1593.001` (Social Media), `T1589.003` (Employee Names)
+///
+/// The technique deduplication happens at tagging time (entity.tag is idempotent).
+#[must_use]
+pub fn techniques_for_entity_kind(kind: &EntityKind) -> &'static [&'static str] {
+    match kind {
+        // People and identifiers
+        EntityKind::Person => &[
+            "T1589",       // Gather Victim Identity Information
+            "T1589.003",   // Employee Names
+            "T1591",       // Gather Victim Org Information
+        ],
+        EntityKind::Email => &["T1589.002"],     // Email Addresses
+        EntityKind::Phone => &["T1589"],         // Gather Victim Identity Information
+        EntityKind::Username => &[
+            "T1593.001",   // Social Media
+            "T1589.003",   // Employee Names
+        ],
+
+        // Credentials
+        EntityKind::Credential | EntityKind::ApiKey | EntityKind::Password => {
+            &["T1589.001"]  // Credentials
+        }
+
+        // Network infrastructure
+        EntityKind::IpAddress => &["T1590.005"],   // IP Addresses
+        EntityKind::Domain => &[
+            "T1590.001",   // Domain Properties
+            "T1596.002",   // WHOIS
+            "T1593.002",   // Search Engines
+            "T1594",       // Search Victim-Owned Websites
+        ],
+        EntityKind::Url => &["T1594"],             // Search Victim-Owned Websites
+        EntityKind::Asn => &["T1590.004"],         // Network Topology
+        EntityKind::Cidr => &[
+            "T1590.001",   // Domain Properties
+            "T1590.004",   // Network Topology
+        ],
+
+        // Physical / Geospatial
+        EntityKind::Address | EntityKind::Coordinates => &["T1591.001"],  // Determine Physical Locations
+
+        // Organisation
+        EntityKind::Organisation => &["T1591"],     // Gather Victim Org Information
+        EntityKind::AbnAcn => &[
+            "T1591.002",   // Business Relationships
+            "T1591.004",   // Identify Roles
+        ],
+
+        // Host / Device information
+        EntityKind::MacAddress | EntityKind::DeviceId | EntityKind::Ssid => {
+            &["T1592"]     // Gather Victim Host Information
+        }
+
+        // Web analytics and tracking
+        EntityKind::TrackingId => &[
+            "T1593.002",   // Search Engines
+            "T1591",       // Gather Victim Org Information
+        ],
+
+        // Cryptocurrency
+        EntityKind::CryptoAddress => &["T1589"],   // Gather Victim Identity Information
+
+        // Uncategorised or no direct mapping
+        EntityKind::Other(_) => &[],
     }
 }
 
