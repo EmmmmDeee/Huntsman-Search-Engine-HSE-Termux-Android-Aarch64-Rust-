@@ -11,10 +11,9 @@ edition = "2024"
 # would fail to build on the stable toolchain the four-command verification
 # gate (`cargo fmt`/`clippy`/`doc`/`test`) runs on every cycle. Being outside
 # the workspace means those commands never see this crate at all — the gate
-# stays green on stable, and `cargo fuzz` (nightly-only, its own CI lane —
-# see `../.github/workflows/ci.yml`'s `fuzz` job) is the only thing that ever
-# builds it. See `../docs/PROBLEM_TREE.md` §3.F (F.3) for the standing
-# rationale.
+# stays green on stable, and `cargo fuzz` (nightly-only, its own separate
+# workflow — see `../.github/workflows/fuzz.yml`, not a job inside ci.yml)
+# is the only thing that ever builds it.
 
 [package.metadata]
 cargo-fuzz = true
