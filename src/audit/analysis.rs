@@ -68,8 +68,10 @@ fn geo_consistency(entities: &[AuditEntity]) -> (GeoSummary, Option<Finding>) {
         // location" — a spurious [MEDIUM/HIGH] geo-divergence finding on every
         // single sweep, dinging the self-audit score for a fixed artifact of
         // how the sweep is seeded rather than a real source disagreement.
-        if crate::core::scan::is_radar_sentinel(crate::core::scan::TargetKind::Coordinates, &e.value)
-        {
+        if crate::core::scan::is_radar_sentinel(
+            crate::core::scan::TargetKind::Coordinates,
+            &e.value,
+        ) {
             continue;
         }
         if let Some((lat, lon)) = crate::util::geohash::parse_coords(&e.value) {

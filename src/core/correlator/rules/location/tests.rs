@@ -140,6 +140,27 @@ use super::*;
     }
 
     #[test]
+    fn is_infrastructure_geo_flags_radar_sentinel_even_when_seed_anchored() {
+        // `hse radar` seeds its sweep with the sentinel Coordinates target
+        // (0,0), minted with the same `seed, subject` tags — and a
+        // person-anchoring evidence source — a real operator-provided anchor
+        // carries. Without the sentinel check it sails past every other gate
+        // here and gets fused into AU-057's weighted median as a full subject
+        // sighting (observed live: dragged a real Brisbane fix out to the
+        // Indian Ocean via UID f428eed0...).
+        let mut sentinel = Entity::new(
+            crate::core::entity::EntityKind::Coordinates,
+            crate::core::scan::RADAR_SENTINEL_COORD_RAW,
+            1.0,
+            "s",
+        );
+        sentinel.add_evidence(Evidence::new("wigle", "seed anchor"));
+        sentinel.tag("seed");
+        sentinel.tag("subject");
+        assert!(is_infrastructure_geo(&sentinel));
+    }
+
+    #[test]
     fn best_au_location_estimate_rung2_is_order_independent_on_a_confidence_tie() {
         // Two equal-confidence AU person-anchored coordinates (Brisbane QLD vs
         // Melbourne VIC), single-source so the rung-1 synergy gate stays closed and

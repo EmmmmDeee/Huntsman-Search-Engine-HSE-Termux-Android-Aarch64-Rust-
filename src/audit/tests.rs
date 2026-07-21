@@ -302,7 +302,13 @@ fn geo_consensus_produces_no_finding() {
 #[test]
 fn radar_sentinel_seed_does_not_trigger_geo_divergence() {
     let ents = vec![
-        ent("coordinates", "0.000000,0.000000", 0.9, 50, &["seed", "subject"]),
+        ent(
+            "coordinates",
+            "0.000000,0.000000",
+            0.9,
+            50,
+            &["seed", "subject"],
+        ),
         ent("coordinates", "-27.587302,152.926999", 0.9, 2, &[]),
         ent("coordinates", "-27.587396,152.926844", 0.9, 2, &[]),
     ];
@@ -315,7 +321,10 @@ fn radar_sentinel_seed_does_not_trigger_geo_divergence() {
     );
     // The sentinel is excluded entirely — only the 2 real fixes count.
     assert_eq!(r.geo.coord_count, 2);
-    assert!(r.geo.max_spread_km < 1.0, "the 2 real fixes are metres apart");
+    assert!(
+        r.geo.max_spread_km < 1.0,
+        "the 2 real fixes are metres apart"
+    );
 
     // The raw sentinel form (pre-normalisation, "0,0") must be excluded too —
     // `is_radar_sentinel` recognises both the raw and normalised spellings.
@@ -324,7 +333,10 @@ fn radar_sentinel_seed_does_not_trigger_geo_divergence() {
         ent("coordinates", "-27.587302,152.926999", 0.9, 2, &[]),
     ];
     let r_raw = audit(&ents_raw, LogSignals::default());
-    assert_eq!(r_raw.geo.coord_count, 1, "the raw-form sentinel is excluded too");
+    assert_eq!(
+        r_raw.geo.coord_count, 1,
+        "the raw-form sentinel is excluded too"
+    );
 
     // A GENUINE (0,0)-seeded scan is not the radar's use case, but a real
     // subject coordinate anywhere else must still be cross-validated normally
@@ -342,7 +354,10 @@ fn radar_sentinel_seed_does_not_trigger_geo_divergence() {
     ];
     let r_real = audit(&ents_real_seed, LogSignals::default());
     assert!(
-        r_real.findings.iter().any(|f| f.category == "geo-divergence"),
+        r_real
+            .findings
+            .iter()
+            .any(|f| f.category == "geo-divergence"),
         "a genuine seed coordinate must still be cross-validated against \
          other fixes — only the exact radar sentinel is exempt"
     );
