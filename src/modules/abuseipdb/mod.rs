@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -30,7 +31,7 @@ impl Module for AbuseIpDb {
         SRC
     }
     fn description(&self) -> &'static str {
-        "AbuseIPDB IP reputation — abuse confidence score and report history"
+        "AbuseIPDB reputation recon — pivots an IP to its abuse-confidence score and community report history"
     }
     fn priority(&self) -> u8 {
         52
@@ -107,7 +108,7 @@ impl Module for AbuseIpDb {
 /// first-class DNS/cert/WHOIS pivots the module used to discard.
 fn build_entities(data: &AbuseData, ip: &str, scan_id: &str) -> Vec<Entity> {
     let abuse_score = data.abuse_confidence_score.unwrap_or(0);
-    let confidence = 0.60 + (abuse_score as f64 / 100.0) * 0.35;
+    let confidence = confidence::MEDIUM_PLUS + (abuse_score as f64 / 100.0) * 0.35;
 
     let mut ip_entity = Entity::new(EntityKind::IpAddress, ip, confidence, scan_id);
     ip_entity.tag(crate::core::tags::THREAT_INTEL);
@@ -196,7 +197,12 @@ fn build_entities(data: &AbuseData, ip: &str, scan_id: &str) -> Vec<Entity> {
 
     // ISP / operator → Organisation pivot.
     if let Some(isp) = data.isp.as_deref().map(str::trim).filter(|s| s.len() >= 2) {
-        let mut o = Entity::new(EntityKind::Organisation, isp, 0.60, scan_id);
+        let mut o = Entity::new(
+            EntityKind::Organisation,
+            isp,
+            confidence::MEDIUM_PLUS,
+            scan_id,
+        );
         o.tag("abuseipdb");
         o.tag("isp");
         o.add_evidence(

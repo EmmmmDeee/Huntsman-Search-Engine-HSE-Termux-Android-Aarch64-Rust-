@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -91,7 +92,7 @@ impl Module for FullContact {
     }
 
     fn description(&self) -> &'static str {
-        "FullContact person enrichment — email/phone → name, employer, location, socials"
+        "FullContact enrichment — pivots an email/phone to name, employer, location, and social accounts"
     }
 
     fn priority(&self) -> u8 {
@@ -207,7 +208,13 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
     };
 
     if let Some(name) = r.full_name.as_deref().filter(|n| n.contains(' ')) {
-        push(&mut out, EntityKind::Person, name, 0.75, &[]);
+        push(
+            &mut out,
+            EntityKind::Person,
+            name,
+            confidence::VERY_HIGH,
+            &[],
+        );
         // Attach the job title to the Person entity as a tag + evidence attribute.
         if let Some(title) = r.title.as_deref().map(str::trim).filter(|t| !t.is_empty())
             && let Some(e) = out.last_mut()
@@ -231,7 +238,11 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
             .filter_map(|e| e.name.as_deref()),
     );
     orgs.iter().enumerate().for_each(|(i, o)| {
-        let conf = if i == 0 { 0.65 } else { 0.55 };
+        let conf = if i == 0 {
+            confidence::HIGH
+        } else {
+            confidence::MEDIUM_HIGH
+        };
         push(&mut out, EntityKind::Organisation, o, conf, &["employer"]);
     });
     // Location(s): top-level convenience string + structured formatted addresses.
@@ -255,7 +266,13 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
             extra_tags.push("country:AU");
         }
         let tags_refs: Vec<&str> = extra_tags;
-        push(&mut out, EntityKind::Address, loc, 0.60, &tags_refs);
+        push(
+            &mut out,
+            EntityKind::Address,
+            loc,
+            confidence::MEDIUM_PLUS,
+            &tags_refs,
+        );
         if !au_state_tag.is_empty()
             && let Some(last) = out.last_mut()
         {
@@ -264,7 +281,12 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
         // Inline Coordinates via offline city lookup.
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.55, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::MEDIUM_HIGH,
+                scan_id,
+            );
             c.tag(SRC);
             c.tag("addr-derived");
             c.tag("geoint");
@@ -289,7 +311,7 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
                 &mut out,
                 EntityKind::Username,
                 &format!("{net}:{u}"),
-                0.60,
+                confidence::MEDIUM_PLUS,
                 &[net],
             );
         }
@@ -299,7 +321,13 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
             .map(str::trim)
             .filter(|u| u.starts_with("http"))
         {
-            push(&mut out, EntityKind::Url, url, 0.55, &[net]);
+            push(
+                &mut out,
+                EntityKind::Url,
+                url,
+                confidence::MEDIUM_HIGH,
+                &[net],
+            );
         }
     });
 

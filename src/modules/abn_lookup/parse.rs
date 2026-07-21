@@ -3,6 +3,7 @@
 use serde_json::Value;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
 };
@@ -44,7 +45,12 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
         return;
     }
 
-    let mut org = Entity::new(EntityKind::Organisation, &entity_name, 0.90, scan_id);
+    let mut org = Entity::new(
+        EntityKind::Organisation,
+        &entity_name,
+        confidence::VERY_HIGH_PLUS,
+        scan_id,
+    );
     org.tag("abr");
     org.tag("australian");
     if status.to_lowercase().contains("active") {
@@ -73,7 +79,12 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
     result.push(org);
 
     if !abn.is_empty() {
-        let mut abn_entity = Entity::new(EntityKind::AbnAcn, &abn, 0.95, scan_id);
+        let mut abn_entity = Entity::new(
+            EntityKind::AbnAcn,
+            &abn,
+            confidence::VERY_HIGH_PLUSPLUS,
+            scan_id,
+        );
         abn_entity.tag("abr");
         abn_entity.add_evidence(Evidence::new(SRC, format!("ABN {abn} → {entity_name}")));
         result.push(abn_entity);
@@ -85,7 +96,8 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
         } else {
             format!("{postcode}, {state}, Australia")
         };
-        let mut addr_entity = Entity::new(EntityKind::Address, &addr, 0.75, scan_id);
+        let mut addr_entity =
+            Entity::new(EntityKind::Address, &addr, confidence::VERY_HIGH, scan_id);
         addr_entity.tag("abr");
         addr_entity.tag("country:AU");
         if let Some(sc) = crate::util::address_au::state_code(&addr) {
@@ -109,7 +121,12 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
         };
         if let Some((lat, lon)) = coord_source {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.65, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::HIGH,
+                scan_id,
+            );
             c.tag("addr-derived");
             c.tag("geoint");
             c.tag("country:AU");
@@ -132,7 +149,12 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
                 && !name.is_empty()
                 && name != entity_name
             {
-                let mut bn_entity = Entity::new(EntityKind::Organisation, name, 0.80, scan_id);
+                let mut bn_entity = Entity::new(
+                    EntityKind::Organisation,
+                    name,
+                    confidence::HIGH_PLUSPLUS,
+                    scan_id,
+                );
                 bn_entity.tag("abr");
                 bn_entity.tag("business-name");
                 bn_entity.add_evidence(Evidence::new(SRC, format!("Trading name for ABN {abn}")));
@@ -142,7 +164,12 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
     }
 
     if entity_type.contains("IND") || entity_type.contains("Individual") {
-        let mut person = Entity::new(EntityKind::Person, &entity_name, 0.80, scan_id);
+        let mut person = Entity::new(
+            EntityKind::Person,
+            &entity_name,
+            confidence::HIGH_PLUSPLUS,
+            scan_id,
+        );
         person.tag("abr");
         person.tag("sole-trader");
         person.add_evidence(Evidence::new(
@@ -189,10 +216,10 @@ pub(super) fn parse_name_results(
         }
 
         let conf = match score {
-            90..=100 => 0.90,
-            70..=89 => 0.80,
-            50..=69 => 0.70,
-            _ => 0.60,
+            90..=100 => confidence::VERY_HIGH_PLUS,
+            70..=89 => confidence::HIGH_PLUSPLUS,
+            50..=69 => confidence::HIGH_PLUS,
+            _ => confidence::MEDIUM_PLUS,
         };
 
         let mut org = Entity::new(EntityKind::Organisation, &name, conf, scan_id);
@@ -226,7 +253,8 @@ pub(super) fn parse_name_results(
             } else {
                 format!("{postcode}, {state}, Australia")
             };
-            let mut addr_entity = Entity::new(EntityKind::Address, &addr, 0.65, scan_id);
+            let mut addr_entity =
+                Entity::new(EntityKind::Address, &addr, confidence::HIGH, scan_id);
             addr_entity.tag("abr");
             addr_entity.tag("country:AU");
             if let Some(sc) = crate::util::address_au::state_code(&addr) {

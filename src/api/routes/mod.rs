@@ -19,6 +19,7 @@
 //! | DELETE | `/api/v1/scans/{id}`              | `scan_delete`            |
 //! | POST   | `/api/v1/scans/{id}/rerun`        | `scan_rerun`             |
 //! | GET    | `/api/v1/scans/{id}/entities`     | `scan_entities`          |
+//! | GET    | `/api/v1/scans/{id}/diamond`      | `scan_diamond`           |
 //! | GET    | `/api/v1/scans/{id}/entities.csv` | `scan_entities_csv`      |
 //! | GET    | `/api/v1/scans/{id}/correlations` | `scan_correlations` (v0.4+) |
 //! | GET    | `/api/v1/scans/{id}/relations`    | `scan_relations`         |
@@ -389,6 +390,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // `hse serve` restart, so "what was around me earlier" doesn't
         // require remembering a session id.
         .route("/radar/history", get(scan_handlers::radar_history))
+        .route("/radar/recurring", get(scan_handlers::radar_recurring))
         .route(
             "/scans/import",
             // Raise this route's body cap from axum's 2 MB default to the import
@@ -414,6 +416,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             "/scans/{id}/entities/facets",
             get(scan_handlers::scan_entities_facets),
         )
+        .route("/scans/{id}/diamond", get(scan_handlers::scan_diamond))
         .route(
             "/scans/{id}/entities.csv",
             get(scan_export::scan_entities_csv),
@@ -761,7 +764,7 @@ async fn favicon_handler() -> Response {
 const MANIFEST_JSON: &str = r##"{
   "name": "Huntsman Search Engine",
   "short_name": "Huntsman",
-  "description": "OSINT/GEOINT platform — runs entirely in Termux on Android, no root.",
+  "description": "All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition — SpiderFoot-inspired breadth, runs entirely in Termux on Android, no root.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

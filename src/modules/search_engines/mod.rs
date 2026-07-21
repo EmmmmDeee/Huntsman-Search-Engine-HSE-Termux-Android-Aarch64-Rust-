@@ -34,9 +34,9 @@
 //!   - FullName: professional profile + document discovery
 //!
 //! Entity production:
-//!   - Domain (subdomains at 0.70, external at 0.45) → triggers 15+ modules
-//!   - Email (from snippet text at 0.60) → triggers breach + identity stack
-//!   - Phone (from snippet text at 0.55) → triggers numverify, phone_intl
+//!   - Domain (subdomains at confidence::HIGH_PLUS, external at confidence::LOW_MEDIUM) → triggers 15+ modules
+//!   - Email (from snippet text at confidence::MEDIUM_PLUS) → triggers breach + identity stack
+//!   - Phone (from snippet text at confidence::MEDIUM_HIGH) → triggers numverify, phone_intl
 
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -372,7 +372,7 @@ impl Module for SearchEngines {
     }
 
     fn description(&self) -> &'static str {
-        "Multi-engine OSINT dork search across 17 engines"
+        "Multi-engine dork recon — sweeps OSINT queries across 17 search engines"
     }
 
     fn priority(&self) -> u8 {

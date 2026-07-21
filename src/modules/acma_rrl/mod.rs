@@ -10,6 +10,7 @@ mod tests;
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -26,7 +27,8 @@ pub struct AcmaRrl;
 ///
 /// A deliberately dependency-free HTML walk (no scraper/html5ever crate, in
 /// keeping with the lean Termux build): it splits on `<tr>`/`</tr>`, pulls each
-/// `<td>` via [`strip_html_tags`], and keeps rows with at least three cells.
+/// `<td>` via [`strip_tags_plain`](crate::util::html::strip_tags_plain), and
+/// keeps rows with at least three cells.
 /// The header row (`Licensee`) and rows missing a name or licence number are
 /// dropped, so the result is data-only. Pure given `html` — unit-testable
 /// against a captured response without a network round-trip.
@@ -53,7 +55,7 @@ pub(super) fn parse_acma_html(html: &str) -> Vec<(String, String, String)> {
                 r = &r[td_content_start + 1..];
                 let Some(td_end) = r.find("</td>") else { break };
                 let cell = &r[..td_end];
-                cells.push(strip_html_tags(cell).trim().to_string());
+                cells.push(crate::util::html::strip_tags_plain(cell).trim().to_string());
                 r = &r[td_end + 5..];
             }
             cells
@@ -82,7 +84,7 @@ pub(super) fn build_licensee_entities(
 ) -> Vec<Entity> {
     let mut out = Vec::with_capacity(licences.len());
     for (name, lic_no, service) in licences {
-        let mut org = Entity::new(EntityKind::Organisation, name, 0.65, scan_id);
+        let mut org = Entity::new(EntityKind::Organisation, name, confidence::HIGH, scan_id);
         org.tag("acma");
         org.tag("radiocommunications-licensee");
         if !service.is_empty() {
@@ -124,25 +126,6 @@ pub(super) fn extract_abn_from_html(html: &str) -> Option<String> {
 /// A single-pass character filter that drops everything between `<` and `>`.
 /// Sufficient for the flat, well-formed RRL cells (no nested-bracket or
 /// entity-decoding concerns here); the caller trims the result.
-fn strip_html_tags(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for c in html.chars() {
-        match c {
-            '<' => {
-                in_tag = true;
-            }
-            '>' => {
-                in_tag = false;
-            }
-            _ if !in_tag => {
-                out.push(c);
-            }
-            _ => {}
-        }
-    }
-    out
-}
 
 #[async_trait]
 impl Module for AcmaRrl {
@@ -151,7 +134,7 @@ impl Module for AcmaRrl {
     }
 
     fn description(&self) -> &'static str {
-        "ACMA Radiocommunications Register: licence holders by organisation name, ABN, or coordinates"
+        "ACMA Radiocommunications Register recon — enumerates licence holders by organisation name, ABN, or coordinates"
     }
 
     fn priority(&self) -> u8 {
@@ -232,7 +215,12 @@ impl Module for AcmaRrl {
         if !licences.is_empty()
             && let Some(abn) = extract_abn_from_html(&html)
         {
-            let mut abn_entity = Entity::new(EntityKind::AbnAcn, &abn, 0.70, &ctx.scan_id);
+            let mut abn_entity = Entity::new(
+                EntityKind::AbnAcn,
+                &abn,
+                confidence::HIGH_PLUS,
+                &ctx.scan_id,
+            );
             abn_entity.tag("acma");
             let note = if licences.len() == 1 {
                 format!("ABN for {} from ACMA RRL", licences[0].0)

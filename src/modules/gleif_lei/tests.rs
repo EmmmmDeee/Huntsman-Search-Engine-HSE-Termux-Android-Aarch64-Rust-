@@ -5,6 +5,7 @@ use super::{
     types::{GleifAddress, GleifEntity, GleifResp},
 };
 use crate::core::{
+    confidence,
     entity::EntityKind,
     module::{Module, ModuleCategory, ModuleCost},
     scan::{Target, TargetKind},
@@ -126,7 +127,7 @@ fn loose_candidate_surfaces_with_full_evidence_but_no_pivot() {
     let ents = records_to_entities(&resp, "Rio Tinto", "s"); // matches neither name fully
     // Both rows lack "Rio"/"Tinto" -> both candidates, none exact.
     assert!(ents.iter().all(|e| e.kind == EntityKind::Organisation));
-    assert!(ents.iter().all(|e| e.confidence < 0.50));
+    assert!(ents.iter().all(|e| e.confidence < confidence::MEDIUM));
     assert!(
         ents.iter()
             .all(|e| e.tags.iter().any(|t| t == "name-candidate"))

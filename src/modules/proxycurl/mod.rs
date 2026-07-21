@@ -58,7 +58,7 @@ impl Module for Proxycurl {
         "proxycurl"
     }
     fn description(&self) -> &'static str {
-        "LinkedIn profile extraction — employment, education, and certifications via Proxycurl"
+        "LinkedIn profile recon via Proxycurl — harvests employment, education, and certifications to enrich a target"
     }
     fn priority(&self) -> u8 {
         88

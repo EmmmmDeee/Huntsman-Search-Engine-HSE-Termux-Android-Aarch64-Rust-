@@ -49,6 +49,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::core::{
+    confidence,
     entity::{EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -92,7 +93,7 @@ impl Module for SeekNow {
     }
 
     fn description(&self) -> &'static str {
-        "SeekNow (see-know.eu) — full 18-endpoint OSINT/breach pool with discord/gaming pivots"
+        "SeekNow (see-know.eu) — sweeps the full 18-endpoint OSINT/breach pool with discord and gaming pivots"
     }
 
     fn priority(&self) -> u8 {
@@ -410,7 +411,7 @@ impl Module for SeekNow {
 ///
 /// A broad seed (above all a `full_name` auto-detect, but also an
 /// address-adjacent phone/IP) can return rows for strangers who merely share a
-/// term with the target. Minting the 0.85 BREACH parent off the raw hit count
+/// term with the target. Minting the confidence::HIGH_PLUSPLUS_PLUS BREACH parent off the raw hit count
 /// re-affirms the seed's own UID — merging via `absorb` (GREATEST semantics)
 /// straight into the pre-existing entity — even when NONE of the returned
 /// rows actually identify the subject. `search_subject_present` mirrors the
@@ -431,7 +432,7 @@ fn absorb_search_hits(
 ) {
     let total = items.len();
     if search_subject_present(target_value, items) {
-        let mut parent = target.to_entity(0.85, scan_id);
+        let mut parent = target.to_entity(confidence::HIGH_PLUSPLUS_PLUS, scan_id);
         parent.tag(tags::BREACH);
         parent.tag("see-know");
         parent.add_evidence(

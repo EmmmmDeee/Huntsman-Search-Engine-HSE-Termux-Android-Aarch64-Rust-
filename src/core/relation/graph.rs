@@ -57,6 +57,45 @@ pub struct IdentityPath {
     pub min_confidence: f64,
 }
 
+/// The **derivation trail** of an entity: the chain of `DerivedFrom` pivots
+/// that led from the seed to it — `[entity, its expansion parent, …, root]`,
+/// each element being the entity whose expansion surfaced the next. Follows the
+/// `DerivedFrom` edge direction (`from_uid` = child → `to_uid` = parent) up
+/// toward the seed, stopping at a root (an entity with no parent edge — the seed
+/// or a seed-round find) or if a cycle is ever detected. Deterministic: the
+/// FIRST `DerivedFrom` parent per child is used (relations are built in a
+/// deterministic order), so an entity carrying several derivation edges still
+/// yields a stable chain. Pure — the returned UIDs borrow from `relations`.
+///
+/// A returned chain of length 1 means the entity is a root (seed-round /
+/// generation 0): nothing derived it. Reverse the result for a seed→entity
+/// reading.
+#[must_use]
+pub fn provenance_chain<'a>(uid: &'a str, relations: &'a [Relation]) -> Vec<&'a str> {
+    // child → parent, keeping the FIRST DerivedFrom edge per child so the walk
+    // is stable when an entity has more than one derivation ancestor.
+    let mut parent: HashMap<&str, &str> = HashMap::new();
+    for r in relations
+        .iter()
+        .filter(|r| r.kind == RelationKind::DerivedFrom)
+    {
+        parent
+            .entry(r.from_uid.as_str())
+            .or_insert(r.to_uid.as_str());
+    }
+    let mut chain = vec![uid];
+    let mut seen: HashSet<&str> = HashSet::from([uid]);
+    let mut cur = uid;
+    while let Some(&p) = parent.get(cur) {
+        if !seen.insert(p) {
+            break; // cycle guard — DerivedFrom is acyclic, but never loop
+        }
+        chain.push(p);
+        cur = p;
+    }
+    chain
+}
+
 /// Identity-bearing entity kinds — the nodes a connection path links end to end.
 /// Intermediate nodes may be any kind (a domain, an IP, an address); only the
 /// two endpoints must be identities. Mirrors the AU-034/AU-060 identity notion.
@@ -675,28 +714,18 @@ pub fn resolve_identity_clusters(
         }
     }
 
-    // Union-find with iterative path-halving — merge the endpoints of every link.
-    fn find(parent: &mut [usize], mut x: usize) -> usize {
-        while parent[x] != x {
-            parent[x] = parent[parent[x]];
-            x = parent[x];
-        }
-        x
-    }
-    let mut parent: Vec<usize> = (0..uids.len()).collect();
+    // Union-find over the interned uids — the canonical disjoint-set primitive.
+    // Merge the endpoints of every surviving link.
+    let mut uf = crate::util::union_find::UnionFind::new(uids.len());
     for p in &paths {
-        let a = find(&mut parent, index[p.from_uid.as_str()]);
-        let b = find(&mut parent, index[p.to_uid.as_str()]);
-        if a != b {
-            parent[a] = b;
-        }
+        uf.union(index[p.from_uid.as_str()], index[p.to_uid.as_str()]);
     }
 
     // Weakest-link confidence per component: the minimum link min_confidence
     // among every link whose endpoints landed in that component.
     let mut comp_conf: HashMap<usize, f64> = HashMap::new();
     for p in &paths {
-        let r = find(&mut parent, index[p.from_uid.as_str()]);
+        let r = uf.find(index[p.from_uid.as_str()]);
         let e = comp_conf.entry(r).or_insert(f64::INFINITY);
         *e = e.min(p.min_confidence);
     }
@@ -704,7 +733,7 @@ pub fn resolve_identity_clusters(
     // Group members by component root.
     let mut groups: HashMap<usize, Vec<&str>> = HashMap::new();
     for (i, &u) in uids.iter().enumerate() {
-        let r = find(&mut parent, i);
+        let r = uf.find(i);
         groups.entry(r).or_default().push(u);
     }
 

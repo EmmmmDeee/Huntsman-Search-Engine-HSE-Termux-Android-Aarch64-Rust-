@@ -13,6 +13,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -29,7 +30,7 @@ impl Module for LocalNet {
         "local_net"
     }
     fn description(&self) -> &'static str {
-        "Local network discovery via ARP table and network interfaces"
+        "Local network sweep — enumerates hosts from the ARP table and network interfaces"
     }
     fn priority(&self) -> u8 {
         58
@@ -91,7 +92,12 @@ impl Module for LocalNet {
                     .map_or_else(|_| "unknown".into(), |s| s.trim().to_string());
 
                 let iface = iface_os.to_string_lossy();
-                let mut e = Entity::new(EntityKind::MacAddress, &mac, 0.95, &ctx.scan_id);
+                let mut e = Entity::new(
+                    EntityKind::MacAddress,
+                    &mac,
+                    confidence::VERY_HIGH_PLUSPLUS,
+                    &ctx.scan_id,
+                );
                 e.tag(crate::core::tags::LOCAL_INTERFACE);
                 e.add_evidence(
                     Evidence::new(SRC, format!("Local interface {iface} ({state})"))
@@ -133,7 +139,12 @@ fn parse_arp(content: &str, scan_id: &str, result: &mut ModuleResult) {
 
         let vendor = oui_vendor(mac);
 
-        let mut ip_entity = Entity::new(EntityKind::IpAddress, ip, 0.95, scan_id);
+        let mut ip_entity = Entity::new(
+            EntityKind::IpAddress,
+            ip,
+            confidence::VERY_HIGH_PLUSPLUS,
+            scan_id,
+        );
         ip_entity.tag(crate::core::tags::LOCAL_ARP);
         let mut ip_ev = Evidence::new(SRC, format!("ARP entry on {dev}"))
             .with_attr("mac", mac)
@@ -146,7 +157,12 @@ fn parse_arp(content: &str, scan_id: &str, result: &mut ModuleResult) {
         ip_entity.add_evidence(ip_ev);
         result.push(ip_entity);
 
-        let mut mac_entity = Entity::new(EntityKind::MacAddress, mac, 0.95, scan_id);
+        let mut mac_entity = Entity::new(
+            EntityKind::MacAddress,
+            mac,
+            confidence::VERY_HIGH_PLUSPLUS,
+            scan_id,
+        );
         mac_entity.tag(crate::core::tags::LOCAL_ARP);
         if let Some(v) = vendor {
             mac_entity.tag(format!("vendor:{}", v.to_lowercase().replace(' ', "-")));

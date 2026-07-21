@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
 #[test]
@@ -25,13 +26,13 @@ fn ct_log_discriminates_subdomain_from_co_hosted_confidence() {
         .find(|e| e.value == "unrelated-cotenant.net")
         .expect("co-tenant emitted");
     assert!(
-        (sub.confidence - 0.88).abs() < 1e-9,
+        (sub.confidence - confidence::EXPERT).abs() < 1e-9,
         "confirmed subdomain keeps high confidence"
     );
     assert!(sub.has_tag(tags::SUBDOMAIN));
     assert!(
-        (co.confidence - 0.45).abs() < 1e-9,
-        "co-hosted non-subdomain is a weak lead, not an equally-confident 0.88"
+        (co.confidence - confidence::LOW_MEDIUM).abs() < 1e-9,
+        "co-hosted non-subdomain is a weak lead, not an equally-confident confidence::EXPERT"
     );
     assert!(co.has_tag("co-hosted") && !co.has_tag(tags::SUBDOMAIN));
 }

@@ -2,9 +2,9 @@ use super::CellIntel;
 use super::helpers::{
     accuracy_to_confidence, build_tower_device, json_to_str, mcc_to_centroid, parse_cells_survey,
 };
-use crate::core::entity::EntityKind;
 use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
+use crate::core::{confidence, entity::EntityKind};
 
 // ---- Module trait tests ----
 
@@ -32,7 +32,7 @@ fn module_name_and_priority() {
 fn module_description() {
     assert_eq!(
         CellIntel.description(),
-        "Cell tower survey and geolocation via Termux + OpenCelliD"
+        "Cell-tower survey & geolocation — sweeps nearby towers via Termux and geolocates them against OpenCelliD"
     );
 }
 
@@ -81,7 +81,7 @@ fn entity_tags_include_cell_tower_and_radio_type() {
     let e = &r.entities[0];
     assert_eq!(e.kind, EntityKind::DeviceId);
     assert_eq!(e.value, "310-260-1234-5678");
-    assert!((e.confidence - 0.80).abs() < 1e-6);
+    assert!((e.confidence - confidence::HIGH_PLUSPLUS).abs() < 1e-6);
     assert!(e.has_tag(crate::core::tags::CELL_TOWER));
     assert!(e.has_tag("radio:lte"));
     assert_eq!(e.scan_id, "scan-x");
@@ -169,10 +169,10 @@ fn json_to_str_handles_all_variants() {
 
 #[test]
 fn accuracy_to_confidence_tiers() {
-    assert!((accuracy_to_confidence(50) - 0.85).abs() < 1e-6);
-    assert!((accuracy_to_confidence(300) - 0.75).abs() < 1e-6);
-    assert!((accuracy_to_confidence(1000) - 0.65).abs() < 1e-6);
-    assert!((accuracy_to_confidence(5000) - 0.50).abs() < 1e-6);
+    assert!((accuracy_to_confidence(50) - confidence::HIGH_PLUSPLUS_PLUS).abs() < 1e-6);
+    assert!((accuracy_to_confidence(300) - confidence::VERY_HIGH).abs() < 1e-6);
+    assert!((accuracy_to_confidence(1000) - confidence::HIGH).abs() < 1e-6);
+    assert!((accuracy_to_confidence(5000) - confidence::MEDIUM).abs() < 1e-6);
     assert!((accuracy_to_confidence(50000) - 0.35).abs() < 1e-6);
 }
 

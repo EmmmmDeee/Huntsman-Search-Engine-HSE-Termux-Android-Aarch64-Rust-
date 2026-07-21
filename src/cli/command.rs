@@ -13,9 +13,11 @@ use super::keys_cmd::KeysAction;
 #[command(
     name = "hse",
     version = crate::VERSION,
-    about = "Huntsman Search Engine — Termux aarch64 OSINT / GEOINT prototype",
-    long_about = "Pure-Rust OSINT scaffold for Termux on Android aarch64.\n\
-                  80+ modules (most free, no key), autonomous depth-bounded expansion.\n\
+    about = "Huntsman Search Engine (HSE) — GhostSec-tradition all-source OSINT / GEOINT recon for Termux aarch64",
+    long_about = "Huntsman Search Engine (HSE) — an all-source OSINT / GEOINT / NETINT reconnaissance\n\
+                  engine in the GhostSec tradition: SpiderFoot-inspired breadth without the daemon or the\n\
+                  footprint. Pure-Rust, keyless-first, autonomous depth-bounded expansion, forged to run\n\
+                  entirely inside Termux on Android aarch64 — single binary, zero native dependencies.\n\
                   Docs: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-"
 )]
 pub struct Cli {
@@ -43,6 +45,12 @@ pub enum Command {
         // the value, not parsed by clap as an unknown short flag.
         #[arg(short, long, allow_hyphen_values = true)]
         value: Option<String>,
+        /// Batch mode: path to a file of seeds, one target per line (blank lines
+        /// and `#` comments ignored). Runs the SAME scan for every listed seed —
+        /// bulk-scan an IP / domain / email / username list. When set, `--value`
+        /// is ignored; each seed's findings are stored and exportable per scan_id.
+        #[arg(long, value_name = "PATH")]
+        input_file: Option<String>,
         /// Comma-separated allowlist of module names.
         #[arg(short, long)]
         modules: Option<String>,

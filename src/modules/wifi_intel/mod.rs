@@ -18,6 +18,7 @@ mod tests;
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -48,7 +49,7 @@ impl Module for WifiIntel {
     }
 
     fn description(&self) -> &'static str {
-        "WiFi AP survey and BSSID geolocation via Termux + WiGLE"
+        "WiFi AP survey — sweeps nearby access points via Termux and geolocates each BSSID through WiGLE"
     }
 
     fn priority(&self) -> u8 {
@@ -128,7 +129,12 @@ impl Module for WifiIntel {
         // ── Phase 1: MacAddress entities for ALL APs ────────────────────
         result.extend(aps.iter().map(|ap| {
             let ssid = ap.ssid.as_deref().unwrap_or("<hidden>");
-            let mut e = Entity::new(EntityKind::MacAddress, &ap.bssid, 0.95, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::MacAddress,
+                &ap.bssid,
+                confidence::VERY_HIGH_PLUSPLUS,
+                &ctx.scan_id,
+            );
             e.tag(crate::core::tags::WIFI_AP);
             e.add_evidence(
                 Evidence::new(SOURCE, format!("Wi-Fi AP: {ssid}"))
@@ -167,7 +173,12 @@ impl Module for WifiIntel {
                     .or(ap.ssid.as_deref())
                     .unwrap_or("<hidden>");
 
-                let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.80, &ctx.scan_id);
+                let mut e = Entity::new(
+                    EntityKind::Coordinates,
+                    &coords,
+                    confidence::HIGH_PLUSPLUS,
+                    &ctx.scan_id,
+                );
                 e.tag("geoint");
                 e.tag(crate::core::tags::WIFI_AP);
                 e.tag("bssid-located");
@@ -225,7 +236,12 @@ impl Module for WifiIntel {
                     {
                         addr_str = format!("{addr_str} {p}");
                     }
-                    let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.60, &ctx.scan_id);
+                    let mut addr = Entity::new(
+                        EntityKind::Address,
+                        &addr_str,
+                        confidence::MEDIUM_PLUS,
+                        &ctx.scan_id,
+                    );
                     addr.tag("geoint");
                     addr.tag("bssid-derived");
                     addr.add_evidence(
@@ -253,7 +269,12 @@ fn parse_aps(stdout: &[u8], scan_id: &str) -> ModuleResult {
     let mut result = ModuleResult::with_capacity(aps.len());
     for ap in aps {
         let ssid = ap.ssid.as_deref().unwrap_or("<hidden>");
-        let mut e = Entity::new(EntityKind::MacAddress, &ap.bssid, 0.95, scan_id);
+        let mut e = Entity::new(
+            EntityKind::MacAddress,
+            &ap.bssid,
+            confidence::VERY_HIGH_PLUSPLUS,
+            scan_id,
+        );
         e.tag(crate::core::tags::WIFI_AP);
         e.add_evidence(
             Evidence::new(SOURCE, format!("Wi-Fi AP: {ssid}"))

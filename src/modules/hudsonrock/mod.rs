@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -48,7 +49,7 @@ struct Stealer {
 /// (actual malware exfiltration, not compilations), so the baseline is
 /// higher than database breaches. Recent compromises get boosted further
 /// by `freshness_boost`.
-const BASE_CONFIDENCE: f64 = 0.85;
+const BASE_CONFIDENCE: f64 = confidence::HIGH_PLUSPLUS_PLUS;
 
 /// Boost confidence to this value when the compromise date is within
 /// 90 days. Per Recorded Future's 2025 report, 53% of credentials are
@@ -66,7 +67,7 @@ impl Module for HudsonRock {
     }
 
     fn description(&self) -> &'static str {
-        "Free stealer-log lookup via HudsonRock Cavalier"
+        "HudsonRock Cavalier recon (free) — sweeps stealer-log corpora for a target's infostealer exposure"
     }
 
     fn priority(&self) -> u8 {
@@ -186,7 +187,7 @@ fn victim_ip_entities(stealers: &[Stealer], scan_id: &str) -> Vec<Entity> {
             let mut e = Entity::new(
                 crate::core::entity::EntityKind::IpAddress,
                 ip,
-                0.70,
+                confidence::HIGH_PLUS,
                 scan_id,
             );
             e.tag(tags::STEALER_LOG);

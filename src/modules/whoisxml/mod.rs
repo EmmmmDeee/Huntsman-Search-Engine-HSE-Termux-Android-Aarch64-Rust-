@@ -19,6 +19,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -114,7 +115,7 @@ impl Module for WhoisXml {
     }
 
     fn description(&self) -> &'static str {
-        "Structured WHOIS (registrant, contacts, dates, NS) via whoisxmlapi.com"
+        "Structured WHOIS via whoisxmlapi.com — surfaces registrant, contacts, registration dates, and nameservers as parsed fields"
     }
 
     fn category(&self) -> ModuleCategory {
@@ -276,7 +277,7 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
             && low.contains('.')
             && seen.insert(format!("dom:{low}"))
         {
-            let mut e = Entity::new(EntityKind::Domain, &low, 0.65, scan_id);
+            let mut e = Entity::new(EntityKind::Domain, &low, confidence::HIGH, scan_id);
             e.tag("whoisxml");
             e.tag("registered-domain");
             e.add_evidence(base_ev.clone().with_attr("queried_domain", domain));
@@ -296,7 +297,12 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
             .filter(|o| !crate::core::validation::is_whois_privacy_placeholder(o))
             && seen.insert(format!("org:{}", org.to_lowercase()))
         {
-            let mut e = Entity::new(EntityKind::Organisation, &org, 0.70, scan_id);
+            let mut e = Entity::new(
+                EntityKind::Organisation,
+                &org,
+                confidence::HIGH_PLUS,
+                scan_id,
+            );
             e.tag("whoisxml");
             e.tag(format!("whois-{role}"));
             let mut ev = base_ev.clone().with_attr("contact_role", role);
@@ -311,7 +317,7 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
             nonempty(&c.name).filter(|n| !crate::core::validation::is_whois_privacy_placeholder(n))
             && seen.insert(format!("person:{}", name.to_lowercase()))
         {
-            let mut e = Entity::new(EntityKind::Person, &name, 0.60, scan_id);
+            let mut e = Entity::new(EntityKind::Person, &name, confidence::MEDIUM_PLUS, scan_id);
             e.tag("whoisxml");
             e.tag(format!("whois-{role}"));
             let mut ev = base_ev.clone().with_attr("contact_role", role);
@@ -328,7 +334,7 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
         if let Some(email) = nonempty(&c.email).filter(|s| s.contains('@')) {
             let low = email.to_lowercase();
             if seen.insert(format!("mail:{low}")) {
-                let mut e = Entity::new(EntityKind::Email, &email, 0.70, scan_id);
+                let mut e = Entity::new(EntityKind::Email, &email, confidence::HIGH_PLUS, scan_id);
                 e.tag("whoisxml");
                 e.tag(format!("whois-{role}-email"));
                 e.add_evidence(base_ev.clone().with_attr("contact_role", role));
@@ -360,7 +366,7 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
             .filter(|l| !crate::core::validation::is_whois_privacy_placeholder(l))
             && seen.insert(format!("addr:{}", loc.to_lowercase()))
         {
-            let mut e = Entity::new(EntityKind::Address, &loc, 0.45, scan_id);
+            let mut e = Entity::new(EntityKind::Address, &loc, confidence::LOW_MEDIUM, scan_id);
             e.tag("whoisxml");
             e.tag(format!("whois-{role}"));
             e.tag("geo-hint");
@@ -390,7 +396,7 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
             if !seen.insert(format!("dom:{host}")) {
                 continue;
             }
-            let mut e = Entity::new(EntityKind::Domain, &host, 0.65, scan_id);
+            let mut e = Entity::new(EntityKind::Domain, &host, confidence::HIGH, scan_id);
             e.tag("whoisxml");
             e.tag("nameserver");
             e.add_evidence(base_ev.clone().with_attr("ns_for", domain));

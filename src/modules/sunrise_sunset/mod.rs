@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -66,7 +67,12 @@ fn build_solar_entity(
     results: &SsResults,
     scan_id: &str,
 ) -> Entity {
-    let mut entity = Entity::new(EntityKind::Coordinates, coord, 0.55, scan_id);
+    let mut entity = Entity::new(
+        EntityKind::Coordinates,
+        coord,
+        confidence::MEDIUM_HIGH,
+        scan_id,
+    );
     entity.tag("sunrise-sunset");
     entity.tag("chronolocation");
     entity.tag("geoint");
@@ -114,11 +120,9 @@ fn build_solar_entity(
     // `day_length` is a number (seconds) on the formatted=0 API but a string on
     // the default endpoint — accept either.
     if let Some(v) = &results.day_length {
-        let dl = match v {
-            serde_json::Value::Number(n) => n.to_string(),
-            serde_json::Value::String(s) => s.clone(),
-            _ => String::new(),
-        };
+        let dl = crate::util::json::scalar_str(v)
+            .map(std::borrow::Cow::into_owned)
+            .unwrap_or_default();
         if !dl.is_empty() {
             ev = ev.with_attr("day_length_s", dl);
         }
@@ -134,7 +138,7 @@ impl Module for SunriseSunset {
         "sunrise_sunset"
     }
     fn description(&self) -> &'static str {
-        "Solar phase timestamps for chronolocation of imagery"
+        "Solar-phase recon — resolves sunrise/sunset timestamps to chronolocate imagery"
     }
     fn priority(&self) -> u8 {
         10

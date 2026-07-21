@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use sha1::{Digest, Sha1};
 
 use crate::core::{
+    confidence,
     entity::{Entity, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -39,11 +40,11 @@ fn parse_breach_count(body: &str, suffix: &str) -> Option<u64> {
 /// confidence the credential is genuinely compromised. **Pure.**
 fn confidence_for(count: u64) -> f64 {
     if count >= 100 {
-        0.90
+        confidence::VERY_HIGH_PLUS
     } else if count >= 10 {
-        0.80
+        confidence::HIGH_PLUSPLUS
     } else {
-        0.70
+        confidence::HIGH_PLUS
     }
 }
 
@@ -108,7 +109,7 @@ impl Module for PwnedPasswords {
         "pwned_passwords"
     }
     fn description(&self) -> &'static str {
-        "HIBP Pwned Passwords k-Anonymity check for credential breach exposure"
+        "HIBP Pwned Passwords recon — k-Anonymity check that surfaces a credential's breach exposure without transmitting it"
     }
     fn priority(&self) -> u8 {
         115

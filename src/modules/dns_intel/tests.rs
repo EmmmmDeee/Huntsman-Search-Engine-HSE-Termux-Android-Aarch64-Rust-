@@ -8,6 +8,7 @@ use super::{
         VERIFICATION_VENDORS, reverse_ip, soa_rname_to_email, unescape_dns_label,
         verification_vendor,
     },
+    resolve::{iodef_entities, tlsrpt_entities},
 };
 
 // -- DnsIntel accepts --------------------------------------------------
@@ -67,6 +68,109 @@ fn soa_admin_role_mailbox_is_gated_as_infrastructure() {
     assert!(!is_infrastructure_email(&soa_rname_to_email(
         "alice.personaldomain.org"
     )));
+}
+
+#[test]
+fn iodef_mailto_becomes_a_security_contact_email() {
+    use crate::core::entity::EntityKind;
+    let ents = iodef_entities("mailto:security@example.com", "example.com", "scan-iodef");
+    assert_eq!(ents.len(), 1);
+    let e = &ents[0];
+    assert_eq!(e.kind, EntityKind::Email);
+    assert_eq!(e.value, "security@example.com");
+    assert!(e.has_tag("iodef") && e.has_tag("security-contact") && e.has_tag("caa"));
+}
+
+#[test]
+fn iodef_https_endpoint_yields_a_domain_lead() {
+    use crate::core::entity::EntityKind;
+    // The reporting host is a pivotable Domain — but only when it differs from
+    // the target domain (a self-referential iodef adds no new lead).
+    let ents = iodef_entities(
+        "https://iodef.reporter.net/report",
+        "example.com",
+        "scan-iodef",
+    );
+    assert_eq!(ents.len(), 1);
+    assert_eq!(ents[0].kind, EntityKind::Domain);
+    // The full reporting-endpoint host is the lead (the engine's own expansion
+    // derives its registrable domain when it re-dispatches).
+    assert_eq!(ents[0].value, "iodef.reporter.net");
+    assert!(ents[0].has_tag("iodef"));
+
+    // Self-referential host (same registrable domain host) adds no new entity.
+    let self_ref = iodef_entities("https://example.com/report", "example.com", "scan-iodef");
+    assert!(self_ref.is_empty(), "iodef host == target adds no new lead");
+}
+
+#[test]
+fn iodef_rejects_malformed_and_unknown_schemes() {
+    // A malformed mailto (no domain dot, whitespace, or missing @) yields nothing.
+    assert!(iodef_entities("mailto:notanemail", "example.com", "s").is_empty());
+    assert!(iodef_entities("mailto:a@b", "example.com", "s").is_empty());
+    assert!(iodef_entities("mailto:a b@c.com", "example.com", "s").is_empty());
+    // A non-mailto/non-http scheme (or bare URN) yields nothing.
+    assert!(iodef_entities("urn:example:report", "example.com", "s").is_empty());
+    assert!(iodef_entities("", "example.com", "s").is_empty());
+}
+
+#[test]
+fn tlsrpt_mailto_becomes_report_email() {
+    use crate::core::entity::EntityKind;
+    // A non-infra reporting mailbox (real live TLSRPT records like google.com's
+    // `sts-reports@google.com` sit on a provider domain and are correctly gated
+    // by the infra filter below — so exercise the happy path with a corp domain).
+    let ents = tlsrpt_entities(
+        &["v=TLSRPTv1;rua=mailto:tlsrpt@fabrikam.example".to_string()],
+        "fabrikam.example",
+        "s",
+    );
+    let email = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("TLSRPT rua mailto → Email");
+    assert_eq!(email.value, "tlsrpt@fabrikam.example");
+    assert!(email.has_tag("tlsrpt-report") && email.has_tag("dns"));
+}
+
+#[test]
+fn tlsrpt_infrastructure_mailbox_is_gated() {
+    // Parity with DMARC/SOA gating: a provider-domain reporting desk (google.com
+    // is in the curated infra-mail set) must NOT be surfaced as a subject email.
+    let ents = tlsrpt_entities(
+        &["v=TLSRPTv1;rua=mailto:sts-reports@google.com".to_string()],
+        "google.com",
+        "s",
+    );
+    assert!(
+        ents.iter()
+            .all(|e| e.kind != crate::core::entity::EntityKind::Email),
+        "infrastructure reporting mailbox must be gated"
+    );
+}
+
+#[test]
+fn tlsrpt_https_endpoint_becomes_domain_lead() {
+    use crate::core::entity::EntityKind;
+    // Verbatim live shape from microsoft.com's _smtp._tls record.
+    let ents = tlsrpt_entities(
+        &["v=TLSRPTv1; rua=https://tlsrpt.azurewebsites.net/report".to_string()],
+        "microsoft.com",
+        "s",
+    );
+    let dom = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain)
+        .expect("TLSRPT rua https → Domain host");
+    assert_eq!(dom.value, "tlsrpt.azurewebsites.net");
+    assert!(dom.has_tag("tlsrpt-report"));
+}
+
+#[test]
+fn tlsrpt_ignores_non_tlsrpt_and_empty() {
+    assert!(tlsrpt_entities(&["v=spf1 -all".to_string()], "x.com", "s").is_empty());
+    assert!(tlsrpt_entities(&["v=TLSRPTv1;".to_string()], "x.com", "s").is_empty());
+    assert!(tlsrpt_entities(&[], "x.com", "s").is_empty());
 }
 
 #[test]

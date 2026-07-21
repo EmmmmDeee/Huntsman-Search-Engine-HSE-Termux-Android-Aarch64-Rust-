@@ -53,6 +53,12 @@ pub mod criminal_ip;
 pub mod crtsh;
 pub mod dehashed;
 pub mod device_sensors;
+// Shared Termux `termux-location` fix primitives (the `Fix` shape +
+// confidence ladder) — a `pub(crate)` HELPER (no `Module` impl), consumed by
+// device_sensors and signal_radar so the on-device fix logic lives once.
+// `pub(crate)` (like `breach_rich`) keeps it out of the
+// `every_declared_module_is_registered` guard.
+pub(crate) mod device_fix;
 pub mod devto;
 pub mod discord_snowflake;
 pub mod disposable_check;
@@ -77,6 +83,11 @@ pub mod geo_domain_classifier;
 pub mod geo_intel;
 pub mod geocode;
 pub mod gitea_user;
+// Shared GitHub REST API binding (the pinned API version) — a `pub(crate)`
+// HELPER (no `Module` impl), consumed by the three github_* modules so a
+// version bump is one edit, not seven. `pub(crate)` (like `breach_rich`) keeps
+// it out of the `every_declared_module_is_registered` guard.
+pub(crate) mod github_api;
 pub mod github_code_search;
 pub mod github_commits;
 pub mod github_user;
@@ -149,6 +160,7 @@ pub mod see_know;
 pub mod seon;
 pub mod shodan;
 pub mod signal_radar;
+pub mod sitemap;
 pub mod smtp_vrfy;
 pub mod social_location;
 pub mod social_probe;
@@ -182,8 +194,11 @@ pub mod zoomeye;
 
 use std::sync::Arc;
 
-use crate::core::entity::{Entity, EntityKind, Evidence};
-use crate::core::module::Module;
+use crate::core::{
+    confidence,
+    entity::{Entity, EntityKind, Evidence},
+    module::Module,
+};
 
 /// Reset the foreign-API-key sink at scan start. Re-exported here so
 /// `core/engine` can drive it without importing `util` directly — the same
@@ -212,7 +227,12 @@ pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
             // high-entropy tokens) but is a distinct artifact — emit it as a
             // chain-tagged CryptoAddress, never a foreign API key.
             if let Some(chain) = fk.service.strip_prefix("crypto_") {
-                let mut e = Entity::new(EntityKind::CryptoAddress, &fk.key, 0.80, scan_id);
+                let mut e = Entity::new(
+                    EntityKind::CryptoAddress,
+                    &fk.key,
+                    confidence::HIGH_PLUSPLUS,
+                    scan_id,
+                );
                 e.tag("crypto-address");
                 e.tag("retrieved");
                 e.tag(format!("chain:{chain}"));
@@ -402,6 +422,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(phone_intl::PhoneIntl),
             Arc::new(phone_au::PhoneAu),
             Arc::new(wayback::Wayback),
+            Arc::new(sitemap::Sitemap),
             Arc::new(device_sensors::DeviceSensors),
             Arc::new(cell_intel::CellIntel),
             Arc::new(cell_local::CellLocal),

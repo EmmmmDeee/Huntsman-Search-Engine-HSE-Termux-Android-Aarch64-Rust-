@@ -224,7 +224,14 @@ pub(crate) async fn download_and_import(url: &str, filename: &str, mcc: Option<i
         .get(url)
         .send()
         .await
-        .map_err(|e| Error::Other(format!("HTTP request failed: {e}")))?;
+        // `.without_url()` STRIPS the request URL from the reqwest error before it
+        // is stringified — the OpenCelliD download URL carries the operator's paid
+        // API key as `token=<HUNTSMAN_OPENCELLID_KEY>`, and reqwest's Display
+        // re-emits the full URL (`… for url (…?token=…)`). Without this the key
+        // would land in `CellsImportPhase::Error`, which the ungated
+        // `GET /cells/status` `import_error` field serves verbatim. Mirrors the
+        // crate's own leak-proof `From<reqwest::Error>` (core::error).
+        .map_err(|e| Error::Other(format!("HTTP request failed: {}", e.without_url())))?;
 
     let status = resp.status();
     let content_type = resp
@@ -260,7 +267,10 @@ pub(crate) async fn download_and_import(url: &str, filename: &str, mcc: Option<i
         let mut stream = resp.bytes_stream();
         let mut total: u64 = 0;
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| Error::Other(format!("Download error: {e}")))?;
+            // Strip the key-bearing URL from the streaming error too (see the
+            // `.without_url()` note on the initial send above).
+            let chunk =
+                chunk.map_err(|e| Error::Other(format!("Download error: {}", e.without_url())))?;
             total += chunk.len() as u64;
             if total > MAX_DOWNLOAD_BYTES {
                 let _ = std::fs::remove_file(&tmp);

@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -73,7 +74,7 @@ fn build_subdomain_entity(
         return None;
     }
     let host = format!("{sub}.{domain}");
-    let mut e = Entity::new(EntityKind::Domain, &host, 0.88, scan_id);
+    let mut e = Entity::new(EntityKind::Domain, &host, confidence::EXPERT, scan_id);
     e.tag("subdomain");
     e.tag("securitytrails");
     e.add_evidence(
@@ -148,7 +149,7 @@ impl Module for SecurityTrails {
         "securitytrails"
     }
     fn description(&self) -> &'static str {
-        "Subdomain enumeration and reverse IP lookup via SecurityTrails"
+        "SecurityTrails recon — enumerates subdomains and pivots via reverse IP lookup"
     }
     fn priority(&self) -> u8 {
         45

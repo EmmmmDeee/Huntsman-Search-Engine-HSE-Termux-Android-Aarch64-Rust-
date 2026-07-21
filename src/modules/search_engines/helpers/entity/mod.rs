@@ -3,6 +3,7 @@
 //! Reaches the other helper groups and shared imports through `use super::*`.
 
 use super::*;
+use crate::core::confidence;
 
 mod extractors;
 pub(in crate::modules::search_engines) use extractors::{
@@ -16,7 +17,7 @@ pub(in crate::modules::search_engines) use extractors::{
 /// search provenance, or search-engine contextual linking.
 ///
 /// Returns (score, confidence):
-///   score ≥ 3 → strong: 0.55 confidence (PROBABLE tier)
+///   score ≥ 3 → strong: confidence::MEDIUM_HIGH confidence (PROBABLE tier)
 ///   score 1-2 → weak:   0.30 confidence (CANDIDATE tier)
 ///   score 0   → drop:   not emitted
 pub(in crate::modules::search_engines) fn score_username(
@@ -115,7 +116,7 @@ pub(in crate::modules::search_engines) fn score_username(
     //    of the seed; and
     //  - bigram overlap ("jaydes" ↔ "jdespal") for transposed/abbreviated aliases.
     // Unlike the old `score == 0` fallback this BOOSTS, so a seed-resembling
-    // handle that ALSO co-occurs reaches PROBABLE (0.55) while pure co-occurrence
+    // handle that ALSO co-occurs reaches PROBABLE (confidence::MEDIUM_HIGH) while pure co-occurrence
     // stays CANDIDATE (0.30) — the precision lift that keeps alias variants ahead
     // of co-occurrence noise.
     let cand = username_lower.as_str();
@@ -178,7 +179,11 @@ pub(in crate::modules::search_engines) fn score_username(
         score
     };
 
-    let confidence = if score >= 3 { 0.55 } else { 0.30 };
+    let confidence = if score >= 3 {
+        confidence::MEDIUM_HIGH
+    } else {
+        0.30
+    };
     (score, confidence)
 }
 

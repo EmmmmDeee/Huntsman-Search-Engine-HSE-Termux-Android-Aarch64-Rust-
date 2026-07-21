@@ -135,7 +135,7 @@ pub(in crate::core::correlator) fn is_infrastructure_geo(e: &Entity) -> bool {
         && !e
             .corroborating_sources()
             .iter()
-            .any(|s| ANCHORING_GEO_SOURCES.contains(s))
+            .any(|s| is_anchoring_geo_source(s))
 }
 
 /// The coordinates admissible to a *person's* geo footprint: confirmed
@@ -476,6 +476,92 @@ pub(crate) fn geo_source_class(source: &str) -> GeoSourceClass {
     }
 }
 
+/// Real-world accuracy radius (metres) a [`GeoSourceClass`] typically achieves —
+/// the geographic PRECISION of the underlying measurement, independent of how
+/// much the correlator TRUSTS it (`Entity::confidence`, which is evidential
+/// reliability, not spatial accuracy). A GPS photo and a phone-carrier region
+/// inference can both be reported at equal, high confidence — the evidence for
+/// each is real and well-corroborated — yet one pins the subject to ~20 m and
+/// the other to ~100 km. Conflating the two lets a coarse-but-trusted signal
+/// manufacture a street-level "primary location" it cannot actually support. A
+/// live scan reproduced exactly this: a country-level carrier-inferred fix fused
+/// into the same weighted median as a genuine address, at equal footing, purely
+/// because raw confidence was the only fusion weight.
+///
+/// Deliberately coarse, order-of-magnitude figures (not survey-grade), one per
+/// class so precision can never drift from the classification `geo_source_class`
+/// already provides (Rule 4: delegate, never duplicate). Monotonically ordered
+/// finest → coarsest: consumer GPS EXIF (~20 m) < rooftop/street geocoding
+/// (~40 m) < land-title parcel (~60 m) < WiGLE-class Wi-Fi AP geolocation
+/// (~75 m) < compulsory electoral enrolment (~150 m, exact address but not
+/// always rooftop-geocoded) < a business registry's registered office (~500 m —
+/// often an agent/PO-box, not necessarily the subject's own address) <
+/// people-finder directory (~2 km) < data-broker enrichment (~3 km) <
+/// self-reported social bio (~5 km, usually just a city name) < search-snippet
+/// inline geocoding (~15 km) < a breach login IP's ISP allocation block
+/// (~20 km, worse regional) < phone area-code / mobile-carrier inference
+/// (~100 km — state/region grain, not city grain, for AU numbering) <
+/// unclassified fallback (~30 km, a moderate-coarse default).
+pub(in crate::core::correlator) fn precision_radius_m(class: GeoSourceClass) -> f64 {
+    match class {
+        GeoSourceClass::PhotoGps => 20.0,
+        GeoSourceClass::Geocode => 40.0,
+        GeoSourceClass::Property => 60.0,
+        GeoSourceClass::WifiSensor => 75.0,
+        GeoSourceClass::Electoral => 150.0,
+        GeoSourceClass::Registry => 500.0,
+        GeoSourceClass::Directory => 2_000.0,
+        GeoSourceClass::Enrichment => 3_000.0,
+        GeoSourceClass::Social => 5_000.0,
+        GeoSourceClass::Search => 15_000.0,
+        GeoSourceClass::NetworkIp => 20_000.0,
+        GeoSourceClass::Phone => 100_000.0,
+        GeoSourceClass::Other => 30_000.0,
+    }
+}
+
+/// The finest (smallest) precision radius among an entity's anchoring geo
+/// sources. If ANY corroborating source pinpointed the subject precisely, the
+/// entity's position is known to that precision — a coarser corroborating
+/// source confirms the same point without degrading the known precision, so
+/// this takes the minimum rather than an average. Non-anchoring sources
+/// ([`is_anchoring_geo_source`]) are excluded, matching the same allowlist
+/// [`is_infrastructure_geo`] gates the fusion candidate set on. `None` when the
+/// entity carries no anchoring source at all.
+pub(in crate::core::correlator) fn best_precision_radius_m(e: &Entity) -> Option<f64> {
+    e.corroborating_sources()
+        .into_iter()
+        .filter(|s| is_anchoring_geo_source(s))
+        .map(|s| precision_radius_m(geo_source_class(s)))
+        .fold(None, |acc: Option<f64>, r| {
+            Some(acc.map_or(r, |a| a.min(r)))
+        })
+}
+
+/// A bounded fusion-weight multiplier derived from a precision radius: finer
+/// precision pulls harder on a weighted median/centroid, coarser precision
+/// pulls softer — but the ratio is compressed (inverse-sqrt, then clamped) so
+/// ONE precise-but-possibly-wrong sighting can never fully override many
+/// independent, corroborating coarse sightings. An UNBOUNDED inverse-variance
+/// weight (the textbook geodetic combining rule) would span nine orders of
+/// magnitude between a 20 m GPS fix and a 100 km carrier inference — enough to
+/// make a single questionable "precise" reading annihilate ten agreeing
+/// electoral/registry hits, which would REGRESS the geometric median's whole
+/// reason for existing: outlier robustness (breakdown point 0.5). This keeps
+/// the fusion honestly precision-aware while preserving that guarantee.
+///
+/// `REFERENCE_RADIUS_M` (1 km) is the pivot: a source at that radius gets
+/// multiplier 1.0 (unchanged from plain confidence weighting); finer sources
+/// scale up toward the ceiling, coarser sources scale down toward the floor.
+pub(in crate::core::correlator) fn precision_weight_multiplier(radius_m: f64) -> f64 {
+    const REFERENCE_RADIUS_M: f64 = 1_000.0;
+    const MIN_MULTIPLIER: f64 = 0.15;
+    const MAX_MULTIPLIER: f64 = 8.0;
+    (REFERENCE_RADIUS_M / radius_m.max(1.0))
+        .sqrt()
+        .clamp(MIN_MULTIPLIER, MAX_MULTIPLIER)
+}
+
 /// The distinct orthogonal source classes represented across a coordinate set.
 fn distinct_geo_classes(
     parsed: &[(&Entity, (f64, f64))],
@@ -609,11 +695,19 @@ pub(crate) fn au059_synergy_fix(entities: &[Entity]) -> Option<SynergyFix> {
             .len()
             .max(1)
     };
+    // Precision-aware on top of the class-diversity bonus: a GPS/geocode point
+    // pulls harder than a phone-carrier or search-snippet point at the SAME
+    // confidence, because it is spatially more precise, not just more trusted.
+    // Multiplicative and independently bounded (see `precision_weight_multiplier`),
+    // so it composes with `class_bonus` without breaking the per-point
+    // (not scan-wide) invariant the comment above requires.
     let weighted: Vec<((f64, f64), f64)> = parsed
         .iter()
         .map(|(e, ll)| {
             let class_bonus = 1.0 + (point_class_count(e) as f64 - 1.0) * 0.10;
-            (*ll, e.c_effective() * class_bonus)
+            let precision_bonus =
+                best_precision_radius_m(e).map_or(1.0, precision_weight_multiplier);
+            (*ll, e.c_effective() * class_bonus * precision_bonus)
         })
         .collect();
     let (lat, lon) = crate::util::geometry::weighted_geometric_median(&weighted)

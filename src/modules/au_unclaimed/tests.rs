@@ -118,7 +118,7 @@ mod qld {
                 .find(|e| e.kind == EntityKind::Person && e.value == v)
         };
         assert!(person("Curt Avery").is_some_and(exact));
-        assert!(person("Erik Avery").is_some_and(|e| !exact(e) && e.confidence < 0.50));
+        assert!(person("Erik Avery").is_some_and(|e| !exact(e) && e.confidence < crate::core::confidence::MEDIUM));
     }
 
     #[test]
@@ -275,6 +275,6 @@ mod qld {
                 "Conondale, QLD 4552, Australia",
             ]
         );
-        assert!(ents.iter().all(|e| e.confidence < 0.50));
+        assert!(ents.iter().all(|e| e.confidence < crate::core::confidence::MEDIUM));
     }
 }

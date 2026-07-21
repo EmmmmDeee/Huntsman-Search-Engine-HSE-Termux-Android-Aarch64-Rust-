@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 use serde_json::json;
 
@@ -17,7 +18,7 @@ fn emit_breach_tags_entity() {
         ],
     };
     let target = Target::new(TargetKind::Email, "x@y.com");
-    let mut entity = target.to_entity(0.75, "s");
+    let mut entity = target.to_entity(confidence::VERY_HIGH, "s");
     emit_breach(&br, &mut entity);
     assert!(entity.has_tag("breach"));
     assert!(entity.has_tag("osintcat:breach:exampleleak"));
@@ -31,7 +32,7 @@ fn emit_breach_noop_on_zero() {
         breach_data: vec![],
     };
     let target = Target::new(TargetKind::Email, "x@y.com");
-    let mut entity = target.to_entity(0.75, "s");
+    let mut entity = target.to_entity(confidence::VERY_HIGH, "s");
     emit_breach(&br, &mut entity);
     assert!(!entity.has_tag("breach"));
     assert!(entity.evidence.is_empty());
@@ -57,7 +58,7 @@ fn emit_breach_tags_multiple_sources() {
         ],
     };
     let target = Target::new(TargetKind::Email, "x@y.com");
-    let mut entity = target.to_entity(0.75, "s");
+    let mut entity = target.to_entity(confidence::VERY_HIGH, "s");
     emit_breach(&br, &mut entity);
     assert!(entity.has_tag("breach"));
     assert!(entity.has_tag("osintcat:breach:leaka"));
@@ -72,7 +73,7 @@ fn emit_footprint_noop_on_zero_registrations() {
     }))
     .unwrap();
     let target = Target::new(TargetKind::Email, "x@y.com");
-    let mut entity = target.to_entity(0.75, "s");
+    let mut entity = target.to_entity(confidence::VERY_HIGH, "s");
     let mut result = ModuleResult::new();
     emit_footprint(&fp, &mut entity, &mut result);
     assert!(entity.evidence.is_empty(), "zero registrations → no evidence");
@@ -90,7 +91,7 @@ fn emit_footprint_tags_taken_platform() {
     }))
     .unwrap();
     let target = Target::new(TargetKind::Email, "x@y.com");
-    let mut entity = target.to_entity(0.75, "s");
+    let mut entity = target.to_entity(confidence::VERY_HIGH, "s");
     let mut result = ModuleResult::new();
     emit_footprint(&fp, &mut entity, &mut result);
     assert!(!entity.evidence.is_empty(), "registrations → evidence");

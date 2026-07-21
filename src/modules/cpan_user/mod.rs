@@ -6,7 +6,10 @@
 //! repository, active since 1993. Authors register a PAUSE ID (traditionally
 //! uppercase) and upload modules; MetaCPAN indexes all CPAN content and
 //! exposes a rich REST API. The author endpoint returns the author's real name,
-//! public email list, personal websites, location, and biography. CPAN authors
+//! public email list, personal websites, blog, location, biography, and — the
+//! high-value part — a `profile` array of linked social/code accounts (GitHub,
+//! Stack Overflow, Twitter, Coderwall, …) that anchors the author across
+//! platforms. CPAN authors
 //! overlap very little with GitHub/GitLab users — many are enterprise Perl
 //! developers, system administrators, and bioinformatics researchers whose
 //! primary identity anchor is their PAUSE ID. As a `code`-family source it
@@ -20,6 +23,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -29,24 +33,25 @@ use crate::util::http::{fetch_json_or_404, urlencode};
 
 const SRC: &str = "cpan_user";
 
-/// A website entry in the MetaCPAN author response.
-#[derive(Deserialize, Default)]
-pub(super) struct CpanSite {
-    /// The URL of the site.
-    #[serde(default)]
-    pub(super) url: Option<String>,
-}
-
-/// A linked external account (`{name, id}`) MetaCPAN records for the author —
-/// GitHub, Twitter, Stack Overflow, … — each a cross-platform Username pivot.
+/// A linked-account entry in the MetaCPAN author `profile` array, e.g.
+/// `{"name":"github","id":"rjbs"}` — the platform and the author's handle on it.
 #[derive(Deserialize, Default)]
 pub(super) struct CpanProfile {
-    /// The platform name (`github`, `twitter`, `stackoverflow`, …).
+    /// Platform name (`github`, `twitter`, `stackoverflow`, `coderwall`, …).
     #[serde(default)]
     pub(super) name: Option<String>,
-    /// The author's handle / id on that platform.
+    /// The author's identifier on that platform — a handle for most, a numeric
+    /// user id for a few (`stackoverflow`, `linkedin`).
     #[serde(default)]
     pub(super) id: Option<String>,
+}
+
+/// A blog entry in the MetaCPAN author `blog` array.
+#[derive(Deserialize, Default)]
+pub(super) struct CpanBlog {
+    /// The blog's URL.
+    #[serde(default)]
+    pub(super) url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -57,21 +62,53 @@ pub(super) struct CpanAuthor {
     /// Full display name — usually a real name.
     #[serde(default)]
     pub(super) name: Option<String>,
-    /// Public email address list.
-    #[serde(default)]
+    /// Public email address(es). MetaCPAN returns this as EITHER a single scalar
+    /// string (`"cpan@example.org"` — the common case, confirmed live) OR an
+    /// array of strings. Accept both: with a plain `Vec<String>` a scalar-email
+    /// author fails the WHOLE author decode, silently breaking the module for
+    /// most real authors (T-live: `RJBS`/`LEONT`/`MSTROUT` all return a scalar).
+    #[serde(default, deserialize_with = "string_or_vec")]
     pub(super) email: Vec<String>,
-    /// Personal website / homepage entries.
+    /// Personal website / homepage URLs. MetaCPAN returns this as an array of
+    /// URL **strings** (`["http://rjbs.cloud/"]`), NOT an array of objects; the
+    /// `string_or_vec` guard also tolerates a lone scalar.
+    #[serde(default, deserialize_with = "string_or_vec")]
+    pub(super) website: Vec<String>,
+    /// Self-reported location — MetaCPAN stores it as a `[lat, lon]` coordinate
+    /// pair (decimal degrees), NOT a place-name string. An `Option<String>` here
+    /// made every author with a location fail to decode.
     #[serde(default)]
-    pub(super) website: Vec<CpanSite>,
-    /// Self-reported location string.
-    #[serde(default)]
-    pub(super) location: Option<String>,
+    pub(super) location: Option<Vec<f64>>,
     /// Biography — may contain additional contact details.
     #[serde(default)]
     pub(super) biography: Option<String>,
-    /// Linked external accounts (github/twitter/…), previously decoded nowhere.
+    /// Linked social/code accounts (github, twitter, stackoverflow, …) — the
+    /// cross-platform identity pivots this module exists to surface.
     #[serde(default)]
     pub(super) profile: Vec<CpanProfile>,
+    /// Blog / weblog entries the author lists.
+    #[serde(default)]
+    pub(super) blog: Vec<CpanBlog>,
+}
+
+/// Deserialize a field that upstream returns as EITHER a single string or an
+/// array of strings into a `Vec<String>`. A missing/null value yields an empty
+/// vec. **Pure** — used for MetaCPAN's polymorphic `email` field.
+fn string_or_vec<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match Option::<OneOrMany>::deserialize(deserializer)? {
+        None => Vec::new(),
+        Some(OneOrMany::One(s)) => vec![s],
+        Some(OneOrMany::Many(v)) => v,
+    })
 }
 
 pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
@@ -98,7 +135,12 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
     out.push(e);
 
     // MetaCPAN profile URL.
-    let mut u = Entity::new(EntityKind::Url, &profile_url, 0.80, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Url,
+        &profile_url,
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
     u.tag("cpan");
     u.add_evidence(ev());
     out.push(u);
@@ -117,7 +159,12 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
 
     // Public email addresses — all of them (the author's own contact details).
     for email in author.email.iter().filter(|e| e.contains('@')) {
-        let mut em = Entity::new(EntityKind::Email, email.trim(), 0.80, scan_id);
+        let mut em = Entity::new(
+            EntityKind::Email,
+            email.trim(),
+            confidence::HIGH_PLUSPLUS,
+            scan_id,
+        );
         em.tag("cpan");
         em.add_evidence(
             Evidence::new(SRC, format!("Public email from CPAN profile of '{handle}'"))
@@ -127,8 +174,9 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
     }
 
     // Personal websites → URL + Domain — all of them (the author's own sites).
-    for site in author.website.iter().filter_map(|s| s.url.as_deref()) {
-        for mut e in profile_kit::website_url_and_domain(site, 0.70, 0.62, scan_id) {
+    for site in author.website.iter().map(String::as_str) {
+        for mut e in profile_kit::website_url_and_domain(site, confidence::HIGH_PLUS, 0.62, scan_id)
+        {
             e.tag("cpan");
             if e.kind == EntityKind::Domain {
                 e.tag("derived");
@@ -138,19 +186,80 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
         }
     }
 
-    // Location → Address (self-asserted, low confidence).
-    if let Some(loc) = author.location.as_deref()
-        && let Some(mut a) = profile_kit::location_address(loc, 0.36, scan_id)
-    {
-        a.tag("cpan");
-        a.tag("self-asserted");
-        a.add_evidence(ev().with_attr("source_field", "location"));
-        out.push(a);
-        if let Some(mut c) = profile_kit::location_coordinates(loc, 0.26, scan_id) {
-            c.tag("cpan");
-            c.add_evidence(ev().with_attr("source_field", "location"));
-            out.push(c);
+    // Linked social/code accounts (MetaCPAN `profile` array) — the cross-platform
+    // identity pivots the module's own docs promise but previously dropped. Each
+    // `{name: platform, id: handle}` becomes a bare Username tagged with the
+    // platform, so it deduplicates with the platform-native modules
+    // (`github_user`, `stackoverflow_user`, …) rather than sitting inert. A
+    // purely-numeric id (a stackoverflow/linkedin *user number*, not a handle) is
+    // NOT a username to pivot on, so it is skipped rather than seeded as junk
+    // into `username_search`.
+    for prof in &author.profile {
+        let (Some(platform), Some(id)) = (
+            prof.name
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            prof.id.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        ) else {
+            continue;
+        };
+        if !id.chars().any(|c| c.is_ascii_alphabetic()) {
+            continue;
         }
+        let platform_lc = platform.to_ascii_lowercase();
+        let mut acct = Entity::new(EntityKind::Username, id, 0.66, scan_id);
+        acct.tag("cpan");
+        acct.tag("cpan-pivot");
+        acct.tag(&platform_lc);
+        acct.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("Linked {platform} account from CPAN profile of '{handle}'"),
+            )
+            .with_attr("platform", &platform_lc)
+            .with_attr("platform_handle", format!("{platform_lc}:{id}"))
+            .with_attr("source_field", "profile"),
+        );
+        out.push(acct);
+    }
+
+    // Blog / weblog URL(s) → URL + Domain (the author's own publishing surface).
+    for url in author.blog.iter().filter_map(|b| b.url.as_deref()) {
+        for mut e in profile_kit::website_url_and_domain(url, 0.66, 0.58, scan_id) {
+            e.tag("cpan");
+            if e.kind == EntityKind::Domain {
+                e.tag("derived");
+            }
+            e.add_evidence(ev().with_attr("source_field", "blog"));
+            out.push(e);
+        }
+    }
+
+    // Location → Coordinates (self-asserted). MetaCPAN gives an exact
+    // `[lat, lon]` pair, so emit the coordinate directly — higher fidelity than
+    // geocoding a place name. Gated to a valid, non-null-island fix.
+    if let Some([lat, lon, ..]) = author.location.as_deref()
+        && (-90.0..=90.0).contains(lat)
+        && (-180.0..=180.0).contains(lon)
+        && !(*lat == 0.0 && *lon == 0.0)
+    {
+        let coord_val = format!("{lat:.4},{lon:.4}");
+        let mut c = Entity::new(
+            EntityKind::Coordinates,
+            &coord_val,
+            confidence::LOW,
+            scan_id,
+        );
+        c.tag("cpan");
+        c.tag("geoint");
+        c.tag("self-asserted");
+        c.add_evidence(
+            ev().with_attr("source_field", "location")
+                .with_attr("lat", format!("{lat}"))
+                .with_attr("lon", format!("{lon}")),
+        );
+        out.push(c);
     }
 
     // Biography — extract email addresses.
@@ -166,34 +275,6 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
         }
     }
 
-    // Linked external accounts → platform-prefixed Username pivots
-    // (`{platform}:{id}`), mirroring the convention the social modules share.
-    for prof in &author.profile {
-        let (Some(platform), Some(id)) = (
-            prof.name
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty()),
-            prof.id.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-        ) else {
-            continue;
-        };
-        let mut u = Entity::new(
-            EntityKind::Username,
-            format!("{}:{id}", platform.to_lowercase()),
-            0.68,
-            scan_id,
-        );
-        u.tag("cpan");
-        u.tag("linked-account");
-        u.tag(platform.to_lowercase());
-        u.add_evidence(
-            ev().with_attr("source_field", "profile")
-                .with_attr("platform", platform),
-        );
-        out.push(u);
-    }
-
     out
 }
 
@@ -205,7 +286,7 @@ impl Module for CpanUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "CPAN/MetaCPAN author profile: name, emails, websites, location (Perl ecosystem, free)"
+        "CPAN/MetaCPAN author recon — harvests name, emails, websites, blog, linked accounts, and location to pivot across the Perl ecosystem (free)"
     }
     fn priority(&self) -> u8 {
         55
@@ -230,7 +311,8 @@ impl Module for CpanUser {
             EntityKind::Email,
             EntityKind::Url,
             EntityKind::Domain,
-            EntityKind::Address,
+            // Location is a [lat, lon] pair → emitted directly as Coordinates
+            // (no place-name Address; the API gives no place string).
             EntityKind::Coordinates,
         ];
         K

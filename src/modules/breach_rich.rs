@@ -20,6 +20,7 @@ use std::collections::HashSet;
 use serde_json::Value;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
     tags,
@@ -300,7 +301,7 @@ pub fn extract_rich_detail(
         {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Person, &full, 0.60, scan_id),
+                Entity::new(EntityKind::Person, &full, confidence::MEDIUM_PLUS, scan_id),
                 ev,
                 source,
                 &[],
@@ -317,7 +318,7 @@ pub fn extract_rich_detail(
         {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Organisation, &o, 0.50, scan_id),
+                Entity::new(EntityKind::Organisation, &o, confidence::MEDIUM, scan_id),
                 ev,
                 source,
                 &[],
@@ -335,7 +336,7 @@ pub fn extract_rich_detail(
         {
             push_context_entity(
                 result,
-                Entity::new(EntityKind::MacAddress, &m, 0.60, scan_id),
+                Entity::new(EntityKind::MacAddress, &m, confidence::MEDIUM_PLUS, scan_id),
                 ev,
                 source,
                 &["device"],
@@ -369,7 +370,7 @@ pub fn extract_rich_detail(
         {
             push_context_entity(
                 result,
-                Entity::new(EntityKind::DeviceId, &d, 0.55, scan_id),
+                Entity::new(EntityKind::DeviceId, &d, confidence::MEDIUM_HIGH, scan_id),
                 ev,
                 source,
                 &["device", "stealer"],
@@ -403,7 +404,12 @@ pub fn extract_rich_detail(
         {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Username, format!("{plat}:{h}"), 0.55, scan_id),
+                Entity::new(
+                    EntityKind::Username,
+                    format!("{plat}:{h}"),
+                    confidence::MEDIUM_HIGH,
+                    scan_id,
+                ),
                 ev,
                 source,
                 &[plat],
@@ -468,7 +474,7 @@ pub fn extract_rich_detail(
             if seen.insert(format!("@addr-part:{k}:{}", p.to_lowercase())) {
                 push_breach_entity(
                     result,
-                    Entity::new(EntityKind::Address, &p, 0.45, scan_id),
+                    Entity::new(EntityKind::Address, &p, confidence::LOW_MEDIUM, scan_id),
                     ev,
                     source,
                     &["geo-hint"],
@@ -487,7 +493,12 @@ pub fn extract_rich_detail(
         if seen.insert(format!("@addr:{}", composed.to_lowercase())) {
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(&composed) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::LOW_MEDIUM,
+                    scan_id,
+                );
                 c.tag("addr-derived");
                 c.tag("geoint");
                 c.tag(tags::BREACH);
@@ -497,7 +508,12 @@ pub fn extract_rich_detail(
             }
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Address, &composed, 0.55, scan_id),
+                Entity::new(
+                    EntityKind::Address,
+                    &composed,
+                    confidence::MEDIUM_HIGH,
+                    scan_id,
+                ),
                 ev,
                 source,
                 &["geo-hint", "composed-address"],
@@ -535,7 +551,7 @@ pub fn extract_rich_detail(
         if seen.insert(format!("@other:{k}:{}", val.to_lowercase())) {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Other(k.clone()), &val, 0.40, scan_id),
+                Entity::new(EntityKind::Other(k.clone()), &val, confidence::LOW, scan_id),
                 ev,
                 source,
                 &["raw-field"],

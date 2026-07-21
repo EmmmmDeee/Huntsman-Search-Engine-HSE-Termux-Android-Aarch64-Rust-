@@ -1593,6 +1593,64 @@ fn relation_round_trip_and_idempotent_upsert() {
 }
 
 #[test]
+fn upsert_relations_batch_persists_all_and_is_idempotent() {
+    use crate::core::relation::{Relation, RelationKind};
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    insert_scan(&store, "relb-scan");
+    let rels = vec![
+        Relation::new("c1", "p1", RelationKind::SubdomainOf, 0.8, "relb-scan"),
+        Relation::new("c2", "p2", RelationKind::HostedOn, 0.7, "relb-scan"),
+    ];
+    let n = store.upsert_relations_batch(&rels).unwrap();
+    assert_eq!(n, 2, "batch reports every relation persisted");
+    assert_eq!(store.relations_for_scan("relb-scan").unwrap().len(), 2);
+    // Idempotent on the deterministic id — re-batching the same set adds no rows,
+    // exactly as the per-relation `upsert_relation` path (ON CONFLICT DO NOTHING).
+    store.upsert_relations_batch(&rels).unwrap();
+    assert_eq!(store.relations_for_scan("relb-scan").unwrap().len(), 2);
+    // An empty batch is a clean zero, not an error.
+    assert_eq!(store.upsert_relations_batch(&[]).unwrap(), 0);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn insert_events_batch_persists_all_in_emission_order() {
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    insert_scan(&store, "evb-scan");
+    let events = vec![
+        Event::new(
+            "evb-scan",
+            EventKind::ScanStart {
+                target_kind: "domain".into(),
+                target_value: "example.com".into(),
+            },
+        ),
+        Event::new(
+            "evb-scan",
+            EventKind::ModuleStart {
+                module: "dns_intel".into(),
+            },
+        ),
+        Event::new(
+            "evb-scan",
+            EventKind::ModuleDone {
+                module: "dns_intel".into(),
+                found: 3,
+            },
+        ),
+    ];
+    let n = store.insert_events_batch(&events).unwrap();
+    assert_eq!(n, 3, "batch reports every event inserted");
+    let got = store.events_for_scan("evb-scan").unwrap();
+    assert_eq!(got.len(), 3, "all events persisted in one transaction");
+    // An empty batch is a clean zero, matching the per-event path's semantics.
+    assert_eq!(store.insert_events_batch(&[]).unwrap(), 0);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn relations_for_scan_is_scan_scoped() {
     use crate::core::relation::{Relation, RelationKind};
     let path = tmp_db();

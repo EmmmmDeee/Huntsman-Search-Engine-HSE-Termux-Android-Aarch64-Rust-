@@ -103,6 +103,131 @@ fn adviser_with_disciplinary_action_is_flagged() {
     assert!(p.evidence.iter().any(|ev| ev.attributes.contains_key("disciplinary_action")));
 }
 
+// Real-shaped adviser record with a corporate controller chain and a distinct
+// authorised-rep firm — modelled on the live data.gov.au dataset (e.g. an
+// adviser under a wealth-group licensee controlled by a major bank, appointed
+// through the group's own AR company with its own ABN).
+const ADVISER_LINKED: &str = r#"{
+  "ADV_NAME":"POPOV, MARSEL","ADV_ROLE":"Authorised Representative",
+  "OVERALL_REGISTRATION_STATUS":"Current",
+  "LICENCE_NAME":"VIRIDIAN ADVISORY PTY LTD","LICENCE_NUMBER":"34605438042",
+  "LICENCE_CONTROLLED_BY":"NATIONAL AUSTRALIA BANK LIMITED [Date Ceased: 21/08/2023] ~ MLC WEALTH LIMITED",
+  "REP_APPOINTED_BY":"VIRIDIAN FINANCIAL GROUP LTD","REP_APPOINTED_NUM":"000315094",
+  "REP_APPOINTED_ABN":"67 605 994 741"}"#;
+
+#[test]
+fn adviser_emits_licensee_controllers_and_distinct_appointer() {
+    let mut r = ModuleResult::new();
+    emit_adviser(&rec(ADVISER_LINKED), "scan", &mut r);
+    let e = &r.entities;
+
+    let orgs: Vec<&Entity> = e.iter().filter(|x| x.kind == EntityKind::Organisation).collect();
+    let org_named = |name: &str| orgs.iter().find(|o| o.value == name).copied();
+
+    // The AFS licensee itself.
+    assert!(org_named("VIRIDIAN ADVISORY PTY LTD").unwrap().has_tag("afs-licensee"));
+
+    // Both controllers of the licensee, one current, one ceased.
+    let nab = org_named("NATIONAL AUSTRALIA BANK LIMITED").expect("current-then-ceased controller");
+    assert!(nab.has_tag("afs-licensee-controller") && nab.has_tag("ceased"));
+    assert!(nab.evidence[0]
+        .attributes
+        .get("date_ceased")
+        .is_some_and(|d| d == "21/08/2023"));
+    let mlc = org_named("MLC WEALTH LIMITED").expect("second controller");
+    assert!(mlc.has_tag("afs-licensee-controller") && !mlc.has_tag("ceased"));
+
+    // The distinct corporate authorised-rep firm (differs from person + licensee).
+    let appointer = org_named("VIRIDIAN FINANCIAL GROUP LTD").expect("appointing firm");
+    assert!(appointer.has_tag("authorised-rep-firm"));
+    assert!(appointer.evidence[0]
+        .attributes
+        .get("authorised_rep_no")
+        .is_some_and(|n| n == "000315094"));
+
+    // The appointing firm's ABN is emitted alongside the adviser/licensee ABNs.
+    let abns: Vec<String> = e
+        .iter()
+        .filter(|x| x.kind == EntityKind::AbnAcn)
+        .map(|x| x.value.chars().filter(char::is_ascii_digit).collect())
+        .collect();
+    assert!(abns.contains(&"67605994741".to_string()), "rep_appointer ABN");
+}
+
+#[test]
+fn self_appointment_and_licensee_appointer_are_not_separate_firms() {
+    // REP_APPOINTED_BY == the adviser (self-appointment) → no appointer Org.
+    let mut m = rec(ADVISER);
+    m.insert("REP_APPOINTED_BY".into(), Value::String("CITIZEN, JANE".into()));
+    let mut r = ModuleResult::new();
+    emit_adviser(&m, "scan", &mut r);
+    assert!(
+        !r.entities.iter().any(|x| x.has_tag("authorised-rep-firm")),
+        "a self-appointment must not surface as an appointing firm"
+    );
+
+    // REP_APPOINTED_BY == the licensee → no separate appointer Org (already
+    // captured as the afs-licensee).
+    let mut m2 = rec(ADVISER);
+    m2.insert(
+        "REP_APPOINTED_BY".into(),
+        Value::String("Acme Financial Pty Ltd".into()),
+    );
+    let mut r2 = ModuleResult::new();
+    emit_adviser(&m2, "scan", &mut r2);
+    assert!(
+        !r2.entities.iter().any(|x| x.has_tag("authorised-rep-firm")),
+        "an appointer equal to the licensee must not be duplicated as a firm"
+    );
+}
+
+#[test]
+fn individual_controller_is_typed_as_person_not_org() {
+    // A small firm's controlling principal is a natural person, not a company —
+    // it must surface as a Person (humanised), never an Organisation, so it
+    // feeds person-oriented correlators correctly.
+    let mut m = rec(ADVISER);
+    m.insert(
+        "LICENCE_CONTROLLED_BY".into(),
+        Value::String("MELISSA  GOODIN".into()),
+    );
+    let mut r = ModuleResult::new();
+    emit_adviser(&m, "scan", &mut r);
+
+    let controller = r
+        .entities
+        .iter()
+        .find(|x| x.has_tag("afs-licensee-controller"))
+        .expect("controller entity");
+    assert_eq!(controller.kind, EntityKind::Person);
+    assert_eq!(controller.value, "Melissa Goodin"); // humanised, whitespace collapsed
+    assert!(
+        !r.entities
+            .iter()
+            .any(|x| x.kind == EntityKind::Organisation && x.has_tag("afs-licensee-controller")),
+        "an individual controller must not be an Organisation"
+    );
+}
+
+#[test]
+fn parse_controllers_splits_and_strips_ceased_markers() {
+    let parsed = parse_controllers(
+        "NATIONAL AUSTRALIA BANK LIMITED [Date Ceased: 21/08/2023] ~ MLC WEALTH LIMITED [Date Ceased: 20/05/2021]",
+    );
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed[0].0, "NATIONAL AUSTRALIA BANK LIMITED");
+    assert_eq!(parsed[0].1.as_deref(), Some("21/08/2023"));
+    assert_eq!(parsed[1].0, "MLC WEALTH LIMITED");
+    assert_eq!(parsed[1].1.as_deref(), Some("20/05/2021"));
+
+    // A single current controller with no marker.
+    let one = parse_controllers("SOME PARENT PTY LTD");
+    assert_eq!(one, vec![("SOME PARENT PTY LTD".to_string(), None)]);
+
+    // Blank / too-short fragments are dropped.
+    assert!(parse_controllers("  ~  ~ AB").is_empty());
+}
+
 /// Credit Representative record (mortgage/finance broker).
 const CREDIT: &str = r#"{
   "CRED_REP_NAME":"SMITH, JOHN ANDREW","CRED_REP_NUM":"563552","CRED_LIC_NUM":"385487",

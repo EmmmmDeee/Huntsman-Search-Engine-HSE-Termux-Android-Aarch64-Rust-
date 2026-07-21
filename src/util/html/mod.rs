@@ -28,6 +28,40 @@ pub fn strip_html(html: &str) -> String {
     decode_entities(&no_tags)
 }
 
+/// Strip HTML **tags only** — drop every `<…>` span and keep the text between,
+/// with no entity decoding and no `<script>`/`<style>` special-casing. A single
+/// left-to-right character scan (an `in_tag` toggle), so it never allocates a
+/// regex and is safe on arbitrary bytes.
+///
+/// This is the deliberately-minimal counterpart to [`strip_html`]: use it for a
+/// well-formed table cell whose text is already entity-free (the ACMA register
+/// and AHPRA practitioner ArcGIS/HTML tables), where decoding entities or
+/// excising script blocks would be wasted work. Reach for [`strip_html`] instead
+/// on a full page body that may carry entities or embedded script/style. One
+/// definition so the modules that each hand-rolled this exact `in_tag` loop stay
+/// in agreement.
+///
+/// ```
+/// use huntsman_search_engine::util::html::strip_tags_plain;
+///
+/// assert_eq!(strip_tags_plain("<td>Jane <b>Doe</b></td>"), "Jane Doe");
+/// assert_eq!(strip_tags_plain("no tags"), "no tags");
+/// ```
+#[must_use]
+pub fn strip_tags_plain(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Decode HTML entities in a single left-to-right pass: the named entities real
 /// markup uses (`&amp; &lt; &gt; &quot; &apos; &nbsp;`, plus the common
 /// typography/symbol set — see [`decode_one_entity`]) and ANY numeric character

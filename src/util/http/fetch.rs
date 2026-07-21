@@ -366,28 +366,42 @@ async fn fetch_json_inner<T: DeserializeOwned>(
             Ok(Some(decode_json_body(resp, module).await?))
         }
         Err(transport) => {
-            // Transport failure → count it against the host breaker before the
-            // curl fallback: a wedged host should trip even though curl might
-            // occasionally rescue one call.
-            if let Some(h) = host.as_deref() {
-                circuit_breaker::record_failure(h, crate::core::entity::unix_now());
-            }
             // reqwest transport failure → one curl fallback attempt. curl
             // collapses every outcome (404, non-zero exit, parse failure) to
             // `None`, so a `None` here means the fallback ALSO failed — surface
             // that as an error rather than `Ok(None)`, which `fetch_json_or_404`
             // callers would read as a definitive "not found", silently masking a
             // network outage as a clean, empty result.
+            //
+            // Breaker accounting is DEFERRED until the fallback resolves. If curl
+            // rescues the call the host is reachable — just not over reqwest's
+            // transport (a TLS/HTTP2 quirk curl tolerates) — so it counts as a
+            // SUCCESS and the breaker stays closed, keeping the working fallback
+            // alive. Recording a failure eagerly (as this did before) opened the
+            // breaker after N *rescued* calls and then permanently short-circuited
+            // the very fallback that was succeeding, because the HalfOpen probe
+            // also uses reqwest and re-fails. Only a curl-also-failed outcome — a
+            // genuinely wedged host — trips the breaker now.
             match super::super::curl::fetch_json::<T>(url, crate::MODULE_TIMEOUT_MS).await {
-                Some(data) => Ok(Some(data)),
-                None => Err(Error::module(
-                    module,
-                    format!(
-                        "transport error ({}) and curl fallback failed for {}",
-                        redact_credentials(&transport.to_string()),
-                        redact_credentials(url)
-                    ),
-                )),
+                Some(data) => {
+                    if let Some(h) = host.as_deref() {
+                        circuit_breaker::record_success(h);
+                    }
+                    Ok(Some(data))
+                }
+                None => {
+                    if let Some(h) = host.as_deref() {
+                        circuit_breaker::record_failure(h, crate::core::entity::unix_now());
+                    }
+                    Err(Error::module(
+                        module,
+                        format!(
+                            "transport error ({}) and curl fallback failed for {}",
+                            redact_credentials(&transport.to_string()),
+                            redact_credentials(url)
+                        ),
+                    ))
+                }
             }
         }
     }

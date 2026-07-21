@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
     #[test]
@@ -62,7 +63,7 @@ use super::*;
         let e = &ents[0];
         assert_eq!(e.kind, EntityKind::Domain);
         assert_eq!(e.value, "app.example.com");
-        assert!((e.confidence - 0.90).abs() < 1e-9);
+        assert!((e.confidence - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
         assert!(e.has_tag(crate::core::tags::VULNERABLE) && e.has_tag("subdomain-takeover"));
         assert!(e.has_tag("takeover:Heroku"));
 

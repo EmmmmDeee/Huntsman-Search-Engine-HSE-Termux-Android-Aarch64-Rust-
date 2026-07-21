@@ -7,7 +7,8 @@ use crate::util::backoff::BackoffPolicy;
 
 use super::budget::{budget_try_increment, is_key_invalid, mark_key_invalid};
 use super::client::{
-    base_url, cache_get, cache_put, get_json, is_auth_error, post_json, typed_cache_key,
+    cache_get, cache_put, get_json_with_fallback, get_raw_with_fallback, is_auth_error,
+    post_json_with_fallback, typed_cache_key,
 };
 use super::enterprise_config::ENTERPRISE;
 
@@ -64,7 +65,6 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
     if is_key_invalid() || !budget_try_increment() {
         return Ok(Vec::new());
     }
-    let url = format!("{}/search", base_url());
     let body = build_search_body(query, query_type, SEARCH_LIMIT);
     // Human archive label: `search` (auto-detect) or `search-<type>` (typed),
     // with the actual looked-up value — so the saved filename names exactly what
@@ -85,10 +85,12 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
     //    immediately, which is what happened before this was diagnosed: a
     //    burst throttle used to latch the shared budget and silently abandon
     //    SeekNow for the rest of the scan.
+    //  - connection/network errors → retried via domain fallback
+    //    (`post_json_with_fallback` tries all known domains before returning error)
     const EMPTY_RETRY_ATTEMPTS: u32 = 2;
     let mut attempt = 0u32;
     loop {
-        match post_json(&url, key, &body, &archive_endpoint, query).await {
+        match post_json_with_fallback("/search", key, &body, &archive_endpoint, query).await {
             Ok(resp) => {
                 let items = extract_items(&resp);
                 if !items.is_empty() {
@@ -163,7 +165,6 @@ pub async fn search_deep(key: &str, query: &str, query_type: &str) -> Result<Vec
     if is_key_invalid() || !budget_try_increment() {
         return Ok(Vec::new());
     }
-    let url = format!("{}/search/deep", base_url());
     let body = build_search_body(query, query_type, SEARCH_LIMIT);
     let archive_endpoint = if query_type.is_empty() {
         "search-deep".to_string()
@@ -177,11 +178,12 @@ pub async fn search_deep(key: &str, query: &str, query_type: &str) -> Result<Vec
     // already-~40s call would double the worst-case latency for no evidenced
     // benefit. Transport errors and rate-limits ARE still retried/backed-off
     // (mirrors `get_path`'s resilience contract for flaky mobile networks —
-    // every other endpoint gets the same protection).
+    // every other endpoint gets the same protection). Connection errors also
+    // trigger domain fallback retries.
     const TRANSPORT_RETRY_ATTEMPTS: u32 = 2;
     let mut attempt = 0u32;
     loop {
-        match post_json(&url, key, &body, &archive_endpoint, query).await {
+        match post_json_with_fallback("/search/deep", key, &body, &archive_endpoint, query).await {
             Ok(resp) => {
                 let items = extract_items(&resp);
                 if !items.is_empty() {
@@ -268,7 +270,7 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
     if is_key_invalid() || !budget_try_increment() {
         return Ok(Vec::new());
     }
-    let url = format!("{}/{path}?{qs}", base_url());
+    let endpoint_path = format!("/{path}");
     // Human archive label: the endpoint path (e.g. `stealer`,
     // `breachhub/search`) and the actual looked-up value (first query param),
     // so the saved filename names exactly what was queried.
@@ -287,10 +289,10 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
     // RateLimited`): previously this response was classified identically to
     // exhausted credits, latching the shared budget and silently abandoning
     // SeekNow for every remaining endpoint call in the scan with zero
-    // backoff or retry.
+    // backoff or retry. Connection errors also trigger domain fallback retries.
     let mut attempt = 0u32;
     loop {
-        match get_json(&url, key, path, archive_query).await {
+        match get_json_with_fallback(&endpoint_path, key, &qs, path, archive_query).await {
             Ok(resp) => {
                 let items = extract_items(&resp);
                 cache_put(ck.clone(), items.clone());
@@ -477,13 +479,12 @@ pub enum CreditsProbe {
 /// `hse doctor`. Does NOT consume a budget slot. See [`CreditsProbe`] for why
 /// the transport-failure case is kept distinct from an auth rejection.
 pub async fn credits_probe(key: &str) -> CreditsProbe {
-    let url = format!("{}/credits", base_url());
-    // Direct HTTP call — no budget gate, no archive (meta-query, not paid data).
-    // The transport error is stringified and handed to the pure classifier so
-    // the Unreachable / auth / schema branches are all unit-testable without a
-    // live round-trip.
-    let result = super::client::CLIENT
-        .get(&url, key)
+    // Direct HTTP call with multi-domain fallback — no budget gate, no archive
+    // (meta-query, not paid data). Tries all known SeekNow domains (the service
+    // intentionally rotates domains) before giving up. The transport error is
+    // stringified and handed to the pure classifier so the Unreachable / auth /
+    // schema branches are all unit-testable without a live round-trip.
+    let result = get_raw_with_fallback("/credits", key)
         .await
         .map_err(|e| e.to_string());
     classify_credits_probe(result)

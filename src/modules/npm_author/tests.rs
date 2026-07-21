@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
     #[test]
@@ -120,6 +121,42 @@ use super::*;
         let ents = build_entities(&body, "alice", "s");
         let emails = values(&ents, EntityKind::Email);
         assert_eq!(emails, vec!["alice@example.com"]);
+    }
+
+    #[test]
+    fn co_maintainer_username_is_emitted_but_subject_not_duplicated() {
+        // Same fixture as above: `bob`'s handle should now surface as its own
+        // Username entity (co-maintainer), while `alice` — the subject — is not
+        // duplicated via this path (she's already emitted once at confidence::EXPERT by the
+        // final confirmed-on-npm block).
+        let body = search(
+            r#"{"objects":[{"package":{"name":"pkg",
+                "maintainers":[
+                    {"username":"alice","email":"alice@example.com"},
+                    {"username":"bob","email":"bob@example.com"}
+                ]}}],"total":1}"#,
+        );
+        let ents = build_entities(&body, "alice", "s");
+        let usernames = values(&ents, EntityKind::Username);
+        assert_eq!(usernames, vec!["bob", "alice"]);
+
+        let bob = of_kind(&ents, EntityKind::Username)
+            .into_iter()
+            .find(|e| e.value == "bob")
+            .expect("bob co-maintainer username entity");
+        assert!(bob.has_tag("npm") && bob.has_tag("co-maintainer"));
+        assert_eq!(bob.confidence, confidence::MEDIUM_HIGH);
+        assert_eq!(
+            bob.evidence[0].attributes.get("package").map(String::as_str),
+            Some("pkg")
+        );
+
+        let alice = of_kind(&ents, EntityKind::Username)
+            .into_iter()
+            .find(|e| e.value == "alice")
+            .expect("alice subject username entity");
+        assert_eq!(alice.confidence, confidence::EXPERT);
+        assert!(!alice.has_tag("co-maintainer"));
     }
 
     #[test]

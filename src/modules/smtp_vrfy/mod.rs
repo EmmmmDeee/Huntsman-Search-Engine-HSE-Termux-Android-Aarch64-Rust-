@@ -36,7 +36,7 @@ impl Module for SmtpVrfy {
     }
 
     fn description(&self) -> &'static str {
-        "Verify email deliverability via SMTP RCPT TO handshake (no email sent)"
+        "Email deliverability probe — verifies via SMTP RCPT TO handshake (no email sent)"
     }
 
     fn priority(&self) -> u8 {

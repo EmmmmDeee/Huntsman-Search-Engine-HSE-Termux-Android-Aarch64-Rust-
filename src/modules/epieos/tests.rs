@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::confidence;
 
 fn email_target() -> Target {
     Target::new(TargetKind::Email, "jane@example.com")
@@ -128,6 +129,32 @@ fn extracts_full_profile_with_review_rating_and_text() {
     assert_eq!(
         pev.attributes.get("review_date").map(String::as_str),
         Some("2024-01-15")
+    );
+}
+
+#[test]
+fn profile_picture_is_emitted_as_url_entity() {
+    // The Google avatar was previously deserialized and folded only into the
+    // anchor's evidence attrs, never surfaced as its own pivotable entity.
+    let es = build(
+        r#"{"google_id":"1234567890","name":"Jane Doe",
+            "profile_picture":"https://lh3.googleusercontent.com/p"}"#,
+    );
+    let pic = es
+        .iter()
+        .find(|e| e.kind == EntityKind::Url && e.value == "https://lh3.googleusercontent.com/p")
+        .expect("profile_picture should be emitted as a Url entity");
+    assert!(pic.has_tag("epieos") && pic.has_tag("google-avatar"));
+    assert_eq!(pic.confidence, confidence::MEDIUM_HIGH);
+
+    // The anchor's evidence attr is unchanged — the Url is additive.
+    let anchor = es.iter().find(|e| e.kind == EntityKind::Email).unwrap();
+    assert_eq!(
+        anchor.evidence[0]
+            .attributes
+            .get("profile_picture")
+            .map(String::as_str),
+        Some("https://lh3.googleusercontent.com/p")
     );
 }
 

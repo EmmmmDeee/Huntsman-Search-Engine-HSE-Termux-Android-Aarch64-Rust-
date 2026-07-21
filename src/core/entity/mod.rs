@@ -396,6 +396,17 @@ pub struct Entity {
     pub tags: Vec<String>,
     /// Scan ID this entity was first seen in.
     pub scan_id: String,
+    /// Expansion **generation**: how many recursive expansion rounds from the
+    /// seed this entity was first discovered — its distance, in pivots, from the
+    /// queried subject. `0` = the seed round (found directly by scanning the
+    /// subject), `N` = surfaced by pivoting on a generation-`N-1` entity, i.e.
+    /// `N` hops out along its derivation trail. Engine-assigned (modules always
+    /// create at `0`); the engine stamps a genuinely-new entity with the round
+    /// it was born in, and `merge` preserves the EARLIEST generation an entity
+    /// entered the graph at. Rides in `data_json` — old rows deserialize to `0`
+    /// via `#[serde(default)]`, so no storage migration is needed.
+    #[serde(default)]
+    pub generation: u32,
 }
 
 impl Entity {
@@ -422,6 +433,10 @@ impl Entity {
             evidence: Vec::new(),
             tags: Vec::new(),
             scan_id: scan_id.into(),
+            // Modules never know their expansion round, so every freshly-built
+            // entity starts at the seed generation; the engine re-stamps a
+            // genuinely-new entity with the round it was actually born in.
+            generation: 0,
         }
     }
 
@@ -553,6 +568,23 @@ impl Entity {
         let residual_doubt = (1.0 - self.confidence) * CORROBORATION_DOUBT_DECAY.powf(n - 1.0);
         let agreement = 1.0 - residual_doubt;
         multiplicative.max(agreement).clamp(0.0, 1.0)
+    }
+
+    /// [`Self::c_effective`] discounted by expansion **depth-decay**: each
+    /// generation (pivot) away from the seed multiplies confidence by `base`
+    /// (`0 < base ≤ 1`), so a finding `N` hops out is scaled by `base^N`. A
+    /// gen-0 (seed-round) entity is unchanged (`base^0 = 1`), and `base = 1.0`
+    /// is a total no-op at any depth. Models the intuition that every pivot adds
+    /// drift, so seed-adjacent leads are inherently more trustworthy than ones
+    /// reached far down a chain of pivots.
+    ///
+    /// Pure; `base` is supplied by the caller. Only consulted when the opt-in
+    /// `feature.depth_decay` expansion policy is enabled (default off), so the
+    /// raw [`Self::c_effective`] every correlation/display/gate reads is
+    /// untouched unless an operator deliberately turns the policy on.
+    #[inline]
+    pub fn c_effective_depth_decayed(&self, base: f64) -> f64 {
+        (self.c_effective() * base.powf(f64::from(self.generation))).clamp(0.0, 1.0)
     }
 
     /// Derived classification tier from [`Self::c_effective`]: `Verified` at
@@ -779,6 +811,7 @@ impl Entity {
     /// - `corroboration` += other.corroboration  — only increases
     /// - `observed_at`  = max(self, other)        — most recent wins
     /// - `raw_value`    = min(self, other)        — deterministic display value
+    /// - `generation`   = preserved (self's)      — earliest generation wins
     /// - `evidence` merged, de-duplicated by `(source, summary)`
     /// - `tags` unioned (de-duplicated)
     ///
@@ -838,6 +871,15 @@ impl Entity {
             .saturating_add(other.corroboration)
             .max(1);
         self.observed_at = u64::max(self.observed_at, other.observed_at);
+        // `generation` is deliberately NOT merged here: it is engine-assigned in
+        // monotonic round order (a genuinely-new entity is stamped with the round
+        // it was born in AFTER insertion), while every module-built `other` still
+        // carries the meaningless default `0`. Taking a min would let a later
+        // round's re-emission (`other.generation == 0`) reset an existing entity's
+        // real generation back to the seed. Keeping `self`'s value preserves the
+        // earliest generation the entity actually entered the graph — the invariant the
+        // engine relies on (merges only ever fold `other` INTO the pre-existing,
+        // earlier-or-equal entity).
         // Deduplicate evidence by (source, summary) to prevent accumulation
         // across live mode iterations or re-scans — a repeated observation by the
         // SAME source with the SAME summary is the same record, not new
@@ -1361,6 +1403,22 @@ pub fn evidence_sources(entities: &[Entity]) -> std::collections::BTreeSet<&str>
         .iter()
         .flat_map(|e| e.evidence.iter().map(|ev| ev.source.as_str()))
         .collect()
+}
+
+/// The **expansion timeline**: how many entities were first discovered in each
+/// expansion generation ([`Entity::generation`]), ordered from the seed outward.
+/// Generation 0 is the seed round (found directly by scanning the subject); each
+/// later generation is one pivot further out along its derivation trail. The
+/// shape of this distribution is the scan's expansion curve — the working graph
+/// growing round by round, then converging as leads are exhausted or pruned.
+/// Pure; returns a `BTreeMap` so generations are already in order.
+#[must_use]
+pub fn expansion_timeline(entities: &[Entity]) -> std::collections::BTreeMap<u32, usize> {
+    let mut hist = std::collections::BTreeMap::new();
+    for e in entities {
+        *hist.entry(e.generation).or_insert(0) += 1;
+    }
+    hist
 }
 
 /// Current Unix timestamp in seconds.

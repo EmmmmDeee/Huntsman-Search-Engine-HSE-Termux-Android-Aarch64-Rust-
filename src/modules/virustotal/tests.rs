@@ -68,7 +68,7 @@ use super::*;
                 && e.has_tag("virustotal")
         );
         assert!(e.has_tag("suspicious")); // surfaced even alongside malicious
-        // confidence = 0.50 + (9/100)*0.45 = 0.5405
+        // confidence = confidence::MEDIUM + (9/100)*confidence::LOW_MEDIUM = 0.5405
         assert!((e.confidence - 0.5405).abs() < 1e-6);
         let ev = &e.evidence[0];
         assert_eq!(
@@ -110,7 +110,7 @@ use super::*;
             !e.has_tag(crate::core::tags::MALICIOUS)
                 && !e.has_tag(crate::core::tags::THREAT_INTEL)
         );
-        assert!((e.confidence - 0.50).abs() < 1e-6); // no malicious → baseline
+        assert!((e.confidence - confidence::MEDIUM).abs() < 1e-6); // no malicious → baseline
     }
 
     #[test]
@@ -145,7 +145,7 @@ use super::*;
         // No DNS records -> only the scanned entity, no phantom pivots.
         assert_eq!(entities.len(), 1);
         let e = &entities[0];
-        assert!((e.confidence - 0.50).abs() < 1e-6);
+        assert!((e.confidence - confidence::MEDIUM).abs() < 1e-6);
         let ev = &e.evidence[0];
         assert_eq!(
             ev.attributes.get("total_engines").map(String::as_str),

@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
 #[test]
@@ -5,7 +6,7 @@ fn classifies_known_australian_service() {
         let geo = classify_domain("commbank.com.au").unwrap();
         assert_eq!(geo.country_code, "AU");
         assert_eq!(geo.method, "known_service");
-        assert!((geo.confidence - 0.60).abs() < 1e-9);
+        assert!((geo.confidence - confidence::MEDIUM_PLUS).abs() < 1e-9);
     }
 
     #[test]
@@ -13,7 +14,7 @@ fn classifies_known_australian_service() {
         let geo = classify_domain("example.com.au").unwrap();
         assert_eq!(geo.country_code, "AU");
         assert_eq!(geo.method, "cctld");
-        assert!((geo.confidence - 0.45).abs() < 1e-9);
+        assert!((geo.confidence - confidence::LOW_MEDIUM).abs() < 1e-9);
     }
 
     #[test]

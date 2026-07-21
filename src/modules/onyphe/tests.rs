@@ -100,6 +100,40 @@ fn vstr_trims_and_rejects_empty() {
 }
 
 #[test]
+fn geoloc_subnet_emits_cidr_entity() {
+    // The `geoloc` category carries a covering `subnet` CIDR alongside asn/
+    // organization/country/city. Before this fix `subnet` was deserialised
+    // into the raw `Value` but never read back out, so the CIDR was silently
+    // dropped despite `EntityKind::Cidr` existing and sibling infra modules
+    // (bgpview/ripestat/netblock) already emitting it.
+    let doc = serde_json::json!({
+        "@category": "geoloc",
+        "ip": "8.8.8.8",
+        "asn": "AS15169",
+        "organization": "Google LLC",
+        "country": "US",
+        "countryname": "United States",
+        "city": "Mountain View",
+        "location": "37.4056,-122.0775",
+        "subnet": "8.8.8.0/24",
+    });
+    let target = Target::new(TargetKind::IpAddress, "8.8.8.8");
+    let r = extract_entities(&[doc], &target, "8.8.8.8", "ip", false, "scan");
+
+    let cidr = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Cidr)
+        .expect("geoloc subnet must surface as a Cidr entity");
+    assert_eq!(cidr.value, "8.8.8.0/24");
+    assert!(cidr.confidence >= confidence::MEDIUM_PLUS && cidr.confidence <= confidence::HIGH_PLUS);
+    assert!(
+        cidr.evidence.iter().any(|e| e.source == SRC),
+        "cidr evidence must be attached"
+    );
+}
+
+#[test]
 fn threatlist_category_wires_name_and_tags_into_evidence() {
     // Real ONYPHE v2 `summary` shape for the `threatlist` category: the
     // named block/threat list plus descriptive tags. Before the fix, neither

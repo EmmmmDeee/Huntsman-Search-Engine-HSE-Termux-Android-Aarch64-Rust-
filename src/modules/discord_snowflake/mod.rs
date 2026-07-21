@@ -20,6 +20,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence, unix_now},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -37,10 +38,10 @@ const DAY_SECS: i64 = 86_400;
 
 /// Confidence for a creation date derived from a value already identified as a
 /// Discord ID upstream (a `discord:`-prefixed handle from the extractor).
-const PREFIXED_CONF: f64 = 0.80;
+const PREFIXED_CONF: f64 = confidence::HIGH_PLUSPLUS;
 /// Confidence for a bare numeric handle that is a valid, plausible, non-Steam
 /// snowflake — likely Discord, but it carried no explicit Discord context.
-const BARE_CONF: f64 = 0.60;
+const BARE_CONF: f64 = confidence::MEDIUM_PLUS;
 
 pub struct DiscordSnowflake;
 
@@ -51,7 +52,7 @@ impl Module for DiscordSnowflake {
     }
 
     fn description(&self) -> &'static str {
-        "Offline Discord account-creation date decoded from a snowflake ID (no API/key)"
+        "Discord snowflake decode — offline recovery of an account-creation date from a snowflake ID (no API/key)"
     }
 
     fn priority(&self) -> u8 {

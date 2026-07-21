@@ -898,23 +898,19 @@ pub fn derive_residency(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
         .filter(|e| matches!(e.kind, EntityKind::Address | EntityKind::Coordinates))
     {
         let mut linked = false;
-        for ev in &place.evidence {
-            for (k, v) in &ev.attributes {
-                if !PERSON_NAME_ATTRS.iter().any(|a| k.eq_ignore_ascii_case(a)) {
-                    continue;
-                }
-                if let Some(&p) = person_by_name.get(v.trim().to_lowercase().as_str())
-                    && seen.insert((p.uid.clone(), place.uid.clone()))
-                {
-                    out.push(Relation::new(
-                        p.uid.as_str(),
-                        place.uid.as_str(),
-                        RelationKind::LocatedAt,
-                        p.confidence.min(place.confidence),
-                        scan_id,
-                    ));
-                    linked = true;
-                }
+        // Reuse the shared person-at-place resolver (same evidence order, filter,
+        // lookup and per-place uid dedup); the global `seen` still handles
+        // cross-place dedup and the exact-name fallback below.
+        for p in residents_of(place, &person_by_name) {
+            if seen.insert((p.uid.clone(), place.uid.clone())) {
+                out.push(Relation::new(
+                    p.uid.as_str(),
+                    place.uid.as_str(),
+                    RelationKind::LocatedAt,
+                    p.confidence.min(place.confidence),
+                    scan_id,
+                ));
+                linked = true;
             }
         }
         if linked || !place.has_tag("exact-name-match") {

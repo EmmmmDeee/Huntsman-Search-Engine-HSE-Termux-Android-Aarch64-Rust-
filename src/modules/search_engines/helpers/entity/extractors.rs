@@ -573,6 +573,17 @@ pub(in crate::modules::search_engines) fn extract_organisations_from_text(
                 continue;
             }
             let end = i + sfx.len();
+            // The suffix must fall at a word boundary. Without this, " Inc"
+            // matches inside "including"/"Incorporated", " Co" inside
+            // "corporate", " Ltd" inside "Ltda", etc. — minting a garbage
+            // organisation from a prose fragment. A live username scan
+            // (`rhino.ryno23`) produced the org "…Repco inc" from a Yahoo
+            // snippet reading "…Repco including pioneer platforms…". Advance by
+            // one (not to `end`) so a genuine later suffix can still match.
+            if bytes.get(end).is_some_and(u8::is_ascii_alphanumeric) {
+                i += 1;
+                continue;
+            }
             // Walk backwards to the start of the org name.
             let before = &text[..i];
             let mut name_start = before

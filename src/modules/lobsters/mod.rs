@@ -6,7 +6,7 @@
 //! ```json
 //! {"username":"pg","created_at":"2012-05-01T00:00:00Z","karma":1234,
 //!  "about":"…html…","is_moderator":false,
-//!  "github_username":"pgraham","twitter_username":"pg",
+//!  "github_username":"pgraham","mastodon_username":"pg@fosstodon.org",
 //!  "invited_by_user":"founder"}
 //! ```
 //!
@@ -15,13 +15,17 @@
 //! independent membership (invite-only), separate karma, separate submissions.
 //! A handle confirmed here is an independent **forum**-family signal, so it
 //! contributes genuine cross-service diversity to AU-045 multi-service identity
-//! confirmation. Critically, the `github_username` and `twitter_username` fields
-//! provide direct cross-platform username pivots with no extra round-trip.
+//! confirmation. Critically, the `github_username` and `mastodon_username`
+//! fields provide direct cross-platform username pivots with no extra
+//! round-trip. (`twitter_username` is retained as a dormant legacy field —
+//! Lobste.rs dropped Twitter linking for the fediverse, so the live API no
+//! longer returns it; `mastodon_username` is its replacement.)
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -46,8 +50,15 @@ pub(super) struct LobstersUser {
     pub(super) is_moderator: Option<bool>,
     #[serde(default)]
     pub(super) github_username: Option<String>,
+    /// Dormant legacy field — Lobste.rs dropped Twitter linking, so the live API
+    /// no longer returns it. Kept for backward compatibility; `mastodon_username`
+    /// is the live cross-platform pivot.
     #[serde(default)]
     pub(super) twitter_username: Option<String>,
+    /// Fediverse handle — the live replacement for `twitter_username`. Stored
+    /// bare (`user`) or fully-qualified (`user@server`).
+    #[serde(default)]
+    pub(super) mastodon_username: Option<String>,
     #[serde(default)]
     pub(super) invited_by_user: Option<String>,
 }
@@ -59,7 +70,7 @@ impl Module for Lobsters {
     }
 
     fn description(&self) -> &'static str {
-        "Lobste.rs account lookup (karma, bio, GitHub/Twitter cross-links) via public JSON API"
+        "Lobste.rs account recon — surfaces karma, bio, and GitHub/Twitter cross-links via the public JSON API"
     }
 
     fn priority(&self) -> u8 {
@@ -119,7 +130,12 @@ impl Module for Lobsters {
 pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
-    let mut u = Entity::new(EntityKind::Username, &user.username, 0.90, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        &user.username,
+        confidence::VERY_HIGH_PLUS,
+        scan_id,
+    );
     u.tag("lobsters");
     if user.is_moderator == Some(true) {
         u.tag("moderator");
@@ -161,6 +177,38 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
         result.push(g);
     }
 
+    // "Invited by" — the account that vouched for/invited the target. Same
+    // Username shape as the cross-platform pivots above, but this is a
+    // same-platform vouching relationship, not a confirmed cross-platform
+    // identity match, so it gets a lower confidence and a distinct tag
+    // (deliberately not "lobsters-pivot", which downstream consumers treat
+    // as a cross-service claim).
+    if let Some(ref inviter) = user.invited_by_user {
+        let inviter = inviter.trim();
+        if !inviter.is_empty() {
+            let mut inv = Entity::new(
+                EntityKind::Username,
+                inviter,
+                confidence::HIGH_PLUS,
+                scan_id,
+            );
+            inv.tag("lobsters");
+            inv.tag("lobsters-invited-by");
+            inv.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!(
+                        "Lobste.rs account '{}' was invited by '{}'",
+                        user.username, inviter
+                    ),
+                )
+                .with_attr("source_field", "invited_by_user")
+                .with_attr("lobsters_user", &user.username),
+            );
+            result.push(inv);
+        }
+    }
+
     if let Some(ref tw) = user.twitter_username
         && !tw.is_empty()
     {
@@ -184,10 +232,66 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
         }
     }
 
+    // Mastodon / fediverse handle — the live cross-platform pivot that replaced
+    // twitter_username. Handles are `user`, `user@server`, or `@user@server`;
+    // strip a leading '@', surface the account as a Username, and when the
+    // homeserver is present surface it as a Domain pivot too (a derivable
+    // infrastructure lead the handle hands over for free).
+    if let Some(ref md) = user.mastodon_username {
+        let md = md.trim().trim_start_matches('@');
+        let (local, server) = match md.split_once('@') {
+            Some((l, s)) => (l, Some(s)),
+            None => (md, None),
+        };
+        if !local.is_empty() {
+            let mut m = Entity::new(
+                EntityKind::Username,
+                local,
+                confidence::HIGH_PLUSPLUS,
+                scan_id,
+            );
+            m.tag("mastodon");
+            m.tag("fediverse");
+            m.tag("lobsters-pivot");
+            let mut mev = Evidence::new(
+                SRC,
+                format!(
+                    "Mastodon handle from Lobste.rs profile of '{}'",
+                    user.username
+                ),
+            )
+            .with_attr("source_field", "mastodon_username")
+            .with_attr("lobsters_user", &user.username);
+            if let Some(s) = server {
+                mev = mev.with_attr("homeserver", s);
+            }
+            m.add_evidence(mev);
+            result.push(m);
+        }
+        if let Some(server) = server.filter(|s| s.contains('.')) {
+            let mut d = Entity::new(EntityKind::Domain, server, confidence::MEDIUM_PLUS, scan_id);
+            d.tag("lobsters");
+            d.tag("mastodon-homeserver");
+            d.tag("derived");
+            d.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!(
+                        "Mastodon homeserver from Lobste.rs profile of '{}'",
+                        user.username
+                    ),
+                )
+                .with_attr("mastodon_handle", md)
+                .with_attr("lobsters_user", &user.username),
+            );
+            result.push(d);
+        }
+    }
+
     // Bio: extract emails and URLs.
     if let Some(about) = user.about.as_deref() {
         for email in crate::util::extract::emails(about) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.75, scan_id);
+            let mut e = Entity::new(EntityKind::Email, &email, confidence::VERY_HIGH, scan_id);
             e.tag("lobsters");
             e.tag("public-profile");
             e.add_evidence(
@@ -202,7 +306,7 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
 
         for link in crate::util::extract::urls(about) {
             let link = link.as_str();
-            let mut url_e = Entity::new(EntityKind::Url, link, 0.70, scan_id);
+            let mut url_e = Entity::new(EntityKind::Url, link, confidence::HIGH_PLUS, scan_id);
             url_e.tag("lobsters");
             url_e.tag("personal-site");
             url_e.add_evidence(
@@ -215,7 +319,7 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
                 && host.contains('.')
                 && host != "lobste.rs"
             {
-                let mut d = Entity::new(EntityKind::Domain, &host, 0.65, scan_id);
+                let mut d = Entity::new(EntityKind::Domain, &host, confidence::HIGH, scan_id);
                 d.tag("lobsters");
                 d.tag("derived");
                 d.add_evidence(
@@ -253,8 +357,15 @@ mod tests {
             is_moderator: Some(false),
             github_username: github.map(str::to_string),
             twitter_username: twitter.map(str::to_string),
+            mastodon_username: None,
             invited_by_user: None,
         }
+    }
+
+    fn user_with_mastodon(username: &str, mastodon: &str) -> LobstersUser {
+        let mut u = make_user(username, 100, None, None, None);
+        u.mastodon_username = Some(mastodon.to_string());
+        u
     }
 
     #[test]
@@ -265,7 +376,7 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "devuser");
         assert!(u.is_some(), "must emit Username entity for the account");
-        assert!((u.unwrap().confidence - 0.90).abs() < 0.01);
+        assert!((u.unwrap().confidence - confidence::VERY_HIGH_PLUS).abs() < 0.01);
     }
 
     #[test]
@@ -283,6 +394,21 @@ mod tests {
     }
 
     #[test]
+    fn emits_invited_by_username_pivot() {
+        let mut user = make_user("devuser", 500, None, None, None);
+        user.invited_by_user = Some("founder".to_string());
+        let entities = build_entities(user, "scan-lob-006");
+        let inv = entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Username && e.value == "founder")
+            .expect("must emit invited-by username pivot");
+        assert!(
+            inv.has_tag("lobsters-invited-by"),
+            "pivot entity must carry 'lobsters-invited-by' tag"
+        );
+    }
+
+    #[test]
     fn emits_twitter_username_pivot_stripping_at_prefix() {
         let user = make_user("devuser", 200, None, Some("@twitterhandle"), None);
         let entities = build_entities(user, "scan-lob-003");
@@ -290,6 +416,45 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "twitterhandle");
         assert!(tw.is_some(), "must strip @ and emit Twitter username");
+    }
+
+    #[test]
+    fn emits_bare_mastodon_username_pivot() {
+        // The live shape for most accounts: a bare fediverse handle (no server).
+        let entities = build_entities(user_with_mastodon("pushcx", "lobsters"), "scan-lob-md1");
+        let m = entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Username && e.value == "lobsters")
+            .expect("must emit the mastodon username pivot");
+        assert!(m.has_tag("mastodon") && m.has_tag("fediverse") && m.has_tag("lobsters-pivot"));
+        // No server → no homeserver Domain entity.
+        assert!(!entities.iter().any(|e| e.kind == EntityKind::Domain));
+    }
+
+    #[test]
+    fn emits_qualified_mastodon_handle_and_homeserver_domain() {
+        // A fully-qualified `@user@server` handle → Username(local) + Domain(server).
+        let entities = build_entities(
+            user_with_mastodon("dev", "@alice@fosstodon.org"),
+            "scan-lob-md2",
+        );
+        let m = entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Username && e.value == "alice")
+            .expect("local part → Username");
+        assert!(m.has_tag("mastodon"));
+        assert_eq!(
+            m.evidence[0]
+                .attributes
+                .get("homeserver")
+                .map(String::as_str),
+            Some("fosstodon.org")
+        );
+        let d = entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Domain && e.value == "fosstodon.org")
+            .expect("homeserver → Domain pivot");
+        assert!(d.has_tag("mastodon-homeserver"));
     }
 
     #[test]

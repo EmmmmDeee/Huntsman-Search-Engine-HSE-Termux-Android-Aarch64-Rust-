@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::confidence;
 
 // ── Tests carried from paid-only shodan.rs ───────────────────────
 
@@ -52,7 +53,7 @@ fn target_entity_builds_ip_entity() {
     let e = target_entity("8.8.8.8", "scan-1");
     assert_eq!(e.kind, EntityKind::IpAddress);
     assert_eq!(e.value, "8.8.8.8");
-    assert!((e.confidence - 0.90).abs() < 1e-9);
+    assert!((e.confidence - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
 }
 
 fn host(json: &str) -> HostResp {

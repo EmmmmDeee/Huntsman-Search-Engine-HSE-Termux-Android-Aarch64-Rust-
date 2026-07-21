@@ -22,6 +22,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -44,12 +45,12 @@ const MAX_SECRETS: usize = 50;
 
 /// Base confidence for a leaked secret tied to the EXACT subject email. COMB is
 /// an aggregated compilation of older breaches (lower fidelity than a live
-/// stealer log), so it sits below HudsonRock's 0.85 stealer baseline.
+/// stealer log), so it sits below HudsonRock's confidence::HIGH_PLUSPLUS_PLUS stealer baseline.
 const EMAIL_MATCH_CONF: f64 = 0.62;
 
 /// Confidence for an exposed account discovered under a DOMAIN target — a real
 /// account at that domain, but a third party rather than the scan subject.
-const DOMAIN_ACCOUNT_CONF: f64 = 0.50;
+const DOMAIN_ACCOUNT_CONF: f64 = confidence::MEDIUM;
 
 pub struct CombSearch;
 
@@ -66,7 +67,7 @@ impl Module for CombSearch {
     }
 
     fn description(&self) -> &'static str {
-        "Free leaked-credential search via the public COMB index (no API key)"
+        "COMB credential sweep — free leaked-credential search across the public COMB index (no API key)"
     }
 
     fn priority(&self) -> u8 {
@@ -303,16 +304,16 @@ fn secret_confidence(kind: TargetKind) -> f64 {
         TargetKind::Domain => DOMAIN_ACCOUNT_CONF,
         // Username secrets are candidate-quarantined downstream; the pre-demote
         // value is moot but kept modest.
-        _ => 0.40,
+        _ => confidence::LOW,
     }
 }
 
 /// Confidence for the enriched seed entity, by target kind.
 fn seed_confidence(kind: TargetKind) -> f64 {
     match kind {
-        TargetKind::Email => 0.75,
-        TargetKind::Domain => 0.65,
-        _ => 0.45,
+        TargetKind::Email => confidence::VERY_HIGH,
+        TargetKind::Domain => confidence::HIGH,
+        _ => confidence::LOW_MEDIUM,
     }
 }
 

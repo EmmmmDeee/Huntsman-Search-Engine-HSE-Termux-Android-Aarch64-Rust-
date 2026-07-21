@@ -30,6 +30,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -82,9 +83,13 @@ fn build_domain_entity(entry: &DomainEntry, broad_match: bool, scan_id: &str) ->
         return None;
     }
     let is_dead = entry.is_dead.as_deref() == Some("True");
-    // Live domain 0.55, dead 0.35; a broad keyword match is weakly related to
+    // Live domain confidence::MEDIUM_HIGH, dead 0.35; a broad keyword match is weakly related to
     // the target, so dampen it (0.7×).
-    let mut conf = if is_dead { 0.35 } else { 0.55 };
+    let mut conf = if is_dead {
+        0.35
+    } else {
+        confidence::MEDIUM_HIGH
+    };
     if broad_match {
         conf *= 0.7;
     }
@@ -119,7 +124,7 @@ impl Module for DomainsDb {
         "domainsdb"
     }
     fn description(&self) -> &'static str {
-        "Domain registration search via domainsdb.info (free, no key)"
+        "Domain-registration recon via domainsdb.info — sweeps registered domains for infrastructure pivots (free, no key)"
     }
     fn priority(&self) -> u8 {
         19

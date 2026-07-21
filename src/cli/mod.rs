@@ -168,6 +168,7 @@ pub async fn run() -> Result<()> {
         Command::Scan {
             kind,
             value,
+            input_file,
             modules,
             exclude,
             throttle,
@@ -196,13 +197,21 @@ pub async fn run() -> Result<()> {
             output,
             include_infra,
         } => {
-            let value = resolve_seed(value, keys::default_seed())?;
+            // In batch mode (`--input-file`) the per-line seeds supply the
+            // targets, so a top-level `--value`/default seed is not required —
+            // pass an empty placeholder that `run_batch` overwrites per seed.
+            let value = if input_file.is_some() {
+                value.unwrap_or_default()
+            } else {
+                resolve_seed(value, keys::default_seed())?
+            };
             // `--full` is the no-compromise preset: force every module on (drop
             // the free/passive filters and any allowlist), deep recursion, and
             // no ROI pruning. It composes by overriding the narrowing flags.
             scan::cmd_scan(scan::ScanCmd {
                 kind,
                 value,
+                input_file,
                 modules: if full { None } else { modules },
                 exclude,
                 throttle_ms: throttle,

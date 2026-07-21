@@ -226,21 +226,65 @@ impl CurlClient {
         cmd.args(["--", url]);
         cmd.kill_on_drop(true);
 
-        let output = timeout(Duration::from_millis(self.outer_timeout_ms), cmd.output())
-            .await
-            .map_err(|_| Error::module(self.module, "timeout"))?
-            .map_err(|e| Error::module(self.module, e.to_string()))?;
+        // Bounded read instead of `cmd.output()`: `--compressed` makes curl inflate
+        // the response in-process, and `--max-filesize` only bounds the COMPRESSED
+        // transfer — so a tiny compressed body could decode past available memory (a
+        // decompression bomb from a compromised or operator-overridden provider host)
+        // and OOM-kill the tool on a low-RAM phone. Read curl's stdout under a hard
+        // DECODED ceiling (`JSON_BODY_CAP`, matching the reqwest path's guarantee)
+        // and treat an over-cap response — anomalous for a paid JSON API — as an
+        // error. stdout and stderr are drained CONCURRENTLY so neither pipe filling
+        // can deadlock the child.
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
 
-        if !output.status.success() {
+        let (exit_status, stdout_bytes, stderr_bytes) =
+            timeout(Duration::from_millis(self.outer_timeout_ms), async {
+                use tokio::io::AsyncReadExt as _;
+                let mut child = cmd
+                    .spawn()
+                    .map_err(|e| Error::module(self.module, e.to_string()))?;
+                let mut child_out = child.stdout.take().expect("stdout piped");
+                let mut child_err = child.stderr.take().expect("stderr piped");
+                let cap = crate::util::http::JSON_BODY_CAP as u64;
+                let mut body = Vec::new();
+                let mut err = Vec::new();
+                // `take(cap + 1)` reads one byte past the ceiling so an exactly-cap
+                // body still succeeds while a bomb trips the guard below.
+                let mut capped_out = (&mut child_out).take(cap + 1);
+                let (out_res, _err_res) = tokio::join!(
+                    capped_out.read_to_end(&mut body),
+                    child_err.read_to_end(&mut err),
+                );
+                out_res.map_err(|e| Error::module(self.module, e.to_string()))?;
+                if body.len() as u64 > cap {
+                    // Over the decoded ceiling → decompression bomb. Returning drops
+                    // `child`, and `kill_on_drop(true)` reaps the still-writing curl.
+                    return Err(Error::module(
+                        self.module,
+                        "response exceeded the decoded size cap (possible decompression bomb)",
+                    ));
+                }
+                // Both pipes hit EOF (body ≤ cap), so curl has finished writing —
+                // reaping the exit status won't block.
+                let status = child
+                    .wait()
+                    .await
+                    .map_err(|e| Error::module(self.module, e.to_string()))?;
+                Ok::<(std::process::ExitStatus, Vec<u8>, Vec<u8>), Error>((status, body, err))
+            })
+            .await
+            .map_err(|_| Error::module(self.module, "timeout"))??;
+
+        if !exit_status.success() {
             // Surface curl's own exit code (28 = timeout, 6 = could-not-resolve,
             // 7 = connect-refused, …) plus a trimmed stderr snippet, instead of
             // an opaque "curl failed", so transient upstream failures are
             // diagnosable from the logs.
-            let code = output
-                .status
+            let code = exit_status
                 .code()
                 .map_or_else(|| "signal".to_string(), |c| c.to_string());
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr = String::from_utf8_lossy(&stderr_bytes);
             let snippet: String = stderr.trim().chars().take(200).collect();
             let detail = if snippet.is_empty() {
                 format!("curl exited {code}")
@@ -259,7 +303,7 @@ impl CurlClient {
         // hard failure — full-fidelity policy. Downstream `serde_json` still
         // validates the JSON structure, so a genuinely malformed body is caught
         // there, not silently here.
-        let raw = String::from_utf8_lossy(&output.stdout).into_owned();
+        let raw = String::from_utf8_lossy(&stdout_bytes).into_owned();
         Ok(split_status(&raw))
     }
 }

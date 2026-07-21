@@ -26,6 +26,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -66,7 +67,7 @@ impl Module for CodebergUser {
     }
 
     fn description(&self) -> &'static str {
-        "Codeberg account lookup (name, bio, website, location) via public Forgejo API"
+        "Codeberg account recon — enumerates name, bio, website, and location via the public Forgejo API"
     }
 
     fn priority(&self) -> u8 {
@@ -146,7 +147,12 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
     }
 
     // Confirmed-on-Codeberg username.
-    let mut u = Entity::new(EntityKind::Username, &user.login, 0.88, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        &user.login,
+        confidence::EXPERT,
+        scan_id,
+    );
     u.tag("codeberg");
     u.tag("code");
     u.add_evidence(ev.clone());
@@ -206,7 +212,7 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
     // Personal website URL + Domain. The Url and Domain carry distinct evidence,
     // so the kit's stable [Url, Domain] ordering is decorated per-kind.
     if let Some(site) = user.website.as_deref() {
-        for mut e in profile_kit::website_url_and_domain(site, 0.72, 0.65, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(site, 0.72, confidence::HIGH, scan_id) {
             match e.kind {
                 EntityKind::Domain => {
                     e.tag("codeberg");
@@ -270,7 +276,7 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
 
     // Bio/description — extract emails.
     if let Some(bio) = user.description.as_deref() {
-        for mut e in profile_kit::bio_emails(bio, 0.70, scan_id) {
+        for mut e in profile_kit::bio_emails(bio, confidence::HIGH_PLUS, scan_id) {
             e.tag("codeberg");
             e.tag("public-profile");
             e.add_evidence(
@@ -368,7 +374,7 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "alice");
         assert!(u.is_some(), "must emit Username entity");
-        assert!((u.unwrap().confidence - 0.88).abs() < 0.01);
+        assert!((u.unwrap().confidence - confidence::EXPERT).abs() < 0.01);
         assert!(u.unwrap().has_tag("codeberg") && u.unwrap().has_tag("code"));
     }
 

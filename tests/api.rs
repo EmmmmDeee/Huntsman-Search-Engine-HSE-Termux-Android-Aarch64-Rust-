@@ -1686,6 +1686,67 @@ async fn scan_entities_facets_returns_facets() {
     assert!(json["facets"].is_array());
 }
 
+#[tokio::test]
+async fn scan_diamond_rolls_entities_up_by_vertex() {
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("diamond");
+    let sid = "s-diamond";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+    // One entity per Diamond vertex the kind-classifier produces, plus a
+    // quarantined candidate that the endpoint must exclude by default.
+    store
+        .upsert_entity(&Entity::new(EntityKind::Person, "Jordan Avery", 0.9, sid))
+        .unwrap();
+    store
+        .upsert_entity(&Entity::new(EntityKind::Domain, "jordan.example", 0.8, sid))
+        .unwrap();
+    store
+        .upsert_entity(&Entity::new(EntityKind::Password, "leaked-hash", 0.7, sid))
+        .unwrap();
+    let mut cand = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, sid);
+    cand.tag(CANDIDATE);
+    store.upsert_entity(&cand).unwrap();
+
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{sid}/diamond")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    // The quarantined candidate is excluded by default → 3 across 3 vertices.
+    assert_eq!(
+        json["total"].as_u64(),
+        Some(3),
+        "candidate excluded by default: {json}"
+    );
+    let vertices = json["vertices"].as_array().unwrap();
+    let vcount = |name: &str| -> u64 {
+        vertices
+            .iter()
+            .find(|v| v["vertex"] == name)
+            .and_then(|v| v["count"].as_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(vcount("victim"), 1, "Person → victim: {json}");
+    assert_eq!(
+        vcount("infrastructure"),
+        1,
+        "Domain → infrastructure: {json}"
+    );
+    assert_eq!(vcount("capability"), 1, "Password → capability: {json}");
+    // Adversary is a relational role — the kind classifier never emits it.
+    assert_eq!(
+        vcount("adversary"),
+        0,
+        "adversary is relational, not intrinsic: {json}"
+    );
+}
+
 // ── Cancel nonexistent ──────────────────────────────────────────────────
 
 #[tokio::test]
@@ -3221,4 +3282,19 @@ async fn system_debug_bundle_returns_the_diagnostic_artifact_on_loopback() {
     ] {
         assert!(body.contains(header), "bundle missing section: {header}");
     }
+}
+
+#[tokio::test]
+async fn radar_recurring_returns_devices_array() {
+    // With an empty radar history the endpoint must still answer 200 with a
+    // well-formed (empty) devices array — the cross-sweep persistent-device
+    // review surface (AU-122/117's temporal counterpart, core::radar_track).
+    let app = test_app("radar-recurring");
+    let resp = app.oneshot(get("/api/v1/radar/recurring")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert!(
+        json["devices"].as_array().is_some(),
+        "response must carry a 'devices' array"
+    );
 }

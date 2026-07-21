@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::confidence;
 
 fn make_user(
     nickname: &str,
@@ -74,7 +75,7 @@ fn emits_person_from_multi_word_display_name() {
     assert!(p.is_some(), "must emit Person from multi-word display_name");
     assert_eq!(p.unwrap().value, "Jane Developer");
     assert!(p.unwrap().has_tag("bitbucket"));
-    assert!((p.unwrap().confidence - 0.70).abs() < 0.01);
+    assert!((p.unwrap().confidence - confidence::HIGH_PLUS).abs() < 0.01);
 }
 
 #[test]

@@ -50,7 +50,7 @@ impl Module for AbnLookup {
     }
 
     fn description(&self) -> &'static str {
-        "Australian Business Register ABN/ACN/name lookup"
+        "Australian Business Register recon — resolves an ABN, ACN, or entity name to registered business identity"
     }
 
     fn priority(&self) -> u8 {

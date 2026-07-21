@@ -56,8 +56,8 @@ pub use graph::{
     Adjacency, ConnectionBroker, ConnectionTemplate, IDENTITY_PAIR_PROBE_CAP,
     IdentityClusterResult, IdentityPath, PathStep, connection_brokers, connection_templates,
     disjoint_pathways, disjoint_pathways_in, identity_paths, identity_uids, is_identity_kind,
-    reachable_count, resolve_identity_clusters, sorted_confined_adjacency, strongest_path,
-    strongest_path_in, undirected_adjacency,
+    provenance_chain, reachable_count, resolve_identity_clusters, sorted_confined_adjacency,
+    strongest_path, strongest_path_in, undirected_adjacency,
 };
 pub use social_extract::derive_profile_links;
 pub use types::{Relation, RelationKind};

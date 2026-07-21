@@ -127,6 +127,70 @@ fn unquote_txt_reconstructs_single_and_chunked_records() {
 }
 
 #[test]
+fn svcb_hints_from_friendly_presentation_string() {
+    // dns.google's form.
+    let out = parse_svcb_hints(
+        "1 . alpn=h3,h2 ipv4hint=104.16.132.229,104.16.133.229 ipv6hint=2606:4700::6810:84e5",
+    );
+    assert_eq!(
+        out,
+        vec![
+            "104.16.132.229".to_string(),
+            "104.16.133.229".to_string(),
+            "2606:4700::6810:84e5".to_string(),
+        ]
+    );
+    // No hints present → empty.
+    assert!(parse_svcb_hints("1 . alpn=h2").is_empty());
+}
+
+#[test]
+fn svcb_hints_from_raw_rfc3597_wire_form() {
+    // The EXACT bytes cloudflare-dns returned for cloudflare.com's HTTPS record
+    // (captured live): priority 1, root target, alpn h3/h2, then ipv4hint (key 4)
+    // = 104.16.132.229 / 104.16.133.229 and ipv6hint (key 6) = two v6 addresses.
+    let data = r"\# 61 00 01 00 00 01 00 06 02 68 33 02 68 32 00 04 00 08 68 10 84 e5 68 10 85 e5 00 06 00 20 26 06 47 00 00 00 00 00 00 00 00 00 68 10 84 e5 26 06 47 00 00 00 00 00 00 00 00 00 68 10 85 e5";
+    let out = parse_svcb_hints(data);
+    assert!(
+        out.contains(&"104.16.132.229".to_string()) && out.contains(&"104.16.133.229".to_string()),
+        "ipv4hint addresses must decode from the wire form: {out:?}"
+    );
+    assert!(
+        out.iter().any(|ip| ip.starts_with("2606:4700")),
+        "ipv6hint addresses must decode too: {out:?}"
+    );
+}
+
+#[test]
+fn svcb_wire_parser_is_panic_free_on_malformed_input() {
+    // Truncated, non-hex, empty, and over-length-claimed inputs must all just
+    // yield what parsed cleanly (or nothing) — never panic on the no-root target.
+    assert!(parse_svcb_hints(r"\# 4 00 01").is_empty()); // priority only, no params
+    assert!(parse_svcb_hints(r"\# 2 zz zz").is_empty()); // non-hex octets
+    assert!(parse_svcb_hints(r"\#").is_empty()); // empty body
+    assert!(parse_svcb_hints(r"\# 8 00 01 00 00 04 00 08 68").is_empty()); // vlen claims 8, only 1 byte
+}
+
+#[test]
+fn https_record_emits_hint_ip_entities() {
+    use crate::core::entity::EntityKind;
+    let out = run(
+        "HTTPS",
+        &["1 . alpn=h3,h2 ipv4hint=198.51.100.7 ipv6hint=2001:db8::1"],
+    );
+    let v4 = out
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress && e.value == "198.51.100.7")
+        .expect("ipv4hint → IpAddress entity");
+    assert!(v4.has_tag("https-hint") && v4.has_tag("svcb") && v4.has_tag("ipv4"));
+    let v6 = out
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress && e.value == "2001:db8::1")
+        .expect("ipv6hint → IpAddress entity");
+    assert!(v6.has_tag("https-hint") && v6.has_tag("ipv6"));
+}
+
+#[test]
 fn chunked_spf_record_parses_into_members() {
     // The whole point: a long SPF record split across two DoH chunks must
     // still yield its ip4 + include members (it would not with the old
@@ -215,6 +279,8 @@ fn rtype_name_maps_handled_types() {
     assert_eq!(rtype_name(15), Some("MX"));
     assert_eq!(rtype_name(16), Some("TXT"));
     assert_eq!(rtype_name(2), Some("NS"));
+    assert_eq!(rtype_name(65), Some("HTTPS"));
+    assert_eq!(rtype_name(257), Some("CAA"));
     assert_eq!(rtype_name(99), None); // unmapped → caller falls back to queried type
 }
 
@@ -336,4 +402,158 @@ fn dmarc_txt_extracts_rua_and_ruf_reporting_addresses() {
     for e in out.iter().filter(|e| e.kind == EntityKind::Email) {
         assert!(e.has_tag("dmarc-reporting"));
     }
+}
+
+// ── CAA (RFC 8659, type 257) ────────────────────────────────────────────────
+// The wire strings below are verbatim live captures: cloudflare-dns returns the
+// raw RFC 3597 generic form, dns.google the presentation form.
+
+#[test]
+fn caa_parse_cloudflare_rfc3597_hex_issue_and_iodef() {
+    // `\# 22 00 05 issue letsencrypt.org` — flags=00, taglen=05, tag="issue".
+    let (tag, val) =
+        parse_caa_rdata(r"\# 22 00 05 69 73 73 75 65 6c 65 74 73 65 6e 63 72 79 70 74 2e 6f 72 67")
+            .expect("valid issue record");
+    assert_eq!(tag, "issue");
+    assert_eq!(val, "letsencrypt.org");
+
+    // `\# 38 00 05 iodef mailto:tls-abuse@cloudflare.com`.
+    let (tag, val) = parse_caa_rdata(
+        r"\# 38 00 05 69 6f 64 65 66 6d 61 69 6c 74 6f 3a 74 6c 73 2d 61 62 75 73 65 40 63 6c 6f 75 64 66 6c 61 72 65 2e 63 6f 6d",
+    )
+    .expect("valid iodef record");
+    assert_eq!(tag, "iodef");
+    assert_eq!(val, "mailto:tls-abuse@cloudflare.com");
+}
+
+#[test]
+fn caa_parse_google_presentation_form() {
+    assert_eq!(
+        parse_caa_rdata(r#"0 issue "letsencrypt.org""#),
+        Some(("issue".to_string(), "letsencrypt.org".to_string()))
+    );
+    assert_eq!(
+        parse_caa_rdata(r#"0 iodef "mailto:tls-abuse@cloudflare.com""#),
+        Some((
+            "iodef".to_string(),
+            "mailto:tls-abuse@cloudflare.com".to_string()
+        ))
+    );
+    // Issuer parameters after `;` are retained in the value (parity with dns_intel).
+    assert_eq!(
+        parse_caa_rdata(r#"0 issue "digicert.com; cansignhttpexchanges=yes""#),
+        Some((
+            "issue".to_string(),
+            "digicert.com; cansignhttpexchanges=yes".to_string()
+        ))
+    );
+}
+
+#[test]
+fn caa_parse_rejects_malformed_and_non_caa() {
+    assert_eq!(parse_caa_rdata(""), None);
+    assert_eq!(parse_caa_rdata("0 issue"), None); // no value token
+    assert_eq!(parse_caa_rdata("cdn.example.net."), None); // a stray CNAME answer
+    assert_eq!(parse_caa_rdata(r"\# 1 00"), None); // truncated: taglen missing
+    assert_eq!(parse_caa_rdata(r"\# 4 00 05 69 73"), None); // taglen 5 > available
+}
+
+#[test]
+fn caa_entities_aggregate_policy_and_surface_iodef_security_contact() {
+    // Mixed set across both wire forms — issue, issuewild, and an iodef mailto.
+    let records = vec![
+        rec(r#"0 issue "letsencrypt.org""#),
+        rec(r#"0 issuewild "digicert.com""#),
+        rec(
+            r"\# 38 00 05 69 6f 64 65 66 6d 61 69 6c 74 6f 3a 74 6c 73 2d 61 62 75 73 65 40 63 6c 6f 75 64 66 6c 61 72 65 2e 63 6f 6d",
+        ),
+    ];
+    let out = caa_entities(&records, "example.com", "s");
+
+    // One aggregated CAA policy Domain entity for the queried domain.
+    let policy = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain && e.value == "example.com")
+        .expect("CAA policy entity");
+    assert!(policy.has_tag("caa"));
+    let a = &policy.evidence[0].attributes;
+    assert_eq!(a.get("issue").map(String::as_str), Some("letsencrypt.org"));
+    assert_eq!(a.get("issuewild").map(String::as_str), Some("digicert.com"));
+    assert_eq!(
+        a.get("iodef").map(String::as_str),
+        Some("mailto:tls-abuse@cloudflare.com")
+    );
+
+    // The iodef mailto becomes a pivotable security-contact Email — the key
+    // Termux-parity win (routed via the shared dns_intel extractor).
+    let email = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("iodef security-contact email");
+    assert_eq!(email.value, "tls-abuse@cloudflare.com");
+    assert!(email.has_tag("security-contact"));
+    assert!(email.has_tag("iodef"));
+}
+
+#[test]
+fn caa_entities_empty_when_no_caa_records() {
+    assert!(caa_entities(&[], "example.com", "s").is_empty());
+    // Only unparseable answers → no policy entity fabricated.
+    assert!(caa_entities(&[rec("cdn.example.net.")], "example.com", "s").is_empty());
+}
+
+// ── TLSRPT (RFC 8460, _smtp._tls.{domain} TXT) ──────────────────────────────
+
+#[test]
+fn tlsrpt_mailto_becomes_report_email() {
+    // A non-infra reporting mailbox surfaces (real live records like google.com's
+    // `sts-reports@google.com` sit on a provider domain and are gated below).
+    let out = tlsrpt_entities(
+        &[rec("v=TLSRPTv1;rua=mailto:tlsrpt@fabrikam.example")],
+        "fabrikam.example",
+        "s",
+    );
+    let email = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("TLSRPT rua mailto → Email");
+    assert_eq!(email.value, "tlsrpt@fabrikam.example");
+    assert!(email.has_tag("tlsrpt-report") && email.has_tag("dns"));
+}
+
+#[test]
+fn tlsrpt_infrastructure_mailbox_is_gated() {
+    // Parity with the dns_intel transport: a provider-domain reporting desk is
+    // filtered so the two DNS paths surface the identical contact set.
+    let out = tlsrpt_entities(
+        &[rec("v=TLSRPTv1;rua=mailto:sts-reports@google.com")],
+        "google.com",
+        "s",
+    );
+    assert!(out.iter().all(|e| e.kind != EntityKind::Email));
+}
+
+#[test]
+fn tlsrpt_https_endpoint_becomes_domain_lead() {
+    // Verbatim live shape from microsoft.com's _smtp._tls record.
+    let out = tlsrpt_entities(
+        &[rec(
+            "v=TLSRPTv1; rua=https://tlsrpt.azurewebsites.net/report",
+        )],
+        "microsoft.com",
+        "s",
+    );
+    let dom = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain)
+        .expect("TLSRPT rua https → Domain host");
+    assert_eq!(dom.value, "tlsrpt.azurewebsites.net");
+    assert!(dom.has_tag("tlsrpt-report"));
+}
+
+#[test]
+fn tlsrpt_ignores_non_tlsrpt_and_empty() {
+    assert!(tlsrpt_entities(&[rec("v=spf1 -all")], "x.com", "s").is_empty());
+    assert!(tlsrpt_entities(&[rec("v=TLSRPTv1;")], "x.com", "s").is_empty());
+    assert!(tlsrpt_entities(&[], "x.com", "s").is_empty());
 }

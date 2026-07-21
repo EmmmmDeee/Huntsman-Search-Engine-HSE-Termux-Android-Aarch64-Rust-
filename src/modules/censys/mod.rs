@@ -14,6 +14,7 @@ mod types;
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -37,7 +38,7 @@ impl Module for Censys {
         "censys"
     }
     fn description(&self) -> &'static str {
-        "Censys host search: open ports, services, and location data"
+        "Censys host recon — surfaces open ports, running services, and location data"
     }
     fn priority(&self) -> u8 {
         78
@@ -179,7 +180,12 @@ fn build_entities(host: &HostResult, ip: &str, scan_id: &str) -> Vec<Entity> {
 
     // ── IP entity with service evidence ─────────────────────────
     if !host.services.is_empty() {
-        let mut entity = Entity::new(EntityKind::IpAddress, ip, 0.90, scan_id);
+        let mut entity = Entity::new(
+            EntityKind::IpAddress,
+            ip,
+            confidence::VERY_HIGH_PLUS,
+            scan_id,
+        );
         entity.tag("censys");
 
         let mut ports: Vec<u16> = host.services.iter().filter_map(|s| s.port).collect();
@@ -256,7 +262,12 @@ fn build_entities(host: &HostResult, ip: &str, scan_id: &str) -> Vec<Entity> {
         && is_valid_coords(lat, lon)
     {
         let coord_str = format!("{lat:.6},{lon:.6}");
-        let mut geo = Entity::new(EntityKind::Coordinates, &coord_str, 0.65, scan_id);
+        let mut geo = Entity::new(
+            EntityKind::Coordinates,
+            &coord_str,
+            confidence::HIGH,
+            scan_id,
+        );
         geo.tag("geoint");
         geo.tag("censys");
         // Skip a blank country code (no `country:` tag for an empty string).
@@ -287,7 +298,7 @@ fn build_entities(host: &HostResult, ip: &str, scan_id: &str) -> Vec<Entity> {
         let country = loc.country.as_deref().unwrap_or("");
         if !city.is_empty() && !country.is_empty() {
             let addr = crate::util::geo::compose_address(city, province, country);
-            let mut ae = Entity::new(EntityKind::Address, &addr, 0.60, scan_id);
+            let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM_PLUS, scan_id);
             ae.tag("censys");
             ae.tag("geoint");
             ae.add_evidence(Evidence::new(SRC, format!("Censys location for {ip}")));

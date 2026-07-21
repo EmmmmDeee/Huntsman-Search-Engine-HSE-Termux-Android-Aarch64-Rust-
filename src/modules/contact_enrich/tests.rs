@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::confidence;
 
 #[test]
 fn accepts_phone_and_email() {
@@ -82,7 +83,9 @@ fn valid_phone_yields_tagged_entity_with_evidence() {
         }"#,
     );
     let ents = build_phone_entities(&body, &phone_target("+14158586273"), "https", "s");
-    assert_eq!(ents.len(), 1);
+    // Now 2: the subject Phone plus the Numverify `location` promoted to an
+    // Address entity ("Novato" is 6 chars, meeting the >=3 guard).
+    assert_eq!(ents.len(), 2);
     let e = &ents[0];
     assert_eq!(e.kind, EntityKind::Phone);
     assert!(e.has_tag("numverify") && e.has_tag("validated"));
@@ -97,6 +100,21 @@ fn valid_phone_yields_tagged_entity_with_evidence() {
     assert_eq!(attr("country"), Some("United States of America"));
     assert_eq!(attr("carrier"), Some("AT&T Mobility LLC"));
     assert_eq!(attr("line_type"), Some("mobile"));
+
+    let addr = &ents[1];
+    assert_eq!(addr.kind, EntityKind::Address);
+    assert_eq!(addr.value, "Novato");
+    assert!(
+        addr.confidence < confidence::MEDIUM_HIGH,
+        "below the Gravatar Address confidence"
+    );
+    assert!(
+        addr.has_tag("numverify") && addr.has_tag("geoint") && addr.has_tag("phone-registration")
+    );
+    assert_eq!(
+        addr.evidence[0].summary,
+        "Numverify location for +14158586273"
+    );
 }
 
 #[test]

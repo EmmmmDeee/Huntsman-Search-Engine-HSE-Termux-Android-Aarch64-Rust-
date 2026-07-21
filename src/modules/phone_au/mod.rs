@@ -35,6 +35,7 @@ mod tests;
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -208,7 +209,7 @@ impl Module for PhoneAu {
     }
 
     fn description(&self) -> &'static str {
-        "Offline Australian phone line-type & geographic-region classifier"
+        "Offline Australian phone classifier — resolves line type and geographic region"
     }
 
     fn priority(&self) -> u8 {
@@ -248,7 +249,12 @@ impl Module for PhoneAu {
         // Re-emit the canonical +61 E.164 phone so this enrichment merges onto
         // the same Phone uid `phone_intl` produces.
         let canonical = format!("+61{national}");
-        let mut entity = Entity::new(EntityKind::Phone, &canonical, 0.80, &ctx.scan_id);
+        let mut entity = Entity::new(
+            EntityKind::Phone,
+            &canonical,
+            confidence::HIGH_PLUSPLUS,
+            &ctx.scan_id,
+        );
         entity.tag("au-phone");
         entity.tag(format!("line:{}", line.line_type.slug()));
 

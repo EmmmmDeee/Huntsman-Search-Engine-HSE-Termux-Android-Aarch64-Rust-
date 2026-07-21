@@ -8,6 +8,7 @@
 //! `use super::*`.
 
 use super::*;
+use crate::core::confidence;
 
 /// Apply the stealer-context tags (`oathnet-pro`, `stealer`, plus any
 /// `extra_tags` in order) and a cloned evidence record to `e`, then push it.
@@ -119,7 +120,7 @@ pub(super) fn extract_stealer_entities(
         {
             push_stealer_entity(
                 result,
-                Entity::new(EntityKind::Url, u, 0.55, scan_id),
+                Entity::new(EntityKind::Url, u, confidence::MEDIUM_HIGH, scan_id),
                 &ev,
                 &["credential-url"],
             );
@@ -133,7 +134,7 @@ pub(super) fn extract_stealer_entities(
                 if looks_like_email(&lower) && seen.insert(lower) {
                     push_oathnet_entity(
                         result,
-                        Entity::new(EntityKind::Email, email, 0.65, scan_id),
+                        Entity::new(EntityKind::Email, email, confidence::HIGH, scan_id),
                         &ev,
                         &["stealer"],
                         // Stealer hits come from a search on the target's own
@@ -153,7 +154,7 @@ pub(super) fn extract_stealer_entities(
         if looks_like_email(&lower) && seen.insert(format!("@stealer-user:{lower}")) {
             push_stealer_entity(
                 result,
-                Entity::new(EntityKind::Email, &uname, 0.60, scan_id),
+                Entity::new(EntityKind::Email, &uname, confidence::MEDIUM_PLUS, scan_id),
                 &Evidence::new(SRC, "Stealer login email (username field)")
                     .with_attr("source", "stealer"),
                 &["stealer-login"],
@@ -174,7 +175,7 @@ pub(super) fn extract_stealer_entities(
             {
                 push_stealer_entity(
                     result,
-                    Entity::new(EntityKind::Domain, dom, 0.50, scan_id),
+                    Entity::new(EntityKind::Domain, dom, confidence::MEDIUM, scan_id),
                     &Evidence::new(SRC, format!("Stealer credential for {dom}"))
                         .with_attr("source", "stealer"),
                     &[],
@@ -190,7 +191,12 @@ pub(super) fn extract_stealer_entities(
         if seen.insert(format!("@cred:{}", cred_val.to_lowercase())) {
             push_stealer_entity(
                 result,
-                Entity::new(EntityKind::Credential, &cred_val, 0.60, scan_id),
+                Entity::new(
+                    EntityKind::Credential,
+                    &cred_val,
+                    confidence::MEDIUM_PLUS,
+                    scan_id,
+                ),
                 &ev,
                 &[],
             );

@@ -3,6 +3,7 @@
 //! These functions are free of HTTP transport and are unit-tested directly.
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     scan::Target,
     tags,
@@ -12,8 +13,8 @@ use crate::util::str_util::nonempty;
 use super::{
     HIGH_RISK_SCORE, SRC,
     types::{
-        AccountAggregates, Breach, CnamDetails, DomainRegistration, RiskScores, SeonEmailData,
-        SeonFraudHistory, SeonPhoneData,
+        AccountAggregates, Breach, CnamDetails, DomainRegistration, EmailDomainDetails, RiskScores,
+        SeonEmailData, SeonFraudHistory, SeonPhoneData,
     },
 };
 
@@ -121,7 +122,7 @@ fn apply_account_aggregates(mut ev: Evidence, agg: &AccountAggregates) -> Eviden
 /// different provider, so it earns the same treatment rather than a new one.
 fn cnam_person_entity(cnam: &CnamDetails, phone: &str, scan_id: &str) -> Option<Entity> {
     let name = nonempty(&cnam.name).filter(|n| n.len() >= 2)?;
-    let mut person = Entity::new(EntityKind::Person, name, 0.55, scan_id);
+    let mut person = Entity::new(EntityKind::Person, name, confidence::MEDIUM_HIGH, scan_id);
     person.tag("seon");
     person.tag("cnam");
     person.tag("pstn-subscriber");
@@ -166,7 +167,7 @@ pub(super) fn build_email_entities(
 ) -> Vec<Entity> {
     let email = target.value.trim();
     let mut out = Vec::new();
-    let mut entity = target.to_entity(0.88, scan_id);
+    let mut entity = target.to_entity(confidence::EXPERT, scan_id);
     entity.tag("seon");
 
     let mut ev = Evidence::new(SRC, format!("SEON email enrichment for {email}"));
@@ -272,6 +273,15 @@ pub(super) fn build_email_entities(
             .flat_map(|reg| domain_registration_entities(reg, email, scan_id)),
     );
 
+    // The enriched email's own domain as a first-class Domain pivot — SEON
+    // parses it (`email_domain_details.domain`) but it was previously only
+    // ever attached as an evidence attribute on the Email entity above.
+    out.extend(
+        data.email_domain_details
+            .as_ref()
+            .and_then(|dd| email_domain_entity(dd, scan_id)),
+    );
+
     out
 }
 
@@ -282,7 +292,7 @@ pub(super) fn build_email_entities(
 /// every real breach entry does, but a defensive `None` costs nothing).
 fn breach_domain_entity(breach: &Breach, scan_id: &str) -> Option<Entity> {
     let domain = breach.domain.as_deref().filter(|d| d.contains('.'))?;
-    let mut de = Entity::new(EntityKind::Domain, domain, 0.55, scan_id);
+    let mut de = Entity::new(EntityKind::Domain, domain, confidence::MEDIUM_HIGH, scan_id);
     de.tag(tags::BREACH);
     de.tag("seon");
     de.tag(tags::BREACH_DERIVED);
@@ -319,7 +329,7 @@ fn domain_registration_entities(reg: &DomainRegistration, who: &str, scan_id: &s
     };
 
     if let Some(domain) = nonempty(&reg.domain_name) {
-        let mut de = Entity::new(EntityKind::Domain, domain, 0.60, scan_id);
+        let mut de = Entity::new(EntityKind::Domain, domain, confidence::MEDIUM_PLUS, scan_id);
         de.tag("seon");
         de.tag(tags::REGISTRANT);
         de.add_evidence(ev());
@@ -342,7 +352,7 @@ fn domain_registration_entities(reg: &DomainRegistration, who: &str, scan_id: &s
         out.push(oe);
     }
     if let Some(phone) = nonempty(&reg.phone_number).filter(|p| !is_redacted(p)) {
-        let mut phe = Entity::new(EntityKind::Phone, phone, 0.65, scan_id);
+        let mut phe = Entity::new(EntityKind::Phone, phone, confidence::HIGH, scan_id);
         phe.tag("seon");
         phe.tag(tags::REGISTRANT);
         phe.add_evidence(ev());
@@ -362,7 +372,12 @@ fn domain_registration_entities(reg: &DomainRegistration, who: &str, scan_id: &s
     .collect();
     if addr_parts.len() >= 2 {
         let composed = addr_parts.join(", ");
-        let mut ae = Entity::new(EntityKind::Address, composed, 0.60, scan_id);
+        let mut ae = Entity::new(
+            EntityKind::Address,
+            composed,
+            confidence::MEDIUM_PLUS,
+            scan_id,
+        );
         ae.tag("seon");
         ae.tag(tags::REGISTRANT);
         ae.add_evidence(ev());
@@ -370,6 +385,39 @@ fn domain_registration_entities(reg: &DomainRegistration, who: &str, scan_id: &s
     }
 
     out
+}
+
+/// A `Domain` entity for the enriched email's own domain
+/// (`email_domain_details.domain`) — mirrors `breach_domain_entity`'s and
+/// `domain_registration_entities`' identical string-to-`Domain` pattern.
+/// Guarded against freemail/disposable domains (`free`/`disposable`) so a
+/// shared provider like Gmail or a throwaway domain isn't minted as a
+/// first-class pivot node alongside the genuinely email-specific ones.
+fn email_domain_entity(dd: &EmailDomainDetails, scan_id: &str) -> Option<Entity> {
+    let domain = nonempty(&dd.domain)?;
+    if dd.free == Some(true) || dd.disposable == Some(true) {
+        return None;
+    }
+    let mut de = Entity::new(EntityKind::Domain, domain, confidence::MEDIUM_PLUS, scan_id);
+    de.tag("seon");
+    let mut ev = Evidence::new(SRC, format!("SEON email domain details for {domain}"));
+    if let Some(r) = dd.registered {
+        ev = ev.with_attr("registered", r.to_string());
+    }
+    if let Some(r) = nonempty(&dd.registrar_name) {
+        ev = ev.with_attr("registrar_name", r);
+    }
+    if let Some(c) = nonempty(&dd.created) {
+        ev = ev.with_attr("created", c);
+    }
+    if let Some(v) = dd.valid_mx {
+        ev = ev.with_attr("valid_mx", v.to_string());
+    }
+    if let Some(w) = dd.website_exists {
+        ev = ev.with_attr("website_exists", w.to_string());
+    }
+    de.add_evidence(ev);
+    Some(de)
 }
 
 /// Build entities from a SEON **phone** enrichment: the enriched phone (carrier,
@@ -381,7 +429,7 @@ pub(super) fn build_phone_entities(
 ) -> Vec<Entity> {
     let phone = target.value.trim();
     let mut out = Vec::new();
-    let mut entity = target.to_entity(0.88, scan_id);
+    let mut entity = target.to_entity(confidence::EXPERT, scan_id);
     entity.tag("seon");
 
     let mut ev = Evidence::new(SRC, format!("SEON phone enrichment for {phone}"));
@@ -445,6 +493,22 @@ pub(super) fn build_phone_entities(
             .as_ref()
             .and_then(|pcd| nonempty(&pcd.carrier))
             .and_then(|c| carrier_entity(c, phone, scan_id)),
+    );
+
+    // HLR-reported ported-to carrier → a second Organisation pivot, distinct
+    // from the provider-reported carrier above — a number ported to a new
+    // network is a genuinely different Organisation, not a duplicate. Must
+    // stay AFTER the provider_carrier_details push above so any caller that
+    // finds the first Organisation still gets the provider-reported one.
+    out.extend(
+        data.hlr_details
+            .as_ref()
+            .and_then(|h| nonempty(&h.ported_carrier))
+            .and_then(|c| carrier_entity(c, phone, scan_id))
+            .map(|mut oe| {
+                oe.tag("ported-carrier");
+                oe
+            }),
     );
 
     // CNAM Caller-ID-Name → Person pivot (consistent with hlr_cnam).

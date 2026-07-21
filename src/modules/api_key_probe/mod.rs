@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -32,7 +33,7 @@ impl Module for ApiKeyProbe {
     }
 
     fn description(&self) -> &'static str {
-        "Identify, validate, and catalog API keys across OSINT services"
+        "API key probe — identifies, validates, and catalogs API keys across OSINT services"
     }
 
     fn priority(&self) -> u8 {
@@ -143,7 +144,7 @@ impl Module for ApiKeyProbe {
                     probe.service,
                     crate::util::str_util::truncate_safe(key, 12)
                 ),
-                0.95,
+                confidence::VERY_HIGH_PLUSPLUS,
                 &ctx.scan_id,
             );
             entity.tag(format!("service:{}", probe.service));
@@ -189,7 +190,12 @@ impl Module for ApiKeyProbe {
                 _ => None,
             };
             if let Some(domain) = service_domain {
-                let mut d = Entity::new(EntityKind::Domain, domain, 0.60, &ctx.scan_id);
+                let mut d = Entity::new(
+                    EntityKind::Domain,
+                    domain,
+                    confidence::MEDIUM_PLUS,
+                    &ctx.scan_id,
+                );
                 d.tag("api-key-derived");
                 d.tag(format!("service:{}", probe.service));
                 d.add_evidence(Evidence::new(
@@ -223,7 +229,7 @@ impl Module for ApiKeyProbe {
             let mut summary = Entity::new(
                 EntityKind::Other("api_key_report".into()),
                 key,
-                0.99,
+                confidence::CERTAIN,
                 &ctx.scan_id,
             );
             summary.tag("api-key-probe");

@@ -52,7 +52,7 @@ pub async fn scan_timeline(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
@@ -103,7 +103,7 @@ pub async fn scan_communities(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
@@ -134,7 +134,7 @@ pub async fn scan_trust(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
@@ -180,7 +180,7 @@ pub async fn scan_path(
     Path(id): Path<String>,
     Query(q): Query<PathQuery>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);

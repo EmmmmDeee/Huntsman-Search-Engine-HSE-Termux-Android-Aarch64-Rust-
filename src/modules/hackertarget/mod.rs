@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use std::collections::HashSet;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -29,8 +30,8 @@ pub struct HackerTarget;
 /// (no network), so the line→entity mapping is unit-testable directly.
 ///
 /// Each unique host (containing a dot) yields a `Domain` entity — confidence
-/// 0.75 and a `subdomain` tag when it is `domain` or a subdomain of it, else
-/// 0.50 — carrying its resolved IP as evidence. Each unique routable IP (has a
+/// confidence::VERY_HIGH and a `subdomain` tag when it is `domain` or a subdomain of it, else
+/// confidence::MEDIUM — carrying its resolved IP as evidence. Each unique routable IP (has a
 /// dot, not `0.`-prefixed) yields an `IpAddress` entity. Hosts and IPs are
 /// de-duplicated within the body (IPs under an `ip:` key so a host and an IP
 /// string never collide). A blank resolved IP adds no `resolved_ip` attribute.
@@ -48,7 +49,11 @@ fn build_hostsearch_entities(body: &str, domain: &str, scan_id: &str) -> Vec<Ent
 
         if !host.is_empty() && host.contains('.') && seen.insert(host.clone()) {
             let is_sub = crate::util::domains::is_or_subdomain_of(&host, domain);
-            let conf = if is_sub { 0.75 } else { 0.50 };
+            let conf = if is_sub {
+                confidence::VERY_HIGH
+            } else {
+                confidence::MEDIUM
+            };
             let mut e = Entity::new(EntityKind::Domain, &host, conf, scan_id);
             e.tag("hackertarget");
             if is_sub {
@@ -67,7 +72,7 @@ fn build_hostsearch_entities(body: &str, domain: &str, scan_id: &str) -> Vec<Ent
             && !ip.starts_with("0.")
             && seen.insert(format!("ip:{ip}"))
         {
-            let mut e = Entity::new(EntityKind::IpAddress, ip, 0.65, scan_id);
+            let mut e = Entity::new(EntityKind::IpAddress, ip, confidence::HIGH, scan_id);
             e.tag("hackertarget");
             e.add_evidence(Evidence::new(SRC, format!("Resolved from {host}")));
             out.push(e);
@@ -92,7 +97,7 @@ fn build_reverse_ip_entities(body: &str, ip: &str, scan_id: &str) -> Vec<Entity>
             {
                 return None;
             }
-            let mut e = Entity::new(EntityKind::Domain, &domain, 0.65, scan_id);
+            let mut e = Entity::new(EntityKind::Domain, &domain, confidence::HIGH, scan_id);
             e.tag("hackertarget");
             e.tag("reverse-ip");
             e.add_evidence(Evidence::new(SRC, format!("Reverse IP lookup for {ip}")));
@@ -109,7 +114,8 @@ fn build_reverse_dns_entities(body: &str, ip: &str, scan_id: &str) -> Vec<Entity
         .filter_map(|line| {
             let domain = line.trim().trim_end_matches('.').to_lowercase();
             (!domain.is_empty() && domain.contains('.')).then(|| {
-                let mut e = Entity::new(EntityKind::Domain, &domain, 0.70, scan_id);
+                let mut e =
+                    Entity::new(EntityKind::Domain, &domain, confidence::HIGH_PLUS, scan_id);
                 e.tag("hackertarget");
                 e.tag(tags::PTR);
                 e.add_evidence(Evidence::new(SRC, format!("Reverse DNS for {ip}")));
@@ -126,7 +132,7 @@ impl Module for HackerTarget {
     }
 
     fn description(&self) -> &'static str {
-        "Free subdomain + reverse-IP + reverse-DNS via hackertarget.com"
+        "hackertarget.com recon (free) — enumerates subdomains and pivots reverse-IP and reverse-DNS"
     }
 
     fn priority(&self) -> u8 {

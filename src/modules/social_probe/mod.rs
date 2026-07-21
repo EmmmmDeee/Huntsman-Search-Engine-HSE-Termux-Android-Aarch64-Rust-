@@ -291,7 +291,7 @@ impl Module for SocialProbe {
     }
 
     fn description(&self) -> &'static str {
-        "Direct profile probing across 20+ social platforms"
+        "Social identity sweep — direct profile probing across 20+ platforms"
     }
 
     fn priority(&self) -> u8 {

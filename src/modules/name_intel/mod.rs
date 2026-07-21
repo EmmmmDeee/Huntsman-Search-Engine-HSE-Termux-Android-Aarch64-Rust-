@@ -43,8 +43,7 @@ impl Module for NameIntel {
         SRC
     }
     fn description(&self) -> &'static str {
-        "NAMINT-style name intelligence: derive usernames, emails, Gravatars and \
-         platform search pivots from a full name (offline)"
+        "NAMINT-style name intelligence — derives usernames, emails, Gravatars, and platform search pivots from a full name (offline)"
     }
     fn priority(&self) -> u8 {
         97

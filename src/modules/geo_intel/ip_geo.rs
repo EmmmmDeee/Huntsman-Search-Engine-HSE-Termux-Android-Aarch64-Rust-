@@ -88,14 +88,18 @@ pub(super) async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<M
     }
     let untrusted = geo_untrusted.is_some();
 
-    // Source 1: ipapi.co (free, HTTPS, 1000/day)
+    // Source 1: ipapi.co (free, HTTPS, 1000/day). Yields a Coordinates entity
+    // plus an optional Asn entity — only the former is subject to the
+    // cross-source coordinate dedup below.
     if !ctx.cancel.is_cancelled()
         && let Ok(data) =
             fetch_json::<IpApiCoResp>(&ctx.http, SRC, &format!("https://ipapi.co/{ip}/json/")).await
-        && let Some(e) = build_ipapico_entity(&data, ip, untrusted, &ctx.scan_id)
-        && seen_coords.insert(e.value.clone())
     {
-        result.push(e);
+        for e in build_ipapico_entity(&data, ip, untrusted, &ctx.scan_id) {
+            if e.kind != EntityKind::Coordinates || seen_coords.insert(e.value.clone()) {
+                result.push(e);
+            }
+        }
     }
 
     // Source 2: freeipapi.com (free, HTTPS, no limit documented)
@@ -129,23 +133,28 @@ fn tag_country(e: &mut Entity, country_code: Option<&str>, lat: f64, lon: f64) {
     }
 }
 
-/// Build the ipapi.co `Coordinates` entity. **Pure.** `None` when the API
+/// Build the ipapi.co `Coordinates` entity, plus a standalone `Asn` entity
+/// when `data.asn` is present. **Pure.** Returns an empty `Vec` when the API
 /// errored, the coordinates are absent/invalid, or `geo_untrusted` (the IP's
-/// location is infrastructure, not the subject).
+/// location is infrastructure, not the subject) — in that case the `asn` is
+/// also withheld, since it isn't trustworthy for the subject either.
+#[must_use]
 pub(super) fn build_ipapico_entity(
     data: &IpApiCoResp,
     ip: &str,
     geo_untrusted: bool,
     scan_id: &str,
-) -> Option<Entity> {
+) -> Vec<Entity> {
     if data.error == Some(true) || geo_untrusted {
-        return None;
+        return Vec::new();
     }
-    let (lat, lon) = (data.latitude?, data.longitude?);
+    let Some((lat, lon)) = data.latitude.zip(data.longitude) else {
+        return Vec::new();
+    };
     // Coarse free-tier IP-geo: reject the null-island BAND these providers emit
     // as an "unknown location" placeholder, not just the exact (0,0) point.
     if !is_plausible_provider_coord(lat, lon) {
-        return None;
+        return Vec::new();
     }
     let coords = format!("{lat:.4},{lon:.4}");
     let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.68, scan_id);
@@ -171,12 +180,23 @@ pub(super) fn build_ipapico_entity(
         |ev, (k, val)| ev.with_attr(k, val),
     );
     e.add_evidence(ev);
-    Some(e)
+
+    let mut result = vec![e];
+    // Promote the same "asn" field folded into the Coordinates evidence above
+    // into a standalone Asn entity — mirrors the sibling ip_geo module's
+    // identical guard (src/modules/ip_geo/mod.rs).
+    if let Some(asn) = &data.asn
+        && !asn.is_empty()
+    {
+        result.push(crate::util::geo::ip_asn_entity(asn, SRC, ip, scan_id));
+    }
+    result
 }
 
 /// Build the freeipapi.com `Coordinates` entity. **Pure.** `None` when the
 /// coordinates are absent/invalid, `geo_untrusted`, or the IP is flagged a
 /// proxy (an anonymiser exit's location is not the subject's).
+#[must_use]
 pub(super) fn build_freeipapi_entity(
     data: &FreeIpApiResp,
     ip: &str,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::confidence;
 use crate::util::geo::parse_coords;
 
 // -- acceptance tests (from forward_geocode) -------------------------
@@ -73,14 +74,14 @@ fn forward_geocode_shapes_confidence_by_au_relevance() {
     // An AU result is a strong on-region anchor; a foreign one is a demoted
     // candidate that won't be expanded or counted as confirmed.
     let au = build_forward_entity(-27.4766, 153.0166, "-27.476600,153.016600", "scan");
-    assert!((au.confidence - 0.70).abs() < 1e-9);
+    assert!((au.confidence - confidence::HIGH_PLUS).abs() < 1e-9);
     assert!(au.has_tag("au-relevant"));
     assert!(au.has_tag("au-state:QLD")); // Brisbane
     assert!(au.has_tag("geocoded"));
     assert!(!au.has_tag("candidate"));
 
     let foreign = build_forward_entity(51.5074, -0.1278, "51.507400,-0.127800", "scan");
-    assert!((foreign.confidence - 0.40).abs() < 1e-9);
+    assert!((foreign.confidence - confidence::LOW).abs() < 1e-9);
     assert!(foreign.has_tag("off-region"));
     assert!(foreign.has_tag("candidate"));
     assert!(!foreign.has_tag("au-relevant"));
@@ -107,7 +108,7 @@ fn reverse_off_region_by_country_code_is_a_candidate() {
         "address": { "city": "New York", "country_code": "us" }
     }));
     let e = build_reverse_entity(40.7128, -74.0060, &data, "scan");
-    assert!((e.confidence - 0.40).abs() < 1e-9);
+    assert!((e.confidence - confidence::LOW).abs() < 1e-9);
     assert!(e.has_tag("candidate"));
     assert!(e.has_tag("country:US"));
     assert!(!e.has_tag("au-relevant"));
@@ -123,7 +124,7 @@ fn reverse_without_country_code_falls_back_to_the_bounding_box() {
     assert!(au.has_tag("au-relevant"));
 
     let foreign = build_reverse_entity(48.8566, 2.3522, &bare, "scan");
-    assert!((foreign.confidence - 0.55).abs() < 1e-9);
+    assert!((foreign.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
     assert!(!foreign.has_tag("au-relevant"));
     assert!(!foreign.has_tag("candidate"));
 }

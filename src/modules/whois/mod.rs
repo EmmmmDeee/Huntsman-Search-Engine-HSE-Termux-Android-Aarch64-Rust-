@@ -24,6 +24,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -174,7 +175,12 @@ async fn rdap_ip_fallback(target: &Target, ctx: &ModuleContext) -> Result<Module
     }
 
     if !country.is_empty() {
-        let mut ae = Entity::new(EntityKind::Address, &country, 0.50, &ctx.scan_id);
+        let mut ae = Entity::new(
+            EntityKind::Address,
+            &country,
+            confidence::MEDIUM,
+            &ctx.scan_id,
+        );
         ae.tag("whois");
         ae.tag("rdap-fallback");
         ae.tag("geoint");
@@ -216,7 +222,7 @@ impl Module for Whois {
     }
 
     fn description(&self) -> &'static str {
-        "WHOIS registration data and contact extraction"
+        "WHOIS recon — harvests registration data and extracts registrant contacts from the raw record"
     }
 
     fn priority(&self) -> u8 {
@@ -339,7 +345,7 @@ impl Module for Whois {
             return Ok(ModuleResult::new());
         }
 
-        let mut entity = target.to_entity(0.85, &_ctx.scan_id);
+        let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS_PLUS, &_ctx.scan_id);
 
         // Status flags become tags so the SPA can highlight them. These
         // are the most operationally interesting: lock states, hold flags,
@@ -492,7 +498,12 @@ impl Module for Whois {
             let parts = registrant_location_parts(registrant_state.as_deref(), country);
             if !parts.is_empty() && parts.iter().any(|p| p.len() >= 2) {
                 let addr = parts.join(", ");
-                let mut ae = Entity::new(EntityKind::Address, &addr, 0.50, &_ctx.scan_id);
+                let mut ae = Entity::new(
+                    EntityKind::Address,
+                    &addr,
+                    confidence::MEDIUM,
+                    &_ctx.scan_id,
+                );
                 ae.tag("whois");
                 ae.tag(crate::core::tags::REGISTRANT);
                 ae.tag("geoint");
@@ -502,8 +513,12 @@ impl Module for Whois {
                 );
                 if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
                     let coord_val = format!("{lat:.4},{lon:.4}");
-                    let mut c =
-                        Entity::new(EntityKind::Coordinates, &coord_val, 0.40, &_ctx.scan_id);
+                    let mut c = Entity::new(
+                        EntityKind::Coordinates,
+                        &coord_val,
+                        confidence::LOW,
+                        &_ctx.scan_id,
+                    );
                     c.tag("whois");
                     c.tag("addr-derived");
                     c.tag("geoint");
@@ -529,7 +544,7 @@ impl Module for Whois {
                 .map(str::trim)
                 .filter(|n| n.len() >= 4 && n.contains(' ') && !is_redacted(n))
             {
-                let mut pe = Entity::new(EntityKind::Person, name, 0.65, &_ctx.scan_id);
+                let mut pe = Entity::new(EntityKind::Person, name, confidence::HIGH, &_ctx.scan_id);
                 pe.tag("whois");
                 pe.tag(role);
                 pe.add_evidence(

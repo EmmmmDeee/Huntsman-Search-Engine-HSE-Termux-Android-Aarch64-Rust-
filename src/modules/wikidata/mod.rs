@@ -32,6 +32,7 @@ mod urls;
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -50,18 +51,18 @@ const API: &str = "https://www.wikidata.org/w/api.php";
 /// Max same-name items surfaced (1 primary + the rest as candidates).
 const MAX_CANDIDATES: usize = 6;
 
-// Confidence tiers vs the 0.50 noisy-OR expansion floor. The primary pivots;
+// Confidence tiers vs the confidence::MEDIUM noisy-OR expansion floor. The primary pivots;
 // candidates stay sub-floor. People are kept a touch lower than orgs because a
 // name-only seed is more ambiguous than an organisation name.
 pub(super) const PERSON_PRIMARY: f64 = 0.72;
-pub(super) const ORG_PRIMARY: f64 = 0.80;
-pub(super) const CANDIDATE: f64 = 0.40;
+pub(super) const ORG_PRIMARY: f64 = confidence::HIGH_PLUSPLUS;
+pub(super) const CANDIDATE: f64 = confidence::LOW;
 pub(super) const DOMAIN_CONF: f64 = 0.58;
-pub(super) const HANDLE_CONF: f64 = 0.55;
+pub(super) const HANDLE_CONF: f64 = confidence::MEDIUM_HIGH;
 /// Confidence for the Wikidata P18 image URL. Moderate: the image authentically
 /// depicts the matched subject, but the URL is a derived pointer, not a direct
 /// finding about the subject's accounts.
-pub(super) const IMAGE_CONF: f64 = 0.60;
+pub(super) const IMAGE_CONF: f64 = confidence::MEDIUM_PLUS;
 
 /// Wikidata properties whose value is *itself* a social handle/username (a plain
 /// string, no entity-id resolution needed) → emitted as `Username` for
@@ -94,7 +95,7 @@ impl Module for Wikidata {
     }
 
     fn description(&self) -> &'static str {
-        "Wikidata knowledge-graph entity resolution (free, keyless)"
+        "Wikidata recon — resolves an entity against the open knowledge graph (free, keyless)"
     }
 
     fn priority(&self) -> u8 {

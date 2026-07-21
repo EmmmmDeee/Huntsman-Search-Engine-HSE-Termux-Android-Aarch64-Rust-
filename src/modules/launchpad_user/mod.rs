@@ -20,6 +20,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -77,7 +78,12 @@ pub(super) fn build_entities(person: LpPerson, scan_id: &str) -> Vec<Entity> {
 
     // Confirmed username on Launchpad. Surface the declared IANA time zone as a
     // chronolocation lead, and coarsely tag an Australia/* zone country:AU.
-    let mut e = Entity::new(EntityKind::Username, handle, 0.85, scan_id);
+    let mut e = Entity::new(
+        EntityKind::Username,
+        handle,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     e.tag("launchpad");
     e.tag("public-profile");
     let mut uev = ev();
@@ -134,7 +140,7 @@ impl Module for LaunchpadUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Launchpad profile: display name, bio, email (Ubuntu/Debian ecosystem, free)"
+        "Launchpad profile recon — harvests display name, bio, and email across the Ubuntu/Debian ecosystem (free)"
     }
     fn priority(&self) -> u8 {
         53

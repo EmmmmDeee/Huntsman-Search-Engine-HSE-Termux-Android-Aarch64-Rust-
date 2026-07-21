@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
 const FIXTURE: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -33,7 +34,7 @@ fn steam_lookup_url_routes_id_and_vanity() {
     // SteamID64 (public 7656119… range) → /profiles, high confidence.
     let (url, conf) = steam_lookup_url("76561197960287930").unwrap();
     assert!(url.contains("/profiles/76561197960287930?xml=1"));
-    assert!((conf - 0.85).abs() < 1e-9);
+    assert!((conf - confidence::HIGH_PLUSPLUS_PLUS).abs() < 1e-9);
     // `steam:`-prefixed id64 still routes to /profiles.
     assert!(
         steam_lookup_url("steam:76561197960265728")
@@ -51,7 +52,7 @@ fn steam_lookup_url_routes_id_and_vanity() {
     // Bare plausible vanity → /id, moderate confidence.
     let (url, conf) = steam_lookup_url("gabelogannewell").unwrap();
     assert!(url.contains("/id/gabelogannewell"));
-    assert!((conf - 0.60).abs() < 1e-9);
+    assert!((conf - confidence::MEDIUM_PLUS).abs() < 1e-9);
     // A Discord snowflake (18 digits, not 7656119…) must NOT trigger a Steam
     // lookup (all-digit → not a vanity, wrong prefix → not a SteamID64).
     assert!(steam_lookup_url("175928847299117063").is_none());
@@ -71,7 +72,7 @@ fn is_vanity_shaped_gates() {
 #[test]
 fn extract_profile_builds_identity_from_fixture() {
     let mut result = ModuleResult::new();
-    extract_profile(FIXTURE, 0.85, "scan", &mut result);
+    extract_profile(FIXTURE, confidence::HIGH_PLUSPLUS_PLUS, "scan", &mut result);
     let e = &result.entities;
     assert!(
         e.iter()
@@ -99,7 +100,7 @@ fn extract_profile_builds_identity_from_fixture() {
 #[test]
 fn extract_profile_does_not_duplicate_persona_and_vanity() {
     let mut result = ModuleResult::new();
-    extract_profile(FIXTURE, 0.85, "scan", &mut result);
+    extract_profile(FIXTURE, confidence::HIGH_PLUSPLUS_PLUS, "scan", &mut result);
     let usernames: Vec<&str> = result
         .entities
         .iter()
@@ -130,7 +131,7 @@ fn extract_profile_promotes_multiword_persona_to_person() {
   <customURL><![CDATA[gaben]]></customURL>
 </profile>"#;
     let mut result = ModuleResult::new();
-    extract_profile(FIXTURE_NO_REALNAME, 0.85, "scan", &mut result);
+    extract_profile(FIXTURE_NO_REALNAME, confidence::HIGH_PLUSPLUS_PLUS, "scan", &mut result);
     assert!(
         result
             .entities
@@ -150,7 +151,7 @@ fn extract_profile_emits_persona_username_when_distinct_from_vanity() {
   <customURL><![CDATA[newvanity]]></customURL>
 </profile>"#;
     let mut result = ModuleResult::new();
-    extract_profile(FIXTURE_DISTINCT, 0.85, "scan", &mut result);
+    extract_profile(FIXTURE_DISTINCT, confidence::HIGH_PLUSPLUS_PLUS, "scan", &mut result);
     let usernames: std::collections::HashSet<&str> = result
         .entities
         .iter()
@@ -173,7 +174,7 @@ fn extract_profile_mines_bio_email_and_url() {
   <summary><![CDATA[Contact me at rabscuttle@example.com or visit https://rabscuttle.dev/about]]></summary>
 </profile>"#;
     let mut result = ModuleResult::new();
-    extract_profile(FIXTURE_BIO, 0.85, "scan", &mut result);
+    extract_profile(FIXTURE_BIO, confidence::HIGH_PLUSPLUS_PLUS, "scan", &mut result);
     let e = &result.entities;
     assert!(
         e.iter()
@@ -200,7 +201,7 @@ fn extract_profile_bio_without_pivots_emits_nothing_extra() {
   <summary><![CDATA[Just here for the games.]]></summary>
 </profile>"#;
     let mut result = ModuleResult::new();
-    extract_profile(FIXTURE_PLAIN_BIO, 0.85, "scan", &mut result);
+    extract_profile(FIXTURE_PLAIN_BIO, confidence::HIGH_PLUSPLUS_PLUS, "scan", &mut result);
     assert!(!result.entities.iter().any(|x| x.kind == EntityKind::Email));
     assert!(
         !result

@@ -127,10 +127,10 @@ fn au_company_yields_org_address_and_company_number() {
         }"#,
     );
     let ents = build_company_entities(&co, 7, "s");
-    // Org + Address + optional Coordinates (Sydney matches city_coords) + AbnAcn.
+    // Org + Address + optional Coordinates (Sydney matches city_coords) + Url + AbnAcn.
     assert!(
-        ents.len() >= 3,
-        "expected at least 3 entities, got {}",
+        ents.len() >= 4,
+        "expected at least 4 entities, got {}",
         ents.len()
     );
 
@@ -145,9 +145,36 @@ fn au_company_yields_org_address_and_company_number() {
         && e.has_tag("registered-address")
         && e.has_tag("validated")));
 
+    assert!(ents.iter().any(|e| e.kind == EntityKind::Url
+        && e.has_tag("profile-url")
+        && e.value == "https://opencorporates.com/companies/au/111222333"));
+
     assert!(ents.iter().any(|e| e.kind == EntityKind::AbnAcn
         && e.has_tag("company-number")
         && e.value == "111222333"));
+}
+
+#[test]
+fn au_company_opencorporates_url_becomes_pivotable_url_entity() {
+    // The company's own OpenCorporates profile URL must be emitted as a
+    // pivotable `Url` entity, not just stashed as Organisation evidence.
+    let co = company(
+        r#"{
+            "name":"ATLASSIAN PTY LTD","company_number":"111222333",
+            "jurisdiction_code":"au",
+            "opencorporates_url":"https://opencorporates.com/companies/au/111222333"
+        }"#,
+    );
+    let ents = build_company_entities(&co, 1, "s");
+    let url_ent = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Url)
+        .expect("opencorporates_url must yield a Url entity");
+    assert_eq!(
+        url_ent.value,
+        "https://opencorporates.com/companies/au/111222333"
+    );
+    assert!(url_ent.has_tag("opencorporates") && url_ent.has_tag("profile-url"));
 }
 
 #[test]
