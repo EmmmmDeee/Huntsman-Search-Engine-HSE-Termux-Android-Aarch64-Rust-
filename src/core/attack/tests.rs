@@ -250,3 +250,65 @@ use super::*;
             }
         }
     }
+
+    #[test]
+    fn coverage_rolls_up_exercised_techniques_with_counts_and_honest_gaps() {
+        let mut exercised = std::collections::BTreeMap::new();
+        exercised.insert("T1596.002".to_string(), 5); // WHOIS ×5
+        exercised.insert("T1589.002".to_string(), 2); // Email Addresses ×2
+        exercised.insert("T9999".to_string(), 99); // unknown → ignored
+        let cov = coverage(&exercised);
+
+        assert_eq!(cov.tactic_id, "TA0043");
+        // Only the two real techniques are covered, carried in catalogue order
+        // (T1589.002 before T1596.002), with their counts.
+        assert_eq!(cov.covered.len(), 2);
+        assert_eq!(cov.covered[0].technique.id, "T1589.002");
+        assert_eq!(cov.covered[0].entity_count, 2);
+        assert_eq!(cov.covered[1].technique.id, "T1596.002");
+        assert_eq!(cov.covered[1].entity_count, 5);
+        // Covered + uncovered exactly partitions the whole catalogue.
+        assert_eq!(cov.covered.len() + cov.uncovered.len(), RECONNAISSANCE.len());
+        assert!(cov.uncovered.iter().any(|t| t.id == "T1598"));
+        assert!(!cov.uncovered.iter().any(|t| t.id == "T1596.002"));
+        // Fraction matches the covered count.
+        assert!(
+            (cov.coverage_fraction - 2.0 / RECONNAISSANCE.len() as f64).abs() < 1e-9,
+            "fraction = {}",
+            cov.coverage_fraction
+        );
+    }
+
+    #[test]
+    fn empty_coverage_is_all_gaps() {
+        let cov = coverage(&std::collections::BTreeMap::new());
+        assert!(cov.covered.is_empty());
+        assert_eq!(cov.uncovered.len(), RECONNAISSANCE.len());
+        assert!((cov.coverage_fraction - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn navigator_layer_is_a_valid_honest_layer() {
+        let mut exercised = std::collections::BTreeMap::new();
+        exercised.insert("T1596.002".to_string(), 5);
+        let layer = navigator_layer(&coverage(&exercised), "scan-abc");
+
+        assert_eq!(layer["domain"], "enterprise-attack");
+        assert_eq!(layer["versions"]["layer"], "4.5");
+        // Exactly one technique per catalogued id (covered + gaps = whole tactic).
+        let techs = layer["techniques"].as_array().unwrap();
+        assert_eq!(techs.len(), RECONNAISSANCE.len());
+        // The exercised technique is enabled and scored by its entity count.
+        let whois = techs
+            .iter()
+            .find(|t| t["techniqueID"] == "T1596.002")
+            .unwrap();
+        assert_eq!(whois["score"], 5);
+        assert_eq!(whois["enabled"], true);
+        assert_eq!(whois["tactic"], "reconnaissance");
+        // A gap is present, disabled, score 0 — the honest picture.
+        let phishing = techs.iter().find(|t| t["techniqueID"] == "T1598").unwrap();
+        assert_eq!(phishing["score"], 0);
+        assert_eq!(phishing["enabled"], false);
+        assert_eq!(layer["gradient"]["maxValue"], 5);
+    }

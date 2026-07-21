@@ -23,7 +23,7 @@ pub mod intel;
 // ─── Public re-exports ────────────────────────────────────────────────────────
 
 pub use analysis::{
-    scan_correlations, scan_diamond, scan_diff, scan_entities, scan_entities_facets,
+    scan_attack, scan_correlations, scan_diamond, scan_diff, scan_entities, scan_entities_facets,
     scan_entities_filter, scan_identities, scan_location, scan_network, scan_relations,
     scan_stealer_rows,
 };
