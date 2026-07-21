@@ -4,6 +4,7 @@
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
 };
@@ -24,11 +25,10 @@ pub(super) struct Cell {
 }
 
 fn json_to_str(v: &Option<serde_json::Value>) -> String {
-    match v {
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(serde_json::Value::Number(n)) => n.to_string(),
-        _ => String::new(),
-    }
+    v.as_ref()
+        .and_then(crate::util::json::scalar_str)
+        .map(std::borrow::Cow::into_owned)
+        .unwrap_or_default()
 }
 
 fn tech_tag(cell_type: Option<&str>) -> &'static str {
@@ -64,7 +64,12 @@ pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> ModuleResult {
         let tech = tech_tag(cell.cell_type.as_deref());
         let registered = cell.registered.unwrap_or(false);
 
-        let mut e = Entity::new(EntityKind::DeviceId, &tower_id, 0.75, scan_id);
+        let mut e = Entity::new(
+            EntityKind::DeviceId,
+            &tower_id,
+            confidence::VERY_HIGH,
+            scan_id,
+        );
         e.tag(crate::core::tags::CELL_TOWER);
         e.tag(tech);
         if registered {

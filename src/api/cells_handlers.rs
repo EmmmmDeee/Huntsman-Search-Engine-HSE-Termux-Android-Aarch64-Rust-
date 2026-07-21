@@ -70,11 +70,39 @@ pub async fn cells_status(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         CellsImportPhase::Error(msg) => ("error", Some(msg)),
     };
 
-    let Ok(conn) = cell_db::open_ro() else {
+    let path = cell_db::cell_db_path().display().to_string();
+
+    // The reads — `open_ro` plus `count_by_mcc`'s full-table GROUP BY over a
+    // world-scale tower DB — are blocking SQLite work that must not run on the
+    // ~2-worker async reactor (this is the SPA's status-poll target). Offload the
+    // whole read set to the blocking pool in one task, mirroring the offloading
+    // discipline every sibling handler already follows.
+    let db = tokio::task::spawn_blocking(|| {
+        let conn = cell_db::open_ro().ok()?;
+        let total = cell_db::total_count(&conn).unwrap_or(0);
+        let by_mcc: Vec<serde_json::Value> = cell_db::count_by_mcc(&conn)
+            .unwrap_or_default()
+            .into_iter()
+            .take(10)
+            .map(|(mcc, count)| json!({ "mcc": mcc, "count": count }))
+            .collect();
+        let now = crate::core::entity::unix_now() as i64;
+        let last_import = cell_db::last_import(&conn)
+            .ok()
+            .flatten()
+            .map(|rec| last_import_json(&rec, now));
+        Some((total, by_mcc, last_import))
+    })
+    .await
+    .ok()
+    .flatten();
+
+    // Absent DB (or a failed blocking join) → the same "not present" shape.
+    let Some((total, by_mcc, last_import)) = db else {
         return Json(json!({
             "present": false,
             "total": 0,
-            "path": cell_db::cell_db_path().display().to_string(),
+            "path": path,
             "by_mcc": [],
             "last_import": null,
             "import_phase": phase_str,
@@ -83,23 +111,10 @@ pub async fn cells_status(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         .into_response();
     };
 
-    let total = cell_db::total_count(&conn).unwrap_or(0);
-    let by_mcc: Vec<_> = cell_db::count_by_mcc(&conn)
-        .unwrap_or_default()
-        .into_iter()
-        .take(10)
-        .map(|(mcc, count)| json!({ "mcc": mcc, "count": count }))
-        .collect();
-    let now = crate::core::entity::unix_now() as i64;
-    let last_import = cell_db::last_import(&conn)
-        .ok()
-        .flatten()
-        .map(|rec| last_import_json(&rec, now));
-
     Json(json!({
         "present": true,
         "total": total,
-        "path": cell_db::cell_db_path().display().to_string(),
+        "path": path,
         "by_mcc": by_mcc,
         "last_import": last_import,
         "import_phase": phase_str,
@@ -184,7 +199,15 @@ pub async fn cells_import(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *phase = match result {
             Ok(()) => CellsImportPhase::Idle,
-            Err(e) => CellsImportPhase::Error(e.to_string()),
+            // Defense-in-depth: this error is served verbatim by the ungated
+            // `GET /cells/status` `import_error` field, so a key that reached it
+            // through any path (the download URL carries `token=<key>`) is masked
+            // before it can be read by a LAN peer under a non-loopback bind. The
+            // primary fix strips the URL at the source (see cli::cells
+            // `.without_url()`); this guarantees the invariant at the sink.
+            Err(e) => {
+                CellsImportPhase::Error(crate::util::http::redact_credentials(&e.to_string()))
+            }
         };
     });
 

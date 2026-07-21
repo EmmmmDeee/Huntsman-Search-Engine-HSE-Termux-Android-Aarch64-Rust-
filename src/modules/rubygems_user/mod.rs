@@ -24,6 +24,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -77,7 +78,12 @@ pub(super) fn build_entities(gems: Vec<RgGem>, handle: &str, scan_id: &str) -> V
     };
 
     // Confirmed-on-RubyGems username.
-    let mut u = Entity::new(EntityKind::Username, handle, 0.85, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        handle,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     u.tag("rubygems");
     u.tag("public-profile");
     u.add_evidence(ev_base());
@@ -119,7 +125,8 @@ pub(super) fn build_entities(gems: Vec<RgGem>, handle: &str, scan_id: &str) -> V
             {
                 let key = name.to_ascii_lowercase();
                 if seen_names.insert(key)
-                    && let Some(mut p) = profile_kit::person_from_name(name, 0.60, scan_id)
+                    && let Some(mut p) =
+                        profile_kit::person_from_name(name, confidence::MEDIUM_PLUS, scan_id)
                 {
                     p.tag("rubygems");
                     p.tag("derived");
@@ -156,7 +163,12 @@ pub(super) fn build_entities(gems: Vec<RgGem>, handle: &str, scan_id: &str) -> V
             && let Some(gh_user) = github_user_from_url(src_url)
             && seen_gh.insert(gh_user.to_ascii_lowercase())
         {
-            let mut g = Entity::new(EntityKind::Username, gh_user, 0.70, scan_id);
+            let mut g = Entity::new(
+                EntityKind::Username,
+                gh_user,
+                confidence::HIGH_PLUS,
+                scan_id,
+            );
             g.tag("github");
             g.tag("rubygems-pivot");
             g.add_evidence(
@@ -197,7 +209,7 @@ impl Module for RubygemsUser {
     }
 
     fn description(&self) -> &'static str {
-        "RubyGems gem owner profile: real name, homepage, GitHub pivot (Ruby ecosystem, free)"
+        "RubyGems owner recon — surfaces real name, homepage, and a GitHub pivot across the Ruby ecosystem (free)"
     }
 
     fn priority(&self) -> u8 {

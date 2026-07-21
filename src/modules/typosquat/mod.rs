@@ -34,6 +34,7 @@ static SEEN_REGISTRABLE: std::sync::LazyLock<Mutex<std::collections::HashSet<Str
     std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -85,7 +86,7 @@ impl Module for Typosquat {
     }
 
     fn description(&self) -> &'static str {
-        "Generate and resolve typosquat/lookalike domain permutations (registered ones only)"
+        "Typosquat recon — generates lookalike domain permutations and resolves the registered ones to surface active impostors"
     }
 
     fn priority(&self) -> u8 {
@@ -171,7 +172,12 @@ impl Module for Typosquat {
         hits.sort_by(|a, b| a.0.cmp(&b.0));
 
         for (candidate, technique, ips) in hits {
-            let mut e = Entity::new(EntityKind::Domain, &candidate, 0.55, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Domain,
+                &candidate,
+                confidence::MEDIUM_HIGH,
+                &ctx.scan_id,
+            );
             e.tag("typosquat");
             e.tag(format!("typosquat:{technique}"));
             e.add_evidence(

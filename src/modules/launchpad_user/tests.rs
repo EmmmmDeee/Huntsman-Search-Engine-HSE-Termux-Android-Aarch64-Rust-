@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::confidence;
 
 fn make_person(
     name: &str,
@@ -79,7 +80,7 @@ fn emits_username_and_profile_url_from_web_link() {
         .find(|e| e.kind == EntityKind::Username)
         .unwrap();
     assert!(u.has_tag("launchpad") && u.has_tag("public-profile"));
-    assert!((u.confidence - 0.85).abs() < 0.01);
+    assert!((u.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
 }
 
 #[test]

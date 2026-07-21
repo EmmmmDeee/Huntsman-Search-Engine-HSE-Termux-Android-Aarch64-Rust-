@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -106,11 +107,16 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
         }
 
         let coords = format!("{lat:.6},{lon:.6}");
-        // Confidence recalibrated 0.68 → 0.55 — WHOIS-based geo is
+        // Confidence recalibrated 0.68 → confidence::MEDIUM_HIGH — WHOIS-based geo is
         // particularly coarse (registrar address, not host
         // location) so this provider should rank below the
         // residential-DB-backed IP-geo modules.
-        let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.55, scan_id);
+        let mut e = Entity::new(
+            EntityKind::Coordinates,
+            &coords,
+            confidence::MEDIUM_HIGH,
+            scan_id,
+        );
         e.tag("geoint");
         if let Some(cc) = data.country_code.as_deref().filter(|c| !c.is_empty()) {
             e.tag(format!("country:{}", cc.to_uppercase()));
@@ -185,7 +191,7 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
 
         if parts.len() >= 2 {
             let addr_str = parts.join(", ");
-            let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.50, scan_id);
+            let mut addr = Entity::new(EntityKind::Address, &addr_str, confidence::MEDIUM, scan_id);
             addr.tag("geoint");
             addr.tag("derived");
             addr.add_evidence(
@@ -203,7 +209,12 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
         && let Some(org) = &conn.org
         && !org.is_empty()
     {
-        let mut e = Entity::new(EntityKind::Organisation, org, 0.60, scan_id);
+        let mut e = Entity::new(
+            EntityKind::Organisation,
+            org,
+            confidence::MEDIUM_PLUS,
+            scan_id,
+        );
         let ev = [
             ("asn", conn.asn_num.map(|a| format!("AS{a}"))),
             (
@@ -240,6 +251,23 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
         result.push(ae);
     }
 
+    if let Some(conn) = &data.connection
+        && let Some(domain) = conn.domain.as_deref().filter(|s| !s.is_empty())
+    {
+        // The ASN/ISP's own registered domain (e.g. "cloudflare.com" for
+        // AS13335) — a distinct signal from the Organisation name a few
+        // lines up: it's a pivotable identifier in its own right (WHOIS,
+        // cert transparency, etc.), not just a display label.
+        let mut de = Entity::new(EntityKind::Domain, domain, confidence::MEDIUM_HIGH, scan_id);
+        de.tag("geoint");
+        de.tag("derived");
+        de.tag("ip-whois");
+        de.add_evidence(
+            Evidence::new(SRC, format!("IP org domain for {ip}")).with_attr("domain", domain),
+        );
+        result.push(de);
+    }
+
     result
 }
 
@@ -250,7 +278,7 @@ impl Module for IpWhois {
     }
 
     fn description(&self) -> &'static str {
-        "HTTPS IP geolocation via ipwho.is (second source for geo-cluster correlation)"
+        "ipwho.is geolocation recon (HTTPS) — second source for geo-cluster correlation of an IP"
     }
 
     fn priority(&self) -> u8 {
@@ -271,6 +299,7 @@ impl Module for IpWhois {
             EntityKind::Address,
             EntityKind::Asn,
             EntityKind::Organisation,
+            EntityKind::Domain,
         ];
         KINDS
     }

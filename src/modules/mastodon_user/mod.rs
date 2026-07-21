@@ -27,6 +27,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -88,7 +89,7 @@ impl Module for MastodonUser {
     }
 
     fn description(&self) -> &'static str {
-        "Mastodon / Fediverse account lookup across top instances via public v1 API"
+        "Mastodon / Fediverse account recon — sweeps top instances to unmask an account via the public v1 API"
     }
 
     fn priority(&self) -> u8 {
@@ -192,7 +193,12 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
     }
 
     // Confirmed-on-Mastodon username.
-    let mut u = Entity::new(EntityKind::Username, &acct.username, 0.85, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        &acct.username,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     u.tag("mastodon");
     u.tag("fediverse");
     u.add_evidence(ev.clone());
@@ -211,7 +217,7 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
 
     // Real name → Person (≥2 tokens, non-placeholder).
     if let Some(ref name) = acct.display_name
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.60, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::MEDIUM_PLUS, scan_id)
     {
         p.tag("mastodon");
         p.tag("derived");
@@ -272,8 +278,12 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
         let verified = field.verified_at.is_some();
         // Field value may be plain text or HTML with an <a href="...">.
         let plain = crate::util::html::strip_html(&field.value);
-        let conf_url = if verified { 0.82 } else { 0.65 };
-        let conf_domain = if verified { 0.80 } else { 0.58 };
+        let conf_url = if verified { 0.82 } else { confidence::HIGH };
+        let conf_domain = if verified {
+            confidence::HIGH_PLUSPLUS
+        } else {
+            0.58
+        };
 
         // Extract href from the raw HTML value for the URL entity.
         let href = extract_href(&field.value);
@@ -453,7 +463,7 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "alice");
         assert!(u.is_some(), "must emit Username entity");
-        assert!((u.unwrap().confidence - 0.85).abs() < 0.01);
+        assert!((u.unwrap().confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
         assert!(u.unwrap().has_tag("mastodon") && u.unwrap().has_tag("fediverse"));
     }
 
@@ -502,7 +512,7 @@ mod tests {
             .find(|e| e.kind == EntityKind::Url && e.value.contains("alice.dev"));
         assert!(url_e.is_some(), "must emit URL from verified field");
         assert!(url_e.unwrap().has_tag("rel-me-verified"));
-        assert!(url_e.unwrap().confidence >= 0.80);
+        assert!(url_e.unwrap().confidence >= confidence::HIGH_PLUSPLUS);
         let dom = ents
             .iter()
             .find(|e| e.kind == EntityKind::Domain && e.value == "alice.dev");
@@ -540,8 +550,8 @@ mod tests {
             .find(|e| e.kind == EntityKind::Url && e.value.contains("alice.dev"));
         assert!(url_e.is_some());
         assert!(
-            url_e.unwrap().confidence < 0.75,
-            "unverified field URL should be below 0.75"
+            url_e.unwrap().confidence < confidence::VERY_HIGH,
+            "unverified field URL should be below confidence::VERY_HIGH"
         );
         assert!(!url_e.unwrap().has_tag("rel-me-verified"));
     }

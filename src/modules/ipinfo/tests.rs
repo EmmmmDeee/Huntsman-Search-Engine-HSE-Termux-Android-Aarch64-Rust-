@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
     #[test]
     fn accepts_ip_only() {
@@ -74,7 +75,7 @@ use super::*;
         );
         let asn = one(&ents, EntityKind::Asn).unwrap();
         assert_eq!(asn.value, "AS15169");
-        assert!((asn.confidence - 0.80).abs() < 1e-9);
+        assert!((asn.confidence - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
         let dom = one(&ents, EntityKind::Domain).unwrap();
         assert_eq!(dom.value, "dns.google");
         assert!(dom.has_tag(tags::PTR));

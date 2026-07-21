@@ -274,12 +274,12 @@ use super::*;
         // A fresh "Onur Ada" Person entity with no relations is an Unexpanded
         // orphan — the gap analysis names it, classifies it, and points at the
         // corrective scan. This test exercises the full seed→gap pipeline.
-        use crate::core::{entity::EntityKind, gap};
+        use crate::core::{confidence, entity::EntityKind, gap};
 
         let mut entity = crate::core::entity::Entity::new(
             EntityKind::Person,
             "Onur Ada",
-            0.65,
+            confidence::HIGH,
             "scan-onur-ada",
         );
         entity.tag("seed");
@@ -295,7 +295,7 @@ use super::*;
         let orphan = &report.orphans[0];
         assert_eq!(orphan.value, "Onur Ada");
         assert_eq!(orphan.isolation, gap::Isolation::Unexpanded,
-            "confidence 0.65 is above EXPAND_FLOOR — must be Unexpanded, not {:?}", orphan.isolation);
+            "confidence confidence::HIGH is above EXPAND_FLOOR — must be Unexpanded, not {:?}", orphan.isolation);
         assert_eq!(
             orphan.reinjection_target.as_deref(),
             Some("full_name"),

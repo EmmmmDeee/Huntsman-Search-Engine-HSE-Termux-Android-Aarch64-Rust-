@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
 #[test]
@@ -14,11 +15,11 @@ fn otx_confidence_graduates_with_pulse_corroboration() {
         "many corroborating pulses are stronger than a few"
     );
     assert!(
-        (otx_confidence(1) - 0.55).abs() < 1e-9,
+        (otx_confidence(1) - confidence::MEDIUM_HIGH).abs() < 1e-9,
         "a single pulse is a lead, not the former flat 0.72"
     );
     assert!(
-        otx_confidence(50) <= 0.80,
+        otx_confidence(50) <= confidence::HIGH_PLUSPLUS,
         "OTX pulse counts are not fully independent — the top tier stays bounded"
     );
 }
@@ -173,3 +174,87 @@ fn meaningful_tag_keeps_threat_categories_drops_noise() {
         assert!(set.contains("198.51.100.7"));
         assert_eq!(set.len(), 1);
     }
+
+// ── OTX passive DNS ─────────────────────────────────────────────────
+
+fn passive_rows(json: &str) -> Vec<PassiveDnsRow> {
+    serde_json::from_str::<PassiveDnsResp>(json)
+        .unwrap()
+        .passive_dns
+}
+
+#[test]
+fn passive_dns_emits_historical_ips_and_subdomains() {
+    // Verbatim OTX passive_dns record shape (captured live): hostname/address/
+    // record_type/first/last. A domain query returns the domain + its subdomains
+    // resolving to historical IPs.
+    let rows = passive_rows(
+        r#"{"passive_dns":[
+            {"hostname":"torproject.org","address":"116.202.120.181","record_type":"A","first":"2024-01-02T00:00:00","last":"2026-07-14T00:00:00"},
+            {"hostname":"check.torproject.org","address":"116.202.120.166","record_type":"A","first":"2023-05-01T00:00:00","last":"2026-07-10T00:00:00"},
+            {"hostname":"blog.torproject.org","address":"2a01:4f8::1","record_type":"AAAA","first":"2022-01-01T00:00:00","last":"2025-01-01T00:00:00"}
+        ]}"#,
+    );
+    let out = passive_dns_entities(&rows, "torproject.org", "s");
+
+    // Historical IPs (v4 + v6) surface as IpAddress leads.
+    let ips: Vec<&str> = out
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(ips.contains(&"116.202.120.181") && ips.contains(&"116.202.120.166"));
+    assert!(ips.iter().any(|i| i.contains(':')), "AAAA IP must surface too");
+    let ip_ent = out
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress)
+        .unwrap();
+    assert!(ip_ent.has_tag("otx") && ip_ent.has_tag("passive-dns") && ip_ent.has_tag("historical"));
+
+    // Subdomains surface as Domain entities; the apex is a Domain but NOT tagged
+    // subdomain.
+    let subs: Vec<&str> = out
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert!(subs.contains(&"check.torproject.org") && subs.contains(&"blog.torproject.org"));
+    assert!(subs.contains(&"torproject.org"));
+    let sub = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain && e.value == "check.torproject.org")
+        .unwrap();
+    assert!(sub.has_tag(crate::core::tags::SUBDOMAIN) && sub.has_tag("passive-dns"));
+}
+
+#[test]
+fn passive_dns_gates_unrelated_hosts_and_invalid_ips() {
+    // A record whose hostname is NOT the target or a subdomain of it (shared-IP
+    // noise) must be dropped; a non-parseable address must not mint an IP.
+    let rows = passive_rows(
+        r#"{"passive_dns":[
+            {"hostname":"evil-unrelated.com","address":"1.2.3.4","record_type":"A"},
+            {"hostname":"notatorproject.org","address":"5.6.7.8","record_type":"A"},
+            {"hostname":"ok.torproject.org","address":"not-an-ip","record_type":"A"}
+        ]}"#,
+    );
+    let out = passive_dns_entities(&rows, "torproject.org", "s");
+    // The unrelated hostnames are gated out as Domains…
+    assert!(
+        out.iter()
+            .all(|e| e.kind != EntityKind::Domain || e.value == "ok.torproject.org"),
+        "only in-scope hostnames survive"
+    );
+    // `ok.torproject.org` IS in scope and surfaces (its bad address is just skipped).
+    assert!(
+        out.iter()
+            .any(|e| e.kind == EntityKind::Domain && e.value == "ok.torproject.org")
+    );
+    // Row-scope gate: the IPs 1.2.3.4 / 5.6.7.8 belong to the UNRELATED hosts, so
+    // they must NOT be attributed to the subject domain (a shared-IP row can't
+    // leak its IP into the subject's history); and "not-an-ip" never mints an IP.
+    assert!(
+        !out.iter().any(|e| e.kind == EntityKind::IpAddress),
+        "no IP is attributed to the subject from out-of-scope or invalid rows"
+    );
+}

@@ -132,6 +132,7 @@ pub async fn run() -> Report {
     let checks = vec![
         check_module_registry(),
         check_dispatch_graph(),
+        check_module_reachability(),
         check_consumes_accepts(),
         check_module_probes(),
         check_core_math(),
@@ -222,6 +223,32 @@ fn check_dispatch_graph() -> Check {
         Status::Pass,
         "every accepting module is in its kind's dispatch bucket",
     )
+}
+
+/// End-to-end wiring: from EVERY realistic seed kind, the transitive
+/// producer/consumer closure must reach every registered module — the
+/// "100% of modules run during a scan" guarantee. A module accepting a kind that
+/// a seed can no longer produce would be named here (dead end-to-end wiring that
+/// `check_dispatch_graph`'s single-hop view cannot see).
+fn check_module_reachability() -> Check {
+    let modules = crate::modules::registry();
+    let graph = ModuleGraph::build(&modules);
+    match crate::core::dependency::reachability::fully_wired(&graph, &modules) {
+        Ok(n) => check(
+            "modules.reachability",
+            Status::Pass,
+            format!("all {n} modules reachable from every realistic seed kind (100% wired)"),
+        ),
+        Err((seed, dead)) => check(
+            "modules.reachability",
+            Status::Fail,
+            format!(
+                "from a {seed:?} seed, {} module(s) can never be dispatched end-to-end: {}",
+                dead.len(),
+                dead.join(", ")
+            ),
+        ),
+    }
 }
 
 /// Every module's declared `consumes()` covers each kind its `accepts()`

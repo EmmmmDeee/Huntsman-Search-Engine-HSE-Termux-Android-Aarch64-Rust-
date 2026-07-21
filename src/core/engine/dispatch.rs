@@ -532,9 +532,19 @@ impl super::ScanEngine {
             }
             Ok(Err(e)) => {
                 state.stats.errored += 1;
-                // Feed the breaker: a rate-limit/quota message trips immediately;
-                // any other hard error counts toward the soft streak.
-                super::circuit::record_error(name, &e.to_string());
+                // Feed the breaker: a rate-limit/quota error trips immediately; any
+                // other hard error counts toward the soft streak. Classify the
+                // TYPED `RateLimited` variant directly — the string path
+                // (`record_error`) only trips it today because `RateLimited`'s
+                // Display happens to contain "rate limited", so an edit to that
+                // Display would silently downgrade a real throttle to a 3-strike
+                // soft failure with no compile error. Non-typed errors that still
+                // carry a "429"/quota message in their text keep the string path.
+                if matches!(e, crate::core::error::Error::RateLimited(_)) {
+                    super::circuit::record_rate_limit(name);
+                } else {
+                    super::circuit::record_error(name, &e.to_string());
+                }
                 super::health::record_failure(name);
                 warn!(module = name, error = %e, "module error");
                 self.emit(

@@ -49,6 +49,37 @@ pub fn title_case(s: &str) -> String {
     out
 }
 
+/// Upper-case only the **first** character of `s`, leaving the rest of the
+/// string exactly as-is. Empty input yields `""`. Character-safe: the first
+/// scalar's full Unicode upper-casing is applied (so `ß` → `SS`) and the tail
+/// is appended untouched, never byte-sliced.
+///
+/// This is deliberately **not** [`title_case`]: it preserves the remaining
+/// characters' original casing rather than lower-casing them, so an
+/// intentionally-cased tail survives — `"mcDonald"` → `"McDonald"`, never
+/// `"Mcdonald"`. Used to display a lowercased email local-part token or a
+/// permuted name component as a leading-capital word without flattening a
+/// mixed-case surname. One definition so the three modules that each hand-rolled
+/// this `chars().next()` capitaliser share identical semantics.
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::upper_first;
+///
+/// assert_eq!(upper_first("jane"), "Jane");
+/// assert_eq!(upper_first("jane doe"), "Jane doe"); // only the first char
+/// assert_eq!(upper_first("mcDonald"), "McDonald"); // tail casing preserved
+/// assert_eq!(upper_first("ñoño"), "Ñoño"); // multibyte-safe
+/// assert_eq!(upper_first(""), "");
+/// ```
+#[must_use]
+pub fn upper_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+    }
+}
+
 /// The ASCII digits of `s`, in order, with every other character dropped.
 /// One definition of "keep only the digits" for phone / ABN / ACN / LEI
 /// normalisation (was re-derived inline in ~9 places).

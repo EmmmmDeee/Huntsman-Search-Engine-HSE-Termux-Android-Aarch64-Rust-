@@ -67,7 +67,16 @@ pub async fn notify_scan_complete(
                 .nth(1)
                 .and_then(|rest| rest.split('/').next())
                 .unwrap_or("<webhook>");
-            tracing::warn!(scan_id = payload.scan_id, webhook_host = host, error = %e, "webhook notification failed");
+            // `.without_url()` strips the request URL from the reqwest error —
+            // otherwise `%e`'s Display re-emits the full webhook URL (`… for url
+            // (…/<secret>)`), re-leaking the path secret the `host`-only field
+            // above was written to avoid. Same pattern as `RequestBuilderExt`.
+            tracing::warn!(
+                scan_id = payload.scan_id,
+                webhook_host = host,
+                error = %e.without_url(),
+                "webhook notification failed"
+            );
         }
     }
 }

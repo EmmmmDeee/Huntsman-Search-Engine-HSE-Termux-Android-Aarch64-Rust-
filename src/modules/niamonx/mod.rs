@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -185,7 +186,7 @@ impl Module for NiamonX {
     }
 
     fn description(&self) -> &'static str {
-        "NiamonX PBS v1/v2 breach search and ULP infostealer lookup"
+        "NiamonX recon — sweeps PBS v1/v2 breach corpora and ULP infostealer records"
     }
 
     fn priority(&self) -> u8 {
@@ -229,6 +230,7 @@ impl Module for NiamonX {
             EntityKind::Username,
             EntityKind::Phone,
             EntityKind::Person,
+            EntityKind::Url,
         ];
         KINDS
     }
@@ -251,7 +253,7 @@ impl Module for NiamonX {
             fetch_ulp(&ctx.http, key, query, ulp_type, ctx),
         );
 
-        let mut entity = target.to_entity(0.80, &ctx.scan_id);
+        let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, &ctx.scan_id);
         entity.tag(SRC);
 
         // The last genuine transport/parse failure seen across the three
@@ -443,7 +445,8 @@ fn emit_pbs_v1(
         // Corroborating emails as BFS pivots.
         for email in meta.emails.iter().flatten() {
             if !email.eq_ignore_ascii_case(query) {
-                let mut pivot = Entity::new(EntityKind::Email, email, 0.70, scan_id);
+                let mut pivot =
+                    Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
                 pivot.tag(SRC);
                 pivot.tag("pbs-v1-pivot");
                 result.push(pivot);
@@ -458,7 +461,7 @@ fn emit_pbs_v1(
             if !name.eq_ignore_ascii_case(query)
                 && !crate::core::validation::is_username_derived_name(name)
             {
-                let mut pivot = Entity::new(EntityKind::Person, name, 0.65, scan_id);
+                let mut pivot = Entity::new(EntityKind::Person, name, confidence::HIGH, scan_id);
                 pivot.tag(SRC);
                 pivot.tag("pbs-v1-pivot");
                 result.push(pivot);
@@ -575,7 +578,7 @@ fn emit_pbs_v2(
             .as_deref()
             .filter(|e| !e.eq_ignore_ascii_case(query))
         {
-            let mut pivot = Entity::new(EntityKind::Email, email, 0.70, scan_id);
+            let mut pivot = Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
             pivot.tag(SRC);
             pivot.tag("pbs-v2-pivot");
             result.push(pivot);
@@ -585,13 +588,14 @@ fn emit_pbs_v2(
             .as_deref()
             .filter(|u| !u.eq_ignore_ascii_case(query))
         {
-            let mut pivot = Entity::new(EntityKind::Username, uname, 0.70, scan_id);
+            let mut pivot =
+                Entity::new(EntityKind::Username, uname, confidence::HIGH_PLUS, scan_id);
             pivot.tag(SRC);
             pivot.tag("pbs-v2-pivot");
             result.push(pivot);
         }
         if let Some(phone) = &record.phone {
-            let mut pivot = Entity::new(EntityKind::Phone, phone, 0.70, scan_id);
+            let mut pivot = Entity::new(EntityKind::Phone, phone, confidence::HIGH_PLUS, scan_id);
             pivot.tag(SRC);
             pivot.tag("pbs-v2-pivot");
             result.push(pivot);
@@ -670,10 +674,29 @@ fn emit_ulp(
             } else {
                 EntityKind::Username
             };
-            let mut pivot = Entity::new(kind, login, 0.70, scan_id);
+            let mut pivot = Entity::new(kind, login, confidence::HIGH_PLUS, scan_id);
             pivot.tag(SRC);
             pivot.tag("ulp-pivot");
             result.push(pivot);
+        }
+
+        // The login `url` is where the credentials were captured — the most
+        // actionable pivot in a stealer record (mirrors
+        // oathnet_pro::stealer::extract_stealer_entities' identical field).
+        // Emit it as a first-class Url. Its host is deliberately NOT also
+        // minted as a Domain: a stealer-log host is a third-party service the
+        // subject merely has an account on, not a domain they own — minting
+        // it would spawn subdomain-proliferation noise and misdirect
+        // dns/cert/wayback expansion onto the *platform's* infrastructure.
+        if let Some(u) = record.url.as_deref() {
+            let u = u.trim();
+            if u.starts_with("http") && u.contains('.') {
+                let mut pivot = Entity::new(EntityKind::Url, u, confidence::MEDIUM_HIGH, scan_id);
+                pivot.tag(SRC);
+                pivot.tag("ulp-pivot");
+                pivot.tag("credential-url");
+                result.push(pivot);
+            }
         }
     }
 }

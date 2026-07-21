@@ -49,6 +49,7 @@ mod tests;
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::EntityKind,
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -67,15 +68,15 @@ pub(crate) const SRC: &str = "opensanctions";
 /// not independently confirmed by this scan (a same-name different person is
 /// possible without corroborating DOB/nationality on our side), so pitched
 /// at the same single-source-directory tier as `hlr_cnam`'s CNAM `Person`
-/// pivot (0.55) / `au_people`'s directory confirmations (0.62) — not
+/// pivot (confidence::MEDIUM_HIGH) / `au_people`'s directory confirmations (0.62) — not
 /// hibp/dehashed's direct-identity-confirmation tier, since the subject here
 /// isn't the literal seed value but an aggregator's best-scoring candidate.
-pub(super) const MATCH_CONF: f64 = 0.60;
+pub(super) const MATCH_CONF: f64 = confidence::MEDIUM_PLUS;
 
 /// A match this strong (name plus corroborating detail essentially exact)
 /// earns an extra tag distinguishing it from a borderline hit that only just
 /// cleared the API's own match threshold.
-pub(super) const HIGH_CONFIDENCE_SCORE: f64 = 0.90;
+pub(super) const HIGH_CONFIDENCE_SCORE: f64 = confidence::VERY_HIGH_PLUS;
 
 pub struct OpenSanctions;
 
@@ -86,7 +87,7 @@ impl Module for OpenSanctions {
     }
 
     fn description(&self) -> &'static str {
-        "OpenSanctions sanctions/PEP/watchlist screening — OFAC, UN, EU, DFAT (AU) and 400+ global sources"
+        "OpenSanctions screening — cross-checks sanctions/PEP/watchlist exposure across OFAC, UN, EU, DFAT (AU), and 400+ global sources"
     }
 
     fn priority(&self) -> u8 {

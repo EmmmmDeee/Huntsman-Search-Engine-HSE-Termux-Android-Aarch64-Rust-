@@ -130,10 +130,19 @@ fn write_preamble(xml: &mut String, scan_id: &str) {
         xml,
         r#"      <attribute id="6" title="tags" type="string"/>"#
     );
+    // Diamond Model attribution vertex (victim / infrastructure / capability) —
+    // the deterministic `core::diamond` classification, exported so a Gephi
+    // analyst can partition or colour the WHOLE entity graph by attribution role
+    // in one click, not just by kind. A fixed lowercase enum string, never
+    // adversary (that role is relational, carried by the edges, not the node).
+    let _ = writeln!(
+        xml,
+        r#"      <attribute id="7" title="diamond_vertex" type="string"/>"#
+    );
     let _ = writeln!(xml, r#"    </attributes>"#);
 }
 
-/// One `<node>` element with its seven `<attvalue>`s. The id is the truncated
+/// One `<node>` element with its eight `<attvalue>`s. The id is the truncated
 /// uid (see [`short_uid`]) so relation/co-occurrence edges can reference it.
 /// `coreness` is the k-core index (0 = isolated periphery, higher = more
 /// deeply embedded in a densely-connected cluster). `tags` is `|`-joined (the
@@ -182,6 +191,14 @@ fn write_node(xml: &mut String, e: &Entity, coreness: usize) {
         xml,
         r#"          <attvalue for="6" value="{}"/>"#,
         xml_escape(&e.tags.join("|"))
+    );
+    // Diamond attribution vertex — a fixed lowercase enum string, XML-safe by
+    // construction (no escaping needed), so no scan can ever produce an
+    // unclassified node in the graph view.
+    let _ = writeln!(
+        xml,
+        r#"          <attvalue for="7" value="{}"/>"#,
+        e.diamond_vertex().as_str()
     );
     let _ = writeln!(xml, r#"        </attvalues>"#);
     let _ = writeln!(xml, r#"      </node>"#);

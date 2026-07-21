@@ -1,11 +1,22 @@
-//! Unified DNS intelligence module — resolution, brute-force, CAA, reverse,
-//! and blocklist checks dispatched by target kind:
+//! Unified DNS intelligence module — resolution, brute-force, structural
+//! permutation, CAA, reverse, and blocklist checks dispatched by target kind:
 //!
 //! **Domain targets** (sequential):
 //!   1. *Resolution* — A / AAAA / MX / NS / SOA / TXT lookups via `tokio::join!`.
 //!   2. *Subdomain brute-force* — 146-label common-name dictionary, bounded
 //!      to 12 concurrent lookups.
-//!   3. *CAA inspection* — RFC 8659 Certification Authority Authorization.
+//!   3. *Structural permutation* — `altdns`-class enumeration: once a target
+//!      IS an already-discovered subdomain (≥3 labels), generate structural
+//!      siblings of its own leftmost label (numeric neighbours, environment/
+//!      stage prefixes and suffixes, separator normalisation) and resolve
+//!      them. Recurses automatically across the whole scan — see `permute`'s
+//!      module doc.
+//!   4. *SRV service-discovery* — RFC 2782 `_service._proto.domain` records
+//!      (AD domain controllers, mail/collaboration, VoIP, …), apex-only. Each
+//!      resolved target host is a new Domain pivot. See `srv`'s module doc.
+//!   5. *DKIM selectors* — RFC 6376 `<selector>._domainkey.domain` probing for
+//!      mail-vendor attribution and weak-key surfacing, apex-only. See `dkim`.
+//!   6. *CAA inspection* — RFC 8659 Certification Authority Authorization.
 //!
 //! **IpAddress targets** (sequential):
 //!   1. *Reverse DNS* — PTR record lookup.
@@ -18,10 +29,18 @@
 
 mod brute;
 mod constants;
+mod dkim;
 mod helpers;
+mod permute;
 mod resolve;
+// Re-exported so `doh_resolver` (the primary DNS transport on Termux) reuses the
+// same CAA `iodef`→entity mapping instead of duplicating it.
+pub(crate) use resolve::iodef_entities;
+mod resolve_batch;
+mod srv;
 #[cfg(test)]
 mod tests;
+mod wildcard;
 
 use async_trait::async_trait;
 
@@ -33,7 +52,10 @@ use crate::core::{
 };
 
 use self::brute::brute_subdomains;
+use self::dkim::dkim_enumerate;
+use self::permute::permute_subdomains;
 use self::resolve::{blocklist_check, lookup_caa, resolve_records, reverse_lookup};
+use self::srv::srv_enumerate;
 
 pub(super) const SRC: &str = "dns_intel";
 pub(super) const MAX_CONCURRENT_BRUTE: usize = 12;
@@ -51,7 +73,7 @@ impl Module for DnsIntel {
     }
 
     fn description(&self) -> &'static str {
-        "DNS intelligence: resolution, subdomain brute-force, blocklist, reverse DNS, and CAA"
+        "DNS intelligence sweep — resolution, subdomain brute-force, blocklist checks, reverse DNS, and CAA enumeration"
     }
 
     fn priority(&self) -> u8 {
@@ -118,11 +140,30 @@ async fn process_domain(target: &Target, ctx: &ModuleContext) -> Result<ModuleRe
     let resolver_result = resolve_records(target, ctx).await?;
     result.extend(resolver_result);
 
-    // 2. Subdomain brute-force
+    // 2. Subdomain brute-force (generic common-name dictionary)
     let brute_result = brute_subdomains(target, ctx).await?;
     result.extend(brute_result);
 
-    // 3. CAA record inspection
+    // 3. Structural permutation of the CURRENT target's own leftmost label
+    // (a no-op on the bare apex; fires once this target is itself a discovered
+    // subdomain — including one the brute-force pass just found, or one the
+    // engine re-dispatches from a prior round). See `permute` module doc.
+    let permute_result = permute_subdomains(target, ctx).await?;
+    result.extend(permute_result);
+
+    // 4. SRV service-discovery enumeration (apex-only; a no-op on subdomains).
+    // Exposes the concrete host:port of enterprise services — AD domain
+    // controllers, mail/collab, VoIP — each a new Domain pivot. See `srv` doc.
+    let srv_result = srv_enumerate(target, ctx).await?;
+    result.extend(srv_result);
+
+    // 5. DKIM selector enumeration (apex-only). Probes common selectors at
+    // <selector>._domainkey.<domain> to attribute the mail platform/vendor and
+    // surface weak signing keys. See `dkim` module doc.
+    let dkim_result = dkim_enumerate(target, ctx).await?;
+    result.extend(dkim_result);
+
+    // 6. CAA record inspection
     let caa_result = lookup_caa(target, ctx).await?;
     result.extend(caa_result);
 

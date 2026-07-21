@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
     #[test]
@@ -60,7 +61,7 @@ use super::*;
         let e = build_entity(EntityKind::Domain, "example.com", &rows, "s").unwrap();
         assert_eq!(e.kind, EntityKind::Domain);
         assert!(e.has_tag("archived"));
-        assert!((e.confidence - 0.80).abs() < 1e-9);
+        assert!((e.confidence - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
         assert_eq!(attr(&e, "snapshot_count"), Some("3")); // header excluded
         assert_eq!(attr(&e, "first_seen"), Some("20140912153012"));
         assert_eq!(attr(&e, "first_seen_iso"), Some("2014-09-12 15:30:12 UTC"));
@@ -220,4 +221,60 @@ use super::*;
             found,
             "a leaked key in an archived page body must reach the key pool"
         );
+    }
+
+    #[test]
+    fn mine_url_entity_emits_url_with_wayback_tags_and_evidence() {
+        // The archived contact-page URL mined per snapshot must itself be
+        // pivotable as a first-class Url entity, not just an attribute
+        // tacked onto the co-discovered Email/Phone entities.
+        let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let original_url = "http://example.com/contact";
+        let fetch_url = archive_url("20140912153012", original_url);
+        let ts_iso = iso_from_cdx("20140912153012");
+
+        let e = mine_url_entity(&mut seen_urls, original_url, &fetch_url, &ts_iso, "s")
+            .expect("first sighting of original_url must yield a Url entity");
+
+        assert_eq!(e.kind, EntityKind::Url);
+        assert_eq!(e.value, original_url);
+        assert!((e.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
+        assert!(e.has_tag("wayback-historical"));
+        assert!(e.has_tag(crate::core::tags::SEARCH_DISCOVERED));
+        assert_eq!(e.evidence[0].source, SRC);
+        assert!(e.evidence[0].summary.contains(original_url));
+        assert_eq!(attr(&e, "archive_url"), Some(fetch_url.as_str()));
+        assert_eq!(attr(&e, "snapshot_timestamp_iso"), Some(ts_iso.as_str()));
+    }
+
+    #[test]
+    fn mine_url_entity_dedups_repeated_original_url_across_snapshots() {
+        // collapse=urlkey makes a repeated original_url across two CDX rows
+        // rare but not impossible; seen_urls must prevent a duplicate entity.
+        let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let original_url = "http://example.com/about";
+
+        let fetch_url_1 = archive_url("20140912153012", original_url);
+        let first = mine_url_entity(
+            &mut seen_urls,
+            original_url,
+            &fetch_url_1,
+            "2014-09-12 15:30:12 UTC",
+            "s",
+        );
+        assert!(first.is_some(), "first sighting must be emitted");
+
+        let fetch_url_2 = archive_url("20200722120000", original_url);
+        let second = mine_url_entity(
+            &mut seen_urls,
+            original_url,
+            &fetch_url_2,
+            "2020-07-22 12:00:00 UTC",
+            "s",
+        );
+        assert!(
+            second.is_none(),
+            "repeated original_url must be deduped via seen_urls, not re-emitted"
+        );
+        assert_eq!(seen_urls.len(), 1);
     }

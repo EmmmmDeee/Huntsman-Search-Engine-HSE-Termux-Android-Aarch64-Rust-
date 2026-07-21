@@ -34,7 +34,7 @@
 //!   * Confirmed enrolment with division + suburb: 0.72 (electoral roll is
 //!     compulsory and address-verified; higher than directory sources)
 //!   * Division only (no suburb resolved): 0.58
-//!   * Address from division centroid lookup: 0.65 (derived, not raw)
+//!   * Address from division centroid lookup: confidence::HIGH (derived, not raw)
 //!
 //! The module is AU-restricted: it only accepts `FullName` targets and only
 //! emits when the division geography maps inside Australia.
@@ -71,8 +71,7 @@ impl Module for AuElectoral {
     }
 
     fn description(&self) -> &'static str {
-        "AEC and state electoral commission enrolment lookups — confirms residential \
-         electoral division (suburb/state) for an AU full-name seed"
+        "AEC and state electoral-commission recon — confirms residential electoral division (suburb/state) for an AU full-name seed via enrolment lookups"
     }
 
     fn accepts(&self, t: &Target) -> bool {

@@ -97,9 +97,16 @@ async fn writer_loop(mut rx: mpsc::UnboundedReceiver<WriteCmd>, store: Arc<dyn S
             let evts = std::mem::take(&mut batch);
             let s = Arc::clone(&store);
             if let Err(e) = tokio::task::spawn_blocking(move || {
-                for ev in &evts {
-                    if let Err(err) = s.insert_event(ev) {
-                        warn!(error = %err, "db-writer: event persist failed");
+                // One transaction for the whole coalesced drain (≤64 events) —
+                // one commit/fsync on the phone's flash filesystem instead of one
+                // per event. On a batch rollback, salvage what we can per-event
+                // (the same fallback contract as the entity batch path).
+                if let Err(batch_err) = s.insert_events_batch(&evts) {
+                    warn!(error = %batch_err, "db-writer: batch event persist failed — falling back to per-event");
+                    for ev in &evts {
+                        if let Err(err) = s.insert_event(ev) {
+                            warn!(error = %err, "db-writer: event persist failed");
+                        }
                     }
                 }
             })

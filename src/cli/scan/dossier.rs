@@ -147,6 +147,18 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
         "  Modules:   {} run, {} errored, {} deduped",
         scan.modules_run, scan.modules_errored, scan.modules_deduped
     );
+    // Expansion timeline — the scan's expansion curve: how many entities were
+    // first surfaced in each generation as the working graph expanded outward
+    // from the seed. Shown only when expansion reached beyond the seed round
+    // (more than one generation present).
+    let timeline = crate::core::entity::expansion_timeline(entities);
+    if timeline.len() > 1 {
+        let parts: Vec<String> = timeline
+            .iter()
+            .map(|(g, n)| format!("gen{g}:{n}"))
+            .collect();
+        println!("  Expansion: {}", parts.join(" → "));
+    }
 
     // Exposure Index — the calibrated 0–100 headline (with its transparent
     // breakdown) an operator reads first, aggregated from the breach/sensitive-PII/
@@ -330,10 +342,73 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
     }
 
     print_connections(entities, relations);
+    print_derivation_trails(entities, relations);
     print_resolved_identities(entities, relations);
     print_connection_brokers(entities, relations);
 
     print_diagnostics(scan, entities, kind, value, &scan.id, store);
+}
+
+/// DERIVATION TRAILS — the causal chain of pivots that surfaced each of the
+/// deepest findings, seed → … → entity. Where CONNECTIONS shows how identities
+/// link to each other, this shows how the SCAN itself REACHED a finding: which
+/// entity's expansion led to which, generation by generation out from the seed.
+/// Reuses the [`crate::core::relation::provenance_chain`] primitive so the
+/// rendered path and the stored `DerivedFrom` lineage can never disagree. Only
+/// the entities expansion actually reached (generation > 0) have a trail worth
+/// narrating; a seed-round find is trivially its own root.
+fn print_derivation_trails(entities: &[Entity], relations: &[Relation]) {
+    use std::collections::HashMap;
+
+    let mut deep: Vec<&Entity> = entities.iter().filter(|e| e.generation > 0).collect();
+    if deep.is_empty() {
+        return;
+    }
+    // Deepest first (the most "how did we even get here" findings), then by
+    // effective confidence, then uid for a deterministic total order.
+    deep.sort_by(|a, b| {
+        b.generation
+            .cmp(&a.generation)
+            .then_with(|| {
+                b.c_effective()
+                    .partial_cmp(&a.c_effective())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
+
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let label = |uid: &str| -> String {
+        by_uid.get(uid).map_or_else(
+            || format!("{}…", &uid[..uid.len().min(8)]),
+            |e| super::super::truncate(&e.value, 32),
+        )
+    };
+
+    const SHOWN: usize = 12;
+    println!(
+        "━━━ DERIVATION TRAILS ({}) — how the deepest leads were reached ━━━",
+        deep.len()
+    );
+    println!();
+    println!("  The pivot chain from the seed out to each finding (gen = pivots from the seed):");
+    println!();
+    for e in deep.iter().take(SHOWN) {
+        // provenance_chain is entity→root; reverse it for a seed→entity reading.
+        let mut chain = crate::core::relation::provenance_chain(&e.uid, relations);
+        chain.reverse();
+        let rendered = chain
+            .iter()
+            .copied()
+            .map(label)
+            .collect::<Vec<_>>()
+            .join("  →  ");
+        println!("  [gen {}] {}  ({})", e.generation, rendered, e.kind);
+    }
+    if let Some(note) = truncation_note(SHOWN, deep.len()) {
+        println!("{note}");
+    }
+    println!();
 }
 
 /// CONNECTIONS — graph-free link analysis (PROBLEM_TREE C1, the

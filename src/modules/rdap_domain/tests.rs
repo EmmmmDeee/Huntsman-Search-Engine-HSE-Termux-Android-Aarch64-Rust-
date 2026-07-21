@@ -166,3 +166,67 @@ fn ns_entity_tags_and_rejects_blank() {
     // Blank / whitespace name → no entity.
     assert!(build_ns_entity("example.com", "   ", "s").is_none());
 }
+
+// Verbatim shape of the live registrar entity (github.com → MarkMonitor Inc.,
+// IANA #292): a `registrar`-role entity carrying `vcardArray` fn + `publicIds`.
+const REGISTRAR_JSON: &str = r#"{
+  "entities":[{
+    "roles":["registrar"],
+    "handle":"292",
+    "publicIds":[{"type":"IANA Registrar ID","identifier":"292"}],
+    "vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","MarkMonitor Inc."]]],
+    "entities":[{"roles":["abuse"]}]
+  }]
+}"#;
+
+#[test]
+fn registrar_identity_extracts_name_and_iana_id() {
+    let (name, iana) = registrar_identity(&resp(REGISTRAR_JSON));
+    assert_eq!(name.as_deref(), Some("MarkMonitor Inc."));
+    assert_eq!(iana.as_deref(), Some("292"));
+}
+
+#[test]
+fn registrar_identity_never_surfaces_registrant_pii() {
+    // A registrant/admin vCard `fn` can be a natural person's name — it must
+    // NOT be extracted. Only the `registrar` role yields a name.
+    let body = resp(
+        r#"{"entities":[{
+            "roles":["registrant","administrative"],
+            "vcardArray":["vcard",[["fn",{},"text","Jane Q. Public"]]]
+        }]}"#,
+    );
+    let (name, iana) = registrar_identity(&body);
+    assert_eq!(name, None, "registrant vCard fn must never be surfaced");
+    assert_eq!(iana, None);
+}
+
+#[test]
+fn registrar_identity_absent_registrar_is_none() {
+    let (name, iana) = registrar_identity(&resp(r#"{"entities":[{"roles":["technical"]}]}"#));
+    assert_eq!(name, None);
+    assert_eq!(iana, None);
+}
+
+#[test]
+fn domain_entity_surfaces_registrar_and_iana_tag() {
+    let e = build_domain_entity("github.com", &resp(REGISTRAR_JSON), "s");
+    assert_eq!(attr(&e, "registrar"), Some("MarkMonitor Inc."));
+    assert_eq!(attr(&e, "registrar_iana_id"), Some("292"));
+    // The IANA ID also becomes a tag so the correlator can cluster
+    // same-registrar domains without parsing evidence text.
+    assert!(e.has_tag("registrar-id:292"));
+    // The registrar role is still recorded among contact_roles.
+    assert_eq!(attr(&e, "contact_roles"), Some("registrar"));
+}
+
+#[test]
+fn build_registrar_entity_emits_org_with_iana_and_rejects_short_name() {
+    let oe = build_registrar_entity("github.com", "MarkMonitor Inc.", Some("292"), "s").unwrap();
+    assert_eq!(oe.kind, EntityKind::Organisation);
+    assert_eq!(oe.value, "MarkMonitor Inc.");
+    assert!(oe.has_tag("rdap") && oe.has_tag("registrar"));
+    assert_eq!(attr(&oe, "iana_registrar_id"), Some("292"));
+    // Too-short / blank names never mint an Organisation.
+    assert!(build_registrar_entity("x.com", "  a ", None, "s").is_none());
+}

@@ -25,6 +25,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence, unix_now},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -48,7 +49,7 @@ impl Module for StructuredId {
     }
 
     fn description(&self) -> &'static str {
-        "Offline decode of structured IDs (UUIDv1 → MAC + time, MongoDB ObjectID → time)"
+        "Offline structured-ID decode — unmasks UUIDv1 to MAC + time and MongoDB ObjectID to time"
     }
 
     fn priority(&self) -> u8 {
@@ -96,7 +97,7 @@ impl Module for StructuredId {
             && plausible(secs)
         {
             let date = utc_date(secs);
-            let mut e = target.to_entity(0.60, &ctx.scan_id);
+            let mut e = target.to_entity(confidence::MEDIUM_PLUS, &ctx.scan_id);
             e.tag("uuid-v1");
             e.tag("derived");
             e.tag("account-age");
@@ -111,7 +112,12 @@ impl Module for StructuredId {
 
             // The node MAC is a real device fingerprint — emit it first-class.
             if let Some(m) = mac {
-                let mut me = Entity::new(EntityKind::MacAddress, &m, 0.70, &ctx.scan_id);
+                let mut me = Entity::new(
+                    EntityKind::MacAddress,
+                    &m,
+                    confidence::HIGH_PLUS,
+                    &ctx.scan_id,
+                );
                 me.tag("uuid-v1");
                 me.tag("derived");
                 me.add_evidence(
@@ -266,7 +272,7 @@ fn emit_creation(
     result: &mut ModuleResult,
 ) {
     let date = utc_date(secs);
-    let mut e = target.to_entity(0.55, scan_id);
+    let mut e = target.to_entity(confidence::MEDIUM_HIGH, scan_id);
     e.tag(tag);
     e.tag("derived");
     e.tag("account-age");

@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -90,7 +91,7 @@ impl Module for ContactEnrich {
     }
 
     fn description(&self) -> &'static str {
-        "Contact validation: phone via Numverify, email via Gravatar"
+        "Contact validation recon — verifies phone via Numverify and email via Gravatar"
     }
 
     fn priority(&self) -> u8 {
@@ -272,7 +273,43 @@ pub(super) fn build_phone_entities(
     );
     entity.add_evidence(ev);
 
-    vec![entity]
+    let mut result = vec![entity];
+
+    // A Numverify `location` reflects the phone's registration/porting
+    // record, not necessarily the subject's current physical location —
+    // tagged distinctly and at a lower confidence than the Gravatar
+    // `current_location` -> Address promotion below.
+    if let Some(loc) = body.location.as_deref()
+        && loc.trim().len() >= 3
+    {
+        let mut ae = Entity::new(EntityKind::Address, loc, confidence::LOW, scan_id);
+        ae.tag("numverify");
+        ae.tag("geoint");
+        ae.tag("phone-registration");
+        if let Some(sc) = crate::util::address_au::state_code(loc) {
+            ae.tag(format!("au-state:{sc}"));
+            ae.tag("country:AU");
+        }
+        ae.add_evidence(Evidence::new(
+            SRC,
+            format!("Numverify location for {}", target.value),
+        ));
+        if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.35, scan_id);
+            c.tag("numverify");
+            c.tag("addr-derived");
+            c.tag("geoint");
+            c.add_evidence(Evidence::new(
+                SRC,
+                format!("Geocode of Numverify location for {}", target.value),
+            ));
+            result.push(c);
+        }
+        result.push(ae);
+    }
+
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +374,7 @@ pub(super) fn build_email_entities(
     hash: &str,
     scan_id: &str,
 ) -> Vec<Entity> {
-    let mut entity = target.to_entity(0.88, scan_id);
+    let mut entity = target.to_entity(confidence::EXPERT, scan_id);
     entity.tag("gravatar");
     let mut ev = Evidence::new(SRC, format!("Gravatar profile for {normalised}"))
         .with_attr("md5", hash)
@@ -396,7 +433,7 @@ pub(super) fn build_email_entities(
         && name.len() >= 3
         && name.contains(' ')
     {
-        let mut pe = Entity::new(EntityKind::Person, name, 0.75, scan_id);
+        let mut pe = Entity::new(EntityKind::Person, name, confidence::VERY_HIGH, scan_id);
         pe.tag("gravatar");
         pe.add_evidence(Evidence::new(
             SRC,
@@ -407,7 +444,12 @@ pub(super) fn build_email_entities(
     if let Some(username) = entry.preferred_username.as_deref()
         && username.len() >= 3
     {
-        let mut ue = Entity::new(EntityKind::Username, username, 0.70, scan_id);
+        let mut ue = Entity::new(
+            EntityKind::Username,
+            username,
+            confidence::HIGH_PLUS,
+            scan_id,
+        );
         ue.tag("gravatar");
         ue.add_evidence(Evidence::new(
             SRC,
@@ -418,7 +460,7 @@ pub(super) fn build_email_entities(
     if let Some(loc) = entry.current_location.as_deref()
         && loc.len() >= 3
     {
-        let mut ae = Entity::new(EntityKind::Address, loc, 0.55, scan_id);
+        let mut ae = Entity::new(EntityKind::Address, loc, confidence::MEDIUM_HIGH, scan_id);
         ae.tag("gravatar");
         ae.tag("geoint");
         if let Some(sc) = crate::util::address_au::state_code(loc) {
@@ -431,7 +473,12 @@ pub(super) fn build_email_entities(
         ));
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::LOW_MEDIUM,
+                scan_id,
+            );
             c.tag("gravatar");
             c.tag("addr-derived");
             c.tag("geoint");
@@ -448,7 +495,7 @@ pub(super) fn build_email_entities(
         if !url.starts_with("http") {
             return None;
         }
-        let mut ue = Entity::new(EntityKind::Url, url, 0.60, scan_id);
+        let mut ue = Entity::new(EntityKind::Url, url, confidence::MEDIUM_PLUS, scan_id);
         ue.tag("gravatar");
         ue.add_evidence(Evidence::new(
             SRC,

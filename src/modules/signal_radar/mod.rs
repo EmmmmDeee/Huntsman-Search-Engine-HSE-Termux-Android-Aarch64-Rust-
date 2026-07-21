@@ -43,7 +43,7 @@ impl Module for SignalRadar {
     }
 
     fn description(&self) -> &'static str {
-        "Real-time multi-sensor signal radar: WiFi AP scan, Bluetooth, cell towers, GPS, and LAN ARP discovery"
+        "Real-time multi-sensor signal radar — sweeps WiFi AP, Bluetooth, cell towers, GPS, and LAN ARP discovery"
     }
 
     fn priority(&self) -> u8 {
@@ -85,6 +85,7 @@ impl Module for SignalRadar {
             EntityKind::IpAddress,
             EntityKind::Coordinates,
             EntityKind::DeviceId,
+            EntityKind::Ssid,
         ];
         KINDS
     }

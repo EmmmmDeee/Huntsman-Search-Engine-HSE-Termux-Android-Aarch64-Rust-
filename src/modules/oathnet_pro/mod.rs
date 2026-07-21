@@ -59,7 +59,7 @@ impl Module for OathnetPro {
     }
 
     fn description(&self) -> &'static str {
-        "Full-spectrum breach, stealer & OSINT intelligence via OathNet API"
+        "OathNet API recon — full-spectrum breach, stealer, and OSINT intelligence sweep"
     }
 
     fn priority(&self) -> u8 {
@@ -210,7 +210,7 @@ impl Module for OathnetPro {
         // Parent dossier entity — emitted ONLY when the subject actually appears
         // in the records. The engine pre-seeds a subject anchor, so a broad
         // `full_name` search that returns a page of strangers used to merge a
-        // false 0.85 `breach` hit — plus an aggregate dump of 100 strangers'
+        // false confidence::HIGH_PLUSPLUS_PLUS `breach` hit — plus an aggregate dump of 100 strangers'
         // names/countries — straight onto that anchor. `breach_parent_entity`
         // returns `None` on a zero-match page and aggregates the subject's
         // attributes over the MATCHING rows only.

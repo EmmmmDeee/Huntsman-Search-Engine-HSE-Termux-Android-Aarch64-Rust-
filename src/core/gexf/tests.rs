@@ -18,6 +18,30 @@ use super::*;
     }
 
     #[test]
+    fn gexf_exports_the_diamond_vertex_per_kind() {
+        // The attribution vertex is a first-class node attribute so Gephi can
+        // partition the whole graph by Diamond role, not just by kind. It must
+        // reflect the per-kind classification, not a single bucket.
+        let email = Entity::new(EntityKind::Email, "alice@example.com", 0.9, "s"); // victim
+        let ip = Entity::new(EntityKind::IpAddress, "203.0.113.7", 0.9, "s"); // infrastructure
+        let pw = Entity::new(EntityKind::Password, "leaked", 0.9, "s"); // capability
+        let xml = entities_to_gexf(&[email, ip, pw], &[], "s");
+        assert!(
+            xml.contains(r#"<attribute id="7" title="diamond_vertex" type="string"/>"#),
+            "the diamond_vertex attribute must be declared: {xml}"
+        );
+        assert!(xml.contains(r#"<attvalue for="7" value="victim"/>"#), "{xml}");
+        assert!(
+            xml.contains(r#"<attvalue for="7" value="infrastructure"/>"#),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(r#"<attvalue for="7" value="capability"/>"#),
+            "{xml}"
+        );
+    }
+
+    #[test]
     fn gexf_creates_edges_for_a_shared_evidence_record() {
         // Two selectors that appear in the SAME breach record (identical source
         // AND summary) genuinely co-occur → one edge, labelled by the source.
@@ -279,6 +303,7 @@ use super::*;
       <attribute id="4" title="corroboration" type="integer"/>
       <attribute id="5" title="coreness" type="integer"/>
       <attribute id="6" title="tags" type="string"/>
+      <attribute id="7" title="diamond_vertex" type="string"/>
     </attributes>
     <nodes>
       <node id="ed152b32b035" label="example.com">
@@ -290,6 +315,7 @@ use super::*;
           <attvalue for="4" value="1"/>
           <attvalue for="5" value="1"/>
           <attvalue for="6" value="breach|geoint"/>
+          <attvalue for="7" value="infrastructure"/>
         </attvalues>
       </node>
       <node id="df4bda23ac18" label="blog.example.com">
@@ -301,6 +327,7 @@ use super::*;
           <attvalue for="4" value="1"/>
           <attvalue for="5" value="1"/>
           <attvalue for="6" value=""/>
+          <attvalue for="7" value="infrastructure"/>
         </attvalues>
       </node>
     </nodes>

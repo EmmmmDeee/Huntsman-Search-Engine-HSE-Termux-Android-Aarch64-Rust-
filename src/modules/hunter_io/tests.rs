@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
     #[test]
@@ -108,7 +109,7 @@ use super::*;
             .find(|e| e.kind == EntityKind::Email)
             .expect("email entity");
         assert_eq!(email.value, "jane.doe@acme.com");
-        assert!((email.confidence - 0.85).abs() < f64::EPSILON);
+        assert!((email.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < f64::EPSILON);
         assert!(!email.tags.iter().any(|t| t == "email-pattern-synthesised"));
         // Person co-located.
         assert!(emails_of(&es, EntityKind::Person).contains(&"Jane Doe"));
@@ -258,7 +259,7 @@ use super::*;
             .expect("synthesised email");
         // Synthesised against Hunter's CANONICAL domain, low confidence, weak lead.
         assert_eq!(email.value, "mary.sue@acme.io");
-        assert!((email.confidence - 0.40).abs() < f64::EPSILON);
+        assert!((email.confidence - confidence::LOW).abs() < f64::EPSILON);
         assert!(email.tags.iter().any(|t| t == "email-pattern-synthesised"));
         assert!(email.tags.iter().any(|t| t == "weak-lead"));
         // Still attributes the person.
@@ -301,13 +302,13 @@ use super::*;
         // (previously the test re-implemented the match arms and
         // asserted against its own copy).
         let cases: [(Option<u8>, f64); 7] = [
-            (Some(95), 0.85),
-            (Some(75), 0.70),
-            (Some(50), 0.55),
-            (Some(20), 0.45),
-            (Some(1), 0.45),
-            (Some(0), 0.50), // explicit 0 collapses to unknown floor
-            (None, 0.50),
+            (Some(95), confidence::HIGH_PLUSPLUS_PLUS),
+            (Some(75), confidence::HIGH_PLUS),
+            (Some(50), confidence::MEDIUM_HIGH),
+            (Some(20), confidence::LOW_MEDIUM),
+            (Some(1), confidence::LOW_MEDIUM),
+            (Some(0), confidence::MEDIUM), // explicit 0 collapses to unknown floor
+            (None, confidence::MEDIUM),
         ];
         for (input, expected) in cases {
             let got = confidence_from_hunter_score(input);

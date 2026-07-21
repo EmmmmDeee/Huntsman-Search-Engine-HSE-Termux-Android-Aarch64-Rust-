@@ -81,7 +81,7 @@ impl Module for UsernameSearch {
     }
 
     fn description(&self) -> &'static str {
-        "Maigret-style username enumeration across 150+ sites (social, dev, gaming, music, video, dating, …) with category tagging."
+        "Maigret-style username enumeration — sweeps a handle across 150+ sites (social, dev, gaming, music, video, dating, …) with category tagging"
     }
 
     fn is_passive(&self) -> bool {
@@ -164,53 +164,69 @@ impl Module for UsernameSearch {
                     .header("User-Agent", BROWSER_UA)
                     .header("Accept", BROWSER_ACCEPT)
                     .header("Accept-Language", "en-US,en;q=0.9");
-                let resp = tokio::time::timeout(per_site_timeout, req.send()).await;
-                let resp = match resp {
-                    Ok(Ok(r)) => r,
-                    _ => return ProbeResult::Error,
-                };
+                // The ENTIRE probe — request dispatch AND the body read — shares
+                // ONE `per_site_timeout` budget. Previously only `send()` was
+                // bounded here; the `read_body_capped` branches then fell back to
+                // the shared client's 30s read_timeout while still holding a
+                // semaphore permit, so a few slow-body sites could each pin one of
+                // the MAX_CONCURRENT_PROBES slots for ~34.5s and shrink coverage on
+                // exactly the flaky mobile links this module targets.
+                let probe = async {
+                    let resp = match req.send().await {
+                        Ok(r) => r,
+                        Err(_) => return ProbeResult::Error,
+                    };
 
-                let status = resp.status().as_u16();
-                let found = |url: String| ProbeResult::Found {
-                    url,
-                    confidence: hit_conf,
-                    verified: hit_verified,
+                    let status = resp.status().as_u16();
+                    let found = |url: String| ProbeResult::Found {
+                        url,
+                        confidence: hit_conf,
+                        verified: hit_verified,
+                    };
+                    match site.detect {
+                        Detect::StatusEq(want) if status == want => found(url),
+                        Detect::StatusEq(_) => ProbeResult::NotFound,
+                        Detect::StatusAndBody(want, needle) => {
+                            if status != want {
+                                return ProbeResult::NotFound;
+                            }
+                            let body =
+                                match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP)
+                                    .await
+                                {
+                                    Some(t) => t,
+                                    None => return ProbeResult::Error,
+                                };
+                            scan_text_for_keys(&body);
+                            if body.contains(needle) {
+                                found(url)
+                            } else {
+                                ProbeResult::NotFound
+                            }
+                        }
+                        Detect::StatusAndNotBody(want, needle) => {
+                            if status != want {
+                                return ProbeResult::NotFound;
+                            }
+                            let body =
+                                match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP)
+                                    .await
+                                {
+                                    Some(t) => t,
+                                    None => return ProbeResult::Error,
+                                };
+                            scan_text_for_keys(&body);
+                            if body.contains(needle) {
+                                ProbeResult::NotFound
+                            } else {
+                                found(url)
+                            }
+                        }
+                    }
                 };
-                match site.detect {
-                    Detect::StatusEq(want) if status == want => found(url),
-                    Detect::StatusEq(_) => ProbeResult::NotFound,
-                    Detect::StatusAndBody(want, needle) => {
-                        if status != want {
-                            return ProbeResult::NotFound;
-                        }
-                        let body =
-                            match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP).await {
-                                Some(t) => t,
-                                None => return ProbeResult::Error,
-                            };
-                        scan_text_for_keys(&body);
-                        if body.contains(needle) {
-                            found(url)
-                        } else {
-                            ProbeResult::NotFound
-                        }
-                    }
-                    Detect::StatusAndNotBody(want, needle) => {
-                        if status != want {
-                            return ProbeResult::NotFound;
-                        }
-                        let body =
-                            match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP).await {
-                                Some(t) => t,
-                                None => return ProbeResult::Error,
-                            };
-                        scan_text_for_keys(&body);
-                        if body.contains(needle) {
-                            ProbeResult::NotFound
-                        } else {
-                            found(url)
-                        }
-                    }
+                match tokio::time::timeout(per_site_timeout, probe).await {
+                    Ok(result) => result,
+                    Err(_) => ProbeResult::Error,
                 }
             }
             .then_with_site(site.name, site.cat)

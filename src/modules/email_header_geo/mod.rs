@@ -9,6 +9,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -35,7 +36,7 @@ impl Module for EmailHeaderGeo {
     }
 
     fn description(&self) -> &'static str {
-        "Extract geographic signals from email domain infrastructure patterns"
+        "Email infrastructure geolocation — surfaces geographic signals from email domain infrastructure patterns"
     }
 
     fn priority(&self) -> u8 {
@@ -130,7 +131,7 @@ impl Module for EmailHeaderGeo {
         }
 
         if let Some((provider, region)) = detect_corporate_provider(domain) {
-            let mut e = Entity::new(EntityKind::Address, region, 0.40, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Address, region, confidence::LOW, &ctx.scan_id);
             e.tag("geoint");
             e.tag(crate::core::tags::COARSE);
             e.tag("email-provider-inferred");

@@ -1,5 +1,6 @@
 use super::{OpenSanctions, entity_builders::build_entities, types::MatchResp};
 use crate::core::{
+    confidence,
     entity::EntityKind,
     module::{Module, ModuleCost},
     scan::{Target, TargetKind},
@@ -118,7 +119,7 @@ fn definitive_match_carries_sanction_and_debarment_tags_and_evidence() {
     let e = &es[0];
     assert_eq!(e.kind, EntityKind::Person);
     assert_eq!(e.value, "Alexander Vyacheslavovich ZAKHAROV");
-    assert!((e.confidence - 0.60).abs() < 1e-9);
+    assert!((e.confidence - confidence::MEDIUM_PLUS).abs() < 1e-9);
     assert!(e.has_tag(crate::core::tags::SANCTIONED));
     assert!(e.has_tag(crate::core::tags::DEBARRED));
     assert!(
@@ -127,7 +128,7 @@ fn definitive_match_carries_sanction_and_debarment_tags_and_evidence() {
     );
     assert!(
         e.has_tag("high-confidence-match"),
-        "0.92 clears the 0.90 bar"
+        "0.92 clears the confidence::VERY_HIGH_PLUS bar"
     );
 
     let ev = &e.evidence[0];
@@ -175,7 +176,7 @@ fn pep_topic_without_sanction_tags_pep_only() {
     assert!(!es[0].has_tag(crate::core::tags::DEBARRED));
     assert!(
         !es[0].has_tag("high-confidence-match"),
-        "0.81 is below the 0.90 bar"
+        "0.81 is below the confidence::VERY_HIGH_PLUS bar"
     );
 }
 

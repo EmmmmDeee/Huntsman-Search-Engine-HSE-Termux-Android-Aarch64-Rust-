@@ -32,6 +32,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -109,7 +110,7 @@ fn build_entity(kind: EntityKind, value: &str, rows: &[Row], scan_id: &str) -> O
         10,
     );
 
-    let mut entity = Entity::new(kind, value, 0.80, scan_id);
+    let mut entity = Entity::new(kind, value, confidence::HIGH_PLUSPLUS, scan_id);
     entity.tag("archived");
     let mut ev = Evidence::new(
         SRC,
@@ -230,6 +231,42 @@ fn mine_keys_from_body(
     }
 }
 
+/// Build the `Url` entity for a freshly-discovered archived contact-adjacent
+/// page, or `None` when `original_url` was already emitted this scan
+/// (dedup tracked via `seen_urls`). Confidence is modest (confidence::MEDIUM_HIGH) — this only
+/// proves the page was once archived, not that it is live today. **Pure**
+/// (no network/IO), so — like `mine_keys_from_body` — it is exercised
+/// directly by tests without mocking HTTP.
+fn mine_url_entity(
+    seen_urls: &mut std::collections::HashSet<String>,
+    original_url: &str,
+    fetch_url: &str,
+    ts_iso: &str,
+    scan_id: &str,
+) -> Option<Entity> {
+    if !seen_urls.insert(original_url.to_string()) {
+        return None;
+    }
+    let mut u = Entity::new(
+        EntityKind::Url,
+        original_url,
+        confidence::MEDIUM_HIGH,
+        scan_id,
+    );
+    u.tag("wayback-historical");
+    u.tag(crate::core::tags::SEARCH_DISCOVERED);
+    let ev = Evidence::new(
+        SRC,
+        format!(
+            "[wayback] contact-adjacent page discovered via archived snapshot — {original_url}"
+        ),
+    )
+    .with_attr("archive_url", fetch_url)
+    .with_attr("snapshot_timestamp_iso", ts_iso);
+    u.add_evidence(ev);
+    Some(u)
+}
+
 /// Fetch archived contact-adjacent pages for `domain` and extract
 /// historical email addresses and phone numbers with temporal metadata.
 /// Also runs every fetched body through the universal key-harvest
@@ -275,6 +312,7 @@ async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> Vec<
     let mut entities: Vec<Entity> = Vec::new();
     let mut seen_emails: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_phones: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
     let key_pool = crate::util::key_pool::global_pool();
 
     for (timestamp, original_url) in &contact_snapshots {
@@ -301,12 +339,17 @@ async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> Vec<
 
         let ts_iso = iso_from_cdx(timestamp);
 
+        if let Some(u) = mine_url_entity(&mut seen_urls, original_url, &fetch_url, &ts_iso, scan_id)
+        {
+            entities.push(u);
+        }
+
         for email in crate::util::extract::page_emails(&body) {
             if crate::util::domains::is_infrastructure_email(&email) {
                 continue;
             }
             if seen_emails.insert(email.clone()) {
-                let mut e = Entity::new(EntityKind::Email, &email, 0.70, scan_id);
+                let mut e = Entity::new(EntityKind::Email, &email, confidence::HIGH_PLUS, scan_id);
                 e.tag("wayback-historical");
                 e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 let ev = Evidence::new(
@@ -323,7 +366,7 @@ async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> Vec<
 
         for phone in crate::util::extract::phones(&body) {
             if seen_phones.insert(phone.clone()) {
-                let mut e = Entity::new(EntityKind::Phone, &phone, 0.65, scan_id);
+                let mut e = Entity::new(EntityKind::Phone, &phone, confidence::HIGH, scan_id);
                 e.tag("wayback-historical");
                 e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 let ev = Evidence::new(
@@ -357,7 +400,7 @@ impl Module for Wayback {
     }
 
     fn description(&self) -> &'static str {
-        "Internet Archive Wayback Machine: history lookup + historical contact extraction"
+        "Internet Archive Wayback Machine recon — enumerates snapshot history and extracts historical contact intel"
     }
 
     fn priority(&self) -> u8 {

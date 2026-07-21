@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
     #[test]
@@ -16,7 +17,7 @@ use super::*;
         assert_eq!(m.priority(), 30);
         assert_eq!(
             m.description(),
-            "GreyNoise IP reputation: internet noise and RIOT classification (paid v3/ip lookup when keyed)"
+            "GreyNoise IP reputation — classifies internet noise and RIOT status (paid v3/ip lookup when keyed)"
         );
         // Free by default (Community tier); a configured key upgrades to the
         // paid v3/ip lookup instead of gating the module off entirely.
@@ -102,8 +103,8 @@ use super::*;
         assert_eq!(ents.len(), 2);
 
         let subject = of_kind(&ents, EntityKind::IpAddress).expect("subject IP entity");
-        // benign → 0.70
-        assert!((subject.confidence - 0.70).abs() < 1e-9);
+        // benign → confidence::HIGH_PLUS
+        assert!((subject.confidence - confidence::HIGH_PLUS).abs() < 1e-9);
         assert!(subject.has_tag("greynoise-noise"));
         assert!(subject.has_tag("greynoise-riot"));
         assert!(subject.has_tag("greynoise-benign"));
@@ -133,8 +134,8 @@ use super::*;
             r#"{ "noise": true, "riot": false, "classification": "malicious" }"#,
         );
         let subject = build_entities(&body, "71.6.135.131", "s").remove(0);
-        // malicious → 0.80
-        assert!((subject.confidence - 0.80).abs() < 1e-9);
+        // malicious → confidence::HIGH_PLUSPLUS
+        assert!((subject.confidence - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
         assert!(subject.has_tag(crate::core::tags::MALICIOUS));
         assert!(subject.has_tag("greynoise-malicious"));
         assert!(subject.has_tag("greynoise-noise"));
@@ -155,8 +156,8 @@ use super::*;
     fn noise_only_without_classification_is_unknown_band() {
         let body = resp(r#"{ "noise": true, "riot": false }"#);
         let subject = build_entities(&body, "1.2.3.4", "s").remove(0);
-        // No classification → 0.55 and the unknown tag.
-        assert!((subject.confidence - 0.55).abs() < 1e-9);
+        // No classification → confidence::MEDIUM_HIGH and the unknown tag.
+        assert!((subject.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
         assert!(subject.has_tag("greynoise-noise"));
         assert!(subject.has_tag("greynoise-unknown"));
         // Evidence falls back to the literal "unknown" classification.
@@ -243,7 +244,7 @@ use super::*;
             r#"{ "seen": true, "noise": true, "riot": false, "classification": "malicious" }"#,
         );
         let subject = build_paid_entities(&body, "71.6.135.131", "s").remove(0);
-        assert!((subject.confidence - 0.80).abs() < 1e-9);
+        assert!((subject.confidence - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
         assert!(subject.has_tag("greynoise-seen"));
         assert!(subject.has_tag("greynoise-malicious"));
         assert!(subject.has_tag(crate::core::tags::MALICIOUS));
@@ -258,8 +259,8 @@ use super::*;
         let ents = build_paid_entities(&body, "9.9.9.9", "s");
         assert_eq!(ents.len(), 1, "a seen-only record must still surface: {ents:?}");
         let subject = &ents[0];
-        // No classification → 0.55 unknown band, same as the community path.
-        assert!((subject.confidence - 0.55).abs() < 1e-9);
+        // No classification → confidence::MEDIUM_HIGH unknown band, same as the community path.
+        assert!((subject.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
         assert!(subject.has_tag("greynoise-seen"));
         assert!(subject.has_tag("greynoise-unknown"));
     }

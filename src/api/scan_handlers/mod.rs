@@ -23,13 +23,14 @@ pub mod intel;
 // ─── Public re-exports ────────────────────────────────────────────────────────
 
 pub use analysis::{
-    scan_correlations, scan_diff, scan_entities, scan_entities_facets, scan_entities_filter,
-    scan_identities, scan_location, scan_network, scan_relations, scan_stealer_rows,
+    scan_correlations, scan_diamond, scan_diff, scan_entities, scan_entities_facets,
+    scan_entities_filter, scan_identities, scan_location, scan_network, scan_relations,
+    scan_stealer_rows,
 };
 pub use core::{
-    plan_preview, radar_history, radar_live, radar_sweep, scan_auto, scan_auto_plan,
-    scan_auto_sweep, scan_batch, scan_cancel, scan_create, scan_delete, scan_events_history,
-    scan_get, scan_import, scan_list, scan_profiles, scan_rerun,
+    plan_preview, radar_history, radar_live, radar_recurring, radar_sweep, scan_auto,
+    scan_auto_plan, scan_auto_sweep, scan_batch, scan_cancel, scan_create, scan_delete,
+    scan_events_history, scan_get, scan_import, scan_list, scan_profiles, scan_rerun,
 };
 pub use diagnostics::{
     scan_audit, scan_benchmark, scan_duplicates, scan_gaps, scan_metrics, scan_pivots,
@@ -75,11 +76,19 @@ pub(super) fn build_scan_from_request(req: ScanRequest) -> Result<(Scan, Target)
 /// `Some(404)` when no scan with `id` exists (or `Some(500)` on a store error),
 /// else `None`. Sub-resource handlers call this first so an unknown scan yields
 /// 404 rather than a misleading empty 200.
-pub(crate) fn scan_missing(s: &AppState, id: &str) -> Option<axum::response::Response> {
-    match s.store.get_scan(id) {
-        Ok(Some(_)) => None,
-        Ok(None) => Some(not_found()),
-        Err(e) => Some(internal_error(&e)),
+///
+/// The `get_scan` probe is synchronous SQLite under the global connection mutex,
+/// so it runs on the blocking pool — not inline on the ~2-worker async reactor
+/// where it would block a worker before each sub-resource handler's own
+/// `spawn_blocking` read.
+pub(crate) async fn scan_missing(s: &AppState, id: &str) -> Option<axum::response::Response> {
+    let store = std::sync::Arc::clone(&s.store);
+    let id = id.to_string();
+    match tokio::task::spawn_blocking(move || store.get_scan(&id)).await {
+        Ok(Ok(Some(_))) => None,
+        Ok(Ok(None)) => Some(not_found()),
+        Ok(Err(e)) => Some(internal_error(&e)),
+        Err(e) => Some(internal_error(&format!("query task failed: {e}"))),
     }
 }
 

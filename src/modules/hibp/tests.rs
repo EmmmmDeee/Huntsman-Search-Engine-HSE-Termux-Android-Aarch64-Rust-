@@ -170,6 +170,130 @@ fn tag_breach_quality_clean_breach_gets_no_quality_tags() {
     let mut e = Entity::new(EntityKind::Domain, "x.com", 0.5, "t");
     tag_breach_quality(&mut e, &b);
     assert!(!e.tags.iter().any(|t| t.starts_with("breach-")));
+    assert!(!e.tags.iter().any(|t| t == tags::STEALER_LOG));
+}
+
+#[test]
+fn paste_deser_live_shape() {
+    // Verbatim shape of a live `/pasteaccount/{email}` response (confirmed with a
+    // real key): the module must decode Source/Title/Date/EmailCount.
+    let json = r#"[{"Id":"X5VHhh4q","Source":"Pastebin","Title":"nmd",
+        "Date":"2014-11-28T06:11:00Z","EmailCount":245}]"#;
+    let pastes: Vec<Paste> = serde_json::from_str(json).unwrap();
+    assert_eq!(pastes.len(), 1);
+    assert_eq!(pastes[0].source.as_deref(), Some("Pastebin"));
+    assert_eq!(pastes[0].title.as_deref(), Some("nmd"));
+    assert_eq!(pastes[0].email_count, Some(245));
+    // A minimal paste (only Source) still decodes.
+    let minimal: Vec<Paste> = serde_json::from_str(r#"[{"Source":"AdHocUrl"}]"#).unwrap();
+    assert_eq!(minimal[0].source.as_deref(), Some("AdHocUrl"));
+    assert!(minimal[0].email_count.is_none());
+}
+
+#[test]
+fn breach_deser_stealer_log_and_malware_flags() {
+    // The v3 breach schema carries `IsStealerLog` / `IsMalware` on every breach
+    // object (confirmed live via the /breaches catalog: e.g. TelegramStealerLogs,
+    // Emotet). The struct must retain them, not silently drop them.
+    let json = r#"[{
+        "Name": "TelegramStealerLogs",
+        "IsStealerLog": true,
+        "IsMalware": false
+    }]"#;
+    let b = one_breach(json);
+    assert_eq!(b.is_stealer_log, Some(true));
+    assert_eq!(b.is_malware, Some(false));
+    // Absent flags stay None (older/unflagged breach objects).
+    let plain = one_breach(r#"[{"Name": "Adobe"}]"#);
+    assert!(plain.is_stealer_log.is_none());
+    assert!(plain.is_malware.is_none());
+}
+
+#[test]
+fn breach_evidence_surfaces_stealer_log_and_malware() {
+    let b = one_breach(r#"[{"Name": "X", "IsStealerLog": true, "IsMalware": true}]"#);
+    let ev = breach_evidence(&b);
+    assert_eq!(
+        ev.attributes.get("stealer_log").map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        ev.attributes.get("malware").map(String::as_str),
+        Some("true")
+    );
+    // An unflagged breach must not fabricate the attributes.
+    let plain = breach_evidence(&one_breach(r#"[{"Name": "Adobe"}]"#));
+    assert!(!plain.attributes.contains_key("stealer_log"));
+    assert!(!plain.attributes.contains_key("malware"));
+}
+
+#[test]
+fn tag_breach_quality_stealer_log_escalates_to_canonical_tag() {
+    // A stealer-log breach must route the entity into the shared `stealer-log`
+    // correlation machinery — identical severity to a HudsonRock/niamonx hit,
+    // not a routine breach.
+    let b = one_breach(r#"[{"Name": "SL", "IsStealerLog": true, "IsMalware": true}]"#);
+    let mut e = Entity::new(EntityKind::Email, "v@x.com", 0.6, "t");
+    tag_breach_quality(&mut e, &b);
+    assert!(
+        e.tags.iter().any(|t| t == tags::STEALER_LOG),
+        "IsStealerLog must apply the canonical stealer-log tag"
+    );
+    assert!(
+        e.tags.iter().any(|t| t == "breach-malware"),
+        "IsMalware must apply the breach-malware quality tag"
+    );
+}
+
+#[test]
+fn breach_deser_real_alien_stealer_logs_shape() {
+    // Verbatim shape of the live `AlienStealerLogs` catalog object (Feb 2025 ALIEN
+    // TXTBASE, IsStealerLog=true) — including `Attribution`/`DisclosureUrl` fields
+    // the struct does NOT declare. Guards two things at once: the flags round-trip,
+    // and serde tolerates the extra API fields (no `deny_unknown_fields` regression).
+    let json = r#"[{
+        "Name": "AlienStealerLogs",
+        "Title": "ALIEN TXTBASE Stealer Logs",
+        "Domain": "",
+        "BreachDate": "2025-02-15",
+        "AddedDate": "2025-02-25T19:25:18Z",
+        "ModifiedDate": "2025-02-25T19:25:18Z",
+        "PwnCount": 284132969,
+        "Description": "23 billion rows of stealer logs.",
+        "LogoPath": "https://logos.haveibeenpwned.com/List.png",
+        "Attribution": null,
+        "DisclosureUrl": null,
+        "DataClasses": ["Email addresses", "Passwords"],
+        "IsVerified": true,
+        "IsFabricated": false,
+        "IsSensitive": false,
+        "IsRetired": false,
+        "IsSpamList": false,
+        "IsMalware": false,
+        "IsSubscriptionFree": false,
+        "IsStealerLog": true
+    }]"#;
+    let b = one_breach(json);
+    assert_eq!(b.name, "AlienStealerLogs");
+    assert_eq!(b.is_stealer_log, Some(true));
+    assert_eq!(b.is_malware, Some(false));
+    // The stealer-log flag escalates the entity into canonical stealer-log
+    // correlation even though `Domain` is empty (stealer logs aren't site-bound).
+    let mut e = Entity::new(EntityKind::Email, "v@x.com", 0.6, "t");
+    tag_breach_quality(&mut e, &b);
+    assert!(e.tags.iter().any(|t| t == tags::STEALER_LOG));
+    assert!(!e.tags.iter().any(|t| t == "breach-malware"));
+}
+
+#[test]
+fn tag_breach_quality_no_stealer_log_tag_for_ordinary_breach() {
+    // IsMalware without IsStealerLog stays a quality tag only — no escalation
+    // into stealer-log correlation.
+    let b = one_breach(r#"[{"Name": "M", "IsMalware": true, "IsStealerLog": false}]"#);
+    let mut e = Entity::new(EntityKind::Email, "v@x.com", 0.6, "t");
+    tag_breach_quality(&mut e, &b);
+    assert!(!e.tags.iter().any(|t| t == tags::STEALER_LOG));
+    assert!(e.tags.iter().any(|t| t == "breach-malware"));
 }
 
 fn pastes(json: &str) -> Vec<Paste> {

@@ -17,6 +17,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -56,21 +57,31 @@ pub(super) fn build_entities(user: DhUser, scan_id: &str) -> Vec<Entity> {
     };
 
     // Confirmed username.
-    let mut e = Entity::new(EntityKind::Username, handle, 0.85, scan_id);
+    let mut e = Entity::new(
+        EntityKind::Username,
+        handle,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     e.tag("dockerhub");
     e.tag("public-profile");
     e.add_evidence(ev());
     out.push(e);
 
     // Profile URL.
-    let mut u = Entity::new(EntityKind::Url, &profile_url, 0.80, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Url,
+        &profile_url,
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
     u.tag("dockerhub");
     u.add_evidence(ev());
     out.push(u);
 
     // Full name → Person (multi-word only).
     if let Some(name) = user.full_name.as_deref()
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.70, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::HIGH_PLUS, scan_id)
     {
         p.tag("dockerhub");
         p.add_evidence(ev().with_attr("source_field", "full_name"));
@@ -137,7 +148,7 @@ impl Module for DockerhubUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Docker Hub profile: fullname, company, location, website, gravatar email (free)"
+        "Docker Hub profile recon — harvests fullname, company, location, website, and gravatar email to pivot a user (free)"
     }
     fn priority(&self) -> u8 {
         50

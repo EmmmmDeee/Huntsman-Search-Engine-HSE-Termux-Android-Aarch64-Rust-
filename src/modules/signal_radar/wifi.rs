@@ -3,6 +3,7 @@
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
 };
@@ -34,10 +35,10 @@ pub(super) fn wifi_band(freq_mhz: Option<i64>) -> Option<&'static str> {
 /// Confidence from RSSI (dBm): stronger signal = more reliable observation.
 pub(super) fn rssi_confidence(rssi: Option<i64>) -> f64 {
     match rssi {
-        Some(r) if r >= -50 => 0.90,
-        Some(r) if r >= -71 => 0.75,
-        Some(r) if r >= -86 => 0.60,
-        _ => 0.45,
+        Some(r) if r >= -50 => confidence::VERY_HIGH_PLUS,
+        Some(r) if r >= -71 => confidence::VERY_HIGH,
+        Some(r) if r >= -86 => confidence::MEDIUM_PLUS,
+        _ => confidence::LOW_MEDIUM,
     }
 }
 
@@ -65,20 +66,57 @@ pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> ModuleResult {
             e.tag(band);
         }
 
-        e.add_evidence(
-            Evidence::new(SRC, format!("Wi-Fi AP scan: {ssid}"))
-                .with_attr("ssid", ssid)
-                .with_attr("bssid", &ap.bssid)
-                .with_attr("rssi_dbm", ap.rssi.unwrap_or(0).to_string())
-                .with_attr("frequency_mhz", ap.frequency.unwrap_or(0).to_string())
-                .with_attr(
-                    "channel_width",
-                    ap.channel_width.as_deref().unwrap_or("unknown"),
-                )
-                .with_attr("timestamp", ap.timestamp.unwrap_or(0).to_string()),
-        );
+        let mut ev = Evidence::new(SRC, format!("Wi-Fi AP scan: {ssid}"))
+            .with_attr("ssid", ssid)
+            .with_attr("bssid", &ap.bssid)
+            .with_attr("rssi_dbm", ap.rssi.unwrap_or(0).to_string())
+            .with_attr("frequency_mhz", ap.frequency.unwrap_or(0).to_string())
+            .with_attr(
+                "channel_width",
+                ap.channel_width.as_deref().unwrap_or("unknown"),
+            )
+            .with_attr("timestamp", ap.timestamp.unwrap_or(0).to_string());
+
+        // OUI classification (parity with the WiGLE + Bluetooth paths): attribute
+        // the AP's vendor/device class from a real hardware BSSID, or flag a
+        // locally-administered BSSID as `randomized`. A randomized BSSID is a
+        // privacy/rotating address, not a fixed access point — the exact
+        // distinction AU-122 surfaces so it is never treated as a trackable pin.
+        if let Some(oui) = crate::util::oui::classify_mac(&ap.bssid) {
+            e.tag(format!("vendor:{}", oui.vendor));
+            e.tag(format!("device:{}", oui.class.as_str()));
+            let trackable = crate::util::oui::is_locally_administered(&ap.bssid) == Some(false);
+            e.tag(if trackable { "trackable" } else { "randomized" });
+            ev = ev
+                .with_attr("vendor", oui.vendor)
+                .with_attr("device_class", oui.class.as_str())
+                .with_attr("trackable", trackable.to_string());
+        }
+
+        e.add_evidence(ev);
 
         result.push(e);
+
+        // The SSID is a WiGLE-geolocatable pivot in its own right (a network
+        // name search can surface every place that SSID was ever seen), so it
+        // earns its own Ssid entity alongside the BSSID's MacAddress entity —
+        // mirrors the precedent in `cli::import::push_ssids`. Skipped for the
+        // hidden-network placeholder (`ap.ssid` is `None`, defaulted to
+        // `"<hidden>"` above) and for an empty string; a real SSID confidence
+        // sits well below the BSSID's own, since a name is easier to spoof or
+        // duplicate than a hardware address.
+        if !ssid.is_empty() && ssid != "<hidden>" {
+            let mut se = Entity::new(EntityKind::Ssid, ssid, confidence::MEDIUM_HIGH, scan_id);
+            se.tag(crate::core::tags::WIFI_AP);
+            se.tag("device-sensor");
+
+            se.add_evidence(
+                Evidence::new(SRC, format!("Wi-Fi network name: {ssid}"))
+                    .with_attr("bssid", &ap.bssid),
+            );
+
+            result.push(se);
+        }
     }
 
     result

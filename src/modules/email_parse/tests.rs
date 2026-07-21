@@ -196,10 +196,10 @@ async fn role_localpart_yields_domain_but_no_username_or_person() {
 
 #[tokio::test]
 async fn isp_freemail_infers_person_at_lower_confidence() {
-    // R9-1: freemail firstname.lastname now infers a Person at 0.45 (lower than
-    // corporate 0.55) tagged `freemail-inferred`. This enables candidates like
+    // R9-1: freemail firstname.lastname now infers a Person at confidence::LOW_MEDIUM (lower than
+    // corporate confidence::MEDIUM_HIGH) tagged `freemail-inferred`. This enables candidates like
     // ryne.manka@gmail.com → Person "Ryne Manka" to be surfaced for corroboration.
-    // Usernames remain at 0.55 for freemail; corporate stays at 0.70.
+    // Usernames remain at confidence::MEDIUM_HIGH for freemail; corporate stays at confidence::HIGH_PLUS.
     for addr in [
         "john.doe@bigpond.com",
         "john.doe@comcast.net",
@@ -222,8 +222,8 @@ async fn isp_freemail_infers_person_at_lower_confidence() {
         );
         assert_eq!(persons[0].value, "John Doe", "{addr}: wrong person name");
         assert!(
-            (persons[0].confidence - 0.45).abs() < 1e-9,
-            "{addr}: freemail Person confidence should be 0.45, got {}",
+            (persons[0].confidence - confidence::LOW_MEDIUM).abs() < 1e-9,
+            "{addr}: freemail Person confidence should be confidence::LOW_MEDIUM, got {}",
             persons[0].confidence
         );
         assert!(
@@ -232,14 +232,14 @@ async fn isp_freemail_infers_person_at_lower_confidence() {
         );
         for e in r.entities.iter().filter(|e| e.kind == EntityKind::Username) {
             assert!(
-                (e.confidence - 0.55).abs() < 1e-9,
-                "{addr}: freemail username confidence should be 0.55, got {}",
+                (e.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9,
+                "{addr}: freemail username confidence should be confidence::MEDIUM_HIGH, got {}",
                 e.confidence
             );
         }
     }
 
-    // A genuine corporate domain still infers the Person at 0.55 (no freemail tag).
+    // A genuine corporate domain still infers the Person at confidence::MEDIUM_HIGH (no freemail tag).
     let r = EmailParse
         .process(
             &Target::new(TargetKind::Email, "john.doe@acme-corp.com"),
@@ -254,8 +254,8 @@ async fn isp_freemail_infers_person_at_lower_confidence() {
         .expect("corporate address should infer a Person");
     assert_eq!(corp_person.value, "John Doe");
     assert!(
-        (corp_person.confidence - 0.55).abs() < 1e-9,
-        "corporate Person confidence should be 0.55"
+        (corp_person.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9,
+        "corporate Person confidence should be confidence::MEDIUM_HIGH"
     );
     assert!(
         !corp_person.has_tag("freemail-inferred"),
@@ -265,8 +265,8 @@ async fn isp_freemail_infers_person_at_lower_confidence() {
         r.entities
             .iter()
             .filter(|e| e.kind == EntityKind::Username)
-            .all(|e| (e.confidence - 0.70).abs() < 1e-9),
-        "corporate username confidence should be 0.70"
+            .all(|e| (e.confidence - confidence::HIGH_PLUS).abs() < 1e-9),
+        "corporate username confidence should be confidence::HIGH_PLUS"
     );
 }
 

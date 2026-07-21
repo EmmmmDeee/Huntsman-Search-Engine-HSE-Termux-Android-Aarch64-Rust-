@@ -76,6 +76,57 @@ use crate::util::gravatar::Account;
     }
 
     #[test]
+    fn extract_entry_surfaces_owner_emails_company_and_contact() {
+        // Verbatim shape of the live rich profile (Beau Lebens): the owner-
+        // published `emails`, `company`/`job_title`, and `contactInfo` the shared
+        // Entry struct previously dropped.
+        let json = serde_json::json!({
+            "hash": "h",
+            "preferredUsername": "beau",
+            "displayName": "Beau Lebens",
+            "emails": [ { "primary": "true", "value": "beau@automattic.com" } ],
+            "company": "Automattic",
+            "job_title": "Lead, WooCommerce",
+            "contactInfo": [ { "type": "contactform", "value": "https://beau.blog/about" } ],
+            "pronouns": "he/him"
+        });
+        let entry: Entry = serde_json::from_value(json).unwrap();
+        let mut r = ModuleResult::new();
+        extract_entry(&entry, "h", "scan", &mut r);
+
+        // The additional email surfaces as a public-profile Email.
+        let email = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email && e.value == "beau@automattic.com")
+            .expect("owner email entity");
+        assert!(email.has_tag("gravatar") && email.has_tag("public-profile"));
+        assert_eq!(
+            email.evidence[0].attributes.get("primary").map(String::as_str),
+            Some("true")
+        );
+        // Employer → Organisation, carrying the job title.
+        let org = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Organisation && e.value == "Automattic")
+            .expect("company entity");
+        assert!(org.has_tag("employer"));
+        assert_eq!(
+            org.evidence[0].attributes.get("job_title").map(String::as_str),
+            Some("Lead, WooCommerce")
+        );
+        // Contact form → a contact Url lead.
+        assert!(
+            r.entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Url
+                    && e.value == "https://beau.blog/about"
+                    && e.has_tag("contact"))
+        );
+    }
+
+    #[test]
     fn extract_entry_is_quiet_on_an_empty_profile() {
         let entry = Entry::default();
         let mut r = ModuleResult::new();

@@ -40,7 +40,7 @@
 //!   * Registered owner with suburb + state: 0.74 (title register is
 //!     government-maintained, higher than directory or electoral sources)
 //!   * Suburb + postcode only (no street address exposed): 0.62
-//!   * Coordinates from suburb centroid: 0.60 (derived, not raw)
+//!   * Coordinates from suburb centroid: confidence::MEDIUM_PLUS (derived, not raw)
 //!
 //! Orthogonal to `au_electoral` (electoral roll), `au_people` (residential
 //! directories), `abn_lookup` (business register), `asic_director` (company
@@ -77,9 +77,7 @@ impl Module for AuProperty {
     }
 
     fn description(&self) -> &'static str {
-        "Australian property and land title register searches — finds registered \
-         ownership records (suburb/state/postcode) for a full-name seed via NSW, \
-         VIC, and QLD public cadastral portals"
+        "Australian property & land-title recon — pivots a full-name seed to registered ownership records (suburb/state/postcode) across the NSW, VIC, and QLD public cadastral portals"
     }
 
     fn accepts(&self, t: &Target) -> bool {

@@ -10,11 +10,11 @@ use super::*;
         use crate::core::module::{ModuleContext, ModuleResult};
 
         let mut result = ModuleResult::new();
-        // A ≥0.40 entity that would otherwise trigger recycle re-queries.
+        // A ≥confidence::LOW entity that would otherwise trigger recycle re-queries.
         result.push(Entity::new(
             EntityKind::Email,
             "jane.doe@example.com",
-            0.60,
+            confidence::MEDIUM_PLUS,
             "scan",
         ));
         let before = result.entities.len();
@@ -165,7 +165,7 @@ use super::*;
         let e = &entities[0];
         assert_eq!(e.kind, EntityKind::Person);
         assert_eq!(e.value, "Ryne Manka");
-        assert!((e.confidence - 0.65).abs() < 1e-9);
+        assert!((e.confidence - confidence::HIGH).abs() < 1e-9);
         assert!(e.has_tag("social-name"));
         assert!(e.has_tag(crate::core::tags::SEARCH_DISCOVERED));
         assert!(e.has_tag("derived"));
@@ -252,7 +252,7 @@ use super::*;
         let e = &entities[0];
         assert_eq!(e.kind, EntityKind::Url);
         assert_eq!(e.value, "https://linktr.ee/ryno23");
-        assert!((e.confidence - 0.70).abs() < 1e-9, "bio aggregator conf should be 0.70");
+        assert!((e.confidence - confidence::HIGH_PLUS).abs() < 1e-9, "bio aggregator conf should be confidence::HIGH_PLUS");
         assert!(e.has_tag("bio-aggregator"));
         assert!(e.has_tag("social-profile"));
         assert!(e.has_tag(crate::core::tags::SEARCH_DISCOVERED));
@@ -271,7 +271,7 @@ use super::*;
         let entities = extract_bio_aggregator_urls(&results, &target, "s");
         assert_eq!(entities.len(), 1);
         let e = &entities[0];
-        assert!((e.confidence - 0.65).abs() < 1e-9, "messaging conf should be 0.65");
+        assert!((e.confidence - confidence::HIGH).abs() < 1e-9, "messaging conf should be confidence::HIGH");
         assert!(e.has_tag("messaging-profile"));
         assert!(!e.has_tag("bio-aggregator"));
     }
@@ -290,7 +290,7 @@ use super::*;
         assert_eq!(entities.len(), 1, "bio URL from snippet text should be emitted");
         let e = &entities[0];
         assert_eq!(e.value, "https://linktr.ee/ryno23");
-        assert!((e.confidence - 0.65).abs() < 1e-9, "text signal conf should be 0.65");
+        assert!((e.confidence - confidence::HIGH).abs() < 1e-9, "text signal conf should be confidence::HIGH");
         assert!(e.has_tag("bio-aggregator"));
     }
 

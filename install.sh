@@ -839,7 +839,8 @@ KEYS_PATH="$HOME/.huntsman.env"
 if [[ ! -f "$KEYS_PATH" ]]; then
     step "Creating keys template at $KEYS_PATH"
     cat > "$KEYS_PATH" <<'TEMPLATE'
-# Huntsman Search Engine — API keys & configuration
+# Huntsman Search Engine (HSE) — API keys & configuration
+# All-source OSINT / GEOINT / NETINT recon in the GhostSec tradition (SpiderFoot-inspired).
 #
 # Uncomment and paste a value to enable the corresponding key-gated module.
 # File is chmod 0600 — never commit this file.

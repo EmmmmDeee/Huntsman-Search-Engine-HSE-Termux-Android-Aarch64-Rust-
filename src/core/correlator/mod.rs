@@ -414,6 +414,33 @@ const RULES: &[RuleFn] = &[
     // Coordinates naming it) — a subject-owned network placing its owner, a
     // high-value GEOINT lead previously surfaced by no correlation.
     rule_au_115_personal_wifi_geolocated,
+    // AU-117: the operator's OWN bonded (paired) Bluetooth kit whose members
+    // broadcast persistent hardware MACs — a self-carried tracking fingerprint,
+    // the bonded counterpart to AU-122's third-party trackable devices.
+    rule_au_117_personal_device_constellation,
+    // AU-118: two distinct registrable domains in one scan whose brand labels
+    // are homoglyph/typo look-alikes — a phishing/brand-abuse domain standing up
+    // beside the genuine one (dnstwist at the correlation layer, across every
+    // discovered domain rather than only seed permutations).
+    rule_au_118_lookalike_domain_impersonation,
+    // AU-119: the subject's confirmed dating-platform profiles — a location-
+    // bearing personal-exposure surface the generic footprint rules bury in a
+    // list; surfaced on its own at a severity that reflects the exposure.
+    rule_au_119_dating_platform_exposure,
+    // AU-120: the subject's confirmed subscription-creator / webcam / adult
+    // profiles — a deliberate, identity-linked (payment/KYC) footprint elevated
+    // above the generic account roster.
+    rule_au_120_monetized_creator_exposure,
+    // AU-121: the transitive closure of reused-secret links — a chain of
+    // accounts no single secret spans (AU-047's blind spot), reported as one
+    // credential-reuse blast radius. (Renumbered from AU-114 on merge — main's
+    // AU-114 is sanctions exposure.)
+    rule_au_121_credential_reuse_blast_radius,
+    // AU-122: an RF-observed (radar/WiGLE) sweep's trackable hardware devices —
+    // universally-administered MACs a real device broadcasts — separated from
+    // the randomized privacy addresses that rotate and can't be followed.
+    // (Renumbered from AU-115 on merge — main's AU-115 is personal-wifi-geo.)
+    rule_au_122_trackable_rf_device,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
@@ -477,15 +504,28 @@ fn evaluate_rules_on(
 }
 
 /// Entities minus the `candidate`-tagged quarantine set — the view every
-/// correlation rule sees. Allocates a filtered copy because the rule fns take
-/// `&[Entity]`; correlation runs are infrequent and entity counts bounded, so
-/// the clone is negligible.
-fn confirmed_only(entities: &[Entity]) -> Vec<Entity> {
-    entities
+/// correlation rule sees. Returns a [`Cow`](std::borrow::Cow): when nothing is quarantined (the
+/// common case for a focused email/username/domain scan) the caller's slice is
+/// BORROWED, avoiding a full clone of the entity set — each [`Entity`] owns its
+/// `Vec<Evidence>`, so that clone is far from free on a large recalled graph and
+/// ran on every correlation round. Only when a `candidate` entity is actually
+/// present does it allocate the filtered copy. Both call sites pass `&confirmed`
+/// to a `&[Entity]` parameter, so deref coercion keeps them unchanged.
+fn confirmed_only(entities: &[Entity]) -> std::borrow::Cow<'_, [Entity]> {
+    if entities
         .iter()
-        .filter(|e| !e.has_tag(crate::core::tags::CANDIDATE))
-        .cloned()
-        .collect()
+        .all(|e| !e.has_tag(crate::core::tags::CANDIDATE))
+    {
+        std::borrow::Cow::Borrowed(entities)
+    } else {
+        std::borrow::Cow::Owned(
+            entities
+                .iter()
+                .filter(|e| !e.has_tag(crate::core::tags::CANDIDATE))
+                .cloned()
+                .collect(),
+        )
+    }
 }
 
 /// Evaluate the entity-only rules against an in-memory entity slice.
@@ -629,6 +669,10 @@ const RELATION_RULES: &[RelationRuleFn] = &[
     rule_au_109_shared_registrant,
     rule_au_110_shared_hosting_ip,
     rule_au_113_direct_connect_origin_candidate,
+    // AU-116: the multi-hop transitive closure of the infrastructure graph — a
+    // hosting footprint chained across ≥2 IPs that no single-shared-host rule
+    // (AU-110) can see; the infra analogue of AU-060's identity closure.
+    rule_au_116_infrastructure_pivot_closure,
 ];
 
 /// `(entity-only rule count, graph-aware relation rule count)` — the live,

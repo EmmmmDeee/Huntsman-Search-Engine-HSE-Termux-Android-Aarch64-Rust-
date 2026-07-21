@@ -1,6 +1,7 @@
 //! Pure entity-building helpers for GitHub code search results.
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     scan::TargetKind,
 };
@@ -60,7 +61,7 @@ pub(super) fn build_repo_entities(
     // Repo owner → Username pivot.
     if !owner_login.is_empty() {
         let login = owner_login;
-        let owner_conf = if exact_owner { 0.65 } else { conf };
+        let owner_conf = if exact_owner { confidence::HIGH } else { conf };
         let mut u = Entity::new(EntityKind::Username, login, owner_conf, scan_id);
         u.tag(SRC);
         u.tag("github");

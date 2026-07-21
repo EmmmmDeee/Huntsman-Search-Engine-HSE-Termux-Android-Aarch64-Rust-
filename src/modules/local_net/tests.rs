@@ -83,7 +83,7 @@ IP address       HW type     Flags       HW address            Mask     Device
         let ip = &r.entities[0];
         assert_eq!(ip.kind, EntityKind::IpAddress);
         assert_eq!(ip.value, "192.168.1.1");
-        assert!((ip.confidence - 0.95).abs() < 1e-6);
+        assert!((ip.confidence - confidence::VERY_HIGH_PLUSPLUS).abs() < 1e-6);
         assert!(ip.has_tag(crate::core::tags::LOCAL_ARP));
         assert_eq!(ip.evidence.len(), 1);
         assert_eq!(ip.evidence[0].source, "local_net");

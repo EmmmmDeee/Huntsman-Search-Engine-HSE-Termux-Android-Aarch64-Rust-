@@ -16,7 +16,7 @@ pub async fn scan_audit(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
@@ -123,7 +123,7 @@ pub async fn scan_metrics(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
@@ -149,7 +149,7 @@ pub async fn scan_duplicates(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
@@ -169,7 +169,7 @@ pub async fn scan_pivots(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
@@ -205,7 +205,7 @@ pub async fn scan_gaps(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);

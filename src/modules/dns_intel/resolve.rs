@@ -1,6 +1,7 @@
 use hickory_resolver::proto::rr::{RData, RecordType};
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::ModuleContext,
@@ -20,15 +21,18 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
     let resolver = shared_resolver();
     let domain = target.value.as_str();
     let dmarc_name = format!("_dmarc.{domain}");
+    // TLSRPT (RFC 8460) lives at `_smtp._tls.{domain}`, like DMARC at `_dmarc.`.
+    let tlsrpt_name = format!("_smtp._tls.{domain}");
     let mut entities: Vec<Entity> = Vec::new();
 
-    let (ips, mxs, nss, soa, txts, dmarc_txts) = tokio::join!(
+    let (ips, mxs, nss, soa, txts, dmarc_txts, tlsrpt_txts) = tokio::join!(
         resolver.lookup_ip(domain),
         resolver.mx_lookup(domain),
         resolver.ns_lookup(domain),
         resolver.soa_lookup(domain),
         resolver.txt_lookup(domain),
         resolver.txt_lookup(dmarc_name.as_str()),
+        resolver.txt_lookup(tlsrpt_name.as_str()),
     );
 
     // A + AAAA
@@ -39,7 +43,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                 RData::AAAA(aaaa) => (aaaa.0.to_string(), "AAAA", "6"),
                 _ => return None,
             };
-            let mut e = Entity::new(EntityKind::IpAddress, &ip_str, 0.95, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::IpAddress,
+                &ip_str,
+                confidence::VERY_HIGH_PLUSPLUS,
+                &ctx.scan_id,
+            );
             e.tag(if record_type == "A" { "ipv4" } else { "ipv6" });
             e.add_evidence(
                 Evidence::new(SRC, format!("{record_type} record for {domain}"))
@@ -63,7 +72,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
             if host.is_empty() {
                 return None;
             }
-            let mut e = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Domain,
+                &host,
+                confidence::HIGH_PLUSPLUS_PLUS,
+                &ctx.scan_id,
+            );
             e.tag("mx");
             e.add_evidence(
                 Evidence::new(SRC, format!("MX record for {domain}"))
@@ -87,7 +101,7 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
             if host.is_empty() {
                 return None;
             }
-            let mut e = Entity::new(EntityKind::Domain, &host, 0.88, &ctx.scan_id);
+            let mut e = Entity::new(EntityKind::Domain, &host, confidence::EXPERT, &ctx.scan_id);
             e.tag("ns");
             e.add_evidence(
                 Evidence::new(SRC, format!("NS record for {domain}"))
@@ -138,7 +152,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
         // still kept.
         if admin_email.contains('@') && !crate::util::domains::is_infrastructure_email(&admin_email)
         {
-            let mut em = Entity::new(EntityKind::Email, &admin_email, 0.70, &ctx.scan_id);
+            let mut em = Entity::new(
+                EntityKind::Email,
+                &admin_email,
+                confidence::HIGH_PLUS,
+                &ctx.scan_id,
+            );
             em.tag("dns-admin");
             em.add_evidence(
                 Evidence::new(SRC, format!("Zone admin for {domain}"))
@@ -164,7 +183,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
             })
             .collect();
         if !txts.is_empty() {
-            let mut dom = Entity::new(EntityKind::Domain, domain, 0.90, &ctx.scan_id);
+            let mut dom = Entity::new(
+                EntityKind::Domain,
+                domain,
+                confidence::VERY_HIGH_PLUS,
+                &ctx.scan_id,
+            );
             for t in &txts {
                 let t = t.trim_matches('"');
                 let b = t.as_bytes();
@@ -199,8 +223,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                     for member in crate::util::spf::members(t) {
                         match member {
                             crate::util::spf::Member::Ip(ip) => {
-                                let mut ie =
-                                    Entity::new(EntityKind::IpAddress, ip, 0.75, &ctx.scan_id);
+                                let mut ie = Entity::new(
+                                    EntityKind::IpAddress,
+                                    ip,
+                                    confidence::VERY_HIGH,
+                                    &ctx.scan_id,
+                                );
                                 ie.tag("dns");
                                 ie.tag("spf");
                                 ie.add_evidence(
@@ -216,8 +244,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                                 entities.push(ie);
                             }
                             crate::util::spf::Member::Include(inc) => {
-                                let mut de =
-                                    Entity::new(EntityKind::Domain, inc, 0.65, &ctx.scan_id);
+                                let mut de = Entity::new(
+                                    EntityKind::Domain,
+                                    inc,
+                                    confidence::HIGH,
+                                    &ctx.scan_id,
+                                );
                                 de.tag("dns");
                                 de.tag("spf-include");
                                 de.add_evidence(Evidence::new(
@@ -227,8 +259,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                                 entities.push(de);
                             }
                             crate::util::spf::Member::Redirect(red) => {
-                                let mut de =
-                                    Entity::new(EntityKind::Domain, red, 0.65, &ctx.scan_id);
+                                let mut de = Entity::new(
+                                    EntityKind::Domain,
+                                    red,
+                                    confidence::HIGH,
+                                    &ctx.scan_id,
+                                );
                                 de.tag("dns");
                                 de.tag("spf-redirect");
                                 de.add_evidence(Evidence::new(
@@ -238,8 +274,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                                 entities.push(de);
                             }
                             crate::util::spf::Member::A(a_dom) => {
-                                let mut de =
-                                    Entity::new(EntityKind::Domain, a_dom, 0.65, &ctx.scan_id);
+                                let mut de = Entity::new(
+                                    EntityKind::Domain,
+                                    a_dom,
+                                    confidence::HIGH,
+                                    &ctx.scan_id,
+                                );
                                 de.tag("dns");
                                 de.tag("spf-a");
                                 de.add_evidence(Evidence::new(
@@ -249,8 +289,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                                 entities.push(de);
                             }
                             crate::util::spf::Member::Mx(mx_dom) => {
-                                let mut de =
-                                    Entity::new(EntityKind::Domain, mx_dom, 0.65, &ctx.scan_id);
+                                let mut de = Entity::new(
+                                    EntityKind::Domain,
+                                    mx_dom,
+                                    confidence::HIGH,
+                                    &ctx.scan_id,
+                                );
                                 de.tag("dns");
                                 de.tag("spf-mx");
                                 de.add_evidence(Evidence::new(
@@ -304,7 +348,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
             };
 
             // Tag the domain entity with the DMARC policy and any issues.
-            let mut dom = Entity::new(EntityKind::Domain, domain, 0.90, &ctx.scan_id);
+            let mut dom = Entity::new(
+                EntityKind::Domain,
+                domain,
+                confidence::VERY_HIGH_PLUS,
+                &ctx.scan_id,
+            );
             dom.tag("dmarc");
             if let Some(p) = dmarc.policy {
                 dom.tag(p.tag());
@@ -388,7 +437,82 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
         }
     }
 
+    // TLSRPT (RFC 8460) at `_smtp._tls.{domain}` — its `rua=` names a published
+    // mail-security reporting contact (Email or https endpoint), the same class
+    // of OSINT pivot as DMARC `rua`.
+    if let Ok(lookup) = tlsrpt_txts {
+        let txts: Vec<String> = lookup
+            .answers()
+            .iter()
+            .filter_map(|record| match &record.data {
+                RData::TXT(txt_data) => Some(txt_data.to_string()),
+                _ => None,
+            })
+            .collect();
+        entities.extend(tlsrpt_entities(&txts, domain, &ctx.scan_id));
+    }
+
     Ok(entities)
+}
+
+/// Map `_smtp._tls` TXT record strings into TLSRPT reporting-contact entities.
+/// `mailto:` destinations become `Email` entities tagged `tlsrpt-report`;
+/// `http(s)://` collection endpoints become `Domain` leads for their host. A
+/// domain has at most one valid TLSRPT record (first `v=TLSRPTv1` wins).
+///
+/// Shares the pure [`crate::util::tlsrpt`] parser with `doh_resolver` (one
+/// definition, no drift) AND the same `is_infrastructure_email` gate, so both
+/// DNS transports surface the identical contact set — a provider desk
+/// (`sts-reports@google.com`) is dropped rather than clustered as the subject,
+/// matching how this module already gates its DMARC/SOA email emission.
+/// **Pure** (no network/IO), unit-tested directly.
+pub(super) fn tlsrpt_entities(txts: &[String], domain: &str, scan_id: &str) -> Vec<Entity> {
+    let mut out = Vec::new();
+    for raw in txts {
+        let txt = raw.trim_matches('"');
+        let Some(parsed) = crate::util::tlsrpt::parse(txt) else {
+            continue;
+        };
+        for addr in &parsed.emails {
+            if crate::util::domains::is_infrastructure_email(addr) {
+                continue;
+            }
+            let mut e = Entity::new(EntityKind::Email, addr, 0.72, scan_id);
+            e.tag("dns");
+            e.tag("tlsrpt-report");
+            e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("TLSRPT (SMTP-TLS) report address for {domain}"),
+                )
+                .with_attr("record_type", "TLSRPT")
+                .with_attr("parent_domain", domain),
+            );
+            out.push(e);
+        }
+        for url in &parsed.urls {
+            if let Some(host) = crate::util::url_util::host_from_url(url)
+                && host.contains('.')
+                && host != domain
+            {
+                let mut d = Entity::new(EntityKind::Domain, &host, 0.58, scan_id);
+                d.tag("dns");
+                d.tag("tlsrpt-report");
+                d.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("TLSRPT (SMTP-TLS) reporting endpoint host for {domain}"),
+                    )
+                    .with_attr("record_type", "TLSRPT")
+                    .with_attr("rua", url.as_str()),
+                );
+                out.push(d);
+            }
+        }
+        // Only one TLSRPT record is valid per domain (first `v=TLSRPTv1` wins).
+        break;
+    }
+    out
 }
 
 /// CAA record inspection (RFC 8659).
@@ -425,7 +549,12 @@ pub(super) async fn lookup_caa(target: &Target, ctx: &ModuleContext) -> Result<V
         return Ok(Vec::new());
     }
 
-    let mut entity = Entity::new(EntityKind::Domain, domain, 0.85, &ctx.scan_id);
+    let mut entity = Entity::new(
+        EntityKind::Domain,
+        domain,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        &ctx.scan_id,
+    );
     entity.tag("caa");
     let mut ev = Evidence::new(
         SRC,
@@ -446,7 +575,75 @@ pub(super) async fn lookup_caa(target: &Target, ctx: &ModuleContext) -> Result<V
     }
     entity.add_evidence(ev);
 
-    Ok(vec![entity])
+    // The `iodef` values (RFC 8659 §4.4) name WHERE certificate-issuance
+    // violations for this domain should be reported — a `mailto:` address or an
+    // `https://`/`http://` endpoint. That address is a real, published
+    // security/abuse contact the domain operator controls; surface it as a
+    // pivotable Email (and the reporting URL's host as a Domain lead) rather than
+    // burying it in a joined-string attribute the recursion can't traverse.
+    let mut out = vec![entity];
+    for value in &iodefs {
+        out.extend(iodef_entities(value, domain, &ctx.scan_id));
+    }
+    Ok(out)
+}
+
+/// Parse a CAA `iodef` property value into pivotable entities. `mailto:addr`
+/// yields an Email (the domain's designated cert-violation-reporting contact);
+/// an `http(s)://` value yields a Domain for the reporting endpoint's host (a
+/// recursable lead — the raw URL itself is retained on the CAA entity's
+/// evidence). Anything else (a bare URN, malformed value) yields nothing.
+/// **Pure** — no I/O, independently unit-tested.
+///
+/// `pub(crate)` so the DoH resolver (`doh_resolver`) — the PRIMARY DNS transport
+/// on Termux, where hickory's port-53 lookups are frequently blocked and this
+/// module never runs — reuses the exact same iodef→entity mapping rather than
+/// duplicating it, keeping CAA/iodef enumeration identical across both transports.
+pub(crate) fn iodef_entities(value: &str, domain: &str, scan_id: &str) -> Vec<Entity> {
+    let value = value.trim();
+    if let Some(addr) = value.strip_prefix("mailto:") {
+        let addr = addr.trim();
+        // Minimal sanity: a single `@`, a dot in the domain part, no whitespace —
+        // enough to reject a malformed value without duplicating a full validator.
+        let looks_like_email = addr.split('@').count() == 2
+            && !addr.chars().any(char::is_whitespace)
+            && addr.rsplit('@').next().is_some_and(|d| d.contains('.'));
+        if !looks_like_email {
+            return Vec::new();
+        }
+        let mut e = Entity::new(EntityKind::Email, addr, confidence::VERY_HIGH, scan_id);
+        e.tag("caa");
+        e.tag("iodef");
+        e.tag("security-contact");
+        e.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("CAA iodef reporting contact for {domain} (RFC 8659)"),
+            )
+            .with_attr("iodef", value)
+            .with_attr("role", "cert-issuance-violation-report"),
+        );
+        return vec![e];
+    }
+    if (value.starts_with("https://") || value.starts_with("http://"))
+        && let Some(host) = crate::util::url_util::host_from_url(value)
+        && host.contains('.')
+        && host != domain
+    {
+        let mut d = Entity::new(EntityKind::Domain, &host, confidence::MEDIUM_PLUS, scan_id);
+        d.tag("caa");
+        d.tag("iodef");
+        d.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("CAA iodef reporting endpoint host for {domain} (RFC 8659)"),
+            )
+            .with_attr("iodef", value)
+            .with_attr("role", "cert-issuance-violation-report"),
+        );
+        return vec![d];
+    }
+    Vec::new()
 }
 
 /// PTR record lookup for IP → hostname mapping.
@@ -476,7 +673,12 @@ pub(super) async fn reverse_lookup(target: &Target, ctx: &ModuleContext) -> Resu
             if host.is_empty() {
                 return None;
             }
-            let mut e = Entity::new(EntityKind::Domain, host, 0.85, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Domain,
+                host,
+                confidence::HIGH_PLUSPLUS_PLUS,
+                &ctx.scan_id,
+            );
             e.tag(crate::core::tags::PTR);
             e.add_evidence(
                 Evidence::new(SRC, format!("PTR record for {ip}"))
@@ -520,7 +722,12 @@ pub(super) async fn blocklist_check(target: &Target, ctx: &ModuleContext) -> Res
         checked += 1;
     }
 
-    let mut entity = Entity::new(EntityKind::IpAddress, ip, 0.90, &ctx.scan_id);
+    let mut entity = Entity::new(
+        EntityKind::IpAddress,
+        ip,
+        confidence::VERY_HIGH_PLUS,
+        &ctx.scan_id,
+    );
     entity.tag("dnsbl-checked");
 
     if listed_on.is_empty() {

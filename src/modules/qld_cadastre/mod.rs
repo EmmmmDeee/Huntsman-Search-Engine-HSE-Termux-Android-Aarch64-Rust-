@@ -21,6 +21,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -127,7 +128,12 @@ fn build_entities(coord: &str, attrs: &HashMap<String, Value>, scan_id: &str) ->
 
     if let Some(loc) = &locality {
         let addr_value = format!("{loc}, Queensland");
-        let mut addr = Entity::new(EntityKind::Address, &addr_value, 0.55, scan_id);
+        let mut addr = Entity::new(
+            EntityKind::Address,
+            &addr_value,
+            confidence::MEDIUM_HIGH,
+            scan_id,
+        );
         addr.tag(SRC);
         addr.tag("cadastre-derived");
         addr.tag("country:AU");
@@ -153,7 +159,7 @@ impl Module for QldCadastre {
         "qld_cadastre"
     }
     fn description(&self) -> &'static str {
-        "Queensland DCDB cadastre — lot/plan, locality and tenure for coordinates inside QLD"
+        "Queensland DCDB cadastre recon — resolves coordinates inside QLD to lot/plan, locality, and tenure"
     }
     fn priority(&self) -> u8 {
         18

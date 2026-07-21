@@ -119,19 +119,19 @@ fn ip_geo_rejects_the_null_island_band_not_just_exact_zero() {
     let band: IpApiCoResp =
         serde_json::from_str(r#"{"latitude":0.004,"longitude":0.004}"#).unwrap();
     assert!(
-        build_ipapico_entity(&band, "1.2.3.4", false, "t").is_none(),
+        build_ipapico_entity(&band, "1.2.3.4", false, "t").is_empty(),
         "null-island band must be rejected, not just exact (0,0)"
     );
     let zero_lat: IpApiCoResp =
         serde_json::from_str(r#"{"latitude":0.0,"longitude":151.0}"#).unwrap();
-    assert!(build_ipapico_entity(&zero_lat, "1.2.3.4", false, "t").is_none());
+    assert!(build_ipapico_entity(&zero_lat, "1.2.3.4", false, "t").is_empty());
     let band2: FreeIpApiResp =
         serde_json::from_str(r#"{"latitude":0.005,"longitude":-0.002}"#).unwrap();
     assert!(build_freeipapi_entity(&band2, "1.2.3.4", false, "t").is_none());
     // A real fix still passes; the shared helper draws the same line.
     let real: IpApiCoResp =
         serde_json::from_str(r#"{"latitude":-27.4766,"longitude":153.0166}"#).unwrap();
-    assert!(build_ipapico_entity(&real, "1.2.3.4", false, "t").is_some());
+    assert!(!build_ipapico_entity(&real, "1.2.3.4", false, "t").is_empty());
     assert!(!is_plausible_provider_coord(0.004, 0.004));
     assert!(is_plausible_provider_coord(-27.4766, 153.0166));
 }
@@ -181,8 +181,11 @@ fn freeipapi_resp_deserializes() {
 fn ipapico_builder_emits_for_clean_ip_with_iso_and_skips_untrusted() {
     let json = r#"{"city":"South Brisbane","region":"Queensland","country_name":"Australia","country_code":"AU","postal":"4101","latitude":-27.4766,"longitude":153.0166,"timezone":"Australia/Brisbane","org":"APNIC","asn":"AS13335"}"#;
     let r: IpApiCoResp = serde_json::from_str(json).unwrap();
-    let e = build_ipapico_entity(&r, "1.2.3.4", false, "t").expect("coords");
-    assert_eq!(e.kind, EntityKind::Coordinates);
+    let entities = build_ipapico_entity(&r, "1.2.3.4", false, "t");
+    let e = entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+        .expect("coords");
     assert_eq!(
         e.evidence[0]
             .attributes
@@ -192,9 +195,28 @@ fn ipapico_builder_emits_for_clean_ip_with_iso_and_skips_untrusted() {
     );
     assert!(e.tags.iter().any(|t| t == "country:AU"));
     assert!(e.tags.iter().any(|t| t.starts_with("au-state:")));
-    assert!(build_ipapico_entity(&r, "104.16.0.1", true, "t").is_none());
+    assert!(build_ipapico_entity(&r, "104.16.0.1", true, "t").is_empty());
     let err: IpApiCoResp = serde_json::from_str(r#"{"error":true}"#).unwrap();
-    assert!(build_ipapico_entity(&err, "1.2.3.4", false, "t").is_none());
+    assert!(build_ipapico_entity(&err, "1.2.3.4", false, "t").is_empty());
+}
+
+#[test]
+fn ipapico_builder_promotes_asn_to_standalone_entity() {
+    // Regression: ipapi.co's "asn" field used to be folded only into the
+    // Coordinates entity's evidence text — never promoted to a standalone Asn
+    // entity, unlike the sibling ip_geo module's identical field via the same
+    // shared ip_asn_entity helper. Both entities must now come back together.
+    let json = r#"{"city":"South Brisbane","region":"Queensland","country_name":"Australia","country_code":"AU","postal":"4101","latitude":-27.4766,"longitude":153.0166,"timezone":"Australia/Brisbane","org":"APNIC","asn":"AS13335"}"#;
+    let r: IpApiCoResp = serde_json::from_str(json).unwrap();
+    let entities = build_ipapico_entity(&r, "1.2.3.4", false, "t");
+    assert_eq!(entities.len(), 2);
+    assert!(entities.iter().any(|e| e.kind == EntityKind::Coordinates));
+    let asn = entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Asn)
+        .expect("asn entity");
+    assert_eq!(asn.value, "AS13335");
+    assert_eq!(asn.evidence[0].summary, "ASN for 1.2.3.4");
 }
 
 #[test]

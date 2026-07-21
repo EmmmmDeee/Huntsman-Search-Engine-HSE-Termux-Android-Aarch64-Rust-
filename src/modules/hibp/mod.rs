@@ -2,7 +2,8 @@
 //!
 //! Endpoints:
 //!   GET /api/v3/breachedaccount/{email}  — breaches containing this email
-//!   GET /api/v3/pasteaccount/{email}     — pastes containing this email
+//!   GET /api/v3/pasteaccount/{email}     — public pastes (Pastebin, …) the
+//!                                          email appeared in (the "paste" half)
 //!   GET /api/v3/breaches?domain={domain} — breaches affecting a domain
 //!
 //! Rate limit: 10 req/min on the basic subscription. The module
@@ -20,6 +21,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -73,16 +75,27 @@ pub(super) struct Breach {
     pub(super) is_spam_list: Option<bool>,
     #[serde(default)]
     pub(super) is_subscription_free: Option<bool>,
+    // A stealer log or malware dump is a fundamentally different — and more
+    // severe — compromise class than a routine website breach: the credential
+    // was harvested off a victim's *own device* by info-stealer malware, so it
+    // implies live device compromise (browser-stored passwords, cookies,
+    // autofill) rather than a third-party site leaking its user table. HIBP
+    // carries these as first-class flags on every breach object; surface them.
+    #[serde(default)]
+    pub(super) is_stealer_log: Option<bool>,
+    #[serde(default)]
+    pub(super) is_malware: Option<bool>,
     #[serde(default)]
     pub(super) logo_path: Option<String>,
 }
 
 /// Full-fidelity [`Evidence`] for one HIBP breach. Surfaces **every** field the
 /// v3 API returns — title/description, the date trail (breach/added/modified),
-/// pwn_count, data classes, the logo, and the data-quality flags
-/// (verified/fabricated/sensitive/retired/spam/subscription-free) — so a
-/// breach-derived finding carries HIBP's complete characterisation, not just a
-/// name + date. **Pure** (no IO) and unit-tested directly.
+/// pwn_count, data classes, the logo, and the data-quality/severity flags
+/// (verified/fabricated/sensitive/retired/spam/subscription-free plus
+/// stealer-log/malware) — so a breach-derived finding carries HIBP's complete
+/// characterisation, not just a name + date. **Pure** (no IO) and unit-tested
+/// directly.
 fn breach_evidence(breach: &Breach) -> Evidence {
     let nonempty = |o: &Option<String>| o.as_deref().filter(|s| !s.is_empty()).map(str::to_string);
 
@@ -121,6 +134,8 @@ fn breach_evidence(breach: &Breach) -> Evidence {
         ("retired", breach.is_retired),
         ("spam_list", breach.is_spam_list),
         ("subscription_free", breach.is_subscription_free),
+        ("stealer_log", breach.is_stealer_log),
+        ("malware", breach.is_malware),
     ] {
         if let Some(b) = flag {
             ev = ev.with_attr(key, b.to_string());
@@ -245,6 +260,22 @@ fn tag_breach_quality(e: &mut Entity, breach: &Breach) {
     if breach.is_retired == Some(true) {
         e.tag("breach-retired");
     }
+    if breach.is_stealer_log == Some(true) {
+        // A stealer-log hit is device compromise (info-stealer malware harvested
+        // the credential off the victim's own machine), not a third-party site
+        // leaking its user table — a materially more severe class. Route it into
+        // the canonical `stealer-log` correlation machinery (exposure scoring,
+        // AU breach rules, lead extraction) that HudsonRock / niamonx feed, so a
+        // HIBP stealer-log hit escalates identically to a dedicated stealer-log
+        // module's hit rather than reading as a routine breach.
+        e.tag(tags::STEALER_LOG);
+    }
+    if breach.is_malware == Some(true) {
+        // Malware-sourced dump (e.g. an Emotet address-book harvest). A weaker
+        // signal than a full stealer log, so it stays a descriptive `breach-*`
+        // quality tag rather than escalating into stealer-log correlation.
+        e.tag("breach-malware");
+    }
 }
 
 // ── Module impl ─────────────────────────────────────────────────────
@@ -258,7 +289,7 @@ impl Module for Hibp {
     }
 
     fn description(&self) -> &'static str {
-        "Have I Been Pwned — definitive breach + paste oracle (API v3)"
+        "Have I Been Pwned — the definitive breach & paste oracle; surfaces an email's exposure across known corpora (API v3)"
     }
 
     fn priority(&self) -> u8 {
@@ -297,6 +328,10 @@ impl Module for Hibp {
 
         match target.kind {
             TargetKind::Email => {
+                // `query_breached_account` delivers both halves of the module's
+                // "breach + paste oracle" billing: breaches, then (best-effort,
+                // same subscription key) the /pasteaccount pastes folded onto the
+                // same Email entity.
                 self.query_breached_account(key, target, ctx, &mut result)
                     .await?;
             }
@@ -408,10 +443,10 @@ impl Hibp {
             .join(", ");
 
         let base_conf = match verified_count {
-            0 => 0.65,
-            1..=2 => 0.80,
-            3..=5 => 0.88,
-            _ => 0.95,
+            0 => confidence::HIGH,
+            1..=2 => confidence::HIGH_PLUSPLUS,
+            3..=5 => confidence::EXPERT,
+            _ => confidence::VERY_HIGH_PLUSPLUS,
         };
 
         let mut email_ent = Entity::new(
@@ -476,7 +511,12 @@ impl Hibp {
                 .domain
                 .as_deref()
                 .filter(|d| !d.is_empty() && d.contains('.'))?;
-            let mut de = Entity::new(EntityKind::Domain, domain, 0.55, &ctx.scan_id);
+            let mut de = Entity::new(
+                EntityKind::Domain,
+                domain,
+                confidence::MEDIUM_HIGH,
+                &ctx.scan_id,
+            );
             de.tag(tags::BREACH);
             de.tag("hibp");
             de.tag(tags::BREACH_DERIVED);
@@ -536,7 +576,11 @@ impl Hibp {
         let total_pwns: u64 = breaches.iter().filter_map(|b| b.pwn_count).sum();
         let names: Vec<&str> = breaches.iter().map(|b| b.name.as_str()).collect();
 
-        let base_conf = if verified >= 2 { 0.80 } else { 0.65 };
+        let base_conf = if verified >= 2 {
+            confidence::HIGH_PLUSPLUS
+        } else {
+            confidence::HIGH
+        };
 
         let mut domain_ent = Entity::new(
             EntityKind::Domain,

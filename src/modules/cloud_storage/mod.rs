@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use tokio::sync::Semaphore;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -34,6 +35,11 @@ const MAX_CONCURRENT: usize = 16;
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 /// Exposed object keys retained from a public listing (the rest are summarised).
 const KEY_SAMPLE: usize = 25;
+/// Confidence for the per-object `Url` entities minted from a `PublicListable`
+/// finding's key sample — slightly below the 0.9 bucket-root confidence since
+/// each is a derived pivot (a joined URL) rather than the directly-observed
+/// listing itself.
+const OBJECT_KEY_CONFIDENCE: f64 = confidence::HIGH_PLUSPLUS_PLUS;
 
 pub struct CloudStorage;
 
@@ -43,7 +49,7 @@ impl Module for CloudStorage {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Probe S3/GCS/Azure/DigitalOcean for exposed buckets derived from the target name"
+        "Cloud-bucket sweep — probes S3/GCS/Azure/DigitalOcean for exposed buckets derived from the target name"
     }
     fn priority(&self) -> u8 {
         25
@@ -108,7 +114,28 @@ impl Module for CloudStorage {
         });
 
         for f in findings {
+            // `into_entity` consumes `f`, so pull out what's needed for the
+            // per-object entities (below) from the still-borrowed `access`
+            // before the move.
+            let listable = match &f.access {
+                Access::PublicListable { sample, .. } => Some((
+                    f.provider.label(),
+                    f.bucket.clone(),
+                    f.url.clone(),
+                    sample.clone(),
+                )),
+                _ => None,
+            };
             result.push(f.into_entity(&ctx.scan_id));
+            if let Some((label, bucket, bucket_root, sample)) = listable {
+                result.extend(object_key_entities(
+                    label,
+                    &bucket,
+                    &bucket_root,
+                    &sample,
+                    &ctx.scan_id,
+                ));
+            }
         }
         Ok(result)
     }
@@ -264,6 +291,59 @@ impl Finding {
                 .with_attr("bucket", &self.bucket),
         );
         e
+    }
+}
+
+/// Mint one pivotable [`EntityKind::Url`] entity per exposed object key from a
+/// `PublicListable` finding's `sample` — the individual objects behind the
+/// single bucket-root entity [`Finding::into_entity`] already emits. A free
+/// function (rather than living on `Finding`) so it can be exercised directly
+/// against the same fixture data `parse_listing`'s tests use, without needing
+/// an HTTP-mocked `Finding`.
+fn object_key_entities(
+    provider_label: &str,
+    bucket: &str,
+    bucket_root: &str,
+    sample: &[String],
+    scan_id: &str,
+) -> Vec<Entity> {
+    sample
+        .iter()
+        .filter_map(|key| {
+            let key = key.trim();
+            if key.is_empty() {
+                return None;
+            }
+            let url = join_bucket_url(bucket_root, key);
+            let mut e = Entity::new(EntityKind::Url, &url, OBJECT_KEY_CONFIDENCE, scan_id);
+            e.tag("cloud-storage");
+            e.tag("cloud-storage-object");
+            e.tag(format!("provider:{provider_label}"));
+            e.tag(crate::core::tags::VULNERABLE);
+            e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!(
+                        "{provider_label} bucket '{bucket}' publicly lists exposed object '{key}'"
+                    ),
+                )
+                .with_attr("provider", provider_label)
+                .with_attr("bucket", bucket)
+                .with_attr("key", key),
+            );
+            Some(e)
+        })
+        .collect()
+}
+
+/// Join a bucket-root URL with an object key. Azure/DigitalOcean roots already
+/// end in `/`; S3/GCS path-style roots don't — so only add the separator when
+/// it isn't already there, to avoid a doubled slash.
+fn join_bucket_url(bucket_root: &str, key: &str) -> String {
+    if bucket_root.ends_with('/') {
+        format!("{bucket_root}{key}")
+    } else {
+        format!("{bucket_root}/{key}")
     }
 }
 

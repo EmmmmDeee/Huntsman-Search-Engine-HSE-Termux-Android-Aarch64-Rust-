@@ -335,9 +335,7 @@ impl ModuleContext {
     /// Fetch a required key by env-var name. Returns `Error::MissingKey` if
     /// absent — the engine logs this and moves on without aborting the scan.
     pub fn key(&self, name: &str) -> Result<&str> {
-        self.keys
-            .get(name)
-            .map(String::as_str)
+        self.key_opt(name)
             .ok_or_else(|| Error::MissingKey(name.into()))
     }
 

@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::confidence;
 
 #[test]
 fn accepts_two_token_fullname_only() {
@@ -58,7 +59,7 @@ fn parse_relatives_extracts_same_surname_family_and_binds_to_subject() {
         assert_eq!(e.kind, EntityKind::Person);
         assert!(e.has_tag("family-candidate") && e.has_tag("relatives"));
         assert!(
-            e.confidence < 0.50,
+            e.confidence < confidence::MEDIUM,
             "below the expansion floor (recorded, not auto-pivoted)"
         );
         let related = e

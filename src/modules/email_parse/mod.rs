@@ -23,6 +23,7 @@ use async_trait::async_trait;
 use std::collections::HashSet;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -43,7 +44,7 @@ impl Module for EmailParse {
     }
 
     fn description(&self) -> &'static str {
-        "Extract domain and derive usernames from email local part"
+        "Email dissection — splits out the host domain and derives candidate usernames from the local part for onward pivoting"
     }
 
     fn priority(&self) -> u8 {
@@ -93,7 +94,12 @@ impl Module for EmailParse {
             // authoritative set. These leaked as standalone Domain entities and
             // drove the CRITICAL infrastructure-pollution an on-device scan flagged.
             if !is_freemail(&domain) && !crate::core::scan::is_noncentral_domain(&domain) {
-                let mut entity = Entity::new(EntityKind::Domain, &domain, 0.80, &ctx.scan_id);
+                let mut entity = Entity::new(
+                    EntityKind::Domain,
+                    &domain,
+                    confidence::HIGH_PLUSPLUS,
+                    &ctx.scan_id,
+                );
                 entity.tag("derived");
                 entity.tag("email-domain");
                 entity.add_evidence(
@@ -185,13 +191,17 @@ impl Module for EmailParse {
                 // second, shorter inline list. The inline list held only 8 of
                 // the ~40 freemail/ISP providers `is_freemail` knows, so
                 // country/ISP webmail (bigpond, comcast, gmx, yandex.ru, …) was
-                // scored as corporate (0.70 confidence) AND had a Person inferred
+                // scored as corporate (confidence::HIGH_PLUS confidence) AND had a Person inferred
                 // from `firstname.lastname` — fabricating a real name from a
                 // throwaway consumer address, and disagreeing with the very
                 // freemail check that skipped the Domain two blocks up.
                 let email_domain = target.value.split('@').nth(1).unwrap_or("").to_lowercase();
                 let is_corporate = !is_freemail(&email_domain);
-                let uname_conf = if is_corporate { 0.70 } else { 0.55 };
+                let uname_conf = if is_corporate {
+                    confidence::HIGH_PLUS
+                } else {
+                    confidence::MEDIUM_HIGH
+                };
                 // Sorted before emission so the HashSet's randomised iteration
                 // order never leaks into entity order (the same determinism-leak
                 // class fixed for `reddit_user`/`hacker_news`/`web_crawler`).
@@ -209,7 +219,7 @@ impl Module for EmailParse {
                     entity
                 }));
 
-                // firstname.lastname → Person entity (corporate at 0.55, freemail at 0.45).
+                // firstname.lastname → Person entity (corporate at confidence::MEDIUM_HIGH, freemail at confidence::LOW_MEDIUM).
                 // Freemail usernames like ryne.manka@gmail.com still produce a Person
                 // candidate — the lower confidence and `freemail-inferred` tag signal
                 // that the inference is weaker and requires corroboration.
@@ -220,7 +230,11 @@ impl Module for EmailParse {
                     && parts[0].chars().all(char::is_alphabetic)
                     && parts[1].chars().all(char::is_alphabetic)
                 {
-                    let person_conf = if is_corporate { 0.55 } else { 0.45 };
+                    let person_conf = if is_corporate {
+                        confidence::MEDIUM_HIGH
+                    } else {
+                        confidence::LOW_MEDIUM
+                    };
                     let name = format!("{} {}", capitalise(parts[0]), capitalise(parts[1]));
                     let mut pe = Entity::new(EntityKind::Person, &name, person_conf, &ctx.scan_id);
                     pe.tag("derived");
@@ -246,11 +260,7 @@ impl Module for EmailParse {
 /// lowercased email local-part token (`"jane"`) into a display name component
 /// (`"Jane"`) for the inferred `Person` entity. Empty input yields `""`.
 pub(super) fn capitalise(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        None => String::new(),
-        Some(f) => f.to_uppercase().chain(c).collect(),
-    }
+    crate::util::str_util::upper_first(s)
 }
 
 /// Re-export of the shared freemail check. Kept for backwards

@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
-use tokio::sync::Semaphore;
-
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::ModuleContext,
     scan::Target,
 };
-use crate::util::dns::shared_resolver;
 
 use super::constants::SUBDOMAINS;
+use super::resolve_batch::resolve_hosts_concurrently;
+use super::wildcard::detect_wildcard;
 use super::{MAX_CONCURRENT_BRUTE, SRC};
 
 /// Subdomain brute-force via the common-name dictionary.
@@ -20,51 +20,32 @@ pub(super) async fn brute_subdomains(target: &Target, ctx: &ModuleContext) -> Re
         return Ok(Vec::new());
     }
 
-    let resolver = shared_resolver();
-    let sem = Arc::new(Semaphore::new(MAX_CONCURRENT_BRUTE));
-    let mut set = tokio::task::JoinSet::new();
-
-    for sub in SUBDOMAINS {
+    let candidates: Vec<String> = SUBDOMAINS
+        .iter()
         // Skip if the sub-label is already the leftmost label of the input.
-        if parent.starts_with(sub) && parent.as_bytes().get(sub.len()) == Some(&b'.') {
-            continue;
-        }
-        let mut host = String::with_capacity(sub.len() + 1 + parent.len());
-        host.push_str(sub);
-        host.push('.');
-        host.push_str(&parent);
-        let sem = Arc::clone(&sem);
-        set.spawn(async move {
-            let _permit = sem.acquire_owned().await.ok()?;
-            match resolver.lookup_ip(host.as_str()).await {
-                Ok(lookup) => {
-                    let ips: Vec<String> = lookup.iter().map(|ip| ip.to_string()).collect();
-                    let count = ips.len();
-                    let joined = ips.join(", ");
-                    Some((host, joined, count))
-                }
-                Err(_) => None,
-            }
-        });
-    }
+        .filter(|sub| {
+            !(parent.starts_with(*sub) && parent.as_bytes().get(sub.len()) == Some(&b'.'))
+        })
+        .map(|sub| format!("{sub}.{parent}"))
+        .collect();
 
-    // Drain the JoinSet, then SORT hits by host before emitting entities.
-    // `join_next()` yields in network-completion order — nondeterministic
-    // run-to-run — so collecting first and sorting makes this module's output
-    // deterministic for a given DNS state, matching the fixed-order
-    // `tokio::join!` resolution path. Hosts are unique, so the order is total.
-    let mut hits: Vec<(String, String, usize)> = Vec::new();
-    while let Some(join_result) = set.join_next().await {
-        if let Ok(Some(hit)) = join_result {
-            hits.push(hit);
-        }
-    }
-    hits.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    // A wildcard-DNS zone (`*.parent A x.x.x.x`) makes every dictionary word
+    // "resolve" — reproduced live against blogspot.com, where two unrelated
+    // random labels both answered with the same IP. Detect it once up front
+    // and filter out any hit that is nothing more than that catch-all noise.
+    let wildcard_fp = detect_wildcard(&parent).await.map(Arc::new);
+
+    let hits = resolve_hosts_concurrently(candidates, MAX_CONCURRENT_BRUTE, wildcard_fp, ctx).await;
 
     let entities: Vec<Entity> = hits
         .into_iter()
         .map(|(host, ips_joined, count)| {
-            let mut e = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Domain,
+                &host,
+                confidence::HIGH_PLUSPLUS_PLUS,
+                &ctx.scan_id,
+            );
             e.tag("subdomain");
             e.tag("dns-brute");
             e.add_evidence(

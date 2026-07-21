@@ -22,11 +22,13 @@ pub(crate) struct SearchResult {
 
 mod entity;
 mod parse;
+mod relevance;
 mod text;
 mod urls;
 
 pub(super) use entity::*;
 pub(super) use parse::*;
+pub(super) use relevance::*;
 pub(super) use text::*;
 pub(super) use urls::*;
 

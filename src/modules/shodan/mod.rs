@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -105,7 +106,7 @@ impl Module for Shodan {
         "shodan"
     }
     fn description(&self) -> &'static str {
-        "Shodan host intelligence — free InternetDB plus paid API when keyed"
+        "Shodan host intelligence — probes free InternetDB, escalating to the paid API when keyed"
     }
     fn priority(&self) -> u8 {
         105
@@ -277,7 +278,12 @@ impl Shodan {
                         && !host.contains(char::is_whitespace)
                 })
                 .map(|host| {
-                    let mut d = Entity::new(EntityKind::Domain, host, 0.80, &ctx.scan_id);
+                    let mut d = Entity::new(
+                        EntityKind::Domain,
+                        host,
+                        confidence::HIGH_PLUSPLUS,
+                        &ctx.scan_id,
+                    );
                     d.tag("shodan-internetdb");
                     d.tag("ptr");
                     d.add_evidence(
@@ -516,5 +522,10 @@ fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
 
 /// Helper to build an IP entity from a raw IP string.
 pub(super) fn target_entity(ip: &str, scan_id: &str) -> Entity {
-    Entity::new(EntityKind::IpAddress, ip, 0.90, scan_id)
+    Entity::new(
+        EntityKind::IpAddress,
+        ip,
+        confidence::VERY_HIGH_PLUS,
+        scan_id,
+    )
 }

@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
     #[test]
@@ -26,14 +27,14 @@ use super::*;
     #[test]
     fn confidence_bands_track_range_accuracy() {
         // Boundaries of each band, plus the missing-range default (wide → 5000).
-        assert!((confidence_for_range(Some(0.0)) - 0.75).abs() < 1e-9);
-        assert!((confidence_for_range(Some(200.0)) - 0.75).abs() < 1e-9);
-        assert!((confidence_for_range(Some(201.0)) - 0.65).abs() < 1e-9);
-        assert!((confidence_for_range(Some(1000.0)) - 0.65).abs() < 1e-9);
-        assert!((confidence_for_range(Some(5000.0)) - 0.50).abs() < 1e-9);
+        assert!((confidence_for_range(Some(0.0)) - confidence::VERY_HIGH).abs() < 1e-9);
+        assert!((confidence_for_range(Some(200.0)) - confidence::VERY_HIGH).abs() < 1e-9);
+        assert!((confidence_for_range(Some(201.0)) - confidence::HIGH).abs() < 1e-9);
+        assert!((confidence_for_range(Some(1000.0)) - confidence::HIGH).abs() < 1e-9);
+        assert!((confidence_for_range(Some(5000.0)) - confidence::MEDIUM).abs() < 1e-9);
         assert!((confidence_for_range(Some(5001.0)) - 0.35).abs() < 1e-9);
         // None → 5000 default → the 1001..=5000 band.
-        assert!((confidence_for_range(None) - 0.50).abs() < 1e-9);
+        assert!((confidence_for_range(None) - confidence::MEDIUM).abs() < 1e-9);
     }
 
     fn data(lat: Option<f64>, lon: Option<f64>, range: Option<f64>) -> MylnikovData {
@@ -51,7 +52,7 @@ use super::*;
         assert_eq!(e.kind, EntityKind::Coordinates);
         assert_eq!(e.value, "-33.868800,151.209300");
         assert!(e.has_tag("mylnikov") && e.has_tag("geoint") && e.has_tag("bssid-located"));
-        assert!((e.confidence - 0.75).abs() < 1e-9);
+        assert!((e.confidence - confidence::VERY_HIGH).abs() < 1e-9);
         let a = &e.evidence[0].attributes;
         assert_eq!(
             a.get("bssid").map(String::as_str),
@@ -63,7 +64,7 @@ use super::*;
     #[test]
     fn missing_range_omits_attr_and_uses_default_band() {
         let e = build_location_entity("m", &data(Some(10.0), Some(20.0), None), "s").unwrap();
-        assert!((e.confidence - 0.50).abs() < 1e-9);
+        assert!((e.confidence - confidence::MEDIUM).abs() < 1e-9);
         assert_eq!(e.evidence[0].attributes.get("range_m"), None);
     }
 

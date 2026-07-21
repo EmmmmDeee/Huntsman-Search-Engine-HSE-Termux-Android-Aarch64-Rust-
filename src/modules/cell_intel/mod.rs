@@ -47,7 +47,7 @@ impl Module for CellIntel {
     }
 
     fn description(&self) -> &'static str {
-        "Cell tower survey and geolocation via Termux + OpenCelliD"
+        "Cell-tower survey & geolocation — sweeps nearby towers via Termux and geolocates them against OpenCelliD"
     }
 
     fn priority(&self) -> u8 {

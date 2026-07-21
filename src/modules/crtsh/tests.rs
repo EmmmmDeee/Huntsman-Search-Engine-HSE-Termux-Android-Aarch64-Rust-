@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
 #[test]
@@ -98,7 +99,7 @@ fn classifies_subdomains_dedups_and_skips_wildcards() {
 
     // Subdomain → high confidence + subdomain tag.
     let api = by_val("api.example.com").unwrap();
-    assert!((api.confidence - 0.75).abs() < 1e-9);
+    assert!((api.confidence - confidence::VERY_HIGH).abs() < 1e-9);
     assert!(api.has_tag(tags::CT_LOG) && api.has_tag(tags::SUBDOMAIN));
     assert_eq!(
         api.evidence[0].attributes.get("issuer").map(String::as_str),
@@ -107,7 +108,7 @@ fn classifies_subdomains_dedups_and_skips_wildcards() {
 
     // Unrelated domain → lower confidence, no subdomain tag.
     let other = by_val("unrelated.org").unwrap();
-    assert!((other.confidence - 0.45).abs() < 1e-9);
+    assert!((other.confidence - confidence::LOW_MEDIUM).abs() < 1e-9);
     assert!(!other.has_tag(tags::SUBDOMAIN));
 }
 
@@ -117,7 +118,7 @@ fn subdomain_match_is_case_insensitive_against_base() {
     let e = entries(r#"[{"name_value":"api.example.com"}]"#);
     let out = build_entities(&e, "Example.COM", "s");
     let api = out.iter().find(|x| x.value == "api.example.com").unwrap();
-    assert!((api.confidence - 0.75).abs() < 1e-9);
+    assert!((api.confidence - confidence::VERY_HIGH).abs() < 1e-9);
     assert!(api.has_tag(tags::SUBDOMAIN));
 }
 
@@ -130,7 +131,7 @@ fn surfaces_san_emails_above_min_length() {
     let email = out.iter().find(|x| x.kind == EntityKind::Email);
     let email = email.unwrap();
     assert_eq!(email.value, "admin@example.com");
-    assert!((email.confidence - 0.70).abs() < 1e-9);
+    assert!((email.confidence - confidence::HIGH_PLUS).abs() < 1e-9);
     assert!(email.has_tag(tags::CT_LOG));
     // "a@b" is below MIN_EMAIL_LEN → not surfaced.
     assert!(!out.iter().any(|x| x.value == "a@b"));
@@ -138,8 +139,8 @@ fn surfaces_san_emails_above_min_length() {
 
 #[test]
 fn results_emit_all_confidence_first_uncapped() {
-    // 250 distinct unrelated external domains (conf 0.45) plus one subdomain
-    // (0.75). NO per-module cap: EVERY distinct entity is emitted (each a real
+    // 250 distinct unrelated external domains (conf confidence::LOW_MEDIUM) plus one subdomain
+    // (confidence::VERY_HIGH). NO per-module cap: EVERY distinct entity is emitted (each a real
     // BFS pivot the engine's frontier budget bounds, not this leaf module), with
     // the subdomain ranked first and the order confidence-descending.
     let n = 250usize;

@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::entity::EntityKind;
+use crate::core::{confidence, entity::EntityKind};
 
     #[test]
     fn accepts_email_and_username() {
@@ -64,12 +64,12 @@ use crate::core::entity::EntityKind;
 
     #[test]
     fn confidence_bands_step_with_count() {
-        assert!((confidence_for(1) - 0.70).abs() < 1e-9);
-        assert!((confidence_for(9) - 0.70).abs() < 1e-9);
-        assert!((confidence_for(10) - 0.80).abs() < 1e-9);
-        assert!((confidence_for(99) - 0.80).abs() < 1e-9);
-        assert!((confidence_for(100) - 0.90).abs() < 1e-9);
-        assert!((confidence_for(50_000) - 0.90).abs() < 1e-9);
+        assert!((confidence_for(1) - confidence::HIGH_PLUS).abs() < 1e-9);
+        assert!((confidence_for(9) - confidence::HIGH_PLUS).abs() < 1e-9);
+        assert!((confidence_for(10) - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
+        assert!((confidence_for(99) - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
+        assert!((confidence_for(100) - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
+        assert!((confidence_for(50_000) - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
     }
 
     // ── build_entities (pure) ───────────────────────────────────────────
@@ -84,7 +84,7 @@ use crate::core::entity::EntityKind;
         // construction, so both value and raw_value are the canonical form here.
         assert_eq!(e.kind, EntityKind::Email);
         assert_eq!(e.raw_value, "test@example.com");
-        assert!((e.confidence - 0.90).abs() < 1e-9, "5727 ≥ 100 ⇒ 0.90");
+        assert!((e.confidence - confidence::VERY_HIGH_PLUS).abs() < 1e-9, "5727 ≥ 100 ⇒ confidence::VERY_HIGH_PLUS");
         assert!(e.has_tag("pwned-password") && e.has_tag("breach"));
 
         let ev = &e.evidence[0];
@@ -99,7 +99,7 @@ use crate::core::entity::EntityKind;
         let target = Target::new(TargetKind::Username, "alice");
         let e = build_entities(&target, 3, "ABCDE", "scan").remove(0);
         assert_eq!(e.kind, EntityKind::Username);
-        assert!((e.confidence - 0.70).abs() < 1e-9, "3 < 10 ⇒ 0.70");
+        assert!((e.confidence - confidence::HIGH_PLUS).abs() < 1e-9, "3 < 10 ⇒ confidence::HIGH_PLUS");
     }
 
     #[test]

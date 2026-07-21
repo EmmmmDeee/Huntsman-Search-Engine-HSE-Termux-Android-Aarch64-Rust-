@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -48,7 +49,7 @@ impl Module for NumVerify {
     }
 
     fn description(&self) -> &'static str {
-        "NumVerify phone validation — live carrier, line type & region (key-gated)"
+        "NumVerify phone validation — probes live carrier, line type, and region (key-gated)"
     }
 
     fn priority(&self) -> u8 {
@@ -148,7 +149,12 @@ fn build_entities(r: &NvResp, scan_id: &str) -> Vec<Entity> {
 
     let mut out = Vec::new();
 
-    let mut e = Entity::new(EntityKind::Address, &place, 0.55, scan_id);
+    let mut e = Entity::new(
+        EntityKind::Address,
+        &place,
+        confidence::MEDIUM_HIGH,
+        scan_id,
+    );
     e.tag(SRC);
     e.tag("geo-hint");
     e.tag("phone-region");
@@ -171,7 +177,12 @@ fn build_entities(r: &NvResp, scan_id: &str) -> Vec<Entity> {
     out.push(e);
     if let Some((lat, lon)) = crate::util::city_coords::city_coords(&place) {
         let coord_val = format!("{lat:.4},{lon:.4}");
-        let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+        let mut c = Entity::new(
+            EntityKind::Coordinates,
+            &coord_val,
+            confidence::LOW_MEDIUM,
+            scan_id,
+        );
         c.tag(SRC);
         c.tag("addr-derived");
         c.tag("geoint");
@@ -182,7 +193,12 @@ fn build_entities(r: &NvResp, scan_id: &str) -> Vec<Entity> {
 
     // Carrier → Organisation pivot (same pattern as ip2location ISP extraction).
     if let Some(carrier) = r.carrier.as_deref().map(str::trim).filter(|c| c.len() >= 2) {
-        let mut oe = Entity::new(EntityKind::Organisation, carrier, 0.60, scan_id);
+        let mut oe = Entity::new(
+            EntityKind::Organisation,
+            carrier,
+            confidence::MEDIUM_PLUS,
+            scan_id,
+        );
         oe.tag(SRC);
         oe.tag("carrier");
         oe.add_evidence(Evidence::new(SRC, format!("Phone carrier: {carrier}")));

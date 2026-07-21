@@ -37,7 +37,7 @@ impl Module for DeviceSensors {
     }
 
     fn description(&self) -> &'static str {
-        "Device location sensors: WiFi connection info and GPS/network fix via Termux"
+        "Device sensor recon — geolocates via WiFi connection info and GPS/network fix through Termux"
     }
 
     fn priority(&self) -> u8 {

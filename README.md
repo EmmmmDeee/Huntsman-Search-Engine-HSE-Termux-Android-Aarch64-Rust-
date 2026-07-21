@@ -5,9 +5,12 @@
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
 
-Pure-Rust OSINT / GEOINT platform with **162 modules** that runs entirely
+**All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
+SpiderFoot-inspired breadth without the daemon or the footprint.**
+
+Pure-Rust OSINT / GEOINT platform with **163 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
-dark-console Web UI, zero native dependencies.
+dark-console Web UI, zero native dependencies, keyless-first.
 
 ---
 
@@ -111,7 +114,7 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 162 modules
+hse modules                                                 # list all 163 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
@@ -159,7 +162,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ---
 
-## Module Overview (162 modules — 128 free, 34 key-gated/paid)
+## Module Overview (163 modules — 129 free, 34 key-gated/paid)
 
 > Grouped highlights below (all 159). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run
@@ -178,7 +181,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 - **Phone**: `phone_au`, `phone_intl`
 - **Corporate**: `acma_rrl`, `acnc_charities`, `asic_director`, `au_unclaimed`, `austlii`, `gleif_lei`, `opencorporates`
 - **Search**: `search_engines`
-- **Web analysis**: `cloud_storage`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
+- **Web analysis**: `cloud_storage`, `sitemap`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
 - **Termux sensors**: `cell_intel`, `device_sensors`, `local_net`, `signal_radar`
 - **Other**: `api_key_probe`, `chain_intel`
 
@@ -338,8 +341,8 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 - rustls + bundled-sqlite only — no OpenSSL, no native TLS, no C deps
 - `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
 - 4,300+ tests (unit + API integration + architecture boundary enforcement)
-- Deterministic correlator: 113 rules (100 entity + 13 graph-aware relation), no LLM/fuzzy matching
-- 113 correlator rules (AU-001 through AU-115, with some IDs reserved for engine-emitted cross-scan findings such as AU-065/AU-066), incl. graph-aware edge, transitive, multi-pathway corroboration, gap-analysis, jurisdiction cross-check (coordinate / address / phone-region), prediction-confirmed identity bridges (name-derived username AU-077 / email AU-086), sanctions/debarment/PEP screening (AU-114), personal-WiFi geolocation (AU-115), pathway-template, resolved-identity-cluster, anonymous-SIM, high-integrity-connection (max-bottleneck route), connection-broker (identity articulation-point), and robustly-corroborated-identity-cluster (no-single-point-of-failure k-redundant cluster) rules — deterministic, no LLM/fuzzy matching
+- Deterministic correlator: 120 rules (106 entity + 14 graph-aware relation), no LLM/fuzzy matching
+- 120 correlator rules (AU-001 through AU-122, with some IDs reserved for engine-emitted cross-scan findings such as AU-065/AU-066), incl. graph-aware edge, transitive, multi-pathway corroboration, gap-analysis, jurisdiction cross-check (coordinate / address / phone-region), prediction-confirmed identity bridges (name-derived username AU-077 / email AU-086), sanctions/debarment/PEP screening (AU-114), personal-WiFi geolocation (AU-115), pathway-template, resolved-identity-cluster, anonymous-SIM, high-integrity-connection (max-bottleneck route), connection-broker (identity articulation-point), robustly-corroborated-identity-cluster (no-single-point-of-failure k-redundant cluster), transitive-infrastructure-closure (AU-116 — a multi-server hosting footprint chained across IPs no single-hop rule sees), paired-hardware-constellation (AU-117 — the operator's own bonded Bluetooth kit as a self-carried tracking fingerprint), look-alike-domain-impersonation (AU-118 — homoglyph/typo phishing domains flagged across every discovered domain, dnstwist at the correlation layer), dating-platform-exposure (AU-119 — a subject's confirmed dating-app profiles surfaced as a location-bearing personal-exposure surface), monetized-creator-exposure (AU-120 — confirmed subscription-creator/webcam/adult profiles as an identity-linked payment/KYC surface), transitive credential-reuse blast-radius (AU-121 — the reuse-chain closure no single secret spans), and trackable-RF-device (AU-122 — persistent hardware MACs separated from randomized privacy addresses in a radar/WiGLE sweep) rules — deterministic, no LLM/fuzzy matching
 - 2 tokio worker threads (tuned for Termux low-power devices)
 - Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)
 

@@ -2,6 +2,7 @@ use super::build::{build_commit_emails, build_repo_entities};
 use super::types::{CodeItem, CommitAuthor, CommitDetail, CommitItem, CommitsResp};
 use super::{GithubCodeSearch, ModuleCost};
 use crate::core::{
+    confidence,
     entity::EntityKind,
     module::Module,
     scan::{Target, TargetKind},
@@ -45,7 +46,7 @@ fn build_repo_entities_exact_owner_match() {
         .find(|e| e.kind == EntityKind::Username)
         .unwrap();
     assert_eq!(user_e.value, "haigen");
-    assert!(user_e.confidence >= 0.65);
+    assert!(user_e.confidence >= confidence::HIGH);
     assert!(user_e.has_tag("repo-owner"));
 }
 
@@ -59,7 +60,7 @@ fn build_repo_entities_low_conf_unrelated() {
     let ents = build_repo_entities(&item, "haigen@example.com", TargetKind::Email, "s");
     let url_e = ents.iter().find(|e| e.kind == EntityKind::Url).unwrap();
     assert!(
-        url_e.confidence < 0.50,
+        url_e.confidence < confidence::MEDIUM,
         "unrelated repo should be sub-floor"
     );
 }

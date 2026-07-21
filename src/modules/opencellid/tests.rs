@@ -1,6 +1,9 @@
 use super::{AreaResp, OpenCellId, accuracy_to_confidence};
-use crate::core::module::{Module, ModuleCost};
-use crate::core::scan::{Target, TargetKind};
+use crate::core::{
+    confidence,
+    module::{Module, ModuleCost},
+    scan::{Target, TargetKind},
+};
 
 #[test]
 fn module_metadata() {
@@ -105,14 +108,14 @@ fn parse_missing_cells_key_defaults_empty() {
 #[test]
 fn confidence_bands_match_cell_intel_scale() {
     // Boundaries at each tier edge.
-    assert!((accuracy_to_confidence(0) - 0.85).abs() < 1e-9);
-    assert!((accuracy_to_confidence(100) - 0.85).abs() < 1e-9);
-    assert!((accuracy_to_confidence(101) - 0.75).abs() < 1e-9);
-    assert!((accuracy_to_confidence(500) - 0.75).abs() < 1e-9);
-    assert!((accuracy_to_confidence(501) - 0.65).abs() < 1e-9);
-    assert!((accuracy_to_confidence(2000) - 0.65).abs() < 1e-9);
-    assert!((accuracy_to_confidence(2001) - 0.50).abs() < 1e-9);
-    assert!((accuracy_to_confidence(10000) - 0.50).abs() < 1e-9);
+    assert!((accuracy_to_confidence(0) - confidence::HIGH_PLUSPLUS_PLUS).abs() < 1e-9);
+    assert!((accuracy_to_confidence(100) - confidence::HIGH_PLUSPLUS_PLUS).abs() < 1e-9);
+    assert!((accuracy_to_confidence(101) - confidence::VERY_HIGH).abs() < 1e-9);
+    assert!((accuracy_to_confidence(500) - confidence::VERY_HIGH).abs() < 1e-9);
+    assert!((accuracy_to_confidence(501) - confidence::HIGH).abs() < 1e-9);
+    assert!((accuracy_to_confidence(2000) - confidence::HIGH).abs() < 1e-9);
+    assert!((accuracy_to_confidence(2001) - confidence::MEDIUM).abs() < 1e-9);
+    assert!((accuracy_to_confidence(10000) - confidence::MEDIUM).abs() < 1e-9);
     assert!((accuracy_to_confidence(10001) - 0.35).abs() < 1e-9);
 }
 

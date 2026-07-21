@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -53,7 +54,7 @@ impl Module for Fediverse {
     }
 
     fn description(&self) -> &'static str {
-        "Fediverse/Mastodon account discovery via WebFinger (email-shaped handle → profile)"
+        "Fediverse/Mastodon account discovery — resolves an email-shaped handle to its profile via WebFinger"
     }
 
     fn priority(&self) -> u8 {
@@ -176,6 +177,25 @@ fn extract_webfinger(
             url_e.add_evidence(ev.clone());
             result.push(url_e);
         }
+    }
+
+    // `aliases` are additional self-referential URIs WebFinger asserts for the
+    // same subject — sibling data to the typed `rel` links above, but untyped
+    // (no `rel`/`type` to confirm which is the profile page vs. the actor), so
+    // each is still a URL pivot, just at a confidence below the typed
+    // actor/profile-page tiers.
+    for alias in wf.aliases.iter().filter(|a| a.starts_with("http")) {
+        let mut url_e = Entity::new(
+            EntityKind::Url,
+            alias.as_str(),
+            confidence::HIGH_PLUS,
+            scan_id,
+        );
+        url_e.tag("fediverse");
+        url_e.tag("mastodon");
+        url_e.tag("webfinger-alias");
+        url_e.add_evidence(ev.clone());
+        result.push(url_e);
     }
 
     // The local username — a pivot into the free username stack.

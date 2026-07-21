@@ -109,7 +109,7 @@ fn exact_match_fans_out_pivots_candidate_does_not() {
         .expect("candidate still surfaced (no omission)");
     assert!(marshall.tags.iter().any(|t| t == "name-candidate"));
     assert!(
-        marshall.confidence < 0.50,
+        marshall.confidence < confidence::MEDIUM,
         "candidate must stay below expansion floor"
     );
     // Its ABN/postcode are in evidence (complete) but NOT a separate AbnAcn entity.

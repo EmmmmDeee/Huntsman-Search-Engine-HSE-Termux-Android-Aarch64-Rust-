@@ -44,20 +44,19 @@ pub(in crate::core::correlator) fn rule_au_018_email_address_colocation(
     // ("co-located with 6" and "with 9") for one scan.
     let mut uids: Vec<String> = emails.iter().map(|e| e.uid.clone()).collect();
     uids.extend(addresses.iter().map(|e| e.uid.clone()));
-    vec![Correlation {
-        rule_id: "AU-018".into(),
-        rule_name: "Email + physical location co-located".into(),
-        severity: Severity::High,
-        description: format!(
+    vec![Correlation::new(
+        "AU-018",
+        "Email + physical location co-located",
+        Severity::High,
+        format!(
             "{} email(s) co-located with {} address/coordinate(s) — identity-location linkage",
             emails.len(),
             addresses.len()
         ),
-        entity_uids: uids,
-        scan_id: scan_id.into(),
+        uids,
+        scan_id,
         ts,
-        rank: 0.0,
-    }]
+    )]
 }
 
 /// AU-058 — Professional profile geographic signal (T1591.002).

@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
     use std::collections::HashMap;
 
@@ -75,7 +76,7 @@ use super::*;
         for e in &r.entities {
             assert_eq!(e.kind, EntityKind::Username);
             assert!((e.confidence - VARIANT_CONF).abs() < 1e-9);
-            assert!(e.confidence < 0.50, "must stay below the expansion floor");
+            assert!(e.confidence < confidence::MEDIUM, "must stay below the expansion floor");
             assert!(e.has_tag("variant"));
             assert!(e.has_tag("candidate"));
             assert_eq!(e.evidence[0].source, SRC);

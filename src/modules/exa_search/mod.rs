@@ -25,6 +25,7 @@ use serde_json::json;
 use std::time::Duration;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -69,7 +70,7 @@ impl Module for ExaSearch {
     }
 
     fn description(&self) -> &'static str {
-        "Exa AI neural search — semantic web search for entity discovery"
+        "Exa AI neural search — semantic web sweep for entity discovery and lead surfacing"
     }
 
     fn priority(&self) -> u8 {
@@ -173,7 +174,11 @@ impl Module for ExaSearch {
             "contents": { "text": { "max_characters": 1000 } }
         });
 
-        let resp = match ctx
+        // A transport failure to the Exa API is a real outage, not "no results
+        // for this query" — propagate it instead of silently reporting an empty
+        // search. (A genuine zero-hit search still arrives as a 2xx with an empty
+        // `results` array, handled below.)
+        let resp = ctx
             .http
             .post(BASE_URL)
             .header("x-api-key", key)
@@ -181,14 +186,7 @@ impl Module for ExaSearch {
             .json(&body)
             .timeout(Duration::from_secs(15))
             .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::debug!(error = %e, "exa_search request failed");
-                return Ok(ModuleResult::new());
-            }
-        };
+            .await?;
 
         // 401/403/429 → note_keyed_error + Err; 404 → clean miss; other
         // non-2xx → Err via http_status_error. Previously a 500 (server error)
@@ -197,10 +195,12 @@ impl Module for ExaSearch {
             return Ok(ModuleResult::new());
         };
 
-        let parsed: ExaResponse = match crate::util::http::json_scanned(resp, SRC).await {
-            Ok(v) => v,
-            Err(_) => return Ok(ModuleResult::new()),
-        };
+        // The status is already validated 2xx, so a JSON parse failure here is a
+        // malformed body from a live endpoint (an error/HTML page behind a 200) —
+        // a real outage, not an empty result set. Propagate it.
+        let parsed: ExaResponse = crate::util::http::json_scanned(resp, SRC)
+            .await
+            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
 
         let mut result = ModuleResult::new();
         let mut seen_domains = std::collections::HashSet::new();
@@ -211,7 +211,8 @@ impl Module for ExaSearch {
             }
 
             // Emit the URL as its own entity — feeds web_crawler.
-            let mut url_entity = Entity::new(EntityKind::Url, &r.url, 0.70, &ctx.scan_id);
+            let mut url_entity =
+                Entity::new(EntityKind::Url, &r.url, confidence::HIGH_PLUS, &ctx.scan_id);
             url_entity.tag("exa-search");
             url_entity.tag(tags::EXTERNAL);
             let mut ev = Evidence::new(
@@ -264,7 +265,7 @@ impl Module for ExaSearch {
             if let Some(host) = crate::util::url_util::host_from_url(&r.url)
                 && seen_domains.insert(host.clone())
             {
-                let mut d = Entity::new(EntityKind::Domain, &host, 0.65, &ctx.scan_id);
+                let mut d = Entity::new(EntityKind::Domain, &host, confidence::HIGH, &ctx.scan_id);
                 d.tag("exa-search");
                 d.tag(tags::EXTERNAL);
                 d.add_evidence(
@@ -291,7 +292,7 @@ fn mine_snippet(text: &str, scan_id: &str, source_url: &str, result: &mut Module
     // Email regex — same shape as web_crawler::extract_emails.
     for cap in EMAIL_RE.find_iter(text) {
         let email = cap.as_str().to_lowercase();
-        let mut e = Entity::new(EntityKind::Email, &email, 0.60, scan_id);
+        let mut e = Entity::new(EntityKind::Email, &email, confidence::MEDIUM_PLUS, scan_id);
         e.tag("exa-search");
         e.tag("web-scraped");
         e.add_evidence(
@@ -310,7 +311,7 @@ fn mine_snippet(text: &str, scan_id: &str, source_url: &str, result: &mut Module
         if digits.chars().filter(char::is_ascii_digit).count() < 7 {
             continue;
         }
-        let mut p = Entity::new(EntityKind::Phone, &digits, 0.55, scan_id);
+        let mut p = Entity::new(EntityKind::Phone, &digits, confidence::MEDIUM_HIGH, scan_id);
         p.tag("exa-search");
         p.tag("web-scraped");
         p.add_evidence(

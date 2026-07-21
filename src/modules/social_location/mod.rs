@@ -12,6 +12,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -29,7 +30,7 @@ impl Module for SocialLocation {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Extract self-reported location from social profile pages (GitHub, etc.)"
+        "Social geolocation recon — surfaces self-reported location from social profile pages (GitHub, etc.)"
     }
     fn priority(&self) -> u8 {
         15
@@ -89,12 +90,16 @@ impl Module for SocialLocation {
             let trimmed = loc.trim();
             if !trimmed.is_empty() && trimmed.len() <= 200 {
                 // Professional portals carry verified workplace addresses.
-                // Self-reported bio fields are raised to 0.52 (above the 0.50
+                // Self-reported bio fields are raised to 0.52 (above the confidence::MEDIUM
                 // expansion floor) so they feed the geo-correlation chain
                 // (AU-052/AU-053) after the address→coordinates enrichment pass.
-                // Professional portals are set to 0.55 — the same tier as a
+                // Professional portals are set to confidence::MEDIUM_HIGH — the same tier as a
                 // search-discovered postcode-qualified address.
-                let conf = if is_professional { 0.55 } else { 0.52 };
+                let conf = if is_professional {
+                    confidence::MEDIUM_HIGH
+                } else {
+                    0.52
+                };
                 let mut e = Entity::new(EntityKind::Address, trimmed, conf, &ctx.scan_id);
                 e.tag("geoint");
                 if is_professional {

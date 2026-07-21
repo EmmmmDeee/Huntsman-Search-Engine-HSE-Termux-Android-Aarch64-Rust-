@@ -29,6 +29,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -63,7 +64,7 @@ impl Module for ZoomEye {
     }
 
     fn description(&self) -> &'static str {
-        "ZoomEye host/service search: exposed ports, banners, geoloc, ASN/operator for an IP or domain (key-gated)"
+        "ZoomEye host/service recon — enumerates exposed ports, banners, geoloc, and ASN/operator for an IP or domain (key-gated)"
     }
 
     fn priority(&self) -> u8 {
@@ -182,8 +183,12 @@ impl Module for ZoomEye {
             if !skip_coords
                 && let Some((lat, lon)) = coords(m)
                 && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
-                && let Some(mut ce) =
-                    crate::util::geo::coarse_provider_coords(lat, lon, 0.55, &ctx.scan_id)
+                && let Some(mut ce) = crate::util::geo::coarse_provider_coords(
+                    lat,
+                    lon,
+                    confidence::MEDIUM_HIGH,
+                    &ctx.scan_id,
+                )
             {
                 if let Some(cc) = geo_country_code(m) {
                     ce.tag(format!("country:{}", cc.to_uppercase()));
@@ -196,7 +201,12 @@ impl Module for ZoomEye {
             if let Some(addr) = geo_address(m)
                 && seen.insert(format!("@addr:{}", addr.to_lowercase()))
             {
-                let mut ae = Entity::new(EntityKind::Address, &addr, 0.55, &ctx.scan_id);
+                let mut ae = Entity::new(
+                    EntityKind::Address,
+                    &addr,
+                    confidence::MEDIUM_HIGH,
+                    &ctx.scan_id,
+                );
                 ae.tag(crate::core::tags::GEOINT);
                 ae.add_evidence(ev());
                 result.push(ae);
@@ -206,14 +216,20 @@ impl Module for ZoomEye {
             if let Some(asn) = geo_asn(m)
                 && seen.insert(asn.to_lowercase())
             {
-                let mut ae = Entity::new(EntityKind::Asn, &asn, 0.75, &ctx.scan_id);
+                let mut ae =
+                    Entity::new(EntityKind::Asn, &asn, confidence::VERY_HIGH, &ctx.scan_id);
                 ae.add_evidence(ev());
                 result.push(ae);
             }
             if let Some(org) = geo_org(m).filter(|o| o.len() >= 3)
                 && seen.insert(format!("@org:{}", org.to_lowercase()))
             {
-                let mut oe = Entity::new(EntityKind::Organisation, &org, 0.55, &ctx.scan_id);
+                let mut oe = Entity::new(
+                    EntityKind::Organisation,
+                    &org,
+                    confidence::MEDIUM_HIGH,
+                    &ctx.scan_id,
+                );
                 oe.add_evidence(ev());
                 result.push(oe);
             }
@@ -236,7 +252,12 @@ impl Module for ZoomEye {
                 && ip != value
                 && seen.insert(format!("@ip:{ip}"))
             {
-                let mut ie = Entity::new(EntityKind::IpAddress, &ip, 0.70, &ctx.scan_id);
+                let mut ie = Entity::new(
+                    EntityKind::IpAddress,
+                    &ip,
+                    confidence::HIGH_PLUS,
+                    &ctx.scan_id,
+                );
                 ie.tag(SRC);
                 ie.add_evidence(ev());
                 result.push(ie);
@@ -246,7 +267,7 @@ impl Module for ZoomEye {
 
         // For an IP target, fold the exposed service surface onto the seed entity.
         if matches!(target.kind, TargetKind::IpAddress) && !ports.is_empty() {
-            let mut e = target.to_entity(0.60, &ctx.scan_id);
+            let mut e = target.to_entity(confidence::MEDIUM_PLUS, &ctx.scan_id);
             e.tag(SRC);
             for label in &ports {
                 e.tag(format!("port:{label}"));

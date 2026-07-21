@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
     use std::collections::HashMap;
 
@@ -78,7 +79,7 @@ use super::*;
         assert_eq!(e.kind, EntityKind::Email);
         assert_eq!(e.value, "jdoe@gmail.com");
         assert!(
-            e.confidence >= 0.50,
+            e.confidence >= confidence::MEDIUM,
             "canonical mailbox should pivot at depth"
         );
         assert!(e.has_tag("canonical"));

@@ -3194,6 +3194,19 @@ fn au075_named_associate_from_breach_record() {
 }
 
 #[test]
+fn au075_non_breach_parent_is_not_a_named_associate() {
+    // A live phone scan mislabeled a search/crawl "parent" DOMAIN relationship
+    // ("parent" = wikipedia.org) as a breached relative. A non-breach source
+    // must never produce a named-associate finding.
+    let mut e = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    e.add_evidence(Evidence::new("search_engines", "serp").with_attr("parent", "wikipedia.org"));
+    assert!(
+        super::rules::rule_au_075_named_associate(&[e], "s", 0).is_empty(),
+        "a search-sourced domain 'parent' is not a breach-record associate"
+    );
+}
+
+#[test]
 fn au090_jurisdiction_two_sources_agree_is_high() {
     let mut e = Entity::new(EntityKind::Person, "Cindy Haynes", 0.9, "s");
     e.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("state", "QLD"));
@@ -3380,6 +3393,93 @@ fn au093_full_street_address_is_high_and_geocoded() {
     assert!(
         r[0].description.contains("offline"),
         "postcode 4552 geocodes offline"
+    );
+}
+
+#[test]
+fn au093_geocode_reverse_geocode_is_not_labeled_breach() {
+    // The proven defect, generalised: a reverse-geocode record carries the same
+    // suburb/state/postcode attributes as a leaked address, but `geocode` is not
+    // a breach source — it must NOT be assembled and reported as a dwelling.
+    let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    p.add_evidence(
+        Evidence::new("geocode", "reverse geocode")
+            .with_attr("suburb", "Darwin")
+            .with_attr("state", "NT")
+            .with_attr("postcode", "0800"),
+    );
+    assert!(
+        super::rules::rule_au_093_au_address_from_breach(&[p], "s", 0).is_empty(),
+        "a geocoded suburb must never be reported as a breach-sourced address"
+    );
+}
+
+#[test]
+fn au093_registry_enricher_is_not_labeled_breach() {
+    // A non-geo enricher (electoral roll) also stamps suburb/state/postcode but
+    // is not a leaked breach record — the same gate excludes it.
+    let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    p.add_evidence(
+        Evidence::new("au_electoral", "electoral roll")
+            .with_attr("suburb", "Darwin")
+            .with_attr("state", "NT")
+            .with_attr("postcode", "0800"),
+    );
+    assert!(
+        super::rules::rule_au_093_au_address_from_breach(&[p], "s", 0).is_empty(),
+        "a registry-enricher locality is not a breach-sourced address"
+    );
+}
+
+#[test]
+fn au093_mixed_breach_and_geocode_counts_only_the_breach_source() {
+    // The SAME address on a real breach record AND a geocode record → exactly one
+    // finding, counting only the breach source (geocode excluded, not deduped).
+    let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    p.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("suburb", "Brisbane")
+            .with_attr("state", "QLD")
+            .with_attr("postcode", "4000"),
+    );
+    p.add_evidence(
+        Evidence::new("geocode", "reverse geocode")
+            .with_attr("suburb", "Brisbane")
+            .with_attr("state", "QLD")
+            .with_attr("postcode", "4000"),
+    );
+    let r = super::rules::rule_au_093_au_address_from_breach(&[p], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert!(
+        r[0].description.contains("1 breach record source"),
+        "geocode must be excluded from the count: {}",
+        r[0].description
+    );
+    assert!(r[0].description.contains("oathnet_pro"));
+    assert!(
+        !r[0].description.contains("geocode"),
+        "geocode must not be named as a breach source: {}",
+        r[0].description
+    );
+}
+
+#[test]
+fn au090_geocode_state_is_not_a_breach_record() {
+    let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    p.add_evidence(Evidence::new("geocode", "reverse geocode").with_attr("state", "NT"));
+    assert!(
+        super::rules::rule_au_090_au_jurisdiction(&[p], "s", 0).is_empty(),
+        "a geocoded state is not a breach-record jurisdiction"
+    );
+}
+
+#[test]
+fn au091_geocode_postcode_is_not_a_breach_record() {
+    let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
+    p.add_evidence(Evidence::new("geocode", "reverse geocode").with_attr("postcode", "0800"));
+    assert!(
+        super::rules::rule_au_091_au_postcode_locality(&[p], "s", 0).is_empty(),
+        "a geocoded postcode is not a breach-record locality"
     );
 }
 
@@ -6434,8 +6534,9 @@ fn au_103_silent_with_no_device_signals() {
 fn au_057_two_brisbane_coords_produce_synthesised_fix() {
     use super::rules::rule_au_057_synthesised_location_fix;
 
-    // Two Brisbane coordinates both at confidence 0.70 → AU-057 fires with
-    // a synthesised point between them; severity is Medium (2 inputs).
+    // Two Brisbane coordinates both at confidence 0.70, both person-anchoring
+    // sources → AU-057 fires with a synthesised point between them; severity is
+    // Medium (2 inputs).
     let ents = vec![
         {
             let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.70, "scan");
@@ -6489,7 +6590,7 @@ fn au_057_low_confidence_coords_do_not_fire() {
         },
         {
             let mut e = Entity::new(EntityKind::Coordinates, "-27.4766,153.0166", 0.55, "scan");
-            e.add_evidence(Evidence::new("ip_geo", "Brisbane suburb fix".to_string()));
+            e.add_evidence(Evidence::new("photon", "Brisbane suburb fix".to_string()));
             e
         },
     ];

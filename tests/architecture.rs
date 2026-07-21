@@ -103,6 +103,20 @@ fn core_does_not_import_util_directly() {
                 // `util::spf` ever grows a non-pure item.
                 && !line.contains("util::spf::Ipv4Cidr")
                 && !line.contains("util::spf::Ipv6Cidr")
+                // Pure, offline, dependency-free IEEE OUI classifier (a const
+                // vendor table + a U/L-bit test on the first octet; no I/O, no
+                // deps) — same leaf category as `util::spf`/`util::abn`. AU-122
+                // uses it to separate a trackable universally-administered MAC
+                // from a randomized privacy address in a radar/WiGLE sweep, the
+                // same classifier the WiGLE emit path already applies so the two
+                // never disagree on which addresses are real hardware.
+                && !line.contains("util::oui")
+                // Pure, offline look-alike/typosquat comparison for domain
+                // labels (homoglyph skeleton fold + Levenshtein; no I/O, no
+                // deps, no Unicode tables) — same leaf category as
+                // `util::oui`/`util::abn`. AU-118 uses it to flag a phishing /
+                // brand-impersonation domain standing up beside the genuine one.
+                && !line.contains("util::confusable")
                 && !line.contains("util::preflight")
                 && !line.contains("util::keys::signup_hint")
                 && !line.contains("util::oathnet::reset_budget")
@@ -268,6 +282,14 @@ fn core_does_not_import_util_directly() {
                 && !line.contains("util::hashcat::is_common_password")
                 && !line.contains("util::hashcat::digests_of")
                 && !line.contains("util::hashcat::is_common_collision")
+                // Pure, dependency-free disjoint-set / union-find primitive (a
+                // flat parent `Vec<usize>` with path-halving; no state, no I/O,
+                // no deps), same leaf category as `util::geometry`. The
+                // credential-reuse (AU-121) and shared-infrastructure (AU-116)
+                // closure rules use it to compute connected components over
+                // handle/infra graphs; it is the single source of truth those
+                // rules and the diagnostics/relation clusterers all delegate to.
+                && !line.contains("util::union_find")
         })
         .collect();
     assert!(

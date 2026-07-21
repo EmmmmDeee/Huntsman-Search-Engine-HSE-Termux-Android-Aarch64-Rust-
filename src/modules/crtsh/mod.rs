@@ -12,6 +12,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -155,13 +156,17 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
                 if name.len() < MIN_EMAIL_LEN || !seen_emails.insert(name.clone()) {
                     return None;
                 }
-                let mut e = Entity::new(EntityKind::Email, &name, 0.70, scan_id);
+                let mut e = Entity::new(EntityKind::Email, &name, confidence::HIGH_PLUS, scan_id);
                 e.tag(tags::CT_LOG);
                 e.add_evidence(cert_evidence(entry, "Email in certificate SAN"));
                 Some(e)
             } else if name.contains('.') && seen_domains.insert(name.clone()) {
                 let is_sub = name == base || name.ends_with(&dot_base);
-                let conf = if is_sub { 0.75 } else { 0.45 };
+                let conf = if is_sub {
+                    confidence::VERY_HIGH
+                } else {
+                    confidence::LOW_MEDIUM
+                };
                 let mut e = Entity::new(EntityKind::Domain, &name, conf, scan_id);
                 e.tag(tags::CT_LOG);
                 if is_sub {
@@ -189,7 +194,12 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
         if !seen_issuers.insert(key) {
             return None;
         }
-        let mut o = Entity::new(EntityKind::Organisation, org, 0.55, scan_id);
+        let mut o = Entity::new(
+            EntityKind::Organisation,
+            org,
+            confidence::MEDIUM_HIGH,
+            scan_id,
+        );
         o.tag(tags::CT_LOG);
         o.tag("certificate-issuer");
         o.tag("derived");
@@ -243,7 +253,7 @@ impl Module for CrtSh {
     }
 
     fn description(&self) -> &'static str {
-        "Certificate Transparency log search via crt.sh (free, no key)"
+        "crt.sh recon — sweeps Certificate Transparency logs to enumerate subdomains (free, no key)"
     }
 
     fn priority(&self) -> u8 {

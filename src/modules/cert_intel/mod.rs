@@ -14,6 +14,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -46,7 +47,7 @@ impl Module for CertIntel {
     }
 
     fn description(&self) -> &'static str {
-        "Certificate intelligence: CT log search and live TLS probe"
+        "Certificate intelligence — sweeps CT logs and fingerprints a host via live TLS probe"
     }
 
     fn priority(&self) -> u8 {
@@ -110,7 +111,7 @@ impl Module for CertIntel {
             .await
             .map_err(|e| Error::module(SRC, format!("TLS connect: {e}")))
         {
-            let mut entity = target.to_entity(0.88, &ctx.scan_id);
+            let mut entity = target.to_entity(confidence::EXPERT, &ctx.scan_id);
             entity.tag("tls");
 
             let mut ev = Evidence::new(SRC, format!("TLS certificate for {domain}"))
@@ -153,8 +154,8 @@ impl Module for CertIntel {
 /// subdomain relationship. A `%.domain` CT query returns the WHOLE matched
 /// certificate's SAN list, which on a shared-hosting cert includes unrelated
 /// co-tenant domains — so a proper subdomain of `parent` is a confirmed asset
-/// (0.88, tagged [`tags::SUBDOMAIN`]) while a co-listed non-subdomain is only a
-/// weak co-hosting lead (0.45, tagged `co-hosted`): they must NOT carry identical
+/// (confidence::EXPERT, tagged [`tags::SUBDOMAIN`]) while a co-listed non-subdomain is only a
+/// weak co-hosting lead (confidence::LOW_MEDIUM, tagged `co-hosted`): they must NOT carry identical
 /// high confidence, or an unrelated co-tenant is over-attributed to the subject.
 /// Matches the discrimination the TLS-SAN path and the sibling `crtsh` module
 /// already apply. Dedups across both cert paths via `seen_subs`.
@@ -197,7 +198,11 @@ fn ct_log_entities(
                 return None;
             }
             let is_sub = crate::util::domains::is_proper_subdomain_of(&name, parent);
-            let conf = if is_sub { 0.88 } else { 0.45 };
+            let conf = if is_sub {
+                confidence::EXPERT
+            } else {
+                confidence::LOW_MEDIUM
+            };
             let mut e = Entity::new(EntityKind::Domain, &name, conf, scan_id);
             e.tag(tags::CT_LOG);
             if is_sub {
@@ -242,7 +247,12 @@ fn parse_certificate(
             if !is_sub || !seen_subs.insert(san_lower.clone()) {
                 return None;
             }
-            let mut sub = Entity::new(EntityKind::Domain, &san_lower, 0.85, scan_id);
+            let mut sub = Entity::new(
+                EntityKind::Domain,
+                &san_lower,
+                confidence::HIGH_PLUSPLUS_PLUS,
+                scan_id,
+            );
             sub.tag(tags::SUBDOMAIN);
             sub.tag("tls-san");
             sub.add_evidence(

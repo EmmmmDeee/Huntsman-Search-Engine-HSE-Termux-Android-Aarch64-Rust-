@@ -4,6 +4,7 @@ use super::{
     types::{SeonEmailResp, SeonPhoneResp},
 };
 use crate::core::{
+    confidence,
     entity::EntityKind,
     module::{Module, ModuleCost},
     scan::{Target, TargetKind},
@@ -331,6 +332,55 @@ fn email_registrant_name_requires_a_real_full_name_not_a_handle() {
 }
 
 #[test]
+fn email_emits_its_own_domain_as_a_pivot() {
+    // `email_domain_details.domain` was previously only ever attached as an
+    // evidence attribute on the Email entity — this fix mints it as a
+    // first-class Domain entity too. The fixture's domain has custom:true,
+    // free:false, disposable:false, so it must pass the freemail/disposable
+    // guard.
+    let es = email(REAL_EMAIL_RESPONSE);
+    let domain = es
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain && e.value == "example.com")
+        .expect("email's own domain entity");
+    assert!(domain.has_tag("seon"));
+    let ev = &domain.evidence[0];
+    assert_eq!(
+        ev.attributes.get("registrar_name").map(String::as_str),
+        Some("NameCheap, Inc.")
+    );
+    assert_eq!(
+        ev.attributes.get("registered").map(String::as_str),
+        Some("true")
+    );
+}
+
+#[test]
+fn email_own_domain_pivot_skips_freemail_and_disposable() {
+    let es = email(
+        r#"{"data":{"email_domain_details":{
+            "domain":"gmail.com","free":true,"registered":true
+        }}}"#,
+    );
+    assert!(
+        es.iter()
+            .all(|e| !(e.kind == EntityKind::Domain && e.value == "gmail.com")),
+        "freemail domains must not be minted as a Domain pivot"
+    );
+
+    let es = email(
+        r#"{"data":{"email_domain_details":{
+            "domain":"tempmail.example","disposable":true,"registered":true
+        }}}"#,
+    );
+    assert!(
+        es.iter()
+            .all(|e| !(e.kind == EntityKind::Domain && e.value == "tempmail.example")),
+        "disposable domains must not be minted as a Domain pivot"
+    );
+}
+
+#[test]
 fn email_high_score_is_flagged_high_risk() {
     let es = email(r#"{"data":{"risk_scores":{"global_network_score":92.0}}}"#);
     assert!(es[0].has_tag("high-risk"));
@@ -494,6 +544,27 @@ fn phone_emits_a_carrier_organisation_pivot() {
 }
 
 #[test]
+fn phone_emits_a_ported_carrier_organisation_pivot() {
+    // hlr_details.ported_carrier was previously only surfaced as evidence
+    // text — this fix routes it through the same carrier_entity() helper
+    // used for provider_carrier_details.carrier, so a number ported to a
+    // new network mints a second, distinguishable Organisation pivot.
+    let es = phone(REAL_PHONE_RESPONSE);
+    let orgs: Vec<&crate::core::entity::Entity> = es
+        .iter()
+        .filter(|e| e.kind == EntityKind::Organisation)
+        .collect();
+    assert_eq!(orgs[0].value, "Telstra", "provider carrier must stay first");
+    let ported = orgs
+        .iter()
+        .find(|e| e.value == "Optus")
+        .expect("ported-carrier Organisation entity");
+    assert!(ported.has_tag("carrier"));
+    assert!(ported.has_tag("ported-carrier"));
+    assert!((ported.confidence - 0.62).abs() < 1e-9);
+}
+
+#[test]
 fn phone_emits_a_cnam_person_pivot() {
     let es = phone(REAL_PHONE_RESPONSE);
     let person = es
@@ -503,7 +574,7 @@ fn phone_emits_a_cnam_person_pivot() {
     assert_eq!(person.value, "Jordan Avery");
     assert!(person.has_tag("cnam"));
     assert!(person.has_tag("pstn-subscriber"));
-    assert!((person.confidence - 0.55).abs() < 1e-9);
+    assert!((person.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
 }
 
 #[test]

@@ -27,6 +27,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -59,7 +60,7 @@ impl Module for HackerNews {
     }
 
     fn description(&self) -> &'static str {
-        "Hacker News account lookup (karma, created, bio) via the official public API"
+        "Hacker News account recon — resolves a handle to karma, created date, and bio via the official public API"
     }
 
     fn priority(&self) -> u8 {
@@ -134,7 +135,12 @@ pub(super) fn build_entities(
 ) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
-    let mut u = Entity::new(EntityKind::Username, &user.id, 0.90, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        &user.id,
+        confidence::VERY_HIGH_PLUS,
+        scan_id,
+    );
     u.tag("hacker-news");
     let submissions = user.submitted.as_ref().map_or(0, Vec::len);
     let ev = [
@@ -195,7 +201,7 @@ pub(super) fn build_entities(
                 && host != "ycombinator.com"
                 && host != "news.ycombinator.com"
             {
-                let mut d = Entity::new(EntityKind::Domain, &host, 0.65, scan_id);
+                let mut d = Entity::new(EntityKind::Domain, &host, confidence::HIGH, scan_id);
                 d.tag("hacker-news");
                 d.tag("derived");
                 d.add_evidence(
@@ -307,7 +313,7 @@ fn algolia_domain_entities(body: &str, username: &str, scan_id: &str) -> Vec<Ent
     domains
         .into_iter()
         .map(|dom| {
-            let mut d = Entity::new(EntityKind::Domain, &dom, 0.50, scan_id);
+            let mut d = Entity::new(EntityKind::Domain, &dom, confidence::MEDIUM, scan_id);
             d.tag("hn-submission");
             d.add_evidence(
                 Evidence::new(

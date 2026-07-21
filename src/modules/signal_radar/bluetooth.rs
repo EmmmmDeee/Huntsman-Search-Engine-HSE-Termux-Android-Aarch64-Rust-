@@ -11,6 +11,7 @@
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
 };
@@ -46,18 +47,40 @@ pub(super) fn parse_bt_json(stdout: &[u8], scan_id: &str) -> ModuleResult {
         let bt_type = dev.bt_type.as_deref().unwrap_or("unknown");
         let bond_state = dev.bond_state.as_deref().unwrap_or("unknown");
 
-        let mut e = Entity::new(EntityKind::MacAddress, &dev.address, 0.80, scan_id);
+        let mut e = Entity::new(
+            EntityKind::MacAddress,
+            &dev.address,
+            confidence::HIGH_PLUSPLUS,
+            scan_id,
+        );
         e.tag("bluetooth");
         e.tag(format!("bt-{}", bt_type.to_lowercase()));
         e.tag(format!("bond:{}", bond_state.to_lowercase()));
 
-        e.add_evidence(
-            Evidence::new(SRC, format!("Bluetooth device: {name}"))
-                .with_attr("name", name)
-                .with_attr("address", &dev.address)
-                .with_attr("type", bt_type)
-                .with_attr("bond_state", bond_state),
-        );
+        let mut ev = Evidence::new(SRC, format!("Bluetooth device: {name}"))
+            .with_attr("name", name)
+            .with_attr("address", &dev.address)
+            .with_attr("type", bt_type)
+            .with_attr("bond_state", bond_state);
+
+        // OUI classification — the same primitive the WiGLE path applies, so a
+        // radar pin carries the vendor + device class where the address is real
+        // hardware, and is flagged `randomized` (not attributed to any vendor)
+        // where it is a locally-administered privacy address. This is the signal
+        // AU-122 partitions on: a randomized MAC is a rotating throwaway, not a
+        // followable device, and must never be plotted as one.
+        if let Some(oui) = crate::util::oui::classify_mac(&dev.address) {
+            e.tag(format!("vendor:{}", oui.vendor));
+            e.tag(format!("device:{}", oui.class.as_str()));
+            let trackable = crate::util::oui::is_locally_administered(&dev.address) == Some(false);
+            e.tag(if trackable { "trackable" } else { "randomized" });
+            ev = ev
+                .with_attr("vendor", oui.vendor)
+                .with_attr("device_class", oui.class.as_str())
+                .with_attr("trackable", trackable.to_string());
+        }
+
+        e.add_evidence(ev);
 
         result.push(e);
     }

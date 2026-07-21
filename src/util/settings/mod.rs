@@ -128,11 +128,24 @@ pub const FEATURE_TOGGLES: &[(&str, bool)] = &[
     // respects passive/free/exclude). Turn off (`hse config feature.gap_fill off`)
     // to skip the extra corroboration-seeking dispatch.
     ("feature.gap_fill", true),
+    // Expansion depth-decay: discount an entity's effective confidence FOR
+    // EXPANSION PURPOSES by its generation (distance in pivots from the seed),
+    // so the recursion favours seed-adjacent leads and a deep chain must be more
+    // strongly corroborated to keep expanding — a depth horizon on the working
+    // graph. Default **OFF** (byte-identical expansion to today); the raw
+    // c_effective every correlation/display/gate reads is never changed. Turn on
+    // (`hse config feature.depth_decay on`) for a tighter, seed-focused sweep
+    // that spends its budget nearer the subject.
+    ("feature.depth_decay", false),
 ];
 
 /// The `feature.*` key gating active gap-fill — one source of the key string so
 /// the engine gate and the toggle registry can't drift.
 pub const GAP_FILL_FEATURE: &str = "feature.gap_fill";
+
+/// The `feature.*` key gating expansion depth-decay — one source of the key
+/// string so the engine gate and the toggle registry can't drift.
+pub const DEPTH_DECAY_FEATURE: &str = "feature.depth_decay";
 
 /// The `feature.*` key gating the live-sensor radar — the single source of the
 /// key string so the CLI gate, the API gate, and the toggle registry can't drift.

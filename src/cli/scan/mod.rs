@@ -15,10 +15,14 @@ use super::{
     use_color,
 };
 
+#[derive(Clone)]
 pub(super) struct ScanCmd {
     /// `None` (or `"auto"`) auto-detects the kind from `value` — the unified scan.
     pub kind: Option<String>,
     pub value: String,
+    /// Batch mode: a path to a file of seeds (one target per line). When set,
+    /// `value` is ignored and the same scan pipeline runs once per file seed.
+    pub input_file: Option<String>,
     pub modules: Option<String>,
     pub exclude: Option<String>,
     pub throttle_ms: u64,
@@ -53,7 +57,63 @@ pub(super) struct ScanCmd {
     pub include_infra: bool,
 }
 
+/// Parse a batch seed-list file body into ordered, de-duplicated seeds: one
+/// target per line, blank lines and `#`-comment lines skipped, surrounding
+/// whitespace trimmed. **Pure** (no IO) so the parsing is unit-tested directly.
+pub(super) fn parse_seed_list(body: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    body.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter(|l| seen.insert(l.to_string()))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Batch mode: run the SAME scan pipeline for every seed in `--input-file`,
+/// reusing [`cmd_scan`] per seed. This is HSE's keyless, any-seed generalisation
+/// of a "process this list of targets" batch tool — each seed's findings are
+/// scanned, stored (exportable afterwards per `scan_id` via `hse export`), and a
+/// per-seed failure is reported without aborting the run (one bad target must
+/// not sink the whole list).
+async fn run_batch(base: ScanCmd, path: &str) -> crate::core::error::Result<()> {
+    let body = std::fs::read_to_string(path).map_err(|e| {
+        crate::core::error::Error::Other(format!("cannot read --input-file '{path}': {e}"))
+    })?;
+    let seeds = parse_seed_list(&body);
+    if seeds.is_empty() {
+        return Err(crate::core::error::Error::Other(format!(
+            "no seeds in --input-file '{path}' (one target per line; blank and # lines ignored)"
+        )));
+    }
+    let total = seeds.len();
+    eprintln!("batch: scanning {total} seed(s) from {path}");
+    let (mut ok, mut failed) = (0usize, 0usize);
+    for (i, seed) in seeds.into_iter().enumerate() {
+        eprintln!("\n── batch [{}/{total}] {seed} ──", i + 1);
+        let mut per = base.clone();
+        per.value = seed.clone();
+        per.input_file = None; // guard against re-entry
+        // Box the recursive call: cmd_scan ↔ run_batch is a cycle, so at least
+        // one edge must be heap-indirected to keep the future finite-sized.
+        match Box::pin(cmd_scan(per)).await {
+            Ok(()) => ok += 1,
+            Err(e) => {
+                failed += 1;
+                eprintln!("batch: seed '{seed}' failed: {e}");
+            }
+        }
+    }
+    eprintln!("\nbatch complete: {ok} succeeded, {failed} failed, {total} total");
+    Ok(())
+}
+
 pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
+    // Batch mode short-circuit: `--input-file` runs the whole pipeline once per
+    // file seed, reusing this same function (value is overwritten per seed).
+    if let Some(path) = cmd.input_file.clone() {
+        return run_batch(cmd, &path).await;
+    }
     // Unified scan: an omitted (or `auto`) --kind is inferred from the value's
     // shape; an explicit kind is parsed as before. Detection is reported on
     // stderr so the operator sees (and can override) what was chosen.
@@ -354,6 +414,18 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         } else {
             println!();
         }
+        // Expansion timeline: how the working graph grew generation by generation
+        // outward from the seed. Only shown when expansion actually reached beyond
+        // the seed round (more than one generation present), so a plain depth-0
+        // scan stays uncluttered.
+        let timeline = crate::core::entity::expansion_timeline(&entities);
+        if timeline.len() > 1 {
+            let parts: Vec<String> = timeline
+                .iter()
+                .map(|(g, n)| format!("gen {g}: {n}"))
+                .collect();
+            println!("  expansion: {}\n", parts.join("  ·  "));
+        }
         println!(
             "{:<16} {:>6} {:>6}  {:<10} {:<26} VALUE",
             "KIND", "CONF", "C_EFF", "CLASS", "SOURCES"
@@ -539,6 +611,34 @@ mod tests {
     use super::*;
     use crate::core::entity::{Entity, EntityKind, Evidence};
     use std::cell::Cell;
+
+    #[test]
+    fn parse_seed_list_skips_blanks_comments_and_dedups() {
+        let body = "\
+8.8.8.8
+  1.1.1.1
+
+# a comment line
+example.com
+8.8.8.8
+# another comment
+alice@example.com
+";
+        let seeds = parse_seed_list(body);
+        // Order preserved, whitespace trimmed, blanks + # lines dropped, the
+        // duplicate 8.8.8.8 collapsed to its first occurrence.
+        assert_eq!(
+            seeds,
+            vec![
+                "8.8.8.8".to_string(),
+                "1.1.1.1".to_string(),
+                "example.com".to_string(),
+                "alice@example.com".to_string(),
+            ]
+        );
+        // An all-blank / all-comment body yields no seeds (run_batch errors on it).
+        assert!(parse_seed_list("\n\n#only a comment\n   \n").is_empty());
+    }
 
     #[test]
     fn unknown_module_names_flags_typos_and_removed_modules() {

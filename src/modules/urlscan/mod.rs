@@ -1,10 +1,12 @@
 //! URLScan.io domain intelligence — recent scans, resolved IPs, and verdicts.
 //!
-//! Endpoint: `GET https://urlscan.io/api/v1/search/?q=domain:{domain}&size=10`
-//!           `GET https://urlscan.io/api/v1/search/?q=page.url:{url}&size=5`
+//! Endpoint: `GET https://urlscan.io/api/v1/search/?q=domain:{domain}&size=100`
+//!           `GET https://urlscan.io/api/v1/search/?q=page.url:{url}&size=100`
 //!
 //! No API key required for the search endpoint. Anonymous queries are
-//! rate-limited to ~100/min by URLScan.io. The response carries per-scan
+//! rate-limited to ~100/min by URLScan.io; an optional pooled `HUNTSMAN_URLSCAN_KEY`
+//! (sent as the `API-Key` header) raises that limit for large fan-outs. The
+//! page size is the keyless per-page maximum (100). The response carries per-scan
 //! metadata (page URL, domain, resolved IP, country, server header) and
 //! community/engine verdicts. We surface aggregate intel (scan count,
 //! unique IPs, countries, server types) and tag the target as
@@ -16,14 +18,57 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{fetch_json, urlencode};
+use crate::util::http::{fetch_json, fetch_keyed_json, urlencode};
 
 const SRC: &str = "urlscan";
+/// Optional URLScan.io API key. The search endpoint works keyless (~100/min),
+/// but a pooled key raises the rate limit and result quota — worthwhile once a
+/// scan fans out across many domains/IPs. Sent as URLScan's `API-Key` header.
+const KEY_ENV: &str = "HUNTSMAN_URLSCAN_KEY";
+const KEY_HEADER: &str = "API-Key";
+
+/// URLScan.io search page size. Requested at the API's keyless per-page maximum
+/// (100, verified live — larger values are silently capped to 100): the search
+/// is ONE request regardless, so asking for 100 instead of 10 surfaces up to
+/// 10× more resolved IPs / hosting domains / scanned URLs at no extra
+/// request or rate-limit cost. The whole-corpus `total` is still reported
+/// separately, so a target scanned more than 100 times is not understated.
+const PAGE_SIZE: u32 = 100;
+
+/// Build the URLScan.io search URL for a target. **Pure** so the query shape
+/// (field selector + page size) is unit-tested without a live endpoint. Returns
+/// `None` for a kind URLScan cannot be keyed on.
+fn build_query(kind: TargetKind, value: &str) -> Option<String> {
+    let field = match kind {
+        TargetKind::Domain => "domain",
+        TargetKind::Url => "page.url",
+        TargetKind::IpAddress => "page.ip",
+        _ => return None,
+    };
+    Some(format!(
+        "https://urlscan.io/api/v1/search/?q={field}:\"{}\"&size={PAGE_SIZE}",
+        urlencode(value)
+    ))
+}
+
+/// URLScan search fetch with URLScan's *optional-key* auth. With a pooled
+/// [`KEY_ENV`] key the request carries the `API-Key` header via the shared
+/// keyed-fetch helper (401/403/429 burn the key); without one it falls back to
+/// the exact keyless `fetch_json` path, so the free tier is unchanged. A keyless
+/// search always returns a body (`Some`), never `None`.
+async fn urlscan_fetch(ctx: &ModuleContext, url: &str) -> Result<Option<SearchResp>> {
+    if ctx.key_opt(KEY_ENV).is_some() {
+        fetch_keyed_json(ctx, SRC, url, KEY_ENV, KEY_HEADER).await
+    } else {
+        fetch_json(&ctx.http, SRC, url).await.map(Some)
+    }
+}
 
 pub struct UrlScan;
 
@@ -90,7 +135,7 @@ impl Module for UrlScan {
     }
 
     fn description(&self) -> &'static str {
-        "URLScan.io domain intelligence: recent scans, IPs, and verdicts"
+        "URLScan.io domain recon — surfaces recent scans, resolved IPs, and verdicts"
     }
 
     fn priority(&self) -> u8 {
@@ -136,23 +181,13 @@ impl Module for UrlScan {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let query = match target.kind {
-            TargetKind::Domain => format!(
-                "https://urlscan.io/api/v1/search/?q=domain:\"{}\"&size=10",
-                urlencode(&target.value)
-            ),
-            TargetKind::Url => format!(
-                "https://urlscan.io/api/v1/search/?q=page.url:\"{}\"&size=5",
-                urlencode(&target.value)
-            ),
-            TargetKind::IpAddress => format!(
-                "https://urlscan.io/api/v1/search/?q=page.ip:\"{}\"&size=10",
-                urlencode(&target.value)
-            ),
-            _ => return Ok(ModuleResult::new()),
+        let Some(query) = build_query(target.kind, &target.value) else {
+            return Ok(ModuleResult::new());
         };
 
-        let data: SearchResp = fetch_json(&ctx.http, SRC, &query).await?;
+        let Some(data) = urlscan_fetch(ctx, &query).await? else {
+            return Ok(ModuleResult::new());
+        };
 
         if data.results.is_empty() {
             return Ok(ModuleResult::new());
@@ -182,7 +217,11 @@ fn build_target_entity(
     total_matches: u64,
     scan_id: &str,
 ) -> Entity {
-    let confidence = if intel.any_malicious { 0.88 } else { 0.70 };
+    let confidence = if intel.any_malicious {
+        confidence::EXPERT
+    } else {
+        confidence::HIGH_PLUS
+    };
     let mut entity = target.to_entity(confidence, scan_id);
     entity.tag("urlscan");
     if intel.any_malicious {
@@ -277,7 +316,7 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
             .iter()
             .filter(|ip| ip.parse::<std::net::IpAddr>().is_ok())
             .map(|ip| {
-                let mut e = Entity::new(EntityKind::IpAddress, ip, 0.65, scan_id);
+                let mut e = Entity::new(EntityKind::IpAddress, ip, confidence::HIGH, scan_id);
                 e.tag("urlscan");
                 e.add_evidence(Evidence::new(
                     SRC,
@@ -289,7 +328,7 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
 
     // Hosting countries → geo-hint Address + optional Coordinates.
     out.extend(intel.countries.iter().flat_map(|country| {
-        let mut e = Entity::new(EntityKind::Address, country, 0.50, scan_id);
+        let mut e = Entity::new(EntityKind::Address, country, confidence::MEDIUM, scan_id);
         e.tag("urlscan");
         e.tag("geoint");
         e.add_evidence(Evidence::new(
@@ -298,7 +337,12 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
         ));
         let coord = crate::util::city_coords::city_coords(country).map(|(lat, lon)| {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.40, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::LOW,
+                scan_id,
+            );
             c.tag("urlscan");
             c.tag("addr-derived");
             c.tag("geoint");
@@ -320,7 +364,7 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
             .iter()
             .filter(|d| d.contains('.') && d.to_ascii_lowercase() != target_lc)
             .map(|d| {
-                let mut e = Entity::new(EntityKind::Domain, d, 0.55, scan_id);
+                let mut e = Entity::new(EntityKind::Domain, d, confidence::MEDIUM_HIGH, scan_id);
                 e.tag("urlscan");
                 e.tag("resolved-domain");
                 e.add_evidence(Evidence::new(
@@ -335,7 +379,7 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
     // urlscan observed for the target page becomes a pivot, never a capped subset
     // (the set is bounded by urlscan's own per-scan response).
     out.extend(intel.urls.iter().filter(|u| u.len() >= 4).map(|u| {
-        let mut e = Entity::new(EntityKind::Url, u, 0.50, scan_id);
+        let mut e = Entity::new(EntityKind::Url, u, confidence::MEDIUM, scan_id);
         e.tag("urlscan");
         e.add_evidence(Evidence::new(
             SRC,

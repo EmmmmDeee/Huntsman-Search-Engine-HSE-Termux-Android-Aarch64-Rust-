@@ -5,6 +5,7 @@
 
 use super::queries::{Region, build_queries_fullname, regional_dorks};
 use super::*;
+use crate::core::confidence;
 
 #[test]
 fn primary_engine_order_floats_reliable_and_proven_engines_first() {
@@ -1028,7 +1029,7 @@ fn address_corroboration_cannot_reach_verified_on_a_surname_placename_collision(
     // real scan. All evidence on this path shares one literal source string
     // ("search_engines"), so `source_count()` is always 1 and `c_effective()`
     // equals the raw (capped) `confidence` — repetition alone must never be
-    // able to cross `Classification::VERIFIED_MIN` (0.75).
+    // able to cross `Classification::VERIFIED_MIN` (confidence::VERY_HIGH).
     let target = Target::new(TargetKind::FullName, "Brett Lawnton");
     let mk = |n: usize| SearchResult {
         url: format!("https://view.com.au/property/qld/lawnton-4501/listing-{n}/"),
@@ -1231,7 +1232,7 @@ fn username_scoring_term_overlap() {
     };
     let (score, conf) = score_username("jerome-despal", "soundcloud.com", &terms, &r);
     assert!(score >= 3);
-    assert!((conf - 0.55).abs() < 0.01);
+    assert!((conf - confidence::MEDIUM_HIGH).abs() < 0.01);
 }
 
 #[test]
@@ -1545,8 +1546,8 @@ fn score_username_promotes_seed_variant_over_cooccurrence() {
     let (s_variant, c_variant) = score_username("kylocool630", "x.com", &terms, &res);
     let (s_noise, c_noise) = score_username("khloekardashian", "x.com", &terms, &res);
     assert!(
-        s_variant >= 3 && (c_variant - 0.55).abs() < 1e-9,
-        "seed-variant handle should reach PROBABLE (0.55), got score={s_variant} conf={c_variant}"
+        s_variant >= 3 && (c_variant - confidence::MEDIUM_HIGH).abs() < 1e-9,
+        "seed-variant handle should reach PROBABLE (confidence::MEDIUM_HIGH), got score={s_variant} conf={c_variant}"
     );
     assert!(
         s_noise < 3 && (c_noise - 0.30).abs() < 1e-9,
@@ -1597,7 +1598,7 @@ fn confirmed_profile_corroborated_by_engines_reaches_verified() {
         "all 3 engines must be credited even though dedup kept one result"
     );
     assert!(
-        prof.c_effective() >= 0.75,
+        prof.c_effective() >= confidence::VERY_HIGH,
         "3-engine confirmed profile must be Verified, got c_eff={}",
         prof.c_effective()
     );
@@ -1780,8 +1781,8 @@ fn email_seed_emits_no_bare_external_domains() {
 #[test]
 fn build_entities_classifies_subdomain_vs_external_with_engine_corroboration() {
     // The domain branch of `build_entities` has three couplings worth pinning:
-    // a host under the target domain is a SUBDOMAIN (conf 0.70); any other
-    // registrable domain is EXTERNAL (conf 0.45); and each carries the count
+    // a host under the target domain is a SUBDOMAIN (conf confidence::HIGH_PLUS); any other
+    // registrable domain is EXTERNAL (conf confidence::LOW_MEDIUM); and each carries the count
     // of *distinct engines* that returned its URL (cross-engine corroboration,
     // the same signal the profile-URL path uses). Uses a `.com.au` target so
     // the multi-label-suffix registrable logic is exercised too.
@@ -1817,8 +1818,8 @@ fn build_entities_classifies_subdomain_vs_external_with_engine_corroboration() {
         "host under target → SUBDOMAIN tag"
     );
     assert!(
-        (sub.confidence - 0.70).abs() < 1e-9,
-        "subdomain base conf 0.70"
+        (sub.confidence - confidence::HIGH_PLUS).abs() < 1e-9,
+        "subdomain base conf confidence::HIGH_PLUS"
     );
     assert_eq!(
         sub.corroboration, 2,
@@ -1835,8 +1836,8 @@ fn build_entities_classifies_subdomain_vs_external_with_engine_corroboration() {
         "unrelated registrable → EXTERNAL tag"
     );
     assert!(
-        (ext.confidence - 0.45).abs() < 1e-9,
-        "external base conf 0.45"
+        (ext.confidence - confidence::LOW_MEDIUM).abs() < 1e-9,
+        "external base conf confidence::LOW_MEDIUM"
     );
     assert_eq!(ext.corroboration, 1, "one engine returned the external URL");
 
@@ -1883,9 +1884,9 @@ fn offtarget_repo_url_detects_project_named_after_a_term() {
 fn url_from_a_location_seed_is_quarantined_as_generic_location() {
     // Regression from a live "Haigen Bamford" scan: recursion fed the suburb
     // "Regents Park, QLD" back as an Address seed, so every suburb / real-estate
-    // page matched the place term and flooded the results at 0.50. A URL found
+    // page matched the place term and flooded the results at confidence::MEDIUM. A URL found
     // while the seed is itself a location is generic location content, not the
-    // subject's PII — it must be a quarantined candidate (0.30), below the 0.50
+    // subject's PII — it must be a quarantined candidate (0.30), below the confidence::MEDIUM
     // expansion floor, so it neither inflates results nor recurses further.
     let mk = |url: &str| SearchResult {
         url: url.to_string(),
@@ -1917,14 +1918,14 @@ fn url_from_a_location_seed_is_quarantined_as_generic_location() {
     assert!(u.has_tag("generic-location"));
     assert!(u.has_tag("candidate"));
 
-    // The SAME URL from a person seed keeps the normal 0.50 (terms would have to
+    // The SAME URL from a person seed keeps the normal confidence::MEDIUM (terms would have to
     // match; here the path contains no person term, so it simply isn't emitted —
-    // assert it is never a 0.50 PROBABLE from the location seed).
+    // assert it is never a confidence::MEDIUM PROBABLE from the location seed).
     assert!(
         !loc.entities
             .iter()
-            .any(|e| e.kind == EntityKind::Url && (e.confidence - 0.50).abs() < 1e-9),
-        "a location-seed URL must never reach the 0.50 person-PII tier"
+            .any(|e| e.kind == EntityKind::Url && (e.confidence - confidence::MEDIUM).abs() < 1e-9),
+        "a location-seed URL must never reach the confidence::MEDIUM person-PII tier"
     );
 }
 
@@ -1934,7 +1935,7 @@ fn email_and_phone_extraction_requires_the_surname_in_the_result() {
     // instagram.com/rileyj/ (an unrelated account — first name "Riley" only, no
     // "Morley" anywhere in the bio) whose snippet happened to contain
     // "pr@rileyjorja.com", and the unfixed code minted that as a PROBABLE
-    // (0.60+) email attributed to the subject with zero check that the result
+    // (confidence::MEDIUM_PLUS+) email attributed to the subject with zero check that the result
     // actually names them — the same first-name-collision shape the address
     // extractor was already gated against (`result_names_the_subject`, née
     // `location_on_subject`), just never extended to email/phone.
