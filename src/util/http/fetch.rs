@@ -623,10 +623,11 @@ pub async fn keyed_ok_or_404(
 /// (`dehashed`/`hibp`/`leakix`) implement: when the current key hits a terminal
 /// key-quota/auth failure (401/403/429), the call rotates to the next USABLE
 /// pooled key for `module` — the pool's service name is the module name, matching
-/// [`ModuleContext::report_key_exhausted`] — and retries the request with it, so
-/// one call spends every credential the pool holds before it fails. A service
-/// with no extra pooled keys (the common single-key case) sees
-/// [`ModuleContext::next_pooled_key`] return `None` on the first burn and behaves
+/// [`crate::core::module::ModuleContext::report_key_exhausted`] — and retries the
+/// request with it, so one call spends every credential the pool holds before it
+/// fails. A service with no extra pooled keys (the common single-key case) sees
+/// [`crate::core::module::ModuleContext::next_pooled_key`] return `None` on the
+/// first burn and behaves
 /// exactly as before, so this is behaviour-preserving for single-key setups.
 pub async fn fetch_keyed_json<T: DeserializeOwned>(
     ctx: &crate::core::module::ModuleContext,

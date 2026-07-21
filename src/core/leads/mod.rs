@@ -242,7 +242,7 @@ fn history_boost(tags: &[String]) -> f64 {
 ///
 /// Takes the `(betweenness, is_cut_vertex)` signal from
 /// [`pivot::structural_index`] — the un-truncated per-node index — NOT
-/// [`pivot::detect`], whose top-[`PIVOT_CAP`] cut would silently zero the signal for
+/// [`pivot::detect`], whose top-`PIVOT_CAP` cut would silently zero the signal for
 /// a real bridge that ranked just outside the shortlist on a large graph.
 fn structural_boost(signal: Option<&(f64, bool)>) -> f64 {
     match signal {
