@@ -927,8 +927,28 @@ impl Entity {
                 }
             }
         }
+        // `candidate` is a confidence-TIER quarantine stamped by
+        // `demote_to_candidate`, not an accumulating multi-source label like an
+        // ordinary tag — every default view filters entities purely on this tag
+        // (`api::scan_export`, `api::scan_handlers::analysis`), so blindly
+        // unioning it would let a stranger's non-matching, low-confidence
+        // observation of the SAME uid silently quarantine an otherwise-verified
+        // entity. Confidence already resolves to the max of the two sides
+        // above; tag status must track that: skip carrying the tag itself over
+        // in the general union below, then promote `self` out of quarantine
+        // the moment `other` was NOT itself a candidate — a single non-candidate
+        // corroboration is enough, symmetric with the confidence rule.
+        let other_is_candidate = other
+            .tags
+            .iter()
+            .any(|t| t == crate::core::tags::CANDIDATE);
         for t in other.tags {
-            self.tag(t);
+            if t != crate::core::tags::CANDIDATE {
+                self.tag(t);
+            }
+        }
+        if !other_is_candidate {
+            self.tags.retain(|t| t != crate::core::tags::CANDIDATE);
         }
     }
 }
