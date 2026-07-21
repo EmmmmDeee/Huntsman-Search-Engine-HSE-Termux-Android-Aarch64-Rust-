@@ -25,11 +25,10 @@ pub(super) struct Cell {
 }
 
 fn json_to_str(v: &Option<serde_json::Value>) -> String {
-    match v {
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(serde_json::Value::Number(n)) => n.to_string(),
-        _ => String::new(),
-    }
+    v.as_ref()
+        .and_then(crate::util::json::scalar_str)
+        .map(std::borrow::Cow::into_owned)
+        .unwrap_or_default()
 }
 
 fn tech_tag(cell_type: Option<&str>) -> &'static str {

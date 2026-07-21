@@ -126,11 +126,9 @@ pub(super) fn accuracy_to_confidence(range_m: u64) -> f64 {
 /// `mcc`/`mnc` come as `"505"` on some Android versions and `505` on others.
 /// Normalise to string; missing -> empty.
 pub(super) fn json_to_str(v: &Option<serde_json::Value>) -> Cow<'_, str> {
-    match v {
-        Some(serde_json::Value::String(s)) => Cow::Borrowed(s.as_str()),
-        Some(serde_json::Value::Number(n)) => Cow::Owned(n.to_string()),
-        _ => Cow::Borrowed(""),
-    }
+    v.as_ref()
+        .and_then(crate::util::json::scalar_str)
+        .unwrap_or(Cow::Borrowed(""))
 }
 
 /// Coarse country fix from a cell's **Mobile Country Code**: `(lat, lon, ISO)` at

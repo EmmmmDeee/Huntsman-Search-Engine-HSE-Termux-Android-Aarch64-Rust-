@@ -340,17 +340,11 @@ pub(super) fn extract_family_names(
             if !seen.insert(first.to_string()) {
                 continue;
             }
-            // Title-case by CHAR, not byte: `lastname` is not ASCII-validated
-            // (only `first` is, above), so byte slicing it would panic on a
-            // multi-byte surname like "Müller".
-            let titlecase = |w: &str| -> String {
-                let mut c = w.chars();
-                match c.next() {
-                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                    None => String::new(),
-                }
-            };
-            let name = format!("{} {}", titlecase(first), titlecase(&lastname));
+            // `upper_first` capitalises by CHAR, not byte: `lastname` is not
+            // ASCII-validated (only `first` is, above), so byte slicing it would
+            // panic on a multi-byte surname like "Müller".
+            use crate::util::str_util::upper_first;
+            let name = format!("{} {}", upper_first(first), upper_first(&lastname));
             found.push((name, r.url.clone()));
         }
     }

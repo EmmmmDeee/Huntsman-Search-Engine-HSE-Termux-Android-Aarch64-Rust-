@@ -859,11 +859,7 @@ fn clean_display_token(tok: &str) -> Option<String> {
 }
 
 fn titlecase(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
+    crate::util::str_util::upper_first(s)
 }
 
 fn sanitize(s: &str) -> String {

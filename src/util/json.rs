@@ -2,6 +2,26 @@
 //! (see_know, oathnet, …). Single definition so the extraction semantics
 //! (treat empty strings as absent) can't drift between providers.
 use serde_json::Value;
+use std::borrow::Cow;
+
+/// A JSON **scalar** — a `string` or a `number` — rendered as text: the string
+/// borrowed in place, a number in its canonical string form. Any other node
+/// (`bool` / `null` / array / object) yields `None`.
+///
+/// This is the single definition of "accept a field that arrives as either
+/// `"505"` or `505`", shared by the keyed [`val_str_coerce`] here and the
+/// module-local `json_to_str` coercers (cell / radar / sunrise-sunset APIs that
+/// vary the encoding between endpoints). It does **not** apply the empty-string
+/// policy: a `""` yields `Some(Cow::Borrowed(""))`, leaving each caller free to
+/// treat empty as absent (as `val_str_coerce` does) or as a literal empty value.
+#[must_use]
+pub fn scalar_str(v: &Value) -> Option<Cow<'_, str>> {
+    match v {
+        Value::String(s) => Some(Cow::Borrowed(s)),
+        Value::Number(n) => Some(Cow::Owned(n.to_string())),
+        _ => None,
+    }
+}
 
 /// The value at `key` as an owned non-empty string, else `None`. An empty
 /// string is treated as absent.
@@ -42,11 +62,10 @@ pub fn is_null_sentinel(s: &str) -> bool {
 /// an empty string is still treated as absent.
 #[must_use]
 pub fn val_str_coerce(item: &Value, key: &str) -> Option<String> {
-    match item.get(key) {
-        Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
-        Some(Value::Number(n)) => Some(n.to_string()),
-        _ => None,
-    }
+    item.get(key)
+        .and_then(scalar_str)
+        .filter(|s| !s.is_empty())
+        .map(Cow::into_owned)
 }
 
 /// The first present value among `keys`, coercing numbers like [`val_str_coerce`].
@@ -156,6 +175,23 @@ mod tests {
             val_str_or_coerce(&v, &["absent", "postal_code"]).as_deref(),
             Some("23666")
         );
+    }
+
+    #[test]
+    fn scalar_str_coerces_string_and_number_but_not_bool_or_null() {
+        // String borrows in place; number renders canonically.
+        assert_eq!(scalar_str(&json!("505")).as_deref(), Some("505"));
+        assert!(matches!(scalar_str(&json!("505")), Some(Cow::Borrowed(_))));
+        assert_eq!(scalar_str(&json!(505)).as_deref(), Some("505"));
+        assert!(matches!(scalar_str(&json!(505)), Some(Cow::Owned(_))));
+        // Unlike `val_str_coerce`, the empty string is NOT filtered here — the
+        // empty policy belongs to the caller.
+        assert_eq!(scalar_str(&json!("")).as_deref(), Some(""));
+        // Everything else is absent.
+        assert!(scalar_str(&json!(true)).is_none());
+        assert!(scalar_str(&json!(null)).is_none());
+        assert!(scalar_str(&json!([1, 2])).is_none());
+        assert!(scalar_str(&json!({"k": "v"})).is_none());
     }
 
     #[test]

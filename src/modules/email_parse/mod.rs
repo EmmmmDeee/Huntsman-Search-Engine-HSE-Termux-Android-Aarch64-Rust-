@@ -260,11 +260,7 @@ impl Module for EmailParse {
 /// lowercased email local-part token (`"jane"`) into a display name component
 /// (`"Jane"`) for the inferred `Person` entity. Empty input yields `""`.
 pub(super) fn capitalise(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        None => String::new(),
-        Some(f) => f.to_uppercase().chain(c).collect(),
-    }
+    crate::util::str_util::upper_first(s)
 }
 
 /// Re-export of the shared freemail check. Kept for backwards

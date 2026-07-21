@@ -120,11 +120,9 @@ fn build_solar_entity(
     // `day_length` is a number (seconds) on the formatted=0 API but a string on
     // the default endpoint — accept either.
     if let Some(v) = &results.day_length {
-        let dl = match v {
-            serde_json::Value::Number(n) => n.to_string(),
-            serde_json::Value::String(s) => s.clone(),
-            _ => String::new(),
-        };
+        let dl = crate::util::json::scalar_str(v)
+            .map(std::borrow::Cow::into_owned)
+            .unwrap_or_default();
         if !dl.is_empty() {
             ev = ev.with_attr("day_length_s", dl);
         }
