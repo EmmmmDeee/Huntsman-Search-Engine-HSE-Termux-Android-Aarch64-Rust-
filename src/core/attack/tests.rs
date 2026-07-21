@@ -347,8 +347,7 @@ use super::*;
             for id in techniques_for_entity_kind(&kind) {
                 assert!(
                     technique(id).is_some(),
-                    "{:?} maps to unknown technique {id}",
-                    kind
+                    "{kind:?} maps to unknown technique {id}"
                 );
             }
         }
