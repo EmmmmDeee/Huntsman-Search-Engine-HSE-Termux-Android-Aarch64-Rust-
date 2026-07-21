@@ -3355,6 +3355,45 @@ fn au092_agrees_with_address_entity_footprint() {
     assert!(r[0].description.contains("NSW"));
 }
 
+/// AU-092's agreement branch must cite only the entities that named the
+/// AGREEING state — an entity naming some OTHER, unrelated state on either
+/// side must not be swept into `entity_uids` as if it corroborated this
+/// specific finding. Mirrors AU-098's consensus-only uid scoping
+/// (`rule_au_098_residency_consensus`'s "Contributing entity uids" comment).
+#[test]
+fn au092_agreement_cites_only_the_agreeing_states_entities_not_every_named_state() {
+    // Breach side names BOTH QLD (agrees with footprint) and NSW (unrelated,
+    // e.g. a stale prior address on a different breach row) — a DISTINCT
+    // entity from `p` so the two sides' uids can't coincidentally collapse.
+    let mut p = Entity::new(EntityKind::Person, "Cindy Haynes", 0.9, "s");
+    p.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("state", "QLD"));
+    let mut stray = Entity::new(EntityKind::Email, "stale-record@example.com", 0.9, "s2");
+    stray.add_evidence(Evidence::new("see_know", "breach").with_attr("state", "NSW"));
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.6, "s"); // Brisbane, QLD
+    coord.add_evidence(Evidence::new("geocode", "geocoded subject fix"));
+
+    let r = super::rules::rule_au_092_breach_locality_footprint_crosscheck(
+        &[p.clone(), stray.clone(), coord.clone()],
+        "s",
+        0,
+    );
+    assert_eq!(r.len(), 1);
+    assert!(r[0].rule_name.contains("corroborated"));
+    assert!(
+        r[0].entity_uids.contains(&p.uid),
+        "the QLD breach entity DID name the agreeing state and must be cited"
+    );
+    assert!(
+        r[0].entity_uids.contains(&coord.uid),
+        "the QLD footprint entity DID name the agreeing state and must be cited"
+    );
+    assert!(
+        !r[0].entity_uids.contains(&stray.uid),
+        "the NSW breach entity named an UNRELATED state and must not be cited as evidence for the QLD agreement: {:?}",
+        r[0].entity_uids
+    );
+}
+
 #[test]
 fn au092_requires_both_sides() {
     // Only a breach field, no footprint → nothing.

@@ -803,6 +803,10 @@ pub(in crate::core::correlator) fn rule_au_092_breach_locality_footprint_crossch
     let fset: BTreeSet<&'static str> = footprint.keys().copied().collect();
     let shared: Vec<&'static str> = bset.intersection(&fset).copied().collect();
 
+    // Full union across every named state on both sides — used only by the
+    // Conflict branch below, where each side genuinely disagrees and every
+    // entity naming ANY of the disputed states is relevant evidence of the
+    // conflict.
     let mut uids: BTreeSet<String> = BTreeSet::new();
     for s in breach.values().chain(footprint.values()) {
         uids.extend(s.iter().cloned());
@@ -816,6 +820,18 @@ pub(in crate::core::correlator) fn rule_au_092_breach_locality_footprint_crossch
         } else {
             Severity::Medium
         };
+        // Contributing entity uids: only the entities that named the AGREEING
+        // state (mirrors AU-098's consensus-only uid scoping). An entity
+        // naming some OTHER, unrelated state on either side (a stale prior
+        // address on a different breach row, say) is not evidence for THIS
+        // agreement and must not be swept in just because it shares a scan.
+        let mut agreeing_uids: BTreeSet<String> = BTreeSet::new();
+        if let Some(s) = breach.get(state) {
+            agreeing_uids.extend(s.iter().cloned());
+        }
+        if let Some(s) = footprint.get(state) {
+            agreeing_uids.extend(s.iter().cloned());
+        }
         Correlation {
             rule_id: "AU-092".into(),
             rule_name: "Breach locality corroborated by footprint".into(),
@@ -833,7 +849,7 @@ pub(in crate::core::correlator) fn rule_au_092_breach_locality_footprint_crossch
                     )
                 }
             ),
-            entity_uids: uids,
+            entity_uids: agreeing_uids.into_iter().collect(),
             scan_id: scan_id.into(),
             ts,
             rank: 0.0,
