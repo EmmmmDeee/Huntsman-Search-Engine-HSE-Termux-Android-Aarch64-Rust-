@@ -1191,6 +1191,23 @@ fn entity_kind_other_display() {
     assert_eq!(kind.to_string(), "other:foo");
 }
 
+/// `derive_uid` hashes `Display(kind) + ":" + normalised_value`, and
+/// `Other(s)` displays as `"other:{s}"` — so the FULL preimage for an
+/// `Other` entity is `"other:" + s + ":" + value` with no escaping between
+/// the field-name segment and the value segment. Two semantically DISTINCT
+/// (field_name, value) pairs — a scraped breach-JSON key/value, per
+/// `modules::breach_rich`'s catch-all loop — must never collide onto the
+/// same uid just because a `:` moved from one segment to the other.
+#[test]
+fn other_kind_uid_does_not_collide_when_the_delimiter_shifts_between_name_and_value() {
+    let a = Entity::new(EntityKind::Other("a".to_string()), "b:c", 0.5, "s");
+    let b = Entity::new(EntityKind::Other("a:b".to_string()), "c", 0.5, "s");
+    assert_ne!(
+        a.uid, b.uid,
+        "Other(\"a\")+\"b:c\" and Other(\"a:b\")+\"c\" must not share a uid"
+    );
+}
+
 // ── EntityRef from Entity ───────────────────────────────────────────────
 
 #[test]

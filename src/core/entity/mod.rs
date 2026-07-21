@@ -1033,7 +1033,28 @@ pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
     // unchanged.
     use fmt::Write as _;
     let mut h = Sha256::new();
-    let _ = write!(HashWrite(&mut h), "{kind}:");
+    match kind {
+        EntityKind::Other(s) => {
+            // Unlike every fixed-string kind (drawn from a small closed set that
+            // never contains `:`), `Other`'s inner name is attacker/scrape
+            // controlled (`modules::breach_rich`'s catch-all loop mints these
+            // straight from untrusted JSON field names) and can itself contain
+            // `:`. Hashing `"other:{s}:{value}"` via the plain Display path
+            // below is ambiguous at the name/value boundary: Other("a") with
+            // value "b:c" and Other("a:b") with value "c" both produce the
+            // identical preimage "other:a:b:c" and therefore the SAME uid.
+            // Length-prefixing `s` fixes the split point unambiguously — this
+            // changes ONLY `Other`'s hash preimage (hence only its UIDs);
+            // every other kind's byte-identical Display-based path below is
+            // untouched.
+            let _ = write!(HashWrite(&mut h), "other:{}:", s.len());
+            h.update(s.as_bytes());
+            h.update(b":");
+        }
+        _ => {
+            let _ = write!(HashWrite(&mut h), "{kind}:");
+        }
+    }
     h.update(normalised_value.as_bytes());
     hex::encode(h.finalize())
 }
