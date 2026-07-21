@@ -441,6 +441,11 @@ const RULES: &[RuleFn] = &[
     // the randomized privacy addresses that rotate and can't be followed.
     // (Renumbered from AU-115 on merge — main's AU-115 is personal-wifi-geo.)
     rule_au_122_trackable_rf_device,
+    // AU-123: Username handles that share a digit-folded stem (jdiegmann /
+    // jdiegmann92 / jdiegmann_2024) across ≥2 sources — the base-handle-plus-
+    // number pattern one operator reuses across platforms, which the exact-match
+    // handle rules (canonical_handle keeps digits) never join. A Medium lead.
+    rule_au_123_numeric_variant_handle_persona,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
