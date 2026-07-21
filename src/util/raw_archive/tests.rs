@@ -151,7 +151,10 @@ fn describe_url_redacts_a_path_embedded_own_key() {
 }
 
 #[test]
-fn records_in_window_recovers_full_responses_and_filters_by_time() {
+fn records_filtered_dir_recovers_full_responses_and_filters_by_time() {
+    // Exercises the shared `records_filtered_dir` core directly (its window
+    // filter, optional query-set filter, and parse) — the same core
+    // `records_for_queries` builds on — rather than through a dead pub wrapper.
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());

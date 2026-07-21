@@ -511,6 +511,39 @@ pub fn is_keyed_error_status(code: u16) -> bool {
     matches!(code, 401 | 403 | 429)
 }
 
+/// Case-insensitive substrings that mark a `400 Bad Request` body as an
+/// AUTHENTICATION / API-key failure rather than a bad *query*. Not every provider
+/// signals a dead key with 401: Netlas answers a missing key with
+/// `400 {"detail":"Request had invalid authorization credentials: API key not
+/// found"}` and ONYPHE with `400 {..."text":"Invalid API key format"...}`. Without
+/// recognising these, the dead key is never burned or rotated and the module
+/// wastes itself on every scan (observed live: netlas + onyphe both erroring 400
+/// every run with a stale embedded key). Deliberately narrow and auth-specific so a
+/// genuine bad-query 400 — which other paths map to a clean "not found" miss — is
+/// never misclassified as a key problem.
+const AUTH_400_SIGNATURES: &[&str] = &[
+    "api key not found",
+    "invalid api key",
+    "api key format",
+    "invalid authorization",
+    "authorization credentials",
+    "authentication failed",
+    "invalid token",
+    "bad credentials",
+    "unauthorized",
+    "not authorized",
+];
+
+/// True when a `400 Bad Request` body is really an authentication / API-key
+/// failure (see [`AUTH_400_SIGNATURES`]) — the ambiguous-400 providers that mean
+/// 401. Callers gate this on `code == 400` so it only reinterprets that one
+/// ambiguous status; every other non-2xx keeps its exact prior classification.
+#[must_use]
+pub fn is_auth_failure_400_body(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    AUTH_400_SIGNATURES.iter().any(|s| lower.contains(s))
+}
+
 /// Mark `key` exhausted (so the key pool / rotation can react) when `code` is a
 /// key-problem status per [`is_keyed_error_status`]; a no-op otherwise.
 ///
@@ -562,12 +595,20 @@ pub async fn keyed_ok_or_404(
     resp: reqwest::Response,
 ) -> Result<Option<reqwest::Response>> {
     let status = resp.status();
-    if status.as_u16() == 404 {
+    let code = status.as_u16();
+    if code == 404 {
         return Ok(None);
     }
     if !status.is_success() {
-        note_keyed_error(status.as_u16(), module, key, ctx);
-        return Err(http_status_error(module, resp).await);
+        // Read the body once — it is needed for the error message regardless, and it
+        // is what disambiguates a 400: some providers (Netlas) answer a dead key with
+        // 400 + an auth message, not 401, so an auth-shaped 400 must burn the key like
+        // a 401 would (otherwise the pool never rotates past the dead key).
+        let snippet = error_snippet(resp).await;
+        if is_keyed_error_status(code) || (code == 400 && is_auth_failure_400_body(&snippet)) {
+            ctx.report_key_exhausted(module, key, code);
+        }
+        return Err(Error::module(module, format!("HTTP {status}: {snippet}")));
     }
     Ok(Some(resp))
 }
@@ -576,6 +617,18 @@ pub async fn keyed_ok_or_404(
 /// Handles 401/403/429 uniformly via report_key_exhausted, maps 404
 /// to Ok(None). Consolidates the error handling pattern duplicated
 /// across 8+ keyed modules.
+///
+/// **In-scan key cascade.** Every consumer of this chokepoint inherits the same
+/// "maximise API key usage" policy the hand-rolled keyed modules
+/// (`dehashed`/`hibp`/`leakix`) implement: when the current key hits a terminal
+/// key-quota/auth failure (401/403/429), the call rotates to the next USABLE
+/// pooled key for `module` — the pool's service name is the module name, matching
+/// [`crate::core::module::ModuleContext::report_key_exhausted`] — and retries the
+/// request with it, so one call spends every credential the pool holds before it
+/// fails. A service with no extra pooled keys (the common single-key case) sees
+/// [`crate::core::module::ModuleContext::next_pooled_key`] return `None` on the
+/// first burn and behaves
+/// exactly as before, so this is behaviour-preserving for single-key setups.
 pub async fn fetch_keyed_json<T: DeserializeOwned>(
     ctx: &crate::core::module::ModuleContext,
     module: &'static str,
@@ -583,51 +636,115 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
     key_env: &str,
     header_name: &str,
 ) -> Result<Option<T>> {
-    let key = ctx.key(key_env)?;
-    // Per-host circuit breaker (see `breaker_gate`): short-circuit a host that has failed
-    // repeatedly. Host-less/unparseable URLs are un-gated. Note the deliberate asymmetry
-    // with `fetch_json_inner`: a keyed request does NOT fall back to curl on a transport
-    // error (a key header can't be replayed through the curl path), so a send failure is
-    // surfaced directly after recording the breaker failure.
-    let host = breaker_gate(module, url)?;
-    // One bounded retry of the idempotent GET on a transient connect/timeout
-    // blip — the same failure class the non-keyed curl fallback rescues, extended
-    // to every keyed provider at this shared chokepoint. A key header can't be
-    // replayed through the curl path (hence no curl fallback here), but a plain
-    // re-send is safe and costs one round-trip. The transient first failure does
-    // NOT record a breaker failure; only a non-transient error or a failed retry
-    // does, so a single hiccup on a healthy host neither loses the result nor
-    // trips the breaker.
-    let mut attempt: u8 = 0;
-    let resp = loop {
-        match ctx.http.get(url).header(header_name, key).send().await {
-            Ok(resp) => break resp,
-            Err(e) => {
-                if attempt == 0 && transport_is_transient(&e) {
-                    attempt += 1;
-                    continue;
+    // Keys already burned this call, so the cascade never re-hands one. Seeded
+    // with the hot-injected env key before its first use below.
+    let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut key = ctx.key(key_env)?.to_string();
+    loop {
+        tried.insert(key.clone());
+        // Per-host circuit breaker (see `breaker_gate`): short-circuit a host that has failed
+        // repeatedly. Host-less/unparseable URLs are un-gated. Note the deliberate asymmetry
+        // with `fetch_json_inner`: a keyed request does NOT fall back to curl on a transport
+        // error (a key header can't be replayed through the curl path), so a send failure is
+        // surfaced directly after recording the breaker failure.
+        let host = breaker_gate(module, url)?;
+        // One bounded retry of the idempotent GET on a transient connect/timeout
+        // blip — the same failure class the non-keyed curl fallback rescues, extended
+        // to every keyed provider at this shared chokepoint. A key header can't be
+        // replayed through the curl path (hence no curl fallback here), but a plain
+        // re-send is safe and costs one round-trip. The transient first failure does
+        // NOT record a breaker failure; only a non-transient error or a failed retry
+        // does, so a single hiccup on a healthy host neither loses the result nor
+        // trips the breaker.
+        let mut attempt: u8 = 0;
+        let resp = loop {
+            match ctx.http.get(url).header(header_name, &key).send().await {
+                Ok(resp) => break resp,
+                Err(e) => {
+                    if attempt == 0 && transport_is_transient(&e) {
+                        attempt += 1;
+                        continue;
+                    }
+                    if let Some(h) = host.as_deref() {
+                        circuit_breaker::record_failure(h, crate::core::entity::unix_now());
+                    }
+                    return Err(Error::module(module, redact_credentials(&e.to_string())));
                 }
-                if let Some(h) = host.as_deref() {
-                    circuit_breaker::record_failure(h, crate::core::entity::unix_now());
-                }
-                return Err(Error::module(module, redact_credentials(&e.to_string())));
             }
+        };
+        record_breaker_outcome(host.as_deref(), resp.status());
+        let status = resp.status();
+        if status.as_u16() == 404 {
+            return Ok(None);
         }
-    };
-    record_breaker_outcome(host.as_deref(), resp.status());
-    // Classify the keyed response via the shared policy: 404 -> Ok(None); 401/403/429 ->
-    // burn the key + Err; any other non-2xx -> Err; 2xx -> the response to decode. Reuses
-    // the same `keyed_ok_or_404` the other keyed modules use, so "which codes burn a key"
-    // lives in one tested place instead of an inline `matches!` here.
-    let Some(resp) = keyed_ok_or_404(module, key, ctx, resp).await? else {
-        return Ok(None);
-    };
-    Ok(Some(decode_json_body(resp, module).await?))
+        if !status.is_success() {
+            let code = status.as_u16();
+            // Read the body once (needed for the error message regardless); for an
+            // ambiguous 400 it decides whether this is really an auth/key failure —
+            // some providers answer a dead key with 400, not 401.
+            let snippet = error_snippet(resp).await;
+            let keyed =
+                is_keyed_error_status(code) || (code == 400 && is_auth_failure_400_body(&snippet));
+            // Burn the key on a key problem so the pool rotates past it next scan…
+            if keyed {
+                ctx.report_key_exhausted(module, &key, code);
+            }
+            // …and, if the pool still holds an untried usable key, cascade to it now
+            // rather than failing this call.
+            if keyed && let Some(next) = ctx.next_pooled_key(module, &tried) {
+                key = next;
+                continue;
+            }
+            return Err(Error::module(module, format!("HTTP {status}: {snippet}")));
+        }
+        return Ok(Some(decode_json_body(resp, module).await?));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::append_capped;
+    use super::{is_auth_failure_400_body, is_keyed_error_status};
+
+    #[test]
+    fn auth_400_body_matches_real_provider_bodies() {
+        // The exact bodies observed live from a stale embedded key (see the
+        // AUTH_400_SIGNATURES rationale) — Netlas and ONYPHE both answer a dead key
+        // with 400, and both must be recognised as a KEY failure.
+        assert!(is_auth_failure_400_body(
+            r#"{"detail":"Request had invalid authorization credentials: API key not found"}"#
+        ));
+        assert!(is_auth_failure_400_body(
+            r#"{"count":0,"error":3,"status":"nok","text":"Invalid API key format","took":0}"#
+        ));
+        // Case-insensitive.
+        assert!(is_auth_failure_400_body("UNAUTHORIZED"));
+    }
+
+    #[test]
+    fn auth_400_body_rejects_genuine_bad_query_400s() {
+        // A real "bad query / not found" 400 must NOT be mistaken for a key problem,
+        // or the tool would burn a perfectly good key on an unrelated failure.
+        assert!(!is_auth_failure_400_body(
+            r#"{"error":"InvalidRequest","message":"Profile not found"}"#
+        ));
+        assert!(!is_auth_failure_400_body(
+            r#"{"error":"validation","message":"query parameter 'q' is required"}"#
+        ));
+        assert!(!is_auth_failure_400_body(""));
+    }
+
+    #[test]
+    fn keyed_error_status_is_unchanged_by_the_400_path() {
+        // The 400 reinterpretation is body-gated and additive: the status-only
+        // classification every other caller relies on is exactly as before.
+        assert!(is_keyed_error_status(401));
+        assert!(is_keyed_error_status(403));
+        assert!(is_keyed_error_status(429));
+        assert!(!is_keyed_error_status(400));
+        assert!(!is_keyed_error_status(404));
+        assert!(!is_keyed_error_status(500));
+    }
 
     #[test]
     fn append_capped_bounds_a_single_oversized_chunk_to_the_cap() {

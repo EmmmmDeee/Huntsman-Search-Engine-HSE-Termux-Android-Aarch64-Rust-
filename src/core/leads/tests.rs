@@ -362,3 +362,85 @@ fn history_boost_is_graded_and_takes_the_strongest() {
         "strongest prior tie wins, boosts are never summed"
     );
 }
+
+/// `structural_boost` sums the continuous betweenness term and the flat cut-vertex
+/// term, and is zero for a pendant / absent node — the pure-function contract the
+/// synergy rests on.
+#[test]
+fn structural_boost_composes_bridge_and_cut_vertex() {
+    // The signal is the (betweenness, is_cut_vertex) tuple pivot::structural_index
+    // returns per node.
+    assert_eq!(structural_boost(None), 0.0);
+    // Pendant leaf: no betweenness, not a cut vertex → no lift (the common case).
+    assert_eq!(structural_boost(Some(&(0.0, false))), 0.0);
+    // Cut vertex alone earns the flat bonus; a pure bridge earns the full weight;
+    // a node that is both sums them.
+    assert_eq!(
+        structural_boost(Some(&(0.0, true))),
+        STRUCT_CUT_VERTEX_BONUS
+    );
+    assert_eq!(structural_boost(Some(&(1.0, false))), STRUCT_BRIDGE_WEIGHT);
+    assert_eq!(
+        structural_boost(Some(&(1.0, true))),
+        STRUCT_BRIDGE_WEIGHT + STRUCT_CUT_VERTEX_BONUS
+    );
+}
+
+/// The end-to-end synergy: a direct connection that is ALSO a bridging pivot in the
+/// graph (it alone links a pendant cluster onto the subject) outranks an otherwise
+/// identical pendant relative, is flagged `structural`, and says so in its reason —
+/// the graph's own structure prioritising the next recursion. A plain pendant, the
+/// shape of most leads, is untouched.
+#[test]
+fn recommend_lifts_a_lead_that_bridges_the_graph() {
+    let mut subject = ent(EntityKind::Person, "Kyle Diegmann", 0.85);
+    subject.tag("subject");
+    // The bridge: a direct relative who ALSO connects two further relatives that
+    // hang off the subject's footprint only through them (a cut vertex).
+    let mut bridge = ent(EntityKind::Person, "Erik Diegmann", 0.35);
+    bridge.tag("family-candidate");
+    // An otherwise-identical plain pendant relative (same kind/conf/surname/tag),
+    // differing ONLY in graph position — no onward edges.
+    let mut pendant = ent(EntityKind::Person, "Otto Diegmann", 0.35);
+    pendant.tag("family-candidate");
+    // Behind the bridge — NOT direct neighbours of the subject, so never leads,
+    // but they give `bridge` its betweenness / cut-vertex role.
+    let far_a = ent(EntityKind::Person, "Rita Diegmann", 0.35);
+    let far_b = ent(EntityKind::Person, "Sven Diegmann", 0.35);
+
+    let relations = vec![
+        rel(&subject, &bridge, RelationKind::AssociatedWith, 0.5),
+        rel(&subject, &pendant, RelationKind::AssociatedWith, 0.5),
+        rel(&bridge, &far_a, RelationKind::AssociatedWith, 0.5),
+        rel(&bridge, &far_b, RelationKind::AssociatedWith, 0.5),
+    ];
+    let entities = vec![subject, bridge.clone(), pendant.clone(), far_a, far_b];
+
+    let leads = recommend(&entities, &relations, 0.50);
+    // Only the two direct relatives are leads; the far pair are two hops out.
+    let values: std::collections::BTreeSet<&str> = leads.iter().map(|l| l.value.as_str()).collect();
+    assert!(values.contains("Erik Diegmann") && values.contains("Otto Diegmann"));
+    assert!(!values.contains("Rita Diegmann") && !values.contains("Sven Diegmann"));
+
+    let bridge_lead = leads.iter().find(|l| l.value == "Erik Diegmann").unwrap();
+    let pendant_lead = leads.iter().find(|l| l.value == "Otto Diegmann").unwrap();
+
+    assert!(
+        bridge_lead.structural,
+        "the bridging relative is a structural pivot"
+    );
+    assert!(!pendant_lead.structural, "the plain pendant is not");
+    assert!(
+        bridge_lead.score > pendant_lead.score,
+        "graph structure lifts the bridge above the identical pendant ({} !> {})",
+        bridge_lead.score,
+        pendant_lead.score
+    );
+    assert!(
+        bridge_lead.reason.contains("a bridging pivot in the graph"),
+        "the structural role is named in the reason: {}",
+        bridge_lead.reason
+    );
+    // The lift must not fabricate a structural flag on the plain pendant's reason.
+    assert!(!pendant_lead.reason.contains("bridging pivot"));
+}

@@ -7,12 +7,46 @@
 //! no quota spent); `--execute` dispatches it, bounded by the shared OathNet
 //! per-session budget so a batch can't silently blow the daily allowance.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+use futures::future::join_all;
 
 use crate::core::error::{Error, Result};
 use crate::core::scan::detect_kind;
 use crate::util::oathnet;
 use crate::util::oathnet_batch::{self, BatchOptions, BatchQuery};
+
+/// Max queries `--execute` dispatches concurrently. The generated queries are
+/// mutually independent, so concurrency here is pure latency hiding on the
+/// round-trip-bound mobile radio HSE targets — but it is kept deliberately small
+/// so a large fanned-out plan can't stampede the paid OathNet API, which meters
+/// per lookup. The per-lookup budget (`oathnet::search`'s atomic reservation)
+/// remains the hard ceiling regardless of how many run at once.
+const BATCH_CONCURRENCY: usize = 4;
+
+/// The set of (lowercased) query values worth initialising an OathNet search
+/// session for: exactly those that appear on **two or more** queries in the plan.
+///
+/// A session lets multiple calls on one query value collapse to a single billed
+/// lookup (the vendor's "#1 optimisation") — but `init_session` itself costs a
+/// network round-trip while billing no lookup, so it only pays off when a value
+/// is actually queried more than once (the breach+stealer PAIR the generator
+/// emits for every stealer-indexable selector). For a value queried only once,
+/// the single search costs exactly one lookup with or without a session, so the
+/// init POST is pure latency the batch run can drop — a real saving on the
+/// low-power mobile networks HSE targets. Pure and deterministic, so it is
+/// unit-tested directly without a live dispatch.
+fn values_worth_sessioning(plan: &[BatchQuery]) -> HashSet<String> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for q in plan {
+        *counts.entry(q.value.to_lowercase()).or_insert(0) += 1;
+    }
+    counts
+        .into_iter()
+        .filter(|(_, n)| *n >= 2)
+        .map(|(value, _)| value)
+        .collect()
+}
 
 /// Parsed `oathnet-batch` arguments (mirrors the clap `Command::OathnetBatch`
 /// variant; kept as a struct so the command body is testable in isolation).
@@ -22,6 +56,7 @@ pub struct BatchCmd {
     pub no_stealer: bool,
     pub no_permute: bool,
     pub synthesize_emails: bool,
+    pub recurse_depth: u32,
     pub max: usize,
     pub page_size: u32,
     pub execute: bool,
@@ -58,6 +93,7 @@ pub async fn cmd_oathnet_batch(cmd: BatchCmd) -> Result<()> {
         include_stealer: !cmd.no_stealer,
         permute_handles: !cmd.no_permute,
         synthesize_emails: cmd.synthesize_emails,
+        recurse_depth: cmd.recurse_depth,
         max_queries: cmd.max,
     };
 
@@ -148,65 +184,107 @@ async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result
     let mut total_hits = 0usize;
     let mut stopped_on_budget = false;
     let mut rows: Vec<(usize, &BatchQuery, usize)> = Vec::new();
-    // Session IDs initialised so far this run, keyed by lowercased target
-    // value — the generator (`oathnet_batch::query_gen::add`) deliberately
-    // emits a breach+stealer PAIR on the identical field+value for every
-    // stealer-indexable selector specifically so a session covers both
-    // (the vendor's own "#1 optimisation": N calls on one query = 1 lookup
-    // instead of N). Previously `execute_plan` never called `init_session`
-    // at all, so every single dispatched query paid its own full lookup
-    // regardless — this pairing existed in the generated plan but its
-    // quota saving was never actually realised. Tracked locally (never via
-    // shared process state — a concurrent `hse serve` scan could otherwise
-    // clobber which session a query for the same value uses) and threaded
-    // into [`oathnet::search`] explicitly, so the SECOND query for the same
-    // value reuses the session this run already paid to initialise instead
-    // of redundantly re-initing or silently picking up a foreign session.
-    let mut sessioned: HashMap<String, Option<String>> = HashMap::new();
 
+    // Session IDs, keyed by lowercased target value. The generator
+    // (`oathnet_batch::query_gen::add`) deliberately emits a breach+stealer PAIR
+    // on the identical field+value for every stealer-indexable selector so a
+    // session covers both (the vendor's own "#1 optimisation": N calls on one
+    // query = 1 lookup instead of N). Only values queried 2+ times are worth a
+    // session — for a singleton the init POST saves no lookup and just costs a
+    // round-trip (see `values_worth_sessioning`).
+    let session_values = values_worth_sessioning(plan);
+    // Pre-initialise every worth-sessioning value's session ONCE, up front and
+    // sequentially, BEFORE any concurrent dispatch — so two concurrent same-value
+    // queries in a chunk below can't race to double-init (or silently pick up a
+    // foreign session). `init_session` bills no lookup, so this pre-pass spends
+    // only round-trips, and only for the (few) repeated values; it is still
+    // budget-gated so we never init a session the run has no budget to use.
+    let mut sessioned: HashMap<String, Option<String>> = HashMap::new();
     for q in plan {
-        if !oathnet::has_budget() {
+        let lower_value = q.value.to_lowercase();
+        if session_values.contains(&lower_value) && !sessioned.contains_key(&lower_value) {
+            if !oathnet::has_budget() {
+                break;
+            }
+            let sid = oathnet::init_session(key, &q.value).await;
+            sessioned.insert(lower_value, sid);
+        }
+    }
+
+    // Dispatch in bounded-concurrency chunks, each sized to the LIVE remaining
+    // budget. The generated queries are mutually independent (distinct
+    // surface/field/value), so within a chunk they run CONCURRENTLY — a decisive
+    // wall-clock win on the latency-bound mobile radio HSE targets, where a
+    // strictly sequential loop stalls one full round-trip per query. Concurrency
+    // is capped at `BATCH_CONCURRENCY` so a large plan can't stampede the paid API.
+    //
+    // The chunk is sized to `min(BATCH_CONCURRENCY, budget_remaining)` — NOT a flat
+    // `BATCH_CONCURRENCY` — because `oathnet::search` silently short-circuits an
+    // over-budget query to an empty result (no network call). Launching a flat
+    // chunk would let that surplus be counted as `dispatched` and would hide the
+    // "stopped at the budget" signal; sizing to the budget means every query in a
+    // chunk actually runs, so `dispatched` and `stopped_on_budget` stay accurate.
+    // The budget is re-read each iteration, so cached queries (which spend no
+    // budget) don't prematurely end the run.
+    let mut idx = 0usize;
+    while idx < plan.len() {
+        let remaining = {
+            let snap = oathnet::budget_snapshot();
+            let scan_left = snap.scan_cap.saturating_sub(snap.scan_used);
+            let session_left = snap.session_cap.saturating_sub(snap.session_used);
+            scan_left.min(session_left)
+        };
+        if remaining == 0 || oathnet::is_quota_exhausted() {
             stopped_on_budget = true;
             break;
         }
-        let lower_value = q.value.to_lowercase();
-        let session_id = if let Some(sid) = sessioned.get(&lower_value) {
-            sid.clone()
-        } else {
-            let sid = oathnet::init_session(key, &q.value).await;
-            sessioned.insert(lower_value, sid.clone());
-            sid
-        };
-        // Clamp to this specific surface's own documented ceiling — Breach
-        // and Stealer have different maximums (1000 vs 100), so a single
-        // flat `--page-size` can't be passed through uncapped to a plan
-        // that spans both without risking an over-limit request to
-        // whichever surface has the smaller one.
-        let effective_page_size = page_size.min(q.surface.max_page_size());
-        match oathnet::search(
-            key,
-            q.surface.path(),
-            q.field,
-            &q.value,
-            effective_page_size,
-            session_id.as_deref(),
-        )
-        .await
-        {
-            Ok(items) => {
-                dispatched += 1;
-                total_hits += items.len();
-                if !items.is_empty() {
-                    rows.push((dispatched, q, items.len()));
-                }
+        let take = BATCH_CONCURRENCY
+            .min(remaining as usize)
+            .min(plan.len() - idx);
+        let chunk = &plan[idx..idx + take];
+        idx += take;
+        let futures = chunk.iter().map(|q| {
+            // Resolve this query's session synchronously into an owned value, then
+            // move it into the async task — the shared `sessioned` map is only
+            // read here (never across an await), so the concurrent tasks in a
+            // chunk share nothing mutable.
+            let session_id: Option<String> =
+                sessioned.get(&q.value.to_lowercase()).cloned().flatten();
+            // Clamp to this surface's own documented ceiling — Breach and Stealer
+            // differ (1000 vs 100), so one flat `--page-size` can't be passed
+            // through uncapped to a plan spanning both.
+            let effective_page_size = page_size.min(q.surface.max_page_size());
+            async move {
+                let res = oathnet::search(
+                    key,
+                    q.surface.path(),
+                    q.field,
+                    &q.value,
+                    effective_page_size,
+                    session_id.as_deref(),
+                )
+                .await;
+                (q, res)
             }
-            Err(e) => {
-                tracing::warn!(
-                    surface = q.surface.label(),
-                    field = q.field,
-                    value = %q.value,
-                    "oathnet-batch query failed: {e}"
-                );
+        });
+        // `join_all` preserves input order, so `rows` stays deterministic.
+        for (q, res) in join_all(futures).await {
+            match res {
+                Ok(items) => {
+                    dispatched += 1;
+                    total_hits += items.len();
+                    if !items.is_empty() {
+                        rows.push((dispatched, q, items.len()));
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        surface = q.surface.label(),
+                        field = q.field,
+                        value = %q.value,
+                        "oathnet-batch query failed: {e}"
+                    );
+                }
             }
         }
     }
@@ -265,4 +343,80 @@ async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::oathnet::Surface;
+    use crate::util::oathnet_batch::Origin;
+
+    fn q(surface: Surface, field: &'static str, value: &str) -> BatchQuery {
+        BatchQuery {
+            surface,
+            field,
+            value: value.to_string(),
+            origin: Origin::Seed,
+        }
+    }
+
+    #[test]
+    fn empty_plan_sessions_nothing() {
+        assert!(values_worth_sessioning(&[]).is_empty());
+    }
+
+    #[test]
+    fn singleton_value_is_not_sessioned() {
+        // One breach-only query for a value → a session would save no lookup.
+        let plan = vec![q(Surface::Breach, "phone", "+15551234567")];
+        assert!(values_worth_sessioning(&plan).is_empty());
+    }
+
+    #[test]
+    fn paired_value_is_sessioned() {
+        // The breach+stealer pair the generator emits for a login-indexable
+        // selector — the exact case a session collapses to one lookup.
+        let plan = vec![
+            q(Surface::Breach, "email", "a@b.com"),
+            q(Surface::Stealer, "email", "a@b.com"),
+        ];
+        let s = values_worth_sessioning(&plan);
+        assert_eq!(s.len(), 1);
+        assert!(s.contains("a@b.com"));
+    }
+
+    #[test]
+    fn multiplicity_is_counted_case_insensitively() {
+        // The dispatch loop keys sessions on the lowercased value, so the
+        // worth-sessioning test must agree: two differently-cased spellings of
+        // the same value are one value queried twice, hence worth a session.
+        let plan = vec![
+            q(Surface::Breach, "username", "Alice"),
+            q(Surface::Stealer, "username", "alice"),
+        ];
+        let s = values_worth_sessioning(&plan);
+        assert_eq!(s.len(), 1);
+        assert!(s.contains("alice"));
+        assert!(
+            !s.contains("Alice"),
+            "the set is keyed on the lowercased value"
+        );
+    }
+
+    #[test]
+    fn mixed_plan_sessions_only_the_repeated_values() {
+        let plan = vec![
+            // Repeated (breach+stealer) → sessioned.
+            q(Surface::Breach, "email", "a@b.com"),
+            q(Surface::Stealer, "email", "a@b.com"),
+            // Two distinct singletons → not sessioned.
+            q(Surface::Breach, "domain", "b.com"),
+            q(Surface::Breach, "phone", "+15551234567"),
+        ];
+        let s = values_worth_sessioning(&plan);
+        assert_eq!(s.len(), 1);
+        assert!(s.contains("a@b.com"));
+        assert!(!s.contains("b.com"));
+        assert!(!s.contains("+15551234567"));
+    }
 }

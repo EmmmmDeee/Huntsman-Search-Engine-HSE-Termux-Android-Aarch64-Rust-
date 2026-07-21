@@ -134,6 +134,39 @@ fn add_and_cycle() {
 }
 
 #[test]
+fn next_key_excluding_cascades_past_tried_keys() {
+    // The in-scan key cascade: a module that burns `key-a` records it in a
+    // tried-set and asks for the next usable key — which must be `key-b`, never
+    // `key-a` again — then, once both are tried, gets `None`.
+    let pool = KeyPool::new();
+    pool.add("shodan", KeyEntry::new("key-a"));
+    pool.add("shodan", KeyEntry::new("key-b"));
+
+    let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
+    tried.insert("key-a".to_string());
+    let next = pool.next_key_excluding("shodan", &tried).unwrap();
+    assert_eq!(next, "key-b");
+
+    tried.insert("key-b".to_string());
+    assert_eq!(pool.next_key_excluding("shodan", &tried), None);
+}
+
+#[test]
+fn next_key_excluding_still_skips_unusable_keys() {
+    // Exclusion composes with the usual usability filter: a rate-limited /
+    // invalid key is skipped whether or not it is in the tried-set.
+    let pool = KeyPool::new();
+    pool.add("shodan", KeyEntry::new("key-a"));
+    pool.add("shodan", KeyEntry::new("key-b"));
+    pool.mark_status("shodan", "key-b", KeyStatus::Invalid);
+
+    let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
+    tried.insert("key-a".to_string());
+    // key-a excluded, key-b invalid → nothing left to hand out.
+    assert_eq!(pool.next_key_excluding("shodan", &tried), None);
+}
+
+#[test]
 fn skips_invalid_keys() {
     let pool = KeyPool::new();
     pool.add("intelx", KeyEntry::new("good"));

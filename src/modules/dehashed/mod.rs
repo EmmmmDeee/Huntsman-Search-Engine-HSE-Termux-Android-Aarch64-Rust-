@@ -132,7 +132,7 @@ impl Module for DeHashed {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let Some(key) = ctx.key_opt(KEY_ENV) else {
+        let Some(initial_key) = ctx.key_opt(KEY_ENV) else {
             return Ok(ModuleResult::new());
         };
         let Some(selector) = selector_for(target.kind) else {
@@ -151,38 +151,58 @@ impl Module for DeHashed {
             "size": PAGE_SIZE,
         });
 
-        let mut retries = 2u8;
-        let body: DehashedResp = loop {
-            if ctx.cancel.is_cancelled() {
-                return Ok(ModuleResult::new());
-            }
-            let resp = ctx
-                .http
-                .post(V2_SEARCH_URL)
-                .header("Dehashed-Api-Key", key)
-                .header("Accept", "application/json")
-                .json(&payload)
-                .send_tagged(build::SRC)
-                .await?;
-            let status = resp.status();
-            if !status.is_success() {
-                let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, build::SRC, key, ctx)
-                    .await
-                {
-                    continue;
+        // Key cascade: begin on the hot-injected key and, on a terminal
+        // 401/403/429 (quota/auth failure), rotate to the next USABLE pooled key
+        // the pool holds for DeHashed and retry — so one process() call spends
+        // every credential available instead of dying on the first key's quota
+        // while sibling keys sit idle. `tried` records each burned key so the
+        // cascade never re-hands one, and terminates once no untried key remains.
+        let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut key = initial_key.to_string();
+        let body: DehashedResp = 'cascade: loop {
+            tried.insert(key.clone());
+            let mut retries = 2u8;
+            loop {
+                if ctx.cancel.is_cancelled() {
+                    return Ok(ModuleResult::new());
                 }
-                // The body carries DeHashed's own reason — notably the 401
-                // "You need a search subscription and API credits to use the
-                // API" that an account without an active search plan returns —
-                // so surface it verbatim for the operator.
-                return Err(crate::util::http::http_status_error(build::SRC, resp).await);
+                let resp = ctx
+                    .http
+                    .post(V2_SEARCH_URL)
+                    .header("Dehashed-Api-Key", &key)
+                    .header("Accept", "application/json")
+                    .json(&payload)
+                    .send_tagged(build::SRC)
+                    .await?;
+                let status = resp.status();
+                if !status.is_success() {
+                    let code = status.as_u16();
+                    if handle_keyed_error(code, resp.headers(), &mut retries, build::SRC, &key, ctx)
+                        .await
+                    {
+                        continue;
+                    }
+                    // Terminal on this key. If it was a key quota/auth failure and
+                    // the pool still has an untried, usable key, cascade to it
+                    // rather than surfacing an outage the pool could have avoided.
+                    if crate::util::http::is_keyed_error_status(code)
+                        && let Some(next) = ctx.next_pooled_key(build::SRC, &tried)
+                    {
+                        key = next;
+                        continue 'cascade;
+                    }
+                    // The body carries DeHashed's own reason — notably the 401
+                    // "You need a search subscription and API credits to use the
+                    // API" that an account without an active search plan returns —
+                    // so surface it verbatim for the operator.
+                    return Err(crate::util::http::http_status_error(build::SRC, resp).await);
+                }
+                // json_scanned: dehashed responses contain breach data including
+                // leaked credentials — scan the raw body for API keys.
+                break 'cascade crate::util::http::json_scanned(resp, build::SRC)
+                    .await
+                    .map_err(|e| crate::core::error::Error::module(build::SRC, e))?;
             }
-            // json_scanned: dehashed responses contain breach data including
-            // leaked credentials — scan the raw body for API keys.
-            break crate::util::http::json_scanned(resp, build::SRC)
-                .await
-                .map_err(|e| crate::core::error::Error::module(build::SRC, e))?;
         };
 
         let entries = body.entries.unwrap_or_default();
@@ -194,7 +214,7 @@ impl Module for DeHashed {
         // Stable origin fingerprint of the exact key in use — stamped onto every
         // record's evidence as `api_key_origin`, so each finding declares its
         // provenance. The full secret is never written (the middle is elided).
-        let key_fp = crate::util::oathnet::key_fingerprint(key);
+        let key_fp = crate::util::oathnet::key_fingerprint(&key);
         let balance = balance_str(&body.balance);
         let mut result = ModuleResult::new();
         // The breach-presence headline is emitted ONLY when the response is

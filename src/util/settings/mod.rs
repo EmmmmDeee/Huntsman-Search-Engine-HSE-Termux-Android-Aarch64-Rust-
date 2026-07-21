@@ -22,10 +22,7 @@ static CACHE: LazyLock<RwLock<BTreeMap<String, bool>>> =
 
 /// `~/.huntsman/settings.json` (same dir as the key pool / DB).
 pub fn settings_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let dir = PathBuf::from(home).join(".huntsman");
-    let _ = std::fs::create_dir_all(&dir);
-    dir.join("settings.json")
+    crate::util::paths::data_file("settings.json")
 }
 
 /// Read the override map from `path`. Empty on missing/corrupt — toggles are a

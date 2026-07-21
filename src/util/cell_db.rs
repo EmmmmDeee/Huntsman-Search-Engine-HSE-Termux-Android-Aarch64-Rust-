@@ -10,17 +10,12 @@ use rusqlite::{Connection, params};
 // ── Public path helper ──────────────────────────────────────────────────────
 
 /// Path to the cell towers DB file: `$HOME/.huntsman/cell_towers.db`.
-/// Falls back to `./cell_towers.db` when `$HOME` is unset.
+/// Falls back to `./.huntsman/cell_towers.db` when `$HOME` is unset (see
+/// [`crate::util::paths::huntsman_dir`] — the layout stays together under
+/// `.huntsman` rather than scattering a bare file into the CWD).
 #[must_use]
 pub fn cell_db_path() -> PathBuf {
-    std::env::var("HOME").map_or_else(
-        |_| PathBuf::from("cell_towers.db"),
-        |home| {
-            let dir = PathBuf::from(&home).join(".huntsman");
-            let _ = std::fs::create_dir_all(&dir);
-            dir.join("cell_towers.db")
-        },
-    )
+    crate::util::paths::data_file("cell_towers.db")
 }
 
 // ── Connection helpers ──────────────────────────────────────────────────────

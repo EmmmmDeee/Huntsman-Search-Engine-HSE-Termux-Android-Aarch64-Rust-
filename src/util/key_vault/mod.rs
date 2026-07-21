@@ -52,20 +52,9 @@ use crate::util::found_keys::FoundKey;
 /// touched by scan-level cleanup operations.
 #[must_use]
 pub fn vault_path() -> PathBuf {
-    std::env::var("HOME").map_or_else(
-        |_| PathBuf::from("key_vault.db"),
-        |home| {
-            let dir = PathBuf::from(&home).join(".huntsman");
-            let _ = std::fs::create_dir_all(&dir);
-            // Restrict to owner-only on Unix so harvested keys are not world-readable.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-            }
-            dir.join("key_vault.db")
-        },
-    )
+    // `paths::data_file` creates `~/.huntsman` 0700 (owner-only) so harvested
+    // keys in the vault DB aren't world-readable.
+    crate::util::paths::data_file("key_vault.db")
 }
 
 // ── Connection ────────────────────────────────────────────────────────────────

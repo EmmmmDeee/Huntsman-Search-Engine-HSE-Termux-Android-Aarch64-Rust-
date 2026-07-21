@@ -26,6 +26,30 @@ const SRC: &str = "crtsh";
 /// Shortest SAN email we'll surface (`a@b.c` is 5 chars).
 const MIN_EMAIL_LEN: usize = 5;
 
+/// The apex host that discovered Certificate-Transparency names are classified as
+/// subdomains OF (via [`crate::util::domains::is_or_subdomain_of`] in
+/// `build_entities`). For a `Domain` seed this is the value; for a `Url` it is the
+/// **host** (not the full URL); for an `Email` it is the **domain part** (after the
+/// final `@`). **Pure.**
+///
+/// Passing the raw `target.value` for a `Url` (a full `https://…/path`) or an
+/// `Email` (a full address) made `is_or_subdomain_of` never match, so every
+/// discovered subdomain was misclassified as an unrelated external (0.45, no
+/// `subdomain` tag) — dropping it below the engine's expansion floor and silently
+/// killing recursion for URL- and email-seeded scans. Keying on the true apex
+/// restores the subdomain boost and the pivot that drives deeper enumeration.
+fn apex_base(kind: TargetKind, value: &str) -> String {
+    match kind {
+        TargetKind::Url => {
+            crate::util::url_util::host_from_url(value).unwrap_or_else(|| value.to_string())
+        }
+        TargetKind::Email => value
+            .rsplit_once('@')
+            .map_or_else(|| value.to_string(), |(_, domain)| domain.to_string()),
+        _ => value.to_string(),
+    }
+}
+
 /// Build the crt.sh query for a target, or `None` for a kind/URL we can't key on.
 /// **Pure**: a `Domain` becomes a `%.domain` wildcard subdomain search, an
 /// `Email` is searched verbatim, and a `Url` is reduced to its host first.
@@ -95,8 +119,10 @@ const PUBLIC_CA_ORG_PREFIXES: &[&str] = &[
 
 /// Extract the `O=` value from an X.509 Distinguished Name string such as
 /// `"C=US, O=Let's Encrypt, CN=E5"`.  Returns `None` when no O= field is
-/// present or the value is empty.
-fn parse_dn_org(dn: &str) -> Option<&str> {
+/// present or the value is empty. `pub(crate)` so the sibling `certspotter`
+/// Certificate-Transparency module reuses the identical issuer-org parsing
+/// rather than re-deriving it.
+pub(crate) fn parse_dn_org(dn: &str) -> Option<&str> {
     for segment in dn.split(',') {
         let seg = segment.trim();
         if let Some(rest) = seg.strip_prefix("O=") {
@@ -109,7 +135,9 @@ fn parse_dn_org(dn: &str) -> Option<&str> {
     None
 }
 
-fn is_public_ca(org: &str) -> bool {
+/// True when `org` is a well-known public CA whose name adds no OSINT signal.
+/// `pub(crate)` so `certspotter` shares the identical suppression list.
+pub(crate) fn is_public_ca(org: &str) -> bool {
     let lower = org.to_lowercase();
     PUBLIC_CA_ORG_PREFIXES
         .iter()
@@ -129,9 +157,6 @@ fn is_public_ca(org: &str) -> bool {
 /// attribution pivot.
 fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec<Entity> {
     let base = domain_base.trim().to_lowercase();
-    // Pre-compute the `.base` subdomain suffix once instead of re-formatting it
-    // for every name across every certificate.
-    let dot_base = format!(".{base}");
     let mut seen_domains: HashSet<String> = HashSet::new();
     let mut seen_emails: HashSet<String> = HashSet::new();
     let mut seen_issuers: HashSet<String> = HashSet::new();
@@ -161,7 +186,11 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
                 e.add_evidence(cert_evidence(entry, "Email in certificate SAN"));
                 Some(e)
             } else if name.contains('.') && seen_domains.insert(name.clone()) {
-                let is_sub = name == base || name.ends_with(&dot_base);
+                // Canonical dot-boundary subdomain check (not a bare `ends_with`
+                // suffix match, which would also match `evilexample.com` against
+                // base `example.com`) — see `apex_base` above for why `base` is
+                // the true apex, not the raw seed value.
+                let is_sub = crate::util::domains::is_or_subdomain_of(&name, &base);
                 let conf = if is_sub {
                     confidence::VERY_HIGH
                 } else {
@@ -218,13 +247,8 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
     // netlas cert path documents. A prior `.take(10)` on issuers and a
     // `truncate(200)` here silently dropped genuine pivots (subdomains a popular
     // apex's CT history exposes, custom-PKI attribution orgs) with the total count
-    // surfaced nowhere.
-    out.sort_by(|a, b| {
-        b.confidence
-            .partial_cmp(&a.confidence)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.uid.cmp(&b.uid))
-    });
+    // surfaced nowhere. Ordering via the shared host-recon helper.
+    crate::util::recon::sort_by_confidence_desc(&mut out);
     out
 }
 
@@ -313,7 +337,11 @@ impl Module for CrtSh {
         let entries: Vec<CrtEntry> = crate::util::http::fetch_json(&ctx.http, SRC, &url).await?;
 
         let mut result = ModuleResult::new();
-        result.entities = build_entities(&entries, &target.value, &ctx.scan_id);
+        // Classify discovered names against the true apex host (see `apex_base`),
+        // NOT the raw target value — otherwise a Url/Email seed's subdomains are
+        // mislabelled external and never recursed into.
+        let base = apex_base(target.kind, &target.value);
+        result.entities = build_entities(&entries, &base, &ctx.scan_id);
         Ok(result)
     }
 }

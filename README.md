@@ -8,7 +8,7 @@
 **All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
 SpiderFoot-inspired breadth without the daemon or the footprint.**
 
-Pure-Rust OSINT / GEOINT platform with **163 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **165 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 dark-console Web UI, zero native dependencies, keyless-first.
 
@@ -114,7 +114,7 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 163 modules
+hse modules                                                 # list all 165 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
@@ -162,9 +162,9 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ---
 
-## Module Overview (163 modules — 129 free, 34 key-gated/paid)
+## Module Overview (165 modules — 129 free, 36 key-gated/paid)
 
-> Grouped highlights below (all 159). The complete, always-current catalogue
+> A curated highlight of the modules below (not the full list). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run
 > `hse modules` or open the web UI's module wizard — never a static doc that
 > can drift from the registry.
@@ -194,16 +194,26 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ### MITRE ATT&CK alignment (in the data, not a side report)
 
-Every module is mapped to the MITRE ATT&CK **Reconnaissance** tactic (TA0043)
-technique(s) it implements. That mapping is **woven into every scan**: as each
-finding is admitted, the engine stamps it inline with its producing module's
-technique(s) as `attack:<TECHNIQUE_ID>` tags (e.g. `attack:T1589.002` "Email
-Addresses"). So the technique that collected a datum travels with the datum —
-visible in the entity's `tags` in JSON output, on each entity in the full
-dossier (`hse export <id> --format full`) and `hse scan --output dossier`, and
-in the database — with no separate coverage report to reconcile. A finding
-corroborated by several modules carries all of their techniques (merges union
-the tags).
+The tool carries the **complete** MITRE ATT&CK Enterprise matrix as reference
+vocabulary — all 14 tactics and every current technique/sub-technique (v17.1),
+as pure static data (`src/core/attack/`), so any `Tnnnn[.nnn]` id the tool emits
+resolves to its canonical name and owning tactic. But HSE only *claims coverage*
+of the one tactic it actually performs: **Reconnaissance** (TA0043). Holding the
+whole framework while claiming one tactic is the invariant, not a contradiction —
+reference vocabulary is never a coverage assertion, so the per-scan coverage /
+gap report is computed against Reconnaissance alone and a technique HSE performs
+no collection for (e.g. `T1598` Phishing for Information) surfaces as a real,
+named gap.
+
+Every module is mapped to the Reconnaissance technique(s) it implements, and that
+mapping is **woven into every scan**: as each finding is admitted, the engine
+stamps it inline with its producing module's technique(s) as
+`attack:<TECHNIQUE_ID>` tags (e.g. `attack:T1589.002` "Email Addresses"). So the
+technique that collected a datum travels with the datum — visible in the entity's
+`tags` in JSON output, on each entity in the full dossier
+(`hse export <id> --format full`) and `hse scan --output dossier`, and in the
+database — with no separate coverage report to reconcile. A finding corroborated
+by several modules carries all of their techniques (merges union the tags).
 
 
 ## Web UI (dark-console, zero vendored UI framework)

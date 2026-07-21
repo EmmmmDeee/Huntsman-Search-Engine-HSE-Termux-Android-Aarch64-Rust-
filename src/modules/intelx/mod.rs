@@ -284,7 +284,7 @@ impl Module for IntelX {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) {
+        let initial_key = match ctx.key_opt(KEY_ENV) {
             Some(k) => k,
             None => return Ok(ModuleResult::new()),
         };
@@ -306,34 +306,52 @@ impl Module for IntelX {
             "media": 0,
             "terminate": []
         });
-        let mut retries = 0u32;
-        let start: StartResp = loop {
-            let resp = ctx
-                .http
-                .post(format!("{BASE}/intelligent/search"))
-                .header("x-key", key)
-                .header("Accept", "application/json")
-                .json(&body)
-                .send_tagged(SRC)
-                .await?;
-            let status = resp.status();
-            if status.is_success() {
-                break crate::util::http::json_decode(SRC, resp).await?;
+        // Key cascade — START phase only. A dead/rate-limited key on the search
+        // start rotates to the next usable pooled IntelX key and restarts the
+        // search, so one process() call spends every credential the pool holds
+        // before failing. The cascade CANNOT extend to the poll/terminate phases:
+        // the returned `search_id` is bound to the account that started the
+        // search, so those phases must stay on whichever key won here (threaded
+        // via the mutable `key` below). `tried` stops re-handing a burned key.
+        let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut key = initial_key.to_string();
+        let start: StartResp = 'cascade: loop {
+            tried.insert(key.clone());
+            let mut retries = 0u32;
+            loop {
+                let resp = ctx
+                    .http
+                    .post(format!("{BASE}/intelligent/search"))
+                    .header("x-key", &key)
+                    .header("Accept", "application/json")
+                    .json(&body)
+                    .send_tagged(SRC)
+                    .await?;
+                let status = resp.status();
+                if status.is_success() {
+                    break 'cascade crate::util::http::json_decode(SRC, resp).await?;
+                }
+                let code = status.as_u16();
+                if code == 429 && retries < 2 {
+                    // 15s module budget across search + poll phases: cap each
+                    // backoff at 4s so two retries can't exhaust process()'s timeout.
+                    let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 4, 4);
+                    retries += 1;
+                    tokio::time::sleep(Duration::from_secs(retry_secs)).await;
+                    continue;
+                }
+                crate::util::http::note_keyed_error(code, SRC, &key, ctx);
+                if crate::util::http::is_keyed_error_status(code)
+                    && let Some(next) = ctx.next_pooled_key(SRC, &tried)
+                {
+                    key = next;
+                    continue 'cascade;
+                }
+                return Err(Error::module(
+                    "intelx",
+                    format!("HTTP {status} on start: {}", error_snippet(resp).await),
+                ));
             }
-            let code = status.as_u16();
-            if code == 429 && retries < 2 {
-                // 15s module budget across search + poll phases: cap each
-                // backoff at 4s so two retries can't exhaust process()'s timeout.
-                let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 4, 4);
-                retries += 1;
-                tokio::time::sleep(Duration::from_secs(retry_secs)).await;
-                continue;
-            }
-            crate::util::http::note_keyed_error(code, SRC, key, ctx);
-            return Err(Error::module(
-                "intelx",
-                format!("HTTP {status} on start: {}", error_snippet(resp).await),
-            ));
         };
         let search_id = match (start.id, start.status) {
             (Some(id), Some(0) | None) if !id.is_empty() => id,
@@ -362,7 +380,7 @@ impl Module for IntelX {
             let resp = match ctx
                 .http
                 .get(&result_url)
-                .header("x-key", key)
+                .header("x-key", &key)
                 .header("Accept", "application/json")
                 .send()
                 .await
@@ -378,7 +396,7 @@ impl Module for IntelX {
                     tokio::time::sleep(Duration::from_secs(retry_secs)).await;
                 }
                 if code != 429 || poll_retries >= 2 {
-                    crate::util::http::note_keyed_error(code, SRC, key, ctx);
+                    crate::util::http::note_keyed_error(code, SRC, &key, ctx);
                 }
                 continue;
             }
@@ -403,7 +421,7 @@ impl Module for IntelX {
                 .get(format!(
                     "{BASE}/intelligent/search/terminate?id={search_id}"
                 ))
-                .header("x-key", key)
+                .header("x-key", &key)
                 .send()
                 .await;
         }

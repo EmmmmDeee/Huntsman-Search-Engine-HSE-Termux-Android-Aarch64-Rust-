@@ -238,7 +238,6 @@ impl Module for NiamonX {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
         let query = &target.value;
-        let key = ctx.key(KEY_ENV)?;
         let ulp_type = match target.kind {
             TargetKind::Email => "email",
             TargetKind::Username => "username",
@@ -246,12 +245,77 @@ impl Module for NiamonX {
             _ => "auto",
         };
 
-        // All three endpoints are independent — run concurrently.
-        let (r1, r2, r3) = tokio::join!(
-            fetch_pbs_v1(&ctx.http, key, query, ctx),
-            fetch_pbs_v2(&ctx.http, key, query, ctx),
-            fetch_ulp(&ctx.http, key, query, ulp_type, ctx),
-        );
+        // Key cascade across the concurrent endpoint batch. The three endpoints
+        // share one key; if EVERY one fails AND that key was burned in the pool
+        // this call (a 401/403/429 routed through `note_keyed_error` marks it
+        // non-usable), rotate to the next usable pooled key and retry the whole
+        // batch — so one process() spends every credential the pool holds before
+        // reporting an outage. A partial success, or a non-key failure such as a
+        // transient 5xx, leaves the key usable and does NOT cascade, so keys are
+        // never churned on anything but a genuine key/quota failure. `tried` stops
+        // re-handing a burned key; single-key setups never enter the branch.
+        use crate::util::key_pool::KeyStatus;
+        // A key is "burned" once the pool marks it non-usable. We compare the
+        // pool status BEFORE and AFTER this batch so a cascade fires only on a
+        // FRESH burn THIS batch caused (usable before, non-usable after). Reading
+        // only the after-status would misfire on a stale RateLimited/Invalid mark
+        // left by an EARLIER target in the same scan: a genuine key-independent
+        // outage (all three endpoints 5xx) would then churn a good second key even
+        // though nothing here was a key problem.
+        let is_burned = |s: Option<KeyStatus>| {
+            matches!(
+                s,
+                Some(
+                    KeyStatus::Invalid
+                        | KeyStatus::RateLimited
+                        | KeyStatus::Revoked
+                        | KeyStatus::Exhausted
+                )
+            )
+        };
+        let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let injected = ctx.key(KEY_ENV)?.to_string();
+        // Start from the pool's best USABLE niamonx key. `next_pooled_key`
+        // (`next_key`) is cooldown-AWARE: it evaluates `is_usable` (which honours
+        // a rate-limit window that has since elapsed) and flips such a key back to
+        // healthy on selection. That fixes two things at once:
+        //   (a) `ctx.keys` persists across every target in a scan and is only
+        //       gap-filled (never overwritten), so a key rate-limited on an
+        //       earlier target is still the injected value here — starting on it
+        //       blindly, combined with the fresh-burn gate below, made every later
+        //       target silently return empty while a sibling sat idle; and
+        //   (b) it must NOT permanently exclude that key once its 60s cooldown has
+        //       elapsed and it is usable again — an earlier raw-status skip did,
+        //       so a later target could fail even though the cooled-down key would
+        //       have succeeded.
+        // Selecting through the pool honours cooldown for both. Falls back to the
+        // injected env key when the pool holds no niamonx keys (env-only setup).
+        let mut key = ctx.next_pooled_key(SRC, &tried).unwrap_or(injected);
+        let (r1, r2, r3) = loop {
+            tried.insert(key.clone());
+            let before = crate::util::key_pool::global_pool().entry_status(SRC, &key);
+            // All three endpoints are independent — run concurrently.
+            let results = tokio::join!(
+                fetch_pbs_v1(&ctx.http, &key, query, ctx),
+                fetch_pbs_v2(&ctx.http, &key, query, ctx),
+                fetch_ulp(&ctx.http, &key, query, ulp_type, ctx),
+            );
+            let all_failed = results.0.is_err() && results.1.is_err() && results.2.is_err();
+            if all_failed {
+                let after = crate::util::key_pool::global_pool().entry_status(SRC, &key);
+                // Cascade only when this batch turned a usable key non-usable — a
+                // 5xx outage leaves it usable, and a pre-existing bad status is
+                // never re-attributed to this call.
+                if is_burned(after)
+                    && !is_burned(before)
+                    && let Some(next) = ctx.next_pooled_key(SRC, &tried)
+                {
+                    key = next;
+                    continue;
+                }
+            }
+            break results;
+        };
 
         let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, &ctx.scan_id);
         entity.tag(SRC);

@@ -13,17 +13,24 @@ pub(super) fn slug(s: &str, max: usize) -> String {
             _ => out.push('_'),
         }
     }
-    // Collapse runs of '_' for readability and trim leading/trailing separators.
+    // Collapse runs of '_' for readability.
     while out.contains("__") {
         out = out.replace("__", "_");
     }
-    let trimmed = out.trim_matches(['_', '.', '-']).to_string();
-    let trimmed = if trimmed.is_empty() {
+    // Truncate FIRST, then trim — order matters: trimming before the length cap let
+    // `take(max)` slice mid-string and re-introduce a trailing '_', which then
+    // merged with the `__` field separator in `build_filename` into `___`. That
+    // corrupts the `split("__")` field parse in `records_filtered_dir`, shifting the
+    // timestamp field and silently dropping an in-window paid response from the
+    // dossier. Capping before the final trim guarantees no trailing separator
+    // survives, whatever the cut point.
+    let capped: String = out.chars().take(max).collect();
+    let trimmed = capped.trim_matches(['_', '.', '-']);
+    if trimmed.is_empty() {
         "unknown".to_string()
     } else {
-        trimmed
-    };
-    trimmed.chars().take(max).collect()
+        trimmed.to_string()
+    }
 }
 
 /// `YYYYMMDDThhmmssZ` (UTC) for `unix_secs`. Sorts lexicographically in
@@ -78,4 +85,52 @@ pub(super) fn build_body(
     // Pretty-printed: an individual file is meant to be opened and read by a
     // human, so optimise for legibility over compactness.
     serde_json::to_string_pretty(&doc).unwrap_or_else(|_| doc.to_string())
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::{build_filename, slug};
+
+    #[test]
+    fn slug_never_ends_in_a_separator_even_when_truncated_mid_token() {
+        // The bug: trimming before the length cap let `take(max)` slice mid-string
+        // and leave a trailing '_', which merged with the '__' field delimiter into
+        // '___' and corrupted the filename field split. Cap a value whose max-th
+        // char lands right after a separator and assert no trailing separator.
+        let s = slug("aaaaaaaa@bbbbbbbb", 9); // "aaaaaaaa_at_bbbbbbbb" capped at 9
+        assert!(
+            !s.ends_with('_') && !s.ends_with('.') && !s.ends_with('-'),
+            "slug must not end in a separator after truncation, got {s:?}"
+        );
+        // A value that is all separators after the cut collapses to the sentinel.
+        assert_eq!(slug("....----", 3), "unknown");
+    }
+
+    #[test]
+    fn filename_fields_split_cleanly_on_the_double_underscore() {
+        // End-to-end: the archive filename must split into exactly its 5 fields, so
+        // the timestamp field is parseable by the pre-filter. A query that truncates
+        // to a trailing separator must not shift the fields.
+        let name = build_filename(
+            "prov",
+            "endpoint",
+            "aaaaaaaaaa@bbbbbbbbbb",
+            1_700_000_000,
+            1,
+        );
+        let stem = name.strip_suffix(".json").unwrap();
+        let fields: Vec<&str> = stem.split("__").collect();
+        assert_eq!(
+            fields.len(),
+            5,
+            "filename must have 5 '__'-delimited fields: {name}"
+        );
+        // The 4th field is the compact UTC stamp — it must start with a digit, not a
+        // stray '_' bled in from a corrupted query field.
+        assert!(
+            fields[3].starts_with(|c: char| c.is_ascii_digit()),
+            "timestamp field corrupted by a merged separator: {:?}",
+            fields[3]
+        );
+    }
 }

@@ -50,10 +50,14 @@ pub(super) fn emit_key_with(
         }
         return;
     }
-    let dedup = format!(
-        "@apikey:{service}:{}",
-        crate::util::str_util::truncate_safe(key_val, 16)
-    );
+    // Dedup on the FULL key value, not a 16-char prefix: many real credentials
+    // share a long fixed prefix (every HS256 JWT begins with the identical
+    // `eyJhbGciOiJIUzI1…` header; `AKIA…`, `sk-…`, `ghp_…` families likewise), so a
+    // 16-char key collapsed two DISTINCT keys of the same service into one and
+    // silently dropped the second — never emitted, pooled, or vaulted. The value is
+    // bounded (an API key, not a document), so keying on it whole is cheap and
+    // collision-free.
+    let dedup = format!("@apikey:{service}:{key_val}");
     if !seen.insert(dedup) {
         return;
     }
@@ -166,7 +170,9 @@ pub(super) fn emit_key_with(
         roi.label()
     ));
     pool.add(service, entry);
-    crate::util::key_pool::save_pool_best_effort(&pool);
+    // Off the async runtime: this runs inside a keyed module's async process()
+    // on a tokio worker shared with every other concurrently-dispatched module.
+    crate::util::key_pool::persist_off_thread(pool);
 }
 
 /// Routes a stealer/breach record to the key pool when the URL matches
@@ -221,11 +227,14 @@ pub fn store_api_credential(item: &Value, src: &str) {
         crate::util::str_util::truncate_safe(&username, 30),
         crate::util::str_util::truncate_safe(&url, 60)
     ));
+    // Off the async runtime (see `emit_key_with` above): `pool` is reused below,
+    // so this first persist clones the Arc (cheap — a refcount bump, not a pool
+    // copy) rather than moving it.
     if pool.add(service, entry) {
-        crate::util::key_pool::save_pool_best_effort(&pool);
+        crate::util::key_pool::persist_off_thread(std::sync::Arc::clone(&pool));
     }
 
     let user_entry = crate::util::key_pool::KeyEntry::new(format!("{username}:{password}"));
     pool.add(&format!("{service}_login"), user_entry);
-    crate::util::key_pool::save_pool_best_effort(&pool);
+    crate::util::key_pool::persist_off_thread(pool);
 }

@@ -459,6 +459,11 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "rdap",
         "crtsh",
         "cert",
+        // Free passive-DNS subdomain aggregator (exact module: anubis). Its form
+        // matches no earlier needle, so without this it fell to `other` and was
+        // silently dropped from cross-family corroboration — unlike its CT/DNS
+        // siblings crtsh/certspotter(`cert`)/hackertarget which resolve here.
+        "anubis",
         "shodan",
         "censys",
         "greynoise",
