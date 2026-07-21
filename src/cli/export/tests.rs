@@ -23,8 +23,8 @@ fn render_full_dumps_every_field_and_provenance() {
     e.tag("breach");
     e.add_evidence(
         Evidence::new("see_know", "SeekNow record from Snusbase")
-            .with_attr("provider", "see-know.eu")
-            .with_attr("api_key_origin", "see-know.eu:seek-62650f9a…0fd0a4")
+            .with_attr("provider", "see-know")
+            .with_attr("api_key_origin", "see-know:seek-62650f9a…0fd0a4")
             .with_attr("via_endpoint", "search")
             .with_attr("source", "Snusbase")
             .with_attr("username", "3toadsloth"),
@@ -40,12 +40,12 @@ fn render_full_dumps_every_field_and_provenance() {
     let out = render_full(&store, "scan-full").unwrap();
     // Header + provenance roll-up.
     assert!(out.contains("HUNTSMAN FULL DOSSIER"));
-    assert!(out.contains("providers      : see-know.eu"));
-    assert!(out.contains("api key origins: see-know.eu:seek-62650f9a…0fd0a4"));
+    assert!(out.contains("providers      : see-know"));
+    assert!(out.contains("api key origins: see-know:seek-62650f9a…0fd0a4"));
     assert!(out.contains("sources/sites  : Snusbase"));
     // The entity, its value, and EVERY evidence attribute verbatim.
     assert!(out.contains("password = thelord"));
-    assert!(out.contains("api_key_origin = see-know.eu:seek-62650f9a…0fd0a4"));
+    assert!(out.contains("api_key_origin = see-know:seek-62650f9a…0fd0a4"));
     assert!(out.contains("via_endpoint = search"));
     assert!(out.contains("username = 3toadsloth"));
     // "Nothing omitted": the entity's own top-level fields must all appear —

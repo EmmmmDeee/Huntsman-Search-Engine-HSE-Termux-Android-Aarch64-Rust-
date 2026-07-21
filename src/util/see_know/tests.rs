@@ -133,15 +133,17 @@ fn key_fingerprint_identifies_origin_without_full_secret() {
     // the "single source of truth for embedded keys" architecture guard isn't
     // tripped by a literal living outside util::keys.rs.
     let fp = key_fingerprint("seek-1234567890aaaabbbbccccddddeeeeffff0000111122223333");
-    // Provider-prefixed, head + tail present, middle elided.
-    assert!(fp.starts_with("see-know.eu:seek-12345"), "got {fp}");
+    // Provider-prefixed, head + tail present, middle elided. Domain-agnostic
+    // prefix — see-know rotates across three domains, so the fingerprint
+    // never names one (mirrors the `provider` evidence attribute fix).
+    assert!(fp.starts_with("see-know:seek-12345"), "got {fp}");
     assert!(fp.ends_with("223333"), "got {fp}");
     assert!(fp.contains('\u{2026}'));
     // The full secret never appears verbatim — the elided middle is dropped.
     assert!(!fp.contains("aaaabbbbccccddddeeeeffff"));
     // Short/empty keys degrade gracefully.
-    assert_eq!(key_fingerprint(""), "see-know.eu:(no key)");
-    assert_eq!(key_fingerprint("short"), "see-know.eu:short");
+    assert_eq!(key_fingerprint(""), "see-know:(no key)");
+    assert_eq!(key_fingerprint("short"), "see-know:short");
 }
 
 #[test]

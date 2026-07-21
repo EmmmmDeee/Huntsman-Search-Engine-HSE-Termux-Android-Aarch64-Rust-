@@ -132,14 +132,20 @@ pub fn resolve_key(ctx_key: Option<&str>) -> &str {
 /// operator running several keys can tell which one produced a finding) without
 /// scattering the full secret across the persisted entity store. Pure, so the
 /// format is unit-testable.
+///
+/// The prefix is the domain-agnostic `"see-know"` label, not any one of the
+/// three rotating domains ([`all_base_urls`]) — a request served by a fallback
+/// domain still carries the same fingerprint, and the label never goes stale
+/// when the primary domain changes (see the `provider` evidence attribute
+/// fix this mirrors, in `see_know::extract`).
 #[must_use]
 pub fn key_fingerprint(key: &str) -> String {
     let k = key.trim();
     if k.is_empty() {
-        return "see-know.eu:(no key)".to_string();
+        return "see-know:(no key)".to_string();
     }
     if k.len() <= 18 {
-        return format!("see-know.eu:{k}");
+        return format!("see-know:{k}");
     }
     let head: String = k.chars().take(13).collect();
     let tail: String = {
@@ -147,7 +153,7 @@ pub fn key_fingerprint(key: &str) -> String {
         t.reverse();
         t.into_iter().collect()
     };
-    format!("see-know.eu:{head}\u{2026}{tail}")
+    format!("see-know:{head}\u{2026}{tail}")
 }
 
 /// Body signature of a key that cannot retrieve data — so the whole scan should
