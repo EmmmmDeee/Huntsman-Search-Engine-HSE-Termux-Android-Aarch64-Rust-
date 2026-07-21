@@ -48,6 +48,8 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **GhostProject / Scylla / WeLeakInfo / HackCheck / Scrubd / NuclearLeaks** | breach/credential search (varied availability) | varies | — | D |
 | **OathNet** | unified breach + stealer (HSE multiplier) | keyed plan | login-gated | M K D |
 | **SeekNow (see-know.eu)** | unified breach + stealer + external (HSE multiplier) | keyed plan | login-gated | M K D |
+| **NiamonX** | concurrent PBS v1/v2 breach search + ULP infostealer lookup | keyed | opaque | M K D |
+| **OsintCat** | email footprint (100+ platforms), breach lookup, deep email OSINT | free preflight; paid deep search | `x-api-key` | M K D |
 | **IntelTechniques** | OSINT tooling / search tools | — | — | D |
 
 ## 2. Attack-surface / internet-wide host scanners
@@ -81,7 +83,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **URLhaus (abuse.ch)** | malicious URL feed | free | — | M D |
 | **MalwareBazaar (abuse.ch)** | malware-sample intel | free | abuse.ch key | D |
 | **urlscan.io** | URL scan + screenshots + DOM | free | UUID | M K D |
-| **AlienVault OTX** | open threat exchange pulses | free | 64 hex | D C |
+| **AlienVault OTX** | open threat exchange pulses | free (keyless) | 64 hex | M K D |
 | **Hybrid Analysis** | sandbox malware reports | free (vetted) | 64 alnum | D C |
 | **ANY.RUN** | interactive sandbox | ltd | — | D C |
 | **Maltiverse** | IOC intelligence | free/key | JWT/alnum | D C |
@@ -100,6 +102,8 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **FullContact** | person/company enrichment | ltd | 32 alnum | M K D |
 | **Proxycurl** | LinkedIn person/company data | paid | alnum | M K D |
 | **Seon** | fraud/digital-footprint enrichment | trial | alnum | M K D |
+| **OpenSanctions** | sanctions/PEP/watchlist screening (incl. Australia's DFAT list) | free trial/nonprofit | alnum | M K D |
+| **OFAC (US Treasury)** | SDN + Consolidated sanctions-list screening | free | — (no key) | M D |
 | **Snov.io** | email finder/verify, drip | ltd | client id+secret | D C |
 | **Apollo.io** | B2B people/company | free (ltd) | alnum | D C |
 | **RocketReach** | contact lookup | ltd | alnum | D C |
@@ -128,7 +132,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | Provider | What it gives | Free tier | Key shape | HSE |
 |---|---|---|---|---|
 | **IPinfo** | IP geo/ASN/company/privacy | 50k/mo | hex token | M K D |
-| **IP2Location** | IP geo (API + DB) | ltd | alnum | M K D |
+| **IP2Location** | IP geo (API + DB) | free (1k/day, keyless) | — | M D |
 | **ipgeolocation.io** | IP geo/timezone/astronomy | 1k/day | alnum | D C |
 | **ipstack** | IP geo | 100/mo | 32 hex | D C |
 | **ipdata** | IP geo + threat | 1.5k/day | alnum | D C |
@@ -150,7 +154,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **Whoxy** | WHOIS + reverse WHOIS history | ltd | alnum | D C |
 | **DomainTools** | Iris WHOIS/DNS/infra | paid | api user + key | D C |
 | **ViewDNS.info** | DNS/WHOIS/reverse tools | ltd | alnum | D C |
-| **DNSDumpster / domainsdb** | subdomain/passive DNS | free | — | M(domainsdb) D |
+| **DNSDumpster / domainsdb** | subdomain/passive DNS | free / key-gated (domainsdb, 2026: anonymous access disabled) | domainsdb: alnum | M(domainsdb) K D |
 | **IP2WHOIS** | WHOIS lookup | free (500/mo) | alnum | D C |
 | *(keyless)* **dns_intel / doh_resolver / dns_axfr / rdap_domain / whois** | DNS records, DoH, AXFR, RDAP, WHOIS | free | — | M |
 
@@ -244,12 +248,12 @@ light up, and (c) compare your own keys against what HSE will recognise.
 HSE reads keys from `HUNTSMAN_*` env vars (or the UI Settings panel). Recognised
 keyed providers include:
 
-`OATHNET, SEEKNOW, HIBP, DEHASHED, INTELX, HUNTER, EMAILREP, EPIEOS, FULLCONTACT,
-PROXYCURL, SEON, SHODAN, CENSYS (ID+SECRET), ZOOMEYE, BINARYEDGE, FOFA, NETLAS,
-ONYPHE, FULLHUNT, CRIMINALIP, LEAKIX, GREYNOISE, VIRUSTOTAL, ABUSEIPDB, ABUSECH,
-THREATFOX, URLSCAN, PULSEDIVE, PASSIVETOTAL, SECTRAILS, WHOISXML, BUILTWITH, C99,
-BREACHDIR, NUMVERIFY, HLR, OPENCNAM, IPQS, OPENCELLID, WIGLE (USER+TOKEN),
-OPENCORP, TROVE, EXA, ABR_GUID`.
+`OATHNET, NIAMONX, SEEKNOW, HIBP, DEHASHED, INTELX, HUNTER, EMAILREP, EPIEOS,
+FULLCONTACT, PROXYCURL, SEON, OPENSANCTIONS, OSINTCAT, SHODAN, CENSYS (ID+SECRET),
+ZOOMEYE, BINARYEDGE, FOFA, NETLAS, ONYPHE, FULLHUNT, CRIMINALIP, LEAKIX, GREYNOISE,
+VIRUSTOTAL, ABUSEIPDB, ABUSECH, THREATFOX, ALIENVAULT, URLSCAN, PULSEDIVE,
+PASSIVETOTAL, SECTRAILS, WHOISXML, DOMAINSDB, BUILTWITH, C99, BREACHDIR, NUMVERIFY,
+HLR, OPENCNAM, IPQS, OPENCELLID, WIGLE (USER+TOKEN), OPENCORP, TROVE, EXA, ABR_GUID`.
 
 Most are optional — ~79% of HSE modules need **no** key. Add a key only to escalate
 a specific source; HSE never marks up provider pricing (pay the provider directly,

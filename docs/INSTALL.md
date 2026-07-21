@@ -124,8 +124,8 @@ rm -f ~/.huntsman.env   # caution: back up your API keys first
 
 ## Troubleshooting
 
-**"Permission denied" when copying HSE.zip**
-The zip is in Android's scoped storage. Fix:
+**"Permission denied" reading the prebuilt binary from Downloads**
+The file is in Android's scoped storage. Fix:
 - Android Settings → Apps → Termux → Permissions → Files and media → Allow management of all files
 - Then retry the install command
 
