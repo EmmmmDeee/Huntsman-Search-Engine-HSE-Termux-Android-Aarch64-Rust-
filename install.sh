@@ -592,6 +592,19 @@ if [[ $IS_TERMUX -eq 1 ]]; then
     mkdir -p "$TMPDIR"
 fi
 
+# This build has no `--target` — it always compiles for whatever `rustc`'s host
+# is, i.e. host == target, unconditionally (on a real Termux device that's
+# aarch64-linux-android; on a dev's own machine it's whatever that machine is).
+# `-C target-cpu=native` is therefore always safe HERE specifically — unlike in
+# `.cargo/config.toml`, which is keyed by target triple and can't tell this
+# native build apart from CI's cross-compile of the SAME triple from a
+# different host arch (where "native" would mean the wrong CPU). Exporting
+# RUSTFLAGS (rather than editing config.toml) confines the flag to this one
+# on-device invocation; it also REPLACES rather than merges with config.toml's
+# `target.*.rustflags` for this call, so `--as-needed` is repeated here to keep
+# that benefit rather than silently dropping it.
+export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native -C link-arg=-Wl,--as-needed"
+
 # Live progress so a long build never looks frozen:
 #  1. Force cargo's progress bar ON even though stdout is piped to `tee` (a pipe
 #     is not a TTY, so cargo would otherwise stay silent through the whole

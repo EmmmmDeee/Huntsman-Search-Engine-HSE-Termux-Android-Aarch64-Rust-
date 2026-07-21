@@ -375,27 +375,10 @@ impl ModuleContext {
             crate::util::key_pool::KeyStatus::Invalid
         };
         pool.mark_status(service, key_value, key_status);
-        // The in-memory marks above are immediate; persistence is offloaded.
-        persist_key_pool(pool);
-    }
-}
-
-/// Persist the key pool to disk *off* the async runtime. `save_pool` does a
-/// blocking `fsync` + `rename`, and this is reached from async keyed-error
-/// handling on a tokio worker — a burst of 401/403/429s across keyed modules
-/// would otherwise stall the executor. Inside a runtime we hand the blocking I/O
-/// to `spawn_blocking` (fire-and-forget; the in-memory state is already updated
-/// and persistence is best-effort); outside one (CLI / tests) we save inline.
-fn persist_key_pool(pool: std::sync::Arc<crate::util::key_pool::KeyPool>) {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            handle.spawn_blocking(move || {
-                crate::util::key_pool::save_pool_best_effort(&pool);
-            });
-        }
-        Err(_) => {
-            crate::util::key_pool::save_pool_best_effort(&pool);
-        }
+        // The in-memory marks above are immediate; persistence is offloaded (see
+        // `key_pool::persist_off_thread` — the canonical off-runtime persist path
+        // every opportunistic save site shares).
+        crate::util::key_pool::persist_off_thread(pool);
     }
 }
 

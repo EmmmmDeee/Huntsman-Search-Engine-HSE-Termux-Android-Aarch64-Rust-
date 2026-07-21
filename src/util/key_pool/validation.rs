@@ -29,13 +29,17 @@ pub async fn add_and_validate(service: &str, key_value: &str, notes: Option<Stri
     let mut entry = KeyEntry::new(key_value);
     entry.notes = notes;
 
+    // `add_and_validate` is itself `pub async fn`, already run on a tokio worker
+    // — persist off the runtime (`persist_off_thread`) rather than the blocking
+    // `save_pool_best_effort` directly, so a validation call never stalls the
+    // executor other concurrently-dispatched modules share.
     if let Some(valid) = validate_key(service, key_value).await {
         if valid {
             entry.status = KeyStatus::Active;
             entry.last_validated = Some(crate::core::entity::unix_now());
             let added = pool.add(service, entry);
             if added {
-                super::persistence::save_pool_best_effort(&pool);
+                super::persistence::persist_off_thread(pool);
                 tracing::info!(service, "validated and stored API key");
             }
             true
@@ -43,13 +47,13 @@ pub async fn add_and_validate(service: &str, key_value: &str, notes: Option<Stri
             entry.status = KeyStatus::Invalid;
             entry.last_validated = Some(crate::core::entity::unix_now());
             pool.add(service, entry);
-            super::persistence::save_pool_best_effort(&pool);
+            super::persistence::persist_off_thread(pool);
             tracing::warn!(service, "API key failed validation — stored as invalid");
             false
         }
     } else {
         pool.add(service, entry);
-        super::persistence::save_pool_best_effort(&pool);
+        super::persistence::persist_off_thread(pool);
         false
     }
 }

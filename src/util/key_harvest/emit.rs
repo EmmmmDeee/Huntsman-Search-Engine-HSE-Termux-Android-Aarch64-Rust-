@@ -170,7 +170,9 @@ pub(super) fn emit_key_with(
         roi.label()
     ));
     pool.add(service, entry);
-    crate::util::key_pool::save_pool_best_effort(&pool);
+    // Off the async runtime: this runs inside a keyed module's async process()
+    // on a tokio worker shared with every other concurrently-dispatched module.
+    crate::util::key_pool::persist_off_thread(pool);
 }
 
 /// Routes a stealer/breach record to the key pool when the URL matches
@@ -225,11 +227,14 @@ pub fn store_api_credential(item: &Value, src: &str) {
         crate::util::str_util::truncate_safe(&username, 30),
         crate::util::str_util::truncate_safe(&url, 60)
     ));
+    // Off the async runtime (see `emit_key_with` above): `pool` is reused below,
+    // so this first persist clones the Arc (cheap — a refcount bump, not a pool
+    // copy) rather than moving it.
     if pool.add(service, entry) {
-        crate::util::key_pool::save_pool_best_effort(&pool);
+        crate::util::key_pool::persist_off_thread(std::sync::Arc::clone(&pool));
     }
 
     let user_entry = crate::util::key_pool::KeyEntry::new(format!("{username}:{password}"));
     pool.add(&format!("{service}_login"), user_entry);
-    crate::util::key_pool::save_pool_best_effort(&pool);
+    crate::util::key_pool::persist_off_thread(pool);
 }

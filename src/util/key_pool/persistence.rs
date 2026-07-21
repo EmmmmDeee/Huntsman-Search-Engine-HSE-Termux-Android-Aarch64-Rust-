@@ -94,3 +94,42 @@ pub fn save_pool_best_effort(pool: &KeyPool) {
         );
     }
 }
+
+/// Persist the pool off the async runtime — the single canonical entry point
+/// every opportunistic (fire-and-forget) persist site should call instead of
+/// [`save_pool_best_effort`] directly.
+///
+/// `save_pool` does a blocking JSON serialize + `fsync` + rename (tens of ms on
+/// Android flash storage under load); every realistic caller of the best-effort
+/// save — a keyed-error handler reacting to a 401/403/429, or key-harvest
+/// emitting a newly-discovered credential mid-scan — runs inside `async fn
+/// process()` on a small, shared tokio worker pool. Calling `save_pool` inline
+/// there stalls that worker thread, delaying every OTHER module concurrently
+/// scheduled on it — exactly the class of hazard the codebase's other blocking
+/// I/O (`src/api/handlers`, `scan_export`) already guards against with
+/// `spawn_blocking`, but this path lacked it in three call sites (two in
+/// `key_harvest::emit`, one in `key_pool::validation::add_and_validate`) that
+/// called [`save_pool_best_effort`] directly instead of through this helper —
+/// only the original keyed-error-handling call site in `core::module` had it,
+/// hand-rolled and undiscoverable as the pattern every other persist site
+/// should share. Consolidated here as the one canonical implementation.
+///
+/// Inside an active tokio runtime: `spawn_blocking`, fire-and-forget (the
+/// in-memory pool state the caller already mutated is authoritative regardless
+/// of whether the write has landed yet, and persistence is best-effort by
+/// design — a failure is logged, never propagated). Outside one (a plain
+/// `#[test]`, or a sync CLI path): saves inline, exactly as
+/// [`save_pool_best_effort`] always did — so every existing caller keeps
+/// working with zero required changes and no new failure mode.
+pub fn persist_off_thread(pool: std::sync::Arc<KeyPool>) {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn_blocking(move || {
+                save_pool_best_effort(&pool);
+            });
+        }
+        Err(_) => {
+            save_pool_best_effort(&pool);
+        }
+    }
+}
