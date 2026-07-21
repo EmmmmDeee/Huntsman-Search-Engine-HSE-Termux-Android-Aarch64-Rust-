@@ -5,7 +5,7 @@
 //!
 //! 1. **The framework** ([`TACTICS`] + [`ENTERPRISE`]): the entire MITRE ATT&CK
 //!    Enterprise matrix — all 14 tactics and every current technique /
-//!    sub-technique (v17.1) — as pure static data. This lets a finding, an
+//!    sub-technique ([`ATTACK_VERSION`]) — as pure static data. This lets a finding, an
 //!    evidence trail, or a correlation edge be labelled with *any* ATT&CK
 //!    technique in the standard vocabulary, and lets an operator resolve any
 //!    `Tnnnn[.nnn]` id the tool emits to its canonical name and owning tactic(s).
@@ -92,9 +92,9 @@ pub const TACTICS: &[Tactic] = &[
     Tactic { id: "TA0043", shortname: "reconnaissance", name: "Reconnaissance" },
 ];
 
-/// The complete MITRE ATT&CK Enterprise technique catalogue (v17.1) — every
-/// current technique and sub-technique, sorted by `id` for stable output and
-/// easy review. This is reference vocabulary for the WHOLE framework; HSE's
+/// The complete MITRE ATT&CK Enterprise technique catalogue ([`ATTACK_VERSION`])
+/// — every current technique and sub-technique, sorted by `id` for stable output
+/// and easy review. This is reference vocabulary for the WHOLE framework; HSE's
 /// claimed *coverage* is a strict subset ([`reconnaissance`]).
 pub const ENTERPRISE: &[Technique] = &[
     Technique { id: "T1001", name: "Data Obfuscation", is_subtechnique: false, tactics: &["command-and-control"] },

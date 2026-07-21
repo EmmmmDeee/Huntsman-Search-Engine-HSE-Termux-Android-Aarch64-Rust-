@@ -104,6 +104,17 @@ tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 parking_lot        = "0.12"
 url                = "2"
+# `default-features = false` deliberately excludes `system-config` — hickory's
+# own Android JNI/ConnectivityManager probe (src crate: system_conf::android,
+# cfg-gated on that feature) is correctly compiled OUT of this build. Known,
+# accepted upstream bloat: hickory-proto/hickory-net still declare `jni` (+ its
+# jni-sys/jni-macros/jni-sys-macros transitives) as a MANDATORY, non-optional,
+# non-feature-gated `[target.'cfg(target_os = "android")'.dependencies]` entry
+# in their own manifests — independent of any feature flag HSE sets — purely
+# for one unused ProtoError::Jni(..) error-enum variant nothing here ever
+# constructs. Verified via Cargo.lock (jni v0.22.4 resolved) on this crate's
+# actual Termux/Android target; no HSE-side feature flag or code change can
+# avoid it short of patching/forking hickory's manifest.
 hickory-resolver   = { version = "0.26", default-features = false, features = ["tokio"] }
 dotenvy            = "0.15"
 # v0.3 — HTTP server, SPA, SSE
