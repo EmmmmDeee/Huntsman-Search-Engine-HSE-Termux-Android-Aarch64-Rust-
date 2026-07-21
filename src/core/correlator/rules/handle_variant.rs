@@ -13,10 +13,15 @@
 //! every handle the scan actually observed.
 //!
 //! This is weaker evidence than an exact handle reuse, so it is gated hard and
-//! surfaced at **Medium** as a *lead*, not an identity merge:
-//!   * the stem must be distinctive — at least [`MIN_STEM_LEN`] characters and
-//!     not a generic role handle ([`is_generic_handle`]); short/common stems
-//!     (`dev`, `john`, `admin`) link nothing;
+//! surfaced at **Medium** as a *lead*, not an identity merge — critical, because
+//! a false link here misattributes a real stranger's account to the subject:
+//!   * the stem must be distinctive — at least [`MIN_STEM_LEN`] characters, not
+//!     a generic role handle ([`is_generic_handle`]), and not a common
+//!     word/vanity handle ([`is_common_password`]). This last gate is the one
+//!     that matters most: `dragon1`/`dragon2` or `michael1`/`michael2` are two
+//!     STRANGERS who each independently picked a popular word, not one operator
+//!     — the exact failure mode a dictionary-based password-strength check
+//!     already screens for, reused here as a handle-distinctiveness gate;
 //!   * at least two DISTINCT canonical handles must share the stem (so genuine
 //!     numeric variation exists — two distinct canonicals with one stem can
 //!     differ ONLY in their trailing digits);
@@ -29,6 +34,7 @@
 //! across platforms.
 
 use super::*;
+use crate::util::hashcat::is_common_password;
 use std::collections::{BTreeSet, HashSet};
 
 /// Minimum stem length for a distinctive persona key. Stems shorter than this
@@ -72,7 +78,10 @@ pub(in crate::core::correlator) fn rule_au_123_numeric_variant_handle_persona(
         let stem: String = canon
             .trim_end_matches(|c: char| c.is_ascii_digit())
             .to_string();
-        if stem.len() < MIN_STEM_LEN || is_generic_handle(&stem) {
+        // Reject common-role handles AND common dictionary/vanity words: a
+        // stem two strangers could each independently pick (a popular word,
+        // not a distinctive identity) is too weak to attribute a persona on.
+        if stem.len() < MIN_STEM_LEN || is_generic_handle(&stem) || is_common_password(&stem) {
             continue;
         }
         let g = groups.entry(stem).or_default();
@@ -108,7 +117,11 @@ pub(in crate::core::correlator) fn rule_au_123_numeric_variant_handle_persona(
                  numeric suffix ({}) — the base-handle-plus-number pattern one operator reuses \
                  across platforms, linking the variants to a single persona. Weaker than an \
                  exact handle match: treat as a lead.",
-                g.canon_handles.len(),
+                // The count and the listed variants must agree — both counted
+                // over raw display forms, never the coarser canonical count
+                // (which can undercount when the same canonical has multiple
+                // raw spellings, e.g. "JDiegmann92" and "jdiegmann_92").
+                g.raw_variants.len(),
                 g.sources.len(),
                 stem,
                 variants,
@@ -215,6 +228,72 @@ mod tests {
             .is_empty(),
             "generic role stem must not link"
         );
+    }
+
+    #[test]
+    fn au123_silent_on_common_word_stems_two_strangers_could_share() {
+        // `dragon1`/`dragon2` are NOT necessarily one operator — they could be
+        // two different people who each independently picked a popular word.
+        // A stem that is a common dictionary/vanity word must not attribute a
+        // persona, the same reasoning `is_common_password` already encodes for
+        // credential reuse (AU-105): shared popularity is not shared identity.
+        assert!(
+            rule_au_123_numeric_variant_handle_persona(
+                &[
+                    handle("dragon1", "github_user"),
+                    handle("dragon2", "keybase")
+                ],
+                "s",
+                0
+            )
+            .is_empty(),
+            "common-word stem must not link two possible strangers"
+        );
+        assert!(
+            rule_au_123_numeric_variant_handle_persona(
+                &[
+                    handle("michael1", "github_user"),
+                    handle("michael2", "keybase")
+                ],
+                "s",
+                0
+            )
+            .is_empty(),
+            "common first-name-as-password stem must not link"
+        );
+    }
+
+    #[test]
+    fn au123_finding_text_count_matches_the_listed_variants() {
+        // Regression: the reported count must equal the number of variants
+        // actually listed, even when two raw spellings fold to the SAME
+        // canonical handle. `Entity::new` case-folds a Username at
+        // construction (so a case-only difference can never even reach this
+        // rule), but it deliberately preserves separators — so
+        // "jdiegmann_92" and "jdiegmann-92" survive as two DISTINCT stored
+        // values that `canonical_handle` (which strips `.`/`_`/`-`) still
+        // folds to one canonical "jdiegmann92". The reported count must
+        // track the raw display list (3), never the coarser distinct-
+        // canonical figure (2), or the finding text would understate what it
+        // actually lists.
+        let out = rule_au_123_numeric_variant_handle_persona(
+            &[
+                handle("jdiegmann_92", "github_user"), // canonical: jdiegmann92
+                handle("jdiegmann-92", "keybase"),     // canonical: jdiegmann92 (same!)
+                handle("jdiegmann87", "mastodon_user"), // canonical: jdiegmann87 (distinct)
+            ],
+            "s",
+            0,
+        );
+        assert_eq!(out.len(), 1);
+        let desc = &out[0].description;
+        assert!(
+            desc.starts_with("3 handles"),
+            "count must match the 3 listed raw variants, not the 2 distinct canonicals: {desc}"
+        );
+        assert!(desc.contains("jdiegmann_92"));
+        assert!(desc.contains("jdiegmann-92"));
+        assert!(desc.contains("jdiegmann87"));
     }
 
     #[test]
