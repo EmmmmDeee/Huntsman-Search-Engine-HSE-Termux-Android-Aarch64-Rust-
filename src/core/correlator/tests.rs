@@ -4998,6 +4998,32 @@ fn au027_chains_only_the_dominant_coherent_location() {
 }
 
 #[test]
+fn au027_never_anchors_on_the_radar_sentinel() {
+    use super::rules::rule_au_027_address_coordinates_chain;
+    // `hse radar` seeds every sweep with a sentinel Coordinates entity at (0,0),
+    // minted with `seed, subject` tags and no `geocoded`/`geoint` tag of its own.
+    // If it were the ONLY cluster it would win "dominant" by default (max_by on
+    // a single-element cluster list) and anchor a bogus AU-027 chain at null
+    // island instead of correctly finding no coherent chain at all.
+    let mut addr = Entity::new(EntityKind::Address, "Brisbane, QLD", 0.80, "scan");
+    addr.tag("geoint");
+    let mut sentinel = Entity::new(
+        EntityKind::Coordinates,
+        crate::core::scan::RADAR_SENTINEL_COORD_RAW,
+        0.90,
+        "scan",
+    );
+    sentinel.tag("seed");
+    sentinel.tag("subject");
+    let ents = vec![addr, sentinel];
+    let out = rule_au_027_address_coordinates_chain(&ents, "scan", 0);
+    assert!(
+        out.is_empty(),
+        "the radar sentinel must never anchor an AU-027 chain: {out:?}"
+    );
+}
+
+#[test]
 fn au048_links_accounts_sharing_a_public_key() {
     // A public key published by two accounts → cryptographic proof of one
     // controller (same private key). Single account → no link.
