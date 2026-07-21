@@ -164,13 +164,30 @@ impl Module for Onyphe {
                     if handle_keyed_error(code, resp.headers(), &mut retries, SRC, &key, ctx).await {
                         continue;
                     }
+                    // Terminal 401/403/429 (already burned by handle_keyed_error): cascade.
                     if crate::util::http::is_keyed_error_status(code)
                         && let Some(next) = ctx.next_pooled_key(SRC, &tried)
                     {
                         key = next;
                         continue 'cascade;
                     }
-                    return Err(crate::util::http::http_status_error(SRC, resp).await);
+                    // ONYPHE answers a missing/malformed key with `400 Bad Request`
+                    // + "Invalid API key format" — NOT 401 — so an auth-shaped 400
+                    // must burn + rotate the key like a real key error rather than
+                    // erroring out and wasting the module every scan. Body-scoped so a
+                    // genuine bad-query 400 is untouched.
+                    let snippet = crate::util::http::error_snippet(resp).await;
+                    if code == 400 && crate::util::http::is_auth_failure_400_body(&snippet) {
+                        ctx.report_key_exhausted(SRC, &key, code);
+                        if let Some(next) = ctx.next_pooled_key(SRC, &tried) {
+                            key = next;
+                            continue 'cascade;
+                        }
+                    }
+                    return Err(crate::core::error::Error::module(
+                        SRC,
+                        format!("HTTP {status}: {snippet}"),
+                    ));
                 }
                 // json_scanned: onyphe search results may contain leaked credentials —
                 // scan the raw body for embedded API keys.
