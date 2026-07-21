@@ -378,3 +378,52 @@ use super::*;
         // Org Info → T1591
         assert!(techniques_for_entity_kind(&EntityKind::Organisation).contains(&"T1591"));
     }
+
+    #[test]
+    fn coverage_by_entity_type_aggregates_and_sorts_correctly() {
+        // Technique T1589.002 (Email Addresses) carried by 5 Email entities and
+        // 2 Username entities; T1593.001 (Social Media) by 3 Username entities.
+        let entity_techniques = vec![
+            ("Email".to_string(), "T1589.002".to_string()),
+            ("Email".to_string(), "T1589.002".to_string()),
+            ("Email".to_string(), "T1589.002".to_string()),
+            ("Email".to_string(), "T1589.002".to_string()),
+            ("Email".to_string(), "T1589.002".to_string()),
+            ("Username".to_string(), "T1589.002".to_string()),
+            ("Username".to_string(), "T1589.002".to_string()),
+            ("Username".to_string(), "T1593.001".to_string()),
+            ("Username".to_string(), "T1593.001".to_string()),
+            ("Username".to_string(), "T1593.001".to_string()),
+        ];
+        let by_type = coverage_by_entity_type(&entity_techniques);
+        // Only two techniques exercised
+        assert_eq!(by_type.len(), 2);
+        // First is T1589.002 (catalogue order), second is T1593.001
+        assert_eq!(by_type[0].technique.id, "T1589.002");
+        assert_eq!(by_type[1].technique.id, "T1593.001");
+        // T1589.002 breakdown: 5 Email, 2 Username
+        assert_eq!(
+            by_type[0].by_entity_type.get("Email"),
+            Some(&5),
+            "T1589.002 Email count"
+        );
+        assert_eq!(
+            by_type[0].by_entity_type.get("Username"),
+            Some(&2),
+            "T1589.002 Username count"
+        );
+        // T1593.001 breakdown: 3 Username
+        assert_eq!(
+            by_type[1].by_entity_type.get("Username"),
+            Some(&3),
+            "T1593.001 Username count"
+        );
+        // Entity type keys are sorted within each technique
+        let t1589_types: Vec<&String> = by_type[0].by_entity_type.keys().collect();
+        assert!(
+            t1589_types
+                .windows(2)
+                .all(|w| w[0] <= w[1]),
+            "entity types must be sorted"
+        );
+    }

@@ -4437,6 +4437,17 @@ pub struct CoveredTechnique {
     pub entity_count: usize,
 }
 
+/// One exercised technique broken down by entity type: how many entities of
+/// each kind contributed to coverage of a single technique.
+#[derive(Debug, Clone, Serialize)]
+pub struct TechniqueByEntityType {
+    /// The technique id + name.
+    #[serde(flatten)]
+    pub technique: Technique,
+    /// Entity count per kind (e.g., `{ "Email": 5, "Username": 3 }`).
+    pub by_entity_type: std::collections::BTreeMap<String, usize>,
+}
+
 /// A scan's MITRE ATT&CK **Reconnaissance** (TA0043) coverage: the techniques it
 /// exercised (with entity counts) and the honest uncovered gaps, both in the
 /// catalogue's sorted order. Built by [`coverage`] from the `attack:<id>` tags
@@ -4487,6 +4498,47 @@ pub fn coverage(exercised: &std::collections::BTreeMap<String, usize>) -> Covera
         uncovered: gaps,
         coverage_fraction,
     }
+}
+
+/// Compute Reconnaissance technique coverage broken down by entity type.
+/// This shows what kinds of entities carry each technique, enabling analysis
+/// of collection depth across entity dimensions. For example, if a scan's
+/// `T1589.002` (Email Addresses) technique is carried only by Breach entities
+/// (not Search/Social collection), the gap is visible — operators can prioritize
+/// module expansion accordingly.
+///
+/// Takes a list of (entity_kind, technique_id) pairs from the scan's entities
+/// (each entity may contribute multiple technique IDs). Returns techniques in
+/// catalogue order with per-type breakdowns (type-sorted within each technique).
+#[must_use]
+pub fn coverage_by_entity_type(
+    entity_techniques: &[(String, String)],
+) -> Vec<TechniqueByEntityType> {
+    use std::collections::BTreeMap;
+
+    // Aggregate: technique_id → kind → count
+    let mut by_technique: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+    for (kind, tech_id) in entity_techniques {
+        by_technique
+            .entry(tech_id.clone())
+            .or_default()
+            .entry(kind.clone())
+            .and_modify(|c| *c += 1)
+            .or_insert(1);
+    }
+
+    // Build result in catalogue order
+    RECONNAISSANCE
+        .iter()
+        .filter_map(|t| {
+            by_technique.remove(t.id).map(|by_entity_type| {
+                TechniqueByEntityType {
+                    technique: *t,
+                    by_entity_type,
+                }
+            })
+        })
+        .collect()
 }
 
 /// Serialise a [`Coverage`] as a MITRE ATT&CK **Navigator layer** — the standard
