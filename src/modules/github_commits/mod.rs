@@ -126,7 +126,10 @@ impl Module for GithubCommits {
             .http
             .get(&url)
             .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header(
+                "X-GitHub-Api-Version",
+                crate::modules::github_api::API_VERSION,
+            )
             .header("User-Agent", UA_OSINT);
         // Optional token only raises the unauthenticated search rate limit
         // (10/min → 30/min); the module is fully functional without it.

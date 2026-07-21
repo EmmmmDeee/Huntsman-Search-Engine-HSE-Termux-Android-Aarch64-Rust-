@@ -116,7 +116,10 @@ impl Module for GithubUser {
             .http
             .get(&url)
             .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header(
+                "X-GitHub-Api-Version",
+                crate::modules::github_api::API_VERSION,
+            )
             .send_tagged(SRC)
             .await?;
 

@@ -1,61 +1,10 @@
-use serde::Deserialize;
-
 use crate::core::{
-    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
 };
+use crate::modules::device_fix::{Fix, fix_confidence, is_valid_fix};
 
 use super::SRC;
-
-#[derive(Deserialize)]
-pub(super) struct Fix {
-    pub(super) latitude: f64,
-    pub(super) longitude: f64,
-    pub(super) altitude: Option<f64>,
-    pub(super) accuracy: Option<f64>,
-    pub(super) speed: Option<f64>,
-    pub(super) bearing: Option<f64>,
-    pub(super) provider: Option<String>,
-}
-
-/// True if `(lat, lon)` is a usable geographic fix.
-///
-/// Rejects `0.0, 0.0` "Null Island" and out-of-range values. Delegates to
-/// the canonical `util::geo::is_valid_coords` so on-device fixes share the
-/// same validation policy as network-geo modules.
-pub(super) fn is_valid_fix(lat: f64, lon: f64) -> bool {
-    crate::util::geo::is_valid_coords(lat, lon)
-}
-
-/// Confidence for an on-device location fix.
-///
-/// Provider sets the ceiling (GPS confidence::VERY_HIGH_PLUS, network confidence::HIGH); accuracy radius
-/// scales it down for imprecise fixes.
-pub(super) fn fix_confidence(provider: &str, accuracy_m: Option<f64>) -> f64 {
-    let ceiling: f64 = if provider == "gps" {
-        confidence::VERY_HIGH_PLUS
-    } else {
-        confidence::HIGH
-    };
-    match accuracy_m {
-        Some(a) if a > 0.0 => {
-            let scaled = if a <= 20.0 {
-                ceiling
-            } else if a <= 100.0 {
-                ceiling - 0.05
-            } else if a <= 500.0 {
-                ceiling - 0.15
-            } else if a <= 2000.0 {
-                ceiling - 0.25
-            } else {
-                ceiling - 0.35
-            };
-            scaled.clamp(0.30, confidence::VERY_HIGH_PLUS)
-        }
-        _ => ceiling,
-    }
-}
 
 /// Parse `termux-location`'s JSON into a `Coordinates` entity — the device's own
 /// GPS fix, the strongest first-party geolocation signal. Empty result on

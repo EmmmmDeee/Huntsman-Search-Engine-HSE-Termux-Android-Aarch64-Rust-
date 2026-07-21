@@ -117,7 +117,10 @@ impl Module for GithubCodeSearch {
             .http
             .get(&url)
             .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header(
+                "X-GitHub-Api-Version",
+                crate::modules::github_api::API_VERSION,
+            )
             .header("User-Agent", "huntsman-search-engine/1.4");
         if let Some(tok) = token {
             req = req.bearer_auth(tok);
@@ -199,7 +202,10 @@ impl Module for GithubCodeSearch {
                 .http
                 .get(&commits_url)
                 .header("Accept", "application/vnd.github+json")
-                .header("X-GitHub-Api-Version", "2022-11-28")
+                .header(
+                    "X-GitHub-Api-Version",
+                    crate::modules::github_api::API_VERSION,
+                )
                 .header("User-Agent", "huntsman-search-engine/1.4");
             if let Some(tok) = token {
                 creq = creq.bearer_auth(tok);

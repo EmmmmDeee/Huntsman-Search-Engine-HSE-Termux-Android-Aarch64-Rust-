@@ -2,7 +2,7 @@ use crate::core::{confidence, entity::EntityKind, scan::Target, scan::TargetKind
 
 use super::{
     DeviceSensors,
-    gps::{fix_confidence, is_valid_fix, parse_fix},
+    gps::parse_fix,
     wifi::{parse_conn, wifi_band},
 };
 use crate::core::module::Module;
@@ -255,14 +255,6 @@ fn negative_coordinates_handled() {
     assert_eq!(r.entities[0].value, "-33.868800,151.209300");
 }
 
-#[test]
-fn fix_confidence_gps_ceiling() {
-    assert!((fix_confidence("gps", None) - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
-    assert!((fix_confidence("network", None) - confidence::HIGH).abs() < 1e-9);
-}
-
-#[test]
-fn is_valid_fix_rejects_null_island() {
-    assert!(!is_valid_fix(0.0, 0.0));
-    assert!(is_valid_fix(-33.87, 151.21));
-}
+// The `fix_confidence` ladder and `is_valid_fix` are now defined and tested in
+// `crate::modules::device_fix`; these tests cover this module's `parse_fix`
+// wrapper and its Wi-Fi/connection parsing.

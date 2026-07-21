@@ -51,6 +51,12 @@ pub mod criminal_ip;
 pub mod crtsh;
 pub mod dehashed;
 pub mod device_sensors;
+// Shared Termux `termux-location` fix primitives (the `Fix` shape +
+// confidence ladder) — a `pub(crate)` HELPER (no `Module` impl), consumed by
+// device_sensors and signal_radar so the on-device fix logic lives once.
+// `pub(crate)` (like `breach_rich`) keeps it out of the
+// `every_declared_module_is_registered` guard.
+pub(crate) mod device_fix;
 pub mod devto;
 pub mod discord_snowflake;
 pub mod disposable_check;
@@ -75,6 +81,11 @@ pub mod geo_domain_classifier;
 pub mod geo_intel;
 pub mod geocode;
 pub mod gitea_user;
+// Shared GitHub REST API binding (the pinned API version) — a `pub(crate)`
+// HELPER (no `Module` impl), consumed by the three github_* modules so a
+// version bump is one edit, not seven. `pub(crate)` (like `breach_rich`) keeps
+// it out of the `every_declared_module_is_registered` guard.
+pub(crate) mod github_api;
 pub mod github_code_search;
 pub mod github_commits;
 pub mod github_user;

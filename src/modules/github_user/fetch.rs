@@ -67,7 +67,10 @@ pub(super) async fn fetch_ssh_keys(login: &str, ctx: &ModuleContext, result: &mu
         .http
         .get(&url)
         .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header(
+            "X-GitHub-Api-Version",
+            crate::modules::github_api::API_VERSION,
+        )
         .send()
         .await
     {
@@ -220,7 +223,10 @@ pub(super) async fn fetch_gist_content(
             .http
             .get(&url)
             .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header(
+                "X-GitHub-Api-Version",
+                crate::modules::github_api::API_VERSION,
+            )
             .send_tagged(SRC)
             .await
         {
@@ -345,7 +351,10 @@ pub(super) async fn fetch_events(login: &str, ctx: &ModuleContext, result: &mut 
         .http
         .get(&url)
         .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header(
+            "X-GitHub-Api-Version",
+            crate::modules::github_api::API_VERSION,
+        )
         .send()
         .await
     {
