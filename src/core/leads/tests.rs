@@ -368,23 +368,17 @@ fn history_boost_is_graded_and_takes_the_strongest() {
 /// synergy rests on.
 #[test]
 fn structural_boost_composes_bridge_and_cut_vertex() {
-    let node = |betweenness: f64, cut: bool| PivotNode {
-        uid: "u".into(),
-        degree: 3,
-        betweenness,
-        score: 0.0,
-        is_cut_vertex: cut,
-        coreness: 1,
-    };
+    // The signal is the (betweenness, is_cut_vertex) tuple pivot::structural_index
+    // returns per node.
     assert_eq!(structural_boost(None), 0.0);
     // Pendant leaf: no betweenness, not a cut vertex → no lift (the common case).
-    assert_eq!(structural_boost(Some(&node(0.0, false))), 0.0);
+    assert_eq!(structural_boost(Some(&(0.0, false))), 0.0);
     // Cut vertex alone earns the flat bonus; a pure bridge earns the full weight;
     // a node that is both sums them.
-    assert_eq!(structural_boost(Some(&node(0.0, true))), STRUCT_CUT_VERTEX_BONUS);
-    assert_eq!(structural_boost(Some(&node(1.0, false))), STRUCT_BRIDGE_WEIGHT);
+    assert_eq!(structural_boost(Some(&(0.0, true))), STRUCT_CUT_VERTEX_BONUS);
+    assert_eq!(structural_boost(Some(&(1.0, false))), STRUCT_BRIDGE_WEIGHT);
     assert_eq!(
-        structural_boost(Some(&node(1.0, true))),
+        structural_boost(Some(&(1.0, true))),
         STRUCT_BRIDGE_WEIGHT + STRUCT_CUT_VERTEX_BONUS
     );
 }

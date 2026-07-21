@@ -73,6 +73,48 @@ fn build_query_shapes_each_kind() {
     assert_eq!(build_query(TargetKind::Username, "u"), None);
 }
 
+#[test]
+fn apex_base_extracts_the_true_host_for_each_seed_kind() {
+    // A Domain seed is its own apex.
+    assert_eq!(apex_base(TargetKind::Domain, "example.com"), "example.com");
+    // A Url seed reduces to its host — NOT the full URL (the bug: the raw URL as
+    // base made every discovered subdomain classify as an unrelated external).
+    assert_eq!(
+        apex_base(TargetKind::Url, "https://sub.example.com/path?q=1"),
+        "sub.example.com"
+    );
+    // An Email seed reduces to its domain part (after the final `@`).
+    assert_eq!(apex_base(TargetKind::Email, "jane.doe@example.com"), "example.com");
+}
+
+#[test]
+fn url_seed_subdomains_are_classified_against_the_host_not_the_raw_url() {
+    // Regression: with a Url seed, a discovered subdomain of the seed's host must be
+    // recognised as a SUBDOMAIN (0.75, tagged) — the pivot the engine recurses into —
+    // instead of a 0.45 external. Feeding the raw target.value (a full URL) as the
+    // base is what previously suppressed that recursion.
+    let json = r#"[{"name_value":"mail.example.com","common_name":"mail.example.com"}]"#;
+    // Host is the apex `example.com`; the OLD code fed the raw URL
+    // `https://example.com/login` as the base, so is_or_subdomain_of never matched.
+    let base = apex_base(TargetKind::Url, "https://example.com/login");
+    assert_eq!(base, "example.com");
+    let ents = build_entities(&entries(json), &base, "s1");
+    let mail = ents
+        .iter()
+        .find(|e| e.value == "mail.example.com")
+        .expect("discovered subdomain must be present");
+    assert!(
+        mail.tags.iter().any(|t| t == crate::core::tags::SUBDOMAIN),
+        "a Url seed's discovered subdomain must be tagged SUBDOMAIN, got {:?}",
+        mail.tags
+    );
+    assert!(
+        mail.confidence > 0.6,
+        "subdomain confidence must be the boosted tier, got {}",
+        mail.confidence
+    );
+}
+
 fn entries(json: &str) -> Vec<CrtEntry> {
     serde_json::from_str(json).unwrap()
 }

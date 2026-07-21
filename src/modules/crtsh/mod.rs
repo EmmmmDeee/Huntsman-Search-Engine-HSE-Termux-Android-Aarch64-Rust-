@@ -25,6 +25,30 @@ const SRC: &str = "crtsh";
 /// Shortest SAN email we'll surface (`a@b.c` is 5 chars).
 const MIN_EMAIL_LEN: usize = 5;
 
+/// The apex host that discovered Certificate-Transparency names are classified as
+/// subdomains OF (via [`crate::util::domains::is_or_subdomain_of`] in
+/// `build_entities`). For a `Domain` seed this is the value; for a `Url` it is the
+/// **host** (not the full URL); for an `Email` it is the **domain part** (after the
+/// final `@`). **Pure.**
+///
+/// Passing the raw `target.value` for a `Url` (a full `https://…/path`) or an
+/// `Email` (a full address) made `is_or_subdomain_of` never match, so every
+/// discovered subdomain was misclassified as an unrelated external (0.45, no
+/// `subdomain` tag) — dropping it below the engine's expansion floor and silently
+/// killing recursion for URL- and email-seeded scans. Keying on the true apex
+/// restores the subdomain boost and the pivot that drives deeper enumeration.
+fn apex_base(kind: TargetKind, value: &str) -> String {
+    match kind {
+        TargetKind::Url => {
+            crate::util::url_util::host_from_url(value).unwrap_or_else(|| value.to_string())
+        }
+        TargetKind::Email => value
+            .rsplit_once('@')
+            .map_or_else(|| value.to_string(), |(_, domain)| domain.to_string()),
+        _ => value.to_string(),
+    }
+}
+
 /// Build the crt.sh query for a target, or `None` for a kind/URL we can't key on.
 /// **Pure**: a `Domain` becomes a `%.domain` wildcard subdomain search, an
 /// `Email` is searched verbatim, and a `Url` is reduced to its host first.
@@ -299,7 +323,11 @@ impl Module for CrtSh {
         let entries: Vec<CrtEntry> = crate::util::http::fetch_json(&ctx.http, SRC, &url).await?;
 
         let mut result = ModuleResult::new();
-        result.entities = build_entities(&entries, &target.value, &ctx.scan_id);
+        // Classify discovered names against the true apex host (see `apex_base`),
+        // NOT the raw target value — otherwise a Url/Email seed's subdomains are
+        // mislabelled external and never recursed into.
+        let base = apex_base(target.kind, &target.value);
+        result.entities = build_entities(&entries, &base, &ctx.scan_id);
         Ok(result)
     }
 }

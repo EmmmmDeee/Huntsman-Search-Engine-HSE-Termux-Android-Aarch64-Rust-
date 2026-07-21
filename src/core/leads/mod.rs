@@ -20,13 +20,11 @@
 //! and unit-testable; `GET /api/v1/scans/{id}/leads` and the web UI's Leads tab
 //! render it directly. Bounded for a low-RAM Termux device.
 
-use std::collections::HashMap;
-
 use serde::Serialize;
 
 use crate::core::entity::Entity;
 use crate::core::network::{self, ConnectionGroup};
-use crate::core::pivot::{self, PivotNode};
+use crate::core::pivot;
 use crate::core::relation::Relation;
 
 /// Maximum leads returned — a focused, actionable shortlist, not a second entity
@@ -238,14 +236,19 @@ fn history_boost(tags: &[String]) -> f64 {
 /// ([`STRUCT_CUT_VERTEX_BONUS`]) — the same fragility pair the pivot module reports,
 /// here repurposed as *pivot-yield*: a lead many paths route through, or whose loss
 /// would fragment the footprint, is the objectively highest-reach next scan. `None`
-/// (a pendant leaf, or a node outside the top structural pivots) contributes zero,
-/// so the overwhelming majority of leads — direct pendants of the subject — rank
-/// exactly as before; the term only lifts a lead that genuinely bridges the graph.
-fn structural_boost(node: Option<&PivotNode>) -> f64 {
-    match node {
-        Some(p) => {
-            STRUCT_BRIDGE_WEIGHT * p.betweenness
-                + if p.is_cut_vertex {
+/// (a pendant leaf, or a node absent from the index) contributes zero, so the
+/// overwhelming majority of leads — direct pendants of the subject — rank exactly
+/// as before; the term only lifts a lead that genuinely bridges the graph.
+///
+/// Takes the `(betweenness, is_cut_vertex)` signal from
+/// [`pivot::structural_index`] — the un-truncated per-node index — NOT
+/// [`pivot::detect`], whose top-[`PIVOT_CAP`] cut would silently zero the signal for
+/// a real bridge that ranked just outside the shortlist on a large graph.
+fn structural_boost(signal: Option<&(f64, bool)>) -> f64 {
+    match signal {
+        Some(&(betweenness, is_cut_vertex)) => {
+            STRUCT_BRIDGE_WEIGHT * betweenness
+                + if is_cut_vertex {
                     STRUCT_CUT_VERTEX_BONUS
                 } else {
                     0.0
@@ -344,16 +347,15 @@ pub fn recommend(entities: &[Entity], relations: &[Relation], expansion_floor: f
     let net = network::synthesize(entities, relations);
 
     // Structural centrality of the SAME graph the leads live in: the synergy that
-    // lets the graph's own shape prioritise the next recursion. `detect` is bounded
-    // (Brandes only below MAX_BETWEENNESS_NODES, top PIVOT_CAP kept), so only the
-    // genuinely-central leads carry a signal — a lead node absent from this map is a
-    // pendant or minor node and takes the zero path in `structural_boost`.
-    let pivots = pivot::detect(entities, relations);
-    let pivot_by_uid: HashMap<&str, &PivotNode> =
-        pivots.iter().map(|p| (p.uid.as_str(), p)).collect();
+    // lets the graph's own shape prioritise the next recursion. Uses the un-truncated
+    // `structural_index` (every node's betweenness + cut-vertex), NOT `detect` — a
+    // genuine bridge that ranks outside `detect`'s top PIVOT_CAP must still lift its
+    // lead, and a lead absent from the index is a pendant/minor node that takes the
+    // zero path in `structural_boost`.
+    let structural_index = pivot::structural_index(entities, relations);
     // Borrowed into the per-group closures below (they are `move`, so capture the
     // reference, not the map itself — one shared read across every group).
-    let pivot_by_uid = &pivot_by_uid;
+    let structural_index = &structural_index;
 
     let mut leads: Vec<Lead> = net
         .groups
@@ -383,7 +385,7 @@ pub fn recommend(entities: &[Entity], relations: &[Relation], expansion_floor: f
                 let history = history_boost(&conn.tags);
                 // Graph structure lifts it again, independent of trust and history:
                 // a lead that bridges the footprint is the highest-reach next scan.
-                let structural = structural_boost(pivot_by_uid.get(conn.uid.as_str()).copied());
+                let structural = structural_boost(structural_index.get(conn.uid.as_str()));
                 let is_structural = structural > 0.0;
                 Some(Lead {
                     uid: conn.uid.clone(),

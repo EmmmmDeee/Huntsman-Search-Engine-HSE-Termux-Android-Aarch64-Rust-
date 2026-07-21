@@ -50,10 +50,14 @@ pub(super) fn emit_key_with(
         }
         return;
     }
-    let dedup = format!(
-        "@apikey:{service}:{}",
-        crate::util::str_util::truncate_safe(key_val, 16)
-    );
+    // Dedup on the FULL key value, not a 16-char prefix: many real credentials
+    // share a long fixed prefix (every HS256 JWT begins with the identical
+    // `eyJhbGciOiJIUzI1…` header; `AKIA…`, `sk-…`, `ghp_…` families likewise), so a
+    // 16-char key collapsed two DISTINCT keys of the same service into one and
+    // silently dropped the second — never emitted, pooled, or vaulted. The value is
+    // bounded (an API key, not a document), so keying on it whole is cheap and
+    // collision-free.
+    let dedup = format!("@apikey:{service}:{key_val}");
     if !seen.insert(dedup) {
         return;
     }

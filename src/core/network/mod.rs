@@ -177,10 +177,16 @@ pub fn synthesize(entities: &[Entity], relations: &[Relation]) -> SubjectNetwork
         };
     };
 
-    // Undirected adjacency: for the subject's view a link counts whichever way the
-    // edge points. Shared with the path finder / AU-060 via the one canonical
-    // builder (`None` = keep dangling endpoints; they're pruned at lookup below).
-    let adj = undirected_adjacency(relations, None);
+    // Undirected adjacency CONFINED to present entities: for the subject's view a
+    // link counts whichever way the edge points, but only between entities that
+    // actually exist in this scan. Confining (vs the old `None`, which kept dangling
+    // endpoints) keeps `reachable_count` — a plain component walk over `adj` — honest
+    // to its "distinct ENTITIES reachable" contract and consistent with
+    // `direct_count`, which already skips endpoints absent from `by_uid`. Without it
+    // `reachable_count` inflated the total by counting dangling UIDs that have no
+    // entity, disagreeing with `direct_count` on the very same graph.
+    let present: HashSet<&str> = by_uid.keys().copied().collect();
+    let adj = undirected_adjacency(relations, Some(&present));
 
     // ── Direct connections, deduplicated per (group, neighbour) keeping the
     // strongest edge (a pair linked by two kinds shows once, under its primary

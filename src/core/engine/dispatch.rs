@@ -485,7 +485,13 @@ impl super::ScanEngine {
         attack_techniques: &'static [&'static str],
         from_cache: bool,
     ) {
-        state.stats.run += 1;
+        // A cache replay is tallied in `stats.cached` by `replay_cached_result`; it
+        // is NOT a module run (no provider call was made), and `ModuleStats.run` is
+        // documented "Not counted in run" for cached results. Gating here keeps the
+        // reported `modules_run` honest instead of double-counting every replay.
+        if !from_cache {
+            state.stats.run += 1;
+        }
         match result {
             Err(_) => {
                 state.stats.timed_out += 1;
