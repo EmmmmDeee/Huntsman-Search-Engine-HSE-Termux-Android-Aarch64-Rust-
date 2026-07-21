@@ -27,7 +27,8 @@ pub struct AcmaRrl;
 ///
 /// A deliberately dependency-free HTML walk (no scraper/html5ever crate, in
 /// keeping with the lean Termux build): it splits on `<tr>`/`</tr>`, pulls each
-/// `<td>` via [`strip_html_tags`], and keeps rows with at least three cells.
+/// `<td>` via [`strip_tags_plain`](crate::util::html::strip_tags_plain), and
+/// keeps rows with at least three cells.
 /// The header row (`Licensee`) and rows missing a name or licence number are
 /// dropped, so the result is data-only. Pure given `html` — unit-testable
 /// against a captured response without a network round-trip.
@@ -54,7 +55,7 @@ pub(super) fn parse_acma_html(html: &str) -> Vec<(String, String, String)> {
                 r = &r[td_content_start + 1..];
                 let Some(td_end) = r.find("</td>") else { break };
                 let cell = &r[..td_end];
-                cells.push(strip_html_tags(cell).trim().to_string());
+                cells.push(crate::util::html::strip_tags_plain(cell).trim().to_string());
                 r = &r[td_end + 5..];
             }
             cells
@@ -125,25 +126,6 @@ pub(super) fn extract_abn_from_html(html: &str) -> Option<String> {
 /// A single-pass character filter that drops everything between `<` and `>`.
 /// Sufficient for the flat, well-formed RRL cells (no nested-bracket or
 /// entity-decoding concerns here); the caller trims the result.
-fn strip_html_tags(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for c in html.chars() {
-        match c {
-            '<' => {
-                in_tag = true;
-            }
-            '>' => {
-                in_tag = false;
-            }
-            _ if !in_tag => {
-                out.push(c);
-            }
-            _ => {}
-        }
-    }
-    out
-}
 
 #[async_trait]
 impl Module for AcmaRrl {

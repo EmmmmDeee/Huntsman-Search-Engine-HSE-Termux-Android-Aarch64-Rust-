@@ -26,7 +26,8 @@ pub struct Ahpra;
 /// `(name, profession, registration_number)` rows.
 ///
 /// A dependency-free `<tr>`/`<td>` walk (no scraper crate, in keeping with the
-/// lean Termux build): each cell's text is taken via [`strip_tags`] and rows
+/// lean Termux build): each cell's text is taken via
+/// [`strip_tags_plain`](crate::util::html::strip_tags_plain) and rows
 /// with at least three cells are kept. The header row (`Name`/`Practitioner`)
 /// and nameless rows are dropped, so the result is data-only. Pure given
 /// `html` — unit-testable against a captured response.
@@ -56,7 +57,7 @@ pub(super) fn parse_ahpra_html(html: &str) -> Vec<(String, String, String)> {
                 let Some(td_end) = r.find("</td>") else { break };
                 let cell = &r[..td_end];
                 // Strip remaining HTML tags.
-                let text = strip_tags(cell);
+                let text = crate::util::html::strip_tags_plain(cell);
                 cells.push(text.trim().to_string());
                 r = &r[td_end + 5..];
             }
@@ -78,25 +79,6 @@ pub(super) fn parse_ahpra_html(html: &str) -> Vec<(String, String, String)> {
 /// Remove HTML tags from a table cell, returning its visible text — a
 /// single-pass character filter that drops everything between `<` and `>`.
 /// Sufficient for the flat, well-formed AHPRA cells; the caller trims.
-fn strip_tags(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for c in html.chars() {
-        match c {
-            '<' => {
-                in_tag = true;
-            }
-            '>' => {
-                in_tag = false;
-            }
-            _ if !in_tag => {
-                out.push(c);
-            }
-            _ => {}
-        }
-    }
-    out
-}
 
 #[async_trait]
 impl Module for Ahpra {
