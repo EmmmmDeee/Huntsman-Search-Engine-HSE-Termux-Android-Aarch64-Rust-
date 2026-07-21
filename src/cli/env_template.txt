@@ -17,6 +17,8 @@
 # distinct data corpora.
 HUNTSMAN_OATHNET_KEY="insert_oathnet_pro_key_here"
 HUNTSMAN_SEEKNOW_KEY="insert_see_know_eu_key_here"
+# Concurrent PBS v1/v2 breach search + ULP infostealer lookup:
+HUNTSMAN_NIAMONX_KEY="insert_niamonx_key_here"
 # Exa AI neural search — semantic OSINT discovery
 HUNTSMAN_EXA_KEY="insert_exa_ai_key_here"
 
@@ -27,13 +29,17 @@ HUNTSMAN_GREYNOISE_KEY="insert_greynoise_key_here"
 HUNTSMAN_PULSEDIVE_KEY="insert_pulsedive_key_here"
 HUNTSMAN_URLSCAN_KEY="insert_urlscan_io_key_here"
 HUNTSMAN_IPQS_KEY="insert_ipqs_key_here"
+# abuse.ch — one key powers URLhaus, ThreatFox and MalwareBazaar:
+HUNTSMAN_ABUSECH_KEY="insert_abusech_auth_key_here"
+HUNTSMAN_THREATFOX_KEY="insert_abusech_auth_key_here"
 # People & phone enrichment (free developer tiers):
 HUNTSMAN_FULLCONTACT_KEY="insert_fullcontact_key_here"
 HUNTSMAN_NUMVERIFY_KEY="insert_numverify_apilayer_key_here"
 HUNTSMAN_HLR_KEY="insert_hlrlookups_key_here"
 HUNTSMAN_OPENCNAM_KEY="insert_opencnam_key_here"
-# [RESERVED] not yet wired to a module:
+# AlienVault OTX — consumed by ip_reputation's optional pooled enrichment pass:
 HUNTSMAN_ALIENVAULT_KEY="insert_alienvault_otx_key_here"
+# [RESERVED] not yet wired to a module:
 HUNTSMAN_MALSHARE_KEY="insert_malshare_key_here"
 HUNTSMAN_PHISHTANK_KEY="insert_phishtank_key_here"
 
@@ -48,11 +54,14 @@ HUNTSMAN_NETLAS_KEY="insert_netlas_key_here"
 HUNTSMAN_CRIMINALIP_KEY="insert_criminalip_key_here"
 HUNTSMAN_ZOOMEYE_KEY="insert_zoomeye_key_here"
 HUNTSMAN_BINARYEDGE_KEY="insert_binaryedge_key_here"
+HUNTSMAN_DOMAINSDB_KEY="insert_domainsdb_key_here"
+HUNTSMAN_WHOISXML_KEY="insert_whoisxml_key_here"
 
 # --- TIER 3: IDENTITY RECONSTRUCTION, LEAK COMPILATIONS & PERSONA MAPPING ---
 HUNTSMAN_INTELX_KEY="insert_intelx_io_key_here"
 HUNTSMAN_HIBP_KEY="insert_haveibeenpwned_key_here"
 HUNTSMAN_EPIEOS_KEY="insert_epieos_key_here"
+HUNTSMAN_OSINTCAT_KEY="insert_osintcat_key_here"
 HUNTSMAN_SEON_KEY="insert_seon_key_here"
 HUNTSMAN_OPENSANCTIONS_KEY="insert_opensanctions_key_here"
 HUNTSMAN_EMAILREP_KEY="insert_emailrep_key_here"
@@ -67,7 +76,6 @@ HUNTSMAN_HUNTER_KEY="insert_hunter_io_key_here"
 HUNTSMAN_XPOSEDORNOT_KEY="insert_xposedornot_key_here"
 HUNTSMAN_HUDSONROCK_KEY="insert_hudsonrock_key_here"
 HUNTSMAN_DEHASHED_KEY="insert_dehashed_v2_api_key_here"
-HUNTSMAN_NUMVERIFY_KEY="insert_numverify_key_here"
 
 # --- TIER 4: LOCAL WIRELESS, CELLULAR & GEOSPATIAL SIGINT ENRICHMENT ---
 HUNTSMAN_WIGLE_USER="insert_wigle_api_name_here"

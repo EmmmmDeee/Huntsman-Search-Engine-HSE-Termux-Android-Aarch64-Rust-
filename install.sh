@@ -858,7 +858,7 @@ if [[ ! -f "$KEYS_PATH" ]]; then
 # Uncomment and paste a value to enable the corresponding key-gated module.
 # File is chmod 0600 — never commit this file.
 #
-# Free modules (95 of 128) need no keys at all.
+# Free modules (129 of 165) need no keys at all.
 # The Settings page (hse serve → http://127.0.0.1:8080/settings) lets you
 # paste and save any key directly from Chrome on the device.
 #
@@ -872,6 +872,7 @@ if [[ ! -f "$KEYS_PATH" ]]; then
 #HUNTSMAN_DEHASHED_KEY=
 #HUNTSMAN_INTELX_KEY=
 #HUNTSMAN_HUNTER_KEY=
+#HUNTSMAN_OPENSANCTIONS_KEY=
 # ── Infrastructure / threat intel ─────────────────────────────────────────────
 #HUNTSMAN_SHODAN_KEY=
 #HUNTSMAN_SECTRAILS_KEY=
@@ -881,7 +882,13 @@ if [[ ! -f "$KEYS_PATH" ]]; then
 #HUNTSMAN_ONYPHE_KEY=
 #HUNTSMAN_LEAKIX_KEY=
 #HUNTSMAN_ABUSEIPDB_KEY=
+# abuse.ch — one key powers URLhaus, ThreatFox and MalwareBazaar:
+#HUNTSMAN_ABUSECH_KEY=
 #HUNTSMAN_THREATFOX_KEY=
+#HUNTSMAN_ALIENVAULT_KEY=
+#HUNTSMAN_GREYNOISE_KEY=
+#HUNTSMAN_URLSCAN_KEY=
+#HUNTSMAN_DOMAINSDB_KEY=
 #HUNTSMAN_CRIMINALIP_KEY=
 #HUNTSMAN_IPQS_KEY=
 #HUNTSMAN_VIRUSTOTAL_KEY=
