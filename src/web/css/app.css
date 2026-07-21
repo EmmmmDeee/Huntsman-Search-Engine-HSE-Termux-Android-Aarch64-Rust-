@@ -572,6 +572,7 @@ input[type=checkbox],input[type=radio]{ accent-color:var(--accent); width:14px; 
 .lead-card.discordant:hover{ opacity:1; }
 .lead-badge{ display:inline-block; font-size:10px; font-weight:700; color:var(--success); background:var(--success-dim); border:1px solid var(--success); border-radius:var(--radius-sm); padding:0 6px; margin-left:6px; vertical-align:middle; letter-spacing:.3px; }
 .lead-badge.namesake{ color:var(--warning); background:var(--warning-dim); border-color:var(--warning); }
+.lead-badge.pivot{ color:var(--accent); background:var(--accent-dim); border-color:var(--accent); }
 
 /* Timeline — the subject's footprint reconstructed as one vertical chronology */
 .tl{ position:relative; margin:4px 0 0 6px; padding-left:18px; border-left:2px solid var(--border); }

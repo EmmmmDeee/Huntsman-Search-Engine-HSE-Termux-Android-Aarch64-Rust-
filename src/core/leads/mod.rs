@@ -7,17 +7,26 @@
 //! expansion floor (so a scan doesn't auto-fan-out across a whole family tree) —
 //! and turns each into a one-click "scan this next" lead for the analyst.
 //!
-//! It builds directly on the network synthesis (no second graph traversal):
-//! every lead is one of the subject's connections, re-scored for *pivot value*
-//! (how much a fresh scan of it would yield) and annotated with *why* it matters
-//! and whether it is still untapped. Pure over `(entities, relations, floor)`, so
-//! it is deterministic and unit-testable; `GET /api/v1/scans/{id}/leads` and the
-//! web UI's Leads tab render it directly. Bounded for a low-RAM Termux device.
+//! It builds directly on the network synthesis: every lead is one of the subject's
+//! connections, re-scored for *pivot value* (how much a fresh scan of it would
+//! yield) and annotated with *why* it matters and whether it is still untapped. The
+//! score fuses several independent signals — kind/group base value, node trust and
+//! link strength, novelty, cross-scan history, and the **graph's own structure**:
+//! a lead that is a bridging pivot (high betweenness / a cut vertex, from
+//! [`crate::core::pivot`]) is, by the exact reasoning that module is built on, the
+//! highest-reach next scan, so its structural centrality lifts it. That is the
+//! synergy — the connectivity analysis feeding straight back into which recursion
+//! to run next. Pure over `(entities, relations, floor)`, so it is deterministic
+//! and unit-testable; `GET /api/v1/scans/{id}/leads` and the web UI's Leads tab
+//! render it directly. Bounded for a low-RAM Termux device.
+
+use std::collections::HashMap;
 
 use serde::Serialize;
 
 use crate::core::entity::Entity;
 use crate::core::network::{self, ConnectionGroup};
+use crate::core::pivot::{self, PivotNode};
 use crate::core::relation::Relation;
 
 /// Maximum leads returned — a focused, actionable shortlist, not a second entity
@@ -53,6 +62,24 @@ const HISTORY_RELATION_BOOST: f64 = 0.5;
 const HISTORY_COOCCURRENCE_BOOST: f64 = 0.3;
 const HISTORY_RECURRENCE_BOOST: f64 = 0.15;
 
+/// Pivot-score lift per unit of a lead's **betweenness centrality** — the fraction
+/// of the graph's shortest paths that route THROUGH it ([`crate::core::pivot`]).
+/// This is the synergy that closes the loop back onto the graph's own structure: a
+/// lead that is also a bridging intermediary is, by the exact reasoning the pivot
+/// module is built on, the highest-yield next scan — expanding it reaches the most
+/// of the footprint for the least work. Betweenness is normalised to `[0, 1]`, so
+/// this is the maximum lift a pure bridge earns; a pendant leaf (betweenness 0, the
+/// shape of most leads) earns nothing here and its ranking is unchanged.
+const STRUCT_BRIDGE_WEIGHT: f64 = 0.4;
+
+/// Additional flat lift when a lead is a **cut vertex** (articulation point) — its
+/// removal would fragment the graph, so it single-handedly holds a cluster onto the
+/// subject's footprint. The exact binary complement to the continuous betweenness
+/// term, from the same shared pivot analysis; a lead can be a cut vertex at modest
+/// betweenness (a lone bridge to a pendant cluster), so the two are summed, not
+/// merged.
+const STRUCT_CUT_VERTEX_BONUS: f64 = 0.2;
+
 /// A recommended next investigation step: an entity worth pivoting on, why, and
 /// the scan that would pursue it.
 #[derive(Debug, Clone, Serialize)]
@@ -85,6 +112,13 @@ pub struct Lead {
     /// prior relationship). Earns a [`history_boost`] in the ranking and lets the UI
     /// badge a lead that connects two investigations.
     pub bridged: bool,
+    /// This lead is a **structural pivot** — a high-betweenness bridge and/or a cut
+    /// vertex in the scan's relationship graph ([`crate::core::pivot`]). Earns a
+    /// [`structural_boost`] in the ranking, and lets the UI badge the lead whose
+    /// expansion would reach the most of the footprint. Distinct from `confirmed`
+    /// (reliability) and `bridged` (cross-scan history): this is pure graph
+    /// structure — how central the node is to connectivity, regardless of trust.
+    pub structural: bool,
     /// The network group this lead came from (`people` / `identifiers` / …).
     pub group: &'static str,
 }
@@ -198,6 +232,29 @@ fn history_boost(tags: &[String]) -> f64 {
     }
 }
 
+/// Structural-centrality lift for a lead, from its node in the scan's relationship
+/// graph ([`crate::core::pivot::detect`]). Sums the continuous bridge term
+/// ([`STRUCT_BRIDGE_WEIGHT`] × betweenness) and the flat cut-vertex term
+/// ([`STRUCT_CUT_VERTEX_BONUS`]) — the same fragility pair the pivot module reports,
+/// here repurposed as *pivot-yield*: a lead many paths route through, or whose loss
+/// would fragment the footprint, is the objectively highest-reach next scan. `None`
+/// (a pendant leaf, or a node outside the top structural pivots) contributes zero,
+/// so the overwhelming majority of leads — direct pendants of the subject — rank
+/// exactly as before; the term only lifts a lead that genuinely bridges the graph.
+fn structural_boost(node: Option<&PivotNode>) -> f64 {
+    match node {
+        Some(p) => {
+            STRUCT_BRIDGE_WEIGHT * p.betweenness
+                + if p.is_cut_vertex {
+                    STRUCT_CUT_VERTEX_BONUS
+                } else {
+                    0.0
+                }
+        }
+        None => 0.0,
+    }
+}
+
 /// Surname-distinctiveness multiplier for a *family* lead. A `family-candidate`
 /// shares the subject's surname by construction, so how distinctive that surname is
 /// says how much the bare match is worth: a rare surname is itself corroborating (a
@@ -220,7 +277,14 @@ fn surname_factor(value: &str, tags: &[String]) -> f64 {
 
 /// A grounded, human reason for the lead, from its group, label, value, exposure
 /// tags and untapped status.
-fn reason(group: &str, label: &str, value: &str, tags: &[String], untapped: bool) -> String {
+fn reason(
+    group: &str,
+    label: &str,
+    value: &str,
+    tags: &[String],
+    untapped: bool,
+    structural: bool,
+) -> String {
     let head = match group {
         "people" if label == "relative" => "A relative of the subject",
         "people" => "An associate of the subject",
@@ -258,6 +322,11 @@ fn reason(group: &str, label: &str, value: &str, tags: &[String], untapped: bool
     } else if tags.iter().any(|t| t == "cross-scan") {
         r.push_str(" · also in a prior scan");
     }
+    // The graph-structure signal (independent of every trust/history signal above):
+    // this lead bridges the footprint, so expanding it reaches the most for the least.
+    if structural {
+        r.push_str(" · a bridging pivot in the graph");
+    }
     if untapped {
         r.push_str(" · not yet investigated");
     }
@@ -273,6 +342,19 @@ fn reason(group: &str, label: &str, value: &str, tags: &[String], untapped: bool
 #[must_use]
 pub fn recommend(entities: &[Entity], relations: &[Relation], expansion_floor: f64) -> Vec<Lead> {
     let net = network::synthesize(entities, relations);
+
+    // Structural centrality of the SAME graph the leads live in: the synergy that
+    // lets the graph's own shape prioritise the next recursion. `detect` is bounded
+    // (Brandes only below MAX_BETWEENNESS_NODES, top PIVOT_CAP kept), so only the
+    // genuinely-central leads carry a signal — a lead node absent from this map is a
+    // pendant or minor node and takes the zero path in `structural_boost`.
+    let pivots = pivot::detect(entities, relations);
+    let pivot_by_uid: HashMap<&str, &PivotNode> =
+        pivots.iter().map(|p| (p.uid.as_str(), p)).collect();
+    // Borrowed into the per-group closures below (they are `move`, so capture the
+    // reference, not the map itself — one shared read across every group).
+    let pivot_by_uid = &pivot_by_uid;
+
     let mut leads: Vec<Lead> = net
         .groups
         .iter()
@@ -299,26 +381,38 @@ pub fn recommend(entities: &[Entity], relations: &[Relation], expansion_floor: f
                 // Accumulated cross-scan intelligence lifts a lead's priority,
                 // independent of every within-scan signal (the history flywheel).
                 let history = history_boost(&conn.tags);
+                // Graph structure lifts it again, independent of trust and history:
+                // a lead that bridges the footprint is the highest-reach next scan.
+                let structural = structural_boost(pivot_by_uid.get(conn.uid.as_str()).copied());
+                let is_structural = structural > 0.0;
                 Some(Lead {
                     uid: conn.uid.clone(),
                     value: conn.value.clone(),
                     kind: conn.kind.clone(),
                     target_kind,
                     action: "scan",
-                    reason: reason(group.key, &conn.label, &conn.value, &conn.tags, untapped),
+                    reason: reason(
+                        group.key,
+                        &conn.label,
+                        &conn.value,
+                        &conn.tags,
+                        untapped,
+                        is_structural,
+                    ),
                     score: score(
                         kind_value,
                         group_weight(group.key),
                         conn.entity_confidence,
                         conn.edge_confidence,
                         untapped,
-                        confirmation + history,
+                        confirmation + history + structural,
                         discordant,
                     ) * surname_factor(&conn.value, &conn.tags),
                     classification: conn.classification.clone(),
                     confirmed: confirmation > 0.0,
                     discordant,
                     bridged: history > 0.0,
+                    structural: is_structural,
                     group: group.key,
                 })
             })
