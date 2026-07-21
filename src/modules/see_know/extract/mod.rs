@@ -55,7 +55,10 @@ fn record_evidence(item: &Value, dbname: &str, endpoint: &str, key_fp: &str) -> 
         // Provenance: which provider, which exact API key, and which endpoint
         // returned this record. Stamped on EVERY record so a finding always
         // declares its origin (operator directive: specify the API key origin).
-        .with_attr("provider", "see-know.eu")
+        // Domain-agnostic — SeekNow rotates across three domains (see
+        // `see_know::client::all_base_urls`), so a literal TLD here would
+        // misdescribe records served by a fallback and go stale on rotation.
+        .with_attr("provider", "see-know")
         .with_attr("api_key_origin", key_fp)
         .with_attr("via_endpoint", endpoint);
     let Some(obj) = item.as_object() else {

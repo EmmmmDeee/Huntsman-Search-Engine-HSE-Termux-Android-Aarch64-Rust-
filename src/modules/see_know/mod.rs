@@ -1,4 +1,4 @@
-//! SeekNow (see-know.eu) — parallel breach + stealer + OSINT pool.
+//! SeekNow (see-know.xyz) — parallel breach + stealer + OSINT pool.
 //!
 //! Direct OathNet competitor with its own 15,000-lookup daily quota
 //! (`util::see_know::enterprise_config::ENTERPRISE` — the single source of
@@ -93,7 +93,7 @@ impl Module for SeekNow {
     }
 
     fn description(&self) -> &'static str {
-        "SeekNow (see-know.eu) — sweeps the full 18-endpoint OSINT/breach pool with discord and gaming pivots"
+        "SeekNow (see-know.xyz) — sweeps the full 18-endpoint OSINT/breach pool with discord and gaming pivots"
     }
 
     fn priority(&self) -> u8 {
@@ -447,7 +447,10 @@ fn absorb_search_hits(
             )
             .with_attr("hits", total.to_string())
             .with_attr("endpoint", endpoint_path)
-            .with_attr("provider", "see-know.eu")
+            // Domain-agnostic — SeekNow rotates across three domains (see
+            // `see_know::client::all_base_urls`), so a literal TLD here would
+            // misdescribe records served by a fallback and go stale on rotation.
+            .with_attr("provider", "see-know")
             .with_attr("api_key_origin", key_fp),
         );
         result.push(parent);
