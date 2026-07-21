@@ -4541,6 +4541,27 @@ pub fn coverage_by_entity_type(
         .collect()
 }
 
+/// Extract Reconnaissance technique IDs from a list of entities (typically the
+/// correlated entities from a Correlation finding). Returns a sorted, deduplicated
+/// set of technique IDs carried by the entities' `attack:<id>` tags.
+///
+/// This enables attribution tracing: "these entities were linked together by AU-123,
+/// and they were discovered via these Reconnaissance techniques" — the full chain
+/// from module → technique → entity → correlation.
+#[must_use]
+pub fn techniques_from_entities(entities: &[&crate::core::entity::Entity]) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let mut techniques: BTreeSet<String> = BTreeSet::new();
+    for e in entities {
+        for tag in &e.tags {
+            if let Some(tech_id) = tag.strip_prefix("attack:") {
+                techniques.insert(tech_id.to_string());
+            }
+        }
+    }
+    techniques.into_iter().collect()
+}
+
 /// Serialise a [`Coverage`] as a MITRE ATT&CK **Navigator layer** — the standard
 /// JSON the official [ATT&CK Navigator](https://mitre-attack.github.io/attack-navigator/)
 /// renders — so a scan's Reconnaissance coverage drops straight into MITRE's own

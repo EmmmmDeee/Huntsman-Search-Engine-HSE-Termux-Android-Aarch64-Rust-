@@ -427,3 +427,43 @@ use super::*;
             "entity types must be sorted"
         );
     }
+
+    #[test]
+    fn techniques_from_entities_extracts_and_dedupes_attack_tags() {
+        use crate::core::entity::{Entity, EntityKind};
+        // Create test entities with attack technique tags
+        let mut e1 = Entity::new(EntityKind::Email, "test1@example.com", 0.8, "s");
+        e1.tag("attack:T1589.002".to_string());
+        e1.tag("attack:T1593.002".to_string());
+
+        let mut e2 = Entity::new(EntityKind::Username, "testuser", 0.7, "s");
+        e2.tag("attack:T1589.002".to_string()); // Duplicate technique
+        e2.tag("attack:T1593.001".to_string());
+
+        let entities = vec![&e1, &e2];
+        let techniques = techniques_from_entities(&entities);
+
+        // Should extract 3 unique technique IDs (T1589.002, T1593.001, T1593.002)
+        // in sorted order
+        assert_eq!(techniques.len(), 3);
+        assert_eq!(techniques[0], "T1589.002");
+        assert_eq!(techniques[1], "T1593.001");
+        assert_eq!(techniques[2], "T1593.002");
+    }
+
+    #[test]
+    fn techniques_from_entities_ignores_non_attack_tags() {
+        use crate::core::entity::{Entity, EntityKind};
+        let mut e = Entity::new(EntityKind::Email, "test@example.com", 0.8, "s");
+        e.tag("attack:T1589.002".to_string());
+        e.tag("sector:tech".to_string()); // Non-attack tag
+        e.tag("attack:T1593.002".to_string());
+
+        let entities = vec![&e];
+        let techniques = techniques_from_entities(&entities);
+
+        // Should only extract attack techniques, ignore sector tag
+        assert_eq!(techniques.len(), 2);
+        assert!(techniques.contains(&"T1589.002".to_string()));
+        assert!(techniques.contains(&"T1593.002".to_string()));
+    }
