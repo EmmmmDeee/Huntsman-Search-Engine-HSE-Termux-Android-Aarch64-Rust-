@@ -448,6 +448,29 @@ pub async fn scan_delete(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    // Refuse to delete a scan that's still in-flight: `s.cancellations` holds
+    // an entry for exactly as long as the scan's spawned task is alive
+    // (installed at `spawn_scan`, removed by `CancelRegistryGuard`'s Drop when
+    // the task returns — success, error, or panic). Without this check,
+    // deleting a running scan raced the engine's own mid-scan checkpoint
+    // writes and finalisation: `delete_scan`'s cascade would remove all rows
+    // for the id, but the still-running engine task (nothing here stops it)
+    // keeps calling `upsert_entities_batch`/`upsert_scan`/`upsert_correlation`
+    // under the SAME scan_id, silently resurrecting a "deleted" scan in a
+    // partially/fully rebuilt, potentially internally-inconsistent state —
+    // with the client having already been told 200 "deleted". Rejecting up
+    // front closes the multi-second window the live engine run occupies;
+    // the client's documented recovery is to cancel first, then retry delete.
+    if s.cancellations.lock().contains_key(&id) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "scan is still running — cancel it first (POST /api/v1/scans/{id}/cancel), then retry delete",
+                "scan_id": id,
+            })),
+        )
+            .into_response();
+    }
     match s.store.delete_scan(&id) {
         Ok(true) => {
             info!(scan_id = %id, "scan deleted");

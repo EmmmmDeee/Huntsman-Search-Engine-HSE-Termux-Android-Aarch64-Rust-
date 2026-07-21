@@ -140,6 +140,47 @@ fn test_app_with_store(suffix: &str) -> (axum::Router, Arc<Store>) {
     (router(state, "127.0.0.1:8080"), store)
 }
 
+/// Like [`test_app`] but also hands back the shared `Arc<AppState>` so a test
+/// can manipulate state the HTTP surface doesn't expose directly (e.g.
+/// seeding `cancellations` to simulate an in-flight scan deterministically,
+/// without racing a real spawned scan's completion).
+fn test_app_with_state(suffix: &str) -> (axum::Router, Arc<AppState>) {
+    let path = tmp_db(suffix);
+    let store = Arc::new(Store::open(&path).unwrap());
+    let (bus, _rx) = tokio::sync::broadcast::channel(256);
+    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
+    let engine = Arc::new(ScanEngine::new(
+        modules,
+        Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
+        bus.clone(),
+    ));
+    let live = LiveScanner::new(
+        Arc::clone(&engine),
+        bus.clone(),
+        reqwest::Client::new(),
+        Default::default(),
+    );
+    let state = Arc::new(AppState {
+        store: Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
+        engine,
+        bus,
+        live,
+        http: reqwest::Client::new(),
+        allow_key_write: false,
+        cancellations: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+        scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
+            huntsman_search_engine::api::MAX_CONCURRENT_SCANS,
+        )),
+        update_info: Arc::new(std::sync::Mutex::new(
+            huntsman_search_engine::api::UpdateInfo::default(),
+        )),
+        cells_import: Arc::new(std::sync::Mutex::new(
+            huntsman_search_engine::api::CellsImportPhase::default(),
+        )),
+    });
+    (router(Arc::clone(&state), "127.0.0.1:8080"), state)
+}
+
 /// Parse a response body into a `serde_json::Value`.
 async fn body_json(resp: axum::response::Response) -> Value {
     let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
@@ -174,6 +215,31 @@ fn delete(uri: &str) -> Request<Body> {
         .header("x-hse-csrf", "1")
         .body(Body::empty())
         .unwrap()
+}
+
+/// Poll `GET /scans/{id}` until the spawned scan's background task has left
+/// `Running`/`Pending` (bounded — panics after 5s so a real regression fails
+/// fast rather than hanging). `spawn_scan`'s task is merely queued, not run,
+/// by the time the `202 Accepted` response returns, so any test that needs
+/// the scan to have actually finished (e.g. before deleting it, now that
+/// `scan_delete` refuses an in-flight scan) must wait for this rather than
+/// assuming completion.
+async fn wait_for_scan_to_finish(app: &axum::Router, scan_id: &str) {
+    for _ in 0..500 {
+        let resp = app
+            .clone()
+            .oneshot(get(&format!("/api/v1/scans/{scan_id}")))
+            .await
+            .unwrap();
+        let json = body_json(resp).await;
+        match json["status"].as_str() {
+            Some("running" | "pending") => {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            _ => return,
+        }
+    }
+    panic!("scan {scan_id} did not finish within 5s");
 }
 
 /// Create a scan via POST and return `(app_clone, scan_id)`.
@@ -835,10 +901,27 @@ async fn scan_get_not_found() {
 #[tokio::test]
 async fn scan_delete_returns_ok() {
     let (app, scan_id) = create_scan("scan_del").await;
-    let resp = app
-        .oneshot(delete(&format!("/api/v1/scans/{scan_id}")))
-        .await
-        .unwrap();
+    wait_for_scan_to_finish(&app, &scan_id).await;
+    // `wait_for_scan_to_finish` polls the persisted `status` field, which the
+    // engine sets to `complete` slightly BEFORE the spawned task's own
+    // `CancelRegistryGuard` drops (finalisation's post-`engine.run()`
+    // diagnostics tail still runs first) — so `scan_delete`'s in-flight guard
+    // can still legitimately see the id in `cancellations` for a moment after
+    // `status` already reads `complete`. Retry like a real client would.
+    let mut resp = None;
+    for _ in 0..500 {
+        let r = app
+            .clone()
+            .oneshot(delete(&format!("/api/v1/scans/{scan_id}")))
+            .await
+            .unwrap();
+        if r.status() != 409 {
+            resp = Some(r);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let resp = resp.expect("scan never left the in-flight registry within 5s");
     assert_eq!(resp.status(), 200);
     let json = body_json(resp).await;
     assert_eq!(json["deleted"].as_str().unwrap(), scan_id);
@@ -854,6 +937,62 @@ async fn scan_delete_not_found() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
+}
+
+// ── 10b. Scan delete refuses an in-flight scan (data-integrity guard) ────
+
+/// Deleting a scan while its engine task is still alive used to race
+/// `Store::delete_scan`'s cascade against the still-running scan's own
+/// mid-flight `upsert_entities_batch`/`upsert_scan`/`upsert_correlation`
+/// writes under the SAME scan_id — silently resurrecting a "deleted" scan
+/// in a partially-rebuilt, potentially inconsistent state, with the client
+/// already told 200 "deleted". `s.cancellations` holds an entry for exactly
+/// as long as the scan's spawned task is alive (installed at `spawn_scan`,
+/// removed by `CancelRegistryGuard`'s Drop when the task returns), so it's
+/// the authoritative "is this still running" signal `scan_delete` now
+/// checks first. Seeds `cancellations` directly rather than racing a real
+/// spawned scan's completion, so this is deterministic.
+#[tokio::test]
+async fn scan_delete_refuses_an_in_flight_scan_then_succeeds_once_it_ends() {
+    let (app, state) = test_app_with_state("scan_del_inflight");
+    let scan = Scan::new(
+        "inflight1",
+        Target::new(TargetKind::Email, "test@contoso.com"),
+    );
+    state.store.upsert_scan(&scan).unwrap();
+    state.cancellations.lock().insert(
+        "inflight1".to_string(),
+        huntsman_search_engine::core::cancel::CancelHandle::new(),
+    );
+
+    let resp = app
+        .clone()
+        .oneshot(delete("/api/v1/scans/inflight1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        409,
+        "an in-flight scan must not be deletable out from under its own writer"
+    );
+    assert!(
+        state.store.get_scan("inflight1").unwrap().is_some(),
+        "the refused delete must not have touched the scan row"
+    );
+
+    // Simulate the scan's task ending (what `CancelRegistryGuard::drop` does).
+    state.cancellations.lock().remove("inflight1");
+
+    let resp = app
+        .oneshot(delete("/api/v1/scans/inflight1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "once no longer in-flight, delete must succeed as normal"
+    );
+    assert!(state.store.get_scan("inflight1").unwrap().is_none());
 }
 
 // ── 11. Scan entities (empty initially) ──────────────────────────────────
