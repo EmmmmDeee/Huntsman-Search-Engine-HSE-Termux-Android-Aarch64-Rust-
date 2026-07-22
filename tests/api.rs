@@ -1363,6 +1363,35 @@ async fn settings_keys_get_lists_keys() {
         "response must contain keys array"
     );
     assert!(json["keys"].as_array().is_some());
+
+    // Convex acquisition guidance: unset keys ranked highest-leverage first, each
+    // with a tier and (usually) a free-signup hint. The web-UI operator gets the
+    // same ranking `hse doctor` prints.
+    let acq = json["acquisition"]
+        .as_array()
+        .expect("response must contain an acquisition array");
+    assert!(
+        !acq.is_empty(),
+        "a fresh test app has unset keys, so acquisition must be non-empty"
+    );
+    // Ranking is Multiplier > Expansion > Terminal: the tier rank must be
+    // non-increasing across the list (never a lower tier before a higher one).
+    let rank = |t: &str| match t {
+        "multiplier" => 2,
+        "expansion" => 1,
+        _ => 0,
+    };
+    let mut prev = i32::MAX;
+    for e in acq {
+        let tier = e["tier"].as_str().expect("each entry has a tier");
+        assert!(e["name"].as_str().is_some(), "each entry has a name");
+        let r = rank(tier);
+        assert!(
+            r <= prev,
+            "acquisition must be ranked highest-leverage first (saw {tier} out of order)"
+        );
+        prev = r;
+    }
 }
 
 #[tokio::test]

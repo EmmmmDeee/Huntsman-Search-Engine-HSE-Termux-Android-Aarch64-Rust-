@@ -50,6 +50,7 @@ export async function renderOpts(v){
       </div>
     </div>
 
+    ${acquisitionPanel(data.acquisition)}
     ${poolPanel(pool, data.write_enabled)}
     ${keysDiagPanel(kstatus, kpatterns)}
 
@@ -532,6 +533,63 @@ export function keyRow(k, writeEnabled){
       </div>
     ` : ''}
   </div>`;
+}
+/* Tier badge for the acquisition guidance. Multiplier keys are the highest-
+   leverage (they discover infrastructure/identities that unlock MORE sources),
+   so they get the most prominent colour. */
+function acqTierBadge(tier){
+  const m = {
+    multiplier: ['label-success', 'multiplier — highest leverage'],
+    expansion:  ['label-info',    'expansion'],
+    terminal:   ['label-default', 'terminal'],
+  };
+  const [cls, txt] = m[tier] || ['label-default', tier || 'unranked'];
+  return `<span class="label ${cls}">${esc(txt)}</span>`;
+}
+/* Turn the first URL inside a signup hint into a real (new-tab, no-opener) link,
+   escaping the surrounding text. Everything is escaped — the hint strings are
+   server-owned constants, but this stays XSS-safe regardless. */
+function linkifyHint(hint){
+  if (!hint) return '<span class="text-muted">no public signup page</span>';
+  const m = hint.match(/https?:\/\/\S+/);
+  if (!m) return esc(hint);
+  const url = m[0];
+  return `${esc(hint.slice(0, m.index))}<a href="${attr(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>${esc(hint.slice(m.index + url.length))}`;
+}
+/* Convex acquisition guidance: the unset keys the backend ranked highest-leverage
+   first (multiplier > expansion > terminal), each with a free-signup link — the
+   same ranking `hse doctor` prints, brought to the web UI so a Termux operator
+   with no shell access can register the highest-value free keys directly. */
+function acquisitionPanel(list){
+  if (!Array.isArray(list) || !list.length) return '';
+  const mult = list.filter(k=>k.tier==='multiplier').length;
+  const rows = list.map(k=>`
+    <tr>
+      <td style="white-space:nowrap">${acqTierBadge(k.tier)}</td>
+      <td><code>${esc(k.name)}</code></td>
+      <td class="text-muted" style="font-size:12px">${linkifyHint(k.hint)}</td>
+    </tr>`).join('');
+  return `
+    <div class="panel panel-default">
+      <div class="panel-heading"><b>Acquire keys — ranked by leverage</b>
+        <span class="text-muted pull-right" style="font-size:12px">${list.length} unset · ${mult} multiplier-tier</span>
+      </div>
+      <div class="panel-body">
+        <p class="text-muted" style="font-size:12px">
+          The single highest-value action for every future query is registering the
+          free <b>multiplier-tier</b> keys first — each one multiplies coverage
+          across all subsequent scans (they discover infrastructure and identities
+          that unlock more sources), for a one-time near-zero cost. A module needing
+          an unset key skips cleanly — it is never an error.
+        </p>
+        <div style="overflow-x:auto">
+          <table class="table table-condensed" style="margin-bottom:0">
+            <thead><tr><th>Tier</th><th>Key</th><th>Where to get it (mostly free)</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>`;
 }
 /* Key-pool panel: multi-key-per-service entries (discovered keys, imported pools)
    shown MASKED with status/environment, and a Revoke button per usable key. The

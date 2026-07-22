@@ -437,30 +437,9 @@ fn curl_missing_message() -> String {
 ///
 /// Pure over an `is_present` predicate (true if the env var is already set) so
 /// it is unit-testable without touching the filesystem or environment.
-fn rank_unset_keys(
-    is_present: impl Fn(&str) -> bool,
-) -> Vec<(&'static str, crate::util::key_roi::KeyRoi)> {
-    let env_to_service: std::collections::HashMap<&str, &str> =
-        crate::util::service_defs::service_defs()
-            .iter()
-            .map(|d| (d.env_var, d.name))
-            .collect();
-    let mut missing: Vec<(&'static str, crate::util::key_roi::KeyRoi)> = keys::KNOWN_KEYS
-        .iter()
-        .copied()
-        .filter(|k| !is_present(k))
-        .map(|k| {
-            // Map env var → service for tiering; an env var with no service_defs
-            // entry classifies via its own string, which key_roi defaults to the
-            // middle (Expansion) tier — never silently dropped from the ranking.
-            let svc = env_to_service.get(k).copied().unwrap_or(k);
-            (k, crate::util::key_roi::classify(svc))
-        })
-        .collect();
-    // Highest ROI first (Terminal < Expansion < Multiplier), ties broken by name.
-    missing.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
-    missing
-}
+// The unset-key acquisition ranking is the single source of truth in
+// `util::key_roi` (shared with the web Settings page's acquisition guidance).
+use crate::util::key_roi::rank_unset_keys;
 
 /// Render the "Weak findings" doctor section body. `anomalies` is expected
 /// already weakest-first ([`crate::storage::Store::low_confidence_evidence`]'s
