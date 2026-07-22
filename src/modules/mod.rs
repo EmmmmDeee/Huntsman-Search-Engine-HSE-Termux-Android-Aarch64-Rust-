@@ -140,6 +140,7 @@ pub mod phone_geo;
 pub mod phone_intl;
 pub mod photon;
 pub mod portscan;
+pub mod wiki_geosearch;
 // Shared entity-construction toolkit for developer-profile modules — a helper,
 // not a registered `Module`, so it is `pub(crate)` (the registry guard only
 // inspects `pub mod` declarations).
@@ -446,6 +447,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(mylnikov::Mylnikov),
             Arc::new(exif_geo::ExifGeo),
             Arc::new(overpass::Overpass),
+            Arc::new(wiki_geosearch::WikiGeoSearch),
             Arc::new(qld_cadastre::QldCadastre),
             Arc::new(sunrise_sunset::SunriseSunset),
             // Geolocation enrichment (passive, zero-API)
