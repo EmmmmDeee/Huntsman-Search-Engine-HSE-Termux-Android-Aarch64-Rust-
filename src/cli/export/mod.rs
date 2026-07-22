@@ -50,9 +50,24 @@ pub(super) async fn cmd_export(
             )));
         }
     };
+    // `full` / `debug` embed full PII *and* the raw API corpus — including any
+    // third-party keys harvested during the scan — which is why the auto-saved
+    // dossier writes them 0600 + atomically (`export/dossier.rs`). An explicit
+    // `--out` for those formats must get the identical private guarantee, or it
+    // silently drops the same secrets into a world-readable, umask-default file
+    // (a real exposure on a shared Android device). The shareable scan exports
+    // (json/csv/gexf/report) keep the plain write so an operator can hand them
+    // off without first having to loosen 0600 perms.
+    let sensitive = matches!(format.to_lowercase().as_str(), "full" | "debug");
     match out {
         Some(path) => {
-            std::fs::write(&path, &body).map_err(|e| Error::Other(format!("write {path}: {e}")))?;
+            if sensitive {
+                crate::util::atomic_file::write(std::path::Path::new(&path), body.as_bytes())
+                    .map_err(|e| Error::Other(format!("write {path}: {e}")))?;
+            } else {
+                std::fs::write(&path, &body)
+                    .map_err(|e| Error::Other(format!("write {path}: {e}")))?;
+            }
             eprintln!("exported {} bytes to {path}", body.len());
         }
         None => {

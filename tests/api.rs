@@ -194,6 +194,19 @@ fn get(uri: &str) -> Request<Body> {
     Request::builder().uri(uri).body(Body::empty()).unwrap()
 }
 
+/// Shorthand: a GET request carrying a loopback `ConnectInfo` peer, for
+/// endpoints whose extractor requires it (they read `peer.is_loopback()` to gate
+/// or redact operator-identifying fields). Mirrors production, where HSE binds
+/// loopback, and the `keys/pool`-style tests that inject the peer inline.
+fn get_loopback(uri: &str) -> Request<Body> {
+    let mut req = get(uri);
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo::<std::net::SocketAddr>(
+            "127.0.0.1:9999".parse().unwrap(),
+        ));
+    req
+}
+
 /// Shorthand: build a POST request with a JSON body. Carries the `X-HSE-CSRF`
 /// header the API's CSRF guard requires on every mutating request (the SPA
 /// injects it transparently; tests/clients send it explicitly).
@@ -447,7 +460,7 @@ async fn stats_endpoint_includes_seeknow_block() {
     // /api/v1/stats must surface the SeekNow budget snapshot so the
     // operator can see remaining quota at a glance from the UI.
     let app = test_app("stats_seeknow");
-    let resp = app.oneshot(get("/api/v1/stats")).await.unwrap();
+    let resp = app.oneshot(get_loopback("/api/v1/stats")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let json = body_json(resp).await;
     let sn = json
@@ -476,7 +489,7 @@ async fn stats_endpoint_includes_wigle_sub_budgets() {
     // bluetooth). All four must surface on stats so operators can
     // see remaining quota per observation type.
     let app = test_app("stats_wigle");
-    let resp = app.oneshot(get("/api/v1/stats")).await.unwrap();
+    let resp = app.oneshot(get_loopback("/api/v1/stats")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let json = body_json(resp).await;
     let wn = json.get("wigle").expect("stats must include wigle block");
@@ -519,7 +532,7 @@ async fn stats_endpoint_includes_oathnet_block() {
     // After the budget consolidation, oathnet exposes the same wire
     // shape as seeknow (both back-ended by util::budget::QuotaBudget).
     let app = test_app("stats_oathnet");
-    let resp = app.oneshot(get("/api/v1/stats")).await.unwrap();
+    let resp = app.oneshot(get_loopback("/api/v1/stats")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let json = body_json(resp).await;
     let on = json
@@ -1447,7 +1460,7 @@ async fn manifest_is_valid_installable_pwa() {
 #[tokio::test]
 async fn stats_returns_counts() {
     let app = test_app("stats");
-    let resp = app.oneshot(get("/api/v1/stats")).await.unwrap();
+    let resp = app.oneshot(get_loopback("/api/v1/stats")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let json = body_json(resp).await;
     assert!(

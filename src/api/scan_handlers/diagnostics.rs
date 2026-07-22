@@ -278,22 +278,27 @@ pub async fn scan_benchmark(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let scan = match s.store.get_scan(&id) {
-        Ok(Some(sc)) => sc,
-        Ok(None) => return not_found(),
-        Err(e) => return internal_error(&e),
-    };
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
+    // Existence probe folded into the SAME blocking batch as the entity /
+    // relation loads — a synchronous SQLite read under the global connection
+    // mutex must never run on the async reactor (it can stall a worker on the
+    // ~2-worker Termux runtime and starve SSE / `/health`). The `scan` record
+    // is needed for the report, so it rides along in the batch.
     let loaded = tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
+        let Some(scan) = store.get_scan(&id2)? else {
+            return Ok::<_, crate::core::error::Error>(None);
+        };
+        Ok(Some((
+            scan,
             store.entities_for_scan(&id2)?,
             store.relations_for_scan(&id2)?,
-        ))
+        )))
     })
     .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
+    let (scan, entities, relations) = match loaded {
+        Ok(Ok(Some(triple))) => triple,
+        Ok(Ok(None)) => return not_found(),
         Ok(Err(e)) => return internal_error(&e),
         Err(e) => return internal_error(&format!("query task failed: {e}")),
     };

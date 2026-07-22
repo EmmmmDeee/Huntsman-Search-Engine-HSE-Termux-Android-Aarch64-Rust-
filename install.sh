@@ -959,7 +959,12 @@ date +%s > "$LOG_DIR/hse-autoupdate.stamp" 2>/dev/null || true
 step "Verifying installation"
 "$HSE_BIN_DIR/hse" --version
 echo
-"$HSE_BIN_DIR/hse" doctor
+# `hse doctor` is an informational health report here — `--version` above is the
+# install-success gate. `doctor` now exits non-zero on a CRITICAL storage fault
+# (e.g. a pre-existing corrupt database this fresh binary did not create and
+# cannot fix), so `|| true` keeps that from aborting an otherwise-successful
+# install under `set -e`; the FAIL lines still print for the operator to see.
+"$HSE_BIN_DIR/hse" doctor || true
 
 # ─── Restart an already-running server onto the new binary ───────────────────
 # Completes the "all-in-one upgrade" contract: a re-install over a live server

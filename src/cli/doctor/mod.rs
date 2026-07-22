@@ -39,6 +39,15 @@ pub(super) async fn cmd_doctor(live: bool) -> Result<()> {
     println!("DB path:   {}", default_db_path());
     println!("Keys path: {}", keys::env_path());
 
+    // Tracks a CRITICAL storage fault only — the database will not open, or its
+    // integrity check reported corruption. Soft states (missing keys, a module
+    // failure streak, a stale cell DB, a large WAL) are informational and never
+    // set this. When set, `cmd_doctor` returns `Err` at the end so `hse
+    // diagnostics` (which treats doctor as a fail-able section) and a scripted
+    // standalone `hse doctor` both surface a broken DB via a non-zero exit
+    // instead of a silent PASS — while still printing the full report first.
+    let mut critical = false;
+
     println!("\nStorage:");
     let db_path = default_db_path();
     // Kept as a `Result` (not unwrapped into the match arm) so the same open
@@ -54,6 +63,7 @@ pub(super) async fn cmd_doctor(live: bool) -> Result<()> {
                     println!("  integrity:  ok");
                 }
                 Ok(rows) => {
+                    critical = true;
                     println!("  integrity:  FAIL — {} issue(s) reported:", rows.len());
                     for r in rows.iter().take(10) {
                         println!("                {r}");
@@ -74,7 +84,10 @@ pub(super) async fn cmd_doctor(live: bool) -> Result<()> {
                 }
             }
         }
-        Err(e) => println!("  FAIL — {e}"),
+        Err(e) => {
+            critical = true;
+            println!("  FAIL — {e}");
+        }
     }
 
     println!("\nExternal tools:");
@@ -416,6 +429,13 @@ pub(super) async fn cmd_doctor(live: bool) -> Result<()> {
         ),
     }
 
+    if critical {
+        return Err(crate::core::error::Error::Other(
+            "critical storage fault — the database could not be opened or failed its \
+             integrity check (see the FAIL line(s) above)"
+                .into(),
+        ));
+    }
     Ok(())
 }
 

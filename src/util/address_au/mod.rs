@@ -440,7 +440,7 @@ pub fn au_phone_line_type(value: &str) -> Option<(AuLineType, &'static str)> {
     // `6`, so a bare leading `61` is only stripped when a `+` marks it as a
     // country code — a plain `61…` foreign number is left intact (→ `None`).
     let plus = value.contains('+');
-    let digits: String = value.chars().filter(char::is_ascii_digit).collect();
+    let digits = crate::util::str_util::ascii_digits(value);
     let nat = if let Some(rest) = digits.strip_prefix("0061") {
         rest
     } else if plus && let Some(rest) = digits.strip_prefix("61") {
