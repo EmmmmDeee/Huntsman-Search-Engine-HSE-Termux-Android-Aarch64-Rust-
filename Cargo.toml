@@ -1,6 +1,6 @@
 [package]
 name        = "huntsman-search-engine"
-version     = "1.19.0"
+version     = "1.20.0"
 edition     = "2024"
 rust-version = "1.88"
 description = "Huntsman Search Engine — comprehensive on-device OSINT/GEOINT & breach-intelligence platform for Termux aarch64 (no root)"

@@ -607,16 +607,22 @@ impl super::ScanEngine {
                         continue;
                     }
                     // Universal MITRE ATT&CK provenance: stamp every ADMITTED
-                    // entity with the Reconnaissance technique(s) of the module
-                    // that produced it, as inline `attack:<ID>` tags. This makes
-                    // the technique that collected each datum travel with the data
-                    // (JSON `tags`, the full dossier, the DB) — MITRE alignment
-                    // lives in the findings themselves, not a separate coverage
-                    // report. `Entity::tag` de-dupes and `Entity::merge` unions
-                    // tags, so an entity collected via several modules carries all
-                    // of their techniques. Done at the single admission point AFTER
-                    // every drop filter so only surviving findings are stamped.
+                    // entity with the Reconnaissance technique(s) it represents
+                    // and the module that collected it, as inline `attack:<ID>`
+                    // tags. This makes the technique that collected each datum
+                    // travel with the data (JSON `tags`, the full dossier, the DB)
+                    // — MITRE alignment lives in the findings themselves, not a
+                    // separate coverage report. Tagging happens at two layers:
+                    // 1. Module-level: what kind of collection the module does
+                    // 2. Entity-type-level: what kind of data this entity is
+                    // `Entity::tag` de-dupes so overlaps (e.g., a Username from a
+                    // Social module tagged with both `T1593.001`) are idempotent.
+                    // Done at the single admission point AFTER every drop filter so
+                    // only surviving findings are stamped.
                     for id in attack_techniques {
+                        entity.tag(format!("attack:{id}"));
+                    }
+                    for id in crate::core::attack::techniques_for_entity_kind(&entity.kind) {
                         entity.tag(format!("attack:{id}"));
                     }
                     // Universal breach-sector wiring: stamp the source's sector

@@ -1948,6 +1948,73 @@ async fn scan_diamond_rolls_entities_up_by_vertex() {
     );
 }
 
+#[tokio::test]
+async fn scan_attack_rolls_up_reconnaissance_coverage_and_navigator_layer() {
+    let (app, store) = test_app_with_store("attack");
+    let sid = "s-attack";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::Domain, "example.org"),
+        ))
+        .unwrap();
+    // Two entities exercising WHOIS (T1596.002); one exercising Search Engines.
+    let mut a = Entity::new(EntityKind::Domain, "example.org", 0.9, sid);
+    a.tag("attack:T1596.002");
+    a.tag("attack:T1593.002");
+    store.upsert_entity(&a).unwrap();
+    let mut b = Entity::new(EntityKind::IpAddress, "203.0.113.7", 0.8, sid);
+    b.tag("attack:T1596.002");
+    store.upsert_entity(&b).unwrap();
+
+    // Default: coverage rollup with per-technique entity counts + honest gaps.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/attack")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["tactic_id"], "TA0043");
+    let covered = json["covered"].as_array().unwrap();
+    let count_of = |id: &str| -> u64 {
+        covered
+            .iter()
+            .find(|c| c["id"] == id)
+            .and_then(|c| c["entity_count"].as_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(
+        count_of("T1596.002"),
+        2,
+        "WHOIS collected 2 entities: {json}"
+    );
+    assert_eq!(count_of("T1593.002"), 1, "Search Engines 1 entity: {json}");
+    // The tactic HSE performs no collection for shows up as an honest gap.
+    let uncovered = json["uncovered"].as_array().unwrap();
+    assert!(
+        uncovered.iter().any(|t| t["id"] == "T1598"),
+        "Phishing for Information must be an honest gap: {json}"
+    );
+
+    // ?format=navigator → a MITRE ATT&CK Navigator layer.
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{sid}/attack?format=navigator")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let layer = body_json(resp).await;
+    assert_eq!(layer["domain"], "enterprise-attack");
+    let whois = layer["techniques"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["techniqueID"] == "T1596.002")
+        .cloned()
+        .unwrap();
+    assert_eq!(whois["score"], 2, "navigator score = entity count: {layer}");
+}
+
 // ── Cancel nonexistent ──────────────────────────────────────────────────
 
 #[tokio::test]

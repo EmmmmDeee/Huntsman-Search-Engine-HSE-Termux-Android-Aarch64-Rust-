@@ -110,7 +110,11 @@ pub(super) fn extract_associates(
             });
             let mut ev = Evidence::new(SRC, format!("SeekNow {label} of {subject}"))
                 .with_attr("relationship", *label)
-                .with_attr("provider", "see-know.eu")
+                // Domain-agnostic — SeekNow rotates across three domains
+                // (see `see_know::client::all_base_urls`), so a literal TLD
+                // here would misdescribe records served by a fallback and go
+                // stale on the next rotation.
+                .with_attr("provider", "see-know")
                 .with_attr("api_key_origin", key_fp);
             if !subject.is_empty() {
                 ev = ev.with_attr("related_to", subject);

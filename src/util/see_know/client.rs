@@ -83,21 +83,19 @@ pub(super) fn cache_put(key: String, items: Vec<Value>) {
 }
 
 pub fn base_url() -> String {
-    // Default corrected (2026-07-14) from `.icu` back to the vendor's own stated
-    // domain, `.eu` — every other reference to SeekNow in this codebase (module
-    // docs, error strings, `key_harvest::service_domains`, `service_defs`, the
-    // operator-facing setup guide) already names `.eu`, and a real operator's
-    // freshly-generated SeekNow export footer states the platform's own domain as
-    // `https://see-know.eu`. `.icu` had been sandbox-confirmed reachable
-    // (T2.83, 2026-07-13) and was promoted to default on that basis, but a real
-    // device's own DNS resolver failed to resolve `.icu` at all (`curl exited 6`)
-    // in the same scan where a different provider's host on the same client
-    // machinery succeeded — `.icu`-TLD domains are commonly caught by carrier/ISP
-    // DNS-level abuse filtering, a real-world failure mode a sandboxed reachability
-    // probe cannot see. Vet the operator's override: refuse non-https /
-    // private-host redirects and WARN on a divergent host, so a key-bearing
-    // request can't be silently redirected to a look-alike or an internal address.
-    crate::util::endpoint_override::resolve("HUNTSMAN_SEEKNOW_BASE", "https://see-know.eu/api/v1")
+    // Default promoted (2026-07-21) to `.xyz` — the operator-designated primary
+    // endpoint. Prior history: default started on `.icu` (sandbox-confirmed
+    // reachable T2.83, 2026-07-13), was corrected to `.eu` (2026-07-14) after a
+    // real device's DNS resolver failed to resolve `.icu` (`curl exited 6`) while
+    // `.eu` succeeded on the same client machinery — `.icu`-TLD domains are
+    // commonly caught by carrier/ISP DNS-level abuse filtering, a failure mode a
+    // sandboxed reachability probe cannot see. `.eu` and `.icu` remain first and
+    // second fallback in [`all_base_urls`] so a transient `.xyz` outage still
+    // exhausts every known domain before the scan surfaces a connection error.
+    // Vet the operator's override: refuse non-https / private-host redirects and
+    // WARN on a divergent host, so a key-bearing request can't be silently
+    // redirected to a look-alike or an internal address.
+    crate::util::endpoint_override::resolve("HUNTSMAN_SEEKNOW_BASE", "https://see-know.xyz/api/v1")
 }
 
 /// All SeekNow base URLs in fallback order. The service intentionally rotates
@@ -111,7 +109,7 @@ pub(super) fn all_base_urls() -> Vec<String> {
 
     // Add secondary/fallback domains only if they're different from the primary
     // (e.g., if HUNTSMAN_SEEKNOW_BASE override is set to one of these, we skip dupes).
-    let fallbacks = ["https://see-know.icu/api/v1", "https://see-know.xyz/api/v1"];
+    let fallbacks = ["https://see-know.eu/api/v1", "https://see-know.icu/api/v1"];
     for fallback in &fallbacks {
         if !urls.contains(&fallback.to_string()) {
             urls.push(fallback.to_string());
@@ -134,14 +132,20 @@ pub fn resolve_key(ctx_key: Option<&str>) -> &str {
 /// operator running several keys can tell which one produced a finding) without
 /// scattering the full secret across the persisted entity store. Pure, so the
 /// format is unit-testable.
+///
+/// The prefix is the domain-agnostic `"see-know"` label, not any one of the
+/// three rotating domains ([`all_base_urls`]) — a request served by a fallback
+/// domain still carries the same fingerprint, and the label never goes stale
+/// when the primary domain changes (see the `provider` evidence attribute
+/// fix this mirrors, in `see_know::extract`).
 #[must_use]
 pub fn key_fingerprint(key: &str) -> String {
     let k = key.trim();
     if k.is_empty() {
-        return "see-know.eu:(no key)".to_string();
+        return "see-know:(no key)".to_string();
     }
     if k.len() <= 18 {
-        return format!("see-know.eu:{k}");
+        return format!("see-know:{k}");
     }
     let head: String = k.chars().take(13).collect();
     let tail: String = {
@@ -149,7 +153,7 @@ pub fn key_fingerprint(key: &str) -> String {
         t.reverse();
         t.into_iter().collect()
     };
-    format!("see-know.eu:{head}\u{2026}{tail}")
+    format!("see-know:{head}\u{2026}{tail}")
 }
 
 /// Body signature of a key that cannot retrieve data — so the whole scan should

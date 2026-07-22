@@ -250,3 +250,219 @@ use super::*;
             }
         }
     }
+
+    #[test]
+    fn coverage_rolls_up_exercised_techniques_with_counts_and_honest_gaps() {
+        let mut exercised = std::collections::BTreeMap::new();
+        exercised.insert("T1596.002".to_string(), 5); // WHOIS ×5
+        exercised.insert("T1589.002".to_string(), 2); // Email Addresses ×2
+        exercised.insert("T9999".to_string(), 99); // unknown → ignored
+        let cov = coverage(&exercised);
+
+        assert_eq!(cov.tactic_id, "TA0043");
+        // Only the two real techniques are covered, carried in catalogue order
+        // (T1589.002 before T1596.002), with their counts.
+        assert_eq!(cov.covered.len(), 2);
+        assert_eq!(cov.covered[0].technique.id, "T1589.002");
+        assert_eq!(cov.covered[0].entity_count, 2);
+        assert_eq!(cov.covered[1].technique.id, "T1596.002");
+        assert_eq!(cov.covered[1].entity_count, 5);
+        // Covered + uncovered exactly partitions the whole catalogue.
+        assert_eq!(cov.covered.len() + cov.uncovered.len(), reconnaissance().len());
+        assert!(cov.uncovered.iter().any(|t| t.id == "T1598"));
+        assert!(!cov.uncovered.iter().any(|t| t.id == "T1596.002"));
+        // Fraction matches the covered count.
+        assert!(
+            (cov.coverage_fraction - 2.0 / reconnaissance().len() as f64).abs() < 1e-9,
+            "fraction = {}",
+            cov.coverage_fraction
+        );
+    }
+
+    #[test]
+    fn empty_coverage_is_all_gaps() {
+        let cov = coverage(&std::collections::BTreeMap::new());
+        assert!(cov.covered.is_empty());
+        assert_eq!(cov.uncovered.len(), reconnaissance().len());
+        assert!((cov.coverage_fraction - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn navigator_layer_is_a_valid_honest_layer() {
+        let mut exercised = std::collections::BTreeMap::new();
+        exercised.insert("T1596.002".to_string(), 5);
+        let layer = navigator_layer(&coverage(&exercised), "scan-abc");
+
+        assert_eq!(layer["domain"], "enterprise-attack");
+        assert_eq!(layer["versions"]["layer"], "4.5");
+        // Exactly one technique per catalogued id (covered + gaps = whole tactic).
+        let techs = layer["techniques"].as_array().unwrap();
+        assert_eq!(techs.len(), reconnaissance().len());
+        // The exercised technique is enabled and scored by its entity count.
+        let whois = techs
+            .iter()
+            .find(|t| t["techniqueID"] == "T1596.002")
+            .unwrap();
+        assert_eq!(whois["score"], 5);
+        assert_eq!(whois["enabled"], true);
+        assert_eq!(whois["tactic"], "reconnaissance");
+        // A gap is present, disabled, score 0 — the honest picture.
+        let phishing = techs.iter().find(|t| t["techniqueID"] == "T1598").unwrap();
+        assert_eq!(phishing["score"], 0);
+        assert_eq!(phishing["enabled"], false);
+        assert_eq!(layer["gradient"]["maxValue"], 5);
+    }
+
+    #[test]
+    fn every_entity_kind_maps_only_to_catalogued_techniques() {
+        // Entity-type mapping drift guard: every technique ID returned by
+        // techniques_for_entity_kind must exist in the catalogue for every
+        // EntityKind variant. Catches typos and removed techniques at the source.
+        use crate::core::entity::EntityKind;
+        let kinds = [
+            EntityKind::Person,
+            EntityKind::Email,
+            EntityKind::Phone,
+            EntityKind::Username,
+            EntityKind::Credential,
+            EntityKind::ApiKey,
+            EntityKind::Password,
+            EntityKind::IpAddress,
+            EntityKind::Domain,
+            EntityKind::Url,
+            EntityKind::Asn,
+            EntityKind::Cidr,
+            EntityKind::Address,
+            EntityKind::Coordinates,
+            EntityKind::Organisation,
+            EntityKind::AbnAcn,
+            EntityKind::MacAddress,
+            EntityKind::DeviceId,
+            EntityKind::Ssid,
+            EntityKind::TrackingId,
+            EntityKind::CryptoAddress,
+            EntityKind::Other("test".to_string()),
+        ];
+        for kind in kinds {
+            for id in techniques_for_entity_kind(&kind) {
+                assert!(
+                    technique(id).is_some(),
+                    "{kind:?} maps to unknown technique {id}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn entity_type_mapping_resolves_common_types_correctly() {
+        use crate::core::entity::EntityKind;
+        // Email addresses → T1589.002
+        assert!(techniques_for_entity_kind(&EntityKind::Email).contains(&"T1589.002"));
+        // Usernames → T1593.001 (Social Media) + T1589.003 (Employee Names)
+        let username_techniques = techniques_for_entity_kind(&EntityKind::Username);
+        assert!(username_techniques.contains(&"T1593.001"));
+        assert!(username_techniques.contains(&"T1589.003"));
+        // IP Addresses → T1590.005
+        assert!(techniques_for_entity_kind(&EntityKind::IpAddress).contains(&"T1590.005"));
+        // Domains → T1590.001 + T1596.002 + T1593.002 + T1594
+        let domain_techniques = techniques_for_entity_kind(&EntityKind::Domain);
+        assert!(domain_techniques.contains(&"T1590.001"));
+        assert!(domain_techniques.contains(&"T1596.002"));
+        assert!(domain_techniques.contains(&"T1593.002"));
+        assert!(domain_techniques.contains(&"T1594"));
+        // Credentials → T1589.001
+        assert!(techniques_for_entity_kind(&EntityKind::Credential).contains(&"T1589.001"));
+        // Addresses → T1591.001
+        assert!(techniques_for_entity_kind(&EntityKind::Address).contains(&"T1591.001"));
+        // Org Info → T1591
+        assert!(techniques_for_entity_kind(&EntityKind::Organisation).contains(&"T1591"));
+    }
+
+    #[test]
+    fn coverage_by_entity_type_aggregates_and_sorts_correctly() {
+        // Technique T1589.002 (Email Addresses) carried by 5 Email entities and
+        // 2 Username entities; T1593.001 (Social Media) by 3 Username entities.
+        let entity_techniques = vec![
+            ("Email".to_string(), "T1589.002".to_string()),
+            ("Email".to_string(), "T1589.002".to_string()),
+            ("Email".to_string(), "T1589.002".to_string()),
+            ("Email".to_string(), "T1589.002".to_string()),
+            ("Email".to_string(), "T1589.002".to_string()),
+            ("Username".to_string(), "T1589.002".to_string()),
+            ("Username".to_string(), "T1589.002".to_string()),
+            ("Username".to_string(), "T1593.001".to_string()),
+            ("Username".to_string(), "T1593.001".to_string()),
+            ("Username".to_string(), "T1593.001".to_string()),
+        ];
+        let by_type = coverage_by_entity_type(&entity_techniques);
+        // Only two techniques exercised
+        assert_eq!(by_type.len(), 2);
+        // First is T1589.002 (catalogue order), second is T1593.001
+        assert_eq!(by_type[0].technique.id, "T1589.002");
+        assert_eq!(by_type[1].technique.id, "T1593.001");
+        // T1589.002 breakdown: 5 Email, 2 Username
+        assert_eq!(
+            by_type[0].by_entity_type.get("Email"),
+            Some(&5),
+            "T1589.002 Email count"
+        );
+        assert_eq!(
+            by_type[0].by_entity_type.get("Username"),
+            Some(&2),
+            "T1589.002 Username count"
+        );
+        // T1593.001 breakdown: 3 Username
+        assert_eq!(
+            by_type[1].by_entity_type.get("Username"),
+            Some(&3),
+            "T1593.001 Username count"
+        );
+        // Entity type keys are sorted within each technique
+        let t1589_types: Vec<&String> = by_type[0].by_entity_type.keys().collect();
+        assert!(
+            t1589_types
+                .windows(2)
+                .all(|w| w[0] <= w[1]),
+            "entity types must be sorted"
+        );
+    }
+
+    #[test]
+    fn techniques_from_entities_extracts_and_dedupes_attack_tags() {
+        use crate::core::entity::{Entity, EntityKind};
+        // Create test entities with attack technique tags
+        let mut e1 = Entity::new(EntityKind::Email, "test1@example.com", 0.8, "s");
+        e1.tag("attack:T1589.002".to_string());
+        e1.tag("attack:T1593.002".to_string());
+
+        let mut e2 = Entity::new(EntityKind::Username, "testuser", 0.7, "s");
+        e2.tag("attack:T1589.002".to_string()); // Duplicate technique
+        e2.tag("attack:T1593.001".to_string());
+
+        let entities = vec![&e1, &e2];
+        let techniques = techniques_from_entities(&entities);
+
+        // Should extract 3 unique technique IDs (T1589.002, T1593.001, T1593.002)
+        // in sorted order
+        assert_eq!(techniques.len(), 3);
+        assert_eq!(techniques[0], "T1589.002");
+        assert_eq!(techniques[1], "T1593.001");
+        assert_eq!(techniques[2], "T1593.002");
+    }
+
+    #[test]
+    fn techniques_from_entities_ignores_non_attack_tags() {
+        use crate::core::entity::{Entity, EntityKind};
+        let mut e = Entity::new(EntityKind::Email, "test@example.com", 0.8, "s");
+        e.tag("attack:T1589.002".to_string());
+        e.tag("sector:tech".to_string()); // Non-attack tag
+        e.tag("attack:T1593.002".to_string());
+
+        let entities = vec![&e];
+        let techniques = techniques_from_entities(&entities);
+
+        // Should only extract attack techniques, ignore sector tag
+        assert_eq!(techniques.len(), 2);
+        assert!(techniques.contains(&"T1589.002".to_string()));
+        assert!(techniques.contains(&"T1593.002".to_string()));
+    }

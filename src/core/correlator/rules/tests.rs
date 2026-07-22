@@ -340,3 +340,21 @@ use crate::core::entity::Evidence;
         );
         assert_eq!(results[0].rule_id, "AU-120");
     }
+
+    #[test]
+    fn au123_numeric_variant_handle_persona_fires_across_sources() {
+        // A base handle plus a birth-year suffix, observed by two distinct
+        // source modules — the digit-suffix reuse pattern the exact-match
+        // handle rules (canonical_handle keeps digits) never join.
+        let mut a = Entity::new(EntityKind::Username, "jdiegmann", 0.7, "scan-au123");
+        a.add_evidence(Evidence::new("github_user", "found"));
+        let mut b = Entity::new(EntityKind::Username, "jdiegmann92", 0.7, "scan-au123");
+        b.add_evidence(Evidence::new("keybase", "found"));
+        let results = super::rule_au_123_numeric_variant_handle_persona(&[a, b], "scan-au123", 0);
+        assert_eq!(
+            results.len(),
+            1,
+            "AU-123 must fire on a numeric-variant handle pair from distinct sources"
+        );
+        assert_eq!(results[0].rule_id, "AU-123");
+    }

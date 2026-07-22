@@ -80,6 +80,75 @@ pub async fn scan_diamond(
     }
 }
 
+/// `GET /api/v1/scans/{id}/attack` — the scan's MITRE ATT&CK **Reconnaissance**
+/// (TA0043) coverage: every technique the scan exercised (resolved from the
+/// `attack:<id>` provenance tags the engine stamps on each finding, with the
+/// count of entities collected via it) plus the honest uncovered TA0043 gaps,
+/// straight from [`crate::core::attack::coverage`]. This is the scan-level rollup
+/// of the alignment that until now lived only per-finding in the CLI dossier.
+///
+/// With `?format=navigator` it returns a MITRE ATT&CK **Navigator layer** JSON
+/// instead, so the coverage renders directly in the official ATT&CK Navigator.
+/// With `?breakdown=entity_type` it returns a detailed per-technique breakdown
+/// by entity kind (e.g., which entity types carry each technique). Honours
+/// `?include_candidates=…` exactly like `/entities`.
+pub async fn scan_attack(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    match tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await {
+        Ok(Ok(mut entities)) => {
+            if !super::wants_candidates(&params) {
+                entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+            }
+            // Count entities per exercised Reconnaissance technique from their
+            // `attack:<id>` provenance tags — one entity may span several.
+            let mut exercised: std::collections::BTreeMap<String, usize> =
+                std::collections::BTreeMap::new();
+            for e in &entities {
+                for tid in e.tags.iter().filter_map(|t| t.strip_prefix("attack:")) {
+                    *exercised.entry(tid.to_string()).or_insert(0) += 1;
+                }
+            }
+            let coverage = crate::core::attack::coverage(&exercised);
+            if params.get("format").map(String::as_str) == Some("navigator") {
+                return Json(crate::core::attack::navigator_layer(&coverage, &id)).into_response();
+            }
+            if params.get("breakdown").map(String::as_str) == Some("entity_type") {
+                // Breakdown by entity type: for each entity, extract its attack
+                // techniques and pair them with the entity's kind for aggregation.
+                let entity_techniques: Vec<(String, String)> = entities
+                    .iter()
+                    .flat_map(|e| {
+                        e.tags
+                            .iter()
+                            .filter_map(|t| t.strip_prefix("attack:").map(String::from))
+                            .map(move |tid| (e.kind.to_string(), tid))
+                    })
+                    .collect();
+                let by_type = crate::core::attack::coverage_by_entity_type(&entity_techniques);
+                return Json(json!({
+                    "tactic_id": coverage.tactic_id,
+                    "tactic_name": coverage.tactic_name,
+                    "coverage_fraction": coverage.coverage_fraction,
+                    "techniques": by_type,
+                    "uncovered": coverage.uncovered,
+                }))
+                .into_response();
+            }
+            Json(json!(coverage)).into_response()
+        }
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
+    }
+}
+
 /// `GET /api/v1/scans/{a}/diff/{b}` — entity-level diff of scan `a` (baseline)
 /// vs scan `b`. The HTTP surface of `hse diff`: returns the `ScanDiff` JSON
 /// (`{ added, removed, common, confidence_shifts }`) computed by the shared

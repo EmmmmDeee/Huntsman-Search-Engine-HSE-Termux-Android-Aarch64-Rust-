@@ -133,15 +133,17 @@ fn key_fingerprint_identifies_origin_without_full_secret() {
     // the "single source of truth for embedded keys" architecture guard isn't
     // tripped by a literal living outside util::keys.rs.
     let fp = key_fingerprint("seek-1234567890aaaabbbbccccddddeeeeffff0000111122223333");
-    // Provider-prefixed, head + tail present, middle elided.
-    assert!(fp.starts_with("see-know.eu:seek-12345"), "got {fp}");
+    // Provider-prefixed, head + tail present, middle elided. Domain-agnostic
+    // prefix — see-know rotates across three domains, so the fingerprint
+    // never names one (mirrors the `provider` evidence attribute fix).
+    assert!(fp.starts_with("see-know:seek-12345"), "got {fp}");
     assert!(fp.ends_with("223333"), "got {fp}");
     assert!(fp.contains('\u{2026}'));
     // The full secret never appears verbatim — the elided middle is dropped.
     assert!(!fp.contains("aaaabbbbccccddddeeeeffff"));
     // Short/empty keys degrade gracefully.
-    assert_eq!(key_fingerprint(""), "see-know.eu:(no key)");
-    assert_eq!(key_fingerprint("short"), "see-know.eu:short");
+    assert_eq!(key_fingerprint(""), "see-know:(no key)");
+    assert_eq!(key_fingerprint("short"), "see-know:short");
 }
 
 #[test]
@@ -585,14 +587,14 @@ fn client_base_url_uses_endpoint_override_or_default() {
         url.starts_with("https://"),
         "SeekNow base URL must be HTTPS — got {url}"
     );
-    // Must be a well-known domain (see-know.eu) or an override matching HTTPS + non-local rules
+    // Must be a well-known domain (see-know.xyz) or an override matching HTTPS + non-local rules
     assert!(
         url.contains("see-know."),
         "SeekNow base URL must reference the canonical domain — got {url}"
     );
-    // Regression guard for T2.89: the default host is `.eu` (the vendor's own
-    // stated domain — see `SEEKNOW_DEFAULT_KEY`'s doc comment for the evidence
-    // that demoted `.icu`), unless the operator's own shell has
+    // Regression guard: the default host is `.xyz` (promoted to primary
+    // 2026-07-21; `.eu` and `.icu` remain first/second fallback in
+    // `all_base_urls`), unless the operator's own shell has
     // HUNTSMAN_SEEKNOW_BASE set, in which case that override legitimately wins.
     if std::env::var("HUNTSMAN_SEEKNOW_BASE")
         .ok()
@@ -600,8 +602,8 @@ fn client_base_url_uses_endpoint_override_or_default() {
         .is_none()
     {
         assert_eq!(
-            url, "https://see-know.eu/api/v1",
-            "SeekNow default base URL must be the vendor's own `.eu` domain, not `.icu` — got {url}"
+            url, "https://see-know.xyz/api/v1",
+            "SeekNow default base URL must be the `.xyz` domain — got {url}"
         );
     }
 }
