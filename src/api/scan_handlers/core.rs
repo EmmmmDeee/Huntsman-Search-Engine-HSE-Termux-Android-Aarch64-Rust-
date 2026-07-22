@@ -951,9 +951,25 @@ pub async fn plan_preview(
         .into_iter()
         .filter(|m| m.accepts(&target))
         .collect();
+
+    // Convex query value per module: the return-per-unit-budget of firing it as
+    // one query (cheap keyless identity-/key-unlocking modules high, expensive
+    // terminal providers low). This is the order a default scan actually
+    // dispatches in (`convex_budget` is on by default), so the preview reflects
+    // where the phone's budget is spent FIRST — highest query value leading, ties
+    // broken by static priority then name, exactly as the engine's convex
+    // dispatch index orders them.
+    let qv = |m: &std::sync::Arc<dyn Module>| -> f64 {
+        crate::core::convex::query_value(
+            m.cost(),
+            m.is_passive(),
+            crate::core::convex::module_cascade(m.produces(), m.category()),
+        )
+    };
     accepting.sort_by(|a, b| {
-        b.priority()
-            .cmp(&a.priority())
+        qv(b)
+            .total_cmp(&qv(a))
+            .then_with(|| b.priority().cmp(&a.priority()))
             .then_with(|| a.name().cmp(b.name()))
     });
 
@@ -963,13 +979,30 @@ pub async fn plan_preview(
         *by_category.entry(m.category().as_str()).or_insert(0) += 1;
     }
 
+    // Coarse optionality label from the module's cascade, for the UI badge.
+    let optionality = |cascade: f64| -> &'static str {
+        if cascade >= 0.70 {
+            "high"
+        } else if cascade >= 0.40 {
+            "moderate"
+        } else {
+            "terminal"
+        }
+    };
+
     let modules: Vec<serde_json::Value> = accepting
         .iter()
         .map(|m| {
+            let cascade = crate::core::convex::module_cascade(m.produces(), m.category());
             json!({
                 "name": m.name(),
                 "category": m.category().as_str(),
                 "priority": m.priority(),
+                "cost": m.cost().as_str(),
+                "passive": m.is_passive(),
+                // Round to 3 dp so the wire value is stable and compact.
+                "query_value": (qv(m) * 1000.0).round() / 1000.0,
+                "optionality": optionality(cascade),
                 "description": m.description(),
             })
         })
@@ -985,6 +1018,10 @@ pub async fn plan_preview(
             "value": value,
             "kind": target.kind.canonical_str(),
             "module_count": modules.len(),
+            // The preview is ordered by convex query value — the order a default
+            // (convex_budget-on) scan dispatches in, so a budget-truncated run
+            // keeps the highest-return queries.
+            "order": "convex_query_value",
             "categories": categories,
             "modules": modules,
         })),

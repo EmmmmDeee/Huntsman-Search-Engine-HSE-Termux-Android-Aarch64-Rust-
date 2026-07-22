@@ -103,6 +103,19 @@ pub struct ModuleGraph {
     /// (descending), so callers can iterate without re-sorting.
     dispatch_index: HashMap<TargetKind, Vec<usize>>,
 
+    /// The same buckets as [`Self::dispatch_index`], but ordered by convex
+    /// **query value** ([`crate::core::convex::query_value`]) descending — cheap,
+    /// keyless, identity-/key-unlocking queries first; expensive, terminal ones
+    /// last. Walked instead of `dispatch_index` when a scan runs under
+    /// [`crate::core::scan::ScanOptions::convex_budget`], so that a dispatch
+    /// sequence cut short by the phone's budget has already spent it on the
+    /// highest-return-per-query modules. Same *membership* as `dispatch_index`
+    /// (every accepting module is present) — only the order differs — so it never
+    /// changes which modules run, and with the flag off the plain priority order
+    /// is used and behaviour is byte-identical. Precomputed here (pure function of
+    /// static module metadata) so the hot dispatch path pays no per-target sort.
+    convex_dispatch_index: HashMap<TargetKind, Vec<usize>>,
+
     /// Cached `count(modules.consume(kind))` for every `TargetKind`.
     /// Used by `richness_for()` to compute the normalised richness
     /// factor in `expansion_weight_with_richness()`.
@@ -161,8 +174,40 @@ impl ModuleGraph {
 
         let max_consumer_count = consumer_count.values().copied().max().unwrap_or(1).max(1);
 
+        // Convex query-value order: precompute each module's static query value
+        // once (pure function of cost / passivity / produced kinds / category),
+        // then re-order a copy of every dispatch bucket by it — highest-return
+        // query first. Determinism is load-bearing (the engine's whole output is
+        // reproducible), so the f64 key is compared with `total_cmp` and ties are
+        // broken by the SAME (priority desc, name asc) order `dispatch_index`
+        // already carries, so equal-value modules keep their established sequence.
+        let query_value: Vec<f64> = modules
+            .iter()
+            .map(|m| {
+                crate::core::convex::query_value(
+                    m.cost(),
+                    m.is_passive(),
+                    crate::core::convex::module_cascade(m.produces(), m.category()),
+                )
+            })
+            .collect();
+        let convex_dispatch_index: HashMap<TargetKind, Vec<usize>> = dispatch_index
+            .iter()
+            .map(|(kind, bucket)| {
+                let mut ordered = bucket.clone();
+                ordered.sort_by(|&a, &b| {
+                    query_value[b]
+                        .total_cmp(&query_value[a])
+                        .then_with(|| modules[b].priority().cmp(&modules[a].priority()))
+                        .then_with(|| modules[a].name().cmp(modules[b].name()))
+                });
+                (*kind, ordered)
+            })
+            .collect();
+
         Self {
             dispatch_index,
+            convex_dispatch_index,
             consumer_count,
             max_consumer_count,
             producer_index,
@@ -173,6 +218,29 @@ impl ModuleGraph {
     /// accepts `kind`, in priority-descending order.
     pub fn modules_for(&self, kind: TargetKind) -> &[usize] {
         self.dispatch_index.get(&kind).map_or(&[], Vec::as_slice)
+    }
+
+    /// The same module indices as [`Self::modules_for`], but ordered by convex
+    /// **query value** (cheap, high-optionality queries first) — the dispatch
+    /// order a scan uses under
+    /// [`crate::core::scan::ScanOptions::convex_budget`]. Identical membership to
+    /// `modules_for`; only the order differs.
+    pub fn convex_modules_for(&self, kind: TargetKind) -> &[usize] {
+        self.convex_dispatch_index
+            .get(&kind)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// The dispatch order for `kind` under scan options: the convex query-value
+    /// order when `convex_budget` is on, else the plain priority order. One
+    /// helper so every dispatch loop selects the SAME order from the SAME flag,
+    /// and the choice can't drift between the sequential and concurrent paths.
+    pub fn dispatch_order_for(&self, kind: TargetKind, convex_budget: bool) -> &[usize] {
+        if convex_budget {
+            self.convex_modules_for(kind)
+        } else {
+            self.modules_for(kind)
+        }
     }
 
     /// Number of modules that consume `kind`. Zero is legal (e.g. a

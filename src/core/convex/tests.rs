@@ -63,3 +63,103 @@ use super::*;
             "near-neutral for the confident core: {m}"
         );
     }
+
+    // ── Query-level convexity (module dispatch ordering) ─────────────────────
+
+    #[test]
+    fn module_dispatch_cost_orders_passive_below_free_below_keyed_below_paid() {
+        let passive = module_dispatch_cost(ModuleCost::Free, true);
+        let free = module_dispatch_cost(ModuleCost::Free, false);
+        let keyed = module_dispatch_cost(ModuleCost::KeyGated, false);
+        let paid = module_dispatch_cost(ModuleCost::Paid, false);
+        assert!(passive < free, "passive local read is cheapest: {passive}");
+        assert!(free < keyed, "keyless < key-gated: {free} !< {keyed}");
+        assert!(keyed < paid, "key-gated < paid: {keyed} !< {paid}");
+    }
+
+    #[test]
+    fn entity_cascade_ranks_identity_and_keys_above_terminal_geo() {
+        // Identity/credential outputs open the most new query surface; a coordinate
+        // is terminal.
+        assert!(entity_cascade(&EntityKind::Email) > entity_cascade(&EntityKind::Domain));
+        assert!(entity_cascade(&EntityKind::ApiKey) > entity_cascade(&EntityKind::IpAddress));
+        assert!(
+            entity_cascade(&EntityKind::Username) > entity_cascade(&EntityKind::Coordinates),
+            "identity outranks terminal geo"
+        );
+        // Every weight stays in range.
+        for k in [
+            EntityKind::Person,
+            EntityKind::ApiKey,
+            EntityKind::IpAddress,
+            EntityKind::Coordinates,
+            EntityKind::Other("x".into()),
+        ] {
+            let w = entity_cascade(&k);
+            assert!((0.0..=1.0).contains(&w), "cascade {w} out of range for {k}");
+        }
+    }
+
+    #[test]
+    fn module_cascade_takes_the_max_of_outputs_and_category() {
+        // A module that emits even one high-optionality kind earns the premium,
+        // regardless of how terminal its other outputs (or category) are.
+        let mixed = module_cascade(
+            &[EntityKind::Coordinates, EntityKind::Email],
+            ModuleCategory::Geo,
+        );
+        assert!(mixed >= entity_cascade(&EntityKind::Email) - 1e-12);
+        // With NO declared outputs the category proxy carries the estimate, so a
+        // breach-category module still ranks as a high-cascade query.
+        let undeclared_breach = module_cascade(&[], ModuleCategory::Breach);
+        assert!(
+            undeclared_breach > 0.9,
+            "breach category floor applies when outputs undeclared: {undeclared_breach}"
+        );
+        let undeclared_geo = module_cascade(&[], ModuleCategory::Geo);
+        assert!(undeclared_breach > undeclared_geo);
+    }
+
+    #[test]
+    fn query_value_puts_cheap_cascading_queries_first_and_paid_terminal_last() {
+        // The barbell's left end: a keyless breach/identity module that unlocks
+        // credentials → more queries.
+        let cheap_multiplier = query_value(
+            ModuleCost::Free,
+            false,
+            module_cascade(&[EntityKind::Email, EntityKind::ApiKey], ModuleCategory::Breach),
+        );
+        // The right end: a paid, terminal scoring provider (an abuse score).
+        let paid_terminal = query_value(
+            ModuleCost::Paid,
+            false,
+            module_cascade(&[EntityKind::Other("score".into())], ModuleCategory::Threat),
+        );
+        assert!(
+            cheap_multiplier > 1.0,
+            "cheap cascading query lifted above neutral: {cheap_multiplier}"
+        );
+        assert!(
+            paid_terminal < 1.0,
+            "paid terminal query damped below neutral: {paid_terminal}"
+        );
+        assert!(
+            cheap_multiplier > paid_terminal * 2.0,
+            "cheap cascade must clearly outrank paid-terminal: {cheap_multiplier} vs {paid_terminal}"
+        );
+    }
+
+    #[test]
+    fn query_value_is_deterministic_and_finite() {
+        // Same inputs → identical output (precomputed order must be reproducible).
+        for cost in [ModuleCost::Free, ModuleCost::KeyGated, ModuleCost::Paid] {
+            for passive in [false, true] {
+                for cascade in [0.0, 0.3, 0.7, 1.0] {
+                    let a = query_value(cost, passive, cascade);
+                    let b = query_value(cost, passive, cascade);
+                    assert_eq!(a.to_bits(), b.to_bits(), "non-deterministic query_value");
+                    assert!(a.is_finite() && a > 0.0, "query_value must be finite +ve");
+                }
+            }
+        }
+    }

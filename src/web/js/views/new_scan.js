@@ -17,9 +17,22 @@ export async function previewPlan(){
   catch(e){ out.innerHTML = `<div class="alert alert-danger" style="margin:0;padding:6px 10px">${esc(e.message)}</div>`; return; }
   const cats = (p.categories || []).map(c=>`<span class="tag" style="margin:0 4px 2px 0;display:inline-block">${esc(c.category)}&nbsp;${c.count}</span>`).join('');
   const shown = (p.modules || []).slice(0, 40);
-  const mods = shown.map(m=>`<code style="margin:0 4px 2px 0;display:inline-block" title="${attr(m.description||'')}">${esc(m.name)}</code>`).join('');
+  // Colour each module chip by its convex OPTIONALITY tier (how much new query
+  // surface firing it unlocks): high = green, moderate = amber, terminal = grey.
+  // The list arrives already ordered by convex query value, so the leading chips
+  // are the cheapest, highest-return queries — the ones a budget-truncated scan
+  // keeps. The tooltip carries the exact query value / cost for the curious.
+  const optColour = o => o==='high' ? '#4cae4c' : (o==='moderate' ? '#d9a441' : '#8a8f98');
+  const mods = shown.map(m=>{
+    const o = m.optionality || 'moderate';
+    const qv = (typeof m.query_value === 'number') ? m.query_value.toFixed(2) : '?';
+    const tip = `${m.description||''}\n[query value ${qv} · optionality ${o} · cost ${m.cost||'free'}]`;
+    return `<code style="margin:0 4px 3px 0;display:inline-block;border-left:3px solid ${optColour(o)};padding-left:5px" title="${attr(tip.trim())}">${esc(m.name)}</code>`;
+  }).join('');
+  const convex = p.order === 'convex_query_value';
   out.innerHTML = `<div style="padding:8px 10px;border-left:3px solid #5bc0de;background:rgba(91,192,222,0.07)">
     <div>Detected type: <span class="tag">${esc(p.kind)}</span> &middot; <b>${p.module_count}</b> module${p.module_count===1?'':'s'} will run</div>
+    ${convex ? `<div class="text-muted" style="font-size:11px;margin-top:3px">Ordered by <b>convex query value</b> — cheapest, highest-optionality queries first, so a budget-limited scan keeps the ones that pay. <span style="color:#4cae4c">&#9632;</span> high &middot; <span style="color:#d9a441">&#9632;</span> moderate &middot; <span style="color:#8a8f98">&#9632;</span> terminal.</div>` : ''}
     <div style="margin-top:5px">${cats}</div>
     <div style="margin-top:6px;line-height:1.9">${mods}${(p.modules||[]).length>40?' <span class="text-muted">…</span>':''}</div>
   </div>`;

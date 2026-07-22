@@ -221,3 +221,116 @@ use super::*;
         assert!(kinds.contains(&TargetKind::Domain));
         assert!(kinds.contains(&TargetKind::Url));
     }
+
+    // ── Convex query-value dispatch order ────────────────────────────────────
+
+    use crate::core::module::{ModuleCategory, ModuleCost};
+
+    /// Cheap, keyless, identity-producing query — HIGH convex query value but a
+    /// deliberately LOW static priority, so it trails under the plain order and
+    /// must LEAD under the convex order.
+    struct CheapIdentityModule;
+    #[async_trait]
+    impl Module for CheapIdentityModule {
+        fn name(&self) -> &'static str {
+            "cheap_identity"
+        }
+        fn priority(&self) -> u8 {
+            10
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Domain)
+        }
+        async fn process(
+            &self,
+            _t: &Target,
+            _ctx: &ModuleContext,
+        ) -> crate::core::error::Result<ModuleResult> {
+            Ok(ModuleResult::new())
+        }
+        fn category(&self) -> ModuleCategory {
+            ModuleCategory::Breach
+        }
+        fn produces(&self) -> &'static [EntityKind] {
+            const KINDS: &[EntityKind] = &[EntityKind::Email];
+            KINDS
+        }
+    }
+
+    /// Expensive, terminal (paid scoring) query — LOW convex query value but a
+    /// deliberately HIGH static priority, so it leads under the plain order and
+    /// must TRAIL under the convex order.
+    struct PaidTerminalModule;
+    #[async_trait]
+    impl Module for PaidTerminalModule {
+        fn name(&self) -> &'static str {
+            "paid_terminal"
+        }
+        fn priority(&self) -> u8 {
+            90
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Domain)
+        }
+        async fn process(
+            &self,
+            _t: &Target,
+            _ctx: &ModuleContext,
+        ) -> crate::core::error::Result<ModuleResult> {
+            Ok(ModuleResult::new())
+        }
+        fn cost(&self) -> ModuleCost {
+            ModuleCost::Paid
+        }
+        fn category(&self) -> ModuleCategory {
+            ModuleCategory::Threat
+        }
+        fn produces(&self) -> &'static [EntityKind] {
+            const KINDS: &[EntityKind] = &[EntityKind::Coordinates];
+            KINDS
+        }
+    }
+
+    #[test]
+    fn convex_order_has_same_membership_as_priority_order() {
+        let modules: Vec<Arc<dyn Module>> =
+            vec![Arc::new(PaidTerminalModule), Arc::new(CheapIdentityModule)];
+        let g = ModuleGraph::build(&modules);
+        let mut plain = g.modules_for(TargetKind::Domain).to_vec();
+        let mut convex = g.convex_modules_for(TargetKind::Domain).to_vec();
+        plain.sort_unstable();
+        convex.sort_unstable();
+        assert_eq!(
+            plain, convex,
+            "convex order must dispatch the SAME modules, only reordered"
+        );
+    }
+
+    #[test]
+    fn convex_order_fires_cheap_cascading_query_before_paid_terminal() {
+        // Registered paid-first so the plain (priority) order leads with it.
+        let modules: Vec<Arc<dyn Module>> =
+            vec![Arc::new(PaidTerminalModule), Arc::new(CheapIdentityModule)];
+        let g = ModuleGraph::build(&modules);
+        let name = |&idx: &usize| modules[idx].name();
+
+        // Plain order: priority 90 (paid_terminal) before priority 10 (cheap).
+        let plain: Vec<&str> = g.modules_for(TargetKind::Domain).iter().map(name).collect();
+        assert_eq!(plain, vec!["paid_terminal", "cheap_identity"]);
+
+        // Convex order INVERTS it: the cheap, keyless, identity-unlocking query
+        // leads despite its lower static priority — max return per unit of budget.
+        let convex: Vec<&str> = g
+            .convex_modules_for(TargetKind::Domain)
+            .iter()
+            .map(name)
+            .collect();
+        assert_eq!(convex, vec!["cheap_identity", "paid_terminal"]);
+
+        // The flag-driven selector returns the matching order for each setting.
+        assert_eq!(g.dispatch_order_for(TargetKind::Domain, false), g.modules_for(TargetKind::Domain));
+        assert_eq!(
+            g.dispatch_order_for(TargetKind::Domain, true),
+            g.convex_modules_for(TargetKind::Domain)
+        );
+    }
