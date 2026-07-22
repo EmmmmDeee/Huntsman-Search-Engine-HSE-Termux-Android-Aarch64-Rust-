@@ -19,6 +19,7 @@ pub mod diagnostics;
 pub mod dmarc;
 pub mod dns;
 pub mod domains;
+pub mod egress;
 pub mod endpoint_override;
 pub mod extract;
 pub mod found_keys;

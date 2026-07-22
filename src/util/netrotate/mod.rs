@@ -5,9 +5,11 @@
 //! limits:
 //!
 //! * **Proxies** — `HUNTSMAN_SEARCH_PROXY` may be a comma-separated list
-//!   (`socks5://127.0.0.1:9050, http://u:p@host:3128`); requests rotate through
-//!   them round-robin (see [`select_proxy`]). A single value behaves exactly as
-//!   before.
+//!   (`socks5://127.0.0.1:9050, http://u:p@host:3128`); this module parses it
+//!   ([`parse_proxy_list`]) and the validated [`crate::util::egress`] pool
+//!   health-ranks, rotates, fails over, and self-heals across the entries (the
+//!   former blind round-robin, which dispatched even to proven-dead proxies,
+//!   was replaced by that pool).
 //! * **DNS resolvers** — `HUNTSMAN_DNS_RESOLVERS` is a comma list of the public
 //!   providers `cloudflare`, `google`, `quad9`; lookups rotate across them (see
 //!   `util::http`'s SSRF resolver), falling back to the system resolver.
@@ -56,16 +58,6 @@ pub fn parse_proxy_list(raw: &str) -> Vec<String> {
         .filter(|p| !p.is_empty())
         .map(str::to_string)
         .collect()
-}
-
-/// Pick one proxy from `list` by rotating `counter` (round-robin). `None` when
-/// the list is empty. Pure, so the rotation is unit-testable without globals.
-#[must_use]
-pub fn select_proxy(list: &[String], counter: usize) -> Option<String> {
-    if list.is_empty() {
-        return None;
-    }
-    Some(list[counter % list.len()].clone())
 }
 
 /// Parse `HUNTSMAN_DNS_RESOLVERS` into the recognised provider names, preserving

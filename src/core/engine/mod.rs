@@ -414,6 +414,22 @@ impl ScanEngine {
         // `run_with_ledger` (the caller), which wraps this whole function's
         // future in `util::regional::with_regional` — nothing to do here.
 
+        // Keep the validated egress proxy pool healthy: pull operator-configured
+        // published feeds and re-probe due proxies so a dead proxy is evicted
+        // before it can make a resource unreachable. Detached (never blocks the
+        // scan) and internally throttled; not spawned at all when no proxy/feed
+        // is configured, so a proxy-less deployment pays nothing.
+        if crate::util::egress::pool_is_configured()
+            || std::env::var(crate::util::egress::PROXY_FEEDS_ENV).is_ok()
+        {
+            tokio::spawn(async {
+                let (fed, ok) = crate::util::egress::refresh_pool().await;
+                if fed > 0 || ok > 0 {
+                    tracing::debug!(fed, validated_ok = ok, "egress proxy pool refreshed");
+                }
+            });
+        }
+
         // Apply per-scan SeekNow budget override if the operator asked
         // for one. Capped at 500 so a single scan cannot blow the
         // per-session ceiling. `reset_budget` above cleared any prior
