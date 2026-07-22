@@ -286,6 +286,30 @@ use super::*;
             "expected exactly 26 organic results from this fixture, got {}: {urls:?}",
             results.len()
         );
+
+        // Title accuracy regression: Brave wraps the whole card header
+        // (site-name + display-URL + breadcrumb + the `title search-snippet-title`
+        // node) in ONE anchor, so the old whole-anchor strip concatenated
+        // "YouTube youtube.com › @kylo4k Kylo - YouTube". The title must be ONLY
+        // the title node's text — clean, with no leading site-name/URL chrome.
+        let yt = results
+            .iter()
+            .find(|r| r.url.contains("youtube.com/@kylo4k"))
+            .expect("the youtube.com/@kylo4k result present");
+        assert_eq!(
+            yt.title, "Kylo - YouTube",
+            "Brave title must be the title node only, not the header chrome"
+        );
+        // No Brave title should start with a bare site-name + display-URL chrome
+        // prefix (the concatenation signature), e.g. "YouTube youtube.com".
+        for r in &results {
+            assert!(
+                !r.title.contains(" › "),
+                "breadcrumb chrome leaked into the title: {} -> {:?}",
+                r.url,
+                r.title
+            );
+        }
     }
 
     // `testdata/bing_kylo4kylo.html` is a REAL Bing SERP response, fetched live
@@ -416,6 +440,32 @@ use super::*;
             "expected exactly 4 organic results from this fixture, got {}: {urls:?}",
             results.len()
         );
+
+        // Title accuracy regression: each DDG card emits result__a (title) /
+        // result__url / result__snippet for ONE href, so the old last-non-empty
+        // heuristic returned the SNIPPET as the title on 3 of the 4 cards. The
+        // tiktok card's title is its result__a text ("… - TikTok"), NEVER its
+        // "89.8K Likes, 743 Comments…" snippet.
+        let tiktok = results
+            .iter()
+            .find(|r| r.url.contains("tiktok.com"))
+            .expect("tiktok result present");
+        assert!(
+            !tiktok.title.starts_with("89.8K Likes") && tiktok.title.contains("TikTok"),
+            "DDG title must be the result__a title, not the snippet: {:?}",
+            tiktok.title
+        );
+        // No card's title may equal its own snippet (the snippet leaking in).
+        for r in &results {
+            assert!(
+                r.title.is_empty() || r.snippet.is_empty() || r.title != r.snippet,
+                "title equals snippet — the snippet leaked in as the title: \
+                 {} -> title {:?} snippet {:?}",
+                r.url,
+                r.title,
+                r.snippet
+            );
+        }
     }
 
     /// Golden-fixture corpus, fourth slice: MetaGer, one of only THREE engines
