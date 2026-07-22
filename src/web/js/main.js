@@ -17,7 +17,7 @@ import { $, $$, esc } from '/static/js/helpers.js';
 import { API } from '/static/js/api.js';
 import { S } from '/static/js/state.js';
 import { parseHash, nav } from '/static/js/router.js';
-import { clearLiveTimer, clearScanTimer, clearEnginesTimer } from '/static/js/timers.js';
+import { clearLiveTimer, clearScanTimer, clearEnginesTimer, clearOptsTimers } from '/static/js/timers.js';
 import { applyTheme } from '/static/js/theme.js';
 import { renderDash } from '/static/js/views/dash.js';
 import { renderScans } from '/static/js/views/scans.js';
@@ -69,6 +69,7 @@ export async function render(){
   clearLiveTimer();
   clearScanTimer();
   clearEnginesTimer();
+  clearOptsTimers();
   S.route = parseHash();
   $$('#main-navbar-collapse li').forEach(li=>li.classList.remove('active'));
   const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans', engines:'nav-engines', harvest:'nav-harvest'};

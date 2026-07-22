@@ -94,7 +94,12 @@ async fn writer_loop(mut rx: mpsc::UnboundedReceiver<WriteCmd>, store: Arc<dyn S
         }
 
         if !batch.is_empty() {
-            let evts = std::mem::take(&mut batch);
+            // Swap in a fresh pre-sized buffer rather than `mem::take` (which
+            // leaves `batch` at capacity 0, forcing it to re-grow from scratch —
+            // ~log2(64) reallocations — on every drain cycle). The drain is capped
+            // at 64 events, so 64 is the steady-state capacity; the drained Vec is
+            // moved into the blocking task and dropped there.
+            let evts = std::mem::replace(&mut batch, Vec::with_capacity(64));
             let s = Arc::clone(&store);
             if let Err(e) = tokio::task::spawn_blocking(move || {
                 // One transaction for the whole coalesced drain (≤64 events) —

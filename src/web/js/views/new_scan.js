@@ -478,7 +478,10 @@ export async function autoInvestigate(){
   if (st) st.textContent = 'ranking known entities and selecting the highest-value seed…';
   try {
     const r = await API.autoScan();
-    const seed = r.selected_seed ? `${esc(r.selected_seed.kind)} = ${esc(r.selected_seed.value)}` : 'auto-selected entity';
+    // `toast` → `showToast` escapes the message once via `esc()` before setting
+    // innerHTML, so pass the seed raw here — pre-escaping double-escapes it (a
+    // value like O'Brien would render as the literal "O&#39;Brien").
+    const seed = r.selected_seed ? `${r.selected_seed.kind} = ${r.selected_seed.value}` : 'auto-selected entity';
     toast('Autonomous scan queued — investigating '+seed);
     nav(`#/scaninfo?id=${encodeURIComponent(r.scan_id)}&tab=log`);
   } catch(e){

@@ -725,6 +725,15 @@ impl Store {
         )?;
         tx.execute("DELETE FROM events WHERE scan_id = ?1", params![scan_id])?;
         tx.execute("DELETE FROM relations WHERE scan_id = ?1", params![scan_id])?;
+        // `stealer_rows` is scan-scoped like every table above and holds the most
+        // sensitive payload in the store — stolen login/password pairs. It has no
+        // other prune path, so omitting it here left a deleted scan's credentials
+        // live on disk (and `stealer_rows_for_scan` still returns them) and let the
+        // table grow unbounded. A cascade delete must reach it too.
+        tx.execute(
+            "DELETE FROM stealer_rows WHERE scan_id = ?1",
+            params![scan_id],
+        )?;
         // FTS sync: a contentless-external FTS5 index never observes a bare
         // DELETE on its content table, so each orphaned row's text must be
         // removed with an explicit 'delete' command BEFORE the row goes away.

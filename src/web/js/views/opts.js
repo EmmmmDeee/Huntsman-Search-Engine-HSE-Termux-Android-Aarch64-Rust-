@@ -338,13 +338,15 @@ export function wireUpdate(){
     }
   }
 
-  let poller = null;
+  // Stored in shared state (not a closure local) so render()'s clearOptsTimers()
+  // tears it down on navigation — otherwise navigating away mid-update leaks the
+  // interval and re-entering #/opts spawns a duplicate.
   function startPoll(){
-    if (poller) return;
-    poller = setInterval(async()=>{
+    if (S.optsUpdateTimer) return;
+    S.optsUpdateTimer = setInterval(async()=>{
       const s = await refreshStatus();
       if (!s || ['idle','error'].includes(s.phase||'idle')){
-        clearInterval(poller); poller = null;
+        clearInterval(S.optsUpdateTimer); S.optsUpdateTimer = null;
       }
     }, 2500);
   }
@@ -450,17 +452,18 @@ export function wireCells(){
   const PHASE_LABEL = {running:'importing…', error:'last import failed'};
   const PHASE_CLS   = {running:'label-warning', error:'label-danger'};
 
-  let poller = null;
+  // Shared-state timer (see the update poller above) so render()'s
+  // clearOptsTimers() reaps it on navigation instead of leaking a duplicate.
   function startPoll(){
-    if (poller) return;
-    poller = setInterval(async()=>{
+    if (S.optsCellsTimer) return;
+    S.optsCellsTimer = setInterval(async()=>{
       try {
         const s = await API.cellsStatus();
         const p = s.import_phase || 'idle';
         phaseEl.innerHTML = p !== 'idle'
           ? `<span class="label ${PHASE_CLS[p]||'label-default'}">${esc(PHASE_LABEL[p]||p)}</span>` : '';
         if (p !== 'running'){
-          clearInterval(poller); poller = null;
+          clearInterval(S.optsCellsTimer); S.optsCellsTimer = null;
           if (p === 'error'){
             alertify.error('Cell DB import failed: '+(s.import_error||'unknown error'));
           } else {
@@ -468,7 +471,7 @@ export function wireCells(){
           }
           renderOpts($('#view'));
         }
-      } catch { clearInterval(poller); poller = null; }
+      } catch { clearInterval(S.optsCellsTimer); S.optsCellsTimer = null; }
     }, 2500);
   }
 

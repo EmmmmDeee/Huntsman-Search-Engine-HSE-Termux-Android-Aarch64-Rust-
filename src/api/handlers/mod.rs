@@ -622,34 +622,33 @@ pub async fn entity_get(
     State(s): State<Arc<AppState>>,
     Path(uid): Path<String>,
 ) -> impl IntoResponse {
-    match s.store.get_entity(&uid) {
-        Ok(Some(entity)) => {
-            let scan_ids = match s.store.scan_ids_for_entity(&uid) {
-                Ok(ids) => ids,
-                Err(e) => {
-                    tracing::warn!(entity_uid = %uid, error = %e, "scan_ids_for_entity failed");
-                    return internal_error(&e);
-                }
-            };
-            let obs_count = match s.store.observation_count(&uid) {
-                Ok(n) => n,
-                Err(e) => {
-                    tracing::warn!(entity_uid = %uid, error = %e, "observation_count failed");
-                    return internal_error(&e);
-                }
-            };
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "entity": entity,
-                    "scan_ids": scan_ids,
-                    "observation_count": obs_count,
-                })),
-            )
-                .into_response()
-        }
-        Ok(None) => not_found(),
-        Err(e) => internal_error(&e),
+    // Off-reactor: up to three sequential SQLite reads under the global
+    // connection mutex. Running them inline on the async reactor would block it,
+    // unlike every sibling handler here — so the whole read group moves to a
+    // blocking thread.
+    let store = Arc::clone(&s.store);
+    let loaded = tokio::task::spawn_blocking(move || -> crate::core::error::Result<Option<_>> {
+        let Some(entity) = store.get_entity(&uid)? else {
+            return Ok(None);
+        };
+        let scan_ids = store.scan_ids_for_entity(&uid)?;
+        let obs_count = store.observation_count(&uid)?;
+        Ok(Some((entity, scan_ids, obs_count)))
+    })
+    .await;
+    match loaded {
+        Ok(Ok(Some((entity, scan_ids, obs_count)))) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "entity": entity,
+                "scan_ids": scan_ids,
+                "observation_count": obs_count,
+            })),
+        )
+            .into_response(),
+        Ok(Ok(None)) => not_found(),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
     }
 }
 
@@ -671,9 +670,14 @@ pub async fn search_entities(
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(50)
         .min(200);
-    match s.store.search_entities(query, limit) {
-        Ok(entities) => ok_list("entities", entities),
-        Err(e) => internal_error(&e),
+    // Off-reactor: the FTS query runs under the global SQLite mutex on a blocking
+    // thread, matching the sibling handlers' discipline.
+    let store = Arc::clone(&s.store);
+    let query = query.to_string();
+    match tokio::task::spawn_blocking(move || store.search_entities(&query, limit)).await {
+        Ok(Ok(entities)) => ok_list("entities", entities),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
     }
 }
 
