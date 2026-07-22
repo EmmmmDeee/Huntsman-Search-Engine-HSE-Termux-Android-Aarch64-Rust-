@@ -863,7 +863,11 @@ pub async fn init_session(key: &str, value: &str) -> Option<String> {
         .or_else(|| parsed.pointer("/data/session/id"))
         .and_then(|v| v.as_str())
         .map(str::to_string)?;
-    tracing::info!(session_id = %sid, query = %value, "OathNet search session initialised");
+    // `debug!`, not `info!`: `value` is the raw scan target (email / username /
+    // phone = PII). Every other target-bearing detail in the system lives at the
+    // debug/trace "raw logs" tier so `RUST_LOG=info` never surfaces the subject's
+    // identifier; this line must not be the one exception that leaks it at info.
+    tracing::debug!(session_id = %sid, query = %value, "OathNet search session initialised");
     Some(sid)
 }
 

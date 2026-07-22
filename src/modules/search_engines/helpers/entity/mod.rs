@@ -272,7 +272,7 @@ pub(in crate::modules::search_engines) fn build_search_evidence(r: &SearchResult
                 .with_attr("snippet_truncated", "true")
                 .with_attr("snippet_full_len", snippet_len.to_string());
             tracing::debug!(
-                target: "hse::parser",
+                target: "huntsman::parser",
                 url = %r.url,
                 engine = r.engine,
                 full_len = snippet_len,

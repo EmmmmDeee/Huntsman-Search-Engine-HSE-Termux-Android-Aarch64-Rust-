@@ -102,10 +102,16 @@ pub async fn run() -> Result<()> {
     // across the whole system, machine-readable and ingestible by virtually any
     // LLM or log pipeline without a bespoke parser. Each line carries the
     // metadata needed for debugging AND cross-correlation: `timestamp`, `level`,
-    // `target` (module path) + `line_number` (call site), the event's own fields
+    // `target` + `line_number` (call site), the event's own fields
     // flattened to the top level, and the enclosing span chain (`span`/`spans`)
-    // — so the `scan_id`/`module` context an event was emitted under travels with
-    // it and disparate lines can be correlated back to one scan/target/module.
+    // `target` defaults to the emitting module path; the few subsystems that
+    // want a short, stable, greppable tag (engine-health, search, the SERP
+    // parser, per-provider fetch lines) use the `huntsman::<area>` convention —
+    // one prefix, not four, so `grep huntsman::engine_health` and friends work
+    // uniformly. Do not invent new prefixes (`hse::`, `module.`); they scatter
+    // one signal across incompatible tags. The span chain then carries the
+    // `scan_id`/`module` context an event was emitted under, so disparate lines
+    // can be correlated back to one scan/target/module.
     //
     // Default filter: HSE's own crate at TRACE (raw logs for every module, curl
     // call, parse, retry), but the noisy plumbing crates capped at INFO. At TRACE,

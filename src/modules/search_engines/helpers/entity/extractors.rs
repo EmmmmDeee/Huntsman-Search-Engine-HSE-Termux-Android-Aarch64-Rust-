@@ -617,7 +617,7 @@ pub(in crate::modules::search_engines) fn extract_emails_from_text(text: &str) -
     let mut emails = crate::util::extract::page_emails(text);
     if emails.len() > 500 {
         tracing::warn!(
-            target: "hse::parser",
+            target: "huntsman::parser",
             cap = 500,
             text_len = text.len(),
             "extract_emails_from_text hit cap — additional mailboxes in this text were not extracted"
@@ -647,7 +647,7 @@ pub(in crate::modules::search_engines) fn extract_phones_from_text(text: &str) -
     }
     if phones.len() > 300 {
         tracing::warn!(
-            target: "hse::parser",
+            target: "huntsman::parser",
             cap = 300,
             text_len = text.len(),
             "extract_phones_from_text hit cap — additional numbers in this text were not extracted"

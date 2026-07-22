@@ -219,7 +219,7 @@ impl Module for UrlHaus {
             resolve_key(ctx.key_opt(KEY_ENV), ctx.key_opt(KEY_ENV_FALLBACK))
         else {
             tracing::debug!(
-                target: "module.urlhaus",
+                target: "huntsman::urlhaus",
                 "skipped — set HUNTSMAN_ABUSECH_KEY (free at auth.abuse.ch) to enable"
             );
             return Ok(ModuleResult::new());
