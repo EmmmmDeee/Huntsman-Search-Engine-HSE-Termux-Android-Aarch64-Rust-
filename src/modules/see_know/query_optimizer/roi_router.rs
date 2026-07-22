@@ -184,7 +184,7 @@ mod tests {
             ("/search/deep".to_string(), 95.0, 3.0),
         ];
         
-        let (first, budget, time, requested) = router.get_execution_sequence(candidates);
+        let (first, _budget, _time, _requested) = router.get_execution_sequence(candidates);
         
         // First should have the high-ROI queries
         assert!(!first.is_empty());

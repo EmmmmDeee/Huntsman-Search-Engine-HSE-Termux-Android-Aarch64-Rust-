@@ -28,6 +28,7 @@
 mod budget;
 mod client;
 pub mod config;
+pub mod data_log;
 mod endpoints;
 
 // Enterprise plan parameters (the 15,000-daily-credit budget config the live

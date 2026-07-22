@@ -94,6 +94,7 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
             Ok(resp) => {
                 let items = extract_items(&resp);
                 if !items.is_empty() {
+                    super::data_log::log_search("/search", query, query_type, &items);
                     cache_put(ck, items.clone());
                     return Ok(items);
                 }
@@ -187,6 +188,7 @@ pub async fn search_deep(key: &str, query: &str, query_type: &str) -> Result<Vec
             Ok(resp) => {
                 let items = extract_items(&resp);
                 if !items.is_empty() {
+                    super::data_log::log_search("/search/deep", query, query_type, &items);
                     cache_put(ck, items.clone());
                 }
                 return Ok(items);
@@ -295,6 +297,7 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
         match get_json_with_fallback(&endpoint_path, key, &qs, path, archive_query).await {
             Ok(resp) => {
                 let items = extract_items(&resp);
+                super::data_log::log_search(&endpoint_path, archive_query, "", &items);
                 cache_put(ck.clone(), items.clone());
                 return Ok(items);
             }
