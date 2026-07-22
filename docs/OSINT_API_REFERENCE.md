@@ -225,7 +225,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **ACMA RRL** | radio/spectrum licences | M |
 | **AEC / au_electoral** | electoral roll signals | M |
 | **au_property / qld_cadastre / au_unclaimed** | property, cadastre, unclaimed money | M |
-| **au_geo / au_seifa** | ABS statistical geography, socio-economic index | M |
+| **au_geo** | ABS statistical geography (postcode, suburb, LGA, electorates) | M |
 | **AustLII** | case law / tribunal records | M |
 | **Trove** | National Library archive | M K |
 | *(offline)* **postcode_au / address_au / phone_au** | postcode→coord, address/state parse, line-type | M |
