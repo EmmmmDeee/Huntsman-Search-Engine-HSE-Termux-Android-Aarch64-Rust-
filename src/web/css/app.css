@@ -360,6 +360,13 @@ input[type=checkbox],input[type=radio]{ accent-color:var(--accent); width:14px; 
 }
 .glyphicon-spin{ animation:hse-spin 1s linear infinite; }
 @keyframes hse-spin{ to{ transform:rotate(360deg); } }
+/* Inline spinner shown inside a download control while its server-generated
+ * artifact is being fetched (see helpers.js `downloadFile`). Sized to sit on a
+ * button's text baseline; `currentColor` so it inherits the button's text hue
+ * in both themes. */
+.dl-spin{ display:inline-block; width:11px; height:11px; vertical-align:-1px;
+  border:2px solid currentColor; border-right-color:transparent; border-radius:50%;
+  animation:hse-spin .7s linear infinite; opacity:.85; }
 .glyphicon-adjust{-webkit-mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 3a9 9 0 0 0 0 18z' fill='currentColor' stroke='none'/%3E%3C/svg%3E");mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 3a9 9 0 0 0 0 18z' fill='currentColor' stroke='none'/%3E%3C/svg%3E")}
 .glyphicon-alert{-webkit-mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3l10 18H2z'/%3E%3Cline x1='12' y1='9.5' x2='12' y2='14'/%3E%3Ccircle cx='12' cy='17.2' r='1' fill='currentColor' stroke='none'/%3E%3C/svg%3E");mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3l10 18H2z'/%3E%3Cline x1='12' y1='9.5' x2='12' y2='14'/%3E%3Ccircle cx='12' cy='17.2' r='1' fill='currentColor' stroke='none'/%3E%3C/svg%3E")}
 .glyphicon-arrow-right{-webkit-mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='3' y1='12' x2='19' y2='12'/%3E%3Cpolyline points='13,6 19,12 13,18'/%3E%3C/svg%3E");mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='3' y1='12' x2='19' y2='12'/%3E%3Cpolyline points='13,6 19,12 13,18'/%3E%3C/svg%3E")}

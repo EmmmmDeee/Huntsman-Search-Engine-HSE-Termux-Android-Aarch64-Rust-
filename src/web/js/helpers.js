@@ -91,3 +91,102 @@ export function toast(msg,kind){
   alertify.notify(msg, fn, 3);
 }
 
+/* ═══════════ Downloads ═══════════
+ * One canonical path for every file the UI hands to the user. A bare
+ * `<a href download>` is unusable for HSE's server-generated bundles: the
+ * debug / diagnostic bundles run a self-test + `curl` + many DB reads (seconds
+ * on a phone) with ZERO feedback, so a tap looks dead and gets re-tapped; and a
+ * loopback-only 403 or a 500 navigates the browser to a raw JSON error page — a
+ * dead end on Termux mobile with no way back to the app. Instead we `fetch()`
+ * the artifact (showing a spinner on the clicked control), surface any error as
+ * a toast, and save the response as a Blob — the one download mechanism that is
+ * honoured identically across desktop and Android browsers. */
+
+/* Parse the download filename out of a `Content-Disposition` header, honouring
+ * both `filename*=UTF-8''…` (RFC 5987, percent-decoded) and plain
+ * `filename="…"`. Returns null when absent so the caller can fall back. */
+export function filenameFromDisposition(cd){
+  if (!cd) return null;
+  const ext = cd.match(/filename\*\s*=\s*(?:UTF-8'')?([^;]+)/i);
+  if (ext){ try { return decodeURIComponent(ext[1].trim().replace(/^["']|["']$/g,'')); } catch { /* fall through */ } }
+  const plain = cd.match(/filename\s*=\s*"([^"]+)"|filename\s*=\s*([^;]+)/i);
+  if (plain){ return (plain[1] || plain[2] || '').trim(); }
+  return null;
+}
+
+/* Save an in-memory Blob under `name`. The blob → object-URL → synthetic-anchor
+ * → click → revoke sequence is the cross-browser-reliable save path (a
+ * `blob:` URL always honours the `download` attribute, unlike a same-origin
+ * `text/plain` href that Android browsers may open inline). Single definition —
+ * the stealer-log ".txt" export and every fetch-based download share it. */
+export function triggerBlobDownload(blob, name){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name || 'download';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  // Revoke on the next tick — some mobile browsers need the URL to outlive the
+  // synchronous click handler for the save to actually start.
+  setTimeout(()=>URL.revokeObjectURL(url), 0);
+}
+
+/* Fetch `url` and save it as a file, with a spinner on `opts.button` while the
+ * server works and a toast on any failure (never a navigation away). Resolves
+ * to true on success, false on a handled error. `opts.fallbackName` names the
+ * file when the response carries no `Content-Disposition`. */
+export async function downloadFile(url, opts){
+  opts = opts || {};
+  const btn = opts.button;
+  let restore = null;
+  if (btn && !btn.dataset.dlBusy){
+    const orig = btn.innerHTML;
+    btn.dataset.dlBusy = '1';
+    btn.classList.add('disabled');
+    btn.setAttribute('aria-busy','true');
+    btn.innerHTML = '<span class="dl-spin" aria-hidden="true"></span>&nbsp;Preparing…';
+    restore = ()=>{ btn.innerHTML = orig; btn.classList.remove('disabled'); btn.removeAttribute('aria-busy'); delete btn.dataset.dlBusy; };
+  } else if (btn && btn.dataset.dlBusy){
+    return false; // a download from this control is already in flight
+  }
+  try {
+    const resp = await fetch(url, { headers: { 'Accept': 'application/octet-stream' } });
+    if (!resp.ok){
+      let msg = 'HTTP ' + resp.status;
+      try { const j = await resp.clone().json(); if (j && j.error) msg = j.error; }
+      catch { try { const t = (await resp.text()).trim(); if (t) msg = trunc(t, 160); } catch { /* keep HTTP status */ } }
+      toast('Download failed: ' + msg, 'err');
+      return false;
+    }
+    const name = filenameFromDisposition(resp.headers.get('content-disposition')) || opts.fallbackName || 'hse-download';
+    triggerBlobDownload(await resp.blob(), name);
+    return true;
+  } catch (e){
+    toast('Download failed: ' + ((e && e.message) || e), 'err');
+    return false;
+  } finally {
+    if (restore) restore();
+  }
+}
+
+/* One delegated, document-level handler for every `[data-download]` control
+ * (anchor or button). Intercepts the click, cancels the default navigation, and
+ * routes it through `downloadFile` so the spinner + error-toast behaviour is
+ * automatic everywhere — a control opts in purely by markup
+ * (`data-download` + its `href`/`data-download-url`, optional `data-download-name`).
+ * The raw `href` remains a no-JS fallback. Idempotent; call once at bootstrap. */
+export function initDownloads(){
+  if (window.__hseDownloadsInit) return;
+  window.__hseDownloadsInit = true;
+  document.addEventListener('click', e=>{
+    const el = e.target.closest('[data-download]');
+    if (!el) return;
+    const url = el.getAttribute('data-download-url') || el.getAttribute('href');
+    if (!url || url === '#') return;
+    e.preventDefault();
+    downloadFile(url, { button: el, fallbackName: el.getAttribute('data-download-name') || undefined });
+  });
+}
+

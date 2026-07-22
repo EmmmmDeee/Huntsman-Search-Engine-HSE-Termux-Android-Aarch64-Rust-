@@ -44,9 +44,9 @@ export async function renderScanInfo(v){
             ? `<button class="btn btn-warning btn-sm" data-cancel="${attr(id)}" title="Abort scan"><i class="glyphicon glyphicon-stop"></i>&nbsp;Abort</button>`
             : ''}
           <button class="btn btn-default btn-sm" data-rerun="${attr(id)}" title="Rescan"><i class="glyphicon glyphicon-repeat"></i>&nbsp;Rescan</button>
-          <a class="btn btn-default btn-sm" href="${API.csvUrl(id)}" title="Export entities as CSV"><i class="glyphicon glyphicon-download-alt"></i>&nbsp;CSV</a>
-          <a class="btn btn-default btn-sm" id="si-json-link" href="${API.reportUrl(id, false)}" title="Export full report as JSON"><i class="glyphicon glyphicon-save"></i>&nbsp;JSON</a>
-          <a class="btn btn-primary btn-sm" href="${API.debugUrl(id)}" download title="One-click debug bundle: every entity, the full event sequence, correlations, and the scored self-audit with every weakness — one file for complete offline debugging"><i class="glyphicon glyphicon-list-alt"></i>&nbsp;Debug bundle</a>
+          <a class="btn btn-default btn-sm" href="${API.csvUrl(id)}" data-download title="Export entities as CSV"><i class="glyphicon glyphicon-download-alt"></i>&nbsp;CSV</a>
+          <a class="btn btn-default btn-sm" id="si-json-link" href="${API.reportUrl(id, false)}" data-download title="Export full report as JSON"><i class="glyphicon glyphicon-save"></i>&nbsp;JSON</a>
+          <a class="btn btn-primary btn-sm" href="${API.debugUrl(id)}" download data-download title="One-click debug bundle: every entity, the full event sequence, correlations, and the scored self-audit with every weakness — one file for complete offline debugging"><i class="glyphicon glyphicon-list-alt"></i>&nbsp;Debug bundle</a>
           <button class="btn btn-danger btn-sm" data-delete="${attr(id)}" title="Delete"><i class="glyphicon glyphicon-trash"></i></button>
         </div>
         <div class="text-muted" style="font-size:11px;margin-top:4px">

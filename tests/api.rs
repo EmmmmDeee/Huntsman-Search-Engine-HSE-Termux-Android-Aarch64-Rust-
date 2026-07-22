@@ -3374,6 +3374,13 @@ async fn scan_debug_bundle_404_unknown_and_text_attachment_for_known() {
         cd.contains("attachment") && cd.contains(".txt"),
         "debug.txt must carry a download Content-Disposition, got {cd:?}"
     );
+    // Filename must be the clean `hse-debug-<id>.txt` — NOT the double-suffixed
+    // `hse-debug.txt-<id>.debug.txt` the ext-only builder used to emit when a
+    // caller passed "debug.txt" for both the label and the extension.
+    assert!(
+        cd.contains("filename=\"hse-debug-") && cd.ends_with(".txt\""),
+        "debug bundle filename must be hse-debug-<id>.txt (no doubled extension), got {cd:?}"
+    );
 
     let resp = app
         .oneshot(get("/api/v1/scans/__nope__/debug.txt"))

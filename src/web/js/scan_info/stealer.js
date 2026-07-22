@@ -1,4 +1,4 @@
-import { $, $$, attr, esc, toast } from '/static/js/helpers.js';
+import { $, $$, attr, esc, toast, triggerBlobDownload } from '/static/js/helpers.js';
 import { API } from '/static/js/api.js';
 
 /* ── Stealer Logs Viewer — file-explorer refactor ────────────────────────
@@ -422,16 +422,11 @@ async function copyText(text) {
   }
 }
 
+// Local stealer-row export goes through the shared blob-save path so this
+// (in-memory, client-side) ".txt" download and every server-fetched download
+// use one identical, cross-browser-reliable save mechanism.
 function downloadText(text, filename) {
-  const blob = new Blob([text], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  triggerBlobDownload(new Blob([text], { type: 'text/plain' }), filename);
 }
 
 let stylesInjected = false;

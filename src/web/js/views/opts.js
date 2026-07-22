@@ -97,11 +97,11 @@ export async function renderOpts(v){
           contains scan targets); secret-free (key names only, never values).
         </p>
         <p>
-          <a class="btn btn-primary btn-sm" href="${API.debugBundleUrl()}" download>Download full diagnostic bundle</a>
+          <a class="btn btn-primary btn-sm" href="${API.debugBundleUrl()}" download data-download data-download-name="hse-diagnostic-bundle.txt">Download full diagnostic bundle</a>
           &nbsp;
           <button id="st-run" class="btn btn-default btn-sm">Run self-test</button>
           &nbsp;
-          <a class="btn btn-link btn-sm" href="${API.logsUrl()}" download title="Just the raw TRACE log ring (a subset of the full bundle)">logs only</a>
+          <a class="btn btn-link btn-sm" href="${API.logsUrl()}" download data-download data-download-name="hse-debug.log" title="Just the raw TRACE log ring (a subset of the full bundle)">logs only</a>
           &nbsp;<span id="st-summary" class="text-muted" style="font-size:12px"></span>
         </p>
         <div id="st-results" style="margin-top:8px"></div>
