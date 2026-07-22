@@ -387,6 +387,84 @@ pub async fn scraper_health(State(s): State<Arc<AppState>>) -> impl IntoResponse
     .into_response()
 }
 
+/// Shape a live capability-probe sweep into the `GET /api/v1/capabilities/probe`
+/// wire JSON. Split out of the handler so the mapping is unit-testable without
+/// touching the network (the handler just runs the real fleet probe and hands
+/// its reports here).
+pub(crate) fn capability_probe_json(
+    reports: &[crate::util::capability_probe::ProbeReport],
+) -> Value {
+    use crate::util::capability_probe::{ProbeOutcome, is_canary};
+
+    let (mut alive, mut empty, mut unreachable, mut timed_out) = (0usize, 0usize, 0usize, 0usize);
+    let modules: Vec<Value> = reports
+        .iter()
+        .map(|r| {
+            let (outcome, found, reason) = match &r.outcome {
+                ProbeOutcome::Alive { found } => {
+                    alive += 1;
+                    ("alive", Some(*found), None)
+                }
+                ProbeOutcome::Empty => {
+                    empty += 1;
+                    ("empty", None, None)
+                }
+                ProbeOutcome::Unreachable { reason } => {
+                    unreachable += 1;
+                    ("unreachable", None, Some(reason.clone()))
+                }
+                ProbeOutcome::TimedOut => {
+                    timed_out += 1;
+                    ("timed-out", None, None)
+                }
+            };
+            json!({
+                "module": r.module,
+                "kind": r.kind.canonical_str(),
+                "value": r.value,
+                "outcome": outcome,
+                "found": found,
+                "reason": reason,
+                "canary": is_canary(r.module),
+                "drift": r.is_confirmed_drift(),
+            })
+        })
+        .collect();
+    let drift: Vec<&str> = reports
+        .iter()
+        .filter(|r| r.is_confirmed_drift())
+        .map(|r| r.module)
+        .collect();
+    json!({
+        "probed": reports.len(),
+        "alive": alive,
+        "empty": empty,
+        "unreachable": unreachable,
+        "timed_out": timed_out,
+        "drift": drift,
+        "modules": modules,
+    })
+}
+
+/// `POST /api/v1/capabilities/probe` — the **proactive** capability preflight:
+/// probe every keyless module against its real provider right now and report
+/// alive / empty / unreachable / timed-out per module, flagging confirmed drift
+/// (a curated canary that reached its provider yet parsed nothing). This is the
+/// on-demand, network-bound HTTP twin of `hse doctor --live`, sharing the exact
+/// probe implementation ([`crate::util::capability_probe`]) so the Web UI, the
+/// CLI, and the weekly CI drift sweep can never diverge.
+///
+/// Distinct from the two passive health endpoints: `/modules/health` (this
+/// process's failure streaks) and `/health/scrapers` (persisted cross-scan
+/// drift) both only know what real scans already tried — this one actively
+/// verifies capability before an investigation relies on it. Powers the Engines
+/// page's "Run live capability probe" panel. Bounded concurrency keeps a
+/// full-fleet sweep from opening a socket storm on a low-power Termux device.
+pub async fn capabilities_probe() -> Json<Value> {
+    let reports = crate::util::capability_probe::probe_keyless_fleet(8).await;
+    Json(capability_probe_json(&reports))
+}
+
 /// `GET /api/v1/selftest` — run the full module + feature self-validation suite
 /// on demand and return the structured report. Powers the Settings page's
 /// "Run self-test" button. Offline + side-effect-free (a throwaway temp DB).
@@ -622,34 +700,33 @@ pub async fn entity_get(
     State(s): State<Arc<AppState>>,
     Path(uid): Path<String>,
 ) -> impl IntoResponse {
-    match s.store.get_entity(&uid) {
-        Ok(Some(entity)) => {
-            let scan_ids = match s.store.scan_ids_for_entity(&uid) {
-                Ok(ids) => ids,
-                Err(e) => {
-                    tracing::warn!(entity_uid = %uid, error = %e, "scan_ids_for_entity failed");
-                    return internal_error(&e);
-                }
-            };
-            let obs_count = match s.store.observation_count(&uid) {
-                Ok(n) => n,
-                Err(e) => {
-                    tracing::warn!(entity_uid = %uid, error = %e, "observation_count failed");
-                    return internal_error(&e);
-                }
-            };
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "entity": entity,
-                    "scan_ids": scan_ids,
-                    "observation_count": obs_count,
-                })),
-            )
-                .into_response()
-        }
-        Ok(None) => not_found(),
-        Err(e) => internal_error(&e),
+    // Off-reactor: up to three sequential SQLite reads under the global
+    // connection mutex. Running them inline on the async reactor would block it,
+    // unlike every sibling handler here — so the whole read group moves to a
+    // blocking thread.
+    let store = Arc::clone(&s.store);
+    let loaded = tokio::task::spawn_blocking(move || -> crate::core::error::Result<Option<_>> {
+        let Some(entity) = store.get_entity(&uid)? else {
+            return Ok(None);
+        };
+        let scan_ids = store.scan_ids_for_entity(&uid)?;
+        let obs_count = store.observation_count(&uid)?;
+        Ok(Some((entity, scan_ids, obs_count)))
+    })
+    .await;
+    match loaded {
+        Ok(Ok(Some((entity, scan_ids, obs_count)))) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "entity": entity,
+                "scan_ids": scan_ids,
+                "observation_count": obs_count,
+            })),
+        )
+            .into_response(),
+        Ok(Ok(None)) => not_found(),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
     }
 }
 
@@ -671,9 +748,14 @@ pub async fn search_entities(
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(50)
         .min(200);
-    match s.store.search_entities(query, limit) {
-        Ok(entities) => ok_list("entities", entities),
-        Err(e) => internal_error(&e),
+    // Off-reactor: the FTS query runs under the global SQLite mutex on a blocking
+    // thread, matching the sibling handlers' discipline.
+    let store = Arc::clone(&s.store);
+    let query = query.to_string();
+    match tokio::task::spawn_blocking(move || store.search_entities(&query, limit)).await {
+        Ok(Ok(entities)) => ok_list("entities", entities),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
     }
 }
 

@@ -157,11 +157,27 @@ pub async fn settings_keys_get(
         })
         .collect();
     let count = entries.len();
+    // Convex acquisition guidance: unset keys ranked highest-leverage first
+    // (multiplier > expansion > terminal) with a free-signup hint each — the same
+    // ranking `hse doctor` prints, surfaced to the web-UI operator so the single
+    // highest-value action (register the free multiplier keys) is one tap away
+    // instead of CLI-only. Sourced from the one canonical `key_roi::rank_unset_keys`.
+    let acquisition: Vec<Value> = crate::util::key_roi::rank_unset_keys(|k| loaded.contains_key(k))
+        .into_iter()
+        .map(|(name, roi)| {
+            json!({
+                "name": name,
+                "tier": roi.label(),
+                "hint": keys::signup_hint(name),
+            })
+        })
+        .collect();
     Json(json!({
         "keys": entries,
         "count": count,
         "write_enabled": s.allow_key_write,
         "env_path": path,
+        "acquisition": acquisition,
     }))
     .into_response()
 }

@@ -186,7 +186,7 @@ pub async fn run() -> Result<()> {
             max_concurrent,
             adaptive,
             max_roi,
-            convex_budget,
+            no_convex_budget,
             no_regional,
             min_marginal_yield,
             expansion_strategy,
@@ -228,7 +228,9 @@ pub async fn run() -> Result<()> {
                 max_concurrent,
                 adaptive,
                 max_roi: max_roi && !full,
-                convex_budget,
+                // Optionality/barbell allocation is on unless explicitly disabled
+                // — every scan maximises value-per-query out of the box.
+                convex_budget: !no_convex_budget,
                 // AU-focused regional searching is on unless explicitly disabled.
                 regional_search: !no_regional,
                 min_marginal_yield,
@@ -260,7 +262,7 @@ pub async fn run() -> Result<()> {
         } => audit::cmd_audit(csv, scan_id, log, json).await,
         Command::Benchmark { scan_id, json } => benchmark::cmd_benchmark(scan_id, json),
         Command::Gaps { scan_id, json } => gap::cmd_gaps(scan_id, json),
-        Command::Doctor => doctor::cmd_doctor().await,
+        Command::Doctor { live } => doctor::cmd_doctor(live).await,
         Command::Selftest { json } => selftest::cmd_selftest(json).await,
         Command::Provision {
             env_only,
@@ -288,7 +290,7 @@ pub async fn run() -> Result<()> {
             max_wall_time,
             max_concurrent,
             max_roi,
-            convex_budget,
+            no_convex_budget,
             no_regional,
             min_marginal_yield,
             expansion_strategy,
@@ -316,7 +318,8 @@ pub async fn run() -> Result<()> {
                 max_wall_time_secs: max_wall_time,
                 max_concurrent,
                 max_roi,
-                convex_budget,
+                // Optionality/barbell allocation is on unless explicitly disabled.
+                convex_budget: !no_convex_budget,
                 // AU-focused regional searching is on unless explicitly disabled.
                 regional_search: !no_regional,
                 min_marginal_yield,

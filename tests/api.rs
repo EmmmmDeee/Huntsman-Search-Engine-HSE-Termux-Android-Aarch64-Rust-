@@ -1502,6 +1502,35 @@ async fn settings_keys_get_lists_keys() {
         "response must contain keys array"
     );
     assert!(json["keys"].as_array().is_some());
+
+    // Convex acquisition guidance: unset keys ranked highest-leverage first, each
+    // with a tier and (usually) a free-signup hint. The web-UI operator gets the
+    // same ranking `hse doctor` prints.
+    let acq = json["acquisition"]
+        .as_array()
+        .expect("response must contain an acquisition array");
+    assert!(
+        !acq.is_empty(),
+        "a fresh test app has unset keys, so acquisition must be non-empty"
+    );
+    // Ranking is Multiplier > Expansion > Terminal: the tier rank must be
+    // non-increasing across the list (never a lower tier before a higher one).
+    let rank = |t: &str| match t {
+        "multiplier" => 2,
+        "expansion" => 1,
+        _ => 0,
+    };
+    let mut prev = i32::MAX;
+    for e in acq {
+        let tier = e["tier"].as_str().expect("each entry has a tier");
+        assert!(e["name"].as_str().is_some(), "each entry has a name");
+        let r = rank(tier);
+        assert!(
+            r <= prev,
+            "acquisition must be ranked highest-leverage first (saw {tier} out of order)"
+        );
+        prev = r;
+    }
 }
 
 #[tokio::test]
@@ -2348,6 +2377,11 @@ async fn spa_references_only_registered_api_endpoints() {
             "plan" => "/api/v1/plan?value=example.com".to_string(),
             // Cell-tower DB status — ungated GET, safe to probe with no side effects.
             "cells" => "/api/v1/cells/status".to_string(),
+            // Live capability probe — POST-only (a real network sweep per keyless
+            // module), so a bare GET returns 405, not the fallback 404; the
+            // assertion only needs "not 404", confirming the route is registered
+            // WITHOUT firing the live network probe in the hermetic suite.
+            "capabilities" => "/api/v1/capabilities/probe".to_string(),
             // System self-diagnosis bundle — loopback-gated and it also needs a
             // `ConnectInfo` peer, so a bare probe GET reaches the handler and
             // returns 403/500 (never the fallback 404), confirming the route is

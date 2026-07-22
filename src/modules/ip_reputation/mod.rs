@@ -148,13 +148,16 @@ async fn fetch_exit_set(http: &reqwest::Client, url: &str) -> Result<HashSet<Str
 /// retries — unchanged from before T2.111, only the failure signal changed
 /// from a silent `None` to a propagated `Error`.
 async fn exit_set(http: &reqwest::Client) -> Result<Arc<HashSet<String>>> {
-    if let Some(s) = EXIT_SET.get() {
-        return Ok(Arc::clone(s));
-    }
-    let fetched = fetch_exit_set(http, TOR_EXIT_LIST_URL).await?;
-    let arc = Arc::new(fetched);
-    let _ = EXIT_SET.set(Arc::clone(&arc));
-    Ok(EXIT_SET.get().map_or(arc, Arc::clone))
+    // `get_or_try_init` single-flights the fetch: when several IP targets miss the
+    // cache concurrently, exactly ONE runs the (full Tor exit-list) download and
+    // the rest await its result — instead of the old get/fetch/set pattern where
+    // every concurrent first-caller fetched the whole list independently. On a
+    // fetch error the cell stays uninitialised, so the next call retries (the
+    // documented transient-failure contract above is preserved).
+    EXIT_SET
+        .get_or_try_init(|| async { fetch_exit_set(http, TOR_EXIT_LIST_URL).await.map(Arc::new) })
+        .await
+        .map(Arc::clone)
 }
 
 // ── Module ─────────────────────────────────────────────────────────

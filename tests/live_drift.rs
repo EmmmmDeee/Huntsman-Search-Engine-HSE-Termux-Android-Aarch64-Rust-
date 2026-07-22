@@ -3,113 +3,109 @@
 //! These hit **real** third-party endpoints to catch wire-format drift in the
 //! free / keyless modules: when a provider silently changes its JSON/text
 //! shape, the module's parser yields nothing while the unit tests — which run
-//! against canned fixtures — stay green. So a **non-empty** result means the
-//! parser still understands the live response (healthy); an **empty** result
-//! is the drift signal that fails the test.
+//! against canned fixtures — stay green. A drifted parser is invisible until a
+//! real scan comes back empty, so this sweep surfaces it up front.
 //!
-//! They are `#[ignore]`d so the hermetic default suite (`cargo test --all`,
-//! what PR CI runs) never touches the network. The dedicated
-//! `.github/workflows/live-drift.yml` job runs them weekly + on manual dispatch
-//! with `--ignored`, so a third-party outage can never fail a pull request.
-//! Run locally:
+//! The whole fleet is swept through one shared implementation,
+//! [`huntsman_search_engine::util::capability_probe`], the same code that backs
+//! `hse doctor --live`. Each keyless, network module is probed against a
+//! canonical stable target and its outcome classified:
+//!   * **alive**       — provider reached, parser produced ≥1 entity (healthy).
+//!   * **empty**       — provider reached, parser produced 0 entities.
+//!   * **unreachable** — transport error (provider down / device offline).
+//!   * **timed-out**   — exceeded the module's own budget (provider slow/hung).
+//!
+//! Only a curated **canary** set (`capability_probe::CANARY_PROBES`, e.g.
+//! `ip_geo` / `crtsh` / `bgpview` / `ripestat`) asserts must-yield: an `empty`
+//! there is confirmed wire-format drift and **fails** the run. A non-canary
+//! `empty` is only informational — its sample may legitimately have no data
+//! (e.g. a breach lookup for a clean address) — so it never fails. Transport
+//! and timeout outcomes are always **skips**, never failures: a third-party
+//! outage or a throttled CI network can't redden the sweep, only real drift can.
+//! That keeps the scheduled `.github/workflows/live-drift.yml` run's contract
+//! intact — a red run is an actionable drift, never a flaky endpoint.
+//!
+//! The tests are `#[ignore]`d so the hermetic default suite (`cargo test --all`,
+//! what PR CI runs) never touches the network. Run the live sweep with:
 //!
 //! ```text
 //! cargo test --test live_drift -- --ignored --nocapture
 //! ```
-//!
-//! Scope: only free, keyless modules whose endpoints are stable enough for a
-//! scheduled check. Keyed modules need a secrets-gated variant (not here).
-//! Each module runs through the **real** SSRF-guarded `build_client()` — the
-//! same client production uses — so this also exercises the live transport
-//! path, not just parsing.
 
-use std::collections::HashMap;
+use huntsman_search_engine::util::capability_probe::{self, ProbeOutcome};
 
-use huntsman_search_engine::{
-    core::{
-        cancel::CancelHandle,
-        module::{Module, ModuleContext, ModuleResult},
-        scan::{Target, TargetKind},
-    },
-    modules,
-    util::http::build_client,
-};
-
-/// A real, network-capable module context — the production SSRF-guarded client,
-/// no API keys (these modules are all free / keyless). The client is built once
-/// and cheaply cloned (`reqwest::Client` is internally `Arc`), so repeated
-/// calls reuse one connection pool / DNS resolver rather than re-initialising.
-fn live_ctx() -> ModuleContext {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    let (bus, _rx) = tokio::sync::broadcast::channel(8);
-    ModuleContext {
-        scan_id: "live-drift".into(),
-        bus,
-        http: CLIENT.get_or_init(build_client).clone(),
-        keys: HashMap::new(),
-        cancel: CancelHandle::new(),
-    }
-}
-
-/// Run a module against a live target, bounded by the module's own
-/// `max_timeout_ms()` — mirroring how the engine wraps `process()` in
-/// production (`build_client()` only bounds *connection* establishment, so a
-/// server that accepts then stalls would otherwise hang the scheduled job until
-/// GitHub's multi-hour default). The three failure modes are reported
-/// distinctly so a red weekly run is triageable at a glance:
-///   * timeout  — provider slow/hung (not necessarily drift),
-///   * transport error (DNS/TLS/connect) — provider down (not drift),
-///   * Ok(result) — handed to `assert_no_drift`, where empty == drift.
-async fn run_live(m: &dyn Module, kind: TargetKind, value: &str) -> ModuleResult {
-    let budget = std::time::Duration::from_millis(m.max_timeout_ms());
-    // Bind target + ctx so they outlive the borrowed future (a bare temporary
-    // would be dropped at the end of the `let fut = …` statement).
-    let target = Target::new(kind, value);
-    let ctx = live_ctx();
-    match tokio::time::timeout(budget, m.process(&target, &ctx)).await {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => panic!(
-            "{}: transport error against its live API (provider down? not necessarily drift): {e}",
-            m.name()
-        ),
-        Err(_) => panic!(
-            "{}: timed out after {} ms (provider slow/hung? not necessarily drift)",
-            m.name(),
-            m.max_timeout_ms()
-        ),
-    }
-}
-
-/// Assert a live module produced at least one entity, with a drift-specific
-/// message naming the provider so a scheduled-run failure is actionable.
-fn assert_no_drift(m_name: &str, provider: &str, r: &ModuleResult) {
+/// Sweep the whole keyless module fleet against live providers. Fails only on a
+/// **confirmed** drift (a canary that reached its provider yet parsed nothing);
+/// everything else is reported and tolerated. `--nocapture` shows the full
+/// per-module table so a red run — or a healthy one — is triageable at a glance.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "live network — run via the live-drift workflow or `--ignored`"]
+async fn fleet_capability_drift() {
+    // Modest concurrency: enough to finish a ~100-module sweep quickly without
+    // opening a socket storm on a constrained CI / mobile network.
+    let reports = capability_probe::probe_keyless_fleet(8).await;
     assert!(
-        !r.entities.is_empty(),
-        "{m_name} DRIFT: {provider} returned a response that parsed to zero \
-         entities — the upstream wire shape likely changed"
+        !reports.is_empty(),
+        "the sweep probed zero modules — registry or sample table is broken"
+    );
+
+    let mut alive = 0usize;
+    let mut empty = 0usize;
+    let mut unreachable = 0usize;
+    let mut timed_out = 0usize;
+    let mut drifted: Vec<String> = Vec::new();
+
+    for r in &reports {
+        let canary = if capability_probe::is_canary(r.module) {
+            " [canary]"
+        } else {
+            ""
+        };
+        match &r.outcome {
+            ProbeOutcome::Alive { found } => {
+                alive += 1;
+                println!("  alive        {:<22} {found} found{canary}", r.module);
+            }
+            ProbeOutcome::Empty => {
+                empty += 1;
+                println!(
+                    "  empty        {:<22} ({} {}){canary}",
+                    r.module,
+                    r.kind.canonical_str(),
+                    r.value
+                );
+                if r.is_confirmed_drift() {
+                    drifted.push(format!(
+                        "{} — {} returned 0 entities for {} {}",
+                        r.module,
+                        r.module,
+                        r.kind.canonical_str(),
+                        r.value
+                    ));
+                }
+            }
+            ProbeOutcome::Unreachable { reason } => {
+                unreachable += 1;
+                println!("  unreachable  {:<22} {reason}{canary}", r.module);
+            }
+            ProbeOutcome::TimedOut => {
+                timed_out += 1;
+                println!("  timed-out    {:<22}{canary}", r.module);
+            }
+        }
+    }
+
+    println!(
+        "\nlive-drift sweep: {} probed — {alive} alive, {empty} empty, \
+         {unreachable} unreachable, {timed_out} timed-out",
+        reports.len()
+    );
+
+    assert!(
+        drifted.is_empty(),
+        "DRIFT: {} canary module(s) reached their provider but parsed zero \
+         entities — the upstream wire shape likely changed:\n  {}",
+        drifted.len(),
+        drifted.join("\n  ")
     );
 }
-
-#[tokio::test]
-#[ignore = "live network — run via the live-drift workflow or `--ignored`"]
-async fn ip_geo_drift() {
-    // ip-api.com IP geolocation for a stable, well-known public IP.
-    let r = run_live(&modules::ip_geo::IpGeo, TargetKind::IpAddress, "8.8.8.8").await;
-    assert_no_drift("ip_geo", "ip-api.com", &r);
-}
-
-// NOTE — why only ip_geo (for now):
-// The drift tests run through the production `build_client()`, whose 5 s
-// `connect_timeout` is tuned for real mobile links. In throttled / sandboxed
-// CI networks, plain-HTTP `ip_geo` (ip-api.com) connects reliably, but several
-// HTTPS free endpoints (e.g. api.hackertarget.com, dns.google DoH) intermittently
-// exceed that connect budget — a transport flake that would make a scheduled
-// job noisy. Additional modules are added here only once verified to run
-// cleanly through the real client end to end, to keep transport flakiness low.
-// (Those endpoints are reachable — confirmed via raw curl — so this is purely a
-// connect-budget interaction, not a defect in those modules.)
-//
-// Triage when this job goes red: `run_live` distinguishes the cases — a DRIFT
-// assertion (empty parse) means the upstream wire shape changed and the module
-// needs updating; a "transport error" / "timed out" panic means the provider
-// was down or slow, which is informational, not a code defect.

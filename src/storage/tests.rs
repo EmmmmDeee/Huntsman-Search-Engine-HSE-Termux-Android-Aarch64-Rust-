@@ -1004,6 +1004,53 @@ fn delete_scan_cascades_to_events() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[test]
+fn delete_scan_cascades_to_stealer_rows() {
+    use crate::core::stealer_row::{StealerRow, StealerRowKind};
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    insert_scan(&store, "scan-with-creds");
+    insert_scan(&store, "scan-keeper");
+    let row = |login: &str, password: &str| StealerRow {
+        log_id: Some("log-1".into()),
+        domain: Some("example.com".into()),
+        login: Some(login.into()),
+        password: Some(password.into()),
+        pwned_at: Some("2026-05-20T21:00:00Z".into()),
+        kind: StealerRowKind::classify(Some("example.com")),
+    };
+    store
+        .insert_stealer_rows_batch(
+            "scan-with-creds",
+            &[row("alice", "hunter2"), row("bob", "pw")],
+        )
+        .unwrap();
+    store
+        .insert_stealer_rows_batch("scan-keeper", &[row("carol", "keepme")])
+        .unwrap();
+    assert_eq!(
+        store
+            .stealer_rows_for_scan("scan-with-creds")
+            .unwrap()
+            .len(),
+        2
+    );
+
+    // Deleting the scan must purge its stolen credentials — they are the most
+    // sensitive payload in the store and have no other prune path.
+    assert!(store.delete_scan("scan-with-creds").unwrap());
+    assert!(
+        store
+            .stealer_rows_for_scan("scan-with-creds")
+            .unwrap()
+            .is_empty(),
+        "delete_scan must cascade to stealer_rows so stolen credentials do not persist"
+    );
+    // An unrelated scan's credentials are untouched.
+    assert_eq!(store.stealer_rows_for_scan("scan-keeper").unwrap().len(), 1);
+    let _ = std::fs::remove_file(&path);
+}
+
 // ── Tests (from entities.rs) ───────────────────────────────────────────
 
 #[test]

@@ -309,11 +309,11 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
             let after = &lower[pos + place.len()..];
             let context: String = after.chars().take(60).collect();
             // Walk back to a char boundary; UTF-8 multi-byte chars
-            // (e.g. '>' substitutes spanning 3 bytes) must not be split.
-            let mut before_start = pos.saturating_sub(60);
-            while before_start > 0 && !lower.is_char_boundary(before_start) {
-                before_start -= 1;
-            }
+            // (e.g. '>' substitutes spanning 3 bytes) must not be split. This is
+            // the module's canonical safe-slicing primitive rather than a
+            // hand-rolled boundary walk.
+            let before_start =
+                crate::util::str_util::floor_char_boundary(&lower, pos.saturating_sub(60));
             let before: String = lower[before_start..pos].chars().collect();
             let combined = format!("{before} {context}");
             // Whole-word state detection. The window is free prose, so a bare
@@ -586,14 +586,14 @@ pub(in crate::modules::search_engines) fn extract_organisations_from_text(
             }
             // Walk backwards to the start of the org name.
             let before = &text[..i];
-            let mut name_start = before
+            let raw_start = before
                 .rfind([',', '.', ';', '(', '\n'])
                 .map_or(i.saturating_sub(60), |d| d + 1);
             // The `i-60` fallback may land mid-code-point; snap forward to a
-            // boundary so the slice below is always valid.
-            while name_start < i && !text.is_char_boundary(name_start) {
-                name_start += 1;
-            }
+            // boundary with the canonical primitive so the slice below is always
+            // valid. `i` is an ASCII (space) boundary and `raw_start <= i`, so the
+            // next boundary never overshoots `i`.
+            let name_start = crate::util::str_util::ceil_char_boundary(text, raw_start);
             let org = text[name_start..end].trim();
             if org.len() >= 5 && org.starts_with(|c: char| c.is_ascii_uppercase()) {
                 // Lowercase once per candidate rather than once per term.

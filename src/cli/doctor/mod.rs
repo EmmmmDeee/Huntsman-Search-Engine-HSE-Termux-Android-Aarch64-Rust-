@@ -25,7 +25,7 @@ use crate::{
 
 use super::cost_label;
 
-pub(super) async fn cmd_doctor() -> Result<()> {
+pub(super) async fn cmd_doctor(live: bool) -> Result<()> {
     let mods = registry();
     println!("HSE v{} — doctor\n", crate::VERSION);
     println!(
@@ -116,6 +116,16 @@ pub(super) async fn cmd_doctor() -> Result<()> {
         }
     }
 
+    // ── Live capability preflight (opt-in, --live) ─────────────────────
+    // The module-health section above is reactive — it only knows what real
+    // scans in THIS process have already tried. `--live` is the proactive
+    // complement: probe every keyless module against its real provider now, so
+    // a drifted or dead capability shows up before an investigation relies on
+    // it. Network-bound, so it is opt-in; the default `doctor` run stays offline.
+    if live {
+        print_live_capability_report().await;
+    }
+
     let loaded = keys::load();
     let huntsman_keys = sorted_huntsman_keys(&loaded);
     println!("\nHUNTSMAN_* keys loaded: {}", huntsman_keys.len());
@@ -184,6 +194,36 @@ pub(super) async fn cmd_doctor() -> Result<()> {
                         );
                         if let Some(err) = &h.last_error {
                             println!("      last error: {err}");
+                        }
+                    }
+                }
+
+                // ── Key authentication (observed, not synthetically probed) ──
+                // Fuse the loaded-key list with the auth-shaped drift errors
+                // above: a source failing with a 401 / "invalid API key" while
+                // its key IS configured means the CONFIGURED credential is being
+                // rejected by the upstream — the single most actionable key
+                // problem, and one otherwise reconstructed by hand across two
+                // separate sections. Grounded in what real scans observed, so it
+                // never mis-reports a working key the way a synthetic probe would.
+                let rejected: Vec<_> = crate::util::key_health::auth_failing_sources(&health)
+                    .into_iter()
+                    .filter(|i| i.likely_env_var.is_some_and(|e| loaded.contains_key(e)))
+                    .collect();
+                if rejected.is_empty() {
+                    println!("  no configured key is being rejected by its upstream");
+                } else {
+                    println!(
+                        "  {} CONFIGURED KEY(S) REJECTED by the upstream — replace or renew:",
+                        rejected.len()
+                    );
+                    for i in &rejected {
+                        // The upstream's own words, char-safely capped so a long
+                        // JSON body can't flood the terminal.
+                        let detail: String = i.detail.chars().take(160).collect();
+                        match i.likely_env_var {
+                            Some(env) => println!("    - {:<20} {env}\n      {detail}", i.module),
+                            None => println!("    - {:<20}\n      {detail}", i.module),
                         }
                     }
                 }
@@ -398,6 +438,77 @@ fn format_module_health(h: &crate::core::engine::ModuleHealth) -> String {
     }
 }
 
+/// Run the live capability preflight and print a per-module alive/empty/
+/// unreachable table plus a one-line summary. Shares the exact probe
+/// implementation the weekly `live_drift` sweep uses
+/// ([`crate::util::capability_probe`]), so what the operator sees on-device and
+/// what CI asserts can never diverge. Confirmed drift (a curated canary that
+/// reached its provider yet parsed nothing) is called out explicitly.
+async fn print_live_capability_report() {
+    use crate::util::capability_probe::{self, ProbeOutcome};
+
+    println!("\nLive capability probe (keyless modules):");
+    // Bounded concurrency — a full-fleet sweep without a socket storm on a phone.
+    let reports = capability_probe::probe_keyless_fleet(8).await;
+    if reports.is_empty() {
+        println!("  (no keyless modules with a probeable target)");
+        return;
+    }
+
+    let (mut alive, mut empty, mut unreachable, mut timed_out) = (0usize, 0usize, 0usize, 0usize);
+    let mut drift: Vec<&str> = Vec::new();
+    for r in &reports {
+        let canary = if capability_probe::is_canary(r.module) {
+            " [canary]"
+        } else {
+            ""
+        };
+        match &r.outcome {
+            ProbeOutcome::Alive { found } => {
+                alive += 1;
+                println!("  alive        {:<22} {found} found{canary}", r.module);
+            }
+            ProbeOutcome::Empty => {
+                empty += 1;
+                let tag = if r.is_confirmed_drift() {
+                    " — DRIFT (canary parsed nothing)"
+                } else {
+                    ""
+                };
+                println!(
+                    "  empty        {:<22} ({} {}){canary}{tag}",
+                    r.module,
+                    r.kind.canonical_str(),
+                    r.value
+                );
+                if r.is_confirmed_drift() {
+                    drift.push(r.module);
+                }
+            }
+            ProbeOutcome::Unreachable { reason } => {
+                unreachable += 1;
+                println!("  unreachable  {:<22} {reason}{canary}", r.module);
+            }
+            ProbeOutcome::TimedOut => {
+                timed_out += 1;
+                println!("  timed-out    {:<22}{canary}", r.module);
+            }
+        }
+    }
+    println!(
+        "  summary: {} probed — {alive} alive, {empty} empty, {unreachable} unreachable, \
+         {timed_out} timed-out",
+        reports.len()
+    );
+    if !drift.is_empty() {
+        println!(
+            "  ⚠ confirmed drift in {}: {} — the upstream wire shape likely changed",
+            drift.len(),
+            drift.join(", ")
+        );
+    }
+}
+
 /// The `curl:      MISSING` diagnostic body — every module/command that shells
 /// out to the `curl` binary with NO reqwest fallback, so it silently fails
 /// rather than erroring when curl is absent. Verified against the current
@@ -437,30 +548,9 @@ fn curl_missing_message() -> String {
 ///
 /// Pure over an `is_present` predicate (true if the env var is already set) so
 /// it is unit-testable without touching the filesystem or environment.
-fn rank_unset_keys(
-    is_present: impl Fn(&str) -> bool,
-) -> Vec<(&'static str, crate::util::key_roi::KeyRoi)> {
-    let env_to_service: std::collections::HashMap<&str, &str> =
-        crate::util::service_defs::service_defs()
-            .iter()
-            .map(|d| (d.env_var, d.name))
-            .collect();
-    let mut missing: Vec<(&'static str, crate::util::key_roi::KeyRoi)> = keys::KNOWN_KEYS
-        .iter()
-        .copied()
-        .filter(|k| !is_present(k))
-        .map(|k| {
-            // Map env var → service for tiering; an env var with no service_defs
-            // entry classifies via its own string, which key_roi defaults to the
-            // middle (Expansion) tier — never silently dropped from the ranking.
-            let svc = env_to_service.get(k).copied().unwrap_or(k);
-            (k, crate::util::key_roi::classify(svc))
-        })
-        .collect();
-    // Highest ROI first (Terminal < Expansion < Multiplier), ties broken by name.
-    missing.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
-    missing
-}
+// The unset-key acquisition ranking is the single source of truth in
+// `util::key_roi` (shared with the web Settings page's acquisition guidance).
+use crate::util::key_roi::rank_unset_keys;
 
 /// Render the "Weak findings" doctor section body. `anomalies` is expected
 /// already weakest-first ([`crate::storage::Store::low_confidence_evidence`]'s

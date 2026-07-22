@@ -101,9 +101,14 @@ fn record_evidence(item: &Value, dbname: &str, endpoint: &str, key_fp: &str) -> 
     ev
 }
 
+// Coordinates 8 distinct inputs (raw target + prebuilt matcher + provenance +
+// two accumulators); bundling them into a struct would only move the arity, so
+// this follows the module's existing convention (`see_know/mod.rs`).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn extract_entities(
     item: &Value,
     target_value: &str,
+    match_ctx: &TargetMatch,
     scan_id: &str,
     endpoint: &str,
     key_fp: &str,
@@ -124,7 +129,7 @@ pub(super) fn extract_entities(
     // `candidate` leads below (mirroring oathnet_pro), so they never reach the
     // subject's full-confidence tier. `quarantine_start` marks where this
     // record's entities begin so the demotion targets exactly them.
-    let is_target = TargetMatch::new(target_value).matches(item);
+    let is_target = match_ctx.matches(item);
     let quarantine_start = result.entities.len();
 
     if let Some(email) = val_str(item, "email") {
@@ -153,11 +158,12 @@ pub(super) fn extract_entities(
         && phone.len() >= 7
     {
         // Lowercase `phone` once and reuse that single copy for both the dedup
-        // key and the target comparison, instead of lowercasing it twice (and
-        // the target unconditionally). Preserves the exact prior comparison.
+        // key and the target comparison. The target's lowercased form is reused
+        // from the shared `match_ctx` (computed once per scan), not re-derived
+        // per record. Preserves the exact prior comparison.
         let phone_lower = phone.to_lowercase();
         if seen.insert(phone_lower.clone()) {
-            let conf = if phone_lower == target_value.to_lowercase() {
+            let conf = if phone_lower == match_ctx.lower() {
                 confidence::HIGH_PLUS
             } else {
                 confidence::MEDIUM_HIGH

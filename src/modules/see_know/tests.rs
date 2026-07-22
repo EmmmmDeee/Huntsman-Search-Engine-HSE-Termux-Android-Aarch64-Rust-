@@ -1,6 +1,34 @@
 use super::*;
 use crate::core::entity::Entity;
 
+/// Test shim. Production `extract::extract_entities` takes a prebuilt
+/// `&TargetMatch` (built once per result set on the hot path, not per record).
+/// These tests exercise it one record at a time against a raw target string, so
+/// this thin wrapper rebuilds the matcher per call to keep the call sites
+/// readable. It shadows the glob-imported production symbol within this module
+/// only; the shipped call sites in `mod.rs` build the matcher once, as intended.
+#[allow(clippy::too_many_arguments)]
+fn extract_entities(
+    item: &serde_json::Value,
+    target_value: &str,
+    scan_id: &str,
+    endpoint: &str,
+    key_fp: &str,
+    seen: &mut std::collections::HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    super::extract::extract_entities(
+        item,
+        target_value,
+        &crate::util::target_match::TargetMatch::new(target_value),
+        scan_id,
+        endpoint,
+        key_fp,
+        seen,
+        result,
+    );
+}
+
     #[test]
     fn module_timeout_exceeds_seeknow_curl_outer_budget() {
         // Regression: the engine aborts a module at max_timeout_ms. see_know's

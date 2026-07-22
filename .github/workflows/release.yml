@@ -40,11 +40,18 @@ on:
 permissions:
   contents: write # create the tag + create/upload to the GitHub Release
 
-# Serialise per ref so two quick pushes (or a push landing mid-build) can't race
-# to create the same tag/release. Don't cancel an in-flight publish — let it
-# finish; a queued follow-up no-ops once the version's tag exists.
+# Serialise ALL release runs (one group for the whole workflow, NOT per-ref) so
+# they can't race to build + create + upload the same release. A version-bump
+# push fires two runs with DIFFERENT refs for the SAME version — the branch push
+# (refs/heads/main) and, with --follow-tags, the tag push (refs/tags/v<ver>). A
+# per-ref group put those in separate lanes, so both cross-built and raced the
+# asset upload to one release. A single group makes the second queue behind the
+# first; don't cancel an in-flight publish — let it finish, and the queued
+# follow-up no-ops once the version's tag exists (exactly as intended). Distinct
+# versions serialise too, but releases are infrequent and the build cost is the
+# same, so correctness wins over the lost parallelism.
 concurrency:
-  group: release-${{ github.workflow }}-${{ github.ref }}
+  group: release-${{ github.workflow }}
   cancel-in-progress: false
 
 jobs:

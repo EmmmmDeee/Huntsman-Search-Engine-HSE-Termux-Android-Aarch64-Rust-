@@ -1361,38 +1361,81 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
         return Vec::new();
     }
 
+    // Group person indices by canonical name in one O(P) pass. Only a same-name
+    // group of size >= 2 can produce a pair, so pairing WITHIN groups replaces
+    // the former O(P^2) all-pairs name comparison. This is never worse than the
+    // old scan — when every name is distinct each group is a singleton and the
+    // body below does no work — and strictly better in the multi-namesake
+    // clusters this rule exists to resolve (where a recall/breach sweep can push
+    // the same-name group into the dozens or hundreds).
+    let mut groups: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (idx, (name, _)) in persons.iter().enumerate() {
+        groups.entry(name.as_str()).or_default().push(idx);
+    }
+
+    // Precompute each duplicated person's corroborating-source set and its
+    // source-FAMILY set exactly once. The old code rebuilt BOTH (a fresh HashSet
+    // allocation each) for every pair a person took part in — O(g^2) set
+    // allocations for a same-name group of size g; this is O(g). Persons in a
+    // singleton group never pair, so their sets are never built (`None`).
+    let mut precomp: Vec<Option<(HashSet<&str>, HashSet<&'static str>)>> =
+        std::iter::repeat_with(|| None)
+            .take(persons.len())
+            .collect();
+    for members in groups.values() {
+        if members.len() < 2 {
+            continue;
+        }
+        for &idx in members {
+            let src = persons[idx].1.corroborating_sources();
+            let fam: HashSet<&'static str> = src.iter().map(|s| source_family(s)).collect();
+            precomp[idx] = Some((src, fam));
+        }
+    }
+
     let mut out: Vec<Correlation> = Vec::new();
     let mut seen: HashSet<[String; 2]> = HashSet::new();
 
+    // Iterate i ascending and pair with same-name members j > i. This reproduces
+    // the EXACT (i, j) ordering — hence the exact output order and `seen` dedup
+    // behaviour — of the former nested `for i { for j in i+1.. }` scan.
     for i in 0..persons.len() {
-        for j in (i + 1)..persons.len() {
-            if persons[i].0 != persons[j].0 {
+        // Independence gate. "Independent" means the two records were collected
+        // by genuinely different real-world methods — so every part of the gate
+        // runs over CORROBORATING sources only ([`Entity::corroborating_sources`]),
+        // NOT the raw `evidence` list. The deterministic self-enrichment passes
+        // (`name_intel`'s own firstname/lastname permutation of the seed,
+        // `geo_normalize`) and the `recall` / `cross_scan_history` replays attach
+        // useful evidence but are NOT independent observations — `name_intel` in
+        // particular DERIVES a `Person` from the seed name and maps to the real
+        // `identity_registry` family, so hand-rolling the sets from raw `evidence`
+        // (as this rule used to) let the tool's OWN name derivation pose as a
+        // second, independently-sourced record and manufacture a High "same
+        // individual" match. This is the identical honest set `source_families` /
+        // `source_count` already build on.
+        //
+        // (0) A name known ONLY from the tool's own derivation (`name_intel`) or a
+        //     prior-scan replay (`recall`) is not an independently collected record
+        //     at all — a side with no corroborating source can never be one half of
+        //     an "independent match". `precomp[i]` is `None` for singleton-group
+        //     persons (which never pair); an empty corroborating set is the
+        //     no-independent-source case handled here.
+        let Some((src1, fam1)) = precomp[i].as_ref() else {
+            continue;
+        };
+        if src1.is_empty() {
+            continue;
+        }
+        for &j in &groups[persons[i].0.as_str()] {
+            if j <= i {
                 continue;
             }
             let e1 = persons[i].1;
             let e2 = persons[j].1;
-
-            // Independence gate. "Independent" means the two records were
-            // collected by genuinely different real-world methods — so every part
-            // of the gate runs over CORROBORATING sources only
-            // ([`Entity::corroborating_sources`]), NOT the raw `evidence` list.
-            // The deterministic self-enrichment passes (`name_intel`'s own
-            // firstname/lastname permutation of the seed, `geo_normalize`) and the
-            // `recall` / `cross_scan_history` replays attach useful evidence but
-            // are NOT independent observations — `name_intel` in particular DERIVES
-            // a `Person` from the seed name and maps to the real `identity_registry`
-            // family, so hand-rolling the sets from raw `evidence` (as this rule
-            // used to) let the tool's OWN name derivation pose as a second,
-            // independently-sourced record and manufacture a High "same individual"
-            // match. This is the identical honest set `source_families` /
-            // `source_count` already build on.
-            let src1 = e1.corroborating_sources();
-            let src2 = e2.corroborating_sources();
-            // (0) A name known ONLY from the tool's own derivation (`name_intel`)
-            //     or a prior-scan replay (`recall`) is not an independently
-            //     collected record at all — a side with no corroborating source
-            //     can never be one half of an "independent match".
-            if src1.is_empty() || src2.is_empty() {
+            let (src2, fam2) = precomp[j]
+                .as_ref()
+                .expect("j is drawn from the same multi-member group as i");
+            if src2.is_empty() {
                 continue;
             }
             // (1) Skip when the exact corroborating-source SETS are equal —
@@ -1406,8 +1449,6 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
             //     least one differing family (e.g. breach + social). This is
             //     stricter than gate (1): identical families can still have
             //     different `source` strings, which (1) alone would let through.
-            let fam1: HashSet<&str> = src1.iter().map(|s| source_family(s)).collect();
-            let fam2: HashSet<&str> = src2.iter().map(|s| source_family(s)).collect();
             if fam1 == fam2 {
                 continue;
             }

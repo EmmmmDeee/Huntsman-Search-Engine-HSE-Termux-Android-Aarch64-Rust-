@@ -140,12 +140,14 @@ pub enum Command {
         /// (default 0.75 new entities per dispatched target).
         #[arg(long)]
         max_roi: bool,
-        /// Convex (optionality / barbell) budget allocation: re-weight expansion
-        /// candidates by a convexity premium for heavy-tailed upside over
-        /// per-kind dispatch cost, so the bounded budget favours cheap,
-        /// high-optionality identity leads over saturated infrastructure.
-        #[arg(long)]
-        convex_budget: bool,
+        /// Convex (optionality / barbell) budget allocation is ON by default:
+        /// expansion candidates are re-weighted by a convexity premium for
+        /// heavy-tailed upside over per-kind dispatch cost, so the bounded budget
+        /// favours cheap, high-optionality identity leads over saturated
+        /// infrastructure — maximising the value of each scan. Pass
+        /// `--no-convex-budget` for the plain expected-value ranking.
+        #[arg(long = "no-convex-budget", action = clap::ArgAction::SetTrue)]
+        no_convex_budget: bool,
         /// Australian-focused regional searching is ON by default: the search
         /// module adds minimal `.au` / AU-directory dorks on top of the
         /// geolocation-neutral base (a seed with no region signal defaults to
@@ -287,7 +289,13 @@ pub enum Command {
     /// Verify environment: DB path, key file, Termux detection, module counts.
     /// (Subsumed by `hse diagnostics`; kept for scripting and the API/UI.)
     #[command(hide = true)]
-    Doctor,
+    Doctor {
+        /// Also run a live capability preflight: probe every keyless module
+        /// against its real provider and report alive/empty/unreachable per
+        /// module. Opt-in and network-bound — the default run stays offline.
+        #[arg(long)]
+        live: bool,
+    },
     /// Validate every module and core feature, then exit (non-zero on any
     /// failure). (Subsumed by `hse diagnostics`; kept for scripting and the Web UI.)
     #[command(hide = true)]
@@ -417,9 +425,9 @@ pub enum Command {
         /// Same as `scan --max-roi`.
         #[arg(long)]
         max_roi: bool,
-        /// Same as `scan --convex-budget`.
-        #[arg(long)]
-        convex_budget: bool,
+        /// Same as `scan --no-convex-budget` (convex allocation is on by default).
+        #[arg(long = "no-convex-budget", action = clap::ArgAction::SetTrue)]
+        no_convex_budget: bool,
         /// Same as `scan --no-regional`.
         #[arg(long = "no-regional", action = clap::ArgAction::SetTrue)]
         no_regional: bool,

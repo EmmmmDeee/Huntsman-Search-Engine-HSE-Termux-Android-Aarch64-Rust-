@@ -881,48 +881,58 @@ pub async fn radar_recurring(
         .clamp(1, 1000);
     let min_sweeps: usize = params.get("min").and_then(|v| v.parse().ok()).unwrap_or(2);
 
-    let scans = match s.store.radar_history(limit) {
-        Ok(v) => v,
-        Err(e) => return internal_error(&e),
-    };
-
-    let mut sweeps: Vec<Sweep> = Vec::with_capacity(scans.len());
-    for scan in &scans {
-        // A single unreadable sweep must not abort the whole review.
-        let Ok(entities) = s.store.entities_for_scan(&scan.id) else {
-            continue;
-        };
-        let devices: Vec<SweepObservation> = entities
-            .iter()
-            .filter(|e| {
-                e.kind == EntityKind::MacAddress
-                    && (e.has_tag("bluetooth") || e.has_tag(crate::core::tags::WIFI_AP))
-            })
-            .map(|e| {
-                let name = e
-                    .evidence
-                    .iter()
-                    .find_map(|ev| {
-                        ev.attributes
-                            .get("name")
-                            .or_else(|| ev.attributes.get("ssid"))
-                    })
-                    .map(String::to_string);
-                SweepObservation {
-                    mac: e.value.clone(),
-                    name,
-                    bonded: e.has_tag("bond:bonded"),
-                }
-            })
-            .collect();
-        sweeps.push(Sweep {
-            scan_id: scan.id.clone(),
-            ts: scan.started_at,
-            devices,
-        });
+    // Off-reactor: one `radar_history` plus up to `limit` (≤1000) sequential
+    // `entities_for_scan` reads under the global SQLite mutex, then the pure
+    // offline analysis — all on a blocking thread. Walking a deep sweep history
+    // inline would stall the 2-worker async reactor and starve SSE keep-alives /
+    // `/health`, so this follows the off-reactor discipline every sibling here
+    // already uses.
+    let store = Arc::clone(&s.store);
+    match tokio::task::spawn_blocking(move || -> crate::core::error::Result<_> {
+        let scans = store.radar_history(limit)?;
+        let mut sweeps: Vec<Sweep> = Vec::with_capacity(scans.len());
+        for scan in &scans {
+            // A single unreadable sweep must not abort the whole review.
+            let Ok(entities) = store.entities_for_scan(&scan.id) else {
+                continue;
+            };
+            let devices: Vec<SweepObservation> = entities
+                .iter()
+                .filter(|e| {
+                    e.kind == EntityKind::MacAddress
+                        && (e.has_tag("bluetooth") || e.has_tag(crate::core::tags::WIFI_AP))
+                })
+                .map(|e| {
+                    let name = e
+                        .evidence
+                        .iter()
+                        .find_map(|ev| {
+                            ev.attributes
+                                .get("name")
+                                .or_else(|| ev.attributes.get("ssid"))
+                        })
+                        .map(String::to_string);
+                    SweepObservation {
+                        mac: e.value.clone(),
+                        name,
+                        bonded: e.has_tag("bond:bonded"),
+                    }
+                })
+                .collect();
+            sweeps.push(Sweep {
+                scan_id: scan.id.clone(),
+                ts: scan.started_at,
+                devices,
+            });
+        }
+        Ok(recurring_devices(&sweeps, min_sweeps))
+    })
+    .await
+    {
+        Ok(Ok(devices)) => ok_list("devices", devices),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
     }
-
-    ok_list("devices", recurring_devices(&sweeps, min_sweeps))
 }
 
 /// `GET /api/v1/plan?value=<seed>` — forward-only scan-plan PREVIEW.
