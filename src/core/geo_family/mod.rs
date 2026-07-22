@@ -121,6 +121,20 @@ pub fn subject_fixes(entities: &[Entity]) -> Vec<SubjectFix> {
     let mut out = Vec::new();
     for e in entities {
         let coord = match e.kind {
+            // `hse radar` seeds every sweep with a sentinel Coordinates entity
+            // (0,0) minted at confidence 0.90 with an `exact-name-match`-adjacent
+            // `seed`/`subject` shape — it would otherwise sail past both the
+            // confidence floor and the name-match escape hatch below and anchor
+            // every family-candidate distance check on null island instead of
+            // the subject's real location.
+            EntityKind::Coordinates
+                if crate::core::scan::is_radar_sentinel(
+                    crate::core::scan::TargetKind::Coordinates,
+                    &e.value,
+                ) =>
+            {
+                None
+            }
             EntityKind::Coordinates
                 if e.confidence >= SUBJECT_FIX_MIN || e.has_tag("exact-name-match") =>
             {

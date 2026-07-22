@@ -6,6 +6,8 @@
 pub const KNOWN_KEYS: &[&str] = &[
     // Identity / breach
     "HUNTSMAN_OATHNET_KEY",
+    "HUNTSMAN_NIAMONX_KEY",
+    "HUNTSMAN_OSINTCAT_KEY",
     "HUNTSMAN_HIBP_KEY",
     "HUNTSMAN_DEHASHED_KEY",
     "HUNTSMAN_HUNTER_KEY",
@@ -17,7 +19,9 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_CRIMINALIP_KEY",
     "HUNTSMAN_IPQS_KEY",
     "HUNTSMAN_VIRUSTOTAL_KEY",
+    "HUNTSMAN_ABUSECH_KEY",
     "HUNTSMAN_THREATFOX_KEY",
+    "HUNTSMAN_ALIENVAULT_KEY",
     // Expanded services (api_key_probe compatible)
     "HUNTSMAN_ABUSEIPDB_KEY",
     "HUNTSMAN_CENSYS_ID",
@@ -39,6 +43,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_C99_KEY",
     "HUNTSMAN_DOMAINSDB_KEY",
     // Validation / enrichment
+    "HUNTSMAN_FULLCONTACT_KEY",
     "HUNTSMAN_NUMVERIFY_KEY",
     "HUNTSMAN_HLR_KEY",
     "HUNTSMAN_OPENCNAM_KEY",
@@ -74,6 +79,7 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
             "VirusTotal — free key at https://www.virustotal.com/gui/join-us"
         }
         "HUNTSMAN_ABUSEIPDB_KEY" => "AbuseIPDB — free key at https://www.abuseipdb.com/register",
+        "HUNTSMAN_ALIENVAULT_KEY" => "AlienVault OTX — free key at https://otx.alienvault.com/api",
         "HUNTSMAN_SHODAN_KEY" => "Shodan — free key at https://account.shodan.io/register",
         "HUNTSMAN_SECTRAILS_KEY" => {
             "SecurityTrails — free tier at https://securitytrails.com/app/signup"

@@ -11,9 +11,20 @@ name: Live API drift
 # exactly the signal this workflow exists to raise.
 on:
   schedule:
-    # Mondays 06:00 UTC — once a week is enough to catch upstream shape changes.
-    - cron: "0 6 * * 1"
+    # Mondays 08:00 UTC — once a week is enough to catch upstream shape
+    # changes. Staggered after audit.yml (06:00) and fuzz.yml (07:00) so the
+    # three scheduled workflows don't all land in the same slot.
+    - cron: "0 8 * * 1"
   workflow_dispatch:
+
+# Least privilege: the job only reads the checked-out tree and hits public
+# third-party endpoints. No write scopes.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   drift:

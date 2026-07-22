@@ -414,10 +414,10 @@ async fn session_loop(
             Some(ledger) => {
                 inner
                     .engine
-                    .run_with_ledger(scan, target.clone(), ctx, ledger)
+                    .run_with_ledger_panic_safe(scan, target.clone(), ctx, ledger)
                     .await
             }
-            None => inner.engine.run(scan, target.clone(), ctx).await,
+            None => inner.engine.run_panic_safe(scan, target.clone(), ctx).await,
         };
         if let Err(e) = iteration_result {
             warn!(live_id = %live_id, scan_id = %sid, error = %e, "iteration failed");

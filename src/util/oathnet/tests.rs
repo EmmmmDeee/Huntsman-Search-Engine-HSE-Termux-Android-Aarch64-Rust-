@@ -565,3 +565,29 @@ use super::*;
     fn key_fingerprint_trims_surrounding_whitespace() {
         assert_eq!(key_fingerprint("  abc123  "), "oathnet.org:abc123");
     }
+
+    #[test]
+    fn effective_error_status_prefers_the_bodys_reported_status_when_present() {
+        assert_eq!(effective_error_status(Some(404), 200), 404);
+    }
+
+    #[test]
+    fn effective_error_status_falls_back_to_the_real_http_status_when_the_body_omits_it() {
+        // A 404/429/5xx response whose body doesn't conform to the
+        // documented `errors.status_code` shape (a proxy/gateway error page,
+        // a differently-shaped error schema) must still be classified
+        // correctly from the REAL transport-layer status `search()` now
+        // gets from `CurlClient::get_with_status` — not silently fall
+        // through to a generic error that discards already-paginated
+        // results.
+        assert_eq!(effective_error_status(None, 404), 404);
+        assert_eq!(effective_error_status(None, 429), 429);
+        assert_eq!(effective_error_status(None, 503), 503);
+    }
+
+    #[test]
+    fn effective_error_status_treats_a_body_reported_zero_as_absent() {
+        // `status_code: 0` in the body is not a real HTTP status — it must
+        // not shadow a genuine transport-layer status.
+        assert_eq!(effective_error_status(Some(0), 500), 500);
+    }

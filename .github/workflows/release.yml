@@ -29,9 +29,13 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to create/attach the binary to (e.g. v1.4.0)"
+        # No default on purpose: a hardcoded example here (previously
+        # "v1.4.0") silently goes stale every time Cargo.toml's version bumps
+        # — GitHub pre-fills the dispatch form with it, so an operator who
+        # doesn't notice/clear it republishes to the WRONG tag. Forcing an
+        # explicit value every run can't rot.
+        description: "Release tag to create/attach the binary to (e.g. v1.13.0)"
         required: true
-        default: "v1.4.0"
 
 permissions:
   contents: write # create the tag + create/upload to the GitHub Release
@@ -159,6 +163,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.resolve.outputs.tag }}
+          # Without this, action-gh-release creates a not-yet-existing tag
+          # against the repo's DEFAULT BRANCH tip (its own documented
+          # behaviour), not the commit this job actually built — contradicting
+          # the checkout step's comment above ("the publish step creates it
+          # from this same commit"). Pins the tag (and its auto-generated
+          # source zip/tarball) to the exact commit that was cross-compiled,
+          # closing that gap for both workflow_dispatch against a non-default
+          # branch/older tag and the rarer main-push race against a later commit.
+          target_commitish: ${{ github.sha }}
           files: |
             dist/hse-aarch64-linux-android
             dist/hse-aarch64-linux-android.sha256

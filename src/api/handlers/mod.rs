@@ -128,7 +128,7 @@ pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, t
             tracing::warn!(scan_id = %sid, "scan semaphore closed");
             return;
         };
-        match engine.run(scan, target, ctx).await {
+        match engine.run_panic_safe(scan, target, ctx).await {
             Ok(completed) => {
                 // Mirror the CLI's post-scan diagnostics: update the cross-scan
                 // module-stats ledger so API/web scans feed adaptive routing the

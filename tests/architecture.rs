@@ -1142,7 +1142,6 @@ fn env_template_keys_are_all_consumed() {
     // Documented but not yet wired to a consuming module. Each MUST be marked
     // `[RESERVED]` in the template; setting it has no runtime effect (yet).
     const NOT_YET_WIRED: &[&str] = &[
-        "HUNTSMAN_ALIENVAULT_KEY",
         "HUNTSMAN_MALSHARE_KEY",
         "HUNTSMAN_PHISHTANK_KEY",
         "HUNTSMAN_XPOSEDORNOT_KEY",
@@ -1192,6 +1191,125 @@ fn env_template_keys_are_all_consumed() {
     assert!(
         stale.is_empty(),
         "NOT_YET_WIRED lists keys absent from the template (remove them): {stale:?}"
+    );
+}
+
+/// Collects every `HUNTSMAN_*` literal bound to a `const ..._ENV: &str = "..."`
+/// declaration under `dir` — the project-wide convention every key-gated
+/// module uses to name the env var it reads (`const KEY_ENV: &str =
+/// "HUNTSMAN_SHODAN_KEY"`, `const OTX_KEY_ENV: &str =
+/// "HUNTSMAN_ALIENVAULT_KEY"`, etc). Deliberately narrower than
+/// `collect_env_literals` (which also matches prose/doc-comment mentions): this
+/// is the precise "a module genuinely reads this env var" signal used to catch
+/// keys that are consumed but undocumented in a template — the inverse of what
+/// `env_template_keys_are_all_consumed` already guards.
+fn collect_key_env_consts(dir: &Path, out: &mut std::collections::HashSet<String>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_key_env_consts(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            let content = fs::read_to_string(&path).unwrap();
+            for line in content.lines() {
+                if !line.contains("const ") || !line.contains("ENV") {
+                    continue;
+                }
+                if let Some(start) = line.find("\"HUNTSMAN_") {
+                    let rest = &line[start + 1..];
+                    if let Some(end) = rest.find('"') {
+                        out.insert(rest[..end].to_string());
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Guards the THREE independent places a key-gated module's env var must be
+/// documented for an operator to ever discover it — `env_template.txt` (the
+/// `hse provision` template), `util::keys::constants::KNOWN_KEYS` (drives the
+/// Settings-page paste grid), and `install.sh`'s own hand-maintained
+/// `~/.huntsman.env` heredoc (what a fresh `curl | bash` install writes) — all
+/// stay in sync with the modules that actually exist.
+///
+/// This is the inverse direction of `env_template_keys_are_all_consumed`
+/// (documented ⇒ consumed) and closes the gap that let a real drift ship: a
+/// `const ...ENV: &str = "HUNTSMAN_NIAMONX_KEY"` in a live, registered module
+/// with NO test catching that `KNOWN_KEYS` (so the Settings UI could never
+/// surface it) or `env_template.txt` never mentioned it — discovered via a
+/// four-way audit of the actual embedded-vs-shipped provisioning templates
+/// after `src/cli/provision/env_template.txt` turned out to be a silently
+/// stale `include_str!` shadow copy of the real, tested `src/cli/env_template.txt`.
+#[test]
+fn key_gated_modules_are_documented_everywhere_an_operator_would_look() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    let mut consumed = std::collections::HashSet::new();
+    collect_key_env_consts(&root.join("src/modules"), &mut consumed);
+    assert!(
+        consumed.len() > 30,
+        "sanity: expected 30+ KEY_ENV-style consts across src/modules, found {}",
+        consumed.len()
+    );
+
+    // 1. env_template.txt (the file `hse provision` embeds — see the
+    //    `include_str!` in src/cli/provision/mod.rs, which must point HERE).
+    let template = fs::read_to_string(root.join("src/cli/env_template.txt")).unwrap();
+    let template_keys: std::collections::HashSet<&str> = template
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("HUNTSMAN_"))
+        .filter_map(|l| l.split('=').next())
+        .map(str::trim)
+        .collect();
+    let missing_from_template: Vec<&String> = consumed
+        .iter()
+        .filter(|k| !template_keys.contains(k.as_str()))
+        .collect();
+    assert!(
+        missing_from_template.is_empty(),
+        "module(s) read a key env_template.txt never mentions (hse provision \
+         can't offer it): {missing_from_template:?}"
+    );
+
+    // 2. util::keys::constants::KNOWN_KEYS (drives the Settings-page grid).
+    let known: std::collections::HashSet<&str> = huntsman_search_engine::util::keys::KNOWN_KEYS
+        .iter()
+        .copied()
+        .collect();
+    let missing_from_known_keys: Vec<&String> = consumed
+        .iter()
+        .filter(|k| !known.contains(k.as_str()))
+        .collect();
+    assert!(
+        missing_from_known_keys.is_empty(),
+        "module(s) read a key KNOWN_KEYS omits (Settings UI can never surface \
+         it): {missing_from_known_keys:?}"
+    );
+
+    // 3. install.sh's hand-maintained `~/.huntsman.env` heredoc (a fresh
+    //    `curl | bash` install writes exactly this, independently of the
+    //    binary — it must offer every key a real module can use).
+    let install_sh = fs::read_to_string(root.join("install.sh")).unwrap();
+    let heredoc = install_sh
+        .split("cat > \"$KEYS_PATH\" <<'TEMPLATE'")
+        .nth(1)
+        .and_then(|s| s.split("\nTEMPLATE\n").next())
+        .expect("install.sh must contain the `cat > \"$KEYS_PATH\" <<'TEMPLATE' ... TEMPLATE` keys heredoc");
+    let installsh_keys: std::collections::HashSet<&str> = heredoc
+        .lines()
+        .map(|l| l.trim().trim_start_matches('#'))
+        .filter(|l| l.starts_with("HUNTSMAN_"))
+        .filter_map(|l| l.split('=').next())
+        .collect();
+    let missing_from_install_sh: Vec<&String> = consumed
+        .iter()
+        .filter(|k| !installsh_keys.contains(k.as_str()))
+        .collect();
+    assert!(
+        missing_from_install_sh.is_empty(),
+        "module(s) read a key install.sh's fresh-install keys template omits: \
+         {missing_from_install_sh:?}"
     );
 }
 

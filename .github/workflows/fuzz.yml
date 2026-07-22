@@ -1,13 +1,12 @@
 name: Fuzz
 
-# F.3 (`docs/PROBLEM_TREE.md` §3.F) — the "proof & measurement infrastructure"
-# foundation's last remaining leg: coverage-guided fuzzing of the untrusted-
-# byte parsers `proptest`'s random generation doesn't reach as deeply as
-# libFuzzer's mutation engine. Deliberately its own workflow, not a job in
-# ci.yml, mirroring audit.yml's rationale: `cargo-fuzz` needs nightly (not the
-# stable toolchain the rest of CI verifies against) and a full from-scratch
-# ASAN-instrumented rebuild of the whole crate (`codegen-units = 1`, ~172k
-# LOC) is too slow to sit on every push/PR. Advisory-quality, like audit.yml —
+# Coverage-guided fuzzing of the untrusted-byte parsers `proptest`'s random
+# generation doesn't reach as deeply as libFuzzer's mutation engine.
+# Deliberately its own workflow, not a job in ci.yml, mirroring audit.yml's
+# rationale: `cargo-fuzz` needs nightly (not the stable toolchain the rest of
+# CI verifies against) and a full from-scratch ASAN-instrumented rebuild of
+# the whole crate (a sizeable, growing codebase) is too slow to sit on every
+# push/PR. Advisory-quality, like audit.yml —
 # NOT a required check, so a fuzz-run hiccup never blocks an unrelated PR; it
 # surfaces on the schedule, on a change to the fuzz harness itself, and on
 # manual dispatch.
@@ -52,7 +51,7 @@ jobs:
 
       # Seeds a scratch corpus dir from the project's existing real-certificate
       # fixture (`src/modules/cert_intel/testdata/`) — single-sourced test
-      # data per `docs/CONVENTIONS.md` §3, never duplicated in the repo.
+      # data, never duplicated in the repo.
       # IMPORTANT: libFuzzer treats every directory given on its command line
       # as read *and write* — it saves newly-discovered interesting inputs
       # back into it. Pointing it at the real fixture directory would litter

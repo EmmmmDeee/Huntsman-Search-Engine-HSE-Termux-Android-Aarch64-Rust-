@@ -5,46 +5,47 @@ HSE targets **Termux on Android aarch64** (no root required). The same
 
 ---
 
-## Install from zip (recommended — works offline)
+## Install prebuilt binary (recommended — no toolchain, no compile)
 
-Download **HSE.zip** from the GitHub Releases page in Chrome, then paste this
-one command into Termux:
+Download **`hse-aarch64-linux-android`** and its **`.sha256`** sidecar from
+the [GitHub Releases page](https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/releases/latest)
+in Chrome (both land in your Downloads folder), then run the curl installer
+below (or `bash install.sh` from a manual clone). Its prebuilt-binary scan
+(`maybe_use_prebuilt` in `install.sh`) finds the file in Downloads / shared
+storage, verifies it (size + ELF magic + the `.sha256` sidecar + an actual
+`--version` run-test), and installs it directly — **no Rust toolchain, no
+compile, seconds instead of minutes**. This is also the automatic fallback
+when the on-device build can't proceed (e.g. a broken Termux `rust` package),
+and the installer can fetch this same asset over the network itself if you
+skip the manual download (see "No-build fast path" in the main
+[README](../README.md)).
 
-```bash
-rm -rf ~/HSE && cp ~/storage/downloads/HSE.zip ~/ && unzip -q ~/HSE.zip -d ~/HSE && bash ~/HSE/*/install.sh
-```
+**Storage permission (one-time, only needed to read the Downloads folder):**
+Android Settings → Apps → Termux → Permissions → Files and media → **Allow
+management of all files**.
 
-The installer detects it's running inside the extracted source tree and
-handles everything automatically:
-1. Checks for a prebuilt `hse-aarch64-linux-android` binary inside the zip
-   (instant install, no compile).
-2. If no prebuilt is bundled, runs `cargo build` from the source in the zip
-   (~4-6 min on aarch64 with the `fast` profile).
-3. Installs `hse` to `$PREFIX/bin`, sets up the `hse-bg` background wrapper,
-   and writes a keys template to `~/.huntsman.env`.
-
-After the first source build the binary is cached to your Downloads folder, so
-re-installing (after a wipe, or on another aarch64 phone) skips the compile.
-
-**Storage permission (one-time):** Android Settings → Apps → Termux →
-Permissions → Files and media → **Allow management of all files**.
+Knobs: point at a file that isn't in a scanned Downloads path with
+`HSE_PREBUILT=/path/to/hse`, skip the scan entirely with `HSE_PREFER_BUILD=1`.
 
 ---
 
 ## Install via curl (internet required)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/claude/vigilant-galileo-vmjk3e/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh | bash
 ```
 
-Private repo — supply a token (never echoed to screen):
+Private repo — supply a token (never echoed to screen). This fetches
+install.sh's own text via the GitHub Contents API; it does **not** by itself
+authenticate the source clone install.sh performs internally, which still
+needs credentials of its own (see the `GITHUB_TOKEN` row below):
 
 ```bash
 read -rsp 'GitHub token: ' GITHUB_TOKEN && export GITHUB_TOKEN
 curl -fsSL \
   -H "Authorization: token $GITHUB_TOKEN" \
   -H "Accept: application/vnd.github.raw" \
-  "https://api.github.com/repos/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/contents/install.sh?ref=claude/vigilant-galileo-vmjk3e" \
+  "https://api.github.com/repos/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/contents/install.sh?ref=main" \
   | bash
 ```
 
@@ -72,10 +73,14 @@ hse-bg stop
 |----------|---------|--------|
 | `HSE_BUILD_PROFILE` | `fast` (Termux) / `release` (Linux/macOS) | `fast` ≈ 4-6 min; `release` ≈ 15-20 min, smaller binary |
 | `HSE_INSTALL_DIR` | `~/.local/share/hse` | Source clone location (curl mode only) |
-| `HSE_REF` | `claude/vigilant-galileo-vmjk3e` | Branch/tag/SHA to install |
-| `HSE_REPO_URL` | upstream GitHub URL | Override for forks |
-| `GITHUB_TOKEN` | (none) | PAT for private repo clone/download |
-| `HSE_PREFER_BUILD` | `0` | `1` = skip prebuilt scan, always build |
+| `HSE_REF` | `main` | Branch/tag/SHA to install |
+| `HSE_REPO_URL` | upstream GitHub URL | Override for forks; embed a token here (`https://<token>@github.com/...`) or use an `ssh://` URL to authenticate install.sh's own internal `git clone`/`fetch` against a private repo |
+| `GITHUB_TOKEN` | (none) | **Not read by install.sh itself.** Only used by the private-repo curl example above — a PAT to fetch install.sh's own text via the GitHub Contents API. It does not authenticate the source clone; see `HSE_REPO_URL` for that |
+| `HSE_PREFER_BUILD` | `0` | `1` = skip the prebuilt scan/download, always build from source |
+| `HSE_PREBUILT` | (none) | Path to a specific prebuilt binary to install (skips the Downloads-folder scan) |
+| `HSE_PREBUILT_TAG` | `latest` | Pin the release tag to download the prebuilt binary from |
+| `HSE_NO_DOWNLOAD` | `0` | `1` = don't fetch the prebuilt binary from GitHub Releases over the network |
+| `HSE_KEEP_MIRROR` | `0` | `1` = keep your own `termux-change-repo` package-mirror choice instead of the installer pinning Termux's apt sources to the Cloudflare CDN mirror |
 | `CARGO_TARGET_DIR` | `~/.cache/hse-build` | Build artefact location |
 
 ---
@@ -119,8 +124,8 @@ rm -f ~/.huntsman.env   # caution: back up your API keys first
 
 ## Troubleshooting
 
-**"Permission denied" when copying HSE.zip**
-The zip is in Android's scoped storage. Fix:
+**"Permission denied" reading the prebuilt binary from Downloads**
+The file is in Android's scoped storage. Fix:
 - Android Settings → Apps → Termux → Permissions → Files and media → Allow management of all files
 - Then retry the install command
 

@@ -32,7 +32,16 @@ use crate::util::{http::build_client, keys, uid::scan_id};
 /// Canonical env-file template, embedded at compile time. Edit
 /// `src/cli/env_template.txt` to change the on-disk shape; the binary
 /// picks it up on next build.
-const ENV_TEMPLATE: &str = include_str!("env_template.txt");
+///
+/// A duplicate `src/cli/provision/env_template.txt` previously lived
+/// alongside this module and was the one actually `include_str!`-ed here (a
+/// bare `"env_template.txt"` resolves relative to THIS file's directory) —
+/// silently divergent from the file this doc comment (and the
+/// `env_template_keys_are_all_consumed` architecture test) both point at.
+/// Editing the "canonical" file had zero effect on the shipped binary. Fixed
+/// by pointing the embed at the real canonical file one directory up and
+/// deleting the shadow copy, so there is exactly one file to edit.
+const ENV_TEMPLATE: &str = include_str!("../env_template.txt");
 
 const PLACEHOLDER_PREFIX: &str = "insert_";
 const PLACEHOLDER_SUFFIX: &str = "_here";

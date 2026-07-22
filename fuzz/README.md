@@ -1,9 +1,8 @@
 # `huntsman-search-engine-fuzz`
 
-`cargo-fuzz` targets for Huntsman's untrusted-byte parsers — the
-`cargo-fuzz` leg of `docs/PROBLEM_TREE.md` §3.F (F.3, "proof & measurement
-infrastructure"). See that node (and its paired `docs/SOLUTION_TREE.md`
-SOL-F3 node) for the full rationale.
+`cargo-fuzz` targets for Huntsman's untrusted-byte parsers — coverage-guided
+fuzzing of the byte-level scanners `proptest`'s random generation doesn't
+reach as deeply as libFuzzer's mutation engine.
 
 ## Why this is a separate crate
 
@@ -23,8 +22,7 @@ stable, unaffected — and only `cargo fuzz` (nightly-only, its own CI lane:
   (`extract_sans_from_der` / `extract_field_from_der` / `extract_serial_hex`,
   reached via the crate's `#[doc(hidden)] pub fn fuzz_entry_parse_der`).
   This parser reads a live TLS peer's certificate bytes directly — fully
-  attacker-controlled input — and is the same code that fixture testing
-  alone already found two real bugs in (see `PROBLEM_TREE.md` T2.3).
+  attacker-controlled input.
 
 ## Running locally
 

@@ -94,3 +94,65 @@ use super::*;
         assert!(m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
         assert!(!m.accepts(&Target::new(TargetKind::Phone, "+61400000000")));
     }
+
+    /// AU-083 (`core::correlator::rules::locale::rule_au_083_locale_multi_email_corroboration`)
+    /// requires >=2 `email_locale`-sourced evidence entries on the SAME
+    /// locale-inferred Address entity — i.e. two DISTINCT emails independently
+    /// matching the same locale pattern. `Entity::absorb`'s evidence dedup keys
+    /// on `(source, summary)`, so if the emitted summary is derived only from
+    /// the locale/pattern (not the source email), two genuinely different
+    /// emails matching the SAME pattern produce byte-identical evidence and
+    /// collapse into ONE entry on merge — the real end-to-end path this test
+    /// exercises (module emission → same-uid merge), unlike the correlator's
+    /// own unit tests which hand-construct two evidence entries directly and
+    /// so never exercise the dedup that breaks the real pipeline.
+    #[tokio::test]
+    async fn two_distinct_emails_sharing_a_locale_pattern_both_survive_the_merge() {
+        let (bus, _rx) = tokio::sync::broadcast::channel(1);
+        let ctx = ModuleContext {
+            scan_id: "s".into(),
+            bus,
+            http: reqwest::Client::new(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+
+        // Two DIFFERENT people, both with Swedish "-sson" surnames — distinct
+        // local-parts independently matching the same "sv" locale pattern.
+        let r1 = EmailLocale
+            .process(&Target::new(TargetKind::Email, "erik.hansson@example.com"), &ctx)
+            .await
+            .unwrap();
+        let r2 = EmailLocale
+            .process(&Target::new(TargetKind::Email, "lars.svensson@example.net"), &ctx)
+            .await
+            .unwrap();
+
+        let mut addr1 = r1
+            .entities
+            .into_iter()
+            .find(|e| e.kind == EntityKind::Address && e.has_tag("locale-inferred"))
+            .expect("erik.hansson must produce a locale-inferred Address entity");
+        let addr2 = r2
+            .entities
+            .into_iter()
+            .find(|e| e.kind == EntityKind::Address && e.has_tag("locale-inferred"))
+            .expect("lars.svensson must produce a locale-inferred Address entity");
+        assert_eq!(
+            addr1.uid, addr2.uid,
+            "both emails must resolve to the SAME region/uid — the scenario AU-083 corroborates"
+        );
+
+        addr1.merge(addr2);
+        let locale_count = addr1
+            .evidence
+            .iter()
+            .filter(|ev| ev.source == "email_locale")
+            .count();
+        assert_eq!(
+            locale_count, 2,
+            "two DISTINCT emails matching the same locale pattern must both survive the merge \
+             as separate evidence entries, or AU-083 can never fire from real scan data: {:?}",
+            addr1.evidence
+        );
+    }

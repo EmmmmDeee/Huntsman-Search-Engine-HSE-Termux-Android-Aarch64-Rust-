@@ -306,6 +306,45 @@ impl TargetKind {
     }
 }
 
+/// The radar sweep's sentinel target: `hse radar` / `POST /api/v1/radar` seed
+/// every sweep with one of these two placeholder values because the local
+/// sensor modules (`signal_radar`, `device_sensors`, `wifi_intel`, `cell_intel`,
+/// `local_net`) scan the DEVICE's own surroundings and ignore the target value
+/// entirely — a value is only present because `Target` requires one and the
+/// sensors gate on `Coordinates`/`MacAddress` kind to dispatch. It is never a
+/// real claimed location or a real device identity.
+///
+/// Single source of truth for both the RAW form `Target::new` is built with
+/// (`radar_scan_spec` / `cli::radar::cmd_radar`) and the NORMALISED form that
+/// results after `core::entity::normalise` rounds a coordinate to 6 decimal
+/// places (what ends up persisted and what `AuditEntity`/`Store::radar_history`
+/// compare against) — consolidating what were four independent hand-duplicated
+/// copies of these literals (the CLI, the API's `radar_scan_spec`, the storage
+/// layer's `radar_history` query, and its `test_support` mirror).
+pub const RADAR_SENTINEL_COORD_RAW: &str = "0,0";
+/// Post-normalisation form of [`RADAR_SENTINEL_COORD_RAW`] — what a persisted
+/// `Coordinates` entity/target actually reads as.
+pub const RADAR_SENTINEL_COORD_NORMALISED: &str = "0.000000,0.000000";
+/// The MAC sentinel needs no normalisation (already lowercase, colon-separated,
+/// all-zero), so raw and persisted forms are identical.
+pub const RADAR_SENTINEL_MAC: &str = "00:00:00:00:00:00";
+
+/// True if `(kind, value)` is the radar sweep's sentinel target/entity — in
+/// either its raw (`Target::new` input) or normalised (persisted) form. Callers
+/// that must not mistake the sentinel for a real claimed location/identity (the
+/// self-audit's cross-source geo-divergence check, any future radar-aware
+/// consumer) should gate on this rather than re-deriving the literal.
+#[must_use]
+pub fn is_radar_sentinel(kind: TargetKind, value: &str) -> bool {
+    match kind {
+        TargetKind::Coordinates => {
+            value == RADAR_SENTINEL_COORD_RAW || value == RADAR_SENTINEL_COORD_NORMALISED
+        }
+        TargetKind::MacAddress => value == RADAR_SENTINEL_MAC,
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Target {
     pub kind: TargetKind,

@@ -927,8 +927,28 @@ impl Entity {
                 }
             }
         }
+        // `candidate` is a confidence-TIER quarantine stamped by
+        // `demote_to_candidate`, not an accumulating multi-source label like an
+        // ordinary tag — every default view filters entities purely on this tag
+        // (`api::scan_export`, `api::scan_handlers::analysis`), so blindly
+        // unioning it would let a stranger's non-matching, low-confidence
+        // observation of the SAME uid silently quarantine an otherwise-verified
+        // entity. Confidence already resolves to the max of the two sides
+        // above; tag status must track that: skip carrying the tag itself over
+        // in the general union below, then promote `self` out of quarantine
+        // the moment `other` was NOT itself a candidate — a single non-candidate
+        // corroboration is enough, symmetric with the confidence rule.
+        let other_is_candidate = other
+            .tags
+            .iter()
+            .any(|t| t == crate::core::tags::CANDIDATE);
         for t in other.tags {
-            self.tag(t);
+            if t != crate::core::tags::CANDIDATE {
+                self.tag(t);
+            }
+        }
+        if !other_is_candidate {
+            self.tags.retain(|t| t != crate::core::tags::CANDIDATE);
         }
     }
 }
@@ -1013,7 +1033,28 @@ pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
     // unchanged.
     use fmt::Write as _;
     let mut h = Sha256::new();
-    let _ = write!(HashWrite(&mut h), "{kind}:");
+    match kind {
+        EntityKind::Other(s) => {
+            // Unlike every fixed-string kind (drawn from a small closed set that
+            // never contains `:`), `Other`'s inner name is attacker/scrape
+            // controlled (`modules::breach_rich`'s catch-all loop mints these
+            // straight from untrusted JSON field names) and can itself contain
+            // `:`. Hashing `"other:{s}:{value}"` via the plain Display path
+            // below is ambiguous at the name/value boundary: Other("a") with
+            // value "b:c" and Other("a:b") with value "c" both produce the
+            // identical preimage "other:a:b:c" and therefore the SAME uid.
+            // Length-prefixing `s` fixes the split point unambiguously — this
+            // changes ONLY `Other`'s hash preimage (hence only its UIDs);
+            // every other kind's byte-identical Display-based path below is
+            // untouched.
+            let _ = write!(HashWrite(&mut h), "other:{}:", s.len());
+            h.update(s.as_bytes());
+            h.update(b":");
+        }
+        _ => {
+            let _ = write!(HashWrite(&mut h), "{kind}:");
+        }
+    }
     h.update(normalised_value.as_bytes());
     hex::encode(h.finalize())
 }

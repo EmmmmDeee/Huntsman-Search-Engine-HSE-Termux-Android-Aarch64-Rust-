@@ -287,6 +287,82 @@ fn geo_consensus_produces_no_finding() {
     assert!(r.geo.max_spread_km < 50.0);
 }
 
+/// Regression: `hse radar` / `POST /api/v1/radar` seeds every sweep with a
+/// sentinel coordinate (0,0 — "null island") purely so the local-sensor
+/// modules, which gate on target KIND and ignore the value, dispatch. Before
+/// this fix, `geo_consistency` treated that sentinel as a real competing
+/// location claim, so a real GPS/Wi-Fi fix anywhere on Earth (thousands of km
+/// from 0,0) triggered a spurious geo-divergence finding on EVERY single
+/// radar sweep — dinging the self-audit score for a fixed artifact of how the
+/// sweep is seeded, not a genuine source disagreement. This exact shape
+/// (one real fix + the `seed`-tagged sentinel) is reproduced from a live
+/// scan's debug bundle (scan cdaf0195…), which showed `0.000000,0.000000
+/// [seed] — 15802 km from consensus` as a [MEDIUM] finding despite there
+/// being only ONE genuine coordinate source.
+#[test]
+fn radar_sentinel_seed_does_not_trigger_geo_divergence() {
+    let ents = vec![
+        ent(
+            "coordinates",
+            "0.000000,0.000000",
+            0.9,
+            50,
+            &["seed", "subject"],
+        ),
+        ent("coordinates", "-27.587302,152.926999", 0.9, 2, &[]),
+        ent("coordinates", "-27.587396,152.926844", 0.9, 2, &[]),
+    ];
+    let r = audit(&ents, LogSignals::default());
+    assert!(
+        !r.findings.iter().any(|f| f.category == "geo-divergence"),
+        "the radar sentinel must never be compared against real fixes as a \
+         location claim: findings = {:?}",
+        r.findings
+    );
+    // The sentinel is excluded entirely — only the 2 real fixes count.
+    assert_eq!(r.geo.coord_count, 2);
+    assert!(
+        r.geo.max_spread_km < 1.0,
+        "the 2 real fixes are metres apart"
+    );
+
+    // The raw sentinel form (pre-normalisation, "0,0") must be excluded too —
+    // `is_radar_sentinel` recognises both the raw and normalised spellings.
+    let ents_raw = vec![
+        ent("coordinates", "0,0", 0.9, 50, &["seed", "subject"]),
+        ent("coordinates", "-27.587302,152.926999", 0.9, 2, &[]),
+    ];
+    let r_raw = audit(&ents_raw, LogSignals::default());
+    assert_eq!(
+        r_raw.geo.coord_count, 1,
+        "the raw-form sentinel is excluded too"
+    );
+
+    // A GENUINE (0,0)-seeded scan is not the radar's use case, but a real
+    // subject coordinate anywhere else must still be cross-validated normally
+    // — this guard is scoped to the exact sentinel spellings, not "any
+    // near-origin value" or "any seed-tagged coordinate".
+    let ents_real_seed = vec![
+        ent(
+            "coordinates",
+            "35.4137,-114.1762",
+            0.9,
+            5,
+            &["seed", "subject"],
+        ),
+        ent("coordinates", "45.5019,-73.5674", 0.4, 1, &[]), // genuine outlier
+    ];
+    let r_real = audit(&ents_real_seed, LogSignals::default());
+    assert!(
+        r_real
+            .findings
+            .iter()
+            .any(|f| f.category == "geo-divergence"),
+        "a genuine seed coordinate must still be cross-validated against \
+         other fixes — only the exact radar sentinel is exempt"
+    );
+}
+
 #[test]
 fn noise_ratio_and_tiers_are_computed() {
     let ents = vec![

@@ -526,6 +526,68 @@ fn merge_corroboration_accumulates() {
     assert_eq!(a.corroboration, 4); // 1 + 3
 }
 
+/// `candidate` is a confidence-TIER quarantine (see [`Entity::demote_to_candidate`]),
+/// not an accumulating multi-source label like an ordinary tag — every default
+/// view filters entities purely on this tag (`api::scan_export`,
+/// `api::scan_handlers::analysis`). A stranger's non-matching, low-confidence
+/// observation of the SAME uid (a breach row `TargetMatch` classified as a
+/// non-match, tagged `candidate` by `demote_to_candidate`) must not poison an
+/// otherwise-verified entity — confidence already resolves to the max of the
+/// two sides, so tag status must track that: a single non-candidate
+/// corroboration promotes the merged entity out of quarantine for good.
+#[test]
+fn merge_does_not_let_a_candidate_duplicate_poison_a_verified_entity() {
+    let mut verified = email("x@y.com");
+    verified.confidence = 0.9;
+    verified.tag("subject");
+
+    let mut stray_candidate = email("x@y.com");
+    stray_candidate.demote_to_candidate();
+
+    verified.merge(stray_candidate);
+
+    assert!(
+        !verified.has_tag(crate::core::tags::CANDIDATE),
+        "a verified entity must not be quarantined by a merged-in candidate duplicate"
+    );
+    assert!((verified.confidence - 0.9).abs() < 1e-9);
+    assert!(verified.has_tag("subject"));
+}
+
+/// Symmetric case: a genuinely candidate entity gets corroborated later by a
+/// trusted, non-candidate observation of the same uid — it must be promoted
+/// OUT of the candidate tier (not stay hidden from default views forever).
+#[test]
+fn merge_promotes_a_candidate_entity_once_a_verified_duplicate_lands() {
+    let mut candidate = email("x@y.com");
+    candidate.demote_to_candidate();
+    assert!(candidate.has_tag(crate::core::tags::CANDIDATE));
+
+    let mut verified = email("x@y.com");
+    verified.confidence = 0.9;
+
+    candidate.merge(verified);
+
+    assert!(
+        !candidate.has_tag(crate::core::tags::CANDIDATE),
+        "a non-candidate corroboration must promote the entity out of quarantine"
+    );
+}
+
+/// Two candidate-only observations of the same uid must remain quarantined —
+/// there is no genuine corroboration to promote on.
+#[test]
+fn merge_keeps_two_candidate_duplicates_quarantined() {
+    let mut a = email("x@y.com");
+    a.demote_to_candidate();
+    let mut b = email("x@y.com");
+    b.demote_to_candidate();
+
+    a.merge(b);
+
+    assert!(a.has_tag(crate::core::tags::CANDIDATE));
+}
+
 // ── Decay ────────────────────────────────────────────────────────────────
 
 #[test]
@@ -1127,6 +1189,23 @@ fn merge_uid_mismatch_is_noop() {
 fn entity_kind_other_display() {
     let kind = EntityKind::Other("foo".to_string());
     assert_eq!(kind.to_string(), "other:foo");
+}
+
+/// `derive_uid` hashes `Display(kind) + ":" + normalised_value`, and
+/// `Other(s)` displays as `"other:{s}"` — so the FULL preimage for an
+/// `Other` entity is `"other:" + s + ":" + value` with no escaping between
+/// the field-name segment and the value segment. Two semantically DISTINCT
+/// (field_name, value) pairs — a scraped breach-JSON key/value, per
+/// `modules::breach_rich`'s catch-all loop — must never collide onto the
+/// same uid just because a `:` moved from one segment to the other.
+#[test]
+fn other_kind_uid_does_not_collide_when_the_delimiter_shifts_between_name_and_value() {
+    let a = Entity::new(EntityKind::Other("a".to_string()), "b:c", 0.5, "s");
+    let b = Entity::new(EntityKind::Other("a:b".to_string()), "c", 0.5, "s");
+    assert_ne!(
+        a.uid, b.uid,
+        "Other(\"a\")+\"b:c\" and Other(\"a:b\")+\"c\" must not share a uid"
+    );
 }
 
 // ── EntityRef from Entity ───────────────────────────────────────────────

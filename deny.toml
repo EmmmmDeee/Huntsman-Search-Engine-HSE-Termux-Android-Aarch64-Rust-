@@ -6,7 +6,7 @@
 # never blocks an unrelated feature PR; it surfaces on the schedule / dep change.
 #
 # Evidence basis: every allowed license below is present in the locked graph
-# (`cargo deny list`, 277 crates). The set is permissive-only. The single
+# (`cargo deny list`, 285 crates). The set is permissive-only. The single
 # copyleft id seen (LGPL-2.1-or-later, via the UEFI-only `r-efi`) is one branch
 # of that crate's `MIT OR Apache-2.0 OR LGPL-2.1-or-later` expression, satisfied
 # here by MIT/Apache — no strong-copyleft code is linked on any target.
@@ -47,7 +47,7 @@ confidence-threshold = 0.9
 ignore = true
 
 [bans]
-# A 277-crate graph carries a few benign duplicate versions (e.g. thiserror
+# A 285-crate graph carries a few benign duplicate versions (e.g. thiserror
 # 1.x/2.x during the ecosystem migration); surface them without failing. An
 # outright wildcard ("*") version requirement is a real hygiene smell — warn.
 multiple-versions = "warn"
@@ -59,18 +59,12 @@ version = 2
 # second, config-versioned view over the same RustSec DB. A yanked release in
 # the locked graph is a concrete, actionable supply-chain signal — fail on it.
 yanked = "deny"
-# Acknowledged, no-fix-available transitive advisories. Each entry is an
-# *unmaintained* (informational) notice — NOT a vulnerability — on a crate we do
-# not depend on directly and cannot drop without un-pinning a deliberately
-# pinned root. Reviewed and accepted; revisit when the upstream root migrates.
-ignore = [
-    # rustls-pemfile is unmaintained (repo archived 2025-08; its PEM parsing now
-    # lives in rustls-pki-types). Pulled in only transitively by reqwest 0.12,
-    # which the project pins by policy (Termux aarch64 TLS); there is no safe
-    # upgrade until reqwest migrates upstream. No code path of ours uses it
-    # directly. https://rustsec.org/advisories/RUSTSEC-2025-0134
-    "RUSTSEC-2025-0134",
-]
+# Acknowledged, no-fix-available transitive advisories go here. Empty: the one
+# prior entry (RUSTSEC-2025-0134, rustls-pemfile — unmaintained, pulled in only
+# transitively by reqwest 0.12) was removed once a `cargo update` (2026-07-21)
+# migrated reqwest off rustls-pemfile entirely (now rustls-pki-types); the crate
+# no longer appears in Cargo.lock at all, so the advisory can't fire.
+ignore = []
 
 [sources]
 # Only the public crates.io registry may supply dependencies. Blocks an

@@ -15,7 +15,7 @@ falls back to "could not read free disk space — skipping check").
 
 If you still hit it, you're on an older `install.sh`. Pull the latest
 and retry, or use the manual install path in
-[`INSTALL.md`](INSTALL.md#manual-install) which skips the probe.
+[`INSTALL.md`](INSTALL.md#manual-build-termux) which skips the probe.
 
 ### `pkg update: failed`
 

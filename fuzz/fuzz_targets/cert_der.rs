@@ -10,8 +10,8 @@
 //! ```
 //!
 //! Seed from the project's existing real-certificate fixture rather than a
-//! duplicated corpus (`docs/CONVENTIONS.md` §3, single-sourced data) — but
-//! copy it into `corpus/cert_der/` first, never pass
+//! duplicated corpus (single-sourced test data) — but copy it into
+//! `corpus/cert_der/` first, never pass
 //! `../src/modules/cert_intel/testdata` itself as the corpus argument:
 //! libFuzzer treats every directory on its command line as read *and write*
 //! (it saves newly-discovered inputs back into it), so fuzzing against the

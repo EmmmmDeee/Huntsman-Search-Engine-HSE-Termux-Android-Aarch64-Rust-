@@ -462,22 +462,27 @@ impl Store {
     /// around them earlier can do so without remembering a session id. This
     /// is the query behind `GET /api/v1/radar/history`.
     pub fn radar_history(&self, limit: usize) -> Result<Vec<Scan>> {
+        // The raw "0,0"/"00:00:00:00:00:00" `radar_scan_spec` passes to
+        // `Target::new` is NOT what ends up persisted: coordinate normalisation
+        // (`core::entity::normalise`) rounds to 6 decimal places, so the stored
+        // value is `RADAR_SENTINEL_COORD_NORMALISED` — the MAC sentinel is
+        // already normalised-form (lowercase, colon-sep, all-zero) and passes
+        // through unchanged. Sourced from `core::scan`'s single-defined
+        // constants (not re-hardcoded) so this query can't silently drift from
+        // what `radar_scan_spec` / `cli::radar` actually seed a sweep with.
+        let query = format!(
+            "SELECT data_json FROM scans
+             WHERE (json_extract(data_json, '$.target.kind') = 'coordinates'
+                    AND json_extract(data_json, '$.target.value') = '{}')
+                OR (json_extract(data_json, '$.target.kind') = 'mac_address'
+                    AND json_extract(data_json, '$.target.value') = '{}')
+             ORDER BY started_at DESC, id DESC LIMIT ?1",
+            crate::core::scan::RADAR_SENTINEL_COORD_NORMALISED,
+            crate::core::scan::RADAR_SENTINEL_MAC,
+        );
         let raw: Vec<String> = {
             let conn = self.conn.lock();
-            let mut stmt = conn.prepare_cached(
-                // The literal "0,0"/"00:00:00:00:00:00" `radar_scan_spec` passes
-                // to `Target::new` is NOT what ends up persisted: coordinate
-                // normalisation (`core::entity::normalise`) rounds to 6 decimal
-                // places, so the stored value is "0.000000,0.000000" — the MAC
-                // sentinel is already normalised-form (lowercase, colon-sep,
-                // all-zero) and passes through unchanged.
-                "SELECT data_json FROM scans
-                 WHERE (json_extract(data_json, '$.target.kind') = 'coordinates'
-                        AND json_extract(data_json, '$.target.value') = '0.000000,0.000000')
-                    OR (json_extract(data_json, '$.target.kind') = 'mac_address'
-                        AND json_extract(data_json, '$.target.value') = '00:00:00:00:00:00')
-                 ORDER BY started_at DESC, id DESC LIMIT ?1",
-            )?;
+            let mut stmt = conn.prepare_cached(&query)?;
             let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
             collect_rows(rows, "radar_history")
         };

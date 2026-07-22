@@ -272,6 +272,27 @@ struct ErrorDetail {
     status_code: Option<u16>,
 }
 
+/// Resolve the effective HTTP status for classifying an unsuccessful
+/// `search()` response: prefer the API's own `errors.status_code` (when
+/// present and nonzero — a `0` there is not a real status) over the
+/// transport-layer status, since the body's code may be more specific; but
+/// FALL BACK to the real HTTP status curl observed when the body doesn't
+/// provide one at all.
+///
+/// Previously `env.errors.status_code` was the ONLY signal available, via
+/// the status-discarding `CurlClient::get`. A genuine 404/429/5xx response
+/// whose body didn't happen to carry a matching `errors.status_code` field
+/// (a differently-shaped error body, a gateway/proxy response ahead of the
+/// real API) had no way to be classified at all and fell straight through
+/// to the generic `Err("API returned success=false")` at the end of the
+/// branch — discarding any results already accumulated from earlier,
+/// successful pages of the SAME paginated query. `get_with_status` gives an
+/// independent, always-available signal that can't be silently absent the
+/// way the body's own field can.
+fn effective_error_status(body_status: Option<u16>, http_status: u16) -> u16 {
+    body_status.filter(|&c| c != 0).unwrap_or(http_status)
+}
+
 #[derive(Deserialize)]
 struct SearchData {
     #[serde(default)]
@@ -420,7 +441,7 @@ pub async fn search(
         // still degrades exactly as before rather than retrying forever.
         let mut attempt = 0u32;
         let sd: SearchData = loop {
-            let body = CLIENT.get(&url, key).await?;
+            let (body, http_status) = CLIENT.get_with_status(&url, key).await?;
             // Retain the paid response verbatim BEFORE parsing/extraction — operator
             // policy: purchased data is kept in absolute completeness until manually
             // deleted (see `util::raw_archive`). The endpoint label is the last two
@@ -462,7 +483,11 @@ pub async fn search(
                 record_real_quota(q);
             }
             if !env.success {
-                if env.errors.as_ref().and_then(|e| e.status_code) == Some(404) {
+                let code = effective_error_status(
+                    env.errors.as_ref().and_then(|e| e.status_code),
+                    http_status,
+                );
+                if code == 404 {
                     // Negative-cache the clean miss so subsequent scans of the same
                     // dead target don't re-spend an OathNet lookup confirming it's
                     // still empty. The cache is per-process so this only affects
@@ -476,7 +501,7 @@ pub async fn search(
                     }
                     return Ok(all_items);
                 }
-                if env.errors.as_ref().and_then(|e| e.status_code) == Some(429) {
+                if code == 429 {
                     if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
                         mark_quota_exhausted();
                         cache_put(ck, &all_items);
@@ -506,9 +531,11 @@ pub async fn search(
                 // a real failure signal, not a clean "no more pages" or a
                 // quota condition, and must not be silently absorbed as
                 // either.
-                if let Some(code) = env.errors.as_ref().and_then(|e| e.status_code)
-                    && (500..600).contains(&code)
-                {
+                // Status 0 means curl reported no HTTP response at all (a
+                // connection reset after connect) — transient in the same
+                // way a 5xx is, per `CurlClient::get_with_status`'s doc, so
+                // it shares the same retry-then-fail treatment.
+                if code == 0 || (500..600).contains(&code) {
                     if RATE_LIMIT_BACKOFF.should_retry(attempt) {
                         let delay = RATE_LIMIT_BACKOFF.delay(attempt);
                         tracing::debug!(

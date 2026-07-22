@@ -72,18 +72,15 @@ impl StoragePort for InMemoryStore {
     }
 
     fn radar_history(&self, limit: usize) -> Result<Vec<Scan>> {
-        // Mirror Store::radar_history's sentinel filter exactly (same
-        // normalised-value literals `radar_scan_spec`'s targets resolve to).
+        // Mirror Store::radar_history's sentinel filter exactly, via the same
+        // canonical predicate (`core::scan::is_radar_sentinel`) so this mock
+        // can't silently drift from the real implementation.
         let mut scans: Vec<Scan> = self
             .inner
             .lock()
             .scans
             .values()
-            .filter(|s| {
-                let kind = s.target.kind.canonical_str();
-                (kind == "coordinates" && s.target.value == "0.000000,0.000000")
-                    || (kind == "mac_address" && s.target.value == "00:00:00:00:00:00")
-            })
+            .filter(|s| crate::core::scan::is_radar_sentinel(s.target.kind, &s.target.value))
             .cloned()
             .collect();
         scans.sort_by_key(|s| std::cmp::Reverse(s.started_at));

@@ -115,6 +115,22 @@ pub(crate) fn is_anchoring_geo_source(source: &str) -> bool {
 /// (AU-018/026/030) so neither lets a registrant/hosting/IP-geo location vote
 /// the subject's physical position.
 pub(in crate::core::correlator) fn is_infrastructure_geo(e: &Entity) -> bool {
+    // `hse radar` seeds its sweep with a sentinel Coordinates target (0,0) because
+    // signal_radar/device_sensors/wifi_intel/etc. gate on target *kind*, not value.
+    // That sentinel is minted as a `seed, subject` entity — the same tags a real
+    // operator-provided anchor carries — so without this check it sails straight
+    // through the "no person-anchoring source" heuristic below and gets fused into
+    // AU-057's weighted median as a full-confidence subject sighting, dragging a
+    // real Brisbane fix out to the Indian Ocean. It never locates anyone; treat it
+    // as infrastructure noise like a hosting/registrant point.
+    if e.kind == EntityKind::Coordinates
+        && crate::core::scan::is_radar_sentinel(
+            crate::core::scan::TargetKind::Coordinates,
+            &e.value,
+        )
+    {
+        return true;
+    }
     // Single tag pass: detect the HOSTING tag, a WHOIS `registrant` location, and
     // any `infra:` map-feature tag together instead of separate `.iter()` scans.
     for t in &e.tags {

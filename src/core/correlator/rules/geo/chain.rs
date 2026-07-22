@@ -209,7 +209,19 @@ pub(in crate::core::correlator) fn rule_au_027_address_coordinates_chain(
         .collect();
     let coords: Vec<&Entity> = entities_of_kind(entities, EntityKind::Coordinates)
         .into_iter()
-        .filter(|e| e.confidence >= 0.55)
+        // Unlike its siblings (AU-030/052/053/057/059) this rule doesn't gate on
+        // `is_infrastructure_geo` — it relies on the geo-tag check below instead,
+        // and existing regression fixtures assume untagged/unanchored coordinates
+        // still cluster. But the `hse radar` sentinel seed (0,0) must still never
+        // become the "dominant cluster" this rule anchors on, so exclude it
+        // specifically rather than pulling in the broader anchoring-source gate.
+        .filter(|e| {
+            e.confidence >= 0.55
+                && !crate::core::scan::is_radar_sentinel(
+                    crate::core::scan::TargetKind::Coordinates,
+                    &e.value,
+                )
+        })
         .collect();
     if addresses.is_empty() || coords.is_empty() {
         return Vec::new();

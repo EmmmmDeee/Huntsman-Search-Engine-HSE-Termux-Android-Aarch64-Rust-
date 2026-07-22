@@ -59,6 +59,21 @@ fn geo_consistency(entities: &[AuditEntity]) -> (GeoSummary, Option<Finding>) {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut srcs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for e in entities.iter().filter(|e| e.kind == "coordinates") {
+        // The `hse radar` / `POST /api/v1/radar` sweep seeds every run with a
+        // sentinel coordinate (0,0 — "null island") purely so the local-sensor
+        // modules, which gate on target KIND and ignore the value, dispatch. It
+        // is never a real claimed location. Without this guard, every radar
+        // sweep's genuine GPS/Wi-Fi fix was compared against this placeholder
+        // and reported as diverging by thousands of km from "the subject's
+        // location" — a spurious [MEDIUM/HIGH] geo-divergence finding on every
+        // single sweep, dinging the self-audit score for a fixed artifact of
+        // how the sweep is seeded rather than a real source disagreement.
+        if crate::core::scan::is_radar_sentinel(
+            crate::core::scan::TargetKind::Coordinates,
+            &e.value,
+        ) {
+            continue;
+        }
         if let Some((lat, lon)) = crate::util::geohash::parse_coords(&e.value) {
             srcs.extend(e.sources.iter().cloned());
             if seen.insert(e.value.clone()) {
