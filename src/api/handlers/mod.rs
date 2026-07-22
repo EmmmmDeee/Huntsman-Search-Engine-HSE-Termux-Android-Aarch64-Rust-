@@ -497,20 +497,7 @@ pub async fn logs_download(
     }
     let body = crate::util::log_capture::dump();
     let filename = format!("hse-debug-{}.log", crate::core::entity::unix_now());
-    (
-        [
-            (
-                axum::http::header::CONTENT_TYPE,
-                "text/plain; charset=utf-8".to_string(),
-            ),
-            (
-                axum::http::header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{filename}\""),
-            ),
-        ],
-        body,
-    )
-        .into_response()
+    crate::api::scan_export::attachment_response(body, "text/plain; charset=utf-8", &filename)
 }
 
 /// `GET /api/v1/debug/bundle` — the consolidated **system self-diagnosis
@@ -631,20 +618,7 @@ pub async fn system_debug_bundle(
         Err(e) => return internal_error(&format!("debug-bundle render task failed: {e}")),
     };
     let filename = format!("hse-system-debug-{}.txt", crate::core::entity::unix_now());
-    (
-        [
-            (
-                axum::http::header::CONTENT_TYPE,
-                "text/plain; charset=utf-8".to_string(),
-            ),
-            (
-                axum::http::header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{filename}\""),
-            ),
-        ],
-        body,
-    )
-        .into_response()
+    crate::api::scan_export::attachment_response(body, "text/plain; charset=utf-8", &filename)
 }
 
 pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
