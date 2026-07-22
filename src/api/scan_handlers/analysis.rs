@@ -118,7 +118,24 @@ pub async fn scan_attack(
             }
             let coverage = crate::core::attack::coverage(&exercised);
             if params.get("format").map(String::as_str) == Some("navigator") {
-                return Json(crate::core::attack::navigator_layer(&coverage, &id)).into_response();
+                let layer = crate::core::attack::navigator_layer(&coverage, &id);
+                // `?download=1` saves the layer as a file rather than rendering it
+                // inline — the entire point of a Navigator layer is to LOAD the
+                // `.json` into the MITRE ATT&CK Navigator, so it must be a real
+                // download. Routed through the same attachment helper as every
+                // other scan export (→ `hse-navigator-<id>.json`).
+                if params.get("download").map(String::as_str) == Some("1") {
+                    let body =
+                        serde_json::to_string_pretty(&layer).unwrap_or_else(|_| layer.to_string());
+                    return crate::api::scan_export::download_response(
+                        body,
+                        "application/json; charset=utf-8",
+                        &id,
+                        "navigator",
+                        "json",
+                    );
+                }
+                return Json(layer).into_response();
             }
             if params.get("breakdown").map(String::as_str) == Some("entity_type") {
                 // Breakdown by entity type: for each entity, extract its attack

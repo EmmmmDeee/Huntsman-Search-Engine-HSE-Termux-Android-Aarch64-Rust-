@@ -416,7 +416,22 @@ pub(crate) fn download_response(
     ext: &str,
 ) -> axum::response::Response {
     let short_id: String = scan_id.chars().take(12).collect();
-    let filename = format!("hse-{stem}-{short_id}.{ext}");
+    attachment_response(body, content_type, &format!("hse-{stem}-{short_id}.{ext}"))
+}
+
+/// The single place a downloadable HTTP response is built: sets the content type
+/// and a `Content-Disposition: attachment; filename="…"` so the browser saves a
+/// file instead of rendering it inline. Every download surface routes through
+/// here — the scan-scoped exports via [`download_response`] (which layers the
+/// `hse-<stem>-<short_id>.<ext>` naming on top) AND the system-scoped logs /
+/// debug bundle, which pass a timestamped `hse-…-<unix_ts>.<ext>` name directly.
+/// Keeping one builder means the attachment header can never drift between the
+/// two families again (they previously hand-rolled it independently).
+pub(crate) fn attachment_response(
+    body: String,
+    content_type: &'static str,
+    filename: &str,
+) -> axum::response::Response {
     let disposition = format!("attachment; filename=\"{filename}\"");
     let mut resp = (StatusCode::OK, body).into_response();
     let headers = resp.headers_mut();
