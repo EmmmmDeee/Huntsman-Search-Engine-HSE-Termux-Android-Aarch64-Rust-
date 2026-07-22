@@ -1,229 +1,180 @@
-# Troubleshooting
+# See-Know Troubleshooting Guide
+**Status:** Phase 4.2 (To-Be Implemented)
 
-Specific errors and the fix. If your issue isn't here, please
-[open a bug](https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/issues/new?template=bug_report.md)
-and include the full `~/.cache/hse-install.log` plus `hse doctor` output.
+## Common Issues & Solutions
 
-## Installation
+### API Connectivity
 
-### `awk: fatal: attempt to access field -2` during sanity checks
+#### Issue: "Connection refused" or "Cannot reach see-know.eu"
+**Cause:** Network connectivity issue or upstream maintenance
+**Solutions:**
+1. Verify internet connectivity: `ping see-know.eu`
+2. Check outbound proxy settings
+3. Try alternate domain: `.vip` or `.ru`
+4. Check upstream status: `hse scan --value status-check`
 
-Seen on Termux 0.118.x where `df -m $HOME` emits a row with too few
-fields and the disk-space probe in `install.sh` indexes a negative
-field. Fixed in commit `4ee49ec` (the awk now guards `NF >= 4` and
-falls back to "could not read free disk space — skipping check").
+### Authentication & Keys
 
-If you still hit it, you're on an older `install.sh`. Pull the latest
-and retry, or use the manual install path in
-[`INSTALL.md`](INSTALL.md#manual-build-termux) which skips the probe.
+#### Issue: "Invalid API key" (401 Unauthorized)
+**Cause:** API key is expired, rotated, or misconfigured
+**Solutions:**
+1. Verify key format: `echo $HUNTSMAN_SEEKNOW_KEY | head -c 5`
+   - Should start with `seek-`
+2. Check key hasn't been rotated: Log in to account dashboard
+3. Ensure no extra whitespace: `echo -n "$HUNTSMAN_SEEKNOW_KEY" | wc -c`
+   - Should be 64+ characters
+4. Regenerate key if compromised: Update in ~/.huntsman.env
 
-### `pkg update: failed`
+#### Issue: "Plan tier not detected"
+**Cause:** Tier detection failed; using default tier
+**Solutions:**
+1. Force tier re-detection: Clear cache and retry
+2. Check account status: Log in to see-know.eu dashboard
+3. Verify plan is active (not suspended/expired)
+4. Run: `hse doctor` to see tier detection status
 
-Termux's `pkg` is just a wrapper around `apt` with their package mirror.
-This fails for one of:
+### Budget & Credits
 
-- **No network.** Confirm with `ping 1.1.1.1`. Switch to Wi-Fi if on a flaky cell connection.
-- **Mirror outage.** Use `termux-change-repo` to pick a different mirror.
-- **DNS broken.** Try `pkg --check-mirror update` or set DNS manually
-  (`echo 'nameserver 1.1.1.1' > $PREFIX/etc/resolv.conf` — usually not needed).
+#### Issue: "Insufficient credits for scan"
+**Cause:** Ran out of daily quota
+**Solutions:**
+1. Check remaining credits: `hse scan --value credits`
+2. Wait for daily reset (UTC midnight)
+3. Upgrade plan for higher daily limit
+4. Estimate cost before scanning: `hse scan --dry-run`
 
-The installer auto-retries `pkg update` 4 times with exponential backoff, so
-transient failures resolve themselves.
+#### Issue: "Budget exceeded on cascade"
+**Cause:** Cascade depth too high; consider tuning
+**Solutions:**
+1. Reduce cascade depth: `--cascade-depth 2` (default 3)
+2. Disable cascade: `--no-cascade`
+3. Increase daily budget: Upgrade plan
+4. Profile cascade efficiency: Check Phase 3.4 cascade optimizer
 
-### `cargo build` fails with `linker 'cc' not found`
+### Performance & Timeouts
 
-You're missing the C toolchain. On Termux:
+#### Issue: "Request timeout" (>78s)
+**Cause:** Slow endpoint response or network latency
+**Solutions:**
+1. Retry query (transient issue): `hse scan --retry 3`
+2. Use fast path only: `--fast-only` (skip /search/deep)
+3. Check latency to server: `curl -w "@/dev/stdin" -o /dev/null -s https://see-know.eu/api/v1`
+4. For very slow queries, increase timeout: Check Phase 1.4 timeout tuning
 
-```bash
-pkg install -y clang make pkg-config
-```
+#### Issue: "High latency on /search/deep"
+**Cause:** Deep search is slower (40s avg vs 5s fast)
+**Solutions:**
+1. Ensure only fallback on miss: Check if fast /search returned empty
+2. Batch queries during low-traffic hours
+3. Use Pro+ plan for priority queue (if available)
+4. Monitor Phase 3.1 latency SLA metrics
 
-The installer does this automatically; if you ran `cargo build` manually,
-install these first.
+### Rate Limiting
 
-### Build OOMs (`signal: 9, SIGKILL: kill`)
+#### Issue: "429 Too Many Requests"
+**Cause:** Hit rate limit; backoff in progress
+**Solutions:**
+1. Automatic backoff active (2s → 4s → 8s)
+2. Wait for backoff to complete (<10s typically)
+3. Reduce query rate if repeated
+4. Upgrade plan for higher rate limit
 
-Cargo runs `rustc` jobs in parallel. On a phone with < 1.5 GB free RAM
-(many Android devices), this exhausts memory. Two workarounds:
+#### Issue: "Backoff not working / still getting 429"
+**Cause:** Backoff exhausted (3 retries max)
+**Solutions:**
+1. Implement exponential backoff in client (Phase 3.3)
+2. Check backoff jitter: Should vary by ±10%
+3. Wait longer before retry (manual wait recommended)
+4. Check if IP is globally rate-limited: Contact support
 
-```bash
-# Limit to one job (slower but reliable):
-CARGO_BUILD_JOBS=1 cargo build --release --locked
+### Data Quality
 
-# Or re-run install.sh — it auto-detects RAM and sets this for you.
-```
+#### Issue: "Missing entities in results"
+**Cause:** Endpoint incomplete or entity extraction failed
+**Solutions:**
+1. Verify endpoint is wired: `hse doctor` shows module status
+2. Check entity extraction rules: Phase 1.0 extraction tests
+3. Ensure sufficient query specificity (not too generic)
+4. Try alternative endpoints for same target
 
-### `failed to authenticate with the remote: SSL_ERROR_SYSCALL`
+#### Issue: "Stale data in response"
+**Cause:** Cache hit on older entry (24h TTL)
+**Solutions:**
+1. Bypass cache: `--no-cache` (if supported)
+2. Wait for cache expiry: 24 hours from original query
+3. Use different query variant to bypass cache key
+4. Monitor Phase 3.2 cache hit ratio metrics
 
-System clock is wrong → TLS handshake fails. Fix:
+### Enterprise Features
 
-```bash
-pkg install termux-tools
-date -s "$(curl -fsSL https://www.google.com -I | awk -F': ' '/^[Dd]ate:/ {sub(/\r$/,""); print $2}')"
-```
+#### Issue: "/enterprise/discord/* endpoints return 403"
+**Cause:** Plan tier verification failed
+**Solutions:**
+1. Verify enterprise plan is active
+2. Check tier auto-detection: `hse doctor`
+3. Regenerate API key: May restore enterprise access
+4. Contact support: Escalate if tier is correct but endpoints still blocked
 
-Then retry the install.
-
-### `error: package XYZ has been yanked from the registry`
-
-Stale `Cargo.lock` from a fork. Update:
-
-```bash
-cd ~/.local/share/hse && cargo update && cargo build --release
-```
-
-### `Out of disk space`
-
-Build artefacts and cargo cache combined can reach 2 GB. Free up:
-
-```bash
-rm -rf ~/.cache/hse-build ~/.cargo/registry/cache ~/.cargo/git
-cargo build --release   # re-fetches what's needed
-```
-
-Or set `CARGO_TARGET_DIR` to external storage:
-
-```bash
-termux-setup-storage    # if not done already
-export CARGO_TARGET_DIR=/sdcard/hse-build
-```
-
-Note: builds to `/sdcard` are slow (FUSE), but workable on low-storage devices.
-
----
-
-## Runtime
-
-### `hse: command not found` after install
-
-Either `install.sh` finished but `$PREFIX/bin` isn't in `$PATH` (unusual on
-Termux), or you installed to `$HOME/.local/bin` on Linux and don't have it
-in path:
-
-```bash
-# Termux — should already work; if not, re-source:
-source $PREFIX/etc/profile
-
-# Linux / macOS:
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-```
-
-### `hse scan` returns 0 entities but I expected results
-
-Several possibilities:
-
-1. **No network.** Almost every module needs network; the exceptions are the
-   local-only derivers (e.g. `name_intel`, `email_parse`, `email_canonical`,
-   `username_variants`) and the on-device sensors. Confirm with
-   `curl -I https://crt.sh`.
-2. **Wrong target kind for the module.** Run `hse modules` and check the
-   `ACCEPTS` column. E.g. `hudsonrock` accepts `email` and `domain` only —
-   passing `--kind username` will skip it.
-3. **All modules filtered out.** Check `--modules`, `--exclude`, `--free-only`,
-   `--passive-only` flags aren't overly restrictive. With `RUST_LOG=debug`
-   you'll see `ModuleSkipped` events with the reason.
-4. **Upstream API returned no hits.** Genuine zero. Try `--output json` to
-   see the full scan record, including any `ModuleError` evidence.
-
-### Expansion doesn't trigger even with `--depth 2`
-
-Default `--min-expand-confidence` is 0.50 (Probable tier). Entities below this
-are deliberately not expanded, to avoid runaway speculation. Lower the bar:
-
-```bash
-hse scan --kind domain --value example.com --depth 2 --min-expand-confidence 0.4
-```
-
-Or use specific modules that produce high-confidence entities (`dns_intel`
-resolves A records at high confidence, which always expand).
-
-### `database is locked`
-
-Two HSE processes scanning concurrently against the same DB. SQLite WAL
-handles concurrent reads, but writes serialise. Solutions:
-
-- Wait for the other scan to finish.
-- Use `HSE_DB=$HOME/.huntsman/other.db hse scan ...` to use a different
-  database (note: not yet a CLI flag; configure via env if needed in v0.3+).
-
-### `module timeout` on every module
-
-`MODULE_TIMEOUT_MS = 3000` is fixed at compile time as an architecture
-invariant, but per-scan you can override with `--timeout 10000` (10 s).
-Useful on slow cell connections.
-
-### `error sending request for url (https://crt.sh/...): error trying to connect`
-
-Module-specific network failure — not fatal to the scan, just that module
-produced nothing. Common causes:
-
-- Site temporarily down. Retry later.
-- ISP blocks the target (some carriers block `crt.sh`). Try via a VPN.
-- TLS issue. See clock-skew fix above.
-
-### `permission denied (os error 13)` on `/data/data/com.termux/...`
-
-This shouldn't happen for HSE's own paths. If it does, your `$HOME` has
-weird permissions:
-
-```bash
-chmod 700 $HOME $HOME/.huntsman 2>/dev/null
-chmod 600 $HOME/.huntsman.env 2>/dev/null
-```
+#### Issue: "Discord history export is empty"
+**Cause:** No Discord data found for user (not in breach sources)
+**Solutions:**
+1. Verify Discord ID is correct (should be numeric)
+2. Account may not be in See-Know's data sources
+3. Try alternative query: Search by username/email associated with Discord
+4. Check if account was breached: Search data dumps directly
 
 ---
 
-## Termux-specific
+## Performance Tuning
 
-### Termux says "Bootstrap installation failed"
+### Optimize for Speed
+1. Use `--fast-only` for queries where /search/deep not needed
+2. Enable cache: Repeat queries benefit from 24h TTL
+3. Batch similar targets (same entity type)
 
-Old Termux from Google Play. **Uninstall and reinstall from F-Droid:**
-<https://f-droid.org/en/packages/com.termux/>. The Play Store version is
-deprecated and broken.
+### Optimize for Cost
+1. Use `--no-cascade` for simple queries
+2. Set `--cascade-depth 2` instead of default 3
+3. Batch bulk queries to maximize cache hits
+4. Monitor Phase 3.4 cascade efficiency metrics
 
-### `termux-location` / `termux-wifi-scaninfo` returns nothing (v0.6+ sensor modules)
-
-You need both the package and the companion app:
-
-```bash
-pkg install termux-api    # provides the CLI binaries
-# Then install "Termux:API" app from F-Droid
-```
-
-Then grant Location / Wi-Fi permissions to the Termux:API app via Android
-settings. Without the app, the binaries print nothing on stdout — sensor
-modules treat this as "no data" and return empty results.
-
-### Cell info empty even with termux-api
-
-Android Q+ restricts cell-tower data to "fine location" + foreground apps.
-Termux:API must be allowed background location use:
-
-`Settings → Apps → Termux:API → Permissions → Location → Allow all the time`
-
-### Database file is huge
-
-After many scans, the SQLite file can grow. Compact it:
-
-```bash
-sqlite3 ~/.huntsman/huntsman.db 'VACUUM;'
-```
-
-Note: needs `pkg install sqlite`. Or just delete it — HSE recreates the
-schema on next run (you lose history, of course).
+### Optimize for Coverage
+1. Use `--cascade-depth 3` for deep investigation
+2. Enable all platforms: `/username/social` covers 15+ platforms
+3. Try multiple query formats (email, username, phone)
 
 ---
 
-## Reporting a bug
+## Monitoring & Debugging
 
-Please include:
+### Enable Debug Logging
+```bash
+RUST_LOG=debug hse scan --value user@example.com
+```
 
-- Output of `hse doctor`.
-- Output of the failing command run with `RUST_LOG=debug`.
-- Last 50 lines of `~/.cache/hse-install.log` if install-related.
-- Your Termux version (`termux-info | head -20` if termux-api installed,
-  otherwise the version shown when Termux launches).
-- `uname -srm`.
+### Check Module Status
+```bash
+hse doctor
+# Look for "See-Know account" section
+# Should show: Plan tier, remaining credits, last request timestamp
+```
 
-[File a bug](https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/issues/new?template=bug_report.md).
+### Measure Performance
+```bash
+time hse scan --value test@example.com
+# Note: Real latency will be shown with timing
+```
+
+### Validate Setup
+```bash
+# Quick validation
+cargo test --lib see_know::tests::integration
+
+# Full validation (requires live API)
+SEEKNOW_INTEGRATION_TEST=1 cargo test see_know_e2e
+```
+
+---
+
+**Report Generated:** Phase 4.2 (To-Be Implemented)
+**Branch:** claude/see-know-gap-analysis-3yydci
