@@ -124,23 +124,10 @@ async fn ssrf_resolve_pin(url: &str) -> Option<Vec<String>> {
     Some(vec!["--resolve".to_string(), format!("{host}:{port}:{ip}")])
 }
 
-/// Pick the next search proxy from `HUNTSMAN_SEARCH_PROXY`. The variable may be
-/// a comma-separated list (`socks5://h:1, http://h:2`) which is rotated
-/// round-robin across calls so traffic spreads over several egress paths; a
-/// single value behaves exactly as before. `None` ⇒ direct connection with
-/// SSRF IP-pinning.
-fn rotating_search_proxy() -> Option<String> {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static IDX: AtomicUsize = AtomicUsize::new(0);
-    let raw = std::env::var("HUNTSMAN_SEARCH_PROXY").ok()?;
-    let list = crate::util::netrotate::parse_proxy_list(&raw);
-    let i = match list.len() {
-        0 => return None,
-        1 => 0,
-        _ => IDX.fetch_add(1, Ordering::Relaxed),
-    };
-    crate::util::netrotate::select_proxy(&list, i)
-}
+// Proxy selection + per-request failover now lives in the validated
+// `crate::util::egress` pool (health-ranked, self-healing) — see `curl_exec`.
+// The former stateless round-robin over `HUNTSMAN_SEARCH_PROXY` (which blindly
+// dispatched even to proven-dead proxies) was replaced by it.
 
 /// Single curl execution path shared by every public fetch helper (so the
 /// hardening — SSRF pin, proto/redirect limits, the `--max-filesize` cap, the
@@ -148,10 +135,11 @@ fn rotating_search_proxy() -> Option<String> {
 /// and proxied variants).
 ///
 /// Proxy precedence: an explicit `proxy_override` (from [`fetch_via_proxy`]) wins,
-/// else a rotated entry from the `HUNTSMAN_SEARCH_PROXY` list (see
-/// [`rotating_search_proxy`]), else a direct connection pinned to a vetted public
-/// IP. When proxied the SSRF pin is skipped (the proxy resolves and isolates us);
-/// a direct fetch with no resolvable public IP is refused.
+/// else a health-ranked entry from the validated [`crate::util::egress`] pool
+/// with per-request failover, else — only when NO proxy is configured — a direct
+/// connection pinned to a vetted public IP. When proxied the SSRF pin is skipped
+/// (the proxy resolves and isolates us); a direct fetch with no resolvable public
+/// IP is refused; and a configured-but-exhausted pool never silently goes direct.
 async fn curl_exec(
     url: &str,
     timeout_ms: u64,
@@ -160,39 +148,94 @@ async fn curl_exec(
     proxy_override: Option<&str>,
 ) -> Option<String> {
     let secs = (timeout_ms / 1000).max(3).to_string();
+
+    // An explicit override (from `fetch_via_proxy`) wins — a single attempt, no
+    // pool involvement or reporting (the caller chose this exact proxy).
+    if let Some(p) = proxy_override {
+        return run_curl_once(url, &secs, ua, post_data, timeout_ms, Some(p), None).await;
+    }
+
+    // The validated proxy pool with per-request FAILOVER. Try up to
+    // MAX_PROXY_FAILOVER healthy proxies, reporting each real outcome so the
+    // pool self-heals (a dead proxy accrues failures and drops out of
+    // rotation); one dead path never renders the resource unreachable while a
+    // healthy peer exists. Selection is health-ranked (see `util::egress`), so a
+    // proven-dead proxy is skipped rather than blindly round-robined into.
+    //
+    // Security invariant: when the operator HAS configured proxies we NEVER fall
+    // back to a direct connection on exhaustion — that would leak the real IP
+    // the proxy exists to hide. `pool_is_configured` distinguishes "configured
+    // but every entry is currently failing" (⇒ give up, return None) from "no
+    // proxy configured at all" (⇒ the normal SSRF-pinned direct path below).
+    if crate::util::egress::pool_is_configured() {
+        let mut tried: Vec<String> = Vec::new();
+        while tried.len() < MAX_PROXY_FAILOVER {
+            let Some(proxy) = crate::util::egress::next_proxy_excluding(&tried) else {
+                break;
+            };
+            let started = std::time::Instant::now();
+            let res =
+                run_curl_once(url, &secs, ua, post_data, timeout_ms, Some(&proxy), None).await;
+            #[allow(clippy::cast_possible_truncation)]
+            let latency = started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+            crate::util::egress::report_proxy(&proxy, res.is_some(), latency);
+            if res.is_some() {
+                return res;
+            }
+            tried.push(proxy);
+        }
+        // Every pooled proxy failed (or none usable) — do NOT leak a direct
+        // connection the operator's proxy config exists to prevent.
+        return None;
+    }
+
+    // No proxy configured: direct connection, pinned to a vetted public IP so an
+    // attacker-controlled host can't be rebound onto an internal address. Refuse
+    // the fetch if the host has no resolvable public IP.
+    match ssrf_resolve_pin(url).await {
+        Some(pin) => run_curl_once(url, &secs, ua, post_data, timeout_ms, None, Some(&pin)).await,
+        None => None,
+    }
+}
+
+/// Maximum distinct proxies tried for one fetch before giving up. Bounds the
+/// per-request failover so a pool full of dead proxies can't turn one fetch into
+/// a long serial retry storm — the health pool + eviction keep this rare.
+const MAX_PROXY_FAILOVER: usize = 3;
+
+/// Build and run one hardened `curl` fetch. At most one of `proxy` / `pin` is
+/// meaningful: with a `proxy` the SSRF pin is skipped (the proxy resolves and
+/// isolates us); with a `pin` (a `--resolve host:port:ip` pair set) the direct
+/// connection is locked to a vetted public IP. Shared by the override, pool, and
+/// direct paths so the hardening (proto/redirect limits, `--max-filesize` cap,
+/// header set, `kill_on_drop`, the outer timeout) lives in ONE place and can't
+/// drift between them.
+#[allow(clippy::too_many_arguments)]
+async fn run_curl_once(
+    url: &str,
+    secs: &str,
+    ua: &str,
+    post_data: Option<&str>,
+    timeout_ms: u64,
+    proxy: Option<&str>,
+    pin: Option<&[String]>,
+) -> Option<String> {
     let mut cmd = Command::new("curl");
-    cmd.args(["-s", "--max-time", &secs, "-A", ua]);
+    cmd.args(["-s", "--max-time", secs, "-A", ua]);
     cmd.args([
         "-H",
         "Accept: text/html,application/xhtml+xml,application/json",
     ]);
     cmd.args(["-H", "Accept-Language: en-US,en;q=0.9"]);
-
     if let Some(data) = post_data {
         cmd.args(["-H", "Content-Type: application/x-www-form-urlencoded"]);
         cmd.args(["-d", data]);
     }
-
-    // An explicit override (from `fetch_via_proxy`) wins; otherwise rotate
-    // through the HUNTSMAN_SEARCH_PROXY list (single value behaves as before).
-    let proxy = proxy_override
-        .map(str::to_string)
-        .or_else(rotating_search_proxy);
-
-    if let Some(ref p) = proxy {
+    if let Some(p) = proxy {
         cmd.args(["-x", p]);
-    } else {
-        // Direct connection: pin curl to a vetted public IP so an
-        // attacker-controlled host can't be rebound onto an internal address.
-        // Refuse the fetch if the host has no resolvable public IP.
-        match ssrf_resolve_pin(url).await {
-            Some(pin) => {
-                cmd.args(&pin);
-            }
-            None => return None,
-        }
+    } else if let Some(pin) = pin {
+        cmd.args(pin);
     }
-
     cmd.args(FETCH_HARDENING_ARGS);
     cmd.args(["-L", "--", url]);
     cmd.kill_on_drop(true);
