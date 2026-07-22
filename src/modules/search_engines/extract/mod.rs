@@ -115,6 +115,9 @@ pub(super) async fn recycle_entities(
     let mut seen_addrs: HashSet<String> = HashSet::new();
     let mut seen_emails: HashSet<String> = HashSet::new();
     let mut seen_phones: HashSet<String> = HashSet::new();
+    // Coordinates already present (or discovered here), keyed to 4 decimal
+    // places so the same point from two snippets isn't double-emitted.
+    let mut seen_coords: HashSet<String> = HashSet::new();
 
     // Collect existing entity values to avoid duplicates
     for e in &result.entities {
@@ -127,6 +130,9 @@ pub(super) async fn recycle_entities(
             }
             EntityKind::Phone => {
                 seen_phones.insert(e.value.clone());
+            }
+            EntityKind::Coordinates => {
+                seen_coords.insert(e.value.clone());
             }
             _ => {}
         }
@@ -198,7 +204,74 @@ pub(super) async fn recycle_entities(
                 result.push(e);
             }
         }
+
+        // Coordinate literals sitting directly in the snippet/title — a
+        // location-sharing `geo:` URI or a Google Plus Code — become a
+        // first-class Coordinates entity instead of being lost. This is the
+        // snippet-native complement to the address→city_coords derivation above:
+        // that infers a coordinate from a matched place NAME; this reads a
+        // coordinate the page literally states. Deliberately conservative (see
+        // `extract_coords_from_text`) so prose numbers never fabricate a point.
+        for coord in extract_coords_from_text(&combined) {
+            if seen_coords.insert(coord.clone()) {
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord,
+                    confidence::MEDIUM,
+                    &scan_id,
+                );
+                c.tag(crate::core::tags::SEARCH_DISCOVERED);
+                c.tag("recycled");
+                c.tag("geoint");
+                c.tag("snippet-coord");
+                c.add_evidence(recycled_evidence(r, "Coordinates", &coord, &combined));
+                result.push(c);
+            }
+        }
     }
+}
+
+/// Scan snippet/title text for coordinate literals, returning each as a
+/// `"{lat:.4},{lon:.4}"` string. **Deliberately conservative**: only the two
+/// unambiguously-marked forms are scanned —
+///
+/// * `geo:` URIs (RFC 5870), a whitespace-delimited token beginning `geo:`; and
+/// * Open Location Code / "Plus Code" tokens (the `+`-bearing OLC form, e.g.
+///   `4RRH54JX+3M`).
+///
+/// Bare decimal pairs and DMS are intentionally NOT scanned here: prose like
+/// `$33.50, 151.20` or `version 1.5, 2.3` parses as a perfectly in-range
+/// coordinate, and HSE's evidentiary doctrine treats a fabricated coordinate as
+/// worse than a missed one — so only forms whose surface syntax cannot occur by
+/// accident in ordinary text are accepted. Every candidate is still validated by
+/// [`crate::util::geo::coords::parse`] (range + format), and the caller dedups.
+/// Bounded and pure.
+fn extract_coords_from_text(text: &str) -> Vec<String> {
+    use crate::util::geo::coords;
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<(i64, i64)> = HashSet::new();
+    // Bound the tokens scanned so a pathological blob can't balloon work.
+    for tok in text
+        .split(|c: char| c.is_whitespace() || matches!(c, '"' | '<' | '>' | '(' | ')' | '[' | ']'))
+        .take(2048)
+    {
+        // Trim trailing sentence punctuation a snippet may append (`geo:1,2.`).
+        let cand = tok.trim_end_matches(['.', ',', ';', '!', '?']);
+        let is_geo = cand.len() > 4 && cand[..4].eq_ignore_ascii_case("geo:");
+        // A Plus Code always carries exactly one '+' with 8 chars before it; a
+        // cheap pre-filter before the full OLC parse.
+        let is_plus = cand.contains('+') && cand.find('+') == Some(8);
+        if !(is_geo || is_plus) {
+            continue;
+        }
+        if let Some(ll) = coords::parse(cand) {
+            let key = ((ll.lat * 1e4).round() as i64, (ll.lon * 1e4).round() as i64);
+            if seen.insert(key) {
+                out.push(format!("{:.4},{:.4}", ll.lat, ll.lon));
+            }
+        }
+    }
+    out
 }
 
 /// Build a fully-attributed evidence record for a finding extracted from a
