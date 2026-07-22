@@ -11,6 +11,7 @@ mod csv;
 mod dossier;
 mod html;
 mod json;
+mod local;
 mod oathnet_report;
 mod stealer;
 #[cfg(test)]
@@ -27,6 +28,7 @@ use csv::{
 use dossier::{cmd_import_dossier, parse_dossier};
 use html::{cmd_import_html, parse_oathnet_html};
 use json::{import_json_output, parse_oathnet_json};
+use local::cmd_import_local_dir;
 use oathnet_report::{cmd_import_oathnet_report, looks_like_oathnet_report, parse_oathnet_report};
 use stealer::{cmd_import_stealerlogs, looks_like_stealerlogs, parse_stealerlogs};
 use txt::{cmd_import_txt, parse_oathnet_txt};
@@ -37,6 +39,14 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
     const MAX_IMPORT_BYTES: u64 = 16 * 1024 * 1024;
     let meta =
         std::fs::metadata(path).map_err(|e| Error::Other(format!("cannot stat {path}: {e}")))?;
+    // A directory path is a LOCAL-STORAGE SCRAPE: every recognised artifact under
+    // the tree (scan/dossier/stealer-log/breach export/debug bundle) is imported
+    // through the same content-based dispatcher and aggregated into one scan.
+    // Offline — reads local files only — so it works on a Termux install with no
+    // connectivity. Bounded by depth/count/size in `cmd_import_local_dir`.
+    if meta.is_dir() {
+        return cmd_import_local_dir(path, output).await;
+    }
     if meta.len() > MAX_IMPORT_BYTES {
         return Err(Error::Other(format!(
             "file too large ({} bytes > 16 MB): {path}",
@@ -212,7 +222,16 @@ pub(crate) async fn entities_from_upload(
         ImportFormat::OathnetJson => {
             let doc: serde_json::Value = serde_json::from_str(body)
                 .map_err(|e| Error::Other(format!("invalid JSON: {e}")))?;
-            (parse_oathnet_json(&doc, sid).await.0, "oathnet-json")
+            // A `{`-body is routed here whether it is an OathNet-native export or a
+            // Combined Search JSON (`{ "modules": [ … ] }`); `parse_oathnet_json`
+            // dispatches on the shape, so label it by the same discriminator and the
+            // UI reports the format it actually parsed.
+            let label = if doc.get("modules").and_then(|v| v.as_array()).is_some() {
+                "combined-search-json"
+            } else {
+                "oathnet-json"
+            };
+            (parse_oathnet_json(&doc, sid).await.0, label)
         }
         ImportFormat::CombinedSearch => (parse_combined_search(body, sid).0, "combined-search"),
         ImportFormat::Dossier => (parse_dossier(body, sid).0, "dossier"),

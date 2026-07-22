@@ -14,6 +14,17 @@ pub(super) async fn parse_oathnet_json(
     sid: &str,
 ) -> (Vec<crate::core::entity::Entity>, ImportStats) {
     use crate::core::entity::{Entity, EntityKind, Evidence};
+    // A Combined Search JSON export (`{ "modules": [ { "results": [ … ] } ] }`) is a
+    // `{`-leading body, so the import detector routes it here to the OathNet-native
+    // JSON parser — yet it shares none of that shape (no `searchResults` /
+    // `stealerData` / `osintData`). Detect the combined shape by its top-level
+    // `modules` array — which the OathNet-native export never carries — and
+    // delegate, so a multi-source breach search imports its results instead of
+    // silently yielding nothing. Both the CLI and the web upload reach this one
+    // entry, so both are fixed here.
+    if doc.get("modules").and_then(|v| v.as_array()).is_some() {
+        return super::combined::parse_combined_search_json(doc, sid);
+    }
     // Keep the (verbatim) parse body's `&sid` working — it expects an owned id.
     let sid = sid.to_string();
     let mut entities: Vec<Entity> = Vec::new();
