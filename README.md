@@ -88,6 +88,20 @@ so keys never leave the device).
 > per unit of work. The confident identity core keeps its order — only the
 > uncertain tail and the pricey infrastructure are re-sorted. Opt out with
 > `hse scan --no-convex-budget` or `"convex_budget": false` in the API `options`.
+>
+> **Convex ordering now reaches the queries themselves (v1.19+).** The same
+> barbell logic that ranks *which lead to pivot on* now also orders *which
+> modules fire first for a target* — because a module dispatch **is** a query
+> (bounded HTTP, wall-time, battery, and for paid providers real quota). Under
+> the convex flag the engine dispatches by **query value = optionality ÷ cost**:
+> cheap, keyless, identity-/key-unlocking modules run before expensive, terminal
+> ones, so a scan cut short by the phone's budget (an entity cap, a wall-clock
+> limit, a cancel, a dying battery) has already spent it on the queries that
+> compound. Membership is unchanged — every accepting module still runs when the
+> budget allows — only the order differs, and it is precomputed once so the hot
+> path pays nothing. Preview it per seed at **New Scan → Preview plan** (chips
+> ordered by query value, badged high/moderate/terminal) or
+> `GET /api/v1/plan?value=…`.
 
 > **Capability-aware dispatch (v1.18+) — no budget wasted on dead sources.**
 > The same scans also skip any module whose parser has **provably gone dead**

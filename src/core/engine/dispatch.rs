@@ -786,17 +786,22 @@ impl super::ScanEngine {
         ctx: &mut ModuleContext,
         state: &mut DispatchState<'_>,
     ) -> Result<()> {
-        // O(1) dispatch-index lookup replaces the O(M) accepts() scan.
-        // Modules are already priority-sorted within each bucket so we
-        // walk them in the same order the legacy `for module in &self.modules`
-        // loop did. Iterating index-by-index (instead of pre-allocating
-        // a `Vec<Arc<dyn Module>>` and Arc-cloning per target) avoids
-        // a heap allocation + N atomic increments per dispatch — meaningful
-        // on the hot path that runs once per expansion candidate.
+        // O(1) dispatch-index lookup replaces the O(M) accepts() scan. Each
+        // bucket is pre-sorted — by plain module priority, or (under
+        // `convex_budget`) by convex query value so the cheapest, highest-
+        // optionality queries fire first and a budget-truncated sequence keeps
+        // the most valuable ones; `dispatch_order_for` picks the order from the
+        // flag. Iterating index-by-index (instead of pre-allocating a
+        // `Vec<Arc<dyn Module>>` and Arc-cloning per target) avoids a heap
+        // allocation + N atomic increments per dispatch — meaningful on the hot
+        // path that runs once per expansion candidate.
         // Distinct-source count of the target entity (for the high-value-API
         // cross-correlation gate); computed once per target, not per module.
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
-        for &idx in self.graph.modules_for(cx.target.kind) {
+        for &idx in self
+            .graph
+            .dispatch_order_for(cx.target.kind, cx.opts.convex_budget)
+        {
             let Some(module) = self.modules.get(idx) else {
                 continue;
             };
@@ -930,7 +935,10 @@ impl super::ScanEngine {
         state: &mut DispatchState<'_>,
     ) {
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
-        for &idx in self.graph.modules_for(cx.target.kind) {
+        for &idx in self
+            .graph
+            .dispatch_order_for(cx.target.kind, cx.opts.convex_budget)
+        {
             let Some(module) = self.modules.get(idx) else {
                 continue;
             };
@@ -1038,7 +1046,10 @@ impl super::ScanEngine {
         let ctx_shared: Arc<ModuleContext> = Arc::new(ctx.clone());
 
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
-        for &idx in self.graph.modules_for(cx.target.kind) {
+        for &idx in self
+            .graph
+            .dispatch_order_for(cx.target.kind, cx.opts.convex_budget)
+        {
             // Opportunistically absorb any modules that already finished so
             // `entity_map.len()` below is live, not the round-start snapshot —
             // otherwise every module accepted for this target gets spawned

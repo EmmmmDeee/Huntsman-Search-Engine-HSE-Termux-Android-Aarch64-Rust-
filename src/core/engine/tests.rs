@@ -2377,6 +2377,159 @@ async fn concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_s
     );
 }
 
+/// A probe whose static metadata (priority / cost / category / declared outputs)
+/// is fully configurable, and whose `process()` emits ONE entity tagged with a
+/// distinctive value — so a truncated dispatch reveals WHICH module ran first.
+struct ConvexProbe {
+    name: &'static str,
+    value: &'static str,
+    priority: u8,
+    cost: ModuleCost,
+    category: crate::core::module::ModuleCategory,
+    produces: &'static [crate::core::entity::EntityKind],
+}
+
+#[async_trait::async_trait]
+impl Module for ConvexProbe {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn priority(&self) -> u8 {
+        self.priority
+    }
+    fn accepts(&self, _: &Target) -> bool {
+        true
+    }
+    fn cost(&self) -> ModuleCost {
+        self.cost
+    }
+    fn category(&self) -> crate::core::module::ModuleCategory {
+        self.category
+    }
+    fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
+        self.produces
+    }
+    async fn process(
+        &self,
+        _: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut e = Entity::new(EntityKind::Username, self.value, 0.9, &ctx.scan_id);
+        e.add_evidence(Evidence::new(self.name, "synthetic"));
+        let mut r = crate::core::module::ModuleResult::new();
+        r.push(e);
+        Ok(r)
+    }
+}
+
+/// End-to-end proof that the convex query-value order is the one the engine
+/// actually dispatches in under `convex_budget`. Two modules accept the seed: a
+/// HIGH-priority, paid, terminal one (low query value) and a LOW-priority,
+/// keyless, identity-producing one (high query value). Dispatched sequentially
+/// with `max_entities: 1`, exactly ONE module runs — so the single surviving
+/// entity names the module the engine chose to spend the budget on FIRST.
+///
+///   * `convex_budget: false` → plain priority order → the priority-90 paid
+///     terminal module runs → the survivor is `terminal_hit`.
+///   * `convex_budget: true`  → convex query-value order INVERTS it → the cheap,
+///     keyless, identity-unlocking module runs despite its priority of 10 → the
+///     survivor is `cascade_hit`.
+///
+/// This is the value-per-query guarantee: when the phone's budget truncates the
+/// dispatch sequence, the convex order has already spent it on the highest-return
+/// query. It also pins the safety property — the flag OFF is byte-identical to
+/// the established priority behaviour.
+#[tokio::test]
+async fn convex_budget_dispatches_the_highest_query_value_module_first() {
+    use crate::core::entity::EntityKind;
+    use crate::core::module::ModuleCategory;
+    use crate::core::test_support::InMemoryStore;
+
+    const TERMINAL_OUT: &[EntityKind] = &[EntityKind::Coordinates];
+    const CASCADE_OUT: &[EntityKind] = &[EntityKind::Email];
+
+    // Run one sequential, max_entities=1 dispatch and return the single surviving
+    // entity value — i.e. which module the engine fired first.
+    async fn survivor(convex_budget: bool) -> String {
+        let modules: Vec<Arc<dyn Module>> = vec![
+            Arc::new(ConvexProbe {
+                name: "hi_prio_paid_terminal",
+                value: "terminal_hit",
+                priority: 90,
+                cost: ModuleCost::Paid,
+                category: ModuleCategory::Threat,
+                produces: TERMINAL_OUT,
+            }),
+            Arc::new(ConvexProbe {
+                name: "lo_prio_free_cascade",
+                value: "cascade_hit",
+                priority: 10,
+                cost: ModuleCost::Free,
+                category: ModuleCategory::Breach,
+                produces: CASCADE_OUT,
+            }),
+        ];
+        let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+        let (bus, _rx) = tokio::sync::broadcast::channel(64);
+        let engine = ScanEngine::new(modules, store, bus.clone());
+
+        let target = Target::new(TargetKind::Username, "convex-order-seed");
+        let opts = ScanOptions {
+            // Sequential path: dispatches strictly in order, stops at the cap.
+            max_concurrent: 0,
+            max_entities: Some(1),
+            convex_budget,
+            ..Default::default()
+        };
+        let mut ctx = ModuleContext {
+            scan_id: "convex-order-scan".to_string(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+        let cx = DispatchCx {
+            scan_id: "convex-order-scan",
+            target: &target,
+            opts: &opts,
+            is_expansion: false,
+            seed_kind: TargetKind::Username,
+            quarantined: no_quarantine(),
+        };
+        let mut entity_map: HashMap<String, Entity> = HashMap::new();
+        let mut stats = ModuleStats::default();
+        let mut dispatched: DispatchLog = DispatchLog::new();
+        let mut newly_inserted: Vec<String> = Vec::new();
+        let mut state = DispatchState {
+            entity_map: &mut entity_map,
+            stats: &mut stats,
+            dispatched: &mut dispatched,
+            newly_inserted: &mut newly_inserted,
+        };
+        engine
+            .dispatch_target(&cx, &mut ctx, &mut state)
+            .await
+            .expect("dispatch runs");
+        assert_eq!(entity_map.len(), 1, "max_entities=1 must admit exactly one");
+        entity_map.into_values().next().unwrap().value
+    }
+
+    // Flag OFF: established priority order — the priority-90 module wins.
+    assert_eq!(
+        survivor(false).await,
+        "terminal_hit",
+        "with convex_budget off the highest-PRIORITY module must dispatch first"
+    );
+    // Flag ON: convex order — the cheap, high-optionality query wins despite its
+    // far lower priority.
+    assert_eq!(
+        survivor(true).await,
+        "cascade_hit",
+        "with convex_budget on the highest-QUERY-VALUE module must dispatch first"
+    );
+}
+
 #[test]
 fn rank_enrichment_leverage_orders_join_keys_by_cross_scan_degree() {
     use crate::core::entity::{Entity, EntityKind};
