@@ -113,7 +113,10 @@ impl Module for EmailLocale {
             // never fire from real scan data.
             let ev = Evidence::new(
                 SRC,
-                format!("Email local part '{local}' matches {} naming pattern", geo.locale),
+                format!(
+                    "Email local part '{local}' matches {} naming pattern",
+                    geo.locale
+                ),
             )
             .with_attr("locale", geo.locale)
             .with_attr("pattern", geo.pattern);

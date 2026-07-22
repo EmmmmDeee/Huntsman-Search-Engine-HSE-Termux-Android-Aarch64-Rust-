@@ -268,9 +268,213 @@ pub async fn probe_keyless_fleet(concurrency: usize) -> Vec<ProbeReport> {
     reports
 }
 
+/// `~/.huntsman/capability_drift.json` — module name → unix timestamp of the
+/// most recent live probe that confirmed drift on it.
+fn drift_path() -> std::path::PathBuf {
+    crate::util::paths::data_file("capability_drift.json")
+}
+
+/// Read the persisted drift map from `path`. Empty on missing/corrupt — this
+/// is a cache of past confirmations, never load-bearing state, so a parse
+/// error is non-fatal (mirrors [`crate::util::settings::read_map`]).
+fn read_drift_map(path: &std::path::Path) -> HashMap<String, u64> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn write_drift_map_at(path: &std::path::Path, map: &HashMap<String, u64>) -> std::io::Result<()> {
+    let json = serde_json::to_string_pretty(map).map_err(std::io::Error::other)?;
+    crate::util::atomic_file::write(path, json.as_bytes())
+}
+
+/// Merge this sweep's confirmed-drift modules into the map at `path`, stamped
+/// `now`, and persist. A module absent from THIS sweep (probed clean, or not
+/// probed at all) keeps whatever it already had — a single clean re-probe
+/// should not erase a real drift history the operator hasn't acted on yet;
+/// [`recent_confirmed_drift_at`]'s TTL is what ages an entry out, not a
+/// same-run overwrite.
+fn record_confirmed_drift_at(path: &std::path::Path, reports: &[ProbeReport], now: u64) {
+    if !reports.iter().any(ProbeReport::is_confirmed_drift) {
+        return;
+    }
+    let mut map = read_drift_map(path);
+    for r in reports.iter().filter(|r| r.is_confirmed_drift()) {
+        map.insert(r.module.to_string(), now);
+    }
+    let _ = write_drift_map_at(path, &map);
+}
+
+/// Persist this sweep's confirmed-drift modules to the on-device store. Called
+/// after every live probe run — `hse doctor --live` and the Web UI's
+/// `POST /api/v1/capabilities/probe` alike — so a drift finding survives past
+/// the single response/printout that reported it, and the next (offline, free)
+/// `hse doctor` can surface it without re-touching the network. Best-effort:
+/// a write failure here must never fail the probe request itself.
+pub fn record_confirmed_drift(reports: &[ProbeReport]) {
+    record_confirmed_drift_at(&drift_path(), reports, crate::core::entity::unix_now());
+}
+
+/// Confirmed-drift modules still within `ttl_secs` of when a live probe last
+/// caught them, sorted by module name. Pure over an explicit map + `now` so
+/// the aging logic is unit-testable without touching the filesystem or clock.
+fn recent_confirmed_drift_pure(
+    map: &HashMap<String, u64>,
+    ttl_secs: u64,
+    now: u64,
+) -> Vec<(String, u64)> {
+    let mut out: Vec<(String, u64)> = map
+        .iter()
+        .filter(|&(_, &ts)| now.saturating_sub(ts) <= ttl_secs)
+        .map(|(m, &ts)| (m.clone(), ts))
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Confirmed-drift modules a live probe caught within the last `ttl_secs`,
+/// read from the on-device store, sorted by module name. Empty if no live
+/// probe has ever run, or every prior finding has aged out — a stale entry
+/// past `ttl_secs` (the provider may well have been fixed since) is silently
+/// dropped rather than nagging the operator forever about a possibly-resolved
+/// issue.
+#[must_use]
+pub fn recent_confirmed_drift(ttl_secs: u64) -> Vec<(String, u64)> {
+    let map = read_drift_map(&drift_path());
+    recent_confirmed_drift_pure(&map, ttl_secs, crate::core::entity::unix_now())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn canary_report(module: &'static str) -> ProbeReport {
+        // `is_confirmed_drift` requires BOTH a canary module AND `Empty` — use
+        // a real curated canary name so these tests exercise the real gate,
+        // not a hand-picked module the drift persistence doesn't actually see
+        // in production.
+        ProbeReport {
+            module,
+            kind: TargetKind::IpAddress,
+            value: "8.8.8.8",
+            outcome: ProbeOutcome::Empty,
+        }
+    }
+
+    #[test]
+    fn record_confirmed_drift_persists_only_confirmed_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capability_drift.json");
+        let reports = vec![
+            canary_report("ip_geo"),
+            ProbeReport {
+                module: "some_breach_module",
+                kind: TargetKind::Email,
+                value: "test@example.com",
+                outcome: ProbeOutcome::Empty, // not a canary — not confirmed drift
+            },
+            ProbeReport {
+                module: "ip_geo",
+                kind: TargetKind::IpAddress,
+                value: "8.8.8.8",
+                outcome: ProbeOutcome::Alive { found: 3 }, // healthy — no entry
+            },
+        ];
+        record_confirmed_drift_at(&path, &reports, 1_000);
+        let map = read_drift_map(&path);
+        assert_eq!(map.get("ip_geo"), Some(&1_000));
+        assert!(
+            !map.contains_key("some_breach_module"),
+            "a non-canary Empty outcome must never be persisted as drift"
+        );
+    }
+
+    #[test]
+    fn record_confirmed_drift_is_a_no_op_when_nothing_confirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capability_drift.json");
+        let reports = vec![ProbeReport {
+            module: "ip_geo",
+            kind: TargetKind::IpAddress,
+            value: "8.8.8.8",
+            outcome: ProbeOutcome::Alive { found: 1 },
+        }];
+        record_confirmed_drift_at(&path, &reports, 1_000);
+        assert!(
+            !path.exists(),
+            "a clean sweep must not create the drift file at all"
+        );
+    }
+
+    #[test]
+    fn record_confirmed_drift_keeps_a_prior_entry_a_clean_resweep_did_not_touch() {
+        // A single re-probe run where module A comes back clean must not erase
+        // module B's still-unresolved drift from an earlier run.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capability_drift.json");
+        record_confirmed_drift_at(&path, &[canary_report("crtsh")], 1_000);
+        record_confirmed_drift_at(
+            &path,
+            &[ProbeReport {
+                module: "ip_geo",
+                kind: TargetKind::IpAddress,
+                value: "8.8.8.8",
+                outcome: ProbeOutcome::Alive { found: 1 },
+            }],
+            2_000,
+        );
+        let map = read_drift_map(&path);
+        assert_eq!(
+            map.get("crtsh"),
+            Some(&1_000),
+            "crtsh's earlier drift finding must survive an unrelated clean re-probe"
+        );
+    }
+
+    #[test]
+    fn record_confirmed_drift_updates_the_timestamp_on_repeat_confirmation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capability_drift.json");
+        record_confirmed_drift_at(&path, &[canary_report("ip_geo")], 1_000);
+        record_confirmed_drift_at(&path, &[canary_report("ip_geo")], 5_000);
+        let map = read_drift_map(&path);
+        assert_eq!(
+            map.get("ip_geo"),
+            Some(&5_000),
+            "must reflect the LATEST confirmation"
+        );
+    }
+
+    #[test]
+    fn recent_confirmed_drift_pure_keeps_within_ttl_and_drops_stale() {
+        let mut map = HashMap::new();
+        map.insert("fresh".to_string(), 9_500u64);
+        map.insert("stale".to_string(), 1_000u64);
+        let now = 10_000u64;
+        let ttl = 1_000u64; // window: [9_000, 10_000]
+        let out = recent_confirmed_drift_pure(&map, ttl, now);
+        assert_eq!(out, vec![("fresh".to_string(), 9_500u64)]);
+    }
+
+    #[test]
+    fn recent_confirmed_drift_pure_is_sorted_by_module_name() {
+        let mut map = HashMap::new();
+        map.insert("zeta".to_string(), 100u64);
+        map.insert("alpha".to_string(), 100u64);
+        let out = recent_confirmed_drift_pure(&map, 1_000, 100);
+        assert_eq!(
+            out,
+            vec![("alpha".to_string(), 100u64), ("zeta".to_string(), 100u64)]
+        );
+    }
+
+    #[test]
+    fn read_drift_map_is_empty_on_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does_not_exist.json");
+        assert!(read_drift_map(&path).is_empty());
+    }
 
     #[test]
     fn every_canary_has_a_sample_and_is_flagged() {

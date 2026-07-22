@@ -938,10 +938,7 @@ impl Entity {
         // in the general union below, then promote `self` out of quarantine
         // the moment `other` was NOT itself a candidate — a single non-candidate
         // corroboration is enough, symmetric with the confidence rule.
-        let other_is_candidate = other
-            .tags
-            .iter()
-            .any(|t| t == crate::core::tags::CANDIDATE);
+        let other_is_candidate = other.tags.iter().any(|t| t == crate::core::tags::CANDIDATE);
         for t in other.tags {
             if t != crate::core::tags::CANDIDATE {
                 self.tag(t);

@@ -116,6 +116,28 @@ pub(super) async fn cmd_doctor(live: bool) -> Result<()> {
         }
     }
 
+    // ── Persisted capability drift (offline, always shown) ─────────────
+    // A confirmed-drift finding from a PAST live probe (`--live` here, or the
+    // Web UI's "Run live capability probe" panel) is persisted to
+    // `~/.huntsman/capability_drift.json` so it survives past that one
+    // printout/response. Surfaced here, on every (even offline) `doctor` run,
+    // so the operator doesn't have to remember to re-run `--live` to be
+    // reminded a capability is known-dead. Ages out past 7 days (matches the
+    // weekly CI drift-sweep cadence) — a stale finding may well be resolved by
+    // now, so it is dropped rather than nagging forever.
+    const DRIFT_TTL_SECS: u64 = 7 * 24 * 60 * 60;
+    let persisted_drift = crate::util::capability_probe::recent_confirmed_drift(DRIFT_TTL_SECS);
+    if !persisted_drift.is_empty() {
+        println!(
+            "\n⚠ Capability drift (from a previous live probe, last {} days):",
+            DRIFT_TTL_SECS / 86_400
+        );
+        for (module, ts) in &persisted_drift {
+            println!("  {module:<22} confirmed {}", timefmt::compact_utc(*ts));
+        }
+        println!("  run `hse doctor --live` to re-check whether these have recovered");
+    }
+
     // ── Live capability preflight (opt-in, --live) ─────────────────────
     // The module-health section above is reactive — it only knows what real
     // scans in THIS process have already tried. `--live` is the proactive
@@ -507,6 +529,9 @@ async fn print_live_capability_report() {
             drift.join(", ")
         );
     }
+    // Persist so this finding survives past this one printout — the next
+    // (offline, free) `hse doctor` run can surface it without a live re-probe.
+    capability_probe::record_confirmed_drift(&reports);
 }
 
 /// The `curl:      MISSING` diagnostic body — every module/command that shells
