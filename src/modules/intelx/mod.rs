@@ -240,6 +240,13 @@ impl Module for IntelX {
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid
     }
+    fn cache_ttl_secs(&self) -> u64 {
+        // IntelX's leak/archive corpus is immutable once indexed — the same
+        // stable-within-24h C9 bracket as the sibling paid modules. Persisting
+        // the derived entities lets a repeat scan replay an already-purchased
+        // selector for FREE instead of re-spending a paid lookup.
+        86_400
+    }
     fn accepts(&self, t: &Target) -> bool {
         // Derived from the single-sourced selector map so coverage stays in one
         // place. IntelX has dedicated selectors for URL / CIDR / MAC / crypto

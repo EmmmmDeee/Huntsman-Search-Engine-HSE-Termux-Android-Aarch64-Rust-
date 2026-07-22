@@ -33,6 +33,14 @@ fn has(result: &ModuleResult, kind: EntityKind, value: &str) -> bool {
 }
 
 #[test]
+fn cache_ttl_is_24h_so_repeat_scans_dont_re_spend_a_paid_lookup() {
+    use crate::core::module::Module;
+    // Immutable breach dumps ⇒ the inter-scan cache serves a repeat scan for
+    // free; a 0 (trait default) would disable it, so pin the window.
+    assert_eq!(DeHashed.cache_ttl_secs(), 86_400);
+}
+
+#[test]
 fn accepts_six_kinds() {
     let m = DeHashed;
     for k in [
