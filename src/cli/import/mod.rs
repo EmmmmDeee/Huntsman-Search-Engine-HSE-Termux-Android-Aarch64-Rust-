@@ -212,7 +212,16 @@ pub(crate) async fn entities_from_upload(
         ImportFormat::OathnetJson => {
             let doc: serde_json::Value = serde_json::from_str(body)
                 .map_err(|e| Error::Other(format!("invalid JSON: {e}")))?;
-            (parse_oathnet_json(&doc, sid).await.0, "oathnet-json")
+            // A `{`-body is routed here whether it is an OathNet-native export or a
+            // Combined Search JSON (`{ "modules": [ … ] }`); `parse_oathnet_json`
+            // dispatches on the shape, so label it by the same discriminator and the
+            // UI reports the format it actually parsed.
+            let label = if doc.get("modules").and_then(|v| v.as_array()).is_some() {
+                "combined-search-json"
+            } else {
+                "oathnet-json"
+            };
+            (parse_oathnet_json(&doc, sid).await.0, label)
         }
         ImportFormat::CombinedSearch => (parse_combined_search(body, sid).0, "combined-search"),
         ImportFormat::Dossier => (parse_dossier(body, sid).0, "dossier"),

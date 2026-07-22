@@ -433,7 +433,9 @@ fn dossier_is_detected_and_oathnet_txt_is_not() {
     ));
 }
 
-use super::combined::{looks_like_combined_search, parse_combined_search};
+use super::combined::{
+    looks_like_combined_search, parse_combined_search, parse_combined_search_json,
+};
 use super::csv::{looks_like_dehashed_csv, looks_like_hse_csv, parse_dehashed_csv, parse_hse_csv};
 use super::oathnet_report::{looks_like_oathnet_report, parse_oathnet_report};
 use super::stealer::{looks_like_stealerlogs, parse_stealerlogs};
@@ -662,6 +664,134 @@ fn combined_search_does_not_double_count_when_results_echo_the_modules_section()
     assert_eq!(
         stats.breach_records, 2,
         "the duplicated top-level Results: section must not double the reported breach count"
+    );
+}
+
+// Synthetic Combined Search JSON export (no real PII) — the breach-aggregator API
+// response shape `{ "modules": [ { "results": [ … ] } ] }`. It exercises the
+// heterogeneous field types a real multi-source export carries: a `breach` that
+// arrives as an INTEGER, a `dbname` that arrives as an ARRAY, a nested `details`
+// OBJECT that is not a leaf field, and an error-stub result with no identity
+// fields. Emails/persons use non-placeholder values so they survive the import's
+// placeholder filter in the end-to-end path.
+const COMBINED_JSON: &str = r#"{
+  "success": true,
+  "query": "javery",
+  "mode": "username",
+  "count": 3,
+  "modules": [
+    {
+      "key": "snusbase",
+      "label": "Snusbase",
+      "status": "results",
+      "results": [
+        {
+          "username": "javery",
+          "email": "jordanavery@gmail.com",
+          "name": "Jordan Avery",
+          "password": "Hunter2pass",
+          "breach": 2844,
+          "source": "2089_EXAMPLE_BREACH_122025"
+        },
+        {
+          "email": "jordan.reeves@gmail.com",
+          "password_hash": "e1436d06a8b5f6decbf31371d9da13fc",
+          "lastip": "24.32.96.70",
+          "dbname": ["FantasyForum.net", "FuniStream.net"]
+        }
+      ]
+    },
+    {
+      "key": "seon",
+      "label": "SEON",
+      "status": "results",
+      "results": [
+        {
+          "email": "jordanavery@gmail.com",
+          "details": { "risk_scores": { "global_network_score": 1.3 } },
+          "source": "SEON"
+        }
+      ]
+    },
+    {
+      "key": "xosint",
+      "label": "xOsint",
+      "status": "results",
+      "results": [ { "0": "Server-side errors" } ]
+    }
+  ]
+}"#;
+
+#[test]
+fn combined_search_json_extracts_entities_and_coerces_heterogeneous_fields() {
+    use crate::core::entity::EntityKind;
+    let doc: serde_json::Value = serde_json::from_str(COMBINED_JSON).expect("valid JSON fixture");
+    let (ents, stats) = parse_combined_search_json(&doc, "s");
+    let has = |k: EntityKind, v: &str| ents.iter().any(|e| e.kind == k && e.value == v);
+    // snusbase record 1: identity fields + a plaintext credential.
+    assert!(has(EntityKind::Email, "jordanavery@gmail.com"));
+    assert!(has(EntityKind::Username, "javery"));
+    assert!(has(EntityKind::Person, "Jordan Avery"));
+    assert!(has(EntityKind::Credential, "Hunter2pass"));
+    // record 2: a hash credential (from `password_hash`) and a last-login IP.
+    assert!(has(EntityKind::Email, "jordan.reeves@gmail.com"));
+    assert!(has(
+        EntityKind::Credential,
+        "e1436d06a8b5f6decbf31371d9da13fc"
+    ));
+    assert!(has(EntityKind::IpAddress, "24.32.96.70"));
+    // The INTEGER `breach` (2844) is coerced to a string and rides on evidence,
+    // not silently dropped for being a non-string.
+    let em1 = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Email && e.value == "jordanavery@gmail.com")
+        .unwrap();
+    assert!(
+        em1.evidence
+            .iter()
+            .any(|ev| ev.attributes.get("breach").map(String::as_str) == Some("2844")),
+        "integer `breach` field must be coerced and preserved on evidence"
+    );
+    // The ARRAY `dbname` is coerced (joined), not dropped, and rides on evidence.
+    let em2 = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Email && e.value == "jordan.reeves@gmail.com")
+        .unwrap();
+    assert!(
+        em2.evidence.iter().any(|ev| ev
+            .attributes
+            .get("dbname")
+            .is_some_and(|v| v.contains("FantasyForum.net") && v.contains("FuniStream.net"))),
+        "array `dbname` field must be coerced (joined) and preserved on evidence"
+    );
+    // SEON's nested `details` object is skipped (not a leaf) without crashing the
+    // parse, while its email is still captured; the xOsint error stub {"0":"…"}
+    // has no identity field and emits nothing. So exactly three real result
+    // records were counted, not four.
+    assert_eq!(stats.breach_records, 3);
+}
+
+#[tokio::test]
+async fn upload_dispatcher_imports_combined_search_json_not_zero_entities() {
+    use crate::core::entity::EntityKind;
+    // Regression: a Combined Search JSON export is a `{`-leading body, so the import
+    // detector routes it to the OathNet-native JSON parser — which shares none of
+    // its shape and, before the combined-JSON path existed, imported it as ZERO
+    // entities, silently discarding every result of a paid multi-source breach
+    // search uploaded through the Termux web UI. The upload must now yield the
+    // breach entities and label the branch it actually parsed.
+    let (ents, label) = entities_from_upload(COMBINED_JSON, "s").await.unwrap();
+    assert_eq!(label, "combined-search-json");
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "jordanavery@gmail.com"),
+        "combined-search JSON upload must yield its breach entities, not nothing"
+    );
+    assert!(ents.iter().any(|e| e.kind == EntityKind::Credential));
+    assert!(
+        ents.len() >= 5,
+        "expected the full multi-record entity set, got {}",
+        ents.len()
     );
 }
 

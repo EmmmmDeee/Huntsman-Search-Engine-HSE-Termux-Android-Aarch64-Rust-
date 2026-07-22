@@ -90,11 +90,31 @@ fn split_records(body: &str) -> Vec<Vec<(String, String)>> {
     records
 }
 
-/// Parse a Combined Search export into individualised, correlated breach
+/// Parse a Combined Search TXT export into individualised, correlated breach
 /// entities (one evidence record per result, carrying the full leaked row and
-/// its source database). Pure — unit-tested. Credentials are emitted per record
-/// and not value-deduped, preserving cross-account reuse (AU-047).
+/// its source database), then mine the raw report for embedded secrets. Pure —
+/// unit-tested. Credentials are emitted per record and not value-deduped,
+/// preserving cross-account reuse (AU-047).
 pub(super) fn parse_combined_search(body: &str, sid: &str) -> (Vec<Entity>, ImportStats) {
+    let (mut entities, stats) = emit_combined_records(split_records(body), sid);
+    // BSSID → geo seed; wallet → chain seed; leaked API key → first-class finding.
+    push_macs(body, sid, "combined-search", &mut entities);
+    push_crypto(body, sid, "combined-search", &mut entities);
+    push_api_keys(body, sid, "combined-search", &mut entities);
+    push_ibans(body, sid, "combined-search", &mut entities);
+    push_ssids(body, sid, "combined-search", &mut entities);
+    (entities, stats)
+}
+
+/// Emit correlated breach entities from already-split `(label, value)` records —
+/// the shared core of BOTH the text ([`parse_combined_search`]) and the JSON
+/// ([`parse_combined_search_json`]) Combined Search parsers, so the two can never
+/// drift on which leaked field becomes which entity. Credentials are emitted per
+/// record and not value-deduped, preserving cross-account reuse (AU-047).
+fn emit_combined_records(
+    records: Vec<Vec<(String, String)>>,
+    sid: &str,
+) -> (Vec<Entity>, ImportStats) {
     let mut entities = Vec::new();
     let mut stats = ImportStats::default();
     let mut seen = std::collections::HashSet::new();
@@ -112,7 +132,7 @@ pub(super) fn parse_combined_search(body: &str, sid: &str) -> (Vec<Entity>, Impo
     // identical copies, even though the record IS the same one.
     let mut seen_records = std::collections::HashSet::new();
 
-    for rec in split_records(body) {
+    for rec in records {
         let get = |want: &str| -> Option<&str> {
             rec.iter()
                 .find(|(l, _)| l == want)
@@ -120,8 +140,13 @@ pub(super) fn parse_combined_search(body: &str, sid: &str) -> (Vec<Entity>, Impo
                 .filter(|v| !v.is_empty())
         };
         let email = get("email").map(str::to_ascii_lowercase);
+        // A JSON export names the origin database in any of several fields; fall
+        // through them so a record still carries its source. Inert for the text
+        // path, whose records only ever carry `source`/`dbname`.
         let source = get("source")
             .or_else(|| get("dbname"))
+            .or_else(|| get("breach"))
+            .or_else(|| get("leak_site"))
             .unwrap_or("Combined Search");
         // Only treat a block with at least one identity/credential field as a
         // result; metadata blocks (Source Type/Status/Count) yield nothing.
@@ -267,13 +292,118 @@ pub(super) fn parse_combined_search(body: &str, sid: &str) -> (Vec<Entity>, Impo
         stats.breach_records += 1;
     }
 
-    // BSSID → geo seed; wallet → chain seed; leaked API key → first-class finding.
-    push_macs(body, sid, "combined-search", &mut entities);
-    push_crypto(body, sid, "combined-search", &mut entities);
-    push_api_keys(body, sid, "combined-search", &mut entities);
-    push_ibans(body, sid, "combined-search", &mut entities);
-    push_ssids(body, sid, "combined-search", &mut entities);
     (entities, stats)
+}
+
+/// Parse the JSON form of a Combined Search export — the breach-aggregator API
+/// response `{ "modules": [ { "results": [ { "email": …, "password": …, … }, … ] } ] }`
+/// (Snusbase / LeakCheck / OathNet / SEON / … merged into one document). Shares
+/// [`emit_combined_records`] with the text parser, so a JSON record and the
+/// equivalent text record produce the same entities. `doc` is the already-parsed
+/// top-level value the JSON import entry ([`super::json::parse_oathnet_json`])
+/// hands us on detecting the combined shape.
+///
+/// Before this path existed, a combined-search JSON — which, being a `{`-leading
+/// body, is routed to the OathNet-native JSON parser — matched none of that
+/// parser's `searchResults` / `stealerData` / `osintData` pointers and imported
+/// as zero entities, silently discarding every result of a paid multi-source
+/// breach search (CLI and Termux web upload alike).
+pub(super) fn parse_combined_search_json(
+    doc: &serde_json::Value,
+    sid: &str,
+) -> (Vec<Entity>, ImportStats) {
+    let (mut entities, stats) = emit_combined_records(combined_json_records(doc), sid);
+    // Mine the serialized document for embedded secrets exactly as the text path
+    // mines the raw report: a leaked API key / wallet / BSSID / IBAN / SSID sitting
+    // in any field value is still surfaced as its own first-class finding.
+    let flat = doc.to_string();
+    push_macs(&flat, sid, "combined-search", &mut entities);
+    push_crypto(&flat, sid, "combined-search", &mut entities);
+    push_api_keys(&flat, sid, "combined-search", &mut entities);
+    push_ibans(&flat, sid, "combined-search", &mut entities);
+    push_ssids(&flat, sid, "combined-search", &mut entities);
+    (entities, stats)
+}
+
+/// Flatten a Combined Search JSON response into the same `(label, value)` record
+/// shape [`split_records`] produces for the text export, so both feed the one
+/// shared emitter. Walks `modules[].results[]`; each result object becomes one
+/// record. Heterogeneous JSON value types are coerced rather than dropped — a
+/// string verbatim, a number/bool stringified, an array of scalars joined — so a
+/// `source`/`breach` that arrives as an integer (`2844`) or a `dbname` that
+/// arrives as an array (`["A.com","B.com"]`) is preserved instead of silently
+/// lost. Nested objects (e.g. SEON's `details`) and nulls carry no leaf field and
+/// are skipped; a result with no leaf fields at all (e.g. an error stub like
+/// `{"0":"…"}`) yields an empty record, which the emitter's identity-field gate
+/// then drops.
+fn combined_json_records(doc: &serde_json::Value) -> Vec<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    let Some(modules) = doc.get("modules").and_then(|v| v.as_array()) else {
+        return out;
+    };
+    for module in modules {
+        let Some(results) = module.get("results").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for result in results {
+            let Some(obj) = result.as_object() else {
+                continue;
+            };
+            let mut rec: Vec<(String, String)> = Vec::new();
+            for (key, val) in obj {
+                let Some(text) = json_field_to_string(val) else {
+                    continue;
+                };
+                let text = text.trim();
+                if !text.is_empty() {
+                    rec.push((normalize_combined_label(key), text.to_string()));
+                }
+            }
+            if !rec.is_empty() {
+                out.push(rec);
+            }
+        }
+    }
+    out
+}
+
+/// Coerce a JSON leaf (or array of leaves) to one string; `None` for objects and
+/// null (no single leaf value). An array joins its scalar members with `", "` so
+/// a multi-source `dbname`/`source` array reads as one label.
+fn json_field_to_string(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::Array(items) => {
+            let parts: Vec<String> = items.iter().filter_map(json_scalar).collect();
+            (!parts.is_empty()).then(|| parts.join(", "))
+        }
+        other => json_scalar(other),
+    }
+}
+
+/// A single JSON scalar as a string; `None` for array/object/null.
+fn json_scalar(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+/// Fold a JSON field name onto the canonical record label the shared emitter
+/// reads. JSON exports spell some fields with underscores (`full_name`,
+/// `password_hash`, `last_ip`) where the emitter branches on the spaced/short
+/// forms (`full name`, `password hash`, `lastip`); map those across. Every other
+/// key passes through lowercased, so `email` / `username` / `password` / `hash` /
+/// `ip` / `source` / `dbname` / … already line up.
+fn normalize_combined_label(key: &str) -> String {
+    match key.trim().to_ascii_lowercase().as_str() {
+        "full_name" | "fullname" | "profile_name" => "full name".to_string(),
+        "password_hash" | "passwordhash" | "pwd_hash" => "password hash".to_string(),
+        "last_ip" | "login_ip" => "lastip".to_string(),
+        "ip_address" | "ipaddress" => "ip".to_string(),
+        other => other.to_string(),
+    }
 }
 
 /// CLI entry: parse a Combined Search export and persist it as a completed scan.
