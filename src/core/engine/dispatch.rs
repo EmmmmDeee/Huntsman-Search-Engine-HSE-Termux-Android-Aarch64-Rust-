@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::{sleep, timeout};
-use tracing::{Instrument, debug, info, warn};
+use tracing::{Instrument, debug, warn};
 
 use super::{DispatchLog, ModuleStats};
 use crate::core::entity::{Entity, normalise};
@@ -659,7 +659,12 @@ impl super::ScanEngine {
                         found,
                     },
                 );
-                info!(module = name, found, "done");
+                // `debug!`, not `info!`: the structured `EventKind::ModuleDone`
+                // emitted just above is the real per-module completion signal
+                // (UI / SSE / metrics consume it). This log line is raw-tier
+                // detail — at info it fired once per module per scan (dozens of
+                // lines) and buried the handful of events that explain a scan.
+                debug!(module = name, found, "done");
             }
         }
     }

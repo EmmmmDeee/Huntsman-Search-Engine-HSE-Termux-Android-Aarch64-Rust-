@@ -11,7 +11,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::core::{
     confidence,
@@ -149,7 +149,11 @@ impl Module for OsintCat {
                 Err(e) => warn!(error = %e, "osintcat email-osint failed"),
             }
         } else {
-            warn!(
+            // `info!`, not `warn!`: skipping a paid lookup for insufficient
+            // budget is a routine, expected clean-skip (the platform's "no
+            // key / no budget → skip cleanly, never an error" contract), not a
+            // failure. The genuine failure path above (line ~149) stays `warn!`.
+            info!(
                 balance = credits.current_balance,
                 price = credits.price_per_search,
                 "osintcat skipping email-osint: insufficient credits"

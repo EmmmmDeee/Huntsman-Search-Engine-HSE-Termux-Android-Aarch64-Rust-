@@ -15,7 +15,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::core::{
     confidence,
@@ -536,7 +536,9 @@ fn emit_pbs_v1(
     if let Some(rate) = &data.rate
         && rate.remaining < 10
     {
-        warn!(remaining = rate.remaining, "niamonx pbs_v1 quota low");
+        // `info!`, not `warn!`: approaching a provider quota is informational
+        // telemetry, not a failure — nothing went wrong and the scan proceeds.
+        info!(remaining = rate.remaining, "niamonx pbs_v1 quota low");
     }
 
     let blocks = data.blocks.unwrap_or_default();
