@@ -1205,6 +1205,34 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
         );
     }
 
+    // ── 4b′. Key authentication — which keyed sources the upstream is actively
+    //        REJECTING (auth-shaped errors: 401/403, "invalid API key", "API key
+    //        not found", …), lifted out of the generic drift errors above so a
+    //        dead credential is called out explicitly with the exact upstream
+    //        message and the env var most likely holding it. Grounded in observed
+    //        responses — never mis-reports a working key like a synthetic probe. ──
+    let auth_rejected = crate::util::key_health::auth_failing_sources(&inp.scraper_health);
+    let _ = writeln!(
+        s,
+        "\n── KEY AUTHENTICATION ({} source(s) rejected by upstream) ──",
+        auth_rejected.len()
+    );
+    if auth_rejected.is_empty() {
+        let _ = writeln!(
+            s,
+            "  ✓ no keyed source is being rejected for bad credentials"
+        );
+    }
+    for i in &auth_rejected {
+        let env = i.likely_env_var.unwrap_or("(unmapped)");
+        let detail: String = i.detail.chars().take(200).collect();
+        let _ = writeln!(
+            s,
+            "  [AUTH-REJECT] {:<20} {env} · {} failure(s) · {detail}",
+            i.module, i.consecutive_failures
+        );
+    }
+
     // ── 4c. Keyed-provider quota budgets (why a keyed module returns nothing) ──
     let _ = writeln!(
         s,

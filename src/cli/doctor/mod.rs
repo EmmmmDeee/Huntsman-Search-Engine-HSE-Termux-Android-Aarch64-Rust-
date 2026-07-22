@@ -198,6 +198,36 @@ pub(super) async fn cmd_doctor(live: bool) -> Result<()> {
                     }
                 }
 
+                // ── Key authentication (observed, not synthetically probed) ──
+                // Fuse the loaded-key list with the auth-shaped drift errors
+                // above: a source failing with a 401 / "invalid API key" while
+                // its key IS configured means the CONFIGURED credential is being
+                // rejected by the upstream — the single most actionable key
+                // problem, and one otherwise reconstructed by hand across two
+                // separate sections. Grounded in what real scans observed, so it
+                // never mis-reports a working key the way a synthetic probe would.
+                let rejected: Vec<_> = crate::util::key_health::auth_failing_sources(&health)
+                    .into_iter()
+                    .filter(|i| i.likely_env_var.is_some_and(|e| loaded.contains_key(e)))
+                    .collect();
+                if rejected.is_empty() {
+                    println!("  no configured key is being rejected by its upstream");
+                } else {
+                    println!(
+                        "  {} CONFIGURED KEY(S) REJECTED by the upstream — replace or renew:",
+                        rejected.len()
+                    );
+                    for i in &rejected {
+                        // The upstream's own words, char-safely capped so a long
+                        // JSON body can't flood the terminal.
+                        let detail: String = i.detail.chars().take(160).collect();
+                        match i.likely_env_var {
+                            Some(env) => println!("    - {:<20} {env}\n      {detail}", i.module),
+                            None => println!("    - {:<20}\n      {detail}", i.module),
+                        }
+                    }
+                }
+
                 // ── Silent zero-yield ("parse-rate") drift ──────────────
                 // Distinct from a hard failure: the module completes
                 // without erroring but has quietly stopped finding

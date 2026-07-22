@@ -33,6 +33,7 @@ pub mod http;
 pub mod identity;
 pub mod json;
 pub mod key_harvest;
+pub mod key_health;
 pub mod key_pool;
 pub mod key_roi;
 pub mod key_vault;
