@@ -23,6 +23,7 @@ use super::*;
             max_concurrent: 2,
             max_roi: false,
             convex_budget: false,
+            skip_dead_modules: false,
             regional_search: true,
             min_marginal_yield: None,
             expansion_strategy: "geo_converge".to_string(),

@@ -835,6 +835,15 @@ fn pub_target() -> Target {
     Target::new(TargetKind::IpAddress, "1.1.1.1")
 }
 
+/// A shared empty capability-quarantine set for `DispatchCx` test literals —
+/// these tests exercise dispatch paths where capability-aware dispatch is off
+/// (nothing quarantined), so they borrow one process-static empty set.
+fn no_quarantine() -> &'static std::collections::HashSet<String> {
+    static EMPTY: std::sync::OnceLock<std::collections::HashSet<String>> =
+        std::sync::OnceLock::new();
+    EMPTY.get_or_init(std::collections::HashSet::new)
+}
+
 #[test]
 fn circuit_breaker_trip_skips_the_module_at_the_dispatch_gate() {
     // Wiring proof for the circuit breaker: once a module trips (a rate-limit /
@@ -896,6 +905,7 @@ async fn cache_replay_does_not_feed_the_circuit_breaker_success_path() {
         opts: &opts,
         is_expansion: false,
         seed_kind: TargetKind::Email,
+        quarantined: no_quarantine(),
     };
     let mut entity_map: HashMap<String, Entity> = HashMap::new();
     let mut stats = ModuleStats::default();
@@ -2202,6 +2212,7 @@ async fn admitted_entities_are_stamped_with_their_modules_attack_techniques() {
             opts: &opts,
             is_expansion: false,
             seed_kind: TargetKind::Email,
+            quarantined: no_quarantine(),
         };
         let mut entity_map: HashMap<String, Entity> = HashMap::new();
         let mut stats = ModuleStats::default();
@@ -2338,6 +2349,7 @@ async fn concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_s
         opts: &opts,
         is_expansion: false,
         seed_kind: TargetKind::Username,
+        quarantined: no_quarantine(),
     };
     let mut entity_map: HashMap<String, Entity> = HashMap::new();
     let mut stats = ModuleStats::default();

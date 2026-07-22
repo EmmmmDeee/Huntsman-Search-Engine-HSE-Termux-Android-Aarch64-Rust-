@@ -187,6 +187,7 @@ pub async fn run() -> Result<()> {
             adaptive,
             max_roi,
             no_convex_budget,
+            no_skip_dead_modules,
             no_regional,
             min_marginal_yield,
             expansion_strategy,
@@ -231,6 +232,11 @@ pub async fn run() -> Result<()> {
                 // Optionality/barbell allocation is on unless explicitly disabled
                 // — every scan maximises value-per-query out of the box.
                 convex_budget: !no_convex_budget,
+                // Capability-aware dispatch is on unless explicitly disabled;
+                // `--full` is the no-compromise preset, so it forces EVERY module
+                // to run regardless of health (like its other narrowing-flag
+                // overrides), never quarantining anything.
+                skip_dead_modules: !no_skip_dead_modules && !full,
                 // AU-focused regional searching is on unless explicitly disabled.
                 regional_search: !no_regional,
                 min_marginal_yield,
@@ -291,6 +297,7 @@ pub async fn run() -> Result<()> {
             max_concurrent,
             max_roi,
             no_convex_budget,
+            no_skip_dead_modules,
             no_regional,
             min_marginal_yield,
             expansion_strategy,
@@ -320,6 +327,8 @@ pub async fn run() -> Result<()> {
                 max_roi,
                 // Optionality/barbell allocation is on unless explicitly disabled.
                 convex_budget: !no_convex_budget,
+                // Capability-aware dispatch is on unless explicitly disabled.
+                skip_dead_modules: !no_skip_dead_modules,
                 // AU-focused regional searching is on unless explicitly disabled.
                 regional_search: !no_regional,
                 min_marginal_yield,

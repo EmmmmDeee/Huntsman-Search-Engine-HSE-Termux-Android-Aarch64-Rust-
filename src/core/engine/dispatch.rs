@@ -453,6 +453,13 @@ pub(super) struct DispatchCx<'a> {
     /// artifact is the legitimate subject only when the scan itself targets
     /// infrastructure (Domain/IP/CIDR/ASN/URL), and is noise on an identity scan.
     pub(super) seed_kind: TargetKind,
+    /// Modules quarantined for THIS scan by capability-aware dispatch — those
+    /// whose parser has provably gone dead (persistent drift; see
+    /// [`crate::util::scraper_health::quarantined_modules`]). Empty unless the
+    /// scan enabled `skip_dead_modules` on the automatic comprehensive fan-out,
+    /// so an explicit allowlist / `--full` run carries an empty set and skips
+    /// nothing. Computed once per scan and borrowed by every round.
+    pub(super) quarantined: &'a std::collections::HashSet<String>,
 }
 
 /// Mutable per-scan dispatch accumulators threaded through every module run: the
@@ -745,10 +752,31 @@ impl super::ScanEngine {
         {
             stats.skipped += 1;
             self.emit_skipped(cx.scan_id, module.name(), reason);
-            true
-        } else {
-            false
+            return true;
         }
+        // Capability-aware dispatch — the cross-scan, persisted counterpart of
+        // the in-scan circuit breaker. Checked LAST, only for a module that
+        // every standard gate above cleared to run: if its parser has provably
+        // gone dead across recent scans (persistent hard failures or silent
+        // zero-yield drift, see `util::scraper_health::quarantined_modules`),
+        // skip it so its dispatch slot goes to a source that still works — the
+        // budget the scan needs to find more. `cx.quarantined` is empty (so this
+        // never fires) unless the scan enabled `skip_dead_modules` on the
+        // automatic comprehensive fan-out; an explicit `--modules` allowlist or
+        // `--full` run carries an empty set and quarantines nothing. Placed last
+        // so a module filtered for a more specific reason still reports THAT
+        // reason. Self-recovering: a module leaves the set the moment it emits
+        // one healthy result.
+        if cx.quarantined.contains(module.name()) {
+            stats.skipped += 1;
+            self.emit_skipped(
+                cx.scan_id,
+                module.name(),
+                "capability-quarantined — persistent drift (auto-retries once it recovers)",
+            );
+            return true;
+        }
+        false
     }
 
     /// Sequential dispatcher (max_concurrent == 0).

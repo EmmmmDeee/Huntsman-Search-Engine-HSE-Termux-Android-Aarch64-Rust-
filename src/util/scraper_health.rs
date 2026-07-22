@@ -197,6 +197,31 @@ pub fn aggregate_source_health(events_newest_first: &[Event]) -> Vec<SourceHealt
     out
 }
 
+/// The set of module names whose parser has **provably gone dead** — either
+/// hard-drifted ([`SourceHealth::is_drifted`]: ≥[`DRIFTED_THRESHOLD`] trailing
+/// errors) or yield-drifted ([`SourceHealth::is_yield_drifted`]: a proven-
+/// capable source silently returning zero for ≥[`YIELD_DRIFT_THRESHOLD`] runs).
+///
+/// This is the signal **capability-aware dispatch** acts on: a scan skips these
+/// modules so their dispatch slot goes to a source that still works — the
+/// budget the scan needs to find more (the cross-scan, persisted counterpart of
+/// the in-scan [`crate::core::engine`] circuit breaker). Pure over a health
+/// slice, so it is unit-testable without a DB and shares one definition of
+/// "dead" between the engine and any diagnostics that report the quarantine.
+///
+/// **Self-recovering by construction:** both drift predicates reset on the first
+/// success walking back from "now", so once a quarantined module emits a single
+/// healthy `ModuleDone` it drops out of this set on the very next scan — no
+/// timer, no manual reset. Until then it stays skipped, which is the point.
+#[must_use]
+pub fn quarantined_modules(health: &[SourceHealth]) -> std::collections::HashSet<String> {
+    health
+        .iter()
+        .filter(|h| h.is_drifted() || h.is_yield_drifted())
+        .map(|h| h.module.clone())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,5 +443,46 @@ mod tests {
         );
         assert!(health[0].ever_yielded);
         assert!(!health[0].is_yield_drifted(), "only 2 trailing zero-yields");
+    }
+
+    #[test]
+    fn quarantined_modules_collects_hard_and_yield_drift_only() {
+        // hard-drifted (3 errors), yield-drifted (yield then 3 zeros), healthy,
+        // and not-yet-drifted (2 errors) — only the two drifted ones quarantine.
+        let events = vec![
+            // hard_dead: 3 trailing errors → is_drifted
+            err("s3", 330, "hard_dead", "500"),
+            err("s2", 320, "hard_dead", "500"),
+            err("s1", 310, "hard_dead", "500"),
+            // parse_broken: 3 trailing zero-yields after a real yield → is_yield_drifted
+            done_found("s4", 240, "parse_broken", 0),
+            done_found("s3", 230, "parse_broken", 0),
+            done_found("s2", 220, "parse_broken", 0),
+            done_found("s1", 210, "parse_broken", 7),
+            // healthy: newest is a success
+            done("s1", 110, "healthy"),
+            // borderline: only 2 errors → not drifted
+            err("s2", 120, "borderline", "500"),
+            err("s1", 115, "borderline", "500"),
+        ];
+        let q = quarantined_modules(&aggregate_source_health(&events));
+        assert!(q.contains("hard_dead"), "hard-drift must quarantine");
+        assert!(q.contains("parse_broken"), "yield-drift must quarantine");
+        assert!(
+            !q.contains("healthy"),
+            "a healthy source is never quarantined"
+        );
+        assert!(
+            !q.contains("borderline"),
+            "2 failures is below the drift threshold"
+        );
+        assert_eq!(q.len(), 2);
+    }
+
+    #[test]
+    fn quarantined_modules_is_empty_for_a_fresh_event_log() {
+        // The invariant capability-aware dispatch relies on for zero behaviour
+        // change on a fresh DB: no events → nothing quarantined.
+        assert!(quarantined_modules(&aggregate_source_health(&[])).is_empty());
     }
 }

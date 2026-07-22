@@ -148,6 +148,15 @@ pub enum Command {
         /// `--no-convex-budget` for the plain expected-value ranking.
         #[arg(long = "no-convex-budget", action = clap::ArgAction::SetTrue)]
         no_convex_budget: bool,
+        /// Capability-aware dispatch is ON by default: modules whose parser has
+        /// provably gone dead across recent scans (persistent failures or silent
+        /// zero-yield drift) are skipped so their dispatch slot goes to a source
+        /// that still works — maximising each scan's useful return. Only culls
+        /// the automatic comprehensive fan-out; an explicit `--modules` set or
+        /// `--full` always runs everything. Pass `--no-skip-dead-modules` to run
+        /// every module regardless of health.
+        #[arg(long = "no-skip-dead-modules", action = clap::ArgAction::SetTrue)]
+        no_skip_dead_modules: bool,
         /// Australian-focused regional searching is ON by default: the search
         /// module adds minimal `.au` / AU-directory dorks on top of the
         /// geolocation-neutral base (a seed with no region signal defaults to
@@ -428,6 +437,10 @@ pub enum Command {
         /// Same as `scan --no-convex-budget` (convex allocation is on by default).
         #[arg(long = "no-convex-budget", action = clap::ArgAction::SetTrue)]
         no_convex_budget: bool,
+        /// Same as `scan --no-skip-dead-modules` (capability-aware dispatch is on
+        /// by default).
+        #[arg(long = "no-skip-dead-modules", action = clap::ArgAction::SetTrue)]
+        no_skip_dead_modules: bool,
         /// Same as `scan --no-regional`.
         #[arg(long = "no-regional", action = clap::ArgAction::SetTrue)]
         no_regional: bool,
