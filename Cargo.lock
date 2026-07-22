@@ -847,7 +847,7 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "huntsman-search-engine"
-version = "1.24.0"
+version = "1.25.0"
 dependencies = [
  "aho-corasick",
  "async-trait",
