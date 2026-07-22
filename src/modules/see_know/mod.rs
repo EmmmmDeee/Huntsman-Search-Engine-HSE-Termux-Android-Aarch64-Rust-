@@ -352,6 +352,10 @@ impl Module for SeekNow {
             let plan = effective_plan(target.kind, v);
             let endpoint_results = dispatch_plan(key, v, &plan).await;
 
+            // Build the target matcher once for the whole result set — its
+            // lowercase + term-split allocations are loop-invariant across
+            // every record of every endpoint, so they must not repeat per row.
+            let match_ctx = TargetMatch::new(v);
             for (endpoint, items) in &endpoint_results {
                 // Per-endpoint yield tracing: surfaces which endpoints return
                 // data for which target kinds in live logs, supporting the
@@ -368,6 +372,7 @@ impl Module for SeekNow {
                     extract_entities(
                         item,
                         v,
+                        &match_ctx,
                         &ctx.scan_id,
                         endpoint,
                         &key_fp,
@@ -452,10 +457,13 @@ fn absorb_search_hits(
     // vector doesn't repeatedly realloc as records are walked.
     result.entities.reserve(total);
 
+    // Loop-invariant matcher: built once per result set, not once per record.
+    let match_ctx = TargetMatch::new(target_value);
     for item in items {
         extract_entities(
             item,
             target_value,
+            &match_ctx,
             scan_id,
             endpoint_label,
             key_fp,
@@ -575,9 +583,12 @@ fn extract_pivot_entities(
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
+    let match_ctx = TargetMatch::new(seed_value);
     for (endpoint, items) in pivot_results {
         for item in items {
-            extract_entities(item, seed_value, scan_id, endpoint, key_fp, seen, result);
+            extract_entities(
+                item, seed_value, &match_ctx, scan_id, endpoint, key_fp, seen, result,
+            );
             extract_geo_entities(item, endpoint, scan_id, seen, result);
             store_api_credential(item, SRC);
             extract_api_keys_from_item(item, scan_id, SRC, seen, result);

@@ -20,7 +20,6 @@
 //!   * **Hyphenated surname** — "Smith-Jones" yields merged and per-part shapes.
 
 use crate::core::confidence;
-use url::form_urlencoded::byte_serialize;
 
 // ── Output caps ──────────────────────────────────────────────────────────────
 pub(super) const MAX_USERNAMES: usize = 48;
@@ -819,8 +818,12 @@ fn initial(s: &str) -> char {
     s.chars().next().unwrap_or('x')
 }
 
+/// Terse local alias for the canonical percent-encoder. The encoding logic
+/// lives in exactly one place ([`crate::util::http::urlencode`]); this keeps the
+/// URL-builder call sites above readable without re-implementing it.
+#[inline]
 fn q(s: &str) -> String {
-    byte_serialize(s.as_bytes()).collect()
+    crate::util::http::urlencode(s)
 }
 
 fn extract_number(raw: &str) -> Option<String> {

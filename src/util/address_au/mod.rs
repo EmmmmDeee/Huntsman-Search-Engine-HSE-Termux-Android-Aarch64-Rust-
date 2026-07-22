@@ -264,15 +264,25 @@ pub fn state_code(text: &str) -> Option<&'static str> {
 /// assert_eq!(normalise_phone("not a phone"), None);
 /// ```
 pub fn normalise_phone(s: &str) -> Option<String> {
+    // Every branch below routes its candidate through the strict E.164 gate, so
+    // this function can NEVER emit a syntactically invalid number (e.g. a bare
+    // "+61", "0061" → "+61", or "1300" → "+611300"). The `+61…` / `0061…` early
+    // returns used to pass their output back unvalidated, leaking malformed
+    // too-short E.164 straight into correlation keys; the gate closes that.
+    let validated = |e164: String| {
+        crate::core::validation::validate_phone_e164(&e164)
+            .valid
+            .then_some(e164)
+    };
     let digits: String = s
         .chars()
         .filter(|c| c.is_ascii_digit() || *c == '+')
         .collect();
     if digits.starts_with("+61") {
-        return Some(digits);
+        return validated(digits);
     }
     if digits.starts_with("0061") {
-        return Some(format!("+{}", &digits[2..]));
+        return validated(format!("+{}", &digits[2..]));
     }
     // The second digit must be a real ACMA AU national-significant-number
     // lead (2/3/4/5/7/8), matching the gate the 9-digit branch below already
@@ -289,7 +299,7 @@ pub fn normalise_phone(s: &str) -> Option<String> {
             b'2' | b'3' | b'4' | b'5' | b'7' | b'8'
         )
     {
-        return Some(format!("+61{}", &digits[1..]));
+        return validated(format!("+61{}", &digits[1..]));
     }
     if digits.len() == 9
         && (digits.starts_with('2')
@@ -299,10 +309,10 @@ pub fn normalise_phone(s: &str) -> Option<String> {
             || digits.starts_with('7')
             || digits.starts_with('8'))
     {
-        return Some(format!("+61{digits}"));
+        return validated(format!("+61{digits}"));
     }
     if digits.starts_with("1300") || digits.starts_with("1800") {
-        return Some(format!("+61{digits}"));
+        return validated(format!("+61{digits}"));
     }
     None
 }

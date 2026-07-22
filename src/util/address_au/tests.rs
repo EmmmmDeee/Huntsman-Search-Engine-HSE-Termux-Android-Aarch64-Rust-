@@ -160,6 +160,34 @@ use super::*;
     }
 
     #[test]
+    fn normalise_phone_never_emits_invalid_e164() {
+        // Regression: the `+61…` / `0061…` / `1300…` branches used to return
+        // their candidate unvalidated, leaking syntactically invalid E.164
+        // (too short, or country-code-only) straight into correlation keys.
+        // Every branch now routes through the strict E.164 gate.
+        for junk in [
+            "+61",          // country code only
+            "+6100",        // too short + invalid national lead
+            "+610",         // leading-zero national part, too short
+            "0061",         // → "+61", country code only
+            "0061 0",       // → "+610", too short
+            "1300",         // → "+611300", 6 digits, below the 10-digit floor
+            "1800",         // → "+611800", ditto
+        ] {
+            assert_eq!(
+                normalise_phone(junk),
+                None,
+                "invalid/too-short input {junk:?} must not yield a malformed E.164"
+            );
+        }
+        // A well-formed international/local number is still accepted unchanged.
+        assert_eq!(
+            normalise_phone("+61 2 9374 4000").as_deref(),
+            Some("+61293744000")
+        );
+    }
+
+    #[test]
     fn normalise_phone_ten_digit_leading_zero_requires_a_real_au_trunk_digit() {
         // Regression: the 10-digit `0…` branch lacked the trunk-digit gate
         // its 9-digit sibling already enforces, so any 10-digit string
