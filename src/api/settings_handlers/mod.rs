@@ -105,6 +105,58 @@ pub(crate) fn summarize_pool(data: &crate::util::key_pool::PoolData) -> Vec<Serv
     out
 }
 
+/// `GET /api/v1/keys/health` — CONFIGURED keys the upstream is actively
+/// rejecting, derived from what real scans observed (auth-shaped failure
+/// streaks), never a synthetic probe — so it can't mis-report a working key. The
+/// signal that on the CLI lives in `hse doctor`, brought to the web Settings page
+/// so a Termux no-root operator sees a dead key (and exactly which env var to
+/// renew) without dropping to a shell. Loopback-only and value-free, matching the
+/// sibling key endpoints.
+pub async fn keys_health(
+    State(s): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "key health is loopback-only" })),
+        )
+            .into_response();
+    }
+    // Off-reactor: the recent-outcome scan is a blocking SQLite read.
+    let store = Arc::clone(&s.store);
+    let events = match tokio::task::spawn_blocking(move || {
+        store.recent_module_outcome_events(crate::util::scraper_health::RECENT_EVENTS_WINDOW)
+    })
+    .await
+    {
+        Ok(Ok(ev)) => ev,
+        Ok(Err(e)) => return super::handlers::internal_error(&e),
+        Err(e) => {
+            return super::handlers::internal_error(&format!("keys-health query task failed: {e}"));
+        }
+    };
+    let health = crate::util::scraper_health::aggregate_source_health(&events);
+    let loaded = keys::load();
+    // Only surface keys that are actually CONFIGURED and being rejected — the
+    // actionable case. An auth failure on an unset key is expected (the module
+    // skips) and already covered by the acquisition guidance.
+    let rejected: Vec<Value> = crate::util::key_health::auth_failing_sources(&health)
+        .into_iter()
+        .filter(|i| i.likely_env_var.is_some_and(|e| loaded.contains_key(e)))
+        .map(|i| {
+            json!({
+                "module": i.module,
+                "env_var": i.likely_env_var,
+                "consecutive_failures": i.consecutive_failures,
+                "detail": i.detail,
+                "hint": i.likely_env_var.and_then(keys::signup_hint),
+            })
+        })
+        .collect();
+    Json(json!({ "count": rejected.len(), "rejected": rejected })).into_response()
+}
+
 /// `GET /api/v1/keys/status` — per-service key-pool health (counts by status,
 /// aggregate use/error totals, and the mean per-key health score) for the
 /// operator quota view. Never exposes key values, but per-service key-pool

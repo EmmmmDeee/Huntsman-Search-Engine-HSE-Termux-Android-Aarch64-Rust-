@@ -110,6 +110,7 @@ export const API = {
   // Operator diagnostics: per-service key-pool health/quota + the detector
   // coverage catalogue. Surfaced read-only in Settings (loopback-only).
   keysStatus:   ()=>API._req('/api/v1/keys/status'),
+  keysHealth:   ()=>API._req('/api/v1/keys/health'),
   keysPatterns: ()=>API._req('/api/v1/keys/patterns'),
   // Key Harvest dashboard feed: vault bank + ROI tiering + live SeekNow/
   // OathNet/WiGLE account health. Loopback-only.

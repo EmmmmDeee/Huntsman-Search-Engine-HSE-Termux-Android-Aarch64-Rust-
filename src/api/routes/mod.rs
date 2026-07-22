@@ -13,6 +13,7 @@
 //! | GET    | `/api/v1/engines/health`          | `engines_health` (v1.3+) |
 //! | GET    | `/api/v1/health/scrapers`         | `scraper_health` (v1.13+) |
 //! | GET    | `/api/v1/keys/patterns`           | `keys_patterns` (v1.4+)  |
+//! | GET    | `/api/v1/keys/health`             | `keys_health` (v1.17+)   |
 //! | GET    | `/api/v1/keys/harvest`            | `keys_harvest`           |
 //! | POST   | `/api/v1/scans`                   | `scan_create`            |
 //! | GET    | `/api/v1/scans`                   | `scan_list`              |
@@ -354,6 +355,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // ── key-detector catalogue (v1.4+) ──
         .route("/keys/patterns", get(settings_handlers::keys_patterns))
         .route("/keys/status", get(settings_handlers::keys_status))
+        .route("/keys/health", get(settings_handlers::keys_health))
         .route("/keys/harvest", get(key_harvest_handlers::keys_harvest))
         .route("/keys/pool", get(settings_handlers::keys_pool_get))
         .route("/keys/pool/add", post(settings_handlers::keys_pool_add))
