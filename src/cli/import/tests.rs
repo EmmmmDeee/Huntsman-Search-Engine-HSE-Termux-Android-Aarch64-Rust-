@@ -811,6 +811,8 @@ fn local_scrape_enumerates_deterministically_and_skips_noise() {
     std::fs::write(root.join("sub").join("c.csv"), "x").unwrap();
     std::fs::create_dir_all(root.join("target")).unwrap();
     std::fs::write(root.join("target").join("skip.json"), "{}").unwrap(); // dir-skipped
+    std::fs::create_dir_all(root.join("Target")).unwrap();
+    std::fs::write(root.join("Target").join("skip.json"), "{}").unwrap(); // mixed-case dir-skipped
     std::fs::create_dir_all(root.join(".git")).unwrap();
     std::fs::write(root.join(".git").join("skip.txt"), "x").unwrap(); // hidden dir-skipped
 

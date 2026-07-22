@@ -70,9 +70,16 @@ fn is_skippable_file(name: &str) -> bool {
 }
 
 /// True for directory names never worth descending into during a scrape: hidden
-/// directories (`.git`, `.cargo`, …) and heavy build/dependency trees.
+/// directories (`.git`, `.cargo`, …) and heavy build/dependency trees. The
+/// build/dependency names are matched case-insensitively (mirroring
+/// [`is_skippable_file`]) so a mixed-case `Target/` or `NODE_MODULES/` — which a
+/// case-insensitive Android/exFAT storage volume can surface — is skipped too.
 fn is_skippable_dir(name: &str) -> bool {
-    name.starts_with('.') || matches!(name, "target" | "node_modules")
+    name.starts_with('.')
+        || matches!(
+            name.to_ascii_lowercase().as_str(),
+            "target" | "node_modules"
+        )
 }
 
 /// Enumerate candidate importable files under `root`, bounded by depth/count/size

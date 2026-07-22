@@ -333,9 +333,9 @@ pub(super) fn parse_combined_search_json(
 /// `source`/`breach` that arrives as an integer (`2844`) or a `dbname` that
 /// arrives as an array (`["A.com","B.com"]`) is preserved instead of silently
 /// lost. Nested objects (e.g. SEON's `details`) and nulls carry no leaf field and
-/// are skipped; a result with no leaf fields at all (e.g. an error stub like
-/// `{"0":"…"}`) yields an empty record, which the emitter's identity-field gate
-/// then drops.
+/// are skipped. An error stub whose only field is non-identity (e.g. `{"0":"…"}`)
+/// still produces a record; the emitter's identity-field gate then drops it, so it
+/// contributes no entities.
 fn combined_json_records(doc: &serde_json::Value) -> Vec<Vec<(String, String)>> {
     let mut out = Vec::new();
     let Some(modules) = doc.get("modules").and_then(|v| v.as_array()) else {
