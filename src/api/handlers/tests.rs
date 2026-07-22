@@ -83,6 +83,61 @@ use crate::api::scan_export::csv_escape;
     }
 
     #[test]
+    fn capability_probe_json_tallies_outcomes_and_flags_canary_drift() {
+        use super::capability_probe_json;
+        use crate::core::scan::TargetKind;
+        use crate::util::capability_probe::{ProbeOutcome, ProbeReport};
+        // ip_geo is a curated canary → an empty parse is confirmed drift.
+        // A non-canary empty is NOT drift. Alive/unreachable round out the tally.
+        let reports = vec![
+            ProbeReport {
+                module: "ip_geo",
+                kind: TargetKind::IpAddress,
+                value: "8.8.8.8",
+                outcome: ProbeOutcome::Empty,
+            },
+            ProbeReport {
+                module: "certspotter",
+                kind: TargetKind::Domain,
+                value: "example.com",
+                outcome: ProbeOutcome::Alive { found: 9 },
+            },
+            ProbeReport {
+                module: "some_breach",
+                kind: TargetKind::Email,
+                value: "test@example.com",
+                outcome: ProbeOutcome::Empty,
+            },
+            ProbeReport {
+                module: "bgpview",
+                kind: TargetKind::Asn,
+                value: "AS15169",
+                outcome: ProbeOutcome::Unreachable {
+                    reason: "connect".into(),
+                },
+            },
+        ];
+        let v = capability_probe_json(&reports);
+        assert_eq!(v["probed"], 4);
+        assert_eq!(v["alive"], 1);
+        assert_eq!(v["empty"], 2);
+        assert_eq!(v["unreachable"], 1);
+        // Only the ip_geo canary's empty is confirmed drift.
+        assert_eq!(v["drift"].as_array().unwrap().len(), 1);
+        assert_eq!(v["drift"][0], "ip_geo");
+        let mods = v["modules"].as_array().unwrap();
+        let ip_geo = mods.iter().find(|m| m["module"] == "ip_geo").unwrap();
+        assert_eq!(ip_geo["canary"], true);
+        assert_eq!(ip_geo["drift"], true);
+        let breach = mods.iter().find(|m| m["module"] == "some_breach").unwrap();
+        assert_eq!(breach["canary"], false);
+        assert_eq!(breach["drift"], false);
+        let cs = mods.iter().find(|m| m["module"] == "certspotter").unwrap();
+        assert_eq!(cs["outcome"], "alive");
+        assert_eq!(cs["found"], 9);
+    }
+
+    #[test]
     fn csv_escape_plain() {
         assert_eq!(csv_escape("hello"), "hello");
     }

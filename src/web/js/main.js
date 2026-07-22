@@ -32,7 +32,7 @@ import { entityPivot, toggleDetail } from '/static/js/scan_info/browse.js';
 import { toggleCorrMembers, pivotToEntity } from '/static/js/scan_info/correlations.js';
 import { renderOpts, pollUpdateBadge } from '/static/js/views/opts.js';
 import { globalSearch, renderSearch } from '/static/js/views/search.js';
-import { renderEngines, refreshEngines } from '/static/js/views/engines.js';
+import { renderEngines, refreshEngines, runCapabilityProbe } from '/static/js/views/engines.js';
 import { renderHarvest, refreshHarvest } from '/static/js/views/key_harvest.js';
 import { renderLive, closeLiveStream } from '/static/js/views/live.js';
 import { initCompatShims, initNavbarToggle, initModals } from '/static/js/ui.js';
@@ -102,7 +102,7 @@ Object.assign(window, {
   render, nav, globalSearch, previewPlan, uploadDossier, autoInvestigate,
   autoQueuePreview, autoSweepGo, submitWizard, submitBatch, entityPivot,
   toggleDetail, toggleCorrMembers, pivotToEntity, refreshEngines,
-  closeLiveStream, refreshHarvest,
+  runCapabilityProbe, closeLiveStream, refreshHarvest,
 });
 
 /* ═══════════ Bootstrap ═══════════ */
