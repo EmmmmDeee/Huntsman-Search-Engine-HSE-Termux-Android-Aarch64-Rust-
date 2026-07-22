@@ -70,6 +70,18 @@ impl Module for OathnetPro {
         ModuleCost::Paid
     }
 
+    fn cache_ttl_secs(&self) -> u64 {
+        // OathNet has HSE's SCARCEST paid quota (a handful of lookups per scan)
+        // and its cursor-paginated breach search bills one lookup per page, so a
+        // single repeat resolve of a high-hit email can waste several lookups.
+        // Breach corpora are stable within a day, so persisting the derived
+        // entities lets a repeat scan of the same corroborated pivot replay them
+        // for FREE — the same 24h C9 bracket the other paid modules use. No live
+        // call on replay ⇒ no lookup spend (incl. the per-page pagination
+        // charges), which is the largest per-query saving for the scarcest quota.
+        86_400
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,

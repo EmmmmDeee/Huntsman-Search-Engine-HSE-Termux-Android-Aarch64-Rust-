@@ -13,7 +13,7 @@
  * mental model. The state machine, router, and API client are HSE-specific
  * and talk to /api/v1/* (see src/api/routes/mod.rs).
  * ═══════════════════════════════════════════════════════════════════════ */
-import { $, $$, esc } from '/static/js/helpers.js';
+import { $, $$, esc, initDownloads } from '/static/js/helpers.js';
 import { API } from '/static/js/api.js';
 import { S } from '/static/js/state.js';
 import { parseHash, nav } from '/static/js/router.js';
@@ -111,6 +111,7 @@ Object.assign(window, {
   applyTheme();
   initNavbarToggle();
   initModals();
+  initDownloads();
   if (typeof alertify !== 'undefined') alertify.set('notifier','position','top-right');
   try {
     const h = await API.health();

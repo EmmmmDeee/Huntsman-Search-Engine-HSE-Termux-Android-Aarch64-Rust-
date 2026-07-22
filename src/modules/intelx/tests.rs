@@ -23,6 +23,13 @@ const ALL_KINDS: &[TargetKind] = &[
 ];
 
 #[test]
+fn cache_ttl_is_24h_so_repeat_scans_dont_re_spend_a_paid_lookup() {
+    // Immutable leak/archive corpus ⇒ the inter-scan cache serves a repeat
+    // scan for free; a 0 (trait default) would disable it, so pin the window.
+    assert_eq!(IntelX.cache_ttl_secs(), 86_400);
+}
+
+#[test]
 fn accepts_every_kind_intelx_has_a_selector_for() {
     let m = IntelX;
     for k in [

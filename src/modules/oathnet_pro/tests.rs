@@ -2,6 +2,14 @@ use super::*;
 use crate::core::confidence;
 
     #[test]
+    fn cache_ttl_is_24h_so_repeat_scans_dont_re_spend_the_scarce_quota() {
+        // OathNet has the scarcest paid quota and bills per pagination page;
+        // the inter-scan cache is what stops a repeat scan re-spending it. A 0
+        // (trait default) would disable that path, so pin the 24h window.
+        assert_eq!(OathnetPro.cache_ttl_secs(), 86_400);
+    }
+
+    #[test]
     fn extract_breach_entities_characterization() {
         use serde_json::json;
         let item = json!({

@@ -68,6 +68,15 @@ impl Module for DeHashed {
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid
     }
+    fn cache_ttl_secs(&self) -> u64 {
+        // Breach/credential dumps are immutable once indexed — even more stable
+        // than the "IP intel: 24h" case C9 names. Persisting the derived
+        // entities lets a repeat scan of an already-purchased identifier replay
+        // them for FREE within the window instead of re-spending a paid lookup,
+        // closing the paid-module set (see_know/oathnet_pro/dehashed/intelx) so
+        // no paid query repeats an identifier bought in the last 24h.
+        86_400
+    }
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,

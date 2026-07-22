@@ -1163,6 +1163,15 @@ fn extract_entities(
     }
 
     #[test]
+    fn cache_ttl_is_24h_so_repeat_scans_dont_re_spend_credits() {
+        // SeekNow is the highest-spend paid provider; the inter-scan persistent
+        // cache is what makes a repeat scan of the same subject cost zero
+        // credits. A 0 here (the trait default) would silently disable that
+        // path — the single largest per-query saving — so pin it.
+        assert_eq!(SeekNow.cache_ttl_secs(), 86_400);
+    }
+
+    #[test]
     fn produces_includes_geo_and_identity_kinds() {
         let kinds = SeekNow.produces();
         assert!(kinds.contains(&EntityKind::Coordinates));

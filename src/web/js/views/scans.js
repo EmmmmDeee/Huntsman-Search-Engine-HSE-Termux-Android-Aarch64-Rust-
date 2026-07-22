@@ -127,7 +127,7 @@ export function renderScansTable(scans){
         ${(s.status==='running'||s.status==='pending')
           ? `<button class="btn btn-warning btn-xs" data-cancel="${attr(s.id)}" title="Stop scan"><i class="glyphicon glyphicon-stop"></i></button>`
           : `<button class="btn btn-default btn-xs" data-rerun="${attr(s.id)}" title="Rescan"><i class="glyphicon glyphicon-repeat"></i></button>`}
-        <a class="btn btn-default btn-xs" href="${API.csvUrl(s.id)}" title="Export CSV"><i class="glyphicon glyphicon-download-alt"></i></a>
+        <a class="btn btn-default btn-xs" href="${API.csvUrl(s.id)}" data-download title="Export CSV"><i class="glyphicon glyphicon-download-alt"></i></a>
         <button class="btn btn-danger btn-xs" data-delete="${attr(s.id)}" title="Delete"><i class="glyphicon glyphicon-trash"></i></button>
       </td>
     </tr>`;

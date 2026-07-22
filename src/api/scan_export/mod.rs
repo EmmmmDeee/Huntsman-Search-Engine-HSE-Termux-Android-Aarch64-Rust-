@@ -46,6 +46,7 @@ pub async fn scan_entities_csv(
         "text/csv; charset=utf-8",
         &id,
         "csv",
+        "csv",
     )
 }
 
@@ -165,7 +166,7 @@ pub async fn scan_report_json(
     .await;
     match built {
         Ok(Ok(Some(body))) => {
-            download_response(body, "application/json; charset=utf-8", &id, "json")
+            download_response(body, "application/json; charset=utf-8", &id, "json", "json")
         }
         Ok(Ok(None)) => not_found(),
         Ok(Err(e)) => internal_error(&e),
@@ -364,7 +365,7 @@ pub async fn scan_export_gexf(
         entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
     }
     let body = crate::core::gexf::entities_to_gexf(&entities, &relations, &id);
-    download_response(body, "application/xml; charset=utf-8", &id, "gexf")
+    download_response(body, "application/xml; charset=utf-8", &id, "gexf", "gexf")
 }
 
 /// `GET /api/v1/scans/{id}/debug.txt` — the one-click debug bundle: the entire
@@ -390,7 +391,7 @@ pub async fn scan_debug_bundle(
     })
     .await
     {
-        Ok(Ok(body)) => download_response(body, "text/plain; charset=utf-8", &id, "debug.txt"),
+        Ok(Ok(body)) => download_response(body, "text/plain; charset=utf-8", &id, "debug", "txt"),
         Ok(Err(e)) => internal_error(&e),
         Err(e) => internal_error(&format!("debug-bundle render task failed: {e}")),
     }
@@ -398,17 +399,24 @@ pub async fn scan_debug_bundle(
 
 /// Wrap an export `body` as a browser download: a `200` with the given
 /// `content_type` and a `Content-Disposition: attachment` whose filename is
-/// `hse-<ext>-<short-scan-id>.<ext>` (id truncated to 12 chars). Shared by the
+/// `hse-<stem>-<short-scan-id>.<ext>` (id truncated to 12 chars). Shared by the
 /// CSV / JSON / GEXF / debug-bundle endpoints so every download names itself the
 /// same way.
+///
+/// `stem` and `ext` are separate so the file *label* and its *extension* can
+/// differ — e.g. the debug bundle wants `hse-debug-<id>.txt`, not the
+/// double-suffixed `hse-debug.txt-<id>.debug.txt` an `ext`-only builder produced
+/// when a caller passed `"debug.txt"` for both roles. For the CSV/JSON/GEXF
+/// endpoints stem == ext, so their filenames are unchanged.
 pub(crate) fn download_response(
     body: String,
     content_type: &'static str,
     scan_id: &str,
+    stem: &str,
     ext: &str,
 ) -> axum::response::Response {
     let short_id: String = scan_id.chars().take(12).collect();
-    let filename = format!("hse-{ext}-{short_id}.{ext}");
+    let filename = format!("hse-{stem}-{short_id}.{ext}");
     let disposition = format!("attachment; filename=\"{filename}\"");
     let mut resp = (StatusCode::OK, body).into_response();
     let headers = resp.headers_mut();

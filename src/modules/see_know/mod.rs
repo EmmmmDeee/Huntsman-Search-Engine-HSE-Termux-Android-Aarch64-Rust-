@@ -122,6 +122,27 @@ impl Module for SeekNow {
         ModuleCost::Paid
     }
 
+    fn cache_ttl_secs(&self) -> u64 {
+        // Breach / stealer / OSINT corpus is stable within the 24h C9 window —
+        // the same bracket the other paid, finite-allowance modules already use
+        // (censys / netlas / hlr_cnam / opencellid / trove_au). SeekNow is the
+        // highest-priority AND highest-spend paid provider (priority u8::MAX,
+        // per-scan cap clamp(daily/20, 300, 2500)), and it fires on the seed
+        // plus every email/username discovered during expansion — so an operator
+        // iterating on the same subject is the common case. Persisting the
+        // derived entities lets a repeat scan within the window replay them for
+        // FREE instead of re-spending the entire per-scan credit budget, which
+        // is the single largest per-query saving available. Replay re-stamps the
+        // scan_id and re-runs key extraction (see dispatch::replay_cached_result),
+        // so discovered credentials/keys still surface; no live call means no
+        // budget spend. A first scan that was itself budget-clamped replays its
+        // partial result for the window — the accepted C9 stable-within-window
+        // tradeoff every other cached paid module already carries, and exactly
+        // the "don't re-spend on a repeat" behaviour the operator's maximisation
+        // directive wants.
+        86_400
+    }
+
     fn category(&self) -> ModuleCategory {
         ModuleCategory::Breach
     }

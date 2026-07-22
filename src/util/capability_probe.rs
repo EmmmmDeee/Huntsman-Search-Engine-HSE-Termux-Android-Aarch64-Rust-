@@ -276,7 +276,7 @@ fn drift_path() -> std::path::PathBuf {
 
 /// Read the persisted drift map from `path`. Empty on missing/corrupt — this
 /// is a cache of past confirmations, never load-bearing state, so a parse
-/// error is non-fatal (mirrors [`crate::util::settings::read_map`]).
+/// error is non-fatal (mirrors `crate::util::settings`'s own `read_map`).
 fn read_drift_map(path: &std::path::Path) -> HashMap<String, u64> {
     std::fs::read_to_string(path)
         .ok()
@@ -293,7 +293,7 @@ fn write_drift_map_at(path: &std::path::Path, map: &HashMap<String, u64>) -> std
 /// `now`, and persist. A module absent from THIS sweep (probed clean, or not
 /// probed at all) keeps whatever it already had — a single clean re-probe
 /// should not erase a real drift history the operator hasn't acted on yet;
-/// [`recent_confirmed_drift_at`]'s TTL is what ages an entry out, not a
+/// [`recent_confirmed_drift`]'s TTL is what ages an entry out, not a
 /// same-run overwrite.
 fn record_confirmed_drift_at(path: &std::path::Path, reports: &[ProbeReport], now: u64) {
     if !reports.iter().any(ProbeReport::is_confirmed_drift) {
