@@ -1414,6 +1414,39 @@ async fn settings_keys_get_refuses_non_loopback_peer() {
     );
 }
 
+#[tokio::test]
+async fn keys_health_refuses_non_loopback_peer() {
+    // The dead-key diagnosis reveals which configured services are failing auth —
+    // sensitive infra metadata, gated loopback-only like every sibling key route.
+    use std::net::SocketAddr;
+    let app = test_app("keys_health_lan");
+    let lan: SocketAddr = "192.168.1.50:40000".parse().unwrap();
+    let mut req = get("/api/v1/keys/health");
+    req.extensions_mut().insert(axum::extract::ConnectInfo(lan));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 403, "keys/health must be loopback-only");
+}
+
+#[tokio::test]
+async fn keys_health_loopback_returns_rejected_array() {
+    use std::net::SocketAddr;
+    let app = test_app("keys_health_ok");
+    let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    let mut req = get("/api/v1/keys/health");
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(loopback));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    // A fresh test app has no scan-outcome history, so nothing is rejected — but
+    // the shape (count + rejected array) must always be present for the SPA.
+    assert!(
+        json["rejected"].as_array().is_some(),
+        "rejected must be an array"
+    );
+    assert_eq!(json["count"].as_u64(), Some(0));
+}
+
 // ── 17. Settings keys PUT (forbidden) ─────────────────────────────────────
 
 #[tokio::test]

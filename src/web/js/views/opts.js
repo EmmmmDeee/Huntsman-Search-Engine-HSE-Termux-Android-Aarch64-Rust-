@@ -12,9 +12,12 @@ export async function renderOpts(v){
   let pool = null;
   try { pool = await API.poolGet(); } catch { pool = null; }
   // Best-effort operator diagnostics (loopback-only; never block Settings).
-  let kstatus = null, kpatterns = null;
+  let kstatus = null, kpatterns = null, khealth = null;
   try { kstatus = await API.keysStatus(); } catch { kstatus = null; }
   try { kpatterns = await API.keysPatterns(); } catch { kpatterns = null; }
+  // Observed dead-key diagnosis (configured keys the upstream is rejecting).
+  // Best-effort + loopback-only, like the sibling diagnostics — never blocks Settings.
+  try { khealth = await API.keysHealth(); } catch { khealth = null; }
   // Cell-tower DB status is ungated but still best-effort — a corrupt/locked
   // DB file must never block the rest of Settings from rendering.
   let cells = null;
@@ -50,6 +53,7 @@ export async function renderOpts(v){
       </div>
     </div>
 
+    ${deadKeysPanel(khealth)}
     ${acquisitionPanel(data.acquisition)}
     ${poolPanel(pool, data.write_enabled)}
     ${keysDiagPanel(kstatus, kpatterns)}
@@ -585,6 +589,42 @@ function acquisitionPanel(list){
         <div style="overflow-x:auto">
           <table class="table table-condensed" style="margin-bottom:0">
             <thead><tr><th>Tier</th><th>Key</th><th>Where to get it (mostly free)</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>`;
+}
+/* Dead-key panel: CONFIGURED keys the upstream is actively REJECTING, observed
+   from real scan outcomes (GET /api/v1/keys/health). Shown ABOVE acquisition
+   because renewing a rejected key you already registered is more urgent than
+   getting a new one — a dead key silently wastes every query that touches it.
+   Empty/absent → renders nothing (no false alarm). */
+function deadKeysPanel(khealth){
+  const rejected = (khealth && Array.isArray(khealth.rejected)) ? khealth.rejected : [];
+  if (!rejected.length) return '';
+  const rows = rejected.map(k=>`
+    <tr>
+      <td><code>${esc(k.env_var || k.module || '?')}</code></td>
+      <td class="text-muted" style="font-size:12px">${esc(String(k.detail || '').slice(0, 200))}</td>
+      <td class="text-muted" style="font-size:12px">${k.hint ? linkifyHint(k.hint) : '<span class="text-muted">—</span>'}</td>
+    </tr>`).join('');
+  return `
+    <div class="panel panel-danger">
+      <div class="panel-heading"><b>⚠ Configured keys being rejected</b>
+        <span class="pull-right" style="font-size:12px">${rejected.length} dead</span>
+      </div>
+      <div class="panel-body">
+        <p class="text-muted" style="font-size:12px">
+          These keys ARE configured but the provider is rejecting them (bad,
+          expired, or malformed credential) — every scan that touches them wastes
+          the call and yields nothing. This is observed from real scan outcomes,
+          not a synthetic test, so it won't flag a working key. Renew each below
+          (edit it in <b>Module API keys</b> above), then re-run a scan to clear it.
+        </p>
+        <div style="overflow-x:auto">
+          <table class="table table-condensed" style="margin-bottom:0">
+            <thead><tr><th>Key</th><th>Upstream rejection</th><th>Renew at</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
