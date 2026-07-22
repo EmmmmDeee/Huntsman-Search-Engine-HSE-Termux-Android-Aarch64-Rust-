@@ -181,7 +181,10 @@ pub(crate) fn aggregate_scan_stats(scans: &[crate::core::scan::Scan]) -> ScanSta
     agg
 }
 
-pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn stats(
+    State(s): State<Arc<AppState>>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+) -> impl IntoResponse {
     let store = Arc::clone(&s.store);
     let scans = match tokio::task::spawn_blocking(move || store.list_scans(10_000)).await {
         Ok(Ok(scans)) => scans,
@@ -205,6 +208,16 @@ pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let oathnet = budget_block(crate::util::oathnet::budget_snapshot());
     let wigle = crate::modules::wigle::budget_snapshot();
     let wigle_account = crate::modules::wigle::account_status();
+    // The operator's own WiGLE account username is identity, so it is exposed
+    // only to a loopback peer — the same gate every key/account endpoint
+    // (`/keys/*`, settings) already applies. Under an operator-chosen LAN bind a
+    // non-loopback client still gets the full dashboard feed, minus this one
+    // field; `verified` / `last_polled_ts` are non-identifying status and stay.
+    let wigle_user = if peer.ip().is_loopback() {
+        wigle_account.user
+    } else {
+        None
+    };
     let wigle_block = json!({
         "geo":       budget_block(wigle.geo),
         "bssid":     budget_block(wigle.bssid),
@@ -218,7 +231,7 @@ pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
             // exposes no per-call usage endpoint, so quota counts aren't
             // reported here.
             "verified":           wigle_account.verified,
-            "user":               wigle_account.user,
+            "user":               wigle_user,
             "last_polled_ts":     wigle_account.last_polled_ts,
         },
     });

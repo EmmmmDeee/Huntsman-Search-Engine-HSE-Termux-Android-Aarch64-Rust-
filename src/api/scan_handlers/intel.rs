@@ -19,22 +19,30 @@ pub async fn scan_leads(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let scan = match s.store.get_scan(&id) {
-        Ok(Some(scan)) => scan,
-        Ok(None) => return not_found(),
-        Err(e) => return internal_error(&e),
-    };
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
+    // Fold the existence probe into the SAME blocking batch as the entity /
+    // relation loads. A synchronous SQLite read under the global connection
+    // mutex must never run on the async reactor — on the ~2-worker Termux
+    // runtime it can stall a worker and starve SSE keep-alives / `/health`.
+    // Every other `/scans/{id}/...` handler already reads off-reactor (via
+    // `scan_missing` or a batched `spawn_blocking`, as `scan_audit` does); this
+    // one had reimplemented the `get_scan` probe inline. `scan.options` is
+    // needed below, so it rides along in the same batch.
     let loaded = tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
+        let Some(scan) = store.get_scan(&id2)? else {
+            return Ok::<_, crate::core::error::Error>(None);
+        };
+        Ok(Some((
+            scan,
             store.entities_for_scan(&id2)?,
             store.relations_for_scan(&id2)?,
-        ))
+        )))
     })
     .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
+    let (scan, entities, relations) = match loaded {
+        Ok(Ok(Some(triple))) => triple,
+        Ok(Ok(None)) => return not_found(),
         Ok(Err(e)) => return internal_error(&e),
         Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
