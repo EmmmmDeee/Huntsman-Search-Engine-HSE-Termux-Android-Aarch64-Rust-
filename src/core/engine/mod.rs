@@ -149,6 +149,11 @@ struct ExpansionState<'a> {
     dispatched: &'a mut DispatchLog,
     relations: &'a mut Vec<Relation>,
     emitted_corr: &'a mut HashSet<String>,
+    /// Modules quarantined for this scan by capability-aware dispatch (empty
+    /// unless enabled on the comprehensive fan-out) — carried here so every
+    /// expansion round's `DispatchCx` borrows the one set computed at scan start,
+    /// without widening `run_expansion`'s argument list.
+    quarantined: &'a HashSet<String>,
 }
 
 impl StopReason {
@@ -429,6 +434,37 @@ impl ScanEngine {
         let opts = scan.options.clone();
         let started = Instant::now();
 
+        // ─── Capability-aware dispatch: quarantine provably-dead modules ────
+        // Skip modules whose parser has gone dead (persistent hard failures or
+        // silent zero-yield drift, from the cross-scan health log — see
+        // `util::scraper_health`) so the comprehensive fan-out spends its
+        // bounded budget on sources that still work. Gated so it only culls the
+        // AUTOMATIC sweep: a scan that pinned an explicit module allowlist, or
+        // `hse scan --full` (both clear `skip_dead_modules`), runs exactly what
+        // the operator asked for. Computed once per scan and borrowed by every
+        // round's `DispatchCx`. Self-recovering — a module drops out the instant
+        // it emits one healthy result. A health-read error never fails the scan
+        // (falls back to an empty set = no quarantine). On a fresh DB the event
+        // log is empty, so the set is empty and dispatch is unchanged.
+        let quarantined: HashSet<String> = if opts.skip_dead_modules && opts.modules.is_none() {
+            use crate::util::scraper_health::{
+                RECENT_EVENTS_WINDOW, aggregate_source_health, quarantined_modules,
+            };
+            self.store
+                .recent_module_outcome_events(RECENT_EVENTS_WINDOW)
+                .map(|evs| quarantined_modules(&aggregate_source_health(&evs)))
+                .unwrap_or_default()
+        } else {
+            HashSet::new()
+        };
+        if !quarantined.is_empty() {
+            info!(
+                scan_id = %scan.id,
+                quarantined = quarantined.len(),
+                "capability-aware dispatch: skipping modules with persistent drift this scan"
+            );
+        }
+
         // Wall-time watchdog. `budget_check` only enforces the wall budget
         // BETWEEN expansion candidates, so the seed round (all accepting
         // modules fan out at once) and any long in-flight concurrent batch
@@ -528,6 +564,7 @@ impl ScanEngine {
                 opts: &opts,
                 is_expansion: false,
                 seed_kind: target.kind,
+                quarantined: &quarantined,
             };
             // Seed dispatch has no parent to attribute lineage to, so the
             // new-uid buffer is write-only here and discarded.
@@ -571,6 +608,7 @@ impl ScanEngine {
                 dispatched: &mut *dispatched,
                 relations: &mut lineage,
                 emitted_corr: &mut emitted_corr,
+                quarantined: &quarantined,
             };
             let _ = self
                 .run_expansion(&scan.id, &target, &mut ctx, &opts, started, est)
@@ -593,6 +631,7 @@ impl ScanEngine {
                     &mut stats,
                     &mut *dispatched,
                     &mut lineage,
+                    &quarantined,
                 )
                 .await;
         }
@@ -1096,6 +1135,7 @@ impl ScanEngine {
         stats: &mut ModuleStats,
         dispatched: &mut DispatchLog,
         relations: &mut Vec<Relation>,
+        quarantined: &HashSet<String>,
     ) -> usize {
         const MAX_PROBES: usize = 8;
 
@@ -1180,6 +1220,7 @@ impl ScanEngine {
                     opts: &gap_opts,
                     is_expansion: true,
                     seed_kind: seed.kind,
+                    quarantined,
                 };
                 let mut dstate = DispatchState {
                     entity_map: &mut *entity_map,
@@ -1245,6 +1286,7 @@ impl ScanEngine {
             dispatched,
             relations,
             emitted_corr,
+            quarantined,
         } = state;
         // Reused across candidates to capture lineage: the UIDs a candidate's
         // dispatch genuinely inserted (never merged into an existing entity),
@@ -1660,6 +1702,7 @@ impl ScanEngine {
                         opts,
                         is_expansion: true,
                         seed_kind: seed.kind,
+                        quarantined,
                     };
                     let mut dstate = DispatchState {
                         entity_map: &mut *entity_map,
