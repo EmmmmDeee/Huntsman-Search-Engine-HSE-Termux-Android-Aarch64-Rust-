@@ -437,6 +437,7 @@ use super::combined::{
     looks_like_combined_search, parse_combined_search, parse_combined_search_json,
 };
 use super::csv::{looks_like_dehashed_csv, looks_like_hse_csv, parse_dehashed_csv, parse_hse_csv};
+use super::local::{collect_importable_files, import_local_dir_entities};
 use super::oathnet_report::{looks_like_oathnet_report, parse_oathnet_report};
 use super::stealer::{looks_like_stealerlogs, parse_stealerlogs};
 
@@ -793,6 +794,79 @@ async fn upload_dispatcher_imports_combined_search_json_not_zero_entities() {
         "expected the full multi-record entity set, got {}",
         ents.len()
     );
+}
+
+#[test]
+fn local_scrape_enumerates_deterministically_and_skips_noise() {
+    // The local-storage scrape must walk the tree in a fully deterministic order
+    // (sorted by path) and skip build/binary noise and hidden/heavy directories,
+    // so scraping the same installation always ingests the same files.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("a.json"), "{}").unwrap();
+    std::fs::write(root.join("b.txt"), "hi").unwrap();
+    std::fs::write(root.join("photo.png"), [0u8, 1, 2, 3]).unwrap(); // ext-skipped
+    std::fs::write(root.join("Cargo.toml"), "x").unwrap(); // name-skipped
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    std::fs::write(root.join("sub").join("c.csv"), "x").unwrap();
+    std::fs::create_dir_all(root.join("target")).unwrap();
+    std::fs::write(root.join("target").join("skip.json"), "{}").unwrap(); // dir-skipped
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(root.join(".git").join("skip.txt"), "x").unwrap(); // hidden dir-skipped
+
+    let files = collect_importable_files(root);
+    let names: Vec<String> = files
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    // Sorted by full path: a.json < b.txt < sub/c.csv; the rest are skipped.
+    assert_eq!(names, vec!["a.json", "b.txt", "c.csv"]);
+}
+
+#[tokio::test]
+async fn local_scrape_aggregates_recognized_files_across_the_tree() {
+    use crate::core::entity::EntityKind;
+    // Scraping a directory tree ingests every recognised artifact under it through
+    // the shared dispatcher and aggregates them into one entity set — the
+    // network-free "scrape local storage" capability. Files under skipped
+    // directories are never read.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("dossier.txt"), DOSSIER).unwrap();
+    std::fs::create_dir_all(root.join("scans")).unwrap();
+    std::fs::write(root.join("scans").join("s.json"), COMBINED_JSON).unwrap();
+    std::fs::write(root.join("t.csv"), HSE_CSV).unwrap();
+    // Noise that MUST NOT be ingested — a distinctive, non-placeholder marker in a
+    // skipped dir and a binary file.
+    std::fs::create_dir_all(root.join("target")).unwrap();
+    std::fs::write(
+        root.join("target").join("x.json"),
+        r#"{"modules":[{"results":[{"email":"skiptarget@gmail.com"}]}]}"#,
+    )
+    .unwrap();
+    std::fs::write(root.join("pic.png"), [0u8, 159, 146, 150]).unwrap();
+
+    let (ents, scanned, imported) = import_local_dir_entities(root, "s").await;
+    let has = |v: &str| {
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == v)
+    };
+    // The combined-search JSON nested under scans/ is ingested and aggregated.
+    assert!(
+        has("jordanavery@gmail.com"),
+        "combined-search JSON under scans/ must be ingested"
+    );
+    // The dossier + CSV also contribute; at least one email is present from them.
+    assert!(ents.iter().any(|e| e.kind == EntityKind::Email));
+    // The marker in target/ is never read — that directory is skipped.
+    assert!(
+        !has("skiptarget@gmail.com"),
+        "target/ must be skipped, not ingested"
+    );
+    // Exactly the three non-skipped candidates are scanned (dossier.txt,
+    // scans/s.json, t.csv); pic.png and target/ are excluded.
+    assert_eq!(scanned, 3, "only non-skipped candidates are scanned");
+    assert!(imported >= 2, "recognised files contributed entities");
 }
 
 #[test]
