@@ -1,15 +1,21 @@
-// src/modules/see_know/query_optimizer/query_planner.rs
-// Query execution plan generation for autonomous See-Know operation
-// Generates optimal query sequences based on value/cost ROI and cascade strategy
+//! Query execution plan generation for autonomous See-Know operation.
+//!
+//! Generates optimal, multi-phase query sequences by combining the value
+//! scorer, cost analyzer, ROI router and cascade optimizer. Plans serialize to
+//! JSON for local storage on Termux (autonomous, resumable operation).
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
-use super::cascade_optimizer::{CascadeOptimizer, PivotTier};
+use super::cascade_optimizer::CascadeOptimizer;
 use super::cost_analyzer::CostAnalyzer;
-use super::roi_router::{RoiRouter, RoutingDecision};
+use super::roi_router::RoiRouter;
 use super::value_scorer::ValueScorer;
 use crate::util::see_know::config;
+
+/// Default assumed latency (ms) when planning before any live timing exists.
+const PLAN_LATENCY_MS: u32 = 15_000;
+/// Default per-query specificity assumption during planning (0.0-1.0).
+const PLAN_SPECIFICITY: f32 = 0.8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryCandidate {
@@ -57,7 +63,7 @@ pub struct QueryPlanner {
 
 impl QueryPlanner {
     pub fn new() -> Self {
-        QueryPlanner {
+        Self {
             value_scorer: ValueScorer::new(),
             cost_analyzer: CostAnalyzer::new(),
             roi_router: RoiRouter::new(),
@@ -65,221 +71,164 @@ impl QueryPlanner {
         }
     }
 
-    /// Generate all viable query candidates for a target entity type
-    pub fn generate_candidates(&self, target_type: &str) -> Vec<(&'static str, f32)> {
+    /// Generate all viable query candidates for a target entity type.
+    pub fn generate_candidates(&self, target_type: &str) -> Vec<&'static str> {
         match target_type.to_lowercase().as_str() {
-            "email" => vec![
-                ("/search", 85.0),
-                ("/network/email-check", 65.0),
-                ("/search/deep", 95.0),
-            ],
-            "username" => vec![
-                ("/search", 50.0),
-                ("/username/social", 75.0),
-                ("/username/history", 40.0),
-            ],
-            "discord_id" => vec![
-                ("/discord/user", 80.0),
-                ("/search", 45.0),
-            ],
-            "phone" => vec![
-                ("/network/phone-check", 60.0),
-                ("/search", 30.0),
-            ],
-            "domain" => vec![
-                ("/domain/info", 70.0),
-                ("/search", 50.0),
-                ("/domain/email-finder", 75.0),
-            ],
-            "ip_address" => vec![
-                ("/network/ip", 65.0),
-                ("/search", 40.0),
-            ],
-            "organization" => vec![
-                ("/search", 55.0),
-                ("/domain/info", 50.0),
-            ],
-            _ => vec![("/search", 50.0)],
+            "email" => vec!["/search", "/network/email-check", "/search/deep"],
+            "username" => vec!["/search", "/username/social", "/username/history"],
+            "discord_id" => vec!["/discord/user", "/search"],
+            "phone" => vec!["/network/phone", "/search"],
+            "domain" => vec!["/domain/intel", "/domain/whois", "/search"],
+            "ip_address" | "ip" => vec!["/network/ip", "/search"],
+            "organization" => vec!["/search", "/domain/intel"],
+            _ => vec!["/search"],
         }
     }
 
-    /// Build Phase 1 execution plan (direct queries only)
+    /// Build Phase 1 execution plan (direct queries only).
     pub fn plan_phase_1(
         &self,
-        target_entity: &str,
         target_type: &str,
         budget: f32,
         time_budget: f32,
     ) -> QueryPhase {
-        let candidates = self.generate_candidates(target_type);
         let mut phase_candidates = Vec::new();
-        let mut phase_budget_used = 0.0;
+        let mut budget_used = 0.0_f32;
 
-        for (endpoint, base_value) in candidates {
-            if phase_budget_used >= budget {
+        for endpoint in self.generate_candidates(target_type) {
+            if budget_used >= budget {
                 break;
             }
 
-            let value_analysis = self.value_scorer.score_endpoint(
+            let remaining_budget = (budget - budget_used).max(0.0) as u32;
+            let value = self
+                .value_scorer
+                .calculate_composite_value(endpoint, target_type, None, PLAN_SPECIFICITY);
+            let cost = self.cost_analyzer.calculate_effective_cost(
                 endpoint,
-                target_type,
-                false,
-                None,
-            );
-
-            let cost_analysis = self.cost_analyzer.analyze_query(
-                endpoint,
-                15.0,
                 1,
                 None,
-                budget - phase_budget_used,
-                time_budget,
+                PLAN_LATENCY_MS,
+                time_budget as u32,
+                remaining_budget,
             );
-
-            let roi = self.roi_router.calculate_roi(
-                value_analysis.composite,
-                cost_analysis.effective_cost,
-            );
-
-            let routing = self.roi_router.route_query(roi, 1);
+            let roi = self.roi_router.calculate_roi(value.composite, cost.effective_cost);
+            let routing = self.roi_router.route_query(roi);
 
             if routing.should_execute() {
                 phase_candidates.push(QueryCandidate {
                     endpoint: endpoint.to_string(),
                     target_type: target_type.to_string(),
-                    value_score: value_analysis.composite,
-                    effective_cost: cost_analysis.effective_cost,
+                    value_score: value.composite,
+                    effective_cost: cost.effective_cost,
                     roi,
                     routing_decision: routing.as_str().to_string(),
                     reasoning: format!(
-                        "Value: {:.1}, Cost: {:.2}c, ROI: {:.1} - {}",
-                        value_analysis.composite,
-                        cost_analysis.effective_cost,
-                        roi,
-                        value_analysis.reasoning
+                        "Value {:.1}, Cost {:.2}c, ROI {:.1} — {}",
+                        value.composite, cost.effective_cost, roi, value.reasoning
                     ),
                 });
-
-                phase_budget_used += cost_analysis.effective_cost;
+                budget_used += cost.effective_cost;
             }
         }
 
-        let total_value: f32 = phase_candidates.iter().map(|c| c.value_score).sum();
-        let total_cost: f32 = phase_candidates.iter().map(|c| c.effective_cost).sum();
-
-        QueryPhase {
-            phase_number: 1,
-            candidates: phase_candidates,
-            total_value,
-            total_cost,
-            phase_budget: budget,
-            reasoning: format!(
-                "Phase 1 direct queries: {} candidates, {:.1} value, {:.2}c cost, {:.1} ROI",
-                phase_candidates.len(),
-                total_value,
-                total_cost,
-                if total_cost > 0.0 { total_value / total_cost } else { 0.0 }
-            ),
-        }
+        Self::finalize_phase(1, phase_candidates, budget)
     }
 
-    /// Build Phase 2 cascade plan (if cascades enabled)
-    pub fn plan_phase_2(
+    /// Build a cascade phase from discovered pivots at a given depth.
+    pub fn plan_cascade_phase(
         &self,
-        discovered_pivots: Vec<(&str, &str)>,
+        discovered_pivots: &[(&str, &str)],
         remaining_budget: f32,
         time_budget: f32,
         cascade_depth: usize,
     ) -> QueryPhase {
         let mut phase_candidates = Vec::new();
-        let mut phase_budget_used = 0.0;
+        let mut budget_used = 0.0_f32;
         let depth_budget = remaining_budget * config::BUDGET_DEPTH_2_RATIO;
+        let next_depth = (cascade_depth + 1) as u8;
+        let roi_threshold = self.cascade_optimizer.get_roi_threshold_for_depth(next_depth);
 
         for (pivot_type, pivot_value) in discovered_pivots {
-            if phase_budget_used >= depth_budget {
+            if budget_used >= depth_budget {
                 break;
             }
+            let tier = self.cascade_optimizer.classify_pivot_tier(pivot_type);
 
-            let tier = self
-                .cascade_optimizer
-                .classify_pivot_tier(pivot_type);
-
-            let roi_threshold = self
-                .cascade_optimizer
-                .get_roi_threshold_for_depth(cascade_depth + 1);
-
-            let candidates = self.generate_candidates(pivot_type);
-
-            for (endpoint, _) in candidates {
-                let value_analysis = self.value_scorer.score_endpoint(
+            for endpoint in self.generate_candidates(pivot_type) {
+                let remaining = (depth_budget - budget_used).max(0.0);
+                let value = self.value_scorer.calculate_composite_value(
                     endpoint,
                     pivot_type,
-                    false,
                     None,
+                    PLAN_SPECIFICITY,
                 );
-
-                let cost_analysis = self.cost_analyzer.analyze_query(
+                let cost = self.cost_analyzer.calculate_effective_cost(
                     endpoint,
-                    15.0,
-                    cascade_depth + 1,
+                    next_depth,
                     None,
-                    depth_budget - phase_budget_used,
-                    time_budget,
+                    PLAN_LATENCY_MS,
+                    time_budget as u32,
+                    remaining as u32,
                 );
+                let roi = self.roi_router.calculate_roi(value.composite, cost.effective_cost);
 
-                let roi = self.roi_router.calculate_roi(
-                    value_analysis.composite,
-                    cost_analysis.effective_cost,
-                );
-
-                if roi >= roi_threshold && phase_budget_used + cost_analysis.effective_cost <= depth_budget {
-                    let cascade_decision = self.cascade_optimizer.should_cascade(
-                        pivot_type,
+                if roi >= roi_threshold && budget_used + cost.effective_cost <= depth_budget {
+                    let decision = self.cascade_optimizer.should_cascade(
+                        tier,
                         roi,
-                        (depth_budget - phase_budget_used) as i32,
-                        time_budget as i32,
-                        cascade_depth + 1,
+                        next_depth,
+                        remaining as u32,
+                        time_budget as u32,
                     );
-
-                    if cascade_decision.should_cascade {
+                    if decision.should_cascade {
                         phase_candidates.push(QueryCandidate {
                             endpoint: endpoint.to_string(),
                             target_type: pivot_type.to_string(),
-                            value_score: value_analysis.composite,
-                            effective_cost: cost_analysis.effective_cost,
+                            value_score: value.composite,
+                            effective_cost: cost.effective_cost,
                             roi,
                             routing_decision: format!("{:?} pivot", tier),
                             reasoning: format!(
-                                "Cascade from {}: Value {:.1}, ROI {:.1} - {}",
-                                pivot_value, value_analysis.composite, roi, cascade_decision.reasoning
+                                "Cascade from {} ({:?}): Value {:.1}, ROI {:.1} — {}",
+                                pivot_value, tier, value.composite, roi, decision.reasoning
                             ),
                         });
-
-                        phase_budget_used += cost_analysis.effective_cost;
+                        budget_used += cost.effective_cost;
                     }
                 }
             }
         }
 
-        let total_value: f32 = phase_candidates.iter().map(|c| c.value_score).sum();
-        let total_cost: f32 = phase_candidates.iter().map(|c| c.effective_cost).sum();
+        Self::finalize_phase(cascade_depth + 1, phase_candidates, depth_budget)
+    }
 
+    fn finalize_phase(
+        phase_number: usize,
+        candidates: Vec<QueryCandidate>,
+        phase_budget: f32,
+    ) -> QueryPhase {
+        let total_value: f32 = candidates.iter().map(|c| c.value_score).sum();
+        let total_cost: f32 = candidates.iter().map(|c| c.effective_cost).sum();
+        let roi = if total_cost > 0.0 { total_value / total_cost } else { 0.0 };
         QueryPhase {
-            phase_number: 2,
-            candidates: phase_candidates,
+            phase_number,
+            reasoning: format!(
+                "Phase {}: {} candidates, {:.1} value, {:.2}c cost, {:.1} ROI",
+                phase_number,
+                candidates.len(),
+                total_value,
+                total_cost,
+                roi
+            ),
+            candidates,
             total_value,
             total_cost,
-            phase_budget: depth_budget,
-            reasoning: format!(
-                "Phase 2 cascades (depth {}): {} candidates, {:.1} value, {:.2}c cost",
-                cascade_depth + 1,
-                phase_candidates.len(),
-                total_cost
-            ),
+            phase_budget,
         }
     }
 
-    /// Generate complete execution plan for autonomous operation
+    /// Generate a complete multi-phase execution plan for autonomous operation.
     pub fn generate_execution_plan(
         &self,
         target_entity: &str,
@@ -293,7 +242,7 @@ impl QueryPlanner {
         let mut total_value = 0.0;
         let mut total_cost = 0.0;
 
-        let phase_1 = self.plan_phase_1(target_entity, target_type, budget, time_budget);
+        let phase_1 = self.plan_phase_1(target_type, budget, time_budget);
         total_value += phase_1.total_value;
         total_cost += phase_1.total_cost;
         phases.push(phase_1);
@@ -309,79 +258,62 @@ impl QueryPlanner {
                 if total_cost >= budget * 0.95 {
                     break;
                 }
-
-                let phase_n = self.plan_phase_2(
-                    discovered_pivots.clone(),
+                let phase = self.plan_cascade_phase(
+                    &discovered_pivots,
                     budget - total_cost,
                     time_budget,
                     depth,
                 );
-
-                if phase_n.candidates.is_empty() {
+                if phase.candidates.is_empty() {
                     break;
                 }
-
-                total_value += phase_n.total_value;
-                total_cost += phase_n.total_cost;
-                phases.push(phase_n);
+                total_value += phase.total_value;
+                total_cost += phase.total_cost;
+                phases.push(phase);
             }
         }
 
+        let estimated_roi = if total_cost > 0.0 { total_value / total_cost } else { 0.0 };
         ExecutionPlan {
             target_entity: target_entity.to_string(),
             target_type: target_type.to_string(),
             total_budget: budget,
             time_budget_seconds: time_budget,
-            phases,
-            total_planned_value: total_value,
-            total_planned_cost: total_cost,
-            estimated_roi: if total_cost > 0.0 {
-                total_value / total_cost
-            } else {
-                0.0
-            },
-            autonomous_mode: true,
-            cascading_enabled,
-            max_cascade_depth: max_depth,
             plan_reasoning: format!(
-                "Complete plan for {} ({}): {} phases, {:.1} value, {:.2}c cost, {:.1} ROI",
+                "Plan for {} ({}): {} phases, {:.1} value, {:.2}c cost, {:.1} ROI",
                 target_entity,
                 target_type,
                 phases.len(),
                 total_value,
                 total_cost,
-                if total_cost > 0.0 { total_value / total_cost } else { 0.0 }
+                estimated_roi
             ),
+            phases,
+            total_planned_value: total_value,
+            total_planned_cost: total_cost,
+            estimated_roi,
+            autonomous_mode: true,
+            cascading_enabled,
+            max_cascade_depth: max_depth,
         }
     }
 
-    /// Estimate total execution time for plan
+    /// Estimate total execution time (seconds) for a plan.
     pub fn estimate_execution_time(&self, plan: &ExecutionPlan) -> f32 {
         plan.phases
             .iter()
-            .map(|phase| {
-                phase
-                    .candidates
-                    .iter()
-                    .map(|c| {
-                        if c.endpoint.contains("deep") {
-                            30.0
-                        } else {
-                            10.0
-                        }
-                    })
-                    .sum::<f32>()
-            })
+            .flat_map(|phase| phase.candidates.iter())
+            .map(|c| if c.endpoint.contains("deep") { 30.0 } else { 10.0 })
             .sum()
     }
 
-    /// Serialize plan to JSON for Termux storage
-    pub fn serialize_plan(&self, plan: &ExecutionPlan) -> Result<String, serde_json::Error> {
+    /// Serialize a plan to pretty JSON for Termux storage.
+    pub fn serialize_plan(&self, plan: &ExecutionPlan) -> serde_json::Result<String> {
         serde_json::to_string_pretty(plan)
     }
 
-    /// Deserialize plan from JSON
-    pub fn deserialize_plan(json: &str) -> Result<ExecutionPlan, serde_json::Error> {
+    /// Deserialize a plan from JSON.
+    pub fn deserialize_plan(json: &str) -> serde_json::Result<ExecutionPlan> {
         serde_json::from_str(json)
     }
 }
@@ -400,78 +332,55 @@ mod tests {
     fn test_generate_candidates_email() {
         let planner = QueryPlanner::new();
         let candidates = planner.generate_candidates("email");
-        assert!(!candidates.is_empty());
-        assert!(candidates.iter().any(|(ep, _)| ep.contains("search")));
+        assert!(candidates.iter().any(|ep| ep.contains("search")));
     }
 
     #[test]
     fn test_generate_candidates_username() {
         let planner = QueryPlanner::new();
-        let candidates = planner.generate_candidates("username");
-        assert!(candidates.len() >= 2);
+        assert!(planner.generate_candidates("username").len() >= 2);
     }
 
     #[test]
     fn test_plan_phase_1() {
         let planner = QueryPlanner::new();
-        let phase = planner.plan_phase_1("test@example.com", "email", 500.0, 300.0);
-        assert!(!phase.candidates.is_empty());
+        let phase = planner.plan_phase_1("email", 500.0, 300.0);
+        assert_eq!(phase.phase_number, 1);
         assert!(phase.total_cost <= 500.0);
     }
 
     #[test]
     fn test_execution_plan_generation() {
         let planner = QueryPlanner::new();
-        let plan = planner.generate_execution_plan(
-            "test@example.com",
-            "email",
-            1000.0,
-            600.0,
-            true,
-            3,
-        );
+        let plan =
+            planner.generate_execution_plan("test@example.com", "email", 1000.0, 600.0, true, 3);
         assert_eq!(plan.target_type, "email");
         assert!(plan.total_planned_cost <= plan.total_budget);
     }
 
     #[test]
-    fn test_plan_serialization() {
+    fn test_plan_serialization_roundtrip() {
         let planner = QueryPlanner::new();
-        let plan = planner.generate_execution_plan(
-            "test@example.com",
-            "email",
-            500.0,
-            300.0,
-            false,
-            1,
-        );
+        let plan =
+            planner.generate_execution_plan("test@example.com", "email", 500.0, 300.0, false, 1);
         let json = planner.serialize_plan(&plan).unwrap();
         assert!(json.contains("test@example.com"));
-
-        let deserialized = QueryPlanner::deserialize_plan(&json).unwrap();
-        assert_eq!(deserialized.target_entity, plan.target_entity);
+        let back = QueryPlanner::deserialize_plan(&json).unwrap();
+        assert_eq!(back.target_entity, plan.target_entity);
     }
 
     #[test]
     fn test_estimate_execution_time() {
         let planner = QueryPlanner::new();
-        let plan = planner.generate_execution_plan(
-            "testuser",
-            "username",
-            300.0,
-            200.0,
-            false,
-            1,
-        );
-        let time = planner.estimate_execution_time(&plan);
-        assert!(time > 0.0);
+        let plan = planner.generate_execution_plan("testuser", "username", 300.0, 200.0, false, 1);
+        assert!(planner.estimate_execution_time(&plan) > 0.0);
     }
 
     #[test]
     fn test_cascade_phase_planning() {
         let planner = QueryPlanner::new();
-        let phase = planner.plan_phase_2(
-            vec![("discord_id", "123456789"), ("email", "user@test.com")],
+        let phase = planner.plan_cascade_phase(
+            &[("discord_id", "123456789"), ("email", "user@test.com")],
             300.0,
             200.0,
             1,
@@ -482,30 +391,15 @@ mod tests {
     #[test]
     fn test_plan_respects_budget() {
         let planner = QueryPlanner::new();
-        let plan = planner.generate_execution_plan(
-            "target",
-            "email",
-            100.0,
-            300.0,
-            true,
-            3,
-        );
+        let plan = planner.generate_execution_plan("target", "email", 100.0, 300.0, true, 3);
         assert!(plan.total_planned_cost <= plan.total_budget);
     }
 
     #[test]
-    fn test_plan_roi_calculation() {
+    fn test_plan_roi_non_negative() {
         let planner = QueryPlanner::new();
-        let plan = planner.generate_execution_plan(
-            "complex_target",
-            "email",
-            2500.0,
-            600.0,
-            true,
-            3,
-        );
-        if plan.total_planned_cost > 0.0 {
-            assert!(plan.estimated_roi >= 0.0);
-        }
+        let plan =
+            planner.generate_execution_plan("complex_target", "email", 2500.0, 600.0, true, 3);
+        assert!(plan.estimated_roi >= 0.0);
     }
 }

@@ -74,6 +74,7 @@ use crate::util::target_match::TargetMatch;
 mod endpoints;
 mod extract;
 mod pivots;
+pub mod query_optimizer;
 
 use endpoints::{dispatch_plan, effective_plan};
 use extract::{extract_entities, extract_geo_entities};

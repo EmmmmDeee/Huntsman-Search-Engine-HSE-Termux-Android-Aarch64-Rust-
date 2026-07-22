@@ -94,7 +94,7 @@ impl RoiRouter {
         let mut execute_if_time = Vec::new();
         let mut execute_if_requested = Vec::new();
         
-        for (endpoint, _, _, roi, decision) in prioritized {
+        for (endpoint, _, _, _roi, decision) in prioritized {
             match decision {
                 RoutingDecision::ExecuteFirst => execute_first.push(endpoint),
                 RoutingDecision::ExecuteIfBudget => execute_if_budget.push(endpoint),
