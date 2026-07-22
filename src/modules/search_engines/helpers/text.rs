@@ -37,7 +37,22 @@ pub(in crate::modules::search_engines) fn extract_anchor_text(
     // occurrence is always at least as trustworthy as an earlier one, and the
     // overwhelmingly common single-occurrence case (href appears exactly
     // once) is unaffected — the loop still finds and returns that one match.
+    // Two accumulators. `best` is the last-non-empty whole-anchor text (the
+    // engine-agnostic fallback that already served Bing/Startpage correctly).
+    // `titled` is the FIRST occurrence that is unambiguously the *title* rather
+    // than the snippet/chrome — set from a title node inside the anchor (Brave)
+    // or a title-class anchor tag (DDG). When present it wins, because the
+    // last-non-empty heuristic backfires on two real captures:
+    //   * DuckDuckGo cards emit result__a (title) / result__url / result__snippet
+    //     for one href, so "last" grabbed the SNIPPET as the title.
+    //   * Brave wraps the whole card header (site-name + display-URL + breadcrumb
+    //     + the title node) in one anchor, so the whole-anchor strip concatenated
+    //     "YouTube youtube.com › @kylo4k Kylo - YouTube" instead of "Kylo -
+    //     YouTube".
+    // A title-less engine leaves `titled` None and keeps the `best` fallback,
+    // so nothing regresses.
     let mut best = String::new();
+    let mut titled: Option<String> = None;
     let mut search_from = 0usize;
     while search_from < html.len() {
         let pos_dq = html[search_from..]
@@ -63,15 +78,106 @@ pub(in crate::modules::search_engines) fn extract_anchor_text(
             break;
         };
         let end = gt + e;
-        let text = strip_tags(&html[gt..end], max_len);
-        if !text.trim().is_empty() {
+        let inner = &html[gt..end];
+        let text = strip_tags(inner, max_len);
+        let has_text = !text.trim().is_empty();
+
+        if titled.is_none() {
+            // Brave-style: a dedicated title node inside the anchor — extract
+            // ONLY it, dropping the surrounding chrome the anchor also wraps.
+            if let Some(t) = title_node_text(inner, max_len) {
+                titled = Some(t);
+            } else if has_text {
+                // DDG-style: the anchor tag itself is the title link (result__a),
+                // so its whole visible text is the clean title.
+                let tag_start = html[..pos].rfind('<').unwrap_or(pos);
+                if is_title_anchor(&html[tag_start..gt]) {
+                    titled = Some(text.clone());
+                }
+            }
+        }
+        if has_text {
             best = text;
         }
         // `gt > pos` always (`find('>')` returns `g >= 0`), so this guarantees
         // forward progress and the loop terminates.
         search_from = gt;
     }
-    best
+    titled.unwrap_or(best)
+}
+
+/// The quoted value of an opening tag's `class` attribute (`class="a b c"` →
+/// `a b c`), or `None`. Matches the `class=` attribute specifically so a
+/// separate `title="…"` HTML attribute (Brave puts one on its title `<div>`)
+/// can't be mistaken for a title *class*. Pure.
+fn class_value(open_tag: &str) -> Option<&str> {
+    for q in ['"', '\''] {
+        let needle = format!("class={q}");
+        if let Some(p) = open_tag.find(&needle) {
+            let rest = &open_tag[p + needle.len()..];
+            if let Some(end) = rest.find(q) {
+                return Some(&rest[..end]);
+            }
+        }
+    }
+    None
+}
+
+/// True if `open_tag` (a full `<a …>` opening tag) is a search engine's title
+/// *link* — its class contains `result__a` (DuckDuckGo) or `result-title`
+/// (Startpage). Such an anchor's whole visible text IS the title.
+fn is_title_anchor(open_tag: &str) -> bool {
+    class_value(open_tag).is_some_and(|c| {
+        find_ascii_ci(c, "result__a").is_some() || find_ascii_ci(c, "result-title").is_some()
+    })
+}
+
+/// If `inner` (an anchor's inner HTML) contains a dedicated title node — a
+/// leaf tag whose `class` contains `title` (Brave `title search-snippet-title`,
+/// Startpage `wgl-title`) or a heading `<h1..h4>` — return just that node's
+/// stripped text. Isolates the real title from surrounding breadcrumb/site-name
+/// chrome the whole anchor may also wrap. `None` when no such node exists, so
+/// the caller keeps its whole-anchor fallback. Bing is unaffected: its title
+/// `<h2>` wraps the anchor (it is not *inside* the anchor), so nothing here
+/// matches and the fallback still yields Bing's correct title. Pure.
+fn title_node_text(inner: &str, max_len: usize) -> Option<String> {
+    let mut i = 0usize;
+    while let Some(rel) = inner[i..].find('<') {
+        let lt = i + rel;
+        let after = &inner[lt..];
+        if after.starts_with("</") {
+            i = lt + 2;
+            continue;
+        }
+        let Some(gt_rel) = after.find('>') else {
+            break;
+        };
+        let open_tag = &after[..gt_rel]; // "<div class=…" (no '>')
+        let content_start = lt + gt_rel + 1;
+        // Tag name: between '<' and the first whitespace / '/'.
+        let name_end = open_tag[1..]
+            .find(|c: char| c.is_whitespace() || c == '/')
+            .map_or(open_tag.len(), |p| 1 + p);
+        let name = &open_tag[1..name_end];
+        let is_heading = matches!(
+            name.to_ascii_lowercase().as_str(),
+            "h1" | "h2" | "h3" | "h4"
+        );
+        let is_title_class =
+            class_value(open_tag).is_some_and(|c| find_ascii_ci(c, "title").is_some());
+        if is_heading || is_title_class {
+            // Leaf node: text up to the next '<' (Brave/Startpage title nodes
+            // are leaves). `strip_tags` also defangs any stray inline markup.
+            let content = &inner[content_start..];
+            let text_end = content.find('<').map_or(inner.len(), |p| content_start + p);
+            let text = strip_tags(&inner[content_start..text_end], max_len);
+            if !text.trim().is_empty() {
+                return Some(text);
+            }
+        }
+        i = content_start;
+    }
+    None
 }
 
 pub(in crate::modules::search_engines) fn extract_surrounding_text(
