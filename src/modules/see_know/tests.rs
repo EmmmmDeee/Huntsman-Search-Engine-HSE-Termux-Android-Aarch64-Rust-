@@ -1234,6 +1234,60 @@ fn extract_entities(
         );
     }
 
+    // ── Email cascade detection (ROI-optimized multi-hop pivot) ──────────
+
+    #[test]
+    fn discover_high_confidence_emails_filters_administrative_mailboxes() {
+        // Cascade detection re-queries discovered emails through email-check to
+        // find new service registrations. Administrative sinks (admin@, info@,
+        // noreply@, etc.) and wildcard patterns are low-yield and would waste
+        // budget — they must be filtered out before dispatch.
+        let mut result = ModuleResult::new();
+        result.push(Entity::new(EntityKind::Email, "jordan.meyer@example.com", 0.9, "t"));
+        result.push(Entity::new(EntityKind::Email, "admin@example.com", 0.9, "t"));
+        result.push(Entity::new(EntityKind::Email, "noreply@example.com", 0.9, "t"));
+        result.push(Entity::new(EntityKind::Email, "info@example.com", 0.9, "t"));
+        result.push(Entity::new(EntityKind::Email, "support@example.com", 0.9, "t"));
+        result.push(Entity::new(EntityKind::Email, "general@example.com", 0.9, "t"));
+        result.push(Entity::new(EntityKind::Email, "*@example.com", 0.9, "t"));
+        result.push(Entity::new(EntityKind::Username, "jmeyer", 0.9, "t"));
+
+        let emails = discover_high_confidence_emails(&result);
+        assert_eq!(
+            emails,
+            vec!["jordan.meyer@example.com"],
+            "only the personal, non-administrative email should survive filtering"
+        );
+    }
+
+    #[test]
+    fn discover_high_confidence_emails_dedupes_case_insensitively() {
+        // Two records of the same email in different case must collapse to one
+        // cascade query — re-querying the same identifier wastes a credit.
+        let mut result = ModuleResult::new();
+        result.push(Entity::new(EntityKind::Email, "Jordan.Meyer@Example.com", 0.9, "t"));
+        result.push(Entity::new(EntityKind::Email, "jordan.meyer@example.com", 0.9, "t"));
+
+        let emails = discover_high_confidence_emails(&result);
+        assert_eq!(
+            emails.len(),
+            1,
+            "case-variant duplicates must collapse to a single cascade query"
+        );
+        assert_eq!(emails[0], "jordan.meyer@example.com");
+    }
+
+    #[tokio::test]
+    async fn dispatch_email_cascade_checks_is_noop_on_empty_input() {
+        // An empty email list converges immediately — no futures, no attempts,
+        // no HTTP. Mirrors the discord/steam dispatchers' empty-input guard so
+        // the cascade pass can never spin up work with nothing to resolve.
+        crate::util::see_know::reset_budget();
+        let (results, attempted) = dispatch_email_cascade_checks("key", Vec::new()).await;
+        assert!(results.is_empty());
+        assert!(attempted.is_empty());
+    }
+
     // ── /search/deep fallback (T-current: the largest documented,
     //    previously-unwired SeekNow coverage gap) ────────────────────────
 

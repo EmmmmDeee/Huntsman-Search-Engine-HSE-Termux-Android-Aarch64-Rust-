@@ -268,12 +268,12 @@ use super::*;
         assert_eq!(cov.covered[1].technique.id, "T1596.002");
         assert_eq!(cov.covered[1].entity_count, 5);
         // Covered + uncovered exactly partitions the whole catalogue.
-        assert_eq!(cov.covered.len() + cov.uncovered.len(), RECONNAISSANCE.len());
+        assert_eq!(cov.covered.len() + cov.uncovered.len(), reconnaissance().len());
         assert!(cov.uncovered.iter().any(|t| t.id == "T1598"));
         assert!(!cov.uncovered.iter().any(|t| t.id == "T1596.002"));
         // Fraction matches the covered count.
         assert!(
-            (cov.coverage_fraction - 2.0 / RECONNAISSANCE.len() as f64).abs() < 1e-9,
+            (cov.coverage_fraction - 2.0 / reconnaissance().len() as f64).abs() < 1e-9,
             "fraction = {}",
             cov.coverage_fraction
         );
@@ -283,7 +283,7 @@ use super::*;
     fn empty_coverage_is_all_gaps() {
         let cov = coverage(&std::collections::BTreeMap::new());
         assert!(cov.covered.is_empty());
-        assert_eq!(cov.uncovered.len(), RECONNAISSANCE.len());
+        assert_eq!(cov.uncovered.len(), reconnaissance().len());
         assert!((cov.coverage_fraction - 0.0).abs() < 1e-9);
     }
 
@@ -297,7 +297,7 @@ use super::*;
         assert_eq!(layer["versions"]["layer"], "4.5");
         // Exactly one technique per catalogued id (covered + gaps = whole tactic).
         let techs = layer["techniques"].as_array().unwrap();
-        assert_eq!(techs.len(), RECONNAISSANCE.len());
+        assert_eq!(techs.len(), reconnaissance().len());
         // The exercised technique is enabled and scored by its entity count.
         let whois = techs
             .iter()

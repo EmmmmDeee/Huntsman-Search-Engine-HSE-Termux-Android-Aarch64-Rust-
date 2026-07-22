@@ -4366,60 +4366,60 @@ pub fn techniques_for_entity_kind(kind: &EntityKind) -> &'static [&'static str] 
     match kind {
         // People and identifiers
         EntityKind::Person => &[
-            "T1589",       // Gather Victim Identity Information
-            "T1589.003",   // Employee Names
-            "T1591",       // Gather Victim Org Information
+            "T1589",     // Gather Victim Identity Information
+            "T1589.003", // Employee Names
+            "T1591",     // Gather Victim Org Information
         ],
-        EntityKind::Email => &["T1589.002"],     // Email Addresses
-        EntityKind::Phone => &["T1589"],         // Gather Victim Identity Information
+        EntityKind::Email => &["T1589.002"], // Email Addresses
+        EntityKind::Phone => &["T1589"],     // Gather Victim Identity Information
         EntityKind::Username => &[
-            "T1593.001",   // Social Media
-            "T1589.003",   // Employee Names
+            "T1593.001", // Social Media
+            "T1589.003", // Employee Names
         ],
 
         // Credentials
         EntityKind::Credential | EntityKind::ApiKey | EntityKind::Password => {
-            &["T1589.001"]  // Credentials
+            &["T1589.001"] // Credentials
         }
 
         // Network infrastructure
-        EntityKind::IpAddress => &["T1590.005"],   // IP Addresses
+        EntityKind::IpAddress => &["T1590.005"], // IP Addresses
         EntityKind::Domain => &[
-            "T1590.001",   // Domain Properties
-            "T1596.002",   // WHOIS
-            "T1593.002",   // Search Engines
-            "T1594",       // Search Victim-Owned Websites
+            "T1590.001", // Domain Properties
+            "T1596.002", // WHOIS
+            "T1593.002", // Search Engines
+            "T1594",     // Search Victim-Owned Websites
         ],
-        EntityKind::Url => &["T1594"],             // Search Victim-Owned Websites
-        EntityKind::Asn => &["T1590.004"],         // Network Topology
+        EntityKind::Url => &["T1594"], // Search Victim-Owned Websites
+        EntityKind::Asn => &["T1590.004"], // Network Topology
         EntityKind::Cidr => &[
-            "T1590.001",   // Domain Properties
-            "T1590.004",   // Network Topology
+            "T1590.001", // Domain Properties
+            "T1590.004", // Network Topology
         ],
 
         // Physical / Geospatial
-        EntityKind::Address | EntityKind::Coordinates => &["T1591.001"],  // Determine Physical Locations
+        EntityKind::Address | EntityKind::Coordinates => &["T1591.001"], // Determine Physical Locations
 
         // Organisation
-        EntityKind::Organisation => &["T1591"],     // Gather Victim Org Information
+        EntityKind::Organisation => &["T1591"], // Gather Victim Org Information
         EntityKind::AbnAcn => &[
-            "T1591.002",   // Business Relationships
-            "T1591.004",   // Identify Roles
+            "T1591.002", // Business Relationships
+            "T1591.004", // Identify Roles
         ],
 
         // Host / Device information
         EntityKind::MacAddress | EntityKind::DeviceId | EntityKind::Ssid => {
-            &["T1592"]     // Gather Victim Host Information
+            &["T1592"] // Gather Victim Host Information
         }
 
         // Web analytics and tracking
         EntityKind::TrackingId => &[
-            "T1593.002",   // Search Engines
-            "T1591",       // Gather Victim Org Information
+            "T1593.002", // Search Engines
+            "T1591",     // Gather Victim Org Information
         ],
 
         // Cryptocurrency
-        EntityKind::CryptoAddress => &["T1589"],   // Gather Victim Identity Information
+        EntityKind::CryptoAddress => &["T1589"], // Gather Victim Identity Information
 
         // Uncategorised or no direct mapping
         EntityKind::Other(_) => &[],
@@ -4464,7 +4464,7 @@ pub struct Coverage {
     /// Catalogued TA0043 techniques the scan performed no collection for — the
     /// honest gaps, straight from [`uncovered`].
     pub uncovered: Vec<&'static Technique>,
-    /// `covered.len() / RECONNAISSANCE.len()`, in `0.0..=1.0`.
+    /// `covered.len() / reconnaissance().len()`, in `0.0..=1.0`.
     pub coverage_fraction: f64,
 }
 
@@ -4475,21 +4475,22 @@ pub struct Coverage {
 /// the rollup is deterministic regardless of entity iteration order.
 #[must_use]
 pub fn coverage(exercised: &std::collections::BTreeMap<String, usize>) -> Coverage {
-    let covered: Vec<CoveredTechnique> = RECONNAISSANCE
+    let recon = reconnaissance();
+    let covered: Vec<CoveredTechnique> = recon
         .iter()
         .filter_map(|t| {
             exercised.get(t.id).map(|&entity_count| CoveredTechnique {
-                technique: *t,
+                technique: **t,
                 entity_count,
             })
         })
         .collect();
     let gaps = uncovered(|id| exercised.contains_key(id));
     #[allow(clippy::cast_precision_loss)]
-    let coverage_fraction = if RECONNAISSANCE.is_empty() {
+    let coverage_fraction = if recon.is_empty() {
         0.0
     } else {
-        covered.len() as f64 / RECONNAISSANCE.len() as f64
+        covered.len() as f64 / recon.len() as f64
     };
     Coverage {
         tactic_id: TACTIC_ID,
@@ -4528,15 +4529,15 @@ pub fn coverage_by_entity_type(
     }
 
     // Build result in catalogue order
-    RECONNAISSANCE
+    reconnaissance()
         .iter()
         .filter_map(|t| {
-            by_technique.remove(t.id).map(|by_entity_type| {
-                TechniqueByEntityType {
-                    technique: *t,
+            by_technique
+                .remove(t.id)
+                .map(|by_entity_type| TechniqueByEntityType {
+                    technique: **t,
                     by_entity_type,
-                }
-            })
+                })
         })
         .collect()
 }

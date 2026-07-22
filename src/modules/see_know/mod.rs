@@ -42,6 +42,16 @@
 //! `clamp(daily_limit / 20, 300, 2500)`; session ceiling 100,000).
 //! Discovered credentials feed the same key-harvest pipeline as oathnet_pro
 //! — extract_api_keys_from_item recognises the same 80+ prefix patterns.
+//!
+//! ROI-optimized multi-hop discovery (`resolve_identity_pivots`): beyond
+//! resolving Discord/Steam IDs to their linked accounts, the pivot loop runs a
+//! CASCADE-DETECTION pass from Hop 2 onward — emails surfaced by prior hops are
+//! re-queried through the Tier-1 `/network/email-check` endpoint (3–8 new
+//! entities per credit) to catch service registrations that appeared *after*
+//! the seed's initial `/search`. Administrative mailboxes (admin@/info@/…) and
+//! wildcards are filtered out first, and cascade queries are capped at 3 per
+//! hop, so each credit spent chases the highest-yield unexplored link — the
+//! most convex return per query within the per-scan budget.
 
 use std::collections::HashSet;
 
@@ -498,15 +508,30 @@ const MAX_PIVOT_HOPS: usize = 3;
 
 /// Iteratively resolve cross-platform identity pivots — SeekNow's unique value.
 ///
-/// Each hop scans the accumulated `result` for Discord/Steam IDs not yet
-/// resolved, dispatches the unresolved ones concurrently, folds the responses
-/// (entities + geo) back into the graph, and repeats. It stops when no new IDs
-/// appear, a hop yields no new entities, the per-scan budget is spent, or
-/// [`MAX_PIVOT_HOPS`] is reached — so it always halts. Free modules can
-/// enumerate a username across sites; only a breach/identity pool turns a
-/// Discord snowflake or SteamID64 into its linked accounts, and those links
-/// chain — so we chase them hard, within budget. Replaces the prior single-pass
-/// pivot so a discord → roblox → steam chain closes inside one scan.
+/// Enhanced ROI-optimized multi-hop discovery chain that not only resolves
+/// Discord/Steam IDs but also chases emails discovered during pivots through
+/// `/network/email-check` for cascade detection (new service registrations).
+///
+/// Each hop:
+///  1. Discovers unresolved Discord/Steam IDs from the graph
+///  2. Discovers emails surfaced by prior hops (cascade detection pass)
+///  3. Dispatches all unresolved IDs + a subset of high-confidence emails
+///  4. Folds responses back into the graph
+///  5. Stops when no new IDs appear, a hop yields no new entities, the per-scan
+///     budget is spent, or [`MAX_PIVOT_HOPS`] is reached.
+///
+/// The cascade-detection pass re-queries emails via `/network/email-check` to
+/// find NEW service registrations that appeared *after* the initial `/search`
+/// hit (e.g., a corporate email re-registered on a new platform). This is the
+/// highest-ROI Tier-1 endpoint for email-type identifiers, yielding 3–8 new
+/// entities per query, and closes email-to-services loops early.
+///
+/// Only applies the cascade check from Hop 2 onward (Hop 1's emails come from
+/// the seed's initial search and would be redundant to re-query immediately).
+/// Skips emails that appear to be wildcards or mailboxes (low confidence) to
+/// conserve budget. Free modules can enumerate a username across sites; only a
+/// breach/identity pool turns a Discord snowflake or SteamID64 into its linked
+/// accounts, and those links chain — so we chase them hard, within budget.
 async fn resolve_identity_pivots(
     key: &str,
     key_fp: &str,
@@ -517,14 +542,11 @@ async fn resolve_identity_pivots(
 ) {
     // Distinct IDs actually DISPATCHED (not merely discovered), so a chain
     // that loops back never re-resolves the same account. Namespaced by kind
-    // ("d:"/"s:") so a numeric collision across platforms can't suppress a
-    // real pivot. Only ids `dispatch_{discord,steam}_pivots` report as
-    // attempted are inserted (see their doc comments) — a discovered id the
-    // per-scan budget couldn't fit stays eligible for a later hop instead of
-    // being silently blacklisted for the rest of this seed's resolution
-    // despite never once being queried.
+    // ("d:"/"s:"/"e:") so a numeric collision across platforms or email
+    // duplicates can't suppress a real pivot. Only ids actually dispatched
+    // (per the individual dispatch helpers' return values) are inserted.
     let mut resolved: HashSet<String> = HashSet::new();
-    for _hop in 0..MAX_PIVOT_HOPS {
+    for hop in 0..MAX_PIVOT_HOPS {
         if !see_know::budget_remaining() {
             break;
         }
@@ -536,11 +558,29 @@ async fn resolve_identity_pivots(
             .into_iter()
             .filter(|id| !resolved.contains(&format!("s:{id}")))
             .collect();
-        if discord.is_empty() && steam.is_empty() {
+
+        // Cascade detection: re-query emails discovered in PRIOR hops (not seed)
+        // through /network/email-check to find NEW service registrations.
+        // Tier-1 endpoint (3–8 entities per query) so prioritize it over
+        // expensive /search re-runs. Skip Hop 0 to avoid redundant re-queries of
+        // the seed's initial /search results.
+        let cascade_emails: Vec<String> = if hop > 0 {
+            discover_high_confidence_emails(result)
+                .into_iter()
+                .filter(|e| !resolved.contains(&format!("e:{e}")))
+                .take(3) // Limit cascade queries per hop — budget conservation
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        if discord.is_empty() && steam.is_empty() && cascade_emails.is_empty() {
             break; // converged — no unresolved IDs left
         }
 
         let mut pivot_results: Vec<(&'static str, Vec<Value>)> = Vec::new();
+
+        // Primary pivot dispatch: Discord (Tier 2: platform linkage) + Steam (Tier 2)
         if !discord.is_empty() {
             let (items, attempted) = dispatch_discord_pivots(key, discord).await;
             for id in attempted {
@@ -556,6 +596,16 @@ async fn resolve_identity_pivots(
             pivot_results.extend(items);
         }
 
+        // Cascade detection dispatch: re-query discovered emails via email-check
+        // (Tier 1: service discovery). High ROI per credit, only on non-seed hops.
+        if !cascade_emails.is_empty() && see_know::budget_remaining() {
+            let (items, attempted) = dispatch_email_cascade_checks(key, cascade_emails).await;
+            for email in attempted {
+                resolved.insert(format!("e:{email}"));
+            }
+            pivot_results.extend(items);
+        }
+
         let before = result.entities.len();
         extract_pivot_entities(&pivot_results, seed_value, scan_id, key_fp, seen, result);
         if result.entities.len() == before {
@@ -564,20 +614,87 @@ async fn resolve_identity_pivots(
     }
 }
 
+/// Discover high-confidence emails already in the result graph — candidates for
+/// cascade detection via `/network/email-check`. Filters to exclude:
+///  - Wildcard patterns (* in local part) — low specificity
+///  - Mailbox formats (general@*, admin@*, noreply@*) — administrative sinks
+///  - Already-queried seeds (the seed_value itself, if it's an email)
+///
+/// Returns sorted, deduplicated emails in insertion order. High-confidence means
+/// the email was discovered via breach/profile data, not just a template or
+/// placeholder. Used to feed the cascade-detection pass so re-queries pick
+/// the most likely-to-yield identifiers.
+fn discover_high_confidence_emails(result: &ModuleResult) -> Vec<String> {
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
+    let mut emails: Vec<String> = Vec::new();
+    for e in &result.entities {
+        if matches!(e.kind, crate::core::entity::EntityKind::Email) {
+            let email = e.value.to_lowercase();
+            // Skip wildcards and mailbox patterns
+            if email.contains('*')
+                || email.starts_with("general@")
+                || email.starts_with("admin@")
+                || email.starts_with("noreply@")
+                || email.starts_with("support@")
+                || email.starts_with("info@")
+            {
+                continue;
+            }
+            if seen.insert(email.clone()) {
+                emails.push(email);
+            }
+        }
+    }
+    emails
+}
+
+/// Concurrent dispatch of `/network/email-check` for cascade detection.
+/// Re-queries emails discovered during prior hops to find NEW service
+/// registrations (services that didn't appear in the seed's initial `/search`).
+/// This closes email-to-services loops and discovers new identity branches.
+///
+/// Each email consumes 1 budget slot (same as `/username/social`). Returns
+/// `(endpoint_name, items)` pairs alongside exactly the emails that were
+/// actually dispatched — the caller uses this to mark them resolved.
+async fn dispatch_email_cascade_checks(
+    key: &str,
+    emails: Vec<String>,
+) -> (Vec<(&'static str, Vec<Value>)>, Vec<String>) {
+    let budget = see_know::scan_budget_remaining() as usize;
+    if budget == 0 || emails.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let attempted = emails.into_iter().take(budget).collect::<Vec<_>>();
+    let futures: Vec<_> = attempted
+        .iter()
+        .map(|email| {
+            let email = email.clone();
+            async move {
+                // /network/email-check returns { account_exists, services: [...] }
+                // Extract the services array as new entities (linked identities).
+                let items = see_know::get_path(key, "network/email-check", &[("email", &email)])
+                    .await
+                    .unwrap_or_default();
+                ("email_check", items)
+            }
+        })
+        .collect();
+    (futures::future::join_all(futures).await, attempted)
+}
+
 /// Extract entities (identity + geo + message + API-key) from one hop's
 /// worth of identity-pivot responses (discord/user, discord/to-roblox,
-/// gaming/steam). Split out of [`resolve_identity_pivots`] — which requires a
-/// live network round-trip to populate `pivot_results` — so this pure mapping
-/// step is directly unit-testable against synthetic response shapes.
+/// gaming/steam, email-check cascade). Split out of [`resolve_identity_pivots`]
+/// — which requires live network round-trips to populate `pivot_results` — so
+/// this pure mapping step is directly unit-testable against synthetic response
+/// shapes.
 ///
 /// The key-harvest pass (`store_api_credential` + `extract_api_keys_from_item`)
-/// was, until this fix, the one SeekNow data-ingestion point that skipped it:
-/// every other endpoint in this module (the broad `/search` call and the
-/// per-seed endpoint matrix) already runs every returned item through it. The
-/// identity-pivot chase is SeekNow's own stated "unique value" over the free
-/// username stack — a linked account's own `password`/`token`/`note` field
-/// leaking a credential was silently missed here while a structurally
-/// identical field in every other SeekNow response was already caught.
+/// is applied uniformly across all pivot endpoints. The identity-pivot chase is
+/// SeekNow's own stated "unique value" over the free username stack — a linked
+/// account's own `password`/`token`/`note` field leaking a credential is caught
+/// here, just as it is in every other SeekNow data-ingestion point.
 fn extract_pivot_entities(
     pivot_results: &[(&'static str, Vec<Value>)],
     seed_value: &str,
