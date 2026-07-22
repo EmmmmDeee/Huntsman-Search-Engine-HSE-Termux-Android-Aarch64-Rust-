@@ -88,12 +88,15 @@ export const S = {
     // default_scan_options: depth 3 / expansion floor 0.20 / entity cap 2500,
     // plus convex (optionality/barbell) budget allocation ON so each scan spends
     // its bounded budget on cheap, high-upside identity leads over saturated
-    // infrastructure — maximising the value of every query out of the box.
-    // buildWizardOptions() submits these, and the Advanced-options form displays
-    // them, so a web scan is as thorough as the CLI out of the box.
+    // infrastructure, and capability-aware dispatch (skip_dead_modules) ON so it
+    // never wastes that budget on modules whose parser has provably gone dead —
+    // both maximising the value of every query out of the box. buildWizardOptions()
+    // submits these, and the Advanced-options form displays them, so a web scan is
+    // as thorough as the CLI out of the box.
     options:{ exclude_modules:[], throttle_ms:250, module_timeout_ms:null, depth:3,
               min_expand_confidence:0.20, max_entities:2500, max_wall_time_secs:null,
-              max_concurrent:2, min_confidence:null, free_only:false, convex_budget:true },
+              max_concurrent:2, min_confidence:null, free_only:false, convex_budget:true,
+              skip_dead_modules:true },
     // Named server-side scan profile (recommended/passive/footprint/investigate/
     // fast/skiptrace), e.g. `--profile skiptrace` on the CLI. `null` = none
     // selected — every Advanced-options field above applies as typed. When

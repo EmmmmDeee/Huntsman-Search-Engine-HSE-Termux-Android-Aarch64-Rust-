@@ -89,6 +89,17 @@ so keys never leave the device).
 > uncertain tail and the pricey infrastructure are re-sorted. Opt out with
 > `hse scan --no-convex-budget` or `"convex_budget": false` in the API `options`.
 
+> **Capability-aware dispatch (v1.15+) — no budget wasted on dead sources.**
+> The same scans also skip any module whose parser has **provably gone dead**
+> across recent runs — persistent failures or silent zero-yield drift, from the
+> cross-scan health signal — so its dispatch slot goes to a source that still
+> works. It only culls the automatic comprehensive fan-out: an explicit
+> `--modules` set or `hse scan --full` still runs everything, and a quarantined
+> module recovers automatically the moment it returns one healthy result. Opt
+> out with `--no-skip-dead-modules` / `"skip_dead_modules": false`. Together with
+> the live capability probe below, HSE now both *sees* a dead capability and
+> *routes around it* — the durability loop, closed.
+
 > **Live capability probe (v1.14+) — know a source works before you rely on it.**
 > A third-party provider can silently change its response shape and a module's
 > parser goes quiet while its unit tests stay green. **Engines → Run live
