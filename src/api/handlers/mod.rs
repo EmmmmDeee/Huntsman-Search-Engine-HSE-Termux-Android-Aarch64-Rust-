@@ -462,6 +462,11 @@ pub(crate) fn capability_probe_json(
 /// full-fleet sweep from opening a socket storm on a low-power Termux device.
 pub async fn capabilities_probe() -> Json<Value> {
     let reports = crate::util::capability_probe::probe_keyless_fleet(8).await;
+    // Persist any confirmed drift so it survives past this one response — the
+    // CLI's offline `hse doctor` can then surface it (see
+    // `capability_probe::recent_confirmed_drift`) without the operator having
+    // to re-run the live probe.
+    crate::util::capability_probe::record_confirmed_drift(&reports);
     Json(capability_probe_json(&reports))
 }
 
