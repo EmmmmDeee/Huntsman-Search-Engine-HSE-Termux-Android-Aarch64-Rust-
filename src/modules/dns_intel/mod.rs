@@ -22,8 +22,9 @@
 //!   1. *Reverse DNS* — PTR record lookup.
 //!   2. *Blocklist (DNSBL)* — 8 well-known DNS-based blocklists.
 //!
-//! All lookups use `crate::util::dns::shared_resolver()` (Cloudflare).
-//! No API keys, no HTTP, no rate limits.
+//! All lookups use `crate::util::dns::shared_resolver()` — a self-healing pool
+//! of independent public resolvers (Cloudflare → Quad9 → Google) that fails over
+//! automatically if one is blocked or dead. No API keys, no HTTP, no rate limits.
 //!
 //! Evidence source for every finding: `"dns_intel"`.
 
