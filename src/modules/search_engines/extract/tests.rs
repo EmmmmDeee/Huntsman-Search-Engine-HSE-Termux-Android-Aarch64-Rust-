@@ -1,5 +1,38 @@
 use super::*;
 
+    #[test]
+    fn extract_coords_from_text_reads_marked_forms_only() {
+        // Positive: an unambiguous geo: URI and a Plus Code in snippet prose
+        // each yield exactly one coordinate.
+        let geo = extract_coords_from_text("Meet here geo:-27.4766,153.0166;u=35 tonight");
+        assert_eq!(geo.len(), 1, "geo: URI must yield one coordinate: {geo:?}");
+        assert!(geo[0].starts_with("-27.476"), "got {geo:?}");
+
+        let plus = extract_coords_from_text("Location code 4RRH46RW+RH7 near the CBD");
+        assert_eq!(plus.len(), 1, "Plus Code must yield one coordinate: {plus:?}");
+
+        // NEGATIVE (the whole point of the conservative design): ordinary prose
+        // numbers that would parse as an in-range decimal pair must NOT fabricate
+        // a coordinate.
+        for prose in [
+            "The item is $33.50, 151.20 including tax",
+            "Upgrade to version 1.5, 2.3 today",
+            "Call 0410 959 140 or visit us",
+            "Scores were 12.5, 45.9 across the board",
+            "Ranked 4.5, 9.8 out of ten",
+        ] {
+            assert!(
+                extract_coords_from_text(prose).is_empty(),
+                "prose must not fabricate a coordinate: {prose:?} -> {:?}",
+                extract_coords_from_text(prose)
+            );
+        }
+
+        // Same point twice ⇒ deduped.
+        let dup = extract_coords_from_text("geo:-27.4766,153.0166 and again geo:-27.4766,153.0166");
+        assert_eq!(dup.len(), 1, "identical points must dedup: {dup:?}");
+    }
+
     /// The recycler must respect the module's hard fetch deadline: with a deadline
     /// already in the past it issues NO requests and adds NO entities, so it can
     /// never overrun the engine's kill timeout (which would discard the whole
