@@ -9,6 +9,7 @@
 //! | GET    | `/api/v1/modules`                 | `modules_list`           |
 //! | GET    | `/api/v1/modules/graph`           | `modules_graph` (v1.1+)  |
 //! | GET    | `/api/v1/modules/health`          | `modules_health`         |
+//! | POST   | `/api/v1/capabilities/probe`      | `capabilities_probe` (v1.14+) |
 //! | GET    | `/api/v1/engines/health`          | `engines_health` (v1.3+) |
 //! | GET    | `/api/v1/health/scrapers`         | `scraper_health` (v1.13+) |
 //! | GET    | `/api/v1/keys/patterns`           | `keys_patterns` (v1.4+)  |
@@ -338,6 +339,10 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/modules/health", get(handlers::modules_health))
         .route("/engines/health", get(handlers::engines_health))
         .route("/health/scrapers", get(handlers::scraper_health))
+        // POST, not GET: a live probe fires a real network request per keyless
+        // module, so it is an explicit action — never something a prefetch or a
+        // stray GET can trigger.
+        .route("/capabilities/probe", post(handlers::capabilities_probe))
         .route("/stats", get(handlers::stats))
         // ── diagnostics: self-test + downloadable verbose logs ──
         .route("/selftest", get(handlers::selftest_run))

@@ -68,9 +68,11 @@ export async function renderEngines(v){
       <tbody>${rows || '<tr><td colspan="6" class="text-center text-muted">No engines</td></tr>'}</tbody>
     </table></div>
     <div id="scraper-health-host"></div>
+    <div id="capprobe-host"></div>
     <div id="modgraph-host"></div>`;
   wireEngineToggles();
   renderScraperHealth($('#scraper-health-host'), scraperHealth);
+  renderCapabilityProbePanel($('#capprobe-host'));
   renderModuleGraph($('#modgraph-host'));
   clearEnginesTimer();
   S.enginesTimer = setInterval(refreshEngines, 30000);
@@ -127,6 +129,74 @@ export function renderScraperHealth(host, data){
            <tbody>${yieldRows}</tbody>
          </table></div>`
       : `<div class="empty-state"><h3>No yield-drifted sources</h3><p>Every tracked module that has found something before is still finding something.</p></div>`}`;
+}
+
+/* Live capability probe (GET /capabilities/probe): the PROACTIVE complement to
+   scraper health above. Scraper health is reactive — it only knows what real
+   scans have already tried. This fires one bounded request per keyless module
+   at its real provider on demand, so a drifted or dead capability shows up
+   BEFORE an investigation relies on it — the in-browser twin of
+   `hse doctor --live`. Network-bound and a few seconds long, so it is an
+   explicit button, never part of the 30 s auto-refresh. */
+export function renderCapabilityProbePanel(host){
+  if (!host) return;
+  host.innerHTML = `
+    <div class="page-header" style="margin-top:26px;border-bottom:1px solid #eee;padding-bottom:8px">
+      <h3 style="margin:0"><i class="glyphicon glyphicon-transfer"></i>&nbsp;Live capability probe
+        <button id="capprobe-run" class="btn btn-primary btn-sm pull-right" onclick="runCapabilityProbe()"><i class="glyphicon glyphicon-play"></i>&nbsp;Run live probe</button>
+      </h3>
+    </div>
+    <p class="text-muted">Actively verify every keyless module against its real provider, right now — <b>alive</b> (parsed data), <b>empty</b> (reached, nothing parsed), <b>unreachable</b> (provider down / offline), or <b>drift</b> (a canary source that reached its provider but parsed nothing — the upstream wire shape likely changed). Proactive, unlike the cross-scan scraper health above. One bounded request per module; a full sweep takes a few seconds.</p>
+    <div id="capprobe-results"></div>`;
+}
+
+/* Fire the sweep and render the per-module table. Exposed on window so the
+   inline onclick resolves it (see main.js). */
+export async function runCapabilityProbe(){
+  const btn = document.getElementById('capprobe-run');
+  const out = document.getElementById('capprobe-results');
+  if (!out) return;
+  if (btn){ btn.disabled = true; btn.innerHTML = '<i class="glyphicon glyphicon-hourglass"></i>&nbsp;Probing…'; }
+  out.innerHTML = `<p class="text-muted">Probing keyless modules against live providers…</p>`;
+  let data;
+  try { data = await API.capabilitiesProbe(); }
+  catch(e){ out.innerHTML = `<div class="alert alert-danger">Capability probe failed: ${esc(e.message)}</div>`;
+            if (btn){ btn.disabled = false; btn.innerHTML = '<i class="glyphicon glyphicon-play"></i>&nbsp;Run live probe'; } return; }
+  const stDot = (o, drift) => {
+    if (drift) return `<span style="color:#a94442;font-weight:700">&#9679;&nbsp;drift</span>`;
+    const c = o==='alive' ? '#3c763d' : (o==='empty' ? '#8a6d3b' : '#a94442');
+    return `<span style="color:${c};font-weight:600">&#9679;&nbsp;${esc(o)}</span>`;
+  };
+  const mods = (data.modules||[]).slice().sort((a,b)=>{
+    // Drift first, then unreachable/empty, then alive — surface problems on top.
+    const rank = m => m.drift ? 0 : (m.outcome==='unreachable'||m.outcome==='timed-out') ? 1 : (m.outcome==='empty' ? 2 : 3);
+    return rank(a)-rank(b) || a.module.localeCompare(b.module);
+  });
+  const rows = mods.map(m=>{
+    const detail = m.outcome==='alive' ? `${esc(String(m.found))} found`
+                 : (m.reason ? esc(m.reason) : (m.outcome==='empty' ? '0 parsed' : ''));
+    return `<tr>
+      <td><b>${esc(m.module)}</b>${m.canary?' <span class="tag" title="curated must-yield canary — an empty result here is confirmed drift">canary</span>':''}</td>
+      <td>${kindPill(m.kind)}</td>
+      <td>${stDot(m.outcome, m.drift)}</td>
+      <td style="color:var(--text-dim);font-size:12px">${detail}</td>
+    </tr>`;
+  }).join('');
+  const drift = data.drift||[];
+  out.innerHTML = `
+    <div class="row" style="margin-bottom:6px">
+      <div class="col-xs-3"><div class="stat-card"><div class="lab">Alive</div><div class="val" style="color:var(--success)">${data.alive||0}</div></div></div>
+      <div class="col-xs-3"><div class="stat-card"><div class="lab">Empty</div><div class="val" style="color:var(--warning)">${data.empty||0}</div></div></div>
+      <div class="col-xs-3"><div class="stat-card"><div class="lab">Unreachable</div><div class="val" style="color:var(--danger)">${(data.unreachable||0)+(data.timed_out||0)}</div></div></div>
+      <div class="col-xs-3"><div class="stat-card"><div class="lab">Drift</div><div class="val" style="color:${drift.length?'var(--danger)':'var(--text-dim)'}">${drift.length}</div></div></div>
+    </div>
+    ${drift.length ? `<div class="alert alert-danger"><b>Confirmed drift:</b> ${drift.map(esc).join(', ')} — a canary provider changed its wire shape. Update the module's parser.</div>` : ''}
+    <div class="table-responsive"><table class="table table-striped table-condensed">
+      <thead><tr><th>Module</th><th>Probed with</th><th>Status</th><th>Detail</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4" class="text-center text-muted">No probeable keyless modules</td></tr>'}</tbody>
+    </table></div>
+    <p class="text-muted" style="font-size:12px">${data.probed||0} module(s) probed. An <b>empty</b> non-canary result is not necessarily a fault — the canonical sample may simply have no data for that source.</p>`;
+  if (btn){ btn.disabled = false; btn.innerHTML = '<i class="glyphicon glyphicon-play"></i>&nbsp;Run live probe'; }
 }
 
 /* Module capability map (GET /modules/graph): for every seed/target kind, how

@@ -238,6 +238,25 @@ use super::*;
     }
 
     #[test]
+    fn embedded_spa_wires_the_capability_probe_endpoint() {
+        // /api/v1/capabilities/probe (v1.14+) is the proactive live capability
+        // preflight — the in-browser twin of `hse doctor --live`. Guard that the
+        // Engines page actually fetches and renders it, so the panel can't
+        // silently regress to dead-from-the-UI like the health endpoints it
+        // complements.
+        let api = app_file("js/api.js");
+        assert!(
+            api.contains("/api/v1/capabilities/probe"),
+            "SPA must call /api/v1/capabilities/probe (Engines live capability probe)"
+        );
+        let engines = app_file("js/views/engines.js");
+        assert!(
+            engines.contains("renderCapabilityProbePanel(") && engines.contains("runCapabilityProbe"),
+            "the Engines page must render the capability-probe panel and its run action"
+        );
+    }
+
+    #[test]
     fn embedded_spa_wires_the_per_scan_analysis_endpoints() {
         // Per-scan endpoints that were implemented + routed but the SPA never
         // surfaced. Each is now a section in the scan report; guard the wiring so

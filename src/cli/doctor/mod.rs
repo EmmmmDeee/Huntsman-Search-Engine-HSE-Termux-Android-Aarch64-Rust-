@@ -25,7 +25,7 @@ use crate::{
 
 use super::cost_label;
 
-pub(super) async fn cmd_doctor() -> Result<()> {
+pub(super) async fn cmd_doctor(live: bool) -> Result<()> {
     let mods = registry();
     println!("HSE v{} — doctor\n", crate::VERSION);
     println!(
@@ -114,6 +114,16 @@ pub(super) async fn cmd_doctor() -> Result<()> {
         for h in &unhealthy {
             println!("  {}", format_module_health(h));
         }
+    }
+
+    // ── Live capability preflight (opt-in, --live) ─────────────────────
+    // The module-health section above is reactive — it only knows what real
+    // scans in THIS process have already tried. `--live` is the proactive
+    // complement: probe every keyless module against its real provider now, so
+    // a drifted or dead capability shows up before an investigation relies on
+    // it. Network-bound, so it is opt-in; the default `doctor` run stays offline.
+    if live {
+        print_live_capability_report().await;
     }
 
     let loaded = keys::load();
@@ -395,6 +405,77 @@ fn format_module_health(h: &crate::core::engine::ModuleHealth) -> String {
             h.consecutive_failures,
             if h.consecutive_failures == 1 { "" } else { "s" },
         ),
+    }
+}
+
+/// Run the live capability preflight and print a per-module alive/empty/
+/// unreachable table plus a one-line summary. Shares the exact probe
+/// implementation the weekly `live_drift` sweep uses
+/// ([`crate::util::capability_probe`]), so what the operator sees on-device and
+/// what CI asserts can never diverge. Confirmed drift (a curated canary that
+/// reached its provider yet parsed nothing) is called out explicitly.
+async fn print_live_capability_report() {
+    use crate::util::capability_probe::{self, ProbeOutcome};
+
+    println!("\nLive capability probe (keyless modules):");
+    // Bounded concurrency — a full-fleet sweep without a socket storm on a phone.
+    let reports = capability_probe::probe_keyless_fleet(8).await;
+    if reports.is_empty() {
+        println!("  (no keyless modules with a probeable target)");
+        return;
+    }
+
+    let (mut alive, mut empty, mut unreachable, mut timed_out) = (0usize, 0usize, 0usize, 0usize);
+    let mut drift: Vec<&str> = Vec::new();
+    for r in &reports {
+        let canary = if capability_probe::is_canary(r.module) {
+            " [canary]"
+        } else {
+            ""
+        };
+        match &r.outcome {
+            ProbeOutcome::Alive { found } => {
+                alive += 1;
+                println!("  alive        {:<22} {found} found{canary}", r.module);
+            }
+            ProbeOutcome::Empty => {
+                empty += 1;
+                let tag = if r.is_confirmed_drift() {
+                    " — DRIFT (canary parsed nothing)"
+                } else {
+                    ""
+                };
+                println!(
+                    "  empty        {:<22} ({} {}){canary}{tag}",
+                    r.module,
+                    r.kind.canonical_str(),
+                    r.value
+                );
+                if r.is_confirmed_drift() {
+                    drift.push(r.module);
+                }
+            }
+            ProbeOutcome::Unreachable { reason } => {
+                unreachable += 1;
+                println!("  unreachable  {:<22} {reason}{canary}", r.module);
+            }
+            ProbeOutcome::TimedOut => {
+                timed_out += 1;
+                println!("  timed-out    {:<22}{canary}", r.module);
+            }
+        }
+    }
+    println!(
+        "  summary: {} probed — {alive} alive, {empty} empty, {unreachable} unreachable, \
+         {timed_out} timed-out",
+        reports.len()
+    );
+    if !drift.is_empty() {
+        println!(
+            "  ⚠ confirmed drift in {}: {} — the upstream wire shape likely changed",
+            drift.len(),
+            drift.join(", ")
+        );
     }
 }
 

@@ -7,6 +7,7 @@ pub mod backoff;
 pub mod breach_sector;
 pub mod bsb;
 pub mod budget;
+pub mod capability_probe;
 pub mod cell_db;
 pub mod circuit_breaker;
 pub mod city_coords;

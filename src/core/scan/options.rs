@@ -118,9 +118,13 @@ pub struct ScanOptions {
     /// expansion candidates by a convexity premium for heavy-tailed upside
     /// divided by per-kind dispatch cost (see [`crate::core::convex`]), so the
     /// bounded budget favours cheap, high-optionality identity leads over
-    /// expensive, saturated infrastructure. Off by default (the base
-    /// expected-value ranking is unchanged).
-    #[serde(default)]
+    /// expensive, saturated infrastructure. **On by default** for API/web scans
+    /// (see [`default_convex_budget`]) so each query maximises optionality-
+    /// weighted return out of the box; the base expected-value ranking is only
+    /// re-sorted on the uncertain tail and the expensive infrastructure, so the
+    /// confident identity core keeps its order. Opt out with the API field /
+    /// `--no-convex-budget`.
+    #[serde(default = "default_convex_budget")]
     pub convex_budget: bool,
 
     /// Australian-focused regional searching. **On by default** — the search
@@ -462,6 +466,11 @@ impl Default for ScanOptions {
             webhook_url: None,
             profile: None,
             max_roi: false,
+            // Library default stays OFF for deterministic unit tests, DECOUPLED
+            // from the serde/product default (`default_convex_budget()` = true):
+            // an API/web/CLI scan gets optionality allocation on out of the box,
+            // while a programmatic `ScanOptions::default()` keeps the plain
+            // expected-value ranking — same split as `min_expand_confidence`.
             convex_budget: false,
             // AU-focused by default: every scan adds Australian-source dorks
             // (`.au` TLDs, AU directories) on top of the geo-neutral base, so the
@@ -515,6 +524,17 @@ fn default_regional_search() -> bool {
     true
 }
 
+/// Serde default for [`ScanOptions::convex_budget`] — **on by default** so every
+/// API/web scan spends its bounded budget the optionality-maximising way (cheap,
+/// high-upside identity leads over saturated infrastructure; see
+/// [`crate::core::convex`]), matching the CLI `hse scan` default. Opt out with
+/// `--no-convex-budget` / the API field. Kept separate from the library
+/// [`ScanOptions::default`] (which stays `false` for deterministic unit tests),
+/// exactly as [`default_min_expand_confidence`] splits its two defaults.
+fn default_convex_budget() -> bool {
+    true
+}
+
 /// Serde default for [`ScanOptions::depth`] — the product default applied to
 /// API/web requests that omit `depth` (mirrors the CLI's `hse scan` default).
 fn default_scan_depth() -> u32 {
@@ -536,6 +556,10 @@ pub(crate) fn default_scan_options() -> ScanOptions {
         depth: DEFAULT_SCAN_DEPTH,
         min_expand_confidence: DEFAULT_MIN_EXPAND_CONFIDENCE,
         max_entities: Some(DEFAULT_MAX_ENTITIES),
+        // On in the product path (value-per-query), matching the per-field serde
+        // default so omitting `convex_budget` inside an `options` object behaves
+        // identically to omitting `options` entirely.
+        convex_budget: default_convex_budget(),
         ..Default::default()
     }
 }

@@ -22,6 +22,11 @@ export const API = {
   // SOL-HEALTH-SIGNAL) — the same live dispatch-outcome data `hse doctor` reports.
   // Complements scraperHealth (cross-scan, persisted) rather than replacing it.
   moduleHealth: ()=>API._req('/api/v1/modules/health'),
+  // Proactive live capability probe: fire one bounded request per keyless module
+  // at its real provider and report alive/empty/unreachable/drift per module —
+  // the HTTP twin of `hse doctor --live`. Network-bound, so it is button-
+  // triggered (never in the 30 s auto-refresh) and can take a few seconds.
+  capabilitiesProbe: ()=>API._req('/api/v1/capabilities/probe',{method:'POST'}),
   scans:     ()=>API._req('/api/v1/scans'),
   scan:      id=>API._req('/api/v1/scans/'+encodeURIComponent(id)),
   entities:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/entities'),
