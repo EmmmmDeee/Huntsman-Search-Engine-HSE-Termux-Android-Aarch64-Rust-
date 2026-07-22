@@ -80,6 +80,24 @@ so keys never leave the device).
 > expansion floor 0.20, entity cap 2500 — so you get the full seed → identifiers
 > → pivots → infrastructure sweep without tuning anything.
 
+> **Value-per-query is maximised by default (v1.14+).** Every scan — CLI, API,
+> and Web wizard — now runs with **convex (optionality / barbell) budget
+> allocation** on: under the device's bounded budget it spends on cheap,
+> high-upside identity leads (an email, a username) before expensive, already-
+> saturated infrastructure fan-out, so a phone scan returns more of what matters
+> per unit of work. The confident identity core keeps its order — only the
+> uncertain tail and the pricey infrastructure are re-sorted. Opt out with
+> `hse scan --no-convex-budget` or `"convex_budget": false` in the API `options`.
+
+> **Live capability probe (v1.14+) — know a source works before you rely on it.**
+> A third-party provider can silently change its response shape and a module's
+> parser goes quiet while its unit tests stay green. **Engines → Run live
+> capability probe** (in the Web UI), `hse doctor --live` (CLI), or
+> `GET /api/v1/capabilities/probe` fires one bounded request per keyless module
+> at its real endpoint and reports **alive / empty / unreachable / drift** per
+> module — the proactive complement to the cross-scan *Scraper health* panel.
+> Loopback-only and bounded, so it is Termux-safe.
+
 > **Termux battery & background (required for long scans):** Android → Settings → Apps → Termux → Battery → set to **Unrestricted** and enable "Allow background data". Without this Android kills Termux mid-scan.
 
 ### Manual build (advanced — the installer already does this)

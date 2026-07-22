@@ -444,7 +444,7 @@ mod tests {
             r#ref: None,
         }));
         // A routine command is eligible for the opportunistic check.
-        assert!(!command_self_updates(&Command::Doctor));
+        assert!(!command_self_updates(&Command::Doctor { live: false }));
     }
 
     // ── Real-git fixtures for `commits_behind` / `changelog_lines` ──────────
