@@ -632,6 +632,19 @@ pub(in crate::modules::search_engines) fn extract_phones_from_text(text: &str) -
     // country-digit gate that rejects `+0…`). This wrapper keeps the search-context
     // cap + warning.
     let mut phones = crate::util::extract::phones(text);
+    // `util::extract::phones` is E.164-shaped, so AU DOMESTIC formats a SERP
+    // snippet routinely carries — `04xx xxx xxx` mobiles, `0x xxxx xxxx` area
+    // numbers, and `1300`/`1800` service lines — are silently dropped (they have
+    // no `+NN` prefix). Union in `util::address_au::extract_phones`, which
+    // recognises exactly those, so an AU subject's phone in a result snippet
+    // becomes a Phone entity instead of being lost. E.164 numbers stay FIRST
+    // (foreign `+NN` coverage unchanged); only AU numbers not already present
+    // are appended, preserving dedup + first-seen order.
+    for au in crate::util::address_au::extract_phones(text) {
+        if !phones.contains(&au) {
+            phones.push(au);
+        }
+    }
     if phones.len() > 300 {
         tracing::warn!(
             target: "hse::parser",

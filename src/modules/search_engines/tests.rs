@@ -678,6 +678,28 @@ fn phone_extraction_international() {
 }
 
 #[test]
+fn phone_extraction_recovers_au_domestic_formats_from_a_snippet() {
+    // Regression: a SERP snippet carrying an AU DOMESTIC number (no +NN prefix)
+    // used to be dropped entirely, because canonical E.164 mining rejects a bare
+    // `04xx`/`0x`/`1300`. The address_au union recovers them so an AU subject's
+    // phone in a result snippet becomes a Phone entity.
+    let mobile = extract_phones_from_text("Contact Jordan on 0410 959 140 anytime");
+    assert!(
+        mobile.iter().any(|p| p.ends_with("410959140")),
+        "AU mobile 0410 959 140 must be recovered, got {mobile:?}"
+    );
+    let service = extract_phones_from_text("Support line 1300 975 707 (business hours)");
+    assert!(
+        !service.is_empty(),
+        "AU 1300 service number must be recovered, got {service:?}"
+    );
+    // A foreign +NN number in the same text is still extracted (E.164 first).
+    let mixed = extract_phones_from_text("AU 0410 959 140 or UK +44 20 7946 0958");
+    assert!(mixed.iter().any(|p| p.starts_with("+44")));
+    assert!(mixed.iter().any(|p| p.ends_with("410959140")));
+}
+
+#[test]
 fn tracking_url_detection() {
     assert!(is_tracking_url("https://r.search.yahoo.com/cbcl/something"));
     assert!(is_tracking_url("https://r.bing.com/rb/something"));
