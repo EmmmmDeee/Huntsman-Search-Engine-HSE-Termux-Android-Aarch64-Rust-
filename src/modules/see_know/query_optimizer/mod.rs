@@ -20,6 +20,8 @@ pub mod query_planner;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+pub use query_planner::{ExecutionPlan, QueryPhase, QueryCandidate, QueryPlanner};
+
 /// Query optimization result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptimizedQuery {
@@ -53,12 +55,19 @@ impl QueryPlan {
     }
 }
 
+impl Default for QueryPlan {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Main optimizer interface
 pub struct QueryOptimizer {
     value_scorer: value_scorer::ValueScorer,
     cost_analyzer: cost_analyzer::CostAnalyzer,
     roi_router: roi_router::RoiRouter,
     cascade_optimizer: cascade_optimizer::CascadeOptimizer,
+    query_planner: QueryPlanner,
 }
 
 impl QueryOptimizer {
@@ -68,28 +77,46 @@ impl QueryOptimizer {
             cost_analyzer: cost_analyzer::CostAnalyzer::new(),
             roi_router: roi_router::RoiRouter::new(),
             cascade_optimizer: cascade_optimizer::CascadeOptimizer::new(),
+            query_planner: QueryPlanner::new(),
         }
     }
 
     /// Generate optimal query sequence for a target
-    pub async fn optimize_query_sequence(
+    pub fn optimize_query_sequence(
         &self,
+        target_entity: &str,
         target_type: &str,
-        budget: u32,
-        time_budget_secs: u32,
-        cascade_depth: u8,
-    ) -> Result<QueryPlan> {
-        // TODO: Implement multi-phase optimization
-        // 1. Generate candidates for target type
-        // 2. Score each candidate (value_scorer)
-        // 3. Analyze costs (cost_analyzer)
-        // 4. Calculate ROI (roi_router)
-        // 5. Sort by ROI
-        // 6. Generate execution plan (query_planner)
-        // 7. Plan cascades (cascade_optimizer)
-        Err(anyhow::anyhow!(
-            "TODO: Phase 1.1+ - Implement query optimization"
-        ))
+        budget: f32,
+        time_budget_secs: f32,
+        cascade_enabled: bool,
+        max_depth: usize,
+    ) -> ExecutionPlan {
+        self.query_planner.generate_execution_plan(
+            target_entity,
+            target_type,
+            budget,
+            time_budget_secs,
+            cascade_enabled,
+            max_depth,
+        )
+    }
+
+    /// Serialize execution plan to JSON
+    pub fn serialize_plan(&self, plan: &ExecutionPlan) -> Result<String> {
+        self.query_planner
+            .serialize_plan(plan)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize plan: {}", e))
+    }
+
+    /// Deserialize execution plan from JSON
+    pub fn deserialize_plan(&self, json: &str) -> Result<ExecutionPlan> {
+        QueryPlanner::deserialize_plan(json)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize plan: {}", e))
+    }
+
+    /// Estimate total execution time for plan
+    pub fn estimate_execution_time(&self, plan: &ExecutionPlan) -> f32 {
+        self.query_planner.estimate_execution_time(plan)
     }
 
     /// Decide whether to cascade and which pivots to follow
@@ -99,9 +126,17 @@ impl QueryOptimizer {
         cascade_depth: u8,
         budget_remaining: u32,
     ) -> Result<bool> {
-        // TODO: Phase 2.1+
+        let roi_threshold = self
+            .cascade_optimizer
+            .get_roi_threshold_for_depth(cascade_depth as usize);
         // Return true if cascade ROI positive and budget sufficient
-        Ok(false)
+        Ok(budget_remaining >= 50 && roi_threshold < 100.0)
+    }
+}
+
+impl Default for QueryOptimizer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
