@@ -1030,6 +1030,30 @@ fn registration_dedups_repeated_registrant() {
     );
 }
 
+#[test]
+fn registration_links_domain_to_registrant_person() {
+    use crate::core::entity::Evidence;
+    // whois folds the registrant NAME into the domain evidence and emits the
+    // registrant as a Person entity — the human registrant must be linked to the
+    // domain (RegisteredBy), not left an orphan. No org/email here, so this also
+    // covers the early-return guard now admitting a Person-only registrant.
+    let mut dom = Entity::new(EntityKind::Domain, "example.com", 0.92, "rel-scan");
+    dom.add_evidence(
+        Evidence::new("whois", "WHOIS for example.com")
+            .with_attr("registrant_name", "Jordan Avery")
+            .with_attr("registrar", "MarkMonitor Inc."),
+    );
+    let person = ent(EntityKind::Person, "Jordan Avery", 0.72);
+    let rels = derive_registration(&[dom.clone(), person.clone()], "s");
+    assert_eq!(rels.len(), 1, "domain -> registrant person");
+    assert_eq!(rels[0].kind, RelationKind::RegisteredBy);
+    assert_eq!(rels[0].from_uid, dom.uid, "edge originates at the domain");
+    assert_eq!(
+        rels[0].to_uid, person.uid,
+        "edge targets the registrant person"
+    );
+}
+
 // ── Identity relations ───────────────────────────────────────────────────────
 
 #[test]

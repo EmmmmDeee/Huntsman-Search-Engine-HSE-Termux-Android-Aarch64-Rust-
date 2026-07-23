@@ -75,6 +75,60 @@ fn render_full_dumps_every_field_and_provenance() {
 }
 
 #[test]
+fn render_full_resolves_relation_labels_and_reports_all_module_counts() {
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::relation::{Relation, RelationKind};
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("full_rel.db");
+    let store = Store::open(db.to_str().unwrap()).unwrap();
+
+    let mut scan = Scan::new("scan-fr", Target::new(TargetKind::FullName, "Jordan Avery"));
+    scan.modules_run = 12;
+    scan.modules_timed_out = 3;
+    scan.modules_skipped = 1;
+    scan.modules_cached = 2;
+    store.upsert_scan(&scan).unwrap();
+
+    let email = Entity::new(EntityKind::Email, "jordan@real.com", 0.85, "scan-fr");
+    let user = Entity::new(EntityKind::Username, "jordanavery", 0.80, "scan-fr");
+    store
+        .upsert_entities_batch(&[email.clone(), user.clone()])
+        .unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            &email.uid,
+            &user.uid,
+            RelationKind::AliasOf,
+            0.8,
+            "scan-fr",
+        ))
+        .unwrap();
+
+    let out = render_full(&store, "scan-fr").unwrap();
+    // Relation endpoints resolve to `value (kind)`, not opaque hex→hex.
+    assert!(out.contains("── RELATIONS ──"));
+    assert!(
+        out.contains("jordan@real.com (email)"),
+        "from-endpoint must resolve to value (kind): {out}"
+    );
+    assert!(
+        out.contains("jordanavery (username)"),
+        "to-endpoint must resolve to value (kind)"
+    );
+    // Full module accounting, including the timed-out/skipped/cached counts.
+    assert!(
+        out.contains("modules    :"),
+        "header must carry module accounting"
+    );
+    assert!(
+        out.contains("3 timed out"),
+        "timed-out count must be disclosed"
+    );
+    assert!(out.contains("1 skipped"));
+    assert!(out.contains("2 cached"));
+}
+
+#[test]
 fn render_full_explains_the_gap_between_corroboration_and_source_count() {
     // Regression: `corroboration` (a raw per-module magnitude) and
     // `source_count` (the distinct-source count that actually drives c_eff)

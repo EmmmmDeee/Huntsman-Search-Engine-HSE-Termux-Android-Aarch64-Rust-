@@ -144,8 +144,13 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
         entities_header_line(entities.len(), scan.entity_count)
     );
     println!(
-        "  Modules:   {} run, {} errored, {} deduped",
-        scan.modules_run, scan.modules_errored, scan.modules_deduped
+        "  Modules:   {} run, {} errored, {} timed out, {} skipped, {} cached, {} deduped",
+        scan.modules_run,
+        scan.modules_errored,
+        scan.modules_timed_out,
+        scan.modules_skipped,
+        scan.modules_cached,
+        scan.modules_deduped
     );
     // Expansion timeline — the scan's expansion curve: how many entities were
     // first surfaced in each generation as the working graph expanded outward
