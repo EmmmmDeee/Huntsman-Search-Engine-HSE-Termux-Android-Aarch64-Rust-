@@ -366,19 +366,23 @@ impl Module for SocialProbe {
                 let exists_codes = platform.exists_codes.to_vec();
 
                 async move {
-                    let url = url_pattern
-                        .replace("{}", &crate::util::http::urlencode(&slug_c));
-                    let (code, body) = crate::util::curl::fetch_with_status(
-                        &url,
-                        4_000,
-                        has_patterns,
-                    )
-                    .await;
-                    let body_blocks = has_patterns
-                        && neg_patterns.iter().any(|p| body.contains(p));
+                    let url = url_pattern.replace("{}", &crate::util::http::urlencode(&slug_c));
+                    let (code, body) =
+                        crate::util::curl::fetch_with_status(&url, 4_000, has_patterns).await;
+                    let body_blocks = has_patterns && neg_patterns.iter().any(|p| body.contains(p));
                     // Pre-calculate detection strength in the async block
-                    let (confidence, verified) = crate::util::probe_confidence::detection_strength(has_patterns);
-                    (idx, platform_name, url, code, body_blocks, exists_codes, confidence, verified)
+                    let (confidence, verified) =
+                        crate::util::probe_confidence::detection_strength(has_patterns);
+                    (
+                        idx,
+                        platform_name,
+                        url,
+                        code,
+                        body_blocks,
+                        exists_codes,
+                        confidence,
+                        verified,
+                    )
                 }
             })
             .collect();
@@ -391,7 +395,9 @@ impl Module for SocialProbe {
             .collect::<Vec<_>>()
             .await;
 
-        for (_idx, platform_name, url, code, body_blocks, exists_codes, confidence, verified) in results {
+        for (_idx, platform_name, url, code, body_blocks, exists_codes, confidence, verified) in
+            results
+        {
             if ctx.cancel.is_cancelled() {
                 break;
             }
@@ -444,11 +450,8 @@ impl Module for SocialProbe {
                     let mut dom = Entity::new(EntityKind::Domain, &host, 0.40, &ctx.scan_id);
                     dom.tag("social-platform");
                     dom.add_evidence(
-                        Evidence::new(
-                            SRC,
-                            format!("Platform domain from {platform_name} profile"),
-                        )
-                        .with_attr("platform", platform_name),
+                        Evidence::new(SRC, format!("Platform domain from {platform_name} profile"))
+                            .with_attr("platform", platform_name),
                     );
                     result.push(dom);
                 }
