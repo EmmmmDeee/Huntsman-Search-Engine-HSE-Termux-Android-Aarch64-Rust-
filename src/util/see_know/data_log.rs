@@ -172,6 +172,32 @@ pub fn stats() -> LogStats {
     stats_from(&log_dir())
 }
 
+/// Per-endpoint count of past positive (data-bearing) records. Because only
+/// data-bearing searches are logged, this is a direct historical-yield signal:
+/// the live plan orderer boosts endpoints that have produced data for THIS
+/// operator before, closing the loop from stored results back into scoring.
+/// Empty map if no log exists yet.
+#[must_use]
+pub fn yield_counts() -> std::collections::HashMap<String, usize> {
+    yield_counts_from(&log_dir())
+}
+
+fn yield_counts_from(dir: &Path) -> std::collections::HashMap<String, usize> {
+    let mut out = std::collections::HashMap::new();
+    let Ok(file) = std::fs::File::open(dir.join(LOG_FILE)) else {
+        return out;
+    };
+    for rec in BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<SearchLogRecord>(&l).ok())
+    {
+        *out.entry(rec.endpoint).or_insert(0) += 1;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,6 +245,19 @@ mod tests {
         assert_eq!(s.records, 2);
         assert_eq!(s.total_items, 3);
         assert_eq!(s.endpoints, 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_yield_counts() {
+        let dir = temp_dir();
+        append_record(&dir, &build_record("/search", "a", "", &[json!({"x": 1})]));
+        append_record(&dir, &build_record("/search", "b", "", &[json!({"x": 2})]));
+        append_record(&dir, &build_record("/discord/user", "123", "", &[json!({"d": 1})]));
+        let counts = yield_counts_from(&dir);
+        assert_eq!(counts.get("/search"), Some(&2));
+        assert_eq!(counts.get("/discord/user"), Some(&1));
+        assert_eq!(counts.get("/network/ip"), None);
         std::fs::remove_dir_all(&dir).ok();
     }
 
