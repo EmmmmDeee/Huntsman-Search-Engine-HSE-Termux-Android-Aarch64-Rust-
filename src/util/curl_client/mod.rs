@@ -385,10 +385,11 @@ fn curl_args(
 }
 
 /// Resolve the DoH fallback URL from a raw env value. Pure so the policy is
-/// unit-tested without mutating process env (the crate denies unsafe, and
-/// `std::env::set_var` is unsafe). Default-on (Cloudflare) when unset; disabled
-/// by an empty value or `off`/`none`/`false`/`0` (case-insensitive). Any other
-/// value is treated as a custom DoH endpoint URL.
+/// unit-tested without mutating process env: on the crate's Rust 2024 edition
+/// `std::env::set_var` is an `unsafe fn`, and this crate is `#![forbid(unsafe_code)]`,
+/// so a test could not call it even in an `unsafe` block. Default-on (Cloudflare)
+/// when unset; disabled by an empty value or `off`/`none`/`false`/`0`
+/// (case-insensitive). Any other value is treated as a custom DoH endpoint URL.
 fn resolve_doh(raw: Option<&str>) -> Option<String> {
     match raw {
         None => Some(DEFAULT_DOH_URL.to_string()),
