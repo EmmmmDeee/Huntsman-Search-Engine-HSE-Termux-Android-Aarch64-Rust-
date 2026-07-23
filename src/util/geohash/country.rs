@@ -196,22 +196,29 @@ pub fn country_name_for_iso(iso: &str) -> Option<&'static str> {
 }
 
 /// Two-letter ISO country code lookup by name. Covers the ~30
-/// countries most likely to appear in OSINT breach data.
+/// countries most likely to appear in OSINT breach data. Does NOT match bare
+/// US state postal codes (CA, DE, IN, etc.) as country codes, since a free-text
+/// address ending with "City, ST" (no ZIP) could be ambiguous — "Sacramento, CA"
+/// must be California, not Canada/Germany/India. Only full country names and
+/// their unambiguous abbreviations are matched.
 pub(super) fn iso_for(country: &str) -> Option<&'static str> {
     let l = country.trim().to_lowercase();
     Some(match l.as_str() {
         "united states" | "usa" | "us" | "united states of america" => "US",
         "australia" | "au" => "AU",
         "united kingdom" | "uk" | "great britain" | "england" | "gb" => "GB",
-        "canada" | "ca" => "CA",
-        "germany" | "de" | "deutschland" => "DE",
+        // "ca" is California (US state postal code), not Canada — reject bare code.
+        "canada" => "CA",
+        // "de" is Delaware (US state postal code), not Germany — reject bare code.
+        "germany" | "deutschland" => "DE",
         "france" | "fr" => "FR",
         "netherlands" | "nl" | "holland" => "NL",
         "spain" | "es" => "ES",
         "italy" | "it" => "IT",
         "japan" | "jp" => "JP",
         "china" | "cn" => "CN",
-        "india" | "in" => "IN",
+        // "in" is Indiana (US state postal code), not India — reject bare code.
+        "india" => "IN",
         "brazil" | "br" => "BR",
         "russia" | "ru" => "RU",
         "ireland" | "ie" => "IE",

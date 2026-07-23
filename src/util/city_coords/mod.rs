@@ -8,15 +8,33 @@
 /// Returns `None` when no entry matches — callers should treat a miss as
 /// "unknown city" rather than an error.
 ///
+/// Matches city names as whole words or phrases (split on comma/space delimiters),
+/// not substrings — prevents "Logan Square, Chicago" from matching the "logan" QLD
+/// entry. Multi-word cities ("North Lakes", "Sunshine Coast") are matched as
+/// phrases.
+///
 /// Falls back to [`postcode_coords`] when `addr` is a bare 4-digit AU
 /// postcode (e.g. `"4000"` → Brisbane CBD) so postcode-only addresses from
 /// breach records and search snippets still resolve offline.
 pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
     let trimmed = addr.trim();
     let lower = trimmed.to_lowercase();
+
+    // Split on comma + space (common address delimiter), then on space alone
+    // for entries like "North Lakes". Check each possible phrase/word match
+    // against the full CITIES table.
     for &(city, lat, lon) in CITIES {
-        if lower.contains(city) {
+        // Check for exact multi-word phrase match first (e.g. "North Lakes", "Sunshine Coast").
+        if city.contains(' ') && lower.contains(city) {
             return Some((lat, lon));
+        }
+        // For single-word entries, check whole-word match via comma/space delimiters.
+        if !city.contains(' ') {
+            for part in lower.split(|c: char| c == ',' || c.is_whitespace()) {
+                if part == city {
+                    return Some((lat, lon));
+                }
+            }
         }
     }
     // Last-resort: treat a bare 4-digit string as a postcode — the exact suburb
