@@ -89,9 +89,7 @@ impl Module for NumVerify {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let Some(key) = ctx.key_opt(KEY_ENV) else {
-            return Ok(ModuleResult::new());
-        };
+        let key = ctx.key(KEY_ENV)?;
         let number = target.value.trim();
         let url = format!(
             "https://api.apilayer.com/number_verification/validate?number={}",

@@ -179,8 +179,13 @@ async fn curl_exec(
         // caller's timeout_ms is a true upper bound on proxy failover time. If we
         // gave each proxy the full timeout, 3 sequential 7s-timeout proxies would
         // burn 21s total — amplifying the caller's budget 3x. Instead, each gets
-        // ~(timeout_ms / MAX_PROXY_FAILOVER) so the aggregate is bounded.
-        let per_proxy_timeout_ms = timeout_ms / MAX_PROXY_FAILOVER as u64;
+        // ~(timeout_ms / MAX_PROXY_FAILOVER) so the aggregate is bounded. Subtract
+        // the tokio timeout grace (run_curl_once adds +2000ms) from the per-proxy
+        // slice so the total tokio overhead stays bounded: each call waits at most
+        // (per_proxy_slice + 2000), and 3 calls total ≤ timeout_ms + 2000.
+        let grace_ms = 2000u64;
+        let per_proxy_timeout_ms =
+            (timeout_ms.saturating_sub(grace_ms) / MAX_PROXY_FAILOVER as u64).max(100);
         while tried.len() < MAX_PROXY_FAILOVER {
             let Some(proxy) = crate::util::egress::next_proxy_excluding(&tried) else {
                 break;

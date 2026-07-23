@@ -180,10 +180,7 @@ impl Module for SecurityTrails {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) {
-            Some(k) => k,
-            None => return Ok(ModuleResult::new()),
-        };
+        let key = ctx.key(KEY_ENV)?;
 
         match target.kind {
             TargetKind::Domain => self.subdomain_search(target, key, ctx).await,

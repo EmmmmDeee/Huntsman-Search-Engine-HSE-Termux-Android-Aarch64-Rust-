@@ -194,10 +194,7 @@ impl Module for Netlas {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) {
-            Some(k) => k,
-            None => return Ok(ModuleResult::new()),
-        };
+        let key = ctx.key(KEY_ENV)?;
 
         let query = netlas_query(target);
         let url = format!("https://app.netlas.io/api/responses/?q={query}&fields=*");

@@ -376,21 +376,34 @@ async fn session_loop(
             },
         ));
 
+        // Create a fresh cancel handle for this iteration, independent of the
+        // session-level handle. The session handle only gates the outer loop
+        // (allowing orderly iteration termination); the iteration handle gates
+        // the engine dispatch AND receives the wall-time watchdog timeout.
+        // This separation ensures that when the watchdog fires at max_wall_time,
+        // it cancels only the current iteration and not the entire session.
+        // If the session was already cancelled before this iteration started,
+        // propagate that to the iteration handle so this iteration aborts
+        // immediately and the loop checks the session handle and exits.
+        let iteration_cancel = CancelHandle::new();
+        if cancel.is_cancelled() {
+            iteration_cancel.cancel();
+        }
+
         let scan = Scan::new(sid.clone(), target.clone()).with_options(scan_options.clone());
         let ctx = ModuleContext {
             scan_id: sid.clone(),
             bus: inner.bus.clone(),
             http: http.clone(),
             keys: loaded_keys.clone(),
-            // Plumb the SAME live-session cancel handle into the engine
-            // so `DELETE /api/v1/live/{id}` aborts the in-flight
-            // iteration at the next module boundary (the iteration's
-            // scan completes with `ScanStatus::Aborted` and partial
-            // entities are preserved exactly as for one-shot scans).
-            // Without this share-rather-than-replace, stop() only
-            // affected the outer loop and the iteration had to run to
-            // its full expansion depth before stopping.
-            cancel: cancel.clone(),
+            // Plumb the iteration-level cancel handle into the engine so the
+            // wall-time watchdog cancels only this iteration. The watchdog will
+            // never have access to the session-level handle, so it cannot
+            // prematurely terminate the live session.
+            // `DELETE /api/v1/live/{id}` still works: it sets the session-level
+            // cancel, which the top-of-loop check sees and breaks gracefully
+            // after the current iteration completes.
+            cancel: iteration_cancel.clone(),
         };
 
         // Radar mode threads the persistent ledger so keyed modules skip

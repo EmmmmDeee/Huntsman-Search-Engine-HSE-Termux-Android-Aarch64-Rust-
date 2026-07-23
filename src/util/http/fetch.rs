@@ -9,14 +9,19 @@ use super::keys::scan_for_api_keys;
 use super::redact::redact_credentials;
 
 /// True if an HTTP status is a *server-side* fault that should count against a
-/// host's circuit breaker: any 5xx, or 429 (rate-limited / quota-exhausted).
+/// host's circuit breaker: any 5xx, 429 (rate-limited / quota-exhausted),
+/// 408 (request timeout), or 425 (too early).
 ///
 /// A 404 — and every other definitive client answer (400/401/403/…) — is a
 /// valid response, not an endpoint fault, so it deliberately does **not** trip
 /// the breaker (gating on those would short-circuit a host that is up and simply
-/// answering "no" / "unauthorised").
+/// answering "no" / "unauthorised"). But transient upstream timeouts (408) and
+/// congestion signals (425) indicate the backend is overloaded, not a working
+/// host, so they count against the breaker to avoid burning budget on a wedged
+/// upstream that fast-rejects with 408.
 fn is_breaker_failure_status(status: reqwest::StatusCode) -> bool {
-    status.is_server_error() || status.as_u16() == 429
+    let code = status.as_u16();
+    status.is_server_error() || matches!(code, 408 | 425 | 429)
 }
 
 /// Append `chunk` to `buf` but never past `cap` total bytes, returning `true`

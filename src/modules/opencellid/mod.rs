@@ -140,10 +140,7 @@ impl Module for OpenCellId {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let api_key = match ctx.key_opt(KEY_ENV) {
-            Some(k) => k,
-            None => return Ok(ModuleResult::new()),
-        };
+        let api_key = ctx.key(KEY_ENV)?;
         match target.kind {
             TargetKind::Coordinates => process_area(target, ctx, api_key).await,
             TargetKind::DeviceId => process_tower(target, ctx, api_key).await,

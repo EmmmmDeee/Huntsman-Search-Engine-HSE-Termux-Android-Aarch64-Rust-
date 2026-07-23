@@ -91,10 +91,7 @@ impl Module for HlrCnam {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let hlr_key = match ctx.key_opt(HLR_KEY_ENV) {
-            Some(k) => k,
-            None => return Ok(ModuleResult::new()),
-        };
+        let hlr_key = ctx.key(HLR_KEY_ENV)?;
 
         let number = target.value.trim();
         if number.is_empty() {

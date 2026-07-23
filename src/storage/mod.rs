@@ -280,6 +280,12 @@ impl Store {
             PRAGMA foreign_keys=ON;
             PRAGMA cache_size=-{cache_kb};
             PRAGMA mmap_size={mmap};
+            -- Allow concurrent writes to wait up to 5s instead of failing
+            -- immediately on SQLITE_BUSY. When multiple `hse` processes share
+            -- the database (e.g. `hse serve` + CLI import), a writer that
+            -- encounters a lock will retry rather than abort, allowing imports
+            -- and operations to complete instead of erroring.
+            PRAGMA busy_timeout=5000;
             {SCHEMA_DDL}"
         ))?;
 

@@ -89,14 +89,8 @@ impl Module for Censys {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let api_id = match ctx.key_opt(ID_ENV) {
-            Some(v) => v,
-            None => return Ok(ModuleResult::new()),
-        };
-        let api_secret = match ctx.key_opt(SECRET_ENV) {
-            Some(v) => v,
-            None => return Ok(ModuleResult::new()),
-        };
+        let api_id = ctx.key(ID_ENV)?;
+        let api_secret = ctx.key(SECRET_ENV)?;
 
         let ip = target.value.trim();
         if ip.is_empty() {

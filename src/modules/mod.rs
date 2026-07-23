@@ -481,7 +481,10 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(asic_banned_orgs::AsicBannedOrgs),
             Arc::new(au_business_id::AuBusinessId),
             Arc::new(au_electoral::AuElectoral),
-            Arc::new(au_property::AuProperty),
+            // AU-PROPERTY DISABLED: all three endpoints (NSW ELVIS, VIC MapShare WFS,
+            // QLD titles) return 404 as of 2026-07-14 and are documented as
+            // retired/migrated. When replacement endpoints exist, re-register.
+            // Arc::new(au_property::AuProperty),
             Arc::new(au_geo::AuGeo),
             Arc::new(acnc_charities::AcncCharities),
             Arc::new(gleif_lei::GleifLei),

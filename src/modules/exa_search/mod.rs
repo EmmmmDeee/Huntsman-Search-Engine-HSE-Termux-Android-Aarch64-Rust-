@@ -116,10 +116,7 @@ impl Module for ExaSearch {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) {
-            Some(k) if !k.is_empty() => k,
-            _ => return Ok(ModuleResult::new()),
-        };
+        let key = ctx.key(KEY_ENV)?;
 
         // Per-target query templates — phrased to maximise semantic match
         // recall for OSINT-relevant pages.

@@ -108,10 +108,7 @@ impl Module for ZoomEye {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let initial_key = match ctx.key_opt(KEY_ENV) {
-            Some(v) => v,
-            None => return Ok(ModuleResult::new()),
-        };
+        let initial_key = ctx.key(KEY_ENV)?;
 
         let value = target.value.trim();
         if value.is_empty() {
