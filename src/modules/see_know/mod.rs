@@ -381,7 +381,7 @@ impl Module for SeekNow {
             // single-origin platform checks — the maximisation directive
             // means SeekNow's platform-specific profile depth is worth the
             // quota even where free coverage exists at presence-only depth.
-            let plan = effective_plan(target.kind, v);
+            let plan = effective_plan(target.kind, v, &ctx.scan_id);
             let endpoint_results = dispatch_plan(key, v, &plan).await;
 
             // Build the target matcher once for the whole result set — its

@@ -55,8 +55,8 @@ const FREE_COVERED_SINGLE_ORIGIN: &[EndpointCall] = &[
 /// a single-operator deployment) means every endpoint that adds platform-
 /// specific profile depth or breach context should fire. Budget caps bound
 /// total spend; platform-presence filtering no longer does.
-pub(super) fn effective_plan(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
-    order_by_roi(plan_endpoints(kind, value), target_type_str(kind))
+pub(super) fn effective_plan(kind: TargetKind, value: &str, scan_id: &str) -> Vec<EndpointCall> {
+    order_by_roi(plan_endpoints(kind, value), target_type_str(kind), scan_id)
 }
 
 /// Map a target kind to the value scorer's `target_type` discriminator so the
@@ -82,7 +82,10 @@ fn target_type_str(kind: TargetKind) -> &'static str {
 /// The data-log feedback loop is closed here: endpoints that have historically
 /// produced data for this operator (`data_log::yield_counts`) get a saturating
 /// boost, so a repeat scan favours what has actually paid off before.
-fn order_by_roi(plan: Vec<EndpointCall>, target_type: &str) -> Vec<EndpointCall> {
+/// `scan_id` scopes `yield_counts`' per-scan memoization — this runs once per
+/// seed, so without it a scan touching hundreds of seeds would re-read and
+/// re-parse the on-disk log hundreds of times over for the same answer.
+fn order_by_roi(plan: Vec<EndpointCall>, target_type: &str, scan_id: &str) -> Vec<EndpointCall> {
     if plan.len() < 2 {
         return plan;
     }
@@ -93,7 +96,7 @@ fn order_by_roi(plan: Vec<EndpointCall>, target_type: &str) -> Vec<EndpointCall>
     let scorer = ValueScorer::new();
     let coster = CostAnalyzer::new();
     let router = RoiRouter::new();
-    let yields = see_know::data_log::yield_counts();
+    let yields = see_know::data_log::yield_counts(scan_id);
 
     // Neutral budget/time: budget-pressure and time-stress are identical for
     // every endpoint in one plan, so they cannot change RELATIVE order — the

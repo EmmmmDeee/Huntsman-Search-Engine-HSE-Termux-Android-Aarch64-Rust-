@@ -41,10 +41,11 @@ const LOG_FILE: &str = "seek_searches.jsonl";
 const ROTATED_FILE: &str = "seek_searches.jsonl.1";
 
 /// Size cap for the active log file before rotation. Bounds BOTH disk use and
-/// the cost of the readers: `yield_counts` runs on every `effective_plan`, so an
-/// unbounded file would make the live plan-ordering hot path re-parse an
-/// ever-growing log each call. 8 MiB holds tens of thousands of records — an
-/// ample, recent-enough yield-feedback window — while keeping every read O(cap).
+/// the cost of the readers: `yield_counts` is memoized per scan (see
+/// [`YIELD_CACHE`]) but still pays one full read+parse per scan, so an
+/// unbounded file would make every scan's first plan-ordering call re-parse an
+/// ever-growing log. 8 MiB holds tens of thousands of records — an ample,
+/// recent-enough yield-feedback window — while keeping that read O(cap).
 const MAX_LOG_BYTES: u64 = 8 * 1024 * 1024;
 
 /// One persisted See-Know search result.
@@ -63,6 +64,18 @@ pub struct SearchLogRecord {
     /// Raw result items exactly as returned by the API.
     pub items: Vec<Value>,
 }
+
+/// Per-scan memoization for [`yield_counts`]: `(scan_id, counts)` for the most
+/// recently computed scan. A single slot, not a keyed cache — `order_by_roi`
+/// runs once per seed and a scan can process hundreds of them, so caching the
+/// map for the CURRENT scan turns a per-seed full-log read+parse into one per
+/// scan. If `hse serve` ever runs two scans concurrently the slot thrashes
+/// between their ids (each call still checks `scan_id` equality before
+/// returning cached data, so a wrong id never reads a foreign scan's counts —
+/// concurrency only degrades the memoization benefit, never correctness), an
+/// acceptable trade for a tool built around one active scan at a time.
+static YIELD_CACHE: Mutex<Option<(String, std::collections::HashMap<String, usize>)>> =
+    Mutex::new(None);
 
 /// Aggregate statistics over the on-device log.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -235,9 +248,32 @@ pub fn stats() -> LogStats {
 /// the live plan orderer boosts endpoints that have produced data for THIS
 /// operator before, closing the loop from stored results back into scoring.
 /// Empty map if no log exists yet.
+///
+/// Memoized per `scan_id` (see [`YIELD_CACHE`]): the first call for a given
+/// scan pays a full log read+parse, every subsequent call for the SAME scan
+/// returns the cached map. A new `scan_id` always forces a fresh read, so a
+/// long-lived `hse serve` process never serves a later scan stale counts from
+/// an earlier one.
 #[must_use]
-pub fn yield_counts() -> std::collections::HashMap<String, usize> {
-    yield_counts_from(&log_dir())
+pub fn yield_counts(scan_id: &str) -> std::collections::HashMap<String, usize> {
+    yield_counts_cached(scan_id, &log_dir())
+}
+
+/// [`yield_counts`] split on the log directory so the memoization contract is
+/// unit-testable against a throwaway directory instead of the real on-device
+/// log path.
+fn yield_counts_cached(scan_id: &str, dir: &Path) -> std::collections::HashMap<String, usize> {
+    let mut cache = YIELD_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((cached_scan, counts)) = cache.as_ref()
+        && cached_scan == scan_id
+    {
+        return counts.clone();
+    }
+    let counts = yield_counts_from(dir);
+    *cache = Some((scan_id.to_string(), counts.clone()));
+    counts
 }
 
 fn yield_counts_from(dir: &Path) -> std::collections::HashMap<String, usize> {
@@ -433,6 +469,46 @@ mod tests {
         assert_eq!(counts.get("/search"), Some(&2));
         assert_eq!(counts.get("/discord/user"), Some(&1));
         assert_eq!(counts.get("/network/ip"), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_yield_counts_cached_reuses_result_for_the_same_scan_id() {
+        let dir = temp_dir();
+        append_record(&dir, &build_record("/search", "a", "", &[json!({"x": 1})]));
+        let scan_id = "scan-cache-hit";
+        assert_eq!(yield_counts_cached(scan_id, &dir).get("/search"), Some(&1));
+
+        // A second record lands (as a real scan's own searches would append
+        // mid-scan), but a call with the SAME scan_id must still return the
+        // memoized snapshot from the first call, not re-read the file.
+        append_record(&dir, &build_record("/search", "b", "", &[json!({"x": 2})]));
+        assert_eq!(
+            yield_counts_cached(scan_id, &dir).get("/search"),
+            Some(&1),
+            "same scan_id must reuse the cached (now stale) count, not re-read"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_yield_counts_cached_refreshes_on_a_new_scan_id() {
+        let dir = temp_dir();
+        append_record(&dir, &build_record("/search", "a", "", &[json!({"x": 1})]));
+        assert_eq!(
+            yield_counts_cached("scan-refresh-1", &dir).get("/search"),
+            Some(&1)
+        );
+
+        append_record(&dir, &build_record("/search", "b", "", &[json!({"x": 2})]));
+        // A DIFFERENT scan_id must force a fresh read and see the new total.
+        assert_eq!(
+            yield_counts_cached("scan-refresh-2", &dir).get("/search"),
+            Some(&2),
+            "a new scan_id must bypass the cache and see the current file state"
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 

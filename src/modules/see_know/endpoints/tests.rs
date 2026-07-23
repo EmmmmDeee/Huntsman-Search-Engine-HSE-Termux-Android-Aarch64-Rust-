@@ -104,7 +104,7 @@ use super::*;
         // FREE_COVERED_SINGLE_ORIGIN filter that dropped github/twitter/… has
         // been removed; effective_plan() now returns the complete matrix and
         // relies solely on the budget cap (300/scan) as the rate limiter.
-        let labels: Vec<&str> = effective_plan(TargetKind::Username, "alice")
+        let labels: Vec<&str> = effective_plan(TargetKind::Username, "alice", "test-full-matrix")
             .iter()
             .map(|c| c.label())
             .collect();
@@ -132,10 +132,14 @@ use super::*;
         // Discord/Steam ID resolution is cross-platform identity linkage, NOT
         // single-origin enumeration — it survives the filter even though the
         // paths live under discord/ and gaming/.
-        let labels: Vec<&str> = effective_plan(TargetKind::Username, "359023095012345678")
-            .iter()
-            .map(|c| c.label())
-            .collect();
+        let labels: Vec<&str> = effective_plan(
+            TargetKind::Username,
+            "359023095012345678",
+            "test-id-pivots",
+        )
+        .iter()
+        .map(|c| c.label())
+        .collect();
         assert!(
             labels.contains(&"discord_user") && labels.contains(&"discord_to_roblox"),
             "ID-resolution pivots must survive; got {labels:?}"
@@ -159,7 +163,7 @@ use super::*;
         // ahead of low-pivot leaf lookups, while preserving the full set. For a
         // username, the social aggregate (pivot 70, broad coverage) must rank
         // ahead of username history and a single-platform gaming leaf.
-        let plan = effective_plan(TargetKind::Username, "alice");
+        let plan = effective_plan(TargetKind::Username, "alice", "test-roi-order");
         let labels: Vec<&str> = plan.iter().map(|c| c.label()).collect();
 
         let idx = |l: &str| labels.iter().position(|x| *x == l);
