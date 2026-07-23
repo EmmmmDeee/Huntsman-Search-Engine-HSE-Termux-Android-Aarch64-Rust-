@@ -472,7 +472,7 @@ pub(super) struct DispatchCx<'a> {
 /// separately at their use sites so the entity merge, the stat bump, the
 /// ledger insert, and the new-uid record never contend.
 pub(super) struct DispatchState<'a> {
-    pub(super) entity_map: &'a mut HashMap<String, Entity>,
+    pub(super) entity_map: &'a mut super::TrackedEntityMap,
     pub(super) stats: &'a mut ModuleStats,
     pub(super) dispatched: &'a mut DispatchLog,
     pub(super) newly_inserted: &'a mut Vec<String>,
