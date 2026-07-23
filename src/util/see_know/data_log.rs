@@ -76,8 +76,7 @@ pub fn log_path() -> PathBuf {
 fn now_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis())
 }
 
 fn build_record(endpoint: &str, query: &str, query_type: &str, items: &[Value]) -> SearchLogRecord {
