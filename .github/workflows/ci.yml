@@ -22,8 +22,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Pinned to the SAME literal version as rust-toolchain.toml (not
+      # `@stable`) so this job's clippy/rustfmt can never drift from a
+      # contributor's local pinned toolchain — the exact class of surprise
+      # that twice broke this branch's CI in one session before this pin
+      # existed. Keep both in lockstep when bumping.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
 
@@ -54,6 +59,15 @@ jobs:
   msrv:
     name: MSRV (1.88)
     runs-on: ubuntu-latest
+    # CRITICAL: rustup resolves an ambient rust-toolchain.toml (repo root)
+    # ABOVE a plain `rustup default` — which is all `dtolnay/rust-toolchain`
+    # sets — so without this override the repo's new rust-toolchain.toml pin
+    # (1.97.1) would silently hijack every `cargo` invocation below back onto
+    # 1.97.1, defeating the MSRV gate while staying green. RUSTUP_TOOLCHAIN is
+    # rustup's highest-precedence resolution source (above rust-toolchain.toml
+    # AND `rustup default`), so this keeps 1.88 authoritative regardless.
+    env:
+      RUSTUP_TOOLCHAIN: "1.88"
     steps:
       - uses: actions/checkout@v4
 
@@ -72,8 +86,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Pinned to the same literal version as rust-toolchain.toml — see the
+      # `check` job's comment above for why `@stable` alone isn't used here.
       - name: Install Rust toolchain + aarch64 Android target
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
         with:
           targets: aarch64-linux-android
 

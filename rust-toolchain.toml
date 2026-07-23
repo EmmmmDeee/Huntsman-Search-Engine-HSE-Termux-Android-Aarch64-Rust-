@@ -1,0 +1,19 @@
+# Pins the exact Rust toolchain for every `cargo`/`rustc` invocation rustup
+# manages (local dev machines and CI) so `cargo fmt`/`cargo clippy` output can
+# never silently diverge between a contributor's floating "stable" and CI's —
+# the drift class that twice broke this branch's CI in one session (a local
+# clippy 1.94 missed a `-D warnings` lint that CI's clippy 1.97 caught, and
+# separately a lint that only 1.97 flags at all). `.github/workflows/ci.yml`
+# pins `dtolnay/rust-toolchain` to this SAME literal version in every job
+# (including the `msrv` job's `RUSTUP_TOOLCHAIN` override) so the two can never
+# drift apart even transiently on a cache-miss CI run.
+#
+# Scope: this file only affects rustup-managed toolchains. Termux's own Rust
+# (installed via `pkg install rust`, a system package — see
+# `scripts/setup-dev.sh`) has no rustup underneath it and ignores this file
+# entirely; it tracks whatever version Termux's package repo currently ships.
+# That is a separate, unrelated axis of version drift with no rustup-based fix.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+targets = ["aarch64-linux-android"]

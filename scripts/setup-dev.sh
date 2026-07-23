@@ -69,12 +69,18 @@ install_system_deps() {
 }
 
 ensure_rust() {
-  # Termux installs rust via pkg above; elsewhere bootstrap rustup if cargo is
-  # absent. The repo pins no toolchain (MSRV 1.88, edition 2024) — current
-  # stable satisfies both.
+  # Termux installs rust via pkg above (a system package with no rustup
+  # underneath — it ignores the pin below and tracks whatever version
+  # Termux's package repo ships); elsewhere bootstrap rustup if cargo is
+  # absent. rust-toolchain.toml (repo root) pins the exact rustup toolchain
+  # (currently 1.97.1, components rustfmt+clippy, target aarch64-linux-android)
+  # so a plain `--default-toolchain stable` bootstrap here still ends up
+  # running the pinned version inside this repo — rustup auto-installs and
+  # switches to a rust-toolchain.toml's pin the first time cargo/rustc runs in
+  # a directory that has one, with no extra step needed here.
   if ! command -v cargo >/dev/null 2>&1; then
     if [ -z "${TERMUX_VERSION:-}" ]; then
-      log "installing Rust via rustup (stable)"
+      log "installing Rust via rustup (stable; the repo's rust-toolchain.toml pin takes over inside it)"
       curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
         sh -s -- -y --profile minimal --default-toolchain stable
     fi
@@ -82,6 +88,8 @@ ensure_rust() {
     [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
   fi
   # rustfmt + clippy are needed for the `fmt`/`clippy` gates (rustup toolchains).
+  # Run from the repo root (see caller), so this targets the pinned toolchain
+  # rust-toolchain.toml selects, not whatever `rustup default` is.
   if command -v rustup >/dev/null 2>&1; then
     rustup component add rustfmt clippy >/dev/null 2>&1 || true
   fi
