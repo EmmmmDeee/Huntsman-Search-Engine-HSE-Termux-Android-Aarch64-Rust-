@@ -317,7 +317,7 @@ pub async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str, timeout_ms: u
 /// when the body was truncated by `--max-filesize` (curl exit code 63). Treating
 /// exit 63 as a hard failure would suppress real profiles whose pages exceed 8 KB.
 /// `timeout_ms` is reserved for future use; the current implementation encodes a
-/// 4-second curl `--max-time` internally.
+/// Respects the caller's timeout, converted to seconds for curl's `--max-time`.
 ///
 /// # SSRF model
 /// This path applies the same protocol/redirect hardening as [`curl_exec`]
@@ -330,13 +330,15 @@ pub async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str, timeout_ms: u
 /// high-volume status fan-out is not warranted. Any future caller that passes an
 /// attacker-controlled host MUST route through [`curl_exec`] (or reqwest), which
 /// pin the resolved address against the private/reserved set.
-pub async fn fetch_with_status(url: &str, _timeout_ms: u64, capture_body: bool) -> (u16, String) {
+pub async fn fetch_with_status(url: &str, timeout_ms: u64, capture_body: bool) -> (u16, String) {
+    let timeout_secs = (timeout_ms.saturating_add(999)) / 1000;
+    let timeout_secs_str = timeout_secs.to_string();
     let mut args: Vec<&str> = vec![
         "-s",
         "-w",
         "\n%{http_code}",
         "--max-time",
-        "4",
+        &timeout_secs_str,
         "-L",
         // Protocol/redirect hardening, mirroring `FETCH_HARDENING_ARGS`: confine
         // the initial request and every redirect hop to http/https (no
