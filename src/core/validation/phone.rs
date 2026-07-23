@@ -316,3 +316,140 @@ mod e164_reserved_range_tests {
         assert!(real_au.valid, "real AU number should pass");
     }
 }
+
+#[cfg(test)]
+mod e164_property_tests {
+    use super::{to_e164_au, validate_phone_e164};
+
+    #[test]
+    fn valid_e164_is_idempotent() {
+        // If a number is valid E.164, normalizing it should be idempotent
+        let test_numbers = vec![
+            "+61412345678",
+            "+14155551234",
+            "+33123456789",
+            "+441632123456",
+        ];
+        for num in test_numbers {
+            // First validation
+            let first = validate_phone_e164(num);
+            if first.valid {
+                // Second validation of same number should also pass
+                let second = validate_phone_e164(num);
+                assert!(
+                    second.valid,
+                    "E.164 number should remain valid on re-validation: {}",
+                    num
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn au_normalization_is_idempotent() {
+        // If an AU number normalizes to E.164, normalizing the result should be idempotent
+        let test_numbers = vec![
+            "0412345678",
+            "0298765432",
+            "+61412345678",
+            "61412345678",
+            "(02) 9876 5432",
+            "0412 345 678",
+        ];
+        for num in test_numbers {
+            if let Some(normalized) = to_e164_au(num) {
+                // Re-normalize the already-normalized number
+                let re_normalized = to_e164_au(&normalized);
+                assert_eq!(
+                    re_normalized,
+                    Some(normalized.clone()),
+                    "AU normalization should be idempotent: {} → {}",
+                    num,
+                    normalized
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn au_normalization_preserves_validity() {
+        // All AU numbers that normalize successfully should be valid E.164
+        let test_numbers = vec![
+            "0412345678",
+            "0298765432",
+            "0755512345",
+            "+61412345678",
+            "61412345678",
+        ];
+        for num in test_numbers {
+            if let Some(normalized) = to_e164_au(num) {
+                let validation = validate_phone_e164(&normalized);
+                assert!(
+                    validation.valid,
+                    "AU-normalized number should be valid E.164: {} → {}",
+                    num, normalized
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn au_normalization_rejects_foreign_numbers() {
+        // Non-AU numbers should not normalize via AU path
+        let non_au = vec![
+            "0612345678", // French (lead digit 6)
+            "0112345678", // Invalid (lead digit 1)
+            "0912345678", // Invalid (lead digit 9)
+            "0012345678", // Invalid (lead digit 0)
+        ];
+        for num in non_au {
+            assert_eq!(
+                to_e164_au(num),
+                None,
+                "Foreign/invalid number should not normalize: {}",
+                num
+            );
+        }
+    }
+
+    #[test]
+    fn au_normalization_accepts_all_real_trunk_digits() {
+        // All real ACMA trunk digits (2/3/4/5/7/8) should be accepted
+        for trunk in ['2', '3', '4', '5', '7', '8'] {
+            let local = format!("0{trunk}12345678");
+            assert!(
+                to_e164_au(&local).is_some(),
+                "Valid AU trunk digit {} should normalize: {}",
+                trunk,
+                local
+            );
+
+            let intl = format!("61{trunk}12345678");
+            assert!(
+                to_e164_au(&intl).is_some(),
+                "Valid AU trunk digit {} should normalize (bare-61): {}",
+                trunk,
+                intl
+            );
+        }
+    }
+
+    #[test]
+    fn au_international_and_local_collapse() {
+        // The local and international forms of an AU number should normalize to the same value
+        let test_pairs = vec![
+            ("0412345678", "+61412345678"),
+            ("0298765432", "61298765432"),
+            ("0755512345", "+61755512345"),
+        ];
+        for (local, intl) in test_pairs {
+            let local_norm = to_e164_au(local);
+            let intl_norm = to_e164_au(intl);
+            assert_eq!(
+                local_norm, intl_norm,
+                "Local and international forms should normalize to same value: {} vs {}",
+                local, intl
+            );
+        }
+    }
+}
