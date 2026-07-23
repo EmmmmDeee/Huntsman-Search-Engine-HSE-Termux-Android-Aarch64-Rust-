@@ -10,6 +10,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use super::types::EndpointRegistry;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ValueScore {
     pub entity_diversity: f32,      // 0-100
@@ -48,48 +50,22 @@ impl ValueScore {
 }
 
 pub struct ValueScorer {
-    entity_type_counts: HashMap<String, usize>,
+    /// Single source of truth for per-endpoint diversity + pivot signals.
+    registry: EndpointRegistry,
     hit_rate_cache: HashMap<String, f32>,
 }
 
 impl ValueScorer {
     pub fn new() -> Self {
-        let mut entity_counts = HashMap::new();
-        
-        // Entity type counts per endpoint
-        entity_counts.insert("/search".to_string(), 17);       // All types
-        entity_counts.insert("/search/deep".to_string(), 17);  // All types
-        entity_counts.insert("/username/social".to_string(), 3);
-        entity_counts.insert("/username/github".to_string(), 2);
-        entity_counts.insert("/username/twitter".to_string(), 2);
-        entity_counts.insert("/username/tiktok".to_string(), 2);
-        entity_counts.insert("/username/reddit".to_string(), 2);
-        entity_counts.insert("/username/history".to_string(), 3);
-        entity_counts.insert("/discord/user".to_string(), 2);
-        entity_counts.insert("/discord/to-roblox".to_string(), 2);
-        entity_counts.insert("/network/ip".to_string(), 5);
-        entity_counts.insert("/network/email-check".to_string(), 3);
-        entity_counts.insert("/network/phone".to_string(), 2);
-        entity_counts.insert("/domain/intel".to_string(), 4);
-        entity_counts.insert("/domain/whois".to_string(), 3);
-        entity_counts.insert("/gaming/xbox".to_string(), 2);
-        entity_counts.insert("/gaming/roblox".to_string(), 2);
-        entity_counts.insert("/gaming/minecraft".to_string(), 2);
-        entity_counts.insert("/gaming/steam".to_string(), 2);
-        
         Self {
-            entity_type_counts: entity_counts,
+            registry: EndpointRegistry::new(),
             hit_rate_cache: HashMap::new(),
         }
     }
 
-    /// Score query on entity diversity (0-100)
+    /// Score query on entity diversity (0-100), sourced from the registry.
     pub fn score_entity_diversity(&self, endpoint: &str) -> f32 {
-        let count = self.entity_type_counts
-            .get(endpoint)
-            .copied()
-            .unwrap_or(1);
-        
+        let count = self.registry.entity_type_count(endpoint);
         // Normalize to 0-100 scale (17 types = 100)
         ((count as f32 / 17.0) * 100.0).min(100.0)
     }
@@ -127,21 +103,9 @@ impl ValueScorer {
         adjusted.min(100.0)
     }
 
-    /// Score query on cascade/pivot potential (0-100)
+    /// Score query on cascade/pivot potential (0-100), sourced from the registry.
     pub fn score_pivot_potential(&self, endpoint: &str) -> f32 {
-        match endpoint {
-            "/discord/user" => 80.0,           // Can pivot to Roblox, Steam
-            "/network/email-check" => 75.0,    // Can pivot to service platforms
-            "/username/social" => 70.0,        // Platform accounts are pivots
-            "/search" => 65.0,                 // Discovers many pivotable types
-            "/search/deep" => 65.0,
-            "/username/github" => 50.0,        // GitHub as starting point
-            "/username/twitter" => 50.0,
-            "/domain/intel" => 45.0,           // Can pivot to registrant emails
-            "/network/ip" => 40.0,             // Limited pivot without context
-            "/gaming/steam" => 35.0,           // Gaming platforms, limited cascade
-            _ => 25.0,
-        }
+        self.registry.pivot_potential(endpoint)
     }
 
     /// Score based on cache age (0-100)
