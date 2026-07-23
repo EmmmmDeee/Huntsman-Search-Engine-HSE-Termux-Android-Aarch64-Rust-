@@ -1364,12 +1364,16 @@ pub fn derive_canonical_identities(entities: &[Entity], scan_id: &str) -> Vec<Re
     }
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
     // Resolve each canonical group's member UIDs back to entities; `emit_pairwise`
-    // links every distinct variant pair as the same node.
+    // links every distinct variant pair as the same node. Crucially, filter out
+    // candidate-quarantined entities to avoid fabricated links: a candidate entity
+    // (from a non-target record in dehashed/OathNet/etc) must not be merged with
+    // primary-target entities, as this would create false identity claims.
     let entity_groups = groups.iter().map(|group| {
         group
             .members
             .iter()
             .filter_map(|uid| by_uid.get(uid.as_str()).copied())
+            .filter(|e| !e.has_tag(crate::core::tags::CANDIDATE))
             .collect::<Vec<&Entity>>()
     });
     emit_pairwise(entity_groups, RelationKind::SameAs, scan_id, |a, b| {
