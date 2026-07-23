@@ -108,7 +108,22 @@ fn string_signal(
         return None;
     }
     if norm_a == norm_b {
-        return Some((W_HANDLE_EQUIV, "handle-equivalence"));
+        // An exact canonical-handle match is the strongest tie — but ONLY when the
+        // shared handle is distinctive. A match on a generic role handle
+        // ("admin", "info", "support", "contact") or a very short token is a
+        // coincidence two unrelated people trivially share; letting it earn the
+        // 0.80 weight — enough to clear COREF_PROMOTE_MIN_SCORE on its own — would
+        // fabricate an AliasOf/IdentifiedBy/SameAs edge between strangers, the
+        // exact failure mode every correlator identity rule already guards against
+        // with the same generic-handle + length-floor exclusion (AU-034/045/076/
+        // 079/123). Below the floor we fall through to the weaker name-token /
+        // substring signals, which cannot alone reach the promotion threshold.
+        const MIN_DISTINCTIVE_HANDLE_LEN: usize = 4;
+        if norm_a.len() >= MIN_DISTINCTIVE_HANDLE_LEN
+            && !crate::util::preflight::is_placeholder_username(norm_a)
+        {
+            return Some((W_HANDLE_EQUIV, "handle-equivalence"));
+        }
     }
     // Name-token match: a Person's every token (≥2 chars), of which there are ≥2,
     // is a substring of the OTHER side's canonical handle.

@@ -1150,7 +1150,31 @@ impl super::ScanEngine {
                 continue;
             }
 
-            let Ok(permit) = Arc::clone(&sem).acquire_owned().await else {
+            // Acquire a concurrency permit, but never block on it INDEFINITELY:
+            // if the scan is cancelled (operator stop / wall-time watchdog) while
+            // every permit is held by an in-flight module, a plain `.await` here
+            // observes the cancel only once a permit frees — up to a full module
+            // timeout (tens of seconds on a Termux budget) later, blowing the
+            // documented ~3-8s p99 cancellation latency and delaying the
+            // join/abort drain below. Pin ONE acquire future (preserving the
+            // semaphore's FIFO queue position) and poll the cancel flag on a short
+            // cadence while it's pending, so a cancel breaks the dispatch loop
+            // promptly. `CancelHandle` is a bare `AtomicBool` with no async
+            // wakeup, hence the poll rather than a `select!` on a future.
+            let acquire = Arc::clone(&sem).acquire_owned();
+            tokio::pin!(acquire);
+            let permit = loop {
+                tokio::select! {
+                    biased;
+                    p = &mut acquire => break p.ok(),
+                    () = sleep(Duration::from_millis(200)) => {
+                        if ctx.cancel.is_cancelled() {
+                            break None;
+                        }
+                    }
+                }
+            };
+            let Some(permit) = permit else {
                 break;
             };
 

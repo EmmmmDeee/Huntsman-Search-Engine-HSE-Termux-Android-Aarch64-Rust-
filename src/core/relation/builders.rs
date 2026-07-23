@@ -1430,10 +1430,28 @@ pub fn derive_coreferences(
         .iter()
         .map(|e| (e.uid.as_str(), e.kind.clone()))
         .collect();
+    // Candidate-quarantined UIDs are EXCLUDED from co-reference promotion, exactly
+    // as `derive_canonical_identities` excludes them from its SameAs pass. A
+    // `candidate`-tagged entity is one the engine has already judged NOT to
+    // identify the subject (a non-target row from a broad breach/name search that
+    // `TargetMatch` classified as a namesake, capped at CANDIDATE_CONF). Promoting
+    // it into an `AliasOf`/`IdentifiedBy`/`SameAs` edge would fuse the confirmed
+    // subject with an unrelated stranger into a persisted, analyst-facing identity
+    // link — the fabricated-identity failure mode this tool must never produce.
+    // The `coref` scorer itself is confidence-blind, so this gate is the chokepoint.
+    let candidate: HashSet<&str> = entities
+        .iter()
+        .filter(|e| e.has_tag(crate::core::tags::CANDIDATE))
+        .map(|e| e.uid.as_str())
+        .collect();
 
     let mut seen: HashSet<(String, String, String)> = HashSet::new();
     let mut out = Vec::new();
     for c in crate::core::coref::resolve_coreferences(entities, COREF_PROMOTE_MIN_SCORE, 512) {
+        // Skip any pair touching a quarantined candidate (see `candidate` above).
+        if candidate.contains(c.uid_a.as_str()) || candidate.contains(c.uid_b.as_str()) {
+            continue;
+        }
         let (Some(ka), Some(kb)) = (kind_of.get(c.uid_a.as_str()), kind_of.get(c.uid_b.as_str()))
         else {
             continue;

@@ -19,6 +19,34 @@ fn handle_equivalence_links_a_username_to_a_matching_email() {
     assert!(c.uid_a <= c.uid_b, "endpoints are oriented by UID");
 }
 
+/// A generic role handle shared by two selectors must NOT fire handle-
+/// equivalence: "admin@x.com" and an "admin" username trivially collide on a
+/// non-identifying token, and promoting that to a co-reference would fabricate
+/// an identity link between unrelated accounts.
+#[test]
+fn generic_handle_does_not_fire_handle_equivalence() {
+    let email = Entity::new(EntityKind::Email, "admin@example.com", 0.7, "s");
+    let user = Entity::new(EntityKind::Username, "admin", 0.7, "s");
+    let out = resolve_coreferences(&[email, user], DEFAULT_MIN_SCORE, 50);
+    assert!(
+        out.iter().all(|c| !c.signals.contains(&"handle-equivalence")),
+        "a generic role handle must not earn the strong handle-equivalence tie: {out:?}"
+    );
+}
+
+/// A too-short shared handle (< 4 chars) is likewise a coincidence, not identity
+/// evidence, so it must not fire handle-equivalence.
+#[test]
+fn short_handle_does_not_fire_handle_equivalence() {
+    let a = Entity::new(EntityKind::Username, "abc", 0.7, "s");
+    let b = Entity::new(EntityKind::Username, "abc", 0.7, "s2");
+    let out = resolve_coreferences(&[a, b], DEFAULT_MIN_SCORE, 50);
+    assert!(
+        out.iter().all(|c| !c.signals.contains(&"handle-equivalence")),
+        "a <4-char shared handle must not earn handle-equivalence: {out:?}"
+    );
+}
+
 /// A Person's full name embedded in another selector's handle fires the
 /// name-token tier (not the weaker substring tier).
 #[test]

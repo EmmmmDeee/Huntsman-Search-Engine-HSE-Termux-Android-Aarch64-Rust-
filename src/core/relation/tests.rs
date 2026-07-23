@@ -1148,6 +1148,35 @@ fn coreference_promotion_emits_typed_identity_edges() {
 }
 
 #[test]
+fn coreference_promotion_excludes_candidate_quarantined_entities() {
+    // A confirmed subject Person and a candidate-quarantined namesake that both
+    // canonicalise to "johnsmith" (e.g. an unrelated "John Smith" row a broad
+    // name search surfaced and TargetMatch demoted). Co-reference promotion must
+    // NOT fuse them: a candidate is one the engine already judged not to identify
+    // the subject, so an AliasOf/SameAs/IdentifiedBy edge here would fabricate an
+    // identity link between strangers — the worst outcome for an evidentiary tool.
+    let subject = ent(EntityKind::Person, "John Smith", 0.9);
+    let mut namesake = ent(EntityKind::Username, "johnsmith", 0.9);
+    namesake.demote_to_candidate();
+
+    let rels = derive_coreferences(&[subject.clone(), namesake.clone()], &[], "s");
+    assert!(
+        rels.iter()
+            .all(|r| r.from_uid != namesake.uid && r.to_uid != namesake.uid),
+        "no promoted edge may touch a candidate-quarantined entity: {rels:?}"
+    );
+
+    // Sanity: without the demotion the same pair WOULD promote — proving the
+    // exclusion (not some unrelated miss) is what suppressed the edge above.
+    let confirmed = ent(EntityKind::Username, "johnsmith", 0.9);
+    let promoted = derive_coreferences(&[subject, confirmed], &[], "s");
+    assert!(
+        !promoted.is_empty(),
+        "a confirmed matching handle must still promote"
+    );
+}
+
+#[test]
 fn coreference_promotion_is_strictly_additive() {
     // An edge already present in `existing` for the same (from, kind, to) must NOT
     // be re-emitted — the pass can only ADD links, never restate a higher-trust
