@@ -31,6 +31,67 @@ fn insert_scan(store: &Store, id: &str) {
 }
 
 #[test]
+fn fresh_open_stamps_the_current_schema_version() {
+    let path = tmp_db();
+    {
+        let _store = Store::open(&path).unwrap();
+    }
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let ver: i32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        ver, SCHEMA_VERSION,
+        "a fresh DB must be stamped to the current schema version"
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn open_refuses_a_forward_incompatible_database() {
+    // A DB written by a NEWER binary (higher user_version) must be REFUSED, not
+    // warned-and-opened — an older binary writing against a schema it doesn't
+    // understand risks corrupting a newer store (findings from the storage audit).
+    let path = tmp_db();
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(&format!("PRAGMA user_version = {};", SCHEMA_VERSION + 1))
+            .unwrap();
+    }
+    // `Store` isn't `Debug`, so match rather than `.expect_err()`.
+    let err = match Store::open(&path) {
+        Ok(_) => panic!("a newer-schema DB must be refused, not opened"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err, crate::core::error::Error::Other(ref m) if m.contains("newer than this build")),
+        "expected a schema-too-new refusal, got {err:?}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn migrations_registry_is_ordered_and_targets_are_reachable() {
+    // Guards the invariant `open()`'s migration loop relies on: strictly
+    // ascending targets, each in (0, SCHEMA_VERSION]. A stray, duplicate, or
+    // too-high target would make an upgrade skip, re-run, or never reach a step.
+    // An empty registry (today's state) is valid.
+    let mut prev = 0;
+    for (target, _sql) in MIGRATIONS {
+        assert!(
+            *target > prev,
+            "MIGRATIONS targets must strictly ascend: {target} after {prev}"
+        );
+        assert!(
+            *target <= SCHEMA_VERSION,
+            "migration target {target} exceeds SCHEMA_VERSION {SCHEMA_VERSION} — bump the version"
+        );
+        prev = *target;
+    }
+}
+
+#[test]
 #[cfg(unix)]
 fn open_restricts_the_db_file_to_owner_only() {
     // §7 S3: the store holds PII + harvested keys, so it must not be left

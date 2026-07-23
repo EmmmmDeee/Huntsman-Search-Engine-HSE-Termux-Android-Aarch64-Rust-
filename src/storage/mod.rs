@@ -21,9 +21,30 @@ pub struct Store {
 }
 
 /// Logical schema version stamped into `PRAGMA user_version` on first open.
-/// Increment this when a future non-additive migration is introduced so older
-/// binaries can warn rather than silently misread a newer schema.
+/// Increment this ONLY together with a matching [`MIGRATIONS`] step (see below).
 const SCHEMA_VERSION: i32 = 1;
+
+/// Ordered schema migrations that `CREATE … IF NOT EXISTS` in [`SCHEMA_DDL`]
+/// CANNOT express — `ALTER TABLE ADD COLUMN`, backfilling a newly-added column,
+/// or changing an index on an existing table. Each entry is `(target_version,
+/// sql)`: the SQL upgrades the schema TO `target_version` and runs exactly once,
+/// in ascending order, on any DB whose `user_version` is below it, inside the
+/// same transaction as the version bump (so a failed step rolls the whole
+/// upgrade back rather than leaving a half-migrated store).
+///
+/// HOW TO EVOLVE THE SCHEMA SAFELY:
+///   * A whole NEW table or index → add it to [`SCHEMA_DDL`] as
+///     `CREATE … IF NOT EXISTS`; it applies to old and new DBs alike, needs NO
+///     entry here, and needs NO version bump.
+///   * A COLUMN on an EXISTING table, or anything `IF NOT EXISTS` can't make →
+///     `IF NOT EXISTS` is a NO-OP against a table that already exists, so editing
+///     [`SCHEMA_DDL`] would silently skip every UPGRADED install and its writes
+///     would then fail with "no such column". Instead bump [`SCHEMA_VERSION`] and
+///     add an `ALTER TABLE …` step HERE. That is the only path that reaches an
+///     existing user's database.
+const MIGRATIONS: &[(i32, &str)] = &[
+    // (2, "ALTER TABLE entities ADD COLUMN example INTEGER NOT NULL DEFAULT 0;"),
+];
 
 /// Static schema (tables + indexes), `CREATE … IF NOT EXISTS` so it's safe to
 /// run on every open. Kept as a constant so [`Store::open`] reads as a short
@@ -289,20 +310,42 @@ impl Store {
             {SCHEMA_DDL}"
         ))?;
 
-        // Schema versioning: stamp on first open; warn on forward-compatibility break.
+        // Schema versioning: refuse a forward-incompatible DB, else migrate up.
         {
             let ver: i32 = conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap_or(0);
             if ver > SCHEMA_VERSION {
-                tracing::warn!(
-                    db_version = ver,
-                    binary_version = SCHEMA_VERSION,
-                    "DB schema version is newer than this binary — open with a newer `hse` or use a fresh database"
-                );
+                // A DB written by a NEWER binary. REFUSE rather than warn-and-
+                // continue (the prior behaviour): this binary would run its
+                // INSERT/SELECT against a schema it doesn't understand — a
+                // renamed or added-NOT-NULL column makes a write fail mid-session
+                // after a live handle was already handed out, or silently writes
+                // the wrong shape. On Termux a user may run an old CLI beside a
+                // newer `serve`, or downgrade the app; a forward-incompatible
+                // store must stop cleanly, not risk corrupting a newer database.
+                return Err(crate::core::error::Error::Other(format!(
+                    "database schema version {ver} is newer than this build supports \
+                     ({SCHEMA_VERSION}); upgrade `hse` (or point the database path at a \
+                     fresh file) — refusing to open to avoid corrupting a newer store"
+                )));
             }
             if ver < SCHEMA_VERSION {
-                conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+                // Apply the ordered [`MIGRATIONS`] that IF-NOT-EXISTS DDL can't
+                // express, then advance the version — all in ONE transaction so a
+                // failed step rolls back instead of leaving a half-migrated store
+                // stamped forward. With no migrations registered (the schema has
+                // only ever grown by CREATE … IF NOT EXISTS), this simply stamps
+                // a fresh/pre-versioning DB to the current version, exactly as
+                // before — but the hook now exists for the first real ALTER.
+                let tx = conn.unchecked_transaction()?;
+                for (target, sql) in MIGRATIONS {
+                    if *target > ver && *target <= SCHEMA_VERSION {
+                        tx.execute_batch(sql)?;
+                    }
+                }
+                tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+                tx.commit()?;
             }
         }
 
