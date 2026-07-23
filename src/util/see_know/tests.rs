@@ -5,8 +5,8 @@ use super::budget::{
     scan_budget_remaining, set_scan_cap_override, should_probe_quota,
 };
 use super::client::{
-    CLIENT, CLIENT_FAST, HARDCODED_KEY_FOR_TESTS, cache_get, cache_key, cache_put, classify_status,
-    is_auth_error, key_fingerprint, parse_response, resolve_key, typed_cache_key,
+    CLIENT, CLIENT_FAST, HARDCODED_KEY_FOR_TESTS, base_urls_for, cache_get, cache_key, cache_put,
+    classify_status, is_auth_error, key_fingerprint, parse_response, resolve_key, typed_cache_key,
 };
 use super::endpoints::{
     CreditsOutcome, CreditsProbe, SEARCH_LIMIT, build_search_body, classify_credits_probe,
@@ -606,6 +606,47 @@ fn client_base_url_uses_endpoint_override_or_default() {
             "SeekNow default base URL must be the `.xyz` domain — got {url}"
         );
     }
+}
+
+#[test]
+fn base_urls_for_default_rotates_through_every_known_public_domain() {
+    // No override active (primary == the built-in default): full 3-domain
+    // rotation, exactly today's behaviour.
+    let urls = base_urls_for("https://see-know.xyz/api/v1".to_string());
+    assert_eq!(
+        urls,
+        vec![
+            "https://see-know.xyz/api/v1",
+            "https://see-know.eu/api/v1",
+            "https://see-know.icu/api/v1",
+        ]
+    );
+}
+
+#[test]
+fn base_urls_for_active_override_is_exclusive_no_public_fallback() {
+    // An accepted HUNTSMAN_SEEKNOW_BASE override (primary != the built-in
+    // default) must NOT fall through to see-know.eu/.icu on failure — that
+    // would silently send the key-bearing, PII-bearing request to a host the
+    // operator explicitly did not choose, and (for the carrier-DNS-filtering
+    // workaround `hse doctor` itself recommends) just reproduces the exact
+    // resolution failure the override exists to route around.
+    let urls = base_urls_for("https://my-private-relay.example/api/v1".to_string());
+    assert_eq!(
+        urls,
+        vec!["https://my-private-relay.example/api/v1"],
+        "an active override must be the ONLY url tried — got {urls:?}"
+    );
+}
+
+#[test]
+fn base_urls_for_override_pinned_to_a_known_fallback_is_also_exclusive() {
+    // Even when the override happens to equal one of the two hardcoded
+    // fallback domains, it must still win exclusively — the operator's
+    // explicit choice, not the rotation order, decides once an override
+    // is set at all.
+    let urls = base_urls_for("https://see-know.eu/api/v1".to_string());
+    assert_eq!(urls, vec!["https://see-know.eu/api/v1"]);
 }
 
 #[test]

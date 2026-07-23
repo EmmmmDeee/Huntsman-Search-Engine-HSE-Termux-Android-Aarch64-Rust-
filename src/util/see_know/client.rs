@@ -82,6 +82,11 @@ pub(super) fn cache_put(key: String, items: Vec<Value>) {
     RESPONSE_CACHE.put(key, items);
 }
 
+/// The built-in primary endpoint absent any `HUNTSMAN_SEEKNOW_BASE` override.
+/// Shared with [`all_base_urls`] so its "is an override actually active" check
+/// can never drift from the literal `base_url` resolves against.
+const DEFAULT_BASE: &str = "https://see-know.xyz/api/v1";
+
 pub fn base_url() -> String {
     // Default promoted (2026-07-21) to `.xyz` — the operator-designated primary
     // endpoint. Prior history: default started on `.icu` (sandbox-confirmed
@@ -91,24 +96,50 @@ pub fn base_url() -> String {
     // commonly caught by carrier/ISP DNS-level abuse filtering, a failure mode a
     // sandboxed reachability probe cannot see. `.eu` and `.icu` remain first and
     // second fallback in [`all_base_urls`] so a transient `.xyz` outage still
-    // exhausts every known domain before the scan surfaces a connection error.
+    // exhausts every known domain before the scan surfaces a connection error —
+    // UNLESS the operator has set an override, see that function's doc.
     // Vet the operator's override: refuse non-https / private-host redirects and
     // WARN on a divergent host, so a key-bearing request can't be silently
     // redirected to a look-alike or an internal address.
-    crate::util::endpoint_override::resolve("HUNTSMAN_SEEKNOW_BASE", "https://see-know.xyz/api/v1")
+    crate::util::endpoint_override::resolve("HUNTSMAN_SEEKNOW_BASE", DEFAULT_BASE)
 }
 
-/// All SeekNow base URLs in fallback order. The service intentionally rotates
-/// domains; fallback attempts exhaustively try all known domains before surfacing
-/// a network/connection error, allowing the scan to continue despite transient
-/// domain availability. Auth errors (invalid key, plan required) are NOT retried
-/// across domains — if the key is invalid on one, it's invalid on all.
+/// All SeekNow base URLs to try, in order. The service intentionally rotates
+/// domains, so with NO operator override active, fallback attempts exhaustively
+/// try all known public domains before surfacing a network/connection error,
+/// letting the scan continue despite transient domain availability. Auth errors
+/// (invalid key, plan required) are NOT retried across domains — if the key is
+/// invalid on one, it's invalid on all.
+///
+/// An ACCEPTED `HUNTSMAN_SEEKNOW_BASE` override — [`base_url`] resolving to
+/// anything other than [`DEFAULT_BASE`] — takes exclusive effect instead:
+/// no public-domain fallback is appended. Previously every fallback attempt
+/// still ran even with an override set, so a transient hiccup on the
+/// operator's chosen endpoint silently sent the same key-bearing,
+/// PII-bearing request on to see-know.eu/.icu — hosts the operator did not
+/// choose, defeating the override's own purpose (see `endpoint_override`'s
+/// doc comment on why a redirect must never be silent). It also actively
+/// worked against the override's most-recommended use: `hse doctor` tells an
+/// operator on a carrier that DNS-filters the public domains to point this
+/// override at a reachable proxy — falling back to the direct domains from
+/// there just reproduces the exact resolution failure the override exists
+/// to route around. A rejected/unsafe override (`endpoint_override::resolve`
+/// already WARNs and substitutes [`DEFAULT_BASE`]) is indistinguishable here
+/// from no override at all, so it correctly still gets full rotation.
 pub(super) fn all_base_urls() -> Vec<String> {
-    let primary = base_url();
-    let mut urls = vec![primary.clone()];
+    base_urls_for(base_url())
+}
 
-    // Add secondary/fallback domains only if they're different from the primary
-    // (e.g., if HUNTSMAN_SEEKNOW_BASE override is set to one of these, we skip dupes).
+/// [`all_base_urls`] split on the already-resolved primary URL, so the
+/// override-exclusivity policy is unit-testable against a literal instead of
+/// the real `HUNTSMAN_SEEKNOW_BASE` environment variable (which tests must
+/// not mutate — `std::env::set_var` is `unsafe`, denied crate-wide).
+pub(super) fn base_urls_for(primary: String) -> Vec<String> {
+    if primary != DEFAULT_BASE {
+        return vec![primary];
+    }
+
+    let mut urls = vec![primary];
     let fallbacks = ["https://see-know.eu/api/v1", "https://see-know.icu/api/v1"];
     for fallback in &fallbacks {
         if !urls.contains(&fallback.to_string()) {
