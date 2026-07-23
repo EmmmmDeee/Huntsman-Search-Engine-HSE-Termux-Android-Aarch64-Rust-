@@ -22,6 +22,10 @@ runs:
         ANDROID_API: ${{ inputs.android-api }}
       run: |
         set -euo pipefail
+        if [ -z "${ANDROID_NDK_LATEST_HOME:-}" ]; then
+          echo "ANDROID_NDK_LATEST_HOME is unset/empty — this runner has no Android NDK preinstalled" >&2
+          exit 1
+        fi
         TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
         CLANG="$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang"
         test -x "$CLANG" \

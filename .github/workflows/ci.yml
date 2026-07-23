@@ -121,7 +121,7 @@ jobs:
       # deliberately excludes --benches/--doc, which add cross-compile cost
       # for artifacts this job has no way to execute anyway.
       - name: Compile tests (aarch64-linux-android, not executed)
-        run: cargo test --locked --no-run --lib --bins --tests --target aarch64-linux-android
+        run: cargo test --locked --no-run --lib --bin hse --tests --target aarch64-linux-android
 
   install-script:
     name: install.sh syntax (bash + shellcheck)
