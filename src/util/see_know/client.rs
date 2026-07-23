@@ -85,19 +85,22 @@ pub(super) fn cache_put(key: String, items: Vec<Value>) {
 /// The built-in primary endpoint absent any `HUNTSMAN_SEEKNOW_BASE` override.
 /// Shared with [`all_base_urls`] so its "is an override actually active" check
 /// can never drift from the literal `base_url` resolves against.
-const DEFAULT_BASE: &str = "https://see-know.xyz/api/v1";
+const DEFAULT_BASE: &str = "https://see-know.ru/api/v1";
 
 pub fn base_url() -> String {
-    // Default promoted (2026-07-21) to `.xyz` — the operator-designated primary
-    // endpoint. Prior history: default started on `.icu` (sandbox-confirmed
-    // reachable T2.83, 2026-07-13), was corrected to `.eu` (2026-07-14) after a
-    // real device's DNS resolver failed to resolve `.icu` (`curl exited 6`) while
-    // `.eu` succeeded on the same client machinery — `.icu`-TLD domains are
-    // commonly caught by carrier/ISP DNS-level abuse filtering, a failure mode a
-    // sandboxed reachability probe cannot see. `.eu` and `.icu` remain first and
-    // second fallback in [`all_base_urls`] so a transient `.xyz` outage still
-    // exhausts every known domain before the scan surfaces a connection error —
-    // UNLESS the operator has set an override, see that function's doc.
+    // Default promoted (2026-07-23) to `.ru` — the operator-designated primary
+    // endpoint (live-probe confirmed: `/` 200, `/api/v1/credits` 401-needs-key,
+    // matching the SeekNow API shape). Prior history: default started on `.icu`
+    // (sandbox-confirmed reachable T2.83, 2026-07-13), was corrected to `.eu`
+    // (2026-07-14) after a real device's DNS resolver failed to resolve `.icu`
+    // (`curl exited 6`) while `.eu` succeeded on the same client machinery —
+    // `.icu`-TLD domains are commonly caught by carrier/ISP DNS-level abuse
+    // filtering, a failure mode a sandboxed reachability probe cannot see; then
+    // promoted to `.xyz` (2026-07-21). The prior primaries `.xyz`, `.eu`, and
+    // `.icu` remain first/second/third fallback in [`all_base_urls`] so a
+    // transient `.ru` outage still exhausts every known domain before the scan
+    // surfaces a connection error — UNLESS the operator has set an override, see
+    // that function's doc.
     // Vet the operator's override: refuse non-https / private-host redirects and
     // WARN on a divergent host, so a key-bearing request can't be silently
     // redirected to a look-alike or an internal address.
@@ -140,7 +143,11 @@ pub(super) fn base_urls_for(primary: String) -> Vec<String> {
     }
 
     let mut urls = vec![primary];
-    let fallbacks = ["https://see-know.eu/api/v1", "https://see-know.icu/api/v1"];
+    let fallbacks = [
+        "https://see-know.xyz/api/v1",
+        "https://see-know.eu/api/v1",
+        "https://see-know.icu/api/v1",
+    ];
     for fallback in &fallbacks {
         if !urls.contains(&fallback.to_string()) {
             urls.push(fallback.to_string());

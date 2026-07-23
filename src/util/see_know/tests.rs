@@ -587,14 +587,14 @@ fn client_base_url_uses_endpoint_override_or_default() {
         url.starts_with("https://"),
         "SeekNow base URL must be HTTPS — got {url}"
     );
-    // Must be a well-known domain (see-know.xyz) or an override matching HTTPS + non-local rules
+    // Must be a well-known domain (see-know.ru) or an override matching HTTPS + non-local rules
     assert!(
         url.contains("see-know."),
         "SeekNow base URL must reference the canonical domain — got {url}"
     );
-    // Regression guard: the default host is `.xyz` (promoted to primary
-    // 2026-07-21; `.eu` and `.icu` remain first/second fallback in
-    // `all_base_urls`), unless the operator's own shell has
+    // Regression guard: the default host is `.ru` (promoted to primary
+    // 2026-07-23; `.xyz`, `.eu`, and `.icu` remain first/second/third fallback
+    // in `all_base_urls`), unless the operator's own shell has
     // HUNTSMAN_SEEKNOW_BASE set, in which case that override legitimately wins.
     if std::env::var("HUNTSMAN_SEEKNOW_BASE")
         .ok()
@@ -602,20 +602,21 @@ fn client_base_url_uses_endpoint_override_or_default() {
         .is_none()
     {
         assert_eq!(
-            url, "https://see-know.xyz/api/v1",
-            "SeekNow default base URL must be the `.xyz` domain — got {url}"
+            url, "https://see-know.ru/api/v1",
+            "SeekNow default base URL must be the `.ru` domain — got {url}"
         );
     }
 }
 
 #[test]
 fn base_urls_for_default_rotates_through_every_known_public_domain() {
-    // No override active (primary == the built-in default): full 3-domain
+    // No override active (primary == the built-in default): full 4-domain
     // rotation, exactly today's behaviour.
-    let urls = base_urls_for("https://see-know.xyz/api/v1".to_string());
+    let urls = base_urls_for("https://see-know.ru/api/v1".to_string());
     assert_eq!(
         urls,
         vec![
+            "https://see-know.ru/api/v1",
             "https://see-know.xyz/api/v1",
             "https://see-know.eu/api/v1",
             "https://see-know.icu/api/v1",
