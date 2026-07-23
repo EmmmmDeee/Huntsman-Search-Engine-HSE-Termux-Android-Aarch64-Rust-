@@ -205,8 +205,26 @@ impl LiveScanner {
     pub fn start(&self, target: Target, scan_options: ScanOptions, live: LiveOptions) -> String {
         // Live sessions re-scan on a loop; cap depth at the operator boundary too.
         let scan_options = scan_options.clamp_depth();
+        let live_id = new_live_id(&target);
+        let session = LiveSession {
+            id: live_id.clone(),
+            target: target.clone(),
+            scan_options: scan_options.clone(),
+            live_options: live.clone(),
+            status: LiveStatus::Running,
+            started_at: unix_now(),
+            last_iteration_at: None,
+            iteration: 0,
+            scan_ids: std::collections::HashSet::new(),
+            scan_id_order: VecDeque::new(),
+        };
+
+        // Atomically: check cap, evict oldest if needed, insert new session. This
+        // prevents race conditions where multiple concurrent start() calls could all
+        // see active < MAX_SESSIONS and all proceed to create new sessions, exceeding
+        // the cap. Must be a single write lock for the entire check-evict-insert.
         {
-            let sessions = self.inner.sessions.read();
+            let mut sessions = self.inner.sessions.write();
             let active = sessions
                 .values()
                 .filter(|s| s.status == LiveStatus::Running)
@@ -229,25 +247,17 @@ impl LiveScanner {
                 if let Some(id) = oldest_id {
                     drop(sessions);
                     self.stop(&id);
+                    // Re-acquire write lock after stop() — the stop operation may
+                    // take significant time, so we release and re-acquire to minimize
+                    // contention.
+                    sessions = self.inner.sessions.write();
                 }
             }
+            // Now insert under the write lock, ensuring cap + insert are atomic.
+            sessions.insert(live_id.clone(), session);
         }
-        let live_id = new_live_id(&target);
-        let session = LiveSession {
-            id: live_id.clone(),
-            target: target.clone(),
-            scan_options: scan_options.clone(),
-            live_options: live.clone(),
-            status: LiveStatus::Running,
-            started_at: unix_now(),
-            last_iteration_at: None,
-            iteration: 0,
-            scan_ids: std::collections::HashSet::new(),
-            scan_id_order: VecDeque::new(),
-        };
 
         let cancel = CancelHandle::new();
-        self.inner.sessions.write().insert(live_id.clone(), session);
         self.inner
             .cancels
             .write()
