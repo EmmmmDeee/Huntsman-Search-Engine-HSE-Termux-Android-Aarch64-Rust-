@@ -404,14 +404,14 @@ impl Module for SocialProbe {
 
                 let mut entity = Entity::new(EntityKind::Url, &url, confidence, &ctx.scan_id);
                 entity.tag("social-profile");
-                entity.tag(format!("platform:{}", platform_name));
+                entity.tag(format!("platform:{platform_name}"));
                 entity.tag(if verified {
                     "verified-detection"
                 } else {
                     "weak-detection"
                 });
                 entity.add_evidence(
-                    Evidence::new(SRC, format!("Profile found on {}", platform_name))
+                    Evidence::new(SRC, format!("Profile found on {platform_name}"))
                         .with_attr("platform", platform_name)
                         .with_attr("http_status", code.to_string())
                         .with_attr("profile_url", &url)
@@ -446,7 +446,7 @@ impl Module for SocialProbe {
                     dom.add_evidence(
                         Evidence::new(
                             SRC,
-                            format!("Platform domain from {} profile", platform_name),
+                            format!("Platform domain from {platform_name} profile"),
                         )
                         .with_attr("platform", platform_name),
                     );
