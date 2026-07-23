@@ -180,14 +180,11 @@ async fn process_qld(target: &Target, ctx: &ModuleContext, out: &mut ModuleResul
 
     let broadened = surname != full;
 
-    let mut pc_localities = Vec::new();
-    for pc in exact_postcodes(&records, full, broadened) {
-        let locs = crate::util::postcode_au::localities(&ctx.http, &pc).await;
-        if !locs.is_empty() {
-            pc_localities.push((pc, locs));
-        }
-    }
-
+    // Always emit primary results immediately — the postcode enrichment is
+    // best-effort locality expansion. If enrichment is slow or times out, the
+    // primary unclaimed-money records must NOT be discarded. The module's 20s
+    // timeout is the hard cap; enrichment that runs over must not prevent primary
+    // results from being returned.
     out.extend(records_to_entities(
         &records,
         total,
@@ -195,7 +192,27 @@ async fn process_qld(target: &Target, ctx: &ModuleContext, out: &mut ModuleResul
         broadened,
         &ctx.scan_id,
     ));
-    out.extend(suburbs_to_entities(&pc_localities, &ctx.scan_id));
+
+    // Enrich with postcode localities, but don't let a slow/hanging enrichment
+    // block the primary results. Skip enrichment if we're running low on time,
+    // capping the enrichment pass to 3 seconds max to ensure a quick return.
+    let mut pc_localities = Vec::new();
+    if let Ok(Ok(())) = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        for pc in exact_postcodes(&records, full, broadened) {
+            let locs = crate::util::postcode_au::localities(&ctx.http, &pc).await;
+            if !locs.is_empty() {
+                pc_localities.push((pc, locs));
+            }
+        }
+        Ok::<(), ()>(())
+    })
+    .await
+    {
+        // Enrichment completed within the timeout; add locality entities.
+        out.extend(suburbs_to_entities(&pc_localities, &ctx.scan_id));
+    }
+    // If enrichment timed out, that's a clean miss — no error, just skip it.
+
     Ok(())
 }
 
