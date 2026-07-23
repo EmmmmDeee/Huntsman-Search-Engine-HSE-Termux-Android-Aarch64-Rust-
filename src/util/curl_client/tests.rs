@@ -123,6 +123,26 @@ use super::*;
     }
 
     #[test]
+    fn default_doh_url_is_an_ip_literal_not_a_hostname() {
+        // Regression guard for the bootstrap gap: a hostname-based default
+        // (`cloudflare-dns.com`) would itself need resolving via the very
+        // system resolver the DoH fallback exists to route around, so it
+        // provides no self-heal at all during a TOTAL resolver failure (only
+        // the narrower "this one provider domain is filtered" case). An IP
+        // literal needs no lookup — curl dials it directly.
+        let host = url::Url::parse(DEFAULT_DOH_URL)
+            .expect("DEFAULT_DOH_URL must be a valid URL")
+            .host_str()
+            .expect("DEFAULT_DOH_URL must have a host")
+            .to_string();
+        assert!(
+            host.parse::<std::net::IpAddr>().is_ok(),
+            "DEFAULT_DOH_URL's host must be an IP literal so reaching it needs no DNS \
+             lookup of its own — got {host:?}"
+        );
+    }
+
+    #[test]
     fn doh_fallback_defaults_on_and_honours_disable_keywords() {
         // Unset → default-on (Cloudflare), so a filtering system resolver
         // self-heals without any operator action.
