@@ -189,6 +189,15 @@ async fn body_json(resp: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
+/// Read a response body as UTF-8 text (for plain-text downloads like
+/// `debug.txt` / `events.log`, which aren't JSON).
+async fn body_text(resp: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
 /// Shorthand: build a GET request.
 fn get(uri: &str) -> Request<Body> {
     Request::builder().uri(uri).body(Body::empty()).unwrap()
@@ -3400,6 +3409,60 @@ async fn scan_debug_bundle_404_unknown_and_text_attachment_for_known() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 404, "debug.txt must 404 for an unknown scan");
+}
+
+#[tokio::test]
+async fn scan_events_log_404_unknown_and_text_attachment_for_known() {
+    let (app, sid) = create_scan("events-log-cov").await;
+
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/events.log")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "events.log must 200 for a known scan");
+    let ct = resp
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        ct.starts_with("text/plain"),
+        "events.log must be text/plain, got {ct:?}"
+    );
+    let cd = resp
+        .headers()
+        .get(http::header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        cd.contains("attachment") && cd.contains(".log"),
+        "events.log must carry a download Content-Disposition, got {cd:?}"
+    );
+    assert!(
+        cd.contains("filename=\"hse-events-") && cd.ends_with(".log\""),
+        "events.log filename must be hse-events-<id>.log, got {cd:?}"
+    );
+    // Body must be render_event_log's output, not e.g. an empty/error body —
+    // guards against Content-Type/filename drifting correctly while the body
+    // itself silently stops matching the shared renderer.
+    let body = body_text(resp).await;
+    assert!(
+        body.contains("SCAN SEQUENCE"),
+        "events.log body must contain the scan-sequence header, got {body:?}"
+    );
+
+    let resp = app
+        .oneshot(get("/api/v1/scans/__nope__/events.log"))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        404,
+        "events.log must 404 for an unknown scan"
+    );
 }
 
 // ── Security: DNS-rebind Host guard + scan-import CSRF ──────────────────────

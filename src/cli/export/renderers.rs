@@ -322,8 +322,8 @@ fn render_raw_response_body(raw: &serde_json::Value) -> String {
 /// line, in order. Pure (no storage I/O) so callers fetch `events` once via
 /// [`StoragePort::events_for_scan`](crate::core::port::StoragePort::events_for_scan)
 /// and pass the slice in — shared by [`render_debug_bundle`]'s §3 and the
-/// standalone `GET /scans/{id}/events.log` download endpoint
-/// (`api::scan_export::scan_events_log`), so the two never drift apart.
+/// standalone HTTP download endpoint `api::scan_export::scan_events_log`
+/// (`GET /api/v1/scans/{id}/events.log`), so the two never drift apart.
 pub(crate) fn render_event_log(events: &[crate::core::event::Event]) -> String {
     use std::collections::BTreeMap;
     use std::fmt::Write as _;

@@ -50,15 +50,24 @@ export function kindPill(k){const s=kindToStr(k);return `<span class="kind-pill 
 // core::entity), just in the display layer instead of the confidence engine.
 export const ENRICHMENT_SOURCES = new Set(['geo_normalize', 'name_intel', 'payid', 'recall', 'cross_scan_history']);
 // Distinct corroborating sources drive the C_eff boost — must match the
-// backend's Entity::source_count()/corroborating_sources(): count distinct
-// non-enrichment evidence.source strings; when none are present, fall back to
-// the corroboration field. (The old version boosted on the raw corroboration
-// field, which over-credited single-source findings whose within-module counts
-// were summed by merge.)
+// backend's Entity::source_count() exactly, branch for branch: (1) evidence
+// exists with >=1 distinct non-enrichment source -> that distinct count; (2)
+// no evidence at all (synthetic/test entity) -> the explicit corroboration
+// field; (3) evidence exists but EVERY record is non-corroborating -> forced
+// to 1, NOT the corroboration field. Branch 3 matters: `recall` ratchets
+// corroboration up by one on every re-scan, so falling back to it here (as
+// an earlier version of this function did) let a purely enrichment-sourced
+// entity's on-screen Src/C_eff/tier climb indefinitely while the backend's
+// own classification correctly stayed pinned at one source — the exact
+// recall-ratchet bug `Entity::source_count()`'s own doc comment (core::entity)
+// describes fixing server-side, just reopened client-side.
 export function sourceCount(e){
   const evs=e.evidence||[];
-  if(evs.length){const s=new Set();for(const ev of evs){if(ev&&ev.source&&!ENRICHMENT_SOURCES.has(ev.source))s.add(ev.source);}if(s.size)return Math.max(1,s.size);}
-  return Math.max(1,e.corroboration??1);
+  const s=new Set();
+  for(const ev of evs){if(ev&&ev.source&&!ENRICHMENT_SOURCES.has(ev.source))s.add(ev.source);}
+  if(s.size) return s.size;
+  if(!evs.length) return Math.max(1,e.corroboration??1);
+  return 1;
 }
 // Mirror the backend Entity::c_effective(): the STRONGER of the multiplicative
 // boost and the independent-agreement (noisy-OR) term over the distinct
