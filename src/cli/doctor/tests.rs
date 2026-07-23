@@ -2,6 +2,65 @@ use super::*;
     use crate::util::key_roi::KeyRoi;
 
     #[test]
+    fn seeknow_guidance_when_doh_retry_already_ran_and_failed() {
+        // curl_client's real format when the DoH retry itself also failed:
+        // "curl exited 6 (after DoH resolver fallback): <stderr snippet>".
+        let detail = "curl exited 6 (after DoH resolver fallback): Could not resolve host";
+        let msg = seeknow_unreachable_guidance(detail);
+        assert!(
+            msg.contains("already ran"),
+            "must state the DoH retry was already attempted: {msg}"
+        );
+        assert!(
+            !msg.contains("did not run"),
+            "must not ALSO claim it didn't run: {msg}"
+        );
+    }
+
+    #[test]
+    fn seeknow_guidance_when_dns_failure_but_doh_disabled() {
+        // A genuine exit-6 with NO doh-retry marker — only possible if
+        // HUNTSMAN_DOH_URL disabled the automatic fallback (the code
+        // unconditionally attempts it otherwise).
+        let detail = "curl exited 6: Could not resolve host";
+        let msg = seeknow_unreachable_guidance(detail);
+        assert!(
+            msg.contains("did not run"),
+            "must state the retry did NOT run: {msg}"
+        );
+        assert!(
+            !msg.contains("already ran"),
+            "must not falsely claim a retry was attempted: {msg}"
+        );
+        assert!(
+            msg.contains("HUNTSMAN_DOH_URL"),
+            "must point at the env var that could have disabled it: {msg}"
+        );
+    }
+
+    #[test]
+    fn seeknow_guidance_when_not_a_dns_failure_at_all() {
+        // A regression guard for the Copilot-flagged bug: a plain timeout
+        // (exit 28) or connection-refused (exit 7) must NOT claim any DoH
+        // retry was attempted — the fallback only ever triggers on exit 6.
+        for detail in [
+            "curl exited 28: Operation timed out",
+            "curl exited 7: Failed to connect",
+            "curl exited 60: SSL certificate problem",
+        ] {
+            let msg = seeknow_unreachable_guidance(detail);
+            assert!(
+                !msg.contains("DoH") || msg.contains("did not run"),
+                "non-DNS failure ({detail}) must not claim an unqualified DoH attempt: {msg}"
+            );
+            assert!(
+                !msg.contains("already ran"),
+                "non-DNS failure ({detail}) must not claim the retry already ran: {msg}"
+            );
+        }
+    }
+
+    #[test]
     fn loaded_huntsman_keys_are_sorted_regardless_of_insertion_order() {
         // `loaded` is a HashMap, so an unsorted read would print the keys in a
         // different order on every `hse doctor` invocation against the
