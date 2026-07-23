@@ -100,15 +100,11 @@ fn build_electoral_entities_emits_address_and_coords() {
 }
 
 #[test]
-fn build_electoral_entities_unknown_division_emits_address_only() {
+fn build_electoral_entities_unknown_division_emits_nothing() {
     let ents = build_electoral_entities("Xyzzy", None, "Test", "s");
     assert!(
-        ents.iter().any(|e| e.kind == EntityKind::Address),
-        "must still emit Address for unknown division"
-    );
-    assert!(
-        !ents.iter().any(|e| e.kind == EntityKind::Coordinates),
-        "no Coordinates for unknown division (no centroid)"
+        ents.is_empty(),
+        "unknown divisions with no inferred state emit no entities (to avoid invalid state codes)"
     );
 }
 
@@ -128,11 +124,12 @@ fn address_confidence_reflects_whether_a_suburb_was_resolved() {
         addr.confidence
     );
 
-    // A division with NO suburb resolved (no centroid, no hint) is a
+    // A division with NO suburb resolved (not in centroid table, no hint) is a
     // materially weaker locate — a division can span many suburbs — so it
     // must score the documented lower 0.58 tier, not the flat 0.72 a
-    // suburb-level match gets.
-    let division_only = build_electoral_entities("Xyzzy", None, "Test", "s");
+    // suburb-level match gets. Use a division name that contains "sydney" (so
+    // state is inferred as NSW) but isn't in the centroid table.
+    let division_only = build_electoral_entities("Sydney Outer", None, "Test", "s");
     let addr2 = division_only
         .iter()
         .find(|e| e.kind == EntityKind::Address)

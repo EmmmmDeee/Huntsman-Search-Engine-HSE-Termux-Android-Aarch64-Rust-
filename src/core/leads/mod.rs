@@ -363,14 +363,17 @@ pub fn recommend(entities: &[Entity], relations: &[Relation], expansion_floor: f
         .flat_map(|group: &ConnectionGroup| {
             group.items.iter().filter_map(move |conn| {
                 let (target_kind, kind_value) = pivot(&conn.kind)?;
-                // Untapped = the engine did not pivot it: below the expansion
-                // floor, OR a shared-surname `family-candidate` (the engine
-                // deliberately holds the surname cluster below the floor so a scan
-                // doesn't fan out across a whole family tree). Geo-corroboration may
-                // lift such a relative's confidence over the floor at finalise, but
-                // it was still never auto-expanded — so it stays a one-tap lead.
+                // Untapped = the engine did not pivot it: below the expansion floor, OR a
+                // shared-surname `family-candidate` that was NOT geo-corroborated. The engine
+                // deliberately holds surname clusters below the floor to avoid sprawl (a whole
+                // family tree), but geo-corroboration at finalise (promote_geo_corroborated_family)
+                // actually DOES auto-expand these entities within the scan, promoting them and
+                // tagging them "geo-corroborated". So check: family-candidate without
+                // geo-corroborated = untapped; family-candidate WITH geo-corroborated = tapped.
+                let is_family_candidate = conn.tags.iter().any(|t| t == "family-candidate");
+                let is_geo_corroborated = conn.tags.iter().any(|t| t == "geo-corroborated");
                 let untapped = conn.entity_confidence < expansion_floor
-                    || conn.tags.iter().any(|t| t == "family-candidate");
+                    || (is_family_candidate && !is_geo_corroborated);
                 // A flagged namesake is the opposite of confirmed, so it earns no
                 // reliability bonus (even if its tier alone would have) and takes
                 // the ranking penalty instead.

@@ -89,9 +89,7 @@ fn recommend_ranks_geo_corroborated_family_top() {
     );
     let top = &leads[0];
     assert!(
-        top.reason.contains("relative")
-            && top.reason.contains("confirmed in the subject's area")
-            && top.reason.contains("not yet investigated"),
+        top.reason.contains("relative") && top.reason.contains("confirmed in the subject's area"),
         "reason: {}",
         top.reason
     );
