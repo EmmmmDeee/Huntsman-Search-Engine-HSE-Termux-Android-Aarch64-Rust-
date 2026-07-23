@@ -54,6 +54,11 @@ pub(super) struct Platform {
 /// discount it instead of counting a guess as a confirmed, subject-controlled
 /// account — the exact false signal a real scan against a guessed handle
 /// produced across 30+ status-only platforms.
+///
+/// The concurrent probe path (see `process`) inlines the underlying
+/// `probe_confidence::detection_strength` call directly, so this wrapper is
+/// retained only for the platform-metadata invariant tests below.
+#[cfg(test)]
 fn detection_strength(platform: &Platform) -> (f64, bool) {
     crate::util::probe_confidence::detection_strength(!platform.negative_patterns.is_empty())
 }
