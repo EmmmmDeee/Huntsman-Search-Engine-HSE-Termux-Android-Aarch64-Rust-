@@ -212,18 +212,22 @@ pub async fn scan_gaps(
     let id2 = id.clone();
     let loaded = tokio::task::spawn_blocking(move || {
         Ok::<_, crate::core::error::Error>((
+            store.get_scan(&id2)?,
             store.entities_for_scan(&id2)?,
             store.relations_for_scan(&id2)?,
         ))
     })
     .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
+    let (scan, entities, relations) = match loaded {
+        Ok(Ok(triple)) => triple,
         Ok(Err(e)) => return internal_error(&e),
         Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
 
-    let report = crate::core::gap::analyze(&entities, &relations);
+    let min_expand = scan.map_or(crate::core::gap::EXPAND_FLOOR, |sc| {
+        sc.options.min_expand_confidence
+    });
+    let report = crate::core::gap::analyze_with_confidence(&entities, &relations, min_expand);
 
     let by_uid: std::collections::HashMap<&str, &crate::core::entity::Entity> =
         entities.iter().map(|e| (e.uid.as_str(), e)).collect();

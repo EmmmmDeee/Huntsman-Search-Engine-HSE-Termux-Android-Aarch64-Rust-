@@ -20,7 +20,11 @@ pub fn cmd_gaps(scan_id: Option<String>, json: bool) -> Result<()> {
     let id = resolve_scan_id(&store, scan_id.as_deref().unwrap_or("latest"))?;
     let entities = store.entities_for_scan(&id)?;
     let relations = store.relations_for_scan(&id)?;
-    let report = gap::analyze(&entities, &relations);
+    let scan = store
+        .get_scan(&id)?
+        .ok_or_else(|| Error::Other(format!("scan {id} not found")))?;
+    let min_expand = scan.options.min_expand_confidence;
+    let report = gap::analyze_with_confidence(&entities, &relations, min_expand);
 
     if json {
         let out = serde_json::to_string_pretty(&report).map_err(|e| Error::Other(e.to_string()))?;

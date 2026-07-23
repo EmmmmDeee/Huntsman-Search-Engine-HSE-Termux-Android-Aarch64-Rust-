@@ -141,16 +141,24 @@ pub struct GapReport {
 /// [`Isolation`] and emitted most-actionable first. An empty entity slice yields the
 /// explicit [`null state`](GapReport::null_state).
 ///
+/// `min_expand_confidence` should be the scan's actual expansion gate
+/// (from `ScanOptions::min_expand_confidence`). Defaults to [`EXPAND_FLOOR`] for
+/// backwards compatibility when the confidence is not known.
+///
 /// ```
 /// use huntsman_search_engine::core::gap;
 ///
-/// let r = gap::analyze(&[], &[]);
+/// let r = gap::analyze_with_confidence(&[], &[], 0.50);
 /// assert!(r.null_state);
 /// assert_eq!(r.total_seeds, 0);
 /// assert!(r.orphans.is_empty());
 /// ```
 #[must_use]
-pub fn analyze(entities: &[Entity], relations: &[Relation]) -> GapReport {
+pub fn analyze_with_confidence(
+    entities: &[Entity],
+    relations: &[Relation],
+    min_expand_confidence: f64,
+) -> GapReport {
     let g = Graph::build(entities, relations);
 
     let mut linked_seeds = 0usize;
@@ -181,7 +189,7 @@ pub fn analyze(entities: &[Entity], relations: &[Relation]) -> GapReport {
         let isolation = if reinjection_target.is_none() {
             counts.terminal += 1;
             Isolation::Terminal
-        } else if e.c_effective() < EXPAND_FLOOR {
+        } else if e.c_effective() < min_expand_confidence {
             counts.below_expand_floor += 1;
             Isolation::BelowExpandFloor
         } else {
@@ -225,6 +233,14 @@ pub fn analyze(entities: &[Entity], relations: &[Relation]) -> GapReport {
         isolation: counts,
         orphans,
     }
+}
+
+/// Backwards-compatible wrapper for [`analyze_with_confidence`] with the hardcoded
+/// [`EXPAND_FLOOR`]. Use [`analyze_with_confidence`] when the scan's actual
+/// `min_expand_confidence` is available.
+#[must_use]
+pub fn analyze(entities: &[Entity], relations: &[Relation]) -> GapReport {
+    analyze_with_confidence(entities, relations, EXPAND_FLOOR)
 }
 
 #[cfg(test)]

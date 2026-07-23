@@ -6,6 +6,13 @@ use super::pool::KeyPool;
 use super::types::{KeyEntry, KeyStatus};
 use crate::util::service_defs::{KeyPlacement, ServiceDef, find_service};
 
+/// Default DoH resolver for the reachability fallback. Used when the system
+/// resolver fails (curl exit 6) and no operator override is set.
+const DEFAULT_DOH_URL: &str = "https://1.1.1.1/dns-query";
+
+/// Env var by which an operator overrides (or disables) the DoH fallback.
+const DOH_ENV: &str = "HUNTSMAN_DOH_URL";
+
 /// Add a key and validate it immediately against the service endpoint.
 /// If valid, marks it Active and stores it. If invalid, marks it Invalid
 /// but still stores it (won't be used by next_key).
@@ -83,8 +90,13 @@ enum ProbeOutcome {
     Indeterminate,
 }
 
-async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> ProbeOutcome {
-    let timeout_ms = 10_000u64;
+/// Run a single curl probe, optionally via a DoH resolver on retry.
+async fn run_curl_probe(
+    sdef: &ServiceDef,
+    key: &str,
+    timeout_ms: u64,
+    doh_url: Option<&str>,
+) -> Option<String> {
     let secs = (timeout_ms / 1000).to_string();
 
     let mut cmd = tokio::process::Command::new("curl");
@@ -97,6 +109,11 @@ async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> ProbeOutcome
         "--max-time",
         &secs,
     ]);
+
+    // Apply DoH resolver if this is a retry.
+    if let Some(doh) = doh_url {
+        cmd.args(["--doh-url", doh]);
+    }
 
     match sdef.key_header {
         KeyPlacement::QueryParam(param) => {
@@ -133,12 +150,38 @@ async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> ProbeOutcome
     let output = tokio::time::timeout(Duration::from_millis(timeout_ms + 2000), cmd.output())
         .await
         .ok()
-        .and_then(std::result::Result::ok);
+        .and_then(std::result::Result::ok)?;
 
-    let Some(output) = output else {
-        return ProbeOutcome::Indeterminate;
+    Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Get the DoH fallback URL, or None if disabled via env var.
+fn doh_fallback_url() -> Option<String> {
+    match std::env::var(DOH_ENV) {
+        Ok(val) if val.is_empty() || val == "off" || val == "none" => None,
+        Ok(val) => Some(val),
+        Err(_) => Some(DEFAULT_DOH_URL.to_string()),
+    }
+}
+
+async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> ProbeOutcome {
+    let timeout_ms = 10_000u64;
+
+    // Try the initial curl invocation. On DNS resolution failure, retry with DoH.
+    let mut code = match run_curl_probe(sdef, key, timeout_ms, None).await {
+        Some(c) => c,
+        None => return ProbeOutcome::Indeterminate,
     };
-    let code = String::from_utf8_lossy(&output.stdout);
+
+    // Check if we got a DNS resolution failure (curl exit code 0 but no HTTP response).
+    // If so, retry with DoH fallback.
+    if code.trim() == "0"
+        && let Some(doh) = doh_fallback_url()
+        && let Some(retry_code) = run_curl_probe(sdef, key, timeout_ms, Some(&doh)).await
+    {
+        code = retry_code;
+    }
+
     match code.trim() {
         "200" | "201" | "204" | "301" | "302" => ProbeOutcome::Valid,
         // A definitive auth rejection — the only outcome that proves the key bad.

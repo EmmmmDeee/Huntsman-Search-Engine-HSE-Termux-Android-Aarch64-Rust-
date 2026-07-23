@@ -23,6 +23,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -159,9 +162,29 @@ fn append_record_capped(dir: &Path, record: &SearchLogRecord, max_bytes: u64) ->
     if current_len > 0 && current_len + line.len() as u64 > max_bytes {
         let _ = std::fs::rename(&current, dir.join(ROTATED_FILE));
     }
-    match OpenOptions::new().create(true).append(true).open(&current) {
-        Ok(mut f) => f.write_all(line.as_bytes()).is_ok(),
-        Err(_) => false,
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        match OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(&current)
+        {
+            Ok(mut f) => {
+                // Re-secure if the file already existed with loose permissions.
+                let _ = std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o600));
+                f.write_all(line.as_bytes()).is_ok()
+            }
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        match OpenOptions::new().create(true).append(true).open(&current) {
+            Ok(mut f) => f.write_all(line.as_bytes()).is_ok(),
+            Err(_) => false,
+        }
     }
 }
 
