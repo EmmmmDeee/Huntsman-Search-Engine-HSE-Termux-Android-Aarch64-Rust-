@@ -655,6 +655,32 @@ ok "Built: $BUILT ($(du -h "$BUILT" | awk '{print $1}'))"
 
 fi  # end PREBUILT guard — toolchain + clone + source build skipped when a prebuilt was used
 
+# ─── Runtime dependencies for the prebuilt fast-path ─────────────────────────
+# When a prebuilt binary was used the whole pkg-install block above was skipped,
+# but the RUNTIME still needs `curl` (every paid-API and egress transport shells
+# out to it — src/util/curl*, src/util/egress, src/util/key_pool/validation,
+# api_key_probe, abn_lookup) and `git` (`hse update`'s self-update). Termux base
+# ships neither, so a prebuilt install would otherwise produce a binary whose
+# curl-backed modules all fail with command-not-found. The local-Downloads
+# prebuilt path may run offline, so this is strictly best-effort: install what's
+# missing, but never `die` — a prebuilt binary that merely lacks curl-backed
+# modules still beats a failed install. Source builds already got both above.
+if [[ "$PREBUILT" == "1" && $IS_TERMUX -eq 1 && "${HSE_NO_PKG:-0}" != "1" ]]; then
+    _rt_missing=()
+    command -v curl >/dev/null 2>&1 || _rt_missing+=(curl)
+    command -v git >/dev/null 2>&1 || _rt_missing+=(git)
+    if ((${#_rt_missing[@]})); then
+        step "Installing runtime dependencies for the prebuilt binary (${_rt_missing[*]})"
+        DEBIAN_FRONTEND=noninteractive apt-get update -y >> "$LOG_FILE" 2>&1 || true
+        if DEBIAN_FRONTEND=noninteractive apt-get install -y "${_rt_missing[@]}" >> "$LOG_FILE" 2>&1; then
+            ok "Runtime dependencies installed: ${_rt_missing[*]}"
+        else
+            log_warn "Could not install ${_rt_missing[*]} — curl-backed modules and 'hse update' may not work offline."
+            hint "Install them later with: pkg install ${_rt_missing[*]}"
+        fi
+    fi
+fi
+
 # ─── Install binary ──────────────────────────────────────────────────────────
 step "Installing binary to $HSE_BIN_DIR/hse"
 
@@ -916,6 +942,9 @@ if [[ ! -f "$KEYS_PATH" ]]; then
 #HUNTSMAN_EPIEOS_KEY=
 #HUNTSMAN_PROXYCURL_KEY=
 #HUNTSMAN_OPENCORP_KEY=
+# GitHub token — OPTIONAL: github_* modules run unauthenticated but a classic
+# PAT (no scopes needed for public data) raises GitHub's low anonymous rate limit.
+#HUNTSMAN_GITHUB_TOKEN=
 #
 # ── Operator defaults ─────────────────────────────────────────────────────────
 # Set your own default scan target to avoid retyping --value every run.
@@ -937,17 +966,37 @@ else
 fi
 
 # ─── Record install location for `hse update` ────────────────────────────────
-# hse update reads HUNTSMAN_INSTALL_DIR from ~/.huntsman.env to find install.sh.
-# Use grep+printf instead of sed so that special characters in HSE_INSTALL_DIR
+# hse update reads HUNTSMAN_INSTALL_DIR from ~/.huntsman.env to find install.sh,
+# then git-pulls + re-runs it. Only record the dir when it is ACTUALLY a source
+# tree: a prebuilt install skips the clone above, so $HSE_INSTALL_DIR then has no
+# install.sh/Cargo.toml, and recording it would point `hse update` (and the
+# background auto-updater) at a directory with no `.git` — where every git call
+# silently fails, so the updater no-ops while still burning a git subprocess
+# each throttle window. When there is no source tree, leave HUNTSMAN_INSTALL_DIR
+# unset: `find_install_dir()` then falls through cleanly and `hse update` reports
+# the reinstall one-liner instead of a silent, wasteful no-op. Prebuilt users
+# upgrade by re-running the installer (which re-detects a newer prebuilt).
+# Use grep+printf instead of sed so special characters in HSE_INSTALL_DIR
 # (e.g. & | \ in the path) are never interpreted as sed metacharacters.
 # chmod 0600 before mv preserves the key-file mode that Rust sets on creation.
-{
-    grep -v '^HUNTSMAN_INSTALL_DIR=' "$KEYS_PATH" 2>/dev/null || true
-    printf '\n# Written by install.sh — used by `hse update`\nHUNTSMAN_INSTALL_DIR=%s\n' \
-        "$HSE_INSTALL_DIR"
-} > "$KEYS_PATH.tmp" \
-    && chmod 0600 "$KEYS_PATH.tmp" \
-    && mv -f "$KEYS_PATH.tmp" "$KEYS_PATH"
+if [[ -f "$HSE_INSTALL_DIR/install.sh" && -f "$HSE_INSTALL_DIR/Cargo.toml" ]]; then
+    {
+        grep -v '^HUNTSMAN_INSTALL_DIR=' "$KEYS_PATH" 2>/dev/null || true
+        printf '\n# Written by install.sh — used by `hse update`\nHUNTSMAN_INSTALL_DIR=%s\n' \
+            "$HSE_INSTALL_DIR"
+    } > "$KEYS_PATH.tmp" \
+        && chmod 0600 "$KEYS_PATH.tmp" \
+        && mv -f "$KEYS_PATH.tmp" "$KEYS_PATH"
+else
+    # Prebuilt install (no source tree) — drop any stale dir a prior source
+    # install recorded, so `hse update` doesn't git against a now-absent repo.
+    if grep -q '^HUNTSMAN_INSTALL_DIR=' "$KEYS_PATH" 2>/dev/null; then
+        { grep -v '^HUNTSMAN_INSTALL_DIR=' "$KEYS_PATH" 2>/dev/null || true; } > "$KEYS_PATH.tmp" \
+            && chmod 0600 "$KEYS_PATH.tmp" \
+            && mv -f "$KEYS_PATH.tmp" "$KEYS_PATH"
+    fi
+    hint "Prebuilt install: to upgrade later, re-run the installer (curl … | bash) — it re-detects a newer prebuilt."
+fi
 
 # Seed the auto-update throttle stamp so the freshly-installed binary (which is,
 # by definition, current with main right now) doesn't immediately re-check on its

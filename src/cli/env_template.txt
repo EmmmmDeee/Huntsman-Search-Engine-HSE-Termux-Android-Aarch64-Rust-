@@ -67,6 +67,11 @@ HUNTSMAN_OPENSANCTIONS_KEY="insert_opensanctions_key_here"
 HUNTSMAN_EMAILREP_KEY="insert_emailrep_key_here"
 HUNTSMAN_PROXYCURL_KEY="insert_proxycurl_key_here"
 HUNTSMAN_OPENCORP_KEY="insert_opencorporates_key_here"
+# GitHub token — OPTIONAL. github_user / github_code_search / github_commits
+# work unauthenticated at GitHub's low anonymous rate limit; a classic PAT (no
+# scopes needed for public data) raises it. Read via key_opt, so it never gates
+# the modules — it only lifts the request ceiling.
+HUNTSMAN_GITHUB_TOKEN="insert_github_token_here"
 # Australian archives:
 HUNTSMAN_TROVE_KEY="insert_nla_trove_key_here"
 HUNTSMAN_BREACHDIR_KEY="insert_breachdirectory_key_here"

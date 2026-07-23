@@ -1446,7 +1446,28 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             }
             out
         }
-        _ => value.trim().to_string(),
+        // Catch-all (Person, Address, Organisation, Password, ApiKey, breach
+        // record kinds, …): trim, then strip control characters. Module-
+        // discovered values bypass `Target::validate()`'s control-char rejection
+        // — that guard runs ONLY at the user-input boundary — so a scraped OSINT
+        // value can carry raw C0/C1 bytes, e.g. an ESC (0x1b) ANSI/OSC sequence.
+        // Left intact, those reach the Termux terminal verbatim through the
+        // dossier and export renderers' `println!`/`writeln!` of `e.value`,
+        // letting a scraped record rewrite the terminal title (OSC 2), clear the
+        // screen, or spoof a shell prompt / hyperlink (OSC 8). The
+        // Email/Username/Domain arms already cut at `is_control`; the catch-all
+        // did not. Filtering (not truncating) keeps a multi-field value's tail,
+        // and normalising once here protects every sink — terminal, file export,
+        // and any future one — at a single point. The common control-free value
+        // keeps the original zero-extra-work path.
+        _ => {
+            let trimmed = value.trim();
+            if trimmed.contains(char::is_control) {
+                trimmed.chars().filter(|c| !c.is_control()).collect()
+            } else {
+                trimmed.to_string()
+            }
+        }
     }
 }
 

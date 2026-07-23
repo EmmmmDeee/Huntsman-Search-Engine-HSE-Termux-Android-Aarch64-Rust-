@@ -676,6 +676,41 @@ fn normalise_email_strips_invisible_and_control_noise() {
 }
 
 #[test]
+fn normalise_catchall_strips_control_bytes_for_terminal_safety() {
+    // Module-discovered Person/Address/Organisation/… values bypass
+    // Target::validate()'s control-char rejection (that guard runs only at the
+    // user-input boundary), so a scraped OSINT value can carry raw ESC/OSC
+    // bytes. Left intact those reach the Termux terminal verbatim through the
+    // dossier + export renderers' println!/writeln! of e.value — letting a
+    // scraped record rewrite the terminal title (OSC 2), clear the screen, or
+    // spoof a shell prompt / hyperlink (OSC 8). The catch-all normalise arm must
+    // strip them (the Email/Username/Domain arms already do; this closes the
+    // same hole for every other kind).
+    let attack = "Jordan\u{1b}]2;PWNED\u{7}\u{1b}[2J fake";
+    for kind in [
+        EntityKind::Person,
+        EntityKind::Address,
+        EntityKind::Organisation,
+        EntityKind::Password,
+    ] {
+        let out = normalise(&kind, attack);
+        assert!(
+            !out.chars().any(char::is_control),
+            "{kind:?}: normalise must strip control bytes, got {out:?}"
+        );
+        // Printable text survives — only the control bytes are removed.
+        assert_eq!(out, "Jordan]2;PWNED[2J fake", "{kind:?}");
+    }
+    // A control-free value is returned unchanged (the zero-extra-work fast path).
+    assert_eq!(normalise(&EntityKind::Person, "Jordan Ash"), "Jordan Ash");
+    // Two values differing only by an injected ESC fold to the same UID.
+    assert_eq!(
+        Entity::new(EntityKind::Person, attack, 0.3, "s").uid,
+        Entity::new(EntityKind::Person, "Jordan]2;PWNED[2J fake", 0.3, "s").uid,
+    );
+}
+
+#[test]
 fn normalise_email_strips_surrounding_quotes() {
     // A seed/CSV/shell-quoted address (`"matt@x.com`, `'matt@x.com'`) must fold to
     // the clean address — a stray quote otherwise forks the UID and poisons every
