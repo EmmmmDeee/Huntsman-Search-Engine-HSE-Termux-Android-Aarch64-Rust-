@@ -1,7 +1,21 @@
 # High-Value Query Optimization System
 **Date:** July 22, 2026  
-**Status:** New foundational layer for See-Know module  
+**Status:** Superseded (see note below) — scoring PRINCIPLES below are live;
+the `QueryOptimizer`/`QueryPlanner`/`ExecutionPlan` integration Part 5
+describes is not  
 **Impact:** Automatic query prioritization, ROI optimization, intelligent cascade routing
+
+> **2026-07-23 status note:** this was written as a pre-implementation design
+> doc. The value/cost/ROI scoring engines it specifies (Parts 1–4:
+> `value_scorer`, `cost_analyzer`, `roi_router`) were built and ARE live —
+> but wired directly into `modules::see_know::endpoints::order_by_roi`
+> (reordering each target's SeekNow dispatch plan by ROI, with a
+> `data_log::yield_counts` historical-yield boost), not through the
+> `QueryOptimizer` / `QueryPlanner` / `ExecutionPlan` facade Part 5 below
+> describes — that facade, and the standalone `CascadeOptimizer` it wrapped,
+> were never called from anywhere live and have been removed as dead code.
+> Treat Parts 1–4 as the current scoring-dimension reference; treat Part 5
+> onward as historical design intent, not current architecture.
 
 ---
 
