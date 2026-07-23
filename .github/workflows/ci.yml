@@ -104,17 +104,24 @@ jobs:
       # minimum) and build the lib for real. This verifies the project's
       # actual deployment target (Termux on Android aarch64) end to end,
       # including the native crates the x86_64 jobs never cross-compile.
+      - name: Setup Android NDK aarch64 cross-compile env
+        uses: ./.github/actions/setup-ndk-aarch64
+
       - name: Build (aarch64-linux-android)
-        env:
-          ANDROID_API: "24"
-        run: |
-          TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          test -x "$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang" \
-            || { echo "NDK aarch64 clang not found under $TOOLCHAIN"; ls "$TOOLCHAIN" | head; exit 1; }
-          export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang"
-          export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
-          cargo build --locked --lib --bin hse --target aarch64-linux-android
+        run: cargo build --locked --lib --bin hse --target aarch64-linux-android
+
+      # Compile-only (never executed — ubuntu-latest is x86_64, so an
+      # aarch64-linux-android test binary can't run here without real device
+      # emulation, which the `hse` binary + Termux itself already stand in
+      # for). This still catches real regressions the x86_64 `check` job
+      # can't: test code gated on `#[cfg(target_arch = "aarch64")]`, or a
+      # dependency whose TEST harness (as opposed to its library code) fails
+      # to cross-compile for this target. Scoped to match the build step
+      # above (lib + the hse binary) plus the tests/ integration suite —
+      # deliberately excludes --benches/--doc, which add cross-compile cost
+      # for artifacts this job has no way to execute anyway.
+      - name: Compile tests (aarch64-linux-android, not executed)
+        run: cargo test --locked --no-run --lib --bins --tests --target aarch64-linux-android
 
   install-script:
     name: install.sh syntax (bash + shellcheck)

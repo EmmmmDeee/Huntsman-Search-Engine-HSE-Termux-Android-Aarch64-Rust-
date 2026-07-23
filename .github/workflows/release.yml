@@ -128,25 +128,30 @@ jobs:
           # not-yet-existent tag would fail the run.)
           ref: ${{ (github.event_name == 'push' && github.ref_type == 'tag') && github.ref_name || github.sha }}
 
+      # Pinned to the same literal version as rust-toolchain.toml / ci.yml —
+      # `@stable` here would still transparently end up building with the
+      # rust-toolchain.toml-pinned version anyway (rustup auto-activates an
+      # ambient rust-toolchain.toml above `rustup default` the moment cargo
+      # runs in this checkout), but it wastefully downloads an unused
+      # `stable` toolchain first and leaves this job's declared version
+      # implicit rather than matching ci.yml's explicit pin.
       - name: Install Rust + aarch64 Android target
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
         with:
           targets: aarch64-linux-android
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Setup Android NDK aarch64 cross-compile env
+        uses: ./.github/actions/setup-ndk-aarch64
+
       - name: Build release binary (aarch64-linux-android)
-        env:
-          ANDROID_API: "24"
+        run: cargo build --release --locked --bin hse --target aarch64-linux-android
+
+      - name: Strip release binary
         run: |
           TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          test -x "$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang" \
-            || { echo "NDK aarch64 clang not found under $TOOLCHAIN"; ls "$TOOLCHAIN" | head; exit 1; }
-          export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang"
-          export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
-          cargo build --release --locked --bin hse --target aarch64-linux-android
           # The release profile already strips (Cargo.toml: strip = true), but
           # run llvm-strip too in case a future profile change drops it.
           "$TOOLCHAIN/llvm-strip" target/aarch64-linux-android/release/hse || true
