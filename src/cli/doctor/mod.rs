@@ -416,12 +416,23 @@ pub(super) async fn cmd_doctor(live: bool) -> Result<()> {
         // Report it as a transport/DNS problem — NOT a key problem — with curl's
         // own detail and the concrete next steps, so an on-device operator can
         // fix it without guessing.
+        //
+        // This probe already self-heals a filtered/broken system resolver: it
+        // routes through the shared `CurlClient`, which on exit 6 automatically
+        // retries once via DoH (Cloudflare by default, `HUNTSMAN_DOH_URL`
+        // to override) before ever reaching this branch — see `util::curl_client`.
+        // Seeing this message therefore means BOTH the system resolver and that
+        // automatic HTTPS fallback failed, so the guidance below only lists the
+        // escalation paths beyond what already ran automatically.
         CreditsProbe::Unreachable(detail) => println!(
             "  UNREACHABLE — could not connect to the SeekNow API host: {detail}\n    \
-             This is a network/DNS failure, not a key problem. If it reads \
-             'Could not resolve host', your carrier/ISP resolver may be filtering \
-             the domain — try a different DNS resolver, or point HUNTSMAN_SEEKNOW_BASE \
-             at a reachable https base for the same API."
+             This is a network/DNS failure, not a key problem. An automatic DNS-over-HTTPS \
+             retry already ran and also failed (see 'after DoH resolver fallback' above if \
+             present), so the resolver-level self-heal is exhausted. Next steps: point \
+             HUNTSMAN_DOH_URL at a different DoH endpoint (or 'off' to disable it), set \
+             Android's system-wide Private DNS (Settings > Network > Private DNS) to a \
+             resolver your carrier doesn't filter, or point HUNTSMAN_SEEKNOW_BASE at a \
+             reachable https base for the same API."
         ),
         CreditsProbe::Unparseable => println!(
             "  reachable, but the response carried no recognised credits field — the key \
