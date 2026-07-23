@@ -397,6 +397,35 @@ pub async fn scan_debug_bundle(
     }
 }
 
+/// `GET /api/v1/scans/{id}/events.log` — the complete, loss-less scan event
+/// sequence alone (module start/done/error, entities found, expansion
+/// ticks/stops, every admission/exclusion) as a per-type histogram plus a JSONL
+/// timeline — everything the web "Scan Log" tab shows, as one downloadable
+/// file, without the rest of the [`scan_debug_bundle`] dossier. `hse export
+/// {id} --format events` produces the byte-identical body via
+/// [`crate::cli::export::render_event_log`].
+pub async fn scan_events_log(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id).await {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    match tokio::task::spawn_blocking(move || store.events_for_scan(&id2)).await {
+        Ok(Ok(events)) => download_response(
+            crate::cli::export::render_event_log(&events),
+            "text/plain; charset=utf-8",
+            &id,
+            "events",
+            "log",
+        ),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("events-log query task failed: {e}")),
+    }
+}
+
 /// Wrap an export `body` as a browser download: a `200` with the given
 /// `content_type` and a `Content-Disposition: attachment` whose filename is
 /// `hse-<stem>-<short-scan-id>.<ext>` (id truncated to 12 chars). Shared by the

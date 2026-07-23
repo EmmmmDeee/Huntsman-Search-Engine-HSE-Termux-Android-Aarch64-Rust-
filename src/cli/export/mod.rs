@@ -17,7 +17,8 @@ mod tests;
 
 pub(crate) use dossier::write_full_dossier;
 pub(crate) use renderers::{
-    KeyPoolSummary, SystemDebugInputs, render_debug_bundle, render_full, render_system_debug_bundle,
+    KeyPoolSummary, SystemDebugInputs, render_debug_bundle, render_event_log, render_full,
+    render_system_debug_bundle,
 };
 
 use crate::core::error::{Error, Result};
@@ -44,9 +45,10 @@ pub(super) async fn cmd_export(
         // `full` always includes infra — it is the maximum-detail format.
         "full" => render_full(&store, &sid)?,
         "debug" => render_debug_bundle(&store, &sid)?,
+        "events" => render_event_log(&store.events_for_scan(&sid)?),
         other => {
             return Err(Error::Other(format!(
-                "unknown --format '{other}'. Valid: json, csv, gexf, report, full, debug"
+                "unknown --format '{other}'. Valid: json, csv, gexf, report, full, debug, events"
             )));
         }
     };

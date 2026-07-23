@@ -98,6 +98,7 @@ export const API = {
   reportUrl: (id, includeInfra)=>'/api/v1/scans/'+encodeURIComponent(id)+'/report.json'+(includeInfra?'?include_infra=1':''),
   gexfUrl:   id=>'/api/v1/scans/'+encodeURIComponent(id)+'/graph.gexf',
   debugUrl:  id=>'/api/v1/scans/'+encodeURIComponent(id)+'/debug.txt',
+  eventsLogUrl: id=>'/api/v1/scans/'+encodeURIComponent(id)+'/events.log',
   keysGet:   ()=>API._req('/api/v1/settings/keys'),
   keysPut:   body=>API._req('/api/v1/settings/keys',{method:'PUT',body}),
   // Key POOL (multi-key per service): masked list + revoke-by-non-secret-id.

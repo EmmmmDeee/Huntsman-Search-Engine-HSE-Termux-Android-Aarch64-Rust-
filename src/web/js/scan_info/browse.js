@@ -1,5 +1,5 @@
 import { API } from '/static/js/api.js';
-import { $, attr, attrText, classify, effC, esc, extLink, fmtDate, kindPill } from '/static/js/helpers.js';
+import { $, ENRICHMENT_SOURCES, attr, attrText, classify, effC, esc, extLink, fmtDate, kindPill, sourceCount } from '/static/js/helpers.js';
 import { S } from '/static/js/state.js';
 
 /* ── Browse tab ── */
@@ -95,24 +95,33 @@ export function renderBrowseTable(rows){
     return '<div class="empty-state"><h3>No entities match</h3><p>Adjust the filter, or check the Scan Log if the scan is still running.</p></div>';
   }
   const body = rows.map((e,idx)=>{
-    const eff = effC(e), tier = classify(eff);
+    const eff = effC(e), tier = classify(eff), srcN = sourceCount(e);
     const sources = Array.from(new Set((e.evidence||[]).map(ev=>ev.source))).sort();
     const evDetail = (e.evidence||[]).map(ev=>{
       const attrs = Object.entries(ev.attributes||{}).map(([k,v])=>`<span class="ev-attr"><span class="ak">${esc(k)}:</span> ${extLink(attrText(v),90)}</span>`).join('');
-      return `<div class="ev-block"><span class="ev-src">${esc(ev.source)}</span><div class="ev-sum">${esc(ev.summary)}</div>${attrs?`<div class="ev-attrs">${attrs}</div>`:''}</div>`;
+      // Mirrors the CLI dossier's "(non-corroborating: …)" marker (see
+      // `is_non_corroborating_source` in core::entity) so the web UI stops
+      // implying every listed source independently boosted C_eff when some
+      // are self-enrichment/recall/cross-scan passes that don't.
+      const nonCorrob = ev.source && ENRICHMENT_SOURCES.has(ev.source);
+      const marker = nonCorrob ? ' <span class="text-muted" style="font-size:10px">(non-corroborating: enrichment/recall/cross-scan)</span>' : '';
+      return `<div class="ev-block"><span class="ev-src">${esc(ev.source)}</span>${marker}<span class="text-muted pull-right" style="font-size:10px">${esc(fmtDate(ev.recorded_at))}</span><div class="ev-sum">${esc(ev.summary)}</div>${attrs?`<div class="ev-attrs">${attrs}</div>`:''}</div>`;
     }).join('');
     return `<tr onclick="toggleDetail(this)" data-idx="${idx}">
       <td>${kindPill(e.kind)}</td>
       <td style="word-break:break-word"><code>${extLink(e.raw_value||e.value)}</code></td>
       <td class="text-right"><code>${eff.toFixed(3)}</code></td>
+      <td class="text-right"><code>${(e.confidence??0).toFixed(3)}</code></td>
       <td class="text-right">${e.corroboration||1}</td>
+      <td class="text-right" title="Distinct corroborating sources (excludes enrichment/recall/cross-scan)">${srcN}</td>
       <td><span class="cls c-${attr(tier)}">${tier}</span></td>
       <td>${(e.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</td>
       <td>${sources.map(s=>`<span class="src-pill">${esc(s)}</span>`).join('')}</td>
       <td><span class="text-muted" style="font-family:monospace;font-size:11px">${esc(fmtDate(e.observed_at))}</span></td>
     </tr>
-    <tr class="entity-detail-row" style="display:none"><td colspan="8"><div class="entity-detail">
+    <tr class="entity-detail-row" style="display:none"><td colspan="10"><div class="entity-detail">
       <div style="margin-bottom:4px"><b>UID:</b> <code style="font-size:10px">${esc(e.uid||'')}</code>
+        <span style="margin-left:10px"><b>Generation:</b> ${e.generation??0} hop${(e.generation===1)?'':'s'} from seed</span>
         <button class="btn btn-default btn-xs" style="margin-left:8px" data-uid="${attr(e.uid||'')}" onclick="event.stopPropagation();entityPivot(this.dataset.uid,this)"
                 title="Find every scan this exact identifier appears in"><i class="glyphicon glyphicon-globe"></i>&nbsp;Seen across scans</button>
         <span class="pivot-out" style="margin-left:8px"></span></div>
@@ -122,8 +131,8 @@ export function renderBrowseTable(rows){
   }).join('');
   return `<div class="table-responsive"><table class="table table-striped table-condensed tablesorter" id="browse-table">
     <thead><tr>
-      <th>Type</th><th>Value</th><th class="text-right">C_eff</th>
-      <th class="text-right">Corr</th><th>Tier</th>
+      <th>Type</th><th>Value</th><th class="text-right">C_eff</th><th class="text-right" title="Base confidence, before corroboration boost">Conf</th>
+      <th class="text-right">Corr</th><th class="text-right" title="Distinct corroborating sources">Src</th><th>Tier</th>
       <th class="sorter-false">Tags</th><th class="sorter-false">Sources</th><th>Observed</th>
     </tr></thead><tbody>${body}</tbody></table></div>`;
 }
