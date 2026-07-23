@@ -186,10 +186,11 @@ impl TrackedEntityMap {
     }
 
     fn get_mut(&mut self, uid: &str) -> Option<&mut Entity> {
-        if self.map.contains_key(uid) {
-            self.dirty.insert(uid.to_string());
-        }
-        self.map.get_mut(uid)
+        // Single lookup (previously `contains_key` + `get_mut`, hashing the
+        // key twice on this hot path): only mark dirty on an actual hit.
+        let entity = self.map.get_mut(uid)?;
+        self.dirty.insert(uid.to_string());
+        Some(entity)
     }
 
     /// Snapshot every entity inserted or mutated since the last call (or
@@ -197,8 +198,12 @@ impl TrackedEntityMap {
     /// changed — the caller should skip an empty-result checkpoint exactly
     /// as it already skips one on a round with no dispatch activity.
     fn take_dirty(&mut self) -> Vec<Entity> {
-        std::mem::take(&mut self.dirty)
-            .into_iter()
+        // `drain()`, not `mem::take()`: this runs once per round, and
+        // `mem::take` would drop the HashSet's backing allocation and force
+        // a fresh one on every round's subsequent inserts. `drain()` clears
+        // the set while keeping its capacity for reuse.
+        self.dirty
+            .drain()
             .filter_map(|uid| self.map.get(&uid).cloned())
             .collect()
     }
