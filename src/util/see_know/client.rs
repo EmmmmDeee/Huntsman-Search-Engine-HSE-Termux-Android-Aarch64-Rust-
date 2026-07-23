@@ -430,13 +430,22 @@ pub(super) async fn get_json_with_fallback(
 
 /// Raw GET with multi-domain fallback (no parsing/archiving). Used for meta-queries
 /// like `/credits` that don't consume budget and shouldn't be archived.
+///
+/// Routes through [`CLIENT_FAST`], not the wide `/search`-sized [`CLIENT`]: its
+/// only caller (`credits_probe`) is a parameter-free metadata GET answering in
+/// low single-digit seconds, same shape as the other [`CLIENT_FAST`] endpoints
+/// — not the ~55s-worst-case name search [`CLIENT`] is budgeted for. Before this
+/// fix a single unreachable domain could burn the full 78s `CLIENT` outer
+/// timeout (curl's own 75s `--max-time` plus headroom — see [`CLIENT`]'s doc)
+/// per domain: up to ~234s across all 3 fallback domains before `hse doctor`
+/// or scan-start's budget-scaling probe got an answer.
 pub(super) async fn get_raw_with_fallback(endpoint_path: &str, key: &str) -> Result<String> {
     let urls = all_base_urls();
     let mut last_error = None;
 
     for (idx, base) in urls.iter().enumerate() {
         let url = format!("{base}{endpoint_path}");
-        match CLIENT.get(&url, key).await {
+        match CLIENT_FAST.get(&url, key).await {
             Ok(body) => return Ok(body),
             Err(e) => {
                 let err_str = e.to_string();
