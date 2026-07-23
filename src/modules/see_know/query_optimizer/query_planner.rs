@@ -86,12 +86,7 @@ impl QueryPlanner {
     }
 
     /// Build Phase 1 execution plan (direct queries only).
-    pub fn plan_phase_1(
-        &self,
-        target_type: &str,
-        budget: f32,
-        time_budget: f32,
-    ) -> QueryPhase {
+    pub fn plan_phase_1(&self, target_type: &str, budget: f32, time_budget: f32) -> QueryPhase {
         let mut phase_candidates = Vec::new();
         let mut budget_used = 0.0_f32;
 
@@ -101,9 +96,12 @@ impl QueryPlanner {
             }
 
             let remaining_budget = (budget - budget_used).max(0.0) as u32;
-            let value = self
-                .value_scorer
-                .calculate_composite_value(endpoint, target_type, None, PLAN_SPECIFICITY);
+            let value = self.value_scorer.calculate_composite_value(
+                endpoint,
+                target_type,
+                None,
+                PLAN_SPECIFICITY,
+            );
             let cost = self.cost_analyzer.calculate_effective_cost(
                 endpoint,
                 1,
@@ -112,7 +110,9 @@ impl QueryPlanner {
                 time_budget as u32,
                 remaining_budget,
             );
-            let roi = self.roi_router.calculate_roi(value.composite, cost.effective_cost);
+            let roi = self
+                .roi_router
+                .calculate_roi(value.composite, cost.effective_cost);
             let routing = self.roi_router.route_query(roi);
 
             if routing.should_execute() {
@@ -147,7 +147,9 @@ impl QueryPlanner {
         let mut budget_used = 0.0_f32;
         let depth_budget = remaining_budget * config::BUDGET_DEPTH_2_RATIO;
         let next_depth = (cascade_depth + 1) as u8;
-        let roi_threshold = self.cascade_optimizer.get_roi_threshold_for_depth(next_depth);
+        let roi_threshold = self
+            .cascade_optimizer
+            .get_roi_threshold_for_depth(next_depth);
 
         for (pivot_type, pivot_value) in discovered_pivots {
             if budget_used >= depth_budget {
@@ -171,7 +173,9 @@ impl QueryPlanner {
                     time_budget as u32,
                     remaining as u32,
                 );
-                let roi = self.roi_router.calculate_roi(value.composite, cost.effective_cost);
+                let roi = self
+                    .roi_router
+                    .calculate_roi(value.composite, cost.effective_cost);
 
                 if roi >= roi_threshold && budget_used + cost.effective_cost <= depth_budget {
                     let decision = self.cascade_optimizer.should_cascade(
@@ -188,7 +192,7 @@ impl QueryPlanner {
                             value_score: value.composite,
                             effective_cost: cost.effective_cost,
                             roi,
-                            routing_decision: format!("{:?} pivot", tier),
+                            routing_decision: format!("{tier:?} pivot"),
                             reasoning: format!(
                                 "Cascade from {} ({:?}): Value {:.1}, ROI {:.1} — {}",
                                 pivot_value, tier, value.composite, roi, decision.reasoning
@@ -210,7 +214,11 @@ impl QueryPlanner {
     ) -> QueryPhase {
         let total_value: f32 = candidates.iter().map(|c| c.value_score).sum();
         let total_cost: f32 = candidates.iter().map(|c| c.effective_cost).sum();
-        let roi = if total_cost > 0.0 { total_value / total_cost } else { 0.0 };
+        let roi = if total_cost > 0.0 {
+            total_value / total_cost
+        } else {
+            0.0
+        };
         QueryPhase {
             phase_number,
             reasoning: format!(
@@ -273,7 +281,11 @@ impl QueryPlanner {
             }
         }
 
-        let estimated_roi = if total_cost > 0.0 { total_value / total_cost } else { 0.0 };
+        let estimated_roi = if total_cost > 0.0 {
+            total_value / total_cost
+        } else {
+            0.0
+        };
         ExecutionPlan {
             target_entity: target_entity.to_string(),
             target_type: target_type.to_string(),
@@ -303,7 +315,13 @@ impl QueryPlanner {
         plan.phases
             .iter()
             .flat_map(|phase| phase.candidates.iter())
-            .map(|c| if c.endpoint.contains("deep") { 30.0 } else { 10.0 })
+            .map(|c| {
+                if c.endpoint.contains("deep") {
+                    30.0
+                } else {
+                    10.0
+                }
+            })
             .sum()
     }
 

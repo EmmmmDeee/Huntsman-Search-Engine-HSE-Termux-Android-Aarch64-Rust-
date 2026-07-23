@@ -76,7 +76,7 @@ impl RoiRouter {
                 (endpoint, value, cost, roi, decision)
             })
             .collect();
-        
+
         // Sort by ROI descending
         results.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
         results
@@ -88,23 +88,28 @@ impl RoiRouter {
         candidates: Vec<(String, f32, f32)>,
     ) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
         let prioritized = self.prioritize_queries(candidates);
-        
+
         let mut execute_first = Vec::new();
         let mut execute_if_budget = Vec::new();
         let mut execute_if_time = Vec::new();
         let mut execute_if_requested = Vec::new();
-        
+
         for (endpoint, _, _, _roi, decision) in prioritized {
             match decision {
                 RoutingDecision::ExecuteFirst => execute_first.push(endpoint),
                 RoutingDecision::ExecuteIfBudget => execute_if_budget.push(endpoint),
                 RoutingDecision::ExecuteIfTime => execute_if_time.push(endpoint),
                 RoutingDecision::ExecuteIfRequested => execute_if_requested.push(endpoint),
-                RoutingDecision::Skip => {}, // Don't add to any list
+                RoutingDecision::Skip => {} // Don't add to any list
             }
         }
-        
-        (execute_first, execute_if_budget, execute_if_time, execute_if_requested)
+
+        (
+            execute_first,
+            execute_if_budget,
+            execute_if_time,
+            execute_if_requested,
+        )
     }
 
     /// Estimate total cost of execution sequence
@@ -126,7 +131,7 @@ mod tests {
     #[test]
     fn test_roi_calculation() {
         let router = RoiRouter::new();
-        
+
         assert_eq!(router.calculate_roi(85.0, 1.0), 85.0);
         assert_eq!(router.calculate_roi(50.0, 2.0), 25.0);
         assert_eq!(router.calculate_roi(100.0, 0.0), 100.0); // Free query
@@ -135,7 +140,7 @@ mod tests {
     #[test]
     fn test_routing_decision() {
         let router = RoiRouter::new();
-        
+
         assert_eq!(router.route_query(60.0), RoutingDecision::ExecuteFirst);
         assert_eq!(router.route_query(30.0), RoutingDecision::ExecuteIfBudget);
         assert_eq!(router.route_query(15.0), RoutingDecision::ExecuteIfTime);
@@ -159,15 +164,15 @@ mod tests {
     #[test]
     fn test_prioritize_queries() {
         let router = RoiRouter::new();
-        
+
         let candidates = vec![
-            ("/search".to_string(), 85.0, 1.0),              // ROI: 85
-            ("/username/social".to_string(), 50.0, 2.0),    // ROI: 25
-            ("/search/deep".to_string(), 95.0, 3.0),        // ROI: 31.67
+            ("/search".to_string(), 85.0, 1.0),          // ROI: 85
+            ("/username/social".to_string(), 50.0, 2.0), // ROI: 25
+            ("/search/deep".to_string(), 95.0, 3.0),     // ROI: 31.67
         ];
-        
+
         let results = router.prioritize_queries(candidates);
-        
+
         // Should be sorted by ROI descending: /search (85) > /search/deep (31.67) > /username/social (25)
         assert_eq!(results[0].0, "/search");
         assert_eq!(results[1].0, "/search/deep");
@@ -177,18 +182,18 @@ mod tests {
     #[test]
     fn test_execution_sequence() {
         let router = RoiRouter::new();
-        
+
         let candidates = vec![
             ("/search".to_string(), 85.0, 1.0),
             ("/username/social".to_string(), 50.0, 2.0),
             ("/search/deep".to_string(), 95.0, 3.0),
         ];
-        
+
         let (first, _budget, _time, _requested) = router.get_execution_sequence(candidates);
-        
+
         // First should have the high-ROI queries
         assert!(!first.is_empty());
-        
+
         // Search (ROI 85) should be in first
         assert!(first.contains(&"/search".to_string()));
     }
@@ -196,12 +201,12 @@ mod tests {
     #[test]
     fn test_sequence_cost_estimation() {
         let router = RoiRouter::new();
-        
+
         let sequence = vec![
             ("/search".to_string(), 1.0),
             ("/username/social".to_string(), 2.0),
         ];
-        
+
         let total = router.estimate_sequence_cost(&sequence);
         assert_eq!(total, 3.0);
     }

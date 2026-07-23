@@ -13,16 +13,16 @@
 //!
 //! Integrated across all 4 phases with progressive sophistication.
 
+pub mod cascade_optimizer;
+pub mod cost_analyzer;
+pub mod query_planner;
+pub mod roi_router;
 pub mod types;
 pub mod value_scorer;
-pub mod cost_analyzer;
-pub mod roi_router;
-pub mod cascade_optimizer;
-pub mod query_planner;
 
 use serde::{Deserialize, Serialize};
 
-pub use query_planner::{ExecutionPlan, QueryPhase, QueryCandidate, QueryPlanner};
+pub use query_planner::{ExecutionPlan, QueryCandidate, QueryPhase, QueryPlanner};
 
 /// Query optimization result
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,7 +141,8 @@ mod tests {
     #[test]
     fn test_optimizer_initialization() {
         let optimizer = QueryOptimizer::new();
-        let plan = optimizer.optimize_query_sequence("test@example.com", "email", 500.0, 300.0, false, 1);
+        let plan =
+            optimizer.optimize_query_sequence("test@example.com", "email", 500.0, 300.0, false, 1);
         assert_eq!(plan.target_type, "email");
     }
 

@@ -13,19 +13,21 @@ pub fn get_termux_storage_dir() -> PathBuf {
             return storage;
         }
     }
-    
+
     // Fallback to home directory
     if let Ok(home) = std::env::var("HOME") {
         return PathBuf::from(home);
     }
-    
+
     // Last resort: current directory
     PathBuf::from(".")
 }
 
 /// Get HSE results directory (creates if needed)
 pub fn get_results_dir() -> PathBuf {
-    let results = get_termux_storage_dir().join(".hse").join("see_know_results");
+    let results = get_termux_storage_dir()
+        .join(".hse")
+        .join("see_know_results");
     let _ = std::fs::create_dir_all(&results);
     results
 }
@@ -96,8 +98,7 @@ pub fn get_endpoint_cost(endpoint: &str) -> f32 {
     ENDPOINT_COSTS
         .iter()
         .find(|(name, _)| *name == endpoint)
-        .map(|(_, cost)| *cost)
-        .unwrap_or(1.0)
+        .map_or(1.0, |(_, cost)| *cost)
 }
 
 #[cfg(test)]

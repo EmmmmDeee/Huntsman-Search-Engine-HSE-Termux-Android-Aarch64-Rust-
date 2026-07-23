@@ -99,7 +99,9 @@ fn append_record(dir: &Path, record: &SearchLogRecord) -> bool {
     };
     line.push('\n');
 
-    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = WRITE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if std::fs::create_dir_all(dir).is_err() {
         return false;
     }
@@ -156,7 +158,10 @@ pub fn log_search(endpoint: &str, query: &str, query_type: &str, items: &[Value]
     if items.is_empty() {
         return false;
     }
-    append_record(&log_dir(), &build_record(endpoint, query, query_type, items))
+    append_record(
+        &log_dir(),
+        &build_record(endpoint, query, query_type, items),
+    )
 }
 
 /// Read every persisted record (oldest first). Empty vec if no log exists yet.
@@ -221,9 +226,10 @@ mod tests {
         let rec = build_record("/search", "user@example.com", "email", &[json!({"hit": 1})]);
         assert!(append_record(&dir, &rec));
         let all = read_all_from(&dir);
-        assert!(all
-            .iter()
-            .any(|r| r.query == "user@example.com" && r.endpoint == "/search"));
+        assert!(
+            all.iter()
+                .any(|r| r.query == "user@example.com" && r.endpoint == "/search")
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -236,10 +242,18 @@ mod tests {
     #[test]
     fn test_stats_counts() {
         let dir = temp_dir();
-        append_record(&dir, &build_record("/search", "a", "", &[json!({"x": 1}), json!({"x": 2})]));
         append_record(
             &dir,
-            &build_record("/network/email-check", "b@c.com", "email", &[json!({"svc": "gh"})]),
+            &build_record("/search", "a", "", &[json!({"x": 1}), json!({"x": 2})]),
+        );
+        append_record(
+            &dir,
+            &build_record(
+                "/network/email-check",
+                "b@c.com",
+                "email",
+                &[json!({"svc": "gh"})],
+            ),
         );
         let s = stats_from(&dir);
         assert_eq!(s.records, 2);
@@ -253,7 +267,10 @@ mod tests {
         let dir = temp_dir();
         append_record(&dir, &build_record("/search", "a", "", &[json!({"x": 1})]));
         append_record(&dir, &build_record("/search", "b", "", &[json!({"x": 2})]));
-        append_record(&dir, &build_record("/discord/user", "123", "", &[json!({"d": 1})]));
+        append_record(
+            &dir,
+            &build_record("/discord/user", "123", "", &[json!({"d": 1})]),
+        );
         let counts = yield_counts_from(&dir);
         assert_eq!(counts.get("/search"), Some(&2));
         assert_eq!(counts.get("/discord/user"), Some(&1));

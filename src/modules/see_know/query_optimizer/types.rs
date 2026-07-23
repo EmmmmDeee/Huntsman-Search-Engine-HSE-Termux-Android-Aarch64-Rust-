@@ -94,7 +94,8 @@ impl EndpointRegistry {
 
     /// Typical latency in seconds (default 12 for unknown endpoints).
     pub fn typical_latency_seconds(&self, endpoint: &str) -> f32 {
-        self.get(endpoint).map_or(12.0, |m| m.typical_latency_seconds)
+        self.get(endpoint)
+            .map_or(12.0, |m| m.typical_latency_seconds)
     }
 
     /// Direct credit cost — delegates to the one cost table so cost is never
