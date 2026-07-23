@@ -88,15 +88,33 @@ function applySort(table, col, heads, forceDir){
   th.classList.add(dir === 'asc' ? 'sort-asc' : 'sort-desc');
   const tbody = table.querySelector('tbody');
   if (!tbody) return;
-  const rows = Array.from(tbody.querySelectorAll('tr'));
-  rows.sort((a, b)=>{
-    const av = cellSortValue(a.children[col] || {});
-    const bv = cellSortValue(b.children[col] || {});
+  // Group each primary row with an immediately-following hidden detail panel
+  // (e.g. scan_info/browse.js's click-to-expand evidence row,
+  // `.entity-detail-row`) and sort/re-append the GROUP as one unit. Sorting
+  // every `<tr>` independently — the previous behaviour — silently splits a
+  // primary row from its detail row (they land in unrelated positions once
+  // reordered by a column the detail row has no cell for), and
+  // `toggleDetail()` locates the panel via `nextElementSibling`, so a split
+  // pair makes the expand/collapse click do nothing. Harmless no-op for
+  // tables with no detail rows (every group is just the row itself).
+  const allRows = Array.from(tbody.querySelectorAll('tr'));
+  const groups = [];
+  for (let i = 0; i < allRows.length; i++){
+    const row = allRows[i];
+    if (row.classList.contains('entity-detail-row')) continue; // consumed below
+    const next = allRows[i + 1];
+    const detail = next && next.classList.contains('entity-detail-row') ? next : null;
+    if (detail) i++;
+    groups.push({ primary: row, detail });
+  }
+  groups.sort((a, b)=>{
+    const av = cellSortValue(a.primary.children[col] || {});
+    const bv = cellSortValue(b.primary.children[col] || {});
     if (av < bv) return dir === 'asc' ? -1 : 1;
     if (av > bv) return dir === 'asc' ? 1 : -1;
     return 0;
   });
-  rows.forEach(r=>tbody.appendChild(r));
+  groups.forEach(g=>{ tbody.appendChild(g.primary); if (g.detail) tbody.appendChild(g.detail); });
 }
 
 /* ─── window.jQuery shim ───

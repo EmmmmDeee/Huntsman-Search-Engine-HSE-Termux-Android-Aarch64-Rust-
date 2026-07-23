@@ -29,6 +29,7 @@
 //! | GET    | `/api/v1/scans/{id}/stealer-rows` | `scan_stealer_rows` (v1.13+) |
 //! | GET    | `/api/v1/scans/{id}/audit`        | `scan_audit` (v1.3+)     |
 //! | GET    | `/api/v1/scans/{id}/events`       | `scan_events_sse` (SSE)  |
+//! | GET    | `/api/v1/scans/{id}/events.log`   | `scan_events_log` (v1.31+, download) |
 //! | POST   | `/api/v1/live`                    | `live_create` (v0.5+)    |
 //! | GET    | `/api/v1/live`                    | `live_list`              |
 //! | GET    | `/api/v1/live/{id}`               | `live_get`               |
@@ -436,6 +437,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         )
         .route("/scans/{id}/graph.gexf", get(scan_export::scan_export_gexf))
         .route("/scans/{id}/debug.txt", get(scan_export::scan_debug_bundle))
+        .route("/scans/{id}/events.log", get(scan_export::scan_events_log))
         .route(
             "/scans/{id}/correlations",
             get(scan_handlers::scan_correlations),

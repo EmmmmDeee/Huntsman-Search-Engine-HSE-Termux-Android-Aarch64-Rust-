@@ -317,6 +317,47 @@ fn render_raw_response_body(raw: &serde_json::Value) -> String {
     crate::util::http::redact_credentials(&pretty)
 }
 
+/// Render the complete, loss-less scan event sequence: a per-type histogram
+/// followed by one JSON-serialised [`Event`](crate::core::event::Event) per
+/// line, in order. Pure (no storage I/O) so callers fetch `events` once via
+/// [`StoragePort::events_for_scan`](crate::core::port::StoragePort::events_for_scan)
+/// and pass the slice in — shared by [`render_debug_bundle`]'s §3 and the
+/// standalone `GET /scans/{id}/events.log` download endpoint
+/// (`api::scan_export::scan_events_log`), so the two never drift apart.
+pub(crate) fn render_event_log(events: &[crate::core::event::Event]) -> String {
+    use std::collections::BTreeMap;
+    use std::fmt::Write as _;
+
+    let mut histo: BTreeMap<String, usize> = BTreeMap::new();
+    for ev in events {
+        *histo
+            .entry(ev.kind.event_type_str().to_string())
+            .or_default() += 1;
+    }
+    let mut s = String::new();
+    let _ = writeln!(s, "── SCAN SEQUENCE ({} events) ──", events.len());
+    let _ = writeln!(s, "  event histogram:");
+    for (typ, n) in &histo {
+        let _ = writeln!(s, "    {typ:30} {n}");
+    }
+    let _ = writeln!(
+        s,
+        "\n  full timeline (JSONL — one loss-less event per line, in order):"
+    );
+    if events.is_empty() {
+        let _ = writeln!(
+            s,
+            "  (no events recorded — event persistence disabled, or an import not a live scan)"
+        );
+    }
+    for ev in events {
+        // Loss-less, greppable: timestamp + the entire serialised event.
+        let json = serde_json::to_string(ev).unwrap_or_else(|_| "{}".into());
+        let _ = writeln!(s, "  {} {}", ev.ts, json);
+    }
+    s
+}
+
 /// The **one-file debug bundle** — everything needed to understand and improve a
 /// scan from a single artifact, with no black boxes. It concatenates:
 ///   0. the environment fingerprint ([`render_environment`](super::environment::render_environment)) — build/host, module
@@ -458,32 +499,8 @@ pub(crate) fn render_debug_bundle(
 
     // ── 3. Complete scan sequence (every event) ──
     let events = store.events_for_scan(sid)?;
-    let mut histo: BTreeMap<String, usize> = BTreeMap::new();
-    for ev in &events {
-        *histo
-            .entry(ev.kind.event_type_str().to_string())
-            .or_default() += 1;
-    }
-    let _ = writeln!(s, "\n── SCAN SEQUENCE ({} events) ──", events.len());
-    let _ = writeln!(s, "  event histogram:");
-    for (typ, n) in &histo {
-        let _ = writeln!(s, "    {typ:30} {n}");
-    }
-    let _ = writeln!(
-        s,
-        "\n  full timeline (JSONL — one loss-less event per line, in order):"
-    );
-    if events.is_empty() {
-        let _ = writeln!(
-            s,
-            "  (no events recorded — event persistence disabled, or an import not a live scan)"
-        );
-    }
-    for ev in &events {
-        // Loss-less, greppable: timestamp + the entire serialised event.
-        let json = serde_json::to_string(ev).unwrap_or_else(|_| "{}".into());
-        let _ = writeln!(s, "  {} {}", ev.ts, json);
-    }
+    s.push('\n');
+    s.push_str(&render_event_log(&events));
 
     // ── 4. Scored self-audit (every weakness + recommendation) ──
     let entities = store.entities_for_scan(sid)?;
