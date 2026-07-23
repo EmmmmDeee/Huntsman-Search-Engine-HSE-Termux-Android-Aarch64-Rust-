@@ -20,6 +20,16 @@
 //!     default UA.
 //!   - Termux ships curl as part of the standard pkg set; one less
 //!     thing to link against on minimal aarch64 builds.
+//!
+//! Self-healing DNS: because every request goes through the system
+//! resolver, a Termux device whose carrier/ISP resolver *filters* a
+//! provider domain sees `curl: (6) Could not resolve host` even though
+//! the host is reachable. [`CurlClient::exec`] retries such a failure
+//! ONCE through a DoH (DNS-over-HTTPS) resolver (`curl --doh-url`), which
+//! resolves over HTTPS and bypasses the broken/filtering local resolver.
+//! Only the already-failed resolution path pays the extra call; every
+//! success path is byte-identical to before. Operator override:
+//! `HUNTSMAN_DOH_URL` (set to `off`/`none`/empty to disable).
 
 use std::time::Duration;
 
@@ -55,6 +65,19 @@ const DEFAULT_UA: &str = crate::util::curl::UA_MOBILE;
 /// does not apply here — which is exactly why compression is enabled on this
 /// transport and only this transport.
 const CLIENT_BASE_ARGS: &[&str] = &["-s", "-S", "-L", "--compressed"];
+
+/// curl exit code for "Could not resolve host" — the DNS-resolution failure the
+/// DoH fallback is designed to self-heal. Named so the retry condition in
+/// [`CurlClient::exec`] reads intent rather than a bare magic number.
+const CURL_EXIT_COULD_NOT_RESOLVE: i32 = 6;
+
+/// Default DoH resolver for the reachability fallback — Cloudflare's RFC 8484
+/// endpoint. Used when the system resolver fails (curl exit 6) and no operator
+/// override is set. HTTPS-based, so a filtering/broken local resolver is bypassed.
+const DEFAULT_DOH_URL: &str = "https://cloudflare-dns.com/dns-query";
+
+/// Env var by which an operator overrides (or disables) the DoH fallback.
+const DOH_ENV: &str = "HUNTSMAN_DOH_URL";
 
 /// How a provider's API key is presented on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,126 +200,132 @@ impl CurlClient {
         self.exec(url, key, Some(body)).await
     }
 
-    async fn exec(&self, url: &str, key: &str, post_body: Option<&str>) -> Result<(String, u16)> {
+    /// Build the curl [`Command`] for one request. `doh_url = Some(..)` adds the
+    /// `--doh-url` resolver flag (the reachability fallback); `None` is the
+    /// normal path, whose argument vector is byte-identical to the historical
+    /// inline construction.
+    fn build_command(
+        &self,
+        url: &str,
+        key: &str,
+        post_body: Option<&str>,
+        doh_url: Option<&str>,
+    ) -> Command {
         let secs = self.curl_timeout_secs.to_string();
         let auth_header = self.auth.header_line(key);
-
+        let args = curl_args(&secs, auth_header.as_deref(), post_body, doh_url, url);
         let mut cmd = Command::new("curl");
-        // Static transfer flags (`-s -S -L --compressed`) — silent-with-errors,
-        // follow redirects, and request/decompress a compressed response.
-        // `-S`/`--show-error` alongside `-s`: silent mode alone suppresses BOTH
-        // the progress meter AND curl's own fatal-error text, so a DNS/connect
-        // failure previously surfaced as a bare "curl exited 6" with an empty
-        // `output.stderr` below — diagnosable only by looking up what curl exit
-        // code 6 means, never WHICH host or WHY. `-S` keeps the progress meter
-        // suppressed but restores the one-line diagnostic ("curl: (6) Could not
-        // resolve host: …") into stderr, which the failure branch below already
-        // captures and reports. `--compressed` shrinks the paid-API JSON transfer
-        // ~4× with a byte-identical decompressed body (see [`CLIENT_BASE_ARGS`]).
-        cmd.args(CLIENT_BASE_ARGS);
-        cmd.args(["--max-time", &secs, "-A", DEFAULT_UA]);
-        // Protocol/redirect/size hardening, single-sourced so this keyed-API
-        // path and the free-function curl path can never drift apart.
-        //
-        // Unlike `curl::curl_exec`, this path applies no in-process private-IP
-        // `ssrf_resolve_pin`: every `url` here targets a hardcoded paid-provider
-        // API base (OathNet, SeekNow, …) declared by the provider module, with
-        // discovered values confined to the path/query — the host is never
-        // attacker-controlled, so there is no rebinding target to pin.
-        cmd.args(crate::util::curl::FETCH_HARDENING_ARGS);
-        if let Some(ref h) = auth_header {
-            cmd.args(["-H", h]);
-        }
-        cmd.args(["-H", "Accept: application/json"]);
-        if let Some(body) = post_body {
-            cmd.args([
-                "-X",
-                "POST",
-                "-H",
-                "Content-Type: application/json",
-                "-d",
-                body,
-            ]);
-        }
-        // Append the final HTTP status on its own trailing line so a caller can
-        // distinguish a transient upstream 5xx from a genuine empty result. It is
-        // written to stdout AFTER the body; [`split_status`] strips it back off so
-        // the returned body is byte-identical to the pre-status behaviour.
-        cmd.args(["-w", "\n%{http_code}"]);
-        cmd.args(["--", url]);
+        cmd.args(&args);
         cmd.kill_on_drop(true);
+        cmd
+    }
 
-        // Bounded read instead of `cmd.output()`: `--compressed` makes curl inflate
-        // the response in-process, and `--max-filesize` only bounds the COMPRESSED
-        // transfer — so a tiny compressed body could decode past available memory (a
-        // decompression bomb from a compromised or operator-overridden provider host)
-        // and OOM-kill the tool on a low-RAM phone. Read curl's stdout under a hard
-        // DECODED ceiling (`JSON_BODY_CAP`, matching the reqwest path's guarantee)
-        // and treat an over-cap response — anomalous for a paid JSON API — as an
-        // error. stdout and stderr are drained CONCURRENTLY so neither pipe filling
-        // can deadlock the child.
+    /// Spawn `cmd`, drain stdout/stderr concurrently under a hard decoded-size
+    /// ceiling, and return `(exit status, stdout, stderr)`. Bounded read instead
+    /// of `cmd.output()`: `--compressed` makes curl inflate the response
+    /// in-process, and `--max-filesize` only bounds the COMPRESSED transfer — so
+    /// a tiny compressed body could decode past available memory (a decompression
+    /// bomb from a compromised or operator-overridden provider host) and OOM-kill
+    /// the tool on a low-RAM phone. stdout and stderr are drained CONCURRENTLY so
+    /// neither pipe filling can deadlock the child; `kill_on_drop(true)` reaps a
+    /// still-writing curl if the ceiling trips or the outer timeout fires.
+    async fn run_curl(
+        &self,
+        mut cmd: Command,
+    ) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>)> {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        let (exit_status, stdout_bytes, stderr_bytes) =
-            timeout(Duration::from_millis(self.outer_timeout_ms), async {
-                use tokio::io::AsyncReadExt as _;
-                let mut child = cmd
-                    .spawn()
-                    .map_err(|e| Error::module(self.module, e.to_string()))?;
-                let mut child_out = child.stdout.take().expect("stdout piped");
-                let mut child_err = child.stderr.take().expect("stderr piped");
-                let cap = crate::util::http::JSON_BODY_CAP as u64;
-                let mut body = Vec::new();
-                let mut err = Vec::new();
-                // `take(cap + 1)` reads one byte past the ceiling so an exactly-cap
-                // body still succeeds while a bomb trips the guard below.
-                let mut capped_out = (&mut child_out).take(cap + 1);
-                let (out_res, _err_res) = tokio::join!(
-                    capped_out.read_to_end(&mut body),
-                    child_err.read_to_end(&mut err),
-                );
-                out_res.map_err(|e| Error::module(self.module, e.to_string()))?;
-                if body.len() as u64 > cap {
-                    // Over the decoded ceiling → decompression bomb. Returning drops
-                    // `child`, and `kill_on_drop(true)` reaps the still-writing curl.
-                    return Err(Error::module(
-                        self.module,
-                        "response exceeded the decoded size cap (possible decompression bomb)",
-                    ));
-                }
-                // Both pipes hit EOF (body ≤ cap), so curl has finished writing —
-                // reaping the exit status won't block.
-                let status = child
-                    .wait()
-                    .await
-                    .map_err(|e| Error::module(self.module, e.to_string()))?;
-                Ok::<(std::process::ExitStatus, Vec<u8>, Vec<u8>), Error>((status, body, err))
-            })
-            .await
-            .map_err(|_| Error::module(self.module, "timeout"))??;
+        timeout(Duration::from_millis(self.outer_timeout_ms), async {
+            use tokio::io::AsyncReadExt as _;
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| Error::module(self.module, e.to_string()))?;
+            let mut child_out = child.stdout.take().expect("stdout piped");
+            let mut child_err = child.stderr.take().expect("stderr piped");
+            let cap = crate::util::http::JSON_BODY_CAP as u64;
+            let mut body = Vec::new();
+            let mut err = Vec::new();
+            // `take(cap + 1)` reads one byte past the ceiling so an exactly-cap
+            // body still succeeds while a bomb trips the guard below.
+            let mut capped_out = (&mut child_out).take(cap + 1);
+            let (out_res, _err_res) = tokio::join!(
+                capped_out.read_to_end(&mut body),
+                child_err.read_to_end(&mut err),
+            );
+            out_res.map_err(|e| Error::module(self.module, e.to_string()))?;
+            if body.len() as u64 > cap {
+                // Over the decoded ceiling → decompression bomb. Returning drops
+                // `child`, and `kill_on_drop(true)` reaps the still-writing curl.
+                return Err(Error::module(
+                    self.module,
+                    "response exceeded the decoded size cap (possible decompression bomb)",
+                ));
+            }
+            // Both pipes hit EOF (body ≤ cap), so curl has finished writing —
+            // reaping the exit status won't block.
+            let status = child
+                .wait()
+                .await
+                .map_err(|e| Error::module(self.module, e.to_string()))?;
+            Ok::<(std::process::ExitStatus, Vec<u8>, Vec<u8>), Error>((status, body, err))
+        })
+        .await
+        .map_err(|_| Error::module(self.module, "timeout"))?
+    }
+
+    async fn exec(&self, url: &str, key: &str, post_body: Option<&str>) -> Result<(String, u16)> {
+        // First attempt via the system resolver (the normal, byte-identical path).
+        let mut result = self
+            .run_curl(self.build_command(url, key, post_body, None))
+            .await?;
+        let mut via_doh = false;
+
+        // Self-healing DNS reachability: curl exit 6 == "could not resolve host".
+        // On a device whose carrier/ISP resolver filters a provider domain the
+        // host is reachable but unresolvable, so retry the identical request ONCE
+        // through a DoH resolver, which resolves over HTTPS and bypasses the
+        // broken/filtering resolver. Only this already-failed path pays the extra
+        // call; success paths are unaffected. Disabled via `HUNTSMAN_DOH_URL=off`.
+        let could_not_resolve =
+            !result.0.success() && result.0.code() == Some(CURL_EXIT_COULD_NOT_RESOLVE);
+        if let Some(doh) = could_not_resolve.then(doh_fallback_url).flatten() {
+            result = self
+                .run_curl(self.build_command(url, key, post_body, Some(&doh)))
+                .await?;
+            via_doh = true;
+        }
+
+        let (exit_status, stdout_bytes, stderr_bytes) = result;
 
         if !exit_status.success() {
             // Surface curl's own exit code (28 = timeout, 6 = could-not-resolve,
             // 7 = connect-refused, …) plus a trimmed stderr snippet, instead of
             // an opaque "curl failed", so transient upstream failures are
-            // diagnosable from the logs.
+            // diagnosable from the logs. Note the DoH fallback when it was tried,
+            // so a still-failing resolve is distinguishable from a bare one.
             let code = exit_status
                 .code()
                 .map_or_else(|| "signal".to_string(), |c| c.to_string());
+            let via = if via_doh {
+                " (after DoH resolver fallback)"
+            } else {
+                ""
+            };
             let stderr = String::from_utf8_lossy(&stderr_bytes);
             let snippet: String = stderr.trim().chars().take(200).collect();
             let detail = if snippet.is_empty() {
-                format!("curl exited {code}")
+                format!("curl exited {code}{via}")
             } else {
                 // Redact in case curl echoes an effective URL carrying a key.
                 format!(
-                    "curl exited {code}: {}",
+                    "curl exited {code}{via}: {}",
                     crate::util::http::redact_credentials(&snippet)
                 )
             };
             return Err(Error::module(self.module, detail));
         }
+
         // Lossy decode (matching the free `curl::curl_exec` path): a paid-API
         // response with a stray non-UTF-8 byte (e.g. a Latin-1 char in an error
         // string) must still yield a usable body rather than being dropped as a
@@ -306,6 +335,84 @@ impl CurlClient {
         let raw = String::from_utf8_lossy(&stdout_bytes).into_owned();
         Ok(split_status(&raw))
     }
+}
+
+/// Build curl's full ordered argument list. Pure and free-standing so the exact
+/// arg vector — auth header, POST framing, the optional DoH resolver flag, and
+/// the trailing `-w`/`--` — is unit-testable without spawning a process. With
+/// `doh_url = None` the vector is byte-identical to the historical inline args.
+fn curl_args(
+    secs: &str,
+    auth_header: Option<&str>,
+    post_body: Option<&str>,
+    doh_url: Option<&str>,
+    url: &str,
+) -> Vec<String> {
+    let mut a: Vec<String> = Vec::with_capacity(20);
+    a.extend(CLIENT_BASE_ARGS.iter().map(|s| (*s).to_string()));
+    a.push("--max-time".to_string());
+    a.push(secs.to_string());
+    a.push("-A".to_string());
+    a.push(DEFAULT_UA.to_string());
+    a.extend(
+        crate::util::curl::FETCH_HARDENING_ARGS
+            .iter()
+            .map(|s| (*s).to_string()),
+    );
+    if let Some(doh) = doh_url {
+        a.push("--doh-url".to_string());
+        a.push(doh.to_string());
+    }
+    if let Some(h) = auth_header {
+        a.push("-H".to_string());
+        a.push(h.to_string());
+    }
+    a.push("-H".to_string());
+    a.push("Accept: application/json".to_string());
+    if let Some(body) = post_body {
+        a.push("-X".to_string());
+        a.push("POST".to_string());
+        a.push("-H".to_string());
+        a.push("Content-Type: application/json".to_string());
+        a.push("-d".to_string());
+        a.push(body.to_string());
+    }
+    a.push("-w".to_string());
+    a.push("\n%{http_code}".to_string());
+    a.push("--".to_string());
+    a.push(url.to_string());
+    a
+}
+
+/// Resolve the DoH fallback URL from a raw env value. Pure so the policy is
+/// unit-tested without mutating process env: on the crate's Rust 2024 edition
+/// `std::env::set_var` is an `unsafe fn`, and this crate is `#![forbid(unsafe_code)]`,
+/// so a test could not call it even in an `unsafe` block. Default-on (Cloudflare)
+/// when unset; disabled by an empty value or `off`/`none`/`false`/`0`
+/// (case-insensitive). Any other value is treated as a custom DoH endpoint URL.
+fn resolve_doh(raw: Option<&str>) -> Option<String> {
+    match raw {
+        None => Some(DEFAULT_DOH_URL.to_string()),
+        Some(v) => {
+            let t = v.trim();
+            if t.is_empty()
+                || t.eq_ignore_ascii_case("off")
+                || t.eq_ignore_ascii_case("none")
+                || t.eq_ignore_ascii_case("false")
+                || t == "0"
+            {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        }
+    }
+}
+
+/// The DoH fallback URL resolved from the process env (`HUNTSMAN_DOH_URL`), or
+/// the Cloudflare default. See [`resolve_doh`].
+fn doh_fallback_url() -> Option<String> {
+    resolve_doh(std::env::var(DOH_ENV).ok().as_deref())
 }
 
 /// Split curl's `-w '\n%{http_code}'` output into `(body, status)`. The status
