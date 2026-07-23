@@ -125,12 +125,18 @@ fn append_record_capped(dir: &Path, record: &SearchLogRecord, max_bytes: u64) ->
         return false;
     }
     let current = dir.join(LOG_FILE);
-    // Rotate BEFORE appending once the active file reaches the cap: rename it to
-    // the single retained generation (replacing any prior one), so the active
-    // file — and thus every reader's parse cost — stays bounded and disk use is
-    // capped at ~2× max_bytes. Best-effort: a failed rename degrades to a
-    // continued append (bounded growth lost, but never a lost record).
-    if std::fs::metadata(&current).map_or(0, |m| m.len()) >= max_bytes {
+    let current_len = std::fs::metadata(&current).map_or(0, |m| m.len());
+    // Rotate BEFORE appending when adding THIS record would push the active file
+    // past the cap (projected size = current_len + this line): rename the active
+    // file to the single retained generation (replacing any prior one). Checking
+    // the projected size — not just the pre-append size — is what makes the cap
+    // actually hold: a large record can't overshoot for a whole extra generation.
+    // Each generation therefore stays <= max_bytes and disk is bounded at ~2×.
+    // An empty active file is never rotated (nothing to preserve); a single
+    // record larger than the cap is unavoidably written whole, isolated in its
+    // own generation. Best-effort: a failed rename degrades to a continued append
+    // (bounded growth lost, but never a lost record).
+    if current_len > 0 && current_len + line.len() as u64 > max_bytes {
         let _ = std::fs::rename(&current, dir.join(ROTATED_FILE));
     }
     match OpenOptions::new().create(true).append(true).open(&current) {
@@ -139,26 +145,43 @@ fn append_record_capped(dir: &Path, record: &SearchLogRecord, max_bytes: u64) ->
     }
 }
 
-/// Read all retained records inside `dir`, oldest first: the rotated generation
-/// (if present) followed by the active file. Malformed lines are skipped so a
-/// partially-written tail never aborts retrieval. Both files are size-bounded
-/// (see [`MAX_LOG_BYTES`]), so this stays O(cap) even on a long-lived deployment.
-/// The single source of truth for reading, so the three public readers can never
-/// drift in how they parse or which generations they include.
-fn read_files(dir: &Path) -> Vec<SearchLogRecord> {
-    let mut out = Vec::new();
+/// Minimal projection for the hot yield-count path: deserialize ONLY the
+/// endpoint, so counting never materializes each record's potentially large
+/// `items` payload. serde ignores the other fields (no `deny_unknown_fields`).
+#[derive(Deserialize)]
+struct EndpointOnly {
+    endpoint: String,
+}
+
+/// Stream every non-empty record line inside `dir`, oldest first: the rotated
+/// generation (if present) followed by the active file. The single source of
+/// truth for WHICH generations are read and HOW lines are filtered, so every
+/// reader shares it and cannot drift; callers choose what to deserialize per
+/// line (full record vs a minimal projection). Both files are size-bounded (see
+/// [`MAX_LOG_BYTES`]), so this stays O(cap) on a long-lived deployment.
+fn for_each_record_line(dir: &Path, mut on_line: impl FnMut(&str)) {
     for name in [ROTATED_FILE, LOG_FILE] {
         let Ok(file) = std::fs::File::open(dir.join(name)) else {
             continue;
         };
-        out.extend(
-            BufReader::new(file)
-                .lines()
-                .map_while(Result::ok)
-                .filter(|l| !l.trim().is_empty())
-                .filter_map(|l| serde_json::from_str::<SearchLogRecord>(&l).ok()),
-        );
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                on_line(trimmed);
+            }
+        }
     }
+}
+
+/// Read all retained records inside `dir` (oldest first), skipping malformed
+/// lines. Materializes full records — for retrieval callers, not the hot path.
+fn read_files(dir: &Path) -> Vec<SearchLogRecord> {
+    let mut out = Vec::new();
+    for_each_record_line(dir, |line| {
+        if let Ok(rec) = serde_json::from_str::<SearchLogRecord>(line) {
+            out.push(rec);
+        }
+    });
     out
 }
 
@@ -218,10 +241,14 @@ pub fn yield_counts() -> std::collections::HashMap<String, usize> {
 }
 
 fn yield_counts_from(dir: &Path) -> std::collections::HashMap<String, usize> {
+    // Hot path (runs on every effective_plan): stream lines and pull ONLY the
+    // endpoint, never allocating the full records / `items` payloads.
     let mut out = std::collections::HashMap::new();
-    for rec in read_files(dir) {
-        *out.entry(rec.endpoint).or_insert(0) += 1;
-    }
+    for_each_record_line(dir, |line| {
+        if let Ok(e) = serde_json::from_str::<EndpointOnly>(line) {
+            *out.entry(e.endpoint).or_insert(0) += 1;
+        }
+    });
     out
 }
 
@@ -316,6 +343,57 @@ mod tests {
             "no rotation below the cap"
         );
         assert_eq!(read_all_from(&dir).len(), 5);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_projected_size_keeps_active_file_within_cap() {
+        // Regression guard for the projected-size rotation fix: with a cap that
+        // fits one record but not two, the old PRE-append check let the active
+        // file reach ~2 records before rotating (overshooting the cap). The
+        // projected-size check must keep the active file within the cap after
+        // every append. The cap is DERIVED from a real serialized record (not a
+        // hard-coded byte count) so it reliably holds exactly one line but not two.
+        let dir = temp_dir();
+        let one_line = serde_json::to_string(&build_record("/search", "q0", "", &[json!({"n": 0})]))
+            .unwrap()
+            .len() as u64
+            + 1; // trailing newline
+        let cap = one_line * 2 - 1; // one record fits; two would exceed
+        for i in 0..6 {
+            append_record_capped(
+                &dir,
+                &build_record("/search", &format!("q{i}"), "", &[json!({"n": i})]),
+                cap,
+            );
+            let active_len = std::fs::metadata(dir.join(LOG_FILE)).map_or(0, |m| m.len());
+            assert!(
+                active_len <= cap,
+                "active file {active_len}B must stay within the {cap}B cap after append {i}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_yield_counts_span_rotated_and_active_generations() {
+        // The hot-path yield counter (endpoint-only streaming) must still count
+        // across both the rotated generation and the active file.
+        let dir = temp_dir();
+        let cap = 1u64; // rotate on every append
+        append_record_capped(
+            &dir,
+            &build_record("/search", "a", "", &[json!({"x": 1})]),
+            cap,
+        );
+        append_record_capped(
+            &dir,
+            &build_record("/search", "b", "", &[json!({"x": 2})]),
+            cap,
+        );
+        let counts = yield_counts_from(&dir);
+        // `a` rotated, `b` active → both counted (2 total for /search).
+        assert_eq!(counts.get("/search"), Some(&2));
         std::fs::remove_dir_all(&dir).ok();
     }
 
