@@ -894,7 +894,10 @@ fn tag_prefixed_concatenates_and_dedups() {
     // is a prefix of an existing tag's id must NOT be treated as present.
     e.tag_prefixed("attack:", "T1593");
     assert!(e.has_tag("attack:T1593"));
-    assert_eq!(e.tags.iter().filter(|t| t.starts_with("attack:")).count(), 2);
+    assert_eq!(
+        e.tags.iter().filter(|t| t.starts_with("attack:")).count(),
+        2
+    );
     // Interoperates with plain `tag`: a value first added via `tag` is seen as
     // existing by `tag_prefixed` and not duplicated.
     let mut f = email("c@d.com");

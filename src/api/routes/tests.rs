@@ -275,6 +275,22 @@ use super::*;
         // The AU-059 residency fix (the headline "where is the subject" finding)
         // must be surfaced, not just embedded in the heavy report.json export.
         assert!(report.contains("renderLocation("));
+        // Key findings (the harvested emails/names/phones/usernames) must be the
+        // FIRST section — a people-search's whole point is immediately visible,
+        // above the analytical panels, not buried in the Browse tab.
+        assert!(
+            report.contains("renderFindings("),
+            "report must compose the Key findings summary"
+        );
+        let findings_at = report.find("renderFindings(").expect("renderFindings present");
+        let metrics_at = report.find("renderMetrics(").expect("renderMetrics present");
+        assert!(
+            findings_at < metrics_at,
+            "Key findings must render before the metrics/analytical sections"
+        );
+        // The module must actually be registered as an embedded asset (or the
+        // import 404s at runtime and the whole report view silently breaks).
+        let _ = app_file("js/scan_info/findings.js");
     }
 
     #[test]

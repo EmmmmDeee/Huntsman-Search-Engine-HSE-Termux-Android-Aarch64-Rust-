@@ -161,6 +161,11 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         include_bytes!("../../web/js/scan_info/duplicates.js"),
     ),
     (
+        "js/scan_info/findings.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/findings.js"),
+    ),
+    (
         "js/scan_info/gaps.js",
         "application/javascript",
         include_bytes!("../../web/js/scan_info/gaps.js"),

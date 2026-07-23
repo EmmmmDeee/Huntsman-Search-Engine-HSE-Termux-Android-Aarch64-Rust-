@@ -4,6 +4,7 @@ import { renderBenchmark } from '/static/js/scan_info/benchmark.js';
 import { renderCommunities } from '/static/js/scan_info/communities.js';
 import { renderCorrelations } from '/static/js/scan_info/correlations.js';
 import { renderDuplicates } from '/static/js/scan_info/duplicates.js';
+import { renderFindings } from '/static/js/scan_info/findings.js';
 import { renderGaps } from '/static/js/scan_info/gaps.js';
 import { renderIdentities } from '/static/js/scan_info/identities.js';
 import { renderLeads } from '/static/js/scan_info/leads.js';
@@ -23,7 +24,8 @@ import { renderTrust } from '/static/js/scan_info/trust.js';
    Settings) into one — the rest live under Browse / Graph / Scan Log. ── */
 export async function renderReport(host, id, scan){
   host.innerHTML = `
-    <div id="rpt-metrics"></div>
+    <div id="rpt-findings"></div>
+    <div id="rpt-metrics" style="margin-top:18px"></div>
     <div id="rpt-network"  style="margin-top:18px"></div>
     <div id="rpt-identities" style="margin-top:18px"></div>
     <div id="rpt-location" style="margin-top:18px"></div>
@@ -40,6 +42,7 @@ export async function renderReport(host, id, scan){
     <div id="rpt-audit"    style="margin-top:18px"></div>`;
   // Each renderer owns its sub-section (and its own async fetch); composing them
   // reuses the synthesis already built rather than duplicating any logic.
+  renderFindings($('#rpt-findings'), id);
   renderMetrics($('#rpt-metrics'), id);
   renderNetwork($('#rpt-network'), id);
   renderIdentities($('#rpt-identities'), id);

@@ -338,8 +338,7 @@ mod e164_property_tests {
                 let second = validate_phone_e164(num);
                 assert!(
                     second.valid,
-                    "E.164 number should remain valid on re-validation: {}",
-                    num
+                    "E.164 number should remain valid on re-validation: {num}"
                 );
             }
         }
@@ -363,9 +362,7 @@ mod e164_property_tests {
                 assert_eq!(
                     re_normalized,
                     Some(normalized.clone()),
-                    "AU normalization should be idempotent: {} → {}",
-                    num,
-                    normalized
+                    "AU normalization should be idempotent: {num} → {normalized}"
                 );
             }
         }
@@ -386,8 +383,7 @@ mod e164_property_tests {
                 let validation = validate_phone_e164(&normalized);
                 assert!(
                     validation.valid,
-                    "AU-normalized number should be valid E.164: {} → {}",
-                    num, normalized
+                    "AU-normalized number should be valid E.164: {num} → {normalized}"
                 );
             }
         }
@@ -406,8 +402,7 @@ mod e164_property_tests {
             assert_eq!(
                 to_e164_au(num),
                 None,
-                "Foreign/invalid number should not normalize: {}",
-                num
+                "Foreign/invalid number should not normalize: {num}"
             );
         }
     }
@@ -419,17 +414,13 @@ mod e164_property_tests {
             let local = format!("0{trunk}12345678");
             assert!(
                 to_e164_au(&local).is_some(),
-                "Valid AU trunk digit {} should normalize: {}",
-                trunk,
-                local
+                "Valid AU trunk digit {trunk} should normalize: {local}"
             );
 
             let intl = format!("61{trunk}12345678");
             assert!(
                 to_e164_au(&intl).is_some(),
-                "Valid AU trunk digit {} should normalize (bare-61): {}",
-                trunk,
-                intl
+                "Valid AU trunk digit {trunk} should normalize (bare-61): {intl}"
             );
         }
     }
@@ -447,8 +438,7 @@ mod e164_property_tests {
             let intl_norm = to_e164_au(intl);
             assert_eq!(
                 local_norm, intl_norm,
-                "Local and international forms should normalize to same value: {} vs {}",
-                local, intl
+                "Local and international forms should normalize to same value: {local} vs {intl}"
             );
         }
     }
