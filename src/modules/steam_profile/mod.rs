@@ -176,7 +176,10 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
     result.push(url_e);
 
     // Real name — the high-value Steam-ID → person link.
-    let realname = extract_tag(xml, "realname").filter(|n| n.len() >= 3 && n.len() <= 80);
+    let realname = extract_tag(xml, "realname").filter(|n| {
+        let len = n.len();
+        len >= 3 && len <= 80
+    });
     if let Some(realname) = realname.as_deref() {
         let mut p = Entity::new(
             EntityKind::Person,

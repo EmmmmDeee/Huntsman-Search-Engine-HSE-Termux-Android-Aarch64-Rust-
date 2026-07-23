@@ -313,7 +313,8 @@ impl Module for PhoneIntl {
         let Some(digits) = international_digits(&target.value) else {
             return Ok(ModuleResult::new());
         };
-        if digits.len() < 7 || digits.len() > 15 {
+        let len = digits.len();
+        if len < 7 || len > 15 {
             // E.164 mandates 7–15 digits total (incl. country code).
             return Ok(ModuleResult::new());
         }

@@ -383,7 +383,8 @@ fn extract_sans_from_der(der: &[u8]) -> CertSans {
             {
                 let value = value.trim().to_lowercase();
                 if tag == 0x82 {
-                    if value.contains('.') && value.len() > 3 && value.len() <= 253 {
+                    let len = value.len();
+                    if value.contains('.') && len > 3 && len <= 253 {
                         out.domains.push(value);
                     }
                 } else if crate::util::extract::looks_like_email(&value) {
