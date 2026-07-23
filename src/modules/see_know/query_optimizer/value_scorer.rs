@@ -8,7 +8,6 @@
 //! - Coverage (vs. alternatives)
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 use super::types::EndpointRegistry;
 
@@ -58,7 +57,6 @@ impl ValueScore {
 pub struct ValueScorer {
     /// Single source of truth for per-endpoint diversity + pivot signals.
     registry: EndpointRegistry,
-    hit_rate_cache: HashMap<String, f32>,
 }
 
 impl Default for ValueScorer {
@@ -71,7 +69,6 @@ impl ValueScorer {
     pub fn new() -> Self {
         Self {
             registry: EndpointRegistry::new(),
-            hit_rate_cache: HashMap::new(),
         }
     }
 
@@ -84,12 +81,6 @@ impl ValueScorer {
 
     /// Score query on historical hit rate (0-100)
     pub fn score_hit_rate(&self, endpoint: &str, target_type: &str, specificity: f32) -> f32 {
-        // Check cache first
-        let cache_key = format!("{endpoint}_{target_type}");
-        if let Some(&cached_score) = self.hit_rate_cache.get(&cache_key) {
-            return cached_score;
-        }
-
         // Base hit rates by endpoint and target type
         let base_rate = match (endpoint, target_type) {
             ("/search", "email") => 75.0,
