@@ -21,6 +21,13 @@ use crate::core::event::EventKind;
 use crate::core::module::{Module, ModuleContext, ModuleCost, ModuleResult};
 use crate::core::scan::{ScanOptions, Target, TargetKind};
 
+/// Maximum entities a single module can contribute per scan. Prevents a
+/// misbehaving or exploitable module from exhausting memory and crashing
+/// the hse serve process on resource-constrained Termux (typically ~2GB RAM).
+/// Modules that legitimately exceed this would need a redesign; ordinary
+/// modules (searches, API probes, lookups) return far fewer results.
+const MAX_ENTITIES_PER_MODULE: usize = 50_000;
+
 /// Dispatch-dedup key: a module is invoked at most once per `(module, normalised
 /// target)` across the whole scan. The value is normalised the same way
 /// `Entity::new` does, so the same target reached two ways dedups to one run.
@@ -595,8 +602,15 @@ impl super::ScanEngine {
                 }
                 let mut found = 0usize;
                 for mut entity in mr.entities.drain(..) {
+                    // Safety limit: a misbehaving module must not exhaust RAM on
+                    // Termux and crash the serve process. Cap results per module;
+                    // any module genuinely needing more would require a
+                    // paginated/streaming API redesign.
+                    if found >= MAX_ENTITIES_PER_MODULE {
+                        break;
+                    }
                     // Admission drop-filters (pure policy in `admission_rejection`);
-                    // emit the reason + skip on rejection, exactly as the inline
+                    // emit the reason & skip on rejection, exactly as the inline
                     // chain did — same order, same reason strings, same continue.
                     if let Some(reason) = admission_rejection(
                         cx.seed_kind,
