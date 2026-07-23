@@ -73,11 +73,11 @@ ensure_rust() {
   # underneath — it ignores the pin below and tracks whatever version
   # Termux's package repo ships); elsewhere bootstrap rustup if cargo is
   # absent. rust-toolchain.toml (repo root) pins the exact rustup toolchain
-  # (currently 1.97.1, components rustfmt+clippy, target aarch64-linux-android)
-  # so a plain `--default-toolchain stable` bootstrap here still ends up
-  # running the pinned version inside this repo — rustup auto-installs and
-  # switches to a rust-toolchain.toml's pin the first time cargo/rustc runs in
-  # a directory that has one, with no extra step needed here.
+  # (see that file for the current version/components/targets) so a plain
+  # `--default-toolchain stable` bootstrap here still ends up running the
+  # pinned version inside this repo — rustup auto-installs and switches to
+  # a rust-toolchain.toml's pin the first time cargo/rustc runs in a
+  # directory that has one, with no extra step needed here.
   if ! command -v cargo >/dev/null 2>&1; then
     if [ -z "${TERMUX_VERSION:-}" ]; then
       log "installing Rust via rustup (stable; the repo's rust-toolchain.toml pin takes over inside it)"
