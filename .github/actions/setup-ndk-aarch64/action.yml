@@ -1,0 +1,41 @@
+name: Setup Android NDK aarch64 cross-compile env
+description: >
+  Points cc-rs and cargo's linker at the Android NDK's aarch64 clang/ar
+  (ubuntu-latest ships the NDK preinstalled at $ANDROID_NDK_LATEST_HOME) so a
+  dependency that compiles C in its build script (ring's TLS asm, bundled
+  SQLite) can cross-compile for aarch64-linux-android. Single-sourced so
+  ci.yml and release.yml can never drift apart on the NDK recipe — both call
+  this instead of duplicating the shell block.
+
+inputs:
+  android-api:
+    description: "Android API level to target (Termux's minimum is 24)"
+    required: false
+    default: "24"
+
+runs:
+  using: composite
+  steps:
+    - name: Export NDK aarch64 cross-compile env vars
+      shell: bash
+      env:
+        ANDROID_API: ${{ inputs.android-api }}
+      run: |
+        set -euo pipefail
+        if [ -z "${ANDROID_NDK_LATEST_HOME:-}" ]; then
+          echo "ANDROID_NDK_LATEST_HOME is unset/empty — this runner has no Android NDK preinstalled" >&2
+          exit 1
+        fi
+        TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        CLANG="$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang"
+        test -x "$CLANG" \
+          || { echo "NDK aarch64 clang not found under $TOOLCHAIN"; ls "$TOOLCHAIN" | head; exit 1; }
+        # A composite action's `run:` steps are separate shell invocations, so a
+        # plain `export` would not survive into the CALLING job's later steps —
+        # write to $GITHUB_ENV instead, which every subsequent step in the job
+        # (composite or not) inherits.
+        {
+          echo "CC_aarch64_linux_android=$CLANG"
+          echo "AR_aarch64_linux_android=$TOOLCHAIN/llvm-ar"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CLANG"
+        } >>"$GITHUB_ENV"
