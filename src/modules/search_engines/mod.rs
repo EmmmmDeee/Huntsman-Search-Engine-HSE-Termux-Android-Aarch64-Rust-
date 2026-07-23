@@ -66,6 +66,7 @@ use futures::StreamExt;
 use crate::core::{
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
+    scan::Target,
 };
 
 pub struct SearchEngines;
@@ -348,6 +349,68 @@ async fn fetch_engine(
     (engine.name, Some(acc))
 }
 
+/// Secondary pivot pass: re-search discovered usernames + variants on
+/// reliable engines for cross-platform linkage. Takes primary results,
+/// extracts username pivots, generates variants, then fetches them across
+/// proven-live engines. Returns appended SearchResults ready for dedup.
+async fn run_pivot_pass(
+    primary_results: &[SearchResult],
+    target: &Target,
+    dead_engines: &HashSet<&str>,
+    fetch_deadline: std::time::Instant,
+) -> Vec<SearchResult> {
+    let mut pivots = extract_username_pivots(primary_results, target);
+
+    // Generate username variants for the strongest pivots
+    // (separator swaps, trailing digits, truncations)
+    let base_pivots: Vec<String> = pivots.clone();
+    for base in &base_pivots {
+        let raw = base.trim_matches('"');
+        for variant in generate_username_variants(raw) {
+            let vq = format!("\"{variant}\"");
+            if !pivots.contains(&vq) {
+                pivots.push(vq);
+            }
+        }
+    }
+
+    if pivots.is_empty() {
+        return Vec::new();
+    }
+
+    // Flatten the (pivot × engine) grid into one batch and fetch it
+    // with the same bounded concurrency as the primary pass — each
+    // request self-clamps to the deadline. The engine set is the
+    // reliable core PLUS every engine proven live this scan, so the
+    // cross-platform pivot runs through all the engines that actually
+    // produced results, not just the static three.
+    let pivot_engines = proven_live_engines();
+    let jobs: Vec<_> = pivots
+        .iter()
+        .take(10)
+        .flat_map(|pq| {
+            pivot_engines
+                .iter()
+                .filter(|e| engine_enabled(e.name) && !dead_engines.contains(e.name))
+                .map(move |e| fetch_one(e, (e.build_url)(pq), pq.clone(), fetch_deadline))
+        })
+        .collect();
+
+    let mut pivot_results: Vec<SearchResult> = futures::stream::iter(jobs)
+        .buffer_unordered(ENGINE_CONCURRENCY)
+        .collect::<Vec<Option<Vec<SearchResult>>>>()
+        .await
+        .into_iter()
+        .flatten()
+        .flatten()
+        .collect();
+
+    // Determinism: racy completion order → sort the merged batch.
+    pivot_results.sort_by(|a, b| a.engine.cmp(b.engine).then_with(|| a.url.cmp(&b.url)));
+
+    pivot_results
+}
+
 fn is_social_host(host: &str) -> bool {
     // Accept only the canonical profile-serving hosts: a social root domain or
     // its www/m/mobile alias. Arbitrary subdomains (pic., business., create.,
@@ -606,54 +669,9 @@ impl Module for SearchEngines {
         // ── Secondary pivot: re-search discovered usernames + variants
         //    on reliable engines for cross-platform linkage ────────────
         if !ctx.cancel.is_cancelled() {
-            let mut pivots = extract_username_pivots(&all_results, target);
-
-            // Generate username variants for the strongest pivots
-            // (separator swaps, trailing digits, truncations)
-            let base_pivots: Vec<String> = pivots.clone();
-            for base in &base_pivots {
-                let raw = base.trim_matches('"');
-                for variant in generate_username_variants(raw) {
-                    let vq = format!("\"{variant}\"");
-                    if !pivots.contains(&vq) {
-                        pivots.push(vq);
-                    }
-                }
-            }
-
-            if !pivots.is_empty() && !ctx.cancel.is_cancelled() {
-                // Flatten the (pivot × engine) grid into one batch and fetch it
-                // with the same bounded concurrency as the primary pass — each
-                // request self-clamps to the deadline. The engine set is the
-                // reliable core PLUS every engine proven live this scan, so the
-                // cross-platform pivot runs through all the engines that actually
-                // produced results, not just the static three.
-                let pivot_engines = proven_live_engines();
-                let jobs: Vec<_> = pivots
-                    .iter()
-                    .take(10)
-                    .flat_map(|pq| {
-                        pivot_engines
-                            .iter()
-                            .filter(|e| engine_enabled(e.name) && !dead_engines.contains(e.name))
-                            .map(move |e| {
-                                fetch_one(e, (e.build_url)(pq), pq.clone(), fetch_deadline)
-                            })
-                    })
-                    .collect();
-                let mut pivot_results: Vec<SearchResult> = futures::stream::iter(jobs)
-                    .buffer_unordered(ENGINE_CONCURRENCY)
-                    .collect::<Vec<Option<Vec<SearchResult>>>>()
-                    .await
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .collect();
-                // Determinism: racy completion order → sort the merged batch.
-                pivot_results
-                    .sort_by(|a, b| a.engine.cmp(b.engine).then_with(|| a.url.cmp(&b.url)));
-                all_results.append(&mut pivot_results);
-            }
+            let mut pivot_results =
+                run_pivot_pass(&all_results, target, &dead_engines, fetch_deadline).await;
+            all_results.append(&mut pivot_results);
         }
 
         // Count how many DISTINCT engines returned each canonical URL BEFORE
