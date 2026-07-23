@@ -56,7 +56,84 @@ const FREE_COVERED_SINGLE_ORIGIN: &[EndpointCall] = &[
 /// specific profile depth or breach context should fire. Budget caps bound
 /// total spend; platform-presence filtering no longer does.
 pub(super) fn effective_plan(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
-    plan_endpoints(kind, value)
+    order_by_roi(plan_endpoints(kind, value), target_type_str(kind))
+}
+
+/// Map a target kind to the value scorer's `target_type` discriminator so the
+/// hit-rate/coverage dimensions score against the right column.
+fn target_type_str(kind: TargetKind) -> &'static str {
+    match kind {
+        TargetKind::Email => "email",
+        TargetKind::Username => "username",
+        TargetKind::Phone => "phone",
+        TargetKind::IpAddress => "ip",
+        TargetKind::Domain => "domain",
+        TargetKind::FullName => "name",
+        _ => "",
+    }
+}
+
+/// Order a per-target plan by ROI (value ÷ effective-cost), highest first —
+/// the live realisation of the High-Value Query System. The SET of endpoints is
+/// unchanged (so credit totals and every membership guarantee hold); only the
+/// order changes, which matters solely for budget-cut tiebreaks — high-yield
+/// endpoints now run first automatically instead of by a hand-maintained list.
+///
+/// The data-log feedback loop is closed here: endpoints that have historically
+/// produced data for this operator (`data_log::yield_counts`) get a saturating
+/// boost, so a repeat scan favours what has actually paid off before.
+fn order_by_roi(plan: Vec<EndpointCall>, target_type: &str) -> Vec<EndpointCall> {
+    if plan.len() < 2 {
+        return plan;
+    }
+    use super::query_optimizer::cost_analyzer::CostAnalyzer;
+    use super::query_optimizer::roi_router::RoiRouter;
+    use super::query_optimizer::value_scorer::ValueScorer;
+
+    let scorer = ValueScorer::new();
+    let coster = CostAnalyzer::new();
+    let router = RoiRouter::new();
+    let yields = see_know::data_log::yield_counts();
+
+    // Neutral budget/time: budget-pressure and time-stress are identical for
+    // every endpoint in one plan, so they cannot change RELATIVE order — the
+    // ordering is purely value/cost plus the historical-yield feedback.
+    const NEUTRAL_TIME_SECS: u32 = 3600;
+    const NEUTRAL_BUDGET: u32 = 1000;
+    const PLAN_LATENCY_MS: u32 = 15_000;
+
+    let mut scored: Vec<(EndpointCall, f32)> = plan
+        .into_iter()
+        .map(|call| {
+            let path = call.canonical_path();
+            let value = scorer
+                .calculate_composite_value(&path, target_type, None, 0.8)
+                .composite;
+            let cost = coster
+                .calculate_effective_cost(
+                    &path,
+                    1,
+                    None,
+                    PLAN_LATENCY_MS,
+                    NEUTRAL_TIME_SECS,
+                    NEUTRAL_BUDGET,
+                )
+                .effective_cost;
+            let mut roi = router.calculate_roi(value, cost);
+            // Saturating yield boost (1 prior hit ≈ +7%, 10 ≈ +24%): a
+            // tiebreaker that rewards proven endpoints without letting history
+            // dominate the value/cost signal.
+            if let Some(&hits) = yields.get(path.as_str()) {
+                roi *= 1.0 + (hits as f32).ln_1p() * 0.1;
+            }
+            (call, roi)
+        })
+        .collect();
+
+    // Stable sort: equal-ROI endpoints keep plan_endpoints' order, preserving
+    // the discord/steam ID-resolution prepend for ties.
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.into_iter().map(|(call, _)| call).collect()
 }
 
 /// True if `call` is a platform-presence check that SeekNow covers at
@@ -202,6 +279,13 @@ impl EndpointCall {
     /// endpoint-specific geo extractors (e.g. WHOIS registrant fields).
     fn label(self) -> &'static str {
         self.spec().0
+    }
+
+    /// Canonical API path (`/{path}`) — the key shared by the value/cost
+    /// registry (`query_optimizer::types`) and the on-device data-log store, so
+    /// ROI ordering and yield feedback line up with what actually gets called.
+    fn canonical_path(self) -> String {
+        format!("/{}", self.spec().1)
     }
 
     async fn invoke(self, key: &str, value: &str) -> Result<Vec<Value>> {

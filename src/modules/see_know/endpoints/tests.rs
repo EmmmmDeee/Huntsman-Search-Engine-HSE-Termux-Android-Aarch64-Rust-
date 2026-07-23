@@ -154,6 +154,32 @@ use super::*;
     }
 
     #[test]
+    fn effective_plan_orders_high_value_endpoints_first() {
+        // The live HVQS ordering must place higher value/cost (ROI) endpoints
+        // ahead of low-pivot leaf lookups, while preserving the full set. For a
+        // username, the social aggregate (pivot 70, broad coverage) must rank
+        // ahead of username history and a single-platform gaming leaf.
+        let plan = effective_plan(TargetKind::Username, "alice");
+        let labels: Vec<&str> = plan.iter().map(|c| c.label()).collect();
+
+        let idx = |l: &str| labels.iter().position(|x| *x == l);
+        let social = idx("social").expect("social present");
+        let history = idx("username_history").expect("history present");
+        let minecraft = idx("minecraft").expect("minecraft present");
+        assert!(
+            social < history && social < minecraft,
+            "high-value 'social' must precede low-pivot leaves; got {labels:?}"
+        );
+
+        // Set preserved: reordering never drops or adds an endpoint.
+        assert_eq!(
+            plan.len(),
+            plan_endpoints(TargetKind::Username, "alice").len(),
+            "ROI ordering must preserve the endpoint set"
+        );
+    }
+
+    #[test]
     fn plan_domain_covers_intel_and_whois() {
         let plan = plan_endpoints(TargetKind::Domain, "example.com");
         let labels: Vec<&str> = plan.iter().map(|c| c.label()).collect();
