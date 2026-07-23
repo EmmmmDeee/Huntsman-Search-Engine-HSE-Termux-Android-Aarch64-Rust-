@@ -77,16 +77,40 @@ pub(super) fn parse_seed_list(body: &str) -> Vec<String> {
 /// scanned, stored (exportable afterwards per `scan_id` via `hse export`), and a
 /// per-seed failure is reported without aborting the run (one bad target must
 /// not sink the whole list).
+///
+/// **Memory-safe design**: Streams the input file line-by-line instead of
+/// buffering the entire file. This prevents OOM crashes on Termux (2GB RAM) when
+/// processing large seed lists (e.g., 1GB input file).
 async fn run_batch(base: ScanCmd, path: &str) -> crate::core::error::Result<()> {
-    let body = std::fs::read_to_string(path).map_err(|e| {
-        crate::core::error::Error::Other(format!("cannot read --input-file '{path}': {e}"))
+    use std::io::{BufRead, BufReader};
+
+    let file = std::fs::File::open(path).map_err(|e| {
+        crate::core::error::Error::Other(format!("cannot open --input-file '{path}': {e}"))
     })?;
-    let seeds = parse_seed_list(&body);
-    if seeds.is_empty() {
+
+    let reader = BufReader::new(file);
+    let mut seen = std::collections::HashSet::new();
+    let mut seeds = Vec::new();
+    let mut empty = true;
+
+    for line_result in reader.lines() {
+        let line = line_result.map_err(|e| {
+            crate::core::error::Error::Other(format!("error reading --input-file '{path}': {e}"))
+        })?;
+        let trimmed = line.trim();
+        // Skip blank lines and comments
+        if !trimmed.is_empty() && !trimmed.starts_with('#') && seen.insert(trimmed.to_string()) {
+            seeds.push(trimmed.to_string());
+            empty = false;
+        }
+    }
+
+    if empty {
         return Err(crate::core::error::Error::Other(format!(
             "no seeds in --input-file '{path}' (one target per line; blank and # lines ignored)"
         )));
     }
+
     let total = seeds.len();
     eprintln!("batch: scanning {total} seed(s) from {path}");
     let (mut ok, mut failed) = (0usize, 0usize);

@@ -601,12 +601,14 @@ impl super::ScanEngine {
                     super::health::record_success(name);
                 }
                 let mut found = 0usize;
+                let mut ceiling_hit = false;
                 for mut entity in mr.entities.drain(..) {
                     // Safety limit: a misbehaving module must not exhaust RAM on
                     // Termux and crash the serve process. Cap results per module;
                     // any module genuinely needing more would require a
                     // paginated/streaming API redesign.
                     if found >= MAX_ENTITIES_PER_MODULE {
+                        ceiling_hit = true;
                         break;
                     }
                     // Admission drop-filters (pure policy in `admission_rejection`);
@@ -665,6 +667,21 @@ impl super::ScanEngine {
                         state.entity_map.insert(entity.uid.clone(), entity);
                     }
                     found += 1;
+                }
+                // Emit ceiling-hit telemetry: when a module produces more than
+                // MAX_ENTITIES_PER_MODULE results, we've truncated the output.
+                // This signal tells operators that the module returned more data
+                // than we could process, and alerts on production metrics.
+                if ceiling_hit {
+                    let discarded = mr.entities.len(); // Remaining unprocessed entities
+                    warn!(
+                        module = name,
+                        found,
+                        discarded,
+                        limit = MAX_ENTITIES_PER_MODULE,
+                        "module exceeded entity ceiling; {} results discarded",
+                        discarded
+                    );
                 }
                 self.emit(
                     cx.scan_id,

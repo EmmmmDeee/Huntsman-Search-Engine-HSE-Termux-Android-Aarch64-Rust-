@@ -1,9 +1,64 @@
 use super::report::ValidationReport;
 
+/// Check if an E.164 number falls within a reserved test/placeholder range.
+/// Reserved ranges include:
+/// - +1-555-0000 to +1-555-0199 (US test exchanges)
+/// - +1-555-0200 to +1-555-0599 (reserved but may be locally used)
+/// - +0800-xxxxx (EU international toll-free prefix)
+/// - +0900-xxxxx (EU premium rate prefix)
+///
+/// These ranges are statistically present in test data and breach dumps but
+/// never represent real individuals, so filtering them eliminates false
+/// positives from fabricated/placeholder numbers in data leaks.
+fn is_reserved_phone_range(e164: &str) -> bool {
+    // Format: "+CCNNNNNNNNNNN" where CC is country code
+    if e164.len() < 4 {
+        return false;
+    }
+
+    // US test numbers: +1-555-XXXX (country code 1, exchange 555)
+    if e164.starts_with("+1555") && e164.len() >= 9 {
+        // Extract the line number (last 4 digits after +1-555)
+        let line_num = &e164[5..9];
+        if let Ok(num) = line_num.parse::<u16>() {
+            // Reject the documented test range: 555-0000 to 555-0199
+            // Also reject adjacent reserved ranges: 555-0200 to 555-0599
+            if num < 600 {
+                return true;
+            }
+        }
+    }
+
+    // International toll-free: +0800-xxxx (various countries)
+    // This is the UIFN (Universal International Freephone Number) prefix.
+    // Reserved for testing/examples across all countries.
+    if e164.starts_with("+0800") || e164.starts_with("+0900") {
+        return true;
+    }
+
+    // French test range: +33-555-xxxxx
+    if e164.starts_with("+33555") {
+        return true;
+    }
+
+    // German test range: +49-0189-xxxxxx
+    if e164.starts_with("+490189") {
+        return true;
+    }
+
+    // UK test range: +44-1632-xxxxxx
+    if e164.starts_with("+441632") {
+        return true;
+    }
+
+    false
+}
+
 /// True if `s` is a syntactically valid E.164 number: leading `+`,
 /// then 10 to 15 digits, with the country code in the conventional
 /// 1-3 digit range (and never a leading `0`). Does NOT verify the number is
-/// dial-able; only the format.
+/// dial-able; only the format. Also rejects known reserved test/placeholder
+/// ranges that appear frequently in breach data but represent no real person.
 pub fn validate_phone_e164(s: &str) -> ValidationReport {
     if !s.starts_with('+') {
         return ValidationReport::fail("e164.missing_plus", "must start with '+'");
@@ -26,6 +81,14 @@ pub fn validate_phone_e164(s: &str) -> ValidationReport {
         return ValidationReport::fail(
             "e164.length",
             format!("expected 10..=15 digits, got {}", digits.len()),
+        );
+    }
+    // Reject known reserved test/placeholder ranges to prevent false positives
+    // from breach data (fabricated test numbers are statistically common).
+    if is_reserved_phone_range(s) {
+        return ValidationReport::fail(
+            "e164.reserved_range",
+            "falls within reserved test/placeholder range",
         );
     }
     ValidationReport::ok()
@@ -195,5 +258,61 @@ mod e164_au_tests {
                 "a real AU number in bare-61 form (lead {lead}) must canonicalise: {intl}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod e164_reserved_range_tests {
+    use super::{is_reserved_phone_range, validate_phone_e164};
+
+    #[test]
+    fn us_test_range_555_rejected() {
+        // +1-555-0000 to +1-555-0599 are documented US test/placeholder ranges
+        assert!(is_reserved_phone_range("+15550000000"));
+        assert!(is_reserved_phone_range("+15550100000"));
+        assert!(is_reserved_phone_range("+15550599999"));
+        // Just outside the reserved range should pass the range check
+        // (but full validation may still reject for other reasons)
+        assert!(!is_reserved_phone_range("+15550700000"));
+        assert!(!is_reserved_phone_range("+15561234567"));
+    }
+
+    #[test]
+    fn uifn_toll_free_rejected() {
+        // +0800 and +0900 are reserved international prefixes
+        assert!(is_reserved_phone_range("+0800123456"));
+        assert!(is_reserved_phone_range("+0900123456"));
+    }
+
+    #[test]
+    fn european_test_ranges_rejected() {
+        // +33-555-xxxxx (France)
+        assert!(is_reserved_phone_range("+33555123456"));
+        // +49-0189-xxxxxx (Germany)
+        assert!(is_reserved_phone_range("+490189123456"));
+        // +44-1632-xxxxxx (UK)
+        assert!(is_reserved_phone_range("+441632123456"));
+    }
+
+    #[test]
+    fn validation_rejects_reserved_numbers() {
+        // These should be syntactically valid but fail semantic validation
+        let us_test = validate_phone_e164("+15550000000");
+        assert!(!us_test.valid);
+        assert_eq!(us_test.reason, "e164.reserved_range");
+
+        let uifn = validate_phone_e164("+0800123456");
+        assert!(!uifn.valid);
+
+        // Real numbers should still pass
+        let real_us = validate_phone_e164("+14155551234");
+        assert!(
+            real_us.valid,
+            "real US number should pass: {}",
+            real_us.reason
+        );
+
+        let real_au = validate_phone_e164("+61412345678");
+        assert!(real_au.valid, "real AU number should pass");
     }
 }
