@@ -21,6 +21,9 @@ pub mod au_business_id;
 pub mod au_electoral;
 pub mod au_geo;
 pub mod au_people;
+// Retired (all endpoints 404 since 2026-07-14); retained behind an off-by-default
+// feature. See `[features].au_property` in Cargo.toml and the registry below.
+#[cfg(feature = "au_property")]
 pub mod au_property;
 pub mod au_unclaimed;
 pub mod austlii;
@@ -481,10 +484,13 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(asic_banned_orgs::AsicBannedOrgs),
             Arc::new(au_business_id::AuBusinessId),
             Arc::new(au_electoral::AuElectoral),
-            // AU-PROPERTY DISABLED: all three endpoints (NSW ELVIS, VIC MapShare WFS,
-            // QLD titles) return 404 as of 2026-07-14 and are documented as
-            // retired/migrated. When replacement endpoints exist, re-register.
-            // Arc::new(au_property::AuProperty),
+            // AU-PROPERTY: all three endpoints (NSW ELVIS, VIC MapShare WFS, QLD
+            // titles) return 404 as of 2026-07-14 (documented retired/migrated),
+            // so the module is gated behind the off-by-default `au_property`
+            // feature and does NOT compile into the default build. When
+            // replacement endpoints exist, build with `--features au_property`.
+            #[cfg(feature = "au_property")]
+            Arc::new(au_property::AuProperty),
             Arc::new(au_geo::AuGeo),
             Arc::new(acnc_charities::AcncCharities),
             Arc::new(gleif_lei::GleifLei),

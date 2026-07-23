@@ -57,6 +57,17 @@ inefficient_to_string = "deny"
 map_unwrap_or = "deny"
 unnested_or_patterns = "deny"
 
+[features]
+default = []
+# Retired module kept in-tree for revival, excluded from the default build.
+# `au_property`'s three upstreams (NSW ELVIS, VIC MapShare WFS, QLD titles) all
+# returned 404 as of 2026-07-14 (documented retired/migrated), so the 791-line
+# module never dispatches. Rather than delete it, it is gated OFF here: enable
+# with `--features au_property` if/when replacement endpoints exist. The
+# `every_declared_module_is_registered` architecture test skips cfg-gated
+# declarations, so a feature-off module is not flagged as dead-at-runtime.
+au_property = []
+
 [dependencies]
 tokio              = { version = "1",    features = ["rt-multi-thread", "macros", "time", "sync", "process", "io-util", "net", "fs", "signal"] }
 serde              = { version = "1",    features = ["derive"] }

@@ -1323,13 +1323,24 @@ fn every_declared_module_is_registered() {
     let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/modules/mod.rs"))
         .expect("src/modules/mod.rs must exist");
 
-    let declared: Vec<String> = src
-        .lines()
-        .filter_map(|l| {
-            let l = l.trim();
-            l.strip_prefix("pub mod ")
+    let lines: Vec<&str> = src.lines().collect();
+    let declared: Vec<String> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| {
+            let name = l
+                .trim()
+                .strip_prefix("pub mod ")
                 .and_then(|r| r.strip_suffix(';'))
-                .map(|n| n.trim().to_string())
+                .map(|n| n.trim().to_string())?;
+            // Skip conditionally-compiled declarations: a `pub mod` behind a
+            // `#[cfg(...)]` (e.g. an off-by-default feature like `au_property`,
+            // a retired module retained for revival) is intentionally absent
+            // from the DEFAULT registry, so it is not "dead at runtime" — its
+            // registration is gated by the same cfg. Without this, cfg-gating a
+            // module would make this guard fire spuriously.
+            let cfg_gated = i > 0 && lines[i - 1].trim_start().starts_with("#[cfg(");
+            (!cfg_gated).then_some(name)
         })
         .collect();
 
@@ -1342,7 +1353,16 @@ fn every_declared_module_is_registered() {
         .filter_map(|marker| src.find(marker))
         .min()
         .unwrap_or(0);
-    let body = &src[anchor..];
+    // Drop whole-line comments before the registration check: a commented-out
+    // `// Arc::new(foo::Foo),` must NOT count as registering `foo`. That exact
+    // bug once let a retired-but-commented module silently satisfy this guard
+    // (the guard's whole point is to catch declared-but-unregistered modules,
+    // and a commented registration is precisely "not registered").
+    let body: String = src[anchor..]
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     let missing: Vec<&String> = declared
         .iter()
