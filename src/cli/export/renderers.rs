@@ -265,9 +265,16 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
     // finished_at] excludes earlier runs of the same target, and the query-set
     // (target value + every entity value) excludes a neighbouring back-to-back
     // scan whose second-granular window touches this one. (A loose ±margin window
-    // bled adjacent scans together — unix timestamps are per-second.)
+    // bled adjacent scans together — unix timestamps are per-second.) For ongoing/
+    // unfinished scans, use current time as the boundary so archive queries capture
+    // only relevant responses, not all future records.
     let start = scan.started_at;
-    let end = scan.finished_at.unwrap_or(u64::MAX);
+    let end = scan.finished_at.or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_secs())
+    }).unwrap_or(scan.started_at);
     let mut queries: std::collections::HashSet<String> = std::collections::HashSet::new();
     queries.insert(scan.target.value.to_lowercase());
     for e in &entities {
