@@ -167,11 +167,13 @@ time hse scan --value test@example.com
 
 ### Validate Setup
 ```bash
-# Quick validation
-cargo test --lib see_know::tests::integration
+# Endpoint coverage ledger — asserts the documented-vs-actually-wired endpoint
+# count stays accurate (see util::see_know::integration_tests)
+cargo test --lib see_know::integration_tests
 
-# Full validation (requires live API)
-SEEKNOW_INTEGRATION_TEST=1 cargo test see_know_e2e
+# Live smoke test — currently a documented stub (no HTTP client seam exists to
+# mock it), left #[ignore]d; requires hand-extending with a real HUNTSMAN_SEEKNOW_KEY
+cargo test --lib see_know::integration_tests -- --ignored
 ```
 
 ---
