@@ -225,35 +225,10 @@ impl LiveScanner {
         // the cap. Must be a single write lock for the entire check-evict-insert.
         {
             let mut sessions = self.inner.sessions.write();
-            let active = sessions
-                .values()
-                .filter(|s| s.status == LiveStatus::Running)
-                .count();
-            if active >= Self::MAX_SESSIONS {
-                // Evict the oldest running session. `sessions` is a HashMap, so
-                // its `values()` order is randomised; break started_at ties by
-                // session id so that *which* of two same-second sessions is
-                // dropped is predictable (and logged-then-reproducible), not a
-                // coin flip on HashMap iteration order.
-                let oldest_id = sessions
-                    .values()
-                    .filter(|s| s.status == LiveStatus::Running)
-                    .min_by(|a, b| {
-                        a.started_at
-                            .cmp(&b.started_at)
-                            .then_with(|| a.id.cmp(&b.id))
-                    })
-                    .map(|s| s.id.clone());
-                if let Some(id) = oldest_id {
-                    drop(sessions);
-                    self.stop(&id);
-                    // Re-acquire write lock after stop() — the stop operation may
-                    // take significant time, so we release and re-acquire to minimize
-                    // contention.
-                    sessions = self.inner.sessions.write();
-                }
-            }
-            // Now insert under the write lock, ensuring cap + insert are atomic.
+            // Evict the oldest running session if we're at the cap, marking it
+            // `Stopped` synchronously under this same lock, THEN insert — so the
+            // check-evict-insert is atomic and the cap is actually enforced.
+            evict_oldest_running_if_full(&mut sessions, &self.inner.cancels, Self::MAX_SESSIONS);
             sessions.insert(live_id.clone(), session);
         }
 
@@ -476,6 +451,59 @@ const MAX_TERMINAL_SESSIONS: usize = 100;
 /// deterministic, not a `HashMap`-iteration coin flip. Takes the bare map
 /// (not `&LiveInner`) so it's testable without constructing an engine/bus/
 /// http client.
+/// Enforce the `max` concurrent-running-session cap on an ALREADY-LOCKED
+/// sessions map: if the running count is at (or over) `max`, mark the oldest
+/// running session `Stopped` in place and cancel its handle, freeing a slot for
+/// the caller's imminent insert.
+///
+/// Correctness hinges on doing this *under the caller's held write guard* and
+/// mutating the status *here* rather than via [`LiveScanner::stop`]. `stop` is
+/// cooperative — it only trips the `CancelHandle`; the detached `session_loop`
+/// keeps its entry `Running` in this map until it observes the flag, up to a
+/// full module timeout later. An earlier version released the lock to call
+/// `stop`, re-acquired, and inserted WITHOUT re-checking, so a burst of `start`
+/// calls each saw the same still-`Running` oldest session and inserted anyway,
+/// spawning N sessions past the cap (the exact resource-exhaustion the cap
+/// exists to prevent on a phone). Flipping the status to `Stopped` synchronously
+/// makes the freed slot visible to the very next running-count read.
+///
+/// Ties on `started_at` break by id, matching `prune_terminal_sessions` and
+/// `list`, so which of two same-second sessions is evicted is deterministic.
+/// Takes the bare map + cancels lock (not `&LiveInner`) so it's testable without
+/// constructing an engine/bus/http client. Lock order is always sessions →
+/// cancels (see `start`'s insert path and `mark_completed`), and this reads
+/// `cancels` while the caller holds `sessions`, so it cannot deadlock.
+fn evict_oldest_running_if_full(
+    sessions: &mut HashMap<String, LiveSession>,
+    cancels: &RwLock<HashMap<String, CancelHandle>>,
+    max: usize,
+) {
+    let active = sessions
+        .values()
+        .filter(|s| s.status == LiveStatus::Running)
+        .count();
+    if active < max {
+        return;
+    }
+    let oldest_id = sessions
+        .values()
+        .filter(|s| s.status == LiveStatus::Running)
+        .min_by(|a, b| {
+            a.started_at
+                .cmp(&b.started_at)
+                .then_with(|| a.id.cmp(&b.id))
+        })
+        .map(|s| s.id.clone());
+    if let Some(id) = oldest_id {
+        if let Some(evicted) = sessions.get_mut(&id) {
+            evicted.status = LiveStatus::Stopped;
+        }
+        if let Some(c) = cancels.read().get(&id) {
+            c.cancel();
+        }
+    }
+}
+
 fn prune_terminal_sessions(sessions: &RwLock<HashMap<String, LiveSession>>) {
     let mut sessions = sessions.write();
     let mut terminal: Vec<(String, u64)> = sessions

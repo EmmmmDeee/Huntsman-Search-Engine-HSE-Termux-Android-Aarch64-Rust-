@@ -255,3 +255,83 @@ use super::*;
 
         assert_eq!(sessions.read().len(), 5, "under the cap, nothing is evicted");
     }
+
+    // Running-session count helper for the eviction tests below.
+    fn running(map: &HashMap<String, LiveSession>) -> usize {
+        map.values().filter(|s| s.status == LiveStatus::Running).count()
+    }
+
+    #[test]
+    fn evict_oldest_running_if_full_frees_exactly_one_slot_synchronously() {
+        // Regression for the check-then-act cap race: the previous code released
+        // the lock to call the cooperative `stop()` (which leaves the evicted
+        // session Running until its loop notices) and then inserted without
+        // re-checking, so a burst of starts blew past MAX_SESSIONS. The eviction
+        // must mark the oldest running session `Stopped` in place, under the
+        // caller's lock, so the freed slot is visible to the very next insert.
+        let mut map: HashMap<String, LiveSession> = (0..3)
+            .map(|i| {
+                (
+                    format!("live-{i}"),
+                    mk_session(&format!("live-{i}"), LiveStatus::Running, i as u64),
+                )
+            })
+            .collect();
+        let cancels = RwLock::new(HashMap::new());
+
+        // Simulate `start`'s atomic block: evict-then-insert at the cap of 3.
+        evict_oldest_running_if_full(&mut map, &cancels, 3);
+        map.insert(
+            "live-new".to_string(),
+            mk_session("live-new", LiveStatus::Running, 99),
+        );
+
+        assert_eq!(
+            running(&map),
+            3,
+            "running count must stay at the cap after evict-then-insert"
+        );
+        // The OLDEST (live-0, started_at 0) is the one evicted.
+        assert_eq!(map["live-0"].status, LiveStatus::Stopped);
+        assert_eq!(map["live-new"].status, LiveStatus::Running);
+    }
+
+    #[test]
+    fn evict_oldest_running_if_full_is_a_no_op_below_the_cap() {
+        let mut map: HashMap<String, LiveSession> = (0..2)
+            .map(|i| {
+                (
+                    format!("live-{i}"),
+                    mk_session(&format!("live-{i}"), LiveStatus::Running, i as u64),
+                )
+            })
+            .collect();
+        let cancels = RwLock::new(HashMap::new());
+
+        evict_oldest_running_if_full(&mut map, &cancels, 10);
+
+        assert_eq!(running(&map), 2, "below the cap, nothing is evicted");
+    }
+
+    #[test]
+    fn evict_oldest_running_if_full_repeated_starts_never_exceed_the_cap() {
+        // The multi-start burst the race produced: run evict-then-insert many
+        // times and confirm the running count is pinned at the cap throughout,
+        // never climbing — the invariant the cap exists to guarantee.
+        const MAX: usize = 4;
+        let mut map: HashMap<String, LiveSession> = HashMap::new();
+        let cancels = RwLock::new(HashMap::new());
+        for i in 0..20 {
+            evict_oldest_running_if_full(&mut map, &cancels, MAX);
+            map.insert(
+                format!("live-{i}"),
+                mk_session(&format!("live-{i}"), LiveStatus::Running, i as u64),
+            );
+            assert!(
+                running(&map) <= MAX,
+                "running count {} exceeded cap {MAX} at start #{i}",
+                running(&map)
+            );
+        }
+        assert_eq!(running(&map), MAX, "converges to exactly the cap");
+    }

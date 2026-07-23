@@ -387,6 +387,20 @@ async fn persist_import(
     store.upsert_scan(&scan)?;
     store.upsert_entities_batch(entities)?;
 
+    // Device-safety bound, identical to the web upload path's
+    // IMPORT_ENRICH_MAX_ENTITIES: `derive_all` runs ~19 passes, several O(n²)
+    // (incl. `core::coref`'s O(n²) resolution), with NO internal deadline. A
+    // large breach dossier — the documented use case for `hse import` — holds
+    // tens of thousands of entities and would lock a 2-core Termux phone for
+    // minutes here. The import's PRIMARY contract (persist every parsed entity)
+    // is already met above unconditionally; only the best-effort enrichment is
+    // bounded, so a huge import always COMPLETES. A larger dossier stores every
+    // entity and can be correlated on demand via `hse rescan`.
+    const IMPORT_ENRICH_MAX_ENTITIES: usize = 5_000;
+    if entities.len() > IMPORT_ENRICH_MAX_ENTITIES {
+        return Ok((0, 0));
+    }
+
     let mut relations = 0usize;
     for r in &crate::core::relation::derive_all(entities, sid) {
         if store.upsert_relation(r).is_ok() {
