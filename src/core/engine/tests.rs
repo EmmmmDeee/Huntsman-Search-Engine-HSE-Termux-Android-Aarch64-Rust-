@@ -907,7 +907,7 @@ async fn cache_replay_does_not_feed_the_circuit_breaker_success_path() {
         seed_kind: TargetKind::Email,
         quarantined: no_quarantine(),
     };
-    let mut entity_map: HashMap<String, Entity> = HashMap::new();
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
     let mut stats = ModuleStats::default();
     let mut dispatched: DispatchLog = DispatchLog::new();
     let mut newly_inserted: Vec<String> = Vec::new();
@@ -2214,7 +2214,7 @@ async fn admitted_entities_are_stamped_with_their_modules_attack_techniques() {
             seed_kind: TargetKind::Email,
             quarantined: no_quarantine(),
         };
-        let mut entity_map: HashMap<String, Entity> = HashMap::new();
+        let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
         let mut stats = ModuleStats::default();
         let mut dispatched: DispatchLog = DispatchLog::new();
         let mut newly_inserted: Vec<String> = Vec::new();
@@ -2351,7 +2351,7 @@ async fn concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_s
         seed_kind: TargetKind::Username,
         quarantined: no_quarantine(),
     };
-    let mut entity_map: HashMap<String, Entity> = HashMap::new();
+    let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
     let mut stats = ModuleStats::default();
     let mut dispatched: DispatchLog = DispatchLog::new();
     let mut newly_inserted: Vec<String> = Vec::new();
@@ -2497,7 +2497,7 @@ async fn convex_budget_dispatches_the_highest_query_value_module_first() {
             seed_kind: TargetKind::Username,
             quarantined: no_quarantine(),
         };
-        let mut entity_map: HashMap<String, Entity> = HashMap::new();
+        let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
         let mut stats = ModuleStats::default();
         let mut dispatched: DispatchLog = DispatchLog::new();
         let mut newly_inserted: Vec<String> = Vec::new();
@@ -2512,7 +2512,7 @@ async fn convex_budget_dispatches_the_highest_query_value_module_first() {
             .await
             .expect("dispatch runs");
         assert_eq!(entity_map.len(), 1, "max_entities=1 must admit exactly one");
-        entity_map.into_values().next().unwrap().value
+        entity_map.into_inner().into_values().next().unwrap().value
     }
 
     // Flag OFF: established priority order — the priority-90 module wins.
@@ -3289,4 +3289,145 @@ async fn run_panic_safe_force_fails_a_scan_that_panics_outside_process() {
         persisted.finished_at.is_some(),
         "a force-failed scan must have finished_at set"
     );
+}
+
+// ── TrackedEntityMap: dirty-tracking contract ───────────────────────────
+//
+// The round loop's checkpoint used to re-clone and re-persist the WHOLE
+// accumulated entity_map every round with dispatch activity — round 50
+// re-persisted round 1's untouched entities all over again. TrackedEntityMap
+// narrows the checkpoint to only what changed since the last checkpoint,
+// while leaving read access (and thus live correlation, which genuinely
+// needs the full working set every round) completely unaffected. These
+// tests pin the wrapper's contract directly, independent of a full scan.
+
+fn tracked_test_entity(uid: &str) -> Entity {
+    Entity::new(EntityKind::Email, uid, 0.5, "test-scan")
+}
+
+#[test]
+fn tracked_entity_map_insert_marks_dirty() {
+    let mut map = TrackedEntityMap::new();
+    let e = tracked_test_entity("a@example.com");
+    map.insert(e.uid.clone(), e.clone());
+    let dirty = map.take_dirty();
+    assert_eq!(dirty.len(), 1);
+    assert_eq!(dirty[0].uid, e.uid);
+}
+
+#[test]
+fn tracked_entity_map_get_mut_on_existing_key_marks_dirty() {
+    let mut map = TrackedEntityMap::new();
+    let e = tracked_test_entity("a@example.com");
+    map.insert(e.uid.clone(), e.clone());
+    let _ = map.take_dirty(); // clear the insert's own dirty mark
+
+    map.get_mut(&e.uid).expect("entity present").confidence = 0.9;
+    let dirty = map.take_dirty();
+    assert_eq!(
+        dirty.len(),
+        1,
+        "a get_mut on an existing key must mark it dirty"
+    );
+    assert_eq!(
+        dirty[0].confidence, 0.9,
+        "take_dirty must reflect the mutation"
+    );
+}
+
+#[test]
+fn tracked_entity_map_get_mut_on_missing_key_does_not_mark_dirty() {
+    let mut map = TrackedEntityMap::new();
+    assert!(map.get_mut("does-not-exist").is_none());
+    assert!(
+        map.take_dirty().is_empty(),
+        "a get_mut miss must never fabricate a dirty entry"
+    );
+}
+
+#[test]
+fn tracked_entity_map_take_dirty_clears_the_set() {
+    let mut map = TrackedEntityMap::new();
+    let e = tracked_test_entity("a@example.com");
+    map.insert(e.uid.clone(), e);
+    assert_eq!(
+        map.take_dirty().len(),
+        1,
+        "first drain returns the inserted entity"
+    );
+    assert!(
+        map.take_dirty().is_empty(),
+        "a second drain with no intervening mutation must be empty — this is exactly what \
+         lets a round with no dispatch activity skip a checkpoint entirely"
+    );
+}
+
+#[test]
+fn tracked_entity_map_only_reports_entities_touched_since_the_last_drain() {
+    // Models exactly the round-loop pattern this wrapper exists for: round 1
+    // inserts two entities and checkpoints (draining both); round 2 mutates
+    // only ONE of them. The second checkpoint must see only that one --- not
+    // the untouched entity from round 1 re-persisted all over again.
+    let mut map = TrackedEntityMap::new();
+    let a = tracked_test_entity("a@example.com");
+    let b = tracked_test_entity("b@example.com");
+    map.insert(a.uid.clone(), a.clone());
+    map.insert(b.uid.clone(), b.clone());
+    let round1 = map.take_dirty();
+    assert_eq!(
+        round1.len(),
+        2,
+        "round 1's checkpoint sees everything inserted so far"
+    );
+
+    map.get_mut(&a.uid).unwrap().confidence = 0.99;
+    let round2 = map.take_dirty();
+    assert_eq!(
+        round2.len(),
+        1,
+        "round 2's checkpoint must see ONLY the mutated entity, not b re-persisted unchanged"
+    );
+    assert_eq!(round2[0].uid, a.uid);
+}
+
+#[test]
+fn tracked_entity_map_deref_gives_full_read_access_regardless_of_dirty_state() {
+    // Live correlation reads the FULL working set every round via Deref, not
+    // just the dirty subset -- a correlation rule can legitimately relate an
+    // entity from an early round to one just discovered. Prove read access
+    // is never narrowed by dirty-tracking, including right after a drain.
+    let mut map = TrackedEntityMap::new();
+    let a = tracked_test_entity("a@example.com");
+    let b = tracked_test_entity("b@example.com");
+    let (a_uid, b_uid) = (a.uid.clone(), b.uid.clone());
+    map.insert(a.uid.clone(), a);
+    map.insert(b.uid.clone(), b);
+    let _ = map.take_dirty(); // fully drained -- dirty-tracking is now empty
+
+    assert_eq!(
+        map.len(),
+        2,
+        "Deref read access must be unaffected by drained dirty state"
+    );
+    assert!(map.contains_key(&a_uid));
+    assert!(map.contains_key(&b_uid));
+    assert_eq!(map.values().count(), 2);
+}
+
+#[test]
+fn tracked_entity_map_into_inner_yields_every_entity_regardless_of_dirty_state() {
+    // finalise_scan's one-time full flush must see everything, dirty or not
+    // -- it has no use for dirty-tracking, unlike the per-round checkpoint.
+    let mut map = TrackedEntityMap::new();
+    let a = tracked_test_entity("a@example.com");
+    let b = tracked_test_entity("b@example.com");
+    let (a_uid, b_uid) = (a.uid.clone(), b.uid.clone());
+    map.insert(a.uid.clone(), a);
+    map.insert(b.uid.clone(), b);
+    let _ = map.take_dirty();
+
+    let inner = map.into_inner();
+    assert_eq!(inner.len(), 2);
+    assert!(inner.contains_key(&a_uid));
+    assert!(inner.contains_key(&b_uid));
 }
