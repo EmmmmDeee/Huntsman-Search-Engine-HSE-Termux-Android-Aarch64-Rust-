@@ -636,10 +636,10 @@ impl super::ScanEngine {
                     // Done at the single admission point AFTER every drop filter so
                     // only surviving findings are stamped.
                     for id in attack_techniques {
-                        entity.tag(format!("attack:{id}"));
+                        entity.tag_prefixed("attack:", id);
                     }
                     for id in crate::core::attack::techniques_for_entity_kind(&entity.kind) {
-                        entity.tag(format!("attack:{id}"));
+                        entity.tag_prefixed("attack:", id);
                     }
                     // Universal breach-sector wiring: stamp the source's sector
                     // (`sector:real-estate`, …) on every breach finding — one

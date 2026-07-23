@@ -651,6 +651,29 @@ impl Entity {
         }
     }
 
+    /// Tag with the concatenation `{prefix}{id}`, allocating **only** when the
+    /// tag is genuinely new. Hot-path variant of [`tag`](Self::tag) for the
+    /// dispatch loop's attack-technique stamping, where the module-level and
+    /// entity-kind-level technique sets routinely overlap (a Social module's
+    /// `Username`, say, maps to `T1593.001` from both) — the plain `tag` would
+    /// `format!` the duplicate into a fresh `String` and then discard it at the
+    /// dedup check. Across ~50k entities × up to 3 techniques per scan that
+    /// throwaway churn is measurable on a low-RAM phone; checking membership
+    /// against the borrowed parts first skips the allocation entirely.
+    pub fn tag_prefixed(&mut self, prefix: &str, id: &str) {
+        let exists = self.tags.iter().any(|t| {
+            t.len() == prefix.len() + id.len()
+                && t.as_bytes().starts_with(prefix.as_bytes())
+                && t[prefix.len()..] == *id
+        });
+        if !exists {
+            let mut s = String::with_capacity(prefix.len() + id.len());
+            s.push_str(prefix);
+            s.push_str(id);
+            self.tags.push(s);
+        }
+    }
+
     /// Quarantine this entity into the `Candidate` tier: cap its confidence at
     /// [`CANDIDATE_CONF`] and stamp the `candidate` tag. Idempotent (the tag
     /// de-dupes; the cap is a `min`). The single, orthogonal definition of "this

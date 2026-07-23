@@ -58,19 +58,6 @@ pub(super) struct ScanCmd {
     pub include_infra: bool,
 }
 
-/// Parse a batch seed-list file body into ordered, de-duplicated seeds: one
-/// target per line, blank lines and `#`-comment lines skipped, surrounding
-/// whitespace trimmed. **Pure** (no IO) so the parsing is unit-tested directly.
-pub(super) fn parse_seed_list(body: &str) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    body.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .filter(|l| seen.insert(l.to_string()))
-        .map(str::to_string)
-        .collect()
-}
-
 /// Batch mode: run the SAME scan pipeline for every seed in `--input-file`,
 /// reusing [`cmd_scan`] per seed. This is HSE's keyless, any-seed generalisation
 /// of a "process this list of targets" batch tool — each seed's findings are
@@ -637,34 +624,6 @@ mod tests {
     use super::*;
     use crate::core::entity::{Entity, EntityKind, Evidence};
     use std::cell::Cell;
-
-    #[test]
-    fn parse_seed_list_skips_blanks_comments_and_dedups() {
-        let body = "\
-8.8.8.8
-  1.1.1.1
-
-# a comment line
-example.com
-8.8.8.8
-# another comment
-alice@example.com
-";
-        let seeds = parse_seed_list(body);
-        // Order preserved, whitespace trimmed, blanks + # lines dropped, the
-        // duplicate 8.8.8.8 collapsed to its first occurrence.
-        assert_eq!(
-            seeds,
-            vec![
-                "8.8.8.8".to_string(),
-                "1.1.1.1".to_string(),
-                "example.com".to_string(),
-                "alice@example.com".to_string(),
-            ]
-        );
-        // An all-blank / all-comment body yields no seeds (run_batch errors on it).
-        assert!(parse_seed_list("\n\n#only a comment\n   \n").is_empty());
-    }
 
     #[test]
     fn unknown_module_names_flags_typos_and_removed_modules() {

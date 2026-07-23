@@ -252,8 +252,16 @@ impl CurlClient {
             let mut child = cmd
                 .spawn()
                 .map_err(|e| Error::module(self.module, e.to_string()))?;
-            let mut child_out = child.stdout.take().expect("stdout piped");
-            let mut child_err = child.stderr.take().expect("stderr piped");
+            // stdout/stderr were configured as piped above, so `take()` yields
+            // `Some` on a healthy spawn. Handle `None` as a real error rather than
+            // panicking: on a resource-constrained phone a pipe-setup failure must
+            // degrade the module cleanly, never unwind through the dispatch loop.
+            let mut child_out = child.stdout.take().ok_or_else(|| {
+                Error::module(self.module, "curl stdout pipe unavailable after spawn")
+            })?;
+            let mut child_err = child.stderr.take().ok_or_else(|| {
+                Error::module(self.module, "curl stderr pipe unavailable after spawn")
+            })?;
             let cap = crate::util::http::JSON_BODY_CAP as u64;
             let mut body = Vec::new();
             let mut err = Vec::new();

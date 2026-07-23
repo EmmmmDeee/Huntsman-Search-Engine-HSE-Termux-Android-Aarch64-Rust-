@@ -877,6 +877,32 @@ fn tag_dedup() {
     assert_eq!(e.tags.len(), 1);
 }
 
+#[test]
+fn tag_prefixed_concatenates_and_dedups() {
+    let mut e = email("a@b.com");
+    e.tag_prefixed("attack:", "T1593.001");
+    // Produces the same value the old `tag(format!("attack:{id}"))` did.
+    assert!(e.has_tag("attack:T1593.001"));
+    // Idempotent: a repeat (as when the module-level and entity-kind-level
+    // technique sets overlap) does not duplicate the tag.
+    e.tag_prefixed("attack:", "T1593.001");
+    assert_eq!(
+        e.tags.iter().filter(|t| *t == "attack:T1593.001").count(),
+        1
+    );
+    // A different id under the same prefix is a distinct tag, and one whose id
+    // is a prefix of an existing tag's id must NOT be treated as present.
+    e.tag_prefixed("attack:", "T1593");
+    assert!(e.has_tag("attack:T1593"));
+    assert_eq!(e.tags.iter().filter(|t| t.starts_with("attack:")).count(), 2);
+    // Interoperates with plain `tag`: a value first added via `tag` is seen as
+    // existing by `tag_prefixed` and not duplicated.
+    let mut f = email("c@d.com");
+    f.tag("attack:T1594");
+    f.tag_prefixed("attack:", "T1594");
+    assert_eq!(f.tags.iter().filter(|t| *t == "attack:T1594").count(), 1);
+}
+
 // ── Display ──────────────────────────────────────────────────────────────
 
 #[test]
