@@ -103,28 +103,46 @@ fn rotating_resolvers() -> Option<&'static Vec<hickory_resolver::TokioResolver>>
     RESOLVERS.get_or_init(build_rotating_resolvers).as_ref()
 }
 
+/// Resolve `host` to its public addresses, trying the operator's rotating
+/// resolver set first when configured (`HUNTSMAN_DNS_RESOLVERS`) and falling
+/// back to the system resolver — on an outright rotating-resolver error, or
+/// whenever no override is configured at all. Any resolver error degrades
+/// gracefully to the system resolver; a rotating-resolver lookup that
+/// *succeeds* but yields only private/reserved addresses is trusted as final
+/// (not retried against the system resolver), matching the SSRF filter's
+/// refuse-don't-retry posture.
+///
+/// `pub(crate)` so the curl-fallback SSRF pin (`util::curl::ssrf_resolve_pin`)
+/// shares this exact resolution strategy instead of being hard-wired to the
+/// system resolver alone — the same class of DNS-reachability gap the
+/// paid-API [`crate::util::curl_client`] transport already self-heals (there,
+/// via curl's own `--doh-url` retry on a bare "could not resolve host").
+pub(crate) async fn resolve_public_ips(host: &str) -> std::io::Result<Vec<std::net::IpAddr>> {
+    if let Some(resolvers) = rotating_resolvers() {
+        static IDX: AtomicUsize = AtomicUsize::new(0);
+        let idx = IDX.fetch_add(1, Ordering::Relaxed) % resolvers.len();
+        if let Ok(lookup) = resolvers[idx].lookup_ip(host).await {
+            let public: Vec<std::net::IpAddr> = lookup
+                .iter()
+                .filter(|ip| !crate::util::preflight::is_private_addr(*ip))
+                .collect();
+            return Ok(public);
+        }
+    }
+    let addrs = tokio::net::lookup_host((host, 0)).await?;
+    Ok(filter_public(addrs).into_iter().map(|a| a.ip()).collect())
+}
+
 impl reqwest::dns::Resolve for SsrfResolver {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
         Box::pin(async move {
             let host = name.as_str().to_owned();
-            // Opt-in rotating public resolvers (HUNTSMAN_DNS_RESOLVERS): spread
-            // lookups across providers, with the same private-IP SSRF filter.
-            // Any resolver error degrades gracefully to the system resolver.
-            if let Some(resolvers) = rotating_resolvers() {
-                static IDX: AtomicUsize = AtomicUsize::new(0);
-                let idx = IDX.fetch_add(1, Ordering::Relaxed) % resolvers.len();
-                if let Ok(lookup) = resolvers[idx].lookup_ip(host.as_str()).await {
-                    let public: Vec<SocketAddr> = lookup
-                        .iter()
-                        .filter(|ip| !crate::util::preflight::is_private_addr(*ip))
-                        .map(|ip| SocketAddr::new(ip, 0))
-                        .collect();
-                    return Ok(Box::new(public.into_iter()) as reqwest::dns::Addrs);
-                }
-            }
-            let addrs = tokio::net::lookup_host((host.as_str(), 0)).await?;
-            let public = filter_public(addrs);
-            Ok(Box::new(public.into_iter()) as reqwest::dns::Addrs)
+            let public = resolve_public_ips(&host).await?;
+            let addrs: Vec<SocketAddr> = public
+                .into_iter()
+                .map(|ip| SocketAddr::new(ip, 0))
+                .collect();
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
         })
     }
 }
