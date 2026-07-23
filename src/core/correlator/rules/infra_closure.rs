@@ -50,6 +50,14 @@ pub(in crate::core::correlator) fn rule_au_116_infrastructure_pivot_closure(
     const MIN_CONF: f64 = 0.50;
     const MIN_DOMAINS: usize = 3;
     const MIN_IPS: usize = 2;
+    /// Cap on distinct registrable domains to report as transitive-closure
+    /// correlation. AU-110's 5-domain cap prevents treating shared hosting as
+    /// co-ownership; AU-116's multi-hop case is more legitimate, but still
+    /// needs an upper bound to avoid reporting entire cloud infrastructure
+    /// ecosystems (100s–1000s of domains on many IPs) as a single find. A cap
+    /// of 20 allows for larger operator estates (5–10 properties per IP × 2–3
+    /// IPs) while staying far below shared-cloud noise.
+    const MAX_DOMAINS: usize = 20;
 
     // Infra nodes: Domain + IpAddress, indexed by uid. A benign-CDN IP is
     // recorded but never traversed (see below), so it can't bridge domains.
@@ -134,11 +142,16 @@ pub(in crate::core::correlator) fn rule_au_116_infrastructure_pivot_closure(
 
     // Keep only qualifying components — ≥3 distinct owners AND ≥2 IP nodes → a
     // genuine multi-server chain, not a single shared host (AU-110's job) —
-    // BEFORE sorting, so the sort never touches the many single-node (0-domain)
-    // components a large graph produces.
+    // AND ≤MAX_DOMAINS to avoid reporting entire cloud infrastructure as a
+    // single correlation. BEFORE sorting, so the sort never touches the many
+    // single-node (0-domain) components a large graph produces.
     let mut ordered: Vec<&Comp> = comps
         .values()
-        .filter(|c| c.domains.len() >= MIN_DOMAINS && c.ip_count >= MIN_IPS)
+        .filter(|c| {
+            c.domains.len() >= MIN_DOMAINS
+                && c.domains.len() <= MAX_DOMAINS
+                && c.ip_count >= MIN_IPS
+        })
         .collect();
     ordered.sort_by(|a, b| a.domains.iter().next().cmp(&b.domains.iter().next()));
 
@@ -283,6 +296,34 @@ mod tests {
             rule_au_116_infrastructure_pivot_closure(&[a, b, c, ip1, ip2], &rels, "s", 0)
                 .is_empty(),
             "one owner's subdomains are not a multi-owner footprint"
+        );
+    }
+
+    #[test]
+    fn au116_respects_max_domains_cap() {
+        // A chain with 21 distinct registrable domains (more than MAX_DOMAINS=20)
+        // across 2 IPs must be silently skipped to avoid reporting entire cloud
+        // infrastructure ecosystems as a single correlation.
+        let mut ents = Vec::new();
+        let mut rels = Vec::new();
+        let ip1 = ip("203.0.113.1");
+        let ip2 = ip("203.0.113.2");
+        ents.push(ip1.clone());
+        ents.push(ip2.clone());
+
+        // Create 21 domains, alternating between the two IPs.
+        for i in 1..=21 {
+            let d = dom(&format!("domain{i}.com"));
+            let target_ip = if i % 2 == 0 { &ip2 } else { &ip1 };
+            rels.push(edge(&d, target_ip, RelationKind::ResolvesTo));
+            ents.push(d);
+        }
+
+        let results = rule_au_116_infrastructure_pivot_closure(&ents, &rels, "s", 0);
+        assert!(
+            results.is_empty(),
+            "AU-116 must not fire on >{} distinct domains to match AU-110's co-ownership philosophy",
+            20
         );
     }
 }
