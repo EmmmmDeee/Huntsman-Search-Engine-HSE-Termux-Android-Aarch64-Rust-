@@ -85,7 +85,7 @@ fn reject_non_loopback(peer: &SocketAddr) -> Option<(StatusCode, Json<serde_json
 /// pull / cargo build / binary replace) racing each other, and potentially
 /// two concurrent `self_restart()` calls. Making the read-then-write atomic
 /// under one lock closes that window structurally rather than narrowing it.
-fn try_start_update(update_info: &std::sync::Mutex<UpdateInfo>) -> bool {
+pub(crate) fn try_start_update(update_info: &std::sync::Mutex<UpdateInfo>) -> bool {
     let mut info = update_info
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);

@@ -58,6 +58,32 @@ pub fn get_bool(key: &str, default: bool) -> bool {
     resolve(&guard, key, default)
 }
 
+/// Resolve a two-part `<prefix><name>` boolean toggle without heap-allocating a
+/// fresh composite key on every call. The engine's dispatch gate resolves
+/// `module.<name>` for every (module × target) on every round, and the
+/// engine-dispatch loop resolves `engine.<name>` per engine — hot paths where
+/// `get_bool(&format!("{prefix}{name}"), ..)` allocated a throwaway `String`
+/// each call even though the override map is almost always empty. A reused
+/// thread-local buffer keeps its capacity across calls, so after the first call
+/// the key assembly is allocation-free; behaviour is identical to `get_bool` on
+/// the concatenated key.
+#[must_use]
+pub fn get_bool_prefixed(prefix: &str, name: &str, default: bool) -> bool {
+    thread_local! {
+        static KEYBUF: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    }
+    KEYBUF.with(|buf| {
+        let mut key = buf.borrow_mut();
+        key.clear();
+        key.push_str(prefix);
+        key.push_str(name);
+        let guard = CACHE
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        resolve(&guard, &key, default)
+    })
+}
+
 /// Set and persist a toggle. Updates the in-process cache immediately so the
 /// change is visible without a restart, then writes the file atomically.
 pub fn set_bool(key: &str, value: bool) -> std::io::Result<()> {

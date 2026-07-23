@@ -341,7 +341,7 @@ pub(super) fn module_skip_reason(
     // Persistent per-module toggle (universal toggleability): `hse config
     // module.<name> off` disables a module across ALL scans until re-enabled.
     // Default on, so an unset module behaves exactly as before.
-    if !crate::util::settings::get_bool(&format!("module.{name}"), true) {
+    if !crate::util::settings::get_bool_prefixed("module.", name, true) {
         return Some("disabled in config");
     }
     if opts.free_only && !matches!(module.cost(), ModuleCost::Free) {

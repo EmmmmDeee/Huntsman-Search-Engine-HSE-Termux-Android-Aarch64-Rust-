@@ -750,7 +750,7 @@ pub(crate) fn session_dead(name: &str) -> bool {
 /// `hse config engine.<name> off`. Checked in every engine-dispatch loop and the
 /// liveness probe so a disabled engine is never queried.
 pub(crate) fn engine_enabled(name: &str) -> bool {
-    crate::util::settings::get_bool(&format!("engine.{name}"), true)
+    crate::util::settings::get_bool_prefixed("engine.", name, true)
 }
 
 /// The per-engine on/off toggles `(key, enabled)` for all engines — backs the

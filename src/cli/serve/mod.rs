@@ -131,12 +131,20 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
                 // recent server-side check throttles the CLI path too (one device,
                 // one cadence) — and vice-versa.
                 crate::cli::update::record_check_stamp(now_secs);
+                // Gate through the SAME atomic check-and-claim the manual
+                // `POST /update/trigger` handler uses (`try_start_update`): it
+                // reads-and-claims `phase` under one lock, returning false if an
+                // update is already `Applying`/`Restarting`. Previously this loop
+                // set `phase = Applying` directly without the claim, so a manual
+                // trigger and this auto-updater could both enter `apply_update`
+                // (concurrent git pull / cargo build / binary swap on one tree,
+                // then racing `self_restart()`s) — the exact invariant
+                // `try_start_update` exists to guarantee, defeated via the side
+                // door. On a lost claim we skip this cycle; the next tick retries.
                 if behind.unwrap_or(0) > 0
                     && crate::util::settings::get_bool("feature.auto_update", true)
+                    && crate::api::update_handlers::try_start_update(&update_info)
                 {
-                    if let Ok(mut info) = update_info.lock() {
-                        info.phase = UpdatePhase::Applying;
-                    }
                     let result = apply_update(None).await;
                     match result {
                         Ok(()) => {
