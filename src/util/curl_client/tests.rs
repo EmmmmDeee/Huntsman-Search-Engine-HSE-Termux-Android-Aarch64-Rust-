@@ -122,6 +122,60 @@ use super::*;
         assert_ne!(AuthScheme::Bearer, AuthScheme::XApiKey);
     }
 
+    #[test]
+    fn doh_fallback_defaults_on_and_honours_disable_keywords() {
+        // Unset → default-on (Cloudflare), so a filtering system resolver
+        // self-heals without any operator action.
+        assert_eq!(resolve_doh(None), Some(DEFAULT_DOH_URL.to_string()));
+        // Explicit disable keywords (case-insensitive, trimmed) turn it off.
+        for off in ["off", "OFF", "none", "None", "false", "0", "", "  off  "] {
+            assert_eq!(resolve_doh(Some(off)), None, "'{off}' must disable DoH");
+        }
+        // Any other value is a custom DoH endpoint (trimmed).
+        assert_eq!(
+            resolve_doh(Some("  https://dns.google/dns-query  ")),
+            Some("https://dns.google/dns-query".to_string())
+        );
+    }
+
+    #[test]
+    fn curl_args_normal_path_is_unchanged_and_omits_doh() {
+        // With doh_url = None the argument vector must carry the base transport
+        // flags, request compression, terminate options with `--`, and NOT
+        // contain a resolver flag — i.e. byte-identical to the historical path.
+        let args = curl_args("15", Some("x-api-key: k"), None, None, "https://api.example/x");
+        assert!(!args.iter().any(|a| a == "--doh-url"), "no DoH on the normal path");
+        assert!(args.contains(&"--compressed".to_string()));
+        assert!(args.contains(&"x-api-key: k".to_string()));
+        // `-w` then `--` then the URL must be the tail, in that order.
+        let w = args.iter().position(|a| a == "-w").expect("-w present");
+        let dd = args.iter().position(|a| a == "--").expect("-- present");
+        assert!(w < dd, "-w must precede --");
+        assert_eq!(args.last().unwrap(), "https://api.example/x", "url is last");
+    }
+
+    #[test]
+    fn curl_args_doh_path_inserts_resolver_flag_with_value() {
+        let doh = "https://cloudflare-dns.com/dns-query";
+        let args = curl_args("15", None, None, Some(doh), "https://api.example/x");
+        let i = args
+            .iter()
+            .position(|a| a == "--doh-url")
+            .expect("--doh-url present on the fallback path");
+        assert_eq!(args.get(i + 1).map(String::as_str), Some(doh), "URL follows --doh-url");
+        // The resolver flag must sit before the terminating `--` so curl parses it.
+        let dd = args.iter().position(|a| a == "--").expect("-- present");
+        assert!(i < dd, "--doh-url must precede --");
+    }
+
+    #[test]
+    fn curl_args_post_body_adds_json_framing() {
+        let args = curl_args("15", None, Some("{\"q\":1}"), None, "https://api.example/x");
+        assert!(args.windows(2).any(|w| w[0] == "-X" && w[1] == "POST"));
+        assert!(args.contains(&"Content-Type: application/json".to_string()));
+        assert!(args.windows(2).any(|w| w[0] == "-d" && w[1] == "{\"q\":1}"));
+    }
+
     // Note: the curl-invocation failure path (`Error::module(self.module,
     // "curl failed" | "timeout")`) is intentionally NOT unit-tested here.
     // Such a test would depend on the host's curl version and on `curl
