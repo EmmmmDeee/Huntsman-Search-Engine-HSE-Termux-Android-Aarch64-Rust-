@@ -415,13 +415,16 @@ pub(super) async fn cmd_doctor(live: bool) -> Result<()> {
         // The observed live failure: `curl exited 6` (could not resolve host).
         // Report it as a transport/DNS problem — NOT a key problem — with curl's
         // own detail and the concrete next steps, so an on-device operator can
-        // fix it without guessing.
+        // fix it without guessing. `detail`'s wording is precise about what
+        // was actually tried (see `seeknow_unreachable_guidance`) rather than
+        // assuming every `Unreachable` was a DNS failure that already got a
+        // DoH retry — `CreditsProbe::Unreachable` also covers timeouts,
+        // connection-refused, and TLS failures, none of which trigger the
+        // shared `CurlClient`'s exit-6-only DoH fallback (`util::curl_client`).
         CreditsProbe::Unreachable(detail) => println!(
             "  UNREACHABLE — could not connect to the SeekNow API host: {detail}\n    \
-             This is a network/DNS failure, not a key problem. If it reads \
-             'Could not resolve host', your carrier/ISP resolver may be filtering \
-             the domain — try a different DNS resolver, or point HUNTSMAN_SEEKNOW_BASE \
-             at a reachable https base for the same API."
+             {}",
+            seeknow_unreachable_guidance(&detail)
         ),
         CreditsProbe::Unparseable => println!(
             "  reachable, but the response carried no recognised credits field — the key \
@@ -437,6 +440,66 @@ pub(super) async fn cmd_doctor(live: bool) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// The DoH-retry marker `util::curl_client::CurlClient::exec` appends to its
+/// error `detail` exactly when it attempted the automatic DoH fallback for
+/// this request (win or lose) — see that function's `via` string. Matched
+/// verbatim here rather than re-derived, so the two stay coupled by a single
+/// literal instead of silently drifting apart.
+const DOH_RETRY_MARKER: &str = "(after DoH resolver fallback)";
+
+/// curl's own exit-code text for "could not resolve host" (6), as embedded in
+/// `detail` by the same function. Distinguishes a DNS failure that did NOT get
+/// an automatic retry (fallback disabled via `HUNTSMAN_DOH_URL=off`) from a
+/// non-DNS transport failure (timeout, connection-refused, TLS) that the DoH
+/// fallback never applies to in the first place.
+const CURL_EXIT_6_MARKER: &str = "exited 6";
+
+/// Build the `hse doctor` guidance for a `CreditsProbe::Unreachable(detail)`.
+///
+/// `CreditsProbe::Unreachable` covers every curl transport failure — timeouts,
+/// connection-refused, TLS errors, and DNS resolution failures alike — but
+/// only a DNS failure (`curl exited 6`) ever triggers the shared `CurlClient`'s
+/// automatic DoH retry, and even then only when `HUNTSMAN_DOH_URL` hasn't
+/// disabled it. Claiming "an automatic DoH retry already ran" unconditionally
+/// would be actively wrong for the other failure classes, so this branches on
+/// what `detail` actually says was tried instead of assuming the DNS case.
+///
+/// Pure over the classified `detail` string so the three real cases are
+/// unit-tested directly, without a live network round-trip.
+fn seeknow_unreachable_guidance(detail: &str) -> String {
+    if detail.contains(DOH_RETRY_MARKER) {
+        // The automatic DoH retry ran (regardless of what error it hit) and
+        // the request still failed — the resolver-level self-heal already
+        // available is exhausted.
+        "This is a network/DNS failure, not a key problem. An automatic DNS-over-HTTPS \
+         retry already ran (see 'after DoH resolver fallback' above) and the connection \
+         still failed. Next steps: point HUNTSMAN_DOH_URL at a different DoH endpoint, \
+         set Android's system-wide Private DNS (Settings > Network > Private DNS) to a \
+         resolver your carrier doesn't filter, or point HUNTSMAN_SEEKNOW_BASE at a \
+         reachable https base for the same API."
+            .to_string()
+    } else if detail.contains(CURL_EXIT_6_MARKER) {
+        // A genuine DNS failure, but the automatic retry did NOT run — the
+        // only way that happens is HUNTSMAN_DOH_URL disabling the fallback.
+        "This is a DNS resolution failure (could not resolve host), and the automatic \
+         DoH retry did not run for this request — check whether HUNTSMAN_DOH_URL is set \
+         to 'off'/'none' and clear it to re-enable the fallback. Next steps: clear \
+         HUNTSMAN_DOH_URL (or point it at a specific DoH endpoint), set Android's \
+         system-wide Private DNS (Settings > Network > Private DNS) to a resolver your \
+         carrier doesn't filter, or point HUNTSMAN_SEEKNOW_BASE at a reachable https base \
+         for the same API."
+            .to_string()
+    } else {
+        // Not a DNS failure at all (timeout, connection-refused, TLS, …) — the
+        // DoH fallback never applies here, so don't claim it was tried.
+        "This is a network connectivity failure, not a DNS resolution problem — the \
+         automatic DoH fallback only applies to unresolvable hosts, so it did not run for \
+         this request. Verify general internet connectivity and any outbound proxy/firewall \
+         settings, or point HUNTSMAN_SEEKNOW_BASE at a reachable https base for the same API."
+            .to_string()
+    }
 }
 
 /// The loaded `HUNTSMAN_*` key names, sorted for stable, run-to-run-identical
