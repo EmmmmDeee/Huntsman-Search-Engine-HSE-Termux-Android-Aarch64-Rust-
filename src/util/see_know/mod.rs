@@ -38,6 +38,16 @@ pub mod enterprise_config;
 #[cfg(test)]
 mod tests;
 
+// Honest coverage ledger for SeekNow's documented API surface vs. what HSE
+// actually calls (see the file's own doc comment for the "previously made a
+// false comprehensive-coverage claim, now self-consistency-checked with
+// citations" history). Was orphaned — present on disk but never declared as a
+// module — since the `dc4fb56` restructure; restored so its 3 real assertions
+// (endpoint ledger counts, credit-cost coverage, per-target-type wiring) run
+// again instead of silently doing nothing.
+#[cfg(test)]
+mod integration_tests;
+
 // Budget / quota management — includes BudgetSnapshot re-export so external
 // consumers (`api::handlers::stats`) keep working through the original path.
 pub use budget::{
