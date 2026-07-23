@@ -175,13 +175,27 @@ async fn curl_exec(
     // proxy configured at all" (⇒ the normal SSRF-pinned direct path below).
     if crate::util::egress::pool_is_configured() {
         let mut tried: Vec<String> = Vec::new();
+        // Share the timeout budget across all MAX_PROXY_FAILOVER attempts, so a
+        // caller's timeout_ms is a true upper bound on proxy failover time. If we
+        // gave each proxy the full timeout, 3 sequential 7s-timeout proxies would
+        // burn 21s total — amplifying the caller's budget 3x. Instead, each gets
+        // ~(timeout_ms / MAX_PROXY_FAILOVER) so the aggregate is bounded.
+        let per_proxy_timeout_ms = timeout_ms / MAX_PROXY_FAILOVER as u64;
         while tried.len() < MAX_PROXY_FAILOVER {
             let Some(proxy) = crate::util::egress::next_proxy_excluding(&tried) else {
                 break;
             };
             let started = std::time::Instant::now();
-            let res =
-                run_curl_once(url, &secs, ua, post_data, timeout_ms, Some(&proxy), None).await;
+            let res = run_curl_once(
+                url,
+                &secs,
+                ua,
+                post_data,
+                per_proxy_timeout_ms,
+                Some(&proxy),
+                None,
+            )
+            .await;
             #[allow(clippy::cast_possible_truncation)]
             let latency = started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
             crate::util::egress::report_proxy(&proxy, res.is_some(), latency);
