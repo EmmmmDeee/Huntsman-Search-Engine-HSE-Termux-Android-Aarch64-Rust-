@@ -396,9 +396,10 @@ pub enum Command {
         /// Stop after this many iterations. Omit for infinite.
         #[arg(long)]
         iterations: Option<u32>,
-        /// Same as `scan --depth` — applies to each iteration.
-        #[arg(short, long, default_value_t = 0)]
-        depth: u32,
+        /// Same as `scan --depth` — applies to each iteration. Omit to use the
+        /// comprehensive product default (MAX_DEPTH = 3).
+        #[arg(short, long)]
+        depth: Option<u32>,
         /// Same as `scan --free-only`.
         #[arg(long)]
         free_only: bool,

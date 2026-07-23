@@ -215,10 +215,7 @@ async fn cmd_import(
 /// --country` and `POST /api/v1/cells/import` (`api::cells_handlers`) — the
 /// one place this network+import sequence is implemented.
 pub(crate) async fn download_and_import(url: &str, filename: &str, mcc: Option<i64>) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .build()
-        .map_err(|e| Error::Other(e.to_string()))?;
+    let client = crate::util::http::build_client();
 
     let resp = client
         .get(url)

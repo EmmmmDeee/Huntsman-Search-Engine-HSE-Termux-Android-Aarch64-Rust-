@@ -319,7 +319,7 @@ pub async fn run() -> Result<()> {
                 value,
                 interval,
                 iterations,
-                depth,
+                depth: depth.unwrap_or(crate::core::scan::DEFAULT_SCAN_DEPTH),
                 free_only,
                 passive_only,
                 modules,

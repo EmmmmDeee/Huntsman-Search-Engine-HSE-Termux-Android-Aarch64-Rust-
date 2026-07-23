@@ -3,10 +3,10 @@
 //!
 //! Each side is either a **scan id** in the store (or `latest`) or a path to a
 //! **JSON entity snapshot** written by `hse export --format json`. The file
-//! form enables time-series monitoring that a bare scan id cannot: a scan id is
-//! the deterministic `SHA-256(kind:value)`, so re-scanning a target overwrites
-//! its row — but snapshot the graph now, re-scan later, then
-//! `hse diff snapshot.json latest` to see what changed. Scan-id↔scan-id diffs
+//! form enables time-series monitoring that a bare scan id cannot: every scan
+//! gets a fresh unique id (timestamp + counter, never re-used), so re-scanning a
+//! target creates a separate row — but snapshot the graph now, re-scan later,
+//! then `hse diff snapshot.json latest` to see what changed. Scan-id↔scan-id diffs
 //! serve link analysis (shared infrastructure / identity surface between two
 //! targets).
 
@@ -74,14 +74,11 @@ pub(super) fn cmd_diff(from: String, to: String, format: String) -> Result<()> {
     {
         eprintln!(
             "note: both sides resolve to the same scan ({}…) — diffing it against \
-             itself, so there are no changes.\n      Scan ids are deterministic \
-             (SHA-256 of kind+value), so re-scanning a target overwrites its row \
-             rather than making a second one.\n      For time-series monitoring, \
-             snapshot first then diff the file:\n        hse export --scan-id {} \
-             --format json --out before.json\n        # ... re-scan the target \
-             later ...\n        hse diff before.json {}",
+             itself, so there are no changes.\n      For time-series monitoring, \
+             snapshot first then diff the file to capture what changed between scans:\n        \
+             hse export --scan-id {} --format json --out before.json\n        \
+             # ... re-scan the target later ...\n        hse diff before.json latest",
             &ida[..ida.len().min(12)],
-            ida,
             ida,
         );
         return Err(Error::Other("both sides resolve to the same scan".into()));

@@ -1059,6 +1059,22 @@ fn handles_alias_shared_persona_across_platforms() {
 }
 
 #[test]
+fn handles_do_not_alias_a_generic_placeholder_persona() {
+    // Two unrelated mailboxes and a username that all normalise to a GENERIC
+    // placeholder handle ("admin") must NOT be aliased: unrelated people trivially
+    // share such a handle, so an AliasOf edge here would fabricate an identity link
+    // between strangers — the same generic-handle guard the coref path applies.
+    let a = ent(EntityKind::Email, "admin@company-a.com", 0.8);
+    let b = ent(EntityKind::Email, "admin@company-b.com", 0.8);
+    let u = ent(EntityKind::Username, "admin", 0.8);
+    let rels = derive_handles(&[a, b, u], "s");
+    assert!(
+        rels.is_empty(),
+        "a generic placeholder handle must not alias distinct accounts: {rels:?}"
+    );
+}
+
+#[test]
 fn identity_ownership_evidence_then_fingerprint() {
     use crate::core::entity::Evidence;
     // Subject Person (seed-anchor tagged) + an evidence-named mailbox + a

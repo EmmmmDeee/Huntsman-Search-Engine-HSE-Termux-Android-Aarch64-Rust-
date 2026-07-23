@@ -619,8 +619,20 @@ fn persona_key(e: &Entity) -> Option<String> {
         return None;
     }
     let key = crate::core::scan::identity_norm(&e.value);
-    // 4 = IDENTITY_OVERLAP_MIN: shorter handles alias too readily.
-    (key.len() >= 4 && !key.bytes().all(|b| b.is_ascii_digit())).then_some(key)
+    // 4 = IDENTITY_OVERLAP_MIN: shorter handles alias too readily. All-digit keys
+    // are IDs, not personas. And a generic placeholder handle (`admin`, `test`,
+    // `guest`, …) is one that unrelated people trivially share, so keying on it
+    // would `AliasOf`-fuse two strangers' selectors — the same generic-handle
+    // fabrication the coref handle-equivalence signal guards against, closed here
+    // with the one shared `is_placeholder_username` predicate so the two aliasing
+    // paths can't drift on what counts as too-generic to identify a person.
+    if key.len() < 4
+        || key.bytes().all(|b| b.is_ascii_digit())
+        || crate::util::preflight::is_placeholder_username(&key)
+    {
+        return None;
+    }
+    Some(key)
 }
 
 /// The folded last whitespace token of a Person value — a family key. `None` when
