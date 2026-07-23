@@ -38,7 +38,9 @@ mod seeknow_full_integration {
     /// (not currently exercised by anything in this file — see the module
     /// doc comment).
     fn get_api_key() -> Option<String> {
-        env::var("HUNTSMAN_SEEKNOW_KEY").ok().filter(|k| !k.is_empty())
+        env::var("HUNTSMAN_SEEKNOW_KEY")
+            .ok()
+            .filter(|k| !k.is_empty())
     }
 
     /// Whether HSE actually calls this endpoint, and why/why not — every
@@ -63,6 +65,13 @@ mod seeknow_full_integration {
 
     /// Test metadata: endpoint name, target type, credit cost, expected
     /// response shape, and REAL wiring status (see [`Wired`]).
+    ///
+    /// `path`/`method`/`description` are the ledger's documentation payload —
+    /// read by a human auditing this ledger against `docs/SEEKNOW_SETUP.md`,
+    /// not by any assertion below — so `#[allow(dead_code)]` on them is
+    /// deliberate rather than a fixable lint; deleting the fields would
+    /// silently drop the citation each `ENDPOINTS` entry exists to record.
+    #[allow(dead_code)]
     struct EndpointSpec {
         name: &'static str,
         path: &'static str,
@@ -322,8 +331,14 @@ mod seeknow_full_integration {
             .iter()
             .filter(|e| e.wired == Wired::NotImplemented)
             .count();
-        assert_eq!(wired, 18, "18 of the 24 documented endpoints are actually called");
-        assert_eq!(removed_404, 1, "exactly /stealer was live-verified 404 and removed");
+        assert_eq!(
+            wired, 18,
+            "18 of the 24 documented endpoints are actually called"
+        );
+        assert_eq!(
+            removed_404, 1,
+            "exactly /stealer was live-verified 404 and removed"
+        );
         assert_eq!(
             not_implemented, 5,
             "/search/deep + the 3 /enterprise/discord/* + /status were never built"
