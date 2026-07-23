@@ -435,8 +435,9 @@ pub(super) async fn get_json_with_fallback(
 /// only caller (`credits_probe`) is a parameter-free metadata GET answering in
 /// low single-digit seconds, same shape as the other [`CLIENT_FAST`] endpoints
 /// — not the ~55s-worst-case name search [`CLIENT`] is budgeted for. Before this
-/// fix a single unreachable domain could burn the full 75s `CLIENT` curl budget
-/// per domain (up to ~234s across all 3 fallback domains) before `hse doctor`
+/// fix a single unreachable domain could burn the full 78s `CLIENT` outer
+/// timeout (curl's own 75s `--max-time` plus headroom — see [`CLIENT`]'s doc)
+/// per domain: up to ~234s across all 3 fallback domains before `hse doctor`
 /// or scan-start's budget-scaling probe got an answer.
 pub(super) async fn get_raw_with_fallback(endpoint_path: &str, key: &str) -> Result<String> {
     let urls = all_base_urls();
