@@ -66,6 +66,71 @@ fn build_entities_surfaces_previously_dropped_cert_issuer_and_http_fields() {
 }
 
 #[test]
+fn build_entities_emits_every_unique_cve_with_a_disclosed_count() {
+    use crate::core::entity::EntityKind;
+    // A host with 8 distinct CVEs (spread across two response items, with a
+    // duplicate) must surface ALL 8, deduplicated, plus a cve_count — not the
+    // old silent .take(5). CVEs are the vulnerabilities an analyst pivots on.
+    let cves_a: Vec<_> = (0..5).map(|i| format!("CVE-2024-000{i}")).collect();
+    let cves_b: Vec<_> = (3..8).map(|i| format!("CVE-2024-000{i}")).collect();
+    let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "items": [
+            { "data": { "ip": "203.0.113.10", "port": 443, "protocol": "tcp",
+                        "cve": cves_a.iter().map(|n| serde_json::json!({"name": n})).collect::<Vec<_>>() } },
+            { "data": { "ip": "203.0.113.10", "port": 80, "protocol": "tcp",
+                        "cve": cves_b.iter().map(|n| serde_json::json!({"name": n})).collect::<Vec<_>>() } }
+        ]
+    }))
+    .unwrap();
+    let r = super::build_entities(&body, "203.0.113.10", "scan");
+    let ip = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress)
+        .expect("ip entity");
+    let ev = &ip.evidence[0];
+    let cves = ev.attributes.get("cves").expect("cves attr");
+    let listed: Vec<&str> = cves.split(',').collect();
+    assert_eq!(
+        listed.len(),
+        8,
+        "all 8 distinct CVEs must surface (deduped): {cves}"
+    );
+    assert_eq!(
+        ev.attributes.get("cve_count").map(String::as_str),
+        Some("8")
+    );
+    let mut sorted = listed.clone();
+    sorted.sort_unstable();
+    assert_eq!(listed, sorted, "CVEs must emit in sorted order");
+}
+
+#[test]
+fn build_entities_discloses_technology_count() {
+    use crate::core::entity::EntityKind;
+    let techs: Vec<String> = (0..14).map(|i| format!("tech{i:02}")).collect();
+    let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "items": [ { "data": { "ip": "203.0.113.10", "port": 443, "protocol": "tcp",
+                               "technologies": techs } } ]
+    }))
+    .unwrap();
+    let r = super::build_entities(&body, "203.0.113.10", "scan");
+    let ip = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress)
+        .expect("ip entity");
+    assert_eq!(
+        ip.evidence[0]
+            .attributes
+            .get("technology_count")
+            .map(String::as_str),
+        Some("14"),
+        "technology_count must disclose the true total even when the list is display-capped"
+    );
+}
+
+#[test]
 fn build_entities_emits_every_unique_san_domain_and_email() {
     use crate::core::entity::EntityKind;
     // A multi-SAN certificate with 25 distinct SAN domains and an HTTP body exposing

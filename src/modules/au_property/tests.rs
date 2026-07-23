@@ -65,6 +65,46 @@ fn name_matches_detects_token_presence() {
 }
 
 #[test]
+fn name_matches_requires_whole_word_not_substring() {
+    // "le" is a SUBSTRING of "alexander" but not a whole word. The old substring
+    // gate returned true here, which — now that a match stamps `owner` +
+    // `exact-name-match` — would fabricate a subject↔property link for an
+    // AU-common short surname. Whole-word matching must reject it.
+    assert!(
+        !name_matches("Alexander Smith 5 Oak St NSW 2000", "Le Smith"),
+        "a short surname appearing only as a substring must NOT match"
+    );
+    assert!(name_matches("Le Smith 5 Oak St NSW 2000", "Le Smith"));
+}
+
+#[test]
+fn record_to_entities_stamps_owner_and_exact_name_match() {
+    // The name-matched owner must be stamped as an `owner` attr and both entities
+    // tagged `exact-name-match`, so the relation layer links the subject Person
+    // to their registered property instead of leaving it a graph orphan.
+    let rec = PropertyRecord {
+        owner_name: "Jordan Avery".into(),
+        suburb: "Sydney".into(),
+        state: "NSW",
+        postcode: Some("2000".into()),
+    };
+    let ents = record_to_entities(&rec, "s");
+    let addr = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("must emit Address");
+    assert_eq!(
+        addr.evidence[0].attributes.get("owner").map(String::as_str),
+        Some("Jordan Avery"),
+        "owner attr must carry the matched name so derive_residency can bind it"
+    );
+    assert!(
+        ents.iter().all(|e| e.has_tag("exact-name-match")),
+        "both the Address and Coordinates must be tagged exact-name-match"
+    );
+}
+
+#[test]
 fn extract_postcode_finds_valid_au_postcode() {
     assert_eq!(extract_postcode("Sydney NSW 2000"), Some("2000".into()));
     assert_eq!(extract_postcode("Melbourne VIC 3000"), Some("3000".into()));
