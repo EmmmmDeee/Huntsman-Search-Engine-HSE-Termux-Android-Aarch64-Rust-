@@ -41,10 +41,11 @@ const LOG_FILE: &str = "seek_searches.jsonl";
 const ROTATED_FILE: &str = "seek_searches.jsonl.1";
 
 /// Size cap for the active log file before rotation. Bounds BOTH disk use and
-/// the cost of the readers: `yield_counts` runs on every `effective_plan`, so an
-/// unbounded file would make the live plan-ordering hot path re-parse an
-/// ever-growing log each call. 8 MiB holds tens of thousands of records — an
-/// ample, recent-enough yield-feedback window — while keeping every read O(cap).
+/// the cost of the readers: `yield_counts` is memoized per scan (see
+/// [`YIELD_CACHE`]) but still pays one full read+parse per scan, so an
+/// unbounded file would make every scan's first plan-ordering call re-parse an
+/// ever-growing log. 8 MiB holds tens of thousands of records — an ample,
+/// recent-enough yield-feedback window — while keeping that read O(cap).
 const MAX_LOG_BYTES: u64 = 8 * 1024 * 1024;
 
 /// One persisted See-Know search result.
@@ -63,6 +64,25 @@ pub struct SearchLogRecord {
     /// Raw result items exactly as returned by the API.
     pub items: Vec<Value>,
 }
+
+/// Per-scan memoization for [`yield_counts`]: `(scan_id, counts)` pairs for
+/// the most recently seen scans. `order_by_roi` runs once per seed and a scan
+/// can process hundreds of them, so caching the map per `scan_id` turns a
+/// per-seed full-log read+parse into one per scan. A small bounded slot list
+/// (not one global slot) so `hse serve` running a handful of scans at once
+/// doesn't thrash — each scan gets its OWN cached entry instead of evicting
+/// the others on every call — while staying cheap to scan linearly at this
+/// size. FIFO eviction (oldest inserted first) once full; a lookup miss
+/// (including one caused by eviction) always just falls back to a fresh read,
+/// so a wrong/absent id can never return another scan's counts.
+type YieldCache = Mutex<Vec<(String, std::collections::HashMap<String, usize>)>>;
+
+/// Bound on concurrently-memoized scans. Comfortably above realistic
+/// concurrent-scan counts for this single-operator tool, with headroom to
+/// spare.
+const MAX_CACHED_SCANS: usize = 8;
+
+static YIELD_CACHE: YieldCache = Mutex::new(Vec::new());
 
 /// Aggregate statistics over the on-device log.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -235,9 +255,40 @@ pub fn stats() -> LogStats {
 /// the live plan orderer boosts endpoints that have produced data for THIS
 /// operator before, closing the loop from stored results back into scoring.
 /// Empty map if no log exists yet.
+///
+/// Memoized per `scan_id` (see [`YIELD_CACHE`]): the first call for a given
+/// scan pays a full log read+parse, every subsequent call for the SAME scan
+/// returns the cached map. A new `scan_id` always forces a fresh read, so a
+/// long-lived `hse serve` process never serves a later scan stale counts from
+/// an earlier one.
 #[must_use]
-pub fn yield_counts() -> std::collections::HashMap<String, usize> {
-    yield_counts_from(&log_dir())
+pub fn yield_counts(scan_id: &str) -> std::collections::HashMap<String, usize> {
+    yield_counts_cached(&YIELD_CACHE, scan_id, &log_dir())
+}
+
+/// [`yield_counts`] split on the cache instance and the log directory, so the
+/// memoization contract is unit-testable against a throwaway directory AND a
+/// throwaway cache — never the real on-device log path or the process-global
+/// [`YIELD_CACHE`], which every concurrently-running test would otherwise
+/// share (`cargo test` runs `#[test]` functions in parallel by default; a
+/// shared global slot let one test's scan_id silently evict another's).
+fn yield_counts_cached(
+    cache: &YieldCache,
+    scan_id: &str,
+    dir: &Path,
+) -> std::collections::HashMap<String, usize> {
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, counts)) = guard.iter().find(|(id, _)| id == scan_id) {
+        return counts.clone();
+    }
+    let counts = yield_counts_from(dir);
+    if guard.len() >= MAX_CACHED_SCANS {
+        guard.remove(0);
+    }
+    guard.push((scan_id.to_string(), counts.clone()));
+    counts
 }
 
 fn yield_counts_from(dir: &Path) -> std::collections::HashMap<String, usize> {
@@ -433,6 +484,125 @@ mod tests {
         assert_eq!(counts.get("/search"), Some(&2));
         assert_eq!(counts.get("/discord/user"), Some(&1));
         assert_eq!(counts.get("/network/ip"), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_yield_counts_cached_reuses_result_for_the_same_scan_id() {
+        // An isolated LOCAL cache, never the process-global YIELD_CACHE:
+        // `cargo test` runs `#[test]` functions concurrently by default, and a
+        // shared global slot would let another test's unrelated scan_id call
+        // race with (and corrupt) this test's own cache entries.
+        let cache: YieldCache = Mutex::new(Vec::new());
+        let dir = temp_dir();
+        append_record(&dir, &build_record("/search", "a", "", &[json!({"x": 1})]));
+        let scan_id = "scan-cache-hit";
+        assert_eq!(
+            yield_counts_cached(&cache, scan_id, &dir).get("/search"),
+            Some(&1)
+        );
+
+        // A second record lands (as a real scan's own searches would append
+        // mid-scan), but a call with the SAME scan_id must still return the
+        // memoized snapshot from the first call, not re-read the file.
+        append_record(&dir, &build_record("/search", "b", "", &[json!({"x": 2})]));
+        assert_eq!(
+            yield_counts_cached(&cache, scan_id, &dir).get("/search"),
+            Some(&1),
+            "same scan_id must reuse the cached (now stale) count, not re-read"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_yield_counts_cached_refreshes_on_a_new_scan_id() {
+        let cache: YieldCache = Mutex::new(Vec::new());
+        let dir = temp_dir();
+        append_record(&dir, &build_record("/search", "a", "", &[json!({"x": 1})]));
+        assert_eq!(
+            yield_counts_cached(&cache, "scan-refresh-1", &dir).get("/search"),
+            Some(&1)
+        );
+
+        append_record(&dir, &build_record("/search", "b", "", &[json!({"x": 2})]));
+        // A DIFFERENT scan_id must force a fresh read and see the new total.
+        assert_eq!(
+            yield_counts_cached(&cache, "scan-refresh-2", &dir).get("/search"),
+            Some(&2),
+            "a new scan_id must bypass the cache and see the current file state"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_yield_counts_cached_holds_several_scans_without_evicting_each_other() {
+        // The whole point of a bounded MULTI-slot cache over a single slot:
+        // two DIFFERENT scans interleaving their calls (exactly what happens
+        // if `hse serve` ever runs concurrent scans, and what a parallel test
+        // run does to any test relying on the global YIELD_CACHE) must not
+        // evict one another as long as both fit under MAX_CACHED_SCANS.
+        let cache: YieldCache = Mutex::new(Vec::new());
+        let dir_a = temp_dir();
+        let dir_b = temp_dir();
+        append_record(
+            &dir_a,
+            &build_record("/search", "a", "", &[json!({"x": 1})]),
+        );
+        append_record(
+            &dir_b,
+            &build_record("/discord/user", "b", "", &[json!({"x": 1})]),
+        );
+
+        assert_eq!(
+            yield_counts_cached(&cache, "scan-a", &dir_a).get("/search"),
+            Some(&1)
+        );
+        assert_eq!(
+            yield_counts_cached(&cache, "scan-b", &dir_b).get("/discord/user"),
+            Some(&1)
+        );
+        // Both entries must still be independently cached — a lookup for
+        // "scan-a" must NOT have been evicted or clobbered by "scan-b"'s
+        // insertion moments later.
+        append_record(
+            &dir_a,
+            &build_record("/search", "c", "", &[json!({"x": 2})]),
+        );
+        assert_eq!(
+            yield_counts_cached(&cache, "scan-a", &dir_a).get("/search"),
+            Some(&1),
+            "scan-a's cached entry must survive scan-b's unrelated insertion"
+        );
+
+        std::fs::remove_dir_all(&dir_a).ok();
+        std::fs::remove_dir_all(&dir_b).ok();
+    }
+
+    #[test]
+    fn test_yield_counts_cached_evicts_oldest_once_full() {
+        let cache: YieldCache = Mutex::new(Vec::new());
+        let dir = temp_dir();
+        append_record(&dir, &build_record("/search", "a", "", &[json!({"x": 1})]));
+
+        // Fill the cache to exactly its bound (MAX_CACHED_SCANS entries), then
+        // insert ONE more distinct id — eviction only fires on an insert that
+        // finds the cache ALREADY at the bound, so exactly MAX_CACHED_SCANS
+        // fills would leave every entry (including the first) still present.
+        for i in 0..=MAX_CACHED_SCANS {
+            yield_counts_cached(&cache, &format!("scan-fill-{i}"), &dir);
+        }
+        // The very first inserted id ("scan-fill-0") must now be evicted
+        // (FIFO) — a fresh call for it must see the CURRENT file state, not
+        // return a stale cached value from before the bound was exceeded.
+        append_record(&dir, &build_record("/search", "b", "", &[json!({"x": 2})]));
+        assert_eq!(
+            yield_counts_cached(&cache, "scan-fill-0", &dir).get("/search"),
+            Some(&2),
+            "the oldest entry must have been evicted once the cache filled up"
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 
