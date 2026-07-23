@@ -72,9 +72,20 @@ const CLIENT_BASE_ARGS: &[&str] = &["-s", "-S", "-L", "--compressed"];
 const CURL_EXIT_COULD_NOT_RESOLVE: i32 = 6;
 
 /// Default DoH resolver for the reachability fallback — Cloudflare's RFC 8484
-/// endpoint. Used when the system resolver fails (curl exit 6) and no operator
-/// override is set. HTTPS-based, so a filtering/broken local resolver is bypassed.
-const DEFAULT_DOH_URL: &str = "https://cloudflare-dns.com/dns-query";
+/// endpoint, addressed by its **literal IP** rather than `cloudflare-dns.com`.
+/// Used when the system resolver fails (curl exit 6) and no operator override
+/// is set. HTTPS-based, so a filtering/broken local resolver is bypassed.
+///
+/// The IP literal matters: reaching this URL at all still requires resolving
+/// ITS host first, and a hostname here would need the very same (possibly
+/// totally broken, not just filtering one provider) system resolver the DoH
+/// fallback exists to route around — a chicken-and-egg bootstrap gap that a
+/// `cloudflare-dns.com` URL never closes. `1.1.1.1` needs no lookup at all
+/// (curl dials the literal directly), and Cloudflare's DoH certificate is
+/// issued with `1.1.1.1`/`1.0.0.1` as literal-IP Subject Alternative Names
+/// specifically to support this bootstrap pattern, so TLS validation still
+/// succeeds.
+const DEFAULT_DOH_URL: &str = "https://1.1.1.1/dns-query";
 
 /// Env var by which an operator overrides (or disables) the DoH fallback.
 const DOH_ENV: &str = "HUNTSMAN_DOH_URL";
