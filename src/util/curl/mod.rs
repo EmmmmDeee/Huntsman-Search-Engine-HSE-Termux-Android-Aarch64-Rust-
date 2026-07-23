@@ -100,6 +100,12 @@ pub(crate) const FETCH_HARDENING_ARGS: &[&str] = &[
 /// fetch. The curl-fallback half of the SSRF defense, mirroring
 /// `http::SsrfResolver`; it covers attacker-controlled hosts such as
 /// employer_pivot's `https://{discovered_domain}/...`.
+///
+/// Hostname resolution goes through [`crate::util::http::resolve_public_ips`] —
+/// the same rotating-resolver-with-system-fallback strategy `SsrfResolver`
+/// applies to every reqwest lookup — rather than a bare `tokio::net::lookup_host`,
+/// so a carrier/ISP resolver that filters (or is entirely broken for) this host
+/// no longer hard-fails the fetch when `HUNTSMAN_DNS_RESOLVERS` is configured.
 async fn ssrf_resolve_pin(url: &str) -> Option<Vec<String>> {
     let parsed = url::Url::parse(url).ok()?;
     let host = parsed.host_str()?;
@@ -109,18 +115,18 @@ async fn ssrf_resolve_pin(url: &str) -> Option<Vec<String>> {
     // is no rebinding race and `--resolve` (which only rewrites name lookups)
     // would do nothing. Just vet the literal and emit no pin. `host_str()`
     // brackets IPv6 literals (`[2606:…]`); strip them before the parse, or every
-    // IPv6-literal target fails `lookup_host` below (getaddrinfo rejects the
+    // IPv6-literal target fails resolution below (getaddrinfo rejects the
     // brackets) and is wrongly refused — public ones included.
     let bare = crate::util::preflight::unbracket_host(host);
     if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
         return (!crate::util::preflight::is_private_addr(ip)).then(Vec::new);
     }
 
-    let ip = tokio::net::lookup_host((host, port))
+    let ip = crate::util::http::resolve_public_ips(host)
         .await
         .ok()?
-        .map(|a| a.ip())
-        .find(|ip| !crate::util::preflight::is_private_addr(*ip))?;
+        .into_iter()
+        .next()?;
     Some(vec!["--resolve".to_string(), format!("{host}:{port}:{ip}")])
 }
 
