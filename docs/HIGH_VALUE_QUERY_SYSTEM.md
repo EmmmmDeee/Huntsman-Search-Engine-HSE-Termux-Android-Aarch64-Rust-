@@ -1,8 +1,8 @@
 # High-Value Query Optimization System
 **Date:** July 22, 2026  
-**Status:** Superseded (see note below) — scoring PRINCIPLES below are live;
-the `QueryOptimizer`/`QueryPlanner`/`ExecutionPlan` integration Part 5
-describes is not  
+**Status:** Superseded (see note below) — the scoring principles in Parts
+1–4 are live; the `QueryOptimizer`/`QueryPlanner`/`ExecutionPlan`
+integration Part 5 describes is not.  
 **Impact:** Automatic query prioritization, ROI optimization, intelligent cascade routing
 
 > **2026-07-23 status note:** this was written as a pre-implementation design
