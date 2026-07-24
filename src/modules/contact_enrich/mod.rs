@@ -286,7 +286,7 @@ pub(super) fn build_phone_entities(
         ae.tag("numverify");
         ae.tag("geoint");
         ae.tag("phone-registration");
-        if let Some(sc) = crate::util::address_au::state_code(loc) {
+        if let Some(sc) = crate::util::address_au::single_state_code(loc) {
             ae.tag(format!("au-state:{sc}"));
             ae.tag("country:AU");
         }
@@ -463,7 +463,7 @@ pub(super) fn build_email_entities(
         let mut ae = Entity::new(EntityKind::Address, loc, confidence::MEDIUM_HIGH, scan_id);
         ae.tag("gravatar");
         ae.tag("geoint");
-        if let Some(sc) = crate::util::address_au::state_code(loc) {
+        if let Some(sc) = crate::util::address_au::single_state_code(loc) {
             ae.tag(format!("au-state:{sc}"));
             ae.tag("country:AU");
         }

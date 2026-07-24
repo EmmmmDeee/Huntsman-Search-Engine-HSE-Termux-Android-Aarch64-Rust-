@@ -259,7 +259,7 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
     for loc in &loc_list {
         let mut extra_tags: Vec<&str> = vec!["geo-hint", "geoint"];
         let mut au_state_tag = String::new();
-        if let Some(sc) = crate::util::address_au::state_code(loc) {
+        if let Some(sc) = crate::util::address_au::single_state_code(loc) {
             au_state_tag = format!("au-state:{sc}");
         }
         if !au_state_tag.is_empty() {
@@ -290,7 +290,7 @@ fn build_entities(r: &FcResp, scan_id: &str) -> Vec<Entity> {
             c.tag(SRC);
             c.tag("addr-derived");
             c.tag("geoint");
-            if let Some(sc) = crate::util::address_au::state_code(loc) {
+            if let Some(sc) = crate::util::address_au::single_state_code(loc) {
                 c.tag(format!("au-state:{sc}"));
                 c.tag("country:AU");
             }
