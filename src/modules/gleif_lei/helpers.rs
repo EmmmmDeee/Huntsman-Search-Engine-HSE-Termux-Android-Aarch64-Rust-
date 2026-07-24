@@ -30,6 +30,27 @@ pub(super) fn query_url(name: &str) -> String {
 
 const BASE_URL: &str = "https://api.gleif.org/api/v1/lei-records";
 
+/// A syntactically valid LEI: exactly 20 uppercase-alphanumeric characters
+/// (ISO 17442).
+///
+/// This is a security gate, not a tidiness check. An LEI read out of an API
+/// response is interpolated straight into a URL **path segment** by
+/// [`family_url`]; anything containing `/`, `?`, `#`, `.` or an escape would
+/// otherwise be able to redirect the request somewhere other than the record it
+/// claims to be. Restricting to the ISO 17442 alphabet makes that impossible by
+/// construction rather than by escaping.
+pub(super) fn is_lei(s: &str) -> bool {
+    s.len() == 20
+        && s.bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
+/// The Level-2 relationship URL for one LEI (`.../lei-records/{lei}/{path}`),
+/// or `None` when the LEI is not well-formed — see [`is_lei`].
+pub(super) fn family_url(lei: &str, path: &str) -> Option<String> {
+    is_lei(lei).then(|| format!("{BASE_URL}/{lei}/{path}"))
+}
+
 /// `registeredAs` digits when this AU entity's local registry id is a valid
 /// ACN (9) or ABN (11). GLEIF stores it spaced ("004 028 077"); we strip to
 /// digits. Only AU jurisdictions map cleanly to the ABN/ACN namespace — a UK

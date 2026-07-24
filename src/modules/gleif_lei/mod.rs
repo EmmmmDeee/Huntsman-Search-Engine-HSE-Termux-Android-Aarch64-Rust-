@@ -1,10 +1,13 @@
-//! Global Legal Entity Identifier (GLEIF) lookup (keyless, free).
+//! Global Legal Entity Identifier (GLEIF) lookup and corporate-family walk
+//! (keyless, free).
 //!
-//! Endpoint: `GET https://api.gleif.org/api/v1/lei-records`
-//!           `?filter[entity.legalName]={name}&page[size]=100`
-//! Auth:     none — GLEIF publishes the global LEI index as a public,
-//!           keyless JSON:API (the authoritative ISO 17442 registry of legal
-//!           entities that trade in financial markets, ~2.7M records).
+//! Auth: none — GLEIF publishes the global LEI index as a public, keyless
+//! JSON:API (the authoritative ISO 17442 registry of legal entities that trade
+//! in financial markets, ~2.7M records), and its mandate is open data, so
+//! **both** levels below are free with no key and no registration.
+//!
+//! # Level 1 — who this legal entity is
+//! `GET /lei-records?filter[entity.legalName]={name}&page[size]=100`
 //!
 //! For an `Organisation` seed we search the LEI index by legal name and, for
 //! every row whose name matches the seed, emit cross-correlating entities:
@@ -20,6 +23,44 @@
 //! cross the expansion floor and pivot. The LEI itself, the entity status,
 //! jurisdiction and any foreign `registeredAs` are carried in evidence so
 //! nothing the API returns is dropped, even for loose matches that don't pivot.
+//!
+//! # Level 2 — who consolidates it, and what it consolidates
+//! `GET /lei-records/{lei}/direct-parent`, `/ultimate-parent`, `/direct-children`
+//!
+//! GLEIF publishes an actual ownership graph (RR-CDF relationship records)
+//! alongside the index, and this module used to throw all of it away: an
+//! organisation resolved to a name, an address and an ACN, and stopped at the
+//! corporate boundary. It now walks one generation of the consolidation tree per
+//! dispatch — see [`level2::walk_family`] for why depth is produced by the
+//! engine's expansion rounds rather than by recursing inside the module.
+//!
+//! That turns a single organisation into a corporate family, which is what makes
+//! the adverse-register modules compose: an `sanctions_ofac` hit on a parent is
+//! only actionable if the subsidiaries are in the graph to hang it on. Since
+//! **September 2025** that is not merely convenient — the BIS Affiliates Rule
+//! (90 FR 47201) extended Entity List / MEU / SDN restrictions to entities 50%
+//! or more owned in the *aggregate* by listed parties, and BIS states plainly
+//! that its own consolidated list "will no longer comprise an exhaustive
+//! listing" of restricted parties. A screening tool that only name-matches is,
+//! by the regulator's own account, no longer sufficient; resolving ownership is
+//! the missing half.
+//!
+//! # What a Level-2 edge does NOT mean
+//! GLEIF Level 2 is **high-precision, low-recall**, and conflating it with
+//! ownership is the obvious way to misuse it:
+//!
+//!   * An edge is an *accounting-consolidation* relationship, **not** an
+//!     ownership percentage. It never says "owns >50%", so this module never
+//!     says so either — that determination needs a source GLEIF is not.
+//!   * A *missing* edge is not evidence of independence. Entities may file a
+//!     reporting exception (`NON_CONSOLIDATING`, `NO_LEI`, …) instead, so vast
+//!     numbers of real ownership links are simply absent.
+//!
+//! Both caveats are stamped into the evidence of every relative emitted (see
+//! [`family`]), not just documented here, because the operator reads the dossier
+//! and not this file. Relatives are graded below an exact Level-1 match for a
+//! reason that is about the *seed* rather than the edge — see
+//! [`family::KIN_CONFIDENCE`].
 
 use async_trait::async_trait;
 
@@ -32,10 +73,14 @@ use crate::core::{
 };
 use crate::util::http::fetch_json;
 
+mod family;
 mod helpers;
+mod level2;
 mod transform;
 mod types;
 
+#[cfg(test)]
+mod family_tests;
 #[cfg(test)]
 mod tests;
 
@@ -46,6 +91,14 @@ pub(super) const SRC: &str = "gleif_lei";
 /// surfaces (directive: never omit an API-derived result); LEI name search is
 /// precise, so this is a generous ceiling a real query stays well under.
 pub(super) const MAX_RECORDS: usize = 100;
+
+/// Cap on how many exact name matches get a Level-2 corporate-family walk.
+///
+/// Each walk is three HTTP requests, so walking all 100 possible rows would turn
+/// one module invocation into 300 — far past any sane timeout. Exact matches are
+/// rare (LEI legal-name search is precise), so a real query almost always has
+/// one; the cap exists for the pathological case, and never fires silently.
+pub(super) const MAX_FAMILY_SEEDS: usize = 3;
 
 // Confidence tiers, aligned with the gov/corporate band and the noisy-OR
 // expansion floor (confidence::MEDIUM): exact name matches pivot immediately; loose candidates
@@ -65,7 +118,7 @@ impl Module for GleifLei {
     }
 
     fn description(&self) -> &'static str {
-        "GLEIF recon (free, keyless) — resolves a Global Legal Entity Identifier (LEI) to its registered entity"
+        "GLEIF recon (free, keyless) — resolves a Global Legal Entity Identifier (LEI) to its registered entity and walks its corporate family (parents/subsidiaries)"
     }
 
     fn priority(&self) -> u8 {
@@ -112,9 +165,12 @@ impl Module for GleifLei {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        // A single name search against api.gleif.org; beat the 3s default so a
-        // slow-but-connected response isn't killed.
-        12_000
+        // One name search plus, for each exact hit, a three-request Level-2 walk
+        // (parent / ultimate parent / children) against api.gleif.org — up to
+        // 1 + 3 * MAX_FAMILY_SEEDS sequential keyless requests. Generous enough
+        // that a mobile connection finishing the walk isn't killed mid-family,
+        // which would silently drop the ownership half of the finding.
+        30_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -127,6 +183,22 @@ impl Module for GleifLei {
         let resp: types::GleifResp = fetch_json(&ctx.http, SRC, &helpers::query_url(query)).await?;
         let mut out = ModuleResult::new();
         out.extend(transform::records_to_entities(&resp, query, &ctx.scan_id));
+
+        // Level 2: turn each confidently-resolved organisation into a corporate
+        // family. Only exact name matches are walked (see `exact_seeds`), and the
+        // cap never fires silently.
+        let seeds = transform::exact_seeds(&resp, query);
+        if seeds.len() > MAX_FAMILY_SEEDS {
+            tracing::warn!(
+                "{SRC}: '{query}' resolved to {} exact legal-name matches; walking the corporate \
+                 family of the first {MAX_FAMILY_SEEDS} only — the rest are reported from Level 1 \
+                 alone, with NO ownership graph",
+                seeds.len()
+            );
+        }
+        for (lei, name) in seeds.into_iter().take(MAX_FAMILY_SEEDS) {
+            out.extend(level2::walk_family(ctx, &lei, &name, &ctx.scan_id).await);
+        }
         Ok(out)
     }
 }
