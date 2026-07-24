@@ -13,6 +13,32 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 /// Minimum relation strength retained in the projection.
 const MIN_EDGE_STRENGTH: f64 = 0.3;
 
+/// The entity to centre a projection on when the caller names none.
+///
+/// The scan subject (or seed) if there is one — the operator already reads that
+/// entity as the origin, so centring anywhere else would misrepresent the graph.
+/// Failing that, the most-connected entity, since a projection anchored on a leaf
+/// pushes the bulk of the graph past the horizon. Ties break on uid so the choice
+/// is deterministic. `None` only when there are no entities at all.
+#[must_use]
+pub fn default_center(entities: &[Entity], relations: &[Relation]) -> Option<String> {
+    if let Some(uid) = crate::core::metrics::subject_uid(entities) {
+        return Some(uid.to_string());
+    }
+    let mut degree: BTreeMap<&str, usize> = entities.iter().map(|e| (e.uid.as_str(), 0)).collect();
+    for r in relations {
+        for uid in [r.from_uid.as_str(), r.to_uid.as_str()] {
+            if let Some(d) = degree.get_mut(uid) {
+                *d += 1;
+            }
+        }
+    }
+    degree
+        .into_iter()
+        .max_by(|(a_uid, a_deg), (b_uid, b_deg)| a_deg.cmp(b_deg).then_with(|| b_uid.cmp(a_uid)))
+        .map(|(uid, _)| uid.to_string())
+}
+
 /// A node placed on one of the concentric rings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnakeNode {
@@ -79,7 +105,10 @@ impl SnakeGraph {
 
         // BFS out from the centre, recording hop distance.
         let mut distance: BTreeMap<&str, usize> = BTreeMap::new();
-        let mut beyond_horizon = 0usize;
+        // A set, not a counter: the same out-of-range node is reachable from every
+        // frontier node adjacent to it, and it is one entity however many times the
+        // sweep bumps into it.
+        let mut beyond: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         let mut queue = VecDeque::new();
         distance.insert(center_uid, 0);
         queue.push_back(center_uid);
@@ -94,13 +123,14 @@ impl SnakeGraph {
                     continue;
                 }
                 if d + 1 > max_distance {
-                    beyond_horizon += 1;
+                    beyond.insert(neighbour);
                     continue;
                 }
                 distance.insert(neighbour, d + 1);
                 queue.push_back(neighbour);
             }
         }
+        let beyond_horizon = beyond.len();
 
         // Group by ring so each ring's nodes can be spread evenly around it.
         let mut rings: BTreeMap<usize, Vec<&str>> = BTreeMap::new();

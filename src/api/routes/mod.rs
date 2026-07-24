@@ -26,6 +26,8 @@
 //! | GET    | `/api/v1/scans/{id}/entities.csv` | `scan_entities_csv`      |
 //! | GET    | `/api/v1/scans/{id}/correlations` | `scan_correlations` (v0.4+) |
 //! | GET    | `/api/v1/scans/{id}/relations`    | `scan_relations`         |
+//! | GET    | `/api/v1/scans/{id}/cross-scan`   | `scan_cross_scan` (v1.35+) |
+//! | GET    | `/api/v1/scans/{id}/snake.svg`    | `scan_snake_svg` (v1.35+) |
 //! | GET    | `/api/v1/scans/{id}/stealer-rows` | `scan_stealer_rows` (v1.13+) |
 //! | GET    | `/api/v1/scans/{id}/audit`        | `scan_audit` (v1.3+)     |
 //! | GET    | `/api/v1/scans/{id}/events`       | `scan_events_sse` (SSE)  |
@@ -451,6 +453,14 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         )
         // Subject-centric relationship synthesis — powers the web UI Network view.
         .route("/scans/{id}/network", get(scan_handlers::scan_network))
+        // Entities this scan shares with earlier investigations, ranked by bridge
+        // strength and carrying the prior scan ids each one expands into.
+        .route(
+            "/scans/{id}/cross-scan",
+            get(scan_handlers::scan_cross_scan),
+        )
+        // Simplified concentric-ring projection of the relation graph, as SVG.
+        .route("/scans/{id}/snake.svg", get(scan_handlers::scan_snake_svg))
         // People-centric co-reference resolution — scores which selectors name the
         // same individual (cross-identifier record linkage).
         .route(

@@ -490,3 +490,185 @@ pub async fn scan_identities(
     )
         .into_response()
 }
+
+/// `GET /api/v1/scans/{id}/cross-scan` — the scan's **cross-scan bridge
+/// category**: every entity this scan shares with earlier investigations, ranked
+/// by how strongly it is bridged, each carrying the prior scan ids it expands
+/// into.
+///
+/// The engine's finalise passes tag entities that recur across investigations
+/// (same-kind recurrence, co-occurrence, a recalled typed relation, or a
+/// cross-kind local-part alias); this endpoint assembles those tags into one
+/// browsable facet — a history-aware search category rather than a scattering of
+/// tags. `prior_scan_ids` is what makes it expandable: each row names the earlier
+/// scans to open next.
+///
+/// Ranked strongest tier first (`relation` > `cooccurrence` > `recurrence` >
+/// `kind_alias`), then confidence, then uid, so the order is total and stable.
+/// `?min_tier=` filters to a tier and above. `lookups_failed` reports bridges
+/// whose prior-scan lookup errored, so an empty `prior_scan_ids` is never
+/// silently mistaken for "no history". Honours `?include_candidates=…` exactly
+/// like `/entities`.
+pub async fn scan_cross_scan(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
+        return resp;
+    }
+    let min_tier = match params.get("min_tier").map(String::as_str) {
+        None => crate::core::cross_scan::BridgeTier::KindAlias,
+        Some("kind_alias") => crate::core::cross_scan::BridgeTier::KindAlias,
+        Some("recurrence") => crate::core::cross_scan::BridgeTier::Recurrence,
+        Some("cooccurrence") => crate::core::cross_scan::BridgeTier::Cooccurrence,
+        Some("relation") => crate::core::cross_scan::BridgeTier::Relation,
+        Some(other) => {
+            return bad_request(format!(
+                "unknown min_tier `{other}` (expected kind_alias, recurrence, \
+                 cooccurrence or relation)"
+            ));
+        }
+    };
+
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    // The candidate quarantine runs BEFORE the category is assembled, so a
+    // quarantined entity is absent from the category rather than filtered after
+    // its prior-scan history has already been resolved.
+    let loaded = tokio::task::spawn_blocking(move || {
+        let mut entities = store.entities_for_scan(&id2)?;
+        super::apply_candidate_gate(&mut entities, &params);
+        let category = crate::core::cross_scan::category_from_entities(&*store, &id2, &entities);
+        Ok::<_, crate::core::error::Error>((category, min_tier))
+    })
+    .await;
+
+    let (category, min_tier) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+
+    let bridges: Vec<serde_json::Value> = category
+        .at_least(min_tier)
+        .into_iter()
+        .map(|b| {
+            json!({
+                "uid": b.uid,
+                "value": b.value,
+                "kind": b.kind.to_string(),
+                "confidence": b.confidence,
+                "tier": b.tier.as_str(),
+                "hub": b.hub,
+                "prior_scan_ids": b.prior_scan_ids,
+                "prior_scan_count": b.prior_scan_ids.len(),
+            })
+        })
+        .collect();
+
+    Json(json!({
+        "scan_id": category.scan_id,
+        "bridges": bridges,
+        "total": bridges.len(),
+        "prior_scans": category.prior_scans(),
+        "lookups_failed": category.lookups_failed,
+    }))
+    .into_response()
+}
+
+/// `GET /api/v1/scans/{id}/snake.svg` — the scan's relation graph as a
+/// **concentric-ring ("snake") projection**, rendered as a standalone SVG.
+///
+/// The full relation graph is a hairball; this picks one entity as the centre and
+/// lays the rest out in rings by hop distance, keeping only edges between
+/// adjacent rings, so the result reads as nested circles rather than a mesh.
+/// Every node in reach stays visible and radial distance carries meaning.
+///
+/// `?center=<uid>` chooses the centre (default: the scan subject, else the
+/// most-connected entity). `?depth=` sets the ring horizon (default 4, capped 8)
+/// and `?size=` the pixel square (default 900, clamped 200–4000). Entities
+/// reachable but past the horizon are reported in `X-Snake-Beyond-Horizon`
+/// rather than silently dropped. `?download=1` returns it as a file. Candidate
+/// entities and any edge touching them are hidden unless `?include_candidates=…`,
+/// exactly as on `/network`.
+pub async fn scan_snake_svg(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
+        return resp;
+    }
+    let depth = match params.get("depth").map(|v| v.parse::<usize>()) {
+        None => 4,
+        Some(Ok(d)) if d >= 1 => d.min(8),
+        Some(_) => return bad_request("depth must be a positive integer (capped at 8)"),
+    };
+    let size = match params.get("size").map(|v| v.parse::<f64>()) {
+        None => 900.0,
+        Some(Ok(v)) if v.is_finite() => v.clamp(200.0, 4000.0),
+        Some(_) => return bad_request("size must be a number between 200 and 4000"),
+    };
+
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.entities_for_scan(&id2)?,
+            store.relations_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (entities, relations) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    // Hide quarantined candidates AND every edge touching one, so the drawing
+    // re-leaks a non-subject neither as a labelled node nor as a stub edge.
+    let (entities, relations) = super::confine_graph_to_visible(entities, relations, &params);
+
+    let center = match params.get("center") {
+        Some(uid) => {
+            if !entities.iter().any(|e| &e.uid == uid) {
+                return bad_request("center uid is not an entity in this scan");
+            }
+            uid.clone()
+        }
+        // An empty scan renders an empty graph rather than 404-ing: the resource
+        // exists, it just has nothing in it. 404 here means "no such scan".
+        None => crate::core::snake_graph::default_center(&entities, &relations).unwrap_or_default(),
+    };
+
+    let graph = crate::core::snake_graph::SnakeGraph::build(&center, &entities, &relations, depth);
+    let svg = graph.to_svg(size);
+
+    if params.get("download").map(String::as_str) == Some("1") {
+        return crate::api::scan_export::download_response(svg, "image/svg+xml", &id, "snake", "svg");
+    }
+
+    // Rendered inline. Node labels are XML-escaped and every colour comes from a
+    // fixed table, so the document carries no scriptable input — the CSP and
+    // nosniff headers are belt-and-braces in case a future serializer regresses.
+    (
+        StatusCode::OK,
+        [
+            (axum::http::header::CONTENT_TYPE, "image/svg+xml".to_string()),
+            (
+                axum::http::header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; style-src 'unsafe-inline'".to_string(),
+            ),
+            (
+                axum::http::header::X_CONTENT_TYPE_OPTIONS,
+                "nosniff".to_string(),
+            ),
+            (
+                axum::http::HeaderName::from_static("x-snake-beyond-horizon"),
+                graph.nodes_beyond_horizon.to_string(),
+            ),
+        ],
+        svg,
+    )
+        .into_response()
+}

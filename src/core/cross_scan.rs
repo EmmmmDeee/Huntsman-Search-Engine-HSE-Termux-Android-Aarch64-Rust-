@@ -108,14 +108,30 @@ impl CrossScanCategory {
 /// total and stable. Per-entity prior-scan lookups are indexed point queries; the
 /// set they run over is already bounded by the finalise passes that write the tags.
 pub fn category_for_scan(store: &dyn StoragePort, scan_id: &str) -> Result<CrossScanCategory> {
+    let entities = store.entities_for_scan(scan_id)?;
+    Ok(category_from_entities(store, scan_id, &entities))
+}
+
+/// Assemble the category from entities the caller has already loaded.
+///
+/// Split out from [`category_for_scan`] so a caller that must filter the entity
+/// set first — the API, which applies the candidate quarantine before anything
+/// reads the entities — controls the load. A quarantined entity gated out here is
+/// then absent from the category, rather than being loaded past the gate.
+#[must_use]
+pub fn category_from_entities(
+    store: &dyn StoragePort,
+    scan_id: &str,
+    entities: &[Entity],
+) -> CrossScanCategory {
     let mut category = CrossScanCategory {
         scan_id: scan_id.to_string(),
         entities: Vec::new(),
         lookups_failed: 0,
     };
 
-    for entity in store.entities_for_scan(scan_id)? {
-        let Some(tier) = BridgeTier::strongest(&entity) else {
+    for entity in entities {
+        let Some(tier) = BridgeTier::strongest(entity) else {
             continue;
         };
 
@@ -153,7 +169,7 @@ pub fn category_for_scan(store: &dyn StoragePort, scan_id: &str) -> Result<Cross
             .then_with(|| a.uid.cmp(&b.uid))
     });
 
-    Ok(category)
+    category
 }
 
 /// Handle values a cross-kind history probe should look for, given an entity.
