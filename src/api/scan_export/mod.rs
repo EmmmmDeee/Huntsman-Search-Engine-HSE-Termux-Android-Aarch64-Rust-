@@ -411,8 +411,9 @@ pub async fn scan_debug_bundle(
 
 /// `GET /api/v1/scans/{id}/events.log` — the complete, loss-less scan event
 /// sequence alone (module start/done/error, entities found, expansion
-/// ticks/stops, every admission/exclusion) as a per-type histogram plus a JSONL
-/// timeline — everything the web "Scan Log" tab shows, as one downloadable
+/// ticks/stops, every admission/exclusion) as a per-type breakdown plus a
+/// readable, aligned per-event timeline (`HH:MM:SS  category  glyph summary`,
+/// matching the web "Scan Log" view) — everything the web "Scan Log" tab shows, as one downloadable
 /// file, without the rest of the [`scan_debug_bundle`] dossier. `hse export
 /// {id} --format events` produces the byte-identical body via
 /// [`crate::cli::export::render_event_log`].

@@ -337,43 +337,51 @@ fn render_raw_response_body(raw: &serde_json::Value) -> String {
     crate::util::http::redact_credentials(&pretty)
 }
 
-/// Render the complete, loss-less scan event sequence: a per-type histogram
-/// followed by one JSON-serialised [`Event`](crate::core::event::Event) per
-/// line, in order. Pure (no storage I/O) so callers fetch `events` once via
+/// Render the complete scan event sequence as a **human-readable timeline**: a
+/// header (event count + UTC date and time-span), a per-type breakdown, then one
+/// aligned line per event — `HH:MM:SS  <category>  <glyph> <summary>` in order,
+/// formatted via [`EventKind::log_summary`](crate::core::event::EventKind::log_summary).
+/// Pure (no storage I/O) so callers fetch `events` once via
 /// [`StoragePort::events_for_scan`](crate::core::port::StoragePort::events_for_scan)
 /// and pass the slice in — shared by [`render_debug_bundle`]'s §3 and the
 /// standalone HTTP download endpoint `api::scan_export::scan_events_log`
-/// (`GET /api/v1/scans/{id}/events.log`), so the two never drift apart.
+/// (`GET /api/v1/scans/{id}/events.log`), so the two never drift apart. Every
+/// event and its exact ordering is preserved; only the raw JSON envelope is
+/// dropped in favour of the readable line — the full per-entity detail already
+/// lives in the debug bundle's dossier section, and the machine-readable events
+/// remain available verbatim from `GET /api/v1/scans/{id}/events.history`.
 pub(crate) fn render_event_log(events: &[crate::core::event::Event]) -> String {
+    use crate::util::timefmt::{hms_utc, ymd_utc};
     use std::collections::BTreeMap;
     use std::fmt::Write as _;
 
-    let mut histo: BTreeMap<String, usize> = BTreeMap::new();
+    let mut histo: BTreeMap<&'static str, usize> = BTreeMap::new();
     for ev in events {
-        *histo
-            .entry(ev.kind.event_type_str().to_string())
-            .or_default() += 1;
+        *histo.entry(ev.kind.event_type_str()).or_default() += 1;
     }
+
     let mut s = String::new();
-    let _ = writeln!(s, "── SCAN SEQUENCE ({} events) ──", events.len());
-    let _ = writeln!(s, "  event histogram:");
-    for (typ, n) in &histo {
-        let _ = writeln!(s, "    {typ:30} {n}");
+    let _ = writeln!(s, "── SCAN SEQUENCE · {} events ──", events.len());
+    if let (Some(first), Some(last)) = (events.first(), events.last()) {
+        let date = ymd_utc(first.ts as i64).unwrap_or_else(|| "—".into());
+        let _ = writeln!(s, "  {date} · {} → {} UTC", hms_utc(first.ts), hms_utc(last.ts));
     }
-    let _ = writeln!(
-        s,
-        "\n  full timeline (JSONL — one loss-less event per line, in order):"
-    );
+
+    let _ = writeln!(s, "\n  By type:");
+    for (typ, n) in &histo {
+        let _ = writeln!(s, "    {typ:<20}{n:>5}");
+    }
+
+    let _ = writeln!(s, "\n  Timeline (UTC):");
     if events.is_empty() {
         let _ = writeln!(
             s,
-            "  (no events recorded — event persistence disabled, or an import not a live scan)"
+            "    (no events recorded — event persistence disabled, or an import not a live scan)"
         );
     }
     for ev in events {
-        // Loss-less, greppable: timestamp + the entire serialised event.
-        let json = serde_json::to_string(ev).unwrap_or_else(|_| "{}".into());
-        let _ = writeln!(s, "  {} {}", ev.ts, json);
+        let (category, body) = ev.kind.log_summary();
+        let _ = writeln!(s, "    {}  {category:<7} {body}", hms_utc(ev.ts));
     }
     s
 }
@@ -387,8 +395,9 @@ pub(crate) fn render_event_log(events: &[crate::core::event::Event]) -> String {
 ///   2. the typed relation graph and correlator hits;
 ///   3. the COMPLETE scan sequence — every event (module start/done/error,
 ///      entity found, every admission/expansion exclusion with its reason,
-///      expansion ticks/stops) as loss-less JSONL plus a per-type histogram, so
-///      the exact order of operations and every decision is reconstructable;
+///      expansion ticks/stops) as a readable, aligned per-event timeline plus a
+///      per-type breakdown, so the exact order of operations and every decision
+///      is reconstructable at a glance;
 ///   4. the scored self-audit — score, every weakness finding with its
 ///      recommendation, the exclusion ledger, and the geo-consistency summary.
 ///
