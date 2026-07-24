@@ -38,16 +38,24 @@ pub(crate) struct PropertyRecord {
     pub postcode: Option<String>,
 }
 
-/// Try to match a name token against the subject's full name. Returns true
-/// when the surname and at least one given-name token appear in the text
+/// Try to match the subject's full name against a text window. Returns true when
+/// every token of the full name appears as a WHOLE WORD in the text
 /// (case-insensitive). Pure.
+///
+/// Whole-word, not substring: a substring gate wrongly admits a coincidental
+/// line for AU-common short surnames (Le, Ng, Ha, Vo, Do) — and since a matched
+/// record now stamps an `owner` attribute and an `exact-name-match` tag that the
+/// relation layer turns into a Person→property `LocatedAt` edge, a loose match
+/// would FABRICATE a subject↔property link. Mirrors
+/// `qld_helpers::owner_matches_full_name`.
 pub(crate) fn name_matches(text: &str, full_name: &str) -> bool {
     let text_lc = text.to_lowercase();
     let full_lc = full_name.to_lowercase();
-    // Every token of the full name must appear somewhere in the text.
-    full_lc
-        .split_whitespace()
-        .all(|token| text_lc.contains(token))
+    full_lc.split_whitespace().all(|token| {
+        text_lc
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|word| word == token)
+    })
 }
 
 /// Extract AU state abbreviation from a text window. Returns the canonical
@@ -159,6 +167,10 @@ pub(crate) fn record_to_entities(rec: &PropertyRecord, scan_id: &str) -> Vec<Ent
         SRC,
         format!("Property title owner match: {}", rec.owner_name),
     )
+    // `owner` is a PERSON_NAME_ATTRS key, so `core::relation::derive_residency`
+    // binds this place to the matching subject Person as a LocatedAt edge — the
+    // record is whole-word name-matched by construction (see `name_matches`).
+    .with_attr("owner", &rec.owner_name)
     .with_attr("suburb", &rec.suburb)
     .with_attr("state", rec.state);
 
@@ -167,6 +179,9 @@ pub(crate) fn record_to_entities(rec: &PropertyRecord, scan_id: &str) -> Vec<Ent
     addr.tag(format!("au-state:{}", rec.state));
     addr.tag("country:AU");
     addr.tag("source:property");
+    // Name-matched register hit → geo_family can anchor the precise suburb
+    // Address on the subject (mirrors qld_unclaimed's exact register hits).
+    addr.tag("exact-name-match");
     out.push(addr);
 
     // Derive coordinates from the suburb centroid via the offline city table.
@@ -185,6 +200,7 @@ pub(crate) fn record_to_entities(rec: &PropertyRecord, scan_id: &str) -> Vec<Ent
         coord.add_evidence(evid.with_attr("derived_from", "suburb_centroid"));
         coord.tag(format!("au-state:{}", rec.state));
         coord.tag("country:AU");
+        coord.tag("exact-name-match");
         out.push(coord);
     }
 

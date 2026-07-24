@@ -17,6 +17,10 @@ use super::handlers::{internal_error, not_found};
 use super::scan_handlers::{scan_missing, wants_candidates, wants_infra};
 use crate::api::AppState;
 
+/// Genericise proprietary breach/intel source names in the shareable downloads
+/// so a scan result handed to a customer never reveals the operator's providers.
+mod redact;
+
 pub async fn scan_entities_csv(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -41,6 +45,8 @@ pub async fn scan_entities_csv(
     if !crate::api::scan_handlers::wants_candidates(&params) {
         entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
     }
+    // Redaction of the proprietary source names in the `sources` /
+    // `corroborating_sources` columns is enforced by `download_response`.
     download_response(
         entities_to_csv(&entities),
         "text/csv; charset=utf-8",
@@ -365,6 +371,7 @@ pub async fn scan_export_gexf(
         entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
     }
     let body = crate::core::gexf::entities_to_gexf(&entities, &relations, &id);
+    // Redaction of proprietary source names is enforced by `download_response`.
     download_response(body, "application/xml; charset=utf-8", &id, "gexf", "gexf")
 }
 
@@ -391,7 +398,12 @@ pub async fn scan_debug_bundle(
     })
     .await
     {
-        Ok(Ok(body)) => download_response(body, "text/plain; charset=utf-8", &id, "debug", "txt"),
+        // Operator artifact (labelled "operator only" in the UI): the debug bundle
+        // deliberately KEEPS the real provider names, so it opts out of the
+        // default-safe redaction via `download_response_operator`.
+        Ok(Ok(body)) => {
+            download_response_operator(body, "text/plain; charset=utf-8", &id, "debug", "txt")
+        }
         Ok(Err(e)) => internal_error(&e),
         Err(e) => internal_error(&format!("debug-bundle render task failed: {e}")),
     }
@@ -414,6 +426,9 @@ pub async fn scan_events_log(
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
     match tokio::task::spawn_blocking(move || store.events_for_scan(&id2)).await {
+        // The event JSONL names the producing provider in module_start/done/error;
+        // `download_response` redacts those proprietary source names for the
+        // customer copy.
         Ok(Ok(events)) => download_response(
             crate::cli::export::render_event_log(&events),
             "text/plain; charset=utf-8",
@@ -438,6 +453,36 @@ pub async fn scan_events_log(
 /// when a caller passed `"debug.txt"` for both roles. For the CSV/JSON/GEXF
 /// endpoints stem == ext, so their filenames are unchanged.
 pub(crate) fn download_response(
+    body: String,
+    content_type: &'static str,
+    scan_id: &str,
+    stem: &str,
+    ext: &str,
+) -> axum::response::Response {
+    // SHAREABLE scan download → genericise proprietary breach/intel source names
+    // so the customer copy never reveals which providers the operator uses.
+    // Enforced HERE, at the single scan-download choke point, rather than wrapped
+    // around each format's body: every current serializer (CSV / report.json /
+    // GEXF / events.log AND the MITRE navigator layer) and any format added later
+    // is redacted by default. A download that must KEEP the real names (the
+    // operator debug bundle) opts out via [`download_response_operator`], so
+    // forgetting to redact defaults to the safe, customer-shareable behaviour.
+    download_response_operator(
+        redact::redact_sensitive_sources(&body),
+        content_type,
+        scan_id,
+        stem,
+        ext,
+    )
+}
+
+/// Operator-only counterpart to [`download_response`] that KEEPS the real
+/// provider names — the scan debug bundle, an explicit operator artifact labelled
+/// "operator only" in the UI. Same `hse-<stem>-<short_id>.<ext>` naming; the only
+/// difference is that it does NOT redact. Choosing this is a conscious opt-out of
+/// the default-safe redaction, which is why it is a named function rather than a
+/// bool flag.
+pub(crate) fn download_response_operator(
     body: String,
     content_type: &'static str,
     scan_id: &str,

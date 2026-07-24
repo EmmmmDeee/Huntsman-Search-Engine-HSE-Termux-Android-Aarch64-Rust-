@@ -99,6 +99,23 @@ use super::*;
     }
 
     #[test]
+    fn single_state_code_only_resolves_unambiguous_states() {
+        // A single, unambiguous state → resolved (by code or by full name).
+        assert_eq!(single_state_code("Melbourne / VIC"), Some("VIC"));
+        assert_eq!(single_state_code("Brisbane / QLD"), Some("QLD"));
+        assert_eq!(single_state_code("Hobart / TAS"), Some("TAS"));
+        assert_eq!(single_state_code("Sydney, New South Wales"), Some("NSW"));
+        // Ambiguous multi-state labels — a coarse phone area code (02, 08) spans
+        // several states — must NOT collapse to one fabricated jurisdiction.
+        assert_eq!(single_state_code("Sydney / NSW / ACT"), None);
+        assert_eq!(single_state_code("Perth / SA / NT"), None);
+        // No state signal, and (unlike `state_code`) NO postcode fallback: an
+        // explicit state mention is required.
+        assert_eq!(single_state_code("just some text"), None);
+        assert_eq!(single_state_code("PO Box, 3001"), None);
+    }
+
+    #[test]
     fn locality_key_folds_postcode_variants_but_keeps_streets_distinct() {
         // Same suburb, two granularities → one key.
         assert_eq!(

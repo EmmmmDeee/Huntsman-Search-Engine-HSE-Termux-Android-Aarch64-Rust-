@@ -16,7 +16,7 @@
 //! (`SubdomainOf`, `BelongsToDomain`, `HostedOn`); `derive_colocation` links
 //! `CoLocatedWith` between nearby Coordinates (Haversine via `util::geohash`);
 //! `derive_resolution` links `ResolvesTo` (Domain → IpAddress) from DNS evidence;
-//! `derive_registration` links `RegisteredBy` (Domain → Org/Email) from WHOIS;
+//! `derive_registration` links `RegisteredBy` (Domain → Org/Email/Person) from WHOIS;
 //! `derive_name_lineage` links `DerivedFrom` for name-permuted handles.
 //!
 //! **Identity** (the person-centric graph — otherwise a person scan has nodes but

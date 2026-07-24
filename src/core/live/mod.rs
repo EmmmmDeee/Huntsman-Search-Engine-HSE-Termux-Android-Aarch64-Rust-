@@ -84,6 +84,25 @@ pub enum LiveStatus {
     Stopped,
 }
 
+/// Serialise a `scan_ids` `HashSet` as a lexically-sorted sequence so identical
+/// session state produces byte-identical JSON on every process run. A raw
+/// `HashSet` serialises in its per-process-random SipHash iteration order,
+/// which would otherwise leak into the `/api/v1/live` and `/api/v1/live/{id}`
+/// API responses. Runtime keeps the `HashSet` for the SSE owner-check's O(1)
+/// `contains`; only the serialised view is ordered. Deserialisation is
+/// unaffected (the derived `Deserialize` reads a plain array back into a set).
+fn serialize_scan_ids_sorted<S>(
+    ids: &std::collections::HashSet<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let mut sorted: Vec<&String> = ids.iter().collect();
+    sorted.sort_unstable();
+    serializer.collect_seq(sorted)
+}
+
 /// The public view of a live session. Returned by list/get endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveSession {
@@ -101,6 +120,12 @@ pub struct LiveSession {
     /// — which spawns a distinct scan per discovered target — can't grow it
     /// without limit; only ids spawned long ago are evicted, so recent/active
     /// scans always route their events.
+    ///
+    /// Serialised sorted (see [`serialize_scan_ids_sorted`]): the runtime type
+    /// stays a `HashSet` for the SSE owner-check's O(1) `contains`, but the
+    /// JSON view emits the ids in a stable order so identical session state is
+    /// byte-reproducible across process runs.
+    #[serde(serialize_with = "serialize_scan_ids_sorted")]
     pub scan_ids: std::collections::HashSet<String>,
     /// Insertion order for `scan_ids`, enabling FIFO eviction at
     /// [`SCAN_ID_CAP`]. Internal bookkeeping — not serialised (the API exposes

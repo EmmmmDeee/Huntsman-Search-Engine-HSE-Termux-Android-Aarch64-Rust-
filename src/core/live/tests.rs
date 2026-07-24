@@ -151,6 +151,33 @@ use super::*;
         assert_eq!(s.scan_ids.len(), before);
     }
 
+    #[test]
+    fn scan_ids_serialize_in_sorted_order_for_reproducible_api_output() {
+        // `scan_ids` is a `HashSet`, whose native iteration order is
+        // per-process-random (SipHash seed). It serializes directly into the
+        // `GET /api/v1/live` responses, so without a stable order the SAME
+        // live-session state would emit a differently-ordered `scan_ids` array
+        // across separate server runs. 40 distinct ids make a coincidental
+        // sorted hash order astronomically unlikely (1/N!).
+        let mut s = mk_session("live-order", LiveStatus::Running, 1_700_000_000);
+        for i in (0..40).rev() {
+            s.record_scan(format!("scan-{i:02}"));
+        }
+        let json = serde_json::to_value(&s).unwrap();
+        let got: Vec<&str> = json["scan_ids"]
+            .as_array()
+            .expect("scan_ids serializes as a JSON array")
+            .iter()
+            .map(|v| v.as_str().expect("each scan id is a string"))
+            .collect();
+        let mut want = got.clone();
+        want.sort_unstable();
+        assert_eq!(
+            got, want,
+            "scan_ids must serialize in sorted order for byte-reproducible API output"
+        );
+    }
+
     fn mk_session(id: &str, status: LiveStatus, started_at: u64) -> LiveSession {
         LiveSession {
             id: id.to_string(),

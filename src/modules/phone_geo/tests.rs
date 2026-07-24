@@ -270,6 +270,48 @@ async fn landline_runs_area_pass_and_emits_phone_area_geo_source() {
 }
 
 #[tokio::test]
+async fn au_multistate_area_code_does_not_fabricate_one_state() {
+    // The `08` area code covers WA + SA + NT; the coarse label "Perth / SA / NT"
+    // must NOT be collapsed to a single hard `au-state:`. Previously the
+    // first-token `state_code` stamped `au-state:SA` on every WA (Perth) and NT
+    // landline — a fabricated jurisdiction feeding the AU residency verdict. The
+    // Address/Coordinates are still emitted; only the ambiguous state tag is held.
+    let m = PhoneGeo;
+    let target = Target::new(TargetKind::Phone, "+61 8 9325 0000");
+    let r = m.process(&target, &test_ctx()).await.unwrap();
+    assert!(
+        r.entities.iter().any(|e| e.has_tag("phone-area-code")),
+        "08 landline must still emit an area-code entity"
+    );
+    for e in r.entities.iter().filter(|e| e.has_tag("phone-area-code")) {
+        assert!(
+            !e.tags.iter().any(|t| t.starts_with("au-state:")),
+            "a multi-state area code must not stamp a single au-state tag, got {:?}",
+            e.tags
+        );
+    }
+}
+
+#[tokio::test]
+async fn au_single_state_area_code_still_tags_state() {
+    // `03` (outside the Tasmania 03-6x block) is unambiguously Victoria — the
+    // guard must still stamp the legitimate single-state jurisdiction.
+    let m = PhoneGeo;
+    let target = Target::new(TargetKind::Phone, "+61 3 9000 0000");
+    let r = m.process(&target, &test_ctx()).await.unwrap();
+    let addr = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Address && e.has_tag("phone-area-code"))
+        .expect("03 landline must emit an area-code Address");
+    assert!(
+        addr.has_tag("au-state:VIC"),
+        "an unambiguous single-state area code must keep its au-state tag, got {:?}",
+        addr.tags
+    );
+}
+
+#[tokio::test]
 async fn mobile_runs_carrier_pass_and_emits_phone_carrier_geo_source() {
     let m = PhoneGeo;
     // AU Telstra mobile: no geographic area code, but a carrier hit.

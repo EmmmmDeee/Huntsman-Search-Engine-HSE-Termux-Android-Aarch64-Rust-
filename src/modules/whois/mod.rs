@@ -384,6 +384,16 @@ impl Module for Whois {
             entity.tag("dnssec:signed");
         }
 
+        // Parsed here (not only at the Person-emission site below) so the
+        // registrant/admin/tech NAMES fold into the domain's own evidence attrs —
+        // those attrs are what `core::relation::derive_registration` matches a
+        // registrant Person against to build the Domain→Person `RegisteredBy`
+        // edge. A redacted name folds harmlessly: no Person entity is emitted for
+        // it, so it can never form an edge.
+        let registrant_name = field(
+            &response,
+            &["Registrant Name:", "Registrant Person:", "person:"],
+        );
         let ev = [
             ("registrar", registrar.clone()),
             ("registrar_iana_id", registrar_iana.clone()),
@@ -401,6 +411,9 @@ impl Module for Whois {
             ),
             ("dnssec", dnssec.clone()),
             ("registrant_org", registrant_org.clone()),
+            ("registrant_name", registrant_name.clone()),
+            ("admin_name", admin_name.clone()),
+            ("tech_name", tech_name.clone()),
             ("registrant_country", registrant_country.clone()),
             ("registrant_state", registrant_state.clone()),
             ("registrant_email", registrant_email.clone()),
@@ -469,11 +482,8 @@ impl Module for Whois {
             }
         }
 
-        // Registrant name → Person entity (when not redacted).
-        let registrant_name = field(
-            &response,
-            &["Registrant Name:", "Registrant Person:", "person:"],
-        );
+        // Registrant name → Person entity (when not redacted). `registrant_name`
+        // is parsed above so it can also fold into the domain evidence.
         if let Some(name) = &registrant_name {
             let name = name.trim();
             if name.len() >= 4

@@ -244,7 +244,11 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
     // byte-identical-output guarantee. Ordered set → the lexicographically
     // smallest fingerprint, deterministically.
     let mut jarm_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut cve_list: Vec<String> = Vec::new();
+    // BTreeSet, not Vec: a host's CVE set is load-bearing pivot/prioritisation
+    // intelligence, so it is emitted in full (no cap) — deduped across response
+    // items and sorted for byte-deterministic output. Mirrors the full-fidelity
+    // vuln policy in the sibling `shodan` module.
+    let mut cve_set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut tech_list: Vec<String> = Vec::new();
     let mut isp_val: Option<String> = None;
     let mut geo_val: Option<(f64, f64, String, String)> = None;
@@ -349,9 +353,9 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
             all_emails.extend(emails.iter().cloned());
         }
         if let Some(cves) = &data.cve {
-            for cve in cves.iter().take(5) {
-                if let Some(n) = &cve.name {
-                    cve_list.push(n.clone());
+            for cve in cves {
+                if let Some(n) = cve.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                    cve_set.insert(n.to_string());
                 }
             }
         }
@@ -404,29 +408,37 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
     if let Some(code) = http_status {
         ev = ev.with_attr("http_status", code.to_string());
     }
-    if !cve_list.is_empty() {
-        ev = ev.with_attr(
-            "cves",
-            cve_list
-                .iter()
-                .take(5)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(","),
-        );
+    if !cve_set.is_empty() {
+        // Emit the complete, deduplicated CVE set plus a disclosed count — a
+        // host's vulnerabilities are the intelligence an analyst pivots on.
+        ev = ev
+            .with_attr(
+                "cves",
+                cve_set
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )
+            .with_attr("cve_count", cve_set.len().to_string());
     }
     if !tech_list.is_empty() {
         tech_list.sort();
         tech_list.dedup();
-        ev = ev.with_attr(
-            "technologies",
-            tech_list
-                .iter()
-                .take(10)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(","),
-        );
+        // Disclose the full detected-technology count so a host running more than
+        // the displayed sample does not silently lose stack-attribution pivots
+        // (mirrors `port_count` alongside the capped `open_ports`).
+        ev = ev
+            .with_attr("technology_count", tech_list.len().to_string())
+            .with_attr(
+                "technologies",
+                tech_list
+                    .iter()
+                    .take(10)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
     }
     if let Some(isp) = &isp_val {
         ev = ev.with_attr("isp", isp);

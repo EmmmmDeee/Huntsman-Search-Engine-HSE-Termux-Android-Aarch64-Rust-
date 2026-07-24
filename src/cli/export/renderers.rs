@@ -96,6 +96,10 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
     let _ = writeln!(s, "status     : {:?}", scan.status);
     let _ = writeln!(s, "entities   : {}", entities.len());
     let _ = writeln!(s, "relations  : {}", relations.len());
+    // Full module accounting — including the timed-out/skipped/cached counts the
+    // header historically dropped. A timed-out module is a stronger
+    // incompleteness signal than a dedup, so total transparency requires it.
+    let _ = writeln!(s, "modules    : {}", scan.module_accounting_line());
 
     // Exposure Index — the calibrated 0–100 headline with its transparent
     // per-signal breakdown, mirroring the live dossier (`print_dossier`) so the
@@ -243,12 +247,28 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
     }
 
     if !relations.is_empty() {
+        // Resolve each endpoint UID to `value (kind)` so the relation graph is
+        // legible in the primary human dossier (mirrors print_dossier /
+        // scan_relations) instead of opaque hex→hex. render_full carries EVERY
+        // entity (candidates included), so endpoints resolve; the short-uid stub
+        // is a defensive fallback only. Lookup-only map (never iterated) — output
+        // stays byte-deterministic. UIDs are hex ASCII, so the slice is byte-safe.
+        let by_uid: std::collections::HashMap<&str, &crate::core::entity::Entity> =
+            entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+        let label = |uid: &str| {
+            super::super::relation_endpoint_label(&by_uid, uid, |e| {
+                format!("{} ({})", e.value, e.kind)
+            })
+        };
         let _ = writeln!(s, "\n── RELATIONS ──");
         for r in &relations {
             let _ = writeln!(
                 s,
                 "  {} ──{}──▶ {}  (conf={:.2})",
-                r.from_uid, r.kind, r.to_uid, r.confidence
+                label(&r.from_uid),
+                r.kind,
+                label(&r.to_uid),
+                r.confidence
             );
         }
     }

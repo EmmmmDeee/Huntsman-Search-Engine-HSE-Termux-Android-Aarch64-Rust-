@@ -1,5 +1,5 @@
 import { API } from '/static/js/api.js';
-import { $, $$, attr, esc, fmtClock, fmtDate, kindPill, statusPill, toast } from '/static/js/helpers.js';
+import { $, $$, attr, esc, fmtClock, fmtDate, kindPill, saveShownRows, statusPill, toast } from '/static/js/helpers.js';
 import { closeLiveSse, mapEvent, openLiveSse } from '/static/js/scan_info/log.js';
 import { S, TARGET_KINDS } from '/static/js/state.js';
 import { clearLiveTimer } from '/static/js/timers.js';
@@ -51,6 +51,16 @@ export function appendLiveLog(ev){
   box.appendChild(row);
   while (box.childElementCount > 300) box.removeChild(box.firstChild);
   box.scrollTop = box.scrollHeight;
+}
+/* Save exactly the rows currently shown in the Live-activity panel to a .log
+   file — the always-available path for a streaming session (there is no
+   persisted per-session log endpoint), mirroring the scan-log "Save shown". */
+export function saveLiveShown(){
+  saveShownRows('#live-stream-host', {
+    emptyMsg: 'No live activity shown yet — nothing to save.',
+    header: (n) => `# HSE live-session activity (as shown in the browser)\n# ${n} event(s) — live capture, may be partial\n\n`,
+    filename: 'hse-live-activity.log',
+  });
 }
 export function renderLiveSessions(sessions){
   if (!sessions.length){
@@ -161,6 +171,7 @@ export async function renderLive(v){
         <b><i class="glyphicon glyphicon-transfer" style="color:var(--info)"></i>&nbsp;Live activity</b>
         <span id="live-stream-label" class="text-muted" style="font-weight:400"></span>
         <button class="btn btn-default btn-xs pull-right" onclick="closeLiveStream()" title="Stop tailing this session"><i class="glyphicon glyphicon-stop"></i>&nbsp;Stop</button>
+        <button class="btn btn-default btn-xs pull-right" style="margin-right:6px" onclick="saveLiveShown()" title="Save the live activity shown here to a .log file"><i class="glyphicon glyphicon-download-alt"></i>&nbsp;Save shown</button>
       </div>
       <div class="panel-body" id="live-stream-host" style="max-height:320px;overflow:auto;padding:6px 10px;font-size:12px">
         <div class="text-muted">Waiting for events…</div>
