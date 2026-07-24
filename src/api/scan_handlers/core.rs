@@ -13,6 +13,26 @@ use crate::api::AppState;
 use crate::core::entity::scan_id;
 use crate::core::scan::{Scan, ScanRequest, Target, TargetKind};
 
+/// Run a blocking `Store` operation off the async reactor and normalise the
+/// outcome for a handler. Every `Store` method takes the global SQLite
+/// connection mutex, so calling one inline on an async handler pins the worker
+/// thread for the whole query — a cascade `delete_scan` or a batch of writes
+/// then stalls every unrelated request sharing that thread. This is the
+/// write-path analogue of the `spawn_blocking` every *read* handler in this
+/// module already uses: on success it yields the value; on a store error or a
+/// task-join failure it yields a ready `500` for the caller to `return`.
+async fn offload_store<T, F>(f: F) -> std::result::Result<T, axum::response::Response>
+where
+    F: FnOnce() -> crate::core::error::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(internal_error(&e)),
+        Err(e) => Err(internal_error(&format!("db task failed: {e}"))),
+    }
+}
+
 pub async fn scan_create(
     State(s): State<Arc<AppState>>,
     Json(req): Json<ScanRequest>,
@@ -22,8 +42,10 @@ pub async fn scan_create(
         Err(msg) => return bad_request(msg),
     };
 
-    if let Err(e) = s.store.upsert_scan(&scan) {
-        return internal_error(&e);
+    let store = Arc::clone(&s.store);
+    let scan_db = scan.clone();
+    if let Err(resp) = offload_store(move || store.upsert_scan(&scan_db)).await {
+        return resp;
     }
 
     spawn_scan(&s, scan.clone(), target);
@@ -169,8 +191,10 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let sid = scan_id(kind.canonical_str(), &value);
     let scan = Scan::new(sid.clone(), target.clone())
         .with_options(crate::core::scan::default_scan_options());
-    if let Err(e) = s.store.upsert_scan(&scan) {
-        return internal_error(&e);
+    let store = Arc::clone(&s.store);
+    let scan_db = scan.clone();
+    if let Err(resp) = offload_store(move || store.upsert_scan(&scan_db)).await {
+        return resp;
     }
     spawn_scan(&s, scan, target);
     info!(scan_id = %sid, kind = ?kind, "autonomous scan queued — seed auto-selected");
@@ -358,9 +382,19 @@ pub async fn scan_auto_sweep(
         let sid = scan_id(t.kind.canonical_str(), &t.value);
         let scan = Scan::new(sid.clone(), target.clone())
             .with_options(crate::core::scan::default_scan_options());
-        if let Err(e) = s.store.upsert_scan(&scan) {
-            dispatched.push(json!({ "error": e.to_string(), "value": t.value }));
-            continue;
+        let store = Arc::clone(&s.store);
+        let scan_db = scan.clone();
+        match tokio::task::spawn_blocking(move || store.upsert_scan(&scan_db)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                dispatched.push(json!({ "error": e.to_string(), "value": t.value }));
+                continue;
+            }
+            Err(e) => {
+                dispatched
+                    .push(json!({ "error": format!("db task failed: {e}"), "value": t.value }));
+                continue;
+            }
         }
         spawn_scan(&s, scan, target);
         dispatched.push(json!({
@@ -471,13 +505,19 @@ pub async fn scan_delete(
         )
             .into_response();
     }
-    match s.store.delete_scan(&id) {
+    // `delete_scan` is a multi-table cascade transaction (scans, correlations,
+    // observations, events, relations, stealer_rows, entities + FTS sync) under
+    // the global connection mutex — the heaviest write in the API. Run it off the
+    // reactor so a large-scan delete can't stall unrelated requests.
+    let store = Arc::clone(&s.store);
+    let id_db = id.clone();
+    match offload_store(move || store.delete_scan(&id_db)).await {
         Ok(true) => {
             info!(scan_id = %id, "scan deleted");
             (StatusCode::OK, Json(json!({ "deleted": id }))).into_response()
         }
         Ok(false) => not_found(),
-        Err(e) => internal_error(&e),
+        Err(resp) => resp,
     }
 }
 
@@ -485,17 +525,21 @@ pub async fn scan_rerun(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let original = match s.store.get_scan(&id) {
+    let store = Arc::clone(&s.store);
+    let id_db = id.clone();
+    let original = match offload_store(move || store.get_scan(&id_db)).await {
         Ok(Some(scan)) => scan,
         Ok(None) => return not_found(),
-        Err(e) => return internal_error(&e),
+        Err(resp) => return resp,
     };
 
     let sid = scan_id(original.target.kind.canonical_str(), &original.target.value);
     let new_scan = Scan::new(sid, original.target.clone()).with_options(original.options.clone());
 
-    if let Err(e) = s.store.upsert_scan(&new_scan) {
-        return internal_error(&e);
+    let store = Arc::clone(&s.store);
+    let scan_db = new_scan.clone();
+    if let Err(resp) = offload_store(move || store.upsert_scan(&scan_db)).await {
+        return resp;
     }
 
     spawn_scan(&s, new_scan.clone(), original.target);
@@ -683,9 +727,18 @@ pub async fn scan_batch(
                 continue;
             }
         };
-        if let Err(e) = s.store.upsert_scan(&scan) {
-            scan_ids.push(json!({ "error": e.to_string() }));
-            continue;
+        let store = Arc::clone(&s.store);
+        let scan_db = scan.clone();
+        match tokio::task::spawn_blocking(move || store.upsert_scan(&scan_db)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                scan_ids.push(json!({ "error": e.to_string() }));
+                continue;
+            }
+            Err(e) => {
+                scan_ids.push(json!({ "error": format!("db task failed: {e}") }));
+                continue;
+            }
         }
         let sid = scan.id.clone();
         spawn_scan(&s, scan, target);
@@ -772,8 +825,10 @@ pub async fn radar_sweep(
     let (target, opts) = radar_scan_spec(params.get("seed").map(String::as_str));
     let sid = scan_id("radar", target.kind.canonical_str());
     let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
-    if let Err(e) = s.store.upsert_scan(&scan) {
-        return internal_error(&e);
+    let store = Arc::clone(&s.store);
+    let scan_db = scan.clone();
+    if let Err(resp) = offload_store(move || store.upsert_scan(&scan_db)).await {
+        return resp;
     }
     spawn_scan(&s, scan, target);
     info!(scan_id = %sid, "radar sweep queued — live device sensors (button activation)");
@@ -850,9 +905,10 @@ pub async fn radar_history(
         .and_then(|v| v.parse().ok())
         .unwrap_or(100)
         .clamp(1, 1000);
-    match s.store.radar_history(limit) {
+    let store = Arc::clone(&s.store);
+    match offload_store(move || store.radar_history(limit)).await {
         Ok(scans) => ok_list("sweeps", scans),
-        Err(e) => internal_error(&e),
+        Err(resp) => resp,
     }
 }
 

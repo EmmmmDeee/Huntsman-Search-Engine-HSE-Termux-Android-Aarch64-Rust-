@@ -529,6 +529,12 @@ pub enum Command {
         /// format but scoped only to the infra filter.
         #[arg(long, default_value_t = false)]
         include_infra: bool,
+        /// Redact subject PII for a shareable export: mask credential-class
+        /// values (passwords, credentials, harvested API keys) and coarsen
+        /// precise coordinates to ~11 km. Applies to json / csv / gexf only —
+        /// the full/debug dossiers are unredacted by contract.
+        #[arg(long, default_value_t = false)]
+        redact: bool,
     },
 
     /// Compare two completed scans: entities added / removed / re-scored.

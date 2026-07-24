@@ -195,9 +195,9 @@ fn structured_exports_quarantine_candidates_but_full_retains_them() {
     store.upsert_entities_batch(&[confirmed, stranger]).unwrap();
 
     for body in [
-        render_csv(&store, "scan-q").unwrap(),
-        render_json(&store, "scan-q").unwrap(),
-        render_gexf(&store, "scan-q").unwrap(),
+        render_csv(&store, "scan-q", false).unwrap(),
+        render_json(&store, "scan-q", false).unwrap(),
+        render_gexf(&store, "scan-q", false).unwrap(),
     ] {
         assert!(
             body.contains("subject@example-real.com"),
@@ -277,12 +277,96 @@ fn debug_bundle_includes_dossier_sequence_and_audit() {
     assert!(out.contains("HUNTSMAN FULL DOSSIER")); // §1 embeds render_full
     assert!(out.contains("── EXPOSURE INDEX")); // §1 headline mirrors live dossier
     assert!(out.contains("── CORRELATIONS")); // §2
-    assert!(out.contains("── SCAN SEQUENCE (2 events)")); // §3
-    assert!(out.contains("module_start")); // histogram + JSONL
-    assert!(out.contains("\"reason\":\"identity_mismatch\"")); // loss-less event
+    assert!(out.contains("── SCAN SEQUENCE · 2 events")); // §3 header
+    assert!(out.contains("module_start")); // per-type breakdown
+    assert!(out.contains("▶ hibp")); // module_start rendered in the human timeline
+    assert!(out.contains("⊘ not expanded · username stranger")); // exclusion event rendered readably, with its reason
+    assert!(out.contains("identity_mismatch")); // …and its reason is preserved on that line
     assert!(out.contains("── SELF-AUDIT")); // §4
     assert!(out.contains("score      :"));
     assert!(out.contains("exclusions : identity_mismatch×1")); // ledger folded in
+}
+
+#[test]
+fn event_log_renders_a_readable_aligned_timeline() {
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::event::{Event, EventKind};
+    use crate::core::tags::CANDIDATE;
+
+    let mut cand = Entity::new(EntityKind::Password, "hunter2", 0.25, "s");
+    cand.tag(CANDIDATE);
+    let evs = vec![
+        Event::new(
+            "s",
+            EventKind::ScanStart {
+                target_kind: "username".into(),
+                target_value: "alameddine".into(),
+            },
+        ),
+        Event::new(
+            "s",
+            EventKind::ModuleStart {
+                module: "dehashed".into(),
+            },
+        ),
+        Event::new(
+            "s",
+            EventKind::ModuleDone {
+                module: "dehashed".into(),
+                found: 0,
+            },
+        ),
+        Event::new(
+            "s",
+            EventKind::ModuleSkipped {
+                module: "psbdmp".into(),
+                reason: "capability-quarantined".into(),
+            },
+        ),
+        Event::new(
+            "s",
+            EventKind::EntityFound {
+                entity: Entity::new(EntityKind::Email, "a@b.com", 0.90, "s"),
+            },
+        ),
+        Event::new("s", EventKind::EntityFound { entity: cand }),
+        Event::new(
+            "s",
+            EventKind::EntityExcluded {
+                kind: "username".into(),
+                value: "stranger".into(),
+                reason: "identity_mismatch".into(),
+            },
+        ),
+        Event::new(
+            "s",
+            EventKind::ScanComplete {
+                scan_id: "s".into(),
+                entity_count: 2,
+            },
+        ),
+    ];
+    let out = crate::cli::export::render_event_log(&evs);
+
+    // Structure: header with count, a by-type breakdown, and a UTC timeline.
+    assert!(out.contains("── SCAN SEQUENCE · 8 events ──"));
+    assert!(out.contains("By type:"));
+    assert!(out.contains("Timeline (UTC):"));
+    // Each event kind renders as a readable, glyph-led line (spacing-agnostic).
+    assert!(out.contains("● scan started · username=alameddine"));
+    assert!(out.contains("▶ dehashed"));
+    assert!(out.contains("✓ dehashed  (0 found)"));
+    assert!(out.contains("◌ psbdmp  capability-quarantined"));
+    assert!(out.contains("+ email  a@b.com  ·0.90"));
+    assert!(out.contains("(candidate)")); // candidate entity flagged
+    assert!(out.contains("⊘ not expanded · username stranger  identity_mismatch"));
+    assert!(out.contains("✔ scan complete · 2 entities"));
+    // Category columns present for grouping.
+    for cat in ["scan", "module", "entity", "expand"] {
+        assert!(out.contains(cat), "category column `{cat}` must appear");
+    }
+
+    println!("\n===== render_event_log sample =====\n{out}=====");
 }
 
 #[test]
@@ -535,19 +619,25 @@ fn export_formats_determinism_audit() {
         .unwrap();
 
     use crate::core::error::Result;
-    type StoreFmt = fn(&Store, &str) -> Result<String>;
+    type StoreFmt = fn(&Store, &str, bool) -> Result<String>;
     type PortFmt = fn(&dyn crate::core::port::StoragePort, &str) -> Result<String>;
 
-    // Byte-reproducible formats (Store-typed).
+    // Byte-reproducible formats (Store-typed). Exercised in both the plain and
+    // `--redact` modes — redaction must be deterministic too.
     let store_fmts: &[(&str, StoreFmt)] = &[
         ("json", render_json),
         ("csv", render_csv),
         ("gexf", render_gexf),
     ];
     for (name, render) in store_fmts {
-        let a = render(&store, "scan-au").unwrap();
-        let b = render(&store, "scan-au").unwrap();
-        assert_eq!(a, b, "format `{name}` is not byte-deterministic");
+        for redact in [false, true] {
+            let a = render(&store, "scan-au", redact).unwrap();
+            let b = render(&store, "scan-au", redact).unwrap();
+            assert_eq!(
+                a, b,
+                "format `{name}` (redact={redact}) is not byte-deterministic"
+            );
+        }
     }
     // full + debug take `&dyn StoragePort`.
     let port_fmts: &[(&str, PortFmt)] = &[("full", render_full), ("debug", render_debug_bundle)];
@@ -728,18 +818,18 @@ mod prop {
 
             // Store-typed formats.
             prop_assert_eq!(
-                render_json(&forward, "scan-prop").unwrap(),
-                render_json(&reversed, "scan-prop").unwrap(),
+                render_json(&forward, "scan-prop", false).unwrap(),
+                render_json(&reversed, "scan-prop", false).unwrap(),
                 "json leaked insertion order"
             );
             prop_assert_eq!(
-                render_csv(&forward, "scan-prop").unwrap(),
-                render_csv(&reversed, "scan-prop").unwrap(),
+                render_csv(&forward, "scan-prop", false).unwrap(),
+                render_csv(&reversed, "scan-prop", false).unwrap(),
                 "csv leaked insertion order"
             );
             prop_assert_eq!(
-                render_gexf(&forward, "scan-prop").unwrap(),
-                render_gexf(&reversed, "scan-prop").unwrap(),
+                render_gexf(&forward, "scan-prop", false).unwrap(),
+                render_gexf(&reversed, "scan-prop", false).unwrap(),
                 "gexf leaked insertion order"
             );
             // Port-typed formats (`&dyn StoragePort`).

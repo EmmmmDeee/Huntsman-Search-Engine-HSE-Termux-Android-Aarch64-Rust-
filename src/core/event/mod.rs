@@ -133,6 +133,90 @@ impl EventKind {
             Self::ScanComplete { .. } => "scan_complete",
         }
     }
+
+    /// A compact, human-readable one-line summary for the scan event log:
+    /// `(category, body)`, where `category` is the short fixed column
+    /// (`scan` / `module` / `entity` / `expand` / `corr` / `live`) and `body`
+    /// leads with a status glyph. This is the single Rust-side definition of how
+    /// an event reads to a human — the downloaded `events.log`, `hse export
+    /// --format events`, and the debug bundle's sequence section all render
+    /// through it — deliberately mirroring the browser Scan-Log view
+    /// (`web/js/scan_info/log.js` `mapEvent`) so on-screen and on-disk agree.
+    /// Pure.
+    #[must_use]
+    pub fn log_summary(&self) -> (&'static str, String) {
+        match self {
+            Self::ScanStart {
+                target_kind,
+                target_value,
+            } => (
+                "scan",
+                format!("● scan started · {target_kind}={target_value}"),
+            ),
+            Self::ModuleStart { module } => ("module", format!("▶ {module}")),
+            Self::ModuleDone { module, found } => {
+                ("module", format!("✓ {module}  ({found} found)"))
+            }
+            Self::ModuleError { module, error } => ("module", format!("✗ {module}  {error}")),
+            Self::ModuleSkipped { module, reason } => ("module", format!("◌ {module}  {reason}")),
+            Self::EntityFound { entity } => {
+                let cand = if entity.has_tag(crate::core::tags::CANDIDATE) {
+                    "  (candidate)"
+                } else {
+                    ""
+                };
+                (
+                    "entity",
+                    format!(
+                        "+ {}  {}  ·{:.2}{cand}",
+                        entity.kind, entity.value, entity.confidence
+                    ),
+                )
+            }
+            Self::ExpansionTick {
+                depth,
+                queued,
+                visited,
+            } => (
+                "expand",
+                format!("↺ depth {depth} · queued {queued} · visited {visited}"),
+            ),
+            Self::ExpansionStop { reason } => ("expand", format!("■ expansion stopped · {reason}")),
+            Self::EntityExcluded {
+                kind,
+                value,
+                reason,
+            } => (
+                "expand",
+                format!("⊘ not expanded · {kind} {value}  {reason}"),
+            ),
+            Self::CorrelationFound { correlation } => {
+                let name = if correlation.rule_name.is_empty() {
+                    &correlation.rule_id
+                } else {
+                    &correlation.rule_name
+                };
+                ("corr", format!("⚡ {name}"))
+            }
+            Self::CorrelationsDone { count } => ("corr", format!("correlations done · {count}")),
+            Self::LiveStart {
+                target_kind,
+                target_value,
+                interval_secs,
+                ..
+            } => (
+                "live",
+                format!(
+                    "▶ live session started · {target_kind}={target_value}  every {interval_secs}s"
+                ),
+            ),
+            Self::LiveTick { iteration, .. } => ("live", format!("↻ iteration {iteration}")),
+            Self::LiveStop { reason, .. } => ("live", format!("■ live session stopped · {reason}")),
+            Self::ScanComplete { entity_count, .. } => {
+                ("scan", format!("✔ scan complete · {entity_count} entities"))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
