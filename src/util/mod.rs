@@ -3,6 +3,7 @@
 pub mod abn;
 pub mod address_au;
 pub mod atomic_file;
+pub mod atproto;
 pub mod backoff;
 pub mod breach_sector;
 pub mod bsb;
