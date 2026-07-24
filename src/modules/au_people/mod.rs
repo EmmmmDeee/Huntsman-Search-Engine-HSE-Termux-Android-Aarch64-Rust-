@@ -121,11 +121,24 @@ pub(super) fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<
                 ae.add_evidence(
                     Evidence::new(
                         SRC,
-                        format!("True People Search AU address for {full_name}"),
+                        format!(
+                            "Address listed on the True People Search AU results page for {full_name} (attribution unconfirmed)"
+                        ),
                     )
                     .with_attr("line", line)
                     .with_attr("source", "tps_au"),
                 );
+                // A TPS results page lists the subject ALONGSIDE relatives,
+                // associates, and unrelated same-name people, and this line scan
+                // cannot tell whose address a line is. Emitting each as a CONFIRMED
+                // subject Address (0.52, above the 0.50 floor) fabricated a residency
+                // — and an `au-state:` jurisdiction — for strangers, polluting the AU
+                // residency verdict (AU-090/091/092/098). Demote to a candidate lead:
+                // retained for the Network/full views, excluded from the confirmed
+                // graph, correlator, and residency consensus. The subject's real
+                // address is confirmed by the name-matched sources
+                // (au_property/au_unclaimed), not this unattributed line scan.
+                ae.demote_to_candidate();
                 ae
             }),
     );
@@ -143,8 +156,14 @@ pub(super) fn parse_tps_html(html: &str, full_name: &str, scan_id: &str) -> Vec<
             c.tag("country:AU");
             c.add_evidence(Evidence::new(
                 SRC,
-                format!("Geocode of True People Search AU address for {full_name}"),
+                format!(
+                    "Geocode of an address listed on the True People Search AU results page for {full_name} (attribution unconfirmed)"
+                ),
             ));
+            // Derived from an unconfirmed TPS address (see the parse above) — carry
+            // the same candidate quarantine so an unattributed line can't seed a
+            // confirmed coordinate that feeds the geo footprint.
+            c.demote_to_candidate();
             Some(c)
         })
         .collect();

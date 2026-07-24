@@ -112,6 +112,47 @@ fn parse_tps_html_skips_non_au_lines() {
 }
 
 #[test]
+fn parse_tps_html_addresses_are_candidate_leads_not_confirmed() {
+    // A TPS results page lists the subject ALONGSIDE relatives, associates, and
+    // unrelated same-name people; this line scan cannot attribute an address line
+    // to the subject. So every emitted address (and its derived coordinate) must
+    // be a CANDIDATE lead — quarantined from the confirmed graph, correlator, and
+    // AU residency verdict — never a confirmed subject Address at 0.52.
+    let html = "<div>Results for Test Person</div>\
+                <p>Bondi Beach, NSW 2026</p>\
+                <p>Fitzroy VIC 3065</p>";
+    let ents = parse_tps_html(html, "Test Person", "s");
+    let addrs: Vec<_> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Address)
+        .collect();
+    assert!(
+        !addrs.is_empty(),
+        "the scan must still surface the address leads"
+    );
+    for a in &addrs {
+        assert!(
+            a.has_tag(crate::core::tags::CANDIDATE),
+            "a TPS address must be a candidate lead, tags = {:?}",
+            a.tags
+        );
+        assert!(
+            a.confidence <= crate::core::entity::CANDIDATE_CONF,
+            "a TPS address must not exceed candidate confidence, got {}",
+            a.confidence
+        );
+    }
+    // Any coordinate derived from those addresses inherits the same quarantine.
+    for c in ents.iter().filter(|e| e.kind == EntityKind::Coordinates) {
+        assert!(
+            c.has_tag(crate::core::tags::CANDIDATE),
+            "a TPS-derived coordinate must be a candidate lead, tags = {:?}",
+            c.tags
+        );
+    }
+}
+
+#[test]
 fn dedup_removes_same_kind_value() {
     let mut ents = vec![
         Entity::new(EntityKind::Address, "Sydney NSW 2000", 0.5, "s"),
