@@ -4,19 +4,6 @@
 
 use super::*;
 
-/// True when a Username value is a usable identity anchor: long enough and not a
-/// generic / role / extraction-noise token. Mirrors the AU-034 handle gate
-/// (`account.rs`) so the whole identity-cluster family treats junk handles
-/// (`from`, `dns`, role mailboxes) consistently — they must never seed a
-/// "confirmed identity" correlation. A live person-scan fired AU-045 on `from`
-/// and `dns` (mis-extracted as usernames, "confirmed" across two source
-/// families); those are parser artifacts, not aliases.
-fn is_anchorable_handle(value: &str) -> bool {
-    const MIN_HANDLE_LEN: usize = 4;
-    let handle = canonical_handle(value);
-    handle.len() >= MIN_HANDLE_LEN && !is_generic_handle(&handle)
-}
-
 pub(in crate::core::correlator) fn rule_au_002_identity_cluster(
     entities: &[Entity],
     scan_id: &str,

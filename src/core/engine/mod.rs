@@ -2001,6 +2001,9 @@ fn apply_finalise_enrichment_passes(
     promote_breach_candidate_geo_corroborated(entities);
     flag_geo_discordant_namesakes(entities);
     history::link_cross_scan_history(store, entities, scan_id);
+    // After same-kind recurrence, so an entity the stronger pass already bridged
+    // isn't also tagged with the weaker cross-kind alias.
+    history::link_cross_scan_kind_aliases(store, entities, scan_id);
     history::link_cross_scan_cooccurrence(store, entities, scan_id);
     history::link_cross_scan_relations(store, entities, scan_id);
     for e in entities.iter_mut() {

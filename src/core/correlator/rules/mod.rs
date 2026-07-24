@@ -219,6 +219,22 @@ fn is_generic_handle(handle: &str) -> bool {
         || NON_IDENTITY_TOKENS.contains(&handle)
 }
 
+/// True when a handle value is a usable identity anchor: long enough once
+/// canonicalised, and not a generic / role / extraction-noise token. Junk handles
+/// (`from`, `dns`, role mailboxes) must never seed an identity claim — a live
+/// person-scan fired AU-045 on `from` and `dns`, mis-extracted as usernames and
+/// "confirmed" across two source families; those are parser artifacts, not
+/// aliases.
+///
+/// `pub(in crate::core)`: shared with `core::cross_scan`, so the handle a
+/// cross-scan history probe is willing to chase is exactly the handle the AU-034 /
+/// AU-045 / AU-076 rules are willing to anchor on.
+pub(in crate::core) fn is_anchorable_handle(value: &str) -> bool {
+    const MIN_HANDLE_LEN: usize = 4;
+    let handle = canonical_handle(value);
+    handle.len() >= MIN_HANDLE_LEN && !is_generic_handle(&handle)
+}
+
 /// Modules that *derive* a username by inference — a name permutation, an email
 /// local-part, or a handle variant — rather than observing it on a platform.
 /// Sources that *derive* a candidate username from a seed without independently

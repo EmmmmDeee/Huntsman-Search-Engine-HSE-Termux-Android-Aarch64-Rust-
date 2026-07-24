@@ -228,7 +228,7 @@ pub(in crate::core) use rules::source_family;
 // edge and the AU-047/AU-048/AU-106 correlations can never disagree on which
 // secrets/handles qualify.
 pub(in crate::core) use rules::Secret;
-pub(in crate::core) use rules::canonical_handle;
+pub(in crate::core) use rules::{canonical_handle, is_anchorable_handle};
 use rules::*;
 
 const RULES: &[RuleFn] = &[

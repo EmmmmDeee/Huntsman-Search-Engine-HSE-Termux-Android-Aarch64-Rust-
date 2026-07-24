@@ -91,7 +91,7 @@ pub enum AuditFlag {
 
 /// Breach consensus stage: query all sources, compile, audit.
 pub async fn run_consensus_pass(
-    entities: &mut Vec<Entity>,
+    entities: &mut [Entity],
     _scan_id: &str,
 ) -> Result<BreachConsensusReport> {
     let mut report = BreachConsensusReport::new(_scan_id);

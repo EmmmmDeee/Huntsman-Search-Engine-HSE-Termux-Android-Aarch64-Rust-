@@ -40,6 +40,11 @@ const HUB_THRESHOLD: usize = 3;
 /// device even when a scan produces many specific identifiers.
 const MAX_COOCCURRENCE_PROBES: usize = 48;
 
+/// Max cross-kind alias point-queries per scan. Tighter than [`MAX_PROBES`]
+/// because each candidate email can spend two probes (punctuated and canonical
+/// handle spellings) and the link it yields is the weakest of the family.
+const MAX_ALIAS_PROBES: usize = 32;
+
 /// Max prior scans examined per current candidate. The candidate's prior-scan ids
 /// are sorted and truncated to this, so a value seen in very many earlier scans
 /// can't fan the read phase out unboundedly (and the cap is applied
@@ -230,6 +235,80 @@ pub(super) fn link_cross_scan_history(
         tracing::info!(
             linked,
             "cross-scan history: findings bridged to earlier investigations"
+        );
+    }
+    linked
+}
+
+/// Link this scan's emails to usernames recorded under a DIFFERENT kind earlier.
+///
+/// [`link_cross_scan_history`] keys on the UID, which is
+/// `SHA-256(kind + ":" + normalised_value)` — so it can only ever bridge an entity
+/// to a prior sighting of the *same kind*. An address whose local-part is the
+/// handle the same person registered elsewhere is invisible to it. AU-076 makes
+/// exactly that link within a scan; this is its history-facing counterpart, and
+/// the only cross-kind bridge that exists (normalisation is kind-specific, so no
+/// two other kinds can share a normalised value).
+///
+/// Weaker than a same-kind recurrence — a handle collision is suggestive, not
+/// proof — so an entity already bridged by [`link_cross_scan_history`] is skipped
+/// rather than double-tagged, and the evidence says "possible". Same contract as
+/// its siblings: runs before persist, bounded ([`MAX_ALIAS_PROBES`]), idempotent
+/// via the tag, deterministic, and store errors are skipped. Returns the number of
+/// entities bridged.
+pub(super) fn link_cross_scan_kind_aliases(
+    store: &dyn StoragePort,
+    entities: &mut [Entity],
+    scan_id: &str,
+) -> usize {
+    let mut linked = 0usize;
+    let mut probes = 0usize;
+    for e in entities.iter_mut() {
+        if probes >= MAX_ALIAS_PROBES {
+            break;
+        }
+        // A same-kind recurrence is a strictly stronger bridge, and the alias tag
+        // is what makes this pass idempotent.
+        if e.has_tag("cross-scan")
+            || e.has_tag(crate::core::cross_scan::ALIAS_TAG)
+            || !is_cross_scan_candidate(e)
+        {
+            continue;
+        }
+
+        for handle in crate::core::cross_scan::alias_handles(e) {
+            if probes >= MAX_ALIAS_PROBES {
+                break;
+            }
+            probes += 1;
+            let uid = crate::core::entity::derive_uid(
+                &EntityKind::Username,
+                &crate::core::entity::normalise(&EntityKind::Username, &handle),
+            );
+            let Ok(ids) = store.scan_ids_for_entity(&uid) else {
+                continue;
+            };
+            let prior = ids.iter().filter(|id| id.as_str() != scan_id).count();
+            if prior == 0 {
+                continue;
+            }
+            e.tag(crate::core::cross_scan::ALIAS_TAG);
+            e.add_evidence(Evidence::new(
+                CROSS_SCAN_SOURCE,
+                format!(
+                    "Local-part matches username `{handle}` recorded in {prior} earlier \
+                     scan(s) — a possible identifier reuse across kinds, not a confirmed \
+                     same-identity match"
+                ),
+            ));
+            linked += 1;
+            break;
+        }
+    }
+    if linked > 0 {
+        tracing::info!(
+            linked,
+            "cross-scan aliases: emails bridged to earlier usernames by local-part"
         );
     }
     linked
