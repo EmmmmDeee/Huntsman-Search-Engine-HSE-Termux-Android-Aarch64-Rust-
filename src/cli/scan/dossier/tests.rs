@@ -1,6 +1,8 @@
 use super::analysis::confine_relations_to_visible;
 use super::appendix::{tenure_headline, total_dead_scan_hint};
-use super::findings::{DOSSIER_KIND_ORDER, group_by_kind, kind_heading, order_dossier_kinds};
+use super::findings::{
+    DOSSIER_KIND_ORDER, group_by_kind, kind_heading, order_dossier_kinds, sort_findings,
+};
 use super::frontmatter::entities_header_line;
 use super::plan::{Appendix, Plan, contents_lines, letter_appendices};
 use super::truncation_note;
@@ -447,4 +449,62 @@ fn total_dead_scan_hint_is_silent_when_nothing_was_even_dispatched() {
 fn total_dead_scan_hint_is_silent_when_entities_were_found() {
     let entities = vec![Entity::new(EntityKind::Email, "a@b.com", 0.5, "s")];
     assert_eq!(total_dead_scan_hint(&entities, 12), None);
+}
+
+// ─── PART I — ordering within a kind ───────────────────────────────────────
+
+/// Best-believed first. The headline ordering an operator reads down.
+#[test]
+fn findings_are_ranked_by_confidence_descending() {
+    let a = Entity::new(EntityKind::Email, "low@b.com", 0.30, "s");
+    let b = Entity::new(EntityKind::Email, "high@b.com", 0.95, "s");
+    let c = Entity::new(EntityKind::Email, "mid@b.com", 0.60, "s");
+
+    let ranked = sort_findings(&[&a, &b, &c]);
+
+    let values: Vec<&str> = ranked.iter().map(|e| e.value.as_str()).collect();
+    assert_eq!(values, ["high@b.com", "mid@b.com", "low@b.com"]);
+}
+
+/// Equal confidence must not leave the order to the caller.
+///
+/// `sort_by` is stable, so ties preserve INPUT order — and input order is the
+/// storage backend's row order, not the dossier's. Handing the same three
+/// findings over in two different orders must still print one order, or two
+/// runs over identical data produce dossiers that cannot be diffed.
+#[test]
+fn equal_confidence_findings_break_the_tie_on_uid_not_on_input_order() {
+    let a = Entity::new(EntityKind::Email, "a@b.com", 0.80, "s");
+    let b = Entity::new(EntityKind::Email, "b@b.com", 0.80, "s");
+    let c = Entity::new(EntityKind::Email, "c@b.com", 0.80, "s");
+
+    let forward: Vec<&str> = sort_findings(&[&a, &b, &c])
+        .iter()
+        .map(|e| e.uid.as_str())
+        .collect();
+    let reverse: Vec<&str> = sort_findings(&[&c, &b, &a])
+        .iter()
+        .map(|e| e.uid.as_str())
+        .collect();
+
+    assert_eq!(
+        forward, reverse,
+        "print order must not depend on input order"
+    );
+
+    let mut expected = [a.uid.as_str(), b.uid.as_str(), c.uid.as_str()];
+    expected.sort_unstable();
+    assert_eq!(forward, expected, "ties must resolve on uid ascending");
+}
+
+/// The tie-break is subordinate: it must never reorder across confidence bands.
+#[test]
+fn the_uid_tie_break_never_outranks_confidence() {
+    // "zzz" sorts last by uid but is the best-believed finding.
+    let strong = Entity::new(EntityKind::Email, "zzz@b.com", 0.99, "s");
+    let weak = Entity::new(EntityKind::Email, "aaa@b.com", 0.10, "s");
+
+    let ranked = sort_findings(&[&weak, &strong]);
+
+    assert_eq!(ranked[0].value, "zzz@b.com");
 }

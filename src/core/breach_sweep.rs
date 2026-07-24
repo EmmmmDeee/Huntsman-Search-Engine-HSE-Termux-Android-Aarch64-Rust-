@@ -170,9 +170,14 @@ pub fn compile(entities: &[Entity], inputs: SweepInputs<'_>) -> SweepPlan {
     };
 
     // One shared visited-set across every anchor — the cross-anchor half of the
-    // recursion. Seeded with what the scan already dispatched so the sweep can
-    // never re-ask a question expansion already answered.
-    let mut seen: HashSet<(TargetKind, String)> = inputs.already_probed.clone();
+    // recursion. It holds ONLY what this plan derived; what the scan already
+    // dispatched is consulted separately in `inputs.already_probed`. Copying
+    // that set in to seed this one would be the obvious shortcut, but the
+    // engine's expansion visited-set grows with the whole scan, so the copy
+    // costs more the better the scan went — and the two sets mean different
+    // things anyway, which is exactly what the counters below have to tell
+    // apart.
+    let mut seen: HashSet<(TargetKind, String)> = HashSet::new();
     let mut ranked: Vec<(usize, SweepProbe)> = Vec::new();
 
     for (anchor_rank, anchor) in anchors.iter().enumerate().take(MAX_ANCHORS) {
@@ -188,16 +193,16 @@ pub fn compile(entities: &[Entity], inputs: SweepInputs<'_>) -> SweepPlan {
             };
 
             let key = probe_key(kind, &query.value);
-            if seen.contains(&key) {
-                // Distinguish "expansion already did this" from "another anchor
-                // in this same plan already did this": only the former is a
-                // skip worth reporting, the latter is the dedup working.
-                if inputs.already_probed.contains(&key) {
-                    plan.skipped_already_probed += 1;
-                }
+            // Distinguish "expansion already did this" from "another anchor in
+            // this same plan already did this": only the former is a skip worth
+            // reporting, the latter is the dedup working.
+            if inputs.already_probed.contains(&key) {
+                plan.skipped_already_probed += 1;
                 continue;
             }
-            seen.insert(key);
+            if !seen.insert(key) {
+                continue;
+            }
 
             ranked.push((
                 anchor_rank,

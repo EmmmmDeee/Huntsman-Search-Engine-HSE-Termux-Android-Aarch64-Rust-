@@ -68,8 +68,8 @@ impl Appendix {
 /// the sequence, and a reader who cannot find "Appendix C" has no way to tell
 /// a section that was omitted from a section that was lost. Pure.
 ///
-/// `ORDER` is a six-entry constant, so the letter can never run past `Z`;
-/// [`super::tests`] pins that, since the arithmetic below silently assumes it.
+/// `ORDER` is a six-entry constant, so the letter can never run past `Z`; the
+/// unit tests pin that, since the arithmetic below silently assumes it.
 pub(super) fn letter_appendices(present: &[Appendix]) -> Vec<(char, Appendix)> {
     Appendix::ORDER
         .iter()

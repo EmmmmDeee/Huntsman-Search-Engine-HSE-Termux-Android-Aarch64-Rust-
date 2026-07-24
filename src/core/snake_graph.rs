@@ -198,9 +198,23 @@ impl SnakeGraph {
     }
 
     /// Render as a standalone SVG, `size` pixels square.
+    ///
+    /// The 18% margin left by `0.82` is what holds a node's own radius and the
+    /// label printed under it inside the frame; the outermost ring guide is
+    /// placed exactly on that boundary.
     pub fn to_svg(&self, size: f64) -> String {
         let centre = size / 2.0;
-        let scale = centre * 0.82;
+        // `ring_radius` passes 1.0 at ring 6, and the API admits a depth of 8 —
+        // so a deep graph drawn at a fixed scale puts its outer rings, and every
+        // node and label on them, outside the viewBox, where they are silently
+        // clipped. Normalising by the outermost radius makes the outer ring fit
+        // by construction, at any depth.
+        //
+        // The `max(1.0)` keeps graphs of depth <= 6 rendering exactly as before,
+        // which is deliberate: a ring then means the same absolute distance in
+        // every such SVG, so an operator flipping between two scans is comparing
+        // like with like. Only a graph that would otherwise overflow is shrunk.
+        let scale = centre * 0.82 / ring_radius(self.max_ring).max(1.0);
         let position: HashMap<&str, (f64, f64)> = self
             .nodes
             .iter()
@@ -426,6 +440,45 @@ mod tests {
         assert!(svg.ends_with("</svg>\n"));
         assert_eq!(svg.matches("<circle").count(), 1 + 2); // one ring guide + two nodes
         assert!(svg.contains("Subject"));
+    }
+
+    /// `ring_radius` passes 1.0 at ring 6 and the API admits depth 8, so a deep
+    /// graph drawn at a fixed scale would place its outer ring outside the
+    /// viewBox — clipping the nodes and labels that live there without any
+    /// indication they were ever drawn.
+    #[test]
+    fn the_outer_ring_stays_inside_the_frame_at_every_admitted_depth() {
+        let size = 600.0;
+        let centre = size / 2.0;
+        for max_ring in 0..=8_usize {
+            let graph = SnakeGraph {
+                center_uid: "c".into(),
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                max_ring,
+                nodes_beyond_horizon: 0,
+            };
+            let scale = centre * 0.82 / ring_radius(graph.max_ring).max(1.0);
+            let outer = ring_radius(max_ring) * scale;
+            assert!(
+                outer <= centre,
+                "depth {max_ring}: outer ring at {outer} escapes the {centre}px half-frame"
+            );
+        }
+    }
+
+    /// Deliberate: a ring must mean the same absolute distance in every SVG a
+    /// shallow scan produces, so an operator flipping between two of them is
+    /// comparing like with like. Only a graph that would overflow is shrunk.
+    #[test]
+    fn shallow_graphs_are_not_rescaled() {
+        for max_ring in 0..=6_usize {
+            assert!(
+                (ring_radius(max_ring).max(1.0) - 1.0).abs() < f64::EPSILON,
+                "depth {max_ring} must render at the unnormalised scale"
+            );
+        }
+        assert!(ring_radius(7).max(1.0) > 1.0, "depth 7 must be normalised");
     }
 
     #[test]

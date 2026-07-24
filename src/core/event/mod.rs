@@ -226,7 +226,11 @@ impl EventKind {
                 };
                 (
                     "expand",
-                    format!("⇉ breach sweep · {probes} probes from {anchors} anchors{over}"),
+                    format!(
+                        "⇉ breach sweep · {probes} probe{} from {anchors} anchor{}{over}",
+                        plural(*probes),
+                        plural(*anchors)
+                    ),
                 )
             }
             Self::ConsensusAudit {
@@ -237,7 +241,8 @@ impl EventKind {
             } => (
                 "corr",
                 format!(
-                    "⚖ breach audit · {verdict} · {corroborated}/{examined} corroborated · {flags} flags"
+                    "⚖ breach audit · {verdict} · {corroborated}/{examined} corroborated · {flags} flag{}",
+                    plural(*flags)
                 ),
             ),
             Self::CorrelationFound { correlation } => {
@@ -267,6 +272,14 @@ impl EventKind {
             }
         }
     }
+}
+
+/// `""` or `"s"`, so a counted noun in a rendered event reads as English.
+///
+/// A live scan routinely reports exactly one of something, and "1 probes" is
+/// the kind of detail that makes an operator distrust the number next to it.
+const fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
 }
 
 #[cfg(test)]

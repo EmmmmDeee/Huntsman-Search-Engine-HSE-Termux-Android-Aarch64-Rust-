@@ -1417,7 +1417,7 @@ impl ScanEngine {
     /// the grader does not recognise would produce findings that are never
     /// graded, and the sweep would report an audit that silently skipped them.
     ///
-    /// A module that self-declares [`ModuleCategory::Breach`] but is not
+    /// A module that self-declares [`crate::core::ModuleCategory::Breach`] but is not
     /// recognised is exactly that hole, so it is named in a warning rather than
     /// quietly dispatched — `core` cannot import the module registry, so this
     /// call site is the only place the two classifications are both visible.

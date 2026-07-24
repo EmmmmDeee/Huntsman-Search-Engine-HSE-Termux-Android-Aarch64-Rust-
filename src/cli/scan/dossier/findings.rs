@@ -126,17 +126,30 @@ pub(super) fn print(by_kind: &BTreeMap<String, Vec<&Entity>>, hints_letter: Opti
         println!("━━━ {} ({}) ━━━", kind_heading(kind_name), group.len());
         println!();
 
-        let mut sorted = group.clone();
-        sorted.sort_by(|a, b| {
-            b.confidence
-                .partial_cmp(&a.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        for e in &sorted {
+        for e in &sort_findings(group) {
             print_finding(e);
         }
     }
+}
+
+/// One kind's findings in print order: confidence descending, uid ascending —
+/// the SAME total order the store applies (`ORDER BY e.confidence DESC, e.uid
+/// ASC`).
+///
+/// The uid tie-break is not decoration. `sort_by` is stable, so without it
+/// equal-confidence findings keep whatever order the caller handed them, which
+/// is the backend's row order rather than the dossier's own; two runs over the
+/// same data would then be free to disagree. A dossier an operator cannot diff
+/// against yesterday's is a dossier they cannot cite. Pure.
+pub(super) fn sort_findings<'a>(group: &[&'a Entity]) -> Vec<&'a Entity> {
+    let mut sorted = group.to_vec();
+    sorted.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
+    sorted
 }
 
 /// One finding: the value, how well it is believed, its tags, the collection
