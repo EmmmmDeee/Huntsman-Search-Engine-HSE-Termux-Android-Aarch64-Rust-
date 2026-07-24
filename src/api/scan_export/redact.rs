@@ -26,13 +26,26 @@ use std::sync::LazyLock;
 /// never a sensitive name (so redaction is idempotent).
 pub const REDACTED_LABEL: &str = "breach-source";
 
-/// Paid/proprietary breach-intel providers that carry a NON-`Breach`
-/// [`ModuleCategory`] — so the category sweep in [`SENSITIVE`] would miss them —
-/// but must still be hidden. `oathnet_pro` is categorised `People`, yet is a
-/// paid breach/stealer-intel provider. Add any other such provider here as it is
-/// integrated; the `every_breach_category_source_is_redacted` test guards the
-/// `Breach`-category set automatically.
-const EXTRA_SENSITIVE: &[&str] = &["oathnet_pro"];
+/// Paid/proprietary breach-intel provider source labels the category sweep in
+/// [`SENSITIVE`] does NOT catch, in EVERY string form they appear as:
+///   - `oathnet_pro` is `People`-categorised (not `Breach`), so the sweep skips
+///     it entirely; and
+///   - the `breach_rich` rich-pass and the stealer path stamp their source as
+///     the HYPHENATED provider label (`see-know` / `oathnet-pro`) or the bare
+///     `oathnet`, distinct from the underscore module `name()` the sweep sees.
+///
+/// The operator named OathNet and Seek-Know specifically, so every spelling of
+/// both is listed. Add any other paid provider here as it is integrated; the
+/// `every_breach_category_source_is_redacted` test guards the `Breach`-category
+/// set automatically.
+const EXTRA_SENSITIVE: &[&str] = &[
+    "oathnet_pro",
+    "oathnet-pro",
+    "oathnet",
+    "see_know",
+    "see-know",
+    "seeknow",
+];
 
 /// The set of source names to genericise, resolved ONCE: every `Breach`-category
 /// module's source name (authoritative and self-maintaining — a newly added
@@ -56,7 +69,12 @@ static SENSITIVE_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
     if SENSITIVE.is_empty() {
         return None;
     }
-    let alt = SENSITIVE
+    // Longest-first, so a longer provider label (`oathnet-pro`) is matched whole
+    // before a shorter label it contains (`oathnet`), independent of the regex
+    // engine's alternation-ordering semantics.
+    let mut names: Vec<&String> = SENSITIVE.iter().collect();
+    names.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    let alt = names
         .iter()
         .map(|s| regex::escape(s))
         .collect::<Vec<_>>()
@@ -88,6 +106,29 @@ mod tests {
         // Public, non-secret sources are preserved — they are not tradecraft.
         let out = redact_sensitive_sources("source: whois\nsource: github_user\n");
         assert!(out.contains("whois") && out.contains("github_user"));
+    }
+
+    #[test]
+    fn covers_every_spelling_of_the_named_providers() {
+        // `breach_rich` stamps the HYPHENATED source label ("see-know" /
+        // "oathnet-pro") and the stealer path stamps bare "oathnet" — distinct
+        // from the underscore module name()s. Every spelling the operator named
+        // must be redacted whole (not partially, leaving a recognisable stub).
+        for tag in [
+            "see_know",
+            "see-know",
+            "seeknow",
+            "oathnet_pro",
+            "oathnet-pro",
+            "oathnet",
+        ] {
+            let out = redact_sensitive_sources(&format!(r#"{{"source":"{tag}"}}"#));
+            assert!(
+                !out.contains(tag),
+                "source tag {tag:?} leaked through redaction: {out}"
+            );
+            assert!(out.contains(REDACTED_LABEL), "expected label for {tag:?}");
+        }
     }
 
     #[test]

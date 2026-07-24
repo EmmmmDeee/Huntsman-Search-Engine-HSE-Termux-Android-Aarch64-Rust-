@@ -34,7 +34,7 @@ import { renderOpts, pollUpdateBadge } from '/static/js/views/opts.js';
 import { globalSearch, renderSearch } from '/static/js/views/search.js';
 import { renderEngines, refreshEngines, runCapabilityProbe } from '/static/js/views/engines.js';
 import { renderHarvest, refreshHarvest } from '/static/js/views/key_harvest.js';
-import { renderLive, closeLiveStream } from '/static/js/views/live.js';
+import { renderLive, closeLiveStream, saveLiveShown } from '/static/js/views/live.js';
 import { initCompatShims, initNavbarToggle, initModals } from '/static/js/ui.js';
 
 /* Installed at module-load time (before any view can run) so the
@@ -103,7 +103,7 @@ Object.assign(window, {
   render, nav, globalSearch, previewPlan, uploadDossier, autoInvestigate,
   autoQueuePreview, autoSweepGo, submitWizard, submitBatch, entityPivot,
   toggleDetail, toggleCorrMembers, pivotToEntity, refreshEngines,
-  runCapabilityProbe, closeLiveStream, refreshHarvest,
+  runCapabilityProbe, closeLiveStream, saveLiveShown, refreshHarvest,
 });
 
 /* ═══════════ Bootstrap ═══════════ */
