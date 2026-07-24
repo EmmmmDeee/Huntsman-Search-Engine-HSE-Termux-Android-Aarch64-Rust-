@@ -45,6 +45,10 @@ const EXTRA_SENSITIVE: &[&str] = &[
     "see_know",
     "see-know",
     "seeknow",
+    // The "SeekNow" brand as the operator spells it, defensively — matched
+    // case-insensitively, so "Seek-Know" / "SeekNow" are covered too.
+    "seek-know",
+    "seek_know",
 ];
 
 /// The set of source names to genericise, resolved ONCE: every `Breach`-category
@@ -79,7 +83,14 @@ static SENSITIVE_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
         .map(|s| regex::escape(s))
         .collect::<Vec<_>>()
         .join("|");
-    Regex::new(&format!(r"\b(?:{alt})\b")).ok()
+    // Case-INSENSITIVE: the module `name()`/tags are lowercase (`oathnet_pro`,
+    // `see_know`), but evidence SUMMARIES carry the capitalised brand — e.g.
+    // `oathnet_pro` writes "OathNet: N matching breach record(s)…" and see_know
+    // writes "SeekNow record from …". Those summaries land in the CSV `evidence`
+    // column and `report.json`, so a lowercase-only match would leak "OathNet" /
+    // "SeekNow" verbatim. The provider names are distinctive, so `(?i)` carries
+    // no realistic over-match risk.
+    Regex::new(&format!(r"(?i)\b(?:{alt})\b")).ok()
 });
 
 /// Replace every proprietary breach/intel provider name in `body` with
@@ -163,6 +174,36 @@ mod tests {
             redact_sensitive_sources(&format!("value={longer}")).contains(&longer),
             "a longer token containing a source name must not be partially redacted"
         );
+    }
+
+    #[test]
+    fn redacts_capitalised_brand_in_evidence_summaries() {
+        // The exact summary strings the providers write, which flow into the CSV
+        // `evidence` column and report.json. A case-sensitive match would leak the
+        // capitalised brand verbatim.
+        for (summary, brand) in [
+            (
+                "OathNet: 3 matching breach record(s) of 12 — LinkedIn, Collection1",
+                "OathNet",
+            ),
+            ("SeekNow record from MyFitnessPal", "SeekNow"),
+            ("SeekNow email of jane@example.com", "SeekNow"),
+            ("DeHashed record from Adobe", "DeHashed"),
+        ] {
+            let out = redact_sensitive_sources(summary);
+            assert!(
+                !out.contains(brand),
+                "provider brand {brand:?} leaked in summary: {out}"
+            );
+            // The surrounding RESULT detail (the breach-corpus names) stays.
+            assert!(
+                out.contains("breach record")
+                    || out.contains("record from")
+                    || out.contains("email of")
+            );
+        }
+        // The underlying breach-corpus names are result detail and must remain.
+        assert!(redact_sensitive_sources("OathNet: 1 record — LinkedIn").contains("LinkedIn"));
     }
 
     #[test]
