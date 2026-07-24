@@ -246,6 +246,48 @@ pub fn state_code(text: &str) -> Option<&'static str> {
     None
 }
 
+/// The AU state named by `text`, but **only when exactly one** distinct state is
+/// present — by 2–3 letter code as a whole token (`NSW`, `WA`, …) or by full
+/// state name as a case-insensitive substring (`"western australia"`).
+///
+/// Ambiguous text that spans several states returns [`None`]. The motivating
+/// case is a coarse phone area-code label such as `"Sydney / NSW / ACT"` or
+/// `"Perth / SA / NT"`, where a single Australian area code (`02`, `08`) covers
+/// more than one state/territory: [`state_code`] returns the *first* token it
+/// sees (`NSW`, `SA`), fabricating one hard jurisdiction for a value that
+/// genuinely spans several. This guard refuses to pick one.
+///
+/// Unlike [`state_code`], an EXPLICIT state mention is required — there is no
+/// postcode fallback (a postcode always resolves to exactly one state, which
+/// would defeat the "is it unambiguous?" question this answers). Pure.
+#[must_use]
+pub fn single_state_code(text: &str) -> Option<&'static str> {
+    let mut found: Option<&'static str> = None;
+    // 1) Whole-token abbreviations (case-insensitive), split on non-alphanumerics.
+    for tok in text.split(|c: char| !c.is_ascii_alphanumeric()) {
+        if tok.len() == 2 || tok.len() == 3 {
+            let up = tok.to_ascii_uppercase();
+            if let Some(code) = STATES.iter().copied().find(|s| *s == up) {
+                match found {
+                    Some(prev) if prev != code => return None,
+                    _ => found = Some(code),
+                }
+            }
+        }
+    }
+    // 2) Full state names as a case-insensitive substring.
+    let lc = text.to_lowercase();
+    for &(name, code) in STATE_NAMES {
+        if lc.contains(name) {
+            match found {
+                Some(prev) if prev != code => return None,
+                _ => found = Some(code),
+            }
+        }
+    }
+    found
+}
+
 /// AU phone-number normaliser: returns E.164 form (`+61…`) when the
 /// input is a recognisable Australian number (08/02/03/04/07/13/1300/1800).
 ///

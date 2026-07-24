@@ -126,7 +126,7 @@ fn area_code_pass(digits: &str, ctx: &ModuleContext, result: &mut ModuleResult) 
         e.tag("phone-area-code");
         e.tag(format!("country:{}", geo.country_code));
         if geo.country_code == "AU"
-            && let Some(sc) = crate::util::address_au::state_code(geo.location)
+            && let Some(sc) = crate::util::address_au::single_state_code(geo.location)
         {
             e.tag(format!("au-state:{sc}"));
         }
@@ -159,7 +159,7 @@ fn area_code_pass(digits: &str, ctx: &ModuleContext, result: &mut ModuleResult) 
             c.tag("phone-area-code");
             c.tag(format!("country:{}", geo.country_code));
             if geo.country_code == "AU"
-                && let Some(sc) = crate::util::address_au::state_code(geo.location)
+                && let Some(sc) = crate::util::address_au::single_state_code(geo.location)
             {
                 c.tag(format!("au-state:{sc}"));
             }
