@@ -3862,7 +3862,9 @@ async fn scan_cross_scan_ranks_bridges_and_quarantines_candidates_by_default() {
     // An unknown tier is a client error, not a silently empty result.
     let bad = app
         .clone()
-        .oneshot(get(&format!("/api/v1/scans/{sid}/cross-scan?min_tier=bogus")))
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/cross-scan?min_tier=bogus"
+        )))
         .await
         .unwrap();
     assert_eq!(bad.status(), 400);
@@ -3879,6 +3881,134 @@ async fn scan_cross_scan_ranks_bridges_and_quarantines_candidates_by_default() {
     assert!(
         opted.to_string().contains("stranger@breach.example"),
         "explicit opt-in must return the candidate bridge: {opted}"
+    );
+}
+
+#[tokio::test]
+async fn scan_cross_scan_walks_the_history_transitively_and_reports_its_limits() {
+    // End-to-end over the REAL store (the in-memory port is not the thing that
+    // ships): a bridge into a prior scan is followed one hop further, the chain
+    // that reached the far identifier is returned with it, and nothing
+    // quarantined escapes the scan the requester asked for.
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("cross_scan_transitive");
+    let (here, prior, far) = ("s-here", "s-prior", "s-far");
+    for sid in [here, prior, far] {
+        store
+            .upsert_scan(&Scan::new(sid, Target::new(TargetKind::FullName, "Jordan")))
+            .unwrap();
+    }
+
+    // The direct bridge: one email recorded by BOTH this scan and the prior one.
+    let mut bridge = Entity::new(EntityKind::Email, "jordan@corp.example", 0.9, here);
+    bridge.tag("cross-scan");
+    store.upsert_entity(&bridge).unwrap();
+    store
+        .upsert_entity(&Entity::new(
+            EntityKind::Email,
+            "jordan@corp.example",
+            0.9,
+            prior,
+        ))
+        .unwrap();
+
+    // Reachable ONLY by opening the prior scan: a username it shares with a
+    // third investigation this scan has never touched.
+    for sid in [prior, far] {
+        store
+            .upsert_entity(&Entity::new(EntityKind::Username, "jmeyers", 0.8, sid))
+            .unwrap();
+    }
+    // Two things the walk must refuse, both sitting in the prior scan:
+    // shared infrastructure, and a quarantined candidate.
+    for sid in [prior, far] {
+        store
+            .upsert_entity(&Entity::new(
+                EntityKind::IpAddress,
+                "104.20.37.187",
+                0.95,
+                sid,
+            ))
+            .unwrap();
+        let mut c = Entity::new(EntityKind::Email, "quarantined@breach.example", 0.9, sid);
+        c.tag(CANDIDATE);
+        store.upsert_entity(&c).unwrap();
+    }
+
+    let json = body_json(
+        app.clone()
+            .oneshot(get(&format!("/api/v1/scans/{here}/cross-scan")))
+            .await
+            .unwrap(),
+    )
+    .await;
+
+    let t = &json["transitive"];
+    assert_eq!(t["requested"], true, "the walk runs by default: {json}");
+    let links = t["links"].as_array().expect("transitive links array");
+    assert_eq!(
+        links.len(),
+        1,
+        "exactly the one reachable identifier: {json}"
+    );
+    assert_eq!(links[0]["value"], "jmeyers");
+    assert_eq!(links[0]["degree"], 2);
+    // The chain is auditable: through our bridge, via the prior scan.
+    assert_eq!(links[0]["via_uids"][0], serde_json::json!(bridge.uid));
+    assert_eq!(links[0]["via_scan_ids"][0], prior);
+    // And it names the investigation it opens up.
+    assert_eq!(links[0]["prior_scan_ids"][0], far);
+    assert_eq!(
+        t["complete"], true,
+        "nothing was over budget, dropped, or failed: {json}"
+    );
+
+    // A transitive link is a LEAD, so it is never folded into `bridges` —
+    // which remains only what THIS scan actually recorded.
+    let bridges = json["bridges"].as_array().expect("bridges");
+    assert_eq!(bridges.len(), 1);
+    assert_eq!(bridges[0]["value"], "jordan@corp.example");
+
+    // Shared infrastructure must not wire two investigations together.
+    assert!(
+        !json.to_string().contains("104.20.37.187"),
+        "an IP is context, not identity — it must not be a transitive link: {json}"
+    );
+
+    // The quarantine holds through the walk, and — unlike the direct bridges —
+    // `include_candidates` cannot widen it: the candidate lives in ANOTHER scan.
+    for query in ["", "?include_candidates=1"] {
+        let json = body_json(
+            app.clone()
+                .oneshot(get(&format!("/api/v1/scans/{here}/cross-scan{query}")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            !json.to_string().contains("quarantined@breach.example"),
+            "a quarantined value from a prior scan must never escape via the \
+             transitive walk (query `{query}`): {json}"
+        );
+    }
+
+    // `?transitive=0` opts out of the extra store loads entirely.
+    let skipped = body_json(
+        app.clone()
+            .oneshot(get(&format!(
+                "/api/v1/scans/{here}/cross-scan?transitive=0"
+            )))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(skipped["transitive"]["requested"], false);
+    assert_eq!(skipped["transitive"]["total"], 0);
+    assert_eq!(skipped["transitive"]["scans_visited"], 0);
+    assert_eq!(
+        skipped["bridges"].as_array().map(Vec::len),
+        Some(1),
+        "opting out of the walk must not change the direct bridges: {skipped}"
     );
 }
 

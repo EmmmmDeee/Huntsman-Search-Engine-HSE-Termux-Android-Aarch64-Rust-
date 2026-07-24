@@ -509,6 +509,25 @@ pub async fn scan_identities(
 /// whose prior-scan lookup errored, so an empty `prior_scan_ids` is never
 /// silently mistaken for "no history". Honours `?include_candidates=…` exactly
 /// like `/entities`.
+///
+/// # `transitive`
+///
+/// The response also carries the **second- and third-degree closure**: what an
+/// operator would find by opening each `prior_scan_ids` entry by hand and
+/// following the identifiers it shares onward. That manual walk is the whole
+/// point of the category, so the endpoint does it — bounded to
+/// `MAX_TRANSITIVE_SCANS` scan loads, inside the same blocking task, and
+/// reporting `scans_over_budget` / `dropped_over_cap` / `lookups_failed` so a
+/// short closure is never mistaken for an exhausted one. Pass `?transitive=0`
+/// to skip the walk entirely.
+///
+/// `transitive.links` is kept OUT of `bridges` and shaped differently on
+/// purpose: a bridge is a fact about this scan's subject, a transitive link is a
+/// lead about somebody a prior scan touched. Each link carries the exact chain
+/// (`via_uids` / `via_scan_ids`) that reached it. The walk refuses quarantined
+/// candidates unconditionally — `?include_candidates=1` widens the direct
+/// bridges only, never the closure, so opting in cannot pull a quarantined value
+/// out of a scan other than this one.
 pub async fn scan_cross_scan(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -531,6 +550,13 @@ pub async fn scan_cross_scan(
         }
     };
 
+    // Default ON: the category exists to be walked, and the walk is bounded.
+    // `?transitive=0` is the escape hatch for a caller that only wants degree 1.
+    let want_transitive = !matches!(
+        params.get("transitive").map(String::as_str),
+        Some("0" | "false" | "no")
+    );
+
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
     // The candidate quarantine runs BEFORE the category is assembled, so a
@@ -539,7 +565,14 @@ pub async fn scan_cross_scan(
     let loaded = tokio::task::spawn_blocking(move || {
         let mut entities = store.entities_for_scan(&id2)?;
         super::apply_candidate_gate(&mut entities, &params);
-        let category = crate::core::cross_scan::category_from_entities(&*store, &id2, &entities);
+        let mut category =
+            crate::core::cross_scan::category_from_entities(&*store, &id2, &entities);
+        if want_transitive {
+            // Runs here, on the blocking pool, because it is up to
+            // MAX_TRANSITIVE_SCANS synchronous store reads — never on the
+            // reactor.
+            category.expand_transitively(&*store);
+        }
         Ok::<_, crate::core::error::Error>((category, min_tier))
     })
     .await;
@@ -567,12 +600,51 @@ pub async fn scan_cross_scan(
         })
         .collect();
 
+    let t = &category.transitive;
+    let links: Vec<serde_json::Value> = t
+        .links
+        .iter()
+        .map(|l| {
+            json!({
+                "uid": l.uid,
+                "value": l.value,
+                "kind": l.kind.to_string(),
+                // Named `confidence_in_source_scan`, not `confidence`: it is the
+                // score the scan we reached it from recorded, and calling it
+                // `confidence` here would read as a claim about THIS subject.
+                "confidence_in_source_scan": l.confidence,
+                "degree": l.degree,
+                "via_uids": l.via_uids,
+                "via_scan_ids": l.via_scan_ids,
+                "prior_scan_ids": l.prior_scan_ids,
+                "prior_scan_count": l.prior_scan_ids.len(),
+                "hub": l.hub,
+            })
+        })
+        .collect();
+
     Json(json!({
         "scan_id": category.scan_id,
         "bridges": bridges,
         "total": bridges.len(),
         "prior_scans": category.prior_scans(),
         "lookups_failed": category.lookups_failed,
+        "transitive": json!({
+            "requested": want_transitive,
+            "links": links,
+            "total": links.len(),
+            "max_degree": crate::core::cross_scan::MAX_BRIDGE_DEGREE,
+            "scans_visited": t.scans_visited,
+            // Everything the walk declined to do, so a caller can tell an
+            // exhausted closure from a truncated one.
+            "scans_over_budget": t.scans_over_budget,
+            "dropped_over_cap": t.dropped_over_cap,
+            "hubs_not_traversed": t.hubs_not_traversed,
+            "lookups_failed": t.lookups_failed,
+            "complete": t.scans_over_budget == 0
+                && t.dropped_over_cap == 0
+                && t.lookups_failed == 0,
+        }),
     }))
     .into_response()
 }
@@ -645,7 +717,13 @@ pub async fn scan_snake_svg(
     let svg = graph.to_svg(size);
 
     if params.get("download").map(String::as_str) == Some("1") {
-        return crate::api::scan_export::download_response(svg, "image/svg+xml", &id, "snake", "svg");
+        return crate::api::scan_export::download_response(
+            svg,
+            "image/svg+xml",
+            &id,
+            "snake",
+            "svg",
+        );
     }
 
     // Rendered inline. Node labels are XML-escaped and every colour comes from a
@@ -654,7 +732,10 @@ pub async fn scan_snake_svg(
     (
         StatusCode::OK,
         [
-            (axum::http::header::CONTENT_TYPE, "image/svg+xml".to_string()),
+            (
+                axum::http::header::CONTENT_TYPE,
+                "image/svg+xml".to_string(),
+            ),
             (
                 axum::http::header::CONTENT_SECURITY_POLICY,
                 "default-src 'none'; style-src 'unsafe-inline'".to_string(),

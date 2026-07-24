@@ -25,8 +25,8 @@
 //! The audit is therefore adversarial toward the scan's own output: every flag
 //! it raises is a reason to trust a finding *less*.
 
-use crate::core::correlator::{is_breach_source, DOB_KEYS};
-use crate::core::entity::{Classification, Entity, Evidence, CONSENSUS_SOURCE};
+use crate::core::correlator::{DOB_KEYS, is_breach_source};
+use crate::core::entity::{CONSENSUS_SOURCE, Classification, Entity, Evidence};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -415,7 +415,7 @@ fn consensus_evidence(result: &ConsensusResult) -> Evidence {
 mod tests {
     use super::*;
     use crate::core::confidence;
-    use crate::core::entity::{EntityKind, CROSS_SCAN_SOURCE};
+    use crate::core::entity::{CROSS_SCAN_SOURCE, EntityKind};
 
     fn entity(confidence: f64) -> Entity {
         Entity::new(EntityKind::Email, "a@example.com", confidence, "scan-1")
@@ -436,10 +436,12 @@ mod tests {
         assert_eq!(report.entities_examined, 0);
         assert!(report.results.is_empty());
         // Nothing attached, so the chain is untouched.
-        assert!(!ents[0]
-            .evidence
-            .iter()
-            .any(|ev| ev.source == CONSENSUS_SOURCE));
+        assert!(
+            !ents[0]
+                .evidence
+                .iter()
+                .any(|ev| ev.source == CONSENSUS_SOURCE)
+        );
     }
 
     #[test]
@@ -478,10 +480,12 @@ mod tests {
 
         assert!((ents[0].confidence - before_conf).abs() < f64::EPSILON);
         // The summary is attached but discounted, so C_eff is unmoved too.
-        assert!(ents[0]
-            .evidence
-            .iter()
-            .any(|ev| ev.source == CONSENSUS_SOURCE));
+        assert!(
+            ents[0]
+                .evidence
+                .iter()
+                .any(|ev| ev.source == CONSENSUS_SOURCE)
+        );
         assert!((ents[0].c_effective() - before_ceff).abs() < 1e-12);
     }
 
@@ -510,9 +514,11 @@ mod tests {
         let report = run_consensus_pass(&mut ents, "scan-1");
 
         assert!(!report.results[0].breach_only);
-        assert!(!report
-            .flags()
-            .any(|f| matches!(f, AuditFlag::ConfidenceDiscrepancy { .. })));
+        assert!(
+            !report
+                .flags()
+                .any(|f| matches!(f, AuditFlag::ConfidenceDiscrepancy { .. }))
+        );
     }
 
     #[test]
@@ -591,9 +597,11 @@ mod tests {
         let report = run_consensus_pass(&mut ents, "scan-1");
 
         assert_eq!(report.new_findings, 1);
-        assert!(report
-            .flags()
-            .any(|f| matches!(f, AuditFlag::NewFinding { .. })));
+        assert!(
+            report
+                .flags()
+                .any(|f| matches!(f, AuditFlag::NewFinding { .. }))
+        );
     }
 
     #[test]

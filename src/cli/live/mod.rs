@@ -250,8 +250,11 @@ fn render_event(kind: &crate::core::event::EventKind) -> String {
             } else {
                 String::new()
             };
-            format!("  ⇉ breach sweep — {probes} probe{} from {anchors} anchor{}{over}",
-                plural2(*probes), plural2(*anchors))
+            format!(
+                "  ⇉ breach sweep — {probes} probe{} from {anchors} anchor{}{over}",
+                plural2(*probes),
+                plural2(*anchors)
+            )
         }
         E::ConsensusAudit {
             verdict,

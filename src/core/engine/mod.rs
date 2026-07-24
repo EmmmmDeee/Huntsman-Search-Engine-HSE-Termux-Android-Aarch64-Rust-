@@ -1540,7 +1540,8 @@ impl ScanEngine {
         let mut probed = 0usize;
 
         for probe in &plan.probes {
-            if ctx.cancel.is_cancelled() || budget_check(opts, started, entity_map.len()).is_some() {
+            if ctx.cancel.is_cancelled() || budget_check(opts, started, entity_map.len()).is_some()
+            {
                 // Not a silent stop: the operator must be able to tell a sweep
                 // that finished from one the budget cut short.
                 warn!(

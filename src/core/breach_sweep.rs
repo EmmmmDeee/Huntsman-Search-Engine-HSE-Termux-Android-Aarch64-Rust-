@@ -40,7 +40,7 @@ use crate::core::scan::{Target, TargetKind};
 // its value types. `core` must not reach into the OathNet API client itself —
 // the field→kind mapping this needs lives on `BatchQuery::target_kind`, beside
 // the field it reads, precisely so that stays true.
-use crate::util::oathnet_batch::{generate, BatchOptions, Origin};
+use crate::util::oathnet_batch::{BatchOptions, Origin, generate};
 use std::collections::HashSet;
 
 /// Identity anchors the sweep will expand, most valuable first.
@@ -270,10 +270,7 @@ fn is_identity_anchor(entity: &Entity) -> bool {
 /// spelled when rediscovered.
 fn probe_key(kind: TargetKind, value: &str) -> (TargetKind, String) {
     let entity_kind = kind.to_entity_kind();
-    (
-        kind,
-        crate::core::entity::normalise(&entity_kind, value),
-    )
+    (kind, crate::core::entity::normalise(&entity_kind, value))
 }
 
 /// How speculative a derived value is — lower is better evidenced.
@@ -339,10 +336,11 @@ mod tests {
 
         let plan = compile(&ents, inputs(&p, &q));
 
-        assert!(plan
-            .probes
-            .iter()
-            .any(|pr| pr.kind == TargetKind::Username && pr.value == "jordanmeyers"));
+        assert!(
+            plan.probes
+                .iter()
+                .any(|pr| pr.kind == TargetKind::Username && pr.value == "jordanmeyers")
+        );
         assert_eq!(plan.anchors_considered, 1);
         assert_eq!(plan.anchors_used, 1);
     }
@@ -417,10 +415,12 @@ mod tests {
 
         let plan = compile(&ents, inputs(&probed, &q));
 
-        assert!(!plan
-            .probes
-            .iter()
-            .any(|pr| pr.kind == TargetKind::Username && pr.value == "jordanmeyers"));
+        assert!(
+            !plan
+                .probes
+                .iter()
+                .any(|pr| pr.kind == TargetKind::Username && pr.value == "jordanmeyers")
+        );
         assert!(plan.skipped_already_probed >= 1);
     }
 
@@ -492,7 +492,13 @@ mod tests {
         let (p, q) = empty();
         // Many high-value anchors, each fanning out — comfortably over the cap.
         let ents: Vec<Entity> = (0..MAX_ANCHORS)
-            .map(|i| ent(EntityKind::Email, &format!("jordanmeyers{i}@example.com"), 0.9))
+            .map(|i| {
+                ent(
+                    EntityKind::Email,
+                    &format!("jordanmeyers{i}@example.com"),
+                    0.9,
+                )
+            })
             .collect();
 
         let plan = compile(&ents, inputs(&p, &q));
@@ -513,8 +519,11 @@ mod tests {
         let plan = compile(&ents, inputs(&p, &q));
 
         assert!(plan.skipped_free_text > 0);
-        assert!(plan.probes.iter().all(|pr| pr.kind != TargetKind::Domain
-            || !pr.value.contains(' ')));
+        assert!(
+            plan.probes
+                .iter()
+                .all(|pr| pr.kind != TargetKind::Domain || !pr.value.contains(' '))
+        );
     }
 
     #[test]

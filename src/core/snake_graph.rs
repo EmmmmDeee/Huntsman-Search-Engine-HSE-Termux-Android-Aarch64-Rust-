@@ -204,12 +204,7 @@ impl SnakeGraph {
         let position: HashMap<&str, (f64, f64)> = self
             .nodes
             .iter()
-            .map(|n| {
-                (
-                    n.uid.as_str(),
-                    (centre + n.x * scale, centre + n.y * scale),
-                )
-            })
+            .map(|n| (n.uid.as_str(), (centre + n.x * scale, centre + n.y * scale)))
             .collect();
 
         let mut svg = format!(
@@ -360,7 +355,9 @@ mod tests {
 
     #[test]
     fn strong_relations_outrank_weak_ones() {
-        assert!(relation_strength(RelationKind::SameAs) > relation_strength(RelationKind::DerivedFrom));
+        assert!(
+            relation_strength(RelationKind::SameAs) > relation_strength(RelationKind::DerivedFrom)
+        );
         assert!(relation_strength(RelationKind::DerivedFrom) >= MIN_EDGE_STRENGTH);
     }
 
@@ -434,7 +431,8 @@ mod tests {
     #[test]
     fn xml_special_characters_are_escaped() {
         let centre = entity(EntityKind::Other("note".into()), "a<b&c");
-        let svg = SnakeGraph::build(&centre.uid, std::slice::from_ref(&centre), &[], 2).to_svg(400.0);
+        let svg =
+            SnakeGraph::build(&centre.uid, std::slice::from_ref(&centre), &[], 2).to_svg(400.0);
 
         assert!(svg.contains("a&lt;b&amp;c"));
         assert!(!svg.contains("a<b&c"));
