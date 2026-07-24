@@ -292,6 +292,24 @@ impl fmt::Display for Classification {
 
 // ─── Evidence ────────────────────────────────────────────────────────────────
 
+/// Verification method for account ownership or data derivation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationMethod {
+    /// Account email matches a known entity's email.
+    EmailLinked,
+    /// Platform-native verification (checkmark, badge, official status).
+    PlatformVerified,
+    /// Activity proof: recent posts, followers, creation signals.
+    ActivityProof,
+    /// Self-disclosure: bio, pinned post, or explicit linking to other identity.
+    SelfDisclosed,
+    /// Account linked to another entity's profile.
+    LinkedProfile,
+    /// Unverified handle enumeration (present on platform, ownership unknown).
+    Unverified,
+}
+
 /// A single piece of evidence attached to an entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Evidence {
@@ -312,6 +330,18 @@ pub struct Evidence {
     pub attributes: BTreeMap<String, String>,
     /// Unix timestamp (seconds) when evidence was recorded.
     pub recorded_at: u64,
+    /// Verification status for account/handle ownership. None if not applicable.
+    /// Marked at evidence creation and propagated through correlations to gate
+    /// account-attribution rules — prevents unverified accounts from being linked
+    /// to persons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<VerificationMethod>,
+    /// True if this evidence represents a derivation or inference rather than
+    /// a direct observation. Inferred data (e.g., names permuted from usernames,
+    /// coordinates calculated from addresses) must be confidence-capped below HIGH
+    /// and should decay confidence in downstream correlations.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_inferred: bool,
 }
 
 impl Evidence {
@@ -321,6 +351,8 @@ impl Evidence {
             summary: summary.into(),
             attributes: BTreeMap::new(),
             recorded_at: unix_now(),
+            verification: None,
+            is_inferred: false,
         }
     }
 
@@ -350,6 +382,23 @@ impl Evidence {
         }
         self
     }
+
+    /// Set the verification status for this evidence (used to mark account ownership verification).
+    pub fn with_verification(mut self, v: VerificationMethod) -> Self {
+        self.verification = Some(v);
+        self
+    }
+
+    /// Mark this evidence as inferred/derived rather than directly observed.
+    pub fn with_inferred(mut self, inferred: bool) -> Self {
+        self.is_inferred = inferred;
+        self
+    }
+}
+
+/// Helper for serde skip_serializing_if on bool false values.
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 // ─── Entity ───────────────────────────────────────────────────────────────────
