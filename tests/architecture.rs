@@ -290,6 +290,17 @@ fn core_does_not_import_util_directly() {
                 // handle/infra graphs; it is the single source of truth those
                 // rules and the diagnostics/relation clusterers all delegate to.
                 && !line.contains("util::union_find")
+                // Pure, IO-free recursive query generator + its value types (no
+                // network, no key, no state — `generate` is a deterministic
+                // `(kind, value, opts) -> Vec<BatchQuery>`), same leaf category
+                // as `util::union_find`. `core::breach_sweep` compiles the final
+                // bulk breach plan with it. Deliberately scoped to
+                // `oathnet_batch`: the OathNet *client* (`util::oathnet` —
+                // budget state, key resolution, `async fn search`) stays out of
+                // `core`, which is why the field→TargetKind mapping the sweep
+                // needs lives on `BatchQuery::target_kind` rather than being
+                // reached for as `util::oathnet::FIELD_*`.
+                && !line.contains("util::oathnet_batch")
         })
         .collect();
     assert!(

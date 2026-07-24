@@ -483,6 +483,8 @@ use super::*;
             "expansion_tick",
             "expansion_stop",
             "entity_excluded",
+            "breach_sweep",
+            "consensus_audit",
             "correlation_found",
             "correlations_done",
             "live_start",

@@ -5,6 +5,8 @@
 
 pub mod attack;
 pub mod benchmark;
+pub mod breach_consensus;
+pub mod breach_sweep;
 pub mod cancel;
 pub mod classifier;
 pub mod classify_module;
@@ -13,6 +15,7 @@ pub mod confidence;
 pub mod convex;
 pub mod coref;
 pub mod correlator;
+pub mod cross_scan;
 pub mod crypto;
 pub mod data_broker;
 pub mod dependency;
@@ -42,6 +45,7 @@ pub mod relation;
 pub mod resolve;
 pub mod roi;
 pub mod scan;
+pub mod snake_graph;
 pub mod stealer_row;
 pub mod tags;
 #[cfg(test)]

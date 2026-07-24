@@ -471,3 +471,113 @@ fn relation_recall_is_idempotent_and_never_inflates_confidence() {
     );
     assert_eq!(entities[0].evidence.len(), evidence_after);
 }
+
+#[test]
+fn bridges_an_email_to_a_username_recorded_under_a_different_kind() {
+    let store = InMemoryStore::new();
+    // A PRIOR investigation recorded the handle as a Username.
+    store
+        .upsert_entity(&ent(EntityKind::Username, "jordanmeyers", 0.7, "prior-scan"))
+        .unwrap();
+
+    // This scan only ever sees the address. The UID-keyed recurrence pass cannot
+    // bridge it — different kind means a different UID.
+    let email = ent(
+        EntityKind::Email,
+        "jordan.meyers@example.com",
+        0.6,
+        "this-scan",
+    );
+    let conf_before = email.c_effective();
+    let mut entities = vec![email];
+
+    assert_eq!(
+        link_cross_scan_history(&store, &mut entities, "this-scan"),
+        0,
+        "same-kind recurrence cannot see across kinds"
+    );
+    assert_eq!(
+        link_cross_scan_kind_aliases(&store, &mut entities, "this-scan"),
+        1
+    );
+
+    let bridged = &entities[0];
+    assert!(bridged.has_tag(crate::core::cross_scan::ALIAS_TAG));
+    assert!(!bridged.has_tag("cross-scan"), "the weaker tier only");
+    assert!(
+        bridged
+            .evidence
+            .iter()
+            .any(|ev| ev.source == "cross_scan_history"
+                && ev.summary.contains("jordanmeyers")
+                && ev.summary.contains("not a confirmed")),
+        "names the matched handle and states the link is not confirmed"
+    );
+    // Provenance only — a handle collision must never inflate confidence.
+    assert!((bridged.c_effective() - conf_before).abs() < 1e-9);
+
+    assert_eq!(
+        link_cross_scan_kind_aliases(&store, &mut entities, "this-scan"),
+        0,
+        "idempotent"
+    );
+}
+
+#[test]
+fn alias_pass_skips_entities_the_stronger_recurrence_pass_already_bridged() {
+    let store = InMemoryStore::new();
+    store
+        .upsert_entity(&ent(
+            EntityKind::Email,
+            "jordanmeyers@example.com",
+            0.7,
+            "prior-scan",
+        ))
+        .unwrap();
+    store
+        .upsert_entity(&ent(EntityKind::Username, "jordanmeyers", 0.7, "prior-scan"))
+        .unwrap();
+
+    let mut entities = vec![ent(
+        EntityKind::Email,
+        "jordanmeyers@example.com",
+        0.6,
+        "this-scan",
+    )];
+
+    assert_eq!(
+        link_cross_scan_history(&store, &mut entities, "this-scan"),
+        1
+    );
+    assert_eq!(
+        link_cross_scan_kind_aliases(&store, &mut entities, "this-scan"),
+        0,
+        "already bridged by the stronger same-kind pass"
+    );
+    assert!(!entities[0].has_tag(crate::core::cross_scan::ALIAS_TAG));
+}
+
+#[test]
+fn alias_pass_ignores_role_mailboxes_and_unseen_handles() {
+    let store = InMemoryStore::new();
+    store
+        .upsert_entity(&ent(EntityKind::Username, "admin", 0.7, "prior-scan"))
+        .unwrap();
+
+    let mut entities = vec![
+        // Role mailbox: the handle identifies nobody.
+        ent(EntityKind::Email, "admin@example.com", 0.6, "this-scan"),
+        // Real handle, but no earlier scan recorded it.
+        ent(EntityKind::Email, "unseenhandle@example.com", 0.6, "this-scan"),
+    ];
+
+    assert_eq!(
+        link_cross_scan_kind_aliases(&store, &mut entities, "this-scan"),
+        0
+    );
+    assert!(
+        entities
+            .iter()
+            .all(|e| !e.has_tag(crate::core::cross_scan::ALIAS_TAG))
+    );
+}

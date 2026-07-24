@@ -42,6 +42,41 @@ use crate::core::entity::Evidence;
     }
 
     #[test]
+    fn source_family_covers_every_breach_category_module() {
+        // Every module that self-declares `ModuleCategory::Breach` in the
+        // registry, by exact name. `core` may not import `modules`, so the two
+        // classifications cannot be reconciled by a direct registry walk — this
+        // literal list is the reconciliation, and the engine's sweep allow-list
+        // warns at runtime if a Breach-category module ever appears that this
+        // list has not caught up with.
+        //
+        // A miss here is not cosmetic: `"other"` is excluded from cross-family
+        // diversity, so an unclassified breach corpus silently stops counting
+        // toward corroboration and stops being a family the gap analysis can
+        // find missing.
+        for m in [
+            "comb_search",
+            "dehashed",
+            "hibp",
+            "hudsonrock",
+            "intelx",
+            "leakix",
+            "niamonx",
+            "osintcat",
+            "psbdmp",
+            "pwned_passwords",
+            "xposed_or_not",
+        ] {
+            assert_eq!(source_family(m), "breach", "{m} is not classed as breach");
+        }
+        // `see_know` is a breach-category module whose name has no breach token
+        // and whose family is deliberately NOT "breach" (it is a people-search
+        // aggregator). `is_breach_source` special-cases it instead, so the
+        // consensus pass still counts it as an attesting corpus.
+        assert!(super::breach_pii::is_breach_source("see_know"));
+    }
+
+    #[test]
     fn source_family_classifies_all_major_families() {
         assert_eq!(source_family("hibp"), "breach");
         assert_eq!(source_family("dehashed"), "breach");

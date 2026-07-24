@@ -74,6 +74,25 @@ pub enum EventKind {
         value: String,
         reason: String,
     },
+    /// The final bulk breach sweep dispatched its compiled plan. Reports the
+    /// plan's shape, INCLUDING what it declined to ask, so a sweep that hit its
+    /// cap is distinguishable from one that simply had less to ask about.
+    BreachSweep {
+        anchors: usize,
+        probes: usize,
+        /// Probes the plan derived but could not fit under the cap.
+        dropped: usize,
+    },
+    /// The autonomous audit of the breach corpus graded the scan's findings.
+    /// `verdict` is the [`crate::core::breach_consensus::AuditVerdict`] label;
+    /// `flags` counts every concern raised, so a `pass` with a high flag count
+    /// still reads as one that needed looking at.
+    ConsensusAudit {
+        verdict: String,
+        examined: usize,
+        corroborated: usize,
+        flags: usize,
+    },
     /// Correlator rule fired post-scan (v0.4+).
     CorrelationFound {
         correlation: crate::core::correlator::Correlation,
@@ -125,6 +144,8 @@ impl EventKind {
             Self::ExpansionTick { .. } => "expansion_tick",
             Self::ExpansionStop { .. } => "expansion_stop",
             Self::EntityExcluded { .. } => "entity_excluded",
+            Self::BreachSweep { .. } => "breach_sweep",
+            Self::ConsensusAudit { .. } => "consensus_audit",
             Self::CorrelationFound { .. } => "correlation_found",
             Self::CorrelationsDone { .. } => "correlations_done",
             Self::LiveStart { .. } => "live_start",
@@ -190,6 +211,40 @@ impl EventKind {
                 "expand",
                 format!("⊘ not expanded · {kind} {value}  {reason}"),
             ),
+            Self::BreachSweep {
+                anchors,
+                probes,
+                dropped,
+            } => {
+                // The dropped count is part of the headline, not a footnote: a
+                // sweep that fit everything and one that was cut short read
+                // identically without it.
+                let over = if *dropped > 0 {
+                    format!(" · {dropped} over cap")
+                } else {
+                    String::new()
+                };
+                (
+                    "expand",
+                    format!(
+                        "⇉ breach sweep · {probes} probe{} from {anchors} anchor{}{over}",
+                        plural(*probes),
+                        plural(*anchors)
+                    ),
+                )
+            }
+            Self::ConsensusAudit {
+                verdict,
+                examined,
+                corroborated,
+                flags,
+            } => (
+                "corr",
+                format!(
+                    "⚖ breach audit · {verdict} · {corroborated}/{examined} corroborated · {flags} flag{}",
+                    plural(*flags)
+                ),
+            ),
             Self::CorrelationFound { correlation } => {
                 let name = if correlation.rule_name.is_empty() {
                     &correlation.rule_id
@@ -217,6 +272,14 @@ impl EventKind {
             }
         }
     }
+}
+
+/// `""` or `"s"`, so a counted noun in a rendered event reads as English.
+///
+/// A live scan routinely reports exactly one of something, and "1 probes" is
+/// the kind of detail that makes an operator distrust the number next to it.
+const fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
 }
 
 #[cfg(test)]

@@ -213,7 +213,10 @@ const MAX_REACH_DEPTH: usize = 24;
 /// The subject anchor for the reach profile: the entity tagged `subject`, else the
 /// first tagged `seed`, else `None`. Mirrors how the network synthesis picks the hub,
 /// so the measure is anchored on the same origin the operator sees as the seed.
-fn subject_uid(entities: &[Entity]) -> Option<&str> {
+///
+/// `pub(in crate::core)`: shared with [`crate::core::snake_graph`], so the entity a
+/// graph projection centres on is the same one the reach profile anchors to.
+pub(in crate::core) fn subject_uid(entities: &[Entity]) -> Option<&str> {
     entities
         .iter()
         .find(|e| e.has_tag("subject"))

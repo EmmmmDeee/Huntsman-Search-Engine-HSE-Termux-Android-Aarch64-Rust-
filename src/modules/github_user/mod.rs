@@ -324,7 +324,7 @@ impl Module for GithubUser {
                 a.tag("github");
                 a.tag("geoint");
                 a.tag("self-reported");
-                if let Some(sc) = crate::util::address_au::state_code(location) {
+                if let Some(sc) = crate::util::address_au::single_state_code(location) {
                     a.tag(format!("au-state:{sc}"));
                     a.tag("country:AU");
                 }
@@ -341,7 +341,7 @@ impl Module for GithubUser {
                     c.tag("addr-derived");
                     c.tag("geoint");
                     c.tag("github");
-                    if let Some(sc) = crate::util::address_au::state_code(location) {
+                    if let Some(sc) = crate::util::address_au::single_state_code(location) {
                         c.tag(format!("au-state:{sc}"));
                         c.tag("country:AU");
                     }

@@ -240,6 +240,31 @@ fn render_event(kind: &crate::core::event::EventKind) -> String {
         } => {
             format!("  ⊘ not expanded [{kind}] {value} — {reason}")
         }
+        E::BreachSweep {
+            anchors,
+            probes,
+            dropped,
+        } => {
+            let over = if *dropped > 0 {
+                format!(" ({dropped} over cap)")
+            } else {
+                String::new()
+            };
+            format!(
+                "  ⇉ breach sweep — {probes} probe{} from {anchors} anchor{}{over}",
+                plural2(*probes),
+                plural2(*anchors)
+            )
+        }
+        E::ConsensusAudit {
+            verdict,
+            examined,
+            corroborated,
+            flags,
+        } => format!(
+            "  ⚖ breach audit — {verdict}: {corroborated}/{examined} corroborated, {flags} flag{}",
+            plural2(*flags)
+        ),
         E::CorrelationFound { correlation } => format!(
             "  ⚑ correlation [{}] {} — {}",
             correlation.severity, correlation.rule_name, correlation.description

@@ -180,15 +180,31 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
     }
 }
 
+/// Backstop on how many `MatchingNames` candidates are expanded.
+///
+/// NOT the old presentation cap of ten, which threw away real registry hits.
+/// This one sits far above anything the ABR endpoint returns — it exists only
+/// so a hostile or malformed payload cannot turn one name search into an
+/// out-of-memory kill on a phone. Each candidate fans out to roughly four
+/// entities, and the fetch layer only bounds the response at 32 MiB, which is
+/// several hundred thousand entries of this shape.
+///
+/// A real result set can never reach it; if one ever does, the overflow is
+/// logged with the true total rather than dropped in silence.
+pub(super) const MAX_NAME_HITS: usize = 500;
+
 /// Expand the ranked `MatchingNames` candidate list into entities.
 ///
-/// Walks up to [`MAX_NAME_HITS`](super::MAX_NAME_HITS) `Names` entries, mapping each ABR match `Score`
-/// (0-100) onto an entity confidence band, and emits the `Organisation`,
-/// `AbnAcn`, registered `Address`, and an inline `Coordinates` anchor per
-/// candidate — the multi-result analogue of [`parse_abn_result`], scored a
-/// touch lower since a name match is fuzzier than an exact ABN lookup. Entries
-/// missing a name or ABN are skipped; an empty/absent `Names` array is a no-op.
-/// `query` is the original search term, recorded in evidence for provenance.
+/// Maps each ABR match `Score` (0-100) onto an entity confidence band, and
+/// emits the `Organisation`, `AbnAcn`, registered `Address`, and an inline
+/// `Coordinates` anchor per candidate — the multi-result analogue of
+/// [`parse_abn_result`], scored a touch lower since a name match is fuzzier
+/// than an exact ABN lookup. Entries missing a name or ABN are skipped;
+/// an empty/absent `Names` array is a no-op. `query` is the original search
+/// term, recorded in evidence for provenance.
+///
+/// Bounded by [`MAX_NAME_HITS`], non-silently — see that constant for why the
+/// bound is a memory backstop rather than a display limit.
 pub(super) fn parse_name_results(
     data: &Value,
     query: &str,
@@ -200,7 +216,15 @@ pub(super) fn parse_name_results(
         _ => return,
     };
 
-    for entry in names.iter().take(super::MAX_NAME_HITS) {
+    if names.len() > MAX_NAME_HITS {
+        tracing::warn!(
+            "{SRC}: MatchingNames for '{query}' returned {} candidates; expanding the first \
+             {MAX_NAME_HITS} — the rest are NOT in this scan's results",
+            names.len()
+        );
+    }
+
+    for entry in names.iter().take(MAX_NAME_HITS) {
         let abn = str_field(entry, "Abn").unwrap_or_default();
         let name = str_field(entry, "Name").unwrap_or_default();
         let name_type = str_field(entry, "NameType").unwrap_or_default();

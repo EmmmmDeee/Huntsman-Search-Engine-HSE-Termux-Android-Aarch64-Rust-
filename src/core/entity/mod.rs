@@ -103,14 +103,30 @@ pub const RECALL_SOURCE: &str = "recall";
 /// inflate [`Entity::source_count`] / `c_effective`.
 pub const CROSS_SCAN_SOURCE: &str = "cross_scan_history";
 
+/// Evidence source name of the final breach-consensus grading pass
+/// ([`crate::core::breach_consensus`]).
+///
+/// The pass reads the evidence the breach modules already attached and records
+/// how many DISTINCT corpora attest each finding. It is a *summary of* those
+/// observations, not a new one — counting it would let an entity corroborate
+/// itself, and would do so most strongly for the entities the grading singled
+/// out as weakest. The summary is attached (and is what the audit trail reads)
+/// but, like [`RECALL_SOURCE`] and [`CROSS_SCAN_SOURCE`], it can never inflate
+/// [`Entity::source_count`] / `c_effective`.
+pub const CONSENSUS_SOURCE: &str = "breach_consensus";
+
 /// True if `source` must NOT count toward cross-source corroboration — a
 /// deterministic self-enrichment pass ([`ENRICHMENT_ONLY_SOURCES`]), the recall
-/// replay ([`RECALL_SOURCE`]), or the cross-scan history link ([`CROSS_SCAN_SOURCE`]).
-/// All attach genuine, useful evidence, but none is an independent observation, so
-/// none may inflate the corroboration count.
+/// replay ([`RECALL_SOURCE`]), the cross-scan history link ([`CROSS_SCAN_SOURCE`]),
+/// or the breach-consensus summary ([`CONSENSUS_SOURCE`]). All attach genuine,
+/// useful evidence, but none is an independent observation, so none may inflate
+/// the corroboration count.
 #[inline]
 pub fn is_non_corroborating_source(source: &str) -> bool {
-    is_enrichment_source(source) || source == RECALL_SOURCE || source == CROSS_SCAN_SOURCE
+    is_enrichment_source(source)
+        || source == RECALL_SOURCE
+        || source == CROSS_SCAN_SOURCE
+        || source == CONSENSUS_SOURCE
 }
 
 // ─── EntityKind ──────────────────────────────────────────────────────────────
@@ -292,6 +308,24 @@ impl fmt::Display for Classification {
 
 // ─── Evidence ────────────────────────────────────────────────────────────────
 
+/// Verification method for account ownership or data derivation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationMethod {
+    /// Account email matches a known entity's email.
+    EmailLinked,
+    /// Platform-native verification (checkmark, badge, official status).
+    PlatformVerified,
+    /// Activity proof: recent posts, followers, creation signals.
+    ActivityProof,
+    /// Self-disclosure: bio, pinned post, or explicit linking to other identity.
+    SelfDisclosed,
+    /// Account linked to another entity's profile.
+    LinkedProfile,
+    /// Unverified handle enumeration (present on platform, ownership unknown).
+    Unverified,
+}
+
 /// A single piece of evidence attached to an entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Evidence {
@@ -312,6 +346,18 @@ pub struct Evidence {
     pub attributes: BTreeMap<String, String>,
     /// Unix timestamp (seconds) when evidence was recorded.
     pub recorded_at: u64,
+    /// Verification status for account/handle ownership. None if not applicable.
+    /// Marked at evidence creation and propagated through correlations to gate
+    /// account-attribution rules — prevents unverified accounts from being linked
+    /// to persons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<VerificationMethod>,
+    /// True if this evidence represents a derivation or inference rather than
+    /// a direct observation. Inferred data (e.g., names permuted from usernames,
+    /// coordinates calculated from addresses) must be confidence-capped below HIGH
+    /// and should decay confidence in downstream correlations.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_inferred: bool,
 }
 
 impl Evidence {
@@ -321,6 +367,8 @@ impl Evidence {
             summary: summary.into(),
             attributes: BTreeMap::new(),
             recorded_at: unix_now(),
+            verification: None,
+            is_inferred: false,
         }
     }
 
@@ -350,6 +398,23 @@ impl Evidence {
         }
         self
     }
+
+    /// Set the verification status for this evidence (used to mark account ownership verification).
+    pub fn with_verification(mut self, v: VerificationMethod) -> Self {
+        self.verification = Some(v);
+        self
+    }
+
+    /// Mark this evidence as inferred/derived rather than directly observed.
+    pub fn with_inferred(mut self, inferred: bool) -> Self {
+        self.is_inferred = inferred;
+        self
+    }
+}
+
+/// Helper for serde skip_serializing_if on bool false values.
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 // ─── Entity ───────────────────────────────────────────────────────────────────

@@ -237,7 +237,7 @@ pub(super) fn records_to_entities(
     scan_id: &str,
 ) -> Vec<Entity> {
     let mut out = Vec::new();
-    for rec in records.iter().take(MAX_RECORDS) {
+    for rec in records {
         let owner = field_str(rec, "Owner").unwrap_or_else(|| "(unknown owner)".to_string());
         // The exact-vs-family split only has meaning when the query was
         // surname-*broadened* (a multi-token FullName). For a verbatim search
