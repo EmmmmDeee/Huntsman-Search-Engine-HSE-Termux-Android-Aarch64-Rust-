@@ -116,6 +116,13 @@ fn area_code_pass(digits: &str, ctx: &ModuleContext, result: &mut ModuleResult) 
     }
 
     if let Some(geo) = data::lookup_area_code(digits) {
+        // The unambiguous AU state (if any) for this area-code label, resolved
+        // ONCE and reused for both the Address and the derived Coordinates.
+        // `single_state_code` returns None for a multi-state label (e.g.
+        // "Perth / SA / NT"), so no single hard jurisdiction is fabricated.
+        let au_state = (geo.country_code == "AU")
+            .then(|| crate::util::address_au::single_state_code(geo.location))
+            .flatten();
         let mut e = Entity::new(
             EntityKind::Address,
             geo.location,
@@ -125,9 +132,7 @@ fn area_code_pass(digits: &str, ctx: &ModuleContext, result: &mut ModuleResult) 
         e.tag("geoint");
         e.tag("phone-area-code");
         e.tag(format!("country:{}", geo.country_code));
-        if geo.country_code == "AU"
-            && let Some(sc) = crate::util::address_au::single_state_code(geo.location)
-        {
+        if let Some(sc) = au_state {
             e.tag(format!("au-state:{sc}"));
         }
         let ev = Evidence::new(
@@ -158,9 +163,7 @@ fn area_code_pass(digits: &str, ctx: &ModuleContext, result: &mut ModuleResult) 
             c.tag("geoint");
             c.tag("phone-area-code");
             c.tag(format!("country:{}", geo.country_code));
-            if geo.country_code == "AU"
-                && let Some(sc) = crate::util::address_au::single_state_code(geo.location)
-            {
+            if let Some(sc) = au_state {
                 c.tag(format!("au-state:{sc}"));
             }
             c.add_evidence(ev);

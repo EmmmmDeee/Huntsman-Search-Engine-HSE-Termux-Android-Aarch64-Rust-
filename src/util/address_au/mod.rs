@@ -202,6 +202,18 @@ static STATE_NAMES_MATCHER: std::sync::LazyLock<MatchSet> =
 /// Best-effort canonical AU state/territory code for a free-text fragment
 /// (`"Brisbane City, Queensland, Australia"`, `"… QLD 4000"`, `"4017"`).
 ///
+/// Iterator over the AU state codes named as whole 2–3 letter tokens in `text`
+/// (case-insensitive), in reading order, with repeats. Shared by [`state_code`]
+/// (which takes the first) and [`single_state_code`] (which checks distinctness),
+/// so the whole-token abbreviation scan lives in exactly one place.
+/// `eq_ignore_ascii_case` tests membership without allocating an uppercased copy
+/// of each token.
+fn state_abbrev_tokens(text: &str) -> impl Iterator<Item = &'static str> + '_ {
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| t.len() == 2 || t.len() == 3)
+        .filter_map(|t| STATES.iter().copied().find(|s| s.eq_ignore_ascii_case(t)))
+}
+
 /// Resolution order, most authoritative first: a whole-token state abbreviation
 /// (`QLD`), then a full state name (`Queensland`), then a 4-digit postcode via
 /// [`state_for_postcode`]. Returns `None` when nothing in the text names a
@@ -209,14 +221,9 @@ static STATE_NAMES_MATCHER: std::sync::LazyLock<MatchSet> =
 /// (the `WA` in "Walesby", the `SA` in "Sandgate"). Pure; no I/O.
 #[must_use]
 pub fn state_code(text: &str) -> Option<&'static str> {
-    // 1) Whole-token abbreviation (case-insensitive), split on non-alphanumerics.
-    for tok in text.split(|c: char| !c.is_ascii_alphanumeric()) {
-        if tok.len() == 2 || tok.len() == 3 {
-            let up = tok.to_ascii_uppercase();
-            if let Some(s) = STATES.iter().copied().find(|s| *s == up) {
-                return Some(s);
-            }
-        }
+    // 1) Whole-token abbreviation (case-insensitive) — first match wins.
+    if let Some(s) = state_abbrev_tokens(text).next() {
+        return Some(s);
     }
     // 2) Full state name as a substring (names are distinctive multi-word or
     //    long single words; ordered longest-first in STATE_NAMES). One
@@ -262,27 +269,23 @@ pub fn state_code(text: &str) -> Option<&'static str> {
 /// would defeat the "is it unambiguous?" question this answers). Pure.
 #[must_use]
 pub fn single_state_code(text: &str) -> Option<&'static str> {
-    let mut found: Option<&'static str> = None;
-    // 1) Whole-token abbreviations (case-insensitive), split on non-alphanumerics.
-    for tok in text.split(|c: char| !c.is_ascii_alphanumeric()) {
-        if tok.len() == 2 || tok.len() == 3 {
-            let up = tok.to_ascii_uppercase();
-            if let Some(code) = STATES.iter().copied().find(|s| *s == up) {
-                match found {
-                    Some(prev) if prev != code => return None,
-                    _ => found = Some(code),
-                }
-            }
-        }
-    }
-    // 2) Full state names as a case-insensitive substring.
     let lc = text.to_lowercase();
-    for &(name, code) in STATE_NAMES {
-        if lc.contains(name) {
-            match found {
-                Some(prev) if prev != code => return None,
-                _ => found = Some(code),
-            }
+    // Whole-token abbreviations (shared with `state_code`) chained with full state
+    // names as a substring, folded through ONE distinctness pass: the first state
+    // seen is held; a second, DIFFERENT state proves the text spans several → None.
+    // `STATE_NAMES_MATCHER` is deliberately NOT reused for the name step — its
+    // `find_id` yields only the leftmost match, but detecting ambiguity needs EVERY
+    // distinct name present.
+    let names = STATE_NAMES
+        .iter()
+        .filter(|&&(n, _)| lc.contains(n))
+        .map(|&(_, c)| c);
+
+    let mut found: Option<&'static str> = None;
+    for code in state_abbrev_tokens(text).chain(names) {
+        match found {
+            Some(prev) if prev != code => return None,
+            _ => found = Some(code),
         }
     }
     found
