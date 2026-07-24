@@ -73,13 +73,6 @@ const MAX_WALK_DEPTH: usize = 64;
 /// noise to the (already precise) locator scan in `extract`.
 const MIN_LEAF_LEN: usize = 4;
 
-/// Cap on how many leaf strings get scanned per page. A 64 KiB page body
-/// (the crawler's hard `BODY_CAP`) naturally bounds the leaf count already,
-/// but this is an explicit, documented ceiling — consistent with every other
-/// bounded accumulator in this module (`MAX_PAGES`, `NOTABLE_PAGES_CAP`,
-/// `CONTACT_DUMP_LIMIT`) — rather than relying solely on the implicit bound.
-const MAX_LEAVES: usize = 500;
-
 /// Extract every embedded-entity candidate from a page's hydration JSON, if
 /// any is present. Total: a missing marker, a truncated/malformed payload
 /// (the crawler's `BODY_CAP` can slice a large blob mid-document before this
@@ -101,7 +94,6 @@ pub(super) fn extract_hydration_entities(body: &str) -> Vec<Classified> {
 
     let mut leaves: Vec<&str> = Vec::new();
     collect_string_leaves(&value, 0, &mut leaves);
-    leaves.truncate(MAX_LEAVES);
 
     let mut out = Vec::new();
     for leaf in leaves {
@@ -179,7 +171,7 @@ fn find_last_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
 /// entity candidates and are skipped; object keys are not collected (only
 /// values) since a hydration payload's keys are field names, not data.
 fn collect_string_leaves<'a>(value: &'a Value, depth: usize, out: &mut Vec<&'a str>) {
-    if depth > MAX_WALK_DEPTH || out.len() >= MAX_LEAVES {
+    if depth > MAX_WALK_DEPTH {
         return;
     }
     match value {

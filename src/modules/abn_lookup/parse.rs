@@ -182,13 +182,13 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
 
 /// Expand the ranked `MatchingNames` candidate list into entities.
 ///
-/// Walks up to [`MAX_NAME_HITS`](super::MAX_NAME_HITS) `Names` entries, mapping each ABR match `Score`
-/// (0-100) onto an entity confidence band, and emits the `Organisation`,
-/// `AbnAcn`, registered `Address`, and an inline `Coordinates` anchor per
-/// candidate — the multi-result analogue of [`parse_abn_result`], scored a
-/// touch lower since a name match is fuzzier than an exact ABN lookup. Entries
-/// missing a name or ABN are skipped; an empty/absent `Names` array is a no-op.
-/// `query` is the original search term, recorded in evidence for provenance.
+/// Maps each ABR match `Score` (0-100) onto an entity confidence band, and
+/// emits the `Organisation`, `AbnAcn`, registered `Address`, and an inline
+/// `Coordinates` anchor per candidate — the multi-result analogue of
+/// [`parse_abn_result`], scored a touch lower since a name match is fuzzier
+/// than an exact ABN lookup. Entries missing a name or ABN are skipped;
+/// an empty/absent `Names` array is a no-op. `query` is the original search
+/// term, recorded in evidence for provenance.
 pub(super) fn parse_name_results(
     data: &Value,
     query: &str,
@@ -200,7 +200,7 @@ pub(super) fn parse_name_results(
         _ => return,
     };
 
-    for entry in names.iter().take(super::MAX_NAME_HITS) {
+    for entry in names {
         let abn = str_field(entry, "Abn").unwrap_or_default();
         let name = str_field(entry, "Name").unwrap_or_default();
         let name_type = str_field(entry, "NameType").unwrap_or_default();
