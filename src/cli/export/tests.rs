@@ -195,9 +195,9 @@ fn structured_exports_quarantine_candidates_but_full_retains_them() {
     store.upsert_entities_batch(&[confirmed, stranger]).unwrap();
 
     for body in [
-        render_csv(&store, "scan-q").unwrap(),
-        render_json(&store, "scan-q").unwrap(),
-        render_gexf(&store, "scan-q").unwrap(),
+        render_csv(&store, "scan-q", false).unwrap(),
+        render_json(&store, "scan-q", false).unwrap(),
+        render_gexf(&store, "scan-q", false).unwrap(),
     ] {
         assert!(
             body.contains("subject@example-real.com"),
@@ -619,19 +619,22 @@ fn export_formats_determinism_audit() {
         .unwrap();
 
     use crate::core::error::Result;
-    type StoreFmt = fn(&Store, &str) -> Result<String>;
+    type StoreFmt = fn(&Store, &str, bool) -> Result<String>;
     type PortFmt = fn(&dyn crate::core::port::StoragePort, &str) -> Result<String>;
 
-    // Byte-reproducible formats (Store-typed).
+    // Byte-reproducible formats (Store-typed). Exercised in both the plain and
+    // `--redact` modes — redaction must be deterministic too.
     let store_fmts: &[(&str, StoreFmt)] = &[
         ("json", render_json),
         ("csv", render_csv),
         ("gexf", render_gexf),
     ];
     for (name, render) in store_fmts {
-        let a = render(&store, "scan-au").unwrap();
-        let b = render(&store, "scan-au").unwrap();
-        assert_eq!(a, b, "format `{name}` is not byte-deterministic");
+        for redact in [false, true] {
+            let a = render(&store, "scan-au", redact).unwrap();
+            let b = render(&store, "scan-au", redact).unwrap();
+            assert_eq!(a, b, "format `{name}` (redact={redact}) is not byte-deterministic");
+        }
     }
     // full + debug take `&dyn StoragePort`.
     let port_fmts: &[(&str, PortFmt)] = &[("full", render_full), ("debug", render_debug_bundle)];
@@ -812,18 +815,18 @@ mod prop {
 
             // Store-typed formats.
             prop_assert_eq!(
-                render_json(&forward, "scan-prop").unwrap(),
-                render_json(&reversed, "scan-prop").unwrap(),
+                render_json(&forward, "scan-prop", false).unwrap(),
+                render_json(&reversed, "scan-prop", false).unwrap(),
                 "json leaked insertion order"
             );
             prop_assert_eq!(
-                render_csv(&forward, "scan-prop").unwrap(),
-                render_csv(&reversed, "scan-prop").unwrap(),
+                render_csv(&forward, "scan-prop", false).unwrap(),
+                render_csv(&reversed, "scan-prop", false).unwrap(),
                 "csv leaked insertion order"
             );
             prop_assert_eq!(
-                render_gexf(&forward, "scan-prop").unwrap(),
-                render_gexf(&reversed, "scan-prop").unwrap(),
+                render_gexf(&forward, "scan-prop", false).unwrap(),
+                render_gexf(&reversed, "scan-prop", false).unwrap(),
                 "gexf leaked insertion order"
             );
             // Port-typed formats (`&dyn StoragePort`).

@@ -16,19 +16,28 @@ fn confirmed_entities(store: &Store, sid: &str) -> Result<Vec<crate::core::entit
     Ok(entities)
 }
 
-pub(super) fn render_json(store: &Store, sid: &str) -> Result<String> {
-    let entities = confirmed_entities(store, sid)?;
+pub(super) fn render_json(store: &Store, sid: &str, redact: bool) -> Result<String> {
+    let mut entities = confirmed_entities(store, sid)?;
+    if redact {
+        crate::util::redact::redact_entities(&mut entities);
+    }
     serde_json::to_string_pretty(&entities)
         .map_err(|e| Error::Other(format!("json serialise: {e}")))
 }
 
-pub(super) fn render_csv(store: &Store, sid: &str) -> Result<String> {
-    let entities = confirmed_entities(store, sid)?;
+pub(super) fn render_csv(store: &Store, sid: &str, redact: bool) -> Result<String> {
+    let mut entities = confirmed_entities(store, sid)?;
+    if redact {
+        crate::util::redact::redact_entities(&mut entities);
+    }
     Ok(crate::api::scan_export::entities_to_csv(&entities))
 }
 
-pub(super) fn render_gexf(store: &Store, sid: &str) -> Result<String> {
-    let entities = confirmed_entities(store, sid)?;
+pub(super) fn render_gexf(store: &Store, sid: &str, redact: bool) -> Result<String> {
+    let mut entities = confirmed_entities(store, sid)?;
+    if redact {
+        crate::util::redact::redact_entities(&mut entities);
+    }
     let relations = store.relations_for_scan(sid)?;
     Ok(crate::core::gexf::entities_to_gexf(
         &entities, &relations, sid,

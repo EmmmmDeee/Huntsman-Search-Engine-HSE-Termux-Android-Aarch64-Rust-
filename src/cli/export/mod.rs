@@ -30,6 +30,7 @@ pub(super) async fn cmd_export(
     format: String,
     out: Option<String>,
     include_infra: bool,
+    redact: bool,
 ) -> Result<()> {
     let store = Store::open(&default_db_path())?;
     // `latest` → most-recent Complete scan; an explicit id is existence-checked so
@@ -37,10 +38,25 @@ pub(super) async fn cmd_export(
     // indistinguishable from a real scan that found nothing). Shared with
     // `diff`/`audit` via `super::resolve_scan_id`.
     let sid = super::resolve_scan_id(&store, &scan_id)?;
-    let body = match format.to_lowercase().as_str() {
-        "json" => renderers::render_json(&store, &sid)?,
-        "csv" => renderers::render_csv(&store, &sid)?,
-        "gexf" => renderers::render_gexf(&store, &sid)?,
+    let fmt = format.to_lowercase();
+    // `--redact` masks subject credential-class values and coarsens precise
+    // coordinates, for the SHAREABLE entity exports only. It is deliberately
+    // rejected for `full`/`debug` (whose contract is total unredacted
+    // transparency for a local interpreter) and for `report` (its nested
+    // scan-report shape does not route through the entity redaction pass), so a
+    // caller is never lulled into thinking a still-sensitive artifact was
+    // scrubbed. `events` carries no entity values to redact.
+    if redact && !matches!(fmt.as_str(), "json" | "csv" | "gexf") {
+        return Err(Error::Other(format!(
+            "--redact applies to json, csv, gexf only (not '{fmt}'): the full/debug \
+             dossiers are unredacted by contract, and report/events carry no entity \
+             values to mask"
+        )));
+    }
+    let body = match fmt.as_str() {
+        "json" => renderers::render_json(&store, &sid, redact)?,
+        "csv" => renderers::render_csv(&store, &sid, redact)?,
+        "gexf" => renderers::render_gexf(&store, &sid, redact)?,
         "report" => renderers::render_report(&store, &sid, include_infra)?,
         // `full` always includes infra — it is the maximum-detail format.
         "full" => render_full(&store, &sid)?,
@@ -60,7 +76,7 @@ pub(super) async fn cmd_export(
     // (a real exposure on a shared Android device). The shareable scan exports
     // (json/csv/gexf/report) keep the plain write so an operator can hand them
     // off without first having to loosen 0600 perms.
-    let sensitive = matches!(format.to_lowercase().as_str(), "full" | "debug");
+    let sensitive = matches!(fmt.as_str(), "full" | "debug");
     match out {
         Some(path) => {
             if sensitive {
