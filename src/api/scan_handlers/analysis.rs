@@ -22,9 +22,7 @@ pub async fn scan_entities(
     let id2 = id.clone();
     match tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await {
         Ok(Ok(mut entities)) => {
-            if !super::wants_candidates(&params) {
-                entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
-            }
+            super::apply_candidate_gate(&mut entities, &params);
             ok_list("entities", entities)
         }
         Ok(Err(e)) => internal_error(&e),
@@ -51,9 +49,7 @@ pub async fn scan_diamond(
     let id2 = id.clone();
     match tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await {
         Ok(Ok(mut entities)) => {
-            if !super::wants_candidates(&params) {
-                entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
-            }
+            super::apply_candidate_gate(&mut entities, &params);
             let by_vertex = crate::core::diamond::partition_by_vertex(&entities);
             let vertices: Vec<serde_json::Value> = by_vertex
                 .iter()
@@ -104,9 +100,7 @@ pub async fn scan_attack(
     let id2 = id.clone();
     match tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await {
         Ok(Ok(mut entities)) => {
-            if !super::wants_candidates(&params) {
-                entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
-            }
+            super::apply_candidate_gate(&mut entities, &params);
             // Count entities per exercised Reconnaissance technique from their
             // `attack:<id>` provenance tags — one entity may span several.
             let mut exercised: std::collections::BTreeMap<String, usize> =
@@ -227,13 +221,10 @@ pub async fn scan_entities_filter(
     .await
     {
         Ok(Ok(mut entities)) => {
-            // Quarantine by default (opt in with `?include_candidates=1`) — matches
-            // `scan_entities`, `scan_entities_csv`, and `report.json` so this filtered
-            // view can't be used to route around the candidate quarantine the other
-            // entity-listing endpoints already enforce.
-            if !super::wants_candidates(&params) {
-                entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
-            }
+            // Quarantine by default (opt in with `?include_candidates=1`) so this
+            // filtered view can't route around the candidate quarantine the other
+            // entity-listing endpoints enforce — see `apply_candidate_gate`.
+            super::apply_candidate_gate(&mut entities, &params);
             ok_list("entities", entities)
         }
         Ok(Err(e)) => internal_error(&e),
@@ -341,6 +332,7 @@ pub async fn scan_location(
 pub async fn scan_relations(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
@@ -365,6 +357,9 @@ pub async fn scan_relations(
         Ok(Err(e)) => return internal_error(&e),
         Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
+    // Hide candidate endpoints (as node values AND as dangling edges) unless
+    // opted in — the Relations view must not route around the entity quarantine.
+    let (ents, rels) = super::confine_graph_to_visible(ents, rels, &params);
     let by_uid: std::collections::HashMap<String, (String, String)> = ents
         .into_iter()
         .map(|e| (e.uid, (e.value, e.kind.to_string())))
@@ -407,6 +402,7 @@ pub async fn scan_relations(
 pub async fn scan_network(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
@@ -425,6 +421,9 @@ pub async fn scan_network(
         Ok(Err(e)) => return internal_error(&e),
         Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
+    // Hide quarantined `candidate` entities (and any edge to them) unless opted
+    // in, so the Network graph can't re-leak a non-subject the entity list hides.
+    let (entities, relations) = super::confine_graph_to_visible(entities, relations, &params);
     let network = crate::core::network::synthesize(&entities, &relations);
     (StatusCode::OK, Json(network)).into_response()
 }
@@ -467,9 +466,13 @@ pub async fn scan_identities(
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
     let computed = tokio::task::spawn_blocking(move || {
-        store
-            .entities_for_scan(&id2)
-            .map(|entities| crate::core::coref::resolve_coreferences(&entities, min_score, limit))
+        store.entities_for_scan(&id2).map(|mut entities| {
+            // Co-reference must not cluster quarantined candidates into the
+            // subject's identity set (opt in with `?include_candidates=1`).
+            // Filtering first also shrinks the O(n²) pairwise work.
+            super::apply_candidate_gate(&mut entities, &params);
+            crate::core::coref::resolve_coreferences(&entities, min_score, limit)
+        })
     })
     .await;
     let corefs = match computed {

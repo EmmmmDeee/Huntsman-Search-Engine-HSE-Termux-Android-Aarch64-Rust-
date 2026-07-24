@@ -1847,6 +1847,132 @@ async fn scan_gexf_quarantines_candidate_nodes_by_default() {
     );
 }
 
+// ── Graph / identity read endpoints: candidate quarantine ────────────────
+
+#[tokio::test]
+async fn scan_relations_quarantines_candidate_endpoints_by_default() {
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("relations_candidate");
+    let sid = "s-rel-cand";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+    let subject = Entity::new(EntityKind::Email, "subject@real.example", 0.9, sid);
+    let mut candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, sid);
+    candidate.tag(CANDIDATE);
+    store.upsert_entity(&subject).unwrap();
+    store.upsert_entity(&candidate).unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            subject.uid.as_str(),
+            candidate.uid.as_str(),
+            RelationKind::AssociatedWith,
+            0.5,
+            sid,
+        ))
+        .unwrap();
+
+    // Default: the edge to the quarantined candidate is dropped — its value never
+    // leaks via from_value/to_value, and no dangling UID remains.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/relations")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert!(
+        json["relations"].as_array().is_some_and(|r| r.is_empty()),
+        "candidate-endpoint edge must be hidden by default: {json}"
+    );
+    assert!(
+        !json.to_string().contains("stranger@breach.example"),
+        "no candidate PII may leak into the relations view by default: {json}"
+    );
+
+    // Opt-in returns the edge with the candidate endpoint resolved.
+    let resp2 = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/relations?include_candidates=1"
+        )))
+        .await
+        .unwrap();
+    let json2 = body_json(resp2).await;
+    assert_eq!(
+        json2["relations"].as_array().map(Vec::len),
+        Some(1),
+        "include_candidates=1 returns the edge: {json2}"
+    );
+    assert!(
+        json2.to_string().contains("stranger@breach.example"),
+        "opt-in resolves the candidate endpoint value: {json2}"
+    );
+}
+
+#[tokio::test]
+async fn scan_network_quarantines_candidate_nodes_by_default() {
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("network_candidate");
+    let sid = "s-net-cand";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+    let subject = Entity::new(EntityKind::Email, "subject@real.example", 0.9, sid);
+    let mut candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, sid);
+    candidate.tag(CANDIDATE);
+    store.upsert_entity(&subject).unwrap();
+    store.upsert_entity(&candidate).unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            subject.uid.as_str(),
+            candidate.uid.as_str(),
+            RelationKind::AssociatedWith,
+            0.5,
+            sid,
+        ))
+        .unwrap();
+
+    // Default: the quarantined candidate must not appear as a network node.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/network")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = axum::body::to_bytes(resp.into_body(), 5_000_000)
+        .await
+        .unwrap();
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        !body.contains("stranger@breach.example"),
+        "a quarantined candidate must not leak into the network graph by default: {body}"
+    );
+
+    // Opt-in surfaces the linked candidate node.
+    let resp2 = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/network?include_candidates=1"
+        )))
+        .await
+        .unwrap();
+    let bytes2 = axum::body::to_bytes(resp2.into_body(), 5_000_000)
+        .await
+        .unwrap();
+    let body2 = String::from_utf8_lossy(&bytes2);
+    assert!(
+        body2.contains("stranger@breach.example"),
+        "include_candidates=1 surfaces the candidate node: {body2}"
+    );
+}
+
 // ── JSON report ─────────────────────────────────────────────────────────
 
 #[tokio::test]

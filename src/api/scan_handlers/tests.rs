@@ -247,3 +247,67 @@ use super::*;
         // reject it.
         assert!(snapshot_still_relevant_to(500, 1_000));
     }
+
+    #[test]
+    fn apply_candidate_gate_hides_candidates_unless_opted_in() {
+        use crate::core::entity::{Entity, EntityKind};
+        use crate::core::tags::CANDIDATE;
+        use std::collections::HashMap;
+
+        let subject = Entity::new(EntityKind::Email, "subject@real.example", 0.9, "s");
+        let mut candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, "s");
+        candidate.tag(CANDIDATE);
+
+        // Default (no query params): the quarantined candidate is dropped.
+        let mut ents = vec![subject.clone(), candidate.clone()];
+        apply_candidate_gate(&mut ents, &HashMap::new());
+        assert_eq!(ents.len(), 1);
+        assert_eq!(ents[0].value, "subject@real.example");
+
+        // Opt-in with `?include_candidates=1`: both retained.
+        let mut ents = vec![subject, candidate];
+        let params = HashMap::from([("include_candidates".to_string(), "1".to_string())]);
+        apply_candidate_gate(&mut ents, &params);
+        assert_eq!(ents.len(), 2);
+    }
+
+    #[test]
+    fn confine_graph_to_visible_drops_candidate_nodes_and_their_dangling_edges() {
+        use crate::core::entity::{Entity, EntityKind};
+        use crate::core::relation::{Relation, RelationKind};
+        use crate::core::tags::CANDIDATE;
+        use std::collections::HashMap;
+
+        let subject = Entity::new(EntityKind::Email, "subject@real.example", 0.9, "s");
+        let mut candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, "s");
+        candidate.tag(CANDIDATE);
+        // Edge subject → candidate: once the candidate NODE is hidden this edge
+        // would dangle and re-expose the candidate's UID, so it must go too.
+        let edge = Relation::new(
+            subject.uid.as_str(),
+            candidate.uid.as_str(),
+            RelationKind::AssociatedWith,
+            0.5,
+            "s",
+        );
+
+        // Default: candidate node gone AND the edge to it gone.
+        let (ents, rels) = confine_graph_to_visible(
+            vec![subject.clone(), candidate.clone()],
+            vec![edge.clone()],
+            &HashMap::new(),
+        );
+        assert_eq!(ents.len(), 1);
+        assert_eq!(ents[0].value, "subject@real.example");
+        assert!(
+            rels.is_empty(),
+            "the edge to the hidden candidate must be dropped, not left dangling"
+        );
+
+        // Opt-in: full graph returned untouched.
+        let params = HashMap::from([("include_candidates".to_string(), "on".to_string())]);
+        let (ents, rels) =
+            confine_graph_to_visible(vec![subject, candidate], vec![edge], &params);
+        assert_eq!(ents.len(), 2);
+        assert_eq!(rels.len(), 1);
+    }
