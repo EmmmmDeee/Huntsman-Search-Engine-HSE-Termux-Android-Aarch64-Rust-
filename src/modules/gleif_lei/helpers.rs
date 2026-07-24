@@ -14,19 +14,7 @@ pub(super) fn non_empty(s: Option<String>) -> Option<String> {
 /// (case-insensitive). Whole-word, not substring, so a short seed token can't
 /// match inside an unrelated word. (Same precision rule as `acnc_charities`.)
 pub(super) fn name_matches_query(name: &str, query: &str) -> bool {
-    let words: Vec<&str> = name
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let tokens: Vec<&str> = query
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .collect();
-    // At least one token, and every token present as a whole word.
-    !tokens.is_empty()
-        && tokens
-            .iter()
-            .all(|tok| words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
+    crate::util::str_util::whole_word_token_match(name, query)
 }
 
 /// The lei-records search URL for one legal-name query. JSON:API bracket params

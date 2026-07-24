@@ -46,8 +46,14 @@ pub(crate) struct PropertyRecord {
 /// line for AU-common short surnames (Le, Ng, Ha, Vo, Do) — and since a matched
 /// record now stamps an `owner` attribute and an `exact-name-match` tag that the
 /// relation layer turns into a Person→property `LocatedAt` edge, a loose match
-/// would FABRICATE a subject↔property link. Mirrors
-/// `qld_helpers::owner_matches_full_name`.
+/// would FABRICATE a subject↔property link.
+///
+/// Deliberately NOT the shared [`crate::util::str_util::whole_word_token_match`]
+/// (which folds ASCII-only): AU property registers carry accented owner names
+/// (e.g. `NGUYỄN`, `LÊ`), and an ASCII fold would miss an accented letter in
+/// mismatched case (seed `José` vs register `JOSÉ`). This matcher stays
+/// full-Unicode (`to_lowercase`) on purpose — do not collapse it into the ASCII
+/// helper.
 pub(crate) fn name_matches(text: &str, full_name: &str) -> bool {
     let text_lc = text.to_lowercase();
     let full_lc = full_name.to_lowercase();
