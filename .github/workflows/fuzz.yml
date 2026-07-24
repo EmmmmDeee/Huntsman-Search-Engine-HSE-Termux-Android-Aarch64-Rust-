@@ -67,4 +67,13 @@ jobs:
           mkdir -p fuzz/corpus/cert_der
           cp src/modules/cert_intel/testdata/selfsigned.der fuzz/corpus/cert_der/seed_selfsigned.der
           cd fuzz
-          cargo fuzz run cert_der corpus/cert_der -- -max_total_time=120 -seed=1
+          # `+nightly` is REQUIRED: the repo-root rust-toolchain.toml pins stable
+          # 1.97.1, and rustup resolves that file ABOVE the `rustup default
+          # nightly` the install step sets — so a bare `cargo fuzz run` builds on
+          # 1.97.1 and dies with "error: the option `Z` is only accepted on the
+          # nightly compiler" (cargo-fuzz's ASAN build passes `-Zsanitizer`). The
+          # explicit `+nightly` is rustup's highest-precedence selector (above
+          # rust-toolchain.toml) and propagates via RUSTUP_TOOLCHAIN to the inner
+          # `cargo build` cargo-fuzz spawns — the same override the documented
+          # local command in fuzz/README.md already uses.
+          cargo +nightly fuzz run cert_der corpus/cert_der -- -max_total_time=120 -seed=1
