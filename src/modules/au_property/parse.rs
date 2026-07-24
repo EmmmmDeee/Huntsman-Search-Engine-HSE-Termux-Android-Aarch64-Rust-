@@ -50,7 +50,7 @@ pub(crate) struct PropertyRecord {
 ///
 /// Deliberately NOT the shared [`crate::util::str_util::whole_word_token_match`]
 /// (which folds ASCII-only): AU property registers carry accented owner names
-/// (e.g. `NGUYỄN`, `MOREAU`), and an ASCII fold would miss an accented letter in
+/// (e.g. `NGUYỄN`, `LÊ`), and an ASCII fold would miss an accented letter in
 /// mismatched case (seed `José` vs register `JOSÉ`). This matcher stays
 /// full-Unicode (`to_lowercase`) on purpose — do not collapse it into the ASCII
 /// helper.

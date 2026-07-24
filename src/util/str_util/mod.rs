@@ -466,7 +466,7 @@ pub fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
 ///
 /// Whole-word — not substring — is the whole point: it stops a short query token
 /// like `"red"` matching inside `"Mildred"`, or a seed initial `"M"` matching
-/// inside `"AVERY"` — the false "this relative is the subject" upgrades a
+/// inside `"SMITH"` — the false "this relative is the subject" upgrades a
 /// substring gate produces. Allocation-free per token (`eq_ignore_ascii_case`,
 /// no lower-cased copies). Single-sourced so every register/name matcher
 /// (`au_unclaimed`, `wikidata`, `acnc_charities`, `gleif_lei`) shares one

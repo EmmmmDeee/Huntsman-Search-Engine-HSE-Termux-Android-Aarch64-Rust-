@@ -1885,7 +1885,7 @@ async fn scan_relations_quarantines_candidate_endpoints_by_default() {
     assert_eq!(resp.status(), 200);
     let json = body_json(resp).await;
     assert!(
-        json["relations"].as_array().is_some_and(|r| r.is_empty()),
+        json["relations"].as_array().is_some_and(Vec::is_empty),
         "candidate-endpoint edge must be hidden by default: {json}"
     );
     assert!(
