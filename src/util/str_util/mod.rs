@@ -460,6 +460,43 @@ pub fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
     }
 }
 
+/// True when **every** alphanumeric token of `needle` appears as a WHOLE WORD
+/// in `haystack`, compared ASCII-case-insensitively. Both sides tokenise on
+/// non-alphanumeric boundaries; an empty `needle` (no tokens) matches nothing.
+///
+/// Whole-word — not substring — is the whole point: it stops a short query token
+/// like `"red"` matching inside `"Mildred"`, or a seed initial `"M"` matching
+/// inside `"AVERY"` — the false "this relative is the subject" upgrades a
+/// substring gate produces. Allocation-free per token (`eq_ignore_ascii_case`,
+/// no lower-cased copies). Single-sourced so every register/name matcher
+/// (`au_unclaimed`, `wikidata`, `acnc_charities`, `gleif_lei`) shares one
+/// definition instead of four hand-rolled copies drifting apart.
+///
+/// ```
+/// use huntsman_search_engine::util::str_util::whole_word_token_match;
+///
+/// assert!(whole_word_token_match("Linus Torvalds", "linus torvalds"));
+/// assert!(whole_word_token_match("The Smith Family", "smith family"));
+/// assert!(!whole_word_token_match("Mildred Smith", "red")); // not a whole word
+/// assert!(!whole_word_token_match("Linus Torvalds", "linus pauling")); // missing token
+/// assert!(!whole_word_token_match("anything at all", "")); // empty needle matches nothing
+/// ```
+#[must_use]
+pub fn whole_word_token_match(haystack: &str, needle: &str) -> bool {
+    let words: Vec<&str> = haystack
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let tokens: Vec<&str> = needle
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect();
+    !tokens.is_empty()
+        && tokens
+            .iter()
+            .all(|tok| words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

@@ -74,18 +74,7 @@ pub(super) fn derive_query(target: &Target) -> &str {
 /// non-alphanumeric boundaries and compares with `eq_ignore_ascii_case` (no
 /// per-token `String` allocation).
 pub(super) fn owner_matches_full_name(owner: &str, seed: &str) -> bool {
-    let owner_words: Vec<&str> = owner
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let tokens: Vec<&str> = seed
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .collect();
-    !tokens.is_empty()
-        && tokens
-            .iter()
-            .all(|tok| owner_words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
+    crate::util::str_util::whole_word_token_match(owner, seed)
 }
 
 /// Honorific tokens stripped from the FRONT of a parsed owner name, so the real
