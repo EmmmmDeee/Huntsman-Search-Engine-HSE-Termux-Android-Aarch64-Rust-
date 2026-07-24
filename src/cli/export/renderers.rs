@@ -373,7 +373,12 @@ pub(crate) fn render_event_log(events: &[crate::core::event::Event]) -> String {
     let _ = writeln!(s, "── SCAN SEQUENCE · {} events ──", events.len());
     if let (Some(first), Some(last)) = (events.first(), events.last()) {
         let date = ymd_utc(first.ts as i64).unwrap_or_else(|| "—".into());
-        let _ = writeln!(s, "  {date} · {} → {} UTC", hms_utc(first.ts), hms_utc(last.ts));
+        let _ = writeln!(
+            s,
+            "  {date} · {} → {} UTC",
+            hms_utc(first.ts),
+            hms_utc(last.ts)
+        );
     }
 
     let _ = writeln!(s, "\n  By type:");

@@ -37,7 +37,14 @@ pub const REDACTED: &str = "[redacted]";
 /// Evidence-attribute keys whose values are coarsened when a `Coordinates`
 /// entity is redacted — the precise fix could otherwise survive in the evidence
 /// trail after the top-level `value` was coarsened.
-const COORD_ATTR_KEYS: &[&str] = &["lat", "lon", "latitude", "longitude", "coordinates", "coord"];
+const COORD_ATTR_KEYS: &[&str] = &[
+    "lat",
+    "lon",
+    "latitude",
+    "longitude",
+    "coordinates",
+    "coord",
+];
 
 /// True for the credential-class kinds whose *value* is itself the secret:
 /// [`EntityKind::Password`], [`EntityKind::Credential`], and
@@ -160,8 +167,14 @@ mod tests {
 
     #[test]
     fn coarsen_rounds_to_one_dp_and_rejects_garbage() {
-        assert_eq!(coarsen_coordinates("-27.5047,152.9794").as_deref(), Some("-27.5,153.0"));
-        assert_eq!(coarsen_coordinates("0.04, -0.04").as_deref(), Some("0.0,0.0"));
+        assert_eq!(
+            coarsen_coordinates("-27.5047,152.9794").as_deref(),
+            Some("-27.5,153.0")
+        );
+        assert_eq!(
+            coarsen_coordinates("0.04, -0.04").as_deref(),
+            Some("0.0,0.0")
+        );
         assert_eq!(coarsen_coordinates("not a coord"), None);
         assert_eq!(coarsen_coordinates("12.3"), None, "needs both components");
         assert_eq!(coarsen_coordinates("nan,1.0"), None, "non-finite rejected");
@@ -171,7 +184,11 @@ mod tests {
     fn coarsen_scalar_rounds_a_lone_degree() {
         assert_eq!(coarsen_scalar("-27.5047").as_deref(), Some("-27.5"));
         assert_eq!(coarsen_scalar("152.9794").as_deref(), Some("153.0"));
-        assert_eq!(coarsen_scalar("-0.02").as_deref(), Some("0.0"), "-0.0 folded");
+        assert_eq!(
+            coarsen_scalar("-0.02").as_deref(),
+            Some("0.0"),
+            "-0.0 folded"
+        );
         assert_eq!(coarsen_scalar("Chelmer"), None, "non-numeric left alone");
     }
 
@@ -190,7 +207,11 @@ mod tests {
         assert_eq!(e.raw_value, REDACTED);
         // The plaintext must not survive anywhere in the serialised evidence.
         let ev = &e.evidence[0];
-        assert!(!ev.summary.contains("hunter2"), "summary leaked: {}", ev.summary);
+        assert!(
+            !ev.summary.contains("hunter2"),
+            "summary leaked: {}",
+            ev.summary
+        );
         assert!(ev.attributes.is_empty(), "attributes must be scrubbed");
         // The evidence entry itself is kept so source_count stays truthful.
         assert_eq!(e.evidence.len(), 1);
@@ -199,7 +220,12 @@ mod tests {
 
     #[test]
     fn coordinates_value_and_precise_attrs_are_coarsened() {
-        let mut e = Entity::new(EntityKind::Coordinates, "-27.5047,152.9794", 0.9, "au_unclaimed");
+        let mut e = Entity::new(
+            EntityKind::Coordinates,
+            "-27.5047,152.9794",
+            0.9,
+            "au_unclaimed",
+        );
         e.add_evidence(
             Evidence::new("au_unclaimed", "address fix")
                 .with_attr("lat", "-27.5047")
@@ -214,7 +240,10 @@ mod tests {
         assert_eq!(ev.attributes.get("lat").map(String::as_str), Some("-27.5"));
         assert_eq!(ev.attributes.get("lon").map(String::as_str), Some("153.0"));
         // Non-coordinate attributes are untouched.
-        assert_eq!(ev.attributes.get("locality").map(String::as_str), Some("Chelmer"));
+        assert_eq!(
+            ev.attributes.get("locality").map(String::as_str),
+            Some("Chelmer")
+        );
     }
 
     #[test]

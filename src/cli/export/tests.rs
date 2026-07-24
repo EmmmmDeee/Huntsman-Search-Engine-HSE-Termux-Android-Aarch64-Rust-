@@ -633,7 +633,10 @@ fn export_formats_determinism_audit() {
         for redact in [false, true] {
             let a = render(&store, "scan-au", redact).unwrap();
             let b = render(&store, "scan-au", redact).unwrap();
-            assert_eq!(a, b, "format `{name}` (redact={redact}) is not byte-deterministic");
+            assert_eq!(
+                a, b,
+                "format `{name}` (redact={redact}) is not byte-deterministic"
+            );
         }
     }
     // full + debug take `&dyn StoragePort`.

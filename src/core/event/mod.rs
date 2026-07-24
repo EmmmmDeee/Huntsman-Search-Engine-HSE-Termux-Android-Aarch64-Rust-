@@ -149,7 +149,10 @@ impl EventKind {
             Self::ScanStart {
                 target_kind,
                 target_value,
-            } => ("scan", format!("● scan started · {target_kind}={target_value}")),
+            } => (
+                "scan",
+                format!("● scan started · {target_kind}={target_value}"),
+            ),
             Self::ModuleStart { module } => ("module", format!("▶ {module}")),
             Self::ModuleDone { module, found } => {
                 ("module", format!("✓ {module}  ({found} found)"))
@@ -183,7 +186,10 @@ impl EventKind {
                 kind,
                 value,
                 reason,
-            } => ("expand", format!("⊘ not expanded · {kind} {value}  {reason}")),
+            } => (
+                "expand",
+                format!("⊘ not expanded · {kind} {value}  {reason}"),
+            ),
             Self::CorrelationFound { correlation } => {
                 let name = if correlation.rule_name.is_empty() {
                     &correlation.rule_id
@@ -200,7 +206,9 @@ impl EventKind {
                 ..
             } => (
                 "live",
-                format!("▶ live session started · {target_kind}={target_value}  every {interval_secs}s"),
+                format!(
+                    "▶ live session started · {target_kind}={target_value}  every {interval_secs}s"
+                ),
             ),
             Self::LiveTick { iteration, .. } => ("live", format!("↻ iteration {iteration}")),
             Self::LiveStop { reason, .. } => ("live", format!("■ live session stopped · {reason}")),
