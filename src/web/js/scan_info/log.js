@@ -1,4 +1,4 @@
-import { $, esc, fmtClock, kindPill, triggerBlobDownload, toast } from '/static/js/helpers.js';
+import { $, esc, fmtClock, kindPill, saveShownRows } from '/static/js/helpers.js';
 import { S } from '/static/js/state.js';
 import { API } from '/static/js/api.js';
 
@@ -50,23 +50,14 @@ export async function renderLog(host, scan){
   // the always-available path: it captures a live/streaming scan's rows as they
   // appear, and works even when the server-side history fetch failed (the
   // `historyError` branch below) where the `.log` download may be empty.
-  $('#log-save-shown').addEventListener('click', ()=>{
-    const rows = $('#log-box').querySelectorAll('.log-row');
-    if (!rows.length){ toast('No events shown yet — nothing to save.', 'warn'); return; }
-    const lines = [];
-    rows.forEach(r=>{
-      const ts  = (r.querySelector('.ts')?.textContent  || '').trim();
-      const typ = (r.querySelector('.typ')?.textContent || '').trim();
-      const msg = (r.querySelector('.msg')?.textContent || '').trim();
-      lines.push(`${ts}  ${typ.padEnd(7)}  ${msg}`.trimEnd());
-    });
-    const header =
+  $('#log-save-shown').addEventListener('click', ()=>saveShownRows('#log-box', {
+    emptyMsg: 'No events shown yet — nothing to save.',
+    header: (n) =>
       `# HSE scan event log (as shown in the browser)\n` +
       `# scan ${scan.id}\n` +
-      `# ${rows.length} event(s)` + (running ? ' — live capture, may be partial\n' : '\n') + `\n`;
-    const blob = new Blob([header + lines.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
-    triggerBlobDownload(blob, `hse-events-shown-${scan.id.slice(0, 12)}.log`);
-  });
+      `# ${n} event(s)` + (running ? ' — live capture, may be partial\n' : '\n') + `\n`,
+    filename: `hse-events-shown-${scan.id.slice(0, 12)}.log`,
+  }));
 
   // 1) Subscribe to SSE FIRST so events broadcast during the
   //    history fetch are captured in the `buffered` array rather

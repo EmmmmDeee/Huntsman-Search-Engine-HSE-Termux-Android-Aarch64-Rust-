@@ -142,6 +142,31 @@ export function triggerBlobDownload(blob, name){
   setTimeout(()=>URL.revokeObjectURL(url), 0);
 }
 
+/* Serialise the `.log-row` rows currently rendered inside `selector` to a .log
+ * file and save it. This is the always-available capture path shared by the
+ * scan-log panel and the live-activity panel: it records exactly what is on
+ * screen, so it works for a live/streaming scan and even when a server-side
+ * history fetch failed. `opts.emptyMsg` is toasted when nothing is shown;
+ * `opts.header` is a string or a `(count) => string` prepended to the file;
+ * `opts.filename` names the download. Single-sourced so the row DOM shape
+ * (`.ts`/`.typ`/`.msg`) and the on-disk line format live in one place. */
+export function saveShownRows(selector, opts){
+  opts = opts || {};
+  const host = document.querySelector(selector);
+  const rows = host ? host.querySelectorAll('.log-row') : [];
+  if (!rows.length){ toast(opts.emptyMsg || 'Nothing shown yet — nothing to save.', 'warn'); return; }
+  const lines = [];
+  rows.forEach(r=>{
+    const ts  = (r.querySelector('.ts')?.textContent  || '').trim();
+    const typ = (r.querySelector('.typ')?.textContent || '').trim();
+    const msg = (r.querySelector('.msg')?.textContent || '').trim();
+    lines.push(`${ts}  ${typ.padEnd(7)}  ${msg}`.trimEnd());
+  });
+  const header = typeof opts.header === 'function' ? opts.header(rows.length) : (opts.header || '');
+  const blob = new Blob([header + lines.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
+  triggerBlobDownload(blob, opts.filename || 'hse-log.log');
+}
+
 /* Fetch `url` and save it as a file, with a spinner on `opts.button` while the
  * server works and a toast on any failure (never a navigation away). Resolves
  * to true on success, false on a handled error. `opts.fallbackName` names the

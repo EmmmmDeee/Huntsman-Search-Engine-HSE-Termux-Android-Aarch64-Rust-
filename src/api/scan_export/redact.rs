@@ -12,9 +12,10 @@
 //! itself — the datum, its confidence, and its provenance TYPE (that it came
 //! from a breach source) are preserved, so the export stays fully useful. The
 //! operator's own full-detail views are deliberately UNAFFECTED: the live web-UI
-//! panels (served by the `/entities`, `/network`, … JSON endpoints), the
-//! loopback-only debug bundle, and `hse export` in the shell all keep the real
-//! source names.
+//! panels (served by the `/entities`, `/network`, … JSON endpoints), the operator
+//! scan debug bundle (built via the non-redacting `download_response_operator`
+//! path and labelled "operator only" in the UI), and `hse export` in the shell
+//! all keep the real source names.
 
 use crate::core::module::ModuleCategory;
 use regex::Regex;
@@ -26,8 +27,9 @@ use std::sync::LazyLock;
 /// never a sensitive name (so redaction is idempotent).
 pub const REDACTED_LABEL: &str = "breach-source";
 
-/// Paid/proprietary breach-intel provider source labels the category sweep in
-/// [`SENSITIVE`] does NOT catch, in EVERY string form they appear as:
+/// Paid/proprietary breach-intel provider source labels the `Breach`-category
+/// registry sweep in [`SENSITIVE_RE`] does NOT catch, in EVERY string form they
+/// appear as:
 ///   - `oathnet_pro` is `People`-categorised (not `Breach`), so the sweep skips
 ///     it entirely; and
 ///   - the `breach_rich` rich-pass and the stealer path stamp their source as
@@ -51,34 +53,31 @@ const EXTRA_SENSITIVE: &[&str] = &[
     "seek_know",
 ];
 
-/// The set of source names to genericise, resolved ONCE: every `Breach`-category
-/// module's source name (authoritative and self-maintaining — a newly added
-/// breach module is covered without editing this file) plus [`EXTRA_SENSITIVE`].
-static SENSITIVE: LazyLock<BTreeSet<String>> = LazyLock::new(|| {
-    let mut set: BTreeSet<String> = crate::modules::registry()
+/// One whole-token, case-insensitive alternation regex over the sensitive source
+/// set, resolved and compiled ONCE. The set is every `Breach`-category module's
+/// source name (authoritative and self-maintaining — a newly added breach module
+/// is covered without editing this file) plus [`EXTRA_SENSITIVE`]. `\b` anchors
+/// both ends so a coincidental substring (a subject value that merely *contains*
+/// a provider name) is never touched.
+static SENSITIVE_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
+    // A `BTreeSet` de-dups the registry sweep against `EXTRA_SENSITIVE`; its sort
+    // order is incidental — the match-length order the regex actually needs is
+    // imposed below.
+    let mut names: BTreeSet<String> = crate::modules::registry()
         .iter()
         .filter(|m| m.category() == ModuleCategory::Breach)
         .map(|m| m.name().to_string())
         .collect();
-    for &e in EXTRA_SENSITIVE {
-        set.insert(e.to_string());
-    }
-    set
-});
-
-/// One whole-token alternation regex over [`SENSITIVE`], compiled once. `\b`
-/// anchors both ends so a coincidental substring (a subject value that merely
-/// *contains* a provider name) is never touched.
-static SENSITIVE_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
-    if SENSITIVE.is_empty() {
+    names.extend(EXTRA_SENSITIVE.iter().map(|&e| e.to_string()));
+    if names.is_empty() {
         return None;
     }
     // Longest-first, so a longer provider label (`oathnet-pro`) is matched whole
     // before a shorter label it contains (`oathnet`), independent of the regex
     // engine's alternation-ordering semantics.
-    let mut names: Vec<&String> = SENSITIVE.iter().collect();
-    names.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
-    let alt = names
+    let mut ordered: Vec<&String> = names.iter().collect();
+    ordered.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    let alt = ordered
         .iter()
         .map(|s| regex::escape(s))
         .collect::<Vec<_>>()
