@@ -414,7 +414,11 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         ev = ev
             .with_attr(
                 "cves",
-                cve_set.iter().cloned().collect::<Vec<_>>().join(","),
+                cve_set
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(","),
             )
             .with_attr("cve_count", cve_set.len().to_string());
     }

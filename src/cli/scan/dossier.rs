@@ -143,15 +143,7 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
         "{}",
         entities_header_line(entities.len(), scan.entity_count)
     );
-    println!(
-        "  Modules:   {} run, {} errored, {} timed out, {} skipped, {} cached, {} deduped",
-        scan.modules_run,
-        scan.modules_errored,
-        scan.modules_timed_out,
-        scan.modules_skipped,
-        scan.modules_cached,
-        scan.modules_deduped
-    );
+    println!("  Modules:   {}", scan.module_accounting_line());
     // Expansion timeline — the scan's expansion curve: how many entities were
     // first surfaced in each generation as the working graph expanded outward
     // from the seed. Shown only when expansion reached beyond the seed round
@@ -316,11 +308,10 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
     if !relations.is_empty() {
         use std::collections::HashMap;
         let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
-        let label = |uid: &str| -> String {
-            by_uid.get(uid).map_or_else(
-                || format!("{}…", &uid[..uid.len().min(8)]),
-                |e| super::super::truncate(&e.value, 40),
-            )
+        let label = |uid: &str| {
+            super::super::relation_endpoint_label(&by_uid, uid, |e| {
+                super::super::truncate(&e.value, 40)
+            })
         };
         let confined = confine_relations_to_visible(entities, relations);
         let hidden = relations.len() - confined.len();

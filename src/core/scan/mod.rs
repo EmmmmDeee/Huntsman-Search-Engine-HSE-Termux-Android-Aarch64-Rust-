@@ -737,6 +737,25 @@ pub struct Scan {
 }
 
 impl Scan {
+    /// The six module-accounting counts as one canonical human sentence:
+    /// `"{run} run, {errored} errored, {timed_out} timed out, {skipped} skipped,
+    /// {cached} cached, {deduped} deduped"`. Single-sourced so every renderer
+    /// (the dossier, the debug-bundle header, any future one) surfaces the same
+    /// counts in the same order and can never again disagree — the drift this
+    /// prevents is exactly what once left the dossier showing only 3 of the 6.
+    /// Callers prepend their own label/prefix.
+    pub fn module_accounting_line(&self) -> String {
+        format!(
+            "{} run, {} errored, {} timed out, {} skipped, {} cached, {} deduped",
+            self.modules_run,
+            self.modules_errored,
+            self.modules_timed_out,
+            self.modules_skipped,
+            self.modules_cached,
+            self.modules_deduped
+        )
+    }
+
     pub fn new(id: impl Into<String>, target: Target) -> Self {
         Self {
             id: id.into(),

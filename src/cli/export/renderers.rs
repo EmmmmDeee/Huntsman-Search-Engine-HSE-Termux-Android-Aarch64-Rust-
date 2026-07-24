@@ -99,16 +99,7 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
     // Full module accounting — including the timed-out/skipped/cached counts the
     // header historically dropped. A timed-out module is a stronger
     // incompleteness signal than a dedup, so total transparency requires it.
-    let _ = writeln!(
-        s,
-        "modules    : {} run, {} errored, {} timed out, {} skipped, {} cached, {} deduped",
-        scan.modules_run,
-        scan.modules_errored,
-        scan.modules_timed_out,
-        scan.modules_skipped,
-        scan.modules_cached,
-        scan.modules_deduped
-    );
+    let _ = writeln!(s, "modules    : {}", scan.module_accounting_line());
 
     // Exposure Index — the calibrated 0–100 headline with its transparent
     // per-signal breakdown, mirroring the live dossier (`print_dossier`) so the
@@ -264,11 +255,10 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
         // stays byte-deterministic. UIDs are hex ASCII, so the slice is byte-safe.
         let by_uid: std::collections::HashMap<&str, &crate::core::entity::Entity> =
             entities.iter().map(|e| (e.uid.as_str(), e)).collect();
-        let label = |uid: &str| -> String {
-            by_uid.get(uid).map_or_else(
-                || format!("{}…", &uid[..uid.len().min(8)]),
-                |e| format!("{} ({})", e.value, e.kind),
-            )
+        let label = |uid: &str| {
+            super::super::relation_endpoint_label(&by_uid, uid, |e| {
+                format!("{} ({})", e.value, e.kind)
+            })
         };
         let _ = writeln!(s, "\n── RELATIONS ──");
         for r in &relations {

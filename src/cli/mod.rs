@@ -569,6 +569,22 @@ pub(super) fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+/// Resolve a relation-endpoint UID to a human label: apply `found` to the
+/// entity when `by_uid` resolves it, else a short-uid stub `"abcd1234…"`. The
+/// hex-slice fallback lives HERE, in one place, so every relations renderer
+/// (dossier RELATIONS, the `export` full render, and any future one) shows the
+/// identical stub for an unresolvable endpoint and can never drift. UIDs are
+/// hex ASCII, so the byte slice is char-boundary safe.
+pub(super) fn relation_endpoint_label(
+    by_uid: &std::collections::HashMap<&str, &crate::core::entity::Entity>,
+    uid: &str,
+    found: impl FnOnce(&crate::core::entity::Entity) -> String,
+) -> String {
+    by_uid
+        .get(uid)
+        .map_or_else(|| format!("{}…", &uid[..uid.len().min(8)]), |e| found(e))
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");
