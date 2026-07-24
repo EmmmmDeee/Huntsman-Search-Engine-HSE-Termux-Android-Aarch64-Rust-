@@ -5,6 +5,7 @@
 
 pub mod attack;
 pub mod benchmark;
+pub mod breach_consensus;
 pub mod cancel;
 pub mod classifier;
 pub mod classify_module;
