@@ -17,6 +17,10 @@ use super::handlers::{internal_error, not_found};
 use super::scan_handlers::{scan_missing, wants_candidates, wants_infra};
 use crate::api::AppState;
 
+/// Genericise proprietary breach/intel source names in the shareable downloads
+/// so a scan result handed to a customer never reveals the operator's providers.
+mod redact;
+
 pub async fn scan_entities_csv(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -42,7 +46,10 @@ pub async fn scan_entities_csv(
         entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
     }
     download_response(
-        entities_to_csv(&entities),
+        // Shareable download → genericise proprietary breach/intel source names
+        // (the `sources` / `corroborating_sources` columns) so the customer copy
+        // never reveals which providers the operator uses.
+        redact::redact_sensitive_sources(&entities_to_csv(&entities)),
         "text/csv; charset=utf-8",
         &id,
         "csv",
@@ -165,9 +172,13 @@ pub async fn scan_report_json(
     })
     .await;
     match built {
-        Ok(Ok(Some(body))) => {
-            download_response(body, "application/json; charset=utf-8", &id, "json", "json")
-        }
+        Ok(Ok(Some(body))) => download_response(
+            redact::redact_sensitive_sources(&body),
+            "application/json; charset=utf-8",
+            &id,
+            "json",
+            "json",
+        ),
         Ok(Ok(None)) => not_found(),
         Ok(Err(e)) => internal_error(&e),
         Err(e) => internal_error(&format!("report task failed: {e}")),
@@ -365,7 +376,13 @@ pub async fn scan_export_gexf(
         entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
     }
     let body = crate::core::gexf::entities_to_gexf(&entities, &relations, &id);
-    download_response(body, "application/xml; charset=utf-8", &id, "gexf", "gexf")
+    download_response(
+        redact::redact_sensitive_sources(&body),
+        "application/xml; charset=utf-8",
+        &id,
+        "gexf",
+        "gexf",
+    )
 }
 
 /// `GET /api/v1/scans/{id}/debug.txt` — the one-click debug bundle: the entire
@@ -415,7 +432,10 @@ pub async fn scan_events_log(
     let id2 = id.clone();
     match tokio::task::spawn_blocking(move || store.events_for_scan(&id2)).await {
         Ok(Ok(events)) => download_response(
-            crate::cli::export::render_event_log(&events),
+            // Shareable download → genericise the module/source names the event
+            // JSONL carries (module_start/done/error name the producing provider),
+            // so the customer copy never reveals the operator's breach sources.
+            redact::redact_sensitive_sources(&crate::cli::export::render_event_log(&events)),
             "text/plain; charset=utf-8",
             &id,
             "events",
