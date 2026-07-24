@@ -229,6 +229,11 @@ pub(in crate::core) use rules::source_family;
 // secrets/handles qualify.
 pub(in crate::core) use rules::Secret;
 pub(in crate::core) use rules::{canonical_handle, is_anchorable_handle};
+// The breach/stealer corpus classifier: `core::breach_consensus` grades an
+// entity's corroboration by counting DISTINCT breach sources, and must agree
+// exactly with the correlator on which sources those are — a second, drifting
+// list would let the consensus pass certify agreement the rules never saw.
+pub(in crate::core) use rules::breach_pii::{is_breach_source, DOB_KEYS};
 use rules::*;
 
 const RULES: &[RuleFn] = &[

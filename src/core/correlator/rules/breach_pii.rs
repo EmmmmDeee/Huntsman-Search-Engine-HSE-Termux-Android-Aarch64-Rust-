@@ -108,7 +108,7 @@ fn scan_evidence<'a>(entities: &'a [Entity], keys: &[&str]) -> Vec<(String, &'a 
 /// `photon`, `search_engines`, and the AU registries (`au_property`,
 /// `au_electoral`, `abn_lookup`, `au_people`) — is classified non-breach by
 /// `source_family` and so is correctly rejected. Pure.
-fn is_breach_source(name: &str) -> bool {
+pub(in crate::core) fn is_breach_source(name: &str) -> bool {
     super::source_family(name) == "breach"
         || name.eq_ignore_ascii_case("see_know")
         || name.eq_ignore_ascii_case("see-know")

@@ -103,14 +103,30 @@ pub const RECALL_SOURCE: &str = "recall";
 /// inflate [`Entity::source_count`] / `c_effective`.
 pub const CROSS_SCAN_SOURCE: &str = "cross_scan_history";
 
+/// Evidence source name of the final breach-consensus grading pass
+/// ([`crate::core::breach_consensus`]).
+///
+/// The pass reads the evidence the breach modules already attached and records
+/// how many DISTINCT corpora attest each finding. It is a *summary of* those
+/// observations, not a new one — counting it would let an entity corroborate
+/// itself, and would do so most strongly for the entities the grading singled
+/// out as weakest. The summary is attached (and is what the audit trail reads)
+/// but, like [`RECALL_SOURCE`] and [`CROSS_SCAN_SOURCE`], it can never inflate
+/// [`Entity::source_count`] / `c_effective`.
+pub const CONSENSUS_SOURCE: &str = "breach_consensus";
+
 /// True if `source` must NOT count toward cross-source corroboration — a
 /// deterministic self-enrichment pass ([`ENRICHMENT_ONLY_SOURCES`]), the recall
-/// replay ([`RECALL_SOURCE`]), or the cross-scan history link ([`CROSS_SCAN_SOURCE`]).
-/// All attach genuine, useful evidence, but none is an independent observation, so
-/// none may inflate the corroboration count.
+/// replay ([`RECALL_SOURCE`]), the cross-scan history link ([`CROSS_SCAN_SOURCE`]),
+/// or the breach-consensus summary ([`CONSENSUS_SOURCE`]). All attach genuine,
+/// useful evidence, but none is an independent observation, so none may inflate
+/// the corroboration count.
 #[inline]
 pub fn is_non_corroborating_source(source: &str) -> bool {
-    is_enrichment_source(source) || source == RECALL_SOURCE || source == CROSS_SCAN_SOURCE
+    is_enrichment_source(source)
+        || source == RECALL_SOURCE
+        || source == CROSS_SCAN_SOURCE
+        || source == CONSENSUS_SOURCE
 }
 
 // ─── EntityKind ──────────────────────────────────────────────────────────────
