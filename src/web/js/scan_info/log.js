@@ -186,6 +186,12 @@ export function mapEvent(ev){
   if (t==='expansion_tick') return {typ:'expand', lv:'info',  msg:`depth ${ev.depth} · queued ${ev.queued} · visited ${ev.visited}`};
   if (t==='expansion_stop') return {typ:'expand', lv:'warn',  msg:`expansion stopped · ${esc(ev.reason)}`};
   if (t==='entity_excluded') return {typ:'expand', lv:'skip', msg:`⊘ not expanded · ${kindPill(ev.kind)} ${esc(ev.value)} <span class="text-muted">${esc(ev.reason)}</span>`};
+  // Final bulk breach sweep. `dropped` is part of the line, not a tooltip: a
+  // capped plan and a complete one must not read the same.
+  if (t==='breach_sweep')   return {typ:'expand', lv:'info',  msg:`⇉ breach sweep · ${ev.probes} probes from ${ev.anchors} anchors${ev.dropped?` <span class="text-muted">(${ev.dropped} over cap)</span>`:''}`};
+  // Autonomous audit of the breach corpus. A non-passing verdict means two
+  // corpora contradict each other, so it renders at warn level.
+  if (t==='consensus_audit') return {typ:'corr', lv:(ev.verdict==='PASS'||ev.verdict==='PASS_WITH_WARNINGS')?'ok':'warn', msg:`⚖ breach audit · ${esc(ev.verdict)} · ${ev.corroborated}/${ev.examined} corroborated <span class="text-muted">${ev.flags} flags</span>`};
   if (t==='correlation_found') return {typ:'corr', lv:'corr', msg:`${esc(ev.correlation?.rule_name||ev.correlation?.rule_id||'?')}`};
   if (t==='correlations_done') return {typ:'corr', lv:'info', msg:`correlations done · ${ev.count}`};
   // Live-session lifecycle (streamed into the Live-activity panel). Without

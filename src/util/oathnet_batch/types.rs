@@ -6,6 +6,9 @@
 // `oathnet_batch::Surface` while there is exactly one definition.
 pub use crate::util::oathnet::Surface;
 
+use crate::core::scan::TargetKind;
+use crate::util::oathnet::{FIELD_DOMAIN, FIELD_EMAIL, FIELD_IP, FIELD_PHONE, FIELD_USERNAME};
+
 /// Why a query was generated — surfaced in the plan so an operator can see how
 /// each query relates to the seed, and so callers can weight derived queries
 /// below the direct seed.
@@ -51,6 +54,45 @@ pub struct BatchQuery {
     pub value: String,
     /// Why this query was generated — its provenance back to the seed.
     pub origin: Origin,
+}
+
+impl BatchQuery {
+    /// The [`TargetKind`] this query's selector field dispatches as, or `None`
+    /// when the field names no scannable identifier.
+    ///
+    /// The exact inverse of [`crate::util::oathnet::selector_field`], and it
+    /// lives here — on the type that carries the field — rather than in the
+    /// API client, for two reasons. It is pure (a `match` over `&'static str`
+    /// constants; no state, network, or key), and it is what a *consumer* of a
+    /// generated plan needs: every caller that turns queries into scan targets
+    /// asks this question, so answering it once here stops each of them from
+    /// re-deriving the mapping and drifting from the generator.
+    ///
+    /// `q` (free text) maps to `None`: it is a corpus-side full-text search,
+    /// not an identifier, so there is no module graph to run for it. Callers
+    /// must count those as skipped rather than dropping them in silence.
+    ///
+    /// ```
+    /// use huntsman_search_engine::core::scan::TargetKind;
+    /// use huntsman_search_engine::util::oathnet_batch::{generate, BatchOptions};
+    ///
+    /// let qs = generate(TargetKind::Email, "a.b@example.org", &BatchOptions::default());
+    /// // Every query the generator emits either names a scannable kind or is
+    /// // free text — never an unrecognised field.
+    /// assert!(qs.iter().all(|q| q.target_kind().is_some() || q.field == "q"));
+    /// ```
+    #[must_use]
+    pub fn target_kind(&self) -> Option<TargetKind> {
+        Some(match self.field {
+            FIELD_EMAIL => TargetKind::Email,
+            FIELD_USERNAME => TargetKind::Username,
+            FIELD_PHONE => TargetKind::Phone,
+            FIELD_DOMAIN => TargetKind::Domain,
+            FIELD_IP => TargetKind::IpAddress,
+            // `FIELD_QUERY` and anything unrecognised.
+            _ => return None,
+        })
+    }
 }
 
 /// Knobs controlling how aggressively the seed is expanded.

@@ -3431,3 +3431,292 @@ fn tracked_entity_map_into_inner_yields_every_entity_regardless_of_dirty_state()
     assert!(inner.contains_key(&a_uid));
     assert!(inner.contains_key(&b_uid));
 }
+
+// ── Final breach sweep + autonomous audit ───────────────────────────────────
+
+/// A stand-in breach corpus. Its NAME is what matters: `source_family` classes
+/// anything containing "breach" into the breach family, so
+/// `is_breach_source` recognises it, the engine admits it to the sweep's
+/// allow-list, and the consensus pass counts it as an attesting corpus — the
+/// same three decisions a real corpus module goes through.
+///
+/// It answers every identity target with one Email entity derived from the
+/// target's value, so a dispatched sweep probe is observable in the store. The
+/// synthetic domain is deliberately NOT `example.*` — the engine's placeholder
+/// filter rejects those, which would make the fixture silently produce nothing.
+struct StubBreachCorpus {
+    name: &'static str,
+}
+
+#[async_trait::async_trait]
+impl Module for StubBreachCorpus {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn category(&self) -> crate::core::module::ModuleCategory {
+        crate::core::module::ModuleCategory::Breach
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(
+            t.kind,
+            TargetKind::Email | TargetKind::Username | TargetKind::FullName | TargetKind::Phone
+        )
+    }
+    fn produces(&self) -> &'static [EntityKind] {
+        const K: &[EntityKind] = &[EntityKind::Email];
+        K
+    }
+    async fn process(
+        &self,
+        target: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        let local: String = target
+            .value
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect();
+        let mut e = Entity::new(
+            EntityKind::Email,
+            format!("{local}@leakset.net"),
+            0.9,
+            &ctx.scan_id,
+        );
+        e.add_evidence(crate::core::entity::Evidence::new(self.name, "synthetic"));
+        let mut r = crate::core::module::ModuleResult::new();
+        r.push(e);
+        Ok(r)
+    }
+}
+
+/// Collect every event the engine published, so a test can assert on the
+/// pipeline's own record of what it did rather than on side effects.
+fn drain_events(rx: &mut tokio::sync::broadcast::Receiver<crate::core::Event>) -> Vec<EventKind> {
+    let mut out = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        out.push(ev.kind);
+    }
+    out
+}
+
+/// End-to-end: the final bulk breach query is compiled and dispatched by the
+/// scan pipeline itself — not merely available to a CLI caller — and the
+/// autonomous audit runs after it.
+#[tokio::test]
+async fn a_scan_runs_the_final_breach_sweep_and_then_audits_it() {
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, mut rx) = tokio::sync::broadcast::channel(4096);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        store_port,
+        bus.clone(),
+    );
+
+    let opts = ScanOptions {
+        depth: 1,
+        expand_all_identities: true,
+        max_roi: false,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Email, "subject@example.com");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("email", "subject@example.com"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let scan_id = scan.id.clone();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    engine.run(scan, target, ctx).await.unwrap();
+
+    let events = drain_events(&mut rx);
+    let sweep = events
+        .iter()
+        .find_map(|k| match k {
+            EventKind::BreachSweep {
+                anchors,
+                probes,
+                dropped,
+            } => Some((*anchors, *probes, *dropped)),
+            _ => None,
+        })
+        .expect("the scan pipeline must run the final breach sweep, not just offer it to the CLI");
+    let (anchors, probes, _dropped) = sweep;
+    assert!(
+        probes > 0 && anchors > 0,
+        "a confident Email seed must yield at least one anchor and probe; got \
+         {anchors} anchors / {probes} probes"
+    );
+
+    let audit = events
+        .iter()
+        .find_map(|k| match k {
+            EventKind::ConsensusAudit {
+                verdict, examined, ..
+            } => Some((verdict.clone(), *examined)),
+            _ => None,
+        })
+        .expect("the sweep must be audited autonomously once it has been used");
+    let (verdict, examined) = audit;
+    assert!(
+        examined > 0,
+        "the corpus module attested entities, so the audit had a population to grade"
+    );
+    assert_ne!(
+        verdict, "PENDING_REVIEW",
+        "an un-run audit must never be reported as the scan's verdict"
+    );
+
+    // The sweep's dispatches actually reached the store, tagged and attributed.
+    let ents = store.entities_for_scan(&scan_id).unwrap();
+    let swept: Vec<&Entity> = ents
+        .iter()
+        .filter(|e| e.has_tag(crate::core::breach_consensus::SWEEP_TAG))
+        .collect();
+    assert!(
+        !swept.is_empty(),
+        "sweep-discovered entities must be tagged `{}` so a reader can tell what the \
+         final bulk query contributed; entities present: {:?}",
+        crate::core::breach_consensus::SWEEP_TAG,
+        ents.iter().map(|e| &e.value).collect::<Vec<_>>()
+    );
+    // Sweep finds sit one generation beyond gap-fill's `depth + 1`.
+    for e in &swept {
+        assert_eq!(
+            e.generation, 3,
+            "a depth-1 scan's sweep finds belong at generation 3 (depth + 2): {}",
+            e.value
+        );
+    }
+}
+
+/// The audit is grading, not collection: it costs no network I/O and answers a
+/// question a shallow scan needs answered too. A depth-0 scan that touched a
+/// corpus must still get a verdict — but must NOT run the sweep, which is
+/// expansion and which the operator switched off by asking for depth 0.
+#[tokio::test]
+async fn the_audit_runs_on_a_depth_zero_scan_but_the_sweep_does_not() {
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, mut rx) = tokio::sync::broadcast::channel(4096);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        store_port,
+        bus.clone(),
+    );
+
+    let opts = ScanOptions {
+        depth: 0,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Email, "shallow@example.com");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("email", "shallow@example.com"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    engine.run(scan, target, ctx).await.unwrap();
+
+    let events = drain_events(&mut rx);
+    assert!(
+        !events
+            .iter()
+            .any(|k| matches!(k, EventKind::BreachSweep { .. })),
+        "depth 0 means no pivoting at all — the sweep dispatches new targets and \
+         must stay off"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|k| matches!(k, EventKind::ConsensusAudit { .. })),
+        "the audit reads evidence already collected, so a depth-0 scan that hit a \
+         corpus must still be graded"
+    );
+}
+
+/// The sweep must never manufacture the corroboration the consensus reports.
+/// Its grading pass records what the corpora said; it may not itself count as a
+/// corpus, or the weakest findings would be the ones it flattered most.
+#[tokio::test]
+async fn the_audit_does_not_inflate_the_confidence_it_grades() {
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, _rx) = tokio::sync::broadcast::channel(4096);
+    let engine = ScanEngine::new(
+        vec![Arc::new(StubBreachCorpus {
+            name: "stub_breach_corpus",
+        })],
+        store_port,
+        bus.clone(),
+    );
+
+    let opts = ScanOptions {
+        depth: 0,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Email, "solo@example.com");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("email", "solo@example.com"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let scan_id = scan.id.clone();
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    engine.run(scan, target, ctx).await.unwrap();
+
+    let ents = store.entities_for_scan(&scan_id).unwrap();
+    let graded: Vec<&Entity> = ents
+        .iter()
+        .filter(|e| {
+            e.evidence
+                .iter()
+                .any(|ev| ev.source == crate::core::entity::CONSENSUS_SOURCE)
+        })
+        .collect();
+    assert!(
+        !graded.is_empty(),
+        "the fixture must actually be graded, or this test proves nothing"
+    );
+    for e in &graded {
+        // Exactly one real corpus attested each of these; the consensus summary
+        // must not have become a second "source" that lifts them.
+        let corroborating = e.corroborating_sources();
+        assert!(
+            !corroborating.contains(&crate::core::entity::CONSENSUS_SOURCE),
+            "the consensus summary counted itself as corroboration for {}",
+            e.value
+        );
+    }
+}

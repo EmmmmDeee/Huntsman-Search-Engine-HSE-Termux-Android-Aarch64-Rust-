@@ -36,7 +36,10 @@
 
 use crate::core::entity::Entity;
 use crate::core::scan::{Target, TargetKind};
-use crate::util::oathnet;
+// The ONLY `util` dependency: the pure, IO-free recursive query generator and
+// its value types. `core` must not reach into the OathNet API client itself —
+// the field→kind mapping this needs lives on `BatchQuery::target_kind`, beside
+// the field it reads, precisely so that stays true.
 use crate::util::oathnet_batch::{generate, BatchOptions, Origin};
 use std::collections::HashSet;
 
@@ -61,6 +64,17 @@ pub const RECURSE_DEPTH: u32 = 1;
 /// Cap on queries taken from any single anchor, so one prolific anchor cannot
 /// crowd every other identifier out of a capped plan.
 pub const MAX_PER_ANCHOR: usize = 16;
+
+/// Floor on an anchor's effective confidence, independent of the scan's own
+/// expansion floor.
+///
+/// Higher than [`crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE`] (0.20) on
+/// purpose. An internal pivot on a weak lead costs a wasted dispatch; sending
+/// that same weak lead to a breach corpus DISCLOSES it to a third party, and
+/// the value being weak is exactly what makes disclosing it unjustified. The
+/// caller takes the maximum of this and the scan's floor, so tightening the
+/// scan tightens the sweep but loosening it cannot loosen the sweep.
+pub const MIN_ANCHOR_CONFIDENCE: f64 = 0.35;
 
 /// One probe the sweep will dispatch: a target, and the entity it came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,7 +182,7 @@ pub fn compile(entities: &[Entity], inputs: SweepInputs<'_>) -> SweepPlan {
 
         let mut contributed = false;
         for query in generate(anchor_kind, &anchor.value, &opts) {
-            let Some(kind) = kind_for_field(query.field) else {
+            let Some(kind) = query.target_kind() else {
                 plan.skipped_free_text += 1;
                 continue;
             };
@@ -249,22 +263,6 @@ fn is_identity_anchor(entity: &Entity) -> bool {
         entity.kind,
         EntityKind::Email | EntityKind::Username | EntityKind::Person | EntityKind::Phone
     )
-}
-
-/// The [`TargetKind`] a generated selector field dispatches as.
-///
-/// `q` (free text) has none: it is a corpus-side full-text search, not an
-/// identifier, and there is no module graph to run for it. Counted as skipped
-/// rather than dropped in silence.
-fn kind_for_field(field: &str) -> Option<TargetKind> {
-    match field {
-        oathnet::FIELD_EMAIL => Some(TargetKind::Email),
-        oathnet::FIELD_USERNAME => Some(TargetKind::Username),
-        oathnet::FIELD_PHONE => Some(TargetKind::Phone),
-        oathnet::FIELD_DOMAIN => Some(TargetKind::Domain),
-        oathnet::FIELD_IP => Some(TargetKind::IpAddress),
-        _ => None,
-    }
 }
 
 /// Dedup key. Normalises exactly as the engine's visited-set does, so a probe

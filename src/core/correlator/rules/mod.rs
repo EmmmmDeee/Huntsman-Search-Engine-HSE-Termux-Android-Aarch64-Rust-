@@ -369,6 +369,16 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "breach",
         "stealer",
         "hudsonrock", // infostealer-log intelligence (exact module name)
+        // The remaining `ModuleCategory::Breach` modules, whose names carry no
+        // generic breach token and so fell through to `"other"` — the catch-all
+        // that is EXCLUDED from family-diversity counts. Four breach corpora were
+        // therefore contributing nothing to cross-family corroboration, and were
+        // invisible to the gap analysis's missing-family search. Exact module
+        // names; `source_family_covers_every_breach_category_module` pins them.
+        "comb_search", // COMB combo-list corpus
+        "psbdmp",      // Pastebin dump archive (paste exposure)
+        "niamonx",     // Niamonx breach-lookup API
+        "osintcat",    // OSINTCat breach-lookup API
     ]) {
         "breach"
     } else if has(&[

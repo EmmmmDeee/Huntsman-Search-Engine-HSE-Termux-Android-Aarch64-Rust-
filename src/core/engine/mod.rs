@@ -745,7 +745,35 @@ impl ScanEngine {
                     &quarantined,
                 )
                 .await;
+
+            // Final bulk breach query — the last leg. Everything above has run,
+            // so the plan is compiled from the whole graph the recursion built
+            // rather than from the seed alone. Bounded, cancel-aware, toggle-
+            // gated, and restricted to the breach corpora; any new entities flow
+            // into finalise below.
+            let _ = self
+                .run_breach_sweep(
+                    &scan.id,
+                    &target,
+                    &mut ctx,
+                    &opts,
+                    started,
+                    &mut entity_map,
+                    &mut visited,
+                    &mut stats,
+                    &mut *dispatched,
+                    &mut lineage,
+                    &quarantined,
+                )
+                .await;
         }
+
+        // Grade the breach corpus and record the autonomous verdict. Outside the
+        // depth gate on purpose: the sweep is collection and needs the recursion
+        // to have run, but the audit is pure grading of evidence already held —
+        // a depth-0 scan whose seed round hit two corpora with contradictory
+        // dates of birth needs that verdict just as much as a deep one.
+        self.run_consensus_audit(&scan.id, &mut entity_map);
 
         // Scan body done — stop the wall-time watchdog so it can't fire after
         // we've already finished (and is reaped promptly rather than sleeping
@@ -1378,6 +1406,270 @@ impl ScanEngine {
             );
         }
         probed
+    }
+
+    /// The registered modules that query a breach/stealer/paste corpus, as the
+    /// dispatch allow-list for the final sweep.
+    ///
+    /// Classified by [`crate::core::correlator::is_breach_source`] — the SAME
+    /// predicate the consensus pass uses to decide which evidence sources attest
+    /// a finding. Sharing it is the point: a module dispatched here whose source
+    /// the grader does not recognise would produce findings that are never
+    /// graded, and the sweep would report an audit that silently skipped them.
+    ///
+    /// A module that self-declares [`ModuleCategory::Breach`] but is not
+    /// recognised is exactly that hole, so it is named in a warning rather than
+    /// quietly dispatched — `core` cannot import the module registry, so this
+    /// call site is the only place the two classifications are both visible.
+    fn breach_sweep_modules(&self, scan_id: &str) -> Vec<String> {
+        let mut allow = Vec::new();
+        let mut ungraded: Vec<&str> = Vec::new();
+        for m in &self.modules {
+            let name = m.name();
+            let recognised = crate::core::correlator::is_breach_source(name);
+            if recognised {
+                allow.push(name.to_string());
+            } else if m.info().category == crate::core::ModuleCategory::Breach {
+                ungraded.push(name);
+            }
+        }
+        if !ungraded.is_empty() {
+            warn!(
+                scan_id,
+                modules = ungraded.join(","),
+                "breach-category modules unknown to the corpus classifier — their findings would \
+                 not be graded by the consensus audit, so they are excluded from the sweep; add \
+                 them to `source_family`'s breach set"
+            );
+        }
+        allow
+    }
+
+    /// The final bulk breach query: compile every confident identity the scan
+    /// has accumulated into one plan and put it to the breach corpora.
+    ///
+    /// Runs LAST, after expansion and gap-fill, because that is what makes it
+    /// worth running: the plan is compiled from the full graph the recursive
+    /// search built, not from the seed, so an alias discovered at depth 3 is
+    /// swept with the same standing as the address the operator typed. The
+    /// compiler ([`crate::core::breach_sweep`]) is pure and deterministic; this
+    /// function is only the dispatch half.
+    ///
+    /// Returns the number of probes actually dispatched.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_breach_sweep(
+        &self,
+        scan_id: &str,
+        seed: &Target,
+        ctx: &mut ModuleContext,
+        opts: &ScanOptions,
+        started: Instant,
+        entity_map: &mut TrackedEntityMap,
+        visited: &mut HashSet<(TargetKind, String)>,
+        stats: &mut ModuleStats,
+        dispatched: &mut DispatchLog,
+        relations: &mut Vec<Relation>,
+        quarantined: &HashSet<String>,
+    ) -> usize {
+        if !crate::util::settings::get_bool(crate::util::settings::BREACH_SWEEP_FEATURE, true) {
+            return 0;
+        }
+        // Same ordering as gap-fill: bail BEFORE the snapshot + compile, not just
+        // before the dispatch loop. A cancelled scan must do no further work, and
+        // the compile walks the whole entity set.
+        if ctx.cancel.is_cancelled() {
+            return 0;
+        }
+
+        let allow: Vec<String> = {
+            let mut a = self.breach_sweep_modules(scan_id);
+            if let Some(user_allow) = &opts.modules {
+                a.retain(|m| user_allow.contains(m));
+            }
+            a
+        };
+        if allow.is_empty() {
+            return 0;
+        }
+
+        let ents: Vec<Entity> = entity_map.values().cloned().collect();
+        let plan = crate::core::breach_sweep::compile(
+            &ents,
+            crate::core::breach_sweep::SweepInputs {
+                already_probed: visited,
+                quarantined,
+                // Whichever floor is stricter — see `MIN_ANCHOR_CONFIDENCE`.
+                min_confidence: opts
+                    .effective_min_expand_confidence()
+                    .max(crate::core::breach_sweep::MIN_ANCHOR_CONFIDENCE),
+            },
+        );
+
+        // Emit the plan's shape BEFORE dispatching, and emit it even when empty:
+        // "the sweep ran and had nothing to ask" and "the sweep never ran" are
+        // different outcomes and must not look the same in the event log.
+        self.emit(
+            scan_id,
+            EventKind::BreachSweep {
+                anchors: plan.anchors_used,
+                probes: plan.len(),
+                dropped: plan.dropped_over_cap,
+            },
+        );
+        if plan.dropped_over_cap > 0 {
+            warn!(
+                scan_id,
+                dropped = plan.dropped_over_cap,
+                cap = crate::core::breach_sweep::MAX_PROBES,
+                "breach sweep hit its probe cap — the plan is a bounded sample, not exhaustive"
+            );
+        }
+        if plan.is_empty() {
+            return 0;
+        }
+
+        let sweep_opts = ScanOptions {
+            modules: Some(allow),
+            ..opts.clone()
+        };
+        // One generation beyond gap-fill's `+1`: the sweep is the last leg, so
+        // its finds are the furthest point of the derivation trail.
+        let sweep_generation = opts.depth.saturating_add(2);
+
+        let mut newly_inserted: Vec<String> = Vec::new();
+        let mut probed = 0usize;
+
+        for probe in &plan.probes {
+            if ctx.cancel.is_cancelled() || budget_check(opts, started, entity_map.len()).is_some() {
+                // Not a silent stop: the operator must be able to tell a sweep
+                // that finished from one the budget cut short.
+                warn!(
+                    scan_id,
+                    dispatched = probed,
+                    planned = plan.len(),
+                    "breach sweep stopped early (cancelled or over budget)"
+                );
+                break;
+            }
+            let target = probe.target();
+
+            newly_inserted.clear();
+            {
+                let cx = DispatchCx {
+                    scan_id,
+                    target: &target,
+                    opts: &sweep_opts,
+                    is_expansion: true,
+                    seed_kind: seed.kind,
+                    quarantined,
+                };
+                let mut dstate = DispatchState {
+                    entity_map: &mut *entity_map,
+                    stats: &mut *stats,
+                    dispatched: &mut *dispatched,
+                    newly_inserted: &mut newly_inserted,
+                };
+                if let Err(e) = self.dispatch_target(&cx, ctx, &mut dstate).await {
+                    warn!(scan_id, error = %e, "breach-sweep dispatch failed (continuing)");
+                }
+            }
+            for uid in newly_inserted.drain(..) {
+                if let Some(child) = entity_map.get_mut(&uid) {
+                    child.generation = sweep_generation;
+                    child.tag(crate::core::breach_consensus::SWEEP_TAG);
+                    let child_conf = child.confidence;
+                    relations.push(Relation::new(
+                        uid.as_str(),
+                        probe.anchor_uid.as_str(),
+                        RelationKind::DerivedFrom,
+                        child_conf,
+                        scan_id,
+                    ));
+                }
+            }
+            visited.insert(visit_key(&target));
+            probed += 1;
+        }
+
+        info!(
+            scan_id,
+            probed,
+            planned = plan.len(),
+            anchors = plan.anchors_used,
+            skipped_already_probed = plan.skipped_already_probed,
+            skipped_free_text = plan.skipped_free_text,
+            dropped_over_cap = plan.dropped_over_cap,
+            "final breach sweep dispatched"
+        );
+        probed
+    }
+
+    /// Grade the scan's breach findings and record the autonomous audit verdict.
+    ///
+    /// Runs unconditionally at the end of every scan, not only when the sweep
+    /// dispatched something. The audit's job is to answer "do the corpora agree
+    /// about this person?", and a depth-0 scan whose seed round hit two corpora
+    /// with contradictory dates of birth needs that answer just as much as a
+    /// deep one. Costs no network I/O — it reads evidence already collected.
+    ///
+    /// The pass never raises confidence (see [`crate::core::breach_consensus`]);
+    /// it only attaches its summary and its flags, so this is safe to run after
+    /// every gate the scan has already applied.
+    fn run_consensus_audit(&self, scan_id: &str, entity_map: &mut TrackedEntityMap) {
+        let mut ents: Vec<Entity> = entity_map.values().cloned().collect();
+        let report = crate::core::breach_consensus::run_consensus_pass(&mut ents, scan_id);
+        if report.entities_examined == 0 {
+            return;
+        }
+
+        // Write back ONLY the entities the pass graded — the rest are untouched
+        // clones, and overwriting them would clobber nothing today but would
+        // silently discard any concurrent mutation if this ever moved.
+        let graded: HashSet<String> = report
+            .results
+            .iter()
+            .map(|r| r.entity_uid.clone())
+            .collect();
+        for e in ents {
+            if graded.contains(&e.uid)
+                && let Some(slot) = entity_map.get_mut(&e.uid)
+            {
+                *slot = e;
+            }
+        }
+
+        let flags = report.flags().count();
+        self.emit(
+            scan_id,
+            EventKind::ConsensusAudit {
+                verdict: report.verdict.as_str().to_string(),
+                examined: report.entities_examined,
+                corroborated: report.entities_corroborated,
+                flags,
+            },
+        );
+        if report.verdict.can_use_for_correlation() {
+            info!(
+                scan_id,
+                verdict = report.verdict.as_str(),
+                examined = report.entities_examined,
+                corroborated = report.entities_corroborated,
+                new_findings = report.new_findings,
+                flags,
+                "autonomous breach audit complete"
+            );
+        } else {
+            // A failed audit means two corpora contradict each other on a
+            // single-valued attribute. That is a finding in its own right, and
+            // must be loud rather than buried in an info line.
+            warn!(
+                scan_id,
+                verdict = report.verdict.as_str(),
+                examined = report.entities_examined,
+                flag_counts = ?report.flag_counts(),
+                "autonomous breach audit did not pass — corpora disagree"
+            );
+        }
     }
 
     /// Drive the expansion loop. Returns the stop reason for diagnostics.

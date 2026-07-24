@@ -173,6 +173,17 @@ use super::*;
                 value: "1.2.3.4".into(),
                 reason: "r".into(),
             },
+            EventKind::BreachSweep {
+                anchors: 3,
+                probes: 12,
+                dropped: 1,
+            },
+            EventKind::ConsensusAudit {
+                verdict: "pass".into(),
+                examined: 4,
+                corroborated: 2,
+                flags: 1,
+            },
             EventKind::CorrelationFound {
                 correlation: Correlation::new(
                     "AU-001",
@@ -219,6 +230,8 @@ use super::*;
                 | EventKind::ExpansionTick { .. }
                 | EventKind::ExpansionStop { .. }
                 | EventKind::EntityExcluded { .. }
+                | EventKind::BreachSweep { .. }
+                | EventKind::ConsensusAudit { .. }
                 | EventKind::CorrelationFound { .. }
                 | EventKind::CorrelationsDone { .. }
                 | EventKind::LiveStart { .. }
@@ -248,7 +261,7 @@ use super::*;
             );
         }
 
-        assert_eq!(every.len(), 15, "one representative per EventKind variant");
+        assert_eq!(every.len(), 17, "one representative per EventKind variant");
     }
 
     // ── Full Event round-trip ───────────────────────────────────────────
