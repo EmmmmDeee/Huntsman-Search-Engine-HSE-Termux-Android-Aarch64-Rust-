@@ -628,21 +628,84 @@ fn named_ssid_evidence(
     Some(ev)
 }
 
+/// True when an SSID is a default/carrier/generic name rather than one a person
+/// chose — the names whose WiGLE observations belong to strangers' routers, not
+/// the subject's.
+///
+/// Two matchers, because the terms fall into two very different classes.
+///
+/// Distinctive vendor and carrier strings ([`GENERIC_SSID_BRANDS`]) match as
+/// **substrings**: real defaults concatenate them (`xfinitywifi`, `NETGEAR47`,
+/// `TelstraFDA3B2`), and the strings are long and specific enough that they do
+/// not turn up inside ordinary words.
+///
+/// Short English words ([`GENERIC_SSID_WORDS`]) match only as **whole tokens**.
+/// Substring-matching these silently destroyed the module's flagship
+/// capability: `att`, `free`, `open` and `test` occur inside perfectly ordinary
+/// surnames, so `Seattle-Cafe`, `Freeman-Family`, `Openshaw-House` and
+/// `Testa-Household` were all classified generic — and because
+/// [`Wigle::ssid_search`] consults this before issuing any request, those
+/// subjects were never looked up at all. A whole-token test keeps
+/// `Free Public WiFi` generic while letting `Freeman-Family` through.
 pub(super) fn is_generic_ssid(s: &str) -> bool {
-    // One cached `aho-corasick` pass via `util::scan` (SOL-F1) — equivalent to the
-    // old `GENERIC_SSIDS.iter().any(|g| lower.contains(g))`. Case-sensitive over the
-    // Unicode-lowercased string (the patterns are lowercase), so it preserves the
-    // exact `to_lowercase()` fold (non-ASCII included), unlike an ASCII-CI matcher.
-    static GENERIC: std::sync::LazyLock<crate::util::scan::MatchSet> =
-        std::sync::LazyLock::new(|| crate::util::scan::MatchSet::new(GENERIC_SSIDS));
-    GENERIC.is_match(&s.to_lowercase())
+    let lower = s.to_lowercase();
+
+    // One cached `aho-corasick` pass via `util::scan` (SOL-F1). Case-sensitive
+    // over the Unicode-lowercased string (the patterns are lowercase), so it
+    // preserves the exact `to_lowercase()` fold, unlike an ASCII-CI matcher.
+    static BRANDS: std::sync::LazyLock<crate::util::scan::MatchSet> =
+        std::sync::LazyLock::new(|| crate::util::scan::MatchSet::new(GENERIC_SSID_BRANDS));
+    if BRANDS.is_match(&lower) {
+        return true;
+    }
+
+    ssid_tokens(&lower).any(|tok| GENERIC_SSID_WORDS.contains(&tok))
 }
 
-pub(super) const GENERIC_SSIDS: &[&str] = &[
-    "linksys", "netgear", "default", "dlink", "tp-link", "tplink", "asus", "xfinity", "spectrum",
-    "att", "optimum", "cox", "telstra", "optus", "vodafone", "nbn", "iinet", "eduroam", "guest",
-    "free", "public", "open", "android", "iphone", "galaxy", "pixel", "setup", "config", "admin",
-    "test", "hidden", "unknown", "unnamed",
+/// Split an SSID into comparable word tokens: separated on any non-alphanumeric
+/// character and at every letter↔digit boundary, so `ATT4G-Home` yields
+/// `att`, `4`, `g`, `home` and the carrier prefix is recognised without
+/// substring-matching `att` inside `Seattle`.
+fn ssid_tokens(lower: &str) -> impl Iterator<Item = &str> {
+    lower
+        .split(|c: char| !c.is_alphanumeric())
+        .flat_map(|part| {
+            let mut tokens = Vec::new();
+            let mut start = 0;
+            let mut prev: Option<char> = None;
+            for (idx, ch) in part.char_indices() {
+                if let Some(p) = prev
+                    && p.is_numeric() != ch.is_numeric()
+                {
+                    tokens.push(&part[start..idx]);
+                    start = idx;
+                }
+                prev = Some(ch);
+            }
+            if start < part.len() {
+                tokens.push(&part[start..]);
+            }
+            tokens
+        })
+        .filter(|t| !t.is_empty())
+}
+
+/// Vendor/carrier strings distinctive enough to match anywhere in the name —
+/// defaults routinely concatenate them with hex or digits.
+pub(super) const GENERIC_SSID_BRANDS: &[&str] = &[
+    "linksys", "netgear", "dlink", "tp-link", "tplink", "xfinity", "spectrum", "optimum",
+    "telstra", "optus", "vodafone", "iinet", "eduroam", "android", "iphone", "galaxy", "unnamed",
+    "unknown", "hidden",
+];
+
+/// Short, common words that must match as a WHOLE TOKEN. Every one of these
+/// occurs inside ordinary surnames and place names; see [`is_generic_ssid`].
+/// `wifi`/`wlan` are deliberately absent: they are descriptive suffixes people
+/// append to their own names (`Smith-WiFi`), so treating them as generic would
+/// re-create the very false-positive class this split exists to remove.
+pub(super) const GENERIC_SSID_WORDS: &[&str] = &[
+    "default", "asus", "att", "cox", "nbn", "guest", "free", "public", "open", "pixel", "setup",
+    "config", "admin", "test",
 ];
 
 impl Wigle {
