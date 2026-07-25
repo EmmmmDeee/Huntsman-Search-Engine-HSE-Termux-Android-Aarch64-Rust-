@@ -947,6 +947,24 @@ impl ScanEngine {
     /// count so live streaming is the norm, not the exception.
     const INCREMENTAL_CORRELATE_MAX_ENTITIES: usize = 400;
 
+    /// Working-set ceiling for the per-round **reconsideration** pass (the three
+    /// `promote_*` re-promotion passes that let the scan return to a set-aside lead
+    /// once later rounds corroborate it). Deliberately SEPARATE from — and far
+    /// higher than — [`INCREMENTAL_CORRELATE_MAX_ENTITIES`]: those two once shared
+    /// the `400` correlator ceiling, which silently DISABLED reconsideration for
+    /// every round after the working set crossed 400 entities — i.e. on any
+    /// breach-heavy or common-name scan, since the default cap is
+    /// [`crate::core::scan::DEFAULT_MAX_ENTITIES`] = 2500. That defeated "maximised
+    /// recursion": a corroborated lead that should rise above the expansion floor
+    /// and expand simply never did once the set grew. The correlator's ceiling is
+    /// justified (its live pass is unbudgeted and can run seconds/round); the
+    /// `promote_*` passes are NOT — the two geo passes are O(n) over a small
+    /// confirmed-subject set, and `promote_multipath_corroborated` is internally
+    /// bounded by `IDENTITY_PAIR_PROBE_CAP`, so none needs the correlator's cap.
+    /// Sized above the default entity cap so reconsideration runs for the whole of
+    /// a normal scan; an above-ceiling round is logged, never silently skipped.
+    const RECONSIDER_MAX_ENTITIES: usize = 5_000;
+
     /// Expansion depth-decay base (see `feature.depth_decay`): each generation
     /// away from the seed multiplies an entity's *expansion* confidence by this
     /// factor — gen 1 ×0.75, gen 2 ×0.56, gen 3 ×0.42. Combined with the default
@@ -1747,9 +1765,11 @@ impl ScanEngine {
             // autonomous mechanism that lets the scan come back to a lead it had
             // set aside once later rounds make it credible. Idempotent
             // (tag-guarded — a promotion never double-stamps across rounds) and
-            // bounded by working-set size exactly like the live correlation pass,
-            // so it can never itself stall a round.
-            if entity_map.len() <= Self::INCREMENTAL_CORRELATE_MAX_ENTITIES {
+            // bounded by working-set size via `RECONSIDER_MAX_ENTITIES` (its OWN
+            // ceiling, NOT the correlator's — the promote passes are O(n)/self-
+            // capped, so they run for the whole of a normal scan; see that const's
+            // doc for why they were wrongly conflated with the correlator ceiling).
+            if entity_map.len() <= Self::RECONSIDER_MAX_ENTITIES {
                 let mut snapshot: Vec<Entity> = entity_map.values().cloned().collect();
                 let promoted = promote_geo_corroborated_family(&mut snapshot)
                     + promote_multipath_corroborated(&mut snapshot, relations.as_slice())
@@ -1765,6 +1785,17 @@ impl ScanEngine {
                         "reconsidered prior data — re-promoted candidates on new downstream corroboration"
                     );
                 }
+            } else {
+                // Above the ceiling reconsideration is skipped — make it observable
+                // (the correlator's own skip logs separately) so a large scan that
+                // stops re-promoting isn't a silent black box.
+                debug!(
+                    scan_id,
+                    round = depth,
+                    entities = entity_map.len(),
+                    cap = Self::RECONSIDER_MAX_ENTITIES,
+                    "reconsideration skipped — working set above RECONSIDER_MAX_ENTITIES"
+                );
             }
             // Snapshot the entity set at round start — entities discovered
             // during this round will be expansion candidates in the next round,

@@ -111,6 +111,62 @@ fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
     assert_eq!(promote_geo_corroborated_family(&mut lone), 0);
 }
 
+/// Recursion-completeness regression: the reconsideration pass must keep working
+/// when the working set is LARGE. The three `promote_*` passes were once gated on
+/// the correlator's `INCREMENTAL_CORRELATE_MAX_ENTITIES` = 400 ceiling, so on any
+/// scan whose working set crossed 400 entities (well within the default 2500 cap)
+/// re-promotion silently stopped for every remaining round — a corroborated lead
+/// that should rise above the expansion floor and expand never did. The passes are
+/// O(n) / self-capped, so they must promote correctly at n ≫ 400; this proves it by
+/// running `promote_geo_corroborated_family` over a 600-entity set that straddles
+/// the old ceiling with one genuine in-area relative buried in it.
+#[test]
+fn reconsideration_promotes_at_large_working_sets_past_the_old_400_ceiling() {
+    use crate::core::entity::{Classification, Entity, EntityKind, Evidence};
+
+    // Subject's confirmed GPS near Woodford, QLD (the anchor the pass corroborates
+    // against).
+    let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
+    gps.tag("geoint");
+
+    // One genuine in-area, single-source family-candidate — the lead that MUST be
+    // re-promoted even though it is buried in a large set.
+    let mut relative = Entity::new(EntityKind::Person, "Erik Moreau", 0.32, "s");
+    relative.tag("family-candidate");
+    relative.add_evidence(Evidence::new("qld_unclaimed", "owner").with_attr("postcode", "4518"));
+
+    let mut ents = vec![gps, relative];
+    // Pad the working set well past the old 400 ceiling with inert filler entities
+    // (distinct emails — not family-candidates, so they never promote), so the set
+    // size alone would have disabled reconsideration under the old shared cap.
+    for i in 0..600 {
+        ents.push(Entity::new(
+            EntityKind::Email,
+            format!("filler{i}@noise.example"),
+            0.5,
+            "s",
+        ));
+    }
+    assert!(
+        ents.len() > 400,
+        "the set must straddle the old ceiling to exercise the regression"
+    );
+
+    let promoted = promote_geo_corroborated_family(&mut ents);
+    assert_eq!(
+        promoted, 1,
+        "the in-area relative must still be re-promoted at n>400 — the whole point \
+         of decoupling reconsideration from the correlator's 400 ceiling"
+    );
+    let relative = ents.iter().find(|e| e.value == "Erik Moreau").unwrap();
+    assert!(relative.has_tag("geo-corroborated"));
+    assert_eq!(
+        relative.classify(),
+        Classification::Probable,
+        "the lead is lifted out of candidate quarantine so it can expand this round"
+    );
+}
+
 /// People-centric "return to old data": a same-name breach candidate whose
 /// locality resolves to the subject's confirmed metro is re-promoted out of
 /// namesake quarantine, while a same-name record in a different state stays a
