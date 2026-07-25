@@ -235,12 +235,23 @@ pub(crate) fn build_scan_report(
     }
     let correlations = store.correlations_for_scan(scan_id)?;
     let best_location = extract_au_location_fix(&correlations, &entities);
+    // The calibrated 0–100 Exposure Index — the SAME headline verdict the CLI
+    // `print_dossier` and the debug bundle both open with. This envelope is the
+    // canonical over-the-wire/on-device dossier (shared by GET report.json and
+    // `hse export --format report`), yet it was the one dossier rendering that
+    // omitted the summary score, so a consumer reading report.json alone could
+    // not tell a MINIMAL scan from a HIGH one without recomputing it. `assess`
+    // is pure and excludes candidate/sub-floor rows internally, so the score is
+    // identical whether or not this envelope filtered candidates above, and the
+    // determinism audit still holds (nothing here varies but `exported_at`).
+    let exposure = crate::core::exposure::assess(&entities, &correlations);
     Ok(Some(json!({
         "scan": scan,
         "entities": entities,
         "entity_count": entities.len(),
         "correlations": correlations,
         "correlation_count": correlations.len(),
+        "exposure": exposure,
         // Best AU geolocation fix synthesised by AU-059 cross-seed geo synergy.
         // `null` when no AU-059 fired; present with full structured fields when
         // ≥2 orthogonal AU source classes converged on a location.

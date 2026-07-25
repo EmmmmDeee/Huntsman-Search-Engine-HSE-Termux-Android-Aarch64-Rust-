@@ -36,6 +36,24 @@ use super::*;
             Some(2),
             "include_candidates returns the full set"
         );
+        // The report envelope must carry the Exposure Index headline the CLI
+        // dossier and debug bundle both open with — score (0..=100), band label,
+        // and the transparent per-signal breakdown — so report.json is a
+        // complete dossier on its own, not one that forces the reader to
+        // recompute the summary verdict.
+        let exposure = &default["exposure"];
+        assert!(
+            exposure["score"].as_u64().is_some_and(|s| s <= 100),
+            "report must carry the exposure score: {default}"
+        );
+        assert!(
+            exposure["band"].as_str().is_some(),
+            "report must carry the exposure band label"
+        );
+        assert!(
+            exposure["components"].is_array(),
+            "report must carry the per-signal exposure breakdown"
+        );
     }
 
     #[test]

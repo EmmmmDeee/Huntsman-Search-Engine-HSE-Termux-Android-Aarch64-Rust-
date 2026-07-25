@@ -61,12 +61,16 @@ async function renderExposure(scanId){
   const band = String(x.band || '');
   const cls = BAND_CLASS[band.toUpperCase()] || 'label-default';
   const comps = (x.components || []).map(c => {
-    const max = c.max || 0;
-    const pct = max ? Math.round((c.score / max) * 100) : 0;
+    // Coerce to numbers and clamp to 0–100: the values are trusted backend
+    // integers today, but a non-numeric/over-max value must never emit
+    // `width:NaN%` or `width:120%` and break the bar layout.
+    const max = Number(c.max) || 0;
+    const score = Number(c.score) || 0;
+    const pct = max ? Math.max(0, Math.min(100, Math.round((score / max) * 100))) : 0;
     return `
       <tr>
         <td style="width:190px">${esc(c.name)}</td>
-        <td class="text-right" style="width:70px"><code>${esc(c.score)}/${esc(max)}</code></td>
+        <td class="text-right" style="width:70px"><code>${esc(score)}/${esc(max)}</code></td>
         <td style="width:120px">
           <div style="background:var(--border,#eee);height:6px;border-radius:3px;overflow:hidden">
             <div style="width:${pct}%;height:6px;background:var(--accent,#337ab7)"></div>
@@ -82,10 +86,11 @@ async function renderExposure(scanId){
         <span class="text-muted pull-right" style="font-size:12px">calibrated 0–100 · same assessment as the CLI dossier</span>
       </div>
       <div class="panel-body">
-        <div style="font-size:22px;margin-bottom:8px">
+        <div style="font-size:22px;margin-bottom:2px">
           <b>${esc(x.score)}</b><span class="text-muted" style="font-size:14px">/100</span>
           &nbsp;<span class="label ${cls}">${esc(band)}</span>
         </div>
+        ${x.summary ? `<div class="text-muted" style="font-size:12px;margin-bottom:8px">${esc(x.summary)}</div>` : ''}
         ${comps ? `<table class="table table-condensed" style="margin-bottom:0"><tbody>${comps}</tbody></table>` : ''}
       </div>
     </div>`;
