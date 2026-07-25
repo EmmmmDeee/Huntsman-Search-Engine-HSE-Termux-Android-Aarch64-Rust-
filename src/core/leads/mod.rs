@@ -131,7 +131,30 @@ fn pivot(kind: &str) -> Option<(&'static str, f64)> {
         "username" => Some(("username", 0.7)),
         "phone" => Some(("phone", 0.55)),
         "domain" => Some(("domain", 0.5)),
+        // A crypto wallet is a first-class blockchain-analysis pivot (chain
+        // clustering, exchange attribution) — high value, ranked with the
+        // identifier tier rather than the thin-infra tail.
+        "crypto_address" => Some(("crypto_address", 0.6)),
+        // A co-owned company / registered organisation fans out to directors,
+        // filings, and further entities via the AU registry modules.
+        "organisation" => Some(("organisation", 0.5)),
         "ip_address" => Some(("ip_address", 0.35)),
+        // Network-infrastructure pivots: an ASN or CIDR block expands to the
+        // subject's wider hosting estate (bgpview / ripestat / netblock).
+        "asn" => Some(("asn", 0.3)),
+        "cidr" => Some(("cidr", 0.3)),
+        // RF/geolocation pivots: a router BSSID or a unique SSID geolocates via
+        // wigle / mylnikov — the on-the-ground location follow-up.
+        "mac_address" => Some(("mac_address", 0.3)),
+        "ssid" => Some(("ssid", 0.3)),
+        // A captured URL re-scans for fresh links/host intel.
+        "url" => Some(("url", 0.3)),
+        // A tracking ID (GA / GTM / Ads) links co-managed properties.
+        "tracking_id" => Some(("tracking_id", 0.35)),
+        // Deliberately NOT pivotable: credentials/passwords (not a scannable
+        // target — the reuse correlator consumes them), and free-text `other`.
+        // Coordinates/address/device_id are locations/artifacts, not fan-out
+        // seeds, so they stay off the one-tap Leads surface.
         _ => None,
     }
 }

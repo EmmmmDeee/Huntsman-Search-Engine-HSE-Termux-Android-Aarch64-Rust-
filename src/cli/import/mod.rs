@@ -7,6 +7,7 @@
 use crate::core::error::{Error, Result};
 
 mod combined;
+mod combolist;
 mod csv;
 mod dossier;
 mod html;
@@ -21,6 +22,7 @@ mod txt;
 // Format parsers live in the per-format submodules; pull their entry points
 // into scope for the dispatcher, the web-upload router and the tests.
 use combined::{cmd_import_combined, looks_like_combined_search, parse_combined_search};
+use combolist::{cmd_import_combolist, looks_like_combolist, parse_combolist};
 use csv::{
     cmd_import_csv, cmd_import_hse_csv, looks_like_dehashed_csv, looks_like_hse_csv,
     parse_dehashed_csv, parse_hse_csv,
@@ -102,6 +104,7 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
         ImportFormat::OathnetReport => cmd_import_oathnet_report(&body, output).await,
         ImportFormat::HseCsv => cmd_import_hse_csv(&body, output).await,
         ImportFormat::DehashedCsv => cmd_import_csv(&body, output).await,
+        ImportFormat::Combolist => cmd_import_combolist(&body, output).await,
         ImportFormat::OathnetTxt => cmd_import_txt(&body, output).await,
     }
 }
@@ -119,6 +122,8 @@ pub(crate) enum ImportFormat {
     OathnetReport,
     HseCsv,
     DehashedCsv,
+    /// Flat `identity:password` combolist / `url:user:pass` ULP credential dump.
+    Combolist,
     /// Catch-all: an OathNet stealer-log TXT (and any unrecognised plain text).
     OathnetTxt,
 }
@@ -160,6 +165,14 @@ pub(crate) fn detect_import_format(path: &str, body: &str) -> ImportFormat {
     }
     if path.ends_with(".csv") || looks_like_dehashed_csv(body) {
         return ImportFormat::DehashedCsv;
+    }
+    // Flat combolist / ULP dump: the LAST content heuristic before the plain-text
+    // catch-all. A body of bare `identity:password` lines matches none of the
+    // labelled formats above, so without this it would fall to `OathnetTxt` and
+    // import zero entities. Deliberately last so it can only ever rescue text that
+    // would otherwise parse to nothing.
+    if looks_like_combolist(body) {
+        return ImportFormat::Combolist;
     }
     ImportFormat::OathnetTxt
 }
@@ -239,6 +252,7 @@ pub(crate) async fn entities_from_upload(
         ImportFormat::OathnetReport => (parse_oathnet_report(body, sid).0, "oathnet-report"),
         ImportFormat::HseCsv => (parse_hse_csv(body, sid).0, "hse-csv"),
         ImportFormat::DehashedCsv => (parse_dehashed_csv(body, sid).0, "dehashed-csv"),
+        ImportFormat::Combolist => (parse_combolist(body, sid).0, "combolist"),
         ImportFormat::OathnetTxt => (parse_oathnet_txt(body, sid).0, "oathnet-txt"),
     };
     deduplicate_by_uid(&mut entities);

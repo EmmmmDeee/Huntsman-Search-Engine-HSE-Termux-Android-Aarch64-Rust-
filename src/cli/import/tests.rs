@@ -5,7 +5,7 @@
 
 use super::{
     ImportFormat, deduplicate_by_uid, detect_import_format, entities_from_upload,
-    looks_like_dossier, parse_dossier, parse_oathnet_html,
+    looks_like_combolist, looks_like_dossier, parse_combolist, parse_dossier, parse_oathnet_html,
 };
 
 #[test]
@@ -1739,8 +1739,8 @@ mod prop {
     use proptest::prelude::*;
 
     use super::super::{
-        parse_dossier, parse_oathnet_html, parse_oathnet_report, parse_oathnet_txt,
-        parse_stealerlogs,
+        parse_combolist, parse_dossier, parse_oathnet_html, parse_oathnet_report,
+        parse_oathnet_txt, parse_stealerlogs,
     };
 
     proptest! {
@@ -1794,5 +1794,127 @@ mod prop {
                 prop_assert!(!e.value.is_empty(), "empty value in entity: {e:?}");
             }
         }
+
+        #[test]
+        fn parse_combolist_never_panics(s in ".{0,512}") {
+            let (ents, _stats) = parse_combolist(&s, "s");
+            for e in &ents {
+                prop_assert!(!e.value.is_empty(), "empty value in entity: {e:?}");
+            }
+        }
     }
+}
+
+// ── Combolist / ULP credential-dump import (the silent-zero-import fix) ──────
+
+/// The regression: a flat `email:password` combolist — the most common
+/// credential-leak format — matched no labelled detector and fell to the
+/// `OathnetTxt` catch-all, which reads only `URL:`/`Username:`/`Password:` lines,
+/// so the whole dump imported as ZERO entities with no error.
+#[test]
+fn combolist_detects_and_imports_email_password_pairs() {
+    let body = "alice@example.com:hunter2\nbob@work.org:s3cretpw\ncarol@mail.net:passw0rd\n";
+    assert_eq!(
+        detect_import_format("", body),
+        ImportFormat::Combolist,
+        "a bare email:password dump must route to the combolist parser, not the TXT catch-all"
+    );
+    let (ents, stats) = parse_combolist(body, "s");
+    assert_eq!(stats.emails, 3, "each line's identity is an Email");
+    assert_eq!(stats.credentials, 3, "each line's secret is a plaintext Credential");
+    use crate::core::entity::EntityKind;
+    assert!(
+        ents.iter().any(|e| e.kind == EntityKind::Email && e.value == "alice@example.com"),
+        "the email identity must be surfaced"
+    );
+    assert!(
+        ents.iter().any(|e| e.kind == EntityKind::Credential && e.value == "hunter2"),
+        "the plaintext password must be surfaced as a reuse join-key"
+    );
+}
+
+#[test]
+fn combolist_handles_bare_username_identities() {
+    let body = "bob_login:s3cretpw\njdoe99:letmein12\nadmin.user:qwerty123\n";
+    assert_eq!(detect_import_format("", body), ImportFormat::Combolist);
+    let (ents, stats) = parse_combolist(body, "s");
+    use crate::core::entity::EntityKind;
+    assert_eq!(stats.usernames, 3, "non-email identities become Usernames");
+    assert_eq!(stats.credentials, 3);
+    assert!(ents.iter().any(|e| e.kind == EntityKind::Username && e.value == "bob_login"));
+}
+
+#[test]
+fn combolist_parses_ulp_url_login_pass_form() {
+    // ULP: `https://site.com/login:user:pass` — URL + host domain + identity + secret.
+    let body = "https://portal.acme.com/login:alice@acme.com:pw123456\n\
+                https://shop.example.net/account:buyer42:shoppass\n";
+    assert_eq!(detect_import_format("", body), ImportFormat::Combolist);
+    let (ents, stats) = parse_combolist(body, "s");
+    use crate::core::entity::EntityKind;
+    assert!(stats.urls >= 2, "each ULP line yields its Url");
+    assert!(
+        ents.iter().any(|e| e.kind == EntityKind::Domain && e.value == "portal.acme.com"),
+        "the URL host must be extracted as a Domain pivot"
+    );
+    assert!(
+        ents.iter().any(|e| e.kind == EntityKind::Email && e.value == "alice@acme.com"),
+        "the login identity after the URL must be parsed"
+    );
+    assert!(
+        ents.iter().any(|e| e.kind == EntityKind::Credential && e.value == "pw123456"),
+        "the ULP password must be surfaced"
+    );
+}
+
+#[test]
+fn combolist_does_not_hijack_labelled_or_prose_bodies() {
+    // A labelled stealer/TXT body carries `Username: `/`Password: ` markers — must
+    // NOT be stolen by the combolist heuristic (it owns those lines).
+    let labelled = "URL: https://x.com\nUsername: joe\nPassword: hunter2\n";
+    assert_ne!(
+        detect_import_format("", labelled),
+        ImportFormat::Combolist,
+        "labelled TXT lines must stay with the TXT parser"
+    );
+    // Free-form prose with the odd colon must not be misread as a dump.
+    let prose = "The meeting is at 12:30 today.\nRemember to email the report.\n";
+    assert!(!looks_like_combolist(prose), "prose is not a combolist");
+}
+
+#[test]
+fn combolist_deduplicates_reused_passwords_and_identities() {
+    // A password reused across two accounts is ONE Credential (the reuse join-key);
+    // a repeated identity is one entity.
+    let body = "alice@example.com:reused1\nbob@example.com:reused1\nalice@example.com:reused1\n";
+    let (_ents, stats) = parse_combolist(body, "s");
+    assert_eq!(stats.emails, 2, "two distinct emails");
+    assert_eq!(stats.credentials, 1, "the shared password collapses to one Credential");
+}
+
+#[test]
+fn combolist_rejects_lines_missing_a_secret() {
+    // `identity:` with an empty secret, or a lone token, is not a credential line.
+    let body = "alice@example.com:\nnocolon\n:orphansecret\n";
+    assert!(
+        !looks_like_combolist(body),
+        "malformed lines must not be classified as a combolist"
+    );
+    let (ents, stats) = parse_combolist(body, "s");
+    assert_eq!(stats.emails, 0);
+    assert_eq!(stats.credentials, 0);
+    assert!(ents.is_empty(), "no valid credential lines ⇒ no entities");
+}
+
+#[tokio::test]
+async fn combolist_flows_through_the_web_upload_path() {
+    // The web upload (`entities_from_upload`) shares the detector, so a combolist
+    // pasted into the browser must import identically to the CLI — the exact path
+    // that previously imported zero entities.
+    let body = "victim@target.com:leakedpass\nother.handle:anotherpass\n";
+    let (ents, label) = entities_from_upload(body, "s").await.expect("combolist upload parses");
+    assert_eq!(label, "combolist", "the upload reports the format it parsed");
+    assert!(!ents.is_empty(), "the upload must surface entities, not silently drop them");
+    use crate::core::entity::EntityKind;
+    assert!(ents.iter().any(|e| e.kind == EntityKind::Email && e.value == "victim@target.com"));
 }

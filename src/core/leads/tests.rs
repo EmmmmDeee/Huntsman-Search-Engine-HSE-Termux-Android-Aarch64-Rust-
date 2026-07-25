@@ -53,6 +53,42 @@ fn recommend_ranks_untapped_relatives() {
     );
 }
 
+/// Regression: non-identity pivots the engine DOES expand — a crypto wallet
+/// (blockchain analysis), a co-owned company — were structurally invisible in the
+/// Leads surface because `pivot()` returned `None` for every kind outside the
+/// person/email/username/phone/domain/ip set. A discovered, untapped crypto
+/// address must now surface as a one-tap lead with `target_kind == "crypto_address"`.
+#[test]
+fn recommend_surfaces_crypto_and_org_pivots() {
+    let mut subject = ent(EntityKind::Person, "Kyle Diegmann", 0.85);
+    subject.tag("subject");
+    // A wallet the engine surfaced but held below the expansion floor → untapped.
+    let wallet = ent(
+        EntityKind::CryptoAddress,
+        "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+        0.4,
+    );
+    let org = ent(EntityKind::Organisation, "Acme Holdings Pty Ltd", 0.4);
+
+    let relations = vec![
+        rel(&subject, &wallet, RelationKind::AssociatedWith, 0.5),
+        rel(&subject, &org, RelationKind::AssociatedWith, 0.5),
+    ];
+    let entities = vec![subject, wallet.clone(), org.clone()];
+
+    let leads = recommend(&entities, &relations, 0.50);
+    let crypto_lead = leads
+        .iter()
+        .find(|l| l.target_kind == "crypto_address")
+        .expect("a discovered crypto wallet must be an actionable lead");
+    assert_eq!(crypto_lead.value, "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh");
+    assert_eq!(crypto_lead.action, "scan");
+    assert!(
+        leads.iter().any(|l| l.target_kind == "organisation"),
+        "a co-owned organisation must also surface as a lead"
+    );
+}
+
 /// A geo-corroborated relative — shared surname AND the subject's own confirmed
 /// area, two independent free signals ([`crate::core::geo_family`]) — is the single
 /// most reliable free pivot, so it is the TOP lead even though geo-corroboration
