@@ -25,6 +25,50 @@ use crate::core::entity::{Entity, EntityKind, Evidence};
 use crate::core::error::Result;
 use crate::core::port::StoragePort;
 use crate::core::relation::Relation;
+use std::collections::HashMap;
+use std::cell::RefCell;
+
+// ─── RuleContext ───────────────────────────────────────────────────────────
+// Lazy-cached precomputed indexes shared across all correlation rules,
+// eliminating O(R·E) redundant index rebuilds. Each rule independently calling
+// canonical_handle() on the same entities 24 times per pass is O(R·E) with a
+// large constant factor. RuleContext precomputes indexes once and shares them
+// via method calls, amortizing the cost to O(E) + O(R·log E) rule dispatch.
+
+pub struct RuleContext<'a> {
+    entities: &'a [Entity],
+    // Lazy-cached: by_canonical_handle maps canonical_handle(entity) → vec of entities with that handle
+    by_canonical_handle: RefCell<Option<HashMap<String, Vec<&'a Entity>>>>,
+}
+
+impl<'a> RuleContext<'a> {
+    pub fn new(entities: &'a [Entity]) -> Self {
+        Self {
+            entities,
+            by_canonical_handle: RefCell::new(None),
+        }
+    }
+
+    pub fn entities(&self) -> &'a [Entity] {
+        self.entities
+    }
+
+    /// Returns a reference to the cached canonical-handle map. Builds and caches
+    /// on first call, returns cached on subsequent calls.
+    pub fn by_canonical_handle(&self) -> std::cell::Ref<HashMap<String, Vec<&'a Entity>>> {
+        if self.by_canonical_handle.borrow().is_none() {
+            let mut map: HashMap<String, Vec<&Entity>> = HashMap::new();
+            for entity in self.entities {
+                let canonical = canonical_handle(&entity.value);
+                map.entry(canonical).or_insert_with(Vec::new).push(entity);
+            }
+            *self.by_canonical_handle.borrow_mut() = Some(map);
+        }
+        std::cell::Ref::map(self.by_canonical_handle.borrow(), |opt| {
+            opt.as_ref().expect("just populated")
+        })
+    }
+}
 
 // ─── Severity ──────────────────────────────────────────────────────────────
 
@@ -166,12 +210,16 @@ impl Correlator {
         // finalise pass that runs both, that was two full clones of the entity
         // set per scan.
         let confirmed = confirmed_only(&entities);
+        // Build shared RuleContext once, shared by both entity and relation rule
+        // passes. This precomputes indexes (e.g. canonical-handle map) that all
+        // rules would otherwise rebuild independently.
+        let context = RuleContext::new(&confirmed);
         let now = crate::core::entity::unix_now();
         // One shared wall-clock deadline across the entity AND relation passes, so
         // the WHOLE finalise correlator phase is bounded (a huge recalled graph
         // can't hang the scan). Never reached by a normal scan.
         let deadline = Some(std::time::Instant::now() + CORRELATOR_BUDGET);
-        let mut firings = evaluate_rules_on(&confirmed, scan_id, now, deadline);
+        let mut firings = evaluate_rules_on(&context, scan_id, now, deadline);
 
         // Graph-aware pass: rules that need the typed relation edges (the
         // attribution graph), not just the flat entity list. Relations are
@@ -179,7 +227,7 @@ impl Correlator {
         let relations = self.store.relations_for_scan(scan_id)?;
         if !relations.is_empty() {
             firings.extend(evaluate_relation_rules_on(
-                &confirmed, &relations, scan_id, now, deadline,
+                &context, &relations, scan_id, now, deadline,
             ));
         }
 
@@ -201,7 +249,7 @@ impl Correlator {
 
 // ─── Rules ─────────────────────────────────────────────────────────────────
 
-type RuleFn = fn(&[Entity], &str, u64) -> Vec<Correlation>;
+type RuleFn = fn(&RuleContext, &str, u64) -> Vec<Correlation>;
 
 pub(crate) mod rules;
 pub(crate) use rules::location::{
@@ -464,9 +512,10 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     // corroboration out of noise. The entities remain in the store and the
     // candidates view; they simply don't get to assert relationships.
     let confirmed = confirmed_only(entities);
+    let context = RuleContext::new(&confirmed);
     // The live incremental pass is per-round and small — no budget, full
     // determinism (its streaming correlations must be reproducible).
-    evaluate_rules_on(&confirmed, scan_id, now, None)
+    evaluate_rules_on(&context, scan_id, now, None)
 }
 
 /// Wall-clock budget for the FINALISE correlator pass (entity rules + the
@@ -485,14 +534,14 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
 const CORRELATOR_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Run every entity-only rule over an already quarantine-filtered, confirmed
-/// entity slice. Split out from [`evaluate_rules`] so a caller that runs both
-/// the entity and the relation passes (`Correlator::run`) can filter once and
-/// share the confirmed view instead of cloning it per pass. `deadline` (set only
-/// on the finalise pass) caps total wall-time: once reached, no further rule is
-/// started and the pass returns what it has — a complete scan with partial
-/// correlations beats one hung forever.
+/// entity slice using a pre-built RuleContext. Split out from [`evaluate_rules`]
+/// so a caller that runs both the entity and the relation passes (`Correlator::run`)
+/// can filter once and share the confirmed view and RuleContext instead of
+/// cloning per pass. `deadline` (set only on the finalise pass) caps total
+/// wall-time: once reached, no further rule is started and the pass returns what
+/// it has — a complete scan with partial correlations beats one hung forever.
 fn evaluate_rules_on(
-    confirmed: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     now: u64,
     deadline: Option<std::time::Instant>,
@@ -508,7 +557,7 @@ fn evaluate_rules_on(
             );
             break;
         }
-        out.extend(rule(confirmed, scan_id, now));
+        out.extend(rule(context, scan_id, now));
     }
     out
 }
@@ -663,7 +712,7 @@ pub fn bench_correlate_entities(entities: &[Entity], scan_id: &str) -> Vec<Corre
 // Kept separate from `RULES` so the 30 entity-only rules need no signature
 // change.
 
-type RelationRuleFn = fn(&[Entity], &[Relation], &str, u64) -> Vec<Correlation>;
+type RelationRuleFn = fn(&RuleContext, &[Relation], &str, u64) -> Vec<Correlation>;
 
 const RELATION_RULES: &[RelationRuleFn] = &[
     rule_au_031_malicious_adjacency,
@@ -700,9 +749,9 @@ pub fn rule_counts() -> (usize, usize) {
 
 /// Run every relation-aware rule over an already quarantine-filtered, confirmed
 /// entity slice (see [`evaluate_rules_on`]). Lets `Correlator::run` reuse the
-/// single confirmed view it already built for the entity pass.
+/// single confirmed view and shared RuleContext it already built for the entity pass.
 fn evaluate_relation_rules_on(
-    confirmed: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
@@ -721,7 +770,7 @@ fn evaluate_relation_rules_on(
             );
             break;
         }
-        out.extend(rule(confirmed, relations, scan_id, now));
+        out.extend(rule(context, relations, scan_id, now));
     }
     out
 }
