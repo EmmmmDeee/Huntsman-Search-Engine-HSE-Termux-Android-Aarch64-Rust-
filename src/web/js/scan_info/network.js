@@ -45,10 +45,21 @@ export async function renderNetwork(host, id){
         <span class="badge">${g.total}</span>${more}</div>`;
     for (const c of g.items){
       const conf = Math.max(0, Math.min(100, Math.round((c.edge_confidence||0)*100)));
+      // The far-end node's TIER: the Connection struct separates edge_confidence
+      // (how trusted the link is) from the node's own tier/entity_confidence
+      // (how trusted the far entity is), but the row showed only the link bar —
+      // so a CANDIDATE far-end read identically to a VERIFIED one. Surface the
+      // tier pill (same styling as Browse) and carry the node confidence in its
+      // tooltip, reconnecting both node-trust fields the synthesis computes.
+      const tier = c.classification || '';
+      const nodeConf = Math.round((Number(c.entity_confidence)||0)*100);
+      const tierPill = tier
+        ? `<span class="cls c-${attr(tier)}" title="far-end entity ${esc(tier)} · node confidence ${nodeConf}%">${esc(tier)}</span>`
+        : '';
       html += `<div class="net-conn">
         <span class="net-rel">${esc(c.label)}</span>
         <span class="net-conn-val">${extLink(c.value, 72)}</span>
-        ${kindPill(c.kind)}
+        ${kindPill(c.kind)}${tierPill}
         <span class="net-conf" title="link confidence ${conf}%"><span class="net-conf-bar" style="width:${conf}%"></span></span>
       </div>`;
     }
