@@ -28,7 +28,10 @@ pub fn parse_csv<P: AsRef<Path>>(csv_path: P) -> DocumentResult<CsvData> {
 
     for result in reader.records() {
         let record = result?;
-        let row: Vec<String> = record.iter().map(std::string::ToString::to_string).collect();
+        let row: Vec<String> = record
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         records.push(row.clone());
 
         // Build raw text representation

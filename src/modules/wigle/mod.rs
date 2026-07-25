@@ -673,9 +673,12 @@ fn named_ssid_entities(results: &[Network], query_label: &str, scan_id: &str) ->
             e.tag("wifi-network");
             e.tag("geo-lead");
             e.add_evidence(
-                Evidence::new(SRC, format!("Named WiFi network observed near {query_label}"))
-                    .with_attr("ssid", &ssid)
-                    .with_attr("named_ssids_observed", observed.to_string()),
+                Evidence::new(
+                    SRC,
+                    format!("Named WiFi network observed near {query_label}"),
+                )
+                .with_attr("ssid", &ssid)
+                .with_attr("named_ssids_observed", observed.to_string()),
             );
             e
         })

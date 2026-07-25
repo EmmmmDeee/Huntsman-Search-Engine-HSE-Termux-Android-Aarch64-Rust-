@@ -1,8 +1,8 @@
 //! Regex patterns for entity extraction + confidence boosters.
 
+use super::{EntityKind, ExtractedEntity};
 use lazy_static::lazy_static;
 use regex::Regex;
-use super::{EntityKind, ExtractedEntity};
 
 lazy_static! {
     // Email: RFC 5322 simplified (high confidence if matches)
@@ -134,7 +134,7 @@ pub fn extract_by_patterns(text: &str) -> Vec<ExtractedEntity> {
         entities.push(ExtractedEntity {
             kind: EntityKind::SocialHandle,
             value: cap.as_str()[1..].to_string(), // Remove @ prefix
-            confidence: 0.60, // Speculative (could be mention, not identity)
+            confidence: 0.60,                     // Speculative (could be mention, not identity)
             context: extract_context(text, cap.start()),
             source_pattern: "social_handle_twitter".to_string(),
             boost_reason: None,
@@ -175,21 +175,33 @@ mod tests {
     fn extract_email() {
         let text = "Contact john.doe@example.com for info";
         let entities = extract_by_patterns(text);
-        assert!(entities.iter().any(|e| e.kind == EntityKind::Email && e.value == "john.doe@example.com"));
+        assert!(
+            entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Email && e.value == "john.doe@example.com")
+        );
     }
 
     #[test]
     fn extract_ipv4() {
         let text = "Server at 192.168.1.1 running Linux";
         let entities = extract_by_patterns(text);
-        assert!(entities.iter().any(|e| e.kind == EntityKind::Ipv4 && e.value == "192.168.1.1"));
+        assert!(
+            entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Ipv4 && e.value == "192.168.1.1")
+        );
     }
 
     #[test]
     fn extract_sha256() {
         let text = "Hash: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         let entities = extract_by_patterns(text);
-        assert!(entities.iter().any(|e| e.kind == EntityKind::Hash && e.confidence > 0.90));
+        assert!(
+            entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Hash && e.confidence > 0.90)
+        );
     }
 
     #[test]

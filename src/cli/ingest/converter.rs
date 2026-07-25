@@ -1,7 +1,7 @@
 //! Convert extracted entities → HSE core::entity::Entity for auto-scan pipeline.
 
 use crate::core::entity::{Entity, EntityKind as CoreEntityKind, Evidence};
-use crate::util::entity_extractor::{ExtractedEntity, EntityKind as ExtractorEntityKind};
+use crate::util::entity_extractor::{EntityKind as ExtractorEntityKind, ExtractedEntity};
 
 /// Map extractor EntityKind to core EntityKind.
 pub fn map_entity_kind(kind: &ExtractorEntityKind) -> CoreEntityKind {
@@ -76,7 +76,10 @@ pub fn extracted_to_hse_entity(
 
     // Tag as document-ingested for filtering/audit
     entity.tag("document-ingestion");
-    entity.tag(format!("ingest:confidence-{:.0}", extracted.confidence * 100.0));
+    entity.tag(format!(
+        "ingest:confidence-{:.0}",
+        extracted.confidence * 100.0
+    ));
 
     entity
 }

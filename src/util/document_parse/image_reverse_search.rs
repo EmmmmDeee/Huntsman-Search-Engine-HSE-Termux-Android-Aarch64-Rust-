@@ -142,7 +142,10 @@ pub fn generate_reverse_image_variants<P: AsRef<Path>>(
     image_path: P,
 ) -> DocumentResult<ReverseImageSearchSet> {
     let path = image_path.as_ref();
-    debug!("Generating reverse image search variants for: {}", path.display());
+    debug!(
+        "Generating reverse image search variants for: {}",
+        path.display()
+    );
     let img = image::ImageReader::open(path)?.decode()?;
     generate_variants_from_image(&img)
 }
@@ -313,7 +316,10 @@ mod tests {
             assert_eq!(variant.file_size_bytes, variant.data.len());
 
             let format = image::guess_format(&variant.data).unwrap_or_else(|e| {
-                panic!("{} variant is not a recognisable image: {e}", variant.engine)
+                panic!(
+                    "{} variant is not a recognisable image: {e}",
+                    variant.engine
+                )
             });
             let expected = match variant.format.as_str() {
                 "jpeg" => image::ImageFormat::Jpeg,
@@ -380,7 +386,10 @@ mod tests {
         // The short axis scales to 0.08px here; a zero-dimension image cannot
         // be encoded, so both axes must clamp to at least one pixel.
         let resized = resize_image_maintain_aspect(&gradient(10_000, 1), 800, 600);
-        assert!(resized.width() >= 1 && resized.height() >= 1, "got {resized:?}");
+        assert!(
+            resized.width() >= 1 && resized.height() >= 1,
+            "got {resized:?}"
+        );
         // And it must still be encodable end-to-end.
         let set = generate_variants_from_image(&gradient(10_000, 1)).unwrap();
         assert!(set.variants.iter().all(|v| !v.data.is_empty()));

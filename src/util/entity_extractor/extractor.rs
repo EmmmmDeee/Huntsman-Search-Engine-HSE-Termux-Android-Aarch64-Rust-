@@ -1,6 +1,8 @@
 //! End-to-end entity extraction pipeline.
 
-use super::{classifier::EntityClassifier, patterns, EntityKind, ExtractionResult, ExtractedEntity};
+use super::{
+    EntityKind, ExtractedEntity, ExtractionResult, classifier::EntityClassifier, patterns,
+};
 use tracing::{debug, info};
 
 /// Main entity extractor: patterns + classification + deduplication.
@@ -24,7 +26,10 @@ impl EntityExtractor {
 
         // Step 1: Pattern-based extraction
         let mut entities = patterns::extract_by_patterns(text);
-        info!("Extracted {} candidate entities via patterns", entities.len());
+        info!(
+            "Extracted {} candidate entities via patterns",
+            entities.len()
+        );
 
         // Step 2: Classify + boost confidence
         for entity in &mut entities {

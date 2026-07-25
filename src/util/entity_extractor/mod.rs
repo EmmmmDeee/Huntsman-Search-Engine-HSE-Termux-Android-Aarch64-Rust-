@@ -5,10 +5,10 @@
 //! - Confidence scoring based on format validation + extraction method
 //! - Auto-kind classification via heuristics + JSON schema mapping
 
-pub mod patterns;
 pub mod classifier;
 pub mod extractor;
 pub mod ml_classifier;
+pub mod patterns;
 
 pub use extractor::EntityExtractor;
 pub use ml_classifier::MlClassifier;
@@ -89,9 +89,9 @@ impl EntityKind {
 pub struct ExtractedEntity {
     pub kind: EntityKind,
     pub value: String,
-    pub confidence: f64, // 0.0-1.0
-    pub context: Option<String>, // Surrounding text for validation
-    pub source_pattern: String, // "email_rfc5322", "phone_e164", etc.
+    pub confidence: f64,              // 0.0-1.0
+    pub context: Option<String>,      // Surrounding text for validation
+    pub source_pattern: String,       // "email_rfc5322", "phone_e164", etc.
     pub boost_reason: Option<String>, // Why confidence was boosted
 }
 

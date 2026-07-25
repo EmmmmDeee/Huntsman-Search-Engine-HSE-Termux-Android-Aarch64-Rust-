@@ -66,7 +66,8 @@ mod tests {
     #[test]
     fn estimate_quality_uniform_image() {
         // Create a uniform gray image (low quality)
-        let img: ImageBuffer<Luma<u8>, Vec<u8>> = ImageBuffer::from_fn(10, 10, |_, _| Luma([128u8]));
+        let img: ImageBuffer<Luma<u8>, Vec<u8>> =
+            ImageBuffer::from_fn(10, 10, |_, _| Luma([128u8]));
         let dyn_img = DynamicImage::ImageLuma8(img);
         let quality = estimate_ocr_quality(&dyn_img);
         // Uniform image should have low quality score

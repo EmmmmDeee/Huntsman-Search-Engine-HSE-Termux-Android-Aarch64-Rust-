@@ -305,7 +305,9 @@ pub async fn run() -> Result<()> {
                 generate_reverse_search_variants,
                 image_variant_output_dir: image_variant_output_dir.map(std::path::PathBuf::from),
             };
-            ingest::run(args).await.map_err(|e| Error::Other(e.to_string()))
+            ingest::run(args)
+                .await
+                .map_err(|e| Error::Other(e.to_string()))
         }
         Command::Serve { bind, no_key_write } => serve::cmd_serve(bind, !no_key_write).await,
         Command::Live {

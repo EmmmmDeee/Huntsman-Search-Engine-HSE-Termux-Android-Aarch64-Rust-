@@ -165,10 +165,7 @@ mod tests {
     #[test]
     fn classify_ipv4() {
         let classifier = EntityClassifier::new().unwrap();
-        assert_eq!(
-            classifier.classify("192.168.1.1", None),
-            EntityKind::Ipv4
-        );
+        assert_eq!(classifier.classify("192.168.1.1", None), EntityKind::Ipv4);
     }
 
     #[test]

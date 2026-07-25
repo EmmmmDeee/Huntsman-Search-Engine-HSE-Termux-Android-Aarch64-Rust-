@@ -45,7 +45,10 @@ impl MlClassifier {
                 }
             }
             EntityKind::Username => {
-                if Self::contains_any(&context_lower, &["user", "handle", "account", "profile", "@"]) {
+                if Self::contains_any(
+                    &context_lower,
+                    &["user", "handle", "account", "profile", "@"],
+                ) {
                     boost += 0.05;
                 }
             }
@@ -122,9 +125,9 @@ impl MlClassifier {
                 let is_hex = entity.value.chars().all(|c| c.is_ascii_hexdigit());
                 if is_hex {
                     match len {
-                        32 => 0.95, // MD5
-                        40 => 0.90, // SHA1
-                        64 => 0.98, // SHA256
+                        32 => 0.95,  // MD5
+                        40 => 0.90,  // SHA1
+                        64 => 0.98,  // SHA256
                         128 => 0.97, // SHA512
                         _ => 0.70,
                     }
@@ -135,11 +138,7 @@ impl MlClassifier {
             EntityKind::Ipv4 => {
                 // Quad-dotted decimal validation
                 let parts: Vec<&str> = entity.value.split('.').collect();
-                if parts.len() == 4
-                    && parts.iter().all(|p| {
-                        p.parse::<u8>().is_ok()
-                    })
-                {
+                if parts.len() == 4 && parts.iter().all(|p| p.parse::<u8>().is_ok()) {
                     0.95
                 } else {
                     0.30

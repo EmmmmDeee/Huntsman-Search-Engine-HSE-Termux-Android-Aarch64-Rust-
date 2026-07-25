@@ -731,8 +731,7 @@ fn dominant_coherent_group(parsed: Vec<(&Entity, (f64, f64))>) -> Vec<(&Entity, 
     groups
         .into_iter()
         .map(|idx| {
-            let members: Vec<(&Entity, (f64, f64))> =
-                idx.iter().map(|&i| parsed[i]).collect();
+            let members: Vec<(&Entity, (f64, f64))> = idx.iter().map(|&i| parsed[i]).collect();
             let classes = distinct_geo_classes(&members).len();
             let weight: f64 = members.iter().map(|(e, _)| e.c_effective()).sum();
             (classes, weight, members)
@@ -959,18 +958,16 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
     // `null` and the dossier printed nothing, even with a photo GPS and a
     // geocoded home address agreeing. The AU enrichments (state, locality) are
     // simply absent outside Australia.
-    let best_coord = person_anchored_coords(entities)
-        .into_iter()
-        .max_by(|a, b| {
-            a.0.c_effective()
-                .partial_cmp(&b.0.c_effective())
-                .unwrap_or(std::cmp::Ordering::Equal)
-                // Equal confidence: smaller UID wins (reverse compare → "greater"),
-                // matching the rung-5 login-IP and rung-6 phone selectors below.
-                // Without it `max_by` returns whichever tied coord iterated LAST,
-                // so the user-facing estimate flipped with HashMap-snapshot order.
-                .then_with(|| b.0.uid.cmp(&a.0.uid))
-        });
+    let best_coord = person_anchored_coords(entities).into_iter().max_by(|a, b| {
+        a.0.c_effective()
+            .partial_cmp(&b.0.c_effective())
+            .unwrap_or(std::cmp::Ordering::Equal)
+            // Equal confidence: smaller UID wins (reverse compare → "greater"),
+            // matching the rung-5 login-IP and rung-6 phone selectors below.
+            // Without it `max_by` returns whichever tied coord iterated LAST,
+            // so the user-facing estimate flipped with HashMap-snapshot order.
+            .then_with(|| b.0.uid.cmp(&a.0.uid))
+    });
     if let Some((e, (lat, lon))) = best_coord {
         return Some(AuLocationEstimate {
             lat,

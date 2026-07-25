@@ -270,7 +270,10 @@ mod tests {
         let mut metadata = ImageGeolocationMetadata::default();
         extract_exif_metadata(&exif, &mut metadata);
 
-        assert_eq!(metadata.camera_model.as_deref(), Some("Apple iPhone 15 Pro"));
+        assert_eq!(
+            metadata.camera_model.as_deref(),
+            Some("Apple iPhone 15 Pro")
+        );
     }
 
     #[test]
@@ -375,8 +378,16 @@ mod tests {
             .coordinates
             .expect("a JPEG with a GPS IFD must yield coordinates");
         // Brisbane: S 27°28'35", E 153°0'59".
-        assert!((coords.latitude - -27.476).abs() < 0.01, "{}", coords.latitude);
-        assert!((coords.longitude - 153.016).abs() < 0.01, "{}", coords.longitude);
+        assert!(
+            (coords.latitude - -27.476).abs() < 0.01,
+            "{}",
+            coords.latitude
+        );
+        assert!(
+            (coords.longitude - 153.016).abs() < 0.01,
+            "{}",
+            coords.longitude
+        );
         assert_eq!(metadata.geolocation_confidence, EXIF_GPS_CONFIDENCE);
     }
 

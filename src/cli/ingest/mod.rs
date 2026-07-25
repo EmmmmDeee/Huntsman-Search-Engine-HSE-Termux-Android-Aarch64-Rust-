@@ -61,10 +61,11 @@ pub struct IngestArgs {
 /// Execute `hse ingest` command.
 pub async fn run(args: IngestArgs) -> DocumentResult<()> {
     // Detect file format
-    let format = DocumentFormat::from_path(&args.file)
-        .ok_or_else(|| crate::util::document_parse::DocumentParseError::UnsupportedFormat(
+    let format = DocumentFormat::from_path(&args.file).ok_or_else(|| {
+        crate::util::document_parse::DocumentParseError::UnsupportedFormat(
             args.file.to_string_lossy().to_string(),
-        ))?;
+        )
+    })?;
 
     info!("Ingesting {:?} from {}", format, args.file.display());
 
@@ -174,7 +175,9 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
 
     info!(
         "Extracted {} chars from {}, confidence: {}",
-        raw_text.metadata.character_count, args.file.display(), raw_text.confidence
+        raw_text.metadata.character_count,
+        args.file.display(),
+        raw_text.confidence
     );
 
     // Extract entities
@@ -187,7 +190,9 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
     if matches!(raw_text.source_format, DocumentFormat::Image) {
         // Extract EXIF geolocation if requested
         if args.extract_geolocation {
-            match crate::util::document_parse::image_geolocation::extract_image_geolocation(&args.file) {
+            match crate::util::document_parse::image_geolocation::extract_image_geolocation(
+                &args.file,
+            ) {
                 Ok(geo_metadata) => {
                     if let Some(coords) = &geo_metadata.coordinates {
                         info!(
@@ -210,7 +215,9 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
 
         // Generate reverse image search variants if requested
         if args.generate_reverse_search_variants {
-            match crate::util::document_parse::image_reverse_search::generate_reverse_image_variants(&args.file) {
+            match crate::util::document_parse::image_reverse_search::generate_reverse_image_variants(
+                &args.file,
+            ) {
                 Ok(search_set) => {
                     info!(
                         "Generated {} reverse image search variants ({}x{})",
@@ -222,7 +229,8 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
                     // Save variants to disk if output directory specified
                     if let Some(output_dir) = &args.image_variant_output_dir {
                         fs::create_dir_all(output_dir)?;
-                        let base_name = args.file
+                        let base_name = args
+                            .file
                             .file_stem()
                             .and_then(|n| n.to_str())
                             .unwrap_or("image");
@@ -241,7 +249,8 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
                         }
 
                         // Save metadata summary
-                        let metadata_path = output_dir.join(format!("{base_name}_reverse_search_metadata.json"));
+                        let metadata_path =
+                            output_dir.join(format!("{base_name}_reverse_search_metadata.json"));
                         let metadata_json = serde_json::json!({
                             "original_dimensions": search_set.original_dimensions,
                             "variant_count": search_set.variants.len(),
@@ -255,8 +264,14 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
                             "primary_variant": search_set.primary_variant,
                             "image_hash": search_set.image_hash,
                         });
-                        fs::write(&metadata_path, serde_json::to_string_pretty(&metadata_json)?)?;
-                        info!("Saved reverse search metadata to {}", metadata_path.display());
+                        fs::write(
+                            &metadata_path,
+                            serde_json::to_string_pretty(&metadata_json)?,
+                        )?;
+                        info!(
+                            "Saved reverse search metadata to {}",
+                            metadata_path.display()
+                        );
                     }
                 }
                 Err(e) => {
@@ -334,13 +349,19 @@ fn format_output(
             .collect::<Vec<_>>()
             .join("\n")),
 
-        "json" => Ok(json!(entities.iter().map(|e| json!({
-            "kind": e.kind.to_str(),
-            "value": e.value,
-            "confidence": e.confidence,
-            "source_pattern": e.source_pattern,
-            "boost_reason": e.boost_reason,
-        })).collect::<Vec<_>>()).to_string()),
+        "json" => Ok(json!(
+            entities
+                .iter()
+                .map(|e| json!({
+                    "kind": e.kind.to_str(),
+                    "value": e.value,
+                    "confidence": e.confidence,
+                    "source_pattern": e.source_pattern,
+                    "boost_reason": e.boost_reason,
+                }))
+                .collect::<Vec<_>>()
+        )
+        .to_string()),
 
         "csv" => {
             let mut csv = String::from("kind,value,confidence,source_pattern\n");
@@ -371,9 +392,11 @@ fn format_output(
             Ok(table)
         }
 
-        other => Err(crate::util::document_parse::DocumentParseError::UnsupportedFormat(
-            format!("output format: {other}"),
-        )),
+        other => Err(
+            crate::util::document_parse::DocumentParseError::UnsupportedFormat(format!(
+                "output format: {other}"
+            )),
+        ),
     }
 }
 
@@ -415,7 +438,10 @@ mod tests {
             "entities must be attributable to the ingest path"
         );
         assert!(
-            entity.evidence.iter().any(|e| e.source.contains("notes.txt")),
+            entity
+                .evidence
+                .iter()
+                .any(|e| e.source.contains("notes.txt")),
             "evidence must name the source document"
         );
     }

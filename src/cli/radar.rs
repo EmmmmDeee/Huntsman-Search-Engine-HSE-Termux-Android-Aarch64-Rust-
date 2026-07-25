@@ -223,8 +223,7 @@ pub(super) async fn cmd_radar() -> Result<()> {
                     // old 0.50 discarded the derived identifiers (name →
                     // email/handle permutations, emitted at 0.20–0.30) that the
                     // deeper hops exist to confirm.
-                    min_expand_confidence:
-                        crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE,
+                    min_expand_confidence: crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE,
                     // The pivot runs the full expansion pipeline; without the entity
                     // ceiling every one-shot `hse scan` carries, a fan-out pivot on
                     // the long-running radar loop grows the frontier unbounded in RAM

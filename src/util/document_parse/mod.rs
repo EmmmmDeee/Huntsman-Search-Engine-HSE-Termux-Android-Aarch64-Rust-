@@ -3,17 +3,17 @@
 //! Supports OCR (via system tesseract or pure-Rust fallback), PDF text extraction,
 //! CSV/JSON parsing, and image preprocessing. Gracefully degrades if OCR unavailable.
 
+pub mod csv_parse;
+pub mod image_geolocation;
+pub mod image_prep;
+pub mod image_reverse_search;
+pub mod json_parse;
 pub mod ocr;
 pub mod pdf_parse;
-pub mod csv_parse;
-pub mod json_parse;
-pub mod image_prep;
-pub mod image_geolocation;
-pub mod image_reverse_search;
 
+use crate::util::entity_extractor::ExtractionError;
 use std::path::Path;
 use thiserror::Error;
-use crate::util::entity_extractor::ExtractionError;
 
 /// Supported document input formats.
 ///
@@ -26,10 +26,10 @@ pub enum DocumentFormat {
     Json,
     Jsonl,
     Text,
-    Yaml,        // Phase 5: YAML config/data files
-    Toml,        // Phase 5: TOML config files
-    Env,         // Phase 5: Environment variable files (.env, .env.local)
-    Xml,         // Phase 5: XML data/config files
+    Yaml, // Phase 5: YAML config/data files
+    Toml, // Phase 5: TOML config files
+    Env,  // Phase 5: Environment variable files (.env, .env.local)
+    Xml,  // Phase 5: XML data/config files
 }
 
 impl DocumentFormat {
@@ -123,19 +123,52 @@ mod tests {
 
     #[test]
     fn detect_format_from_extension() {
-        assert_eq!(DocumentFormat::from_path("photo.jpg"), Some(DocumentFormat::Image));
-        assert_eq!(DocumentFormat::from_path("data.pdf"), Some(DocumentFormat::Pdf));
-        assert_eq!(DocumentFormat::from_path("records.csv"), Some(DocumentFormat::Csv));
-        assert_eq!(DocumentFormat::from_path("data.json"), Some(DocumentFormat::Json));
-        assert_eq!(DocumentFormat::from_path("data.jsonl"), Some(DocumentFormat::Jsonl));
-        assert_eq!(DocumentFormat::from_path("notes.txt"), Some(DocumentFormat::Text));
+        assert_eq!(
+            DocumentFormat::from_path("photo.jpg"),
+            Some(DocumentFormat::Image)
+        );
+        assert_eq!(
+            DocumentFormat::from_path("data.pdf"),
+            Some(DocumentFormat::Pdf)
+        );
+        assert_eq!(
+            DocumentFormat::from_path("records.csv"),
+            Some(DocumentFormat::Csv)
+        );
+        assert_eq!(
+            DocumentFormat::from_path("data.json"),
+            Some(DocumentFormat::Json)
+        );
+        assert_eq!(
+            DocumentFormat::from_path("data.jsonl"),
+            Some(DocumentFormat::Jsonl)
+        );
+        assert_eq!(
+            DocumentFormat::from_path("notes.txt"),
+            Some(DocumentFormat::Text)
+        );
         // Phase 5: Extended format detection
-        assert_eq!(DocumentFormat::from_path("config.yaml"), Some(DocumentFormat::Yaml));
-        assert_eq!(DocumentFormat::from_path("settings.yml"), Some(DocumentFormat::Yaml));
-        assert_eq!(DocumentFormat::from_path("app.toml"), Some(DocumentFormat::Toml));
-        assert_eq!(DocumentFormat::from_path("data.xml"), Some(DocumentFormat::Xml));
+        assert_eq!(
+            DocumentFormat::from_path("config.yaml"),
+            Some(DocumentFormat::Yaml)
+        );
+        assert_eq!(
+            DocumentFormat::from_path("settings.yml"),
+            Some(DocumentFormat::Yaml)
+        );
+        assert_eq!(
+            DocumentFormat::from_path("app.toml"),
+            Some(DocumentFormat::Toml)
+        );
+        assert_eq!(
+            DocumentFormat::from_path("data.xml"),
+            Some(DocumentFormat::Xml)
+        );
         assert_eq!(DocumentFormat::from_path(".env"), Some(DocumentFormat::Env));
-        assert_eq!(DocumentFormat::from_path(".env.local"), Some(DocumentFormat::Env));
+        assert_eq!(
+            DocumentFormat::from_path(".env.local"),
+            Some(DocumentFormat::Env)
+        );
         assert_eq!(DocumentFormat::from_path("unknown.xyz"), None);
     }
 }

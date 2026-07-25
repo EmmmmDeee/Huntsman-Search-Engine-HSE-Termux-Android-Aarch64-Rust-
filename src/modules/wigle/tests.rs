@@ -895,10 +895,10 @@ fn is_generic_ssid_admits_names_containing_generic_letter_runs() {
 #[test]
 fn is_generic_ssid_still_catches_real_defaults() {
     for ssid in [
-        "ATT4G",           // carrier prefix split at the letter/digit boundary
-        "ATT-WiFi-2461",   // standalone token
+        "ATT4G",         // carrier prefix split at the letter/digit boundary
+        "ATT-WiFi-2461", // standalone token
         "Free Public WiFi",
-        "NETGEAR47",       // concatenated brand
+        "NETGEAR47", // concatenated brand
         "xfinitywifi",
         "ASUS_5G",
         "Guest",
@@ -1058,9 +1058,9 @@ fn named_ssids_become_pivotable_entities() {
     let results = vec![
         net("Smith-Family"),
         net("Bamford-Residence"),
-        net("NETGEAR47"),      // vendor default — not a person's choice
+        net("NETGEAR47"),       // vendor default — not a person's choice
         net("Telstra-Home-12"), // carrier default
-        net("Smith-Family"),   // duplicate must collapse
+        net("Smith-Family"),    // duplicate must collapse
     ];
 
     let ents = named_ssid_entities(&results, "-27.4698,153.0251", "scan");

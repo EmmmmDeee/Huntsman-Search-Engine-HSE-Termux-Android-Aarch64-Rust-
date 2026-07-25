@@ -7359,7 +7359,8 @@ fn au059_class_diversity_bonus_is_per_point_not_a_global_no_op() {
 
     let multi = au059_synergy_fix(&[a_multi, b.clone(), c.clone()])
         .expect("4 orthogonal AU classes in one metro area converge");
-    let mono = au059_synergy_fix(&[a_mono, b, c]).expect("3 orthogonal AU classes in one metro area converge");
+    let mono = au059_synergy_fix(&[a_mono, b, c])
+        .expect("3 orthogonal AU classes in one metro area converge");
 
     assert!(
         multi.lon > mono.lon + 1e-4,

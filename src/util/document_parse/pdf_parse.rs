@@ -28,7 +28,9 @@ pub fn parse_pdf<P: AsRef<Path>>(pdf_path: P) -> DocumentResult<RawDocumentText>
     let page_count = text.matches("/Type/Page").count() + text.matches("/Type /Page").count();
 
     let message = if page_count > 0 {
-        format!("PDF document with {page_count} pages detected (full text extraction requires OCR or PDf text layer)")
+        format!(
+            "PDF document with {page_count} pages detected (full text extraction requires OCR or PDf text layer)"
+        )
     } else {
         "PDF document detected (page count unknown; full text extraction requires OCR or PDF text layer)".to_string()
     };
@@ -41,7 +43,11 @@ pub fn parse_pdf<P: AsRef<Path>>(pdf_path: P) -> DocumentResult<RawDocumentText>
         confidence: 0.40, // PDF validation (text extraction lower confidence without full parser)
         metadata: DocumentMetadata {
             source_file: Some(path_str),
-            page_count: if page_count > 0 { Some(page_count) } else { None },
+            page_count: if page_count > 0 {
+                Some(page_count)
+            } else {
+                None
+            },
             character_count,
             extraction_method: "pdf_signature_validation".to_string(),
             ..Default::default()
