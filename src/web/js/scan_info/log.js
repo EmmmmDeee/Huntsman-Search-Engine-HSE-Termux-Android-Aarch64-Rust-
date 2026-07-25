@@ -186,7 +186,19 @@ export function mapEvent(ev){
   if (t==='module_done')    return {typ:'module', lv:'ok',    msg:`✓ ${esc(ev.module)} <span class="text-muted">(${ev.found} found)</span>`};
   if (t==='module_error')   return {typ:'module', lv:'err',   msg:`✗ ${esc(ev.module)} <span class="text-muted">${esc(ev.error)}</span>`};
   if (t==='module_skipped') return {typ:'module', lv:'skip',  msg:`◌ ${esc(ev.module)} <span class="text-muted">${esc(ev.reason)}</span>`};
-  if (t==='entity_found')   return {typ:'entity', lv:'found', msg:`${kindPill(ev.entity?.kind)} ${esc(ev.entity?.value)}`};
+  // Confidence and the candidate marker are part of the line, not decoration:
+  // the Rust twin (`EventKind::log_summary`, core/event/mod.rs) renders
+  // "+ {kind}  {value}  ·{conf}{  (candidate)}", and the downloaded events.log
+  // / debug-bundle sequence therefore carry both. Dropping them here made the
+  // on-screen log disagree with the on-disk one for every single entity row —
+  // a 0.30 speculative username read identically to a 0.95 observed AP.
+  if (t==='entity_found'){
+    const e = ev.entity || {};
+    const conf = typeof e.confidence === 'number' ? e.confidence.toFixed(2) : null;
+    const cand = (e.tags||[]).includes('candidate') ? ' <span class="text-muted">(candidate)</span>' : '';
+    return {typ:'entity', lv:'found',
+      msg:`${kindPill(e.kind)} ${esc(e.value)}${conf!=null?` <span class="text-muted">·${esc(conf)}</span>`:''}${cand}`};
+  }
   if (t==='scan_start')     return {typ:'scan',   lv:'info',  msg:`scan started · ${esc(ev.target_kind)}=${esc(ev.target_value)}`};
   if (t==='scan_complete')  return {typ:'scan',   lv:'ok',    msg:`scan complete · ${ev.entity_count} entities`};
   if (t==='expansion_tick') return {typ:'expand', lv:'info',  msg:`depth ${ev.depth} · queued ${ev.queued} · visited ${ev.visited}`};
