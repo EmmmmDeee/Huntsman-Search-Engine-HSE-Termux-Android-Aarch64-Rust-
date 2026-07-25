@@ -8711,6 +8711,71 @@ fn au080_recurring_cooccurrence_link_fires_on_tagged_pair() {
 }
 
 #[test]
+fn au080_gates_sub_floor_endpoints_and_bounds_the_tail() {
+    use super::rules::rule_au_080_recurring_cooccurrence_link;
+
+    // A corroborated hub that co-occurred with many partners across prior scans.
+    let mut hub = Entity::new(EntityKind::Email, "hub@example.com", 0.9, "s");
+    const N: usize = 15; // > MAX_PAIRS (12), so the tail must be rolled up
+    let mut all: Vec<Entity> = Vec::new();
+    for i in 0..N {
+        let val = format!("partner{i}@example.com");
+        hub.add_evidence(Evidence::new(
+            "cross_scan_history",
+            format!(
+                "Co-occurred with `{val}` across 2 earlier scan(s) in the local \
+                 intelligence database — a recurring association that bridges investigations"
+            ),
+        ));
+        all.push(Entity::new(EntityKind::Email, val, 0.9, "s"));
+    }
+    // One partner is a bare generated candidate below the confidence floor: the
+    // recurring pairing with it is noise (regenerated identically every scan) and
+    // must be gated out, never counted toward the cap or the rollup.
+    hub.add_evidence(Evidence::new(
+        "cross_scan_history",
+        "Co-occurred with `weakcandidate@example.com` across 2 earlier scan(s) in the local \
+         intelligence database — a recurring association that bridges investigations"
+            .to_string(),
+    ));
+    all.push(Entity::new(
+        EntityKind::Email,
+        "weakcandidate@example.com",
+        0.30,
+        "s",
+    ));
+    hub.tag("cross-scan-cooccurrence");
+    all.insert(0, hub);
+
+    let r = rule_au_080_recurring_cooccurrence_link(&all, "s", 0);
+
+    // 15 above-floor pairs → 12 ranked + 1 rollup = 13; the 0.30 candidate is
+    // gated out and never becomes a pair.
+    assert_eq!(
+        r.len(),
+        13,
+        "12 strongest pairs kept + 1 honest rollup summary"
+    );
+    let rollup = r.last().unwrap();
+    assert_eq!(
+        rollup.severity,
+        super::Severity::Low,
+        "the rolled-up tail is a low-severity summary"
+    );
+    assert!(
+        rollup
+            .description
+            .contains("3 further recurring co-occurrence"),
+        "rollup must state the 3 suppressed pairs, not drop them silently — got: {}",
+        rollup.description
+    );
+    assert!(
+        r.iter().all(|c| !c.description.contains("weakcandidate")),
+        "a sub-floor generated candidate must be gated out of AU-080 entirely"
+    );
+}
+
+#[test]
 fn au081_canonical_person_name_match_fires_on_cross_source_same_name() {
     use super::rules::rule_au_081_canonical_person_name_match;
     // Two Person entities: one from a breach (family "breach"), one from a social

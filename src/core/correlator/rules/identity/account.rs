@@ -1226,13 +1226,29 @@ pub(in crate::core::correlator) fn rule_au_080_recurring_cooccurrence_link(
     let entity_by_value: HashMap<&str, &Entity> =
         entities.iter().map(|e| (e.value.as_str(), e)).collect();
 
-    let mut out: Vec<Correlation> = Vec::new();
+    // A recurring co-occurrence is only signal between entities that are
+    // themselves corroborated. A name's GENERATED permutations — variant handles
+    // and speculative mailboxes minted identically on every scan — "co-occur
+    // across investigations" purely by construction, not by any real-world
+    // association, and an unbounded pass over them is the single largest source
+    // of correlation noise (a live 57-entity scan emitted ~100 of these). Gate
+    // both endpoints on a confidence floor, then rank what survives and bound the
+    // O(pairs) tail below so the few hub-level pairings that are the actual
+    // signal are not buried.
+    const MIN_CONF: f64 = 0.50;
+    const MAX_PAIRS: usize = 12;
+    // Distinct entities named in the rolled-up tail edge — bounded so the summary
+    // cannot itself become a giant hyperedge.
+    const ROLLUP_UID_CAP: usize = 25;
+    // (is_hub, shared_scans, correlation), kept together so the tail can be
+    // ranked strongest-first before it is bounded.
+    let mut ranked: Vec<(bool, usize, Correlation)> = Vec::new();
     // Deduplicate pairs (order-independent) so A→B and B→A don't both fire.
     let mut seen: HashSet<[String; 2]> = HashSet::new();
 
     for entity in entities
         .iter()
-        .filter(|e| e.has_tag("cross-scan-cooccurrence"))
+        .filter(|e| e.has_tag("cross-scan-cooccurrence") && e.confidence >= MIN_CONF)
     {
         for ev in &entity.evidence {
             // Only parse cross-scan-history co-occurrence records.
@@ -1250,6 +1266,11 @@ pub(in crate::core::correlator) fn rule_au_080_recurring_cooccurrence_link(
             let Some(&partner_e) = entity_by_value.get(partner_value) else {
                 continue;
             };
+            // The partner must clear the same floor: a corroborated endpoint
+            // recurring with a bare generated candidate is still noise.
+            if partner_e.confidence < MIN_CONF {
+                continue;
+            }
 
             // Deduplicate the pair (alphabetical order of UIDs).
             let mut pair = [entity.uid.clone(), partner_e.uid.clone()];
@@ -1276,27 +1297,73 @@ pub(in crate::core::correlator) fn rule_au_080_recurring_cooccurrence_link(
 
             let mut uids = vec![entity.uid.clone(), partner_e.uid.clone()];
             uids.sort_unstable();
-            out.push(Correlation {
-                rule_id: "AU-080".into(),
-                rule_name: "Recurring co-occurrence identity association".into(),
-                severity,
-                description: format!(
-                    "{} '{}' and {} '{}' have appeared together in {shared} prior \
-                     investigation(s) — a recurring structural association in the local \
-                     intelligence database that bridges cases{}",
-                    entity.kind,
-                    entity.value,
-                    partner_e.kind,
-                    partner_e.value,
-                    if is_hub { " (hub-level frequency)" } else { "" },
-                ),
-                entity_uids: uids,
-                scan_id: scan_id.into(),
-                ts,
-                rank: 0.0,
-            });
+            ranked.push((
+                is_hub,
+                shared,
+                Correlation {
+                    rule_id: "AU-080".into(),
+                    rule_name: "Recurring co-occurrence identity association".into(),
+                    severity,
+                    description: format!(
+                        "{} '{}' and {} '{}' have appeared together in {shared} prior \
+                         investigation(s) — a recurring structural association in the local \
+                         intelligence database that bridges cases{}",
+                        entity.kind,
+                        entity.value,
+                        partner_e.kind,
+                        partner_e.value,
+                        if is_hub { " (hub-level frequency)" } else { "" },
+                    ),
+                    entity_uids: uids,
+                    scan_id: scan_id.into(),
+                    ts,
+                    rank: 0.0,
+                },
+            ));
         }
     }
+
+    // Strongest first: hub-level pairings, then higher prior-scan frequency,
+    // with a deterministic uid tie-break so the kept set is stable across runs
+    // (the store orders by uid and the dossier diffs on it).
+    ranked.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(b.1.cmp(&a.1))
+            .then_with(|| a.2.entity_uids.cmp(&b.2.entity_uids))
+    });
+
+    if ranked.len() <= MAX_PAIRS {
+        return ranked.into_iter().map(|(_, _, c)| c).collect();
+    }
+
+    // Bound the O(pairs) tail. The suppressed pairs are the low-frequency long
+    // tail that buries the signal; roll them into ONE honest summary rather than
+    // dropping them silently — each pair's co-occurrence evidence stays on the
+    // entities themselves, so the underlying data is not lost, only de-duplicated
+    // in the correlation view.
+    let suppressed = ranked.len() - MAX_PAIRS;
+    let mut out: Vec<Correlation> = ranked.drain(..MAX_PAIRS).map(|(_, _, c)| c).collect();
+    let mut tail_uids: Vec<String> = ranked
+        .into_iter()
+        .flat_map(|(_, _, c)| c.entity_uids)
+        .collect();
+    tail_uids.sort_unstable();
+    tail_uids.dedup();
+    tail_uids.truncate(ROLLUP_UID_CAP);
+    out.push(Correlation {
+        rule_id: "AU-080".into(),
+        rule_name: "Recurring co-occurrence identity association".into(),
+        severity: Severity::Low,
+        description: format!(
+            "{suppressed} further recurring co-occurrence pair(s), below the top {MAX_PAIRS} by \
+             frequency, were rolled up to reduce noise — each pairing's evidence remains on the \
+             entities involved"
+        ),
+        entity_uids: tail_uids,
+        scan_id: scan_id.into(),
+        ts,
+        rank: 0.0,
+    });
     out
 }
 
