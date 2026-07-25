@@ -20,9 +20,9 @@
 /* ─────────────────────────── Design tokens ─────────────────────────── */
 
 :root{
-  --bg:            #0c0f13;
-  --bg-elevated:   #12161c;
-  --bg-elevated-2: #181d25;
+  --bg:            #0a0d11;
+  --bg-elevated:   #11151b;
+  --bg-elevated-2: #171d25;
   --bg-hover:      #1e2530;
   --border:        #232a35;
   --border-strong: #333d4d;
@@ -50,6 +50,9 @@
   --radius-pill:   999px;
   --sans: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   --mono: ui-monospace,SFMono-Regular,Consolas,"Liberation Mono","Courier New",monospace;
+  /* Locator mark in the app bar — masked, so it inherits the accent colour and
+     re-tints with the theme instead of being a second copy of the favicon. */
+  --mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='black' stroke-width='2.6'/%3E%3Ccircle cx='16' cy='16' r='2.8' fill='black'/%3E%3Cpath d='M16 1v6M16 25v6M1 16h6M25 16h6' stroke='black' stroke-width='2.6' stroke-linecap='round'/%3E%3C/svg%3E");
 }
 body.light-theme{
   --bg:            #eef1f4;
@@ -151,54 +154,235 @@ h1,h2,h3,h4,h5{ font-weight:600; color:var(--text); margin:0 0 10px; }
 .col-lg-12{width:100%}
 }
 
-/* ───────────────────────────── Navbar ───────────────────────────── */
+/* ───────────────────────── App shell / navigation ─────────────────────────
 
-.navbar{ position:relative; min-height:52px; margin-bottom:0; }
-.navbar-fixed-top{ position:fixed; top:0; left:0; right:0; z-index:1030; }
-.navbar-inverse{
+   One set of links, two layouts, no duplicated markup (see spa.html):
+
+     • narrow  — `.navbar` is a fixed bottom tab bar, thumb-reachable on the
+                 phone this runs on under Termux, and `#morepanel` is a sheet
+                 that slides up over it.
+     • ≥768px  — `#morepanel` goes `display:contents`, so its links become
+                 direct flex children of `.navbar` and the whole thing reads as
+                 an ordinary top nav under the app bar. The "More" tab hides.
+
+   Both bars sit inside `env(safe-area-inset-*)` so nothing hides behind an
+   Android gesture pill or a display cutout. */
+
+.appbar{
+  position:fixed; top:0; left:0; right:0; z-index:1030;
+  display:flex; align-items:center; gap:10px;
+  height:calc(52px + env(safe-area-inset-top));
+  padding:env(safe-area-inset-top) max(12px,env(safe-area-inset-right)) 0 max(12px,env(safe-area-inset-left));
   background:var(--bg-elevated); border-bottom:1px solid var(--border);
   box-shadow:var(--shadow-sm);
 }
-.navbar .container-fluid{ display:flex; align-items:center; flex-wrap:wrap; }
-.navbar-header{ display:flex; align-items:center; }
-.navbar-brand{ padding:14px 12px 14px 0; font-size:16px; color:var(--text); display:inline-block; }
-.navbar-brand .brand-logo-text{ font-size:15px; letter-spacing:.02em; color:var(--text); font-weight:500; }
-.navbar-brand b{ color:var(--accent); font-weight:700; }
-.navbar-brand small{ color:var(--text-dim); font-weight:400; font-size:11px; margin-left:6px; font-family:var(--mono); }
-.navbar-toggle{
-  display:none; background:transparent; border:1px solid var(--border-strong);
-  border-radius:var(--radius-sm); padding:7px 9px; cursor:pointer; margin-left:auto;
+.brand{ display:flex; align-items:center; gap:7px; color:var(--text); flex:0 0 auto; min-width:0; }
+.brand:hover{ text-decoration:none; color:var(--text); }
+.brand-mark{
+  width:18px; height:18px; flex:0 0 auto; border-radius:50%;
+  background:var(--accent);
+  -webkit-mask-image:var(--mark); mask-image:var(--mark);
+  -webkit-mask-size:contain; mask-size:contain; -webkit-mask-repeat:no-repeat; mask-repeat:no-repeat;
 }
-.navbar-toggle .icon-bar{ display:block; width:20px; height:2px; background:var(--text-muted); border-radius:1px; }
-.navbar-toggle .icon-bar+.icon-bar{ margin-top:4px; }
-.navbar-collapse{ display:flex; flex:1 1 auto; align-items:center; }
-.navbar-nav{ list-style:none; display:flex; margin:0; padding:0; }
-.navbar-nav>li{ position:relative; }
-.navbar-nav>li>a{
-  display:block; padding:16px 13px; color:var(--text-muted); font-size:13px;
-  font-weight:500; white-space:nowrap;
+.brand-text{
+  font-size:14px; font-weight:600; letter-spacing:.01em; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis;
 }
-.navbar-nav>li>a:hover{ color:var(--text); text-decoration:none; background:var(--bg-hover); }
-.navbar-nav>li.active>a,.navbar-nav>li.active>a:hover{
-  color:var(--accent); background:var(--accent-dim); box-shadow:inset 0 -2px 0 var(--accent);
+.brand-sep{ color:var(--accent); margin:0 4px; }
+.brand-ver{ font-family:var(--mono); font-size:10.5px; color:var(--text-dim); flex:0 0 auto; }
+
+.appbar-search{ display:flex; align-items:center; position:relative; flex:1 1 auto; min-width:0; max-width:420px; }
+.appbar-search .glyphicon{
+  position:absolute; left:9px; width:14px; height:14px; color:var(--text-dim); pointer-events:none;
 }
-.navbar-nav>li>a .glyphicon{ margin-right:2px; }
-.navbar-right{ margin-left:auto; }
-.navbar-form{ display:flex; align-items:center; }
-.navbar-left{ margin-right:auto; }
-@media (max-width:767px){
-  .navbar-toggle{ display:block; }
-  .navbar-collapse{
-    display:none; flex-basis:100%; flex-direction:column; align-items:stretch;
-    border-top:1px solid var(--border); margin-top:10px; padding-top:8px;
+.appbar-search input{
+  width:100%; min-width:0; height:34px; padding:0 10px 0 29px;
+  background:var(--bg); color:var(--text);
+  border:1px solid var(--border); border-radius:var(--radius-pill);
+  font-family:var(--sans); font-size:12.5px; outline:none;
+  transition:border-color .12s, background-color .12s;
+}
+.appbar-search input::placeholder{ color:var(--text-dim); }
+.appbar-search input:focus{ border-color:var(--accent); background:var(--bg-elevated-2); }
+.appbar-search input::-webkit-search-cancel-button{ -webkit-appearance:none; }
+
+.appbar-actions{ display:flex; align-items:center; gap:2px; margin-left:auto; flex:0 0 auto; }
+.iconbtn{
+  display:inline-flex; align-items:center; justify-content:center;
+  width:38px; height:38px; border-radius:var(--radius); color:var(--text-muted);
+}
+.iconbtn:hover{ background:var(--bg-hover); color:var(--text); text-decoration:none; }
+.iconbtn .glyphicon{ width:16px; height:16px; }
+#update-badge{
+  background:var(--danger); color:#fff; border-radius:var(--radius-pill);
+  font-family:var(--mono); font-size:9px; font-weight:700; padding:2px 6px; margin-right:4px;
+}
+
+.navbar{
+  position:fixed; left:0; right:0; bottom:0; z-index:1030;
+  display:flex; align-items:stretch;
+  background:var(--bg-elevated); border-top:1px solid var(--border);
+  padding-bottom:env(safe-area-inset-bottom);
+  box-shadow:0 -1px 2px rgba(0,0,0,.4);
+}
+.navlink{
+  flex:1 1 0; min-width:0;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px;
+  /* 56px clears the 44px minimum touch target with room for the label. */
+  min-height:56px; padding:7px 2px 6px;
+  background:none; border:0; font-family:var(--sans);
+  color:var(--text-dim); font-size:10px; font-weight:500; letter-spacing:.01em;
+  cursor:pointer; text-align:center;
+  -webkit-tap-highlight-color:transparent;
+  transition:color .12s;
+}
+.navlink:hover{ color:var(--text-muted); text-decoration:none; }
+.navlink>span{ max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.navlink .glyphicon{ width:19px; height:19px; }
+.navlink.active{ color:var(--accent); }
+/* Raised-sheet state, kept visually distinct from `.active` so the accent keeps
+   meaning "the page you are on". */
+.navlink-more.sheet-open{ color:var(--text); background:var(--bg-hover); }
+.navlink.active .glyphicon{ transform:translateY(-1px); }
+/* Indicator rides the top edge next to the content area it belongs to. */
+.navlink.active::before{
+  content:''; position:absolute; top:0; width:26px; height:2px;
+  background:var(--accent); border-radius:0 0 2px 2px;
+}
+.navlink{ position:relative; }
+
+.morepanel{
+  position:fixed; left:0; right:0; z-index:1029;
+  bottom:calc(56px + env(safe-area-inset-bottom));
+  display:flex; flex-direction:column;
+  background:var(--bg-elevated); border-top:1px solid var(--border);
+  box-shadow:var(--shadow-md);
+  transform:translateY(110%); visibility:hidden;
+  transition:transform .18s ease, visibility .18s;
+}
+.morepanel.open{ transform:translateY(0); visibility:visible; }
+.morepanel .navlink{
+  flex:0 0 auto; flex-direction:row; justify-content:flex-start; gap:12px;
+  min-height:52px; padding:0 20px; font-size:13px; font-weight:500;
+  border-bottom:1px solid var(--border);
+  /* Full-strength text: in the sheet these are the primary thing on screen, and
+     the tab bar's dim resting colour reads as disabled at this size. */
+  color:var(--text);
+}
+.morepanel .navlink:last-child{ border-bottom:0; }
+.morepanel .navlink .glyphicon{ width:17px; height:17px; }
+.morepanel .navlink.active::before{ display:none; }
+.morepanel .navlink.active{ background:var(--accent-dim); }
+
+#mainbody{
+  padding-top:calc(64px + env(safe-area-inset-top));
+  /* Clears the tab bar so the last row of a table is never trapped under it. */
+  padding-bottom:calc(72px + env(safe-area-inset-bottom));
+  max-width:1500px;
+}
+
+/* Phone-sized: the app bar gets tight, so the brand sheds its wordmark and
+   leaves the locator mark plus the version — the search field is worth more
+   screen than the product name the user already knows they opened. */
+@media (max-width:560px){
+  .brand-text{ display:none; }
+}
+
+@media (min-width:768px){
+  .appbar{ gap:14px; }
+  .navbar{
+    position:fixed; top:calc(52px + env(safe-area-inset-top)); bottom:auto;
+    border-top:0; border-bottom:1px solid var(--border);
+    padding:0 max(12px,env(safe-area-inset-left)); box-shadow:var(--shadow-sm);
+    gap:2px;
   }
-  .navbar-collapse.in{ display:flex; }
-  .navbar-nav{ flex-direction:column; width:100%; }
-  .navbar-nav>li>a{ padding:11px 6px; }
-  .navbar-right{ margin-left:0; }
-  .navbar-form{ margin:8px 0; width:100%; }
-  .navbar-form .input-group{ width:100% !important; }
+  /* The wrapper dissolves; its links join the row as ordinary siblings.
+     `visibility` and `transform` have to be unwound explicitly: `display:contents`
+     removes the box but not the inheritance, so the sheet's hidden state would
+     otherwise pass straight down and the secondary destinations would be absent
+     from the desktop nav entirely. */
+  .morepanel{
+    display:contents;
+    visibility:visible;
+    transform:none;
+  }
+  .morepanel .navlink{
+    border-bottom:0; background:none;
+  }
+  .navlink-more{ display:none; }
+  .navlink,.morepanel .navlink{
+    flex:0 0 auto; flex-direction:row; gap:6px;
+    min-height:42px; padding:0 13px; font-size:12.5px; font-weight:500;
+  }
+  .navlink .glyphicon,.morepanel .navlink .glyphicon{ width:14px; height:14px; }
+  .navlink.active,.morepanel .navlink.active{ background:var(--accent-dim); }
+  .navlink.active::before{ top:auto; bottom:0; width:100%; height:2px; border-radius:2px 2px 0 0; }
+  .morepanel .navlink.active::before{ display:block; }
+  #mainbody{ padding-top:calc(52px + 42px + 18px + env(safe-area-inset-top)); padding-bottom:40px; }
+}
+
+@media (max-width:767px){
   #scan-filter{ width:100% !important; float:none !important; margin-top:6px !important; display:block; }
+}
+
+/* ─────────────────── Float containment / narrow-screen headers ───────────────────
+
+   Views put their action cluster in a `.pull-right` inside the page heading —
+   13 of them do. On a desktop the buttons fit beside the title and the float is
+   invisible. On a phone they do not fit, so the float runs down past the
+   heading, and because `.row` is `display:flex` it establishes a block
+   formatting context — which *shrinks to avoid floats* rather than flowing
+   under them. The first grid row after any such heading was being squeezed into
+   whatever strip was left: on the Scans page, four stat cards into 58px.
+
+   Two rules fix the whole class of it: headings contain their own floats, and
+   below the layout breakpoint the actions stop floating altogether and become
+   their own full-width row, which is what they need at that width anyway. */
+
+h1,h2,h3,h4,h5{ display:flow-root; }
+.row{ clear:both; }
+
+@media (max-width:767px){
+  h1 .pull-right,h2 .pull-right,h3 .pull-right,h4 .pull-right,h5 .pull-right,
+  .page-header .pull-right{
+    float:none; display:flex; flex-wrap:wrap; gap:6px; margin-top:10px;
+  }
+  /* Stat tiles read as a scoreboard, so they stay two-up rather than becoming
+     four full-width bands that push the actual content off-screen. */
+  .row>[class^="col-"]:has(>.stat-card),
+  .row>[class*=" col-"]:has(>.stat-card){ width:50%; }
+
+  /* Data tables restack into one labelled card per row. A seven-column table
+     needs ~740px; a phone has ~340, and sideways scrolling hid the status and
+     the row's own action buttons behind a gesture nothing advertised. The
+     labels come from `data-label`, filled from each table's own `<thead>` by
+     `labelTables()` in ui.js — so the header text is not duplicated here and
+     cannot drift from it. Tables without a header are left alone. */
+  .table-responsive:has(thead th){ overflow-x:visible; }
+  .table-responsive:has(thead th) table,
+  .table-responsive:has(thead th) tbody,
+  .table-responsive:has(thead th) tr,
+  .table-responsive:has(thead th) td{ display:block; width:auto; }
+  .table-responsive:has(thead th) thead{ display:none; }
+  .table-responsive:has(thead th) tbody tr{
+    border:1px solid var(--border); border-radius:var(--radius);
+    background:var(--bg-elevated); margin-bottom:8px; padding:2px 0;
+  }
+  .table-responsive:has(thead th) tbody td{
+    display:flex; align-items:baseline; gap:6px 12px;
+    padding:7px 12px; border:0; text-align:left; white-space:normal;
+    /* A cell's children each become flex items, so an actions cell holding five
+       buttons would run off the card edge without this. */
+    flex-wrap:wrap;
+  }
+  .table-responsive:has(thead th) tbody td::before{
+    content:attr(data-label);
+    flex:0 0 38%; min-width:0;
+    color:var(--text-dim); font-size:10.5px; text-transform:uppercase;
+    letter-spacing:.05em; font-weight:600;
+  }
+  /* A cell with nothing in it would otherwise render as a lone floating label. */
+  .table-responsive:has(thead th) tbody td:empty{ display:none; }
 }
 
 /* ───────────────────────────── Buttons ───────────────────────────── */
@@ -349,7 +533,14 @@ input[type=checkbox],input[type=radio]{ accent-color:var(--accent); width:14px; 
 .text-danger{ color:var(--danger); }
 .text-warning{ color:var(--warning); }
 .text-success{ color:var(--success); }
+.text-dim{ color:var(--text-dim); }
 .pull-right{ float:right; }
+/* Visible to assistive tech only — the theme control is an icon, but its label
+   still has to name the action it performs. */
+.sr-only{
+  position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+  overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0;
+}
 
 /* ───────────────────────────── Icons (glyphicon-compatible) ───────────────────────────── */
 

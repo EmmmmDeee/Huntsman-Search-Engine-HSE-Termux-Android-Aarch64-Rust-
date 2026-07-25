@@ -2555,9 +2555,13 @@ async fn spa_served_with_required_ui_structure() {
     );
     // Directive UI checklist — this scaffolding must stay present.
     for marker in [
-        "<html",             // a real HTML document
-        "viewport",          // touch / mobile-optimised
-        "#222",              // dark theme (navbar dark)
+        "<html",    // a real HTML document
+        "viewport", // touch / mobile-optimised
+        // Dark-by-default console background (`--bg`, with `body.light-theme`
+        // as the opt-in alternative). Tracks the palette, so it moves when the
+        // palette legitimately moves — it exists to catch shipping a *light*
+        // default, not to freeze one shade.
+        "#0a0d11",
         "/static/d3.min.js", // interactive node graph (D3)
         "tablesorter",       // sortable data tables
         "#/dash",            // tabbed navigation (client-side hash routes)

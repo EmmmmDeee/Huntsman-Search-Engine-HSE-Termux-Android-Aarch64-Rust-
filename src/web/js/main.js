@@ -35,7 +35,7 @@ import { globalSearch, renderSearch } from '/static/js/views/search.js';
 import { renderEngines, refreshEngines, runCapabilityProbe } from '/static/js/views/engines.js';
 import { renderHarvest, refreshHarvest } from '/static/js/views/key_harvest.js';
 import { renderLive, closeLiveStream, saveLiveShown } from '/static/js/views/live.js';
-import { initCompatShims, initNavbarToggle, initModals } from '/static/js/ui.js';
+import { initCompatShims, initMoreSheet, initModals, initTableLabels } from '/static/js/ui.js';
 
 /* Installed at module-load time (before any view can run) so the
  * `alertify.*`/`jQuery(...).tablesorter(...)` call sites scattered across
@@ -71,7 +71,7 @@ export async function render(){
   clearEnginesTimer();
   clearOptsTimers();
   S.route = parseHash();
-  $$('#main-navbar-collapse li').forEach(li=>li.classList.remove('active'));
+  $$('#mainnav .navlink').forEach(a=>a.classList.remove('active'));
   const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans', engines:'nav-engines', harvest:'nav-harvest'};
   const navEl = $('#'+navMap[S.route.name]); if (navEl) navEl.classList.add('active');
 
@@ -109,8 +109,9 @@ Object.assign(window, {
 /* ═══════════ Bootstrap ═══════════ */
 (async function init(){
   applyTheme();
-  initNavbarToggle();
+  initMoreSheet();
   initModals();
+  initTableLabels();
   initDownloads();
   if (typeof alertify !== 'undefined') alertify.set('notifier','position','top-right');
   try {

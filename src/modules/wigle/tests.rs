@@ -631,6 +631,7 @@ fn category_is_geo() {
 
 #[test]
 fn budgets_reset_independently_per_observation_type() {
+    let _g = budget_guard();
     GEO_BUDGET.reset_scan();
     for _ in 0..GEO_BUDGET.scan_cap() {
         GEO_BUDGET.increment();
@@ -644,6 +645,9 @@ fn budgets_reset_independently_per_observation_type() {
 
 #[test]
 fn budget_snapshot_aggregates_all_four_sub_budgets() {
+    // Asserts `scan_used == 0` on shared statics, so it must not run
+    // alongside anything that spends a unit.
+    let _g = budget_guard();
     reset_budget();
     let s = budget_snapshot();
     assert!(s.geo.scan_cap >= 1);
@@ -1152,4 +1156,218 @@ fn budget_snapshot_reports_every_declared_budget() {
     // Field access is the assertion: `ssid` was declared, reset and consumed
     // while being absent from this struct.
     let _ = (snap.geo, snap.bssid, snap.cell, snap.bluetooth, snap.ssid);
+}
+
+// ── Budget is denominated in HTTP requests, not dispatches ──────────────────
+//
+// Each sub-budget's documented cap ("3 geo searches per scan") is a promise
+// about upstream requests against the operator's daily WiGLE allowance, so the
+// charge has to sit next to the request it pays for. These pin the two ways
+// that promise was broken: a request that is never issued must not be billed,
+// and an exhausted allowance must stop the caller before it dials out.
+
+/// Serialises every test that touches a WiGLE budget.
+///
+/// The budgets are process-global statics and the test harness runs threads in
+/// parallel, so a test that resets or drains one races any other test doing the
+/// same — `reset_budget()` in particular clears all five at once. Without this
+/// the suite passes or fails depending on thread interleaving.
+/// Async-aware because the dispatch-level tests hold it across `.await`; a
+/// `std::sync::Mutex` guard is not safe to hold across a yield point.
+static BUDGET_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// Take [`BUDGET_LOCK`] from a synchronous test. Safe here because `#[test]`
+/// functions run outside any Tokio runtime; async tests `.await` the lock
+/// directly instead.
+fn budget_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    BUDGET_LOCK.blocking_lock()
+}
+
+/// Context whose HTTP client resolves the WiGLE host to a closed loopback port.
+///
+/// These tests assert that no request is issued. Letting the real hostname
+/// through would send live traffic to a third party — spending the quota this
+/// very budget exists to protect, and making the suite depend on the network —
+/// while an attempted call here fails instantly against a refused local
+/// connection. So `Ok(empty)` means "never dialled" and `Err` means "dialled",
+/// which is exactly the distinction under test.
+fn offline_ctx() -> crate::core::module::ModuleContext {
+    let http = reqwest::Client::builder()
+        .resolve(
+            "api.wigle.net",
+            std::net::SocketAddr::from(([127, 0, 0, 1], 1)),
+        )
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .expect("client with a loopback resolve override");
+    crate::core::module::ModuleContext {
+        scan_id: "budget-test".to_string(),
+        bus: tokio::sync::broadcast::channel(16).0,
+        http,
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    }
+}
+
+/// Regression: the SSID unit was charged in `process` *before* `ssid_search`
+/// applied its skip filters, so a scan whose networks were all carrier
+/// defaults burned its whole SSID allowance without issuing one request — and
+/// the distinctive name later in the pivot chain, the only one that could
+/// actually geolocate the subject, found the budget already spent.
+#[tokio::test]
+async fn a_skipped_generic_ssid_costs_no_budget() {
+    let _g = BUDGET_LOCK.lock().await;
+    SSID_BUDGET.reset_scan();
+    let before = SSID_BUDGET.scan_remaining();
+
+    let out = Wigle
+        .ssid_search("user", "token", "NETGEAR", &offline_ctx())
+        .await
+        .expect("a generic SSID is skipped, not an error");
+
+    assert!(out.entities.is_empty(), "generic SSID must not geolocate");
+    assert_eq!(
+        SSID_BUDGET.scan_remaining(),
+        before,
+        "no request was issued, so no unit may be spent"
+    );
+}
+
+/// An empty SSID is filtered before the request too, and must likewise be free.
+#[tokio::test]
+async fn an_empty_ssid_costs_no_budget() {
+    let _g = BUDGET_LOCK.lock().await;
+    SSID_BUDGET.reset_scan();
+    let before = SSID_BUDGET.scan_remaining();
+
+    let out = Wigle
+        .ssid_search("user", "token", "", &offline_ctx())
+        .await
+        .expect("an empty SSID is skipped, not an error");
+
+    assert!(out.entities.is_empty());
+    assert_eq!(SSID_BUDGET.scan_remaining(), before);
+}
+
+/// An exhausted SSID allowance must short-circuit ahead of the request.
+///
+/// Before the fix `ssid_search` held no guard at all — the single unit was
+/// spent back in `process` — so a drained budget still dialled WiGLE. The
+/// loopback resolve makes that visible: a call attempt surfaces as `Err`,
+/// while the guard returns `Ok` with nothing.
+#[tokio::test]
+async fn an_exhausted_ssid_budget_issues_no_request() {
+    let _g = BUDGET_LOCK.lock().await;
+    SSID_BUDGET.reset_scan();
+    while SSID_BUDGET.try_increment() {}
+    assert!(!SSID_BUDGET.remaining(), "precondition: allowance drained");
+
+    let out = Wigle
+        .ssid_search("user", "token", "Kowalczyk-Family-5G", &offline_ctx())
+        .await
+        .expect("exhaustion is a skip, not a failed request");
+    assert!(out.entities.is_empty());
+
+    SSID_BUDGET.reset_scan();
+}
+
+/// Regression: `bssid_lookup` probes the WiFi, cell and Bluetooth corpora in
+/// turn — up to three billable requests — while `process` charged one unit for
+/// the whole dispatch, so a documented "5 BSSID lookups per scan" could spend
+/// fifteen. The loop now charges per kind and breaks when the allowance runs
+/// out, so a drained budget probes nothing.
+#[tokio::test]
+async fn an_exhausted_bssid_budget_probes_no_observation_kind() {
+    let _g = BUDGET_LOCK.lock().await;
+    BSSID_BUDGET.reset_scan();
+    while BSSID_BUDGET.try_increment() {}
+    assert!(!BSSID_BUDGET.remaining(), "precondition: allowance drained");
+
+    let out = Wigle
+        .bssid_lookup("user", "token", "AA:BB:CC:DD:EE:FF", &offline_ctx())
+        .await
+        .expect("exhaustion is a skip, not a failed request");
+    assert!(out.entities.is_empty());
+
+    BSSID_BUDGET.reset_scan();
+}
+
+/// The per-kind charge must be able to spend more than one unit per dispatch —
+/// that is the whole fix — so the cap has to be able to fund a complete
+/// three-corpus lookup.
+#[test]
+fn the_bssid_budget_can_fund_all_three_observation_kinds() {
+    let _g = budget_guard();
+    BSSID_BUDGET.reset_scan();
+    assert!(
+        BSSID_BUDGET.scan_cap() >= 3,
+        "one BSSID dispatch probes WiFi, cell and Bluetooth; a cap below 3 \
+         could never fund a single complete lookup"
+    );
+    for probe in 0..3 {
+        assert!(
+            BSSID_BUDGET.try_increment(),
+            "probe {probe} of one lookup must be affordable"
+        );
+    }
+    BSSID_BUDGET.reset_scan();
+}
+
+/// The two tests above call `ssid_search`/`bssid_lookup` directly, which pins
+/// where the charge sits *now*. These drive the real `process` entry point,
+/// which is where the single per-dispatch unit used to be taken — so they
+/// measure the invariant the budget actually promises: units spent equals
+/// requests issued.
+///
+/// Regression: `process` charged one SSID unit up front, before `ssid_search`
+/// had a chance to skip a carrier-default name. Three such networks drained a
+/// 3-unit allowance without a single request leaving the host.
+#[tokio::test]
+async fn a_generic_ssid_dispatch_spends_nothing() {
+    let _g = BUDGET_LOCK.lock().await;
+    SSID_BUDGET.reset_scan();
+    let before = SSID_BUDGET.scan_remaining();
+
+    let out = Wigle
+        .process(&Target::new(TargetKind::Ssid, "NETGEAR"), &offline_ctx())
+        .await
+        .expect("a generic SSID is skipped, not an error");
+
+    assert!(out.entities.is_empty());
+    assert_eq!(
+        SSID_BUDGET.scan_remaining(),
+        before,
+        "a dispatch that issues no request must cost no quota"
+    );
+}
+
+/// Regression: one `MacAddress` dispatch probes the WiFi, cell and Bluetooth
+/// corpora in sequence — three billable requests — and was charged a single
+/// unit, so the documented "5 BSSID lookups per scan" could spend fifteen
+/// against an allowance denominated in requests.
+///
+/// The probes fail here (the host resolves to a closed port), which is the
+/// point: each is charged *before* it is issued, so the accounting holds
+/// whether or not WiGLE answers.
+#[tokio::test]
+async fn one_bssid_dispatch_is_billed_for_every_corpus_it_probes() {
+    let _g = BUDGET_LOCK.lock().await;
+    BSSID_BUDGET.reset_scan();
+    let before = BSSID_BUDGET.scan_remaining();
+
+    let _ = Wigle
+        .process(
+            &Target::new(TargetKind::MacAddress, "AA:BB:CC:DD:EE:FF"),
+            &offline_ctx(),
+        )
+        .await;
+
+    assert_eq!(
+        before - BSSID_BUDGET.scan_remaining(),
+        3,
+        "three corpora probed must cost three units, not one"
+    );
+
+    BSSID_BUDGET.reset_scan();
 }
