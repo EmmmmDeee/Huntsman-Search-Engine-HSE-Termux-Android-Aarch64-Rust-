@@ -21,6 +21,23 @@ export function fmtDuration(secs){
 export function fmtClock(){const d=new Date(),p=n=>String(n).padStart(2,'0');return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;}
 export function statusPill(s){const m={complete:'s-complete',running:'s-running',failed:'s-failed',pending:'s-pending',aborted:'s-aborted'};return `<span class="status-pill ${m[s]||'s-pending'}">${esc(s||'pending')}</span>`;}
 export function costPill(c){return `<span class="cost-pill cost-${attr(c)}">${esc(c)}</span>`;}
+// Render a per-service pool's mean health for a table cell, honestly. The
+// backend sends `avg_health: null` when a service has NO tested key yet (every
+// key is still Untested) — an untested key carries no operational history, so
+// its internal score defaults optimistically to ~0.97 and folding that in would
+// paint a wholly-unproven pool as "healthy". In that case show "untested", not
+// a fabricated percentage (and "—" for a genuinely empty pool). Otherwise the
+// value is the mean over the exercised keys only.
+export function healthCell(s){
+  const total = (s && s.total) || 0;
+  if (s == null || s.avg_health == null){
+    return total
+      ? '<span class="text-muted" title="no key exercised yet — health is unknown until the first real dispatch grades one">untested</span>'
+      : '<span class="text-muted">—</span>';
+  }
+  const pct = Math.round(s.avg_health*100);
+  return `${pct}%`;
+}
 // Flatten an EntityKind to a display string. Unit variants arrive as plain
 // strings; the catch-all `Other(s)` arrives as {"other":"…"} (externally-tagged
 // enum) and must become "other:…" rather than "[object Object]".

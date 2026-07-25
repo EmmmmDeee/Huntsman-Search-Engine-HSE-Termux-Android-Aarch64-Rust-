@@ -1049,7 +1049,8 @@ fn key_pool_untested_key_is_not_counted_dead() {
         exhausted: 0,
         invalid: 0,
         revoked: 0,
-        avg_health: 0.97,
+        // An untested-only pool has no exercised key to grade → health is None.
+        avg_health: None,
     };
     assert!(!untested.is_dead(), "an untested-only pool is not dead");
     // But an all-exhausted/invalid pool with no untested key IS dead.
@@ -1062,7 +1063,7 @@ fn key_pool_untested_key_is_not_counted_dead() {
         exhausted: 2,
         invalid: 0,
         revoked: 0,
-        avg_health: 0.05,
+        avg_health: Some(0.0),
     };
     assert!(dead.is_dead());
 }
@@ -1148,7 +1149,7 @@ fn system_bundle_has_every_section_and_surfaces_verdict_logs_and_failed_scan_err
             exhausted: 1,
             invalid: 0,
             revoked: 0,
-            avg_health: 0.1,
+            avg_health: Some(0.1),
         }],
         db_integrity: vec!["*** in database main ***".into(), "row 7 missing".into()],
         wal_bytes: Some(128 * 1024 * 1024),

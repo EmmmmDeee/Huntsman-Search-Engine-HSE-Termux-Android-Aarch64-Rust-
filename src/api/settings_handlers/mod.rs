@@ -55,11 +55,22 @@ pub(crate) struct ServiceQuota {
     pub revoked: usize,
     pub uses: u64,
     pub errors: u64,
-    /// Mean [`crate::util::key_pool::KeyEntry::health_score`] across this service's
-    /// keys — the at-a-glance "how healthy is this pool" number (0.0–1.0), `0.0`
-    /// for a service with no keys. The status counts above say *what* the keys
-    /// are; this says how operationally healthy they are overall.
-    pub avg_health: f64,
+    /// How many of this service's keys carry a real verdict — i.e. are anything
+    /// other than [`crate::util::key_pool::KeyStatus::Untested`]. This is the
+    /// population `avg_health` is averaged over; it is `0` when every key is
+    /// still untested.
+    pub tested: usize,
+    /// Mean [`crate::util::key_pool::KeyEntry::health_score`] across this
+    /// service's *tested* keys — the at-a-glance "how healthy is this pool"
+    /// number (0.0–1.0) — or `None` when no key has been exercised yet. An
+    /// untested key has no operational history, so its `health_score` falls
+    /// back to an optimistic `~0.97`; folding that into the mean would report a
+    /// wholly unproven pool as healthy. Averaging over tested keys only (and
+    /// reporting `None` when there are none) keeps the number honest: the pool
+    /// reads as "untested" until a real dispatch grades at least one key. The
+    /// status counts above say *what* the keys are; this says how operationally
+    /// healthy the exercised ones are.
+    pub avg_health: Option<f64>,
 }
 
 /// Summarise a key-pool snapshot into per-service status counts (plus the mean
@@ -90,14 +101,18 @@ pub(crate) fn summarize_pool(data: &crate::util::key_pool::PoolData) -> Vec<Serv
                 }
                 q.uses += e.use_count;
                 q.errors += e.error_count;
-                health_sum += e.health_score(now);
+                // Only keys with a real verdict feed the health average — an
+                // untested key's optimistic default score would otherwise make a
+                // wholly-unexercised pool read as healthy (see `avg_health` doc).
+                if e.status != KeyStatus::Untested {
+                    health_sum += e.health_score(now);
+                    q.tested += 1;
+                }
             }
-            // Mean over all keys; 0.0 for an empty service (avoids 0/0).
-            q.avg_health = if entries.is_empty() {
-                0.0
-            } else {
-                health_sum / entries.len() as f64
-            };
+            // Mean over TESTED keys; `None` when none have been exercised yet
+            // (all-untested or empty service) so the dashboard shows "untested"
+            // rather than a fabricated percentage.
+            q.avg_health = (q.tested > 0).then(|| health_sum / q.tested as f64);
             q
         })
         .collect();

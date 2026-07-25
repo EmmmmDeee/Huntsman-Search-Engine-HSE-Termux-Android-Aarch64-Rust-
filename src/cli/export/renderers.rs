@@ -900,7 +900,10 @@ pub(crate) struct KeyPoolSummary {
     pub exhausted: usize,
     pub invalid: usize,
     pub revoked: usize,
-    pub avg_health: f64,
+    /// Mean health across the pool's *tested* keys, or `None` when every key is
+    /// still untested (no operational history to grade). Rendered as "n/a"
+    /// rather than a fabricated score in that case.
+    pub avg_health: Option<f64>,
 }
 
 impl KeyPoolSummary {
@@ -1330,9 +1333,13 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
     }
     for k in &inp.key_pool {
         let dead = if k.is_dead() { "  · ALL DEAD" } else { "" };
+        // "n/a" (not a fabricated 0.00) when no key has been exercised yet.
+        let health = k
+            .avg_health
+            .map_or_else(|| "n/a".to_string(), |h| format!("{h:.2}"));
         let _ = writeln!(
             s,
-            "  {:<14} {}/{} active · {} untested · {} rate-limited · {} exhausted · {} invalid · {} revoked · health {:.2}{}",
+            "  {:<14} {}/{} active · {} untested · {} rate-limited · {} exhausted · {} invalid · {} revoked · health {}{}",
             k.service,
             k.active,
             k.total,
@@ -1341,7 +1348,7 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             k.exhausted,
             k.invalid,
             k.revoked,
-            k.avg_health,
+            health,
             dead
         );
     }

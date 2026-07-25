@@ -1,5 +1,5 @@
 import { API } from '/static/js/api.js';
-import { $, $$, attr, esc, fmtDate, toast } from '/static/js/helpers.js';
+import { $, $$, attr, esc, fmtDate, healthCell, toast } from '/static/js/helpers.js';
 import { S } from '/static/js/state.js';
 import { render } from '/static/js/main.js';
 
@@ -685,7 +685,7 @@ export function keysDiagPanel(status, patterns){
       <td class="text-right">${s.invalid}</td><td class="text-right">${s.untested}</td>
       <td class="text-right">${s.revoked}</td><td class="text-right">${s.uses}</td>
       <td class="text-right">${s.errors}</td>
-      <td class="text-right">${Math.round((s.avg_health||0)*100)}%</td>
+      <td class="text-right">${healthCell(s)}</td>
     </tr>`).join('');
   const cov = patterns
     ? `<p class="text-muted" style="font-size:12px">Detector coverage: <b>${esc(patterns.count)}</b> key-shape patterns across <b>${esc(patterns.unique_services)}</b> services.</p>`

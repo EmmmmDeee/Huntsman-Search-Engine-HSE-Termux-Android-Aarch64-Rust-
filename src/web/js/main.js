@@ -33,7 +33,7 @@ import { toggleCorrMembers, pivotToEntity } from '/static/js/scan_info/correlati
 import { renderOpts, pollUpdateBadge } from '/static/js/views/opts.js';
 import { globalSearch, renderSearch } from '/static/js/views/search.js';
 import { renderEngines, refreshEngines, runCapabilityProbe } from '/static/js/views/engines.js';
-import { renderHarvest, refreshHarvest } from '/static/js/views/key_harvest.js';
+import { renderHarvest, refreshHarvest, harvestPoolFilter, harvestPoolRoi, harvestPoolGroup, harvestPoolSort } from '/static/js/views/key_harvest.js';
 import { renderLive, closeLiveStream, saveLiveShown } from '/static/js/views/live.js';
 import { initCompatShims, initMoreSheet, initModals, initTableLabels } from '/static/js/ui.js';
 
@@ -104,6 +104,7 @@ Object.assign(window, {
   autoQueuePreview, autoSweepGo, submitWizard, submitBatch, entityPivot,
   toggleDetail, toggleCorrMembers, pivotToEntity, refreshEngines,
   runCapabilityProbe, closeLiveStream, saveLiveShown, refreshHarvest,
+  harvestPoolFilter, harvestPoolRoi, harvestPoolGroup, harvestPoolSort,
 });
 
 /* ═══════════ Bootstrap ═══════════ */

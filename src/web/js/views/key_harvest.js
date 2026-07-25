@@ -1,5 +1,5 @@
 import { API } from '/static/js/api.js';
-import { $, esc, fmtDate } from '/static/js/helpers.js';
+import { $, esc, fmtDate, healthCell } from '/static/js/helpers.js';
 
 /* ═══════════ Page: Key Harvest (#/harvest) ═══════════
  * Dedicated operator dashboard for HSE's proactive API-key-harvesting
@@ -8,10 +8,20 @@ import { $, esc, fmtDate } from '/static/js/helpers.js';
  * same calls `hse doctor` makes, surfaced here so the check doesn't need a
  * CLI hop). Backed by the single loopback-only `/api/v1/keys/harvest` feed
  * — see `src/api/key_harvest_handlers.rs`. */
+
+/* Last-fetched feed, cached at module scope so the pool table's sort/filter/
+ * group controls can re-render from memory without re-hitting the endpoint
+ * (which re-runs the live SeekNow/WiGLE network probes — not something a
+ * keystroke in the filter box should trigger). */
+let _data = null;
+/* Pool-table view state, persisted across in-place re-renders. */
+const _poolUi = { q: '', roi: 'all', sort: 'total', dir: 'desc', group: false };
+
 export async function renderHarvest(v){
   let data = null, loadError = null;
   try { data = await API.keysHarvest(); }
   catch(e){ loadError = e; }
+  _data = data;
 
   if (!data){
     v.innerHTML = `
@@ -113,6 +123,7 @@ function accountHealthPanel(accounts){
 
 /* ─── Key vault: the permanent cross-scan bank ─── */
 const ROI_LABEL = { multiplier: 'Multiplier', expansion: 'Expansion', terminal: 'Terminal' };
+const ROI_WEIGHT = { multiplier: 3, expansion: 2, terminal: 1 };
 function roiBadge(tier){
   const cls = tier === 'multiplier' ? 'label-success' : tier === 'expansion' ? 'label-info' : 'label-default';
   return `<span class="label ${cls}">${esc(ROI_LABEL[tier] || tier)}</span>`;
@@ -122,6 +133,8 @@ function vaultPanel(vault){
   const v = vault || {};
   const census = v.osint_provider_census || [];
   const recent = v.recent || [];
+  const total = v.total_count || 0;
+  const osint = v.osint_count || 0;
 
   const censusRows = census.map(c => `
     <tr>
@@ -145,7 +158,7 @@ function vaultPanel(vault){
   return `
     <div class="panel panel-default">
       <div class="panel-heading"><b>Key vault — permanent harvest bank</b>
-        <span class="text-muted pull-right" style="font-size:12px">${esc(v.total_count||0)} key(s) ever seen · never auto-purged</span>
+        <span class="text-muted pull-right" style="font-size:12px">${esc(total)} key(s) ever seen · never auto-purged</span>
       </div>
       <div class="panel-body">
         <p class="text-muted" style="font-size:12px">
@@ -154,26 +167,74 @@ function vaultPanel(vault){
           never sent to the browser.
         </p>
         ${census.length ? `
-          <h5 style="margin:10px 0 4px"><b>OSINT provider census</b></h5>
+          <h5 style="margin:10px 0 4px"><b>OSINT provider census</b>
+            <span class="text-muted" style="font-weight:normal;font-size:11px">(${esc(osint)} of ${esc(total)} key(s) are catalogued OSINT/recon tooling)</span></h5>
           <div class="table-responsive"><table class="table table-condensed">
             <thead><tr><th>Category</th><th>Service</th><th class="text-right">Keys</th><th>ROI tier</th></tr></thead>
             <tbody>${censusRows}</tbody>
-          </table></div>` : '<p class="text-muted" style="font-size:12px">No OSINT-provider keys harvested yet.</p>'}
+          </table></div>`
+          : `<p class="text-muted" style="font-size:12px">No catalogued OSINT-provider keys harvested yet${total ? ' — the ' + esc(total) + ' key(s) below are generic infrastructure (cloud, payment, tokens, …)' : ''}.</p>`}
         ${recent.length ? `
           <h5 style="margin:14px 0 4px"><b>Recently seen</b>
-            <span class="text-muted" style="font-weight:normal;font-size:11px">(top ${esc(v.recent_limit||recent.length)})</span></h5>
+            <span class="text-muted" style="font-weight:normal;font-size:11px">(every harvested key, most-recent first${total > recent.length ? ` · showing ${esc(recent.length)} of ${esc(total)}` : ''})</span></h5>
           <div class="table-responsive"><table class="table table-condensed">
             <thead><tr><th>Service</th><th>Key</th><th>Category</th><th>ROI</th><th class="text-right">Seen</th><th>First</th><th>Last</th></tr></thead>
             <tbody>${recentRows}</tbody>
-          </table></div>` : ''}
+          </table></div>`
+          : (total ? '' : '<p class="text-muted" style="font-size:12px">Nothing harvested yet — run a scan and foreign keys found along the way land here.</p>')}
       </div>
     </div>`;
 }
 
-/* ─── Key pool: ROI-tiered rotation-ready keys ─── */
-function poolPanel(pool){
-  const services = (pool && pool.services) || [];
-  const rows = services.map(s => `
+/* ─── Key pool: ROI-tiered rotation-ready keys ───
+ * The pool routinely runs to dozens of services (generic_hex alone can hold
+ * hundreds of thousands of keys), so the table is sortable, filterable by name
+ * and ROI tier, and groupable by tier. All interaction is client-side over the
+ * already-fetched feed (`_data`) — see the re-render note at the top. */
+const POOL_COLS = [
+  { key: 'service',      label: 'Service', num: false, align: '' },
+  { key: 'roi_tier',     label: 'ROI',     num: false, align: '' },
+  { key: 'total',        label: 'Total',   num: true,  align: 'text-right' },
+  { key: 'active',       label: 'Active',  num: true,  align: 'text-right' },
+  { key: 'rate_limited', label: 'Rate-lim',num: true,  align: 'text-right' },
+  { key: 'exhausted',    label: 'Exh.',    num: true,  align: 'text-right' },
+  { key: 'invalid',      label: 'Invalid', num: true,  align: 'text-right' },
+  { key: 'untested',     label: 'Untested',num: true,  align: 'text-right' },
+  { key: 'revoked',      label: 'Revoked', num: true,  align: 'text-right' },
+  { key: 'avg_health',   label: 'Health',  num: true,  align: 'text-right' },
+];
+
+/* A single service's value for the active sort key, normalised to a number for
+ * numeric columns so the comparison is total and stable. `avg_health === null`
+ * (an all-untested pool) sorts BELOW every graded pool. */
+function poolSortVal(s, key){
+  if (key === 'service') return String(s.service || '');
+  if (key === 'roi_tier') return ROI_WEIGHT[s.roi_tier] || 0;
+  if (key === 'avg_health') return s.avg_health == null ? -1 : s.avg_health;
+  return s[key] || 0;
+}
+
+function poolSorted(services){
+  const { q, roi, sort, dir } = _poolUi;
+  const needle = q.trim().toLowerCase();
+  let rows = services.filter(s =>
+    (!needle || String(s.service || '').toLowerCase().includes(needle)) &&
+    (roi === 'all' || s.roi_tier === roi));
+  const mul = dir === 'asc' ? 1 : -1;
+  rows.sort((a, b) => {
+    const va = poolSortVal(a, sort), vb = poolSortVal(b, sort);
+    let c;
+    if (typeof va === 'string') c = va.localeCompare(vb);
+    else c = va < vb ? -1 : va > vb ? 1 : 0;
+    // Deterministic tie-break on service name so equal rows never reorder.
+    if (c === 0 && sort !== 'service') c = String(a.service).localeCompare(String(b.service));
+    return c * mul;
+  });
+  return rows;
+}
+
+function poolRowHtml(s){
+  return `
     <tr>
       <td><b>${esc(s.service)}</b></td>
       <td>${roiBadge(s.roi_tier)}</td>
@@ -184,27 +245,107 @@ function poolPanel(pool){
       <td class="text-right">${esc(s.invalid)}</td>
       <td class="text-right">${esc(s.untested)}</td>
       <td class="text-right">${esc(s.revoked)}</td>
-      <td class="text-right">${Math.round((s.avg_health||0)*100)}%</td>
-    </tr>`).join('');
+      <td class="text-right">${healthCell(s)}</td>
+    </tr>`;
+}
 
+function poolHeadHtml(){
+  const { sort, dir } = _poolUi;
+  return '<tr>' + POOL_COLS.map(c => {
+    const caret = c.key === sort ? (dir === 'asc' ? ' ▲' : ' ▼') : '';
+    return `<th class="${c.align}" style="cursor:pointer;white-space:nowrap" onclick="harvestPoolSort('${c.key}')" title="Sort by ${esc(c.label)}">${esc(c.label)}${caret}</th>`;
+  }).join('') + '</tr>';
+}
+
+/* The sortable/filterable body only — re-rendered in place by the controls so
+ * the filter input keeps focus between keystrokes. */
+function poolTableHtml(pool){
+  const services = (pool && pool.services) || [];
+  const rows = poolSorted(services);
+  const summary = `<p class="text-muted" style="font-size:11px;margin:0 0 6px">
+    Showing <b>${rows.length}</b> of ${services.length} service(s)${_poolUi.q || _poolUi.roi !== 'all' ? ' (filtered)' : ''}.</p>`;
+
+  if (!services.length) return '<p class="text-muted" style="font-size:12px">No keys in the pool yet.</p>';
+  if (!rows.length) return summary + '<p class="text-muted" style="font-size:12px">No service matches the current filter.</p>';
+
+  let body;
+  if (_poolUi.group){
+    // Group by ROI tier (Multiplier → Expansion → Terminal), each block still
+    // ordered by the active column sort.
+    const order = ['multiplier', 'expansion', 'terminal'];
+    const groups = order
+      .map(t => [t, rows.filter(r => r.roi_tier === t)])
+      .filter(([, rs]) => rs.length);
+    // Any tier not in the canonical order (defensive) trails at the end.
+    const known = new Set(order);
+    const extra = rows.filter(r => !known.has(r.roi_tier));
+    body = groups.map(([t, rs]) => `
+      <tr class="active"><td colspan="${POOL_COLS.length}" style="font-weight:bold">
+        ${roiBadge(t)} <span class="text-muted" style="font-weight:normal;font-size:11px">${rs.length} service(s)</span>
+      </td></tr>${rs.map(poolRowHtml).join('')}`).join('');
+    if (extra.length) body += extra.map(poolRowHtml).join('');
+  } else {
+    body = rows.map(poolRowHtml).join('');
+  }
+
+  return summary + `<div class="table-responsive"><table class="table table-condensed">
+      <thead>${poolHeadHtml()}</thead>
+      <tbody>${body}</tbody>
+    </table></div>`;
+}
+
+function poolPanel(pool){
+  const count = (pool && pool.count) || 0;
+  const roiOpt = (val, label) => `<option value="${val}"${_poolUi.roi === val ? ' selected' : ''}>${label}</option>`;
   return `
-    <div class="panel panel-default">
+    <div class="panel panel-default" id="harvest-pool">
       <div class="panel-heading"><b>Key pool — ROI-tiered rotation view</b>
-        <span class="text-muted pull-right" style="font-size:12px">${esc((pool&&pool.count)||0)} service(s) · loopback-only</span>
+        <span class="text-muted pull-right" style="font-size:12px">${esc(count)} service(s) · loopback-only</span>
       </div>
       <div class="panel-body">
         <p class="text-muted" style="font-size:12px">
           Per-service pool health with each service's key-discovery ROI tier attached — Multiplier
           services (Shodan, Hunter, the breach pools, …) cascade into more keys and are the
-          highest-value targets to keep healthy. Manage/rotate/revoke individual keys on the
-          <a href="#/opts">Settings</a> page.
+          highest-value targets to keep healthy. <b>Health</b> is the mean over each pool's
+          <i>exercised</i> keys, or <span class="text-muted">untested</span> when none have been
+          dispatched yet. Manage/rotate/revoke individual keys on the <a href="#/opts">Settings</a> page.
         </p>
-        ${services.length ? `<div class="table-responsive"><table class="table table-condensed">
-          <thead><tr><th>Service</th><th>ROI</th><th class="text-right">Total</th><th class="text-right">Active</th>
-            <th class="text-right">Rate-lim</th><th class="text-right">Exh.</th><th class="text-right">Invalid</th>
-            <th class="text-right">Untested</th><th class="text-right">Revoked</th><th class="text-right">Health</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table></div>` : '<p class="text-muted" style="font-size:12px">No keys in the pool yet.</p>'}
+        <div class="form-inline" style="margin-bottom:8px">
+          <input type="text" class="form-control input-sm" placeholder="Filter by service…"
+            value="${esc(_poolUi.q)}" oninput="harvestPoolFilter(this.value)" style="max-width:220px">
+          <select class="form-control input-sm" onchange="harvestPoolRoi(this.value)" style="max-width:170px">
+            ${roiOpt('all', 'All ROI tiers')}
+            ${roiOpt('multiplier', 'Multiplier only')}
+            ${roiOpt('expansion', 'Expansion only')}
+            ${roiOpt('terminal', 'Terminal only')}
+          </select>
+          <label style="font-weight:normal;font-size:12px;margin-left:6px">
+            <input type="checkbox" onchange="harvestPoolGroup(this.checked)"${_poolUi.group ? ' checked' : ''}> group by ROI tier
+          </label>
+        </div>
+        <div id="harvest-pool-table">${poolTableHtml(pool)}</div>
       </div>
     </div>`;
+}
+
+/* Re-render ONLY the pool table body from the cached feed — leaves the controls
+ * (and the filter input's focus/caret) untouched. */
+function rerenderPoolTable(){
+  const host = $('#harvest-pool-table');
+  if (host && _data) host.innerHTML = poolTableHtml(_data.pool);
+}
+
+/* ─── Pool-table control handlers (bound to window in main.js) ─── */
+export function harvestPoolFilter(val){ _poolUi.q = val || ''; rerenderPoolTable(); }
+export function harvestPoolRoi(val){ _poolUi.roi = val || 'all'; rerenderPoolTable(); }
+export function harvestPoolGroup(on){ _poolUi.group = !!on; rerenderPoolTable(); }
+export function harvestPoolSort(col){
+  if (_poolUi.sort === col){
+    _poolUi.dir = _poolUi.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _poolUi.sort = col;
+    // Sensible first click: names ascend A→Z, counts/health descend high→low.
+    _poolUi.dir = (col === 'service') ? 'asc' : 'desc';
+  }
+  rerenderPoolTable();
 }
