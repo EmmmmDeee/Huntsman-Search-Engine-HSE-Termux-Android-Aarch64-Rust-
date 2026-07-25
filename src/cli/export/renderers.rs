@@ -526,12 +526,19 @@ pub(crate) fn render_debug_bundle(
         }
     }
     for c in &correlations {
+        // `rank` (severity × max child C_eff) is what `correlations_for_scan`
+        // sorts this list by, and the web Correlations view prints it beside
+        // each hit. Showing it here too means a reader of the bundle can
+        // explain the ordering they are looking at instead of inferring it —
+        // and can see when a LOW-severity rule outranks a MEDIUM one because
+        // its child entities are far better corroborated.
         let _ = writeln!(
             s,
-            "  • [{}] {} ({}) — {}  · entities: {}",
+            "  • [{}] {} ({}, rank {:.2}) — {}  · entities: {}",
             c.rule_id,
             c.rule_name,
             c.severity,
+            c.rank,
             c.description,
             c.entity_uids.len()
         );

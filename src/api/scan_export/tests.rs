@@ -119,7 +119,7 @@ use super::*;
         // (the SPA download button, external tooling) parse this header row.
         assert_eq!(
             entities_to_csv(&[]).trim_end(),
-            "kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags"
+            "kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags,uid,generation"
         );
 
         let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.60, "src");
@@ -135,11 +135,20 @@ use super::*;
             row.starts_with("email,a@b.com,a@b.com,0.600,0.600,"),
             "field order / numeric formatting drifted: {row}"
         );
-        // `tags` is the final column; the comma-bearing tag is RFC-4180 quoted,
-        // proving entities_to_csv routes assembled fields through csv_escape.
+        // The comma-bearing tag is RFC-4180 quoted, proving entities_to_csv
+        // routes assembled fields through csv_escape. `tags` is followed by the
+        // appended join-key columns, so it is no longer the final field.
         assert!(
-            row.ends_with(",\"plain|has,comma\""),
+            row.contains(",\"plain|has,comma\","),
             "tags column not escaped through csv_escape: {row}"
+        );
+        // `uid` + `generation` close the row: the uid is what every other
+        // artifact (JSON export, debug bundle, Browse, /entities/{uid}) keys a
+        // finding by, so a CSV row must be joinable back to them.
+        let e2 = Entity::new(EntityKind::Email, "a@b.com", 0.60, "src");
+        assert!(
+            row.ends_with(&format!(",{},0", e2.uid)),
+            "row must end with the uid join key and generation: {row}"
         );
     }
 

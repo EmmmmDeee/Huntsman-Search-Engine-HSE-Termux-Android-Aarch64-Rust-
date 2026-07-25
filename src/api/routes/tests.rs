@@ -278,6 +278,38 @@ use super::*;
     }
 
     #[test]
+    fn embedded_spa_surfaces_the_exposure_index() {
+        // `core::exposure::assess` headlines the CLI dossier and the debug
+        // bundle, but had no API consumer at all — so the web console (the only
+        // interface on a Termux/Android device without a second terminal) never
+        // showed the calibrated 0–100 verdict that summarises the whole scan.
+        // Guard both ends of the wire so it cannot go dead again.
+        let api = app_file("js/api.js");
+        assert!(
+            api.contains("/exposure"),
+            "SPA must fetch the per-scan /exposure endpoint"
+        );
+        let info = app_file("js/scan_info/info.js");
+        assert!(
+            info.contains("API.exposure("),
+            "the Info tab must call API.exposure()"
+        );
+        assert!(
+            info.contains("Exposure Index"),
+            "the Exposure Index panel must be rendered"
+        );
+        // Every component field the backend serialises must be consumed — a
+        // breakdown that drops `detail` or `max` reduces the transparent
+        // per-signal explanation to a bare number.
+        for field in ["c.name", "c.score", "c.max", "c.detail"] {
+            assert!(
+                info.contains(field),
+                "the Exposure breakdown must render {field}"
+            );
+        }
+    }
+
+    #[test]
     fn embedded_spa_wires_the_autonomous_plan_and_sweep_endpoints() {
         // The autonomous loop's read-only queue preview (/scan/auto/plan) and the
         // multi-target sweep (/scan/auto/sweep) are routed + tested server-side but

@@ -73,7 +73,17 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
     // — `source_count` (distinct corroborating sources) does. Without both
     // numbers side by side, a reader has no way to tell from the CSV alone
     // whether a high `corroboration` reflects genuine independent agreement.
-    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags\n");
+    // `uid` and `generation` are APPENDED (never inserted) so the header still
+    // begins with the exact prefix `looks_like_hse_csv` sniffs for and every
+    // by-name column lookup — the import and audit parsers both resolve columns
+    // by header name — keeps working on older and newer files alike.
+    // `uid` is the join key: it is what the JSON export, the debug bundle, the
+    // Browse pane and the /entities/{uid} pivot endpoint all identify a finding
+    // by, so without it a CSV row could only be matched back to the other
+    // artifacts by string-matching kind+value. `generation` (hops from the seed)
+    // travels with it for the same reason it was added to the bundle — it
+    // separates a seed-adjacent finding from one three pivots out.
+    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags,uid,generation\n");
     for e in entities {
         let eff = e.c_effective();
         let source_count = e.source_count();
@@ -128,7 +138,7 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
 
         let _ = writeln!(
             body,
-            "{},{},{},{:.3},{:.3},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{},{}",
             csv_escape(&e.kind.to_string()),
             csv_escape(&e.value),
             csv_escape(&e.raw_value),
@@ -143,6 +153,8 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
             csv_escape(&evidence_urls),
             csv_escape(&evidence),
             csv_escape(&tags),
+            csv_escape(&e.uid),
+            e.generation,
         );
     }
     body
