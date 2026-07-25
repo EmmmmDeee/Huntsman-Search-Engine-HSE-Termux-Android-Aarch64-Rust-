@@ -3,7 +3,6 @@
 use super::{EntityKind, ExtractedEntity, ExtractionResult};
 use regex::Regex;
 use std::collections::HashMap;
-use tracing::debug;
 
 /// Classifier for assigning entity kinds + confidence scores.
 pub struct EntityClassifier {

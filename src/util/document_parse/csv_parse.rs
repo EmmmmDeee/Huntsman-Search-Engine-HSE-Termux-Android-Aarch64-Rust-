@@ -1,6 +1,6 @@
 //! CSV parsing and field extraction.
 
-use super::{DocumentMetadata, DocumentParseError, DocumentResult, RawDocumentText};
+use super::{DocumentMetadata, DocumentResult, RawDocumentText};
 use crate::util::document_parse::DocumentFormat;
 use csv::Reader;
 use std::fs::File;

@@ -10,7 +10,6 @@ pub mod classifier;
 pub mod extractor;
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use thiserror::Error;
 
 /// Entity kind detected by the classifier.

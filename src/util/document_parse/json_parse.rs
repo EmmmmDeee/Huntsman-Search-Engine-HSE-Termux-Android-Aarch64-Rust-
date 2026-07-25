@@ -1,8 +1,8 @@
 //! JSON and JSONL parsing.
 
-use super::{DocumentMetadata, DocumentParseError, DocumentResult, RawDocumentText};
+use super::{DocumentMetadata, DocumentResult, RawDocumentText};
 use crate::util::document_parse::DocumentFormat;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::fs::File;
 use std::path::Path;
 use tracing::debug;
