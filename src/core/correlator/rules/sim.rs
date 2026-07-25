@@ -13,10 +13,11 @@ use crate::util::sim_anonymity::{ANONYMITY_TAGS, tier_for_tag};
 
 /// AU-068 — Anonymous / burner SIM.
 pub(in crate::core::correlator) fn rule_au_068_anonymous_sim(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let mut out = Vec::new();
     for e in entities.iter().filter(|e| e.kind == EntityKind::Phone) {
         let Some(tier) = ANONYMITY_TAGS

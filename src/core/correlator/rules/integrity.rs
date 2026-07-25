@@ -17,11 +17,12 @@ use crate::core::relation::{identity_uids, sorted_confined_adjacency, strongest_
 
 /// AU-069 — High-integrity connection.
 pub(in crate::core::correlator) fn rule_au_069_high_integrity_connection(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const MAX_HOPS: usize = 5;
     // Every link on the strongest route must clear this floor for the connection
     // to count as reliable end to end.

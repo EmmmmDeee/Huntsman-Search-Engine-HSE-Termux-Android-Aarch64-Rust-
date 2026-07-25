@@ -31,11 +31,12 @@ use crate::core::relation::identity_paths;
 /// link is filtered — it is covered by the direct-edge rules). Pair
 /// deduplication and deterministic ordering come from the primitive.
 pub(in crate::core::correlator) fn rule_au_060_transitive_identity_closure(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const MAX_HOPS: usize = 4;
     // Weakest-link confidence floor, mirroring AU-067's `MIN_CONF`. A transitive
     // chain is only as trustworthy as its weakest edge, so a path that routes

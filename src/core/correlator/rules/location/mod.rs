@@ -263,10 +263,11 @@ fn distinct_geo_sources(parsed: &[(&Entity, (f64, f64))]) -> usize {
 /// towers) clustered around one IP point — an *exclude*-list silently admitted
 /// the latter, so the gate is a positive allowlist instead.
 pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let parsed = person_anchored_coords(entities);
     if parsed.len() < 3 {
         return Vec::new();

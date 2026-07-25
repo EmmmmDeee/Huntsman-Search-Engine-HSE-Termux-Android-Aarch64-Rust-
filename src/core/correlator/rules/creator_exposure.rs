@@ -34,10 +34,11 @@ const CREATOR_CATEGORIES: &[&str] = &["cat:fans", "cat:cam", "cat:adult"];
 /// profiles, names their platforms, and emits one finding. `entity_uids`
 /// carries the profile entities in entity order.
 pub(in crate::core::correlator) fn rule_au_120_monetized_creator_exposure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::BTreeSet;
 
     let mut platforms: BTreeSet<String> = BTreeSet::new();

@@ -39,10 +39,11 @@ use crate::util::oui;
 /// unfollowable). `entity_uids` carries the trackable MACs — the actionable
 /// subset — in entity order for a stable render.
 pub(in crate::core::correlator) fn rule_au_122_trackable_rf_device(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     /// A MacAddress entity is an RF observation (radar / WiGLE), not a
     /// breach-sourced BSSID, iff it carries one of these provenance tags.
     fn is_rf_observed(e: &Entity) -> bool {

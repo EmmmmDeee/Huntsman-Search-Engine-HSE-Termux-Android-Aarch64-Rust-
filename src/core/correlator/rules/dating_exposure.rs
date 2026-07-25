@@ -28,10 +28,11 @@ use super::*;
 /// names their platforms, and emits one finding. `entity_uids` carries the
 /// dating profile entities in entity order.
 pub(in crate::core::correlator) fn rule_au_119_dating_platform_exposure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::BTreeSet;
 
     let mut platforms: BTreeSet<String> = BTreeSet::new();

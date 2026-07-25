@@ -211,10 +211,11 @@ pub(in crate::core::correlator) fn age_from_dob(dob: &str, now_unix: u64) -> Opt
 /// (Medium). Conflicting DOBs each emit their own finding, so a namesake's DOB
 /// is visible as the minority claim rather than silently averaged in.
 pub(in crate::core::correlator) fn rule_au_073_subject_date_of_birth(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // dob → (distinct sources, uids), both ordered for determinism.
     let mut by_dob: BTreeMap<String, SourcesAndUids> = BTreeMap::new();
     for (raw, source, uid) in scan_evidence(entities, DOB_KEYS) {
@@ -366,10 +367,11 @@ pub(crate) const GOV_IDS: &[GovId] = &[
 /// value is masked in the finding text; the full value remains in the entity's
 /// evidence under the operator full-fidelity policy.
 pub(in crate::core::correlator) fn rule_au_074_au_government_id_exposure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let mut out = Vec::new();
     for gid in GOV_IDS {
         // (masked value, sources, uids) per distinct underlying value.
@@ -438,10 +440,11 @@ const ASSOCIATE_KEYS: &[(&str, &str)] = &[
 /// genuine relationship intelligence that the geo/surname family rules
 /// (AU-049/051/061) can't reach because the tie is stated, not inferred.
 pub(in crate::core::correlator) fn rule_au_075_named_associate(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // (name, relationship) → (sources, uids).
     let mut assoc: BTreeMap<(String, &'static str), SourcesAndUids> = BTreeMap::new();
     for &(key, relation) in ASSOCIATE_KEYS {
@@ -529,10 +532,11 @@ const JURISDICTION_KEYS: &[&str] = &[
 /// by mining the structured field directly, reaching state assertions that never
 /// became an `Address` entity. Runs on the confirmed view.
 pub(in crate::core::correlator) fn rule_au_090_au_jurisdiction(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // canonical AU state code → (distinct sources, uids), ordered for determinism.
     let mut by_state: BTreeMap<&'static str, SourcesAndUids> = BTreeMap::new();
     for (raw, source, uid) in scan_evidence(entities, JURISDICTION_KEYS) {
@@ -650,10 +654,11 @@ fn au_postcode_and_state(raw: &str) -> Option<(String, &'static str)> {
 /// of the AU-focused engine, a 4-digit `postcode` in an assigned AU range is
 /// read as Australian.)
 pub(in crate::core::correlator) fn rule_au_091_au_postcode_locality(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // postcode → (state, distinct sources, uids).
     let mut by_pc: BTreeMap<String, (&'static str, BTreeSet<String>, BTreeSet<String>)> =
         BTreeMap::new();
@@ -786,10 +791,11 @@ fn join_states(set: &BTreeSet<&'static str>) -> String {
 /// Requires at least one state from *each* side; a scan with only breach fields,
 /// or only a geo footprint, yields nothing. Pure over the confirmed entity set.
 pub(in crate::core::correlator) fn rule_au_092_breach_locality_footprint_crosscheck(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let breach = breach_field_states(entities);
     if breach.is_empty() {
         return Vec::new();
@@ -929,10 +935,11 @@ fn record_attr<'a>(attrs: &'a BTreeMap<String, String>, keys: &[&str]) -> Option
 /// (Per the AU-091 note, a 4-digit postcode in an assigned AU range is read as
 /// Australian; the suburb requirement further constrains the match.)
 pub(in crate::core::correlator) fn rule_au_093_au_address_from_breach(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // assembled address → (has_street, distinct sources, uids).
     let mut by_addr: BTreeMap<String, (bool, BTreeSet<String>, BTreeSet<String>)> = BTreeMap::new();
     for e in entities {
@@ -1053,10 +1060,11 @@ pub(in crate::core::correlator) fn rule_au_093_au_address_from_breach(
 /// VPN/foreign exit. This is the gold-standard geolocation finding: a
 /// jurisdiction asserted by independent corroboration, confidence shown.
 pub(in crate::core::correlator) fn rule_au_098_residency_consensus(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     type StateMap = BTreeMap<&'static str, BTreeSet<String>>;
 
     // Coordinate class.
@@ -1212,10 +1220,11 @@ pub(in crate::core::correlator) fn rule_au_098_residency_consensus(
 /// `n ≥ 5` is a High-confidence, cross-facet identity fix — Interpol-grade
 /// subject resolution from the data already collected.
 pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Each facet class -> the entity uids that establish it, so the finding can
     // point at the contributing entities and the class is counted at most once.
     let mut facets: BTreeMap<&'static str, BTreeSet<String>> = BTreeMap::new();
@@ -1346,10 +1355,11 @@ pub(crate) const BANK_ACCOUNT_KEYS: &[&str] = &[
 /// BSBs that resolve to a known institution are surfaced (accuracy over
 /// coverage), so the named bank is reliable.
 pub(in crate::core::correlator) fn rule_au_104_bank_account_exposure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // institution -> (distinct sources, uids).
     let mut by_bank: BTreeMap<&'static str, SourcesAndUids> = BTreeMap::new();
     for (raw, source, uid) in scan_evidence(entities, BSB_KEYS) {
@@ -1434,10 +1444,11 @@ const HASH_PW_KEYS: &[&str] = &["password_hash", "hashed_password", "hash"];
 /// (immediately exploitable); hash reuse is Medium. Runs on the confirmed view, so
 /// a co-occurrence stranger's reused password never fires it. Deterministic.
 pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // grouping key (`p:`/`h:` namespaced) -> (plaintext?, distinct breaches, uids).
     let mut by_secret: BTreeMap<String, (bool, BTreeSet<String>, BTreeSet<String>)> =
         BTreeMap::new();

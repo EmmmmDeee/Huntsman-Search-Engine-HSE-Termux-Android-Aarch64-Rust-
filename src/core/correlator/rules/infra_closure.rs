@@ -40,11 +40,12 @@ use crate::util::domains::registrable_domain;
 /// of ≥3 registrable domains bound through ≥2 IP nodes. `entity_uids` carries
 /// every domain and IP in the footprint, in entity order.
 pub(in crate::core::correlator) fn rule_au_116_infrastructure_pivot_closure(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     /// Weakest edge confidence that still counts as a real infrastructure link
     /// (mirrors the Probable floor the identity-graph rules resolve under).
     const MIN_CONF: f64 = 0.50;

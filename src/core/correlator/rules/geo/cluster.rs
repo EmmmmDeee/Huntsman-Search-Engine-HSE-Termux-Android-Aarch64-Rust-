@@ -1,10 +1,11 @@
 use super::*;
 
 pub(in crate::core::correlator) fn rule_au_013_local_network_discovery(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const LAN_TAGS: &[&str] = &[
         crate::core::tags::LOCAL_ARP,
         crate::core::tags::LOCAL_INTERFACE,
@@ -38,10 +39,11 @@ pub(in crate::core::correlator) fn rule_au_013_local_network_discovery(
 }
 
 pub(in crate::core::correlator) fn rule_au_014_geo_cluster(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const GEO_TAGS: &[&str] = &["geoint", "wifi-observed"];
     entities_of_kind(entities, EntityKind::Coordinates)
         .into_iter()
@@ -81,11 +83,12 @@ pub(in crate::core::correlator) fn rule_au_014_geo_cluster(
 /// the pairwise geo rules (AU-017/AU-030) don't surface. Deterministic:
 /// component membership is edge-defined and the output is uid-sorted.
 pub(in crate::core::correlator) fn rule_au_032_colocation_cluster(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::{HashMap, HashSet};
 
     // Undirected adjacency from CoLocatedWith edges only.
@@ -161,10 +164,11 @@ pub(in crate::core::correlator) fn rule_au_032_colocation_cluster(
 /// position to within a cell footprint). The Coordinates entities spawned by these
 /// towers are the primary geoint leads; this rule surfaces the corroboration quality.
 pub(in crate::core::correlator) fn rule_au_084_cell_tower_dual_source(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let corroborated: Vec<&Entity> = entities_of_kind(entities, EntityKind::DeviceId)
         .into_iter()
         .filter(|e| {
@@ -220,10 +224,11 @@ pub(in crate::core::correlator) fn rule_au_084_cell_tower_dual_source(
 /// admitted participates — a generic `linksys`/`xfinitywifi` name never reaches
 /// emission), and runs on the confirmed (candidate-filtered) view.
 pub(in crate::core::correlator) fn rule_au_115_personal_wifi_geolocated(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let ssids = entities_of_kind(entities, EntityKind::Ssid);
     if ssids.is_empty() {
         return Vec::new();

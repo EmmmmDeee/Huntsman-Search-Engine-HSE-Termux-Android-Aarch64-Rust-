@@ -79,23 +79,24 @@ pub(in crate::core) struct SingleRouteLink {
 /// [`IDENTITY_PAIR_PROBE_CAP`] bounds the pair COUNT so the `O(identities²)` sweep
 /// can't dominate finalise (the identical bound AU-062's multipath sweep uses).
 pub(in crate::core) fn single_route_identity_links(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
 ) -> Vec<SingleRouteLink> {
-    single_route_identity_links_capped(entities, relations, IDENTITY_PAIR_PROBE_CAP)
+    single_route_identity_links_capped(context, relations, IDENTITY_PAIR_PROBE_CAP)
 }
 
 /// [`single_route_identity_links`] with an explicit pair-probe ceiling — the
 /// public entry pins it to [`IDENTITY_PAIR_PROBE_CAP`]; the parameter exists so the
 /// cap is unit-testable without a 6 000-entity fixture.
 fn single_route_identity_links_capped(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     max_pair_probes: usize,
 ) -> Vec<SingleRouteLink> {
     const MAX_HOPS: usize = 5;
     const MAX_PATHS: usize = 4;
 
+    let entities = context.entities();
     let identity_uids = identity_uids(entities);
     // Build the traversal graph ONCE and reuse it across every pair.
     let adj = sorted_confined_adjacency(entities, relations);
@@ -146,9 +147,10 @@ pub(in crate::core) struct GapProbe {
 /// families unioned). The shared selector behind the engine's active gap-fill, so
 /// what the lead names and what the engine pursues are the same set.
 pub(in crate::core) fn gap_fill_probes(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
 ) -> Vec<GapProbe> {
+    let entities = context.entities();
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
     let families_of = |uid: &str| -> BTreeSet<&'static str> {
         by_uid
@@ -158,7 +160,7 @@ pub(in crate::core) fn gap_fill_probes(
     };
 
     let mut by_endpoint: BTreeMap<String, BTreeSet<&'static str>> = BTreeMap::new();
-    for link in single_route_identity_links(entities, relations) {
+    for link in single_route_identity_links(context, relations) {
         let mut present: BTreeSet<&'static str> = families_of(&link.a_uid);
         present.extend(families_of(&link.b_uid));
         for step in &link.route {
@@ -200,11 +202,12 @@ pub(in crate::core) fn gap_fill_probes(
 /// orthogonal source families absent from its single route: the logical
 /// requirement that would corroborate the connection from another pathway.
 pub(in crate::core::correlator) fn rule_au_063_corroboration_gap(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
 
     let families_of = |uid: &str| -> BTreeSet<&'static str> {
@@ -228,7 +231,7 @@ pub(in crate::core::correlator) fn rule_au_063_corroboration_gap(
         b: String,
     }
     let mut cands: Vec<Candidate> = Vec::new();
-    for link in single_route_identity_links(entities, relations) {
+    for link in single_route_identity_links(context, relations) {
         let (a, b) = (link.a_uid.as_str(), link.b_uid.as_str());
 
         // Families already represented on the single link.

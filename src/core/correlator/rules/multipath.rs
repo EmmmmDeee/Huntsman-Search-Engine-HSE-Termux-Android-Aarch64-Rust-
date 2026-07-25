@@ -56,23 +56,25 @@ pub(in crate::core) struct MultipathLink {
 /// [`IDENTITY_PAIR_PROBE_CAP`] bounds the pair COUNT so the `O(identities²)` sweep
 /// can't dominate finalise (the identical bound AU-063's single-route sweep uses).
 pub(in crate::core) fn multipath_corroborated_links(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
 ) -> Vec<MultipathLink> {
-    multipath_corroborated_links_capped(entities, relations, IDENTITY_PAIR_PROBE_CAP)
+    let entities = context.entities();
+    multipath_corroborated_links_capped(context, relations, IDENTITY_PAIR_PROBE_CAP)
 }
 
 /// [`multipath_corroborated_links`] with an explicit pair-probe ceiling — the
 /// public entry pins it to [`IDENTITY_PAIR_PROBE_CAP`]; the parameter exists so the
 /// cap is unit-testable without a 6 000-entity fixture.
 fn multipath_corroborated_links_capped(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     max_pair_probes: usize,
 ) -> Vec<MultipathLink> {
     const MAX_HOPS: usize = 5;
     const MAX_PATHS: usize = 4;
 
+    let entities = context.entities();
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
     let identity_uids = identity_uids(entities);
     // Build the traversal graph ONCE and reuse it for every pair (vs rebuilding +
@@ -138,15 +140,16 @@ fn multipath_corroborated_links_capped(
 /// [`multipath_corroborated_links`] — the same finder the engine's promotion
 /// pass uses — and formats each corroborated pair as a [`Correlation`].
 pub(in crate::core::correlator) fn rule_au_062_multipath_corroboration(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
 
     let mut out = Vec::new();
-    for link in multipath_corroborated_links(entities, relations) {
+    for link in multipath_corroborated_links(context, relations) {
         let n = link.pathways;
         let severity = if n >= 3 || link.families.len() >= 3 {
             Severity::High
@@ -219,7 +222,8 @@ mod tests {
             rel(&o, &b, RelationKind::DerivedFrom),
         ];
         let ents = [a.clone(), b.clone(), d, o];
-        let out = rule_au_062_multipath_corroboration(&ents, &rels, "s", 0);
+        let context = RuleContext::new(&ents);
+        let out = rule_au_062_multipath_corroboration(&context, &rels, "s", 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rule_id, "AU-062");
         assert!(out[0].entity_uids.contains(&a.uid));
@@ -253,14 +257,15 @@ mod tests {
         ents.extend(e2);
         rels.extend(r2);
 
-        let full = multipath_corroborated_links_capped(&ents, &rels, usize::MAX);
+        let context = RuleContext::new(&ents);
+        let full = multipath_corroborated_links_capped(&context, &rels, usize::MAX);
         assert_eq!(
             full.len(),
             2,
             "two independent components → two multipath links"
         );
         assert_eq!(
-            multipath_corroborated_links(&ents, &rels).len(),
+            multipath_corroborated_links(&context, &rels).len(),
             full.len(),
             "the public entry runs at the production cap; this fixture is under it"
         );
@@ -286,7 +291,9 @@ mod tests {
             rel(&a, &d, RelationKind::BelongsToDomain),
             rel(&d, &b, RelationKind::DerivedFrom),
         ];
-        assert!(rule_au_062_multipath_corroboration(&[a, b, d], &rels, "s", 0).is_empty());
+        let ents = [a, b, d];
+        let context = RuleContext::new(&ents);
+        assert!(rule_au_062_multipath_corroboration(&context, &rels, "s", 0).is_empty());
     }
 
     #[test]
@@ -303,7 +310,9 @@ mod tests {
             rel(&a, &d2, RelationKind::ResolvesTo),
             rel(&d2, &b, RelationKind::DerivedFrom),
         ];
-        assert!(rule_au_062_multipath_corroboration(&[a, b, d1, d2], &rels, "s", 0).is_empty());
+        let ents = [a, b, d1, d2];
+        let context = RuleContext::new(&ents);
+        assert!(rule_au_062_multipath_corroboration(&context, &rels, "s", 0).is_empty());
     }
 
     #[test]
@@ -328,8 +337,10 @@ mod tests {
             rel(&a, &derived, RelationKind::RegisteredBy),
             rel(&derived, &b, RelationKind::DerivedFrom),
         ];
+        let ents = [a, b, infra, derived];
+        let context = RuleContext::new(&ents);
         assert!(
-            rule_au_062_multipath_corroboration(&[a, b, infra, derived], &rels, "s", 0).is_empty(),
+            rule_au_062_multipath_corroboration(&context, &rels, "s", 0).is_empty(),
             "a name_intel-derived family is not independent orthogonal corroboration"
         );
 
@@ -344,8 +355,10 @@ mod tests {
             rel(&a, &replay, RelationKind::LocatedAt),
             rel(&replay, &b, RelationKind::DerivedFrom),
         ];
+        let ents = [a, b, org, replay];
+        let context = RuleContext::new(&ents);
         assert!(
-            rule_au_062_multipath_corroboration(&[a, b, org, replay], &rels, "s", 0).is_empty(),
+            rule_au_062_multipath_corroboration(&context, &rels, "s", 0).is_empty(),
             "a geo_normalize-replay family is not independent orthogonal corroboration"
         );
     }

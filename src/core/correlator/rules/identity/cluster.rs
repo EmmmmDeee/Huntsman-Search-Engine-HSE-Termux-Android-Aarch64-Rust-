@@ -5,10 +5,11 @@
 use super::*;
 
 pub(in crate::core::correlator) fn rule_au_002_identity_cluster(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // A confidence floor on top of the upstream candidate-exclusion: a genuine
     // identity cluster is built from corroborated entities, not weak guesses.
     const MIN_CONF: f64 = 0.50;
@@ -107,10 +108,11 @@ fn strong_corroborating_families(e: &Entity) -> std::collections::BTreeSet<&'sta
 /// single-source fragility a result-matrix analysis surfaced: it rewards genuine
 /// cross-provider agreement and makes it a first-class, ranked finding.
 pub(in crate::core::correlator) fn rule_au_045_multi_service_identity(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const MIN_FAMILIES: usize = 2;
     entities
         .iter()
@@ -172,10 +174,11 @@ pub(in crate::core::correlator) fn rule_au_045_multi_service_identity(
 /// alias's identifiers, or an unrelated breach-dump stranger can't be fused in;
 /// role mailboxes are excluded as well.
 pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolution(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::{BTreeSet, HashSet};
     // Platform-account provider families — the ones where a confirmed handle is
     // an account a person controls (not infra/breach corpora).
@@ -274,10 +277,11 @@ pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolutio
 }
 
 pub(in crate::core::correlator) fn rule_au_003_high_corroboration(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Thresholds are on DISTINCT corroborating sources (source_count), not the
     // summed observation-magnitude field. Calibrated for real distinct-source
     // counts: infra entities (domain/url/ip) reach high agreement easily across
@@ -341,10 +345,11 @@ pub(in crate::core::correlator) fn rule_au_003_high_corroboration(
 }
 
 pub(in crate::core::correlator) fn rule_au_020_person_entity_cluster(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let persons: Vec<&Entity> = entities_of_kind(entities, EntityKind::Person)
         .into_iter()
         .filter(|e| e.confidence >= 0.50)
@@ -368,10 +373,11 @@ pub(in crate::core::correlator) fn rule_au_020_person_entity_cluster(
 }
 
 pub(in crate::core::correlator) fn rule_au_023_cross_platform_identity(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const IDENTITY_SOURCES: &[&str] = &[
         "keybase",
         "github_user",

@@ -14,10 +14,11 @@ use super::*;
 /// severity; the region stays coarse (continent/country-group), so it signals
 /// direction, not an exact address.
 pub(in crate::core::correlator) fn rule_au_083_locale_multi_email_corroboration(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     entities
         .iter()
         .filter(|e| {

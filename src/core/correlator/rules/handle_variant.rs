@@ -48,10 +48,11 @@ const MIN_STEM_LEN: usize = 5;
 /// from ≥2 distinct sources. `entity_uids` carries every variant's entity, in
 /// entity order, so the SPA can render the linked persona.
 pub(in crate::core::correlator) fn rule_au_123_numeric_variant_handle_persona(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     #[derive(Default)]
     struct Group {
         /// Distinct canonical handles sharing the stem (the variation count).

@@ -3,10 +3,11 @@ use super::*;
 use crate::util::geohash::geohash;
 
 pub(in crate::core::correlator) fn rule_au_016_breach_ip_geo_chain(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let breach_ips: Vec<&Entity> = entities_of_kind(entities, EntityKind::IpAddress)
         .into_iter()
         .filter(|e| e.has_tag("breach"))
@@ -50,10 +51,11 @@ pub(in crate::core::correlator) fn rule_au_016_breach_ip_geo_chain(
 }
 
 pub(in crate::core::correlator) fn rule_au_017_multi_geo_convergence(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Cheap precondition: fewer than two confirmed coordinate entities can never
     // form a cluster, so bail before parsing anything.
     if entities
@@ -134,10 +136,11 @@ pub(in crate::core::correlator) fn rule_au_017_multi_geo_convergence(
 }
 
 pub(in crate::core::correlator) fn rule_au_026_validated_address(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const GEO_SOURCES: &[&str] = &[
         "geocode",
         "photon",
@@ -199,10 +202,11 @@ pub(in crate::core::correlator) fn rule_au_026_validated_address(
 /// convergence is AU-017's job; this asserts the *primary* address↔coordinate
 /// location.
 pub(in crate::core::correlator) fn rule_au_027_address_coordinates_chain(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let addresses: Vec<&Entity> = entities_of_kind(entities, EntityKind::Address)
         .into_iter()
         .filter(|e| e.confidence >= 0.55)
@@ -303,10 +307,11 @@ pub(in crate::core::correlator) fn rule_au_027_address_coordinates_chain(
 /// not verified here (see AU-027 on why the correlator can't). AU-017 covers
 /// spatial clustering of `Coordinates`.
 pub(in crate::core::correlator) fn rule_au_030_geo_convergence_score(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let geo_entities: Vec<&Entity> = entities
         .iter()
         .filter(|e| {
@@ -390,10 +395,11 @@ pub(in crate::core::correlator) fn rule_au_030_geo_convergence_score(
 ///
 /// Requires ≥ 2 valid inputs; `High` at ≥ 3 inputs, `Medium` at 2.
 pub(in crate::core::correlator) fn rule_au_057_synthesised_location_fix(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let candidates: Vec<(&Entity, (f64, f64))> =
         entities_of_kind(entities, EntityKind::Coordinates)
             .into_iter()

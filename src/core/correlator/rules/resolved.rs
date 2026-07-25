@@ -26,11 +26,12 @@ use crate::core::relation::resolve_identity_clusters;
 /// identity of ≥3 members whose weakest binding link clears the floor. Severity
 /// rises with cluster size (a larger resolved identity is a stronger finding).
 pub(in crate::core::correlator) fn rule_au_067_resolved_identity_cluster(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const MAX_HOPS: usize = 4;
     const MIN_MEMBERS: usize = 3;
     const MIN_CONF: f64 = 0.50;

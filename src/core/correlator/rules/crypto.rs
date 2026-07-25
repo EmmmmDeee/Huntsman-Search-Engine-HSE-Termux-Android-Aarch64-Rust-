@@ -26,10 +26,11 @@ use super::*;
 /// (HashMap-ordered) and finalise passes agree — the disjoint-set double-persist
 /// the UID tie-break was added to prevent stays fixed.
 pub(in crate::core::correlator) fn rule_au_039_wallet_identity(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let wallets = entities_of_kind(entities, EntityKind::CryptoAddress);
     if wallets.is_empty() {
         return Vec::new();
@@ -77,10 +78,11 @@ pub(in crate::core::correlator) fn rule_au_039_wallet_identity(
 /// (clipboard-hijacker malware harvests these in volume). Distinct from AU-039:
 /// this is about the *exposure source*, not co-located identity.
 pub(in crate::core::correlator) fn rule_au_040_wallet_breach_exposure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::CryptoAddress)
@@ -103,10 +105,11 @@ pub(in crate::core::correlator) fn rule_au_040_wallet_breach_exposure(
 /// (`chain_intel`): an on-chain → identity edge. `Medium` (a handle is a lead,
 /// not an identity by itself).
 pub(in crate::core::correlator) fn rule_au_041_ens_identity(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::Username && e.has_tag("ens"))

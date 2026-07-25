@@ -42,10 +42,11 @@ use super::*;
 /// the component, in entity order, so the SPA Correlations view can render the
 /// whole chain.
 pub(in crate::core::correlator) fn rule_au_121_credential_reuse_blast_radius(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     /// A component must reach this many distinct handles to count as a blast
     /// radius (a 2-handle link is a single-secret AU-047 pair's job).
     const MIN_HANDLES: usize = 3;

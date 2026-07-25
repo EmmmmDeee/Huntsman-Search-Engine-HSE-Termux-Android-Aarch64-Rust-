@@ -25,11 +25,12 @@ use crate::core::relation::{connection_brokers, identity_uids, sorted_confined_a
 /// of identities the broker holds together (a larger fan-out is a more critical
 /// single point of failure).
 pub(in crate::core::correlator) fn rule_au_070_connection_broker(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // A 2-identity split is a fragile *pair* (AU-063); a broker is a genuine ≥3-way
     // linchpin.
     const MIN_BROKERED: usize = 3;

@@ -33,10 +33,11 @@ use crate::util::domains::registrable_domain;
 /// finding's `entity_uids` carries the Domain entities of both sides, in entity
 /// order, so the SPA can render the impersonating/impersonated pair.
 pub(in crate::core::correlator) fn rule_au_118_lookalike_domain_impersonation(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::BTreeMap;
 
     // registrable domain -> (brand label, entity uids that map to it). BTreeMap

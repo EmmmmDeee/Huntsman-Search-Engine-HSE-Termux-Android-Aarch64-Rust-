@@ -36,10 +36,11 @@ use crate::util::oui;
 /// a persistent hardware address — emits one Medium finding naming the trackable
 /// members. `entity_uids` carries the whole bonded constellation in entity order.
 pub(in crate::core::correlator) fn rule_au_117_personal_device_constellation(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let bonded: Vec<&Entity> = entities
         .iter()
         .filter(|e| {

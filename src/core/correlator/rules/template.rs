@@ -20,11 +20,12 @@ use crate::core::relation::connection_templates;
 
 /// AU-064 — Generalized pathway template.
 pub(in crate::core::correlator) fn rule_au_064_generalized_pathway_template(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const MAX_HOPS: usize = 4;
 
     let mut out = Vec::new();

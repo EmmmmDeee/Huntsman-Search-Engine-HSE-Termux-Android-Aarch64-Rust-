@@ -19,10 +19,11 @@ use super::*;
 /// Runs on the confirmed (candidate-filtered) view, so speculative name-permuted
 /// addresses — kept at CANDIDATE — never inflate the count.
 pub(in crate::core::correlator) fn rule_au_072_payid_payment_surface(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::BTreeSet;
     const MIN_PAYIDS: usize = 2;
 
