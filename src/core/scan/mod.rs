@@ -13,8 +13,8 @@ use classify::domain_expansion_factor;
 // primitives; `core::relation` reuses them to bind a subject to their identifiers
 // and associates (rather than re-deriving a second, drift-prone copy).
 pub(crate) use classify::{
-    identity_norm, identity_overlaps, is_infra_domain, is_mega_domain, is_noncentral_domain,
-    is_wrong_identity_pivot,
+    IDENTITY_OVERLAP_MIN, identity_norm, identity_overlaps, is_infra_domain, is_mega_domain,
+    is_noncentral_domain, is_wrong_identity_pivot,
 };
 
 mod detect;

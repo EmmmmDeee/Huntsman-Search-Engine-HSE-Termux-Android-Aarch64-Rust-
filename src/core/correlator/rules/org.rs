@@ -669,23 +669,72 @@ pub(in crate::core::correlator) fn rule_au_087_shared_org_email_domain(
         entry.1.insert(e.uid.clone());
     }
 
+    // Ride-along: link any Person whose name derives one of the local-parts —
+    // the actual people affiliated at this organisation (same dictionary-free
+    // identity overlap the engine's wrong-identity gate uses), so the firing
+    // names people, not just addresses.
+    //
+    // Structural fix, not a cap: the naive `persons × organisational-addresses`
+    // pairwise `identity_overlaps` scan is a genuine O(n²) hazard —
+    // `correlator::perf::per_rule_breakdown` found it (alongside AU-039)
+    // dominating the correlation pass's entity-count scaling. `identity_overlaps`
+    // itself is exactly: either normalized side shorter than
+    // `IDENTITY_OVERLAP_MIN` (4) chars ⟹ requires full EXACT equality of both
+    // normalized strings; both sides ≥4 chars ⟹ requires a shared substring of
+    // length ≥4, which is exactly "shares at least one 4-gram" (any common
+    // substring of length ≥4 necessarily contains a common 4-character window,
+    // and sharing one 4-gram is itself a length-4 common substring). Indexing
+    // every Person's normalized name once — by its exact value (covers the
+    // short-side case) and by its 4-grams (covers the long-side case) — turns
+    // matching one local-part into O(local-part length) hash lookups instead of
+    // an O(persons) rescan, with identical results.
+    let persons: Vec<(&Entity, String)> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .map(|p| (p, crate::core::scan::identity_norm(&p.value)))
+        .filter(|(_, norm)| !norm.is_empty())
+        .collect();
+    let mut exact_index: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut kmer_index: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, (_, norm)) in persons.iter().enumerate() {
+        exact_index.entry(norm.as_str()).or_default().push(i);
+        if norm.len() >= crate::core::scan::IDENTITY_OVERLAP_MIN {
+            for w in 0..=(norm.len() - crate::core::scan::IDENTITY_OVERLAP_MIN) {
+                kmer_index
+                    .entry(&norm[w..w + crate::core::scan::IDENTITY_OVERLAP_MIN])
+                    .or_default()
+                    .push(i);
+            }
+        }
+    }
+
     let mut out = Vec::new();
     for (domain, (addresses, mut uids)) in by_domain {
         if addresses.len() < 2 {
             continue;
         }
-        // Ride-along: link any Person whose name derives one of the local-parts —
-        // the actual people affiliated at this organisation (same dictionary-free
-        // identity overlap the engine's wrong-identity gate uses), so the firing
-        // names people, not just addresses.
-        for p in entities.iter().filter(|e| e.kind == EntityKind::Person) {
-            let matches = addresses.iter().any(|addr| {
-                let local = addr.split('@').next().unwrap_or(addr);
-                crate::core::scan::identity_overlaps(&p.value, local)
-            });
-            if matches {
-                uids.insert(p.uid.clone());
+        let mut matched: BTreeSet<usize> = BTreeSet::new();
+        for addr in &addresses {
+            let local = addr.split('@').next().unwrap_or(addr);
+            let local_norm = crate::core::scan::identity_norm(local);
+            if local_norm.is_empty() {
+                continue;
             }
+            if let Some(hits) = exact_index.get(local_norm.as_str()) {
+                matched.extend(hits);
+            }
+            if local_norm.len() >= crate::core::scan::IDENTITY_OVERLAP_MIN {
+                for w in 0..=(local_norm.len() - crate::core::scan::IDENTITY_OVERLAP_MIN) {
+                    if let Some(hits) =
+                        kmer_index.get(&local_norm[w..w + crate::core::scan::IDENTITY_OVERLAP_MIN])
+                    {
+                        matched.extend(hits);
+                    }
+                }
+            }
+        }
+        for i in matched {
+            uids.insert(persons[i].0.uid.clone());
         }
         // Show a bounded, sorted sample so a company-wide breach dump doesn't emit
         // a multi-kilobyte description; the link set still carries every uid.

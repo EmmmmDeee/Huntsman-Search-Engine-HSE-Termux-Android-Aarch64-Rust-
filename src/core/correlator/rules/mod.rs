@@ -532,24 +532,6 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
     }
 }
 
-/// Do two entities share at least one *corroborating* evidence source — i.e. was
-/// there a single collection module that surfaced BOTH of them? This is the
-/// concrete "co-location" tie that separates a genuine co-occurrence (a stealer
-/// log / breach record naming a person and their wallet in one pass stamps the
-/// same `source` on each entity it mints) from mere co-existence in the same scan
-/// (two unrelated findings from two unrelated modules). Built on
-/// [`Entity::corroborating_sources`], not the full evidence set, so a
-/// non-corroborating replay/enrichment pass (`recall` / `cross_scan_history` /
-/// `geo_normalize` / `name_intel`) can't manufacture a shared-source tie out of a
-/// memory replay or a self-derivation — the same honesty rule
-/// [`source_families`] already enforces for cross-family diversity.
-fn shares_corroborating_source(a: &Entity, b: &Entity) -> bool {
-    let b_sources = b.corroborating_sources();
-    a.corroborating_sources()
-        .iter()
-        .any(|s| b_sources.contains(s))
-}
-
 mod assoc;
 mod breach;
 pub(crate) mod breach_pii;

@@ -3,6 +3,38 @@
 
 use super::*;
 
+/// Buckets `ents` by each of their own corroborating evidence sources, so an
+/// anchor lookup for one entity is a handful of `source → candidates` map
+/// probes instead of a full rescan. Shared by [`rule_au_039_wallet_identity`]'s
+/// wallet→Person and wallet→Email anchor passes.
+fn index_by_source<'a>(ents: &[&'a Entity]) -> HashMap<&'a str, Vec<&'a Entity>> {
+    let mut idx: HashMap<&str, Vec<&Entity>> = HashMap::new();
+    for &e in ents {
+        for s in e.corroborating_sources() {
+            idx.entry(s).or_default().push(e);
+        }
+    }
+    idx
+}
+
+/// Entities in `idx` sharing ANY corroborating source with `w`, deduped by
+/// uid — exactly the set `ents.iter().filter(|e| shares_corroborating_source(w,
+/// e))` would collect, just reached via the source index instead of a rescan.
+fn anchors_for<'a>(w: &Entity, idx: &HashMap<&str, Vec<&'a Entity>>) -> Vec<&'a Entity> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut v: Vec<&Entity> = Vec::new();
+    for s in w.corroborating_sources() {
+        if let Some(candidates) = idx.get(s) {
+            for &c in candidates {
+                if seen.insert(c.uid.as_str()) {
+                    v.push(c);
+                }
+            }
+        }
+    }
+    v
+}
+
 /// AU-039 — a cryptocurrency wallet co-occurring with a real identity (Person or
 /// Email) **in a shared collection source**: an attribution lead linking on-chain
 /// funds to a person. Co-presence, not proof, so `High` (warrants attention)
@@ -25,6 +57,17 @@ use super::*;
 /// pure function of the entity set (source membership + UID order), so the live
 /// (HashMap-ordered) and finalise passes agree — the disjoint-set double-persist
 /// the UID tie-break was added to prevent stays fixed.
+///
+/// Anchor lookup is index-based, not the pairwise `wallets × persons` (+
+/// `wallets × emails`) rescan every anchor used to cost: each Person/Email is
+/// bucketed once by its own corroborating sources (`corroborating_sources` is
+/// O(evidence-count), bounded per entity), so finding a wallet's anchors is a
+/// handful of `source → candidates` lookups keyed by the wallet's own sources
+/// instead of a full rescan of `persons`/`emails`. Same
+/// `shares_corroborating_source` semantics — a candidate surfaces here iff its
+/// corroborating-source set intersects the wallet's. Measured via
+/// `correlator::perf::per_rule_breakdown` as one of the two rules (the other
+/// is AU-087) dominating the correlation pass's entity-count scaling.
 pub(in crate::core::correlator) fn rule_au_039_wallet_identity(
     context: &RuleContext,
     scan_id: &str,
@@ -38,21 +81,16 @@ pub(in crate::core::correlator) fn rule_au_039_wallet_identity(
     let persons = entities_of_kind(entities, EntityKind::Person);
     let emails = entities_of_kind(entities, EntityKind::Email);
 
+    let persons_by_source = index_by_source(&persons);
+    let emails_by_source = index_by_source(&emails);
+
     let mut out = Vec::new();
     for w in wallets {
         // Person preferred over Email: only fall back to email anchors when no
         // person is tied to this wallet by a shared source.
-        let mut tied: Vec<&Entity> = persons
-            .iter()
-            .copied()
-            .filter(|p| shares_corroborating_source(w, p))
-            .collect();
+        let mut tied = anchors_for(w, &persons_by_source);
         if tied.is_empty() {
-            tied = emails
-                .iter()
-                .copied()
-                .filter(|e| shares_corroborating_source(w, e))
-                .collect();
+            tied = anchors_for(w, &emails_by_source);
         }
         // Deterministic order for the (same-rule_id) tie-break downstream.
         tied.sort_by(|a, b| a.uid.cmp(&b.uid));

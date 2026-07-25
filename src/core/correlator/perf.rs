@@ -93,3 +93,63 @@ fn pass_is_subquadratic() {
          was reintroduced. Profile per-rule (see git history for AU-034)."
     );
 }
+
+/// Per-rule cost breakdown — the tool `pass_is_subquadratic`'s failure message
+/// points at ("Profile per-rule"). Times every entity-only rule in
+/// [`super::RULES`] individually at [`SMALL`](pass_is_subquadratic::SMALL) and
+/// 4× that count, and prints both the absolute n=LARGE cost and the scaling
+/// ratio per rule, ranked worst-ratio-first. `RULES` holds bare `fn` pointers
+/// with no attached name, so a hit is reported by its index; cross-reference
+/// that index against the literal order of `RULES` in `correlator/mod.rs`.
+#[test]
+#[ignore = "perf diagnostic; run with --ignored --nocapture to find which rule dominates a subquadratic-guard failure"]
+fn per_rule_breakdown() {
+    const SMALL: usize = 500;
+    const LARGE: usize = 2000; // 4× SMALL
+
+    let small = super::bench_synthetic_entities(SMALL);
+    let large = super::bench_synthetic_entities(LARGE);
+    let ctx_small = super::RuleContext::new(&small);
+    let ctx_large = super::RuleContext::new(&large);
+    let now = 0u64;
+
+    // Min-of-N per rule, same estimator as min_pass_us, applied to one rule
+    // call instead of the whole pass.
+    let time_rule = |rule: &super::RuleFn, ctx: &super::RuleContext, iters: u32| -> f64 {
+        let mut best = f64::MAX;
+        for _ in 0..iters {
+            let start = Instant::now();
+            let out = rule(ctx, "scan", now);
+            std::hint::black_box(out.len());
+            best = best.min(start.elapsed().as_secs_f64() * 1e6);
+        }
+        best
+    };
+
+    let mut rows: Vec<(usize, f64, f64, f64)> = super::RULES
+        .iter()
+        .enumerate()
+        .map(|(i, rule)| {
+            let t_small = time_rule(rule, &ctx_small, 10);
+            let t_large = time_rule(rule, &ctx_large, 10);
+            let ratio = if t_small > 0.0 {
+                t_large / t_small
+            } else {
+                0.0
+            };
+            (i, t_small, t_large, ratio)
+        })
+        .collect();
+
+    // Worst scaling first, so the O(n^2)-suspect rule sorts to the top.
+    rows.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
+
+    eprintln!(
+        "per-rule cost — RULES[index]: n={SMALL} µs, n={LARGE} µs, ratio (index maps to RULES in correlator/mod.rs):"
+    );
+    for (i, t_small, t_large, ratio) in rows.iter().take(15) {
+        eprintln!(
+            "  RULES[{i:3}]  n={SMALL}: {t_small:8.2} µs   n={LARGE}: {t_large:9.2} µs   ratio {ratio:6.2}"
+        );
+    }
+}
