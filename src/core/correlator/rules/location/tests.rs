@@ -16,7 +16,7 @@ use super::*;
             au_coord("-33.8688,151.2093", 0.80, "abn_lookup", "NSW"),
             au_coord("-33.8700,151.2100", 0.70, "exif_geo", "NSW"),
         ];
-        let out = rule_au_059_cross_seed_geo_synergy(&ents, "s", 0);
+        let out = rule_au_059_cross_seed_geo_synergy(&RuleContext::new(&ents), "s", 0);
         assert_eq!(out.len(), 1, "two orthogonal classes must fire AU-059");
         assert!(out[0].description.contains("state=NSW"));
     }
@@ -28,7 +28,7 @@ use super::*;
             au_coord("-33.8688,151.2093", 0.80, "abn_lookup", "NSW"),
             au_coord("-33.8700,151.2100", 0.75, "acnc_charities", "NSW"),
         ];
-        let out = rule_au_059_cross_seed_geo_synergy(&ents, "s", 0);
+        let out = rule_au_059_cross_seed_geo_synergy(&RuleContext::new(&ents), "s", 0);
         assert!(out.is_empty(), "same source class must not assert synergy");
     }
 
@@ -39,7 +39,7 @@ use super::*;
             au_coord("-37.8140,144.9640", 0.70, "exif_geo", "VIC"),
             au_coord("-37.8150,144.9650", 0.65, "wigle", "VIC"),
         ];
-        let out = rule_au_059_cross_seed_geo_synergy(&ents, "s", 0);
+        let out = rule_au_059_cross_seed_geo_synergy(&RuleContext::new(&ents), "s", 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].severity, Severity::High);
     }
@@ -53,7 +53,7 @@ use super::*;
             au_coord("-33.8688,151.2093", 0.80, "abn_lookup", "NSW"),
             london,
         ];
-        let out = rule_au_059_cross_seed_geo_synergy(&ents, "s", 0);
+        let out = rule_au_059_cross_seed_geo_synergy(&RuleContext::new(&ents), "s", 0);
         assert!(
             out.is_empty(),
             "non-AU coordinate must not contribute a class"

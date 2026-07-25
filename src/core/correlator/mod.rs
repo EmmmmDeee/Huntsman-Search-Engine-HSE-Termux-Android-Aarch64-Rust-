@@ -55,12 +55,12 @@ impl<'a> RuleContext<'a> {
 
     /// Returns a reference to the cached canonical-handle map. Builds and caches
     /// on first call, returns cached on subsequent calls.
-    pub fn by_canonical_handle(&self) -> std::cell::Ref<HashMap<String, Vec<&'a Entity>>> {
+    pub fn by_canonical_handle(&self) -> std::cell::Ref<'_, HashMap<String, Vec<&'a Entity>>> {
         if self.by_canonical_handle.borrow().is_none() {
             let mut map: HashMap<String, Vec<&Entity>> = HashMap::new();
             for entity in self.entities {
                 let canonical = canonical_handle(&entity.value);
-                map.entry(canonical).or_insert_with(Vec::new).push(entity);
+                map.entry(canonical).or_default().push(entity);
             }
             *self.by_canonical_handle.borrow_mut() = Some(map);
         }
@@ -773,39 +773,6 @@ fn evaluate_relation_rules_on(
         out.extend(rule(context, relations, scan_id, now));
     }
     out
-}
-
-#[cfg(test)]
-mod test_helpers {
-    use super::*;
-
-    /// Macro to call a rule function in tests without needing RuleContext
-    #[macro_export]
-    macro_rules! call_rule {
-        ($rule:path, $entities:expr, $scan_id:expr, $ts:expr) => {{
-            let ctx = $crate::core::correlator::RuleContext::new($entities);
-            $rule(&ctx, $scan_id, $ts)
-        }};
-        ($rule:path, $entities:expr, $relations:expr, $scan_id:expr, $ts:expr) => {{
-            let ctx = $crate::core::correlator::RuleContext::new($entities);
-            $rule(&ctx, $relations, $scan_id, $ts)
-        }};
-    }
-
-    pub fn eval_rules_test(entities: &[Entity], scan_id: &str, now: u64) -> Vec<Correlation> {
-        let context = RuleContext::new(entities);
-        evaluate_rules_on(&context, scan_id, now, None)
-    }
-
-    pub fn eval_rel_rules_test(
-        entities: &[Entity],
-        relations: &[Relation],
-        scan_id: &str,
-        now: u64,
-    ) -> Vec<Correlation> {
-        let context = RuleContext::new(entities);
-        evaluate_relation_rules_on(&context, relations, scan_id, now, None)
-    }
 }
 
 #[cfg(test)]

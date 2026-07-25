@@ -403,26 +403,26 @@ mod tests {
 
         // Full (effectively uncapped) run finds many fragile links, and the public
         // entry agrees with a huge explicit cap.
-        let full = single_route_identity_links_capped(&chain, &rels, usize::MAX);
+        let full = single_route_identity_links_capped(&RuleContext::new(&chain), &rels, usize::MAX);
         assert!(
             full.len() >= 5,
             "the chain topology must yield several single-route links, got {}",
             full.len()
         );
         assert_eq!(
-            single_route_identity_links(&chain, &rels).len(),
+            single_route_identity_links(&RuleContext::new(&chain), &rels).len(),
             full.len(),
             "the public entry runs at the production cap; this fixture is under it"
         );
 
         // The cap bounds the pair sweep: 0 probes → no links; 1 probe → ≤1 link.
-        assert!(single_route_identity_links_capped(&chain, &rels, 0).is_empty());
-        assert!(single_route_identity_links_capped(&chain, &rels, 1).len() <= 1);
+        assert!(single_route_identity_links_capped(&RuleContext::new(&chain), &rels, 0).is_empty());
+        assert!(single_route_identity_links_capped(&RuleContext::new(&chain), &rels, 1).len() <= 1);
 
         // A partial cap yields a deterministic subset of the full result — same
         // bytes every run, and never more than the full sweep.
-        let a = single_route_identity_links_capped(&chain, &rels, 4);
-        let b = single_route_identity_links_capped(&chain, &rels, 4);
+        let a = single_route_identity_links_capped(&RuleContext::new(&chain), &rels, 4);
+        let b = single_route_identity_links_capped(&RuleContext::new(&chain), &rels, 4);
         assert_eq!(
             a.iter().map(|l| (&l.a_uid, &l.b_uid)).collect::<Vec<_>>(),
             b.iter().map(|l| (&l.a_uid, &l.b_uid)).collect::<Vec<_>>(),
@@ -441,7 +441,12 @@ mod tests {
             rel(&a, &d, RelationKind::BelongsToDomain),
             rel(&d, &b, RelationKind::DerivedFrom),
         ];
-        let out = rule_au_063_corroboration_gap(&[a.clone(), b.clone(), d], &rels, "s", 0);
+        let out = rule_au_063_corroboration_gap(
+            &RuleContext::new(&[a.clone(), b.clone(), d]),
+            &rels,
+            "s",
+            0,
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rule_id, "AU-063");
         assert_eq!(out[0].severity, Severity::Low);
@@ -461,7 +466,7 @@ mod tests {
             rel(&a, &d, RelationKind::BelongsToDomain),
             rel(&d, &b, RelationKind::DerivedFrom),
         ];
-        let probes = gap_fill_probes(&[a.clone(), b.clone(), d], &rels);
+        let probes = gap_fill_probes(&RuleContext::new(&[a.clone(), b.clone(), d]), &rels);
         assert_eq!(probes.len(), 2, "both endpoints are probed");
         assert!(
             probes
@@ -486,7 +491,7 @@ mod tests {
             rel(&a, &o, RelationKind::RegisteredBy),
             rel(&o, &b, RelationKind::DerivedFrom),
         ];
-        assert!(gap_fill_probes(&[a, b, d, o], &rels).is_empty());
+        assert!(gap_fill_probes(&RuleContext::new(&[a, b, d, o]), &rels).is_empty());
     }
 
     #[test]
@@ -502,7 +507,10 @@ mod tests {
             rel(&a, &o, RelationKind::RegisteredBy),
             rel(&o, &b, RelationKind::DerivedFrom),
         ];
-        assert!(rule_au_063_corroboration_gap(&[a, b, d, o], &rels, "s", 0).is_empty());
+        assert!(
+            rule_au_063_corroboration_gap(&RuleContext::new(&[a, b, d, o]), &rels, "s", 0)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -511,7 +519,9 @@ mod tests {
         let a = id(EntityKind::Email, "a@x.com");
         let b = id(EntityKind::Username, "bob");
         let rels = [rel(&a, &b, RelationKind::AliasOf)];
-        assert!(rule_au_063_corroboration_gap(&[a, b], &rels, "s", 0).is_empty());
+        assert!(
+            rule_au_063_corroboration_gap(&RuleContext::new(&[a, b]), &rels, "s", 0).is_empty()
+        );
     }
 
     #[test]
@@ -531,7 +541,7 @@ mod tests {
             rels.push(rel(&u, &d, RelationKind::DerivedFrom));
             ents.push(u);
         }
-        let out = rule_au_063_corroboration_gap(&ents, &rels, "s", 0);
+        let out = rule_au_063_corroboration_gap(&RuleContext::new(&ents), &rels, "s", 0);
         // Bounded: never one-per-link. At least one consolidated summary present.
         assert!(
             out.len() <= AU063_DETAIL_CAP + 1,
@@ -565,7 +575,7 @@ mod tests {
             rels.push(rel(&u, &d, RelationKind::DerivedFrom));
             ents.push(u);
         }
-        let out = rule_au_063_corroboration_gap(&ents, &rels, "s", 0);
+        let out = rule_au_063_corroboration_gap(&RuleContext::new(&ents), &rels, "s", 0);
         // The confident email↔user gap is surfaced in detail (names both values).
         assert!(
             out.iter().any(|c| {

@@ -165,7 +165,8 @@ mod tests {
         let dating = creator_profile("https://tinder.com/x", "Tinder", "dating", true);
         let dev = creator_profile("https://github.com/x", "GitHub", "dev", true);
         assert!(
-            rule_au_120_monetized_creator_exposure(&[dating, dev], "s", 0).is_empty(),
+            rule_au_120_monetized_creator_exposure(&RuleContext::new(&[dating, dev]), "s", 0)
+                .is_empty(),
             "only fans/cam/adult categories are creator exposure"
         );
     }

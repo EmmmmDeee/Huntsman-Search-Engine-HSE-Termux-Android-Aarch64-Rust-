@@ -139,7 +139,7 @@ mod tests {
             far.clone(),
             other,
         ];
-        let out = rule_au_061_family_geo_corroboration(&ents, "s", 0);
+        let out = rule_au_061_family_geo_corroboration(&RuleContext::new(&ents), "s", 0);
         assert_eq!(out.len(), 1, "one geo-corroboration correlation");
         let c = &out[0];
         assert_eq!(c.rule_id, "AU-061");
@@ -153,7 +153,9 @@ mod tests {
 
         // No confirmed subject coordinate → nothing fires (no anchor to compare to).
         let no_gps = vec![near_addr];
-        assert!(rule_au_061_family_geo_corroboration(&no_gps, "s", 0).is_empty());
+        assert!(
+            rule_au_061_family_geo_corroboration(&RuleContext::new(&no_gps), "s", 0).is_empty()
+        );
     }
 
     // Build a GPS fix + a named subject + 3 same-surname family-candidates all in
@@ -184,7 +186,7 @@ mod tests {
         // Three "Smith"s in one metro catchment is coincidence, not a 3-relative
         // household — a COMMON subject surname must not reach Critical.
         let out = rule_au_061_family_geo_corroboration(
-            &three_same_surname_in_area("Dana Smith", "Smith"),
+            &RuleContext::new(&three_same_surname_in_area("Dana Smith", "Smith")),
             "s",
             0,
         );
@@ -201,7 +203,7 @@ mod tests {
     fn au_061_distinctive_surname_reaches_critical_at_three() {
         // A distinctive surname keeps the strong 3-relative Critical signal.
         let out = rule_au_061_family_geo_corroboration(
-            &three_same_surname_in_area("Dana Bamford", "Bamford"),
+            &RuleContext::new(&three_same_surname_in_area("Dana Bamford", "Bamford")),
             "s",
             0,
         );
@@ -237,7 +239,7 @@ mod tests {
             cand("Jane Bamford", "4169"),
             cand("Bob Jones", "4101"), // co-resident, DIFFERENT surname → excluded
         ];
-        let out = rule_au_061_family_geo_corroboration(&ents, "s", 0);
+        let out = rule_au_061_family_geo_corroboration(&RuleContext::new(&ents), "s", 0);
         assert_eq!(out.len(), 1);
         assert!(out[0].description.contains("Bamford"));
         assert!(
@@ -307,12 +309,12 @@ mod tests {
 
         // AU-018: no genuine subject address → no identity↔location linkage.
         assert!(
-            rule_au_018_email_address_colocation(&infra, "s", 0).is_empty(),
+            rule_au_018_email_address_colocation(&RuleContext::new(&infra), "s", 0).is_empty(),
             "infra geo must not forge an email↔location linkage"
         );
         // AU-030: two infra-geo addresses are not multi-source convergence.
         assert!(
-            rule_au_030_geo_convergence_score(&infra, "s", 0).is_empty(),
+            rule_au_030_geo_convergence_score(&RuleContext::new(&infra), "s", 0).is_empty(),
             "infra geo must not manufacture geo convergence"
         );
 
@@ -325,7 +327,7 @@ mod tests {
             a
         };
         assert!(
-            rule_au_026_validated_address(&[ip_only], "s", 0).is_empty(),
+            rule_au_026_validated_address(&RuleContext::new(&[ip_only]), "s", 0).is_empty(),
             "two IP-geo lookups are not street-address validation"
         );
 
@@ -342,7 +344,8 @@ mod tests {
             a
         };
         assert!(
-            !rule_au_018_email_address_colocation(&[email, home], "s", 0).is_empty(),
+            !rule_au_018_email_address_colocation(&RuleContext::new(&[email, home]), "s", 0)
+                .is_empty(),
             "a real geocoded address still co-locates with the email"
         );
     }

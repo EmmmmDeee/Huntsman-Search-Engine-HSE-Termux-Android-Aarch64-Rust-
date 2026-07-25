@@ -34,7 +34,7 @@ fn temporal_breach_cluster_survives_non_ascii_breach_date() {
         mk("c@x.com", "2024-02-10"),
     ];
     // Must not panic; the malformed-date row is simply skipped.
-    let _ = rule_au_019_temporal_breach_cluster(&ents, "scan", 0);
+    let _ = rule_au_019_temporal_breach_cluster(&RuleContext::new(&ents), "scan", 0);
 }
 
 #[test]
@@ -51,7 +51,7 @@ fn temporal_breach_cluster_window_is_anchored_not_rolling() {
         mk("b@x.com", "2024-01-10"),
         mk("c@x.com", "2024-01-20"),
     ];
-    let r = rule_au_019_temporal_breach_cluster(&tight, "scan", 0);
+    let r = rule_au_019_temporal_breach_cluster(&RuleContext::new(&tight), "scan", 0);
     assert_eq!(r.len(), 1, "a real ≤30-day cluster must fire");
     assert_eq!(r[0].entity_uids.len(), 3);
 
@@ -65,7 +65,7 @@ fn temporal_breach_cluster_window_is_anchored_not_rolling() {
         mk("d@x.com", "2024-03-30"),
     ];
     assert!(
-        rule_au_019_temporal_breach_cluster(&chained, "scan", 0).is_empty(),
+        rule_au_019_temporal_breach_cluster(&RuleContext::new(&chained), "scan", 0).is_empty(),
         "a chained >30-day span must not be reported as a 30-day cluster"
     );
 }
@@ -146,7 +146,7 @@ fn au002_refuses_to_fuse_an_implausible_identity_dump() {
         ));
     }
     assert!(
-        rule_au_002_identity_cluster(&big, "scan", 0).is_empty(),
+        rule_au_002_identity_cluster(&RuleContext::new(&big), "scan", 0).is_empty(),
         "30 distinct emails is a dump, not an identity cluster"
     );
 
@@ -157,7 +157,7 @@ fn au002_refuses_to_fuse_an_implausible_identity_dump() {
         ent(EntityKind::Phone, "15551112222", 0.7, "s", false),
     ];
     assert_eq!(
-        rule_au_002_identity_cluster(&small, "scan", 0).len(),
+        rule_au_002_identity_cluster(&RuleContext::new(&small), "scan", 0).len(),
         1,
         "a small corroborated identity must still cluster"
     );
@@ -169,7 +169,7 @@ fn au002_refuses_to_fuse_an_implausible_identity_dump() {
         ent(EntityKind::Phone, "15551112222", 0.3, "s", false),
     ];
     assert!(
-        rule_au_002_identity_cluster(&weak, "scan", 0).is_empty(),
+        rule_au_002_identity_cluster(&RuleContext::new(&weak), "scan", 0).is_empty(),
         "sub-floor confidence must not fuse an identity"
     );
 }
@@ -411,7 +411,7 @@ fn au033_links_abn_to_registry_organisation() {
             &["abr", "australian"],
         ),
     ];
-    let r = rule_au_033_abn_organisation_link(&entities, "scan-test", 0);
+    let r = rule_au_033_abn_organisation_link(&RuleContext::new(&entities), "scan-test", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-033");
     assert_eq!(r[0].entity_uids.len(), 2);
@@ -425,14 +425,18 @@ fn au033_no_fire_without_registry_org_or_abn() {
         tagged(EntityKind::AbnAcn, "51824753556", &["abr"]),
         Entity::new(EntityKind::Organisation, "Some Other Co", 0.9, "scan-test"),
     ];
-    assert!(rule_au_033_abn_organisation_link(&mixed, "scan-test", 0).is_empty());
+    assert!(
+        rule_au_033_abn_organisation_link(&RuleContext::new(&mixed), "scan-test", 0).is_empty()
+    );
     // A registry org with no ABN present also does not fire.
     let only_org = vec![tagged(
         EntityKind::Organisation,
         "Example Pty Ltd",
         &["opencorporates"],
     )];
-    assert!(rule_au_033_abn_organisation_link(&only_org, "scan-test", 0).is_empty());
+    assert!(
+        rule_au_033_abn_organisation_link(&RuleContext::new(&only_org), "scan-test", 0).is_empty()
+    );
 }
 
 #[test]
@@ -450,7 +454,7 @@ fn au033_links_abn_to_acnc_and_gleif_registry_orgs() {
                 &[tag, "country:AU"],
             ),
         ];
-        let r = rule_au_033_abn_organisation_link(&entities, "scan-test", 0);
+        let r = rule_au_033_abn_organisation_link(&RuleContext::new(&entities), "scan-test", 0);
         assert_eq!(
             r.len(),
             1,
@@ -472,7 +476,7 @@ fn au034_links_username_to_email_by_shared_handle() {
         username("jmeyers", &["github_user"]),
         email("jmeyers@gmail.com", &["hudsonrock"]),
     ];
-    let r = rule_au_034_handle_reuse_identity(&entities, "scan-test", 0);
+    let r = rule_au_034_handle_reuse_identity(&RuleContext::new(&entities), "scan-test", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-034");
     assert_eq!(r[0].severity, Severity::Medium);
@@ -488,7 +492,7 @@ fn au034_handle_match_is_separator_insensitive_and_strips_plus_tag() {
         username("jordanmeyers", &["search_engines"]),
         email("jordan.meyers+news@x.com", &["hunter_io"]),
     ];
-    let r = rule_au_034_handle_reuse_identity(&entities, "scan-test", 0);
+    let r = rule_au_034_handle_reuse_identity(&RuleContext::new(&entities), "scan-test", 0);
     assert_eq!(r.len(), 1);
 }
 
@@ -501,7 +505,7 @@ fn au034_groups_multiple_emails_under_one_correlation() {
         email("jmeyers@gmail.com", &["name_intel"]),
         email("j.meyers@outlook.com", &["hunter_io"]),
     ];
-    let r = rule_au_034_handle_reuse_identity(&entities, "scan-test", 0);
+    let r = rule_au_034_handle_reuse_identity(&RuleContext::new(&entities), "scan-test", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].entity_uids.len(), 3);
 }
@@ -515,7 +519,9 @@ fn au034_no_fire_on_single_source_self_correlation() {
         username("jmeyers", &["name_intel"]),
         email("jmeyers@gmail.com", &["name_intel"]),
     ];
-    assert!(rule_au_034_handle_reuse_identity(&entities, "scan-test", 0).is_empty());
+    assert!(
+        rule_au_034_handle_reuse_identity(&RuleContext::new(&entities), "scan-test", 0).is_empty()
+    );
 }
 
 #[test]
@@ -526,12 +532,15 @@ fn au034_no_fire_on_role_or_placeholder_handle() {
         username("info", &["github_user"]),
         email("info@company.com", &["hunter_io"]),
     ];
-    assert!(rule_au_034_handle_reuse_identity(&role, "scan-test", 0).is_empty());
+    assert!(rule_au_034_handle_reuse_identity(&RuleContext::new(&role), "scan-test", 0).is_empty());
     let placeholder = vec![
         username("admin", &["github_user"]),
         email("admin@company.com", &["hunter_io"]),
     ];
-    assert!(rule_au_034_handle_reuse_identity(&placeholder, "scan-test", 0).is_empty());
+    assert!(
+        rule_au_034_handle_reuse_identity(&RuleContext::new(&placeholder), "scan-test", 0)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -542,12 +551,16 @@ fn au034_no_fire_on_short_handle_or_no_match() {
         username("abc", &["github_user"]),
         email("abc@x.com", &["hunter_io"]),
     ];
-    assert!(rule_au_034_handle_reuse_identity(&short, "scan-test", 0).is_empty());
+    assert!(
+        rule_au_034_handle_reuse_identity(&RuleContext::new(&short), "scan-test", 0).is_empty()
+    );
     let nomatch = vec![
         username("alice", &["github_user"]),
         email("bob@x.com", &["hunter_io"]),
     ];
-    assert!(rule_au_034_handle_reuse_identity(&nomatch, "scan-test", 0).is_empty());
+    assert!(
+        rule_au_034_handle_reuse_identity(&RuleContext::new(&nomatch), "scan-test", 0).is_empty()
+    );
 }
 
 // ── AU-035 ──────────────────────────────────────────────────────────
@@ -557,7 +570,7 @@ fn au035_fires_when_inferred_then_confirmed() {
     // Derived by name_intel, then observed live by username_search →
     // a guessed handle confirmed real.
     let e = username("jdoe", &["name_intel", "username_search"]);
-    let r = rule_au_035_confirmed_derived_handle(&[e], "scan-test", 0);
+    let r = rule_au_035_confirmed_derived_handle(&RuleContext::new(&[e]), "scan-test", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-035");
     assert_eq!(r[0].entity_uids.len(), 1);
@@ -568,7 +581,7 @@ fn au035_fires_when_inferred_then_confirmed() {
 #[test]
 fn au035_fires_for_email_parse_plus_github() {
     let e = username("jdoe", &["email_parse", "github_user"]);
-    let r = rule_au_035_confirmed_derived_handle(&[e], "scan-test", 0);
+    let r = rule_au_035_confirmed_derived_handle(&RuleContext::new(&[e]), "scan-test", 0);
     assert_eq!(r.len(), 1);
 }
 
@@ -576,10 +589,16 @@ fn au035_fires_for_email_parse_plus_github() {
 fn au035_no_fire_when_only_inferred_or_only_discovered() {
     // Guessed but never confirmed → unconfirmed candidate, no fire.
     let only_inferred = username("jdoe", &["username_variants"]);
-    assert!(rule_au_035_confirmed_derived_handle(&[only_inferred], "scan-test", 0).is_empty());
+    assert!(
+        rule_au_035_confirmed_derived_handle(&RuleContext::new(&[only_inferred]), "scan-test", 0)
+            .is_empty()
+    );
     // Observed but never inferred → an ordinary find, no fire.
     let only_discovered = username("jdoe", &["github_user", "keybase"]);
-    assert!(rule_au_035_confirmed_derived_handle(&[only_discovered], "scan-test", 0).is_empty());
+    assert!(
+        rule_au_035_confirmed_derived_handle(&RuleContext::new(&[only_discovered]), "scan-test", 0)
+            .is_empty()
+    );
 }
 
 // ── AU-036 ──────────────────────────────────────────────────────────
@@ -605,7 +624,7 @@ fn au036_fires_when_two_addresses_converge() {
         "jdoe@gmail.com",
         &["j.doe@gmail.com", "jdoe+news@gmail.com"],
     );
-    let r = rule_au_036_email_alias_convergence(&[e], "scan-test", 0);
+    let r = rule_au_036_email_alias_convergence(&RuleContext::new(&[e]), "scan-test", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-036");
     assert!(r[0].description.contains("jdoe@gmail.com"));
@@ -617,7 +636,9 @@ fn au036_fires_when_two_addresses_converge() {
 fn au036_no_fire_on_single_alias() {
     // Only one address folded in → nothing converged, no finding.
     let e = canonical_email("jdoe@gmail.com", &["j.doe@gmail.com"]);
-    assert!(rule_au_036_email_alias_convergence(&[e], "scan-test", 0).is_empty());
+    assert!(
+        rule_au_036_email_alias_convergence(&RuleContext::new(&[e]), "scan-test", 0).is_empty()
+    );
 }
 
 #[test]
@@ -625,7 +646,9 @@ fn au036_ignores_non_canonical_evidence() {
     // Two evidence records, but not from email_canonical → not alias
     // convergence (could be two breach sources for one address).
     let e = email("jdoe@gmail.com", &["hibp", "hudsonrock"]);
-    assert!(rule_au_036_email_alias_convergence(&[e], "scan-test", 0).is_empty());
+    assert!(
+        rule_au_036_email_alias_convergence(&RuleContext::new(&[e]), "scan-test", 0).is_empty()
+    );
 }
 
 fn tagged(kind: EntityKind, value: &str, tags: &[&str]) -> Entity {
@@ -652,7 +675,7 @@ fn username_summary(value: &str, count: u64, platforms: &str) -> Entity {
 #[test]
 fn au001_fires_at_two_breach_sources() {
     let e = email("x@y.com", &["hudsonrock", "breach_directory"]);
-    let r = rule_au_001_multi_breach(&[e], "s1", 0);
+    let r = rule_au_001_multi_breach(&RuleContext::new(&[e]), "s1", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-001");
     assert_eq!(r[0].severity, Severity::Critical);
@@ -661,13 +684,13 @@ fn au001_fires_at_two_breach_sources() {
 #[test]
 fn au001_no_fire_at_one_source() {
     let e = email("x@y.com", &["hudsonrock"]);
-    assert!(rule_au_001_multi_breach(&[e], "s1", 0).is_empty());
+    assert!(rule_au_001_multi_breach(&RuleContext::new(&[e]), "s1", 0).is_empty());
 }
 
 #[test]
 fn au001_ignores_non_breach_sources() {
     let e = email("x@y.com", &["crtsh", "dns_resolver"]);
-    assert!(rule_au_001_multi_breach(&[e], "s1", 0).is_empty());
+    assert!(rule_au_001_multi_breach(&RuleContext::new(&[e]), "s1", 0).is_empty());
 }
 
 #[test]
@@ -676,10 +699,13 @@ fn au001_does_not_count_generic_search_as_a_breach_source() {
     // source — `search_engines` must never count toward the Critical multi-breach
     // finding (guards against re-adding it to BREACH_SOURCES).
     let one = email("x@y.com", &["hibp", "search_engines"]);
-    assert!(rule_au_001_multi_breach(&[one], "s1", 0).is_empty());
+    assert!(rule_au_001_multi_breach(&RuleContext::new(&[one]), "s1", 0).is_empty());
     // Two genuine breach sources still fire.
     let two = email("x@y.com", &["hibp", "dehashed"]);
-    assert_eq!(rule_au_001_multi_breach(&[two], "s1", 0).len(), 1);
+    assert_eq!(
+        rule_au_001_multi_breach(&RuleContext::new(&[two]), "s1", 0).len(),
+        1
+    );
 }
 
 #[test]
@@ -688,10 +714,13 @@ fn au001_does_not_raise_critical_on_a_role_mailbox() {
     // HIBP + XposedOrNot as a matter of course — that is NOT the subject's breach
     // exposure and must not fire a Critical.
     let role = email("abuse@godaddy.com", &["hibp", "xposed_or_not"]);
-    assert!(rule_au_001_multi_breach(&[role], "s1", 0).is_empty());
+    assert!(rule_au_001_multi_breach(&RuleContext::new(&[role]), "s1", 0).is_empty());
     // A genuine personal mailbox in the same two sources still fires.
     let real = email("matthew@example.com", &["hibp", "xposed_or_not"]);
-    assert_eq!(rule_au_001_multi_breach(&[real], "s1", 0).len(), 1);
+    assert_eq!(
+        rule_au_001_multi_breach(&RuleContext::new(&[real]), "s1", 0).len(),
+        1
+    );
 }
 
 // ── AU-002 ──────────────────────────────────────────────────────────
@@ -703,7 +732,7 @@ fn au002_fires_with_all_three_kinds() {
         Entity::new(EntityKind::Username, "xuser", 0.8, "s"),
         Entity::new(EntityKind::Phone, "+61400000000", 0.8, "s"),
     ];
-    let r = rule_au_002_identity_cluster(&entities, "s", 0);
+    let r = rule_au_002_identity_cluster(&RuleContext::new(&entities), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-002");
     assert_eq!(r[0].entity_uids.len(), 3);
@@ -715,7 +744,7 @@ fn au002_no_fire_missing_kind() {
         Entity::new(EntityKind::Email, "x@y.com", 0.9, "s"),
         Entity::new(EntityKind::Username, "xuser", 0.8, "s"),
     ];
-    assert!(rule_au_002_identity_cluster(&entities, "s", 0).is_empty());
+    assert!(rule_au_002_identity_cluster(&RuleContext::new(&entities), "s", 0).is_empty());
 }
 
 // ── AU-003 ──────────────────────────────────────────────────────────
@@ -727,7 +756,7 @@ fn au003_fires_at_kind_specific_thresholds() {
     // evidence, so source_count() falls back to the field value.
     let mut email = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
     email.corroboration = 2;
-    let r = rule_au_003_high_corroboration(&[email], "s", 0);
+    let r = rule_au_003_high_corroboration(&RuleContext::new(&[email]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-003");
     assert!(
@@ -738,7 +767,7 @@ fn au003_fires_at_kind_specific_thresholds() {
 
     let mut domain = Entity::new(EntityKind::Domain, "x.com", 0.9, "s");
     domain.corroboration = 3;
-    let r = rule_au_003_high_corroboration(&[domain], "s", 0);
+    let r = rule_au_003_high_corroboration(&RuleContext::new(&[domain]), "s", 0);
     assert_eq!(r.len(), 1);
 }
 
@@ -747,11 +776,11 @@ fn au003_no_fire_below_threshold() {
     // Email below 2 distinct sources, domain below 3 → no fire.
     let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
     e.corroboration = 1;
-    assert!(rule_au_003_high_corroboration(&[e], "s", 0).is_empty());
+    assert!(rule_au_003_high_corroboration(&RuleContext::new(&[e]), "s", 0).is_empty());
 
     let mut d = Entity::new(EntityKind::Domain, "x.com", 0.9, "s");
     d.corroboration = 2;
-    assert!(rule_au_003_high_corroboration(&[d], "s", 0).is_empty());
+    assert!(rule_au_003_high_corroboration(&RuleContext::new(&[d]), "s", 0).is_empty());
 }
 
 #[test]
@@ -764,7 +793,7 @@ fn au003_uses_distinct_sources_not_summed_corroboration() {
     single.corroboration = 8;
     single.add_evidence(crate::core::entity::Evidence::new("oathnet_pro", "8 rows"));
     assert!(
-        rule_au_003_high_corroboration(&[single], "s", 0).is_empty(),
+        rule_au_003_high_corroboration(&RuleContext::new(&[single]), "s", 0).is_empty(),
         "single-source entity must not fire AU-003 despite inflated corroboration"
     );
 
@@ -773,7 +802,7 @@ fn au003_uses_distinct_sources_not_summed_corroboration() {
     multi.add_evidence(crate::core::entity::Evidence::new("hibp", "breach"));
     multi.add_evidence(crate::core::entity::Evidence::new("dehashed", "breach"));
     assert_eq!(
-        rule_au_003_high_corroboration(&[multi], "s", 0).len(),
+        rule_au_003_high_corroboration(&RuleContext::new(&[multi]), "s", 0).len(),
         1,
         "two distinct sources must fire AU-003"
     );
@@ -807,7 +836,7 @@ fn au003_excludes_weak_detection_only_entities() {
     ));
     weak.add_evidence(crate::core::entity::Evidence::new("web_crawler", "linked"));
     assert!(
-        rule_au_003_high_corroboration(&[weak], "s", 0).is_empty(),
+        rule_au_003_high_corroboration(&RuleContext::new(&[weak]), "s", 0).is_empty(),
         "weak-detection-only entity must not fire AU-003 regardless of distinct-source count"
     );
 
@@ -827,7 +856,7 @@ fn au003_excludes_weak_detection_only_entities() {
     ));
     verified.add_evidence(crate::core::entity::Evidence::new("web_crawler", "linked"));
     assert_eq!(
-        rule_au_003_high_corroboration(&[verified], "s", 0).len(),
+        rule_au_003_high_corroboration(&RuleContext::new(&[verified]), "s", 0).len(),
         1,
         "a genuinely verified-detection entity must still fire AU-003"
     );
@@ -849,7 +878,7 @@ fn au004_fires_on_malicious_domain() {
         "flagged malicious".to_string(),
     ));
     e.add_evidence(Evidence::new("threatfox", "c2 domain".to_string()));
-    let r = rule_au_004_malicious_infrastructure(&[e], "s", 0);
+    let r = rule_au_004_malicious_infrastructure(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].severity, Severity::Critical);
 }
@@ -867,13 +896,13 @@ fn au004_no_fire_single_source() {
         "ip_reputation",
         "flagged malicious".to_string(),
     ));
-    assert!(rule_au_004_malicious_infrastructure(&[e], "s", 0).is_empty());
+    assert!(rule_au_004_malicious_infrastructure(&RuleContext::new(&[e]), "s", 0).is_empty());
 }
 
 #[test]
 fn au004_no_fire_without_tag() {
     let e = tagged(EntityKind::Domain, "ok.example", &[]);
-    assert!(rule_au_004_malicious_infrastructure(&[e], "s", 0).is_empty());
+    assert!(rule_au_004_malicious_infrastructure(&RuleContext::new(&[e]), "s", 0).is_empty());
 }
 
 // ── AU-005 ──────────────────────────────────────────────────────────
@@ -881,7 +910,7 @@ fn au004_no_fire_without_tag() {
 #[test]
 fn au005_fires_on_tor_exit() {
     let e = tagged(EntityKind::IpAddress, "1.1.1.1", &["tor-exit"]);
-    let r = rule_au_005_anonymous_network(&[e], "s", 0);
+    let r = rule_au_005_anonymous_network(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].severity, Severity::High);
 }
@@ -892,7 +921,7 @@ fn au005_fires_on_tor_exit() {
 fn au006_fires_on_vpn_but_not_tor() {
     let vpn_ip = tagged(EntityKind::IpAddress, "2.2.2.2", &["vpn"]);
     let tor_ip = tagged(EntityKind::IpAddress, "3.3.3.3", &["tor-exit", "vpn"]);
-    let r = rule_au_006_proxy_vpn(&[vpn_ip, tor_ip], "s", 0);
+    let r = rule_au_006_proxy_vpn(&RuleContext::new(&[vpn_ip, tor_ip]), "s", 0);
     assert_eq!(r.len(), 1);
     assert!(r[0].description.contains("2.2.2.2"));
 }
@@ -906,9 +935,9 @@ fn au006_excludes_all_anon_tags_not_just_tor_exit() {
         &["anonymous-network", "vpn"],
     );
     let anon_vpn = tagged(EntityKind::IpAddress, "6.6.6.6", &["anonymous-vpn", "vpn"]);
-    assert!(rule_au_006_proxy_vpn(&[tor_short], "s", 0).is_empty());
-    assert!(rule_au_006_proxy_vpn(&[anon_net], "s", 0).is_empty());
-    assert!(rule_au_006_proxy_vpn(&[anon_vpn], "s", 0).is_empty());
+    assert!(rule_au_006_proxy_vpn(&RuleContext::new(&[tor_short]), "s", 0).is_empty());
+    assert!(rule_au_006_proxy_vpn(&RuleContext::new(&[anon_net]), "s", 0).is_empty());
+    assert!(rule_au_006_proxy_vpn(&RuleContext::new(&[anon_vpn]), "s", 0).is_empty());
 }
 
 // ── AU-007 ──────────────────────────────────────────────────────────
@@ -916,7 +945,7 @@ fn au006_excludes_all_anon_tags_not_just_tor_exit() {
 #[test]
 fn au007_fires_on_high_risk() {
     let e = tagged(EntityKind::IpAddress, "4.4.4.4", &["high-risk", "scanner"]);
-    let r = rule_au_007_high_risk_reputation(&[e], "s", 0);
+    let r = rule_au_007_high_risk_reputation(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].severity, Severity::High);
 }
@@ -930,7 +959,7 @@ fn au008_fires_on_vulnerable_tag() {
         "vuln.example",
         &[crate::core::tags::VULNERABLE],
     );
-    let r = rule_au_008_exposed_service(&[e], "s", 0);
+    let r = rule_au_008_exposed_service(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-008");
 }
@@ -945,7 +974,7 @@ fn au008_benign_infra_verdict_vetoes_exposed_service() {
         "104.20.37.187",
         &[crate::core::tags::VULNERABLE, "greynoise-benign"],
     );
-    assert!(rule_au_008_exposed_service(&[e], "s", 0).is_empty());
+    assert!(rule_au_008_exposed_service(&RuleContext::new(&[e]), "s", 0).is_empty());
 }
 
 // ── AU-009 ──────────────────────────────────────────────────────────
@@ -953,7 +982,7 @@ fn au008_benign_infra_verdict_vetoes_exposed_service() {
 #[test]
 fn au009_fires_on_stealer_log() {
     let e = tagged(EntityKind::Email, "x@y.com", &["stealer-log"]);
-    let r = rule_au_009_stealer_log(&[e], "s", 0);
+    let r = rule_au_009_stealer_log(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].severity, Severity::High);
 }
@@ -966,7 +995,11 @@ fn au037_fires_critical_on_plaintext_credentials() {
     let pw2 = Entity::new(EntityKind::Password, "letmein", 0.9, "s");
     let cred = Entity::new(EntityKind::Credential, "user:pass", 0.9, "s");
     let email = Entity::new(EntityKind::Email, "x@y.com", 0.9, "s");
-    let r = rule_au_037_credential_exposure(&[pw1, pw2, cred, email.clone()], "s", 0);
+    let r = rule_au_037_credential_exposure(
+        &RuleContext::new(&[pw1, pw2, cred, email.clone()]),
+        "s",
+        0,
+    );
     assert_eq!(r.len(), 1, "one aggregate alert");
     assert_eq!(r[0].severity, Severity::Critical);
     assert!(r[0].description.contains("2 plaintext passwords"));
@@ -980,7 +1013,7 @@ fn au037_fires_critical_on_plaintext_credentials() {
     assert!(r[0].entity_uids.contains(&email.uid));
 
     // No secret entities → no firing.
-    assert!(rule_au_037_credential_exposure(&[email], "s", 0).is_empty());
+    assert!(rule_au_037_credential_exposure(&RuleContext::new(&[email]), "s", 0).is_empty());
 }
 
 #[test]
@@ -1000,10 +1033,10 @@ fn au037_entity_uids_are_deterministic_under_input_order() {
         "s",
     ));
 
-    let forward = rule_au_037_credential_exposure(&ents, "s", 0);
+    let forward = rule_au_037_credential_exposure(&RuleContext::new(&ents), "s", 0);
     let mut reversed = ents.clone();
     reversed.reverse();
-    let backward = rule_au_037_credential_exposure(&reversed, "s", 0);
+    let backward = rule_au_037_credential_exposure(&RuleContext::new(&reversed), "s", 0);
 
     assert_eq!(forward.len(), 1);
     assert_eq!(backward.len(), 1);
@@ -1028,10 +1061,10 @@ fn au038_fires_on_confirmed_profiles_across_platforms() {
     };
     // Confirmed profiles on TWO distinct hosts → fires Medium, names both.
     let r = rule_au_038_verified_cross_platform_identity(
-        &[
+        &RuleContext::new(&[
             mk("https://x.com/kylo4kylo"),
             mk("https://github.com/kylo4kylo"),
-        ],
+        ]),
         "s",
         0,
     );
@@ -1043,10 +1076,10 @@ fn au038_fires_on_confirmed_profiles_across_platforms() {
     // Same host twice → only one distinct platform → no firing.
     assert!(
         rule_au_038_verified_cross_platform_identity(
-            &[
+            &RuleContext::new(&[
                 mk("https://www.x.com/kylo4kylo"),
                 mk("https://x.com/kylo4kylo")
-            ],
+            ]),
             "s",
             0
         )
@@ -1054,7 +1087,10 @@ fn au038_fires_on_confirmed_profiles_across_platforms() {
     );
     // A non-confirmed URL is ignored.
     let plain = Entity::new(EntityKind::Url, "https://x.com/kylo4kylo", 0.5, "s");
-    assert!(rule_au_038_verified_cross_platform_identity(&[plain], "s", 0).is_empty());
+    assert!(
+        rule_au_038_verified_cross_platform_identity(&RuleContext::new(&[plain]), "s", 0)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -1067,11 +1103,11 @@ fn au038_fires_on_social_probe_profiles() {
         e
     };
     let r = rule_au_038_verified_cross_platform_identity(
-        &[
+        &RuleContext::new(&[
             mk("https://steamcommunity.com/id/kylo4kylo"),
             mk("https://www.tiktok.com/@kylo4kylo"),
             mk("https://bsky.app/profile/kylo4kylo.bsky.social"),
-        ],
+        ]),
         "s",
         0,
     );
@@ -1083,7 +1119,8 @@ fn au038_fires_on_social_probe_profiles() {
     probe.tag("social-profile");
     let mut searched = Entity::new(EntityKind::Url, "https://twitter.com/kylo4kylo", 0.85, "s");
     searched.tag("confirmed-profile");
-    let r = rule_au_038_verified_cross_platform_identity(&[probe, searched], "s", 0);
+    let r =
+        rule_au_038_verified_cross_platform_identity(&RuleContext::new(&[probe, searched]), "s", 0);
     assert_eq!(r.len(), 1);
     assert!(r[0].description.contains("2 distinct platforms"));
 }
@@ -1102,11 +1139,11 @@ fn au038_excludes_weak_detection_status_only_guesses() {
         e
     };
     let r = rule_au_038_verified_cross_platform_identity(
-        &[
+        &RuleContext::new(&[
             mk_weak("https://onlyfans.com/rob_dorito"),
             mk_weak("https://twitch.tv/rob_dorito"),
             mk_weak("https://tiktok.com/@rob_dorito"),
-        ],
+        ]),
         "s",
         0,
     );
@@ -1130,7 +1167,7 @@ fn au038_excludes_weak_detection_status_only_guesses() {
     strong2.tag("social-profile");
     strong2.tag("verified-detection");
     let r = rule_au_038_verified_cross_platform_identity(
-        &[strong1, strong2, mk_weak("https://onlyfans.com/rob_dorito")],
+        &RuleContext::new(&[strong1, strong2, mk_weak("https://onlyfans.com/rob_dorito")]),
         "s",
         0,
     );
@@ -1144,7 +1181,7 @@ fn au038_excludes_weak_detection_status_only_guesses() {
 #[test]
 fn au010_fires_at_three_sources_on_domain() {
     let e = domain("x.com", &["crtsh", "dns_resolver", "hudsonrock"]);
-    let r = rule_au_010_infra_consensus(&[e], "s", 0);
+    let r = rule_au_010_infra_consensus(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-010");
 }
@@ -1152,13 +1189,13 @@ fn au010_fires_at_three_sources_on_domain() {
 #[test]
 fn au010_no_fire_at_two_sources() {
     let e = domain("x.com", &["crtsh", "dns_resolver"]);
-    assert!(rule_au_010_infra_consensus(&[e], "s", 0).is_empty());
+    assert!(rule_au_010_infra_consensus(&RuleContext::new(&[e]), "s", 0).is_empty());
 }
 
 #[test]
 fn au010_ignores_non_infrastructure_kinds() {
     let e = email("x@y.com", &["a", "b", "c"]);
-    assert!(rule_au_010_infra_consensus(&[e], "s", 0).is_empty());
+    assert!(rule_au_010_infra_consensus(&RuleContext::new(&[e]), "s", 0).is_empty());
 }
 
 #[test]
@@ -1175,13 +1212,22 @@ fn au010_recall_replay_does_not_manufacture_consensus() {
         e
     };
     assert!(
-        rule_au_010_infra_consensus(&[mk(&["dns_intel", "doh_resolver", "recall"])], "s", 0)
-            .is_empty(),
+        rule_au_010_infra_consensus(
+            &RuleContext::new(&[mk(&["dns_intel", "doh_resolver", "recall"])]),
+            "s",
+            0
+        )
+        .is_empty(),
         "two resolvers + a recall replay is not a 3-source consensus"
     );
     // Three INDEPENDENT infrastructure sources still fire.
     assert_eq!(
-        rule_au_010_infra_consensus(&[mk(&["dns_intel", "doh_resolver", "crtsh"])], "s", 0).len(),
+        rule_au_010_infra_consensus(
+            &RuleContext::new(&[mk(&["dns_intel", "doh_resolver", "crtsh"])]),
+            "s",
+            0
+        )
+        .len(),
         1
     );
 }
@@ -1191,7 +1237,7 @@ fn au010_recall_replay_does_not_manufacture_consensus() {
 #[test]
 fn au011_fires_on_three_platforms() {
     let e = username_summary("alice", 3, "github, reddit, twitter");
-    let r = rule_au_011_cross_platform_username(&[e], "s", 0);
+    let r = rule_au_011_cross_platform_username(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert!(r[0].description.contains("3 platforms"));
     assert!(r[0].description.contains("github"));
@@ -1200,7 +1246,7 @@ fn au011_fires_on_three_platforms() {
 #[test]
 fn au011_no_fire_on_two_platforms() {
     let e = username_summary("alice", 2, "github, reddit");
-    assert!(rule_au_011_cross_platform_username(&[e], "s", 0).is_empty());
+    assert!(rule_au_011_cross_platform_username(&RuleContext::new(&[e]), "s", 0).is_empty());
 }
 
 // ── AU-012 ──────────────────────────────────────────────────────────
@@ -1215,7 +1261,7 @@ fn au012_fires_when_username_and_personal_site_url_present() {
             &["personal-site"],
         ),
     ];
-    let r = rule_au_012_identity_linked_domain(&entities, "s", 0);
+    let r = rule_au_012_identity_linked_domain(&RuleContext::new(&entities), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].entity_uids.len(), 2);
     assert!(r[0].description.contains("co-occurs"));
@@ -1227,7 +1273,7 @@ fn au012_also_fires_on_personal_site_domain() {
         tagged(EntityKind::Username, "alice", &[]),
         tagged(EntityKind::Domain, "alice.example", &["personal-site"]),
     ];
-    let r = rule_au_012_identity_linked_domain(&entities, "s", 0);
+    let r = rule_au_012_identity_linked_domain(&RuleContext::new(&entities), "s", 0);
     assert_eq!(r.len(), 1);
 }
 
@@ -1238,7 +1284,7 @@ fn au012_no_fire_without_username() {
         "https://alice.example/",
         &["personal-site"],
     )];
-    assert!(rule_au_012_identity_linked_domain(&entities, "s", 0).is_empty());
+    assert!(rule_au_012_identity_linked_domain(&RuleContext::new(&entities), "s", 0).is_empty());
 }
 
 // ── AU-013 ──────────────────────────────────────────────────────────
@@ -1257,7 +1303,7 @@ fn au013_fires_on_two_lan_entities() {
             &[crate::core::tags::LOCAL_ARP],
         ),
     ];
-    let r = rule_au_013_local_network_discovery(&entities, "s", 0);
+    let r = rule_au_013_local_network_discovery(&RuleContext::new(&entities), "s", 0);
     assert_eq!(r.len(), 1);
 }
 
@@ -1268,7 +1314,7 @@ fn au013_no_fire_on_one_lan_entity() {
         "192.168.1.1",
         &[crate::core::tags::LOCAL_ARP],
     )];
-    assert!(rule_au_013_local_network_discovery(&entities, "s", 0).is_empty());
+    assert!(rule_au_013_local_network_discovery(&RuleContext::new(&entities), "s", 0).is_empty());
 }
 
 // ── AU-014 ──────────────────────────────────────────────────────────
@@ -1278,7 +1324,7 @@ fn au014_fires_on_two_geo_sources() {
     let mut e = Entity::new(EntityKind::Coordinates, "0,0", 0.9, "s");
     e.add_evidence(Evidence::new("wigle", "test"));
     e.add_evidence(Evidence::new("device_sensors", "test"));
-    let r = rule_au_014_geo_cluster(&[e], "s", 0);
+    let r = rule_au_014_geo_cluster(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
 }
 
@@ -1328,7 +1374,7 @@ fn au015_fires_on_threat_intel_tag() {
         "bad.example",
         &[crate::core::tags::THREAT_INTEL, "ti:malware"],
     );
-    let r = rule_au_015_threat_intel_hit(&[e], "s", 0);
+    let r = rule_au_015_threat_intel_hit(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert!(r[0].description.contains("malware"));
 }
@@ -1338,7 +1384,7 @@ fn au015_attribution_names_evidence_source_not_otx() {
     let mut e = Entity::new(EntityKind::Domain, "bad.example", 0.9, "s");
     e.tag(crate::core::tags::THREAT_INTEL);
     e.add_evidence(Evidence::new("threatfox", "t"));
-    let r = rule_au_015_threat_intel_hit(&[e], "s", 0);
+    let r = rule_au_015_threat_intel_hit(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert!(r[0].description.contains("threatfox"));
     assert!(!r[0].description.contains("OTX"));
@@ -1351,7 +1397,7 @@ fn au015_attribution_excludes_non_ti_evidence() {
     e.add_evidence(Evidence::new("ip_reputation", "ti-hit"));
     e.add_evidence(Evidence::new("whois", "registry-data"));
     e.add_evidence(Evidence::new("dns_resolver", "a-record"));
-    let r = rule_au_015_threat_intel_hit(&[e], "s", 0);
+    let r = rule_au_015_threat_intel_hit(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert!(r[0].description.contains("ip_reputation"));
     assert!(!r[0].description.contains("whois"));
@@ -1365,7 +1411,7 @@ fn au015_attribution_falls_back_when_source_unknown() {
         "bad.example",
         &[crate::core::tags::THREAT_INTEL],
     );
-    let r = rule_au_015_threat_intel_hit(&[e], "s", 0);
+    let r = rule_au_015_threat_intel_hit(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert!(r[0].description.contains("curated threat-intel feed"));
 }
@@ -1791,7 +1837,7 @@ fn rule_016_breach_ip_geo_chain_fires() {
         "ip_geo",
         "Geolocation for 101.169.42.148: Gatton, QLD",
     ));
-    let firings = rule_au_016_breach_ip_geo_chain(&[ip, coord], "s", 0);
+    let firings = rule_au_016_breach_ip_geo_chain(&RuleContext::new(&[ip, coord]), "s", 0);
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].rule_id, "AU-016");
 }
@@ -1800,7 +1846,7 @@ fn rule_016_breach_ip_geo_chain_fires() {
 fn rule_016_no_fire_without_breach_tag() {
     let ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.72, "s");
     let coord = Entity::new(EntityKind::Coordinates, "1.0,2.0", 0.65, "s");
-    let firings = rule_au_016_breach_ip_geo_chain(&[ip, coord], "s", 0);
+    let firings = rule_au_016_breach_ip_geo_chain(&RuleContext::new(&[ip, coord]), "s", 0);
     assert!(firings.is_empty());
 }
 
@@ -1817,7 +1863,7 @@ fn rule_016_does_not_chain_on_substring_ip_match() {
         "Geolocation for 11.2.3.45: Gatton, QLD",
     ));
     assert!(
-        rule_au_016_breach_ip_geo_chain(&[breach, coord], "s", 0).is_empty(),
+        rule_au_016_breach_ip_geo_chain(&RuleContext::new(&[breach, coord]), "s", 0).is_empty(),
         "substring IP match must not chain"
     );
 
@@ -1830,7 +1876,7 @@ fn rule_016_does_not_chain_on_substring_ip_match() {
         "Geolocation for 1.2.3.4: Gatton, QLD",
     ));
     assert_eq!(
-        rule_au_016_breach_ip_geo_chain(&[breach2, coord2], "s", 0).len(),
+        rule_au_016_breach_ip_geo_chain(&RuleContext::new(&[breach2, coord2]), "s", 0).len(),
         1,
         "exact whole-IP match (even followed by ':') must still chain"
     );
@@ -1848,7 +1894,7 @@ fn anchored_coord(value: &str, conf: f64) -> Entity {
 fn rule_017_multi_geo_convergence_fires() {
     let c1 = anchored_coord("-27.55,152.27", 0.60);
     let c2 = anchored_coord("-27.60,152.30", 0.65);
-    let firings = rule_au_017_multi_geo_convergence(&[c1, c2], "s", 0);
+    let firings = rule_au_017_multi_geo_convergence(&RuleContext::new(&[c1, c2]), "s", 0);
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].rule_id, "AU-017");
     assert!(firings[0].description.contains("converge"));
@@ -1858,7 +1904,7 @@ fn rule_017_multi_geo_convergence_fires() {
 fn rule_017_no_fire_for_distant_coords() {
     let c1 = anchored_coord("-27.55,152.27", 0.60);
     let c2 = anchored_coord("-33.86,151.20", 0.65);
-    let firings = rule_au_017_multi_geo_convergence(&[c1, c2], "s", 0);
+    let firings = rule_au_017_multi_geo_convergence(&RuleContext::new(&[c1, c2]), "s", 0);
     assert!(firings.is_empty());
 }
 
@@ -1873,20 +1919,20 @@ fn rule_017_excludes_infrastructure_coordinates() {
     let mut h2 = Entity::new(EntityKind::Coordinates, "-27.60,152.30", 0.65, "s");
     h2.tag(crate::core::tags::HOSTING);
     assert!(
-        rule_au_017_multi_geo_convergence(&[h1, h2], "s", 0).is_empty(),
+        rule_au_017_multi_geo_convergence(&RuleContext::new(&[h1, h2]), "s", 0).is_empty(),
         "infrastructure coordinates must not converge into a subject location"
     );
     // A bare coordinate with no anchoring source is also infrastructure.
     let b1 = Entity::new(EntityKind::Coordinates, "-27.55,152.27", 0.60, "s");
     let b2 = Entity::new(EntityKind::Coordinates, "-27.60,152.30", 0.65, "s");
-    assert!(rule_au_017_multi_geo_convergence(&[b1, b2], "s", 0).is_empty());
+    assert!(rule_au_017_multi_geo_convergence(&RuleContext::new(&[b1, b2]), "s", 0).is_empty());
     // Control: the same points, person-anchored, DO converge.
     assert_eq!(
         rule_au_017_multi_geo_convergence(
-            &[
+            &RuleContext::new(&[
                 anchored_coord("-27.55,152.27", 0.60),
                 anchored_coord("-27.60,152.30", 0.65)
-            ],
+            ]),
             "s",
             0
         )
@@ -1908,7 +1954,7 @@ fn rule_017_clustering_is_order_independent() {
     let b = anchored_coord("1.40,0.00", 0.60);
     let c = anchored_coord("1.80,0.00", 0.60);
     let uid_sets = |ents: &[Entity]| -> Vec<Vec<String>> {
-        rule_au_017_multi_geo_convergence(ents, "s", 0)
+        rule_au_017_multi_geo_convergence(&RuleContext::new(ents), "s", 0)
             .into_iter()
             .map(|f| {
                 let mut u = f.entity_uids;
@@ -1939,7 +1985,7 @@ fn rule_017_drops_out_of_range_coordinates() {
     // range-validating parse_coords helper, not clustered as a convergence.
     let junk1 = Entity::new(EntityKind::Coordinates, "200.0,300.0", 0.60, "s");
     let junk2 = Entity::new(EntityKind::Coordinates, "201.0,301.0", 0.65, "s");
-    let firings = rule_au_017_multi_geo_convergence(&[junk1, junk2], "s", 0);
+    let firings = rule_au_017_multi_geo_convergence(&RuleContext::new(&[junk1, junk2]), "s", 0);
     assert!(firings.is_empty(), "out-of-range coords must not converge");
 }
 
@@ -1961,7 +2007,12 @@ fn au031_fires_on_edge_to_malicious_node() {
         0.8,
         "s",
     );
-    let r = rule_au_031_malicious_adjacency(&[bad.clone(), benign.clone()], &[rel], "s", 0);
+    let r = rule_au_031_malicious_adjacency(
+        &RuleContext::new(&[bad.clone(), benign.clone()]),
+        &[rel],
+        "s",
+        0,
+    );
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-031");
     assert_eq!(r[0].severity, Severity::High);
@@ -1983,7 +2034,7 @@ fn au031_no_fire_when_neither_endpoint_flagged() {
         0.8,
         "s",
     );
-    assert!(rule_au_031_malicious_adjacency(&[a, b], &[rel], "s", 0).is_empty());
+    assert!(rule_au_031_malicious_adjacency(&RuleContext::new(&[a, b]), &[rel], "s", 0).is_empty());
 }
 
 #[test]
@@ -2006,7 +2057,7 @@ fn au031_no_fire_when_both_endpoints_flagged() {
         0.8,
         "s",
     );
-    assert!(rule_au_031_malicious_adjacency(&[a, b], &[rel], "s", 0).is_empty());
+    assert!(rule_au_031_malicious_adjacency(&RuleContext::new(&[a, b]), &[rel], "s", 0).is_empty());
 }
 
 #[test]
@@ -2025,7 +2076,7 @@ fn au031_skips_edges_with_missing_endpoints() {
         0.8,
         "s",
     );
-    assert!(rule_au_031_malicious_adjacency(&[bad], &[rel], "s", 0).is_empty());
+    assert!(rule_au_031_malicious_adjacency(&RuleContext::new(&[bad]), &[rel], "s", 0).is_empty());
 }
 
 #[test]
@@ -2052,7 +2103,7 @@ fn au031_aggregates_high_fanout_shared_infra() {
         ));
         entities.push(d);
     }
-    let r = rule_au_031_malicious_adjacency(&entities, &rels, "s", 0);
+    let r = rule_au_031_malicious_adjacency(&RuleContext::new(&entities), &rels, "s", 0);
     assert_eq!(r.len(), 1, "30-way fan-out must aggregate to one finding");
     assert_eq!(r[0].rule_id, "AU-031");
     assert_eq!(r[0].severity, Severity::Medium);
@@ -2063,12 +2114,12 @@ fn au031_aggregates_high_fanout_shared_infra() {
     // Deterministic across input orderings (BTreeMap-keyed).
     let mut shuffled = rels.clone();
     shuffled.reverse();
-    let r2 = rule_au_031_malicious_adjacency(&entities, &shuffled, "s", 0);
+    let r2 = rule_au_031_malicious_adjacency(&RuleContext::new(&entities), &shuffled, "s", 0);
     assert_eq!(r[0].description, r2[0].description);
     assert_eq!(r[0].entity_uids, r2[0].entity_uids);
 
     // Control: a flagged node with few neighbours stays per-neighbour/High.
-    let r3 = rule_au_031_malicious_adjacency(&entities[..4], &rels[..3], "s", 0);
+    let r3 = rule_au_031_malicious_adjacency(&RuleContext::new(&entities[..4]), &rels[..3], "s", 0);
     assert_eq!(r3.len(), 3);
     assert!(r3.iter().all(|c| c.severity == Severity::High));
 }
@@ -2099,7 +2150,7 @@ fn au031_benign_infra_verdict_vetoes_adjacency() {
         entities.push(d);
     }
     assert!(
-        rule_au_031_malicious_adjacency(&entities, &rels, "s", 0).is_empty(),
+        rule_au_031_malicious_adjacency(&RuleContext::new(&entities), &rels, "s", 0).is_empty(),
         "a GreyNoise-benign shared edge must not anchor adjacency"
     );
 
@@ -2123,7 +2174,7 @@ fn au031_benign_infra_verdict_vetoes_adjacency() {
         ));
         ents.push(s);
     }
-    let rm = rule_au_031_malicious_adjacency(&ents, &er, "s", 0);
+    let rm = rule_au_031_malicious_adjacency(&RuleContext::new(&ents), &er, "s", 0);
     assert_eq!(rm.len(), 1);
     assert_eq!(
         rm[0].severity,
@@ -2157,7 +2208,7 @@ fn au032_fires_on_three_node_colocation_cluster() {
             "s",
         ),
     ];
-    let r = rule_au_032_colocation_cluster(&[c1, c2, c3], &rels, "s", 0);
+    let r = rule_au_032_colocation_cluster(&RuleContext::new(&[c1, c2, c3]), &rels, "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-032");
     assert_eq!(r[0].severity, Severity::Medium);
@@ -2177,7 +2228,7 @@ fn au032_no_fire_on_pair() {
         0.9,
         "s",
     )];
-    assert!(rule_au_032_colocation_cluster(&[c1, c2], &rels, "s", 0).is_empty());
+    assert!(rule_au_032_colocation_cluster(&RuleContext::new(&[c1, c2]), &rels, "s", 0).is_empty());
 }
 
 #[test]
@@ -2203,7 +2254,9 @@ fn au032_ignores_non_colocation_edges() {
             "s",
         ),
     ];
-    assert!(rule_au_032_colocation_cluster(&[a, b, c], &rels, "s", 0).is_empty());
+    assert!(
+        rule_au_032_colocation_cluster(&RuleContext::new(&[a, b, c]), &rels, "s", 0).is_empty()
+    );
 }
 
 // ── AU-060 (graph-aware: transitive identity closure) ────────────────
@@ -2232,7 +2285,7 @@ fn au060_fires_on_two_hop_identity_chain() {
         ),
     ];
     let r = rule_au_060_transitive_identity_closure(
-        &[email.clone(), domain.clone(), person.clone()],
+        &RuleContext::new(&[email.clone(), domain.clone(), person.clone()]),
         &rels,
         "s",
         0,
@@ -2258,7 +2311,10 @@ fn au060_no_fire_when_identity_pair_directly_connected() {
         0.8,
         "s",
     )];
-    assert!(rule_au_060_transitive_identity_closure(&[email, person], &rels, "s", 0).is_empty());
+    assert!(
+        rule_au_060_transitive_identity_closure(&RuleContext::new(&[email, person]), &rels, "s", 0)
+            .is_empty()
+    );
 }
 
 // ── Crypto / identity / exposure rules (AU-039 … AU-043) ─────────────
@@ -2287,7 +2343,7 @@ fn au_039_links_wallet_to_source_related_identity() {
         ),
         mk_tagged(EntityKind::Person, "Jordan Avery", "hudsonrock", &[]),
     ];
-    let out = rule_au_039_wallet_identity(&ents, "scan", 0);
+    let out = rule_au_039_wallet_identity(&RuleContext::new(&ents), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-039");
     assert_eq!(out[0].severity, Severity::High);
@@ -2300,7 +2356,7 @@ fn au_039_links_wallet_to_source_related_identity() {
         "chain_intel",
         &[],
     )];
-    assert!(rule_au_039_wallet_identity(&only_wallet, "scan", 0).is_empty());
+    assert!(rule_au_039_wallet_identity(&RuleContext::new(&only_wallet), "scan", 0).is_empty());
 
     // Co-existence WITHOUT a shared source is not attribution (T2.39): a wallet
     // from a chain module and a person from a disjoint presence module co-occur in
@@ -2314,7 +2370,7 @@ fn au_039_links_wallet_to_source_related_identity() {
         ),
         mk_tagged(EntityKind::Person, "Jordan Avery", "see_know", &[]),
     ];
-    assert!(rule_au_039_wallet_identity(&disjoint, "scan", 0).is_empty());
+    assert!(rule_au_039_wallet_identity(&RuleContext::new(&disjoint), "scan", 0).is_empty());
 }
 
 #[test]
@@ -2346,7 +2402,7 @@ fn au_039_does_not_attribute_wallet_to_source_unrelated_identity() {
     let related = mk_tagged(EntityKind::Person, &large_uid_name, "hudsonrock", &[]);
 
     let out = rule_au_039_wallet_identity(
-        &[wallet.clone(), unrelated.clone(), related.clone()],
+        &RuleContext::new(&[wallet.clone(), unrelated.clone(), related.clone()]),
         "scan",
         0,
     );
@@ -2367,7 +2423,7 @@ fn au_039_does_not_attribute_wallet_to_source_unrelated_identity() {
     // Order-independent: same result whichever order the entities arrive in (the
     // live HashMap-ordered pass and the finalise pass must agree).
     let rev = rule_au_039_wallet_identity(
-        &[wallet.clone(), related.clone(), unrelated.clone()],
+        &RuleContext::new(&[wallet.clone(), related.clone(), unrelated.clone()]),
         "scan",
         0,
     );
@@ -2391,7 +2447,7 @@ fn au_039_prefers_tied_person_over_email_and_reports_each_tie() {
     let p2 = mk_tagged(EntityKind::Person, "Zoe Zimmer", src, &[]);
     let em = mk_tagged(EntityKind::Email, "z@example.com", src, &[]);
     let out = rule_au_039_wallet_identity(
-        &[wallet.clone(), p1.clone(), p2.clone(), em.clone()],
+        &RuleContext::new(&[wallet.clone(), p1.clone(), p2.clone(), em.clone()]),
         "scan",
         0,
     );
@@ -2407,7 +2463,8 @@ fn au_039_prefers_tied_person_over_email_and_reports_each_tie() {
     );
 
     // Falls back to an email anchor only when NO person is tied.
-    let out2 = rule_au_039_wallet_identity(&[wallet.clone(), em.clone()], "scan", 0);
+    let out2 =
+        rule_au_039_wallet_identity(&RuleContext::new(&[wallet.clone(), em.clone()]), "scan", 0);
     assert_eq!(out2.len(), 1);
     assert!(out2[0].entity_uids.contains(&em.uid));
 }
@@ -2441,7 +2498,7 @@ fn au_040_fires_only_on_breach_harvested_wallets() {
             &["crypto-address"],
         ),
     ];
-    let out = rule_au_040_wallet_breach_exposure(&ents, "scan", 0);
+    let out = rule_au_040_wallet_breach_exposure(&RuleContext::new(&ents), "scan", 0);
     let fired: HashSet<&String> = out.iter().flat_map(|c| c.entity_uids.iter()).collect();
     let uid = |v: &str| ents.iter().find(|e| e.value == v).unwrap().uid.clone();
     assert_eq!(out.len(), 2, "only genuine breach exposures fire: {out:?}");
@@ -2455,12 +2512,12 @@ fn au_041_fires_on_ens_handle() {
     let mut ens = Entity::new(EntityKind::Username, "vitalik", 0.7, "scan");
     ens.tag("ens");
     ens.add_evidence(Evidence::new("chain_intel", "x").with_attr("ens_name", "vitalik.eth"));
-    let out = rule_au_041_ens_identity(&[ens], "scan", 0);
+    let out = rule_au_041_ens_identity(&RuleContext::new(&[ens]), "scan", 0);
     assert_eq!(out.len(), 1);
     assert!(out[0].description.contains("vitalik.eth"));
     // A plain username (no ens tag) must not fire.
     let plain = mk_tagged(EntityKind::Username, "bob", "username_search", &[]);
-    assert!(rule_au_041_ens_identity(&[plain], "scan", 0).is_empty());
+    assert!(rule_au_041_ens_identity(&RuleContext::new(&[plain]), "scan", 0).is_empty());
 }
 
 // A pgp-linked email carrying the `key_fingerprint` evidence attribute the real
@@ -2480,7 +2537,7 @@ fn au_042_groups_pgp_linked_emails() {
         pgp_email("other@home.com", "AAAA1111BBBB2222"),
         mk_tagged(EntityKind::Email, "unrelated@x.com", "hibp", &[]),
     ];
-    let out = rule_au_042_pgp_email_identity(&ents, "scan", 0);
+    let out = rule_au_042_pgp_email_identity(&RuleContext::new(&ents), "scan", 0);
     assert_eq!(out.len(), 1, "one grouped firing for the shared key");
     assert_eq!(
         out[0].entity_uids.len(),
@@ -2502,7 +2559,7 @@ fn au042_does_not_fuse_emails_from_two_distinct_keys() {
         pgp_email("b1@y.com", "KEYBBBB11111111"),
         pgp_email("b2@y.com", "KEYBBBB11111111"),
     ];
-    let out = rule_au_042_pgp_email_identity(&ents, "scan", 0);
+    let out = rule_au_042_pgp_email_identity(&RuleContext::new(&ents), "scan", 0);
     assert_eq!(
         out.len(),
         2,
@@ -2560,7 +2617,7 @@ fn au_054_locates_pii_corroboration_scaled_never_high() {
             &[],
         ),
     ];
-    let out = rule_au_054_data_broker_exposure(&multi, "scan", 0);
+    let out = rule_au_054_data_broker_exposure(&RuleContext::new(&multi), "scan", 0);
     assert_eq!(out.len(), 1, "one grouped finding, not one per broker");
     assert_eq!(out[0].rule_id, "AU-054");
     // ≥2 independent brokers → Medium (corroborated), but NEVER High/Critical —
@@ -2590,7 +2647,7 @@ fn au_054_locates_pii_corroboration_scaled_never_high() {
         "search_engines",
         &[],
     )];
-    let out = rule_au_054_data_broker_exposure(&single, "scan", 0);
+    let out = rule_au_054_data_broker_exposure(&RuleContext::new(&single), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(
         out[0].severity,
@@ -2605,7 +2662,7 @@ fn au_054_locates_pii_corroboration_scaled_never_high() {
         "github_user",
         &[],
     )];
-    assert!(rule_au_054_data_broker_exposure(&clean, "scan", 0).is_empty());
+    assert!(rule_au_054_data_broker_exposure(&RuleContext::new(&clean), "scan", 0).is_empty());
 }
 
 #[test]
@@ -2621,7 +2678,7 @@ fn au_055_flags_owned_primary_accounts_excluding_brokers() {
         "github_user",
         &["public-profile"],
     )];
-    let out = rule_au_055_primary_source_accounts(&single, "scan", 0);
+    let out = rule_au_055_primary_source_accounts(&RuleContext::new(&single), "scan", 0);
     assert_eq!(out.len(), 1, "one grouped finding");
     assert_eq!(out[0].rule_id, "AU-055");
     assert_eq!(out[0].severity, super::Severity::High);
@@ -2650,7 +2707,7 @@ fn au_055_flags_owned_primary_accounts_excluding_brokers() {
             &["personal-site"],
         ),
     ];
-    let out = rule_au_055_primary_source_accounts(&many, "scan", 0);
+    let out = rule_au_055_primary_source_accounts(&RuleContext::new(&many), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].severity, super::Severity::Critical);
     assert_eq!(out[0].entity_uids.len(), 3);
@@ -2663,7 +2720,7 @@ fn au_055_flags_owned_primary_accounts_excluding_brokers() {
         &["social-profile"],
     )];
     assert!(
-        rule_au_055_primary_source_accounts(&broker, "scan", 0).is_empty(),
+        rule_au_055_primary_source_accounts(&RuleContext::new(&broker), "scan", 0).is_empty(),
         "broker host must not count as a subject-controlled account"
     );
 
@@ -2674,7 +2731,7 @@ fn au_055_flags_owned_primary_accounts_excluding_brokers() {
         "github_user",
         &[],
     )];
-    assert!(rule_au_055_primary_source_accounts(&none, "scan", 0).is_empty());
+    assert!(rule_au_055_primary_source_accounts(&RuleContext::new(&none), "scan", 0).is_empty());
 }
 
 #[test]
@@ -2710,7 +2767,7 @@ fn au_055_excludes_weak_detection_status_only_guesses() {
         ),
     ];
     assert!(
-        rule_au_055_primary_source_accounts(&all_weak, "scan", 0).is_empty(),
+        rule_au_055_primary_source_accounts(&RuleContext::new(&all_weak), "scan", 0).is_empty(),
         "weak-detection (status-only) hits must never count as confirmed primary-source accounts"
     );
 
@@ -2723,7 +2780,7 @@ fn au_055_excludes_weak_detection_status_only_guesses() {
         "username_search",
         &["social-profile", "verified-detection"],
     ));
-    let out = rule_au_055_primary_source_accounts(&mixed, "scan", 0);
+    let out = rule_au_055_primary_source_accounts(&RuleContext::new(&mixed), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(
         out[0].entity_uids.len(),
@@ -2749,7 +2806,7 @@ fn au_043_fires_on_paste_exposure() {
         ),
         mk_tagged(EntityKind::Url, "https://example.com", "web_crawler", &[]),
     ];
-    let out = rule_au_043_paste_exposure(&ents, "scan", 0);
+    let out = rule_au_043_paste_exposure(&RuleContext::new(&ents), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].entity_uids.len(), 1, "only the paste url");
     assert!(out[0].description.contains("1 public paste"));
@@ -2769,7 +2826,8 @@ fn shared_tracking_id_fires_only_across_multiple_sites() {
             .with_attr("source_domain", "b.com"),
     );
 
-    let out = rule_au_044_shared_tracking_id(std::slice::from_ref(&shared), "scan", 0);
+    let out =
+        rule_au_044_shared_tracking_id(&RuleContext::new(std::slice::from_ref(&shared)), "scan", 0);
     assert_eq!(out.len(), 1, "shared id across 2 sites must fire");
     assert_eq!(out[0].rule_id, "AU-044");
     assert!(out[0].description.contains("a.com") && out[0].description.contains("b.com"));
@@ -2781,7 +2839,8 @@ fn shared_tracking_id_fires_only_across_multiple_sites() {
             .with_attr("source_domain", "a.com"),
     );
     assert!(
-        rule_au_044_shared_tracking_id(std::slice::from_ref(&single), "scan", 0).is_empty(),
+        rule_au_044_shared_tracking_id(&RuleContext::new(std::slice::from_ref(&single)), "scan", 0)
+            .is_empty(),
         "single-site id must not fire"
     );
 }
@@ -2808,7 +2867,8 @@ fn au045_multi_service_identity_requires_cross_family_agreement() {
         handle.add_evidence(Evidence::new(s, "confirmed"));
     }
     assert_eq!(
-        super::rules::rule_au_045_multi_service_identity(&[handle], "scan", 0).len(),
+        super::rules::rule_au_045_multi_service_identity(&RuleContext::new(&[handle]), "scan", 0)
+            .len(),
         1,
         "code + forum are independent families and must fire AU-045"
     );
@@ -2818,7 +2878,7 @@ fn au045_multi_service_identity_requires_cross_family_agreement() {
     for s in ["hibp", "github_user", "username_search"] {
         u.add_evidence(Evidence::new(s, "found"));
     }
-    let hits = super::rules::rule_au_045_multi_service_identity(&[u], "scan", 0);
+    let hits = super::rules::rule_au_045_multi_service_identity(&RuleContext::new(&[u]), "scan", 0);
     assert_eq!(hits.len(), 1, "cross-family identity must fire AU-045");
     assert_eq!(hits[0].rule_id, "AU-045");
     assert_eq!(hits[0].severity, super::Severity::High);
@@ -2834,7 +2894,8 @@ fn au045_multi_service_identity_requires_cross_family_agreement() {
         e.add_evidence(Evidence::new(s, "found"));
     }
     assert!(
-        super::rules::rule_au_045_multi_service_identity(&[e], "scan", 0).is_empty(),
+        super::rules::rule_au_045_multi_service_identity(&RuleContext::new(&[e]), "scan", 0)
+            .is_empty(),
         "same-family corroboration must not count as multi-service"
     );
 
@@ -2844,7 +2905,8 @@ fn au045_multi_service_identity_requires_cross_family_agreement() {
         p.add_evidence(Evidence::new(s, "x"));
     }
     assert!(
-        super::rules::rule_au_045_multi_service_identity(&[p], "scan", 0).is_empty(),
+        super::rules::rule_au_045_multi_service_identity(&RuleContext::new(&[p]), "scan", 0)
+            .is_empty(),
         "the 'other' bucket is excluded from family diversity"
     );
 
@@ -2854,7 +2916,8 @@ fn au045_multi_service_identity_requires_cross_family_agreement() {
         d.add_evidence(Evidence::new(s, "x"));
     }
     assert!(
-        super::rules::rule_au_045_multi_service_identity(&[d], "scan", 0).is_empty(),
+        super::rules::rule_au_045_multi_service_identity(&RuleContext::new(&[d]), "scan", 0)
+            .is_empty(),
         "AU-045 binds identity kinds only"
     );
 }
@@ -2876,7 +2939,8 @@ fn au045_excludes_status_only_hits_even_across_distinct_families() {
         Evidence::new("social_probe", "status 200").with_attr("detection", "status-only"),
     );
     assert!(
-        super::rules::rule_au_045_multi_service_identity(&[weak], "scan", 0).is_empty(),
+        super::rules::rule_au_045_multi_service_identity(&RuleContext::new(&[weak]), "scan", 0)
+            .is_empty(),
         "two status-only hits in different families must not satisfy the cross-family bar"
     );
 
@@ -2890,7 +2954,8 @@ fn au045_excludes_status_only_hits_even_across_distinct_families() {
         Evidence::new("social_probe", "status 200").with_attr("detection", "status-only"),
     );
     assert_eq!(
-        super::rules::rule_au_045_multi_service_identity(&[strong], "scan", 0).len(),
+        super::rules::rule_au_045_multi_service_identity(&RuleContext::new(&[strong]), "scan", 0)
+            .len(),
         0,
         "one verified source alone is still only ONE family (presence) — needs a second"
     );
@@ -2902,7 +2967,12 @@ fn au045_excludes_status_only_hits_even_across_distinct_families() {
     );
     both_strong.add_evidence(Evidence::new("hibp", "breach row"));
     assert_eq!(
-        super::rules::rule_au_045_multi_service_identity(&[both_strong], "scan", 0).len(),
+        super::rules::rule_au_045_multi_service_identity(
+            &RuleContext::new(&[both_strong]),
+            "scan",
+            0
+        )
+        .len(),
         1,
         "a verified presence hit + a breach hit are two real independent families"
     );
@@ -2918,7 +2988,8 @@ fn au011_counts_independent_platform_module_confirmations() {
     for s in ["github_user", "reddit_user", "hacker_news"] {
         u.add_evidence(Evidence::new(s, "confirmed account"));
     }
-    let hits = super::rules::rule_au_011_cross_platform_username(&[u], "scan", 0);
+    let hits =
+        super::rules::rule_au_011_cross_platform_username(&RuleContext::new(&[u]), "scan", 0);
     assert_eq!(
         hits.len(),
         1,
@@ -2937,7 +3008,8 @@ fn au011_counts_independent_platform_module_confirmations() {
         u2.add_evidence(Evidence::new(s, "x"));
     }
     assert!(
-        super::rules::rule_au_011_cross_platform_username(&[u2], "scan", 0).is_empty(),
+        super::rules::rule_au_011_cross_platform_username(&RuleContext::new(&[u2]), "scan", 0)
+            .is_empty(),
         "two platforms must not fire"
     );
 }
@@ -2954,8 +3026,11 @@ fn au072_payid_surface_fires_on_multiple_payids_and_links_them() {
     phone.tag("payid:phone");
 
     // Deliberately unsorted input to exercise the determinism of entity_uids.
-    let r =
-        super::rules::rule_au_072_payid_payment_surface(&[phone.clone(), email.clone()], "s", 0);
+    let r = super::rules::rule_au_072_payid_payment_surface(
+        &RuleContext::new(&[phone.clone(), email.clone()]),
+        "s",
+        0,
+    );
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-072");
     assert_eq!(
@@ -2970,7 +3045,10 @@ fn au072_payid_surface_fires_on_multiple_payids_and_links_them() {
     assert_eq!(r[0].entity_uids, expect, "full member set, sorted");
 
     // A single PayID handle is not a surface.
-    assert!(super::rules::rule_au_072_payid_payment_surface(&[email], "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_072_payid_payment_surface(&RuleContext::new(&[email]), "s", 0)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -2983,7 +3061,8 @@ fn au072_register_resolvable_abn_raises_severity() {
     abn.tag("payid:abn");
     abn.tag("payid:registry-resolvable");
 
-    let r = super::rules::rule_au_072_payid_payment_surface(&[email, abn], "s", 0);
+    let r =
+        super::rules::rule_au_072_payid_payment_surface(&RuleContext::new(&[email, abn]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(
         r[0].severity,
@@ -3007,7 +3086,7 @@ fn au073_dob_corroborated_across_sources_disambiguates_namesakes() {
     let mut ns = Entity::new(EntityKind::Email, "d@contoso.com", 0.9, "s");
     ns.add_evidence(Evidence::new("hibp", "breach").with_attr("date_of_birth", "1975-01-01"));
 
-    let r = super::rules::rule_au_073_subject_date_of_birth(&[p, e, ns], "s", 0);
+    let r = super::rules::rule_au_073_subject_date_of_birth(&RuleContext::new(&[p, e, ns]), "s", 0);
     let main = r
         .iter()
         .find(|c| c.description.contains("1980-11-08"))
@@ -3031,7 +3110,11 @@ fn au073_derives_subject_age_from_dob() {
     let mut e = Entity::new(EntityKind::Email, "j@x.com", 0.9, "s");
     e.add_evidence(Evidence::new("see_know", "breach").with_attr("dob", "1992-07-01"));
 
-    let r = super::rules::rule_au_073_subject_date_of_birth(&[p, e], "s", TS_2026_01_01);
+    let r = super::rules::rule_au_073_subject_date_of_birth(
+        &RuleContext::new(&[p, e]),
+        "s",
+        TS_2026_01_01,
+    );
     let f = r
         .iter()
         .find(|c| c.description.contains("1992-07-01"))
@@ -3059,7 +3142,7 @@ fn au073_tolerates_a_multibyte_dob_without_panicking() {
     p.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("dob", "1980-11-€X"));
     let mut e = Entity::new(EntityKind::Email, "j@x.com", 0.9, "s");
     e.add_evidence(Evidence::new("see_know", "breach").with_attr("dob", "1980-11-€X"));
-    let r = super::rules::rule_au_073_subject_date_of_birth(&[p, e], "s", TS);
+    let r = super::rules::rule_au_073_subject_date_of_birth(&RuleContext::new(&[p, e]), "s", TS);
     let f = r
         .iter()
         .find(|c| c.description.contains("1980-11-€X"))
@@ -3100,7 +3183,7 @@ fn au073_never_panics_on_a_multibyte_dob_at_any_byte_position() {
         let mut p = Entity::new(EntityKind::Person, "X Y", 0.9, "s");
         p.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("dob", dob.as_str()));
         // The assertion is simply that this returns without panicking.
-        let _ = super::rules::rule_au_073_subject_date_of_birth(&[p], "s", TS);
+        let _ = super::rules::rule_au_073_subject_date_of_birth(&RuleContext::new(&[p]), "s", TS);
     }
 }
 
@@ -3110,7 +3193,11 @@ fn au073_age_advances_after_the_birthday() {
     const TS_2026_12_01: u64 = 1_796_083_200;
     let mut p = Entity::new(EntityKind::Person, "Jerome Despal", 0.9, "s");
     p.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("dob", "1992-07-01"));
-    let r = super::rules::rule_au_073_subject_date_of_birth(&[p], "s", TS_2026_12_01);
+    let r = super::rules::rule_au_073_subject_date_of_birth(
+        &RuleContext::new(&[p]),
+        "s",
+        TS_2026_12_01,
+    );
     let f = r
         .iter()
         .find(|c| c.description.contains("1992-07-01"))
@@ -3123,7 +3210,11 @@ fn au073_omits_age_for_a_non_iso_dob() {
     // A non-ISO DOB is surfaced verbatim but yields no (mis-parsed) age.
     let mut p = Entity::new(EntityKind::Person, "Jane Citizen", 0.9, "s");
     p.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("dob", "08/11/1980"));
-    let r = super::rules::rule_au_073_subject_date_of_birth(&[p], "s", 1_767_225_600);
+    let r = super::rules::rule_au_073_subject_date_of_birth(
+        &RuleContext::new(&[p]),
+        "s",
+        1_767_225_600,
+    );
     let f = r
         .iter()
         .find(|c| c.description.contains("08/11/1980"))
@@ -3148,7 +3239,8 @@ fn au074_government_id_exposure_validates_checksum_and_masks() {
     let mut bad = Entity::new(EntityKind::Credential, "leak2", 0.9, "s");
     bad.add_evidence(Evidence::new("dehashed", "breach").with_attr("tfn", "123456789"));
 
-    let r = super::rules::rule_au_074_au_government_id_exposure(&[e, bad], "s", 0);
+    let r =
+        super::rules::rule_au_074_au_government_id_exposure(&RuleContext::new(&[e, bad]), "s", 0);
     assert!(!r.is_empty(), "a valid gov-ID exposure must fire");
     let crit = r
         .iter()
@@ -3179,7 +3271,7 @@ fn au075_named_associate_from_breach_record() {
             .with_attr("spouse", "Thomas Haynes")
             .with_attr("emergency_contact", "self"),
     );
-    let r = super::rules::rule_au_075_named_associate(&[e], "s", 0);
+    let r = super::rules::rule_au_075_named_associate(&RuleContext::new(&[e]), "s", 0);
     let hit = r
         .iter()
         .find(|c| c.description.contains("Thomas Haynes"))
@@ -3201,7 +3293,7 @@ fn au075_non_breach_parent_is_not_a_named_associate() {
     let mut e = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
     e.add_evidence(Evidence::new("search_engines", "serp").with_attr("parent", "wikipedia.org"));
     assert!(
-        super::rules::rule_au_075_named_associate(&[e], "s", 0).is_empty(),
+        super::rules::rule_au_075_named_associate(&RuleContext::new(&[e]), "s", 0).is_empty(),
         "a search-sourced domain 'parent' is not a breach-record associate"
     );
 }
@@ -3211,7 +3303,7 @@ fn au090_jurisdiction_two_sources_agree_is_high() {
     let mut e = Entity::new(EntityKind::Person, "Cindy Haynes", 0.9, "s");
     e.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("state", "QLD"));
     e.add_evidence(Evidence::new("see_know", "breach").with_attr("address_state", "Queensland"));
-    let r = super::rules::rule_au_090_au_jurisdiction(&[e], "s", 0);
+    let r = super::rules::rule_au_090_au_jurisdiction(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1, "QLD and Queensland resolve to one jurisdiction");
     assert_eq!(r[0].rule_id, "AU-090");
     assert_eq!(r[0].severity, super::Severity::High);
@@ -3223,7 +3315,7 @@ fn au090_jurisdiction_two_sources_agree_is_high() {
 fn au090_single_source_is_medium() {
     let mut e = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
     e.add_evidence(Evidence::new("see_know", "breach").with_attr("licence_state", "VIC"));
-    let r = super::rules::rule_au_090_au_jurisdiction(&[e], "s", 0);
+    let r = super::rules::rule_au_090_au_jurisdiction(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].severity, super::Severity::Medium);
     assert!(r[0].description.contains("VIC"));
@@ -3234,7 +3326,7 @@ fn au090_conflicting_states_each_surface_with_move_note() {
     let mut e = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
     e.add_evidence(Evidence::new("see_know", "breach").with_attr("state", "NSW"));
     e.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("licence_state", "VIC"));
-    let r = super::rules::rule_au_090_au_jurisdiction(&[e], "s", 0);
+    let r = super::rules::rule_au_090_au_jurisdiction(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 2, "each distinct state surfaces independently");
     assert!(r.iter().all(|c| c.rule_id == "AU-090"));
     assert!(r.iter().any(|c| c.description.contains("NSW")));
@@ -3251,7 +3343,7 @@ fn au090_non_au_or_missing_state_yields_nothing() {
     // A US state and a status-style value — neither resolves to an AU jurisdiction.
     e.add_evidence(Evidence::new("dehashed", "breach").with_attr("state", "California"));
     e.add_evidence(Evidence::new("dehashed", "breach").with_attr("state", "active"));
-    assert!(super::rules::rule_au_090_au_jurisdiction(&[e], "s", 0).is_empty());
+    assert!(super::rules::rule_au_090_au_jurisdiction(&RuleContext::new(&[e]), "s", 0).is_empty());
 }
 
 #[test]
@@ -3259,7 +3351,7 @@ fn au091_postcode_resolves_to_state_and_offline_coord() {
     let mut e = Entity::new(EntityKind::Person, "Cindy Haynes", 0.9, "s");
     e.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("postcode", "4000"));
     e.add_evidence(Evidence::new("see_know", "breach").with_attr("post_code", "4000"));
-    let r = super::rules::rule_au_091_au_postcode_locality(&[e], "s", 0);
+    let r = super::rules::rule_au_091_au_postcode_locality(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-091");
     assert_eq!(r[0].severity, super::Severity::High); // two independent sources
@@ -3279,7 +3371,7 @@ fn au091_single_source_is_medium_and_handles_leading_zero() {
     // NT postcode 0800 (Darwin) — 4-digit with a leading zero must still resolve.
     let mut e = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
     e.add_evidence(Evidence::new("see_know", "breach").with_attr("postal_code", "0800"));
-    let r = super::rules::rule_au_091_au_postcode_locality(&[e], "s", 0);
+    let r = super::rules::rule_au_091_au_postcode_locality(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].severity, super::Severity::Medium);
     assert!(r[0].description.contains("0800"));
@@ -3291,7 +3383,7 @@ fn au091_two_postcodes_surface_separately_with_note() {
     let mut e = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
     e.add_evidence(Evidence::new("see_know", "breach").with_attr("postcode", "4000")); // QLD
     e.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("postcode", "3000")); // VIC
-    let r = super::rules::rule_au_091_au_postcode_locality(&[e], "s", 0);
+    let r = super::rules::rule_au_091_au_postcode_locality(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 2);
     assert!(r.iter().all(|c| c.rule_id == "AU-091"));
     assert!(
@@ -3311,7 +3403,9 @@ fn au091_non_au_and_noise_yield_nothing() {
     // A US 5-digit zip in a postal_code field, and a non-postcode 4-digit (year).
     e.add_evidence(Evidence::new("dehashed", "breach").with_attr("postal_code", "90210"));
     e.add_evidence(Evidence::new("dehashed", "breach").with_attr("postcode", "0001")); // unassigned
-    assert!(super::rules::rule_au_091_au_postcode_locality(&[e], "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_091_au_postcode_locality(&RuleContext::new(&[e]), "s", 0).is_empty()
+    );
 }
 
 #[test]
@@ -3321,7 +3415,11 @@ fn au092_breach_state_agrees_with_geocoded_footprint() {
     p.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("state", "QLD"));
     let mut coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.6, "s"); // Brisbane
     coord.add_evidence(Evidence::new("geocode", "geocoded subject fix")); // person-anchored, not infra
-    let r = super::rules::rule_au_092_breach_locality_footprint_crosscheck(&[p, coord], "s", 0);
+    let r = super::rules::rule_au_092_breach_locality_footprint_crosscheck(
+        &RuleContext::new(&[p, coord]),
+        "s",
+        0,
+    );
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-092");
     assert_eq!(r[0].severity, super::Severity::High);
@@ -3336,7 +3434,11 @@ fn au092_breach_postcode_conflicts_with_footprint() {
     p.add_evidence(Evidence::new("see_know", "breach").with_attr("postcode", "3000"));
     let mut coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.6, "s");
     coord.add_evidence(Evidence::new("geocode", "geocoded subject fix")); // person-anchored, not infra
-    let r = super::rules::rule_au_092_breach_locality_footprint_crosscheck(&[p, coord], "s", 0);
+    let r = super::rules::rule_au_092_breach_locality_footprint_crosscheck(
+        &RuleContext::new(&[p, coord]),
+        "s",
+        0,
+    );
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].severity, super::Severity::Medium);
     assert!(r[0].rule_name.contains("conflict"));
@@ -3349,7 +3451,11 @@ fn au092_agrees_with_address_entity_footprint() {
     let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
     p.add_evidence(Evidence::new("see_know", "breach").with_attr("state", "New South Wales"));
     let addr = Entity::new(EntityKind::Address, "Sydney NSW 2000", 0.7, "s");
-    let r = super::rules::rule_au_092_breach_locality_footprint_crosscheck(&[p, addr], "s", 0);
+    let r = super::rules::rule_au_092_breach_locality_footprint_crosscheck(
+        &RuleContext::new(&[p, addr]),
+        "s",
+        0,
+    );
     assert_eq!(r.len(), 1);
     assert!(r[0].rule_name.contains("corroborated"));
     assert!(r[0].description.contains("NSW"));
@@ -3373,7 +3479,7 @@ fn au092_agreement_cites_only_the_agreeing_states_entities_not_every_named_state
     coord.add_evidence(Evidence::new("geocode", "geocoded subject fix"));
 
     let r = super::rules::rule_au_092_breach_locality_footprint_crosscheck(
-        &[p.clone(), stray.clone(), coord.clone()],
+        &RuleContext::new(&[p.clone(), stray.clone(), coord.clone()]),
         "s",
         0,
     );
@@ -3400,13 +3506,22 @@ fn au092_requires_both_sides() {
     let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
     p.add_evidence(Evidence::new("see_know", "breach").with_attr("state", "QLD"));
     assert!(
-        super::rules::rule_au_092_breach_locality_footprint_crosscheck(&[p.clone()], "s", 0)
-            .is_empty()
+        super::rules::rule_au_092_breach_locality_footprint_crosscheck(
+            &RuleContext::new(&[p.clone()]),
+            "s",
+            0
+        )
+        .is_empty()
     );
     // Only a footprint, no breach field → nothing.
     let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.6, "s");
     assert!(
-        super::rules::rule_au_092_breach_locality_footprint_crosscheck(&[coord], "s", 0).is_empty()
+        super::rules::rule_au_092_breach_locality_footprint_crosscheck(
+            &RuleContext::new(&[coord]),
+            "s",
+            0
+        )
+        .is_empty()
     );
 }
 
@@ -3421,7 +3536,7 @@ fn au093_full_street_address_is_high_and_geocoded() {
             .with_attr("state", "QLD")
             .with_attr("postcode", "4552"),
     );
-    let r = super::rules::rule_au_093_au_address_from_breach(&[p], "s", 0);
+    let r = super::rules::rule_au_093_au_address_from_breach(&RuleContext::new(&[p]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-093");
     assert_eq!(r[0].severity, super::Severity::High);
@@ -3448,7 +3563,8 @@ fn au093_geocode_reverse_geocode_is_not_labeled_breach() {
             .with_attr("postcode", "0800"),
     );
     assert!(
-        super::rules::rule_au_093_au_address_from_breach(&[p], "s", 0).is_empty(),
+        super::rules::rule_au_093_au_address_from_breach(&RuleContext::new(&[p]), "s", 0)
+            .is_empty(),
         "a geocoded suburb must never be reported as a breach-sourced address"
     );
 }
@@ -3465,7 +3581,8 @@ fn au093_registry_enricher_is_not_labeled_breach() {
             .with_attr("postcode", "0800"),
     );
     assert!(
-        super::rules::rule_au_093_au_address_from_breach(&[p], "s", 0).is_empty(),
+        super::rules::rule_au_093_au_address_from_breach(&RuleContext::new(&[p]), "s", 0)
+            .is_empty(),
         "a registry-enricher locality is not a breach-sourced address"
     );
 }
@@ -3487,7 +3604,7 @@ fn au093_mixed_breach_and_geocode_counts_only_the_breach_source() {
             .with_attr("state", "QLD")
             .with_attr("postcode", "4000"),
     );
-    let r = super::rules::rule_au_093_au_address_from_breach(&[p], "s", 0);
+    let r = super::rules::rule_au_093_au_address_from_breach(&RuleContext::new(&[p]), "s", 0);
     assert_eq!(r.len(), 1);
     assert!(
         r[0].description.contains("1 breach record source"),
@@ -3507,7 +3624,7 @@ fn au090_geocode_state_is_not_a_breach_record() {
     let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
     p.add_evidence(Evidence::new("geocode", "reverse geocode").with_attr("state", "NT"));
     assert!(
-        super::rules::rule_au_090_au_jurisdiction(&[p], "s", 0).is_empty(),
+        super::rules::rule_au_090_au_jurisdiction(&RuleContext::new(&[p]), "s", 0).is_empty(),
         "a geocoded state is not a breach-record jurisdiction"
     );
 }
@@ -3517,7 +3634,7 @@ fn au091_geocode_postcode_is_not_a_breach_record() {
     let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
     p.add_evidence(Evidence::new("geocode", "reverse geocode").with_attr("postcode", "0800"));
     assert!(
-        super::rules::rule_au_091_au_postcode_locality(&[p], "s", 0).is_empty(),
+        super::rules::rule_au_091_au_postcode_locality(&RuleContext::new(&[p]), "s", 0).is_empty(),
         "a geocoded postcode is not a breach-record locality"
     );
 }
@@ -3531,7 +3648,7 @@ fn au093_suburb_only_is_medium_with_postcode_derived_state() {
             .with_attr("city", "Brisbane")
             .with_attr("postcode", "4000"),
     );
-    let r = super::rules::rule_au_093_au_address_from_breach(&[p], "s", 0);
+    let r = super::rules::rule_au_093_au_address_from_breach(&RuleContext::new(&[p]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].severity, super::Severity::Medium);
     assert!(r[0].rule_name.contains("suburb"));
@@ -3545,11 +3662,17 @@ fn au093_requires_suburb_plus_state_or_postcode() {
     // AU-090/091 territory, not an assembled locality).
     let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
     p.add_evidence(Evidence::new("see_know", "breach").with_attr("suburb", "Maleny"));
-    assert!(super::rules::rule_au_093_au_address_from_breach(&[p], "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_093_au_address_from_breach(&RuleContext::new(&[p]), "s", 0)
+            .is_empty()
+    );
     // A state with no suburb → nothing (AU-090 already covers a bare state).
     let mut q = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
     q.add_evidence(Evidence::new("see_know", "breach").with_attr("state", "QLD"));
-    assert!(super::rules::rule_au_093_au_address_from_breach(&[q], "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_093_au_address_from_breach(&RuleContext::new(&[q]), "s", 0)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -3570,7 +3693,7 @@ fn au093_dedups_same_address_across_sources() {
             .with_attr("state", "QLD")
             .with_attr("postcode", "4552"),
     );
-    let r = super::rules::rule_au_093_au_address_from_breach(&[p], "s", 0);
+    let r = super::rules::rule_au_093_au_address_from_breach(&RuleContext::new(&[p]), "s", 0);
     assert_eq!(r.len(), 1);
     assert!(r[0].description.contains("2 breach record source"));
 }
@@ -3583,7 +3706,11 @@ fn au098_three_classes_agree_is_high_consensus() {
     let addr = Entity::new(EntityKind::Address, "Spring Hill QLD 4000", 0.7, "s");
     let mut person = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
     person.add_evidence(Evidence::new("see_know", "breach").with_attr("state", "Queensland"));
-    let r = super::rules::rule_au_098_residency_consensus(&[coord, addr, person], "s", 0);
+    let r = super::rules::rule_au_098_residency_consensus(
+        &RuleContext::new(&[coord, addr, person]),
+        "s",
+        0,
+    );
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-098");
     assert_eq!(r[0].severity, super::Severity::High);
@@ -3605,7 +3732,11 @@ fn au098_two_classes_medium_and_surfaces_dissent() {
     coord.add_evidence(Evidence::new("exif_geo", "photo GPS")); // person-anchored, not infra
     let phone = Entity::new(EntityKind::Phone, "+61731234567", 0.7, "s"); // 07 → QLD
     let addr = Entity::new(EntityKind::Address, "Melbourne VIC 3000", 0.7, "s");
-    let r = super::rules::rule_au_098_residency_consensus(&[coord, phone, addr], "s", 0);
+    let r = super::rules::rule_au_098_residency_consensus(
+        &RuleContext::new(&[coord, phone, addr]),
+        "s",
+        0,
+    );
     assert_eq!(r.len(), 1);
     // QLD is supported by 2 classes (coordinate + phone) → Medium; the lone VIC
     // address is the dissenting minority.
@@ -3620,7 +3751,10 @@ fn au098_single_class_does_not_fire() {
     // Only a coordinate — one class — is the single-signal rules' job, not AU-098.
     let mut coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
     coord.add_evidence(Evidence::new("exif_geo", "photo GPS")); // person-anchored: a real 1-class case
-    assert!(super::rules::rule_au_098_residency_consensus(&[coord], "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_098_residency_consensus(&RuleContext::new(&[coord]), "s", 0)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -3632,7 +3766,11 @@ fn au098_appends_australian_isp_network_corroboration() {
     let addr = Entity::new(EntityKind::Address, "Spring Hill QLD 4000", 0.7, "s");
     let mut ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.8, "s");
     ip.add_evidence(Evidence::new("ip_geo", "geo").with_attr("isp", "Telstra"));
-    let r = super::rules::rule_au_098_residency_consensus(&[coord, addr, ip], "s", 0);
+    let r = super::rules::rule_au_098_residency_consensus(
+        &RuleContext::new(&[coord, addr, ip]),
+        "s",
+        0,
+    );
     assert_eq!(r.len(), 1);
     assert!(r[0].description.contains("QLD"));
     assert!(
@@ -3650,8 +3788,11 @@ fn au101_five_identity_facets_is_high_resolution() {
     let phone = Entity::new(EntityKind::Phone, "+61731234567", 0.8, "s");
     let user = Entity::new(EntityKind::Username, "haigenb", 0.8, "s");
     let addr = Entity::new(EntityKind::Address, "Spring Hill QLD 4000", 0.7, "s");
-    let r =
-        super::rules::rule_au_101_identity_resolution(&[person, email, phone, user, addr], "s", 0);
+    let r = super::rules::rule_au_101_identity_resolution(
+        &RuleContext::new(&[person, email, phone, user, addr]),
+        "s",
+        0,
+    );
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-101");
     assert_eq!(r[0].severity, super::Severity::High);
@@ -3667,7 +3808,11 @@ fn au101_four_facets_is_medium_resolution() {
     let email = Entity::new(EntityKind::Email, "h@example.com", 0.8, "s");
     let phone = Entity::new(EntityKind::Phone, "+61731234567", 0.8, "s");
     let user = Entity::new(EntityKind::Username, "haigenb", 0.8, "s");
-    let r = super::rules::rule_au_101_identity_resolution(&[person, email, phone, user], "s", 0);
+    let r = super::rules::rule_au_101_identity_resolution(
+        &RuleContext::new(&[person, email, phone, user]),
+        "s",
+        0,
+    );
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].severity, super::Severity::Medium);
     assert!(r[0].description.contains("4 independent identity facets"));
@@ -3686,7 +3831,11 @@ fn au101_counts_phone_and_email_facets_from_breach_evidence_attributes() {
             .with_attr("date_of_birth", "1990-01-01"),
     );
     let addr = Entity::new(EntityKind::Address, "Spring Hill QLD 4000", 0.7, "s");
-    let r = super::rules::rule_au_101_identity_resolution(&[person, addr.clone()], "s", 0);
+    let r = super::rules::rule_au_101_identity_resolution(
+        &RuleContext::new(&[person, addr.clone()]),
+        "s",
+        0,
+    );
     assert_eq!(
         r.len(),
         1,
@@ -3701,7 +3850,12 @@ fn au101_counts_phone_and_email_facets_from_breach_evidence_attributes() {
     person_no_phone
         .add_evidence(Evidence::new("oathnet", "breach").with_attr("date_of_birth", "1990-01-01"));
     assert!(
-        super::rules::rule_au_101_identity_resolution(&[person_no_phone, addr], "s", 0).is_empty(),
+        super::rules::rule_au_101_identity_resolution(
+            &RuleContext::new(&[person_no_phone, addr]),
+            "s",
+            0
+        )
+        .is_empty(),
         "without the phone facet the footprint is only 3 facets"
     );
 }
@@ -3718,7 +3872,7 @@ fn au101_thin_footprint_and_low_confidence_do_not_fire() {
     let weak_addr = Entity::new(EntityKind::Address, "somewhere", 0.30, "s");
     assert!(
         super::rules::rule_au_101_identity_resolution(
-            &[person, email, phone, weak_name, weak_addr],
+            &RuleContext::new(&[person, email, phone, weak_name, weak_addr]),
             "s",
             0
         )
@@ -3737,7 +3891,8 @@ fn au101_breach_dob_and_gov_id_count_as_facets() {
             .with_attr("date_of_birth", "1990-04-12")
             .with_attr("tfn", "123456782"), // checksum-valid TFN
     );
-    let r = super::rules::rule_au_101_identity_resolution(&[person, email], "s", 0);
+    let r =
+        super::rules::rule_au_101_identity_resolution(&RuleContext::new(&[person, email]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].severity, super::Severity::Medium);
     assert!(r[0].description.contains("date of birth"));
@@ -3751,7 +3906,7 @@ fn au104_resolves_bsb_to_institution_medium() {
     // A CBA BSB in a breach record, no account number → Medium attribution.
     let mut person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
     person.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("bsb", "062-000"));
-    let r = super::rules::rule_au_104_bank_account_exposure(&[person], "s", 0);
+    let r = super::rules::rule_au_104_bank_account_exposure(&RuleContext::new(&[person]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-104");
     assert_eq!(r[0].severity, super::Severity::Medium);
@@ -3768,7 +3923,7 @@ fn au104_escalates_to_high_when_account_number_co_occurs() {
             .with_attr("bank_state_branch", "012003") // ANZ
             .with_attr("account_number", "123456789"),
     );
-    let r = super::rules::rule_au_104_bank_account_exposure(&[person], "s", 0);
+    let r = super::rules::rule_au_104_bank_account_exposure(&RuleContext::new(&[person]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].severity, super::Severity::High);
     assert!(r[0].description.contains("ANZ"));
@@ -3780,10 +3935,16 @@ fn au104_silent_for_unresolvable_or_absent_bsb() {
     // An unallocated BSB resolves to no bank → no (potentially wrong) finding.
     let mut p1 = Entity::new(EntityKind::Person, "X", 0.9, "s");
     p1.add_evidence(Evidence::new("src", "breach").with_attr("bsb", "999-999"));
-    assert!(super::rules::rule_au_104_bank_account_exposure(&[p1], "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_104_bank_account_exposure(&RuleContext::new(&[p1]), "s", 0)
+            .is_empty()
+    );
     // No BSB field at all → nothing fires.
     let p2 = Entity::new(EntityKind::Person, "Y", 0.9, "s");
-    assert!(super::rules::rule_au_104_bank_account_exposure(&[p2], "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_104_bank_account_exposure(&RuleContext::new(&[p2]), "s", 0)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -3798,7 +3959,7 @@ fn au105_flags_plaintext_password_reused_across_breaches() {
                 .with_attr("password", "mnimp316895007"),
         );
     }
-    let r = super::rules::rule_au_105_credential_reuse(&[email], "s", 0);
+    let r = super::rules::rule_au_105_credential_reuse(&RuleContext::new(&[email]), "s", 0);
     assert_eq!(r.len(), 1, "one reuse finding");
     assert_eq!(r[0].rule_id, "AU-105");
     assert_eq!(r[0].severity, Severity::High, "plaintext reuse is High");
@@ -3825,7 +3986,7 @@ fn au105_reads_the_see_know_source_db_breach_name() {
                 .with_attr("password", "reused-pw-9931"),
         );
     }
-    let r = super::rules::rule_au_105_credential_reuse(&[email], "s", 0);
+    let r = super::rules::rule_au_105_credential_reuse(&RuleContext::new(&[email]), "s", 0);
     assert_eq!(r.len(), 1, "cross-breach reuse via source_db must fire");
     assert_eq!(r[0].rule_id, "AU-105");
     assert_eq!(r[0].severity, Severity::High, "plaintext reuse is High");
@@ -3853,7 +4014,7 @@ fn au105_groups_a_hash_case_insensitively_across_sources() {
             .with_attr("dbname", "ticketek.com.au")
             .with_attr("password_hash", "00346d91dd87"),
     );
-    let r = super::rules::rule_au_105_credential_reuse(&[a, b], "s", 0);
+    let r = super::rules::rule_au_105_credential_reuse(&RuleContext::new(&[a, b]), "s", 0);
     assert_eq!(r.len(), 1, "case variants of one hash = one reuse");
     assert_eq!(r[0].severity, Severity::Medium, "hash reuse is Medium");
 }
@@ -3877,11 +4038,19 @@ fn au105_does_not_link_on_a_common_password_hash_collision() {
         e
     };
     assert!(
-        super::rules::rule_au_105_credential_reuse(&[mk("db1", common), mk("db2", common)], "s", 0)
-            .is_empty(),
+        super::rules::rule_au_105_credential_reuse(
+            &RuleContext::new(&[mk("db1", common), mk("db2", common)]),
+            "s",
+            0
+        )
+        .is_empty(),
         "a common-password hash is a collision, not a reuse link"
     );
-    let r = super::rules::rule_au_105_credential_reuse(&[mk("db1", uniq), mk("db2", uniq)], "s", 0);
+    let r = super::rules::rule_au_105_credential_reuse(
+        &RuleContext::new(&[mk("db1", uniq), mk("db2", uniq)]),
+        "s",
+        0,
+    );
     assert_eq!(r.len(), 1, "a unique hash IS a real reuse link");
 }
 
@@ -3905,7 +4074,7 @@ fn au105_bridges_a_plaintext_to_the_same_password_leaked_as_a_hash() {
             .with_attr("dbname", "breach2")
             .with_attr("password_hash", digs[1].as_str()), // sha1(pw)
     );
-    let r = super::rules::rule_au_105_credential_reuse(&[a, b], "s", 0);
+    let r = super::rules::rule_au_105_credential_reuse(&RuleContext::new(&[a, b]), "s", 0);
     assert_eq!(
         r.len(),
         1,
@@ -3927,7 +4096,7 @@ fn au105_silent_for_a_single_use_secret() {
             .with_attr("dbname", "onlyone.com")
             .with_attr("password", "uniquepass1"),
     );
-    assert!(super::rules::rule_au_105_credential_reuse(&[e], "s", 0).is_empty());
+    assert!(super::rules::rule_au_105_credential_reuse(&RuleContext::new(&[e]), "s", 0).is_empty());
 }
 
 #[test]
@@ -3941,7 +4110,7 @@ fn au106_links_accounts_sharing_a_unique_device_fingerprint() {
     let u1 = Entity::new(EntityKind::Username, "ghost_91", 0.6, "scan");
     let u2 = Entity::new(EntityKind::Username, "nightcrawler", 0.6, "scan");
     let hits = super::rules::rule_au_106_shared_device_identity(
-        &[dev.clone(), u1.clone(), u2.clone()],
+        &RuleContext::new(&[dev.clone(), u1.clone(), u2.clone()]),
         "scan",
         0,
     );
@@ -3961,7 +4130,8 @@ fn au106_links_accounts_sharing_a_unique_device_fingerprint() {
     generic.add_evidence(Evidence::new("oathnet", "r").with_attr("username", "ghost_91"));
     generic.add_evidence(Evidence::new("oathnet", "r").with_attr("username", "nightcrawler"));
     assert!(
-        super::rules::rule_au_106_shared_device_identity(&[generic], "scan", 0).is_empty(),
+        super::rules::rule_au_106_shared_device_identity(&RuleContext::new(&[generic]), "scan", 0)
+            .is_empty(),
         "a short/generic hostname must not link people"
     );
 
@@ -3974,7 +4144,8 @@ fn au106_links_accounts_sharing_a_unique_device_fingerprint() {
             .with_attr("username", "alice"),
     );
     assert!(
-        super::rules::rule_au_106_shared_device_identity(&[one], "scan", 0).is_empty(),
+        super::rules::rule_au_106_shared_device_identity(&RuleContext::new(&[one]), "scan", 0)
+            .is_empty(),
         "one account described two ways from one record is not a link"
     );
 }
@@ -3997,7 +4168,8 @@ fn au106_discloses_when_the_identifier_list_is_truncated() {
                 .with_attr("username", format!("user_account_{i}")),
         );
     }
-    let hits = super::rules::rule_au_106_shared_device_identity(&[dev], "scan", 0);
+    let hits =
+        super::rules::rule_au_106_shared_device_identity(&RuleContext::new(&[dev]), "scan", 0);
     assert_eq!(hits.len(), 1);
     assert!(
         hits[0]
@@ -4024,7 +4196,7 @@ fn au106_links_accounts_sharing_a_breach_router_bssid_or_imei() {
     let u1 = Entity::new(EntityKind::Username, "ghost_91", 0.6, "scan");
     let u2 = Entity::new(EntityKind::Username, "nightcrawler", 0.6, "scan");
     let hits = super::rules::rule_au_106_shared_device_identity(
-        &[mac.clone(), u1.clone(), u2.clone()],
+        &RuleContext::new(&[mac.clone(), u1.clone(), u2.clone()]),
         "scan",
         0,
     );
@@ -4043,7 +4215,8 @@ fn au106_links_accounts_sharing_a_breach_router_bssid_or_imei() {
     lan.add_evidence(Evidence::new("wifi_intel", "r1").with_attr("username", "ghost_91"));
     lan.add_evidence(Evidence::new("wifi_intel", "r2").with_attr("username", "nightcrawler"));
     assert!(
-        super::rules::rule_au_106_shared_device_identity(&[lan], "scan", 0).is_empty(),
+        super::rules::rule_au_106_shared_device_identity(&RuleContext::new(&[lan]), "scan", 0)
+            .is_empty(),
         "a non-`device` Wi-Fi MAC must never link identities"
     );
 
@@ -4053,7 +4226,12 @@ fn au106_links_accounts_sharing_a_breach_router_bssid_or_imei() {
     imei.add_evidence(Evidence::new("see-know", "r1").with_attr("username", "ghost_91"));
     imei.add_evidence(Evidence::new("see-know", "r2").with_attr("username", "nightcrawler"));
     assert!(
-        !super::rules::rule_au_106_shared_device_identity(&[imei, u1, u2], "scan", 0).is_empty(),
+        !super::rules::rule_au_106_shared_device_identity(
+            &RuleContext::new(&[imei, u1, u2]),
+            "scan",
+            0
+        )
+        .is_empty(),
         "a shared IMEI across 2 accounts must link them"
     );
 }
@@ -4065,7 +4243,8 @@ fn au107_names_the_breach_stated_employer() {
     let mut org = Entity::new(EntityKind::Organisation, "Globex Pty Ltd", 0.50, "scan");
     org.tag("breach");
     org.add_evidence(Evidence::new("oathnet", "breach record"));
-    let r = super::rules::rule_au_107_breach_employer_affiliation(&[org], "scan", 0);
+    let r =
+        super::rules::rule_au_107_breach_employer_affiliation(&RuleContext::new(&[org]), "scan", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-107");
     assert_eq!(r[0].severity, super::Severity::Medium);
@@ -4076,14 +4255,19 @@ fn au107_names_the_breach_stated_employer() {
     org2.tag("breach");
     org2.add_evidence(Evidence::new("oathnet", "rec"));
     org2.add_evidence(Evidence::new("dehashed", "rec"));
-    let r2 = super::rules::rule_au_107_breach_employer_affiliation(&[org2], "scan", 0);
+    let r2 = super::rules::rule_au_107_breach_employer_affiliation(
+        &RuleContext::new(&[org2]),
+        "scan",
+        0,
+    );
     assert_eq!(r2[0].severity, super::Severity::High);
 
     // A registry Organisation (no `breach` tag) does NOT fire AU-107.
     let mut reg = Entity::new(EntityKind::Organisation, "Acme Ltd", 0.65, "scan");
     reg.tag("abr");
     assert!(
-        super::rules::rule_au_107_breach_employer_affiliation(&[reg], "scan", 0).is_empty(),
+        super::rules::rule_au_107_breach_employer_affiliation(&RuleContext::new(&[reg]), "scan", 0)
+            .is_empty(),
         "a registry org is not a breach-stated employer"
     );
 }
@@ -4096,7 +4280,7 @@ fn au108_reports_breach_cross_platform_footprint() {
         e
     };
     let r = super::rules::rule_au_108_breach_social_footprint(
-        &[mk("twitter:alice"), mk("telegram:alice_b")],
+        &RuleContext::new(&[mk("twitter:alice"), mk("telegram:alice_b")]),
         "scan",
         0,
     );
@@ -4106,14 +4290,18 @@ fn au108_reports_breach_cross_platform_footprint() {
 
     // A single platform never fires.
     assert!(
-        super::rules::rule_au_108_breach_social_footprint(&[mk("twitter:alice")], "scan", 0)
-            .is_empty(),
+        super::rules::rule_au_108_breach_social_footprint(
+            &RuleContext::new(&[mk("twitter:alice")]),
+            "scan",
+            0
+        )
+        .is_empty(),
         "one platform is not a cross-platform footprint"
     );
     // Two handles on the SAME platform don't inflate to a footprint.
     assert!(
         super::rules::rule_au_108_breach_social_footprint(
-            &[mk("twitter:alice"), mk("twitter:bob")],
+            &RuleContext::new(&[mk("twitter:alice"), mk("twitter:bob")]),
             "scan",
             0
         )
@@ -4124,7 +4312,7 @@ fn au108_reports_breach_cross_platform_footprint() {
     // combine with a single real platform to reach the ≥2 gate.
     assert!(
         super::rules::rule_au_108_breach_social_footprint(
-            &[mk("google:123456"), mk("twitter:alice")],
+            &RuleContext::new(&[mk("google:123456"), mk("twitter:alice")]),
             "scan",
             0
         )
@@ -4426,7 +4614,8 @@ fn au099_reverse_geocodes_coordinate_to_locality() {
     // A Brisbane fix → "Brisbane, QLD" with a small distance.
     let mut coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
     coord.add_evidence(Evidence::new("exif_geo", "photo GPS")); // person-anchored, not infra
-    let r = super::rules::rule_au_099_coordinate_reverse_geocode(&[coord], "s", 0);
+    let r =
+        super::rules::rule_au_099_coordinate_reverse_geocode(&RuleContext::new(&[coord]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-099");
     assert_eq!(r[0].severity, super::Severity::Medium);
@@ -4441,7 +4630,14 @@ fn au099_ignores_foreign_and_weak_coordinates() {
     let ny = Entity::new(EntityKind::Coordinates, "40.7128,-74.0060", 0.8, "s");
     // A weak (candidate) AU coordinate is below the 0.50 confidence gate.
     let weak = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.40, "s");
-    assert!(super::rules::rule_au_099_coordinate_reverse_geocode(&[ny, weak], "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_099_coordinate_reverse_geocode(
+            &RuleContext::new(&[ny, weak]),
+            "s",
+            0
+        )
+        .is_empty()
+    );
 }
 
 #[test]
@@ -4456,7 +4652,7 @@ fn au046_resolves_an_alias_to_platform_exposed_identifiers() {
     email.add_evidence(Evidence::new("npm_author", "maintainer email"));
 
     let hits = super::rules::rule_au_046_cross_platform_identity_resolution(
-        &[handle.clone(), email.clone()],
+        &RuleContext::new(&[handle.clone(), email.clone()]),
         "scan",
         0,
     );
@@ -4471,8 +4667,12 @@ fn au046_resolves_an_alias_to_platform_exposed_identifiers() {
     let mut one = Entity::new(EntityKind::Username, "solo", 0.6, "scan");
     one.add_evidence(Evidence::new("npm_author", "x"));
     assert!(
-        super::rules::rule_au_046_cross_platform_identity_resolution(&[one, email], "scan", 0)
-            .is_empty(),
+        super::rules::rule_au_046_cross_platform_identity_resolution(
+            &RuleContext::new(&[one, email]),
+            "scan",
+            0
+        )
+        .is_empty(),
         "one platform family is not cross-platform resolution"
     );
 }
@@ -4494,7 +4694,12 @@ fn au045_046_reject_junk_and_role_handles_as_identity_anchors() {
     // non-identity-token path (`from`, `http` are 4 chars but never handles).
     for bad in ["from", "dns", "www", "http"] {
         assert!(
-            super::rules::rule_au_045_multi_service_identity(&[junk(bad)], "scan", 0).is_empty(),
+            super::rules::rule_au_045_multi_service_identity(
+                &RuleContext::new(&[junk(bad)]),
+                "scan",
+                0
+            )
+            .is_empty(),
             "AU-045 must not promote junk handle '{bad}' to a confirmed identity"
         );
     }
@@ -4505,7 +4710,8 @@ fn au045_046_reject_junk_and_role_handles_as_identity_anchors() {
         role.add_evidence(Evidence::new(s, "found"));
     }
     assert!(
-        super::rules::rule_au_045_multi_service_identity(&[role], "scan", 0).is_empty(),
+        super::rules::rule_au_045_multi_service_identity(&RuleContext::new(&[role]), "scan", 0)
+            .is_empty(),
         "AU-045 must not promote a role mailbox to a confirmed identity"
     );
 
@@ -4516,7 +4722,8 @@ fn au045_046_reject_junk_and_role_handles_as_identity_anchors() {
         good.add_evidence(Evidence::new(s, "confirmed"));
     }
     assert_eq!(
-        super::rules::rule_au_045_multi_service_identity(&[good], "scan", 0).len(),
+        super::rules::rule_au_045_multi_service_identity(&RuleContext::new(&[good]), "scan", 0)
+            .len(),
         1,
         "a distinctive handle across two families must still fire AU-045"
     );
@@ -4530,7 +4737,7 @@ fn au045_046_reject_junk_and_role_handles_as_identity_anchors() {
     }
     assert!(
         super::rules::rule_au_046_cross_platform_identity_resolution(
-            &[junk_alias, email.clone()],
+            &RuleContext::new(&[junk_alias, email.clone()]),
             "scan",
             0,
         )
@@ -4544,7 +4751,7 @@ fn au045_046_reject_junk_and_role_handles_as_identity_anchors() {
         real_alias.add_evidence(Evidence::new(s, "confirmed account"));
     }
     let hits = super::rules::rule_au_046_cross_platform_identity_resolution(
-        &[real_alias, email],
+        &RuleContext::new(&[real_alias, email]),
         "scan",
         0,
     );
@@ -4579,7 +4786,7 @@ fn au046_resolves_only_the_alias_own_account_identifiers() {
     role.add_evidence(Evidence::new("github_user", "profile email"));
 
     let hits = super::rules::rule_au_046_cross_platform_identity_resolution(
-        &[alias.clone(), own.clone(), stranger.clone(), role.clone()],
+        &RuleContext::new(&[alias.clone(), own.clone(), stranger.clone(), role.clone()]),
         "scan",
         0,
     );
@@ -4621,7 +4828,7 @@ fn au047_links_identities_by_a_reused_unique_secret_only() {
     // Salted bcrypt hash seen against both identities → Critical link.
     let bcrypt = cred("$2a$10$id3HAw6TcOjKvPH/RK7MS.abcdef", &[&a.value, &b.value]);
     let hits = super::rules::rule_au_047_reused_secret_identity(
-        &[bcrypt.clone(), a.clone(), b.clone()],
+        &RuleContext::new(&[bcrypt.clone(), a.clone(), b.clone()]),
         "scan",
         0,
     );
@@ -4643,7 +4850,7 @@ fn au047_links_identities_by_a_reused_unique_secret_only() {
     );
     assert!(
         super::rules::rule_au_047_reused_secret_identity(
-            &[unsalted, a.clone(), b.clone()],
+            &RuleContext::new(&[unsalted, a.clone(), b.clone()]),
             "scan",
             0
         )
@@ -4654,7 +4861,12 @@ fn au047_links_identities_by_a_reused_unique_secret_only() {
     // A unique secret seen against only ONE identity is not a link.
     let single = cred("$2b$12$onlyoneidentityhasthisxx", &[&a.value]);
     assert!(
-        super::rules::rule_au_047_reused_secret_identity(&[single, a], "scan", 0).is_empty(),
+        super::rules::rule_au_047_reused_secret_identity(
+            &RuleContext::new(&[single, a]),
+            "scan",
+            0
+        )
+        .is_empty(),
         "one identity is not a cross-account link"
     );
 }
@@ -4676,7 +4888,8 @@ fn au047_discloses_when_the_identifier_list_is_truncated() {
     for em in &email_refs {
         cred.add_evidence(Evidence::new("import:dossier", "breach entry").with_attr("email", *em));
     }
-    let hits = super::rules::rule_au_047_reused_secret_identity(&[cred], "scan", 0);
+    let hits =
+        super::rules::rule_au_047_reused_secret_identity(&RuleContext::new(&[cred]), "scan", 0);
     assert_eq!(hits.len(), 1);
     assert!(
         hits[0]
@@ -4718,8 +4931,11 @@ fn au047_links_on_reused_plaintext_password_and_session_token() {
         &["plaintext-credential"],
         &[&a.value, &b.value],
     );
-    let hits =
-        super::rules::rule_au_047_reused_secret_identity(&[pw, a.clone(), b.clone()], "scan", 0);
+    let hits = super::rules::rule_au_047_reused_secret_identity(
+        &RuleContext::new(&[pw, a.clone(), b.clone()]),
+        "scan",
+        0,
+    );
     assert_eq!(hits.len(), 1, "reused strong password must link accounts");
     assert_eq!(hits[0].severity, super::Severity::High);
     assert!(hits[0].description.contains("password"));
@@ -4730,8 +4946,11 @@ fn au047_links_on_reused_plaintext_password_and_session_token() {
         &["session-token"],
         &[&a.value, &b.value],
     );
-    let hits =
-        super::rules::rule_au_047_reused_secret_identity(&[tok, a.clone(), b.clone()], "scan", 0);
+    let hits = super::rules::rule_au_047_reused_secret_identity(
+        &RuleContext::new(&[tok, a.clone(), b.clone()]),
+        "scan",
+        0,
+    );
     assert_eq!(hits.len(), 1, "reused session token must link accounts");
     assert_eq!(hits[0].severity, super::Severity::Critical);
     assert!(hits[0].description.contains("session/cookie token"));
@@ -4743,8 +4962,12 @@ fn au047_links_on_reused_plaintext_password_and_session_token() {
         &[&a.value, &b.value],
     );
     assert!(
-        super::rules::rule_au_047_reused_secret_identity(&[weak, a.clone(), b.clone()], "scan", 0)
-            .is_empty(),
+        super::rules::rule_au_047_reused_secret_identity(
+            &RuleContext::new(&[weak, a.clone(), b.clone()]),
+            "scan",
+            0
+        )
+        .is_empty(),
         "a common password must not manufacture an identity link"
     );
 
@@ -4756,7 +4979,12 @@ fn au047_links_on_reused_plaintext_password_and_session_token() {
         &[&a.value, &b.value],
     );
     assert!(
-        super::rules::rule_au_047_reused_secret_identity(&[bare_hex, a, b], "scan", 0).is_empty(),
+        super::rules::rule_au_047_reused_secret_identity(
+            &RuleContext::new(&[bare_hex, a, b]),
+            "scan",
+            0
+        )
+        .is_empty(),
         "an untagged hex digest must not link (unsalted-hash collision risk)"
     );
 }
@@ -4790,7 +5018,7 @@ fn au047_links_on_password_entity_and_credits_unique_sources() {
     // Reused `Password` across 2 accounts but only ONE distinct source → High.
     let single_src = pw_entity(&["collection1", "collection1"], &[&a.value, &b.value]);
     let hits = super::rules::rule_au_047_reused_secret_identity(
-        &[single_src, a.clone(), b.clone()],
+        &RuleContext::new(&[single_src, a.clone(), b.clone()]),
         "scan",
         0,
     );
@@ -4805,7 +5033,7 @@ fn au047_links_on_password_entity_and_credits_unique_sources() {
     // the description names the unique-source count.
     let cross_src = pw_entity(&["collection1", "antipublic"], &[&a.value, &b.value]);
     let hits = super::rules::rule_au_047_reused_secret_identity(
-        &[cross_src, a.clone(), b.clone()],
+        &RuleContext::new(&[cross_src, a.clone(), b.clone()]),
         "scan",
         0,
     );
@@ -4833,7 +5061,11 @@ fn au047_links_on_password_entity_and_credits_unique_sources() {
     for em in [&a.value, &b.value] {
         hashed.add_evidence(Evidence::new("oathnet", "breach").with_attr("email", em));
     }
-    let hits = super::rules::rule_au_047_reused_secret_identity(&[hashed, a, b], "scan", 0);
+    let hits = super::rules::rule_au_047_reused_secret_identity(
+        &RuleContext::new(&[hashed, a, b]),
+        "scan",
+        0,
+    );
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].severity, super::Severity::Critical);
     assert!(hits[0].description.contains("password hash"));
@@ -4861,7 +5093,7 @@ fn au047_links_username_keyed_accounts_and_resists_single_record_self_link() {
     let u1 = Entity::new(EntityKind::Username, "ghost_91", 0.6, "scan");
     let u2 = Entity::new(EntityKind::Username, "nightcrawler", 0.6, "scan");
     let hits = super::rules::rule_au_047_reused_secret_identity(
-        &[by_username.clone(), u1.clone(), u2.clone()],
+        &RuleContext::new(&[by_username.clone(), u1.clone(), u2.clone()]),
         "scan",
         0,
     );
@@ -4894,8 +5126,12 @@ fn au047_links_username_keyed_accounts_and_resists_single_record_self_link() {
     let em = Entity::new(EntityKind::Email, "alice@example.com", 0.6, "scan");
     let un = Entity::new(EntityKind::Username, "alice", 0.6, "scan");
     assert!(
-        super::rules::rule_au_047_reused_secret_identity(&[one_account, em, un], "scan", 0)
-            .is_empty(),
+        super::rules::rule_au_047_reused_secret_identity(
+            &RuleContext::new(&[one_account, em, un]),
+            "scan",
+            0
+        )
+        .is_empty(),
         "an email and its matching username from one record are one account, not a link"
     );
 
@@ -4913,7 +5149,7 @@ fn au047_links_username_keyed_accounts_and_resists_single_record_self_link() {
     let e3 = Entity::new(EntityKind::Email, "burner@proton.me", 0.6, "scan");
     let u3 = Entity::new(EntityKind::Username, "bob_work", 0.6, "scan");
     let hits = super::rules::rule_au_047_reused_secret_identity(
-        &[cross, e3.clone(), u3.clone()],
+        &RuleContext::new(&[cross, e3.clone(), u3.clone()]),
         "scan",
         0,
     );
@@ -4942,7 +5178,7 @@ fn au018_includes_full_member_set_so_finalize_supersedes_live() {
         a.tag("geoint");
         ents.push(a);
     }
-    let out = rule_au_018_email_address_colocation(&ents, "s", 0);
+    let out = rule_au_018_email_address_colocation(&RuleContext::new(&ents), "s", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-018");
     // 1 email + all 7 addresses — not capped at take(5) — so a later superset
@@ -4969,7 +5205,7 @@ fn au018_excludes_role_mailboxes_from_the_identity_location_link() {
     // Role mailbox alone with the address must NOT fire — even at high confidence.
     let role = Entity::new(EntityKind::Email, "abuse@godaddy.com", 0.90, "s");
     let only_role = vec![role, addr.clone()];
-    let out = rule_au_018_email_address_colocation(&only_role, "s", 0);
+    let out = rule_au_018_email_address_colocation(&RuleContext::new(&only_role), "s", 0);
     assert!(
         out.is_empty(),
         "a role mailbox must not co-locate to a person's address: {out:?}"
@@ -4982,7 +5218,7 @@ fn au018_excludes_role_mailboxes_from_the_identity_location_link() {
         Entity::new(EntityKind::Email, "abuse@godaddy.com", 0.90, "s"),
         addr,
     ];
-    let out = rule_au_018_email_address_colocation(&with_person, "s", 0);
+    let out = rule_au_018_email_address_colocation(&RuleContext::new(&with_person), "s", 0);
     assert_eq!(out.len(), 1, "the personal email still links: {out:?}");
     assert_eq!(out[0].rule_id, "AU-018");
     // The role mailbox is excluded from the member set, so exactly 1 email + 1
@@ -5016,7 +5252,7 @@ fn au027_chains_only_the_dominant_coherent_location() {
         coord("-27.4690,153.0235"), // Brisbane CBD (~0.2 km away)
         coord("-16.9186,145.7781"), // Cairns, ~1700 km north
     ];
-    let out = rule_au_027_address_coordinates_chain(&ents, "scan", 0);
+    let out = rule_au_027_address_coordinates_chain(&RuleContext::new(&ents), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-027");
     // Dominant cluster = Brisbane's 2 coords, anchored near Brisbane; Cairns out.
@@ -5055,7 +5291,7 @@ fn au027_never_anchors_on_the_radar_sentinel() {
     sentinel.tag("seed");
     sentinel.tag("subject");
     let ents = vec![addr, sentinel];
-    let out = rule_au_027_address_coordinates_chain(&ents, "scan", 0);
+    let out = rule_au_027_address_coordinates_chain(&RuleContext::new(&ents), "scan", 0);
     assert!(
         out.is_empty(),
         "the radar sentinel must never anchor an AU-027 chain: {out:?}"
@@ -5082,7 +5318,7 @@ fn au048_links_accounts_sharing_a_public_key() {
 
     let shared = key("ssh:deadbeefcafef00d", &["ghost91", "jsmith_work"]);
     let hits = super::rules::rule_au_048_shared_public_key(
-        &[shared.clone(), a.clone(), b.clone()],
+        &RuleContext::new(&[shared.clone(), a.clone(), b.clone()]),
         "scan",
         0,
     );
@@ -5093,12 +5329,19 @@ fn au048_links_accounts_sharing_a_public_key() {
 
     // A key on a single account is not a link; a non-key Credential is ignored.
     let solo = key("ssh:only0neacct", &["ghost91"]);
-    assert!(super::rules::rule_au_048_shared_public_key(&[solo, a.clone()], "scan", 0).is_empty());
+    assert!(
+        super::rules::rule_au_048_shared_public_key(
+            &RuleContext::new(&[solo, a.clone()]),
+            "scan",
+            0
+        )
+        .is_empty()
+    );
     let mut pw = Entity::new(EntityKind::Credential, "$2a$10$x", 0.6, "scan");
     pw.add_evidence(Evidence::new("import", "x").with_attr("github_login", "a"));
     pw.add_evidence(Evidence::new("import", "y").with_attr("github_login", "b"));
     assert!(
-        super::rules::rule_au_048_shared_public_key(&[pw], "scan", 0).is_empty(),
+        super::rules::rule_au_048_shared_public_key(&RuleContext::new(&[pw]), "scan", 0).is_empty(),
         "AU-048 only fires on key-tagged credentials"
     );
 
@@ -5114,7 +5357,8 @@ fn au048_links_accounts_sharing_a_public_key() {
             .with_attr("email", "alice@x.com"),
     );
     assert!(
-        super::rules::rule_au_048_shared_public_key(&[same_acct], "scan", 0).is_empty(),
+        super::rules::rule_au_048_shared_public_key(&RuleContext::new(&[same_acct]), "scan", 0)
+            .is_empty(),
         "login + email of ONE account must not count as two accounts"
     );
 
@@ -5128,7 +5372,7 @@ fn au048_links_accounts_sharing_a_public_key() {
     cross.add_evidence(
         Evidence::new("pgp", "key bound to bob@x.com").with_attr("email", "bob@x.com"),
     );
-    let hits = super::rules::rule_au_048_shared_public_key(&[cross], "scan", 0);
+    let hits = super::rules::rule_au_048_shared_public_key(&RuleContext::new(&[cross]), "scan", 0);
     assert_eq!(hits.len(), 1, "distinct handles sharing a key must link");
 }
 
@@ -5150,7 +5394,7 @@ fn au048_reports_distinct_controllers_not_identifier_spellings() {
     key.add_evidence(
         Evidence::new("github_user", "same key published by @bob").with_attr("github_login", "bob"),
     );
-    let hits = super::rules::rule_au_048_shared_public_key(&[key], "scan", 0);
+    let hits = super::rules::rule_au_048_shared_public_key(&RuleContext::new(&[key]), "scan", 0);
     assert_eq!(hits.len(), 1, "two distinct owners sharing a key must link");
     assert!(
         hits[0].description.contains("controls 2 accounts"),
@@ -5173,7 +5417,7 @@ fn au048_discloses_when_the_account_list_is_truncated() {
                 .with_attr("github_login", format!("acct{i}")),
         );
     }
-    let hits = super::rules::rule_au_048_shared_public_key(&[key], "scan", 0);
+    let hits = super::rules::rule_au_048_shared_public_key(&RuleContext::new(&[key]), "scan", 0);
     assert_eq!(hits.len(), 1);
     assert!(
         hits[0].description.contains("9 accounts"),
@@ -5211,7 +5455,8 @@ fn au049_fires_on_two_people_one_residence() {
         person_at("Jordan Meyers", "123 Main St, Springfield, IL"),
         person_at("Dana Meyers", "123 Main St Springfield IL"),
     ];
-    let hits = super::rules::rule_au_049_shared_address_association(&ents, "s", 0);
+    let hits =
+        super::rules::rule_au_049_shared_address_association(&RuleContext::new(&ents), "s", 0);
     assert_eq!(hits.len(), 1, "one household cluster expected");
     assert_eq!(hits[0].rule_id, "AU-049");
     assert!(hits[0].description.contains("2 people"));
@@ -5220,13 +5465,19 @@ fn au049_fires_on_two_people_one_residence() {
 #[test]
 fn au049_single_person_and_region_only_do_not_fire() {
     let one = vec![person_at("Jordan Meyers", "123 Main St, Springfield, IL")];
-    assert!(super::rules::rule_au_049_shared_address_association(&one, "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_049_shared_address_association(&RuleContext::new(&one), "s", 0)
+            .is_empty()
+    );
     // A bare region shared by strangers must never fuse a household.
     let region = vec![
         person_at("Jordan Meyers", "California"),
         person_at("Unrelated Stranger", "California"),
     ];
-    assert!(super::rules::rule_au_049_shared_address_association(&region, "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_049_shared_address_association(&RuleContext::new(&region), "s", 0)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -5246,7 +5497,10 @@ fn au049_one_persons_two_emails_is_not_a_household() {
         e1,
         e2,
     ];
-    assert!(super::rules::rule_au_049_shared_address_association(&ents, "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_049_shared_address_association(&RuleContext::new(&ents), "s", 0)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -5264,7 +5518,8 @@ fn au049_references_address_node_and_reachable_handles() {
         email,
         addr,
     ];
-    let hits = super::rules::rule_au_049_shared_address_association(&ents, "s", 0);
+    let hits =
+        super::rules::rule_au_049_shared_address_association(&RuleContext::new(&ents), "s", 0);
     assert_eq!(hits.len(), 1);
     assert!(
         hits[0].entity_uids.contains(&addr_uid),
@@ -5300,7 +5555,8 @@ fn au049_references_every_reachable_handle_not_a_capped_eight() {
         handle_uids.push(email.uid.clone());
         ents.push(email);
     }
-    let hits = super::rules::rule_au_049_shared_address_association(&ents, "s", 0);
+    let hits =
+        super::rules::rule_au_049_shared_address_association(&RuleContext::new(&ents), "s", 0);
     assert_eq!(hits.len(), 1);
     let referenced = handle_uids
         .iter()
@@ -5319,7 +5575,7 @@ fn au050_shared_phone_links_two_people_and_rejects_placeholders() {
         person_with_phone("Jordan Meyers", "+1 (415) 555-0100"),
         person_with_phone("Casey Lin", "14155550100"),
     ];
-    let hits = super::rules::rule_au_050_shared_phone_association(&ents, "s", 0);
+    let hits = super::rules::rule_au_050_shared_phone_association(&RuleContext::new(&ents), "s", 0);
     assert_eq!(
         hits.len(),
         1,
@@ -5333,7 +5589,10 @@ fn au050_shared_phone_links_two_people_and_rejects_placeholders() {
         person_with_phone("Jordan Meyers", "+00000000000"),
         person_with_phone("Casey Lin", "+00000000000"),
     ];
-    assert!(super::rules::rule_au_050_shared_phone_association(&placeholder, "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_050_shared_phone_association(&RuleContext::new(&placeholder), "s", 0)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -5346,7 +5605,8 @@ fn au050_excludes_shared_business_and_service_lines() {
             person_with_phone("Jordan Meyers", service),
             person_with_phone("Casey Lin", service),
         ];
-        let hits = super::rules::rule_au_050_shared_phone_association(&ents, "s", 0);
+        let hits =
+            super::rules::rule_au_050_shared_phone_association(&RuleContext::new(&ents), "s", 0);
         assert!(
             hits.is_empty(),
             "shared business/service line {service} must not link unrelated people: {hits:?}"
@@ -5359,7 +5619,8 @@ fn au050_excludes_shared_business_and_service_lines() {
         person_with_phone("Jordan Meyers", "0412 345 678"),
         person_with_phone("Casey Lin", "(0412) 345-678"),
     ];
-    let hits = super::rules::rule_au_050_shared_phone_association(&mobile, "s", 0);
+    let hits =
+        super::rules::rule_au_050_shared_phone_association(&RuleContext::new(&mobile), "s", 0);
     assert_eq!(
         hits.len(),
         1,
@@ -5374,7 +5635,7 @@ fn au051_shared_surname_at_residence_is_kin() {
         person_at("Jordan Meyers", "123 Main St, Springfield"),
         person_at("Dana Meyers", "123 Main St, Springfield"),
     ];
-    let hits = super::rules::rule_au_051_shared_surname_kin(&ents, "s", 0);
+    let hits = super::rules::rule_au_051_shared_surname_kin(&RuleContext::new(&ents), "s", 0);
     assert_eq!(hits.len(), 1, "shared surname + residence = kin");
     assert_eq!(hits[0].rule_id, "AU-051");
     assert_eq!(hits[0].severity, super::Severity::Critical);
@@ -5388,7 +5649,9 @@ fn au051_requires_shared_residence_and_distinguishes_roommates() {
         person_at("Jordan Meyers", "123 Main St, Springfield"),
         person_at("Dana Meyers", "987 Oak Ave, Portland"),
     ];
-    assert!(super::rules::rule_au_051_shared_surname_kin(&apart, "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_051_shared_surname_kin(&RuleContext::new(&apart), "s", 0).is_empty()
+    );
 
     // Same residence, different families: AU-049 fires (household) but AU-051
     // (kin) does not.
@@ -5397,10 +5660,14 @@ fn au051_requires_shared_residence_and_distinguishes_roommates() {
         person_at("Casey Lin", "123 Main St, Springfield"),
     ];
     assert_eq!(
-        super::rules::rule_au_049_shared_address_association(&roommates, "s", 0).len(),
+        super::rules::rule_au_049_shared_address_association(&RuleContext::new(&roommates), "s", 0)
+            .len(),
         1
     );
-    assert!(super::rules::rule_au_051_shared_surname_kin(&roommates, "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_051_shared_surname_kin(&RuleContext::new(&roommates), "s", 0)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -5414,7 +5681,7 @@ fn au051_common_surname_is_a_high_lead_not_critical_kin() {
         person_at("Jordan Smith", "123 Main St, Springfield"),
         person_at("Dana Smith", "123 Main St, Springfield"),
     ];
-    let hits = super::rules::rule_au_051_shared_surname_kin(&ents, "s", 0);
+    let hits = super::rules::rule_au_051_shared_surname_kin(&RuleContext::new(&ents), "s", 0);
     assert_eq!(hits.len(), 1, "still fires — it is a lead, not silence");
     assert_eq!(hits[0].rule_id, "AU-051");
     assert_eq!(
@@ -5439,7 +5706,8 @@ fn au087_fires_on_two_addresses_at_one_org_domain() {
     let e1 = org_email_ent("john.smith@acme.com.au");
     let e2 = org_email_ent("jane.doe@acme.com.au");
     let (u1, u2) = (e1.uid.clone(), e2.uid.clone());
-    let hits = super::rules::rule_au_087_shared_org_email_domain(&[e1, e2], "s", 0);
+    let hits =
+        super::rules::rule_au_087_shared_org_email_domain(&RuleContext::new(&[e1, e2]), "s", 0);
     assert_eq!(hits.len(), 1, "one org-domain affiliation cluster");
     let c = &hits[0];
     assert_eq!(c.rule_id, "AU-087");
@@ -5456,26 +5724,38 @@ fn au087_excludes_freemail_and_isp_webmail() {
         org_email_ent("alice@gmail.com"),
         org_email_ent("bob@gmail.com"),
     ];
-    assert!(super::rules::rule_au_087_shared_org_email_domain(&gmail, "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_087_shared_org_email_domain(&RuleContext::new(&gmail), "s", 0)
+            .is_empty()
+    );
     let isp = vec![
         org_email_ent("a@bigpond.com"),
         org_email_ent("b@bigpond.com"),
     ];
-    assert!(super::rules::rule_au_087_shared_org_email_domain(&isp, "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_087_shared_org_email_domain(&RuleContext::new(&isp), "s", 0)
+            .is_empty()
+    );
 }
 
 #[test]
 fn au087_needs_two_distinct_addresses() {
     // A single address at an org domain is not a shared surface.
     let one = vec![org_email_ent("solo@acme.com.au")];
-    assert!(super::rules::rule_au_087_shared_org_email_domain(&one, "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_087_shared_org_email_domain(&RuleContext::new(&one), "s", 0)
+            .is_empty()
+    );
     // The same address in different case (recalled + re-discovered) is ONE
     // distinct address after normalisation, not a cluster of two.
     let dup = vec![
         org_email_ent("solo@acme.com.au"),
         org_email_ent("SOLO@acme.com.au"),
     ];
-    assert!(super::rules::rule_au_087_shared_org_email_domain(&dup, "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_087_shared_org_email_domain(&RuleContext::new(&dup), "s", 0)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -5487,7 +5767,11 @@ fn au087_rides_along_named_person_and_covers_edu_domains() {
     let mut person = Entity::new(EntityKind::Person, "Jane Citizen", 0.62, "s");
     person.tag("au");
     let puid = person.uid.clone();
-    let hits = super::rules::rule_au_087_shared_org_email_domain(&[e1, e2, person], "s", 0);
+    let hits = super::rules::rule_au_087_shared_org_email_domain(
+        &RuleContext::new(&[e1, e2, person]),
+        "s",
+        0,
+    );
     assert_eq!(hits.len(), 1);
     assert!(hits[0].description.contains("uq.edu.au"));
     assert!(
@@ -5509,7 +5793,11 @@ fn ent_from_source(kind: EntityKind, value: &str, source: &str) -> Entity {
 fn au088_single_register_is_high_confirmation() {
     // One authoritative register returning subject data is a High confirmation.
     let p = ent_from_source(EntityKind::Person, "Jane Citizen", "ahpra");
-    let hits = super::rules::rule_au_088_authoritative_register_confirmation(&[p], "s", 0);
+    let hits = super::rules::rule_au_088_authoritative_register_confirmation(
+        &RuleContext::new(&[p]),
+        "s",
+        0,
+    );
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].rule_id, "AU-088");
     assert_eq!(hits[0].severity, super::Severity::High);
@@ -5522,7 +5810,11 @@ fn au088_two_distinct_registers_is_critical() {
     // Two DIFFERENT authorities agreeing is the strongest identity signal → Critical.
     let p = ent_from_source(EntityKind::Person, "Jane Citizen", "ahpra");
     let o = ent_from_source(EntityKind::Person, "Jane Citizen", "au_electoral");
-    let hits = super::rules::rule_au_088_authoritative_register_confirmation(&[p, o], "s", 0);
+    let hits = super::rules::rule_au_088_authoritative_register_confirmation(
+        &RuleContext::new(&[p, o]),
+        "s",
+        0,
+    );
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].severity, super::Severity::Critical);
     assert!(hits[0].description.contains("2 authoritative"));
@@ -5535,7 +5827,11 @@ fn au088_asic_subfeeds_collapse_to_one_authority() {
     let a = ent_from_source(EntityKind::Person, "Jo Director", "asic_persons");
     let b = ent_from_source(EntityKind::Organisation, "Acme Pty Ltd", "asic_director");
     let c = ent_from_source(EntityKind::Person, "Jo Director", "asic_banned_orgs");
-    let hits = super::rules::rule_au_088_authoritative_register_confirmation(&[a, b, c], "s", 0);
+    let hits = super::rules::rule_au_088_authoritative_register_confirmation(
+        &RuleContext::new(&[a, b, c]),
+        "s",
+        0,
+    );
     assert_eq!(hits.len(), 1);
     assert_eq!(
         hits[0].severity,
@@ -5551,7 +5847,12 @@ fn au088_non_register_sources_do_not_fire() {
     let p = ent_from_source(EntityKind::Person, "Jane Citizen", "search_engines");
     let e = ent_from_source(EntityKind::Email, "jane@gmail.com", "name_intel");
     assert!(
-        super::rules::rule_au_088_authoritative_register_confirmation(&[p, e], "s", 0).is_empty()
+        super::rules::rule_au_088_authoritative_register_confirmation(
+            &RuleContext::new(&[p, e]),
+            "s",
+            0
+        )
+        .is_empty()
     );
 }
 
@@ -5564,7 +5865,7 @@ fn au089_two_distinct_companies_fire_medium() {
     let a = Entity::new(EntityKind::AbnAcn, "53004085616", 0.80, "s"); // company ABN
     let b = Entity::new(EntityKind::AbnAcn, "004085616", 0.80, "s"); // its ACN (same co.)
     let c = Entity::new(EntityKind::AbnAcn, "000000019", 0.80, "s"); // a 2nd company
-    let hits = super::rules::rule_au_089_corporate_network(&[a, b, c], "s", 0);
+    let hits = super::rules::rule_au_089_corporate_network(&RuleContext::new(&[a, b, c]), "s", 0);
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].rule_id, "AU-089");
     assert_eq!(hits[0].severity, super::Severity::Medium);
@@ -5579,7 +5880,9 @@ fn au089_single_company_does_not_fire() {
     // A company seen as both its ABN and its derived ACN is still ONE company.
     let a = Entity::new(EntityKind::AbnAcn, "53004085616", 0.80, "s");
     let b = Entity::new(EntityKind::AbnAcn, "004085616", 0.80, "s");
-    assert!(super::rules::rule_au_089_corporate_network(&[a, b], "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_089_corporate_network(&RuleContext::new(&[a, b]), "s", 0).is_empty()
+    );
 }
 
 #[test]
@@ -5588,7 +5891,7 @@ fn au089_three_companies_escalate_to_high() {
     let b = Entity::new(EntityKind::AbnAcn, "000000019", 0.80, "s");
     // A third distinct, checksum-valid ACN (prefix 01000000 → check digit 3).
     let c = Entity::new(EntityKind::AbnAcn, "010000003", 0.80, "s");
-    let hits = super::rules::rule_au_089_corporate_network(&[a, b, c], "s", 0);
+    let hits = super::rules::rule_au_089_corporate_network(&RuleContext::new(&[a, b, c]), "s", 0);
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].severity, super::Severity::High);
     assert!(hits[0].description.contains("3 distinct"));
@@ -5600,7 +5903,10 @@ fn au089_non_company_abn_is_excluded() {
     // not a corporate vehicle — one real company alongside it must not fire.
     let sole = Entity::new(EntityKind::AbnAcn, "51824753556", 0.80, "s");
     let company = Entity::new(EntityKind::AbnAcn, "004085616", 0.80, "s");
-    assert!(super::rules::rule_au_089_corporate_network(&[sole, company], "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_089_corporate_network(&RuleContext::new(&[sole, company]), "s", 0)
+            .is_empty()
+    );
 }
 
 #[cfg(test)]
@@ -5620,7 +5926,11 @@ fn api_key_ent(value: &str, service: &str, criticality: &str, detection: &str) -
 fn au095_ranks_portfolio_critical_first() {
     let aws = api_key_ent("AKIA_aws_secret", "aws", "critical", "proven");
     let analytics = api_key_ent("ph_low_token", "posthog", "low", "probable");
-    let r = super::rules::rule_au_095_exposed_key_portfolio(&[analytics, aws], "s", 0);
+    let r = super::rules::rule_au_095_exposed_key_portfolio(
+        &RuleContext::new(&[analytics, aws]),
+        "s",
+        0,
+    );
     assert_eq!(r.len(), 1, "one portfolio summary");
     assert_eq!(r[0].rule_id, "AU-095");
     assert_eq!(r[0].severity, super::Severity::Critical); // a high-value key present
@@ -5648,7 +5958,8 @@ fn au095_flags_exploitable_and_handles_unrated() {
     let mut bare = Entity::new(EntityKind::ApiKey, "foreignkey123", 0.7, "s");
     bare.tag("api-key");
     bare.tag("foreign-key");
-    let r = super::rules::rule_au_095_exposed_key_portfolio(&[jwt, bare], "s", 0);
+    let r =
+        super::rules::rule_au_095_exposed_key_portfolio(&RuleContext::new(&[jwt, bare]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].severity, super::Severity::High); // no high-criticality key
     assert!(r[0].description.contains("outright exploitable"));
@@ -5666,7 +5977,7 @@ fn au095_discloses_when_the_priority_list_is_truncated() {
     let keys: Vec<Entity> = (0..7)
         .map(|i| api_key_ent(&format!("key-{i}"), &format!("svc{i}"), "high", "proven"))
         .collect();
-    let r = super::rules::rule_au_095_exposed_key_portfolio(&keys, "s", 0);
+    let r = super::rules::rule_au_095_exposed_key_portfolio(&RuleContext::new(&keys), "s", 0);
     assert_eq!(r.len(), 1);
     assert!(
         r[0].description.contains("7 exposed API key"),
@@ -5683,7 +5994,9 @@ fn au095_discloses_when_the_priority_list_is_truncated() {
 #[test]
 fn au095_no_keys_no_finding() {
     let p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
-    assert!(super::rules::rule_au_095_exposed_key_portfolio(&[p], "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_095_exposed_key_portfolio(&RuleContext::new(&[p]), "s", 0).is_empty()
+    );
 }
 
 #[cfg(test)]
@@ -5704,7 +6017,11 @@ fn au096_flags_osint_practitioner_with_tradecraft() {
         "attack-surface",
     );
     let dehashed = osint_key_ent("dehashedkey", "dehashed", "breach-leak");
-    let r = super::rules::rule_au_096_osint_practitioner(&[shodan, dehashed], "s", 0);
+    let r = super::rules::rule_au_096_osint_practitioner(
+        &RuleContext::new(&[shodan, dehashed]),
+        "s",
+        0,
+    );
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-096");
     assert_eq!(r[0].severity, super::Severity::High);
@@ -5724,7 +6041,7 @@ fn au097_consumer_isp_is_medium_residency_signal() {
             .with_attr("isp", "Telstra")
             .with_attr("as", "AS1221 Telstra"),
     );
-    let r = super::rules::rule_au_097_au_isp_network(&[ip], "s", 0);
+    let r = super::rules::rule_au_097_au_isp_network(&RuleContext::new(&[ip]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-097");
     assert_eq!(r[0].severity, super::Severity::Medium);
@@ -5736,7 +6053,7 @@ fn au097_consumer_isp_is_medium_residency_signal() {
 fn au097_aarnet_is_high_academic_affiliation() {
     // An ASN entity valued with AARNet → academic/research network.
     let asn = Entity::new(EntityKind::Asn, "AS7575 AARNet", 0.8, "s");
-    let r = super::rules::rule_au_097_au_isp_network(&[asn], "s", 0);
+    let r = super::rules::rule_au_097_au_isp_network(&RuleContext::new(&[asn]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].severity, super::Severity::High);
     assert!(r[0].description.contains("AARNet"));
@@ -5749,7 +6066,10 @@ fn au097_ignores_foreign_and_non_network_entities() {
     let mut foreign = Entity::new(EntityKind::IpAddress, "8.8.8.8", 0.8, "s");
     foreign.add_evidence(Evidence::new("ip_geo", "geo").with_attr("isp", "Google LLC"));
     let person = Entity::new(EntityKind::Person, "Telstra Smith", 0.8, "s"); // name, not a network
-    assert!(super::rules::rule_au_097_au_isp_network(&[foreign, person], "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_097_au_isp_network(&RuleContext::new(&[foreign, person]), "s", 0)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -5757,7 +6077,7 @@ fn au097_short_token_needs_word_boundary() {
     // "tpg" must not match inside a longer word (no false AU attribution).
     let mut ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.8, "s");
     ip.add_evidence(Evidence::new("ripestat", "asn").with_attr("descr", "ACMETPGENETICS LIMITED"));
-    assert!(super::rules::rule_au_097_au_isp_network(&[ip], "s", 0).is_empty());
+    assert!(super::rules::rule_au_097_au_isp_network(&RuleContext::new(&[ip]), "s", 0).is_empty());
 }
 
 #[test]
@@ -5766,14 +6086,16 @@ fn au096_ignores_non_osint_keys() {
     let mut aws = Entity::new(EntityKind::ApiKey, "AKIAxxxx", 0.8, "s");
     aws.tag("api-key");
     aws.tag("service:aws");
-    assert!(super::rules::rule_au_096_osint_practitioner(&[aws], "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_096_osint_practitioner(&RuleContext::new(&[aws]), "s", 0).is_empty()
+    );
 }
 
 #[test]
 fn au094_non_company_abn_is_a_sole_trader_signal() {
     // 51824753556 — valid ABN, no embedded ACN → a non-company (sole trader/trust).
     let sole = Entity::new(EntityKind::AbnAcn, "51 824 753 556", 0.80, "s");
-    let r = super::rules::rule_au_094_sole_trader_abn(&[sole], "s", 0);
+    let r = super::rules::rule_au_094_sole_trader_abn(&RuleContext::new(&[sole]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-094");
     assert_eq!(r[0].severity, super::Severity::Medium);
@@ -5790,7 +6112,10 @@ fn au094_excludes_companies_and_acns() {
     // not AU-094's. Neither must fire the sole-trader rule.
     let company_abn = Entity::new(EntityKind::AbnAcn, "53004085616", 0.80, "s");
     let acn = Entity::new(EntityKind::AbnAcn, "004085616", 0.80, "s");
-    assert!(super::rules::rule_au_094_sole_trader_abn(&[company_abn, acn], "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_094_sole_trader_abn(&RuleContext::new(&[company_abn, acn]), "s", 0)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -5801,7 +6126,8 @@ fn au094_dedups_and_counts_distinct_non_company_abns() {
     // 18123456789 — a second valid ABN whose trailing nine (123456789) fail the
     // ACN check, so it is genuinely non-company.
     let a2 = Entity::new(EntityKind::AbnAcn, "18123456789", 0.80, "s");
-    let r = super::rules::rule_au_094_sole_trader_abn(&[a1, a1_spaced, a2], "s", 0);
+    let r =
+        super::rules::rule_au_094_sole_trader_abn(&RuleContext::new(&[a1, a1_spaced, a2]), "s", 0);
     assert_eq!(r.len(), 1);
     assert!(r[0].description.contains("2 non-company"));
 }
@@ -5811,7 +6137,7 @@ fn au100_work_email_surfaces_employer_affiliation() {
     // A .com.au work email → commercial employer; a .gov.au → government.
     let e1 = Entity::new(EntityKind::Email, "j.citizen@acme-widgets.com.au", 0.7, "s");
     let e2 = Entity::new(EntityKind::Email, "officer@health.nsw.gov.au", 0.7, "s");
-    let r = super::rules::rule_au_100_au_employer_affiliation(&[e1, e2], "s", 0);
+    let r = super::rules::rule_au_100_au_employer_affiliation(&RuleContext::new(&[e1, e2]), "s", 0);
     assert_eq!(r.len(), 2);
     assert!(r.iter().all(|c| c.rule_id == "AU-100"));
     let commercial = r
@@ -5834,8 +6160,12 @@ fn au100_excludes_freemail_personal_and_foreign() {
     let personal = Entity::new(EntityKind::Email, "me@haigen.id.au", 0.8, "s");
     let foreign = Entity::new(EntityKind::Email, "x@example.com", 0.8, "s");
     assert!(
-        super::rules::rule_au_100_au_employer_affiliation(&[gmail, personal, foreign], "s", 0)
-            .is_empty()
+        super::rules::rule_au_100_au_employer_affiliation(
+            &RuleContext::new(&[gmail, personal, foreign]),
+            "s",
+            0
+        )
+        .is_empty()
     );
 }
 
@@ -5843,7 +6173,7 @@ fn au100_excludes_freemail_personal_and_foreign() {
 fn au100_dedups_multiple_emails_on_one_domain() {
     let e1 = Entity::new(EntityKind::Email, "a@acme.com.au", 0.7, "s");
     let e2 = Entity::new(EntityKind::Email, "b@acme.com.au", 0.7, "s");
-    let r = super::rules::rule_au_100_au_employer_affiliation(&[e1, e2], "s", 0);
+    let r = super::rules::rule_au_100_au_employer_affiliation(&RuleContext::new(&[e1, e2]), "s", 0);
     assert_eq!(r.len(), 1);
     assert!(r[0].description.contains("2 email(s)"));
 }
@@ -5893,11 +6223,12 @@ fn au052_excludes_overpass_poi_cluster_live_toronto_case() {
     // Plus the central IP-geo point (hosting) — also excluded.
     ents.push(hosting_coord("43.6532,-79.3832", "ip_geo"));
     assert!(
-        super::rules::rule_au_052_geographic_area_of_operation(&ents, "s", 0).is_empty(),
+        super::rules::rule_au_052_geographic_area_of_operation(&RuleContext::new(&ents), "s", 0)
+            .is_empty(),
         "Overpass POIs must not form a person's footprint"
     );
     assert!(
-        super::rules::rule_au_053_out_of_area_location(&ents, "s", 0).is_empty(),
+        super::rules::rule_au_053_out_of_area_location(&RuleContext::new(&ents), "s", 0).is_empty(),
         "Overpass POIs must not establish an area for the anomaly rule either"
     );
 }
@@ -5911,7 +6242,8 @@ fn au052_tight_multisource_footprint_is_a_high_location_fix() {
         coord_from("-33.8720,151.2150", "exif_geo"),
         coord_from("-33.8680,151.2080", "wigle"),
     ];
-    let hits = super::rules::rule_au_052_geographic_area_of_operation(&ents, "s", 0);
+    let hits =
+        super::rules::rule_au_052_geographic_area_of_operation(&RuleContext::new(&ents), "s", 0);
     assert_eq!(hits.len(), 1, "three multi-source coords bound an area");
     assert_eq!(hits[0].rule_id, "AU-052");
     assert_eq!(hits[0].severity, super::Severity::High);
@@ -5931,7 +6263,10 @@ fn au052_requires_three_points_and_two_sources() {
         coord_from("-33.8700,151.2100", "geocode"),
         coord_from("-33.8720,151.2150", "exif_geo"),
     ];
-    assert!(super::rules::rule_au_052_geographic_area_of_operation(&two, "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_052_geographic_area_of_operation(&RuleContext::new(&two), "s", 0)
+            .is_empty()
+    );
 
     // Three points but all from ONE source (a single device's track) → not
     // multi-source convergence, must not assert a footprint.
@@ -5940,7 +6275,14 @@ fn au052_requires_three_points_and_two_sources() {
         coord_from("-33.8720,151.2150", "exif_geo"),
         coord_from("-33.8680,151.2080", "exif_geo"),
     ];
-    assert!(super::rules::rule_au_052_geographic_area_of_operation(&one_source, "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_052_geographic_area_of_operation(
+            &RuleContext::new(&one_source),
+            "s",
+            0
+        )
+        .is_empty()
+    );
 }
 
 #[test]
@@ -5952,7 +6294,8 @@ fn au052_dispersed_footprint_is_medium_travel_pattern() {
         coord_from("-37.8100,144.9600", "exif_geo"), // Melbourne
         coord_from("-27.4700,153.0200", "wigle"),    // Brisbane
     ];
-    let hits = super::rules::rule_au_052_geographic_area_of_operation(&ents, "s", 0);
+    let hits =
+        super::rules::rule_au_052_geographic_area_of_operation(&RuleContext::new(&ents), "s", 0);
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].severity, super::Severity::Medium);
     assert!(hits[0].description.contains("dispersed"));
@@ -5970,7 +6313,8 @@ fn au052_excludes_infrastructure_geo_live_peekyou_case() {
         coord_from("36.0345,-89.3856", "ip_whois_geo"), // Tennessee — WHOIS-geo only
     ];
     assert!(
-        super::rules::rule_au_052_geographic_area_of_operation(&ents, "s", 0).is_empty(),
+        super::rules::rule_au_052_geographic_area_of_operation(&RuleContext::new(&ents), "s", 0)
+            .is_empty(),
         "infrastructure coordinates must not form a person's area of operation"
     );
 
@@ -5983,7 +6327,8 @@ fn au052_excludes_infrastructure_geo_live_peekyou_case() {
         coord_from("-33.8720,151.2150", "wigle"),
         coord_from("-33.8680,151.2080", "geocode"),
     ];
-    let hits = super::rules::rule_au_052_geographic_area_of_operation(&mixed, "s", 0);
+    let hits =
+        super::rules::rule_au_052_geographic_area_of_operation(&RuleContext::new(&mixed), "s", 0);
     assert_eq!(hits.len(), 1, "the three real sightings fix the location");
     assert!(hits[0].description.contains("tight"));
 }
@@ -6001,7 +6346,7 @@ fn au053_flags_a_sighting_outside_the_established_area() {
         coord_from("-33.8680,151.2080", "wigle"),
         coord_from("-31.9520,115.8570", "exif_geo"), // Perth
     ];
-    let hits = super::rules::rule_au_053_out_of_area_location(&ents, "s", 0);
+    let hits = super::rules::rule_au_053_out_of_area_location(&RuleContext::new(&ents), "s", 0);
     assert_eq!(hits.len(), 1, "the Perth sighting is out of area");
     assert_eq!(hits[0].rule_id, "AU-053");
     assert_eq!(hits[0].severity, super::Severity::Medium);
@@ -6017,7 +6362,9 @@ fn au053_does_not_fire_on_a_single_coherent_area() {
         coord_from("-33.8680,151.2080", "wigle"),
         coord_from("-33.8710,151.2120", "geocode"),
     ];
-    assert!(super::rules::rule_au_053_out_of_area_location(&ents, "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_053_out_of_area_location(&RuleContext::new(&ents), "s", 0).is_empty()
+    );
 }
 
 #[test]
@@ -6030,7 +6377,9 @@ fn au053_ignores_infrastructure_and_needs_an_established_area() {
         coord_from("36.0345,-89.3856", "ip_whois_geo"),
         coord_from("-33.8700,151.2100", "exif_geo"), // one real point
     ];
-    assert!(super::rules::rule_au_053_out_of_area_location(&ents, "s", 0).is_empty());
+    assert!(
+        super::rules::rule_au_053_out_of_area_location(&RuleContext::new(&ents), "s", 0).is_empty()
+    );
 }
 
 #[test]
@@ -6115,7 +6464,7 @@ fn au_056_corroborates_when_coord_and_address_agree_on_state() {
             &[],
         ),
     ];
-    let out = rule_au_056_jurisdiction_cross_check(&ents, "scan", 0);
+    let out = rule_au_056_jurisdiction_cross_check(&RuleContext::new(&ents), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-056");
     assert_eq!(out[0].severity, super::Severity::High);
@@ -6142,7 +6491,7 @@ fn au_056_derives_coord_state_from_latlong_without_a_tag() {
         ),
         mk_tagged(EntityKind::Address, "Brisbane, QLD", "search_engines", &[]),
     ];
-    let out = rule_au_056_jurisdiction_cross_check(&ents, "scan", 0);
+    let out = rule_au_056_jurisdiction_cross_check(&RuleContext::new(&ents), "scan", 0);
     assert_eq!(out.len(), 1, "cross-check must fire on a tag-less AU coord");
     assert_eq!(out[0].rule_id, "AU-056");
     assert!(out[0].description.contains("QLD"));
@@ -6168,7 +6517,7 @@ fn au_056_flags_conflict_when_states_disagree() {
             &[],
         ),
     ];
-    let out = rule_au_056_jurisdiction_cross_check(&ents, "scan", 0);
+    let out = rule_au_056_jurisdiction_cross_check(&RuleContext::new(&ents), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].severity, super::Severity::Medium);
     assert!(out[0].rule_name.contains("conflict") || out[0].description.contains("travel"));
@@ -6204,7 +6553,7 @@ fn au_056_agreement_stays_medium_and_lists_the_split_side() {
             &[],
         ),
     ];
-    let out = rule_au_056_jurisdiction_cross_check(&ents, "scan", 0);
+    let out = rule_au_056_jurisdiction_cross_check(&RuleContext::new(&ents), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(
         out[0].severity,
@@ -6233,7 +6582,9 @@ fn au_056_silent_without_both_signal_classes() {
         "geocode",
         &["au-state:QLD"],
     )];
-    assert!(rule_au_056_jurisdiction_cross_check(&coord_only, "scan", 0).is_empty());
+    assert!(
+        rule_au_056_jurisdiction_cross_check(&RuleContext::new(&coord_only), "scan", 0).is_empty()
+    );
 
     // Only an address → likewise nothing.
     let addr_only = vec![mk_tagged(
@@ -6242,7 +6593,9 @@ fn au_056_silent_without_both_signal_classes() {
         "see_know",
         &[],
     )];
-    assert!(rule_au_056_jurisdiction_cross_check(&addr_only, "scan", 0).is_empty());
+    assert!(
+        rule_au_056_jurisdiction_cross_check(&RuleContext::new(&addr_only), "scan", 0).is_empty()
+    );
 }
 
 // ─── AU-085 tests (phone-region jurisdiction cross-check) ─────────────────────
@@ -6261,7 +6614,7 @@ fn au_085_corroborates_when_phone_region_matches_address_state() {
             &[],
         ),
     ];
-    let out = rule_au_085_phone_region_jurisdiction(&ents, "scan", 0);
+    let out = rule_au_085_phone_region_jurisdiction(&RuleContext::new(&ents), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-085");
     assert!(out[0].rule_name.contains("corroborates"));
@@ -6292,7 +6645,7 @@ fn au_056_infrastructure_address_does_not_vote_jurisdiction() {
         ),
     ];
     assert!(
-        rule_au_056_jurisdiction_cross_check(&ents, "scan", 0).is_empty(),
+        rule_au_056_jurisdiction_cross_check(&RuleContext::new(&ents), "scan", 0).is_empty(),
         "a hosting datacentre address must not vote the subject's jurisdiction"
     );
 }
@@ -6314,7 +6667,7 @@ fn au_085_infrastructure_address_does_not_corroborate_phone_region() {
         ),
     ];
     assert!(
-        rule_au_085_phone_region_jurisdiction(&ents, "scan", 0).is_empty(),
+        rule_au_085_phone_region_jurisdiction(&RuleContext::new(&ents), "scan", 0).is_empty(),
         "a registrant datacentre address must not corroborate the phone region"
     );
 }
@@ -6336,7 +6689,7 @@ fn au_085_corroborates_against_a_tagless_coordinate_state() {
             &["geoint"],
         ),
     ];
-    let out = rule_au_085_phone_region_jurisdiction(&ents, "scan", 0);
+    let out = rule_au_085_phone_region_jurisdiction(&RuleContext::new(&ents), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-085");
     assert!(out[0].description.contains("QLD"));
@@ -6357,7 +6710,7 @@ fn au_085_flags_conflict_when_region_disagrees_with_address() {
             &[],
         ),
     ];
-    let out = rule_au_085_phone_region_jurisdiction(&ents, "scan", 0);
+    let out = rule_au_085_phone_region_jurisdiction(&RuleContext::new(&ents), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-085");
     assert!(out[0].rule_name.contains("conflicts"));
@@ -6378,7 +6731,9 @@ fn au_085_silent_for_mobile_or_missing_class() {
             &[],
         ),
     ];
-    assert!(rule_au_085_phone_region_jurisdiction(&mobile, "scan", 0).is_empty());
+    assert!(
+        rule_au_085_phone_region_jurisdiction(&RuleContext::new(&mobile), "scan", 0).is_empty()
+    );
 
     // A geographic landline but no address/coordinate → nothing to cross-check.
     let phone_only = vec![mk_tagged(
@@ -6387,7 +6742,9 @@ fn au_085_silent_for_mobile_or_missing_class() {
         "phone_au",
         &[],
     )];
-    assert!(rule_au_085_phone_region_jurisdiction(&phone_only, "scan", 0).is_empty());
+    assert!(
+        rule_au_085_phone_region_jurisdiction(&RuleContext::new(&phone_only), "scan", 0).is_empty()
+    );
 }
 
 // ─── AU-102 tests (phone line-type profile) ──────────────────────────────────
@@ -6402,7 +6759,7 @@ fn au_102_profiles_premises_mobile_and_business_lines() {
         mk_tagged(EntityKind::Phone, "+61 412 345 678", "phone_au", &[]),
         mk_tagged(EntityKind::Phone, "1300 975 707", "import", &[]),
     ];
-    let out = rule_au_102_phone_line_type_profile(&ents, "scan", 0);
+    let out = rule_au_102_phone_line_type_profile(&RuleContext::new(&ents), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-102");
     assert_eq!(out[0].severity, super::Severity::Medium);
@@ -6423,7 +6780,7 @@ fn au_102_two_mobiles_only_is_low_and_fires() {
         mk_tagged(EntityKind::Phone, "+61 412 345 678", "phone_au", &[]),
         mk_tagged(EntityKind::Phone, "0413 222 333", "phone_au", &[]),
     ];
-    let out = rule_au_102_phone_line_type_profile(&ents, "scan", 0);
+    let out = rule_au_102_phone_line_type_profile(&RuleContext::new(&ents), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].severity, super::Severity::Low);
     assert!(out[0].description.contains("2 personal mobiles"));
@@ -6441,7 +6798,7 @@ fn au_102_silent_for_a_single_lone_mobile() {
         "phone_au",
         &[],
     )];
-    assert!(rule_au_102_phone_line_type_profile(&ents, "scan", 0).is_empty());
+    assert!(rule_au_102_phone_line_type_profile(&RuleContext::new(&ents), "scan", 0).is_empty());
 }
 
 #[test]
@@ -6454,7 +6811,7 @@ fn au_102_dedups_the_same_number_across_formats() {
         mk_tagged(EntityKind::Phone, "(07) 3000 1234", "phone_au", &[]),
         mk_tagged(EntityKind::Phone, "0730001234", "import", &[]),
     ];
-    let out = rule_au_102_phone_line_type_profile(&ents, "scan", 0);
+    let out = rule_au_102_phone_line_type_profile(&RuleContext::new(&ents), "scan", 0);
     assert_eq!(out.len(), 1);
     assert!(out[0].description.contains("1 geographic fixed line"));
     assert!(!out[0].description.contains("2 geographic"));
@@ -6492,7 +6849,8 @@ fn au_103_gps_fix_with_corroboration_is_high_self_location() {
         "signal_radar",
         &[crate::core::tags::CELL_TOWER],
     );
-    let out = rule_au_103_device_self_location(&[fix, wifi1, wifi2, cell], "scan", 0);
+    let out =
+        rule_au_103_device_self_location(&RuleContext::new(&[fix, wifi1, wifi2, cell]), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-103");
     assert_eq!(out[0].severity, super::Severity::High);
@@ -6516,7 +6874,7 @@ fn au_103_network_fix_only_is_medium() {
         &["device-sensor", "provider:network", "accuracy:450m"],
     );
     fix.confidence = 0.60;
-    let out = rule_au_103_device_self_location(&[fix], "scan", 0);
+    let out = rule_au_103_device_self_location(&RuleContext::new(&[fix]), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].severity, super::Severity::Medium);
     assert!(out[0].description.contains("network fix"));
@@ -6546,7 +6904,7 @@ fn au_103_presence_only_without_a_fix_is_low() {
         "signal_radar",
         &["bluetooth"],
     );
-    let out = rule_au_103_device_self_location(&[wifi, cell, bt], "scan", 0);
+    let out = rule_au_103_device_self_location(&RuleContext::new(&[wifi, cell, bt]), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].severity, super::Severity::Low);
     assert!(out[0].description.contains("no precise fix"));
@@ -6572,7 +6930,7 @@ fn au_103_flags_foreign_cell_under_an_au_fix() {
         "signal_radar",
         &[crate::core::tags::CELL_TOWER],
     );
-    let out = rule_au_103_device_self_location(&[fix, cell], "scan", 0);
+    let out = rule_au_103_device_self_location(&RuleContext::new(&[fix, cell]), "scan", 0);
     assert_eq!(out.len(), 1);
     assert!(out[0].description.contains("MCC 310 is non-Australian"));
 }
@@ -6589,8 +6947,8 @@ fn au_103_silent_with_no_device_signals() {
         "see_know",
         &[],
     );
-    assert!(rule_au_103_device_self_location(&[subject], "scan", 0).is_empty());
-    assert!(rule_au_103_device_self_location(&[], "scan", 0).is_empty());
+    assert!(rule_au_103_device_self_location(&RuleContext::new(&[subject]), "scan", 0).is_empty());
+    assert!(rule_au_103_device_self_location(&RuleContext::new(&[]), "scan", 0).is_empty());
 }
 
 // ─── AU-057 tests ─────────────────────────────────────────────────────────────
@@ -6614,7 +6972,7 @@ fn au_057_two_brisbane_coords_produce_synthesised_fix() {
             e
         },
     ];
-    let out = rule_au_057_synthesised_location_fix(&ents, "scan", 0);
+    let out = rule_au_057_synthesised_location_fix(&RuleContext::new(&ents), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-057");
     assert_eq!(out[0].severity, super::Severity::Medium);
@@ -6639,7 +6997,7 @@ fn au_057_single_coord_does_not_fire() {
         e.add_evidence(Evidence::new("geocode", "single fix".to_string()));
         e
     }];
-    assert!(rule_au_057_synthesised_location_fix(&ents, "scan", 0).is_empty());
+    assert!(rule_au_057_synthesised_location_fix(&RuleContext::new(&ents), "scan", 0).is_empty());
 }
 
 #[test]
@@ -6659,7 +7017,7 @@ fn au_057_low_confidence_coords_do_not_fire() {
             e
         },
     ];
-    assert!(rule_au_057_synthesised_location_fix(&ents, "scan", 0).is_empty());
+    assert!(rule_au_057_synthesised_location_fix(&RuleContext::new(&ents), "scan", 0).is_empty());
 }
 
 #[test]
@@ -6678,7 +7036,7 @@ fn au_057_three_coords_produce_high_severity() {
         e
     })
     .collect();
-    let out = rule_au_057_synthesised_location_fix(&ents, "scan", 0);
+    let out = rule_au_057_synthesised_location_fix(&RuleContext::new(&ents), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].severity, super::Severity::High);
 }
@@ -6702,7 +7060,7 @@ fn au_057_excludes_infrastructure_coordinates() {
         },
     ];
     assert!(
-        rule_au_057_synthesised_location_fix(&ents, "scan", 0).is_empty(),
+        rule_au_057_synthesised_location_fix(&RuleContext::new(&ents), "scan", 0).is_empty(),
         "infrastructure coordinates must not synthesise a subject location fix"
     );
 }
@@ -6723,7 +7081,7 @@ fn au_058_ratemyagent_url_extracts_suburb() {
         e.add_evidence(Evidence::new("social_probe", "profile found".to_string()));
         e
     }];
-    let out = rule_au_058_professional_profile_geo(&ents, "scan", 0);
+    let out = rule_au_058_professional_profile_geo(&RuleContext::new(&ents), "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-058");
     assert!(out[0].description.contains("paddington"));
@@ -6745,7 +7103,7 @@ fn au_058_non_real_estate_url_does_not_fire() {
         e
     }];
     // linkedin is not in PROF_HOSTS for AU-058 (ratemyagent/homely/soho only)
-    assert!(rule_au_058_professional_profile_geo(&ents, "scan", 0).is_empty());
+    assert!(rule_au_058_professional_profile_geo(&RuleContext::new(&ents), "scan", 0).is_empty());
 }
 
 #[test]
@@ -6762,7 +7120,7 @@ fn au_058_below_confidence_threshold_does_not_fire() {
         e.add_evidence(Evidence::new("social_probe", "low-conf".to_string()));
         e
     }];
-    assert!(rule_au_058_professional_profile_geo(&ents, "scan", 0).is_empty());
+    assert!(rule_au_058_professional_profile_geo(&RuleContext::new(&ents), "scan", 0).is_empty());
 }
 
 // ─── Recursive-scan simulation: cross-seed geo synergy for a subject ─────────
@@ -7389,7 +7747,7 @@ fn au019_fires_for_three_breach_dates_within_30_days() {
         mk("b@x.com", "2024-01-10"),
         mk("c@x.com", "2024-01-20"),
     ];
-    let r = rule_au_019_temporal_breach_cluster(&ents, "s", 0);
+    let r = rule_au_019_temporal_breach_cluster(&RuleContext::new(&ents), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-019");
     assert_eq!(r[0].severity, Severity::High);
@@ -7402,7 +7760,7 @@ fn au020_fires_for_two_person_entities() {
         Entity::new(EntityKind::Person, "Jane Doe", 0.6, "s"),
         Entity::new(EntityKind::Person, "John Roe", 0.6, "s"),
     ];
-    let r = rule_au_020_person_entity_cluster(&ents, "s", 0);
+    let r = rule_au_020_person_entity_cluster(&RuleContext::new(&ents), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-020");
     assert_eq!(r[0].severity, Severity::Medium);
@@ -7413,7 +7771,7 @@ fn au022_fires_for_org_co_located_with_breach() {
     let org = Entity::new(EntityKind::Organisation, "Acme Pty Ltd", 0.7, "s");
     let mut breached = Entity::new(EntityKind::Email, "x@acme.com", 0.6, "s");
     breached.tag("breach");
-    let r = rule_au_022_organisation_with_breach(&[org, breached], "s", 0);
+    let r = rule_au_022_organisation_with_breach(&RuleContext::new(&[org, breached]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-022");
     assert_eq!(r[0].severity, Severity::High);
@@ -7424,7 +7782,7 @@ fn au023_fires_for_person_from_two_identity_sources() {
     let mut p = Entity::new(EntityKind::Person, "Jane Doe", 0.7, "s");
     p.add_evidence(Evidence::new("keybase", "x"));
     p.add_evidence(Evidence::new("github_user", "x"));
-    let r = rule_au_023_cross_platform_identity(&[p], "s", 0);
+    let r = rule_au_023_cross_platform_identity(&RuleContext::new(&[p]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-023");
     assert_eq!(r[0].severity, Severity::High);
@@ -7435,7 +7793,7 @@ fn au024_fires_for_email_with_two_risk_signals() {
     let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.6, "s");
     e.tag("breach");
     e.tag("disposable");
-    let r = rule_au_024_email_fraud_signal(&[e], "s", 0);
+    let r = rule_au_024_email_fraud_signal(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-024");
     assert_eq!(r[0].severity, Severity::High);
@@ -7446,7 +7804,7 @@ fn au025_fires_for_opencorporates_org_with_person() {
     let mut org = Entity::new(EntityKind::Organisation, "Acme Pty Ltd", 0.7, "s");
     org.tag("opencorporates");
     let person = Entity::new(EntityKind::Person, "Jane Doe", 0.7, "s");
-    let r = rule_au_025_corporate_identity_link(&[org, person], "s", 0);
+    let r = rule_au_025_corporate_identity_link(&RuleContext::new(&[org, person]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-025");
     assert_eq!(r[0].severity, Severity::Medium);
@@ -7457,7 +7815,7 @@ fn au026_fires_for_address_from_two_geo_sources() {
     let mut a = Entity::new(EntityKind::Address, "1 Main St, Sydney NSW 2000", 0.6, "s");
     a.add_evidence(Evidence::new("geocode", "x"));
     a.add_evidence(Evidence::new("photon", "x"));
-    let r = rule_au_026_validated_address(&[a], "s", 0);
+    let r = rule_au_026_validated_address(&RuleContext::new(&[a]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-026");
     assert_eq!(r[0].severity, Severity::High);
@@ -7467,7 +7825,7 @@ fn au026_fires_for_address_from_two_geo_sources() {
 fn au028_fires_for_subdomain_takeover_tag() {
     let mut d = Entity::new(EntityKind::Domain, "ghost.example.com", 0.6, "s");
     d.tag("subdomain-takeover");
-    let r = rule_au_028_subdomain_takeover_risk(&[d], "s", 0);
+    let r = rule_au_028_subdomain_takeover_risk(&RuleContext::new(&[d]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-028");
     assert_eq!(r[0].severity, Severity::Critical);
@@ -7478,7 +7836,7 @@ fn au029_fires_for_cloud_storage_vulnerable_tags() {
     let mut e = Entity::new(EntityKind::Url, "https://bucket.s3.amazonaws.com", 0.6, "s");
     e.tag("cloud-storage");
     e.tag(crate::core::tags::VULNERABLE);
-    let r = rule_au_029_cloud_storage_exposure(&[e], "s", 0);
+    let r = rule_au_029_cloud_storage_exposure(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-029");
     assert_eq!(r[0].severity, Severity::Critical);
@@ -7488,7 +7846,7 @@ fn au029_fires_for_cloud_storage_vulnerable_tags() {
 fn au040_fires_for_breach_exposed_wallet() {
     let mut w = Entity::new(EntityKind::CryptoAddress, "0xdeadbeef", 0.6, "s");
     w.add_evidence(Evidence::new("oathnet_pro", "leak"));
-    let r = rule_au_040_wallet_breach_exposure(&[w], "s", 0);
+    let r = rule_au_040_wallet_breach_exposure(&RuleContext::new(&[w]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-040");
     assert_eq!(r[0].severity, Severity::High);
@@ -7498,7 +7856,7 @@ fn au040_fires_for_breach_exposed_wallet() {
 fn au041_fires_for_ens_tagged_username() {
     let mut u = Entity::new(EntityKind::Username, "vitalik.eth", 0.6, "s");
     u.tag("ens");
-    let r = rule_au_041_ens_identity(&[u], "s", 0);
+    let r = rule_au_041_ens_identity(&RuleContext::new(&[u]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-041");
     assert_eq!(r[0].severity, Severity::Medium);
@@ -7513,7 +7871,7 @@ fn au042_does_not_fire_for_a_single_pgp_linked_email() {
     e.tag("pgp-linked");
     e.add_evidence(Evidence::new("pgp", "uid").with_attr("key_fingerprint", "DEADBEEF00000000"));
     assert!(
-        rule_au_042_pgp_email_identity(&[e], "s", 0).is_empty(),
+        rule_au_042_pgp_email_identity(&RuleContext::new(&[e]), "s", 0).is_empty(),
         "one email bound to a key is not a multi-email identity link"
     );
 }
@@ -7521,7 +7879,7 @@ fn au042_does_not_fire_for_a_single_pgp_linked_email() {
 #[test]
 fn au021_fires_for_api_key_entity() {
     let e = Entity::new(EntityKind::ApiKey, "AKIAIOSFODNN7EXAMPLE", 0.9, "s");
-    let r = rule_au_021_api_key_exposure(&[e], "s", 0);
+    let r = rule_au_021_api_key_exposure(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-021");
     assert_eq!(r[0].severity, Severity::Critical);
@@ -7535,7 +7893,7 @@ fn au030_fires_for_three_source_geo_cluster() {
     c1.add_evidence(Evidence::new("wigle", "x"));
     let mut c2 = Entity::new(EntityKind::Coordinates, "51.6,0.2", 0.7, "s");
     c2.add_evidence(Evidence::new("exif_geo", "x"));
-    let r = rule_au_030_geo_convergence_score(&[c1, c2], "s", 0);
+    let r = rule_au_030_geo_convergence_score(&RuleContext::new(&[c1, c2]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-030");
     assert_eq!(r[0].severity, Severity::Medium);
@@ -7548,7 +7906,7 @@ fn au030_fires_for_three_source_geo_cluster() {
     let mut ip2 = Entity::new(EntityKind::Coordinates, "51.6,0.2", 0.7, "s");
     ip2.add_evidence(Evidence::new("maxmind", "x"));
     assert!(
-        rule_au_030_geo_convergence_score(&[ip1, ip2], "s", 0).is_empty(),
+        rule_au_030_geo_convergence_score(&RuleContext::new(&[ip1, ip2]), "s", 0).is_empty(),
         "IP-geo coordinates are the host's location, not subject geo convergence"
     );
 }
@@ -7577,7 +7935,7 @@ fn au062_multipath_corroboration_fires_on_orthogonal_routes() {
         mk_rel(&a, &o, RelationKind::RegisteredBy),
         mk_rel(&o, &b, RelationKind::DerivedFrom),
     ];
-    let out = rule_au_062_multipath_corroboration(&[a, b, d, o], &rels, "s", 0);
+    let out = rule_au_062_multipath_corroboration(&RuleContext::new(&[a, b, d, o]), &rels, "s", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-062");
 }
@@ -7596,7 +7954,7 @@ fn au063_corroboration_gap_flags_a_lone_transitive_link() {
         mk_rel(&a, &d, RelationKind::BelongsToDomain),
         mk_rel(&d, &b, RelationKind::DerivedFrom),
     ];
-    let out = rule_au_063_corroboration_gap(&[a, b, d], &rels, "s", 0);
+    let out = rule_au_063_corroboration_gap(&RuleContext::new(&[a, b, d]), &rels, "s", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-063");
 }
@@ -7621,7 +7979,12 @@ fn au064_generalized_template_fires_on_a_repeated_route() {
         mk_rel(&e2, &d2, RelationKind::BelongsToDomain),
         mk_rel(&d2, &p2, RelationKind::RegisteredBy),
     ];
-    let out = rule_au_064_generalized_pathway_template(&[e1, d1, p1, e2, d2, p2], &rels, "s", 0);
+    let out = rule_au_064_generalized_pathway_template(
+        &RuleContext::new(&[e1, d1, p1, e2, d2, p2]),
+        &rels,
+        "s",
+        0,
+    );
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-064");
 }
@@ -7644,7 +8007,12 @@ fn au067_resolved_identity_cluster_fires_on_three_linked_identities() {
         mk_rel(&domain, &person, RelationKind::RegisteredBy),
         mk_rel(&domain, &uname, RelationKind::DerivedFrom),
     ];
-    let out = rule_au_067_resolved_identity_cluster(&[email, domain, person, uname], &rels, "s", 0);
+    let out = rule_au_067_resolved_identity_cluster(
+        &RuleContext::new(&[email, domain, person, uname]),
+        &rels,
+        "s",
+        0,
+    );
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-067");
 }
@@ -7654,7 +8022,7 @@ fn au068_anonymous_sim_fires_on_a_voip_tagged_phone() {
     // hlr_cnam tags a VoIP/virtual-carrier phone `sim-voip`; AU-068 surfaces it.
     let mut phone = Entity::new(EntityKind::Phone, "+61400000000", 0.85, "s");
     phone.tag("sim-voip");
-    let out = rule_au_068_anonymous_sim(&[phone], "s", 0);
+    let out = rule_au_068_anonymous_sim(&RuleContext::new(&[phone]), "s", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-068");
 }
@@ -7677,7 +8045,7 @@ fn au069_high_integrity_connection_fires_on_an_end_to_end_strong_route() {
     let mid = mk(EntityKind::Person, "Alice");
     let b = mk(EntityKind::Username, "alice");
     let rels = [edge(&a, &mid, 0.9), edge(&mid, &b, 0.9)];
-    let out = rule_au_069_high_integrity_connection(&[a, mid, b], &rels, "s", 0);
+    let out = rule_au_069_high_integrity_connection(&RuleContext::new(&[a, mid, b]), &rels, "s", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-069");
 }
@@ -7702,7 +8070,12 @@ fn au070_connection_broker_fires_on_a_hub_holding_three_identities() {
     let uname = mk(EntityKind::Username, "alice");
     let person = mk(EntityKind::Person, "Bob");
     let rels = [edge(&email, &hub), edge(&uname, &hub), edge(&person, &hub)];
-    let out = rule_au_070_connection_broker(&[hub, email, uname, person], &rels, "s", 0);
+    let out = rule_au_070_connection_broker(
+        &RuleContext::new(&[hub, email, uname, person]),
+        &rels,
+        "s",
+        0,
+    );
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-070");
 }
@@ -7735,7 +8108,12 @@ fn au071_robust_identity_cluster_fires_on_a_redundantly_bound_cluster() {
         edge(&uname, &d2),
         edge(&person, &d2),
     ];
-    let out = rule_au_071_robust_identity_cluster(&[email, uname, person, d1, d2], &rels, "s", 0);
+    let out = rule_au_071_robust_identity_cluster(
+        &RuleContext::new(&[email, uname, person, d1, d2]),
+        &rels,
+        "s",
+        0,
+    );
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-071");
 }
@@ -7766,7 +8144,12 @@ fn au109_fires_on_shared_registrant_org() {
             "s",
         ),
     ];
-    let r = rule_au_109_shared_registrant(&[d1.clone(), d2.clone(), org.clone()], &rels, "s", 0);
+    let r = rule_au_109_shared_registrant(
+        &RuleContext::new(&[d1.clone(), d2.clone(), org.clone()]),
+        &rels,
+        "s",
+        0,
+    );
     assert_eq!(r.len(), 1, "shared registrant must fire one correlation");
     assert_eq!(r[0].rule_id, "AU-109");
     assert_eq!(r[0].severity, Severity::High);
@@ -7802,7 +8185,8 @@ fn au109_fires_on_shared_registrant_email() {
             "s",
         ),
     ];
-    let r = rule_au_109_shared_registrant(&[d1, d2, email.clone()], &rels, "s", 0);
+    let r =
+        rule_au_109_shared_registrant(&RuleContext::new(&[d1, d2, email.clone()]), &rels, "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-109");
     assert!(r[0].description.contains("registrant email"));
@@ -7836,8 +8220,12 @@ fn au109_no_fire_on_privacy_proxy_registrant() {
                 "s",
             ),
         ];
-        let r =
-            rule_au_109_shared_registrant(&[d1.clone(), d2.clone(), who.clone()], &rels, "s", 0);
+        let r = rule_au_109_shared_registrant(
+            &RuleContext::new(&[d1.clone(), d2.clone(), who.clone()]),
+            &rels,
+            "s",
+            0,
+        );
         assert!(
             r.is_empty(),
             "privacy-proxy registrant '{}' must not link domains, got {r:?}",
@@ -7859,7 +8247,10 @@ fn au109_no_fire_on_single_domain_or_redacted() {
         0.8,
         "s",
     )];
-    assert!(rule_au_109_shared_registrant(&[d1.clone(), org], &rels, "s", 0).is_empty());
+    assert!(
+        rule_au_109_shared_registrant(&RuleContext::new(&[d1.clone(), org]), &rels, "s", 0)
+            .is_empty()
+    );
     // A "REDACTED FOR PRIVACY" placeholder registrant is excluded even with two
     // domains (substring marker `redacted`/`privacy`).
     let d2 = Entity::new(EntityKind::Domain, "solo2.example", 0.8, "s");
@@ -7880,7 +8271,10 @@ fn au109_no_fire_on_single_domain_or_redacted() {
             "s",
         ),
     ];
-    assert!(rule_au_109_shared_registrant(&[d1, d2, redacted], &rels2, "s", 0).is_empty());
+    assert!(
+        rule_au_109_shared_registrant(&RuleContext::new(&[d1, d2, redacted]), &rels2, "s", 0)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -7899,8 +8293,18 @@ fn au109_deterministic_across_edge_order() {
         )
     };
     let ents = [d1.clone(), d2.clone(), org.clone()];
-    let r1 = rule_au_109_shared_registrant(&ents, &[mk(&d1, &org), mk(&d2, &org)], "s", 0);
-    let r2 = rule_au_109_shared_registrant(&ents, &[mk(&d2, &org), mk(&d1, &org)], "s", 0);
+    let r1 = rule_au_109_shared_registrant(
+        &RuleContext::new(&ents),
+        &[mk(&d1, &org), mk(&d2, &org)],
+        "s",
+        0,
+    );
+    let r2 = rule_au_109_shared_registrant(
+        &RuleContext::new(&ents),
+        &[mk(&d2, &org), mk(&d1, &org)],
+        "s",
+        0,
+    );
     assert_eq!(r1.len(), 1);
     assert_eq!(
         r1[0].description, r2[0].description,
@@ -7930,7 +8334,12 @@ fn au110_fires_on_two_distinct_sites_one_dedicated_ip() {
     let d2 = Entity::new(EntityKind::Domain, "beta-site.org", 0.8, "s");
     let ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
     let rels = vec![resolves(&d1, &ip), resolves(&d2, &ip)];
-    let r = rule_au_110_shared_hosting_ip(&[d1.clone(), d2.clone(), ip.clone()], &rels, "s", 0);
+    let r = rule_au_110_shared_hosting_ip(
+        &RuleContext::new(&[d1.clone(), d2.clone(), ip.clone()]),
+        &rels,
+        "s",
+        0,
+    );
     assert_eq!(
         r.len(),
         1,
@@ -7955,7 +8364,7 @@ fn au110_no_fire_on_subdomains_of_one_site() {
     let d3 = Entity::new(EntityKind::Domain, "blog.example.com", 0.8, "s");
     let ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
     let rels = vec![resolves(&d1, &ip), resolves(&d2, &ip), resolves(&d3, &ip)];
-    let r = rule_au_110_shared_hosting_ip(&[d1, d2, d3, ip], &rels, "s", 0);
+    let r = rule_au_110_shared_hosting_ip(&RuleContext::new(&[d1, d2, d3, ip]), &rels, "s", 0);
     assert!(
         r.is_empty(),
         "one site's own subdomains are co-residence, not co-ownership: {r:?}"
@@ -7971,7 +8380,12 @@ fn au110_no_fire_on_cdn_or_nonroutable_ip() {
     for ip_val in ["104.16.5.5", "192.168.1.10", "203.0.113.7"] {
         let ip = Entity::new(EntityKind::IpAddress, ip_val, 0.8, "s");
         let rels = vec![resolves(&d1, &ip), resolves(&d2, &ip)];
-        let r = rule_au_110_shared_hosting_ip(&[d1.clone(), d2.clone(), ip.clone()], &rels, "s", 0);
+        let r = rule_au_110_shared_hosting_ip(
+            &RuleContext::new(&[d1.clone(), d2.clone(), ip.clone()]),
+            &rels,
+            "s",
+            0,
+        );
         assert!(
             r.is_empty(),
             "{ip_val}: CDN/non-routable IP must not link, got {r:?}"
@@ -7995,7 +8409,7 @@ fn au110_no_fire_on_shared_hosting_fanout() {
         rels.push(resolves(&d, &ip));
         ents.push(d);
     }
-    let r = rule_au_110_shared_hosting_ip(&ents, &rels, "s", 0);
+    let r = rule_au_110_shared_hosting_ip(&RuleContext::new(&ents), &rels, "s", 0);
     assert!(
         r.is_empty(),
         "8 distinct sites on one IP is shared hosting, not co-ownership: {r:?}"
@@ -8018,7 +8432,7 @@ fn au113_fires_when_cdn_apex_has_a_direct_connect_sibling() {
     let ents = vec![apex.clone(), cdn_ip.clone(), mx.clone(), origin_ip.clone()];
     let rels = vec![resolves(&apex, &cdn_ip), resolves(&mx, &origin_ip)];
 
-    let r = rule_au_113_direct_connect_origin_candidate(&ents, &rels, "s", 0);
+    let r = rule_au_113_direct_connect_origin_candidate(&RuleContext::new(&ents), &rels, "s", 0);
     assert_eq!(
         r.len(),
         1,
@@ -8053,7 +8467,7 @@ fn au113_fires_for_a_direct_connect_subdomain_brute_hit() {
     ];
     let rels = vec![resolves(&apex, &cdn_ip), resolves(&cpanel, &origin_ip)];
 
-    let r = rule_au_113_direct_connect_origin_candidate(&ents, &rels, "s", 0);
+    let r = rule_au_113_direct_connect_origin_candidate(&RuleContext::new(&ents), &rels, "s", 0);
     assert_eq!(
         r.len(),
         1,
@@ -8074,7 +8488,7 @@ fn au113_no_fire_when_apex_is_not_cdn_fronted() {
     let ents = vec![apex.clone(), apex_ip.clone(), mx.clone(), mx_ip.clone()];
     let rels = vec![resolves(&apex, &apex_ip), resolves(&mx, &mx_ip)];
 
-    let r = rule_au_113_direct_connect_origin_candidate(&ents, &rels, "s", 0);
+    let r = rule_au_113_direct_connect_origin_candidate(&RuleContext::new(&ents), &rels, "s", 0);
     assert!(r.is_empty(), "a non-CDN apex has nothing to unmask: {r:?}");
 }
 
@@ -8090,7 +8504,7 @@ fn au113_no_fire_when_sibling_also_resolves_to_a_cdn_edge() {
     let ents = vec![apex.clone(), cdn_ip.clone(), mx.clone(), mx_cdn_ip.clone()];
     let rels = vec![resolves(&apex, &cdn_ip), resolves(&mx, &mx_cdn_ip)];
 
-    let r = rule_au_113_direct_connect_origin_candidate(&ents, &rels, "s", 0);
+    let r = rule_au_113_direct_connect_origin_candidate(&RuleContext::new(&ents), &rels, "s", 0);
     assert!(
         r.is_empty(),
         "an equally CDN-fronted sibling leaks nothing: {r:?}"
@@ -8128,7 +8542,7 @@ fn spf_ip(value: &str, for_domain: &str) -> Entity {
 fn au111_fires_on_cloudflare_fronted_domain_with_spf_ip() {
     let dom = cdn_fronted_domain("example.com", "Cloudflare");
     let ip = spf_ip("203.0.113.9", "example.com");
-    let r = rule_au_111_cdn_origin_candidate(&[dom.clone(), ip.clone()], "s", 0);
+    let r = rule_au_111_cdn_origin_candidate(&RuleContext::new(&[dom.clone(), ip.clone()]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-111");
     assert_eq!(r[0].severity, super::Severity::Medium);
@@ -8149,7 +8563,7 @@ fn au111_does_not_fire_without_cdn_fingerprint() {
     let mut dom = Entity::new(EntityKind::Domain, "plain.com", 0.9, "s");
     dom.tag("mx"); // some other, unrelated dns_intel tag
     let ip = spf_ip("203.0.113.9", "plain.com");
-    assert!(rule_au_111_cdn_origin_candidate(&[dom, ip], "s", 0).is_empty());
+    assert!(rule_au_111_cdn_origin_candidate(&RuleContext::new(&[dom, ip]), "s", 0).is_empty());
 }
 
 #[test]
@@ -8160,7 +8574,7 @@ fn au111_does_not_fire_for_onprem_waf_appliances() {
     let dom = cdn_fronted_domain("example.com", "F5 BIG-IP");
     let ip = spf_ip("203.0.113.9", "example.com");
     assert!(
-        rule_au_111_cdn_origin_candidate(&[dom, ip], "s", 0).is_empty(),
+        rule_au_111_cdn_origin_candidate(&RuleContext::new(&[dom, ip]), "s", 0).is_empty(),
         "an on-premise WAF appliance must not be treated as a DNS-fronting CDN"
     );
 }
@@ -8193,7 +8607,7 @@ fn au113_no_fire_for_a_generic_subdomain_or_unrelated_domain() {
         resolves(&other, &other_ip),
     ];
 
-    let r = rule_au_113_direct_connect_origin_candidate(&ents, &rels, "s", 0);
+    let r = rule_au_113_direct_connect_origin_candidate(&RuleContext::new(&ents), &rels, "s", 0);
     assert!(
         r.is_empty(),
         "a generic subdomain label / unrelated domain must not fire: {r:?}"
@@ -8206,7 +8620,7 @@ fn au111_does_not_fire_for_an_unrelated_domains_spf_ip() {
     // one — must not cross-attribute.
     let dom = cdn_fronted_domain("example.com", "Cloudflare");
     let ip = spf_ip("203.0.113.9", "other-site.com");
-    assert!(rule_au_111_cdn_origin_candidate(&[dom, ip], "s", 0).is_empty());
+    assert!(rule_au_111_cdn_origin_candidate(&RuleContext::new(&[dom, ip]), "s", 0).is_empty());
 }
 
 #[test]
@@ -8219,7 +8633,7 @@ fn au111_ignores_a_non_spf_ip_address() {
     ip.add_evidence(
         Evidence::new("dns_intel", "A record for example.com").with_attr("domain", "example.com"),
     );
-    assert!(rule_au_111_cdn_origin_candidate(&[dom, ip], "s", 0).is_empty());
+    assert!(rule_au_111_cdn_origin_candidate(&RuleContext::new(&[dom, ip]), "s", 0).is_empty());
 }
 
 // ─── AU-112 tests (shared CIDR infrastructure) ────────────────────────────────
@@ -8242,7 +8656,11 @@ fn plain_ip(value: &str) -> Entity {
 fn au112_fires_when_an_independently_discovered_ip_falls_in_a_narrow_block() {
     let block = cidr_block("203.0.113.0/24");
     let ip = plain_ip("203.0.113.42");
-    let r = rule_au_112_shared_cidr_infrastructure(&[block.clone(), ip.clone()], "s", 0);
+    let r = rule_au_112_shared_cidr_infrastructure(
+        &RuleContext::new(&[block.clone(), ip.clone()]),
+        "s",
+        0,
+    );
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-112");
     assert_eq!(r[0].severity, super::Severity::Medium);
@@ -8255,7 +8673,9 @@ fn au112_fires_when_an_independently_discovered_ip_falls_in_a_narrow_block() {
 fn au112_does_not_fire_for_an_ip_outside_the_block() {
     let block = cidr_block("203.0.113.0/24");
     let ip = plain_ip("198.51.100.7");
-    assert!(rule_au_112_shared_cidr_infrastructure(&[block, ip], "s", 0).is_empty());
+    assert!(
+        rule_au_112_shared_cidr_infrastructure(&RuleContext::new(&[block, ip]), "s", 0).is_empty()
+    );
 }
 
 #[test]
@@ -8265,7 +8685,7 @@ fn au112_does_not_fire_for_a_broad_isp_scale_block() {
     let block = cidr_block("203.0.0.0/16");
     let ip = plain_ip("203.0.113.42");
     assert!(
-        rule_au_112_shared_cidr_infrastructure(&[block, ip], "s", 0).is_empty(),
+        rule_au_112_shared_cidr_infrastructure(&RuleContext::new(&[block, ip]), "s", 0).is_empty(),
         "a broad /16 block must not be treated as a shared-infrastructure signal"
     );
 }
@@ -8285,14 +8705,20 @@ fn au112_does_not_fire_when_already_explicitly_linked() {
         )
         .with_attr("cidr", "203.0.113.0/24"),
     );
-    assert!(rule_au_112_shared_cidr_infrastructure(&[block, ip], "s", 0).is_empty());
+    assert!(
+        rule_au_112_shared_cidr_infrastructure(&RuleContext::new(&[block, ip]), "s", 0).is_empty()
+    );
 }
 
 #[test]
 fn au112_fires_for_a_narrow_ipv6_block() {
     let block = cidr_block("2001:db8:1::/64");
     let ip = plain_ip("2001:db8:1::42");
-    let r = rule_au_112_shared_cidr_infrastructure(&[block.clone(), ip.clone()], "s", 0);
+    let r = rule_au_112_shared_cidr_infrastructure(
+        &RuleContext::new(&[block.clone(), ip.clone()]),
+        "s",
+        0,
+    );
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].entity_uids, vec![block.uid.clone(), ip.uid.clone()]);
 }
@@ -8302,7 +8728,9 @@ fn au112_does_not_fire_for_a_broad_ipv6_allocation() {
     // /32 is a typical ISP-scale IPv6 allocation, well above the /48 floor.
     let block = cidr_block("2001:db8::/32");
     let ip = plain_ip("2001:db8:1::42");
-    assert!(rule_au_112_shared_cidr_infrastructure(&[block, ip], "s", 0).is_empty());
+    assert!(
+        rule_au_112_shared_cidr_infrastructure(&RuleContext::new(&[block, ip]), "s", 0).is_empty()
+    );
 }
 
 // ─── AU-114 tests (sanctions / debarment / PEP exposure) ──────────────────────
@@ -8324,7 +8752,7 @@ fn au114_sanctioned_person_fires_critical() {
         0.60,
         crate::core::tags::SANCTIONED,
     );
-    let r = rule_au_114_sanctions_exposure(std::slice::from_ref(&e), "s", 0);
+    let r = rule_au_114_sanctions_exposure(&RuleContext::new(std::slice::from_ref(&e)), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-114");
     assert_eq!(r[0].severity, super::Severity::Critical);
@@ -8336,7 +8764,7 @@ fn au114_sanctioned_person_fires_critical() {
 #[test]
 fn au114_debarred_only_fires_high() {
     let e = flagged_person("Barred Vendor Pty", 0.60, crate::core::tags::DEBARRED);
-    let r = rule_au_114_sanctions_exposure(&[e], "s", 0);
+    let r = rule_au_114_sanctions_exposure(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].severity, super::Severity::High);
     assert!(r[0].description.contains("debarred"));
@@ -8347,7 +8775,7 @@ fn au114_pep_only_fires_medium_and_frames_as_a_lead() {
     // Wikidata's PEP signal (tags::PEP == "pep") is a due-diligence lead, not a
     // determination — it must fire only Medium and never assert guilt.
     let e = flagged_person("Public Office Holder", 0.72, crate::core::tags::PEP);
-    let r = rule_au_114_sanctions_exposure(&[e], "s", 0);
+    let r = rule_au_114_sanctions_exposure(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].severity, super::Severity::Medium);
     assert!(r[0].description.contains("politically-exposed"));
@@ -8363,7 +8791,7 @@ fn au114_takes_the_strongest_flag_when_several_are_present() {
     // (Critical), with every flag enumerated in the description.
     let mut e = flagged_person("Dual Flagged Entity", 0.60, crate::core::tags::SANCTIONED);
     e.tag(crate::core::tags::DEBARRED);
-    let r = rule_au_114_sanctions_exposure(&[e], "s", 0);
+    let r = rule_au_114_sanctions_exposure(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].severity, super::Severity::Critical);
     assert!(r[0].description.contains("sanctioned"));
@@ -8376,7 +8804,7 @@ fn au114_surfaces_the_sanctions_programme_from_evidence() {
     e.add_evidence(
         Evidence::new("opensanctions", "OpenSanctions match").with_attr("program_id", "US-RUSHAR"),
     );
-    let r = rule_au_114_sanctions_exposure(&[e], "s", 0);
+    let r = rule_au_114_sanctions_exposure(&RuleContext::new(&[e]), "s", 0);
     assert_eq!(r.len(), 1);
     assert!(
         r[0].description.contains("US-RUSHAR"),
@@ -8389,12 +8817,12 @@ fn au114_surfaces_the_sanctions_programme_from_evidence() {
 fn au114_does_not_fire_for_an_unflagged_or_low_confidence_entity() {
     // No risk tag → no finding.
     let plain = Entity::new(EntityKind::Person, "Ordinary Person", 0.80, "s");
-    assert!(rule_au_114_sanctions_exposure(&[plain], "s", 0).is_empty());
+    assert!(rule_au_114_sanctions_exposure(&RuleContext::new(&[plain]), "s", 0).is_empty());
     // Flagged but below the 0.55 definitive-match floor → no finding (a weak,
     // speculative person must never be asserted as sanctioned).
     let weak = flagged_person("Weak Match", 0.40, crate::core::tags::SANCTIONED);
     assert!(
-        rule_au_114_sanctions_exposure(&[weak], "s", 0).is_empty(),
+        rule_au_114_sanctions_exposure(&RuleContext::new(&[weak]), "s", 0).is_empty(),
         "a sub-floor confidence entity must not fire a sanctions finding"
     );
 }
@@ -8411,7 +8839,11 @@ fn au115_joins_an_ssid_to_its_wigle_geolocation() {
     coord.add_evidence(
         Evidence::new("wigle", "WiGLE SSID observed").with_attr("ssid", "Jordans_Home_5G"),
     );
-    let r = rule_au_115_personal_wifi_geolocated(&[ssid.clone(), coord.clone()], "s", 0);
+    let r = rule_au_115_personal_wifi_geolocated(
+        &RuleContext::new(&[ssid.clone(), coord.clone()]),
+        "s",
+        0,
+    );
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-115");
     assert_eq!(r[0].severity, super::Severity::High);
@@ -8427,13 +8859,18 @@ fn au115_requires_a_name_match_and_the_wigle_ssid_located_tag() {
     let mut other = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.72, "s");
     other.tag("ssid-located");
     other.add_evidence(Evidence::new("wigle", "x").with_attr("ssid", "SomeoneElse"));
-    assert!(rule_au_115_personal_wifi_geolocated(&[ssid.clone(), other], "s", 0).is_empty());
+    assert!(
+        rule_au_115_personal_wifi_geolocated(&RuleContext::new(&[ssid.clone(), other]), "s", 0)
+            .is_empty()
+    );
     // A matching name but a non-WiGLE coordinate (no ssid-located tag) must NOT
     // fire — an IP-geo fix can't masquerade as a personal-network geolocation.
     let mut ipgeo = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.6, "s");
     ipgeo.tag("geoint");
     ipgeo.add_evidence(Evidence::new("ip_geo", "x").with_attr("ssid", "Jordans_Home_5G"));
-    assert!(rule_au_115_personal_wifi_geolocated(&[ssid, ipgeo], "s", 0).is_empty());
+    assert!(
+        rule_au_115_personal_wifi_geolocated(&RuleContext::new(&[ssid, ipgeo]), "s", 0).is_empty()
+    );
 }
 
 // ─── AU-084 tests (cell tower dual-source) ────────────────────────────────────
@@ -8454,7 +8891,7 @@ fn au084_fires_when_both_sources_present() {
         "505-1-1234-56789",
         &["cell_intel", "opencellid"],
     )];
-    let r = rule_au_084_cell_tower_dual_source(&ents, "s", 0);
+    let r = rule_au_084_cell_tower_dual_source(&RuleContext::new(&ents), "s", 0);
     assert_eq!(r.len(), 1, "dual-source cell tower must fire AU-084");
     assert_eq!(r[0].rule_id, "AU-084");
 }
@@ -8463,7 +8900,7 @@ fn au084_fires_when_both_sources_present() {
 fn au084_does_not_fire_on_single_source() {
     use super::rules::rule_au_084_cell_tower_dual_source;
     let ents = vec![cell_tower("505-1-1234-56789", &["cell_intel"])];
-    let r = rule_au_084_cell_tower_dual_source(&ents, "s", 0);
+    let r = rule_au_084_cell_tower_dual_source(&RuleContext::new(&ents), "s", 0);
     assert!(r.is_empty(), "single-source tower must not fire AU-084");
 }
 
@@ -8475,7 +8912,7 @@ fn au084_medium_severity_for_three_or_more_towers() {
         cell_tower("505-1-1234-22222", &["cell_intel", "opencellid"]),
         cell_tower("505-1-1234-33333", &["cell_intel", "opencellid"]),
     ];
-    let r = rule_au_084_cell_tower_dual_source(&ents, "s", 0);
+    let r = rule_au_084_cell_tower_dual_source(&RuleContext::new(&ents), "s", 0);
     assert_eq!(r.len(), 1, "three dual-source towers must fire one AU-084");
     assert_eq!(r[0].severity, Severity::Medium);
 }
@@ -8487,7 +8924,7 @@ fn au084_ignores_non_cell_tower_device_ids() {
     e.add_evidence(Evidence::new("cell_intel", "mac addr"));
     e.add_evidence(Evidence::new("opencellid", "mac addr"));
     // No cell-tower tag → must not fire.
-    let r = rule_au_084_cell_tower_dual_source(&[e], "s", 0);
+    let r = rule_au_084_cell_tower_dual_source(&RuleContext::new(&[e]), "s", 0);
     assert!(r.is_empty(), "non-cell-tower DeviceId must not fire AU-084");
 }
 
@@ -8500,7 +8937,7 @@ fn au076_email_username_localpart_bridge_fires_on_canonical_match() {
     email.add_evidence(Evidence::new("breach", "x".to_string()));
     let mut uname = Entity::new(EntityKind::Username, "haigen.bamford", 0.8, "s");
     uname.add_evidence(Evidence::new("github_user", "x".to_string()));
-    let r = rule_au_076_email_username_localpart_bridge(&[email, uname], "s", 0);
+    let r = rule_au_076_email_username_localpart_bridge(&RuleContext::new(&[email, uname]), "s", 0);
     assert!(
         !r.is_empty(),
         "AU-076 must fire when local-part canonicalises to a username"
@@ -8528,7 +8965,7 @@ fn au076_consolidates_permutation_flood_into_one_per_canonical_handle() {
     for u in ["matthew.diegmann", "matthewdiegmann", "matthew_diegmann"] {
         ents.push(Entity::new(EntityKind::Username, u, 0.3, "s"));
     }
-    let r = rule_au_076_email_username_localpart_bridge(&ents, "s", 0);
+    let r = rule_au_076_email_username_localpart_bridge(&RuleContext::new(&ents), "s", 0);
     assert_eq!(
         r.len(),
         1,
@@ -8558,7 +8995,7 @@ fn au077_name_derived_username_confirmed_fires_on_predict_plus_confirm() {
         "github_user",
         "Found profile github.com/hbamford".to_string(),
     ));
-    let r = rule_au_077_name_derived_username_confirmed(&[u], "s", 0);
+    let r = rule_au_077_name_derived_username_confirmed(&RuleContext::new(&[u]), "s", 0);
     assert!(
         !r.is_empty(),
         "AU-077 must fire when derivation + live confirmation coexist"
@@ -8568,7 +9005,8 @@ fn au077_name_derived_username_confirmed_fires_on_predict_plus_confirm() {
     // A username with only derivation (no discovery) must NOT fire.
     let mut derived_only = Entity::new(EntityKind::Username, "hbamford2", 0.8, "s");
     derived_only.add_evidence(Evidence::new("name_intel", "Derived handle".to_string()));
-    let r2 = rule_au_077_name_derived_username_confirmed(&[derived_only], "s", 0);
+    let r2 =
+        rule_au_077_name_derived_username_confirmed(&RuleContext::new(&[derived_only]), "s", 0);
     assert!(r2.is_empty(), "derivation alone must not fire AU-077");
 }
 
@@ -8584,7 +9022,7 @@ fn au086_name_derived_email_confirmed_fires_on_predict_plus_confirm() {
         "Speculative email permuted from name",
     ));
     e.add_evidence(Evidence::new("hibp", "found in 2 breaches"));
-    let r = rule_au_086_name_derived_email_confirmed(&[e], "s", 0);
+    let r = rule_au_086_name_derived_email_confirmed(&RuleContext::new(&[e]), "s", 0);
     assert!(
         !r.is_empty(),
         "AU-086 must fire on derivation + breach confirmation"
@@ -8598,7 +9036,7 @@ fn au086_name_derived_email_confirmed_fires_on_predict_plus_confirm() {
     guess.tag("name-derived");
     guess.add_evidence(Evidence::new("name_intel", "permuted"));
     assert!(
-        rule_au_086_name_derived_email_confirmed(&[guess], "s", 0).is_empty(),
+        rule_au_086_name_derived_email_confirmed(&RuleContext::new(&[guess]), "s", 0).is_empty(),
         "an unconfirmed permutation must not fire AU-086"
     );
 
@@ -8607,7 +9045,7 @@ fn au086_name_derived_email_confirmed_fires_on_predict_plus_confirm() {
     let mut found = Entity::new(EntityKind::Email, "someone@corp.com", 0.72, "s");
     found.add_evidence(Evidence::new("hibp", "breached"));
     assert!(
-        rule_au_086_name_derived_email_confirmed(&[found], "s", 0).is_empty(),
+        rule_au_086_name_derived_email_confirmed(&RuleContext::new(&[found]), "s", 0).is_empty(),
         "a non-derived breach email must not fire AU-086"
     );
 }
@@ -8618,7 +9056,7 @@ fn au078_hub_entity_fires_for_hub_tagged_entity() {
     let mut e = Entity::new(EntityKind::Email, "repeat@example.com", 0.9, "s");
     e.add_evidence(Evidence::new("history", "x".to_string()));
     e.tag("hub-entity");
-    let r = rule_au_078_hub_entity(&[e], "s", 0);
+    let r = rule_au_078_hub_entity(&RuleContext::new(&[e]), "s", 0);
     assert!(
         !r.is_empty(),
         "AU-078 must fire for hub-entity tagged entities"
@@ -8627,7 +9065,7 @@ fn au078_hub_entity_fires_for_hub_tagged_entity() {
     assert_eq!(r[0].severity, super::Severity::Medium);
     // Untagged entity must NOT fire.
     let plain = Entity::new(EntityKind::Email, "other@example.com", 0.9, "s");
-    let r2 = rule_au_078_hub_entity(&[plain], "s", 0);
+    let r2 = rule_au_078_hub_entity(&RuleContext::new(&[plain]), "s", 0);
     assert!(r2.is_empty(), "untagged entity must not fire AU-078");
 }
 
@@ -8642,7 +9080,7 @@ fn au079_bio_cross_mention_fires_on_structured_twitter_attr() {
     // The referenced Twitter handle is also in the scan as a Username entity.
     let mut tw = Entity::new(EntityKind::Username, "hbamford_tw", 0.80, "s");
     tw.add_evidence(Evidence::new("social_probe", "Twitter profile".to_string()));
-    let r = rule_au_079_bio_cross_mention(&[gh, tw], "s", 0);
+    let r = rule_au_079_bio_cross_mention(&RuleContext::new(&[gh, tw]), "s", 0);
     assert!(
         !r.is_empty(),
         "AU-079 must fire when twitter attr names a known username"
@@ -8660,7 +9098,7 @@ fn au079_bio_cross_mention_fires_on_at_mention_in_bio() {
     gh.add_evidence(ev);
     let mut reddit = Entity::new(EntityKind::Username, "hbamford_reddit", 0.80, "s");
     reddit.add_evidence(Evidence::new("reddit_user", "Reddit profile".to_string()));
-    let r = rule_au_079_bio_cross_mention(&[gh, reddit], "s", 0);
+    let r = rule_au_079_bio_cross_mention(&RuleContext::new(&[gh, reddit]), "s", 0);
     assert!(!r.is_empty(), "AU-079 must fire on @-mention in bio");
     assert_eq!(r[0].rule_id, "AU-079");
     // Must NOT fire linking entity to itself (no self-loop)
@@ -8688,7 +9126,7 @@ fn au080_recurring_cooccurrence_link_fires_on_tagged_pair() {
     a.tag("cross-scan-cooccurrence");
     let mut b = Entity::new(EntityKind::Email, "bob@example.com", 0.9, "s");
     b.add_evidence(Evidence::new("breach", "Breach record".to_string()));
-    let r = rule_au_080_recurring_cooccurrence_link(&[a, b], "s", 0);
+    let r = rule_au_080_recurring_cooccurrence_link(&RuleContext::new(&[a, b]), "s", 0);
     assert!(
         !r.is_empty(),
         "AU-080 must fire when a co-occurrence partner is present"
@@ -8706,7 +9144,7 @@ fn au080_recurring_cooccurrence_link_fires_on_tagged_pair() {
     a2.tag("cross-scan-cooccurrence");
     a2.tag("hub-cooccurrence");
     let b2 = Entity::new(EntityKind::Email, "bob2@example.com", 0.9, "s");
-    let r2 = rule_au_080_recurring_cooccurrence_link(&[a2, b2], "s", 0);
+    let r2 = rule_au_080_recurring_cooccurrence_link(&RuleContext::new(&[a2, b2]), "s", 0);
     assert!(
         !r2.is_empty(),
         "AU-080 must fire for hub-level co-occurrence"
@@ -8755,7 +9193,7 @@ fn au080_gates_sub_floor_endpoints_and_bounds_the_tail() {
     hub.tag("cross-scan-cooccurrence");
     all.insert(0, hub);
 
-    let r = rule_au_080_recurring_cooccurrence_link(&all, "s", 0);
+    let r = rule_au_080_recurring_cooccurrence_link(&RuleContext::new(&all), "s", 0);
 
     // 15 above-floor pairs → 12 ranked + 1 rollup = 13; the 0.30 candidate is
     // gated out and never becomes a pair.
@@ -8792,7 +9230,8 @@ fn au081_canonical_person_name_match_fires_on_cross_source_same_name() {
     breach_p.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
     let mut social_p = Entity::new(EntityKind::Person, "HAIGEN BAMFORD", 0.75, "s");
     social_p.add_evidence(Evidence::new("social_probe", "Social profile".to_string()));
-    let r = rule_au_081_canonical_person_name_match(&[breach_p, social_p], "s", 0);
+    let r =
+        rule_au_081_canonical_person_name_match(&RuleContext::new(&[breach_p, social_p]), "s", 0);
     assert!(
         !r.is_empty(),
         "AU-081 must fire for same-name persons from different source families"
@@ -8804,7 +9243,8 @@ fn au081_canonical_person_name_match_fires_on_cross_source_same_name() {
     breach2.add_evidence(Evidence::new("dehashed", "Breach record".to_string()));
     let mut social2 = Entity::new(EntityKind::Person, "Haigen Bamford", 0.75, "s");
     social2.add_evidence(Evidence::new("github_user", "GitHub profile".to_string()));
-    let r2 = rule_au_081_canonical_person_name_match(&[breach2, social2], "s", 0);
+    let r2 =
+        rule_au_081_canonical_person_name_match(&RuleContext::new(&[breach2, social2]), "s", 0);
     assert!(
         !r2.is_empty(),
         "AU-081 must match 'Last, First' vs 'First Last' format"
@@ -8814,7 +9254,7 @@ fn au081_canonical_person_name_match_fires_on_cross_source_same_name() {
     dup1.add_evidence(Evidence::new("name_intel", "Derived".to_string()));
     let mut dup2 = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
     dup2.add_evidence(Evidence::new("name_intel", "Derived".to_string()));
-    let r3 = rule_au_081_canonical_person_name_match(&[dup1, dup2], "s", 0);
+    let r3 = rule_au_081_canonical_person_name_match(&RuleContext::new(&[dup1, dup2]), "s", 0);
     assert!(
         r3.is_empty(),
         "AU-081 must not fire for identical source sets"
@@ -8833,7 +9273,11 @@ fn au081_same_family_different_databases_is_not_independent() {
     dehashed_p.add_evidence(Evidence::new("dehashed", "Breach record".to_string()));
     let mut leakcheck_p = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
     leakcheck_p.add_evidence(Evidence::new("leakcheck", "Breach record".to_string()));
-    let r = rule_au_081_canonical_person_name_match(&[dehashed_p, leakcheck_p], "s", 0);
+    let r = rule_au_081_canonical_person_name_match(
+        &RuleContext::new(&[dehashed_p, leakcheck_p]),
+        "s",
+        0,
+    );
     assert!(
         r.is_empty(),
         "two databases of the same source family are not independent — must not fire"
@@ -8853,7 +9297,8 @@ fn au081_common_name_is_a_medium_lead_not_a_high_assert() {
     breach_p.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
     let mut social_p = Entity::new(EntityKind::Person, "Smith John", 0.75, "s");
     social_p.add_evidence(Evidence::new("proxycurl", "LinkedIn profile".to_string()));
-    let r = rule_au_081_canonical_person_name_match(&[breach_p, social_p], "s", 0);
+    let r =
+        rule_au_081_canonical_person_name_match(&RuleContext::new(&[breach_p, social_p]), "s", 0);
     assert!(
         !r.is_empty(),
         "AU-081 must still fire on a shared canonical name — the discount \
@@ -8877,7 +9322,8 @@ fn au081_common_name_is_a_medium_lead_not_a_high_assert() {
     breach_d.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
     let mut social_d = Entity::new(EntityKind::Person, "Bamford Haigen", 0.75, "s");
     social_d.add_evidence(Evidence::new("proxycurl", "LinkedIn profile".to_string()));
-    let rd = rule_au_081_canonical_person_name_match(&[breach_d, social_d], "s", 0);
+    let rd =
+        rule_au_081_canonical_person_name_match(&RuleContext::new(&[breach_d, social_d]), "s", 0);
     assert!(!rd.is_empty(), "AU-081 must fire on the distinctive name");
     assert_eq!(
         rd[0].severity,
@@ -8908,7 +9354,7 @@ fn au081_tool_derived_name_is_not_independent_corroboration() {
     real.add_evidence(Evidence::new("github_user", "GitHub profile".to_string()));
     let mut derived = Entity::new(EntityKind::Person, "Bamford, Haigen", 0.7, "s");
     derived.add_evidence(Evidence::new("name_intel", "Derived from name".to_string()));
-    let r = rule_au_081_canonical_person_name_match(&[real, derived], "s", 0);
+    let r = rule_au_081_canonical_person_name_match(&RuleContext::new(&[real, derived]), "s", 0);
     assert!(
         r.is_empty(),
         "a name known only from the tool's own derivation (name_intel) is not an \
@@ -8931,7 +9377,7 @@ fn au081_still_fires_when_a_genuine_second_source_is_also_name_enriched() {
     e1.add_evidence(Evidence::new("name_intel", "Derived from name".to_string()));
     let mut e2 = Entity::new(EntityKind::Person, "Bamford Haigen", 0.75, "s");
     e2.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
-    let r = rule_au_081_canonical_person_name_match(&[e1, e2], "s", 0);
+    let r = rule_au_081_canonical_person_name_match(&RuleContext::new(&[e1, e2]), "s", 0);
     assert!(
         !r.is_empty(),
         "a genuine code+breach cross-source match must still fire even when \
@@ -8961,7 +9407,7 @@ fn au082_api_key_dual_pathway_fires_on_code_plus_breach() {
         "oathnet_pro",
         "Found in stealer log".to_string(),
     ));
-    let r = rule_au_082_api_key_dual_pathway(&[e], "s", 0);
+    let r = rule_au_082_api_key_dual_pathway(&RuleContext::new(&[e]), "s", 0);
     assert!(
         !r.is_empty(),
         "AU-082 must fire when same API key appears in code+breach families"
@@ -8971,7 +9417,7 @@ fn au082_api_key_dual_pathway_fires_on_code_plus_breach() {
     // Single-family key must NOT fire AU-082 (AU-021 handles that).
     let mut single = Entity::new(EntityKind::ApiKey, "sk-only-breach", 0.85, "s");
     single.add_evidence(Evidence::new("oathnet_pro", "Stealer".to_string()));
-    let r2 = rule_au_082_api_key_dual_pathway(&[single], "s", 0);
+    let r2 = rule_au_082_api_key_dual_pathway(&RuleContext::new(&[single]), "s", 0);
     assert!(
         r2.is_empty(),
         "AU-082 must not fire for a single-family API key"
@@ -8998,7 +9444,7 @@ fn au082_does_not_fire_on_a_recall_replay_of_the_same_sighting() {
         crate::core::entity::RECALL_SOURCE,
         "Recalled from a prior scan".to_string(),
     ));
-    let r = rule_au_082_api_key_dual_pathway(&[e], "s", 0);
+    let r = rule_au_082_api_key_dual_pathway(&RuleContext::new(&[e]), "s", 0);
     assert!(
         r.is_empty(),
         "a recall replay of the same sighting must not manufacture a second \
@@ -9014,7 +9460,7 @@ fn au082_does_not_fire_on_a_recall_replay_of_the_same_sighting() {
         "Found in public repository".to_string(),
     ));
     e2.add_evidence(Evidence::new("payid", "Derived enrichment".to_string()));
-    let r2 = rule_au_082_api_key_dual_pathway(&[e2], "s", 0);
+    let r2 = rule_au_082_api_key_dual_pathway(&RuleContext::new(&[e2]), "s", 0);
     assert!(
         r2.is_empty(),
         "an enrichment-pass evidence entry must not manufacture a second \

@@ -269,11 +269,11 @@ mod tests {
             "the public entry runs at the production cap; this fixture is under it"
         );
         // The cap bounds the pair sweep: 0 probes → nothing; 1 probe → ≤1 link.
-        assert!(multipath_corroborated_links_capped(&ents, &rels, 0).is_empty());
-        assert!(multipath_corroborated_links_capped(&ents, &rels, 1).len() <= 1);
+        assert!(multipath_corroborated_links_capped(&RuleContext::new(&ents), &rels, 0).is_empty());
+        assert!(multipath_corroborated_links_capped(&RuleContext::new(&ents), &rels, 1).len() <= 1);
         // Deterministic across runs.
-        let a = multipath_corroborated_links_capped(&ents, &rels, 3);
-        let b = multipath_corroborated_links_capped(&ents, &rels, 3);
+        let a = multipath_corroborated_links_capped(&RuleContext::new(&ents), &rels, 3);
+        let b = multipath_corroborated_links_capped(&RuleContext::new(&ents), &rels, 3);
         assert_eq!(
             a.iter().map(|l| (&l.a_uid, &l.b_uid)).collect::<Vec<_>>(),
             b.iter().map(|l| (&l.a_uid, &l.b_uid)).collect::<Vec<_>>(),

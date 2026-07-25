@@ -1,7 +1,7 @@
 
 use super::{
-    Entity, EntityKind, canonical_handle, date_diff_days, is_generic_handle, source_family,
-    tagged_matching_sources, text_mentions_ip,
+    Entity, EntityKind, RuleContext, canonical_handle, date_diff_days, is_generic_handle,
+    source_family, tagged_matching_sources, text_mentions_ip,
 };
 use crate::core::entity::Evidence;
 
@@ -227,7 +227,7 @@ use crate::core::entity::Evidence;
                 .with_attr("locale", "sv")
                 .with_attr("pattern", "surname_suffix"),
         );
-        let results = rule_au_083_locale_multi_email_corroboration(&[a], "scan-au083-arch", 0);
+        let results = rule_au_083_locale_multi_email_corroboration(&RuleContext::new(&[a]), "scan-au083-arch", 0);
         assert_eq!(results.len(), 1, "locale rule must fire when >=2 email_locale evidence entries share a locale");
     }
 
@@ -252,7 +252,7 @@ use crate::core::entity::Evidence;
         );
         b.add_evidence(Evidence::new("breach", "record").with_attr("username", "bob"));
         b.add_evidence(Evidence::new("breach", "record").with_attr("username", "carol"));
-        let results = super::rule_au_121_credential_reuse_blast_radius(&[a, b], "scan-au121", 0);
+        let results = super::rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a, b]), "scan-au121", 0);
         assert_eq!(
             results.len(),
             1,
@@ -269,7 +269,7 @@ use crate::core::entity::Evidence;
         hw.tag("bluetooth");
         let mut rnd = Entity::new(EntityKind::MacAddress, "36:32:62:36:31:33", 0.8, "scan-au122");
         rnd.tag("bluetooth");
-        let results = super::rule_au_122_trackable_rf_device(&[hw, rnd], "scan-au122", 0);
+        let results = super::rule_au_122_trackable_rf_device(&RuleContext::new(&[hw, rnd]), "scan-au122", 0);
         assert_eq!(
             results.len(),
             1,
@@ -293,7 +293,7 @@ use crate::core::entity::Evidence;
         };
         let rels = [mk(&a, &ip1), mk(&b, &ip1), mk(&b, &ip2), mk(&c, &ip2)];
         let ents = [a, b, c, ip1, ip2];
-        let results = super::rule_au_116_infrastructure_pivot_closure(&ents, &rels, "scan-au116", 0);
+        let results = super::rule_au_116_infrastructure_pivot_closure(&RuleContext::new(&ents), &rels, "scan-au116", 0);
         assert_eq!(
             results.len(),
             1,
@@ -312,7 +312,7 @@ use crate::core::entity::Evidence;
         let mut buds = Entity::new(EntityKind::MacAddress, "36:32:62:36:31:33", 0.8, "scan-au117");
         buds.tag("bluetooth");
         buds.tag("bond:bonded");
-        let results = super::rule_au_117_personal_device_constellation(&[car, buds], "scan-au117", 0);
+        let results = super::rule_au_117_personal_device_constellation(&RuleContext::new(&[car, buds]), "scan-au117", 0);
         assert_eq!(
             results.len(),
             1,
@@ -327,7 +327,7 @@ use crate::core::entity::Evidence;
         // in the same scan.
         let real = Entity::new(EntityKind::Domain, "paypal.com", 0.8, "scan-au118");
         let fake = Entity::new(EntityKind::Domain, "paypa1.com", 0.8, "scan-au118");
-        let results = super::rule_au_118_lookalike_domain_impersonation(&[real, fake], "scan-au118", 0);
+        let results = super::rule_au_118_lookalike_domain_impersonation(&RuleContext::new(&[real, fake]), "scan-au118", 0);
         assert_eq!(
             results.len(),
             1,
@@ -350,7 +350,7 @@ use crate::core::entity::Evidence;
             mk("https://tinder.com/@rhino", "Tinder"),
             mk("https://badoo.com/@rhino", "Badoo"),
         ];
-        let results = super::rule_au_119_dating_platform_exposure(&ents, "scan-au119", 0);
+        let results = super::rule_au_119_dating_platform_exposure(&RuleContext::new(&ents), "scan-au119", 0);
         assert_eq!(
             results.len(),
             1,
@@ -367,7 +367,7 @@ use crate::core::entity::Evidence;
         e.tag("cat:fans");
         e.tag("platform:OnlyFans");
         e.tag("verified-detection");
-        let results = super::rule_au_120_monetized_creator_exposure(&[e], "scan-au120", 0);
+        let results = super::rule_au_120_monetized_creator_exposure(&RuleContext::new(&[e]), "scan-au120", 0);
         assert_eq!(
             results.len(),
             1,
@@ -385,7 +385,7 @@ use crate::core::entity::Evidence;
         a.add_evidence(Evidence::new("github_user", "found"));
         let mut b = Entity::new(EntityKind::Username, "jdiegmann92", 0.7, "scan-au123");
         b.add_evidence(Evidence::new("keybase", "found"));
-        let results = super::rule_au_123_numeric_variant_handle_persona(&[a, b], "scan-au123", 0);
+        let results = super::rule_au_123_numeric_variant_handle_persona(&RuleContext::new(&[a, b]), "scan-au123", 0);
         assert_eq!(
             results.len(),
             1,

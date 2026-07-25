@@ -277,7 +277,7 @@ mod tests {
             HASH_B,
             &[("username", "bob"), ("username", "carol")],
         );
-        let out = rule_au_121_credential_reuse_blast_radius(&[a, b], "s", 0);
+        let out = rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a, b]), "s", 0);
         assert_eq!(out.len(), 1, "the transitive chain must fire once");
         assert_eq!(out[0].rule_id, "AU-121");
         assert_eq!(
@@ -301,7 +301,7 @@ mod tests {
             ],
         );
         assert!(
-            rule_au_121_credential_reuse_blast_radius(&[a], "s", 0).is_empty(),
+            rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a]), "s", 0).is_empty(),
             "a single-secret span is AU-047's job, not AU-121's"
         );
     }
@@ -320,7 +320,8 @@ mod tests {
             &[("username", "alice"), ("username", "bob")],
         );
         assert!(
-            rule_au_121_credential_reuse_blast_radius(&[a, b], "s", 0).is_empty(),
+            rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a, b]), "s", 0)
+                .is_empty(),
             "two handles is a pair, not a blast radius"
         );
     }
@@ -339,7 +340,7 @@ mod tests {
             "c0rrect-h0rse-b4ttery-st4ple-9",
             &[("username", "bob"), ("username", "carol")],
         );
-        let out = rule_au_121_credential_reuse_blast_radius(&[a, b], "s", 0);
+        let out = rule_au_121_credential_reuse_blast_radius(&RuleContext::new(&[a, b]), "s", 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].severity, Severity::High);
     }

@@ -113,7 +113,11 @@ mod tests {
     fn au118_fires_on_a_homoglyph_lookalike_pair() {
         let real = dom("paypal.com");
         let fake = dom("paypa1.com");
-        let out = rule_au_118_lookalike_domain_impersonation(&[real.clone(), fake.clone()], "s", 0);
+        let out = rule_au_118_lookalike_domain_impersonation(
+            &RuleContext::new(&[real.clone(), fake.clone()]),
+            "s",
+            0,
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rule_id, "AU-118");
         assert_eq!(out[0].severity, Severity::High);
@@ -125,7 +129,7 @@ mod tests {
     fn au118_silent_on_a_brand_tld_variant() {
         // Same brand label, different TLD — legitimate, not impersonation.
         let out = rule_au_118_lookalike_domain_impersonation(
-            &[dom("paypal.com"), dom("paypal.net")],
+            &RuleContext::new(&[dom("paypal.com"), dom("paypal.net")]),
             "s",
             0,
         );
@@ -138,7 +142,7 @@ mod tests {
     #[test]
     fn au118_silent_on_unrelated_domains() {
         let out = rule_au_118_lookalike_domain_impersonation(
-            &[dom("google.com"), dom("facebook.com")],
+            &RuleContext::new(&[dom("google.com"), dom("facebook.com")]),
             "s",
             0,
         );
@@ -149,7 +153,7 @@ mod tests {
     fn au118_folds_subdomains_to_the_registrable_pair() {
         // Subdomains must not multiply the finding — both fold to one registrable.
         let out = rule_au_118_lookalike_domain_impersonation(
-            &[dom("login.paypal.com"), dom("secure.paypa1.com")],
+            &RuleContext::new(&[dom("login.paypal.com"), dom("secure.paypa1.com")]),
             "s",
             0,
         );

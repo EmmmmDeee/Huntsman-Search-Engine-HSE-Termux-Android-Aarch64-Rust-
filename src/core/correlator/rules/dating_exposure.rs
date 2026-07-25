@@ -124,7 +124,11 @@ mod tests {
     #[test]
     fn au119_fires_on_a_confirmed_dating_profile() {
         let a = dating_profile("https://tinder.com/@rhino", "Tinder", true);
-        let out = rule_au_119_dating_platform_exposure(std::slice::from_ref(&a), "s", 0);
+        let out = rule_au_119_dating_platform_exposure(
+            &RuleContext::new(std::slice::from_ref(&a)),
+            "s",
+            0,
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rule_id, "AU-119");
         assert_eq!(out[0].severity, Severity::Medium);
@@ -139,7 +143,7 @@ mod tests {
             dating_profile("https://pof.com/@x", "PlentyOfFish", true),
             dating_profile("https://badoo.com/@x", "Badoo", true),
         ];
-        let out = rule_au_119_dating_platform_exposure(&ents, "s", 0);
+        let out = rule_au_119_dating_platform_exposure(&RuleContext::new(&ents), "s", 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].severity, Severity::High);
     }
@@ -150,7 +154,7 @@ mod tests {
         // of a real profile — it must not manufacture a personal-safety finding.
         let a = dating_profile("https://badoo.com/@x", "Badoo", false);
         assert!(
-            rule_au_119_dating_platform_exposure(&[a], "s", 0).is_empty(),
+            rule_au_119_dating_platform_exposure(&RuleContext::new(&[a]), "s", 0).is_empty(),
             "a status-only dating hit is not a confirmed profile"
         );
     }
@@ -161,7 +165,7 @@ mod tests {
         github.tag("cat:dev");
         github.tag("verified-detection");
         assert!(
-            rule_au_119_dating_platform_exposure(&[github], "s", 0).is_empty(),
+            rule_au_119_dating_platform_exposure(&RuleContext::new(&[github]), "s", 0).is_empty(),
             "a dev profile is not a dating exposure"
         );
     }

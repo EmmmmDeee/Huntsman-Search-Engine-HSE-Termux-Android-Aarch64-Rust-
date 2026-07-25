@@ -229,7 +229,7 @@ pub(super) fn promote_multipath_corroborated(
     entities: &mut [Entity],
     relations: &[Relation],
 ) -> usize {
-    use crate::core::correlator::{multipath_corroborated_links, RuleContext};
+    use crate::core::correlator::{RuleContext, multipath_corroborated_links};
     use crate::core::entity::Evidence;
 
     // Resolve the corroborated endpoints (and the reason for each) up front, so

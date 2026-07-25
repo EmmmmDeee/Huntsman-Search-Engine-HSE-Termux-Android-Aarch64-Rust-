@@ -114,7 +114,7 @@ mod tests {
         ];
         let ents = [email.clone(), domain.clone(), person.clone(), uname.clone()];
 
-        let out = rule_au_067_resolved_identity_cluster(&ents, &rels, "s", 0);
+        let out = rule_au_067_resolved_identity_cluster(&RuleContext::new(&ents), &rels, "s", 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rule_id, "AU-067");
         // All three identities are members; the conduit domain is not.
@@ -138,8 +138,13 @@ mod tests {
             rel(&domain, &person, RelationKind::RegisteredBy, 0.8),
         ];
         assert!(
-            rule_au_067_resolved_identity_cluster(&[email, domain, person], &rels, "s", 0)
-                .is_empty()
+            rule_au_067_resolved_identity_cluster(
+                &RuleContext::new(&[email, domain, person]),
+                &rels,
+                "s",
+                0
+            )
+            .is_empty()
         );
     }
 
@@ -157,8 +162,13 @@ mod tests {
             rel(&domain, &uname, RelationKind::DerivedFrom, 0.2),
         ];
         assert!(
-            rule_au_067_resolved_identity_cluster(&[email, domain, person, uname], &rels, "s", 0)
-                .is_empty()
+            rule_au_067_resolved_identity_cluster(
+                &RuleContext::new(&[email, domain, person, uname]),
+                &rels,
+                "s",
+                0
+            )
+            .is_empty()
         );
     }
 }

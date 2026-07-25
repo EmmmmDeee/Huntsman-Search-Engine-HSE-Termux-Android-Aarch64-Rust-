@@ -52,7 +52,7 @@ mod tests {
     fn au068_fires_on_a_voip_tagged_phone() {
         let mut phone = Entity::new(EntityKind::Phone, "+61400000000", 0.85, "s");
         phone.tag("sim-voip");
-        let out = rule_au_068_anonymous_sim(&[phone], "s", 0);
+        let out = rule_au_068_anonymous_sim(&RuleContext::new(&[phone]), "s", 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rule_id, "AU-068");
         assert!(out[0].description.contains("VoIP"));
@@ -62,7 +62,7 @@ mod tests {
     fn au068_fires_on_an_mvno_tagged_phone() {
         let mut phone = Entity::new(EntityKind::Phone, "+61400000001", 0.85, "s");
         phone.tag("sim-mvno-prepaid");
-        let out = rule_au_068_anonymous_sim(&[phone], "s", 0);
+        let out = rule_au_068_anonymous_sim(&RuleContext::new(&[phone]), "s", 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].severity, Severity::Medium);
     }
@@ -72,9 +72,9 @@ mod tests {
         // A verified phone with no anonymity tag is not a burner finding.
         let mut phone = Entity::new(EntityKind::Phone, "+61400000002", 0.85, "s");
         phone.tag("hlr-verified");
-        assert!(rule_au_068_anonymous_sim(&[phone], "s", 0).is_empty());
+        assert!(rule_au_068_anonymous_sim(&RuleContext::new(&[phone]), "s", 0).is_empty());
         // Neither is a non-phone entity.
         let email = Entity::new(EntityKind::Email, "a@x.com", 0.9, "s");
-        assert!(rule_au_068_anonymous_sim(&[email], "s", 0).is_empty());
+        assert!(rule_au_068_anonymous_sim(&RuleContext::new(&[email]), "s", 0).is_empty());
     }
 }

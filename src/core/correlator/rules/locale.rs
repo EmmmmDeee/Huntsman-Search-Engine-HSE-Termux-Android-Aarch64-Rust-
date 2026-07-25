@@ -86,7 +86,8 @@ mod tests {
                 .with_attr("locale", "sv")
                 .with_attr("pattern", "surname_suffix"),
         );
-        let results = rule_au_083_locale_multi_email_corroboration(&[a], "scan-au083", 0);
+        let results =
+            rule_au_083_locale_multi_email_corroboration(&RuleContext::new(&[a]), "scan-au083", 0);
         assert_eq!(
             results.len(),
             1,
@@ -109,7 +110,11 @@ mod tests {
                 .with_attr("locale", "sv")
                 .with_attr("pattern", "surname_suffix"),
         );
-        let results = rule_au_083_locale_multi_email_corroboration(&[a], "scan-au083-neg", 0);
+        let results = rule_au_083_locale_multi_email_corroboration(
+            &RuleContext::new(&[a]),
+            "scan-au083-neg",
+            0,
+        );
         assert!(
             results.is_empty(),
             "AU-083 must not fire for a single-email locale assertion"

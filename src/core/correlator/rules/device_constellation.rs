@@ -120,7 +120,11 @@ mod tests {
         // the other randomized (0x36) — the operator carries a hardware fingerprint.
         let car = bonded_bt("3C:5A:B4:11:22:33");
         let buds = bonded_bt("36:32:62:36:31:33");
-        let out = rule_au_117_personal_device_constellation(&[car.clone(), buds], "s", 0);
+        let out = rule_au_117_personal_device_constellation(
+            &RuleContext::new(&[car.clone(), buds]),
+            "s",
+            0,
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rule_id, "AU-117");
         assert_eq!(out[0].severity, Severity::Medium);
@@ -135,7 +139,8 @@ mod tests {
     fn au117_silent_on_a_single_pairing() {
         let only = bonded_bt("3C:5A:B4:11:22:33");
         assert!(
-            rule_au_117_personal_device_constellation(&[only], "s", 0).is_empty(),
+            rule_au_117_personal_device_constellation(&RuleContext::new(&[only]), "s", 0)
+                .is_empty(),
             "a lone pairing is not a constellation"
         );
     }
@@ -147,7 +152,8 @@ mod tests {
         let a = bonded_bt("36:32:62:36:31:33");
         let b = bonded_bt("7A:11:22:33:44:55");
         assert!(
-            rule_au_117_personal_device_constellation(&[a, b], "s", 0).is_empty(),
+            rule_au_117_personal_device_constellation(&RuleContext::new(&[a, b]), "s", 0)
+                .is_empty(),
             "an all-privacy-MAC kit carries no persistent fingerprint"
         );
     }
@@ -159,7 +165,8 @@ mod tests {
         let mine = bonded_bt("3C:5A:B4:11:22:33");
         let mut stranger = Entity::new(EntityKind::MacAddress, "3C:5A:B4:99:88:77", 0.8, "s");
         stranger.tag("bluetooth"); // seen, but not bonded
-        let out = rule_au_117_personal_device_constellation(&[mine, stranger], "s", 0);
+        let out =
+            rule_au_117_personal_device_constellation(&RuleContext::new(&[mine, stranger]), "s", 0);
         assert!(
             out.is_empty(),
             "only one BONDED device — an unbonded stranger doesn't join the constellation"

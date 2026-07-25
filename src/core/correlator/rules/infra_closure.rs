@@ -217,7 +217,7 @@ mod tests {
             edge(&c, &ip2, RelationKind::ResolvesTo),
         ];
         let ents = [a, b, c, ip1, ip2];
-        let out = rule_au_116_infrastructure_pivot_closure(&ents, &rels, "s", 0);
+        let out = rule_au_116_infrastructure_pivot_closure(&RuleContext::new(&ents), &rels, "s", 0);
         assert_eq!(out.len(), 1, "the transitive chain must fire once");
         assert_eq!(out[0].rule_id, "AU-116");
         assert_eq!(out[0].severity, Severity::Medium);
@@ -237,7 +237,13 @@ mod tests {
             edge(&c, &ip1, RelationKind::ResolvesTo),
         ];
         assert!(
-            rule_au_116_infrastructure_pivot_closure(&[a, b, c, ip1], &rels, "s", 0).is_empty(),
+            rule_au_116_infrastructure_pivot_closure(
+                &RuleContext::new(&[a, b, c, ip1]),
+                &rels,
+                "s",
+                0
+            )
+            .is_empty(),
             "a single shared host is AU-110's job, not a transitive chain"
         );
     }
@@ -259,8 +265,13 @@ mod tests {
             edge(&c, &ip2, RelationKind::ResolvesTo),
         ];
         assert!(
-            rule_au_116_infrastructure_pivot_closure(&[a, b, c, cdn, ip2], &rels, "s", 0)
-                .is_empty(),
+            rule_au_116_infrastructure_pivot_closure(
+                &RuleContext::new(&[a, b, c, cdn, ip2]),
+                &rels,
+                "s",
+                0
+            )
+            .is_empty(),
             "a benign CDN IP must never bridge domains"
         );
     }
@@ -281,8 +292,13 @@ mod tests {
             edge(&c, &ip2, RelationKind::ResolvesTo),
         ];
         assert!(
-            rule_au_116_infrastructure_pivot_closure(&[a, b, c, ip1, ip2], &rels, "s", 0)
-                .is_empty(),
+            rule_au_116_infrastructure_pivot_closure(
+                &RuleContext::new(&[a, b, c, ip1, ip2]),
+                &rels,
+                "s",
+                0
+            )
+            .is_empty(),
             "one owner's subdomains are not a multi-owner footprint"
         );
     }
