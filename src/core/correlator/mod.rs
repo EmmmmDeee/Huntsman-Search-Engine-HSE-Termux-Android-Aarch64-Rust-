@@ -776,6 +776,26 @@ fn evaluate_relation_rules_on(
 }
 
 #[cfg(test)]
+mod test_helpers {
+    use super::*;
+
+    pub fn eval_rules_test(entities: &[Entity], scan_id: &str, now: u64) -> Vec<Correlation> {
+        let context = RuleContext::new(entities);
+        evaluate_rules_on(&context, scan_id, now, None)
+    }
+
+    pub fn eval_rel_rules_test(
+        entities: &[Entity],
+        relations: &[Relation],
+        scan_id: &str,
+        now: u64,
+    ) -> Vec<Correlation> {
+        let context = RuleContext::new(entities);
+        evaluate_relation_rules_on(&context, relations, scan_id, now, None)
+    }
+}
+
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]

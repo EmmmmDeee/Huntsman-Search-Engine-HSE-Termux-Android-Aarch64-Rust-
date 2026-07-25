@@ -59,7 +59,6 @@ pub(in crate::core) fn multipath_corroborated_links(
     context: &RuleContext,
     relations: &[Relation],
 ) -> Vec<MultipathLink> {
-    let entities = context.entities();
     multipath_corroborated_links_capped(context, relations, IDENTITY_PAIR_PROBE_CAP)
 }
 

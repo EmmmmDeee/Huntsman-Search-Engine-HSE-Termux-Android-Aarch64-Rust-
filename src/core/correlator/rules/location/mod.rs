@@ -339,13 +339,14 @@ pub(in crate::core::correlator) fn rule_au_052_geographic_area_of_operation(
 /// out. Dominant cluster and outliers are disjoint sets, so this never degenerates
 /// the way a leave-one-out hull test would.
 pub(in crate::core::correlator) fn rule_au_053_out_of_area_location(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
     use crate::util::geohash::haversine_km;
     use crate::util::geometry::{geo_footprint, point_in_convex_hull, weighted_centroid};
 
+    let entities = context.entities();
     let mut parsed = person_anchored_coords(entities);
     // Need an established area (≥3) plus at least one candidate outlier.
     if parsed.len() < 4 {
@@ -1282,10 +1283,11 @@ pub(crate) fn au_location_corroboration(entities: &[Entity]) -> Option<LocationC
 }
 
 pub(in crate::core::correlator) fn rule_au_059_cross_seed_geo_synergy(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let Some(fix) = au059_synergy_fix(entities) else {
         return Vec::new();
     };

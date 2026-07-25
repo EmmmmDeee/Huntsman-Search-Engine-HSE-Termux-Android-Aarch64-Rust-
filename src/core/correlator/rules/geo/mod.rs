@@ -62,12 +62,13 @@ pub(super) fn coord_state(e: &Entity) -> Option<&'static str> {
 /// its nearest regional centre. Deduplicated per locality; Medium (a derived,
 /// human-readable label on a coordinate the graph already holds). Offline, pure.
 pub(in crate::core::correlator) fn rule_au_099_coordinate_reverse_geocode(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
     use std::collections::{BTreeMap, BTreeSet};
 
+    let entities = context.entities();
     // locality -> (state, nearest km seen, contributing coordinate uids).
     // Infrastructure coordinates are excluded ([`is_infrastructure_geo`]): a bare
     // IP-geo/hosting fix is the datacentre's position, not the subject's, so it must
@@ -381,16 +382,20 @@ mod tests {
         // subject's coordinate fix" resolving to an AU locality.
         let mut infra = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.60, "s");
         infra.add_evidence(Evidence::new("ip_geo", "IP city"));
+        let ents_infra = [infra];
+        let context = RuleContext::new(&ents_infra);
         assert!(
-            rule_au_099_coordinate_reverse_geocode(&[infra], "s", 0).is_empty(),
+            rule_au_099_coordinate_reverse_geocode(&context, "s", 0).is_empty(),
             "AU-099 must not reverse-geocode an infrastructure coordinate as the subject's fix"
         );
 
         // Control: a genuine EXIF fix at the same point IS reverse-geocoded.
         let mut anchored = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.60, "s");
         anchored.add_evidence(Evidence::new("exif_geo", "photo GPS"));
+        let ents_anchored = [anchored];
+        let context = RuleContext::new(&ents_anchored);
         assert!(
-            !rule_au_099_coordinate_reverse_geocode(&[anchored], "s", 0).is_empty(),
+            !rule_au_099_coordinate_reverse_geocode(&context, "s", 0).is_empty(),
             "AU-099 must still reverse-geocode a real person-anchored coordinate fix"
         );
     }
