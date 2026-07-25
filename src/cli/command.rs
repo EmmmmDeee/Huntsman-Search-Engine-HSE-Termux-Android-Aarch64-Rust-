@@ -362,8 +362,12 @@ pub enum Command {
         /// Input file path (image, PDF, CSV, JSON, JSONL, text).
         #[arg(short, long, value_name = "PATH")]
         file: String,
-        /// Output format: jsonl (default), json, csv, table.
-        #[arg(short, long, default_value = "jsonl")]
+        /// Output format: jsonl (default), json, csv, table, or hse
+        /// (full core::entity::Entity records ready for the scan pipeline).
+        ///
+        /// Short flag is `-F`: `-f` is the input file and `-o` the output
+        /// file, and clap panics at startup on a duplicate short name.
+        #[arg(short = 'F', long, default_value = "jsonl")]
         output_format: String,
         /// Minimum confidence threshold (0.0-1.0, default 0.30).
         #[arg(long, default_value = "0.30")]
@@ -659,4 +663,24 @@ pub enum Command {
         #[arg(long, value_name = "REF")]
         r#ref: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// Validate the whole command tree at test time.
+    ///
+    /// clap's consistency checks (duplicate short flags, conflicting IDs,
+    /// malformed defaults) run inside a `debug_assert` on first parse — so a
+    /// broken definition does not fail the build, it panics at startup on
+    /// every invocation of the affected subcommand. `hse ingest` shipped that
+    /// way: `-o` was claimed by both `--output-format` and `--output`, and the
+    /// command aborted before doing any work. Asserting here turns that class
+    /// of defect into a failing test instead of a runtime crash.
+    #[test]
+    fn cli_definition_is_internally_consistent() {
+        Cli::command().debug_assert();
+    }
 }

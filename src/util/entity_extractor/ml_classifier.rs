@@ -49,13 +49,13 @@ impl MlClassifier {
                     boost += 0.05;
                 }
             }
-            EntityKind::Hash => {
+            EntityKind::Hash
                 if Self::contains_any(
                     &context_lower,
                     &["checksum", "md5", "sha", "hash", "digest", "fingerprint"],
-                ) {
-                    boost += 0.05;
-                }
+                ) =>
+            {
+                boost += 0.05;
             }
             _ => {}
         }
@@ -78,9 +78,8 @@ impl MlClassifier {
 
         domain
             .split('.')
-            .last()
-            .map(|tld| COMMON_TLDS.contains(&tld.to_lowercase().as_str()))
-            .unwrap_or(false)
+            .next_back()
+            .is_some_and(|tld| COMMON_TLDS.contains(&tld.to_lowercase().as_str()))
     }
 
     /// Score entity quality based on format consistency and pattern strength.
@@ -102,8 +101,8 @@ impl MlClassifier {
             }
             EntityKind::Phone => {
                 // E.164 format: +1234567890 or similar
-                let digits_only = entity.value.chars().filter(|c| c.is_ascii_digit()).count();
-                if digits_only >= 7 && digits_only <= 15 {
+                let digits_only = entity.value.chars().filter(char::is_ascii_digit).count();
+                if (7..=15).contains(&digits_only) {
                     0.85
                 } else {
                     0.50
@@ -159,9 +158,7 @@ impl MlClassifier {
 
         // Combine: base confidence, boosted by quality (up to +20%) and context
         let base_boost = entity.confidence * (1.0 + (quality - 0.5) * 0.20);
-        let final_conf = (base_boost + contextual * 0.05).clamp(0.0, 1.0);
-
-        final_conf
+        (base_boost + contextual * 0.05).clamp(0.0, 1.0)
     }
 }
 

@@ -66,7 +66,7 @@ pub fn parse_jsonl<P: AsRef<Path>>(jsonl_path: P) -> DocumentResult<RawDocumentT
         metadata: DocumentMetadata {
             source_file: Some(path_str),
             character_count,
-            extraction_method: format!("jsonl_parse ({} lines)", line_count),
+            extraction_method: format!("jsonl_parse ({line_count} lines)"),
             ..Default::default()
         },
     })
@@ -87,7 +87,7 @@ fn flatten_json_to_text(value: &Value) -> String {
         }
         Value::Array(arr) => {
             for (idx, item) in arr.iter().enumerate() {
-                text.push_str(&format!("[{}]: ", idx));
+                text.push_str(&format!("[{idx}]: "));
                 text.push_str(&flatten_json_to_text(item));
                 text.push('\n');
             }
@@ -115,7 +115,7 @@ mod tests {
             "email": "john@example.com",
             "age": 30
         });
-        writeln!(file, "{}", json.to_string()).unwrap();
+        writeln!(file, "{json}").unwrap();
         file.flush().unwrap();
 
         let result = parse_json(file.path()).unwrap();

@@ -57,7 +57,7 @@ impl EntityExtractor {
         for entity in entities {
             batches
                 .entry(entity.kind.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(entity.value);
         }
 

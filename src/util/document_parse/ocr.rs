@@ -61,8 +61,7 @@ fn is_tesseract_available() -> bool {
     Command::new("which")
         .arg("tesseract")
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 #[cfg(test)]
@@ -74,6 +73,6 @@ mod tests {
         // This test just verifies the availability check function runs
         let available = is_tesseract_available();
         // Don't assert on availability (environment-dependent)
-        println!("tesseract available: {}", available);
+        println!("tesseract available: {available}");
     }
 }

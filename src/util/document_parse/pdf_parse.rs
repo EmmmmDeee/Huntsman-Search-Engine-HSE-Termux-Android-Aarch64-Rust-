@@ -28,7 +28,7 @@ pub fn parse_pdf<P: AsRef<Path>>(pdf_path: P) -> DocumentResult<RawDocumentText>
     let page_count = text.matches("/Type/Page").count() + text.matches("/Type /Page").count();
 
     let message = if page_count > 0 {
-        format!("PDF document with {} pages detected (full text extraction requires OCR or PDf text layer)", page_count)
+        format!("PDF document with {page_count} pages detected (full text extraction requires OCR or PDf text layer)")
     } else {
         "PDF document detected (page count unknown; full text extraction requires OCR or PDF text layer)".to_string()
     };

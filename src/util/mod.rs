@@ -23,6 +23,7 @@ pub mod document_parse;
 pub mod domains;
 pub mod entity_extractor;
 pub mod egress;
+pub mod exif;
 pub mod endpoint_override;
 pub mod extract;
 pub mod found_keys;

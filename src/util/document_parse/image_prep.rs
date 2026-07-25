@@ -49,7 +49,7 @@ pub fn estimate_ocr_quality(img: &DynamicImage) -> f64 {
     let std_dev = variance.sqrt();
 
     // Normalize to 0-1 range (OCR typically works best with std dev 50-100)
-    (std_dev / 128.0).min(1.0).max(0.0)
+    (std_dev / 128.0).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]

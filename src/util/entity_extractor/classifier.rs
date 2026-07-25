@@ -107,19 +107,17 @@ impl EntityClassifier {
                 let common_tlds = [
                     "com", "org", "net", "gov", "edu", "io", "au", "uk", "de", "fr",
                 ];
-                if let Some(tld) = entity.value.split('.').last() {
-                    if common_tlds.contains(&tld) {
-                        entity.confidence = (base_confidence + 0.05).min(1.0);
-                        entity.boost_reason = Some(format!("Known TLD: {}", tld));
-                    }
+                if let Some(tld) = entity.value.split('.').next_back()
+                    && common_tlds.contains(&tld)
+                {
+                    entity.confidence = (base_confidence + 0.05).min(1.0);
+                    entity.boost_reason = Some(format!("Known TLD: {tld}"));
                 }
             }
-            EntityKind::Ipv4 => {
-                // Boost if not in private ranges
-                if !is_private_ipv4(&entity.value) {
-                    entity.confidence = (base_confidence + 0.05).min(1.0);
-                    entity.boost_reason = Some("Public IPv4 range".to_string());
-                }
+            // Boost if not in private ranges
+            EntityKind::Ipv4 if !is_private_ipv4(&entity.value) => {
+                entity.confidence = (base_confidence + 0.05).min(1.0);
+                entity.boost_reason = Some("Public IPv4 range".to_string());
             }
             _ => {}
         }
@@ -145,7 +143,7 @@ fn is_private_ipv4(ip: &str) -> bool {
         parts[2].parse::<u8>(),
         parts[3].parse::<u8>(),
     ) {
-        return a == 10 || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168);
+        return a == 10 || (a == 172 && (16..=31).contains(&b)) || (a == 192 && b == 168);
     }
 
     false

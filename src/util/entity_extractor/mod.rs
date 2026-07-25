@@ -36,9 +36,12 @@ pub enum EntityKind {
     Unknown(String),
 }
 
-impl EntityKind {
-    /// Convert from string (HSE target kind).
-    pub fn from_str(s: &str) -> Self {
+/// Parse an HSE target-kind string. Infallible — an unrecognised kind is
+/// preserved verbatim as [`EntityKind::Unknown`] rather than rejected, so a
+/// document naming a kind HSE doesn't model yet still round-trips. `From`
+/// rather than `FromStr` for exactly that reason: there is no error case.
+impl From<&str> for EntityKind {
+    fn from(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "email" => Self::Email,
             "phone" => Self::Phone,
@@ -57,7 +60,9 @@ impl EntityKind {
             other => Self::Unknown(other.to_string()),
         }
     }
+}
 
+impl EntityKind {
     pub fn to_str(&self) -> &str {
         match self {
             Self::Email => "email",
@@ -109,10 +114,13 @@ mod tests {
 
     #[test]
     fn entity_kind_from_string() {
-        assert_eq!(EntityKind::from_str("email"), EntityKind::Email);
-        assert_eq!(EntityKind::from_str("PHONE"), EntityKind::Phone);
-        assert_eq!(EntityKind::from_str("domain"), EntityKind::Domain);
-        assert_eq!(EntityKind::from_str("unknown_type"), EntityKind::Unknown("unknown_type".to_string()));
+        assert_eq!(EntityKind::from("email"), EntityKind::Email);
+        assert_eq!(EntityKind::from("PHONE"), EntityKind::Phone);
+        assert_eq!(EntityKind::from("domain"), EntityKind::Domain);
+        assert_eq!(
+            EntityKind::from("unknown_type"),
+            EntityKind::Unknown("unknown_type".to_string())
+        );
     }
 
     #[test]

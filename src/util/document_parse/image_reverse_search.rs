@@ -1,33 +1,55 @@
 //! Image reverse search preparation: multi-size generation for search engine compatibility.
 //!
-//! Generates image variants optimized for different reverse image search engines:
-//! - Google Images: 640x480 to 1280x960 (JPEG optimal)
-//! - Bing Visual Search: 320x240 to 640x480
-//! - TinEye: 100x100 to 1024x1024 (any format)
-//! - Yandex Images: 400x300 to 1280x960 (supports WebP)
-//! - Baidu Images: 200x150 to 640x480
+//! Generates image variants sized for the major reverse-image engines, which
+//! each re-encode uploads to their own working resolution. Feeding an engine a
+//! variant near that resolution avoids a lossy double-resize and keeps the
+//! upload small enough to submit quickly.
 //!
-//! All variants are generated with consistent quality settings to maximize matching probability.
+//! Every variant is encoded in a format this build can actually produce, and
+//! the declared `format` always matches the bytes — a mismatch would be
+//! rejected (or silently mis-decoded) by the receiving engine.
 
 use image::{DynamicImage, ImageEncoder};
-use std::path::Path;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use std::path::Path;
+use tracing::debug;
 
 use super::DocumentResult;
+
+/// Encoding used for a generated variant.
+///
+/// Deliberately closed over the formats this build can encode. `image` 0.25
+/// ships a WebP *decoder* only, so WebP is not representable here — an engine
+/// that prefers WebP is served JPEG, which every one of them accepts, rather
+/// than JPEG bytes mislabelled `.webp`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VariantFormat {
+    Jpeg,
+    Png,
+}
+
+impl VariantFormat {
+    /// File extension and the value published in variant metadata.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Jpeg => "jpeg",
+            Self::Png => "png",
+        }
+    }
+}
 
 /// Image variant optimized for a specific reverse search engine.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageVariant {
-    /// Engine name: "google", "bing", "tineye", "yandex", "baidu"
+    /// Engine name: "google", "bing", "tineye", "yandex", "baidu", "thumbnail"
     pub engine: String,
     /// Image dimensions (width x height)
     pub dimensions: (u32, u32),
-    /// Recommended format: "jpeg", "png", "webp"
+    /// Encoded format: "jpeg" or "png". Always matches `data`.
     pub format: String,
-    /// Quality setting (0-100, for JPEG)
+    /// Quality setting (0-100, JPEG only)
     pub quality: u8,
-    /// File size in bytes (approximate)
+    /// Encoded size in bytes
     pub file_size_bytes: usize,
     /// Raw image bytes
     #[serde(skip)]
@@ -43,8 +65,8 @@ pub struct ReverseImageSearchSet {
     pub variants: Vec<ImageVariant>,
     /// Recommended primary variant for fastest search
     pub primary_variant: Option<String>,
-    /// Hash of original image (for deduplication)
-    pub image_hash: Option<String>,
+    /// Perceptual hash of the original image, for deduplication
+    pub image_hash: String,
 }
 
 /// Image size configuration for a specific search engine.
@@ -53,230 +75,359 @@ struct SearchEngineConfig {
     name: &'static str,
     width: u32,
     height: u32,
-    format: &'static str,
+    format: VariantFormat,
     quality: u8,
     description: &'static str,
 }
 
-impl SearchEngineConfig {
-    fn new(name: &'static str, width: u32, height: u32, format: &'static str, quality: u8, description: &'static str) -> Self {
-        SearchEngineConfig {
-            name,
-            width,
-            height,
-            format,
-            quality,
-            description,
-        }
-    }
-}
-
-/// Get all configured search engines for reverse image search.
-fn search_engine_configs() -> Vec<SearchEngineConfig> {
-    vec![
-        // Google Images: prefers 640x480 to 1280x960, JPEG optimal
-        SearchEngineConfig::new("google", 800, 600, "jpeg", 85, "Google Images - balanced quality/speed"),
-
-        // Bing Visual Search: efficient with 320x240 to 640x480
-        SearchEngineConfig::new("bing", 640, 480, "jpeg", 80, "Bing Visual Search - optimized for web"),
-
-        // TinEye: works well across wide range, but 500x375 is sweet spot
-        SearchEngineConfig::new("tineye", 500, 375, "jpeg", 85, "TinEye - optimized perceptual matching"),
-
-        // Yandex Images: supports WebP, prefers 400x300 to 800x600
-        SearchEngineConfig::new("yandex", 640, 480, "webp", 80, "Yandex Images - WebP optimized"),
-
-        // Baidu Images: efficient with smaller sizes, prefers JPEG
-        SearchEngineConfig::new("baidu", 400, 300, "jpeg", 75, "Baidu Images - optimized for Asian detection"),
-
-        // Thumbnail for quick preview + hash matching
-        SearchEngineConfig::new("thumbnail", 200, 150, "jpeg", 70, "Quick thumbnail - preview + hashing"),
-    ]
-}
+/// Target sizes per engine. A `const` table rather than a constructed `Vec` —
+/// the set is fixed at compile time and rebuilding it per image was pure churn.
+const SEARCH_ENGINES: &[SearchEngineConfig] = &[
+    SearchEngineConfig {
+        name: "google",
+        width: 800,
+        height: 600,
+        format: VariantFormat::Jpeg,
+        quality: 85,
+        description: "Google Images - balanced quality/speed",
+    },
+    SearchEngineConfig {
+        name: "bing",
+        width: 640,
+        height: 480,
+        format: VariantFormat::Jpeg,
+        quality: 80,
+        description: "Bing Visual Search - optimized for web",
+    },
+    // TinEye matches exact and near-duplicate images rather than semantic
+    // content, so it is the one engine where re-compression actively hurts:
+    // JPEG artifacts perturb the very signature it fingerprints. Ship it the
+    // resize losslessly. `quality` is inert for PNG.
+    SearchEngineConfig {
+        name: "tineye",
+        width: 500,
+        height: 375,
+        format: VariantFormat::Png,
+        quality: 100,
+        description: "TinEye - lossless, exact/near-duplicate matching",
+    },
+    SearchEngineConfig {
+        name: "yandex",
+        width: 640,
+        height: 480,
+        format: VariantFormat::Jpeg,
+        quality: 80,
+        description: "Yandex Images - JPEG (no WebP encoder in this build)",
+    },
+    SearchEngineConfig {
+        name: "baidu",
+        width: 400,
+        height: 300,
+        format: VariantFormat::Jpeg,
+        quality: 75,
+        description: "Baidu Images - smaller upload for slower links",
+    },
+    SearchEngineConfig {
+        name: "thumbnail",
+        width: 200,
+        height: 150,
+        format: VariantFormat::Jpeg,
+        quality: 70,
+        description: "Quick thumbnail - preview + hashing",
+    },
+];
 
 /// Generate reverse image search variants from an image file.
 pub fn generate_reverse_image_variants<P: AsRef<Path>>(
     image_path: P,
 ) -> DocumentResult<ReverseImageSearchSet> {
     let path = image_path.as_ref();
-    let path_str = path.to_string_lossy();
-
-    debug!("Generating reverse image search variants for: {}", path_str);
-
-    // Load original image
+    debug!("Generating reverse image search variants for: {}", path.display());
     let img = image::ImageReader::open(path)?.decode()?;
-    let original_dimensions = (img.width(), img.height());
+    generate_variants_from_image(&img)
+}
 
+/// Generate variants from an already-decoded image.
+///
+/// Exposed separately so a caller that has decoded the image for another
+/// purpose does not pay to decode it a second time.
+pub fn generate_variants_from_image(img: &DynamicImage) -> DocumentResult<ReverseImageSearchSet> {
+    let original_dimensions = (img.width(), img.height());
     debug!(
-        "Original image dimensions: {}x{}",
-        original_dimensions.0, original_dimensions.1
+        width = original_dimensions.0,
+        height = original_dimensions.1,
+        "source image decoded"
     );
 
-    let mut variants = Vec::new();
-
-    // Generate variant for each search engine
-    for config in search_engine_configs() {
-        match generate_image_variant(&img, config)? {
-            Some(variant) => {
-                debug!(
-                    "Generated {} variant: {}x{}, {} bytes",
-                    variant.engine, variant.dimensions.0, variant.dimensions.1, variant.file_size_bytes
-                );
-                variants.push(variant);
-            }
-            None => {
-                warn!("Failed to generate variant for {}", config.name);
-            }
-        }
+    let mut variants = Vec::with_capacity(SEARCH_ENGINES.len());
+    for config in SEARCH_ENGINES {
+        let variant = generate_image_variant(img, config)?;
+        debug!(
+            engine = config.name,
+            width = variant.dimensions.0,
+            height = variant.dimensions.1,
+            bytes = variant.file_size_bytes,
+            purpose = config.description,
+            "generated variant"
+        );
+        variants.push(variant);
     }
 
-    // Use Google Images variant as primary (best balance of quality and compatibility)
+    // Google's variant is the primary: the largest of the set, and the engine
+    // with the broadest index, so a single-shot search starts there.
     let primary_variant = variants
         .iter()
         .find(|v| v.engine == "google")
         .map(|v| v.engine.clone());
 
-    // Simple image hash for deduplication (using DCT-like heuristic)
-    let image_hash = compute_image_hash(&img);
-
     Ok(ReverseImageSearchSet {
         original_dimensions,
         variants,
         primary_variant,
-        image_hash,
+        image_hash: compute_image_hash(img),
     })
 }
 
 /// Generate a single image variant for a search engine.
 fn generate_image_variant(
     img: &DynamicImage,
-    config: SearchEngineConfig,
-) -> DocumentResult<Option<ImageVariant>> {
-    // Resize image to target dimensions (maintain aspect ratio within bounds)
+    config: &SearchEngineConfig,
+) -> DocumentResult<ImageVariant> {
     let resized = resize_image_maintain_aspect(img, config.width, config.height);
-
-    // Encode to target format
+    let rgb = resized.to_rgb8();
     let mut buffer = Vec::new();
+
     match config.format {
-        "jpeg" => {
-            let mut jpeg_encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, config.quality);
-            let rgb_img = resized.to_rgb8();
-            jpeg_encoder.encode(&rgb_img, rgb_img.width(), rgb_img.height(), image::ExtendedColorType::Rgb8)?;
+        VariantFormat::Jpeg => {
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, config.quality)
+                .encode(
+                    &rgb,
+                    rgb.width(),
+                    rgb.height(),
+                    image::ExtendedColorType::Rgb8,
+                )?;
         }
-        "webp" => {
-            // WebP encoding
-            let rgb_img = resized.to_rgb8();
-            webp_encode(&mut buffer, &rgb_img, config.quality)?;
-        }
-        "png" => {
-            let encoder = image::codecs::png::PngEncoder::new(&mut buffer);
-            let rgb_img = resized.to_rgb8();
-            encoder.write_image(&rgb_img, rgb_img.width(), rgb_img.height(), image::ExtendedColorType::Rgb8)?;
-        }
-        _ => {
-            warn!("Unsupported format: {}", config.format);
-            return Ok(None);
+        VariantFormat::Png => {
+            image::codecs::png::PngEncoder::new(&mut buffer).write_image(
+                &rgb,
+                rgb.width(),
+                rgb.height(),
+                image::ExtendedColorType::Rgb8,
+            )?;
         }
     }
 
-    let file_size = buffer.len();
-
-    Ok(Some(ImageVariant {
+    Ok(ImageVariant {
         engine: config.name.to_string(),
-        dimensions: (resized.width(), resized.height()),
-        format: config.format.to_string(),
+        dimensions: (rgb.width(), rgb.height()),
+        format: config.format.as_str().to_string(),
         quality: config.quality,
-        file_size_bytes: file_size,
+        file_size_bytes: buffer.len(),
         data: buffer,
-    }))
+    })
 }
 
-/// Resize image while maintaining aspect ratio.
-fn resize_image_maintain_aspect(img: &DynamicImage, max_width: u32, max_height: u32) -> DynamicImage {
+/// Resize to fit within `max_width` x `max_height`, preserving aspect ratio and
+/// never upscaling — enlarging a small source invents detail the engines would
+/// then match against.
+fn resize_image_maintain_aspect(
+    img: &DynamicImage,
+    max_width: u32,
+    max_height: u32,
+) -> DynamicImage {
     let (orig_w, orig_h) = (img.width(), img.height());
+    if orig_w == 0 || orig_h == 0 {
+        return img.clone();
+    }
 
-    // Calculate scaling factor to fit within bounds
-    let width_ratio = max_width as f32 / orig_w as f32;
-    let height_ratio = max_height as f32 / orig_h as f32;
-    let scale = width_ratio.min(height_ratio).min(1.0); // Don't upscale
+    let scale = (max_width as f64 / orig_w as f64)
+        .min(max_height as f64 / orig_h as f64)
+        .min(1.0);
 
-    let new_w = (orig_w as f32 * scale) as u32;
-    let new_h = (orig_h as f32 * scale) as u32;
+    // Clamp to at least one pixel per axis: an extreme aspect ratio (a 10000x1
+    // banner, say) scales its short axis to zero, and a zero-dimension resize
+    // yields an image no encoder can write.
+    let new_w = ((orig_w as f64 * scale) as u32).max(1);
+    let new_h = ((orig_h as f64 * scale) as u32).max(1);
 
     img.resize(new_w, new_h, image::imageops::FilterType::Lanczos3)
 }
 
-/// Encode image to WebP format.
-fn webp_encode(buffer: &mut Vec<u8>, img: &image::RgbImage, quality: u8) -> DocumentResult<()> {
-    // Use simple JPEG fallback if WebP encoding is unavailable
-    // In production, would use webp crate, but keeping minimal dependencies
-    let mut jpeg_encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(buffer, quality);
-    jpeg_encoder.encode(img, img.width(), img.height(), image::ExtendedColorType::Rgb8)?;
-    Ok(())
-}
-
-/// Compute a simple image hash for deduplication.
-/// Uses a perceptual hash approach (simplified).
-fn compute_image_hash(img: &DynamicImage) -> Option<String> {
-    // Resize to 8x8 for hash computation
-    let small = img.resize(8, 8, image::imageops::FilterType::Lanczos3);
-    let gray = small.to_luma8();
-
-    // Compute average brightness
+/// Compute a 64-bit average-hash (aHash) of an image, rendered as 16 hex chars.
+///
+/// Uses `resize_exact` rather than an aspect-preserving resize: the hash is a
+/// fixed 8x8 grid, so letting the grid change shape with the source would make
+/// hashes of differently-proportioned images incomparable — which defeats the
+/// deduplication the hash exists for.
+fn compute_image_hash(img: &DynamicImage) -> String {
+    let gray = img
+        .resize_exact(8, 8, image::imageops::FilterType::Lanczos3)
+        .to_luma8();
     let pixels = gray.as_raw();
-    let avg: u32 = pixels.iter().map(|&p| p as u32).sum::<u32>() / pixels.len() as u32;
 
-    // Build binary hash
-    let mut hash = String::new();
+    let sum: u32 = pixels.iter().map(|&p| u32::from(p)).sum();
+    let mean = sum / pixels.len() as u32;
+
+    // Each of the 64 cells contributes one bit: brighter than the mean → 1.
+    let mut bits: u64 = 0;
     for &pixel in pixels {
-        hash.push(if pixel as u32 > avg { '1' } else { '0' });
+        bits = (bits << 1) | u64::from(u32::from(pixel) > mean);
     }
-
-    // Convert to hex for compactness
-    Some(format!("{:x}", u64::from_str_radix(&hash[0..64.min(hash.len())], 2).unwrap_or(0)))
+    format!("{bits:016x}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::{DynamicImage, RgbImage};
 
-    #[test]
-    fn reverse_search_variant_creation() {
-        let config = SearchEngineConfig::new("test", 640, 480, "jpeg", 85, "Test engine");
-        assert_eq!(config.name, "test");
-        assert_eq!(config.width, 640);
-        assert_eq!(config.height, 480);
+    /// A deterministic gradient image — distinct enough per size that hashes
+    /// of different content differ.
+    fn gradient(width: u32, height: u32) -> DynamicImage {
+        DynamicImage::ImageRgb8(RgbImage::from_fn(width, height, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8])
+        }))
+    }
+
+    fn solid(width: u32, height: u32, level: u8) -> DynamicImage {
+        DynamicImage::ImageRgb8(RgbImage::from_fn(width, height, |_, _| {
+            image::Rgb([level, level, level])
+        }))
     }
 
     #[test]
-    fn search_engine_configs_exist() {
-        let configs = search_engine_configs();
-        assert!(configs.len() >= 5);
-        assert!(configs.iter().any(|c| c.name == "google"));
-        assert!(configs.iter().any(|c| c.name == "bing"));
-        assert!(configs.iter().any(|c| c.name == "tineye"));
+    fn every_variant_decodes_as_the_format_it_claims() {
+        // The regression that matters: a variant labelled `jpeg`/`png` whose
+        // bytes are actually something else would be rejected by the engine it
+        // was built for. Decode each variant back and confirm the guessed
+        // format matches the declaration.
+        let set = generate_variants_from_image(&gradient(1200, 900)).unwrap();
+        assert_eq!(set.variants.len(), SEARCH_ENGINES.len());
+
+        for variant in &set.variants {
+            assert!(
+                !variant.data.is_empty(),
+                "{} variant encoded to zero bytes",
+                variant.engine
+            );
+            assert_eq!(variant.file_size_bytes, variant.data.len());
+
+            let format = image::guess_format(&variant.data).unwrap_or_else(|e| {
+                panic!("{} variant is not a recognisable image: {e}", variant.engine)
+            });
+            let expected = match variant.format.as_str() {
+                "jpeg" => image::ImageFormat::Jpeg,
+                "png" => image::ImageFormat::Png,
+                other => panic!("{} declared an unencodable format {other}", variant.engine),
+            };
+            assert_eq!(
+                format, expected,
+                "{} declares {} but the bytes are {format:?}",
+                variant.engine, variant.format
+            );
+
+            let decoded = image::load_from_memory(&variant.data).expect("variant must decode");
+            assert_eq!(
+                (decoded.width(), decoded.height()),
+                variant.dimensions,
+                "{} reports dimensions that disagree with its bytes",
+                variant.engine
+            );
+        }
     }
 
     #[test]
-    fn resize_maintain_aspect_ratio() {
-        // 1000x500 resized to max 640x480 should scale down to 640x320
-        let scale_factor = (640.0 / 1000.0).min(480.0 / 500.0);
-        let expected_h = (500.0 * scale_factor) as u32;
-        // Expect height to scale proportionally
-        assert!(expected_h <= 480);
+    fn variants_fit_within_their_engine_bounds() {
+        let set = generate_variants_from_image(&gradient(1200, 900)).unwrap();
+        for config in SEARCH_ENGINES {
+            let variant = set
+                .variants
+                .iter()
+                .find(|v| v.engine == config.name)
+                .unwrap_or_else(|| panic!("missing variant for {}", config.name));
+            assert!(
+                variant.dimensions.0 <= config.width && variant.dimensions.1 <= config.height,
+                "{} variant {:?} exceeds its {}x{} budget",
+                config.name,
+                variant.dimensions,
+                config.width,
+                config.height
+            );
+        }
+        assert_eq!(set.primary_variant.as_deref(), Some("google"));
+        assert_eq!(set.original_dimensions, (1200, 900));
     }
 
     #[test]
-    fn image_hash_stable() {
-        // Hash should be stable for same image
-        // (actual stability tested with real image files in integration tests)
-        let hash1 = compute_image_hash.is_some(); // Function exists
-        assert!(hash1);
+    fn resize_preserves_aspect_ratio() {
+        let resized = resize_image_maintain_aspect(&gradient(1000, 500), 640, 480);
+        // 1000x500 into 640x480: width binds first (0.64 < 0.96) → 640x320.
+        assert_eq!((resized.width(), resized.height()), (640, 320));
+    }
+
+    #[test]
+    fn resize_never_upscales() {
+        let resized = resize_image_maintain_aspect(&gradient(100, 80), 800, 600);
+        assert_eq!(
+            (resized.width(), resized.height()),
+            (100, 80),
+            "a source smaller than the target must be left alone"
+        );
+    }
+
+    #[test]
+    fn resize_of_extreme_aspect_ratio_keeps_both_axes_nonzero() {
+        // The short axis scales to 0.08px here; a zero-dimension image cannot
+        // be encoded, so both axes must clamp to at least one pixel.
+        let resized = resize_image_maintain_aspect(&gradient(10_000, 1), 800, 600);
+        assert!(resized.width() >= 1 && resized.height() >= 1, "got {resized:?}");
+        // And it must still be encodable end-to-end.
+        let set = generate_variants_from_image(&gradient(10_000, 1)).unwrap();
+        assert!(set.variants.iter().all(|v| !v.data.is_empty()));
+    }
+
+    #[test]
+    fn hash_is_stable_and_fixed_width() {
+        let hash = compute_image_hash(&gradient(640, 480));
+        assert_eq!(hash.len(), 16, "aHash must render as 16 hex chars");
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(
+            hash,
+            compute_image_hash(&gradient(640, 480)),
+            "the same image must hash identically"
+        );
+    }
+
+    #[test]
+    fn hash_width_is_independent_of_aspect_ratio() {
+        // The bug this pins: an aspect-preserving resize gave a 1000x500 image
+        // a 32-bit hash and a square image a 64-bit one, so the two could
+        // never be compared.
+        let wide = compute_image_hash(&gradient(1000, 500));
+        let square = compute_image_hash(&gradient(500, 500));
+        let tall = compute_image_hash(&gradient(500, 1000));
+        assert_eq!(wide.len(), 16);
+        assert_eq!(square.len(), 16);
+        assert_eq!(tall.len(), 16);
+    }
+
+    #[test]
+    fn hash_distinguishes_different_images() {
+        assert_ne!(
+            compute_image_hash(&gradient(256, 256)),
+            compute_image_hash(&solid(256, 256, 200)),
+        );
+    }
+
+    #[test]
+    fn flat_image_hashes_without_panicking() {
+        // Every pixel equals the mean, so no bit is set. Exercises the
+        // divide-and-compare path against a uniform source.
+        assert_eq!(compute_image_hash(&solid(64, 64, 128)), "0".repeat(16));
     }
 
     #[test]
     fn generate_variants_nonexistent_image() {
-        let result = generate_reverse_image_variants("/nonexistent/image.jpg");
-        assert!(result.is_err());
+        assert!(generate_reverse_image_variants("/nonexistent/image.jpg").is_err());
     }
 }

@@ -49,7 +49,7 @@ pub fn extracted_to_hse_entity(
 
     // Build evidence with full extraction metadata
     let mut evidence = Evidence::new(
-        format!("ingest:{}", document_source),
+        format!("ingest:{document_source}"),
         format!(
             "Entity extracted from {} via pattern: {}",
             document_source, extracted.source_pattern
@@ -76,7 +76,7 @@ pub fn extracted_to_hse_entity(
 
     // Tag as document-ingested for filtering/audit
     entity.tag("document-ingestion");
-    entity.tag(&format!("ingest:confidence-{:.0}", extracted.confidence * 100.0));
+    entity.tag(format!("ingest:confidence-{:.0}", extracted.confidence * 100.0));
 
     entity
 }
@@ -116,7 +116,7 @@ mod tests {
         assert_eq!(entity.confidence, 0.85);
         assert_eq!(entity.scan_id, "scan-123");
         assert!(entity.tags.contains(&"document-ingestion".to_string()));
-        assert!(entity.evidence.len() > 0);
+        assert!(!entity.evidence.is_empty());
 
         let first_evidence = &entity.evidence[0];
         assert!(first_evidence.source.contains("ingest:"));

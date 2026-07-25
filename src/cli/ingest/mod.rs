@@ -13,14 +13,24 @@ use std::fs;
 use std::path::PathBuf;
 use tracing::info;
 
+/// Scan id stamped on entities emitted by the `hse` output format.
+///
+/// Ingest runs outside any scan, so there is no real id to carry. A fixed,
+/// obvious placeholder is better than a fabricated-looking one: whoever loads
+/// these entities re-stamps them with the scan that adopts them.
+const PENDING_SCAN_ID: &str = "ingest-pending";
+
 #[derive(Parser, Debug)]
 pub struct IngestArgs {
     /// Input file path (image, PDF, CSV, JSON, JSONL, text)
     #[arg(short, long, value_name = "PATH")]
     pub file: PathBuf,
 
-    /// Output format: jsonl (default), json, csv, table
-    #[arg(short, long, default_value = "jsonl")]
+    /// Output format: jsonl (default), json, csv, table, hse
+    ///
+    /// Short flag is `-F`: `-f` is the input file and `-o` the output file,
+    /// and clap panics at startup on a duplicate short name.
+    #[arg(short = 'F', long, default_value = "jsonl")]
     pub output_format: String,
 
     /// Minimum confidence threshold (0.0-1.0)
@@ -231,7 +241,7 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
                         }
 
                         // Save metadata summary
-                        let metadata_path = output_dir.join(format!("{}_reverse_search_metadata.json", base_name));
+                        let metadata_path = output_dir.join(format!("{base_name}_reverse_search_metadata.json"));
                         let metadata_json = serde_json::json!({
                             "original_dimensions": search_set.original_dimensions,
                             "variant_count": search_set.variants.len(),
@@ -269,22 +279,47 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
     }
 
     // Format output
-    let output_text = format_output(&entities, &args.output_format)?;
+    let document_source = args
+        .file
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("ingest");
+    let output_text = format_output(&entities, &args.output_format, document_source)?;
 
     // Write output
     if let Some(output_path) = args.output {
         fs::write(&output_path, output_text)?;
         info!("Wrote output to {}", output_path.display());
     } else {
-        println!("{}", output_text);
+        println!("{output_text}");
     }
 
     Ok(())
 }
 
-/// Format entities as JSONL, JSON, CSV, or human-readable table.
-fn format_output(entities: &[crate::util::entity_extractor::ExtractedEntity], format: &str) -> DocumentResult<String> {
+/// Format entities as JSONL, JSON, CSV, HSE entities, or human-readable table.
+///
+/// `document_source` names the file the entities came from; it is recorded on
+/// the evidence chain of the `hse` format so a downstream scan can attribute
+/// each entity back to the document that produced it.
+fn format_output(
+    entities: &[crate::util::entity_extractor::ExtractedEntity],
+    format: &str,
+    document_source: &str,
+) -> DocumentResult<String> {
     match format {
+        // Fully-formed `core::entity::Entity` records — kind mapped onto HSE's
+        // taxonomy, confidence carried across, and an evidence chain naming the
+        // source document and matching pattern. This is the shape
+        // `storage::Store::upsert_entities_batch` consumes, so the output can be
+        // fed straight into a scan rather than re-parsed from the flat formats.
+        "hse" | "entities" => {
+            let converted: Vec<_> = entities
+                .iter()
+                .map(|e| converter::extracted_to_hse_entity(e, PENDING_SCAN_ID, document_source))
+                .collect();
+            Ok(serde_json::to_string_pretty(&converted)?)
+        }
         "jsonl" => Ok(entities
             .iter()
             .map(|e| {
@@ -337,7 +372,7 @@ fn format_output(entities: &[crate::util::entity_extractor::ExtractedEntity], fo
         }
 
         other => Err(crate::util::document_parse::DocumentParseError::UnsupportedFormat(
-            format!("output format: {}", other),
+            format!("output format: {other}"),
         )),
     }
 }
@@ -345,20 +380,48 @@ fn format_output(entities: &[crate::util::entity_extractor::ExtractedEntity], fo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::entity_extractor::EntityKind;
 
-    #[test]
-    fn format_jsonl() {
-        let entities = vec![crate::util::entity_extractor::ExtractedEntity {
+    fn sample() -> Vec<crate::util::entity_extractor::ExtractedEntity> {
+        vec![crate::util::entity_extractor::ExtractedEntity {
             kind: EntityKind::Email,
             value: "test@example.com".to_string(),
             confidence: 0.85,
             context: None,
             source_pattern: "email_rfc5322".to_string(),
             boost_reason: None,
-        }];
+        }]
+    }
 
-        let output = format_output(&entities, "jsonl").unwrap();
+    #[test]
+    fn format_jsonl() {
+        let output = format_output(&sample(), "jsonl", "notes.txt").unwrap();
         assert!(output.contains("test@example.com"));
         assert!(output.contains("email"));
+    }
+
+    #[test]
+    fn format_hse_emits_scannable_entities() {
+        let output = format_output(&sample(), "hse", "notes.txt").unwrap();
+        let parsed: Vec<crate::core::entity::Entity> =
+            serde_json::from_str(&output).expect("hse output must round-trip as core entities");
+
+        assert_eq!(parsed.len(), 1);
+        let entity = &parsed[0];
+        assert_eq!(entity.kind, crate::core::entity::EntityKind::Email);
+        assert_eq!(entity.value, "test@example.com");
+        assert!(
+            entity.tags.iter().any(|t| t == "document-ingestion"),
+            "entities must be attributable to the ingest path"
+        );
+        assert!(
+            entity.evidence.iter().any(|e| e.source.contains("notes.txt")),
+            "evidence must name the source document"
+        );
+    }
+
+    #[test]
+    fn format_rejects_unknown_output_format() {
+        assert!(format_output(&sample(), "yaml", "notes.txt").is_err());
     }
 }
