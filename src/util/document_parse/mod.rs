@@ -11,6 +11,7 @@ pub mod image_prep;
 
 use std::path::Path;
 use thiserror::Error;
+use crate::util::entity_extractor::ExtractionError;
 
 /// Supported document input formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +59,8 @@ pub enum DocumentParseError {
     IoError(#[from] std::io::Error),
     #[error("UTF-8 error: {0}")]
     Utf8Error(#[from] std::string::FromUtf8Error),
+    #[error("Entity extraction error: {0}")]
+    ExtractionError(String),
     #[error("Unsupported format: {0}")]
     UnsupportedFormat(String),
     #[error("File size limit exceeded: {0} MiB")]
@@ -84,6 +87,12 @@ pub struct DocumentMetadata {
     pub character_count: usize,
     pub language: Option<String>,
     pub extraction_method: String, // "ocr", "pdf_text_layer", "csv", "json", "text"
+}
+
+impl From<ExtractionError> for DocumentParseError {
+    fn from(err: ExtractionError) -> Self {
+        Self::ExtractionError(err.to_string())
+    }
 }
 
 #[cfg(test)]

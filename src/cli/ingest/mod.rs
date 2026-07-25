@@ -69,13 +69,14 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
         DocumentFormat::Jsonl => crate::util::document_parse::json_parse::parse_jsonl(&args.file)?,
         DocumentFormat::Text => {
             let text = fs::read_to_string(&args.file)?;
+            let character_count = text.len();
             crate::util::document_parse::RawDocumentText {
                 text,
                 source_format: format,
                 confidence: 0.50,
                 metadata: crate::util::document_parse::DocumentMetadata {
                     source_file: Some(args.file.to_string_lossy().to_string()),
-                    character_count: text.len(),
+                    character_count,
                     extraction_method: "text_read".to_string(),
                     ..Default::default()
                 },

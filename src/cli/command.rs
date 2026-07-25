@@ -356,6 +356,25 @@ pub enum Command {
         #[arg(short, long, default_value = "table")]
         output: String,
     },
+    /// Parse documents (image/PDF/CSV/JSON/JSONL/text), extract entities (email, phone, IP, domain, hash, etc.),
+    /// classify by kind, assign confidence scores, and output as HSE-ready batch queries (JSONL/JSON/CSV/table).
+    Ingest {
+        /// Input file path (image, PDF, CSV, JSON, JSONL, text).
+        #[arg(short, long, value_name = "PATH")]
+        file: String,
+        /// Output format: jsonl (default), json, csv, table.
+        #[arg(short, long, default_value = "jsonl")]
+        output_format: String,
+        /// Minimum confidence threshold (0.0-1.0, default 0.30).
+        #[arg(long, default_value = "0.30")]
+        min_confidence: f64,
+        /// Auto-scan extracted entities (future integration).
+        #[arg(long)]
+        auto_scan: bool,
+        /// Output file (default: stdout).
+        #[arg(short, long)]
+        output: Option<String>,
+    },
     /// Start the HTTP server + SPA (browse to http://127.0.0.1:8080 from Chrome).
     Serve {
         /// Bind address. Localhost-only by default — change at your own risk.

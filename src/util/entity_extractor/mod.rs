@@ -9,6 +9,8 @@ pub mod patterns;
 pub mod classifier;
 pub mod extractor;
 
+pub use extractor::EntityExtractor;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
