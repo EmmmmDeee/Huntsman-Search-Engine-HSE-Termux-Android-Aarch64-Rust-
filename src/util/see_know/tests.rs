@@ -610,8 +610,8 @@ fn client_base_url_uses_endpoint_override_or_default() {
 
 #[test]
 fn base_urls_for_default_rotates_through_every_known_public_domain() {
-    // No override active (primary == the built-in default): full 3-domain
-    // rotation, exactly today's behaviour.
+    // No override active (primary == the built-in default): full 4-domain
+    // rotation across every known SeekNow public domain.
     let urls = base_urls_for("https://see-know.xyz/api/v1".to_string());
     assert_eq!(
         urls,
@@ -619,6 +619,7 @@ fn base_urls_for_default_rotates_through_every_known_public_domain() {
             "https://see-know.xyz/api/v1",
             "https://see-know.eu/api/v1",
             "https://see-know.icu/api/v1",
+            "https://see-know.ru/api/v1",
         ]
     );
 }
@@ -626,7 +627,7 @@ fn base_urls_for_default_rotates_through_every_known_public_domain() {
 #[test]
 fn base_urls_for_active_override_is_exclusive_no_public_fallback() {
     // An accepted HUNTSMAN_SEEKNOW_BASE override (primary != the built-in
-    // default) must NOT fall through to see-know.eu/.icu on failure — that
+    // default) must NOT fall through to see-know.eu/.icu/.ru on failure — that
     // would silently send the key-bearing, PII-bearing request to a host the
     // operator explicitly did not choose, and (for the carrier-DNS-filtering
     // workaround `hse doctor` itself recommends) just reproduces the exact
