@@ -158,10 +158,10 @@ use super::*;
 
     #[test]
     fn radar_scan_spec_activates_only_the_live_sensors() {
-        // Default (no seed) → GPS/RF ambient survey on a sentinel coordinate.
+        // The radar takes no parameters: one fixed sentinel coordinate, always.
         // (`Target::new` canonicalises the coordinate pair; the sensors ignore the
         // value entirely, so the exact sentinel form is immaterial.)
-        let (target, opts) = radar_scan_spec(None);
+        let (target, opts) = radar_scan_spec();
         assert_eq!(target.kind, TargetKind::Coordinates);
         assert!(
             target.value.starts_with('0') && target.value.contains(','),
@@ -185,23 +185,31 @@ use super::*;
         let got: std::collections::HashSet<&str> = mods.iter().map(String::as_str).collect();
         assert_eq!(got, want, "radar runs exactly the live device sensors");
 
-        // BSSID-anchored variant → MacAddress sentinel, same sensor invariants.
-        for seed in ["mac", "mac_address", "bssid"] {
-            let (t, o) = radar_scan_spec(Some(seed));
-            assert_eq!(t.kind, TargetKind::MacAddress, "seed={seed}");
-            assert!(o.allow_live_sensors);
-            assert_eq!(
-                o.modules.as_deref().map(<[String]>::len),
-                Some(crate::core::engine::LOCAL_PASSIVE_MODULES.len())
+        // Deterministic: the radar has no inputs, so repeated activation must
+        // produce byte-identical scan specs.
+        let (again, _) = radar_scan_spec();
+        assert_eq!(again.kind, target.kind);
+        assert_eq!(again.value, target.value);
+    }
+
+    /// Every sensor gates on `Coordinates | MacAddress` and ignores the VALUE,
+    /// so the removed `?seed=` knob could not change what any of them collected
+    /// — it only chose which sentinel kind to label the sweep with. This pins
+    /// the property that made removing it safe.
+    #[test]
+    fn every_live_sensor_accepts_the_radar_sentinel() {
+        let (target, _) = radar_scan_spec();
+        let registry = crate::modules::registry();
+        for name in crate::core::engine::LOCAL_PASSIVE_MODULES {
+            let m = registry
+                .iter()
+                .find(|m| m.name() == *name)
+                .unwrap_or_else(|| panic!("{name} must be registered"));
+            assert!(
+                m.accepts(&target),
+                "{name} must accept the radar sentinel, or the sweep dispatches nothing"
             );
         }
-
-        // An unknown seed value falls back to the safe default (coordinates),
-        // never an arbitrary target kind.
-        assert_eq!(
-            radar_scan_spec(Some("example.com")).0.kind,
-            TargetKind::Coordinates
-        );
     }
 
     // ── `snapshot_still_relevant_to` (stale engine-health-cache attribution) ──

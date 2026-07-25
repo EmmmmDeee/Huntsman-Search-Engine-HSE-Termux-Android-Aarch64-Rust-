@@ -128,9 +128,9 @@ export const API = {
   // scan never runs them. Both take NO input whatsoever.
   //   radarLive():  CONTINUOUS autonomous radar — a zero-input live session that
   //                 re-enumerates the device's passive signals in real time.
-  //   radarSweep(): ONE autonomous sweep (kept for API back-compat; optional seed).
+  //   radarSweep(): ONE autonomous sweep (kept for API back-compat). No inputs.
   radarLive: ()=>API._req('/api/v1/radar/live',{method:'POST'}),
-  radarSweep: seed=>API._req('/api/v1/radar'+(seed?('?seed='+encodeURIComponent(seed)):''),{method:'POST'}),
+  radarSweep: ()=>API._req('/api/v1/radar',{method:'POST'}),
   // Historical review of past radar sweeps — sourced from the persisted scans
   // table, so it survives a server restart (unlike the in-memory live-session
   // list above). This is what makes "what was around me earlier" reviewable.
