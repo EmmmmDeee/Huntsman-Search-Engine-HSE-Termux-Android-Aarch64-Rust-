@@ -1251,6 +1251,7 @@ dependencies = [
  "http",
  "image",
  "kamadak-exif",
+ "lazy_static",
  "md-5",
  "memchr",
  "parking_lot",

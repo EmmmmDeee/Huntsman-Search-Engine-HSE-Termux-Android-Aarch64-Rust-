@@ -21,6 +21,7 @@ pub mod dmarc;
 pub mod dns;
 pub mod document_parse;
 pub mod domains;
+pub mod entity_extractor;
 pub mod egress;
 pub mod endpoint_override;
 pub mod extract;
