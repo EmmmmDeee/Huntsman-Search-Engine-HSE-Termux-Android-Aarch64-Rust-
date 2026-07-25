@@ -513,20 +513,11 @@ pub enum Command {
     ///
     /// Think of it as an intermittent radar that detects signals and
     /// automatically enriches them through all available modules.
-    Radar {
-        /// Seconds between sensor sweeps. Default 10.
-        #[arg(short, long, default_value_t = 10)]
-        interval: u64,
-        /// Expansion depth for each discovered entity. Default 2.
-        #[arg(short, long, default_value_t = 2)]
-        depth: u32,
-        /// Stop after this many sweeps. Omit for infinite (Ctrl-C to stop).
-        #[arg(long)]
-        sweeps: Option<u32>,
-        /// Skip paid modules when pivoting.
-        #[arg(long)]
-        free_only: bool,
-    },
+    ///
+    /// Takes no options: it is either running or stopped. Start it with
+    /// `hse radar`, stop it with Ctrl-C. Everything it needs it reads from this
+    /// device's own radios.
+    Radar {},
     /// Export a previous scan's entities to JSON / CSV / GEXF / JSON-report / full.
     ///
     /// JSON           — `[{ kind, value, ... }, ...]` flat entity list

@@ -370,12 +370,7 @@ pub async fn run() -> Result<()> {
             })
             .await
         }
-        Command::Radar {
-            interval,
-            depth,
-            sweeps,
-            free_only,
-        } => radar::cmd_radar(interval, depth, sweeps, free_only).await,
+        Command::Radar {} => radar::cmd_radar().await,
         Command::Export {
             scan_id,
             format,
