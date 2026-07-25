@@ -19,6 +19,7 @@ pub mod curl_client;
 pub mod diagnostics;
 pub mod dmarc;
 pub mod dns;
+pub mod document_parse;
 pub mod domains;
 pub mod egress;
 pub mod endpoint_override;

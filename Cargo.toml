@@ -139,6 +139,12 @@ base64             = "0.22"
 # Already in the lock file transitively via tower-http compression-gzip;
 # promoted here so `hse cells import` can stream-decompress CSV.GZ files.
 flate2             = "1"
+# Document ingestion: CSV, PDF, image parsing (Phase 1.x)
+csv                = "1"
+# Pure-Rust PDF parser — no C deps, aligns with Termux architecture invariant.
+pdf                = "0.10"
+# Pure-Rust image processing for OCR preprocessing (resize, denoise).
+image              = "0.25"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
