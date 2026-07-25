@@ -181,3 +181,105 @@ use super::*;
             "the rung-2 coordinate winner must be order-independent on a confidence tie"
         );
     }
+
+    /// Sightings in two different cities must never be averaged into a fix
+    /// between them.
+    ///
+    /// Perth and Sydney are ~3,290 km apart. Before the coherence gate, an
+    /// `abn_lookup` hit in one and an `exif_geo` hit in the other satisfied the
+    /// "≥2 orthogonal classes" test, and their weighted geometric median landed
+    /// in the Nullarbor — reported at up to 0.97 confidence. The radius was
+    /// honest about the spread, but the point itself was a place nobody had
+    /// been seen.
+    #[test]
+    fn does_not_fuse_sightings_from_different_cities() {
+        let ents = vec![
+            au_coord("-31.9523,115.8613", 0.80, "abn_lookup", "WA"),
+            au_coord("-33.8688,151.2093", 0.70, "exif_geo", "NSW"),
+        ];
+        let fix = au059_synergy_fix(&ents);
+        if let Some(f) = &fix {
+            // Whatever survives must be one real city, never the midpoint.
+            assert!(
+                f.radius_km < 100.0,
+                "a fused fix must not span cities, got radius {} km at {},{}",
+                f.radius_km,
+                f.lat,
+                f.lon
+            );
+            assert!(
+                f.lon < 125.0 || f.lon > 140.0,
+                "fix at lon {} sits between Perth and Sydney — the Nullarbor \
+                 midpoint this gate exists to prevent",
+                f.lon
+            );
+        }
+        // Each city contributes a single class, so neither group can satisfy
+        // the ≥2-orthogonal-class synergy gate on its own.
+        assert!(
+            fix.is_none(),
+            "two single-class city groups must not assert cross-class synergy"
+        );
+    }
+
+    /// The dominant group is chosen by orthogonal-class agreement, so a
+    /// well-corroborated cluster wins over a distant lone sighting — and the
+    /// outlier must not drag the fused point toward itself.
+    #[test]
+    fn fuses_the_best_supported_group_and_ignores_a_distant_outlier() {
+        let ents = vec![
+            au_coord("-33.8688,151.2093", 0.80, "abn_lookup", "NSW"),
+            au_coord("-33.8700,151.2100", 0.75, "exif_geo", "NSW"),
+            au_coord("-33.8710,151.2110", 0.70, "wigle", "NSW"),
+            // A lone Perth sighting 3,290 km west.
+            au_coord("-31.9523,115.8613", 0.85, "au_electoral", "WA"),
+        ];
+        let f = au059_synergy_fix(&ents).expect("the Sydney cluster must still fire");
+        assert!(
+            (f.lat - -33.87).abs() < 0.5 && (f.lon - 151.21).abs() < 0.5,
+            "expected the Sydney cluster, got {},{}",
+            f.lat,
+            f.lon
+        );
+        assert!(f.radius_km < 50.0, "radius {} km", f.radius_km);
+        assert_eq!(f.state, "NSW");
+    }
+
+    /// A live handset GNSS fix is the most precise person-location signal the
+    /// product has. The person-anchor gate is an allowlist, and omitting
+    /// `signal_radar`/`device_sensors` made `is_infrastructure_geo` classify a
+    /// 20 m lock on the subject's own phone as infrastructure — excluding it
+    /// from every rule that answers "where is this person".
+    #[test]
+    fn device_gps_is_person_anchoring_not_infrastructure() {
+        for src in ["signal_radar", "device_sensors", "wifi_intel"] {
+            assert!(
+                is_anchoring_geo_source(src),
+                "{src} locates the subject's own device"
+            );
+            let e = au_coord("-27.4698,153.0251", 0.90, src, "QLD");
+            assert!(
+                !is_infrastructure_geo(&e),
+                "{src} must not be treated as infrastructure"
+            );
+        }
+        assert_eq!(geo_source_class("signal_radar"), GeoSourceClass::DeviceGps);
+        assert_eq!(geo_source_class("device_sensors"), GeoSourceClass::DeviceGps);
+        assert_eq!(geo_source_class("wifi_intel"), GeoSourceClass::WifiSensor);
+        // Finest in the precision table — finer than photo EXIF.
+        assert!(
+            precision_radius_m(GeoSourceClass::DeviceGps)
+                < precision_radius_m(GeoSourceClass::PhotoGps)
+        );
+    }
+
+    /// A handset fix must now reach the headline estimate, and it should win
+    /// over a coarse registry address at the same location.
+    #[test]
+    fn device_gps_reaches_the_headline_location_estimate() {
+        let ents = vec![au_coord("-27.4698,153.0251", 0.90, "signal_radar", "QLD")];
+        let est = best_au_location_estimate(&ents)
+            .expect("a handset GNSS fix must produce a location estimate");
+        assert!((est.lat - -27.4698).abs() < 0.001, "got {}", est.lat);
+        assert_eq!(est.state, "QLD");
+    }

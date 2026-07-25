@@ -48,6 +48,22 @@ const ANCHORING_GEO_SOURCES: &[&str] = &[
     "exif_geo",
     "wigle",
     "mylnikov",
+    // The subject's OWN device sensors — the most precise person-fix the product
+    // can obtain, and for a long time the only class excluded from every rule
+    // that answers "where is this person".
+    //
+    // `signal_radar` and `device_sensors` emit a handset GNSS fix at 7-decimal
+    // precision carrying an `accuracy:{n}m` tag, up to 0.90 confidence for a
+    // ≤20 m lock; `wifi_intel` resolves the access points that handset can
+    // actually see. Because the person-anchor gate is an ALLOWLIST, omitting
+    // them made `is_infrastructure_geo` return true for a 20 m GPS lock on the
+    // subject's own phone — so AU-052/053/057/059, the headline location
+    // estimate, `coord_state` and AU-099 all discarded it while
+    // `core::geo_family` (which has no such gate) happily used it. Family
+    // proximity worked off the GPS fix the headline answer refused to see.
+    "signal_radar",
+    "device_sensors",
+    "wifi_intel",
     // Search-derived inline geocoding (known-city lookup from snippets)
     "search_engines",
     // Social profile bio and professional portal addresses
@@ -441,6 +457,11 @@ pub(in crate::core::correlator) fn rule_au_053_out_of_area_location(
 /// source falls back to [`GeoSourceClass::Other`] so the classifier total-maps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum GeoSourceClass {
+    /// A live GNSS fix from the subject's own handset (`signal_radar`,
+    /// `device_sensors`). The finest signal available: a real-time position
+    /// report from the device in the subject's hand, not an artefact they left
+    /// behind.
+    DeviceGps,
     /// Direct GPS/photo EXIF — a physical sighting of the subject's device.
     PhotoGps,
     /// Wi-Fi access-point geolocation (wardriving databases).
@@ -475,8 +496,11 @@ pub(crate) enum GeoSourceClass {
 /// Map a person-anchoring source name to its orthogonal [`GeoSourceClass`].
 pub(crate) fn geo_source_class(source: &str) -> GeoSourceClass {
     match source {
+        "signal_radar" | "device_sensors" => GeoSourceClass::DeviceGps,
         "exif_geo" => GeoSourceClass::PhotoGps,
-        "wigle" | "mylnikov" => GeoSourceClass::WifiSensor,
+        // `wifi_intel` resolves the APs the subject's device can see, so it is
+        // the same measurement class as a wardriving-database lookup.
+        "wigle" | "mylnikov" | "wifi_intel" => GeoSourceClass::WifiSensor,
         "geocode" | "photon" => GeoSourceClass::Geocode,
         "abn_lookup" | "opencorporates" | "acnc_charities" | "gleif_lei" | "asic_director" => {
             GeoSourceClass::Registry
@@ -507,7 +531,8 @@ pub(crate) fn geo_source_class(source: &str) -> GeoSourceClass {
 /// Deliberately coarse, order-of-magnitude figures (not survey-grade), one per
 /// class so precision can never drift from the classification `geo_source_class`
 /// already provides (Rule 4: delegate, never duplicate). Monotonically ordered
-/// finest → coarsest: consumer GPS EXIF (~20 m) < rooftop/street geocoding
+/// finest → coarsest: live handset GNSS (~10 m) < consumer GPS EXIF (~20 m)
+/// < rooftop/street geocoding
 /// (~40 m) < land-title parcel (~60 m) < WiGLE-class Wi-Fi AP geolocation
 /// (~75 m) < compulsory electoral enrolment (~150 m, exact address but not
 /// always rooftop-geocoded) < a business registry's registered office (~500 m —
@@ -520,6 +545,7 @@ pub(crate) fn geo_source_class(source: &str) -> GeoSourceClass {
 /// unclassified fallback (~30 km, a moderate-coarse default).
 pub(in crate::core::correlator) fn precision_radius_m(class: GeoSourceClass) -> f64 {
     match class {
+        GeoSourceClass::DeviceGps => 10.0,
         GeoSourceClass::PhotoGps => 20.0,
         GeoSourceClass::Geocode => 40.0,
         GeoSourceClass::Property => 60.0,
@@ -674,12 +700,65 @@ impl SynergyFix {
 /// coordinates, or fewer than two distinct orthogonal source classes). Pure and
 /// deterministic. Shared by the rule (which formats its finding from it) and the
 /// API export (which reads its fields directly).
+/// Metropolitan link distance for deciding whether two person sightings can
+/// describe the same place.
+///
+/// Wide enough to chain a home, a workplace and a suburb across one
+/// metropolitan area into a single fix; far narrower than the distance between
+/// Australian capitals, so sightings in different cities never fuse.
+const COHERENT_LINK_KM: f64 = 50.0;
+
+/// Reduce a sighting set to the single spatially coherent group best supported
+/// by orthogonal evidence, or `None` when no group has two sightings.
+///
+/// Fusion answers "where is the centre of these points" and says nothing about
+/// whether the points describe one place. Without this, a Perth sighting and a
+/// Sydney sighting — 3,290 km apart, from two different source classes —
+/// satisfied the synergy gate and their weighted geometric median landed in the
+/// Nullarbor, reported at up to 0.97 confidence with an honest-but-useless
+/// 1,600 km radius. A location nobody was seen at is a fabrication regardless
+/// of how wide the error bar is.
+///
+/// Groups are ranked by orthogonal-class count first — the quantity AU-059
+/// actually measures — then by summed confidence, then by size, with a
+/// first-index tie-break so the choice is deterministic.
+fn dominant_coherent_group(parsed: Vec<(&Entity, (f64, f64))>) -> Vec<(&Entity, (f64, f64))> {
+    let points: Vec<(f64, f64)> = parsed.iter().map(|(_, ll)| *ll).collect();
+    let groups = crate::util::geometry::coherent_groups(&points, COHERENT_LINK_KM);
+    if groups.len() <= 1 {
+        return parsed;
+    }
+    groups
+        .into_iter()
+        .map(|idx| {
+            let members: Vec<(&Entity, (f64, f64))> =
+                idx.iter().map(|&i| parsed[i]).collect();
+            let classes = distinct_geo_classes(&members).len();
+            let weight: f64 = members.iter().map(|(e, _)| e.c_effective()).sum();
+            (classes, weight, members)
+        })
+        .max_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .then(a.2.len().cmp(&b.2.len()))
+        })
+        .map(|(_, _, members)| members)
+        .unwrap_or_default()
+}
+
 pub(crate) fn au059_synergy_fix(entities: &[Entity]) -> Option<SynergyFix> {
     // Australian person-anchored coordinates only.
     let parsed: Vec<(&Entity, (f64, f64))> = person_anchored_coords(entities)
         .into_iter()
         .filter(|(e, ll)| is_australian_coord(e, *ll))
         .collect();
+    if parsed.len() < 2 {
+        return None;
+    }
+
+    // Coherence gate: sightings must describe ONE place before their centre
+    // means anything. Fuse only the best-supported coherent group.
+    let parsed = dominant_coherent_group(parsed);
     if parsed.len() < 2 {
         return None;
     }
@@ -1228,6 +1307,7 @@ fn au_state_majority(parsed: &[(&Entity, (f64, f64))]) -> Option<&'static str> {
 /// Human-readable label for a [`GeoSourceClass`] (for correlation summaries).
 fn geo_class_name(c: &GeoSourceClass) -> &'static str {
     match c {
+        GeoSourceClass::DeviceGps => "device-gps",
         GeoSourceClass::PhotoGps => "photo-gps",
         GeoSourceClass::WifiSensor => "wifi",
         GeoSourceClass::Geocode => "geocode",

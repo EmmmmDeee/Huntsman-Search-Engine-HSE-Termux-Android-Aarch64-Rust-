@@ -7326,13 +7326,20 @@ fn au059_class_diversity_bonus_is_per_point_not_a_global_no_op() {
         e
     };
 
-    // B (Darwin) and C (Perth) are fixed single-class points. With A (Sydney)
-    // they form a genuine triangle (all interior angles < 120°), so the
-    // geometric median is an interior Fermat point that responds continuously to
-    // each vertex's weight — not a near-collinear set that pins the median to the
-    // middle vertex regardless of weight.
-    let b = mk(-12.4634, 130.8456, &["geocode"], "NT"); // Darwin — Geocode
-    let c = mk(-31.9505, 115.8605, &["mylnikov"], "WA"); // Perth — WifiSensor
+    // B and C are fixed single-class points. With A they form a genuine triangle
+    // (all interior angles < 120°), so the geometric median is an interior
+    // Fermat point that responds continuously to each vertex's weight — not a
+    // near-collinear set that pins the median to the middle vertex regardless of
+    // weight.
+    //
+    // All three sit inside one metropolitan area, and must: AU-059 fuses only a
+    // spatially COHERENT group, so the earlier Sydney/Darwin/Perth fixture no
+    // longer converges at all — three points thousands of kilometres apart do
+    // not describe one place, and their "interior Fermat point" was a location
+    // nobody had been seen at. The weighting property under test is unchanged;
+    // only the geometry is now one a real subject could produce.
+    let b = mk(-33.7048, 151.0990, &["geocode"], "NSW"); // Hornsby — Geocode
+    let c = mk(-33.9171, 151.0350, &["mylnikov"], "NSW"); // Bankstown — WifiSensor
 
     // Three-class A: Registry + WifiSensor + PhotoGps → per-point count 3 → 1.20×.
     let a_multi = mk(
@@ -7351,8 +7358,8 @@ fn au059_class_diversity_bonus_is_per_point_not_a_global_no_op() {
     );
 
     let multi = au059_synergy_fix(&[a_multi, b.clone(), c.clone()])
-        .expect("4 orthogonal AU classes converge");
-    let mono = au059_synergy_fix(&[a_mono, b, c]).expect("3 orthogonal AU classes converge");
+        .expect("4 orthogonal AU classes in one metro area converge");
+    let mono = au059_synergy_fix(&[a_mono, b, c]).expect("3 orthogonal AU classes in one metro area converge");
 
     assert!(
         multi.lon > mono.lon + 1e-4,
