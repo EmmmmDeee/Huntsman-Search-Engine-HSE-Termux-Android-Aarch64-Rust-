@@ -1031,3 +1031,125 @@ async fn get_with_retry_gives_up_after_one_retry_on_a_persistent_429() {
         "must classify as RateLimited so the shared circuit breaker paces it correctly: {err:?}"
     );
 }
+
+/// A person-named network near the subject must become a pivotable entity, not
+/// just a line of prose.
+///
+/// `TargetKind::Ssid` is a valid scan target that this same module accepts, and
+/// `ssid_search` resolves a unique SSID to every GPS point it has been observed
+/// at — the pivot that turns "a named network near this coordinate" into
+/// "everywhere that network has been seen". Previously the names were recorded
+/// only as a text attribute on another entity, so the edge could never be
+/// walked.
+#[test]
+fn named_ssids_become_pivotable_entities() {
+    let net = |ssid: &str| Network {
+        ssid: Some(ssid.into()),
+        netid: None,
+        encryption: None,
+        lastupdt: None,
+        trilat: None,
+        trilong: None,
+        city: None,
+        region: None,
+        country: None,
+        postalcode: None,
+    };
+    let results = vec![
+        net("Smith-Family"),
+        net("Bamford-Residence"),
+        net("NETGEAR47"),      // vendor default — not a person's choice
+        net("Telstra-Home-12"), // carrier default
+        net("Smith-Family"),   // duplicate must collapse
+    ];
+
+    let ents = named_ssid_entities(&results, "-27.4698,153.0251", "scan");
+    let names: Vec<&str> = ents.iter().map(|e| e.value.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["Bamford-Residence", "Smith-Family"],
+        "only person-named networks, deduplicated and sorted"
+    );
+    assert!(ents.iter().all(|e| e.kind == EntityKind::Ssid));
+    assert!(ents.iter().all(|e| e.tags.iter().any(|t| t == "geo-lead")));
+    // Above the expansion floor so the pivot actually runs, below MEDIUM so
+    // nothing reads proximity as proven ownership.
+    for e in &ents {
+        assert!(
+            e.confidence > crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE,
+            "{} must clear the expansion floor to pivot",
+            e.value
+        );
+        assert!(e.confidence < crate::core::confidence::MEDIUM);
+    }
+    // The true count rides along, per the no-silent-truncation policy.
+    assert_eq!(
+        ents[0].evidence[0]
+            .attributes
+            .get("named_ssids_observed")
+            .map(String::as_str),
+        Some("2")
+    );
+}
+
+/// A BSSID WiGLE reports twice must not consume two emitted slots.
+///
+/// `dedup_by_key` removes only CONSECUTIVE duplicates, and the pass used to
+/// deduplicate AFTER sorting by distance — so the same access point observed at
+/// two slightly different positions stayed as two entries.
+#[test]
+fn duplicate_bssids_collapse_before_ranking() {
+    let net = |netid: &str, tri: (f64, f64)| Network {
+        ssid: None,
+        netid: Some(netid.into()),
+        encryption: None,
+        lastupdt: None,
+        trilat: Some(tri.0),
+        trilong: Some(tri.1),
+        city: None,
+        region: None,
+        country: None,
+        postalcode: None,
+    };
+    // One AP reported twice at slightly different positions, plus five others,
+    // so a failure to collapse would push a real AP out of the emitted set.
+    let results = vec![
+        net("AA:BB:CC:DD:EE:01", (-27.4700, 153.0251)),
+        net("AA:BB:CC:DD:EE:01", (-27.4701, 153.0252)),
+        net("AA:BB:CC:DD:EE:02", (-27.4702, 153.0253)),
+        net("AA:BB:CC:DD:EE:03", (-27.4703, 153.0254)),
+        net("AA:BB:CC:DD:EE:04", (-27.4704, 153.0255)),
+        net("AA:BB:CC:DD:EE:05", (-27.4705, 153.0256)),
+        net("AA:BB:CC:DD:EE:06", (-27.4706, 153.0257)),
+    ];
+    let ents = wifi_ap_entities(&results, -27.4698, 153.0251, "-27.4698,153.0251", "scan");
+    let mut macs: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::MacAddress)
+        .map(|e| e.value.as_str())
+        .collect();
+    let before = macs.len();
+    macs.sort_unstable();
+    macs.dedup();
+    assert_eq!(before, macs.len(), "a BSSID must be emitted at most once");
+    assert_eq!(macs.len(), MAX_EMITTED_APS);
+
+    // Six DISTINCT APs were observed; the emitted set is bounded, so the true
+    // count must be stated rather than silently implied by the list length.
+    let observed = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::MacAddress)
+        .and_then(|e| e.evidence[0].attributes.get("aps_observed"))
+        .map(String::as_str);
+    assert_eq!(observed, Some("6"));
+}
+
+/// Every declared WiGLE budget must appear on the diagnostic surface, or an
+/// operator cannot tell why a sub-capability stopped firing.
+#[test]
+fn budget_snapshot_reports_every_declared_budget() {
+    let snap = budget_snapshot();
+    // Field access is the assertion: `ssid` was declared, reset and consumed
+    // while being absent from this struct.
+    let _ = (snap.geo, snap.bssid, snap.cell, snap.bluetooth, snap.ssid);
+}
