@@ -1,7 +1,7 @@
 //! Shared SeekNow (see-know.xyz) API client — a direct OathNet competitor
 //! with its own daily-lookup pool.
 //!
-//! Endpoint surface (primary `https://see-know.xyz/api/v1`; `.eu`/`.icu`
+//! Endpoint surface (primary `https://see-know.xyz/api/v1`; `.eu`/`.icu`/`.ru`
 //! fallback in [`client::all_base_urls`]):
 //!
 //!   POST /search                — universal search: breach + stealer + external

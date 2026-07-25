@@ -116,7 +116,7 @@ pub fn base_url() -> String {
 /// no public-domain fallback is appended. Previously every fallback attempt
 /// still ran even with an override set, so a transient hiccup on the
 /// operator's chosen endpoint silently sent the same key-bearing,
-/// PII-bearing request on to see-know.eu/.icu — hosts the operator did not
+/// PII-bearing request on to see-know.eu/.icu/.ru — hosts the operator did not
 /// choose, defeating the override's own purpose (see `endpoint_override`'s
 /// doc comment on why a redirect must never be silent). It also actively
 /// worked against the override's most-recommended use: `hse doctor` tells an
@@ -140,7 +140,11 @@ pub(super) fn base_urls_for(primary: String) -> Vec<String> {
     }
 
     let mut urls = vec![primary];
-    let fallbacks = ["https://see-know.eu/api/v1", "https://see-know.icu/api/v1"];
+    let fallbacks = [
+        "https://see-know.eu/api/v1",
+        "https://see-know.icu/api/v1",
+        "https://see-know.ru/api/v1",
+    ];
     for fallback in &fallbacks {
         if !urls.contains(&fallback.to_string()) {
             urls.push(fallback.to_string());
