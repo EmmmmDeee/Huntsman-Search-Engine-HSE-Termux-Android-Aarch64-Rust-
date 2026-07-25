@@ -9,11 +9,10 @@
 //!
 //! All variants are generated with consistent quality settings to maximize matching probability.
 
-use image::{DynamicImage, ImageReader, ImageFormat};
-use std::io::Cursor;
+use image::DynamicImage;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::debug;
 
 use super::DocumentResult;
 
@@ -105,7 +104,7 @@ pub fn generate_reverse_image_variants<P: AsRef<Path>>(
     debug!("Generating reverse image search variants for: {}", path_str);
 
     // Load original image
-    let img = ImageReader::open(path)?.decode()?;
+    let img = image::ImageReader::open(path)?.decode()?;
     let original_dimensions = (img.width(), img.height());
 
     debug!(
