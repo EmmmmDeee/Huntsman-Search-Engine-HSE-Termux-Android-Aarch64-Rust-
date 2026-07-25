@@ -88,6 +88,17 @@ pub fn extract_image_geolocation<P: AsRef<Path>>(
     Ok(metadata)
 }
 
+/// Extract ASCII string from EXIF value, trimmed and null-safe.
+fn extract_ascii_string(value: &exif::Value) -> Option<String> {
+    if let exif::Value::Ascii(bytes_vec) = value {
+        bytes_vec.first()
+            .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
+            .map(|s| s.trim().to_string())
+    } else {
+        None
+    }
+}
+
 /// Parse EXIF reader and extract relevant fields.
 fn extract_exif_metadata(
     exif_reader: &exif::Exif,
@@ -99,66 +110,37 @@ fn extract_exif_metadata(
     }
 
     // Extract available metadata from exif fields
-    // Note: exif crate v0.6 provides limited field access methods;
-    // we iterate through available fields rather than assuming specific APIs
     let mut has_gps = false;
 
     for field in exif_reader.fields() {
         match field.tag {
-            // Try to extract GPS data if present
             exif::Tag::GPSLatitude => {
                 has_gps = true;
             }
-            // Extract datetime
             exif::Tag::DateTimeOriginal | exif::Tag::DateTime => {
-                if let exif::Value::Ascii(bytes_vec) = &field.value {
-                    for bytes in bytes_vec {
-                        if let Ok(datetime_string) = String::from_utf8(bytes.clone()) {
-                            metadata.datetime = Some(datetime_string.trim().to_string());
-                            break;
-                        }
-                    }
+                if let Some(dt) = extract_ascii_string(&field.value) {
+                    metadata.datetime = Some(dt);
                 }
             }
-            // Extract camera model
             exif::Tag::Make | exif::Tag::Model => {
-                if let exif::Value::Ascii(bytes_vec) = &field.value {
-                    for bytes in bytes_vec {
-                        if let Ok(model_string) = String::from_utf8(bytes.clone()) {
-                            metadata.camera_model = Some(model_string.trim().to_string());
-                            break;
-                        }
-                    }
+                if let Some(model) = extract_ascii_string(&field.value) {
+                    metadata.camera_model = Some(model);
                 }
             }
-            // Extract software
             exif::Tag::Software => {
-                if let exif::Value::Ascii(bytes_vec) = &field.value {
-                    for bytes in bytes_vec {
-                        if let Ok(software_string) = String::from_utf8(bytes.clone()) {
-                            metadata.software = Some(software_string.trim().to_string());
-                            break;
-                        }
-                    }
+                if let Some(software) = extract_ascii_string(&field.value) {
+                    metadata.software = Some(software);
                 }
             }
-            // Extract copyright
             exif::Tag::Copyright => {
-                if let exif::Value::Ascii(bytes_vec) = &field.value {
-                    for bytes in bytes_vec {
-                        if let Ok(copyright_string) = String::from_utf8(bytes.clone()) {
-                            metadata.copyright = Some(copyright_string.trim().to_string());
-                            break;
-                        }
-                    }
+                if let Some(copyright) = extract_ascii_string(&field.value) {
+                    metadata.copyright = Some(copyright);
                 }
             }
             _ => {}
         }
     }
 
-    // GPS data extraction is simplified - in production would require
-    // proper GPS field parsing from exif value bytes
     if has_gps {
         debug!("GPS data detected in EXIF; full parsing requires specialized GPS field parsing");
     }
