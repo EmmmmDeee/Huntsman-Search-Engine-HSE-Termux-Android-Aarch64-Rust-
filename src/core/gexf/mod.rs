@@ -139,10 +139,20 @@ fn write_preamble(xml: &mut String, scan_id: &str) {
         xml,
         r#"      <attribute id="7" title="diamond_vertex" type="string"/>"#
     );
+    // Distinct corroborating sources — the number that actually drives
+    // `c_effective` (unlike the raw, non-deduplicated `corroboration` magnitude in
+    // attribute 4). Exported so a Gephi analyst can size/filter nodes by real
+    // corroboration depth (a 1-source node vs a 5-source one) and reproduce the
+    // confidence reasoning the CSV/report.json already carry — closing the one
+    // trust field the graph export was silently dropping.
+    let _ = writeln!(
+        xml,
+        r#"      <attribute id="8" title="source_count" type="integer"/>"#
+    );
     let _ = writeln!(xml, r#"    </attributes>"#);
 }
 
-/// One `<node>` element with its eight `<attvalue>`s. The id is the truncated
+/// One `<node>` element with its nine `<attvalue>`s. The id is the truncated
 /// uid (see [`short_uid`]) so relation/co-occurrence edges can reference it.
 /// `coreness` is the k-core index (0 = isolated periphery, higher = more
 /// deeply embedded in a densely-connected cluster). `tags` is `|`-joined (the
@@ -199,6 +209,13 @@ fn write_node(xml: &mut String, e: &Entity, coreness: usize) {
         xml,
         r#"          <attvalue for="7" value="{}"/>"#,
         e.diamond_vertex().as_str()
+    );
+    // Distinct corroborating-source count (integer, XML-safe). Matches the CSV's
+    // `source_count` column so the two exports agree on node trust depth.
+    let _ = writeln!(
+        xml,
+        r#"          <attvalue for="8" value="{}"/>"#,
+        e.source_count()
     );
     let _ = writeln!(xml, r#"        </attvalues>"#);
     let _ = writeln!(xml, r#"      </node>"#);

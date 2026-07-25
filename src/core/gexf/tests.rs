@@ -42,6 +42,32 @@ use super::*;
     }
 
     #[test]
+    fn gexf_exports_source_count_so_gephi_can_rank_by_corroboration_depth() {
+        // Regression: the GEXF node dropped `source_count` (distinct corroborating
+        // sources) that CSV/report.json carry — the number that actually drives
+        // c_effective — so a Gephi analyst could not tell a 1-source node from a
+        // multi-source one. It must now be declared AND emitted.
+        let mut multi = Entity::new(EntityKind::Email, "alice@example.com", 0.8, "s");
+        multi.add_evidence(Evidence::new("hibp", "Breach 'Apollo'"));
+        multi.add_evidence(Evidence::new("dehashed", "Breach 'Collection1'"));
+        let single = Entity::new(EntityKind::Domain, "example.com", 0.7, "s");
+        let xml = entities_to_gexf(&[multi.clone(), single], &[], "s");
+        assert!(
+            xml.contains(r#"<attribute id="8" title="source_count" type="integer"/>"#),
+            "the source_count attribute must be declared: {xml}"
+        );
+        // The two-source email carries source_count 2; the bare domain carries 1.
+        assert!(
+            xml.contains(&format!(r#"<attvalue for="8" value="{}"/>"#, multi.source_count())),
+            "the multi-source node's source_count must be emitted: {xml}"
+        );
+        assert!(
+            multi.source_count() >= 2,
+            "two distinct evidence sources should yield source_count >= 2"
+        );
+    }
+
+    #[test]
     fn gexf_creates_edges_for_a_shared_evidence_record() {
         // Two selectors that appear in the SAME breach record (identical source
         // AND summary) genuinely co-occur → one edge, labelled by the source.
@@ -304,6 +330,7 @@ use super::*;
       <attribute id="5" title="coreness" type="integer"/>
       <attribute id="6" title="tags" type="string"/>
       <attribute id="7" title="diamond_vertex" type="string"/>
+      <attribute id="8" title="source_count" type="integer"/>
     </attributes>
     <nodes>
       <node id="ed152b32b035" label="example.com">
@@ -316,6 +343,7 @@ use super::*;
           <attvalue for="5" value="1"/>
           <attvalue for="6" value="breach|geoint"/>
           <attvalue for="7" value="infrastructure"/>
+          <attvalue for="8" value="1"/>
         </attvalues>
       </node>
       <node id="df4bda23ac18" label="blog.example.com">
@@ -328,6 +356,7 @@ use super::*;
           <attvalue for="5" value="1"/>
           <attvalue for="6" value=""/>
           <attvalue for="7" value="infrastructure"/>
+          <attvalue for="8" value="1"/>
         </attvalues>
       </node>
     </nodes>
