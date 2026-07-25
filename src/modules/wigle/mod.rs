@@ -93,14 +93,29 @@ const MAX_EMITTED_APS: usize = 5;
 /// `util::oathnet` already use.
 ///
 /// WiGLE's quota is generous (300/day free, higher tiers paid) so we
-/// allow:
+/// allow, **per HTTP request issued** — not per dispatch:
 ///   - 3 geo searches per scan (the most expensive endpoint — bbox
 ///     scan returns up to 100 networks)
 ///   - 5 BSSID lookups per scan (single-record, cheap)
 ///   - 2 cell tower searches per scan
 ///   - 2 Bluetooth beacon searches per scan
+///   - 3 SSID searches per scan
 ///
-/// Session ceilings (50/100/30/30 respectively) keep `hse serve` /
+/// The per-request denomination is the whole point and was previously
+/// only aspirational: a dispatch is charged one unit, but a geo dispatch
+/// issues a second request when the tight bounding box comes back empty,
+/// and a BSSID dispatch probes the WiFi, cell and Bluetooth corpora in
+/// turn. A scan billed for 3 + 5 could therefore spend 6 + 15 against an
+/// allowance denominated in requests. Every call site now charges
+/// immediately before the request it pays for, so these numbers mean
+/// what they say.
+///
+/// [`BSSID_BUDGET`] is shared with `modules::wifi_intel`, which resolves
+/// scanned access points through the same `/detail` endpoint on the same
+/// credentials; two modules drawing on one upstream quota have to meter
+/// against one budget or neither number is real.
+///
+/// Session ceilings (50/100/30/30/40 respectively) keep `hse serve` /
 /// `hse live` sessions well below the daily allowance even with deep
 /// pivot chains. Both layers are env-tunable so operators on paid
 /// tiers can raise them without recompiling.
@@ -240,19 +255,16 @@ impl Module for Wigle {
 
         let (user, token) = crate::util::keys::wigle_credentials(ctx);
 
+        // Each sub-search charges at the point a request is actually issued —
+        // SSID past its skip filters, BSSID per observation kind probed — so a
+        // dispatch that ends up making no call costs the operator nothing.
         if target.kind == TargetKind::Ssid {
-            if !SSID_BUDGET.try_increment() {
-                return Ok(ModuleResult::new());
-            }
             return self
                 .ssid_search(user, token, target.value.trim(), ctx)
                 .await;
         }
 
         if target.kind == TargetKind::MacAddress {
-            if !BSSID_BUDGET.try_increment() {
-                return Ok(ModuleResult::new());
-            }
             return self.bssid_lookup(user, token, &target.value, ctx).await;
         }
 
@@ -262,15 +274,17 @@ impl Module for Wigle {
 
         let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
 
-        let body = {
-            let tight = fetch_wigle(&ctx.http, user, token, lat, lon, 0.002).await?;
-            if tight.success == Some(true)
-                && tight.total_results.or(tight.result_count).unwrap_or(0) > 0
-            {
-                tight
-            } else {
-                fetch_wigle(&ctx.http, user, token, lat, lon, 0.01).await?
-            }
+        // Tight bbox first, widening only when it came back empty. The widened
+        // retry is a second billable request, so it draws its own unit: charging
+        // once for a path that issues two calls is what made a documented
+        // "3 geo searches per scan" cost up to six.
+        let tight = fetch_wigle(&ctx.http, user, token, lat, lon, 0.002).await?;
+        let empty = tight.success != Some(true)
+            || tight.total_results.or(tight.result_count).unwrap_or(0) == 0;
+        let body = if empty && GEO_BUDGET.try_increment() {
+            fetch_wigle(&ctx.http, user, token, lat, lon, 0.01).await?
+        } else {
+            tight
         };
 
         if body.success != Some(true) {
@@ -807,7 +821,13 @@ impl Wigle {
         bssid: &str,
         ctx: &ModuleContext,
     ) -> Result<ModuleResult> {
+        // One unit per kind actually probed, not one per dispatch: a BSSID absent
+        // from the WiFi and cell corpora costs three requests before the
+        // Bluetooth probe answers, and the caller used to be billed for one.
         for kind in [NetworkKind::Wifi, NetworkKind::Cell, NetworkKind::Bluetooth] {
+            if !BSSID_BUDGET.try_increment() {
+                break;
+            }
             if let Some(body) = fetch_detail(&ctx.http, user, token, bssid, kind).await
                 && body.success == Some(true)
                 && !body.results.is_empty()
@@ -836,6 +856,12 @@ impl Wigle {
         ctx: &ModuleContext,
     ) -> Result<ModuleResult> {
         if ssid.is_empty() || is_generic_ssid(ssid) {
+            return Ok(ModuleResult::new());
+        }
+        // Charged here, past the skip filters: a scan whose SSIDs are all
+        // carrier defaults issues no request and must keep its full allowance
+        // for the one distinctive name that appears later in the pivot chain.
+        if !SSID_BUDGET.try_increment() {
             return Ok(ModuleResult::new());
         }
         let body = fetch_wigle_ssid(&ctx.http, user, token, ssid).await?;

@@ -157,6 +157,16 @@ impl Module for WifiIntel {
                 continue;
             }
 
+            // These are WiGLE `/detail` lookups on the operator's own credentials
+            // and daily allowance — the same endpoint and the same quota the
+            // `wigle` module meters as BSSID_BUDGET. Drawing on that shared
+            // budget rather than none is what keeps the accounting true: this
+            // loop could otherwise spend five requests per dispatch, invisibly,
+            // and radar now pivots without a depth restriction.
+            if !crate::modules::wigle::BSSID_BUDGET.try_increment() {
+                break;
+            }
+
             if let Ok(Some(detail)) =
                 wigle::query_wigle_detail(&ctx.http, user, token, &ap.bssid).await
                 && let (Some(lat), Some(lon)) = (detail.trilat, detail.trilong)
