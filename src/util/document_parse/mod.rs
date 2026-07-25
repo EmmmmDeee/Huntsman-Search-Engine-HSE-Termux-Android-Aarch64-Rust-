@@ -8,6 +8,8 @@ pub mod pdf_parse;
 pub mod csv_parse;
 pub mod json_parse;
 pub mod image_prep;
+pub mod image_geolocation;
+pub mod image_reverse_search;
 
 use std::path::Path;
 use thiserror::Error;

@@ -11,7 +11,7 @@ use clap::Parser;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Parser, Debug)]
 pub struct IngestArgs {
@@ -34,6 +34,18 @@ pub struct IngestArgs {
     /// Output file (default: stdout)
     #[arg(short, long)]
     pub output: Option<PathBuf>,
+
+    /// Extract EXIF geolocation from images
+    #[arg(long)]
+    pub extract_geolocation: bool,
+
+    /// Generate reverse image search variants for detected images
+    #[arg(long)]
+    pub generate_reverse_search_variants: bool,
+
+    /// Output directory for reverse image search variants
+    #[arg(long, value_name = "DIR")]
+    pub image_variant_output_dir: Option<PathBuf>,
 }
 
 /// Execute `hse ingest` command.
@@ -160,6 +172,89 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
     let entities = extractor.extract_from_text(&raw_text.text);
 
     info!("Found {} entities", entities.len());
+
+    // Phase 6: Image processing (geolocation + reverse image search)
+    if matches!(raw_text.source_format, DocumentFormat::Image) {
+        // Extract EXIF geolocation if requested
+        if args.extract_geolocation {
+            match crate::util::document_parse::image_geolocation::extract_image_geolocation(&args.file) {
+                Ok(geo_metadata) => {
+                    if let Some(coords) = &geo_metadata.coordinates {
+                        info!(
+                            "Image geolocation: {:.6}°, {:.6}° (confidence: {:.2})",
+                            coords.latitude, coords.longitude, coords.confidence
+                        );
+                    }
+                    if let Some(datetime) = &geo_metadata.datetime {
+                        info!("Image capture datetime: {}", datetime);
+                    }
+                    if let Some(camera) = &geo_metadata.camera_model {
+                        info!("Camera model: {}", camera);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to extract geolocation: {}", e);
+                }
+            }
+        }
+
+        // Generate reverse image search variants if requested
+        if args.generate_reverse_search_variants {
+            match crate::util::document_parse::image_reverse_search::generate_reverse_image_variants(&args.file) {
+                Ok(search_set) => {
+                    info!(
+                        "Generated {} reverse image search variants ({}x{})",
+                        search_set.variants.len(),
+                        search_set.original_dimensions.0,
+                        search_set.original_dimensions.1
+                    );
+
+                    // Save variants to disk if output directory specified
+                    if let Some(output_dir) = &args.image_variant_output_dir {
+                        fs::create_dir_all(output_dir)?;
+                        let base_name = args.file
+                            .file_stem()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("image");
+
+                        for variant in &search_set.variants {
+                            let variant_path = output_dir.join(format!(
+                                "{}_{}_{}.{}",
+                                base_name, variant.engine, variant.dimensions.0, variant.format
+                            ));
+                            fs::write(&variant_path, &variant.data)?;
+                            info!(
+                                "Saved {} variant to {}",
+                                variant.engine,
+                                variant_path.display()
+                            );
+                        }
+
+                        // Save metadata summary
+                        let metadata_path = output_dir.join(format!("{}_reverse_search_metadata.json", base_name));
+                        let metadata_json = serde_json::json!({
+                            "original_dimensions": search_set.original_dimensions,
+                            "variant_count": search_set.variants.len(),
+                            "variants": search_set.variants.iter().map(|v| serde_json::json!({
+                                "engine": v.engine,
+                                "dimensions": v.dimensions,
+                                "format": v.format,
+                                "quality": v.quality,
+                                "file_size_bytes": v.file_size_bytes,
+                            })).collect::<Vec<_>>(),
+                            "primary_variant": search_set.primary_variant,
+                            "image_hash": search_set.image_hash,
+                        });
+                        fs::write(&metadata_path, serde_json::to_string_pretty(&metadata_json)?)?;
+                        info!("Saved reverse search metadata to {}", metadata_path.display());
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to generate reverse image search variants: {}", e);
+                }
+            }
+        }
+    }
 
     // Phase 4: Auto-scan integration (when --auto-scan flag is set)
     // Future: Wire extracted entities into HSE scan pipeline via:
