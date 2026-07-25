@@ -779,6 +779,19 @@ fn evaluate_relation_rules_on(
 mod test_helpers {
     use super::*;
 
+    /// Macro to call a rule function in tests without needing RuleContext
+    #[macro_export]
+    macro_rules! call_rule {
+        ($rule:path, $entities:expr, $scan_id:expr, $ts:expr) => {{
+            let ctx = $crate::core::correlator::RuleContext::new($entities);
+            $rule(&ctx, $scan_id, $ts)
+        }};
+        ($rule:path, $entities:expr, $relations:expr, $scan_id:expr, $ts:expr) => {{
+            let ctx = $crate::core::correlator::RuleContext::new($entities);
+            $rule(&ctx, $relations, $scan_id, $ts)
+        }};
+    }
+
     pub fn eval_rules_test(entities: &[Entity], scan_id: &str, now: u64) -> Vec<Correlation> {
         let context = RuleContext::new(entities);
         evaluate_rules_on(&context, scan_id, now, None)

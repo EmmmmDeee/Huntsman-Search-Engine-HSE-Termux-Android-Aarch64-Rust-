@@ -126,7 +126,8 @@ mod tests {
         let rels = [edge(&email, &hub), edge(&uname, &hub), edge(&person, &hub)];
         let ents = [hub.clone(), email.clone(), uname.clone(), person.clone()];
 
-        let out = rule_au_070_connection_broker(&ents, &rels, "s", 0);
+        let ctx = RuleContext::new(&ents);
+        let out = rule_au_070_connection_broker(&ctx, &rels, "s", 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rule_id, "AU-070");
         // The finding references the broker and every brokered identity.
@@ -143,8 +144,10 @@ mod tests {
         let email = mk(EntityKind::Email, "a@x.com");
         let uname = mk(EntityKind::Username, "alice");
         let rels = [edge(&email, &hub), edge(&uname, &hub)];
+        let ents = [hub, email, uname];
+        let ctx = RuleContext::new(&ents);
         assert!(
-            rule_au_070_connection_broker(&[hub, email, uname], &rels, "s", 0).is_empty(),
+            rule_au_070_connection_broker(&ctx, &rels, "s", 0).is_empty(),
             "a 2-identity bridge is not a broker"
         );
     }
@@ -156,6 +159,8 @@ mod tests {
         let b = mk(EntityKind::Username, "alice");
         let c = mk(EntityKind::Phone, "+61400000000");
         let rels = [edge(&a, &b), edge(&b, &c), edge(&a, &c)];
-        assert!(rule_au_070_connection_broker(&[a, b, c], &rels, "s", 0).is_empty());
+        let ents = [a, b, c];
+        let ctx = RuleContext::new(&ents);
+        assert!(rule_au_070_connection_broker(&ctx, &rels, "s", 0).is_empty());
     }
 }

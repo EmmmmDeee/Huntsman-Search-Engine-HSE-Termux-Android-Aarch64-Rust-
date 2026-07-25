@@ -9033,7 +9033,7 @@ fn correlator_budget_stops_starting_new_rules_past_the_deadline() {
     let ents = vec![e];
 
     // No deadline → rules run normally (AU-086 fires for this predict+confirm email).
-    let full = evaluate_rules_on(&ents, "s", 0, None);
+    let full = evaluate_rules_on(&RuleContext::new(&ents), "s", 0, None);
     assert!(
         full.iter().any(|c| c.rule_id == "AU-086"),
         "without a budget the confirmed name-derived email must fire AU-086"
@@ -9042,11 +9042,11 @@ fn correlator_budget_stops_starting_new_rules_past_the_deadline() {
     // A deadline already in the past → no rule is started, empty result, no hang.
     let past = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
     assert!(
-        evaluate_rules_on(&ents, "s", 0, past).is_empty(),
+        evaluate_rules_on(&RuleContext::new(&ents), "s", 0, past).is_empty(),
         "an elapsed budget must stop the entity-rule pass immediately"
     );
     assert!(
-        evaluate_relation_rules_on(&ents, &[], "s", 0, past).is_empty(),
+        evaluate_relation_rules_on(&RuleContext::new(&ents), &[], "s", 0, past).is_empty(),
         "an elapsed budget must stop the relation-rule pass immediately"
     );
 }
