@@ -1,6 +1,6 @@
 //! Convert extracted entities → HSE core::entity::Entity for auto-scan pipeline.
 
-use crate::core::entity::{Entity, EntityKind as CoreEntityKind, Evidence, VerificationMethod};
+use crate::core::entity::{Entity, EntityKind as CoreEntityKind, Evidence};
 use crate::util::entity_extractor::{ExtractedEntity, EntityKind as ExtractorEntityKind};
 
 /// Map extractor EntityKind to core EntityKind.
