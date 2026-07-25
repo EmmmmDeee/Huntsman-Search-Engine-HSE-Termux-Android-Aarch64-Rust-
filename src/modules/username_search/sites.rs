@@ -114,9 +114,12 @@ pub(super) const SITES: &[Site] = &[
         "social"
     ),
     s!("TikTok", "https://www.tiktok.com/@{}", G, 200, "social"),
+    // The public Atom feed, NOT `about.json`: verified live in July 2026, the
+    // JSON endpoint 403s for every non-OAuth client, which `StatusEq(200)` read
+    // as "no such account". `.rss` still answers 200/404 honestly.
     s!(
         "Reddit",
-        "https://www.reddit.com/user/{}/about.json",
+        "https://www.reddit.com/user/{}/.rss",
         G,
         200,
         "social"

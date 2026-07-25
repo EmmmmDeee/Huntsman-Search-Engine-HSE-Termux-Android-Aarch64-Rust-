@@ -8,6 +8,31 @@ use super::{
     types::GleifResp,
 };
 
+/// The `(LEI, legal name)` of every searched row whose legal name matches the
+/// seed exactly — the only rows a Level-2 corporate-family walk is spent on.
+///
+/// Loose name candidates are excluded deliberately. A walk costs three HTTP
+/// requests and, worse, attributes a whole corporate family to the operator's
+/// subject; doing that off a fuzzy match would manufacture a confident graph
+/// around the wrong company. Rows without an LEI are skipped because there is
+/// nothing to walk from.
+///
+/// Pure, so the seed-selection rule is testable without a network round trip.
+pub(super) fn exact_seeds(resp: &GleifResp, query: &str) -> Vec<(String, String)> {
+    resp.data
+        .iter()
+        .take(MAX_RECORDS)
+        .filter_map(|rec| {
+            let attrs = rec.attributes.as_ref()?;
+            let entity = attrs.entity.as_ref()?;
+            let name =
+                super::helpers::non_empty(entity.legal_name.as_ref().and_then(|n| n.name.clone()))?;
+            let lei = super::helpers::non_empty(attrs.lei.clone())?;
+            (name_matches_query(&name, query)).then_some((lei, name))
+        })
+        .collect()
+}
+
 /// Pure transform: GLEIF records → entities. Every row yields an `Organisation`
 /// carrying the full record in evidence; exact name matches additionally fan out
 /// into the AbnAcn (AU) and Address pivots. Loose candidates stay a single

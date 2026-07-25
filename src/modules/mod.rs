@@ -138,6 +138,7 @@ pub mod phone_au;
 pub mod phone_geo;
 pub mod phone_intl;
 pub mod photon;
+pub mod plc_directory;
 pub mod portscan;
 pub mod wiki_geosearch;
 pub mod wikidata_geo;
@@ -397,6 +398,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(devto::DevTo),
             Arc::new(stackoverflow_user::StackoverflowUser),
             Arc::new(bluesky_user::BlueskyUser),
+            Arc::new(plc_directory::PlcDirectory),
             Arc::new(mastodon_user::MastodonUser),
             Arc::new(gitlab_user::GitlabUser),
             Arc::new(gitea_user::GiteaUser),

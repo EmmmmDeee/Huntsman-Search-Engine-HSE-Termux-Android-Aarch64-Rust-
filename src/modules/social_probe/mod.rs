@@ -97,7 +97,13 @@ pub(super) const USERNAME_PLATFORMS: &[Platform] = &[
     },
     Platform {
         name: "reddit",
-        url_pattern: "https://www.reddit.com/user/{}/about.json",
+        // The public Atom feed, NOT `about.json`. Verified live in July 2026:
+        // the JSON endpoint answers 403 to every non-OAuth client regardless of
+        // User-Agent, which this probe read as "account does not exist" — so
+        // reddit reported a silent false negative on every scan. `.rss` answers
+        // 200 for a real account and 404 for one that does not exist, which is
+        // the clean existence oracle `exists_codes` needs.
+        url_pattern: "https://www.reddit.com/user/{}/.rss",
         exists_codes: &[200],
         negative_patterns: &[],
     },

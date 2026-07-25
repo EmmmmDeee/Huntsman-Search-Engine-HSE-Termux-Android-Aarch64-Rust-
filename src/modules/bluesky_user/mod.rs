@@ -19,6 +19,19 @@
 //! corroboration pathway for AU-045 multi-service identity confirmation. The
 //! profile's `createdAt` further dates the account (an `account-age` signal the
 //! keyed stacks rarely expose). Official, stable, keyless, CORS-open.
+//!
+//! # Where the handle grammar lives
+//! Deciding whether `alice.bsky.social`, `bnewbold.bsky.team` or `alice.dev` is
+//! a name a platform issued or a domain the subject proved control of is
+//! knowledge about *the protocol and its operators*, not about this endpoint, so
+//! it lives in [`crate::util::atproto`] and is shared with [`plc_directory`].
+//! This module reports the handle in force; `plc_directory` reports every handle
+//! the account ever held. Both grade the same handle through one
+//! [`handle_domain_confidence`] and stamp one [`DOMAIN_HANDLE_CAVEAT`], because
+//! two sources disagreeing about a single fact is precisely what the noisy-OR
+//! agreement model cannot see.
+//!
+//! [`plc_directory`]: crate::modules::plc_directory
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -30,6 +43,10 @@ use crate::core::{
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
+};
+use crate::util::atproto::{
+    DOMAIN_HANDLE_ATTRIBUTION, DOMAIN_HANDLE_CAVEAT, bare_handle, handle_domain_confidence,
+    is_dns_label, is_handle, platform_handle_suffix,
 };
 use crate::util::http::fetch_json_or_absent;
 
@@ -122,7 +139,7 @@ impl Module for BlueskyUser {
         // round-trips — the common plain-username path drops from two requests to
         // one, and a non-handle-shaped username (underscores, etc.) issues none.
         let mut profile: Option<BskyProfile> = None;
-        if is_valid_dns_label(handle) {
+        if is_dns_label(handle) {
             let bsky_handle = format!("{handle}.bsky.social");
             let url1 = format!("{API}?actor={}", crate::util::http::urlencode(&bsky_handle));
             // `fetch_json_or_absent`: Bluesky answers a non-existent (or invalid)
@@ -131,7 +148,7 @@ impl Module for BlueskyUser {
             // engine breaker and suppress Bluesky for the real handles too.
             profile = fetch_json_or_absent(&ctx.http, SRC, &url1).await?;
         }
-        if profile.is_none() && is_custom_domain_handle(handle) {
+        if profile.is_none() && is_handle(handle) {
             let url2 = format!("{API}?actor={}", crate::util::http::urlencode(handle));
             profile = fetch_json_or_absent(&ctx.http, SRC, &url2).await?;
         }
@@ -146,37 +163,16 @@ impl Module for BlueskyUser {
     }
 }
 
-/// True if `s` is a single valid DNS label per the AT Protocol handle grammar:
-/// 1–63 chars, ASCII alphanumerics and hyphens only, not starting or ending with
-/// a hyphen. **Pure.** Underscores (common in usernames — `_ryno_23`) are NOT
-/// permitted, so such a username can never form a valid `{s}.bsky.social` handle
-/// and the `.bsky.social` probe is skipped rather than issued and 400'd.
-fn is_valid_dns_label(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 63
-        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        && !s.starts_with('-')
-        && !s.ends_with('-')
-}
-
-/// True if `s` is a plausible dotted custom-domain AT handle (`alice.dev`): it
-/// contains a dot and EVERY dot-separated label is a valid DNS label. **Pure.**
-/// A plain single-token username (`alice`) is not a valid bare `actor`, so the
-/// bare-handle probe is issued only for domain-shaped inputs.
-fn is_custom_domain_handle(s: &str) -> bool {
-    s.contains('.') && s.split('.').all(is_valid_dns_label)
-}
-
 /// Pure profile→entity mapping. Separated so every branch is unit-testable.
 pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
-    // The handle's bsky.social suffix is stripped so the bare username
-    // deduplicates with the same handle discovered by other modules.
-    let bare_handle = profile
-        .handle
-        .strip_suffix(".bsky.social")
-        .unwrap_or(&profile.handle);
+    // A platform-issued handle collapses to the username inside it, so the bare
+    // name deduplicates with the same handle discovered by other modules.
+    // `crate::util::atproto` knows the whole platform namespace — `.bsky.team`,
+    // `.brid.gy` and `.translate.goog` alongside `.bsky.social` — so a staff or
+    // bridged account no longer keeps a suffix that stops it from meeting itself.
+    let bare = bare_handle(&profile.handle);
 
     let mut ev = Evidence::new(SRC, format!("Bluesky account '{}'", profile.handle))
         .with_attr("bsky_handle", &profile.handle);
@@ -198,7 +194,7 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
     // Confirmed-on-Bluesky username.
     let mut u = Entity::new(
         EntityKind::Username,
-        bare_handle,
+        bare,
         confidence::HIGH_PLUSPLUS_PLUS,
         scan_id,
     );
@@ -240,22 +236,30 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
         result.push(d);
     }
 
-    // Custom-domain handle → Domain entity. An AT Protocol custom-domain
-    // handle means the user controls that domain's DNS TXT record — a
-    // high-confidence domain attribution.
-    if profile.handle.contains('.') && !profile.handle.ends_with(".bsky.social") {
-        // The whole handle IS the domain (e.g. `alice.dev`).
-        let domain = profile.handle.trim_end_matches('.');
-        if domain.contains('.') {
-            let mut d = Entity::new(EntityKind::Domain, domain, 0.82, scan_id);
-            d.tag("bluesky");
-            d.tag("custom-handle");
-            d.add_evidence(
-                ev.clone()
-                    .with_attr("attribution", "AT Protocol custom-domain handle"),
-            );
-            result.push(d);
-        }
+    // Custom-domain handle → Domain entity. AT Protocol verifies one by DNS TXT
+    // record or `/.well-known`, so the account holder demonstrably controlled the
+    // domain. A handle the *platform* issued proves nothing of the sort —
+    // emitting `alice.bsky.social` or `alice.translate.goog` as a domain would
+    // attribute Bluesky's (or Google's) infrastructure to an individual, so the
+    // shared namespace list gates it and label depth grades the rest.
+    let domain = profile.handle.trim_end_matches('.');
+    if platform_handle_suffix(domain).is_none() && domain.contains('.') {
+        let mut d = Entity::new(
+            EntityKind::Domain,
+            domain,
+            // The profile API reports only the handle in force, hence `current`.
+            handle_domain_confidence(true, domain),
+            scan_id,
+        );
+        d.tag("bluesky");
+        d.tag("custom-handle");
+        d.tag("verified-control");
+        d.add_evidence(
+            ev.clone()
+                .with_attr("attribution", DOMAIN_HANDLE_ATTRIBUTION)
+                .with_attr("coverage", DOMAIN_HANDLE_CAVEAT),
+        );
+        result.push(d);
     }
 
     // Profile URL on bsky.app.
@@ -378,22 +382,6 @@ mod tests {
         );
         assert!((u.unwrap().confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
         assert!(u.unwrap().has_tag("bluesky"));
-    }
-
-    #[test]
-    fn custom_domain_handle_emits_domain_entity() {
-        let p = make_profile("alice.dev", None, None);
-        let ents = build_entities(p, "scan-bsky-002");
-        let d = ents
-            .iter()
-            .find(|e| e.kind == EntityKind::Domain && e.value == "alice.dev");
-        assert!(
-            d.is_some(),
-            "custom-domain handle must emit a Domain entity"
-        );
-        assert!(d.unwrap().has_tag("custom-handle"));
-        // Confidence should be high (controls DNS TXT for AT Protocol)
-        assert!(d.unwrap().confidence >= confidence::HIGH_PLUSPLUS);
     }
 
     #[test]
@@ -539,50 +527,101 @@ mod tests {
     }
 
     #[test]
-    fn plain_username_is_a_valid_bsky_social_label_but_not_a_bare_handle() {
-        // `alice` → try `alice.bsky.social` (valid label) but NOT bare `alice`
-        // (not domain-shaped), so the doomed second request is skipped.
-        assert!(is_valid_dns_label("alice"));
-        assert!(is_valid_dns_label("rhino23"));
-        assert!(!is_custom_domain_handle("alice"));
+    fn a_platform_handle_outside_bsky_social_still_collapses_to_the_bare_name() {
+        // Staff (`.bsky.team`) and bridged (`.brid.gy`, `.translate.goog`)
+        // accounts carry names the platform issued, exactly like `.bsky.social`.
+        // While only `.bsky.social` was stripped here, `bnewbold.bsky.team` was
+        // emitted whole and so could never meet the `bnewbold` that
+        // `plc_directory` and the rest of the social band emit for the same
+        // person. The shared namespace list is what closes that.
+        for (handle, bare) in [
+            ("bnewbold.bsky.team", "bnewbold"),
+            ("someone.brid.gy", "someone"),
+            ("retr0-id.translate.goog", "retr0-id"),
+        ] {
+            let ents = build_entities(make_profile(handle, None, None), "scan-bsky-012");
+            assert!(
+                ents.iter()
+                    .any(|e| e.kind == EntityKind::Username && e.value == bare),
+                "{handle} must collapse to the bare username {bare}"
+            );
+        }
     }
 
     #[test]
-    fn underscore_username_forms_no_valid_handle_at_all() {
-        // The exact case from a live scan: `_ryno_23.bsky.social` is rejected by
-        // getProfile as an "Invalid AT identifier" (underscores aren't DNS-label
-        // legal). Neither probe should be issued for it.
-        assert!(!is_valid_dns_label("_ryno_23"));
-        assert!(!is_custom_domain_handle("_ryno_23"));
-        assert!(!is_valid_dns_label("ryno_23"));
-        assert!(!is_valid_dns_label("under_score"));
+    fn a_platform_issued_handle_never_becomes_a_domain() {
+        // Emitting one of these as the subject's Domain would attribute
+        // Bluesky's, Bridgy's or Google's infrastructure to an individual — the
+        // confident wrong finding the shared namespace list exists to prevent.
+        for handle in [
+            "alice.bsky.social",
+            "bnewbold.bsky.team",
+            "someone.brid.gy",
+            "retr0-id.translate.goog",
+        ] {
+            let ents = build_entities(make_profile(handle, None, None), "scan-bsky-013");
+            assert!(
+                ents.iter().all(|e| e.kind != EntityKind::Domain),
+                "{handle} is a platform-issued name and must not become a Domain"
+            );
+        }
     }
 
     #[test]
-    fn custom_domain_handle_is_probed_bare_not_as_bsky_social() {
-        // `alice.dev` → NOT a single label (has a dot), so the `.bsky.social`
-        // probe is skipped; it IS a valid custom-domain handle, so the bare
-        // request is issued.
-        assert!(!is_valid_dns_label("alice.dev"));
-        assert!(is_custom_domain_handle("alice.dev"));
-        assert!(is_custom_domain_handle("a.b.example.com"));
+    fn a_domain_handle_carries_what_it_proves_and_what_it_does_not() {
+        let ents = build_entities(make_profile("alice.dev", None, None), "scan-bsky-002");
+        let d = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Domain && e.value == "alice.dev")
+            .expect("a custom-domain handle must emit a Domain entity");
+        assert!(d.has_tag("custom-handle"));
+        // Graded by the shared function rather than by a literal, so this module
+        // and `plc_directory` cannot hand noisy-OR two different grades for one
+        // fact.
+        assert!(
+            (d.confidence - handle_domain_confidence(true, "alice.dev")).abs() < f64::EPSILON,
+            "domain confidence must come from the shared grading, not a local constant"
+        );
+        let ev = d.evidence.first().expect("domain evidence");
+        assert_eq!(
+            ev.attributes.get("attribution").map(String::as_str),
+            Some(DOMAIN_HANDLE_ATTRIBUTION),
+            "the dossier must state what a domain handle demonstrates"
+        );
+        assert_eq!(
+            ev.attributes.get("coverage").map(String::as_str),
+            Some(DOMAIN_HANDLE_CAVEAT),
+            "and what it does not — verified control is not registration ownership"
+        );
     }
 
     #[test]
-    fn dns_label_rejects_hyphen_edges_and_overlong_input() {
-        assert!(!is_valid_dns_label("-lead"));
-        assert!(!is_valid_dns_label("trail-"));
-        assert!(is_valid_dns_label("mid-dle"));
-        assert!(!is_valid_dns_label(""));
-        assert!(!is_valid_dns_label(&"a".repeat(64)));
-        assert!(is_valid_dns_label(&"a".repeat(63)));
+    fn a_handle_issued_out_of_someone_elses_domain_is_graded_below_an_apex_one() {
+        // The platform list cannot enumerate every provider that hands out
+        // subdomain handles, so label depth covers the tail: the domain is still
+        // reported, and it does not arrive with an apex handle's authority.
+        let ents = build_entities(
+            make_profile("alice.pds.example.org", None, None),
+            "scan-bsky-014",
+        );
+        let d = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Domain && e.value == "alice.pds.example.org")
+            .expect("a non-platform handle is still infrastructure worth reporting");
+        assert!(
+            d.confidence < handle_domain_confidence(true, "alice.dev"),
+            "a subdomain handle must not grade as a registrable domain the subject obtained"
+        );
     }
 
     #[test]
-    fn custom_domain_handle_rejects_an_invalid_label_segment() {
-        // A dot alone isn't enough — every segment must be a valid label.
-        assert!(!is_custom_domain_handle("bad_label.dev"));
-        assert!(!is_custom_domain_handle("ok.-bad"));
-        assert!(!is_custom_domain_handle(".leadingdot"));
+    fn only_probes_that_can_succeed_are_issued() {
+        // The gate in `process`, stated as the pairing it enforces. `alice` can
+        // only ever be `alice.bsky.social`; `alice.dev` can only ever be itself;
+        // and `_ryno_23` — the exact case from a live scan — is neither shape, so
+        // no request is issued for it at all rather than two guaranteed 400s.
+        assert!(is_dns_label("alice") && !is_handle("alice"));
+        assert!(!is_dns_label("alice.dev") && is_handle("alice.dev"));
+        assert!(!is_dns_label("_ryno_23") && !is_handle("_ryno_23"));
     }
 }
