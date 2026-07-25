@@ -64,7 +64,7 @@ fn options_default_is_inert() {
 
 #[test]
 fn clamp_depth_enforces_max_depth() {
-    assert_eq!(MAX_DEPTH, 3);
+    assert_eq!(MAX_DEPTH, 5);
     let over = ScanOptions {
         depth: 99,
         ..Default::default()
@@ -114,9 +114,23 @@ fn optimal_depth_is_differentiated_not_pinned_at_ceiling() {
         depths.contains(&1),
         "some terminal seed must resolve at depth 1"
     );
+    // The auto-selector's own ceiling, which is NOT `MAX_DEPTH`. `MAX_DEPTH` is
+    // the clamp on an operator-requested depth; `optimal_depth` instead walks
+    // the yield curve and stops where marginal yield dies, which for the richest
+    // seed is the third round. The two were the same number until the clamp was
+    // raised to 5 for the live radar — a radio observation starts further from
+    // an identity than a typed seed, so the radar asks for depth explicitly
+    // rather than through this model. Asserting against `MAX_DEPTH` here would
+    // couple the yield model to a limit that is not about yield at all.
+    const AUTO_DEPTH_CEILING: u32 = 3;
+    const _: () = assert!(AUTO_DEPTH_CEILING <= MAX_DEPTH);
     assert!(
-        depths.contains(&MAX_DEPTH),
-        "some rich seed must reach MAX_DEPTH"
+        depths.contains(&AUTO_DEPTH_CEILING),
+        "some rich seed must earn the full auto budget, saw {depths:?}"
+    );
+    assert!(
+        depths.iter().all(|d| *d <= MAX_DEPTH),
+        "auto depth must never exceed the clamp, saw {depths:?}"
     );
 
     // Rich identity seeds with paid keys earn the full budget…
@@ -128,8 +142,8 @@ fn optimal_depth_is_differentiated_not_pinned_at_ceiling() {
     ] {
         assert_eq!(
             optimal_depth(k, true).0,
-            MAX_DEPTH,
-            "{k:?} paid → MAX_DEPTH"
+            AUTO_DEPTH_CEILING,
+            "{k:?} paid → the full auto budget"
         );
         assert_eq!(optimal_depth(k, false).0, 2, "{k:?} keyless → 2");
     }

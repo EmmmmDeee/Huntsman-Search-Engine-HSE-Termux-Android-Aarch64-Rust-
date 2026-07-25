@@ -356,6 +356,38 @@ pub enum Command {
         #[arg(short, long, default_value = "table")]
         output: String,
     },
+    /// Parse documents (image/PDF/CSV/JSON/JSONL/text), extract entities (email, phone, IP, domain, hash, etc.),
+    /// classify by kind, assign confidence scores, and output as HSE-ready batch queries (JSONL/JSON/CSV/table).
+    Ingest {
+        /// Input file path (image, PDF, CSV, JSON, JSONL, text).
+        #[arg(short, long, value_name = "PATH")]
+        file: String,
+        /// Output format: jsonl (default), json, csv, table, or hse
+        /// (full core::entity::Entity records ready for the scan pipeline).
+        ///
+        /// Short flag is `-F`: `-f` is the input file and `-o` the output
+        /// file, and clap panics at startup on a duplicate short name.
+        #[arg(short = 'F', long, default_value = "jsonl")]
+        output_format: String,
+        /// Minimum confidence threshold (0.0-1.0, default 0.30).
+        #[arg(long, default_value = "0.30")]
+        min_confidence: f64,
+        /// Auto-scan extracted entities (future integration).
+        #[arg(long)]
+        auto_scan: bool,
+        /// Output file (default: stdout).
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Extract EXIF geolocation from images.
+        #[arg(long)]
+        extract_geolocation: bool,
+        /// Generate reverse image search variants for detected images.
+        #[arg(long)]
+        generate_reverse_search_variants: bool,
+        /// Output directory for reverse image search variants.
+        #[arg(long, value_name = "DIR")]
+        image_variant_output_dir: Option<String>,
+    },
     /// Start the HTTP server + SPA (browse to http://127.0.0.1:8080 from Chrome).
     Serve {
         /// Bind address. Localhost-only by default — change at your own risk.
@@ -481,20 +513,11 @@ pub enum Command {
     ///
     /// Think of it as an intermittent radar that detects signals and
     /// automatically enriches them through all available modules.
-    Radar {
-        /// Seconds between sensor sweeps. Default 10.
-        #[arg(short, long, default_value_t = 10)]
-        interval: u64,
-        /// Expansion depth for each discovered entity. Default 2.
-        #[arg(short, long, default_value_t = 2)]
-        depth: u32,
-        /// Stop after this many sweeps. Omit for infinite (Ctrl-C to stop).
-        #[arg(long)]
-        sweeps: Option<u32>,
-        /// Skip paid modules when pivoting.
-        #[arg(long)]
-        free_only: bool,
-    },
+    ///
+    /// Takes no options: it is either running or stopped. Start it with
+    /// `hse radar`, stop it with Ctrl-C. Everything it needs it reads from this
+    /// device's own radios.
+    Radar {},
     /// Export a previous scan's entities to JSON / CSV / GEXF / JSON-report / full.
     ///
     /// JSON           — `[{ kind, value, ... }, ...]` flat entity list
@@ -631,4 +654,24 @@ pub enum Command {
         #[arg(long, value_name = "REF")]
         r#ref: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// Validate the whole command tree at test time.
+    ///
+    /// clap's consistency checks (duplicate short flags, conflicting IDs,
+    /// malformed defaults) run inside a `debug_assert` on first parse — so a
+    /// broken definition does not fail the build, it panics at startup on
+    /// every invocation of the affected subcommand. `hse ingest` shipped that
+    /// way: `-o` was claimed by both `--output-format` and `--output`, and the
+    /// command aborted before doing any work. Asserting here turns that class
+    /// of defect into a failing test instead of a runtime crash.
+    #[test]
+    fn cli_definition_is_internally_consistent() {
+        Cli::command().debug_assert();
+    }
 }

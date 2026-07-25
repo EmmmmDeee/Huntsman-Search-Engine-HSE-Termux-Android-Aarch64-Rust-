@@ -13,7 +13,9 @@
 //! - Address entity from city/region/country fields (free geolocation)
 //! - SSID-derived intelligence (names, business identifiers)
 //! - WiFi density and encryption breakdown (neighbourhood profiling)
-//! - MacAddress entities for device/AP correlation (top 5 only)
+//! - MacAddress entities for the closest APs (true distinct count on each)
+//! - Ssid entities for person-named networks, pivotable back to every
+//!   location that network has been observed at
 
 mod account;
 mod emit;
@@ -80,6 +82,11 @@ struct Network {
 }
 
 pub(super) const SRC: &str = "wigle";
+
+/// Access points emitted per geo search. A bbox query returns up to 100
+/// networks; the closest few are the ones that locate anything, and the true
+/// distinct count rides along on every emitted entity as `aps_observed`.
+const MAX_EMITTED_APS: usize = 5;
 
 /// Per-scan + per-session WiGLE budgets, backed by the shared
 /// [`QuotaBudget`] primitive that `util::see_know` and
@@ -154,16 +161,23 @@ pub fn budget_snapshot() -> WigleBudgets {
         bssid: BSSID_BUDGET.snapshot(),
         cell: CELL_BUDGET.snapshot(),
         bluetooth: BLUETOOTH_BUDGET.snapshot(),
+        ssid: SSID_BUDGET.snapshot(),
     }
 }
 
-/// All four WiGLE budgets in one struct, for diagnostic surfaces.
+/// Every WiGLE budget in one struct, for diagnostic surfaces.
+///
+/// `ssid` was missing here while being declared, reset and consumed like the
+/// rest, so an operator whose SSID allowance was exhausted saw nothing on
+/// `/api/v1/stats` or in the dossier and had no way to tell why SSID pivots had
+/// stopped firing.
 #[derive(Debug, Clone, Copy)]
 pub struct WigleBudgets {
     pub geo: BudgetSnapshot,
     pub bssid: BudgetSnapshot,
     pub cell: BudgetSnapshot,
     pub bluetooth: BudgetSnapshot,
+    pub ssid: BudgetSnapshot,
 }
 
 pub struct Wigle;
@@ -203,6 +217,7 @@ impl Module for Wigle {
             EntityKind::Address,
             EntityKind::MacAddress,
             EntityKind::Organisation,
+            EntityKind::Ssid,
         ];
         KINDS
     }
@@ -411,6 +426,13 @@ impl Module for Wigle {
         {
             first.add_evidence(ssid_ev);
         }
+        // …and as pivotable entities, so the expansion loop can resolve each
+        // name back to every location that network has been observed at.
+        result.extend(named_ssid_entities(
+            &body.results,
+            &target.value,
+            &ctx.scan_id,
+        ));
 
         // ── Top MAC addresses (AP BSSIDs) + each AP's OWN observed position ──
         result.extend(wifi_ap_entities(
@@ -512,11 +534,23 @@ fn wifi_ap_entities(
             Some((mac, dist, ap))
         })
         .collect();
-    macs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    // Deduplicate BEFORE ranking. `dedup_by_key` only removes CONSECUTIVE
+    // duplicates, so deduplicating after a distance sort left a BSSID that
+    // WiGLE reported twice at slightly different positions as two separate
+    // entries — consuming two of the emitted slots with one access point.
+    macs.sort_by(|a, b| a.0.cmp(b.0));
     macs.dedup_by_key(|m| m.0);
+    let distinct_aps = macs.len();
+    macs.sort_by(|a, b| {
+        a.1.partial_cmp(&b.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            // Total order: equal distances tie-break on BSSID so the emitted
+            // set is identical across runs regardless of response ordering.
+            .then_with(|| a.0.cmp(b.0))
+    });
 
     let mut out = Vec::new();
-    for &(mac, _, ap) in macs.iter().take(5) {
+    for &(mac, _, ap) in macs.iter().take(MAX_EMITTED_APS) {
         if mac.len() < 12 {
             continue;
         }
@@ -535,7 +569,11 @@ fn wifi_ap_entities(
         e.tag("wigle");
         e.tag(crate::core::tags::WIFI_AP);
         let mut ev = Evidence::new(SRC, format!("WiFi AP near {query_label}"))
-            .with_attr("coordinates", &coord_val);
+            .with_attr("coordinates", &coord_val)
+            // The emitted set is the closest `MAX_EMITTED_APS`; state how many
+            // distinct APs were actually observed so a bounded view is never
+            // mistaken for the whole corpus.
+            .with_attr("aps_observed", distinct_aps.to_string());
         if let Some(oui) = crate::util::oui::classify_mac(mac) {
             e.tag(format!("vendor:{}", oui.vendor));
             e.tag(format!("device:{}", oui.class.as_str()));
@@ -575,21 +613,16 @@ fn wifi_ap_entities(
     out
 }
 
-/// Extract named/business-identifier SSIDs ("Smith-Family") from a WiGLE
-/// result set and build one summarising evidence record. Returns `None` when
-/// no SSID passes the name-shape filter. **Pure** (no I/O) so the headline
-/// count is unit-tested directly.
+/// SSIDs from a result set that look like a name a PERSON chose rather than a
+/// vendor default: at least two `-`/`_`/space separated parts, a first part of
+/// three or more characters starting with a capital, and not a
+/// carrier/default name ([`is_generic_ssid`]). Sorted and deduplicated.
 ///
-/// The evidence headline states the TRUE count of matching SSIDs, while the
-/// `named_ssids` attribute lists only the first 10 (bounded attribute size)
-/// — the two must stay distinct, or an operator with more than 10 named
-/// networks nearby would be told a false, truncated total.
-fn named_ssid_evidence(
-    results: &[Network],
-    target_value: &str,
-    most_recent: Option<&str>,
-) -> Option<Evidence> {
-    let mut ssid_names: Vec<String> = results
+/// One definition shared by [`named_ssid_evidence`] and
+/// [`named_ssid_entities`], so the prose count and the emitted entities can
+/// never disagree about which networks qualified.
+fn named_ssids(results: &[Network]) -> Vec<String> {
+    let mut names: Vec<String> = results
         .iter()
         .filter_map(|net| {
             let ssid = net.ssid.as_deref()?.trim();
@@ -606,9 +639,67 @@ fn named_ssid_evidence(
             .then(|| ssid.to_string())
         })
         .collect();
-    ssid_names.sort();
-    ssid_names.dedup();
+    names.sort();
+    names.dedup();
+    names
+}
 
+/// Named networks observed near the target, as first-class [`EntityKind::Ssid`]
+/// entities.
+///
+/// This closes WiGLE's most valuable pivot. A geo search finds `Smith-Family`
+/// 200 m from the subject and the name was previously recorded only as a text
+/// attribute on some other entity — a dead end. `TargetKind::Ssid` is a valid
+/// scan target that this same module accepts, and [`Wigle::ssid_search`]
+/// resolves a sufficiently unique SSID to every GPS point it has ever been
+/// observed at. Emitting the name as an entity lets the expansion loop walk
+/// that edge: from "a named network near this coordinate" to "everywhere that
+/// network has been seen", which places its owner.
+///
+/// Confidence is deliberately `LOW`: a bounding box returns the neighbours'
+/// networks too, so proximity alone does not prove the subject owns this one.
+/// It sits above the expansion floor so the pivot runs, and below `MEDIUM` so
+/// nothing downstream reads it as an established link — `ssid_search`'s own
+/// uniqueness gate, and the correlator, decide whether it means anything.
+/// **Pure** (no I/O).
+fn named_ssid_entities(results: &[Network], query_label: &str, scan_id: &str) -> Vec<Entity> {
+    let names = named_ssids(results);
+    let observed = names.len();
+    names
+        .into_iter()
+        .map(|ssid| {
+            let mut e = Entity::new(EntityKind::Ssid, &ssid, confidence::LOW, scan_id);
+            e.tag(SRC);
+            e.tag("wifi-network");
+            e.tag("geo-lead");
+            e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("Named WiFi network observed near {query_label}"),
+                )
+                .with_attr("ssid", &ssid)
+                .with_attr("named_ssids_observed", observed.to_string()),
+            );
+            e
+        })
+        .collect()
+}
+
+/// Extract named/business-identifier SSIDs ("Smith-Family") from a WiGLE
+/// result set and build one summarising evidence record. Returns `None` when
+/// no SSID passes the name-shape filter. **Pure** (no I/O) so the headline
+/// count is unit-tested directly.
+///
+/// The evidence headline states the TRUE count of matching SSIDs, while the
+/// `named_ssids` attribute lists only the first 10 (bounded attribute size)
+/// — the two must stay distinct, or an operator with more than 10 named
+/// networks nearby would be told a false, truncated total.
+fn named_ssid_evidence(
+    results: &[Network],
+    target_value: &str,
+    most_recent: Option<&str>,
+) -> Option<Evidence> {
+    let ssid_names = named_ssids(results);
     if ssid_names.is_empty() {
         return None;
     }
@@ -628,21 +719,84 @@ fn named_ssid_evidence(
     Some(ev)
 }
 
+/// True when an SSID is a default/carrier/generic name rather than one a person
+/// chose — the names whose WiGLE observations belong to strangers' routers, not
+/// the subject's.
+///
+/// Two matchers, because the terms fall into two very different classes.
+///
+/// Distinctive vendor and carrier strings ([`GENERIC_SSID_BRANDS`]) match as
+/// **substrings**: real defaults concatenate them (`xfinitywifi`, `NETGEAR47`,
+/// `TelstraFDA3B2`), and the strings are long and specific enough that they do
+/// not turn up inside ordinary words.
+///
+/// Short English words ([`GENERIC_SSID_WORDS`]) match only as **whole tokens**.
+/// Substring-matching these silently destroyed the module's flagship
+/// capability: `att`, `free`, `open` and `test` occur inside perfectly ordinary
+/// surnames, so `Seattle-Cafe`, `Freeman-Family`, `Openshaw-House` and
+/// `Testa-Household` were all classified generic — and because
+/// [`Wigle::ssid_search`] consults this before issuing any request, those
+/// subjects were never looked up at all. A whole-token test keeps
+/// `Free Public WiFi` generic while letting `Freeman-Family` through.
 pub(super) fn is_generic_ssid(s: &str) -> bool {
-    // One cached `aho-corasick` pass via `util::scan` (SOL-F1) — equivalent to the
-    // old `GENERIC_SSIDS.iter().any(|g| lower.contains(g))`. Case-sensitive over the
-    // Unicode-lowercased string (the patterns are lowercase), so it preserves the
-    // exact `to_lowercase()` fold (non-ASCII included), unlike an ASCII-CI matcher.
-    static GENERIC: std::sync::LazyLock<crate::util::scan::MatchSet> =
-        std::sync::LazyLock::new(|| crate::util::scan::MatchSet::new(GENERIC_SSIDS));
-    GENERIC.is_match(&s.to_lowercase())
+    let lower = s.to_lowercase();
+
+    // One cached `aho-corasick` pass via `util::scan` (SOL-F1). Case-sensitive
+    // over the Unicode-lowercased string (the patterns are lowercase), so it
+    // preserves the exact `to_lowercase()` fold, unlike an ASCII-CI matcher.
+    static BRANDS: std::sync::LazyLock<crate::util::scan::MatchSet> =
+        std::sync::LazyLock::new(|| crate::util::scan::MatchSet::new(GENERIC_SSID_BRANDS));
+    if BRANDS.is_match(&lower) {
+        return true;
+    }
+
+    ssid_tokens(&lower).any(|tok| GENERIC_SSID_WORDS.contains(&tok))
 }
 
-pub(super) const GENERIC_SSIDS: &[&str] = &[
-    "linksys", "netgear", "default", "dlink", "tp-link", "tplink", "asus", "xfinity", "spectrum",
-    "att", "optimum", "cox", "telstra", "optus", "vodafone", "nbn", "iinet", "eduroam", "guest",
-    "free", "public", "open", "android", "iphone", "galaxy", "pixel", "setup", "config", "admin",
-    "test", "hidden", "unknown", "unnamed",
+/// Split an SSID into comparable word tokens: separated on any non-alphanumeric
+/// character and at every letter↔digit boundary, so `ATT4G-Home` yields
+/// `att`, `4`, `g`, `home` and the carrier prefix is recognised without
+/// substring-matching `att` inside `Seattle`.
+fn ssid_tokens(lower: &str) -> impl Iterator<Item = &str> {
+    lower
+        .split(|c: char| !c.is_alphanumeric())
+        .flat_map(|part| {
+            let mut tokens = Vec::new();
+            let mut start = 0;
+            let mut prev: Option<char> = None;
+            for (idx, ch) in part.char_indices() {
+                if let Some(p) = prev
+                    && p.is_numeric() != ch.is_numeric()
+                {
+                    tokens.push(&part[start..idx]);
+                    start = idx;
+                }
+                prev = Some(ch);
+            }
+            if start < part.len() {
+                tokens.push(&part[start..]);
+            }
+            tokens
+        })
+        .filter(|t| !t.is_empty())
+}
+
+/// Vendor/carrier strings distinctive enough to match anywhere in the name —
+/// defaults routinely concatenate them with hex or digits.
+pub(super) const GENERIC_SSID_BRANDS: &[&str] = &[
+    "linksys", "netgear", "dlink", "tp-link", "tplink", "xfinity", "spectrum", "optimum",
+    "telstra", "optus", "vodafone", "iinet", "eduroam", "android", "iphone", "galaxy", "unnamed",
+    "unknown", "hidden",
+];
+
+/// Short, common words that must match as a WHOLE TOKEN. Every one of these
+/// occurs inside ordinary surnames and place names; see [`is_generic_ssid`].
+/// `wifi`/`wlan` are deliberately absent: they are descriptive suffixes people
+/// append to their own names (`Smith-WiFi`), so treating them as generic would
+/// re-create the very false-positive class this split exists to remove.
+pub(super) const GENERIC_SSID_WORDS: &[&str] = &[
+    "default", "asus", "att", "cox", "nbn", "guest", "free", "public", "open", "pixel", "setup",
+    "config", "admin", "test",
 ];
 
 impl Wigle {

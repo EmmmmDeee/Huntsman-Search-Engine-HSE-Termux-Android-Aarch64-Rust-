@@ -4143,7 +4143,7 @@ fn best_location_uses_a_single_confirmed_coordinate() {
     coord.add_evidence(Evidence::new("geocode", "Brisbane fix"));
     let est = best_au_location_estimate(&[coord]).expect("a single AU coord yields a fix");
     assert_eq!(est.basis, "confirmed coordinate");
-    assert_eq!(est.state, "QLD");
+    assert_eq!(est.state, Some("QLD"));
     assert_eq!(est.locality.as_deref(), Some("Brisbane"));
     assert!(est.radius_km <= 2.0);
 }
@@ -4155,7 +4155,7 @@ fn best_location_falls_back_to_name_matched_address_postcode() {
     addr.tag("exact-name-match");
     let est = best_au_location_estimate(&[addr]).expect("postcode 4000 resolves");
     assert_eq!(est.basis, "name-matched address (postcode grain)");
-    assert_eq!(est.state, "QLD");
+    assert_eq!(est.state, Some("QLD"));
     assert!((est.radius_km - 8.0).abs() < 1e-9, "postcode grain");
 }
 
@@ -4166,7 +4166,7 @@ fn best_location_uses_a_breach_postcode_when_nothing_finer() {
     p.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("postcode", "4000"));
     let est = best_au_location_estimate(&[p]).expect("breach postcode resolves");
     assert_eq!(est.basis, "breach/register postcode");
-    assert_eq!(est.state, "QLD");
+    assert_eq!(est.state, Some("QLD"));
 }
 
 #[test]
@@ -4180,7 +4180,7 @@ fn best_location_prefers_a_coordinate_over_an_address() {
     addr.tag("exact-name-match");
     let est = best_au_location_estimate(&[coord, addr]).unwrap();
     assert_eq!(est.basis, "confirmed coordinate");
-    assert_eq!(est.state, "QLD");
+    assert_eq!(est.state, Some("QLD"));
 }
 
 #[test]
@@ -4210,7 +4210,7 @@ fn best_location_uses_a_landline_area_code_region_when_nothing_finer() {
     let phone = Entity::new(EntityKind::Phone, "+61 7 3739 4511", 0.7, "s");
     let est = best_au_location_estimate(&[phone]).expect("a QLD landline yields a region fix");
     assert_eq!(est.basis, "landline area-code region");
-    assert_eq!(est.state, "QLD");
+    assert_eq!(est.state, Some("QLD"));
     assert!(
         est.radius_km >= 600.0,
         "a region fix carries an honestly large radius, got {}",
@@ -4242,7 +4242,7 @@ fn best_location_prefers_any_finer_signal_over_a_landline_region() {
     let phone = Entity::new(EntityKind::Phone, "+61 2 9876 5432", 0.9, "s");
     let est = best_au_location_estimate(&[coord, phone]).unwrap();
     assert_eq!(est.basis, "confirmed coordinate");
-    assert_eq!(est.state, "QLD");
+    assert_eq!(est.state, Some("QLD"));
 }
 
 #[test]
@@ -4268,7 +4268,7 @@ fn best_location_uses_a_breach_login_ip_city_when_nothing_finer() {
 
     let est = best_au_location_estimate(&[ip, coord]).expect("a login-IP city fix");
     assert_eq!(est.basis, "breach login-IP city");
-    assert_eq!(est.state, "QLD");
+    assert_eq!(est.state, Some("QLD"));
     assert!(est.confidence <= 0.50, "city/IP grain is capped low");
     assert!(est.radius_km <= 25.0 + 1e-9, "fixed-line city grain");
 }
@@ -7326,13 +7326,20 @@ fn au059_class_diversity_bonus_is_per_point_not_a_global_no_op() {
         e
     };
 
-    // B (Darwin) and C (Perth) are fixed single-class points. With A (Sydney)
-    // they form a genuine triangle (all interior angles < 120°), so the
-    // geometric median is an interior Fermat point that responds continuously to
-    // each vertex's weight — not a near-collinear set that pins the median to the
-    // middle vertex regardless of weight.
-    let b = mk(-12.4634, 130.8456, &["geocode"], "NT"); // Darwin — Geocode
-    let c = mk(-31.9505, 115.8605, &["mylnikov"], "WA"); // Perth — WifiSensor
+    // B and C are fixed single-class points. With A they form a genuine triangle
+    // (all interior angles < 120°), so the geometric median is an interior
+    // Fermat point that responds continuously to each vertex's weight — not a
+    // near-collinear set that pins the median to the middle vertex regardless of
+    // weight.
+    //
+    // All three sit inside one metropolitan area, and must: AU-059 fuses only a
+    // spatially COHERENT group, so the earlier Sydney/Darwin/Perth fixture no
+    // longer converges at all — three points thousands of kilometres apart do
+    // not describe one place, and their "interior Fermat point" was a location
+    // nobody had been seen at. The weighting property under test is unchanged;
+    // only the geometry is now one a real subject could produce.
+    let b = mk(-33.7048, 151.0990, &["geocode"], "NSW"); // Hornsby — Geocode
+    let c = mk(-33.9171, 151.0350, &["mylnikov"], "NSW"); // Bankstown — WifiSensor
 
     // Three-class A: Registry + WifiSensor + PhotoGps → per-point count 3 → 1.20×.
     let a_multi = mk(
@@ -7351,8 +7358,9 @@ fn au059_class_diversity_bonus_is_per_point_not_a_global_no_op() {
     );
 
     let multi = au059_synergy_fix(&[a_multi, b.clone(), c.clone()])
-        .expect("4 orthogonal AU classes converge");
-    let mono = au059_synergy_fix(&[a_mono, b, c]).expect("3 orthogonal AU classes converge");
+        .expect("4 orthogonal AU classes in one metro area converge");
+    let mono = au059_synergy_fix(&[a_mono, b, c])
+        .expect("3 orthogonal AU classes in one metro area converge");
 
     assert!(
         multi.lon > mono.lon + 1e-4,
@@ -8707,6 +8715,71 @@ fn au080_recurring_cooccurrence_link_fires_on_tagged_pair() {
         r2[0].severity,
         super::Severity::High,
         "hub-level must be High severity"
+    );
+}
+
+#[test]
+fn au080_gates_sub_floor_endpoints_and_bounds_the_tail() {
+    use super::rules::rule_au_080_recurring_cooccurrence_link;
+
+    // A corroborated hub that co-occurred with many partners across prior scans.
+    let mut hub = Entity::new(EntityKind::Email, "hub@example.com", 0.9, "s");
+    const N: usize = 15; // > MAX_PAIRS (12), so the tail must be rolled up
+    let mut all: Vec<Entity> = Vec::new();
+    for i in 0..N {
+        let val = format!("partner{i}@example.com");
+        hub.add_evidence(Evidence::new(
+            "cross_scan_history",
+            format!(
+                "Co-occurred with `{val}` across 2 earlier scan(s) in the local \
+                 intelligence database — a recurring association that bridges investigations"
+            ),
+        ));
+        all.push(Entity::new(EntityKind::Email, val, 0.9, "s"));
+    }
+    // One partner is a bare generated candidate below the confidence floor: the
+    // recurring pairing with it is noise (regenerated identically every scan) and
+    // must be gated out, never counted toward the cap or the rollup.
+    hub.add_evidence(Evidence::new(
+        "cross_scan_history",
+        "Co-occurred with `weakcandidate@example.com` across 2 earlier scan(s) in the local \
+         intelligence database — a recurring association that bridges investigations"
+            .to_string(),
+    ));
+    all.push(Entity::new(
+        EntityKind::Email,
+        "weakcandidate@example.com",
+        0.30,
+        "s",
+    ));
+    hub.tag("cross-scan-cooccurrence");
+    all.insert(0, hub);
+
+    let r = rule_au_080_recurring_cooccurrence_link(&all, "s", 0);
+
+    // 15 above-floor pairs → 12 ranked + 1 rollup = 13; the 0.30 candidate is
+    // gated out and never becomes a pair.
+    assert_eq!(
+        r.len(),
+        13,
+        "12 strongest pairs kept + 1 honest rollup summary"
+    );
+    let rollup = r.last().unwrap();
+    assert_eq!(
+        rollup.severity,
+        super::Severity::Low,
+        "the rolled-up tail is a low-severity summary"
+    );
+    assert!(
+        rollup
+            .description
+            .contains("3 further recurring co-occurrence"),
+        "rollup must state the 3 suppressed pairs, not drop them silently — got: {}",
+        rollup.description
+    );
+    assert!(
+        r.iter().all(|c| !c.description.contains("weakcandidate")),
+        "a sub-floor generated candidate must be gated out of AU-080 entirely"
     );
 }
 

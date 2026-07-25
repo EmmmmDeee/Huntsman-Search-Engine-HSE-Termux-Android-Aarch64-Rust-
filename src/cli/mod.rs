@@ -1,5 +1,5 @@
 //! CLI entry point: scan / serve / live / modules / keys / config /
-//! diagnostics / update / export / import / diff / audit / radar.
+//! diagnostics / update / export / import / ingest / diff / audit / radar.
 //!
 //! Surfaces every `ScanOptions` field as a flag so each scan is fully
 //! customisable before launch. `serve` boots the HTTP server + SPA;
@@ -17,6 +17,7 @@ mod doctor;
 mod engines;
 pub(crate) mod export;
 mod gap;
+mod ingest;
 mod keys_cmd;
 mod live;
 mod modules;
@@ -284,6 +285,30 @@ pub async fn run() -> Result<()> {
         Command::SetKey { name, value } => cmd_set_key(name, value),
         Command::Keys { action } => keys_cmd::cmd_keys(action).await,
         Command::Import { file, output } => cmd_import(&file, &output).await,
+        Command::Ingest {
+            file,
+            output_format,
+            min_confidence,
+            auto_scan,
+            output,
+            extract_geolocation,
+            generate_reverse_search_variants,
+            image_variant_output_dir,
+        } => {
+            let args = ingest::IngestArgs {
+                file: std::path::PathBuf::from(file),
+                output_format,
+                min_confidence,
+                auto_scan,
+                output: output.map(std::path::PathBuf::from),
+                extract_geolocation,
+                generate_reverse_search_variants,
+                image_variant_output_dir: image_variant_output_dir.map(std::path::PathBuf::from),
+            };
+            ingest::run(args)
+                .await
+                .map_err(|e| Error::Other(e.to_string()))
+        }
         Command::Serve { bind, no_key_write } => serve::cmd_serve(bind, !no_key_write).await,
         Command::Live {
             kind,
@@ -347,12 +372,7 @@ pub async fn run() -> Result<()> {
             })
             .await
         }
-        Command::Radar {
-            interval,
-            depth,
-            sweeps,
-            free_only,
-        } => radar::cmd_radar(interval, depth, sweeps, free_only).await,
+        Command::Radar {} => radar::cmd_radar().await,
         Command::Export {
             scan_id,
             format,

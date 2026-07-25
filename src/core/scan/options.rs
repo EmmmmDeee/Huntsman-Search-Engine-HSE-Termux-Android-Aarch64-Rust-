@@ -297,7 +297,7 @@ impl std::str::FromStr for ExpansionStrategy {
 /// Termux device each extra hop fans the frontier out roughly exponentially, so
 /// operator-requested depth is capped here. Change this one constant to raise
 /// or lower the ceiling.
-pub const MAX_DEPTH: u32 = 3;
+pub const MAX_DEPTH: u32 = 5;
 
 /// Hard ceiling on operator-requested module concurrency, applied where
 /// `max_concurrent` is consumed via [`ScanOptions::effective_max_concurrent`].
@@ -340,7 +340,13 @@ pub const THROTTLE_CEILING_MS: u64 = 30_000;
 /// programmatic/API callers and the test suite remain deterministic; this product
 /// default is applied at the CLI boundary in `cli::scan`. Operators who want a
 /// faster, shallower sweep set `--depth` explicitly.
-pub const DEFAULT_SCAN_DEPTH: u32 = MAX_DEPTH;
+/// Deliberately BELOW [`MAX_DEPTH`]. The ceiling was raised to 5 so the live
+/// radar can chase a device-observed signal through the full identity chain,
+/// but a bare `hse scan` keeps its established 3-hop behaviour: each extra hop
+/// fans the frontier out roughly exponentially, and silently making every scan
+/// two hops deeper would multiply the runtime and API spend of a command whose
+/// behaviour operators already depend on.
+pub const DEFAULT_SCAN_DEPTH: u32 = 3;
 
 // Compile-time guard: the product default must never exceed the clamp ceiling,
 // or a bare `hse scan` would emit the "clamped to MAX_DEPTH" warning on every run.
