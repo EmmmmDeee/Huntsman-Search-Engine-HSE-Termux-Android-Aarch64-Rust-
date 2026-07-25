@@ -14,6 +14,8 @@ use thiserror::Error;
 use crate::util::entity_extractor::ExtractionError;
 
 /// Supported document input formats.
+///
+/// Phase 5 extensions: YAML, TOML, env files for configuration/secrets ingestion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocumentFormat {
     Image,
@@ -22,10 +24,15 @@ pub enum DocumentFormat {
     Json,
     Jsonl,
     Text,
+    Yaml,        // Phase 5: YAML config/data files
+    Toml,        // Phase 5: TOML config files
+    Env,         // Phase 5: Environment variable files (.env, .env.local)
+    Xml,         // Phase 5: XML data/config files
 }
 
 impl DocumentFormat {
     /// Detect format from file extension.
+    /// Supports Phase 5 extended formats: YAML, TOML, env files, XML.
     pub fn from_path<P: AsRef<Path>>(path: P) -> Option<Self> {
         let path = path.as_ref();
         path.extension()
@@ -37,7 +44,20 @@ impl DocumentFormat {
                 "json" => Some(Self::Json),
                 "jsonl" | "ndjson" => Some(Self::Jsonl),
                 "txt" | "text" => Some(Self::Text),
+                "yaml" | "yml" => Some(Self::Yaml),
+                "toml" => Some(Self::Toml),
+                "env" => Some(Self::Env),
+                "xml" => Some(Self::Xml),
                 _ => None,
+            })
+            .or_else(|| {
+                // Special handling for dotfiles (.env, .env.local, .env.example)
+                let file_name = path.file_name()?.to_str()?;
+                if file_name.starts_with(".env") {
+                    Some(Self::Env)
+                } else {
+                    None
+                }
             })
     }
 }
@@ -107,6 +127,13 @@ mod tests {
         assert_eq!(DocumentFormat::from_path("data.json"), Some(DocumentFormat::Json));
         assert_eq!(DocumentFormat::from_path("data.jsonl"), Some(DocumentFormat::Jsonl));
         assert_eq!(DocumentFormat::from_path("notes.txt"), Some(DocumentFormat::Text));
+        // Phase 5: Extended format detection
+        assert_eq!(DocumentFormat::from_path("config.yaml"), Some(DocumentFormat::Yaml));
+        assert_eq!(DocumentFormat::from_path("settings.yml"), Some(DocumentFormat::Yaml));
+        assert_eq!(DocumentFormat::from_path("app.toml"), Some(DocumentFormat::Toml));
+        assert_eq!(DocumentFormat::from_path("data.xml"), Some(DocumentFormat::Xml));
+        assert_eq!(DocumentFormat::from_path(".env"), Some(DocumentFormat::Env));
+        assert_eq!(DocumentFormat::from_path(".env.local"), Some(DocumentFormat::Env));
         assert_eq!(DocumentFormat::from_path("unknown.xyz"), None);
     }
 }

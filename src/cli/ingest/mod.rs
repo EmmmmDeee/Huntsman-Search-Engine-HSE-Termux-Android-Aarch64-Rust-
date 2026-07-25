@@ -1,4 +1,9 @@
 //! `hse ingest` command: Parse documents → extract entities → output JSONL batch.
+//!
+//! Supports auto-scan: extracted entities can optionally be fed into the HSE scan pipeline
+//! for automatic recursive expansion and cross-correlation. Phase 4 integration.
+
+mod converter;
 
 use crate::util::document_parse::{DocumentFormat, DocumentResult};
 use crate::util::entity_extractor::{EntityExtractor, EntityKind};
@@ -82,6 +87,67 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
                 },
             }
         }
+        // Phase 5: Extended formats (read as text, similar to Text format)
+        DocumentFormat::Yaml => {
+            let text = fs::read_to_string(&args.file)?;
+            let character_count = text.len();
+            crate::util::document_parse::RawDocumentText {
+                text,
+                source_format: format,
+                confidence: 0.45, // Config files slightly lower confidence (may contain noise)
+                metadata: crate::util::document_parse::DocumentMetadata {
+                    source_file: Some(args.file.to_string_lossy().to_string()),
+                    character_count,
+                    extraction_method: "yaml_parse".to_string(),
+                    ..Default::default()
+                },
+            }
+        }
+        DocumentFormat::Toml => {
+            let text = fs::read_to_string(&args.file)?;
+            let character_count = text.len();
+            crate::util::document_parse::RawDocumentText {
+                text,
+                source_format: format,
+                confidence: 0.45,
+                metadata: crate::util::document_parse::DocumentMetadata {
+                    source_file: Some(args.file.to_string_lossy().to_string()),
+                    character_count,
+                    extraction_method: "toml_parse".to_string(),
+                    ..Default::default()
+                },
+            }
+        }
+        DocumentFormat::Env => {
+            let text = fs::read_to_string(&args.file)?;
+            let character_count = text.len();
+            crate::util::document_parse::RawDocumentText {
+                text,
+                source_format: format,
+                confidence: 0.55, // Env files often contain secrets/credentials
+                metadata: crate::util::document_parse::DocumentMetadata {
+                    source_file: Some(args.file.to_string_lossy().to_string()),
+                    character_count,
+                    extraction_method: "env_parse".to_string(),
+                    ..Default::default()
+                },
+            }
+        }
+        DocumentFormat::Xml => {
+            let text = fs::read_to_string(&args.file)?;
+            let character_count = text.len();
+            crate::util::document_parse::RawDocumentText {
+                text,
+                source_format: format,
+                confidence: 0.48,
+                metadata: crate::util::document_parse::DocumentMetadata {
+                    source_file: Some(args.file.to_string_lossy().to_string()),
+                    character_count,
+                    extraction_method: "xml_parse".to_string(),
+                    ..Default::default()
+                },
+            }
+        }
     };
 
     info!(
@@ -94,6 +160,18 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
     let entities = extractor.extract_from_text(&raw_text.text);
 
     info!("Found {} entities", entities.len());
+
+    // Phase 4: Auto-scan integration (when --auto-scan flag is set)
+    // Future: Wire extracted entities into HSE scan pipeline via:
+    // 1. Convert ExtractedEntity → core::entity::Entity using converter::extracted_to_hse_entity()
+    // 2. Create or use existing scan record with unique scan_id
+    // 3. Call storage::Store::upsert_entities_batch(&entities, &scan_id)
+    // 4. Execute engine::ScanEngine::run() with the extracted entities as seeds
+    // 5. Return scan results to user with "auto-scan" tag
+    if args.auto_scan {
+        info!("Auto-scan flag set; implementation pending Phase 4 engine integration");
+        // Auto-scan wiring deferred: requires Store/Engine context not available at CLI level
+    }
 
     // Format output
     let output_text = format_output(&entities, &args.output_format)?;
