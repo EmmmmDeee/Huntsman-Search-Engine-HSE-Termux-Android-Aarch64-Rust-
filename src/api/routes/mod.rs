@@ -790,8 +790,8 @@ const MANIFEST_JSON: &str = r##"{
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#222222",
-  "theme_color": "#222222",
+  "background_color": "#0a0d11",
+  "theme_color": "#0a0d11",
   "icons": [
     { "src": "/favicon.ico", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
   ]
