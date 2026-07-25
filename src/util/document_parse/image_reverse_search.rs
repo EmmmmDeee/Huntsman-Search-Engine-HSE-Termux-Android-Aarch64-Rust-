@@ -9,10 +9,10 @@
 //!
 //! All variants are generated with consistent quality settings to maximize matching probability.
 
-use image::DynamicImage;
+use image::{DynamicImage, ImageEncoder};
 use std::path::Path;
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::DocumentResult;
 
@@ -48,7 +48,7 @@ pub struct ReverseImageSearchSet {
 }
 
 /// Image size configuration for a specific search engine.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 struct SearchEngineConfig {
     name: &'static str,
     width: u32,
@@ -159,9 +159,9 @@ fn generate_image_variant(
     let mut buffer = Vec::new();
     match config.format {
         "jpeg" => {
-            let jpeg_encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, config.quality);
+            let mut jpeg_encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, config.quality);
             let rgb_img = resized.to_rgb8();
-            jpeg_encoder.encode(&rgb_img, rgb_img.width(), rgb_img.height(), image::ColorType::Rgb8)?;
+            jpeg_encoder.encode(&rgb_img, rgb_img.width(), rgb_img.height(), image::ExtendedColorType::Rgb8)?;
         }
         "webp" => {
             // WebP encoding
@@ -171,7 +171,7 @@ fn generate_image_variant(
         "png" => {
             let encoder = image::codecs::png::PngEncoder::new(&mut buffer);
             let rgb_img = resized.to_rgb8();
-            encoder.encode(&rgb_img, rgb_img.width(), rgb_img.height(), image::ColorType::Rgb8)?;
+            encoder.write_image(&rgb_img, rgb_img.width(), rgb_img.height(), image::ExtendedColorType::Rgb8)?;
         }
         _ => {
             warn!("Unsupported format: {}", config.format);
@@ -210,8 +210,8 @@ fn resize_image_maintain_aspect(img: &DynamicImage, max_width: u32, max_height: 
 fn webp_encode(buffer: &mut Vec<u8>, img: &image::RgbImage, quality: u8) -> DocumentResult<()> {
     // Use simple JPEG fallback if WebP encoding is unavailable
     // In production, would use webp crate, but keeping minimal dependencies
-    let jpeg_encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(buffer, quality);
-    jpeg_encoder.encode(img, img.width(), img.height(), image::ColorType::Rgb8)?;
+    let mut jpeg_encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(buffer, quality);
+    jpeg_encoder.encode(img, img.width(), img.height(), image::ExtendedColorType::Rgb8)?;
     Ok(())
 }
 

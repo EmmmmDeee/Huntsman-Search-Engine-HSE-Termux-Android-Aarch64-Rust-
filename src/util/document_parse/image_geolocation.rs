@@ -106,38 +106,50 @@ fn extract_exif_metadata(
     for field in exif_reader.fields() {
         match field.tag {
             // Try to extract GPS data if present
-            _ if field.tag == exif::Tag::GPSLatitude => {
+            exif::Tag::GPSLatitude => {
                 has_gps = true;
             }
             // Extract datetime
-            _ if field.tag == exif::Tag::DateTimeOriginal || field.tag == exif::Tag::DateTime => {
-                if let Ok(val_str) = field.value.as_bytes() {
-                    if let Ok(datetime_string) = String::from_utf8(val_str.to_vec()) {
-                        metadata.datetime = Some(datetime_string.trim().to_string());
+            exif::Tag::DateTimeOriginal | exif::Tag::DateTime => {
+                if let exif::Value::Ascii(bytes_vec) = &field.value {
+                    for bytes in bytes_vec {
+                        if let Ok(datetime_string) = String::from_utf8(bytes.clone()) {
+                            metadata.datetime = Some(datetime_string.trim().to_string());
+                            break;
+                        }
                     }
                 }
             }
             // Extract camera model
-            _ if field.tag == exif::Tag::Make || field.tag == exif::Tag::Model => {
-                if let Ok(val_str) = field.value.as_bytes() {
-                    if let Ok(model_string) = String::from_utf8(val_str.to_vec()) {
-                        metadata.camera_model = Some(model_string.trim().to_string());
+            exif::Tag::Make | exif::Tag::Model => {
+                if let exif::Value::Ascii(bytes_vec) = &field.value {
+                    for bytes in bytes_vec {
+                        if let Ok(model_string) = String::from_utf8(bytes.clone()) {
+                            metadata.camera_model = Some(model_string.trim().to_string());
+                            break;
+                        }
                     }
                 }
             }
             // Extract software
-            _ if field.tag == exif::Tag::Software => {
-                if let Ok(val_str) = field.value.as_bytes() {
-                    if let Ok(software_string) = String::from_utf8(val_str.to_vec()) {
-                        metadata.software = Some(software_string.trim().to_string());
+            exif::Tag::Software => {
+                if let exif::Value::Ascii(bytes_vec) = &field.value {
+                    for bytes in bytes_vec {
+                        if let Ok(software_string) = String::from_utf8(bytes.clone()) {
+                            metadata.software = Some(software_string.trim().to_string());
+                            break;
+                        }
                     }
                 }
             }
             // Extract copyright
-            _ if field.tag == exif::Tag::Copyright => {
-                if let Ok(val_str) = field.value.as_bytes() {
-                    if let Ok(copyright_string) = String::from_utf8(val_str.to_vec()) {
-                        metadata.copyright = Some(copyright_string.trim().to_string());
+            exif::Tag::Copyright => {
+                if let exif::Value::Ascii(bytes_vec) = &field.value {
+                    for bytes in bytes_vec {
+                        if let Ok(copyright_string) = String::from_utf8(bytes.clone()) {
+                            metadata.copyright = Some(copyright_string.trim().to_string());
+                            break;
+                        }
                     }
                 }
             }

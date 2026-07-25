@@ -6,12 +6,12 @@
 mod converter;
 
 use crate::util::document_parse::{DocumentFormat, DocumentResult};
-use crate::util::entity_extractor::{EntityExtractor, EntityKind};
+use crate::util::entity_extractor::EntityExtractor;
 use clap::Parser;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
-use tracing::{info, warn};
+use tracing::info;
 
 #[derive(Parser, Debug)]
 pub struct IngestArgs {

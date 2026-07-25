@@ -291,6 +291,9 @@ pub async fn run() -> Result<()> {
             min_confidence,
             auto_scan,
             output,
+            extract_geolocation,
+            generate_reverse_search_variants,
+            image_variant_output_dir,
         } => {
             let args = ingest::IngestArgs {
                 file: std::path::PathBuf::from(file),
@@ -298,6 +301,9 @@ pub async fn run() -> Result<()> {
                 min_confidence,
                 auto_scan,
                 output: output.map(std::path::PathBuf::from),
+                extract_geolocation,
+                generate_reverse_search_variants,
+                image_variant_output_dir: image_variant_output_dir.map(std::path::PathBuf::from),
             };
             ingest::run(args).await.map_err(|e| Error::Other(e.to_string()))
         }

@@ -374,6 +374,15 @@ pub enum Command {
         /// Output file (default: stdout).
         #[arg(short, long)]
         output: Option<String>,
+        /// Extract EXIF geolocation from images.
+        #[arg(long)]
+        extract_geolocation: bool,
+        /// Generate reverse image search variants for detected images.
+        #[arg(long)]
+        generate_reverse_search_variants: bool,
+        /// Output directory for reverse image search variants.
+        #[arg(long, value_name = "DIR")]
+        image_variant_output_dir: Option<String>,
     },
     /// Start the HTTP server + SPA (browse to http://127.0.0.1:8080 from Chrome).
     Serve {
