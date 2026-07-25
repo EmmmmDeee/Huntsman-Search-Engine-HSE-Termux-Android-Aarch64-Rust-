@@ -25,7 +25,6 @@ pub mod au_property;
 pub mod au_unclaimed;
 pub mod austlii;
 pub mod bgpview;
-pub mod bitbucket_user;
 pub mod bluesky_user;
 // Shared "maximum raw data" breach/stealer extractor — a `pub(crate)` HELPER
 // (no `Module` impl), consumed by see_know / oathnet_pro / dehashed via
@@ -42,12 +41,10 @@ pub mod cert_intel;
 pub mod certspotter;
 pub mod chain_intel;
 pub mod cloud_storage;
-pub mod codeberg_user;
+pub mod code;
 pub mod codewars_user;
 pub mod comb_search;
 pub mod contact_enrich;
-pub mod cpan_user;
-pub mod crates_io;
 pub mod criminal_ip;
 pub mod crtsh;
 pub mod dehashed;
@@ -63,7 +60,6 @@ pub mod discord_snowflake;
 pub mod disposable_check;
 pub mod dns_axfr;
 pub mod dns_intel;
-pub mod dockerhub_user;
 pub mod doh_resolver;
 pub mod domainsdb;
 pub mod email_canonical;
@@ -81,26 +77,14 @@ pub mod gaming_profile;
 pub mod geo_domain_classifier;
 pub mod geo_intel;
 pub mod geocode;
-pub mod gitea_user;
-// Shared GitHub REST API binding (the pinned API version) — a `pub(crate)`
-// HELPER (no `Module` impl), consumed by the three github_* modules so a
-// version bump is one edit, not seven. `pub(crate)` (like `breach_rich`) keeps
-// it out of the `every_declared_module_is_registered` guard.
-pub(crate) mod github_api;
-pub mod github_code_search;
-pub mod github_commits;
-pub mod github_user;
-pub mod gitlab_user;
 pub mod gleif_lei;
 pub mod gravatar;
 pub mod greynoise;
 pub mod hacker_news;
 pub mod hackertarget;
-pub mod hexpm_user;
 pub mod hibp;
 pub mod hlr_cnam;
 pub mod hudsonrock;
-pub mod huggingface_user;
 pub mod hunter_io;
 pub mod intelx;
 pub mod ip2location;
@@ -112,7 +96,6 @@ pub mod ipinfo;
 pub mod ipqs;
 pub mod ipquery;
 pub mod keybase;
-pub mod launchpad_user;
 pub mod leakix;
 pub mod lobsters;
 pub mod local_net;
@@ -123,7 +106,6 @@ pub mod netblock;
 pub mod netlas;
 pub mod niamonx;
 pub mod nostr;
-pub mod npm_author;
 pub mod numverify;
 pub mod oathnet_pro;
 pub mod onyphe;
@@ -149,12 +131,10 @@ pub(crate) mod profile_kit;
 pub mod proxycurl;
 pub mod psbdmp;
 pub mod pwned_passwords;
-pub mod pypi_user;
 pub mod qld_cadastre;
 pub mod rdap_domain;
 pub mod reddit_user;
 pub mod ripestat;
-pub mod rubygems_user;
 pub mod sanctions_ofac;
 pub mod search_engines;
 pub mod securitytrails;
@@ -166,7 +146,6 @@ pub mod sitemap;
 pub mod smtp_vrfy;
 pub mod social_location;
 pub mod social_probe;
-pub mod sourceforge_user;
 pub mod stackoverflow_user;
 pub mod steam_profile;
 pub mod streaming_probe;
@@ -387,9 +366,9 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(username_search::UsernameSearch),
             Arc::new(streaming_probe::StreamingProbe),
             Arc::new(username_variants::UsernameVariants),
-            Arc::new(github_user::GithubUser),
-            Arc::new(github_code_search::GithubCodeSearch),
-            Arc::new(github_commits::GithubCommits),
+            Arc::new(code::github_user::GithubUser),
+            Arc::new(code::github_code_search::GithubCodeSearch),
+            Arc::new(code::github_commits::GithubCommits),
             Arc::new(gaming_profile::GamingProfile),
             Arc::new(steam_profile::SteamProfile),
             Arc::new(structured_id::StructuredId),
@@ -400,21 +379,21 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(bluesky_user::BlueskyUser),
             Arc::new(plc_directory::PlcDirectory),
             Arc::new(mastodon_user::MastodonUser),
-            Arc::new(gitlab_user::GitlabUser),
-            Arc::new(gitea_user::GiteaUser),
-            Arc::new(sourceforge_user::SourceforgeUser),
-            Arc::new(bitbucket_user::BitbucketUser),
-            Arc::new(codeberg_user::CodebergUser),
+            Arc::new(code::gitlab_user::GitlabUser),
+            Arc::new(code::gitea_user::GiteaUser),
+            Arc::new(code::sourceforge_user::SourceforgeUser),
+            Arc::new(code::bitbucket_user::BitbucketUser),
+            Arc::new(code::codeberg_user::CodebergUser),
             Arc::new(codewars_user::CodewarsUser),
-            Arc::new(huggingface_user::HuggingfaceUser),
-            Arc::new(dockerhub_user::DockerhubUser),
-            Arc::new(hexpm_user::HexpmUser),
-            Arc::new(launchpad_user::LaunchpadUser),
-            Arc::new(cpan_user::CpanUser),
-            Arc::new(rubygems_user::RubygemsUser),
-            Arc::new(pypi_user::PypiUser),
-            Arc::new(npm_author::NpmAuthor),
-            Arc::new(crates_io::CratesIo),
+            Arc::new(code::huggingface_user::HuggingfaceUser),
+            Arc::new(code::dockerhub_user::DockerhubUser),
+            Arc::new(code::hexpm_user::HexpmUser),
+            Arc::new(code::launchpad_user::LaunchpadUser),
+            Arc::new(code::cpan_user::CpanUser),
+            Arc::new(code::rubygems_user::RubygemsUser),
+            Arc::new(code::pypi_user::PypiUser),
+            Arc::new(code::npm_author::NpmAuthor),
+            Arc::new(code::crates_io::CratesIo),
             Arc::new(reddit_user::RedditUser),
             Arc::new(gravatar::Gravatar),
             Arc::new(fediverse::Fediverse),

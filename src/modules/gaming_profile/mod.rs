@@ -19,7 +19,7 @@
 //! and Mojang's profile lookup return only the account whose canonical handle
 //! equals the query, never a substring co-hit. So a match is a precise platform
 //! existence fact, emitted at platform-presence confidence without demotion,
-//! mirroring [`crate::modules::github_user`]. (COMB, by contrast, matches
+//! mirroring [`crate::modules::code::github_user`]. (COMB, by contrast, matches
 //! substrings, so its username path is candidate-quarantined.) Whether a
 //! gaming account belongs to the same human as another platform's same-named
 //! account stays the correlator's job. No mock, no simulation — the data is
