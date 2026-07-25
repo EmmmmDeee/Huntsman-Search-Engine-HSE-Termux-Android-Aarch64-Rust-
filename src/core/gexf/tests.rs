@@ -42,6 +42,30 @@ use super::*;
     }
 
     #[test]
+    fn gexf_exports_generation_as_a_node_attribute() {
+        // `generation` (pivot distance from the seed) is a first-class node
+        // attribute so a Gephi analyst can size/colour the graph by expansion
+        // depth — the debug bundle and CSV export already carry it, and GEXF was
+        // the last graph artifact dropping it.
+        let seed = Entity::new(EntityKind::Email, "seed@example.com", 0.9, "s"); // generation 0
+        let mut deep = Entity::new(EntityKind::Username, "farpivot", 0.6, "s");
+        deep.generation = 3;
+        let xml = entities_to_gexf(&[seed, deep], &[], "s");
+        assert!(
+            xml.contains(r#"<attribute id="8" title="generation" type="integer"/>"#),
+            "the generation attribute must be declared: {xml}"
+        );
+        assert!(
+            xml.contains(r#"<attvalue for="8" value="0"/>"#),
+            "the seed's generation (0) must be emitted: {xml}"
+        );
+        assert!(
+            xml.contains(r#"<attvalue for="8" value="3"/>"#),
+            "a pivoted entity's generation must be emitted verbatim: {xml}"
+        );
+    }
+
+    #[test]
     fn gexf_creates_edges_for_a_shared_evidence_record() {
         // Two selectors that appear in the SAME breach record (identical source
         // AND summary) genuinely co-occur → one edge, labelled by the source.
@@ -304,6 +328,7 @@ use super::*;
       <attribute id="5" title="coreness" type="integer"/>
       <attribute id="6" title="tags" type="string"/>
       <attribute id="7" title="diamond_vertex" type="string"/>
+      <attribute id="8" title="generation" type="integer"/>
     </attributes>
     <nodes>
       <node id="ed152b32b035" label="example.com">
@@ -316,6 +341,7 @@ use super::*;
           <attvalue for="5" value="1"/>
           <attvalue for="6" value="breach|geoint"/>
           <attvalue for="7" value="infrastructure"/>
+          <attvalue for="8" value="0"/>
         </attvalues>
       </node>
       <node id="df4bda23ac18" label="blog.example.com">
@@ -328,6 +354,7 @@ use super::*;
           <attvalue for="5" value="1"/>
           <attvalue for="6" value=""/>
           <attvalue for="7" value="infrastructure"/>
+          <attvalue for="8" value="0"/>
         </attvalues>
       </node>
     </nodes>
