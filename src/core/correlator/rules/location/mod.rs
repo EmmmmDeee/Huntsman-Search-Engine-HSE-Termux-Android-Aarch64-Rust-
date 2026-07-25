@@ -850,17 +850,25 @@ pub(crate) fn au059_synergy_fix(entities: &[Entity]) -> Option<SynergyFix> {
     })
 }
 
-/// A single best-effort Australian location estimate for the subject, with the
-/// precision and provenance of whatever signal produced it. The headline "where
-/// is this person" answer that works for the COMMON single-signal scan, not only
-/// the multi-source synergy case [`au059_synergy_fix`] covers.
+/// A single best-effort location estimate for the subject, with the precision
+/// and provenance of whatever signal produced it. The headline "where is this
+/// person" answer that works for the COMMON single-signal scan, not only the
+/// multi-source synergy case [`au059_synergy_fix`] covers.
+///
+/// Jurisdiction-neutral: a confirmed coordinate needs no gazetteer, so a
+/// subject anywhere in the world earns a fix. The Australian enrichments
+/// (`state`, `locality`) and the postcode/area-code rungs below the coordinate
+/// rung are AU-specific and simply do not apply elsewhere.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AuLocationEstimate {
     pub lat: f64,
     pub lon: f64,
     /// Precision radius (km) — finer for a GPS fix, coarser for a postcode centroid.
     pub radius_km: f64,
-    pub state: &'static str,
+    /// Australian state/territory, when the fix lands in Australia. `None` for a
+    /// subject located anywhere else — the estimate itself is jurisdiction
+    /// neutral, only this enrichment is AU-specific.
+    pub state: Option<&'static str>,
     /// Nearest AU population centre (offline reverse geocode), if any.
     pub locality: Option<String>,
     /// How the estimate was derived (the precedence rung that produced it).
@@ -933,7 +941,7 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
             lat: fix.lat,
             lon: fix.lon,
             radius_km: fix.radius_km,
-            state: fix.state,
+            state: Some(fix.state),
             locality: locality_of(fix.lat, fix.lon),
             basis: "multi-source cross-class synergy",
             confidence: fix.synergy_confidence,
@@ -942,10 +950,17 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
         });
     }
 
-    // 2. The most-confident single AU person-anchored coordinate.
+    // 2. The most-confident person-anchored coordinate, ANYWHERE.
+    //
+    // Deliberately not filtered to Australia. Rungs 3+ below are AU-specific
+    // because they resolve AU postcodes and area codes, but a confirmed
+    // coordinate needs no gazetteer — and gating it meant a subject located in
+    // London or Toronto got no headline fix at all: the JSON export wrote
+    // `null` and the dossier printed nothing, even with a photo GPS and a
+    // geocoded home address agreeing. The AU enrichments (state, locality) are
+    // simply absent outside Australia.
     let best_coord = person_anchored_coords(entities)
         .into_iter()
-        .filter(|(e, ll)| is_australian_coord(e, *ll))
         .max_by(|a, b| {
             a.0.c_effective()
                 .partial_cmp(&b.0.c_effective())
@@ -960,8 +975,15 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
         return Some(AuLocationEstimate {
             lat,
             lon,
-            radius_km: coord_accuracy_km(e).unwrap_or(2.0),
-            state: crate::util::geo::au_state_for_coords(lat, lon).unwrap_or("AU"),
+            // Prefer the entity's own reported accuracy; otherwise fall back to
+            // the per-source precision model rather than a flat 2 km. Only
+            // `signal_radar`/`device_sensors` stamp `accuracy:{n}m`, so before
+            // this the fallback was taken almost always and a 20 m EXIF fix and
+            // an 8 km city centroid both reported "± 2.0 km".
+            radius_km: coord_accuracy_km(e)
+                .or_else(|| best_precision_radius_m(e).map(|m| m / 1000.0))
+                .unwrap_or(2.0),
+            state: crate::util::geo::au_state_for_coords(lat, lon),
             locality: locality_of(lat, lon),
             basis: "confirmed coordinate",
             confidence: e.c_effective(),
@@ -994,7 +1016,7 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
             lat,
             lon,
             radius_km: 8.0, // postcode / suburb grain
-            state: crate::util::geo::au_state_for_coords(lat, lon).unwrap_or("AU"),
+            state: Some(crate::util::geo::au_state_for_coords(lat, lon).unwrap_or("AU")),
             locality: locality_of(lat, lon),
             basis: if rank == 1 {
                 "name-matched address (postcode grain)"
@@ -1027,7 +1049,7 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
             lat,
             lon,
             radius_km,
-            state: crate::util::geo::au_state_for_coords(lat, lon).unwrap_or("AU"),
+            state: Some(crate::util::geo::au_state_for_coords(lat, lon).unwrap_or("AU")),
             locality: locality_of(lat, lon),
             basis: "breach login-IP city",
             confidence: (e.c_effective() * 0.7).min(0.50),
@@ -1066,7 +1088,7 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
             lat,
             lon,
             radius_km,
-            state: crate::util::geo::au_state_for_coords(lat, lon).unwrap_or("AU"),
+            state: Some(crate::util::geo::au_state_for_coords(lat, lon).unwrap_or("AU")),
             locality: locality_of(lat, lon),
             basis: "landline area-code region",
             // Region grain is a weak fix: down-weight hard and cap low so it can

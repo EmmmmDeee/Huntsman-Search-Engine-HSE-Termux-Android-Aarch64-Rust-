@@ -206,9 +206,14 @@ impl Collection {
                 .locality
                 .as_deref()
                 .map_or_else(String::new, |l| format!(", near {l}"));
+            // The state is AU-only enrichment: a subject located outside
+            // Australia still gets the fix, just without a state to name.
+            let state = est
+                .state
+                .map_or_else(String::new, |s| format!(", state={s}"));
             println!(
-                "  Best location estimate: {:.4},{:.4} ± {:.1} km  (geohash={}, state={}{})",
-                est.lat, est.lon, est.radius_km, est.geohash, est.state, near
+                "  Best location estimate: {:.4},{:.4} ± {:.1} km  (geohash={}{}{})",
+                est.lat, est.lon, est.radius_km, est.geohash, state, near
             );
             println!(
                 "    basis: {} (confidence {:.2}) — single-signal fix",

@@ -281,5 +281,58 @@ use super::*;
         let est = best_au_location_estimate(&ents)
             .expect("a handset GNSS fix must produce a location estimate");
         assert!((est.lat - -27.4698).abs() < 0.001, "got {}", est.lat);
-        assert_eq!(est.state, "QLD");
+        assert_eq!(est.state, Some("QLD"));
+    }
+
+    fn coord_at(value: &str, conf: f64, source: &str) -> Entity {
+        let mut e = Entity::new(EntityKind::Coordinates, value, conf, "s");
+        e.add_evidence(Evidence::new(source, "geo sighting"));
+        e
+    }
+
+    /// A subject outside Australia must still get a headline location.
+    ///
+    /// Rung 2 used to be filtered through `is_australian_coord`, so a person in
+    /// London with a photo-GPS fix produced no estimate at all — the JSON
+    /// export wrote `null` and the dossier printed nothing. The AU enrichments
+    /// are simply absent; the fix itself is jurisdiction-neutral.
+    #[test]
+    fn non_australian_subject_gets_a_location_estimate() {
+        // Westminster, London.
+        let ents = vec![coord_at("51.5007,-0.1246", 0.85, "exif_geo")];
+        let est = best_au_location_estimate(&ents)
+            .expect("a London photo-GPS fix must produce an estimate");
+        assert!((est.lat - 51.5007).abs() < 0.001, "got {}", est.lat);
+        assert!((est.lon - -0.1246).abs() < 0.001, "got {}", est.lon);
+        assert_eq!(est.state, None, "there is no AU state for a London fix");
+        assert_eq!(est.locality, None, "AU gazetteer must not name a UK place");
+        assert_eq!(est.basis, "confirmed coordinate");
+    }
+
+    /// Australian subjects keep their state and locality enrichment.
+    #[test]
+    fn australian_subject_still_gets_state_enrichment() {
+        let ents = vec![coord_at("-27.4698,153.0251", 0.85, "exif_geo")];
+        let est = best_au_location_estimate(&ents).expect("Brisbane fix");
+        assert_eq!(est.state, Some("QLD"));
+    }
+
+    /// The precision radius must come from the measurement, not a flat
+    /// constant. Only the device-sensor modules stamp `accuracy:{n}m`, so the
+    /// fallback was taken almost always and a 20 m EXIF fix reported "± 2 km".
+    #[test]
+    fn radius_reflects_source_precision_not_a_flat_default() {
+        let photo = best_au_location_estimate(&[coord_at("-27.4698,153.0251", 0.85, "exif_geo")])
+            .expect("photo fix");
+        let social =
+            best_au_location_estimate(&[coord_at("-27.4698,153.0251", 0.85, "social_location")])
+                .expect("social fix");
+        assert!(
+            photo.radius_km < social.radius_km,
+            "a photo GPS fix ({} km) must be reported tighter than a \
+             self-reported social location ({} km)",
+            photo.radius_km,
+            social.radius_km
+        );
+        assert!(photo.radius_km < 0.1, "EXIF GPS is ~20 m, got {} km", photo.radius_km);
     }

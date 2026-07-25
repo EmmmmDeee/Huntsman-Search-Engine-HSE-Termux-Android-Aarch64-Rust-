@@ -4143,7 +4143,7 @@ fn best_location_uses_a_single_confirmed_coordinate() {
     coord.add_evidence(Evidence::new("geocode", "Brisbane fix"));
     let est = best_au_location_estimate(&[coord]).expect("a single AU coord yields a fix");
     assert_eq!(est.basis, "confirmed coordinate");
-    assert_eq!(est.state, "QLD");
+    assert_eq!(est.state, Some("QLD"));
     assert_eq!(est.locality.as_deref(), Some("Brisbane"));
     assert!(est.radius_km <= 2.0);
 }
@@ -4155,7 +4155,7 @@ fn best_location_falls_back_to_name_matched_address_postcode() {
     addr.tag("exact-name-match");
     let est = best_au_location_estimate(&[addr]).expect("postcode 4000 resolves");
     assert_eq!(est.basis, "name-matched address (postcode grain)");
-    assert_eq!(est.state, "QLD");
+    assert_eq!(est.state, Some("QLD"));
     assert!((est.radius_km - 8.0).abs() < 1e-9, "postcode grain");
 }
 
@@ -4166,7 +4166,7 @@ fn best_location_uses_a_breach_postcode_when_nothing_finer() {
     p.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("postcode", "4000"));
     let est = best_au_location_estimate(&[p]).expect("breach postcode resolves");
     assert_eq!(est.basis, "breach/register postcode");
-    assert_eq!(est.state, "QLD");
+    assert_eq!(est.state, Some("QLD"));
 }
 
 #[test]
@@ -4180,7 +4180,7 @@ fn best_location_prefers_a_coordinate_over_an_address() {
     addr.tag("exact-name-match");
     let est = best_au_location_estimate(&[coord, addr]).unwrap();
     assert_eq!(est.basis, "confirmed coordinate");
-    assert_eq!(est.state, "QLD");
+    assert_eq!(est.state, Some("QLD"));
 }
 
 #[test]
@@ -4210,7 +4210,7 @@ fn best_location_uses_a_landline_area_code_region_when_nothing_finer() {
     let phone = Entity::new(EntityKind::Phone, "+61 7 3739 4511", 0.7, "s");
     let est = best_au_location_estimate(&[phone]).expect("a QLD landline yields a region fix");
     assert_eq!(est.basis, "landline area-code region");
-    assert_eq!(est.state, "QLD");
+    assert_eq!(est.state, Some("QLD"));
     assert!(
         est.radius_km >= 600.0,
         "a region fix carries an honestly large radius, got {}",
@@ -4242,7 +4242,7 @@ fn best_location_prefers_any_finer_signal_over_a_landline_region() {
     let phone = Entity::new(EntityKind::Phone, "+61 2 9876 5432", 0.9, "s");
     let est = best_au_location_estimate(&[coord, phone]).unwrap();
     assert_eq!(est.basis, "confirmed coordinate");
-    assert_eq!(est.state, "QLD");
+    assert_eq!(est.state, Some("QLD"));
 }
 
 #[test]
@@ -4268,7 +4268,7 @@ fn best_location_uses_a_breach_login_ip_city_when_nothing_finer() {
 
     let est = best_au_location_estimate(&[ip, coord]).expect("a login-IP city fix");
     assert_eq!(est.basis, "breach login-IP city");
-    assert_eq!(est.state, "QLD");
+    assert_eq!(est.state, Some("QLD"));
     assert!(est.confidence <= 0.50, "city/IP grain is capped low");
     assert!(est.radius_km <= 25.0 + 1e-9, "fixed-line city grain");
 }
