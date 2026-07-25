@@ -111,6 +111,18 @@ fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
     assert_eq!(promote_geo_corroborated_family(&mut lone), 0);
 }
 
+/// The gap-fill probe-cap accounting is exact: below/at the cap nothing is
+/// dropped; above it, exactly `planned - cap` are reported truncated. This is what
+/// drives the "corroboration sweep is a bounded sample" warning, so a graph with
+/// many fragile single-route links no longer silently abandons probes past the cap.
+#[test]
+fn gap_probe_budget_reports_the_truncated_tail() {
+    assert_eq!(gap_probe_budget(20, 8), (8, 12), "12 probes past the cap of 8");
+    assert_eq!(gap_probe_budget(5, 8), (5, 0), "below cap ⇒ nothing dropped");
+    assert_eq!(gap_probe_budget(8, 8), (8, 0), "exactly at cap ⇒ nothing dropped");
+    assert_eq!(gap_probe_budget(0, 8), (0, 0), "no probes ⇒ nothing to run or drop");
+}
+
 /// Recursion-completeness regression: the reconsideration pass must keep working
 /// when the working set is LARGE. The three `promote_*` passes were once gated on
 /// the correlator's `INCREMENTAL_CORRELATE_MAX_ENTITIES` = 400 ceiling, so on any

@@ -1329,6 +1329,12 @@ impl ScanEngine {
             return 0;
         }
 
+        // How many corroboration probes the gap analysis PLANNED, before the
+        // `MAX_PROBES` cap truncates the tail. Captured up front so the sweep can
+        // report — like `run_breach_sweep`'s `dropped_over_cap` does — that it ran a
+        // bounded SAMPLE, instead of silently abandoning probes 9+ (a graph with
+        // many fragile single-route links can plan far more than the cap).
+        let planned = probes.len();
         let by_uid: HashMap<&str, &Entity> = ents.iter().map(|e| (e.uid.as_str(), e)).collect();
         let mut newly_inserted: Vec<String> = Vec::new();
         let mut probed = 0usize;
@@ -1421,6 +1427,20 @@ impl ScanEngine {
             info!(
                 scan_id,
                 probed, "active gap-fill: probed gap endpoints for missing-family corroboration"
+            );
+        }
+        // Honest bounded-sample signal: if the analysis planned more probes than the
+        // cap allows, say so — mirroring `run_breach_sweep`'s `dropped_over_cap` warn
+        // so a truncated corroboration sweep is never a silent black box.
+        let (_run, dropped) = gap_probe_budget(planned, MAX_PROBES);
+        if dropped > 0 {
+            warn!(
+                scan_id,
+                dispatched = probed,
+                planned,
+                dropped,
+                cap = MAX_PROBES,
+                "gap-fill hit its probe cap — corroboration sweep is a bounded sample"
             );
         }
         probed
@@ -2689,5 +2709,19 @@ fn rank_recalled_and_cap(mut out: Vec<Entity>, max: usize) -> Vec<Entity> {
     out.truncate(max);
     out
 }
+
+/// Split a planned gap-fill probe count into `(to_run, dropped)` under a cap:
+/// run at most `cap`, and report how many the cap truncated. Pure and total so
+/// `run_gap_fill`'s bounded-sample warning is decided by one testable rule rather
+/// than an inline `saturating_sub` — the same "say what you dropped" honesty
+/// `run_breach_sweep` already applies to its own probe cap.
+const fn gap_probe_budget(planned: usize, cap: usize) -> (usize, usize) {
+    if planned > cap {
+        (cap, planned - cap)
+    } else {
+        (planned, 0)
+    }
+}
+
 #[cfg(test)]
 mod tests;
