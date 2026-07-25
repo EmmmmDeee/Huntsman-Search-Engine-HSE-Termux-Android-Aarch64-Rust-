@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use super::types::{KeyEntry, KeyStatus, KeyTier};
 
 /// Per-service rate-limit reset window. Imported from service_defs via the parent module.
-pub(super) use crate::util::service_defs::rate_limit_reset;
+pub(super) use crate::secrets::service_defs::rate_limit_reset;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PoolData {
@@ -104,7 +104,7 @@ impl KeyPool {
         // web_crawler/key_harvest, import, or validate — can bloat it. A live
         // name-scan otherwise pooled 12 499 `generic_hex` blobs (6 MB) because
         // only one of the harvest paths was gated.
-        if !crate::util::service_defs::is_poolable_service(service) {
+        if !crate::secrets::service_defs::is_poolable_service(service) {
             return false;
         }
         let mut data = self.data.lock();

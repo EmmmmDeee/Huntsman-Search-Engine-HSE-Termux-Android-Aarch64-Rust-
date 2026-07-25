@@ -353,9 +353,9 @@ fn hardcoded_key_writes_fills_rotates_and_preserves() {
 
 #[test]
 fn pool_keys_fill_empty_env_slots() {
-    let pool = crate::util::key_pool::global_pool();
-    let mut entry = crate::util::key_pool::KeyEntry::new("test-pool-key-12345");
-    entry.status = crate::util::key_pool::KeyStatus::Active;
+    let pool = crate::secrets::key_pool::global_pool();
+    let mut entry = crate::secrets::key_pool::KeyEntry::new("test-pool-key-12345");
+    entry.status = crate::secrets::key_pool::KeyStatus::Active;
     pool.add("shodan", entry);
 
     let map = load();
@@ -369,7 +369,7 @@ fn pool_keys_fill_empty_env_slots() {
 // other test mutating the process-global pool.
 
 use super::io::register_configured_keys;
-use crate::util::key_pool::{KeyPool, KeyStatus};
+use crate::secrets::key_pool::{KeyPool, KeyStatus};
 
 #[test]
 fn register_configured_keys_registers_a_plain_single_key() {
@@ -439,7 +439,7 @@ fn register_configured_keys_never_overwrites_an_already_tracked_key() {
     let pool = KeyPool::new();
     pool.add(
         "shodan",
-        crate::util::key_pool::KeyEntry::new("dead-key-999"),
+        crate::secrets::key_pool::KeyEntry::new("dead-key-999"),
     );
     pool.mark_status("shodan", "dead-key-999", KeyStatus::Invalid);
     assert_eq!(

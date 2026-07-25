@@ -66,7 +66,7 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::key_harvest::{extract_api_keys_from_item, store_api_credential};
+use crate::secrets::key_harvest::{extract_api_keys_from_item, store_api_credential};
 use crate::util::preflight::{is_local_domain, is_placeholder_username, is_private_ip};
 use crate::util::see_know;
 use crate::util::target_match::TargetMatch;

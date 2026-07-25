@@ -8,7 +8,8 @@ mod dossier;
 
 use crate::core::module::ModuleContext;
 use crate::core::scan::{Scan, ScanOptions, Target};
-use crate::util::{keys, uid::scan_id};
+use crate::secrets::keys;
+use crate::util::uid::scan_id;
 
 use super::{
     build_runtime, color_confidence, color_severity, parse_target_kind, split_csv, truncate,

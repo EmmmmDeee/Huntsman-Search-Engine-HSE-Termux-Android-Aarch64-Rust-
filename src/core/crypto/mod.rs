@@ -12,7 +12,7 @@
 //! base58check double-SHA256 check digits, and SegWit `bc1…`/`ltc1…` by their
 //! bech32 / bech32m polynomial checksum. A shape match whose check digits don't
 //! hold — a typo, or random base58 in a breach blob — is rejected at the source,
-//! so the universal [`crate::util::found_keys`] scan no longer mints those
+//! so the universal [`crate::secrets::found_keys`] scan no longer mints those
 //! false-positive wallets across every module. ETH (`0x…` — EIP-55 needs keccak,
 //! and a lowercase address carries no checksum), Solana (raw base58, no checksum)
 //! and Monero (keccak-based checksum) remain shape-only; for those a false

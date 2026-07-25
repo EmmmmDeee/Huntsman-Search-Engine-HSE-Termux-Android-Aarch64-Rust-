@@ -906,7 +906,7 @@ pub(in crate::core::correlator) fn rule_au_095_exposed_key_portfolio(
 /// A harvested key for an OSINT provider — Shodan, Dehashed, IntelX, Maltego,
 /// Hunter, … — is more than a credential: by possession its owner *runs OSINT*.
 /// The harvester tags such keys `osint-practitioner` + `osint-category:<slug>`
-/// (classified by `util::osint_providers`). This rule reads those tags
+/// (classified by `secrets::osint_providers`). This rule reads those tags
 /// and surfaces the attribution: the subject is an OSINT operator, with the
 /// provider list and the tradecraft categories (breach-hunting vs attack-surface
 /// mapping vs people-search …) that the key portfolio reveals.

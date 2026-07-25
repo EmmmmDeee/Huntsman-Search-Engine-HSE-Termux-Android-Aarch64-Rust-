@@ -33,12 +33,12 @@ use crate::util::http::{error_snippet, urlencode};
 
 const SRC: &str = "hibp";
 const KEY_ENV: &str = "HUNTSMAN_HIBP_KEY";
-// Embedded fallback: single source of truth lives in `util::keys`.
-const HARDCODED_KEY: &str = crate::util::keys::HIBP_DEFAULT_KEY;
+// Embedded fallback: single source of truth lives in `secrets::keys`.
+const HARDCODED_KEY: &str = crate::secrets::keys::HIBP_DEFAULT_KEY;
 const BASE_URL: &str = "https://haveibeenpwned.com/api/v3";
 
 pub(super) fn resolve_key(ctx_key: Option<&str>) -> &str {
-    crate::util::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
+    crate::secrets::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
 }
 
 // ── API response types ──────────────────────────────────────────────

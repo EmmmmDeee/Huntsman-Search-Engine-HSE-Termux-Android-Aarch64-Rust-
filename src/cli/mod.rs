@@ -44,8 +44,8 @@ use crate::{
     },
     default_db_path,
     modules::registry,
+    secrets::keys,
     storage::Store,
-    util::keys,
 };
 
 /// Resolve a scan-id selector for the read commands (`export` / `diff` / `audit`):

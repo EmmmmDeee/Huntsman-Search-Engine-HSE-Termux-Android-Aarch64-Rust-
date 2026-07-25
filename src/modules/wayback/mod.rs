@@ -203,20 +203,20 @@ fn archive_url(timestamp: &str, original: &str) -> String {
 /// pool any poolable hit. No network I/O of its own (the body is already in
 /// memory), so this is exercised directly by tests without mocking HTTP.
 fn mine_keys_from_body(
-    pool: &crate::util::key_pool::KeyPool,
+    pool: &crate::secrets::key_pool::KeyPool,
     body: &str,
     domain: &str,
     ts_iso: &str,
     original_url: &str,
 ) {
-    use crate::util::found_keys::{MAX_TOKEN, key_tokens};
-    use crate::util::key_harvest::identify_api_key;
+    use crate::secrets::found_keys::{MAX_TOKEN, key_tokens};
+    use crate::secrets::key_harvest::identify_api_key;
 
     for token in key_tokens(body, MAX_TOKEN) {
         if let Some((service, key_val)) = identify_api_key(token) {
-            let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+            let mut entry = crate::secrets::key_pool::KeyEntry::new(key_val);
             entry.notes = Some(format!("Wayback archive ({ts_iso}) — {original_url}"));
-            entry.status = crate::util::key_pool::KeyStatus::Untested;
+            entry.status = crate::secrets::key_pool::KeyStatus::Untested;
             entry.discovered_at = Some(crate::core::entity::unix_now());
             entry.discovered_by = Some(format!("wayback:{domain}"));
             if pool.add(service, entry) {
@@ -313,7 +313,7 @@ async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> Vec<
     let mut seen_emails: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_phones: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let key_pool = crate::util::key_pool::global_pool();
+    let key_pool = crate::secrets::key_pool::global_pool();
 
     for (timestamp, original_url) in &contact_snapshots {
         if ctx.cancel.is_cancelled() {

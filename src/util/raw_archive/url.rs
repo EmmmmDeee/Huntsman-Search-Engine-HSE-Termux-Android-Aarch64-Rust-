@@ -21,7 +21,7 @@ pub(super) fn describe_url(url: &str) -> (String, String) {
     // bundle that renders raw source records. Exclude them everywhere (the same set
     // `found_keys` uses); this complements the CRED_PARAMS param-NAME skip below,
     // which only catches conventionally-named query keys.
-    let own_keys = crate::util::keys::own_api_keys();
+    let own_keys = crate::secrets::keys::own_api_keys();
     let is_own_key = |s: &str| !own_keys.is_empty() && own_keys.contains(urldecode(s).as_str());
     // Path segments, EXCLUDING any that is one of our own keys, so a path-embedded
     // key can never become the endpoint label (IPQS `/api/json/ip/<KEY>/<IP>` →

@@ -131,7 +131,7 @@ fn reset_budget_clears_the_cross_module_response_cache() {
 fn key_fingerprint_identifies_origin_without_full_secret() {
     // A SYNTHETIC key in the `seek-…` shape — never a real/embedded value, so
     // the "single source of truth for embedded keys" architecture guard isn't
-    // tripped by a literal living outside util::keys.rs.
+    // tripped by a literal living outside secrets::keys.rs.
     let fp = key_fingerprint("seek-1234567890aaaabbbbccccddddeeeeffff0000111122223333");
     // Provider-prefixed, head + tail present, middle elided. Domain-agnostic
     // prefix — see-know rotates across three domains, so the fingerprint

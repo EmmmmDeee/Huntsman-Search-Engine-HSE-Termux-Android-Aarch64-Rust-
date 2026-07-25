@@ -254,7 +254,7 @@ impl Module for NiamonX {
         // transient 5xx, leaves the key usable and does NOT cascade, so keys are
         // never churned on anything but a genuine key/quota failure. `tried` stops
         // re-handing a burned key; single-key setups never enter the branch.
-        use crate::util::key_pool::KeyStatus;
+        use crate::secrets::key_pool::KeyStatus;
         // A key is "burned" once the pool marks it non-usable. We compare the
         // pool status BEFORE and AFTER this batch so a cascade fires only on a
         // FRESH burn THIS batch caused (usable before, non-usable after). Reading
@@ -293,7 +293,7 @@ impl Module for NiamonX {
         let mut key = ctx.next_pooled_key(SRC, &tried).unwrap_or(injected);
         let (r1, r2, r3) = loop {
             tried.insert(key.clone());
-            let before = crate::util::key_pool::global_pool().entry_status(SRC, &key);
+            let before = crate::secrets::key_pool::global_pool().entry_status(SRC, &key);
             // All three endpoints are independent — run concurrently.
             let results = tokio::join!(
                 fetch_pbs_v1(&ctx.http, &key, query, ctx),
@@ -302,7 +302,7 @@ impl Module for NiamonX {
             );
             let all_failed = results.0.is_err() && results.1.is_err() && results.2.is_err();
             if all_failed {
-                let after = crate::util::key_pool::global_pool().entry_status(SRC, &key);
+                let after = crate::secrets::key_pool::global_pool().entry_status(SRC, &key);
                 // Cascade only when this batch turned a usable key non-usable — a
                 // 5xx outage leaves it usable, and a pre-existing bad status is
                 // never re-attributed to this call.

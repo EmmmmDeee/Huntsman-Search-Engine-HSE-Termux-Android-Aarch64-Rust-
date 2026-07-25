@@ -377,7 +377,7 @@ impl ScanEngine {
     /// evidence and cost nothing), so the radar keeps surfacing new leads.
     ///
     /// Wraps the work in the foreign-key scan-scope ambient
-    /// ([`crate::util::found_keys::with_scan`]) so the per-response key scanner
+    /// ([`crate::secrets::found_keys::with_scan`]) so the per-response key scanner
     /// attributes discoveries to THIS `scan_id` even under concurrent `serve`
     /// scans (PROBLEM_TREE T2.11); the logic lives in `run_with_ledger_inner`.
     pub async fn run_with_ledger(
@@ -398,7 +398,7 @@ impl ScanEngine {
         // could silently flip for each other.
         let regional_on = scan.options.regional_search
             || crate::util::settings::get_bool("feature.regional", false);
-        crate::util::found_keys::with_scan(
+        crate::secrets::found_keys::with_scan(
             sid,
             crate::util::regional::with_regional(
                 regional_on,
@@ -2571,8 +2571,8 @@ fn apply_corroboration_boosts(
 /// events table and inter-scan raw-response cache so a long-lived process
 /// scanning many targets doesn't grow either unbounded.
 fn run_finalise_housekeeping(store: &dyn StoragePort, scan_id: &str) {
-    let pool = crate::util::key_pool::global_pool();
-    if let Err(e) = crate::util::key_pool::save_pool(&pool) {
+    let pool = crate::secrets::key_pool::global_pool();
+    if let Err(e) = crate::secrets::key_pool::save_pool(&pool) {
         warn!("failed to save key pool after scan: {e}");
     }
     if let Err(e) = store.checkpoint_truncate() {

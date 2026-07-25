@@ -17,7 +17,7 @@
 //!      both slow (~2.8 → 20 MB/s once skipped; reproduce the current figure via
 //!      the `bench_scan_body_throughput` baseline) and noisy — those are password
 //!      hashes already captured as `Password` entities by the breach modules;
-//!   3. **excludes our own auth credentials** ([`crate::util::keys::own_api_keys`])
+//!   3. **excludes our own auth credentials** ([`crate::secrets::keys::own_api_keys`])
 //!      so the report contains only foreign keys;
 //!   4. retains full provenance (which provider/endpoint, which query) per key.
 //!
@@ -148,7 +148,7 @@ pub(crate) fn key_tokens(body: &str, max_len: usize) -> impl Iterator<Item = &st
 pub fn reset(scan_id: &str) {
     let mut g = lock();
     g.per_scan.remove(scan_id);
-    g.own = crate::util::keys::own_api_keys();
+    g.own = crate::secrets::keys::own_api_keys();
 }
 
 /// Test-only: register an additional own-credential to exclude. The embedded
@@ -163,7 +163,7 @@ fn insert_own_for_test(key: &str) {
 /// value, provenance kept) — excluding our own auth credentials. Best-effort and
 /// infallible: safe to call on every response, JSON or not.
 ///
-/// Identification uses [`crate::util::key_harvest::identify_vendor_api_key`]
+/// Identification uses [`crate::secrets::key_harvest::identify_vendor_api_key`]
 /// (recognised vendor prefixes /
 /// PEM / crypto), NOT the generic-hex heuristic. That is deliberate: this runs
 /// on EVERY response body, and entropy-scanning every 32/64-char hex token (of
@@ -171,7 +171,7 @@ fn insert_own_for_test(key: &str) {
 /// password-hash false positives. The hashes are already captured as `Password`
 /// entities by the breach modules; here we want only genuine third-party keys.
 pub fn scan_body(provider: &str, query: &str, body: &str) {
-    use crate::util::key_harvest::identify_vendor_api_key;
+    use crate::secrets::key_harvest::identify_vendor_api_key;
     if body.is_empty() {
         return;
     }

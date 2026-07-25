@@ -207,7 +207,7 @@ use crate::core::{
 /// architecture-rule shim used for the per-module budget resets (the
 /// dependency direction is `core → modules → util`, never `core → util`).
 pub fn reset_found_keys(scan_id: &str) {
-    crate::util::found_keys::reset(scan_id);
+    crate::secrets::found_keys::reset(scan_id);
 }
 
 /// Drain the foreign-API-key sink into first-class `ApiKey` entities for
@@ -216,12 +216,12 @@ pub fn reset_found_keys(scan_id: &str) {
 /// import. Every entry is a recognised vendor key (the sink uses the
 /// vendor-only identifier), so all are high-confidence.
 pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
-    let found = crate::util::found_keys::drain(scan_id);
+    let found = crate::secrets::found_keys::drain(scan_id);
     // Persist every discovered key to the cross-scan permanent vault BEFORE
     // mapping to entities, so a vault write failure (disk full, permissions)
     // never prevents entities from being emitted. Crypto wallet addresses are
     // included — the vault stores everything with full provenance.
-    crate::util::key_vault::persist_batch(&found, scan_id);
+    crate::secrets::key_vault::persist_batch(&found, scan_id);
     found
         .into_iter()
         .map(|fk| {
@@ -253,7 +253,7 @@ pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
             // Rank by operational value (blast radius if live) so the harvested
             // key set is a value-ordered database: a leaked cloud secret /
             // private key / DB URI ranks above a publishable token or webhook.
-            let tier = crate::util::key_harvest::key_value_tier(&fk.service);
+            let tier = crate::secrets::key_harvest::key_value_tier(&fk.service);
             let mut e = Entity::new(EntityKind::ApiKey, &fk.key, tier.confidence(), scan_id);
             e.tag("api-key");
             e.tag("foreign-key");
@@ -303,7 +303,7 @@ fn install_core_hooks() {
             reset_found_keys(scan_id);
         },
         refresh_round_budget: see_know::refresh_round_budget,
-        identify_api_key: crate::util::key_harvest::identify_api_key,
+        identify_api_key: crate::secrets::key_harvest::identify_api_key,
         drain_found_keys: drain_found_key_entities,
     });
 }

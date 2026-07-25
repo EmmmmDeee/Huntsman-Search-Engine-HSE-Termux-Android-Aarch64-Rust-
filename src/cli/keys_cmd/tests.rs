@@ -1,8 +1,8 @@
 
 use super::{bank_row, char_prefix, mask_key, run_prune, run_tsv_import, validation_label};
 
-    fn vault_entry(service: &str, key: &str, count: u32) -> crate::util::key_vault::VaultEntry {
-        crate::util::key_vault::VaultEntry {
+    fn vault_entry(service: &str, key: &str, count: u32) -> crate::secrets::key_vault::VaultEntry {
+        crate::secrets::key_vault::VaultEntry {
             key_value: key.to_string(),
             service: service.to_string(),
             provider: "stealer_log".to_string(),
@@ -87,7 +87,7 @@ use super::{bank_row, char_prefix, mask_key, run_prune, run_tsv_import, validati
         // `skipped_dup`: `pool.add` rejects both for the same underlying
         // reason ("returned false"), but they are different situations an
         // operator needs to tell apart.
-        let pool = crate::util::key_pool::KeyPool::new();
+        let pool = crate::secrets::key_pool::KeyPool::new();
         let content = format!(
             "{}\n{}\n",
             tsv_row("dump1", "password", SHODAN_KEY),
@@ -116,7 +116,7 @@ use super::{bank_row, char_prefix, mask_key, run_prune, run_tsv_import, validati
         // `discovered_by` string comparison that (due to comparing the row's
         // own internal source label against the CLI file path) matched every
         // entry from any prior import, re-validating historical keys.
-        let pool = crate::util::key_pool::KeyPool::new();
+        let pool = crate::secrets::key_pool::KeyPool::new();
         let first = run_tsv_import(&tsv_row("dump1", "password", SHODAN_KEY), "dump1.tsv", false, &pool);
         assert_eq!(first.imported_this_run, vec![("shodan", SHODAN_KEY.to_string())]);
 
@@ -141,7 +141,7 @@ use super::{bank_row, char_prefix, mask_key, run_prune, run_tsv_import, validati
 
     #[test]
     fn run_prune_previews_without_mutating_then_applies() {
-        use crate::util::key_pool::{KeyEntry, KeyPool};
+        use crate::secrets::key_pool::{KeyEntry, KeyPool};
         let pool = KeyPool::new();
         // Degraded Basic key (default tier): 100 uses, 90 errors -> 10% success.
         let mut bad = KeyEntry::new("bad");

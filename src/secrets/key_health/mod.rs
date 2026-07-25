@@ -4,7 +4,7 @@
 //! Deliberately NOT a synthetic live probe. Per-provider validation endpoints
 //! have irreducibly fuzzy semantics (a valid Netlas key 401s if probed with the
 //! wrong header; domainsDB must be 400ed; some providers 200 an invalid key with
-//! an error body — see `util::service_defs` tests), so a synthetic validator
+//! an error body — see `secrets::service_defs` tests), so a synthetic validator
 //! would routinely mis-report a *working* key as invalid. Instead this reads what
 //! real scans already OBSERVED: a keyed source that drifts with an auth-shaped
 //! error (`HTTP 401`, `HTTP 400 … API key not found`, `Invalid API key format`,
@@ -29,7 +29,7 @@ pub struct KeyAuthIssue {
     /// ("Invalid API key format", "No user found for the API key supplied", …).
     pub detail: String,
     /// Best-effort `HUNTSMAN_*` env var this source's key most likely lives in,
-    /// resolved from the [`crate::util::service_defs`] registry. `None` when the
+    /// resolved from the [`crate::secrets::service_defs`] registry. `None` when the
     /// source name doesn't map to a known service — the auth failure is still
     /// real and reported; only the "which env var to fix" hint is absent.
     pub likely_env_var: Option<&'static str>,
@@ -108,7 +108,7 @@ pub fn auth_failing_sources(health: &[SourceHealth]) -> Vec<KeyAuthIssue> {
 /// resolves without a hand-maintained table.
 #[must_use]
 fn likely_env_var(module: &str) -> Option<&'static str> {
-    let defs = crate::util::service_defs::service_defs();
+    let defs = crate::secrets::service_defs::service_defs();
     // Exact name match wins.
     if let Some(d) = defs.iter().find(|d| d.name == module) {
         return Some(d.env_var);

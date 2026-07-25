@@ -13,14 +13,15 @@
 //! silently truncating result sets, and a live SeekNow account probe that
 //! catches a dead/plan-lacking key before it silently zeroes out HSE's
 //! highest-priority paid source (and its proactive API-key-harvesting
-//! reach — see [`crate::util::key_harvest`]) on every scan.
+//! reach — see [`crate::secrets::key_harvest`]) on every scan.
 
 use crate::core::error::Result;
 use crate::{
     default_db_path, is_termux,
     modules::registry,
+    secrets::keys,
     storage::{EvidenceAnomaly, Store},
-    util::{cell_db, keys, scraper_health, timefmt},
+    util::{cell_db, scraper_health, timefmt},
 };
 
 use super::cost_label;
@@ -241,7 +242,7 @@ pub(super) async fn cmd_doctor(live: bool) -> Result<()> {
                 // problem, and one otherwise reconstructed by hand across two
                 // separate sections. Grounded in what real scans observed, so it
                 // never mis-reports a working key the way a synthetic probe would.
-                let rejected: Vec<_> = crate::util::key_health::auth_failing_sources(&health)
+                let rejected: Vec<_> = crate::secrets::key_health::auth_failing_sources(&health)
                     .into_iter()
                     .filter(|i| i.likely_env_var.is_some_and(|e| loaded.contains_key(e)))
                     .collect();
@@ -382,7 +383,7 @@ pub(super) async fn cmd_doctor(live: bool) -> Result<()> {
     // Probes /credits — a free meta-query, no scan budget spent — so a dead
     // or plan-lacking key is caught HERE, before an operator discovers it
     // only via SeekNow (HSE's highest-priority paid source, and its
-    // proactive API-key-harvesting engine — see `util::key_harvest`)
+    // proactive API-key-harvesting engine — see `secrets::key_harvest`)
     // silently returning nothing on every scan. `query_credits` now also
     // latches `is_key_invalid()` on an auth rejection — previously only the
     // data-bearing `search`/`get_path` calls did that classification, so a
@@ -628,7 +629,7 @@ async fn print_live_capability_report() {
 ///   subprocess directly (or via `util::see_know`/`util::oathnet`'s
 ///   `CurlClient`) with no other transport, so the module returns nothing.
 /// - `hse keys validate` / `hse keys import-tsv --validate`
-///   (`util::key_pool::validation::validate_against_endpoint`) — a failed
+///   (`secrets::key_pool::validation::validate_against_endpoint`) — a failed
 ///   `curl` spawn is swallowed into `false`, the SAME return value as a
 ///   genuinely dead key, so every key in the pool reports INVALID rather
 ///   than the command erroring — a materially worse failure mode than
@@ -657,8 +658,8 @@ fn curl_missing_message() -> String {
 /// Pure over an `is_present` predicate (true if the env var is already set) so
 /// it is unit-testable without touching the filesystem or environment.
 // The unset-key acquisition ranking is the single source of truth in
-// `util::key_roi` (shared with the web Settings page's acquisition guidance).
-use crate::util::key_roi::rank_unset_keys;
+// `secrets::key_roi` (shared with the web Settings page's acquisition guidance).
+use crate::secrets::key_roi::rank_unset_keys;
 
 /// Render the "Weak findings" doctor section body. `anomalies` is expected
 /// already weakest-first ([`crate::storage::Store::low_confidence_evidence`]'s

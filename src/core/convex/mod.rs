@@ -164,7 +164,7 @@ fn module_dispatch_cost(cost: ModuleCost, is_passive: bool) -> f64 {
 /// high-upside end — an email, a username, or a person fans out into many cheap
 /// downstream identity lookups, and a discovered key/credential is a literal
 /// query *multiplier* (it unlocks a whole authenticated provider, i.e. more
-/// queries, mirroring [`crate::util::key_roi::KeyRoi::Multiplier`]). Terminal
+/// queries, mirroring [`crate::secrets::key_roi::KeyRoi::Multiplier`]). Terminal
 /// GEOINT and scoring kinds (a coordinate, an abuse score) resolve and stop, so
 /// they carry little optionality. In `[0, 1]`.
 fn entity_cascade(kind: &EntityKind) -> f64 {

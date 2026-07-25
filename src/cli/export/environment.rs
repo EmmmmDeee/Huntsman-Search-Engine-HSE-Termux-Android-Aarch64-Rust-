@@ -28,14 +28,14 @@ pub(super) fn curl_present() -> bool {
 /// byte-determinism for a fixed host.
 pub(super) fn render_environment(curl: bool) -> String {
     use std::fmt::Write as _;
-    let loaded = crate::util::keys::load();
+    let loaded = crate::secrets::keys::load();
     let mut present: Vec<&str> = loaded
         .keys()
         .filter(|k| k.starts_with("HUNTSMAN_"))
         .map(String::as_str)
         .collect();
     present.sort_unstable();
-    let absent: Vec<&&str> = crate::util::keys::KNOWN_KEYS
+    let absent: Vec<&&str> = crate::secrets::keys::KNOWN_KEYS
         .iter()
         .filter(|k| !loaded.contains_key(**k))
         .collect();

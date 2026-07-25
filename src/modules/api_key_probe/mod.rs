@@ -17,7 +17,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::key_pool::{self, KeyEntry, KeyStatus};
+use crate::secrets::key_pool::{self, KeyEntry, KeyStatus};
 
 const SRC: &str = "api_key_probe";
 

@@ -394,7 +394,7 @@ use super::*;
         // context-only OSINT keys never fire without surrounding text. So a
         // web-scraped key is correctly NEVER added to the pool here. We scope to a
         // unique domain so the assertion is isolated from any concurrent test.
-        let pool = crate::util::key_pool::global_pool();
+        let pool = crate::secrets::key_pool::global_pool();
         let domain = "crawlutil-test.example";
         let scraped = || -> usize {
             pool.snapshot()
@@ -447,14 +447,14 @@ use super::*;
         // cap is `found_keys::MAX_TOKEN` (4096), so a 234-char BinaryEdge-shaped
         // token (poolable — proving it went all the way through classification
         // AND `pool.add`) must now be picked up.
-        let pool = crate::util::key_pool::global_pool();
+        let pool = crate::secrets::key_pool::global_pool();
         let domain = "crawlutil-longkey-test.example";
         let long_key = format!(
             "bp0_{}",
             "oHBvRPOIvGrv5iFlbCBFNOgmBjMtpsiaOclRz3AwzKsbVRJN9wVGFYGW2WmQzCudiH7YFjS1on43XkMtECqOxSF2O3GYRdo1XKXWNqRs7rpEmoKiuPKdYR7osjOrU1xxDO0CzUZREN68k4tUNpfZ46pdJQIPvjiQvlb5lZXOIgfFwD3HJoKyrbmEYYmdhQj38AruHr4iwRxpVHSbKdA9u4uQgwLg6G3oT1ogmM"
         );
         assert!(
-            long_key.len() > 200 && long_key.len() <= crate::util::found_keys::MAX_TOKEN,
+            long_key.len() > 200 && long_key.len() <= crate::secrets::found_keys::MAX_TOKEN,
             "fixture must exceed the old 200-char cap and fit under the real one"
         );
 

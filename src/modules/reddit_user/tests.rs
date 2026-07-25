@@ -451,7 +451,7 @@ fn a_leaked_key_in_reddit_text_reaches_the_pool_with_reddit_provenance() {
         "bp0_{}",
         "oHBvRPOIvGrv5iFlbCBFNOgmBjMtpsiaOclRz3AwzKsbVRJN9wVGFYGW2WmQzCudiH7YFjS1on43XkMtECqOxSF2O3GYRdo1XKXWNqRs7rpEmoKiuPKdYR7osjOrU1xxDO0CzUZREN68k4tUNpfZ46pdJQIPvjiQvlb5lZXOIgfFwD3HJoKyrbmEYYmdhQj38AruHr4iwRxpVHSbKdA9u4uQgwLg6G3oT1ogmM"
     );
-    let pool = crate::util::key_pool::global_pool();
+    let pool = crate::secrets::key_pool::global_pool();
     let username = "reddit-keymine-test-user";
 
     harvest::mine_text(
@@ -505,7 +505,7 @@ fn mining_a_feed_labels_a_bio_hit_distinctly_from_an_item_hit() {
     );
     harvest::mine_feed(&parse(&leaked).unwrap());
 
-    let pool = crate::util::key_pool::global_pool();
+    let pool = crate::secrets::key_pool::global_pool();
     let entry = pool
         .snapshot()
         .services

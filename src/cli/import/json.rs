@@ -283,7 +283,7 @@ pub(super) async fn parse_oathnet_json(
                 entities.push(e);
                 stats.api_keys += 1;
 
-                let valid = crate::util::key_pool::add_and_validate(
+                let valid = crate::secrets::key_pool::add_and_validate(
                     svc,
                     pw,
                     Some(format!("Import: {svc} key from stealer data")),

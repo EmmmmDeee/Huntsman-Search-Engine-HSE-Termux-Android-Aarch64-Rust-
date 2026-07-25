@@ -1225,7 +1225,7 @@ fn extract_entities(
             vec![serde_json::json!({
                 "id": "123456789012345678",
                 // AWS access-key shape — the same synthetic fixture
-                // `util::key_harvest`'s own orchestrator tests use.
+                // `secrets::key_harvest`'s own orchestrator tests use.
                 "token": "AKIAJK28SLQQV61MNG9X",
             })],
         )];

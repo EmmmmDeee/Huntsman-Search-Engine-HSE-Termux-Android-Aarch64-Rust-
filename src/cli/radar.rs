@@ -23,7 +23,8 @@ use crate::core::{
     module::ModuleContext,
     scan::{Scan, ScanOptions, Target},
 };
-use crate::util::{http::build_client, keys, uid::scan_id};
+use crate::secrets::keys;
+use crate::util::{http::build_client, uid::scan_id};
 
 use super::{build_runtime, color_confidence, truncate, use_color};
 

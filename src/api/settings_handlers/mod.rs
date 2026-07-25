@@ -18,14 +18,14 @@ use serde_json::{Value, json};
 
 use super::AppState;
 use super::handlers::bad_request;
-use crate::util::keys;
+use crate::secrets::keys;
 
 /// Expose the API-key detector's prefix-match coverage. Returns the
 /// full ordered table from `key_harvest::patterns` so operators can
 /// see what shapes the scanner recognises — and so dashboards can
 /// surface per-service coverage stats.
 pub async fn keys_patterns() -> Json<Value> {
-    let patterns = crate::util::key_harvest::pattern_catalogue();
+    let patterns = crate::secrets::key_harvest::pattern_catalogue();
     let by_service: std::collections::BTreeMap<&str, usize> =
         patterns
             .iter()
@@ -55,7 +55,7 @@ pub(crate) struct ServiceQuota {
     pub revoked: usize,
     pub uses: u64,
     pub errors: u64,
-    /// Mean [`crate::util::key_pool::KeyEntry::health_score`] across this service's
+    /// Mean [`crate::secrets::key_pool::KeyEntry::health_score`] across this service's
     /// keys — the at-a-glance "how healthy is this pool" number (0.0–1.0), `0.0`
     /// for a service with no keys. The status counts above say *what* the keys
     /// are; this says how operationally healthy they are overall.
@@ -66,8 +66,8 @@ pub(crate) struct ServiceQuota {
 /// per-key health score), dropping every key value. Does not touch the global
 /// pool, so it is unit-testable; the clock is sampled once up front so every
 /// score in one summary is consistent. Sorted by service.
-pub(crate) fn summarize_pool(data: &crate::util::key_pool::PoolData) -> Vec<ServiceQuota> {
-    use crate::util::key_pool::KeyStatus;
+pub(crate) fn summarize_pool(data: &crate::secrets::key_pool::PoolData) -> Vec<ServiceQuota> {
+    use crate::secrets::key_pool::KeyStatus;
     let now = crate::core::entity::unix_now();
     let mut out: Vec<ServiceQuota> = data
         .services
@@ -141,7 +141,7 @@ pub async fn keys_health(
     // Only surface keys that are actually CONFIGURED and being rejected — the
     // actionable case. An auth failure on an unset key is expected (the module
     // skips) and already covered by the acquisition guidance.
-    let rejected: Vec<Value> = crate::util::key_health::auth_failing_sources(&health)
+    let rejected: Vec<Value> = crate::secrets::key_health::auth_failing_sources(&health)
         .into_iter()
         .filter(|i| i.likely_env_var.is_some_and(|e| loaded.contains_key(e)))
         .map(|i| {
@@ -172,7 +172,7 @@ pub async fn keys_status(ConnectInfo(peer): ConnectInfo<SocketAddr>) -> impl Int
         )
             .into_response();
     }
-    let services = summarize_pool(&crate::util::key_pool::global_pool().snapshot());
+    let services = summarize_pool(&crate::secrets::key_pool::global_pool().snapshot());
     Json(json!({ "count": services.len(), "services": services })).into_response()
 }
 
@@ -214,7 +214,7 @@ pub async fn settings_keys_get(
     // ranking `hse doctor` prints, surfaced to the web-UI operator so the single
     // highest-value action (register the free multiplier keys) is one tap away
     // instead of CLI-only. Sourced from the one canonical `key_roi::rank_unset_keys`.
-    let acquisition: Vec<Value> = crate::util::key_roi::rank_unset_keys(|k| loaded.contains_key(k))
+    let acquisition: Vec<Value> = crate::secrets::key_roi::rank_unset_keys(|k| loaded.contains_key(k))
         .into_iter()
         .map(|(name, roi)| {
             json!({
@@ -280,8 +280,8 @@ pub async fn keys_pool_add(
     if service.is_empty() || key.is_empty() {
         return bad_request("service and key are required");
     }
-    if !crate::util::service_defs::is_poolable_service(service) {
-        let names: Vec<&str> = crate::util::key_pool::service_defs()
+    if !crate::secrets::service_defs::is_poolable_service(service) {
+        let names: Vec<&str> = crate::secrets::key_pool::service_defs()
             .iter()
             .map(|d| d.name)
             .collect();
@@ -290,12 +290,12 @@ pub async fn keys_pool_add(
             names.join(", ")
         ));
     }
-    let pool = crate::util::key_pool::global_pool();
-    let mut entry = crate::util::key_pool::KeyEntry::new(key);
+    let pool = crate::secrets::key_pool::global_pool();
+    let mut entry = crate::secrets::key_pool::KeyEntry::new(key);
     entry.notes = req.notes.clone();
     entry.environment = req.env.clone();
     if pool.add(service, entry) {
-        crate::util::key_pool::save_pool_best_effort(&pool);
+        crate::secrets::key_pool::save_pool_best_effort(&pool);
         tracing::info!(service, "key pool: added via web");
         (
             StatusCode::OK,
@@ -396,7 +396,7 @@ pub async fn keys_pool_get(ConnectInfo(peer): ConnectInfo<SocketAddr>) -> impl I
         )
             .into_response();
     }
-    let snap = crate::util::key_pool::global_pool().snapshot();
+    let snap = crate::secrets::key_pool::global_pool().snapshot();
     let mut services: Vec<Value> = snap
         .services
         .iter()
@@ -405,7 +405,7 @@ pub async fn keys_pool_get(ConnectInfo(peer): ConnectInfo<SocketAddr>) -> impl I
                 .iter()
                 .map(|e| {
                     json!({
-                        "id": crate::util::key_pool::key_id(&e.value),
+                        "id": crate::secrets::key_pool::key_id(&e.value),
                         "masked": crate::util::str_util::mask_secret(&e.value),
                         "status": e.status.as_str(),
                         "environment": e.environment(),
@@ -449,9 +449,9 @@ pub async fn keys_pool_revoke(
     if req.service.trim().is_empty() || req.id.trim().is_empty() {
         return bad_request("service and id are required");
     }
-    let pool = crate::util::key_pool::global_pool();
+    let pool = crate::secrets::key_pool::global_pool();
     if pool.revoke_by_id(&req.service, &req.id) {
-        crate::util::key_pool::save_pool_best_effort(&pool);
+        crate::secrets::key_pool::save_pool_best_effort(&pool);
         tracing::info!(service = %req.service, id = %req.id, "key pool: revoked via web");
         (
             StatusCode::OK,
@@ -496,9 +496,9 @@ pub async fn keys_pool_rotate(
     if req.service.trim().is_empty() || req.id.trim().is_empty() || req.new.trim().is_empty() {
         return bad_request("service, id and new value are required");
     }
-    let pool = crate::util::key_pool::global_pool();
+    let pool = crate::secrets::key_pool::global_pool();
     if pool.rotate_by_id(&req.service, &req.id, req.new.trim()) {
-        crate::util::key_pool::save_pool_best_effort(&pool);
+        crate::secrets::key_pool::save_pool_best_effort(&pool);
         tracing::info!(service = %req.service, id = %req.id, "key pool: rotated via web");
         (
             StatusCode::OK,

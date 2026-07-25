@@ -128,7 +128,7 @@ fn describe_url_redacts_a_path_embedded_own_key() {
     // It must NEVER become the endpoint/query label (which lands in the archive
     // filename, `_meta`, and every dossier / one-click debug bundle). Regression
     // for the path-embedded-key leak the query-param CRED_PARAMS skip missed.
-    let own = crate::util::keys::own_api_keys();
+    let own = crate::secrets::keys::own_api_keys();
     let Some(key) = own.iter().next().cloned() else {
         return; // no embedded/own keys in this build → nothing to assert
     };

@@ -8,8 +8,8 @@ pub fn scan_for_api_keys(text: &str) {
 }
 
 pub fn scan_for_api_keys_with_source(text: &str, source: &str) {
-    use crate::util::found_keys::key_tokens;
-    use crate::util::key_harvest::identify_api_key;
+    use crate::secrets::found_keys::key_tokens;
+    use crate::secrets::key_harvest::identify_api_key;
     // Upper bound on the length of a token fed to the generic-inclusive
     // classifier. `key_tokens` *filters* on length (it skips longer tokens, it
     // does not truncate), so a too-low bound silently DROPS — i.e. hides — any
@@ -25,12 +25,12 @@ pub fn scan_for_api_keys_with_source(text: &str, source: &str) {
     // The shared `key_tokens` tokenizer (incl. `?`/`&`/`{}`/`[]` delimiters) still
     // prevents query-string corruption.
     const MAX_HTTP_TOKEN: usize = 4096;
-    let pool = crate::util::key_pool::global_pool();
+    let pool = crate::secrets::key_pool::global_pool();
     let now = crate::core::entity::unix_now();
     for t in key_tokens(text, MAX_HTTP_TOKEN) {
         if let Some((service, key_val)) = identify_api_key(t) {
-            let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
-            entry.status = crate::util::key_pool::KeyStatus::Untested;
+            let mut entry = crate::secrets::key_pool::KeyEntry::new(key_val);
+            entry.status = crate::secrets::key_pool::KeyStatus::Untested;
             entry.discovered_at = Some(now);
             entry.discovered_by = Some(source.to_string());
             pool.add(service, entry);

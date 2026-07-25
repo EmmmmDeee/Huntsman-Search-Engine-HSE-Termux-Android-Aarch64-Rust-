@@ -84,13 +84,13 @@ pub fn load() -> HashMap<String, String> {
     // Register every configured key into the pool — multi-key (comma-
     // separated) AND single-key alike. See `register_configured_keys`'s own
     // doc comment for why the single-key path matters.
-    let pool = crate::util::key_pool::global_pool();
+    let pool = crate::secrets::key_pool::global_pool();
     register_configured_keys(&mut map, &pool);
     // Fill any env var still missing a value from the pool. Single-sourced with
     // the pool's own gap-fill helper instead of re-inlining the
     // skip-if-present-else-`next_key` loop (the two had drifted apart). A
     // CSV-expanded service already has its env entry set above, so this skips it.
-    crate::util::key_pool::merge_pool_into_env(&pool, &mut map);
+    crate::secrets::key_pool::merge_pool_into_env(&pool, &mut map);
 
     map
 }
@@ -102,7 +102,7 @@ pub fn load() -> HashMap<String, String> {
 /// `HUNTSMAN_X_KEY=value` (the common case — most operators configure
 /// exactly one key per service, never run `hse keys add`, and never have a
 /// second key to comma-join) was never added to `pool`'s data at all. Since
-/// [`KeyPool::mark_status`](crate::util::key_pool::KeyPool)/`record_error`
+/// [`KeyPool::mark_status`](crate::secrets::key_pool::KeyPool)/`record_error`
 /// — the entire landing point of every `report_key_exhausted` call across
 /// every keyed module, including the T2.152/T2.153 fixes and this file's
 /// own callers — only UPDATE an existing entry and silently no-op when none
@@ -123,13 +123,13 @@ pub fn load() -> HashMap<String, String> {
 /// never needs to touch `map`, since the value is already exactly what's
 /// there. Takes `pool` explicitly (rather than reaching for the global
 /// singleton itself) so a test can exercise it against a fresh, isolated
-/// [`KeyPool`](crate::util::key_pool::KeyPool) instead of the process-global
+/// [`KeyPool`](crate::secrets::key_pool::KeyPool) instead of the process-global
 /// one every other test also mutates.
 pub(super) fn register_configured_keys(
     map: &mut HashMap<String, String>,
-    pool: &crate::util::key_pool::KeyPool,
+    pool: &crate::secrets::key_pool::KeyPool,
 ) {
-    for svc in crate::util::key_pool::service_defs() {
+    for svc in crate::secrets::key_pool::service_defs() {
         // Avoid cloning the value in the common (single-key, no rotation)
         // case. Bind the entry once and clone only after confirming rotation
         // is needed — a single map lookup with no fallible unwrap.
@@ -146,8 +146,8 @@ pub(super) fn register_configured_keys(
             if keys.len() > 1 {
                 map.insert(svc.env_var.to_string(), keys[0].to_string());
                 for k in &keys {
-                    let mut entry = crate::util::key_pool::KeyEntry::new(*k);
-                    entry.status = crate::util::key_pool::KeyStatus::Active;
+                    let mut entry = crate::secrets::key_pool::KeyEntry::new(*k);
+                    entry.status = crate::secrets::key_pool::KeyStatus::Active;
                     pool.add(svc.name, entry);
                 }
                 tracing::info!(
@@ -158,8 +158,8 @@ pub(super) fn register_configured_keys(
                 );
             }
         } else if !raw.is_empty() {
-            let mut entry = crate::util::key_pool::KeyEntry::new(raw.clone());
-            entry.status = crate::util::key_pool::KeyStatus::Active;
+            let mut entry = crate::secrets::key_pool::KeyEntry::new(raw.clone());
+            entry.status = crate::secrets::key_pool::KeyStatus::Active;
             pool.add(svc.name, entry);
         }
     }

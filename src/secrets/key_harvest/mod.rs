@@ -3,7 +3,7 @@
 //! detection, and per-record breach/stealer-field extraction.
 //!
 //! Lives in `util` (not nested under any one module) because it is reused
-//! across every layer: `util::found_keys` (the universal response-body
+//! across every layer: `secrets::found_keys` (the universal response-body
 //! scanner), `util::http::keys`, several independent scrapers
 //! (`web_crawler`, `username_search`, `search_engines`), the two breach
 //! pools (`oathnet_pro`, `see_know` — via [`extract_api_keys_from_item`]/
@@ -71,7 +71,7 @@ pub fn pattern_catalogue() -> Vec<PatternEntry> {
 
 /// Operational value of a harvested foreign API key — its blast radius if the
 /// leaked credential is live. Drives the confidence and the `high-value` tag on
-/// the `ApiKey` entities drained from [`crate::util::found_keys`], so the
+/// the `ApiKey` entities drained from [`crate::secrets::found_keys`], so the
 /// persisted key set is a *ranked* database: a leaked AWS secret or a private
 /// key is not filed alongside a publishable Stripe key or a webhook URL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -323,7 +323,7 @@ impl DetectionConfidence {
 ///
 /// For a token that matches none of these the cost is just prefix comparisons —
 /// no Shannon-entropy pass, no lowercase allocation. That matters because the
-/// universal response scanner (`util::found_keys`) runs key identification on
+/// universal response scanner (`secrets::found_keys`) runs key identification on
 /// EVERY response body across every module: profiling showed the full
 // Compiled aho-corasick automaton over the KEY_PATTERNS prefix table.
 // LeftmostFirst preserves declaration order (specific-before-generic): when

@@ -200,9 +200,9 @@ pub(super) async fn probe_config_leaks(
             // generic-inclusive `identify_api_key` (a bare 32/64-hex token in a
             // committed `.env` is very likely a real key, not a password hash).
             let mut found = Vec::new();
-            for t in crate::util::found_keys::key_tokens(&body, crate::util::found_keys::MAX_TOKEN)
+            for t in crate::secrets::found_keys::key_tokens(&body, crate::secrets::found_keys::MAX_TOKEN)
             {
-                if let Some((service, key_val)) = crate::util::key_harvest::identify_api_key(t) {
+                if let Some((service, key_val)) = crate::secrets::key_harvest::identify_api_key(t) {
                     found.push((service, key_val.to_string()));
                 }
             }
@@ -544,15 +544,15 @@ pub(super) fn extract_phones(body: &str, phones: &mut HashSet<String>) {
 }
 
 pub(super) fn extract_api_keys_from_body(body: &str, domain: &str) {
-    use crate::util::found_keys::{MAX_TOKEN, key_tokens};
-    use crate::util::key_harvest::identify_api_key;
+    use crate::secrets::found_keys::{MAX_TOKEN, key_tokens};
+    use crate::secrets::key_harvest::identify_api_key;
 
-    let pool = crate::util::key_pool::global_pool();
+    let pool = crate::secrets::key_pool::global_pool();
     for trimmed in key_tokens(body, MAX_TOKEN) {
         if let Some((service, key_val)) = identify_api_key(trimmed) {
-            let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+            let mut entry = crate::secrets::key_pool::KeyEntry::new(key_val);
             entry.notes = Some(format!("Web-scraped from {domain}"));
-            entry.status = crate::util::key_pool::KeyStatus::Untested;
+            entry.status = crate::secrets::key_pool::KeyStatus::Untested;
             entry.discovered_at = Some(crate::core::entity::unix_now());
             entry.discovered_by = Some(format!("web_crawler:{domain}"));
             if pool.add(service, entry) {

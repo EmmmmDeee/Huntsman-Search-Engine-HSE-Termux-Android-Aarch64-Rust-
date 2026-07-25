@@ -74,7 +74,7 @@ pub fn record(provider: &str, endpoint: &str, query: &str, raw: &str) {
     // through here, so this is the universal detection point). Runs regardless
     // of whether on-disk archiving is enabled — key identification is a finding,
     // not an archive feature. Our own auth keys are excluded inside the sink.
-    crate::util::found_keys::scan_body(provider, query, raw);
+    crate::secrets::found_keys::scan_body(provider, query, raw);
 
     if !config::enabled() {
         return;

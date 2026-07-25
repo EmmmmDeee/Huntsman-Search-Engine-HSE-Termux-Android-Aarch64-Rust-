@@ -252,7 +252,7 @@ pub fn wigle_credentials(ctx: &crate::core::module::ModuleContext) -> (&str, &st
 /// never reported as a finding), and every live credential-bearing `HUNTSMAN_*`
 /// value in the process environment (suffixes `_KEY` / `_TOKEN` / `_USER` /
 /// `_SECRET` / `_ID` / `_GUID` — the last three cover the Censys ID+secret pair
-/// and the ABR GUID, which are auth credentials too). Used by `util::found_keys` to
+/// and the ABR GUID, which are auth credentials too). Used by `secrets::found_keys` to
 /// EXCLUDE our own credentials when identifying keys leaked in endpoint data —
 /// the operator already has these; only third-party keys in the data are
 /// findings. Values are returned verbatim (lower-cased copies are added too, so

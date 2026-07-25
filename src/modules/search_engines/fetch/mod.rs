@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use super::helpers::*;
 use super::{EngineSpec, MAX_RESULTS_PER_ENGINE, SearchResult};
-use crate::util::key_harvest::identify_api_key;
+use crate::secrets::key_harvest::identify_api_key;
 
 /// Per-request fetch ceiling (ms): the most any single SERP request may take.
 pub(in crate::modules::search_engines) const MAX_FETCH_MS: u64 = 8_000;
@@ -471,7 +471,7 @@ impl<'a> Iterator for GoogleUrlIter<'a> {
 }
 
 fn scan_body_for_keys(body: &str) {
-    let pool = crate::util::key_pool::global_pool();
+    let pool = crate::secrets::key_pool::global_pool();
     for word in body.split(|c: char| {
         c.is_whitespace() || c == '"' || c == '\'' || c == '`' || c == '>' || c == '<'
     }) {
@@ -480,8 +480,8 @@ fn scan_body_for_keys(body: &str) {
             && trimmed.len() <= 200
             && let Some((service, key_val)) = identify_api_key(trimmed)
         {
-            let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
-            entry.status = crate::util::key_pool::KeyStatus::Untested;
+            let mut entry = crate::secrets::key_pool::KeyEntry::new(key_val);
+            entry.status = crate::secrets::key_pool::KeyStatus::Untested;
             entry.notes = Some("Search engine result page".into());
             pool.add(service, entry);
         }

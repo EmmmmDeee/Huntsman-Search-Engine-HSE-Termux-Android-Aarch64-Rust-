@@ -185,7 +185,7 @@ use super::*;
         let body = format!(
             "<html><body>Contact us. API_KEY={leaked_key} Thanks.</body></html>"
         );
-        let pool = crate::util::key_pool::global_pool();
+        let pool = crate::secrets::key_pool::global_pool();
         let domain = "wayback-keymine-test.example";
         let ts_iso = "2019-03-14 00:00:00 UTC";
         let original_url = "http://wayback-keymine-test.example/contact";

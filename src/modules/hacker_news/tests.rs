@@ -81,7 +81,7 @@ fn user(id: &str) -> HnUser {
 
 #[test]
 fn build_entities_emits_username_with_metadata() {
-    let pool = crate::util::key_pool::global_pool();
+    let pool = crate::secrets::key_pool::global_pool();
     let ents = build_entities(user("pg"), "scan-1", &pool);
     assert_eq!(ents.len(), 1);
     let u = &ents[0];
@@ -104,7 +104,7 @@ fn build_entities_no_submissions_defaults_to_zero() {
         about: None,
         submitted: None,
     };
-    let pool = crate::util::key_pool::global_pool();
+    let pool = crate::secrets::key_pool::global_pool();
     let ents = build_entities(u, "scan-2", &pool);
     assert_eq!(ents[0].evidence[0].attributes.get("submissions").map(String::as_str), Some("0"));
 }
@@ -118,7 +118,7 @@ fn build_entities_bio_email_emits_email_entity() {
         about: Some("Email: alice@example.com".to_string()),
         submitted: None,
     };
-    let pool = crate::util::key_pool::global_pool();
+    let pool = crate::secrets::key_pool::global_pool();
     let ents = build_entities(u, "scan-3", &pool);
     let email = ents.iter().find(|e| e.kind == EntityKind::Email).unwrap();
     assert_eq!(email.value, "alice@example.com");
@@ -134,7 +134,7 @@ fn build_entities_bio_url_emits_url_entity_without_trailing_punct() {
         about: Some("See https://bob.dev/.".to_string()),
         submitted: None,
     };
-    let pool = crate::util::key_pool::global_pool();
+    let pool = crate::secrets::key_pool::global_pool();
     let ents = build_entities(u, "scan-4", &pool);
     let url = ents.iter().find(|e| e.kind == EntityKind::Url).unwrap();
     assert!(url.value.starts_with("https://"));
@@ -144,7 +144,7 @@ fn build_entities_bio_url_emits_url_entity_without_trailing_punct() {
 
 #[test]
 fn build_entities_no_bio_yields_only_username() {
-    let pool = crate::util::key_pool::global_pool();
+    let pool = crate::secrets::key_pool::global_pool();
     let ents = build_entities(user("quiet"), "scan-5", &pool);
     assert_eq!(ents.len(), 1);
     assert_eq!(ents[0].kind, EntityKind::Username);
@@ -214,7 +214,7 @@ fn mine_keys_from_text_pools_a_leaked_key_with_hacker_news_provenance() {
         "oHBvRPOIvGrv5iFlbCBFNOgmBjMtpsiaOclRz3AwzKsbVRJN9wVGFYGW2WmQzCudiH7YFjS1on43XkMtECqOxSF2O3GYRdo1XKXWNqRs7rpEmoKiuPKdYR7osjOrU1xxDO0CzUZREN68k4tUNpfZ46pdJQIPvjiQvlb5lZXOIgfFwD3HJoKyrbmEYYmdhQj38AruHr4iwRxpVHSbKdA9u4uQgwLg6G3oT1ogmM"
     );
     let text = format!("Here's my config, oops: BINARYEDGE_KEY={leaked_key} — ignore that.");
-    let pool = crate::util::key_pool::global_pool();
+    let pool = crate::secrets::key_pool::global_pool();
     let username = "hn-keymine-test-user";
 
     mine_keys_from_text(&pool, &text, username, "submissions");
@@ -265,7 +265,7 @@ fn build_entities_bio_with_a_leaked_key_pools_it_with_bio_provenance() {
         about: Some(format!("my key is {leaked_key} whoops")),
         submitted: None,
     };
-    let pool = crate::util::key_pool::global_pool();
+    let pool = crate::secrets::key_pool::global_pool();
     build_entities(u, "scan-biokey", &pool);
 
     let entry = pool

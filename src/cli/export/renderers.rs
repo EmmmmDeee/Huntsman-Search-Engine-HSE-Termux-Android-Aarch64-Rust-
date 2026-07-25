@@ -1271,7 +1271,7 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
     //        dead credential is called out explicitly with the exact upstream
     //        message and the env var most likely holding it. Grounded in observed
     //        responses — never mis-reports a working key like a synthetic probe. ──
-    let auth_rejected = crate::util::key_health::auth_failing_sources(&inp.scraper_health);
+    let auth_rejected = crate::secrets::key_health::auth_failing_sources(&inp.scraper_health);
     let _ = writeln!(
         s,
         "\n── KEY AUTHENTICATION ({} source(s) rejected by upstream) ──",

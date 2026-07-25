@@ -10,10 +10,10 @@
 //! `search_engines` module was still mid-flight, B's `set_regional` call
 //! silently flipped A's in-progress query building to B's setting too (last
 //! writer wins for the overlap window) — the same unisolated-static shape
-//! PROBLEM_TREE T2.11 already fixed for [`crate::util::found_keys`].
+//! PROBLEM_TREE T2.11 already fixed for [`crate::secrets::found_keys`].
 //!
 //! [`with_regional`] scopes the setting to the current async task via a
-//! [`tokio::task_local`], mirroring [`crate::util::found_keys::with_scan`]
+//! [`tokio::task_local`], mirroring [`crate::secrets::found_keys::with_scan`]
 //! exactly: the engine wraps each scan's `run_with_ledger` **and** each
 //! spawned dispatch task in it (task-locals don't cross `spawn`), so
 //! [`regional_enabled`] always reads back the setting of the scan actually

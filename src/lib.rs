@@ -70,6 +70,7 @@ pub mod audit;
 pub mod cli;
 pub mod core;
 pub mod modules;
+pub mod secrets;
 pub mod selftest;
 pub mod storage;
 pub mod util;

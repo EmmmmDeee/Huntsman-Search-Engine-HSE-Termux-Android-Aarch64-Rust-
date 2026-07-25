@@ -26,7 +26,7 @@ use crate::core::{
     module::ModuleContext,
     scan::{Target, TargetKind},
 };
-use crate::util::keys;
+use crate::secrets::keys;
 
 // ─── Shared response helpers ───────────────────────────────────────────────
 
@@ -591,7 +591,7 @@ pub async fn system_debug_bundle(
     // `summarize_pool`; never copies a key value). Mapped to the renderer's own
     // owned type so `cli::export` stays self-contained.
     let key_pool: Vec<crate::cli::export::KeyPoolSummary> =
-        super::settings_handlers::summarize_pool(&crate::util::key_pool::global_pool().snapshot())
+        super::settings_handlers::summarize_pool(&crate::secrets::key_pool::global_pool().snapshot())
             .into_iter()
             .map(|q| crate::cli::export::KeyPoolSummary {
                 service: q.service,

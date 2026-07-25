@@ -118,11 +118,11 @@ pub fn rank_unset_keys(is_present: impl Fn(&str) -> bool) -> Vec<(&'static str, 
     // service_defs entry classifies via its own string, which `classify` defaults
     // to the middle (Expansion) tier — never silently dropped from the ranking.
     let env_to_service: std::collections::HashMap<&str, &str> =
-        crate::util::service_defs::service_defs()
+        crate::secrets::service_defs::service_defs()
             .iter()
             .map(|d| (d.env_var, d.name))
             .collect();
-    let mut missing: Vec<(&'static str, KeyRoi)> = crate::util::keys::KNOWN_KEYS
+    let mut missing: Vec<(&'static str, KeyRoi)> = crate::secrets::keys::KNOWN_KEYS
         .iter()
         .copied()
         .filter(|k| !is_present(k))

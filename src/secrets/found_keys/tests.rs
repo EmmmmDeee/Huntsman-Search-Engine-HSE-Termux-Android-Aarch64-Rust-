@@ -211,7 +211,7 @@ use super::*;
     /// is the most stable single-machine estimator. Context: a debug build is
     /// ~10x slower than `--release`; treat the absolute number as a debug floor.
     /// Run: `cargo test -p huntsman-search-engine --lib \
-    /// util::found_keys::tests::bench_scan_body_throughput -- --ignored --nocapture`.
+    /// secrets::found_keys::tests::bench_scan_body_throughput -- --ignored --nocapture`.
     #[test]
     #[ignore = "throughput baseline; run with --ignored --nocapture"]
     fn bench_scan_body_throughput() {

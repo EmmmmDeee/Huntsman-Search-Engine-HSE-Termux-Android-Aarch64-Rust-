@@ -34,7 +34,7 @@ use breach::*;
 pub fn reset_budget() {
     crate::util::oathnet::reset_budget();
 }
-use crate::util::key_harvest::{extract_api_keys_from_item, store_api_credential};
+use crate::secrets::key_harvest::{extract_api_keys_from_item, store_api_credential};
 
 const SRC: &str = "oathnet_pro";
 

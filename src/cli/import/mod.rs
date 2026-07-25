@@ -484,7 +484,7 @@ fn detect_and_create_api_key_entity(
     source_label: &str,
 ) -> Option<(&'static str, crate::core::entity::Entity)> {
     use crate::core::entity::{Entity, EntityKind, Evidence};
-    use crate::util::key_harvest::identify_api_key;
+    use crate::secrets::key_harvest::identify_api_key;
 
     let (service, _key_val) = identify_api_key(pw)?;
 
@@ -633,7 +633,7 @@ fn push_api_keys(
         }
     }
     if n > 0 {
-        crate::util::key_pool::save_pool_best_effort(&crate::util::key_pool::global_pool());
+        crate::secrets::key_pool::save_pool_best_effort(&crate::secrets::key_pool::global_pool());
     }
     n
 }
@@ -701,8 +701,8 @@ fn push_ssids(
 }
 
 fn store_key_in_pool(service: &str, key: &str, notes: String) {
-    let pool = crate::util::key_pool::global_pool();
-    let mut entry = crate::util::key_pool::KeyEntry::new(key);
+    let pool = crate::secrets::key_pool::global_pool();
+    let mut entry = crate::secrets::key_pool::KeyEntry::new(key);
     entry.notes = Some(notes);
     pool.add(service, entry);
 }

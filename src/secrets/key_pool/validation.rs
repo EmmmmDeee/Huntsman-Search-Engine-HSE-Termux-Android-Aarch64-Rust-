@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use super::pool::KeyPool;
 use super::types::{KeyEntry, KeyStatus};
-use crate::util::service_defs::{KeyPlacement, ServiceDef, find_service};
+use crate::secrets::service_defs::{KeyPlacement, ServiceDef, find_service};
 
 /// Add a key and validate it immediately against the service endpoint.
 /// If valid, marks it Active and stores it. If invalid, marks it Invalid
@@ -151,7 +151,7 @@ async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> ProbeOutcome
 
 /// Merge pool keys into an env-var map, filling any gaps.
 pub fn merge_pool_into_env(pool: &KeyPool, keys: &mut std::collections::HashMap<String, String>) {
-    let defs = crate::util::service_defs::service_defs();
+    let defs = crate::secrets::service_defs::service_defs();
     for sdef in defs {
         if keys.contains_key(sdef.env_var) {
             continue;

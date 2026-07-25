@@ -539,7 +539,7 @@ impl super::ScanEngine {
                 // defeating the cascade's purpose. No-op for free modules,
                 // which never enter the ledger.
                 state.dispatched.remove(&dispatch_key(name, cx.target));
-                let reason = match crate::util::keys::signup_hint(&key) {
+                let reason = match crate::secrets::keys::signup_hint(&key) {
                     Some(hint) => format!("needs API key {key} — {hint}"),
                     None => format!("needs API key {key}"),
                 };
@@ -1150,7 +1150,7 @@ impl super::ScanEngine {
             // was established on in `run_with_ledger`, right up to this spawn.
             let scope_sid = sid.to_string();
             let regional_on = crate::util::regional::regional_enabled();
-            set.spawn(crate::util::found_keys::with_scan(
+            set.spawn(crate::secrets::found_keys::with_scan(
                 scope_sid,
                 crate::util::regional::with_regional(regional_on, async move {
                     let _permit = permit;

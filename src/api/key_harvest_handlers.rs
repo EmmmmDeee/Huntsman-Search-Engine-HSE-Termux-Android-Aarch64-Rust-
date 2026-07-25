@@ -3,8 +3,8 @@
 //! Distinct from `settings_handlers` (which drives the Settings page's
 //! pool view/revoke/rotate controls) and `/api/v1/stats` (per-process
 //! quota counters): this endpoint is the first place that surfaces
-//! [`crate::util::key_vault`] (the permanent, cross-scan bank of every
-//! foreign API key HSE has ever harvested) and [`crate::util::key_roi`]
+//! [`crate::secrets::key_vault`] (the permanent, cross-scan bank of every
+//! foreign API key HSE has ever harvested) and [`crate::secrets::key_roi`]
 //! (the Multiplier/Expansion/Terminal cascade tiering) together with a
 //! **live** probe of the two paid breach-search providers whose queries
 //! actively drive the harvest — SeekNow (`/credits`) and WiGLE
@@ -25,7 +25,8 @@ use axum::{
 };
 use serde_json::{Value, json};
 
-use crate::util::{key_roi, key_vault, keys, str_util};
+use crate::secrets::{key_roi, key_vault, keys};
+use crate::util::str_util;
 
 /// Cap on how many individual vault entries the feed returns — the census
 /// (`osint_provider_census`) already gives the full per-service counts, so
@@ -108,7 +109,7 @@ fn vault_block() -> Value {
 /// [`super::settings_handlers::summarize_pool`] the Settings page's pool
 /// view already relies on — no duplicate aggregation logic.
 fn pool_block() -> Value {
-    let snap = crate::util::key_pool::global_pool().snapshot();
+    let snap = crate::secrets::key_pool::global_pool().snapshot();
     let services: Vec<Value> = super::settings_handlers::summarize_pool(&snap)
         .into_iter()
         .map(|q| {

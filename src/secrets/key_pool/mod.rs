@@ -19,7 +19,7 @@ pub use validation::{add_and_validate, merge_pool_into_env, validate_key};
 
 // Re-export service_defs items so existing call-sites that reach through
 // `key_pool::find_service` / `key_pool::service_defs` continue to compile.
-pub use crate::util::service_defs::{KeyPlacement, ServiceDef, find_service, service_defs};
+pub use crate::secrets::service_defs::{KeyPlacement, ServiceDef, find_service, service_defs};
 
 // ── Shared pool singleton ────────────────────────────────────────────────────
 

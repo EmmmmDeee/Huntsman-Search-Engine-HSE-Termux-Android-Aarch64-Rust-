@@ -371,8 +371,8 @@ fn check_core_math() -> Check {
 
 /// The key store loads without error; report the configured-key count.
 fn check_keys() -> Check {
-    let keys = crate::util::keys::load();
-    let path = crate::util::keys::env_path();
+    let keys = crate::secrets::keys::load();
+    let path = crate::secrets::keys::env_path();
     check(
         "keys.load",
         Status::Pass,

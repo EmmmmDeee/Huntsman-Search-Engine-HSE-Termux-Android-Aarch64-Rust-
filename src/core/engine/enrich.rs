@@ -347,7 +347,7 @@ pub(super) fn tag_platform_infra(entity: &mut crate::core::entity::Entity) {
 /// entity is read-only. Runs outside `catch_unwind`, so it uses panic-free slicing.
 pub(super) fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {
     use crate::core::hooks::identify_api_key;
-    use crate::util::key_pool::{KeyEntry, KeyStatus, global_pool};
+    use crate::secrets::key_pool::{KeyEntry, KeyStatus, global_pool};
 
     let pool = global_pool();
     let now = crate::core::entity::unix_now();

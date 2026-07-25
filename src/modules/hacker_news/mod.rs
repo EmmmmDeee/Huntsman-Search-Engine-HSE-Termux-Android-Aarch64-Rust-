@@ -113,7 +113,7 @@ impl Module for HackerNews {
             return Ok(ModuleResult::new());
         };
 
-        let pool = crate::util::key_pool::global_pool();
+        let pool = crate::secrets::key_pool::global_pool();
         let mut result = ModuleResult::new();
         result.entities = build_entities(user, &ctx.scan_id, &pool);
 
@@ -131,7 +131,7 @@ impl Module for HackerNews {
 pub(super) fn build_entities(
     user: HnUser,
     scan_id: &str,
-    pool: &crate::util::key_pool::KeyPool,
+    pool: &crate::secrets::key_pool::KeyPool,
 ) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
@@ -221,7 +221,7 @@ async fn fetch_algolia_submissions(
     http: &reqwest::Client,
     username: &str,
     scan_id: &str,
-    pool: &crate::util::key_pool::KeyPool,
+    pool: &crate::secrets::key_pool::KeyPool,
 ) -> Vec<Entity> {
     let url = format!(
         "https://hn.algolia.com/api/v1/search?tags=author_{}&hitsPerPage=50",
@@ -261,19 +261,19 @@ async fn fetch_algolia_submissions(
 /// fetched bodies — and pool any poolable hit. No network I/O of its own, so
 /// it's exercised directly by tests without mocking HTTP.
 fn mine_keys_from_text(
-    pool: &crate::util::key_pool::KeyPool,
+    pool: &crate::secrets::key_pool::KeyPool,
     text: &str,
     username: &str,
     source_label: &str,
 ) {
-    use crate::util::found_keys::{MAX_TOKEN, key_tokens};
-    use crate::util::key_harvest::identify_api_key;
+    use crate::secrets::found_keys::{MAX_TOKEN, key_tokens};
+    use crate::secrets::key_harvest::identify_api_key;
 
     for token in key_tokens(text, MAX_TOKEN) {
         if let Some((service, key_val)) = identify_api_key(token) {
-            let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+            let mut entry = crate::secrets::key_pool::KeyEntry::new(key_val);
             entry.notes = Some(format!("Hacker News {source_label} — user {username}"));
-            entry.status = crate::util::key_pool::KeyStatus::Untested;
+            entry.status = crate::secrets::key_pool::KeyStatus::Untested;
             entry.discovered_at = Some(crate::core::entity::unix_now());
             entry.discovered_by = Some(format!("hacker_news:{username}"));
             if pool.add(service, entry) {

@@ -2,7 +2,7 @@
 #[test]
     fn summarize_pool_counts_by_status_and_never_leaks_values() {
         use super::summarize_pool;
-        use crate::util::key_pool::{KeyEntry, KeyStatus, PoolData};
+        use crate::secrets::key_pool::{KeyEntry, KeyStatus, PoolData};
         let mut data = PoolData::default();
         let mut active = KeyEntry::new("SECRET-ACTIVE");
         active.status = KeyStatus::Active;

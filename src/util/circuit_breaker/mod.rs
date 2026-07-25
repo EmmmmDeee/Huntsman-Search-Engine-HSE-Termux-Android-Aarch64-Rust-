@@ -186,7 +186,7 @@ impl Breaker {
 /// Process-global per-host breaker registry.
 ///
 /// Keyed by host string, mirroring the locking idiom of other process-global
-/// `util` state (`util::termux`'s unavailable-tool map, `util::key_pool`'s
+/// `util` state (`util::termux`'s unavailable-tool map, `secrets::key_pool`'s
 /// indices): a [`LazyLock`] over a [`parking_lot::Mutex`]. Process-global on
 /// purpose — a host's health is a property of the endpoint, not of one scan, so
 /// every concurrent scan shares (and benefits from) the same view.

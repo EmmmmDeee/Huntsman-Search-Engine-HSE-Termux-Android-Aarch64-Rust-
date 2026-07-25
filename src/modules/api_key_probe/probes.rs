@@ -1,4 +1,4 @@
-//! Builds the live-probe list from [`crate::util::service_defs`] — the same
+//! Builds the live-probe list from [`crate::secrets::service_defs`] — the same
 //! registry `key_pool::validation` reads — rather than maintaining a second,
 //! independent url/header/env_var table. Only the JSON-response parser
 //! ([`ServiceDef::probe_parser`]) is genuinely per-vendor; the request shape
@@ -6,7 +6,7 @@
 //! `key_header`, so [`request_for`] derives it generically instead of each
 //! service repeating its own closure for it.
 
-use crate::util::service_defs::{self, KeyPlacement, ProbeParser, ServiceDef};
+use crate::secrets::service_defs::{self, KeyPlacement, ProbeParser, ServiceDef};
 
 pub(super) struct Probe {
     pub(super) service: &'static str,

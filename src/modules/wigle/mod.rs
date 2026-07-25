@@ -43,7 +43,7 @@ use fetch::get_with_retry;
 use fetch::{fetch_detail, fetch_wigle, fetch_wigle_ssid, fetch_wigle_typed};
 
 // WiGLE credentials (env names + embedded fallbacks) are resolved by the
-// single-sourced `crate::util::keys::wigle_credentials`.
+// single-sourced `crate::secrets::keys::wigle_credentials`.
 
 #[derive(Deserialize)]
 struct Resp {
@@ -253,7 +253,7 @@ impl Module for Wigle {
         // by the operator's daily allowance. Each sub-budget is
         // independent and env-tunable.
 
-        let (user, token) = crate::util::keys::wigle_credentials(ctx);
+        let (user, token) = crate::secrets::keys::wigle_credentials(ctx);
 
         // Each sub-search charges at the point a request is actually issued —
         // SSID past its skip filters, BSSID per observation kind probed — so a

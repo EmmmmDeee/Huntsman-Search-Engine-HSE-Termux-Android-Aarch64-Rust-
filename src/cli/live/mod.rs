@@ -83,7 +83,7 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
         Arc::clone(&engine),
         bus.clone(),
         crate::util::http::build_client(),
-        crate::util::keys::populate_and_load().await,
+        crate::secrets::keys::populate_and_load().await,
     );
 
     let live_id = scanner.start(target, scan_options, live_options);

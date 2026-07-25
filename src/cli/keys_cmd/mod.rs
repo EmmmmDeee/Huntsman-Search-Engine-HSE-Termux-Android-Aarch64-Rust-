@@ -6,7 +6,7 @@
 //! `hse set-key` mutation lands here.
 //!
 //! `bank` is different: it reads the persistent **retention bank**
-//! (`util::key_vault`, `~/.huntsman/key_vault.db`) — every API key ever found in
+//! (`secrets::key_vault`, `~/.huntsman/key_vault.db`) — every API key ever found in
 //! a victim/stealer query, categorised and OSINT-providers-first. The bank is
 //! retention-only (never used to authenticate); it is the operator-facing view
 //! of harvested keys as OSINT intelligence.
@@ -174,7 +174,7 @@ pub enum KeysAction {
 }
 
 pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
-    use crate::util::key_pool::{self, KeyEntry, KeyStatus};
+    use crate::secrets::key_pool::{self, KeyEntry, KeyStatus};
 
     let pool = key_pool::global_pool();
 
@@ -183,9 +183,9 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             use std::collections::BTreeMap;
             let mut updates = BTreeMap::new();
             updates.insert(name.clone(), value);
-            crate::util::keys::write_keys(&updates, &[])
+            crate::secrets::keys::write_keys(&updates, &[])
                 .map_err(|e| Error::Other(e.to_string()))?;
-            println!("✓ {name} set in {}", crate::util::keys::env_path());
+            println!("✓ {name} set in {}", crate::secrets::keys::env_path());
         }
         KeysAction::Add {
             service,
@@ -198,7 +198,7 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             // Check poolability up front so a non-poolable service gets an honest
             // error + non-zero exit, instead of the old "Adding anyway" promise
             // followed by a silent drop and a false "already exists" (T2.12).
-            if !crate::util::service_defs::is_poolable_service(&service) {
+            if !crate::secrets::service_defs::is_poolable_service(&service) {
                 let names: Vec<&str> = key_pool::service_defs().iter().map(|s| s.name).collect();
                 return Err(Error::Other(format!(
                     "'{service}' is not a poolable service — its key can't be added to the \
@@ -298,7 +298,7 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
                 // Whether `service_defs` even defines a probe for this service —
                 // the difference between "no validator exists" and "the probe ran
                 // but was inconclusive" (a blocked/timed-out/5xx endpoint).
-                let known = crate::util::service_defs::find_service(svc).is_some();
+                let known = crate::secrets::service_defs::find_service(svc).is_some();
                 for entry in entries {
                     print!("  {svc}: testing {}… ", char_prefix(&entry.value, 8));
                     let outcome = key_pool::validate_key(svc, &entry.value).await;
@@ -441,7 +441,7 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             reveal,
             census,
         } => {
-            use crate::util::key_vault;
+            use crate::secrets::key_vault;
 
             if census {
                 let rows = key_vault::osint_provider_census();
@@ -563,7 +563,7 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             if !summary.stats.is_empty() {
                 println!("\nBy service:");
                 for (svc, n) in &summary.stats {
-                    let roi = crate::util::key_roi::classify(svc);
+                    let roi = crate::secrets::key_roi::classify(svc);
                     println!("  {svc:<18}  {n:>4}  ({} tier)", roi.label());
                 }
             }
@@ -685,11 +685,11 @@ fn validation_label(service_known: bool, outcome: Option<bool>) -> &'static str 
 /// When `apply` is `false` the prune runs against a throwaway clone
 /// (`KeyPool::from_data(pool.snapshot())`) so the real pool is left untouched; the
 /// returned count is exactly what an `--apply` run WOULD remove, reusing the same
-/// [`crate::util::key_pool::KeyPool::prune_degraded`] predicate with no logic
+/// [`crate::secrets::key_pool::KeyPool::prune_degraded`] predicate with no logic
 /// duplication. When `apply` is `true` the real `pool` is pruned in place. Returns
 /// the number of keys pruned.
 fn run_prune(
-    pool: &crate::util::key_pool::KeyPool,
+    pool: &crate::secrets::key_pool::KeyPool,
     min_success_rate: f64,
     min_uses: u64,
     apply: bool,
@@ -697,7 +697,7 @@ fn run_prune(
     if apply {
         pool.prune_degraded(min_success_rate, min_uses)
     } else {
-        let preview = crate::util::key_pool::KeyPool::from_data(pool.snapshot());
+        let preview = crate::secrets::key_pool::KeyPool::from_data(pool.snapshot());
         preview.prune_degraded(min_success_rate, min_uses)
     }
 }
@@ -731,10 +731,10 @@ fn run_tsv_import(
     content: &str,
     file: &str,
     dry_run: bool,
-    pool: &crate::util::key_pool::KeyPool,
+    pool: &crate::secrets::key_pool::KeyPool,
 ) -> TsvImportSummary {
-    use crate::util::key_harvest::identify_api_key;
-    use crate::util::key_pool::{KeyEntry, KeyStatus};
+    use crate::secrets::key_harvest::identify_api_key;
+    use crate::secrets::key_pool::{KeyEntry, KeyStatus};
 
     let mut summary = TsvImportSummary {
         stats: std::collections::BTreeMap::new(),
@@ -779,7 +779,7 @@ fn run_tsv_import(
         // cases separately instead of mislabelling every non-poolable
         // rejection as a "duplicate" (the same distinction `KeysAction::Add`
         // already makes explicit).
-        if !crate::util::service_defs::is_poolable_service(service) {
+        if !crate::secrets::service_defs::is_poolable_service(service) {
             summary.skipped_nonpoolable += 1;
             continue;
         }
@@ -812,7 +812,7 @@ fn run_tsv_import(
 /// Format one retention-bank entry as a display row. OSINT-provider keys are
 /// marked `★` and show their category; infrastructure keys show `infrastructure`.
 /// The key is masked unless `reveal`. Pure (no I/O) so it is unit-tested.
-fn bank_row(e: &crate::util::key_vault::VaultEntry, reveal: bool) -> String {
+fn bank_row(e: &crate::secrets::key_vault::VaultEntry, reveal: bool) -> String {
     let cat = e.osint_category().unwrap_or("infrastructure");
     let mark = if e.is_osint() { "★" } else { " " };
     let key = if reveal {

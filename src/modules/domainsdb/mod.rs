@@ -38,7 +38,7 @@ use crate::core::{
 };
 
 /// Env var holding the operator's domainsdb.info API key. Registered in
-/// `util::keys::KNOWN_KEYS` with a signup hint so an unconfigured scan tells
+/// `secrets::keys::KNOWN_KEYS` with a signup hint so an unconfigured scan tells
 /// the operator where to obtain one.
 const KEY_ENV: &str = "HUNTSMAN_DOMAINSDB_KEY";
 

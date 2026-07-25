@@ -97,9 +97,9 @@ pub(super) fn emit_key_with(
     // Tag with ROI tier so operators can prioritise multiplier keys.
     // Multiplier-tier keys discover infrastructure/identities that
     // cascade into MORE keys via web_crawler and search_engines.
-    let roi = crate::util::key_roi::classify(service);
+    let roi = crate::secrets::key_roi::classify(service);
     entity.tag(format!("roi:{}", roi.label()));
-    if roi == crate::util::key_roi::KeyRoi::Multiplier {
+    if roi == crate::secrets::key_roi::KeyRoi::Multiplier {
         entity.tag("force-multiplier");
     }
     // Exposure CRITICALITY (orthogonal to ROI and detection): how grave the leak
@@ -120,7 +120,7 @@ pub(super) fn emit_key_with(
     // pivot (their tradecraft, tooling, intent). Tag it so the correlator can
     // flag practitioners and the operator can compare against their own keys.
     // Classification only — the key is never used to authenticate.
-    let osint_category = crate::util::osint_providers::osint_category(service);
+    let osint_category = crate::secrets::osint_providers::osint_category(service);
     if let Some(category) = osint_category {
         entity.tag("osint-practitioner");
         entity.tag(format!("osint-category:{}", category.slug()));
@@ -159,12 +159,12 @@ pub(super) fn emit_key_with(
     // is surfaced as the ApiKey entity above but is never injected by
     // `hot_inject_keys`, so pooling it just grew key_pool.json without bound
     // (a live run accumulated 8668 `generic_hex` blobs → a 4 MB pool).
-    if !crate::util::service_defs::is_poolable_service(service) {
+    if !crate::secrets::service_defs::is_poolable_service(service) {
         return;
     }
 
-    let pool = crate::util::key_pool::global_pool();
-    let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+    let pool = crate::secrets::key_pool::global_pool();
+    let mut entry = crate::secrets::key_pool::KeyEntry::new(key_val);
     entry.notes = Some(format!(
         "Auto-discovered {service} key from {source} ({} tier)",
         roi.label()
@@ -172,7 +172,7 @@ pub(super) fn emit_key_with(
     pool.add(service, entry);
     // Off the async runtime: this runs inside a keyed module's async process()
     // on a tokio worker shared with every other concurrently-dispatched module.
-    crate::util::key_pool::persist_off_thread(pool);
+    crate::secrets::key_pool::persist_off_thread(pool);
 }
 
 /// Routes a stealer/breach record to the key pool when the URL matches
@@ -219,9 +219,9 @@ pub fn store_api_credential(item: &Value, src: &str) {
         return;
     };
 
-    let pool = crate::util::key_pool::global_pool();
+    let pool = crate::secrets::key_pool::global_pool();
 
-    let mut entry = crate::util::key_pool::KeyEntry::new(&password);
+    let mut entry = crate::secrets::key_pool::KeyEntry::new(&password);
     entry.notes = Some(format!(
         "{src} stealer: user={} url={}",
         crate::util::str_util::truncate_safe(&username, 30),
@@ -231,10 +231,10 @@ pub fn store_api_credential(item: &Value, src: &str) {
     // so this first persist clones the Arc (cheap — a refcount bump, not a pool
     // copy) rather than moving it.
     if pool.add(service, entry) {
-        crate::util::key_pool::persist_off_thread(std::sync::Arc::clone(&pool));
+        crate::secrets::key_pool::persist_off_thread(std::sync::Arc::clone(&pool));
     }
 
-    let user_entry = crate::util::key_pool::KeyEntry::new(format!("{username}:{password}"));
+    let user_entry = crate::secrets::key_pool::KeyEntry::new(format!("{username}:{password}"));
     pool.add(&format!("{service}_login"), user_entry);
-    crate::util::key_pool::persist_off_thread(pool);
+    crate::secrets::key_pool::persist_off_thread(pool);
 }

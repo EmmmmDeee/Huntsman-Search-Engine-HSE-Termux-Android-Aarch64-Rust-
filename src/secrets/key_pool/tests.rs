@@ -238,7 +238,7 @@ fn merge_does_not_override_existing() {
 
 #[test]
 fn all_services_defined() {
-    let defs = crate::util::service_defs::service_defs();
+    let defs = crate::secrets::service_defs::service_defs();
     assert!(defs.len() >= 24);
     for d in defs {
         assert!(d.env_var.starts_with("HUNTSMAN_"));
@@ -248,9 +248,9 @@ fn all_services_defined() {
 
 #[test]
 fn find_service_works() {
-    assert!(crate::util::service_defs::find_service("shodan").is_some());
-    assert!(crate::util::service_defs::find_service("intelx").is_some());
-    assert!(crate::util::service_defs::find_service("nonexistent").is_none());
+    assert!(crate::secrets::service_defs::find_service("shodan").is_some());
+    assert!(crate::secrets::service_defs::find_service("intelx").is_some());
+    assert!(crate::secrets::service_defs::find_service("nonexistent").is_none());
 }
 
 #[test]

@@ -52,10 +52,10 @@ use super::*;
 
     #[test]
     fn probe_request_uses_the_single_sourced_service_def_not_a_duplicate_table() {
-        // Regression: this probe table and `util::key_pool::validation`'s
+        // Regression: this probe table and `secrets::key_pool::validation`'s
         // key-validation probe used to be two independently-maintained
         // tables (this one in api_key_probe/probes.rs, the other in
-        // util::service_defs) that had already drifted on 3 real endpoints —
+        // secrets::service_defs) that had already drifted on 3 real endpoints —
         // securitytrails, virustotal, and greynoise each tested a DIFFERENT
         // URL in the two tables, one of them wrong. Now both read the same
         // `ServiceDef`, so a probe's derived URL is exactly `test_url` (plus

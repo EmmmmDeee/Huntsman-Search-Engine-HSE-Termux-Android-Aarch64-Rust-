@@ -171,7 +171,7 @@ fn print_plan(plan: &[BatchQuery], kind: &str, value: &str, json: bool) {
 
 /// Dispatch the plan against OathNet, bounded by the shared per-session budget.
 async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result<()> {
-    let loaded = crate::util::keys::load();
+    let loaded = crate::secrets::keys::load();
     let key = oathnet::resolve_key(loaded.get(oathnet::KEY_ENV).map(String::as_str));
 
     // Deliberate batch: start from a fresh per-scan counter and lift the tight

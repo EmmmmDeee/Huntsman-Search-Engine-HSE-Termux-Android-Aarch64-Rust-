@@ -215,7 +215,7 @@ pub(super) async fn cmd_import_txt(body: &str, output: &str) -> Result<()> {
                 stats.api_keys
             ),
         );
-        crate::util::key_pool::save_pool_best_effort(&crate::util::key_pool::global_pool());
+        crate::secrets::key_pool::save_pool_best_effort(&crate::secrets::key_pool::global_pool());
     }
 
     persist_and_report(&sid, &entities, output).await;

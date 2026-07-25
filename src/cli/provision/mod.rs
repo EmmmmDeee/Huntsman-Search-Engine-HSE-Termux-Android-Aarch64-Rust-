@@ -27,7 +27,8 @@ use crate::core::{
     scan::{Scan, ScanOptions, Target, TargetKind},
 };
 use crate::storage::Store;
-use crate::util::{http::build_client, keys, uid::scan_id};
+use crate::secrets::keys;
+use crate::util::{http::build_client, uid::scan_id};
 
 /// Canonical env-file template, embedded at compile time. Edit
 /// `src/cli/env_template.txt` to change the on-disk shape; the binary
@@ -183,7 +184,7 @@ fn write_env_file(path: &Path, contents: &str) -> Result<Option<PathBuf>> {
 }
 
 /// Read the existing env file, treating a missing file as empty but
-/// surfacing every other read error. Mirrors `util::keys::io::write_keys_at`'s
+/// surfacing every other read error. Mirrors `secrets::keys::io::write_keys_at`'s
 /// identical guard: `unwrap_or_default()` on a bare `read_to_string` would
 /// collapse ANY failure — not just "file missing" — into an empty string, so
 /// a transient permission error or a file containing even one non-UTF-8 byte

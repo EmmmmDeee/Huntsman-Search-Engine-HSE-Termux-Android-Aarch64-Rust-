@@ -359,24 +359,24 @@ impl ModuleContext {
         service: &str,
         tried: &std::collections::HashSet<String>,
     ) -> Option<String> {
-        crate::util::key_pool::global_pool().next_key_excluding(service, tried)
+        crate::secrets::key_pool::global_pool().next_key_excluding(service, tried)
     }
 
     /// Report that a key received a rate-limit (429) or auth failure (401/403).
     /// Marks the key in the global pool so subsequent scans rotate to the next one.
     pub fn report_key_exhausted(&self, service: &str, key_value: &str, status: u16) {
-        let pool = crate::util::key_pool::global_pool();
+        let pool = crate::secrets::key_pool::global_pool();
         pool.record_error(service, key_value);
         let key_status = if status == 429 {
-            crate::util::key_pool::KeyStatus::RateLimited
+            crate::secrets::key_pool::KeyStatus::RateLimited
         } else {
-            crate::util::key_pool::KeyStatus::Invalid
+            crate::secrets::key_pool::KeyStatus::Invalid
         };
         pool.mark_status(service, key_value, key_status);
         // The in-memory marks above are immediate; persistence is offloaded (see
         // `key_pool::persist_off_thread` — the canonical off-runtime persist path
         // every opportunistic save site shares).
-        crate::util::key_pool::persist_off_thread(pool);
+        crate::secrets::key_pool::persist_off_thread(pool);
     }
 }
 

@@ -15,9 +15,9 @@
 //! byte scanned was already fetched for the entity extraction.
 
 use crate::core::entity::unix_now;
-use crate::util::found_keys::{MAX_TOKEN, key_tokens};
-use crate::util::key_harvest::identify_api_key;
-use crate::util::key_pool::{KeyEntry, KeyPool, KeyStatus};
+use crate::secrets::found_keys::{MAX_TOKEN, key_tokens};
+use crate::secrets::key_harvest::identify_api_key;
+use crate::secrets::key_pool::{KeyEntry, KeyPool, KeyStatus};
 
 use super::feed::Feed;
 
@@ -28,7 +28,7 @@ use super::feed::Feed;
 /// Reddit renders a pasted snippet into `<code>` blocks, and the tag soup around
 /// a token is noise the tokeniser would otherwise have to survive.
 pub(super) fn mine_feed(feed: &Feed) {
-    let pool = crate::util::key_pool::global_pool();
+    let pool = crate::secrets::key_pool::global_pool();
     if let Some(bio) = feed.bio.as_deref() {
         mine_text(&pool, bio, &feed.username, "bio");
     }

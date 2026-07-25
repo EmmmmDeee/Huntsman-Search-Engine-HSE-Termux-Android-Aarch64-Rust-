@@ -449,7 +449,7 @@ pub(super) async fn cmd_import_stealerlogs(body: &str, output: &str) -> Result<(
     deduplicate_by_uid(&mut entities);
     print_import_stats(&stats, entities.len(), output);
     if stats.api_keys > 0 {
-        crate::util::key_pool::save_pool_best_effort(&crate::util::key_pool::global_pool());
+        crate::secrets::key_pool::save_pool_best_effort(&crate::secrets::key_pool::global_pool());
     }
     persist_and_report(&sid, &entities, output).await;
     persist_stealer_rows_best_effort(&sid, &stealer_rows, output).await;

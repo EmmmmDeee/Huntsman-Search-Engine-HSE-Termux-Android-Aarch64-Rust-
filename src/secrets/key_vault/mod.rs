@@ -12,7 +12,7 @@
 //!   * **Provenance-complete** — stores the service vendor, the module/endpoint
 //!     that discovered the key, and the query value that triggered the hit.
 //!   * **Categorised** — every entry is classified on read via
-//!     [`crate::util::osint_providers`]: an OSINT/recon provider's key
+//!     [`crate::secrets::osint_providers`]: an OSINT/recon provider's key
 //!     ([`VaultEntry::is_osint`]) flags its holder as an OSINT practitioner, and
 //!     [`osint_entries`] / [`osint_provider_census`] give a sorted, maintained
 //!     view of exactly those first-class pivots.
@@ -44,7 +44,7 @@ use std::path::PathBuf;
 
 use rusqlite::{Connection, params};
 
-use crate::util::found_keys::FoundKey;
+use crate::secrets::found_keys::FoundKey;
 
 // ── Path ─────────────────────────────────────────────────────────────────────
 
@@ -161,12 +161,12 @@ pub struct VaultEntry {
 impl VaultEntry {
     /// The OSINT category slug of this key's provider, or `None` when the
     /// provider is not catalogued OSINT/recon tooling (generic infra). Derived
-    /// from `service` via [`crate::util::osint_providers`] — the single source of
+    /// from `service` via [`crate::secrets::osint_providers`] — the single source of
     /// truth — so the bank is categorised without storing a redundant column.
     #[must_use]
     pub fn osint_category(&self) -> Option<&'static str> {
-        crate::util::osint_providers::osint_category(&self.service)
-            .map(crate::util::osint_providers::OsintCategory::slug)
+        crate::secrets::osint_providers::osint_category(&self.service)
+            .map(crate::secrets::osint_providers::OsintCategory::slug)
     }
 
     /// True when this key belongs to an OSINT/recon provider — its holder is, by
@@ -267,7 +267,7 @@ pub fn total_count() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::found_keys::FoundKey;
+    use crate::secrets::found_keys::FoundKey;
 
     fn test_key(service: &str, key: &str) -> FoundKey {
         FoundKey {

@@ -392,13 +392,13 @@ pub(super) fn flag_geo_discordant_namesakes(entities: &mut [Entity]) -> usize {
 /// overwrites an operator-supplied key. Shared by `run_expansion` (per-round
 /// refresh) and both dispatchers (per-module hot-inject).
 pub(super) fn hot_inject_keys(keys: &mut HashMap<String, String>) {
-    let pool = crate::util::key_pool::global_pool();
-    for svc in crate::util::key_pool::service_defs() {
+    let pool = crate::secrets::key_pool::global_pool();
+    for svc in crate::secrets::key_pool::service_defs() {
         if keys.contains_key(svc.env_var) {
             continue;
         }
         if let Some(key) = pool.next_key(svc.name) {
-            let roi = crate::util::key_roi::classify(svc.name);
+            let roi = crate::secrets::key_roi::classify(svc.name);
             info!(
                 service = svc.name,
                 env_var = svc.env_var,

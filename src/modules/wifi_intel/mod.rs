@@ -30,7 +30,7 @@ use crate::util::termux::termux_cmd;
 // ── WiGLE credentials ──────────────────────────────────────────────────
 
 // Env names + embedded fallbacks are resolved by the single-sourced
-// `crate::util::keys::wigle_credentials` (shared with the `wigle` module).
+// `crate::secrets::keys::wigle_credentials` (shared with the `wigle` module).
 
 /// How many of the strongest APs to query WiGLE for.
 const MAX_BSSIDS: usize = 5;
@@ -103,7 +103,7 @@ impl Module for WifiIntel {
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let (user, token) = crate::util::keys::wigle_credentials(ctx);
+        let (user, token) = crate::secrets::keys::wigle_credentials(ctx);
 
         // ── Single termux-wifi-scaninfo call ────────────────────────────
         let Some(stdout) = termux_cmd("termux-wifi-scaninfo", &[], 5000).await else {

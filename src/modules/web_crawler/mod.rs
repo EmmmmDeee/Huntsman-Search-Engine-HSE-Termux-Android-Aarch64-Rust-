@@ -204,7 +204,7 @@ impl Module for WebCrawler {
         for (path, bytes, keys) in &leaks {
             domain_was_leaky = true;
             for (service, key_val) in keys {
-                let roi = crate::util::key_roi::classify(service);
+                let roi = crate::secrets::key_roi::classify(service);
                 let mut e = Entity::new(
                     EntityKind::ApiKey,
                     key_val,
@@ -216,7 +216,7 @@ impl Module for WebCrawler {
                 e.tag("web-crawler");
                 e.tag(format!("service:{service}"));
                 e.tag(format!("roi:{}", roi.label()));
-                if roi == crate::util::key_roi::KeyRoi::Multiplier {
+                if roi == crate::secrets::key_roi::KeyRoi::Multiplier {
                     e.tag("force-multiplier");
                 }
                 e.add_evidence(

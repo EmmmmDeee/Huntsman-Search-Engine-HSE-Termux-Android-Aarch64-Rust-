@@ -10,8 +10,8 @@ use crate::util::response_cache::ResponseCache;
 use super::budget::{mark_key_invalid, mark_quota_exhausted};
 use super::enterprise_config::ENTERPRISE;
 
-// Embedded fallback: the single-source-of-truth default lives in `util::keys`.
-const HARDCODED_KEY: &str = crate::util::keys::SEEKNOW_DEFAULT_KEY;
+// Embedded fallback: the single-source-of-truth default lives in `secrets::keys`.
+const HARDCODED_KEY: &str = crate::secrets::keys::SEEKNOW_DEFAULT_KEY;
 
 /// Per-process response cache backed by the shared
 /// [`ResponseCache`] primitive (cap [`ENTERPRISE`]`.cache_size` — sized to
@@ -155,10 +155,10 @@ pub(super) fn base_urls_for(primary: String) -> Vec<String> {
 
 /// The SeekNow API key to use for a request: the per-scan context key `ctx_key`
 /// when the operator supplied one, otherwise the built-in default
-/// ([`crate::util::keys::resolve_or_default`]). Mirrors `oathnet::resolve_key`.
+/// ([`crate::secrets::keys::resolve_or_default`]). Mirrors `oathnet::resolve_key`.
 #[must_use]
 pub fn resolve_key(ctx_key: Option<&str>) -> &str {
-    crate::util::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
+    crate::secrets::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
 }
 
 /// A stable, human-identifiable fingerprint of the SeekNow API key used for a

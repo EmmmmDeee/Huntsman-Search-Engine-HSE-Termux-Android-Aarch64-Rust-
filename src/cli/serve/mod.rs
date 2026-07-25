@@ -42,7 +42,7 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
         Arc::clone(&engine),
         bus.clone(),
         http.clone(),
-        crate::util::keys::populate_and_load().await,
+        crate::secrets::keys::populate_and_load().await,
     );
     let update_info = Arc::new(std::sync::Mutex::new(UpdateInfo::default()));
     let state = Arc::new(AppState {

@@ -1,5 +1,5 @@
 //! The validated, self-healing egress pool — pure health/selection/failover
-//! logic (no I/O), mirroring the proven [`crate::util::key_pool`] health model
+//! logic (no I/O), mirroring the proven [`crate::secrets::key_pool`] health model
 //! so the rotation is fully unit-testable without a live network. The async
 //! validation probe and feed fetch live in the sibling `validate` module; this
 //! file owns *which endpoint to use next* and *how an endpoint's health

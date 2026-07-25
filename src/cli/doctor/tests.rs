@@ -1,5 +1,5 @@
 use super::*;
-    use crate::util::key_roi::KeyRoi;
+    use crate::secrets::key_roi::KeyRoi;
 
     #[test]
     fn seeknow_guidance_when_doh_retry_already_ran_and_failed() {
