@@ -61,18 +61,21 @@ export function kindToStr(k){
 export function kindPill(k){const s=kindToStr(k);return `<span class="kind-pill k-${attr(s)}">${esc(s)}</span>`;}
 // Non-corroborating evidence sources — NOT independent intelligence, so they
 // must not count toward the C_eff boost. Mirrors the backend's
-// is_non_corroborating_source() exactly: the deterministic self-enrichment
-// passes ENRICHMENT_ONLY_SOURCES ('geo_normalize', 'name_intel', 'payid'),
-// the recall replay ('recall'), and the cross-scan history link
-// ('cross_scan_history'). This set previously carried only 2 of the 5 —
-// missing 'name_intel', 'payid', and 'cross_scan_history' — so an entity
-// corroborated only by those sources (e.g. a name-permuted email plus a
-// cross-scan hit) rendered a higher C_eff/tier in Browse than the server's
-// authoritative classification, reintroducing the exact over-credit bugs
-// those three exclusions exist to close (see the backend doc comments on
-// ENRICHMENT_ONLY_SOURCES/RECALL_SOURCE/CROSS_SCAN_SOURCE in
-// core::entity), just in the display layer instead of the confidence engine.
-export const ENRICHMENT_SOURCES = new Set(['geo_normalize', 'name_intel', 'payid', 'recall', 'cross_scan_history']);
+// is_non_corroborating_source() exactly — all SIX members: the deterministic
+// self-enrichment passes ENRICHMENT_ONLY_SOURCES ('geo_normalize',
+// 'name_intel', 'payid'), the recall replay ('recall'), the cross-scan history
+// link ('cross_scan_history'), and the breach-consensus grading summary
+// ('breach_consensus' = core::entity::CONSENSUS_SOURCE). Any omission
+// reintroduces over-credit: an entity corroborated only by these sources (e.g.
+// a name-permuted email plus a cross-scan hit, or a breach_consensus summary
+// plus one real source) renders a higher C_eff/tier in Browse than the
+// server's authoritative classification (CSV export, CLI dossier, debug
+// bundle) — the exact bug these exclusions exist to close, reopened in the
+// display layer. 'breach_consensus' was added to the backend set after this
+// JS copy was last synced and drifted out; keep the two in lockstep (see the
+// backend doc comments on ENRICHMENT_ONLY_SOURCES/RECALL_SOURCE/
+// CROSS_SCAN_SOURCE/CONSENSUS_SOURCE in core::entity).
+export const ENRICHMENT_SOURCES = new Set(['geo_normalize', 'name_intel', 'payid', 'recall', 'cross_scan_history', 'breach_consensus']);
 // Distinct corroborating sources drive the C_eff boost — must match the
 // backend's Entity::source_count() exactly, branch for branch: (1) evidence
 // exists with >=1 distinct non-enrichment source -> that distinct count; (2)
