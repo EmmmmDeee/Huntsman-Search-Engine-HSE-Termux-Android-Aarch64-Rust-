@@ -36,7 +36,14 @@ export function healthCell(s){
       : '<span class="text-muted">—</span>';
   }
   const pct = Math.round(s.avg_health*100);
-  return `${pct}%`;
+  // The score is a mean over the *tested* keys only; surface that population in
+  // a tooltip so the number is self-explanatory (and untested keys visibly do
+  // not count toward it). `tested` may be absent on older payloads.
+  const tested = s.tested;
+  const title = (tested != null)
+    ? `mean over ${tested} of ${total} key(s) that have been exercised${tested < total ? ` (${total - tested} still untested)` : ''}`
+    : 'mean health over exercised keys';
+  return `<span title="${attr(title)}">${pct}%</span>`;
 }
 // Flatten an EntityKind to a display string. Unit variants arrive as plain
 // strings; the catch-all `Other(s)` arrives as {"other":"…"} (externally-tagged

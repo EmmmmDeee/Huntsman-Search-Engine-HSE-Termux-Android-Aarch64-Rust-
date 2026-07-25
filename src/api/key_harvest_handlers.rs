@@ -219,6 +219,9 @@ async fn accounts_block() -> Value {
         "wigle": {
             "verified": wigle_status.verified,
             "user": wigle_status.user,
+            // When the `/profile/user` probe last ran (unix seconds), so the
+            // card can show the check's freshness; `null` if never polled.
+            "last_polled_ts": wigle_status.last_polled_ts,
         },
     })
 }
@@ -297,5 +300,8 @@ mod tests {
         // is the well-formed "not observed yet" state, not an omission.
         assert!(a["oathnet"]["real_quota"].is_null());
         assert!(a["wigle"].get("verified").is_some());
+        // The WiGLE probe's freshness timestamp is always present (value may be
+        // `null` when never polled) so the card can render "checked …".
+        assert!(a["wigle"].get("last_polled_ts").is_some());
     }
 }

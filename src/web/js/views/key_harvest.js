@@ -92,6 +92,7 @@ function accountHealthPanel(accounts){
     ${oathnet.quota_exhausted ? '<br><span class="text-danger">daily quota exhausted</span>' : ''}
     ${rq
       ? `<br>Real daily quota: <b>${esc(rq.left_today)}</b>${rq.daily_limit != null ? ' / ' + esc(rq.daily_limit) : ''}${rq.is_unlimited ? ' (unlimited plan)' : ''} remaining
+         &nbsp;·&nbsp; <b>${esc(rq.used_today)}</b> used today
          <br><span style="font-size:11px">Observed on the last successful search this process — OathNet has no dedicated
          account-status endpoint to probe on demand, but every search response carries this for free.</span>`
       : `<br><span style="font-size:11px">OathNet has no dedicated account-status endpoint to probe on demand — the real
@@ -99,12 +100,15 @@ function accountHealthPanel(accounts){
          HSE's own process-local budget/quota state, not the provider's.</span>`}`;
   const oathnetOk = oathnet.quota_exhausted ? false : (rq ? rq.left_today > 0 : true);
 
-  const wigleBody = wigle.verified === false
+  const wigleFresh = wigle.last_polled_ts
+    ? `<br><span style="font-size:11px">Checked ${esc(fmtDate(wigle.last_polled_ts))}</span>`
+    : '<br><span style="font-size:11px">Not polled yet this process — a WiGLE lookup during a scan populates this.</span>';
+  const wigleBody = (wigle.verified === false
     ? 'Email NOT verified — WiGLE throttles DB queries until the account email is confirmed.'
     : wigle.verified === true
       ? `Email verified${wigle.user ? ' · user <code>' + esc(wigle.user) + '</code>' : ''}`
-      : '/profile/user not reachable this check.';
-  const wigleOk = wigle.verified === undefined ? null : wigle.verified;
+      : '/profile/user not reachable this check.') + wigleFresh;
+  const wigleOk = wigle.verified === undefined || wigle.verified === null ? null : wigle.verified;
 
   return `
     <div class="panel panel-default">
@@ -135,6 +139,7 @@ function vaultPanel(vault){
   const recent = v.recent || [];
   const total = v.total_count || 0;
   const osint = v.osint_count || 0;
+  const recentLimit = v.recent_limit || recent.length;
 
   const censusRows = census.map(c => `
     <tr>
@@ -150,6 +155,7 @@ function vaultPanel(vault){
       <td><code>${esc(e.masked)}</code></td>
       <td>${e.category ? `<span class="tag">${esc(e.category)}</span>` : '<span class="text-muted">infra</span>'}</td>
       <td>${roiBadge(e.roi_tier)}</td>
+      <td style="font-size:11px">${e.provider ? esc(e.provider) : '<span class="text-muted">—</span>'}</td>
       <td class="text-right">${esc(e.discovery_count)}</td>
       <td style="font-size:11px;color:var(--text-dim)">${esc(fmtDate(e.first_seen_at))}</td>
       <td style="font-size:11px;color:var(--text-dim)">${esc(fmtDate(e.last_seen_at))}</td>
@@ -176,9 +182,9 @@ function vaultPanel(vault){
           : `<p class="text-muted" style="font-size:12px">No catalogued OSINT-provider keys harvested yet${total ? ' — the ' + esc(total) + ' key(s) below are generic infrastructure (cloud, payment, tokens, …)' : ''}.</p>`}
         ${recent.length ? `
           <h5 style="margin:14px 0 4px"><b>Recently seen</b>
-            <span class="text-muted" style="font-weight:normal;font-size:11px">(every harvested key, most-recent first${total > recent.length ? ` · showing ${esc(recent.length)} of ${esc(total)}` : ''})</span></h5>
+            <span class="text-muted" style="font-weight:normal;font-size:11px">(every harvested key, most-recent first${total > recent.length ? ` · showing the ${esc(recent.length)} newest of ${esc(total)} — capped at ${esc(recentLimit)}` : ''})</span></h5>
           <div class="table-responsive"><table class="table table-condensed">
-            <thead><tr><th>Service</th><th>Key</th><th>Category</th><th>ROI</th><th class="text-right">Seen</th><th>First</th><th>Last</th></tr></thead>
+            <thead><tr><th>Service</th><th>Key</th><th>Category</th><th>ROI</th><th>Found by</th><th class="text-right">Seen</th><th>First</th><th>Last</th></tr></thead>
             <tbody>${recentRows}</tbody>
           </table></div>`
           : (total ? '' : '<p class="text-muted" style="font-size:12px">Nothing harvested yet — run a scan and foreign keys found along the way land here.</p>')}
@@ -201,6 +207,8 @@ const POOL_COLS = [
   { key: 'invalid',      label: 'Invalid', num: true,  align: 'text-right' },
   { key: 'untested',     label: 'Untested',num: true,  align: 'text-right' },
   { key: 'revoked',      label: 'Revoked', num: true,  align: 'text-right' },
+  { key: 'uses',         label: 'Uses',    num: true,  align: 'text-right' },
+  { key: 'errors',       label: 'Errors',  num: true,  align: 'text-right' },
   { key: 'avg_health',   label: 'Health',  num: true,  align: 'text-right' },
 ];
 
@@ -245,6 +253,8 @@ function poolRowHtml(s){
       <td class="text-right">${esc(s.invalid)}</td>
       <td class="text-right">${esc(s.untested)}</td>
       <td class="text-right">${esc(s.revoked)}</td>
+      <td class="text-right">${esc(s.uses)}</td>
+      <td class="text-right">${esc(s.errors)}</td>
       <td class="text-right">${healthCell(s)}</td>
     </tr>`;
 }
