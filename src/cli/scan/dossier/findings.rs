@@ -187,8 +187,24 @@ fn print_finding(e: &Entity) {
     }
 
     for ev in &e.evidence {
+        // Two qualifiers that decide how much weight a reader should give the
+        // line, and which the sibling renderers (the debug bundle's ENTITIES
+        // section and the web Browse evidence block) already show — the live
+        // dossier was the one consumer rendering all evidence as if it were
+        // equal, direct observation:
+        //   * non-corroborating — a self-enrichment/recall/cross-scan/consensus
+        //     pass that attaches real detail but never counts toward
+        //     `source_count`, so it must not read as independent confirmation;
+        //   * inferred — a derivation (name permuted from a username,
+        //     coordinates computed from an address), not an observation.
+        let marker = if crate::core::entity::is_non_corroborating_source(&ev.source) {
+            "  (non-corroborating)"
+        } else {
+            ""
+        };
+        let inferred = if ev.is_inferred { "  (inferred)" } else { "" };
         println!(
-            "    ├─ {src} — {summary}",
+            "    ├─ {src} — {summary}{marker}{inferred}",
             src = ev.source,
             summary = ev.summary
         );

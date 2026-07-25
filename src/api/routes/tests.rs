@@ -536,18 +536,40 @@ use super::*;
         // used by `sourceCount()`/`effC()` in spa.html to reproduce
         // `Entity::c_effective()` for Browse) must exclude exactly the same
         // evidence sources as the backend's authoritative
-        // `is_non_corroborating_source()`. It once carried only 2 of the 5 real
-        // exclusions (missing `name_intel`, `payid`, `cross_scan_history`), so
-        // an entity corroborated only by one of those rendered a higher
+        // `is_non_corroborating_source()`. It once carried only 2 of the real
+        // exclusions (missing `name_intel`, `payid`, `cross_scan_history`), and
+        // later lagged again on `breach_consensus`, so an entity corroborated
+        // only by one of those rendered a higher
         // C_eff/tier in Browse than the server's own classification —
         // reintroducing, client-side, the exact over-credit bugs those
         // exclusions were added to close.
-        use crate::core::entity::{CROSS_SCAN_SOURCE, ENRICHMENT_ONLY_SOURCES, RECALL_SOURCE};
+        //
+        // NOTE when adding a new non-corroborating source: append its constant
+        // to `expected` below as well. This list is a hand-assembled mirror of
+        // `is_non_corroborating_source`'s arms (a predicate's domain can't be
+        // enumerated), so it is itself drift-prone — it once omitted
+        // `CONSENSUS_SOURCE` after that arm was added, which made this guard
+        // demand the *stale* 5-member set and fail the corrected 6-member SPA
+        // copy. The `is_non_corroborating_source` assertion below catches the
+        // reverse slip (a constant listed here that the predicate no longer
+        // excludes).
+        use crate::core::entity::{
+            CONSENSUS_SOURCE, CROSS_SCAN_SOURCE, ENRICHMENT_ONLY_SOURCES, RECALL_SOURCE,
+            is_non_corroborating_source,
+        };
         let expected: Vec<&str> = ENRICHMENT_ONLY_SOURCES
             .iter()
             .copied()
-            .chain([RECALL_SOURCE, CROSS_SCAN_SOURCE])
+            .chain([RECALL_SOURCE, CROSS_SCAN_SOURCE, CONSENSUS_SOURCE])
             .collect();
+        for name in &expected {
+            assert!(
+                is_non_corroborating_source(name),
+                "`{name}` is listed as an expected exclusion but the backend's \
+                 is_non_corroborating_source() no longer excludes it — this \
+                 guard's mirror of the predicate has gone stale"
+            );
+        }
         let js = app_file("js/helpers.js")
             .split_once("const ENRICHMENT_SOURCES = new Set([")
             .and_then(|(_, rest)| rest.split_once(']'))

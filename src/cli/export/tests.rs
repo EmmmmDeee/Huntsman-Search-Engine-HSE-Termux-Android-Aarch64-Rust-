@@ -75,6 +75,63 @@ fn render_full_dumps_every_field_and_provenance() {
 }
 
 #[test]
+fn render_full_carries_generation_and_every_per_evidence_qualifier() {
+    // Regression guard for the "every field, fully unredacted" contract: the
+    // ENTITIES section previously dropped the entity's `generation` (pivot
+    // distance from the seed, which the web Browse pane already showed) and
+    // three per-evidence fields — `recorded_at`, `is_inferred`, and
+    // `verification` — so an INFERRED derivation rendered identically to a
+    // direct observation and an account attribution gave no basis.
+    use crate::core::entity::{Entity, EntityKind, Evidence, VerificationMethod};
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("qualifiers_test.db");
+    let store = Store::open(db.to_str().unwrap()).unwrap();
+
+    let target = Target::new(TargetKind::Username, "jmally");
+    let scan = Scan::new("scan-qual", target);
+    store.upsert_scan(&scan).unwrap();
+
+    let mut e = Entity::new(EntityKind::Person, "James Mally", 0.6, "scan-qual");
+    // Two pivots out from the seed — must not read as operator input.
+    e.generation = 2;
+    let mut inferred = Evidence::new("name_intel", "Name permuted from username")
+        .with_verification(VerificationMethod::Unverified)
+        .with_inferred(true);
+    inferred.recorded_at = 1_700_000_000;
+    e.add_evidence(inferred);
+    store.upsert_entities_batch(&[e]).unwrap();
+
+    let out = render_full(&store, "scan-qual").unwrap();
+    assert!(
+        out.contains("generation=2"),
+        "entity generation (hops from seed) must be surfaced: {out}"
+    );
+    assert!(
+        out.contains("(inferred)"),
+        "an inferred derivation must be marked, not read as an observation: {out}"
+    );
+    assert!(
+        out.contains("verification = Unverified"),
+        "the account-attribution basis must be surfaced: {out}"
+    );
+    assert!(
+        out.contains("recorded_at = 1700000000"),
+        "each evidence record's own timestamp must appear: {out}"
+    );
+    assert!(
+        out.contains("20231114T221320Z"),
+        "recorded_at must also render as a compact-UTC string: {out}"
+    );
+    // `name_intel` is an enrichment-only source, so it must ALSO still carry the
+    // pre-existing non-corroborating marker — the new qualifiers append to it
+    // rather than displace it.
+    assert!(
+        out.contains("(non-corroborating"),
+        "the non-corroborating marker must survive alongside the new qualifiers: {out}"
+    );
+}
+
+#[test]
 fn render_full_resolves_relation_labels_and_reports_all_module_counts() {
     use crate::core::entity::{Entity, EntityKind};
     use crate::core::relation::{Relation, RelationKind};
