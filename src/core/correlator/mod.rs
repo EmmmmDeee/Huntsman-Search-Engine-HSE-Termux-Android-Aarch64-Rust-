@@ -25,8 +25,8 @@ use crate::core::entity::{Entity, EntityKind, Evidence};
 use crate::core::error::Result;
 use crate::core::port::StoragePort;
 use crate::core::relation::Relation;
-use std::collections::HashMap;
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 // ─── RuleContext ───────────────────────────────────────────────────────────
 // Lazy-cached precomputed indexes shared across all correlation rules,

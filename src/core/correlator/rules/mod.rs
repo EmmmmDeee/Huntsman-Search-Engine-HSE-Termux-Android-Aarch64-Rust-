@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use super::{Correlation, Severity, RuleContext};
+use super::{Correlation, RuleContext, Severity};
 use crate::core::entity::{Entity, EntityKind};
 use crate::core::relation::{Relation, RelationKind};
 
