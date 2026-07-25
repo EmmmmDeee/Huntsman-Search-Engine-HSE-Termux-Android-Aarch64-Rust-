@@ -1849,10 +1849,15 @@ impl ScanEngine {
                     self.emit_excluded(scan_id, entity, "roi_saturated");
                     continue;
                 }
-                // A kind with no external search target (Credential, Password,
-                // DeviceId, TrackingId, Other) cannot be pivoted on. Previously
-                // this was a silent `continue` — a black box. Record it so the
-                // logs show exactly why the entity was not expanded.
+                // A kind with no scannable TargetKind cannot be pivoted on: only
+                // `Credential`, `Password`, and `Other(_)` map to `None` (they name
+                // a secret or free text no module accepts as a seed). Every other
+                // kind — including DeviceId, TrackingId, Ssid, CryptoAddress, Asn,
+                // Cidr, MacAddress — DOES resolve to a TargetKind with ≥1 consuming
+                // module (cell/tracking/wigle/chain-analysis/netblock), so the
+                // recursion expands it; do NOT add those kinds here (it would sever
+                // a live pivot path). Previously a silent `continue` — a black box;
+                // record it so the logs show exactly why an entity was not expanded.
                 let Some(tk) = TargetKind::from_entity_kind(&entity.kind) else {
                     self.emit_excluded(scan_id, entity, "non_pivotable_kind");
                     continue;

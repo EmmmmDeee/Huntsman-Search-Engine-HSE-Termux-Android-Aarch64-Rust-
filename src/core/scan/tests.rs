@@ -605,6 +605,61 @@ fn unscannable_entity_kinds_return_none() {
     assert!(TargetKind::from_entity_kind(&EntityKind::Credential).is_none());
 }
 
+/// Recursion-integrity guard: the set of entity kinds that CANNOT be pivoted on
+/// is EXACTLY `{Credential, Password, Other}`. The engine's expansion gate keys on
+/// `from_entity_kind` returning `None`, so any kind that silently regresses to
+/// `None` here would be dropped from the recursive sweep — a live pivot path
+/// severed with no test failure anywhere else. This pins every currently-pivotable
+/// kind so that regression is impossible to land unnoticed. (Guards the gate
+/// comment in `core::engine`'s candidate loop, which once wrongly listed DeviceId/
+/// TrackingId as non-pivotable even though each resolves to a scannable kind with
+/// live consuming modules.)
+#[test]
+fn pivotable_entity_kinds_are_exhaustively_locked() {
+    // Every kind that MUST remain pivotable (resolves to Some) — each has ≥1
+    // consuming module, so the recursion expands it. Cross-referenced against the
+    // module `accepts()` surface (cell/tracking/wigle/chain-analysis/netblock/…).
+    let pivotable = [
+        EntityKind::Email,
+        EntityKind::Username,
+        EntityKind::Phone,
+        EntityKind::Person,
+        EntityKind::IpAddress,
+        EntityKind::Domain,
+        EntityKind::Asn,
+        EntityKind::Cidr,
+        EntityKind::Coordinates,
+        EntityKind::Address,
+        EntityKind::Url,
+        EntityKind::Organisation,
+        EntityKind::AbnAcn,
+        EntityKind::ApiKey,
+        EntityKind::MacAddress,
+        EntityKind::CryptoAddress,
+        EntityKind::DeviceId,
+        EntityKind::Ssid,
+        EntityKind::TrackingId,
+    ];
+    for ek in &pivotable {
+        assert!(
+            TargetKind::from_entity_kind(ek).is_some(),
+            "{ek:?} must stay pivotable — the recursion depends on it expanding; \
+             regressing it to None would silently sever a live pivot path"
+        );
+    }
+    // The ONLY non-pivotable kinds. `Other` carries a payload, so build one.
+    for ek in [
+        EntityKind::Credential,
+        EntityKind::Password,
+        EntityKind::Other("anything".into()),
+    ] {
+        assert!(
+            TargetKind::from_entity_kind(&ek).is_none(),
+            "{ek:?} must remain non-pivotable (secret/free-text, no module accepts it as a seed)"
+        );
+    }
+}
+
 #[test]
 fn mac_address_entity_expands() {
     assert_eq!(
