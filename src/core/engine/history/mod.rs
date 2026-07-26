@@ -18,9 +18,7 @@
 
 use std::collections::HashMap;
 
-use crate::core::entity::{
-    CROSS_SCAN_SOURCE, Entity, EntityKind, Evidence, canonical_handle,
-};
+use crate::core::entity::{CROSS_SCAN_SOURCE, Entity, EntityKind, Evidence, canonical_handle};
 use crate::core::port::StoragePort;
 use crate::core::relation::RelationKind;
 
