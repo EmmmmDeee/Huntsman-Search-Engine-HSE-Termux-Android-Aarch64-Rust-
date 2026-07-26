@@ -176,7 +176,6 @@ fn initialize_tracing() {
                 .with_writer(crate::util::log_capture::RingMakeWriter),
         )
         .init();
-
 }
 
 async fn run_command(command: Command) -> Result<()> {
