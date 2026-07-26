@@ -42,7 +42,7 @@ use super::*;
         // LIBRARY defaults (min_expand_confidence=0.50, max_entities=None)
         // instead of the comprehensive PRODUCT defaults `hse scan` and the
         // API's `default_scan_options()` both apply. Pin the fixed values.
-        let opts = build_live_scan_options(&cmd_with_defaults()).unwrap();
+        let opts = build_live_scan_options(&cmd_with_defaults()).expect("should succeed");
         assert_eq!(
             opts.min_expand_confidence,
             crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE,
@@ -89,7 +89,7 @@ use super::*;
             gate_speculative: true,
             ..cmd_with_defaults()
         };
-        let opts = build_live_scan_options(&cmd).unwrap();
+        let opts = build_live_scan_options(&cmd).expect("should succeed");
         assert_eq!(opts.modules, Some(vec!["whois".into(), "dns_intel".into()]));
         assert_eq!(opts.exclude_modules, vec!["crtsh".to_string()]);
         assert_eq!(opts.throttle_ms, 500);

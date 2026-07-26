@@ -32,9 +32,9 @@ use super::*;
 
     #[test]
     fn read_existing_env_treats_missing_file_as_empty() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should succeed");
         let path = dir.path().join("does-not-exist.env");
-        assert_eq!(read_existing_env(&path).unwrap(), "");
+        assert_eq!(read_existing_env(&path).expect("should succeed"), "");
     }
 
     #[test]
@@ -46,7 +46,7 @@ use super::*;
         // believe every currently-configured HUNTSMAN_* key was absent and
         // overwrite them all with template placeholders. The error must
         // surface instead.
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should succeed");
         let err = read_existing_env(dir.path()).unwrap_err();
         assert!(
             err.to_string().contains("read "),
