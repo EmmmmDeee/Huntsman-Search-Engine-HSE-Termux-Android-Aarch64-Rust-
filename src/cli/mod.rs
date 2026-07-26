@@ -20,6 +20,7 @@ mod gap;
 mod ingest;
 mod keys_cmd;
 mod live;
+mod logging;
 mod modules;
 mod oathnet_batch;
 mod provision;
@@ -33,8 +34,6 @@ use std::io::IsTerminal;
 use std::sync::Arc;
 
 use clap::Parser;
-use tracing_subscriber::EnvFilter;
-
 use crate::{
     core::{
         engine::ScanEngine,
@@ -88,7 +87,7 @@ mod command;
 pub use command::{Cli, Command};
 
 pub async fn run() -> Result<()> {
-    initialize_tracing();
+    logging::initialize();
 
     let cli = Cli::parse();
     // Opportunistic, throttled, non-blocking self-update: any routine CLI use
@@ -96,86 +95,6 @@ pub async fn run() -> Result<()> {
     // Best-effort and time-boxed — never delays or fails the command below.
     update::maybe_auto_update_cli(&cli.command).await;
     run_command(cli.command).await
-}
-
-fn initialize_tracing() {
-    // Raw logs by default (operator directive: the entire project outputs raw
-    // logs). When `RUST_LOG` is unset we default to TRACE — the rawest level —
-    // so every curl invocation, full endpoint payload, JSON-parse step, and
-    // retry/backoff decision is emitted without the operator having to opt in.
-    // An explicit `RUST_LOG` still wins (e.g. `RUST_LOG=warn` to quieten, or
-    // `RUST_LOG=hyper=info,huntsman_search_engine=trace` to scope).
-    //
-    // Logs go to STDERR so stdout carries only the requested payload — without
-    // this, log lines interleave into `--output json` (and live/export
-    // streams), producing output downstream parsers cannot consume.
-    //
-    // FORMAT: one JSON object per line (NDJSON) — a single structured format
-    // across the whole system, machine-readable and ingestible by virtually any
-    // LLM or log pipeline without a bespoke parser. Each line carries the
-    // metadata needed for debugging AND cross-correlation: `timestamp`, `level`,
-    // `target` + `line_number` (call site), the event's own fields
-    // flattened to the top level, and the enclosing span chain (`span`/`spans`)
-    // `target` defaults to the emitting module path; the few subsystems that
-    // want a short, stable, greppable tag (engine-health, search, the SERP
-    // parser, per-provider fetch lines) use the `huntsman::<area>` convention —
-    // one prefix, not four, so `grep huntsman::engine_health` and friends work
-    // uniformly. Do not invent new prefixes (`hse::`, `module.`); they scatter
-    // one signal across incompatible tags. The span chain then carries the
-    // `scan_id`/`module` context an event was emitted under, so disparate lines
-    // can be correlated back to one scan/target/module.
-    //
-    // Default filter: HSE's own crate at TRACE (raw logs for every module, curl
-    // call, parse, retry), but the noisy plumbing crates capped at INFO. At TRACE,
-    // the TLS/HTTP stack (hyper/h2/rustls/reqwest) AND the DNS resolver
-    // (hickory_*) emit per-frame/per-byte/per-record IO spam that buries the
-    // project's own logs — a real debug bundle was 96% hickory DNS trace with
-    // 1.5M lines dropped, drowning the ~50 lines that actually explained the scan.
-    // Capping them keeps "the entire project outputs raw logs" meaningful: maximal
-    // verbosity for HSE, signal not framing noise. An explicit `RUST_LOG`
-    // overrides this wholesale.
-    const DEFAULT_RAW_LOG: &str = "trace,\
-        hyper=info,hyper_util=info,h2=info,rustls=info,reqwest=info,\
-        tokio_util=info,tower=info,want=info,mio=info,\
-        hickory_resolver=info,hickory_proto=info,hickory_net=info,trust_dns_proto=info";
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_RAW_LOG));
-    // One JSON event format, two writers behind one EnvFilter: the operator's
-    // stderr console and a tee into the in-memory ring buffer, so the identical
-    // NDJSON stream is downloadable from the Web UI (`GET /api/v1/logs`) /
-    // `hse logs` and is byte-for-byte the same as what scrolled past.
-    // NOTE: the two JSON layers are written out in full rather than built by a
-    // shared closure: each `fmt::layer()` is generic over the subscriber it wraps,
-    // and the two wrap different subscriber types (the second sits atop the
-    // first), so a single closure can't produce both — it would fix that generic
-    // on first use. `flatten_event` puts event fields at the top level;
-    // `with_current_span`/`with_span_list` carry the scan_id/module span context
-    // for cross-correlation.
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(
-            tracing_subscriber::fmt::layer()
-                .json()
-                .flatten_event(true)
-                .with_current_span(true)
-                .with_span_list(true)
-                .with_target(true)
-                .with_line_number(true)
-                .with_writer(std::io::stderr),
-        )
-        .with(
-            tracing_subscriber::fmt::layer()
-                .json()
-                .flatten_event(true)
-                .with_current_span(true)
-                .with_span_list(true)
-                .with_target(true)
-                .with_line_number(true)
-                .with_writer(crate::util::log_capture::RingMakeWriter),
-        )
-        .init();
 }
 
 async fn run_command(command: Command) -> Result<()> {
