@@ -366,10 +366,10 @@ async fn import_extracts_iban_as_financial_finding() {
     assert_eq!(label, "oathnet-txt");
     assert!(
         ents.iter()
-            .any(|e| e.kind == EntityKind::Other("iban".into())
+            .any(|e| e.kind == EntityKind::Iban
                 && e.value == "GB82WEST12345698765432"
                 && e.has_tag("financial")),
-        "a checksum-valid IBAN must become a financial finding"
+        "a checksum-valid IBAN must become a first-class Iban financial finding"
     );
 }
 

@@ -1384,6 +1384,20 @@ fn all_kinds() -> Vec<EntityKind> {
         Ssid,
         TrackingId,
         CryptoAddress,
+        Iban,
+        PayId,
+        BankAccount,
+        CreditCard,
+        SwiftBic,
+        Passport,
+        DriverLicence,
+        TaxId,
+        NationalId,
+        DateOfBirth,
+        VehicleRegistration,
+        Vin,
+        FileHash,
+        Imei,
         Other("x".into()),
     ];
     // Exhaustiveness tripwire: this match names every `EntityKind` variant with no
@@ -1396,7 +1410,10 @@ fn all_kinds() -> Vec<EntityKind> {
         match k {
             Person | Email | Phone | Username | Credential | ApiKey | Password | IpAddress
             | Domain | Url | Asn | Cidr | Address | Coordinates | Organisation | AbnAcn
-            | MacAddress | DeviceId | Ssid | TrackingId | CryptoAddress | Other(_) => {}
+            | MacAddress | DeviceId | Ssid | TrackingId | CryptoAddress | Iban | PayId
+            | BankAccount | CreditCard | SwiftBic | Passport | DriverLicence | TaxId
+            | NationalId | DateOfBirth | VehicleRegistration | Vin | FileHash | Imei
+            | Other(_) => {}
         }
     }
     kinds
@@ -1916,5 +1933,147 @@ mod prop {
             // Monotonic non-decreasing in the source count.
             prop_assert!(c_n1 + 1e-12 >= c_n, "c_eff not monotonic: {} -> {}", c_n, c_n1);
         }
+    }
+}
+
+// ── New seed-entity taxonomy (financial / government-ID / vehicle / cyber) ──────
+//
+// These correlation-node kinds were added so a subject's money rails, identity
+// documents, vehicle and cyber artefacts are first-class typed entities (not
+// untyped `Other`) that the correlator can match as same-owner join keys. The
+// tests below lock the full plumbing so a future edit can't half-wire a kind.
+
+/// Every new kind Display-serialises to its snake_case tag AND round-trips through
+/// serde as that same string — the invariant every existing kind holds (Display ==
+/// serde form). A drift here would desync CSV/GEXF exports from JSON.
+#[test]
+fn new_taxonomy_kinds_display_and_serde_agree() {
+    let cases = [
+        (EntityKind::Iban, "iban"),
+        (EntityKind::PayId, "pay_id"),
+        (EntityKind::BankAccount, "bank_account"),
+        (EntityKind::CreditCard, "credit_card"),
+        (EntityKind::SwiftBic, "swift_bic"),
+        (EntityKind::Passport, "passport"),
+        (EntityKind::DriverLicence, "driver_licence"),
+        (EntityKind::TaxId, "tax_id"),
+        (EntityKind::NationalId, "national_id"),
+        (EntityKind::DateOfBirth, "date_of_birth"),
+        (EntityKind::VehicleRegistration, "vehicle_registration"),
+        (EntityKind::Vin, "vin"),
+        (EntityKind::FileHash, "file_hash"),
+        (EntityKind::Imei, "imei"),
+    ];
+    for (kind, tag) in &cases {
+        assert_eq!(&kind.to_string(), tag, "Display tag for {kind:?}");
+        // serde serialises the unit variant as a bare JSON string.
+        let json = serde_json::to_string(kind).unwrap();
+        assert_eq!(json, format!("\"{tag}\""), "serde form for {kind:?}");
+        // …and round-trips back to the same variant.
+        let back: EntityKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(&back, kind, "serde round-trip for {kind:?}");
+    }
+}
+
+/// The new kinds are correlation nodes, NOT scannable seeds: `from_entity_kind`
+/// must return `None` for every one, so the expansion engine never dispatches a
+/// web search on a passport/account number (privacy) and never wastes a recursion
+/// round on a kind no module consumes.
+#[test]
+fn new_taxonomy_kinds_are_not_scannable_targets() {
+    use crate::core::scan::TargetKind;
+    for kind in [
+        EntityKind::Iban,
+        EntityKind::PayId,
+        EntityKind::BankAccount,
+        EntityKind::CreditCard,
+        EntityKind::SwiftBic,
+        EntityKind::Passport,
+        EntityKind::DriverLicence,
+        EntityKind::TaxId,
+        EntityKind::NationalId,
+        EntityKind::DateOfBirth,
+        EntityKind::VehicleRegistration,
+        EntityKind::Vin,
+        EntityKind::FileHash,
+        EntityKind::Imei,
+    ] {
+        assert!(
+            TargetKind::from_entity_kind(&kind).is_none(),
+            "{kind:?} must be a correlation node, not a scannable seed"
+        );
+    }
+}
+
+/// Government identity documents are Victim (identity facets — who the subject
+/// is); financial / vehicle / cyber artefacts are Infrastructure (linking
+/// artefacts). Locks the Diamond mapping so the attribution view stays coherent.
+#[test]
+fn new_taxonomy_diamond_vertices_are_assigned() {
+    use crate::core::diamond::DiamondVertex;
+    for kind in [
+        EntityKind::Passport,
+        EntityKind::DriverLicence,
+        EntityKind::TaxId,
+        EntityKind::NationalId,
+        EntityKind::DateOfBirth,
+    ] {
+        assert_eq!(
+            kind.diamond_vertex(),
+            DiamondVertex::Victim,
+            "{kind:?} identifies the subject → Victim"
+        );
+    }
+    for kind in [
+        EntityKind::Iban,
+        EntityKind::PayId,
+        EntityKind::BankAccount,
+        EntityKind::CreditCard,
+        EntityKind::SwiftBic,
+        EntityKind::VehicleRegistration,
+        EntityKind::Vin,
+        EntityKind::FileHash,
+        EntityKind::Imei,
+    ] {
+        assert_eq!(
+            kind.diamond_vertex(),
+            DiamondVertex::Infrastructure,
+            "{kind:?} is a linking artefact → Infrastructure"
+        );
+    }
+}
+
+/// Strongly-identifying document / account numbers are sensitive PII (masked in
+/// output like a secret); a DOB — weakly identifying, routinely shown to
+/// disambiguate namesakes — is not.
+#[test]
+fn sensitive_pii_covers_documents_and_accounts_but_not_dob() {
+    for kind in [
+        EntityKind::Passport,
+        EntityKind::DriverLicence,
+        EntityKind::TaxId,
+        EntityKind::NationalId,
+        EntityKind::Iban,
+        EntityKind::PayId,
+        EntityKind::BankAccount,
+        EntityKind::CreditCard,
+        EntityKind::SwiftBic,
+        // existing secrets stay in the set
+        EntityKind::Password,
+        EntityKind::ApiKey,
+        EntityKind::Credential,
+    ] {
+        assert!(kind.is_sensitive_pii(), "{kind:?} must be masked in output");
+    }
+    for kind in [
+        EntityKind::DateOfBirth,
+        EntityKind::Vin,
+        EntityKind::VehicleRegistration,
+        EntityKind::FileHash,
+        EntityKind::Imei,
+        EntityKind::Email,
+        EntityKind::Person,
+    ] {
+        assert!(!kind.is_sensitive_pii(), "{kind:?} must NOT be force-masked");
     }
 }

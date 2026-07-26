@@ -93,13 +93,19 @@ impl EntityKind {
     #[must_use]
     pub fn diamond_vertex(&self) -> DiamondVertex {
         match self {
-            // Identity facets of the subject under characterisation.
+            // Identity facets of the subject under characterisation — including
+            // government identity documents, which name WHO the subject is.
             Self::Person
             | Self::Email
             | Self::Phone
             | Self::Username
             | Self::Organisation
-            | Self::AbnAcn => DiamondVertex::Victim,
+            | Self::AbnAcn
+            | Self::Passport
+            | Self::DriverLicence
+            | Self::TaxId
+            | Self::NationalId
+            | Self::DateOfBirth => DiamondVertex::Victim,
 
             // Leverageable exposed secrets — the exposure surface.
             Self::Credential | Self::ApiKey | Self::Password => DiamondVertex::Capability,
@@ -118,7 +124,19 @@ impl EntityKind {
             | Self::DeviceId
             | Self::Ssid
             | Self::TrackingId
-            | Self::CryptoAddress => DiamondVertex::Infrastructure,
+            | Self::CryptoAddress
+            // Financial rails, vehicle assets, and digital artefacts are all
+            // same-owner linking artefacts that pivot like a wallet/domain — not
+            // secrets and not identity facets.
+            | Self::Iban
+            | Self::PayId
+            | Self::BankAccount
+            | Self::CreditCard
+            | Self::SwiftBic
+            | Self::VehicleRegistration
+            | Self::Vin
+            | Self::FileHash
+            | Self::Imei => DiamondVertex::Infrastructure,
 
             // Catch-all kind: an unclassified artefact in the picture defaults to
             // Infrastructure (the neutral "a node in the graph" role) rather than

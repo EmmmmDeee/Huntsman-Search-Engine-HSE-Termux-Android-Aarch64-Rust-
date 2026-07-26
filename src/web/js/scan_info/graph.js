@@ -41,6 +41,12 @@ export const NODE_COLOR = {
   // Kinds that previously fell back to the undifferentiated '#888' grey (matched
   // to their Browse pill colours so a kind reads the same in both surfaces).
   cidr:'#31708f', crypto_address:'#b8860b', api_key:'#c0392b', ssid:'#2c6e6a', tracking_id:'#5e4b8a',
+  // Financial rails — gold, matched to the crypto wallet node/pill.
+  iban:'#b8860b', pay_id:'#b8860b', bank_account:'#b8860b', credit_card:'#b8860b', swift_bic:'#b8860b',
+  // Government identity documents — sensitive-PII red (matched to their danger pills).
+  passport:'#a94442', driver_licence:'#a94442', tax_id:'#a94442', national_id:'#a94442',
+  // DOB — identity facet, person-green; vehicle assets — info-blue; cyber artefacts — muted.
+  date_of_birth:'#3c763d', vehicle_registration:'#31708f', vin:'#31708f', file_hash:'#666', imei:'#666',
   other:'#888'
 };
 

@@ -11,7 +11,7 @@ pub fn map_entity_kind(kind: &ExtractorEntityKind) -> CoreEntityKind {
         ExtractorEntityKind::Ipv4 | ExtractorEntityKind::Ipv6 => CoreEntityKind::IpAddress,
         ExtractorEntityKind::Domain => CoreEntityKind::Domain,
         ExtractorEntityKind::Url => CoreEntityKind::Url,
-        ExtractorEntityKind::Hash => CoreEntityKind::Other("hash".to_string()),
+        ExtractorEntityKind::Hash => CoreEntityKind::FileHash,
         ExtractorEntityKind::Username => CoreEntityKind::Username,
         ExtractorEntityKind::Person => CoreEntityKind::Person,
         ExtractorEntityKind::Organization => CoreEntityKind::Organisation,

@@ -187,6 +187,24 @@ fn entity_cascade(kind: &EntityKind) -> f64 {
         EntityKind::TrackingId | EntityKind::CryptoAddress => 0.30,
         // Terminal GEOINT — the pipeline's convergence point, no new query surface.
         EntityKind::Address | EntityKind::Coordinates => 0.20,
+        // Terminal correlation nodes: financial rails, government identity
+        // documents, vehicle and cyber artefacts. Each is a same-owner join key
+        // that corroborates the graph but (having no consuming module) opens no
+        // new query surface — so, like GEOINT, it carries minimal cascade.
+        EntityKind::Iban
+        | EntityKind::PayId
+        | EntityKind::BankAccount
+        | EntityKind::CreditCard
+        | EntityKind::SwiftBic
+        | EntityKind::Passport
+        | EntityKind::DriverLicence
+        | EntityKind::TaxId
+        | EntityKind::NationalId
+        | EntityKind::DateOfBirth
+        | EntityKind::VehicleRegistration
+        | EntityKind::Vin
+        | EntityKind::FileHash
+        | EntityKind::Imei => 0.20,
         // Undeclared/other → conservative.
         EntityKind::Other(_) => 0.20,
     }

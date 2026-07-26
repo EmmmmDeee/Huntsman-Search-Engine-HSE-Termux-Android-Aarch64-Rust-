@@ -97,7 +97,29 @@ impl TargetKind {
             EntityKind::DeviceId => Some(Self::DeviceId),
             EntityKind::Ssid => Some(Self::Ssid),
             EntityKind::TrackingId => Some(Self::TrackingId),
-            EntityKind::Credential | EntityKind::Password | EntityKind::Other(_) => None,
+            // Non-scannable correlation nodes: secrets, and the financial / PII /
+            // vehicle / cyber artefacts that name or link the subject but have no
+            // safe public search target (searching a person's document/account
+            // number is unsafe and unsupported). They enrich and correlate the
+            // graph; none is dispatched as a scan seed. Promote one to a scannable
+            // TargetKind only when an enrichment module that consumes it is added.
+            EntityKind::Credential
+            | EntityKind::Password
+            | EntityKind::Iban
+            | EntityKind::PayId
+            | EntityKind::BankAccount
+            | EntityKind::CreditCard
+            | EntityKind::SwiftBic
+            | EntityKind::Passport
+            | EntityKind::DriverLicence
+            | EntityKind::TaxId
+            | EntityKind::NationalId
+            | EntityKind::DateOfBirth
+            | EntityKind::VehicleRegistration
+            | EntityKind::Vin
+            | EntityKind::FileHash
+            | EntityKind::Imei
+            | EntityKind::Other(_) => None,
         }
     }
 

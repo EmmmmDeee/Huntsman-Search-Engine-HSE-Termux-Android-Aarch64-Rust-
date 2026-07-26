@@ -642,6 +642,25 @@ input[type=checkbox],input[type=radio]{ accent-color:var(--accent); width:14px; 
 .k-tracking_id{background:var(--critical-dim);color:var(--critical)}
 .k-api_key{background:var(--danger-dim);color:var(--danger)}
 .k-crypto_address{background:var(--warning-dim);color:var(--warning)}
+/* Financial rails — money/gold theme, matching the crypto wallet pill. */
+.k-iban{background:var(--warning-dim);color:var(--warning)}
+.k-pay_id{background:var(--warning-dim);color:var(--warning)}
+.k-bank_account{background:var(--warning-dim);color:var(--warning)}
+.k-credit_card{background:var(--warning-dim);color:var(--warning)}
+.k-swift_bic{background:var(--warning-dim);color:var(--warning)}
+/* Government identity documents — sensitive PII, danger theme (mask-worthy). */
+.k-passport{background:var(--danger-dim);color:var(--danger)}
+.k-driver_licence{background:var(--danger-dim);color:var(--danger)}
+.k-tax_id{background:var(--danger-dim);color:var(--danger)}
+.k-national_id{background:var(--danger-dim);color:var(--danger)}
+/* DOB — an identity facet routinely shown, not force-masked: person/green. */
+.k-date_of_birth{background:var(--success-dim);color:var(--success)}
+/* Vehicle assets — neutral info theme. */
+.k-vehicle_registration{background:var(--info-dim);color:var(--info)}
+.k-vin{background:var(--info-dim);color:var(--info)}
+/* Cyber artefacts (file hash, device IMEI) — muted, like mac/device. */
+.k-file_hash{background:var(--bg-hover);color:var(--text-muted)}
+.k-imei{background:var(--bg-hover);color:var(--text-muted)}
 
 .status-pill{ font-size:10px; padding:2px 9px; border-radius:var(--radius-pill); font-weight:600; }
 .s-complete{background:var(--success-dim);color:var(--success)}

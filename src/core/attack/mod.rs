@@ -4421,6 +4421,24 @@ pub fn techniques_for_entity_kind(kind: &EntityKind) -> &'static [&'static str] 
         // Cryptocurrency
         EntityKind::CryptoAddress => &["T1589"], // Gather Victim Identity Information
 
+        // Financial identifiers, government identity documents, and vehicle
+        // registrations are all victim identity information.
+        EntityKind::Iban
+        | EntityKind::PayId
+        | EntityKind::BankAccount
+        | EntityKind::CreditCard
+        | EntityKind::SwiftBic
+        | EntityKind::Passport
+        | EntityKind::DriverLicence
+        | EntityKind::TaxId
+        | EntityKind::NationalId
+        | EntityKind::DateOfBirth
+        | EntityKind::VehicleRegistration
+        | EntityKind::Vin => &["T1589"], // Gather Victim Identity Information
+
+        // File hashes and device hardware ids are victim host information.
+        EntityKind::FileHash | EntityKind::Imei => &["T1592"], // Gather Victim Host Information
+
         // Uncategorised or no direct mapping
         EntityKind::Other(_) => &[],
     }

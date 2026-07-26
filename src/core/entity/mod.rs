@@ -186,6 +186,62 @@ pub enum EntityKind {
     // key, and the pivot point for free chain-explorer enrichment.
     CryptoAddress,
 
+    // ── Financial identifiers (correlation nodes, not web-scannable seeds) ──
+    // These name a subject's money rails. Each is a strong same-owner join key
+    // across breach/leak corpora; none is dispatched to a web search (privacy +
+    // no safe public source), so like Credential/Password they map to no
+    // TargetKind. Promote one to a scannable seed only when an enrichment module
+    // (sanctions/registry/chain lookup) that consumes it is added.
+    /// International Bank Account Number (ISO 13616). Already mined from stealer
+    /// logs (`push_ibans`); now a typed entity so it correlates as a same-owner
+    /// financial join key instead of an untyped `Other`.
+    Iban,
+    /// Australian PayID — a real-time-payments alias (email/phone/ABN) bound to a
+    /// bank account. A high-value AU people-centric link between an identifier and
+    /// a settlement account.
+    PayId,
+    /// A bank account number, optionally with its routing prefix (AU BSB, US
+    /// routing). Correlation node only.
+    BankAccount,
+    /// A payment card number (PAN). Breach/stealer artifact; Luhn-valid, never
+    /// serialised in cleartext output (masked like a secret).
+    CreditCard,
+    /// A bank SWIFT/BIC code — identifies the institution behind an account.
+    SwiftBic,
+
+    // ── Government / identity documents (people-centric PII, not scannable) ──
+    // Strong identity-resolution keys lifted from breach/leak/dossier data. NEVER
+    // dispatched to a web search (searching a person's document number is both
+    // unsafe and unsupported); they exist to CORROBORATE that two records name the
+    // same individual, and are masked in output like other sensitive PII.
+    /// A passport number.
+    Passport,
+    /// A driver's licence number.
+    DriverLicence,
+    /// A tax identification number — Australian TFN, US TIN/EIN, etc.
+    TaxId,
+    /// A national identity number — SSN, Medicare, national ID card, etc.
+    NationalId,
+    /// A date of birth. A strong identity-disambiguation key (two same-name
+    /// records sharing a DOB are almost certainly one person).
+    DateOfBirth,
+
+    // ── Vehicle / physical assets ──
+    /// A vehicle registration / licence plate ("rego"). Ties a subject to a
+    /// vehicle; a correlation node (a future rego-lookup module could scan it).
+    VehicleRegistration,
+    /// A Vehicle Identification Number (ISO 3779, 17 chars). Decodable via free
+    /// VIN services in future; a correlation node today.
+    Vin,
+
+    // ── Digital / cyber artifacts ──
+    /// A file/document content hash (MD5 / SHA-1 / SHA-256). Ties a subject to a
+    /// specific artifact (malware sample, leaked document) across corpora.
+    FileHash,
+    /// A mobile device hardware identifier (IMEI). Distinct from the generic
+    /// DeviceId (which also covers cell-tower ids); a same-device join key.
+    Imei,
+
     // Catch-all
     Other(String),
 }
@@ -214,8 +270,55 @@ impl fmt::Display for EntityKind {
             Self::Ssid => f.write_str("ssid"),
             Self::TrackingId => f.write_str("tracking_id"),
             Self::CryptoAddress => f.write_str("crypto_address"),
+            Self::Iban => f.write_str("iban"),
+            Self::PayId => f.write_str("pay_id"),
+            Self::BankAccount => f.write_str("bank_account"),
+            Self::CreditCard => f.write_str("credit_card"),
+            Self::SwiftBic => f.write_str("swift_bic"),
+            Self::Passport => f.write_str("passport"),
+            Self::DriverLicence => f.write_str("driver_licence"),
+            Self::TaxId => f.write_str("tax_id"),
+            Self::NationalId => f.write_str("national_id"),
+            Self::DateOfBirth => f.write_str("date_of_birth"),
+            Self::VehicleRegistration => f.write_str("vehicle_registration"),
+            Self::Vin => f.write_str("vin"),
+            Self::FileHash => f.write_str("file_hash"),
+            Self::Imei => f.write_str("imei"),
             Self::Other(s) => write!(f, "other:{s}"),
         }
+    }
+}
+
+impl EntityKind {
+    /// True if a value of this kind is **sensitive PII** whose raw form must be
+    /// masked in operator-facing output (and never written to shared exports),
+    /// the same discipline `Password` already follows. Covers the authentication
+    /// secrets (Credential/ApiKey/Password) plus the government identity documents
+    /// and financial-account numbers this taxonomy adds — a passport, tax, or card
+    /// number is exactly the kind of value that identifies (or defrauds) a real
+    /// person if it leaks out of the console, so it is treated as a secret for
+    /// display purposes even though it is a correlation node, not an auth token.
+    ///
+    /// A DateOfBirth is deliberately NOT masked here — it is weakly identifying on
+    /// its own and is routinely shown in dossiers to disambiguate namesakes; the
+    /// masked set is the strongly-identifying document/account numbers.
+    #[must_use]
+    pub fn is_sensitive_pii(&self) -> bool {
+        matches!(
+            self,
+            Self::Credential
+                | Self::ApiKey
+                | Self::Password
+                | Self::Iban
+                | Self::PayId
+                | Self::BankAccount
+                | Self::CreditCard
+                | Self::SwiftBic
+                | Self::Passport
+                | Self::DriverLicence
+                | Self::TaxId
+                | Self::NationalId
+        )
     }
 }
 

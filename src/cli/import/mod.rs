@@ -651,7 +651,10 @@ fn push_ibans(
     use crate::core::entity::{Entity, EntityKind, Evidence};
     let mut n = 0;
     for iban in crate::util::extract::ibans(text) {
-        let mut e = Entity::new(EntityKind::Other("iban".into()), &iban, 0.62, sid);
+        // First-class `Iban` (was `Other("iban")`): a typed financial join key so
+        // the correlator can match a subject's account across corpora instead of
+        // treating it as an opaque untyped artefact.
+        let mut e = Entity::new(EntityKind::Iban, &iban, 0.62, sid);
         e.tag("import");
         e.tag(source_tag);
         e.tag("iban");
