@@ -179,14 +179,7 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
     let pool = key_pool::global_pool();
 
     match action {
-        KeysAction::Set { name, value } => {
-            use std::collections::BTreeMap;
-            let mut updates = BTreeMap::new();
-            updates.insert(name.clone(), value);
-            crate::util::keys::write_keys(&updates, &[])
-                .map_err(|e| Error::Other(e.to_string()))?;
-            println!("✓ {name} set in {}", crate::util::keys::env_path());
-        }
+        KeysAction::Set { name, value } => cmd_set_key(name, value)?,
         KeysAction::Add {
             service,
             key,
@@ -207,6 +200,7 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
                     names.join(", ")
                 )));
             }
+
             let mut entry = KeyEntry::new(&key);
             entry.notes = notes;
             entry.environment = env;
@@ -655,6 +649,16 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+pub(super) fn cmd_set_key(name: String, value: String) -> Result<()> {
+    use std::collections::BTreeMap;
+
+    let mut updates = BTreeMap::new();
+    updates.insert(name.clone(), value);
+    crate::util::keys::write_keys(&updates, &[]).map_err(|e| Error::Other(e.to_string()))?;
+    println!("✓ {name} set in {}", crate::util::keys::env_path());
     Ok(())
 }
 

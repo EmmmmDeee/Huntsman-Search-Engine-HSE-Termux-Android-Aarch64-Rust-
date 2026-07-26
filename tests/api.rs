@@ -3,183 +3,20 @@
 
 mod common;
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use async_trait::async_trait;
 use axum::body::Body;
 use http::Request;
 use serde_json::Value;
 use tower::ServiceExt;
 
 use huntsman_search_engine::{
-    api::{AppState, routes::router},
     core::{
-        engine::ScanEngine,
         entity::{Entity, EntityKind},
-        error::Result,
-        live::LiveScanner,
-        module::{Module, ModuleContext, ModuleResult},
         relation::{Relation, RelationKind},
         scan::{Scan, Target, TargetKind},
     },
-    storage::Store,
 };
 
-// ── Synthetic module (mirrors tests/smoke.rs) ─────────────────────────────
-
-/// Echoes the seed back as an entity of the same kind.
-struct SyntheticModule;
-
-#[async_trait]
-impl Module for SyntheticModule {
-    fn name(&self) -> &'static str {
-        "synthetic"
-    }
-    fn priority(&self) -> u8 {
-        100
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Email)
-    }
-    fn description(&self) -> &'static str {
-        "test-only echo module"
-    }
-    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut r = ModuleResult::new();
-        let mut e = Entity::new(EntityKind::Email, &target.value, 0.95, &ctx.scan_id);
-        e.tag("synthetic");
-        r.push(e);
-        Ok(r)
-    }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────
-
-/// Return a fresh temp-db path, removing any leftover files from prior runs.
-fn tmp_db(suffix: &str) -> String {
-    common::tmp_db("api", suffix)
-}
-
-/// Build a complete axum `Router` backed by a fresh SQLite store.
-/// Each test gets its own database via the `suffix` parameter.
-fn test_app(suffix: &str) -> axum::Router {
-    let path = tmp_db(suffix);
-    let store = Arc::new(Store::open(&path).unwrap());
-    let (bus, _rx) = tokio::sync::broadcast::channel(256);
-    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
-    let engine = Arc::new(ScanEngine::new(
-        modules,
-        Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
-        bus.clone(),
-    ));
-    let live = LiveScanner::new(
-        Arc::clone(&engine),
-        bus.clone(),
-        reqwest::Client::new(),
-        Default::default(),
-    );
-    let state = Arc::new(AppState {
-        store,
-        engine,
-        bus,
-        live,
-        http: reqwest::Client::new(),
-        allow_key_write: false,
-        cancellations: Arc::new(parking_lot::Mutex::new(HashMap::new())),
-        scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
-            huntsman_search_engine::api::MAX_CONCURRENT_SCANS,
-        )),
-        update_info: Arc::new(std::sync::Mutex::new(
-            huntsman_search_engine::api::UpdateInfo::default(),
-        )),
-        cells_import: Arc::new(std::sync::Mutex::new(
-            huntsman_search_engine::api::CellsImportPhase::default(),
-        )),
-    });
-    router(state, "127.0.0.1:8080")
-}
-
-/// Like [`test_app`] but also hands back the shared store so a test can seed
-/// entities directly (synchronous, FTS-indexed in the same transaction as the
-/// write) without depending on an async scan completing.
-fn test_app_with_store(suffix: &str) -> (axum::Router, Arc<Store>) {
-    let path = tmp_db(suffix);
-    let store = Arc::new(Store::open(&path).unwrap());
-    let (bus, _rx) = tokio::sync::broadcast::channel(256);
-    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
-    let engine = Arc::new(ScanEngine::new(
-        modules,
-        Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
-        bus.clone(),
-    ));
-    let live = LiveScanner::new(
-        Arc::clone(&engine),
-        bus.clone(),
-        reqwest::Client::new(),
-        Default::default(),
-    );
-    let state = Arc::new(AppState {
-        store: Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
-        engine,
-        bus,
-        live,
-        http: reqwest::Client::new(),
-        allow_key_write: false,
-        cancellations: Arc::new(parking_lot::Mutex::new(HashMap::new())),
-        scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
-            huntsman_search_engine::api::MAX_CONCURRENT_SCANS,
-        )),
-        update_info: Arc::new(std::sync::Mutex::new(
-            huntsman_search_engine::api::UpdateInfo::default(),
-        )),
-        cells_import: Arc::new(std::sync::Mutex::new(
-            huntsman_search_engine::api::CellsImportPhase::default(),
-        )),
-    });
-    (router(state, "127.0.0.1:8080"), store)
-}
-
-/// Like [`test_app`] but also hands back the shared `Arc<AppState>` so a test
-/// can manipulate state the HTTP surface doesn't expose directly (e.g.
-/// seeding `cancellations` to simulate an in-flight scan deterministically,
-/// without racing a real spawned scan's completion).
-fn test_app_with_state(suffix: &str) -> (axum::Router, Arc<AppState>) {
-    let path = tmp_db(suffix);
-    let store = Arc::new(Store::open(&path).unwrap());
-    let (bus, _rx) = tokio::sync::broadcast::channel(256);
-    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(SyntheticModule)];
-    let engine = Arc::new(ScanEngine::new(
-        modules,
-        Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
-        bus.clone(),
-    ));
-    let live = LiveScanner::new(
-        Arc::clone(&engine),
-        bus.clone(),
-        reqwest::Client::new(),
-        Default::default(),
-    );
-    let state = Arc::new(AppState {
-        store: Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
-        engine,
-        bus,
-        live,
-        http: reqwest::Client::new(),
-        allow_key_write: false,
-        cancellations: Arc::new(parking_lot::Mutex::new(HashMap::new())),
-        scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
-            huntsman_search_engine::api::MAX_CONCURRENT_SCANS,
-        )),
-        update_info: Arc::new(std::sync::Mutex::new(
-            huntsman_search_engine::api::UpdateInfo::default(),
-        )),
-        cells_import: Arc::new(std::sync::Mutex::new(
-            huntsman_search_engine::api::CellsImportPhase::default(),
-        )),
-    });
-    (router(Arc::clone(&state), "127.0.0.1:8080"), state)
-}
+use common::{test_app, test_app_with_state, test_app_with_store};
 
 /// Parse a response body into a `serde_json::Value`.
 async fn body_json(resp: axum::response::Response) -> Value {
