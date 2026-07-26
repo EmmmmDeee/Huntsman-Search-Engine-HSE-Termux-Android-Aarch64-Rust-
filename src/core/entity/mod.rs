@@ -13,9 +13,9 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, hash_map::DefaultHasher};
+use std::collections::{BTreeMap, HashMap, hash_map::RandomState};
 use std::fmt;
-use std::hash::{Hash, Hasher};
+use std::hash::BuildHasher;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -975,16 +975,23 @@ impl Entity {
             // and summary. Each bucket retains all matching indices and the lookup
             // verifies the original strings, so hash collisions cannot merge
             // unrelated evidence.
-            let mut index: HashMap<u64, Vec<usize>> = HashMap::with_capacity(self.evidence.len());
+            let identity_hasher = RandomState::new();
+            let mut index: HashMap<u64, Vec<usize>> =
+                HashMap::with_capacity(self.evidence.len().saturating_add(other.evidence.len()));
             for (i, evidence) in self.evidence.iter().enumerate() {
                 index
-                    .entry(evidence_identity_hash(&evidence.source, &evidence.summary))
+                    .entry(evidence_identity_hash(
+                        &identity_hasher,
+                        &evidence.source,
+                        &evidence.summary,
+                    ))
                     .or_default()
                     .push(i);
             }
             self.evidence.reserve(other.evidence.len());
             for ev in other.evidence {
-                let identity_hash = evidence_identity_hash(&ev.source, &ev.summary);
+                let identity_hash =
+                    evidence_identity_hash(&identity_hasher, &ev.source, &ev.summary);
                 let existing_index = index.get(&identity_hash).and_then(|indices| {
                     indices.iter().copied().find(|&i| {
                         self.evidence[i].source == ev.source
@@ -1028,12 +1035,10 @@ impl Entity {
 
 /// Compact fingerprint for an evidence `(source, summary)` identity.
 ///
-/// Callers must resolve collisions by comparing both original strings.
-fn evidence_identity_hash(source: &str, summary: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    source.hash(&mut hasher);
-    summary.hash(&mut hasher);
-    hasher.finish()
+/// The per-merge randomized state resists adversarial collision batches. Callers
+/// must still resolve every collision by comparing both original strings.
+fn evidence_identity_hash(state: &RandomState, source: &str, summary: &str) -> u64 {
+    state.hash_one((source, summary))
 }
 
 /// Merge `incoming`'s attributes into `existing` — they are the same evidence

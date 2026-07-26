@@ -1797,8 +1797,13 @@ fn absorb_dedups_identically_on_both_branches() {
         1,
         "the shared (source,summary) row must be folded to one on the indexed branch"
     );
+    let shared = big_a
+        .evidence
+        .iter()
+        .find(|e| e.source == "shared" && e.summary == "s")
+        .expect("shared evidence must remain present");
     assert_eq!(
-        big_a.evidence[0].attributes.get("new").map(String::as_str),
+        shared.attributes.get("new").map(String::as_str),
         Some("value"),
         "duplicates within the incoming batch must merge their attributes"
     );
