@@ -67,7 +67,7 @@ fn truncation_note(shown: usize, total: usize) -> Option<String> {
 /// near-identical closure, differing only in truncation width and whether the
 /// kind was appended — five chances for one uid to render five ways, and five
 /// allocations over the same slice. The unresolvable-uid fallback is delegated
-/// to [`crate::cli::relation_endpoint_label`], whose whole purpose is to be the
+/// to [`crate::app::export::relation_endpoint_label`], whose whole purpose is to be the
 /// single place that stub is spelled; four of those closures had quietly grown
 /// their own copy of it.
 struct Labeller<'a> {
