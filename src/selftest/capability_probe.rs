@@ -1,4 +1,4 @@
-//! Proactive capability self-audit — probe keyless modules against their real
+//! Proactive capability self-audit: probe keyless modules against their real
 //! providers and classify each as alive / drifted / unreachable.
 //!
 //! ## Why this exists

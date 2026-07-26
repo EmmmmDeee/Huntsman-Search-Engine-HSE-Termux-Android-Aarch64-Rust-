@@ -80,6 +80,26 @@ fn modules_do_not_import_engine_or_storage() {
 }
 
 #[test]
+fn util_does_not_import_upper_layers() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/util");
+    let v = scan_for_violations(
+        &dir,
+        &[
+            "crate::api",
+            "crate::cli",
+            "crate::modules",
+            "crate::selftest",
+            "crate::storage",
+        ],
+    );
+    assert!(
+        v.is_empty(),
+        "util/ must not import upper application layers.\nViolations:\n{}",
+        v.join("\n")
+    );
+}
+
+#[test]
 fn core_does_not_import_util_directly() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core");
     let v = scan_for_violations(&dir, &["crate::util"]);

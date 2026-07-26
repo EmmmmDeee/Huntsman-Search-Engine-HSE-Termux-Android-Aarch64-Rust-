@@ -12,6 +12,8 @@
 //! phone, in CI, or against a live server without touching the network or the
 //! operator's data.
 
+pub mod capability_probe;
+
 use std::sync::Arc;
 use std::time::Instant;
 

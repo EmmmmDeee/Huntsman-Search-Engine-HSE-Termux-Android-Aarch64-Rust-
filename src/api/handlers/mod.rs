@@ -405,9 +405,9 @@ pub async fn scraper_health(State(s): State<Arc<AppState>>) -> impl IntoResponse
 /// touching the network (the handler just runs the real fleet probe and hands
 /// its reports here).
 pub(crate) fn capability_probe_json(
-    reports: &[crate::util::capability_probe::ProbeReport],
+    reports: &[crate::selftest::capability_probe::ProbeReport],
 ) -> Value {
-    use crate::util::capability_probe::{ProbeOutcome, is_canary};
+    use crate::selftest::capability_probe::{ProbeOutcome, is_canary};
 
     let (mut alive, mut empty, mut unreachable, mut timed_out) = (0usize, 0usize, 0usize, 0usize);
     let modules: Vec<Value> = reports
@@ -464,7 +464,7 @@ pub(crate) fn capability_probe_json(
 /// alive / empty / unreachable / timed-out per module, flagging confirmed drift
 /// (a curated canary that reached its provider yet parsed nothing). This is the
 /// on-demand, network-bound HTTP twin of `hse doctor --live`, sharing the exact
-/// probe implementation ([`crate::util::capability_probe`]) so the Web UI, the
+/// probe implementation ([`crate::selftest::capability_probe`]) so the Web UI, the
 /// CLI, and the weekly CI drift sweep can never diverge.
 ///
 /// Distinct from the two passive health endpoints: `/modules/health` (this
@@ -474,12 +474,12 @@ pub(crate) fn capability_probe_json(
 /// page's "Run live capability probe" panel. Bounded concurrency keeps a
 /// full-fleet sweep from opening a socket storm on a low-power Termux device.
 pub async fn capabilities_probe() -> Json<Value> {
-    let reports = crate::util::capability_probe::probe_keyless_fleet(8).await;
+    let reports = crate::selftest::capability_probe::probe_keyless_fleet(8).await;
     // Persist any confirmed drift so it survives past this one response — the
     // CLI's offline `hse doctor` can then surface it (see
     // `capability_probe::recent_confirmed_drift`) without the operator having
     // to re-run the live probe.
-    crate::util::capability_probe::record_confirmed_drift(&reports);
+    crate::selftest::capability_probe::record_confirmed_drift(&reports);
     Json(capability_probe_json(&reports))
 }
 

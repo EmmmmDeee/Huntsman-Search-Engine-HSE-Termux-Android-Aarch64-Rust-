@@ -86,7 +86,7 @@ use crate::api::scan_export::csv_escape;
     fn capability_probe_json_tallies_outcomes_and_flags_canary_drift() {
         use super::capability_probe_json;
         use crate::core::scan::TargetKind;
-        use crate::util::capability_probe::{ProbeOutcome, ProbeReport};
+        use crate::selftest::capability_probe::{ProbeOutcome, ProbeReport};
         // ip_geo is a curated canary → an empty parse is confirmed drift.
         // A non-canary empty is NOT drift. Alive/unreachable round out the tally.
         let reports = vec![
