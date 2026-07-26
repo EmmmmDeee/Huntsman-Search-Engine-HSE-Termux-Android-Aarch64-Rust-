@@ -8,12 +8,10 @@ use http::Request;
 use serde_json::Value;
 use tower::ServiceExt;
 
-use huntsman_search_engine::{
-    core::{
-        entity::{Entity, EntityKind},
-        relation::{Relation, RelationKind},
-        scan::{Scan, Target, TargetKind},
-    },
+use huntsman_search_engine::core::{
+    entity::{Entity, EntityKind},
+    relation::{Relation, RelationKind},
+    scan::{Scan, Target, TargetKind},
 };
 
 use common::{test_app, test_app_with_state, test_app_with_store};
