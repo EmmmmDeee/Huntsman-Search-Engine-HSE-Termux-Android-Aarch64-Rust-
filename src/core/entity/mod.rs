@@ -976,7 +976,7 @@ impl Entity {
             // and summary. Each bucket retains all matching indices and the lookup
             // verifies the original strings, so hash collisions cannot merge
             // unrelated evidence.
-            let identity_hasher = RandomState::new();
+            let identity_hash_builder = RandomState::new();
             // Existing rows establish the minimum useful capacity. Incoming rows
             // grow the map only when they introduce unique identities, avoiding
             // an upper-bound allocation when a batch is mostly duplicates.
@@ -985,7 +985,7 @@ impl Entity {
             for (i, evidence) in self.evidence.iter().enumerate() {
                 index
                     .entry(evidence_identity_hash(
-                        &identity_hasher,
+                        &identity_hash_builder,
                         &evidence.source,
                         &evidence.summary,
                     ))
@@ -995,7 +995,7 @@ impl Entity {
             self.evidence.reserve(other.evidence.len());
             for ev in other.evidence {
                 let identity_hash =
-                    evidence_identity_hash(&identity_hasher, &ev.source, &ev.summary);
+                    evidence_identity_hash(&identity_hash_builder, &ev.source, &ev.summary);
                 // A randomized 64-bit fingerprint makes multi-entry buckets
                 // exceptional; the exact comparison is the collision-safe path.
                 let existing_index = index.get(&identity_hash).and_then(|bucket| {
