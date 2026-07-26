@@ -13,8 +13,9 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, hash_map::DefaultHasher};
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -970,23 +971,33 @@ impl Entity {
                 }
             }
         } else {
-            // Owned keys: a borrowed `&str` map would alias `self.evidence`, which
-            // we mutate. Seed it with the existing rows; a later incoming row
-            // duplicating an existing record OR an earlier incoming one merges
-            // into it (so duplicates within `other` are folded too).
-            let mut index: std::collections::HashMap<(String, String), usize> = self
-                .evidence
-                .iter()
-                .enumerate()
-                .map(|(i, e)| ((e.source.clone(), e.summary.clone()), i))
-                .collect();
+            // Index compact identity fingerprints instead of cloning every source
+            // and summary. Each bucket retains all matching indices and the lookup
+            // verifies the original strings, so hash collisions cannot merge
+            // unrelated evidence.
+            let mut index: HashMap<u64, Vec<usize>> = HashMap::new();
+            for (i, evidence) in self.evidence.iter().enumerate() {
+                index
+                    .entry(evidence_identity_hash(&evidence.source, &evidence.summary))
+                    .or_default()
+                    .push(i);
+            }
             self.evidence.reserve(other.evidence.len());
             for ev in other.evidence {
-                let key = (ev.source.clone(), ev.summary.clone());
-                match index.get(&key) {
-                    Some(&i) => merge_evidence_attrs(&mut self.evidence[i], ev),
+                let identity_hash = evidence_identity_hash(&ev.source, &ev.summary);
+                let existing_index = index.get(&identity_hash).and_then(|indices| {
+                    indices.iter().copied().find(|&i| {
+                        self.evidence[i].source == ev.source
+                            && self.evidence[i].summary == ev.summary
+                    })
+                });
+                match existing_index {
+                    Some(i) => merge_evidence_attrs(&mut self.evidence[i], ev),
                     None => {
-                        index.insert(key, self.evidence.len());
+                        index
+                            .entry(identity_hash)
+                            .or_default()
+                            .push(self.evidence.len());
                         self.evidence.push(ev);
                     }
                 }
@@ -1013,6 +1024,13 @@ impl Entity {
             self.tags.retain(|t| t != crate::core::tags::CANDIDATE);
         }
     }
+}
+
+fn evidence_identity_hash(source: &str, summary: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    source.hash(&mut hasher);
+    summary.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Merge `incoming`'s attributes into `existing` — they are the same evidence

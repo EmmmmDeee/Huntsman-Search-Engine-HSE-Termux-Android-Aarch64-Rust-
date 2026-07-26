@@ -1781,9 +1781,11 @@ fn absorb_dedups_identically_on_both_branches() {
     // 1 shared + 2 a-rows + 2 b-rows = 5.
     assert_eq!(small_a.evidence.len(), 5);
 
-    // Large inputs → HashSet branch (1+16)*(1+16) = 289 > 256.
+    // Large inputs → fingerprint-index branch (1+16)*(1+16) = 289 > 256.
     let mut big_a = build(16, "a");
-    big_a.absorb(build(16, "b"));
+    let mut big_b = build(16, "b");
+    big_b.add_evidence(Evidence::new("shared", "s").with_attr("new", "value"));
+    big_a.absorb(big_b);
     // 1 shared + 16 a-rows + 16 b-rows = 33; the shared row folded once.
     assert_eq!(big_a.evidence.len(), 33);
     assert_eq!(
@@ -1793,7 +1795,12 @@ fn absorb_dedups_identically_on_both_branches() {
             .filter(|e| e.source == "shared")
             .count(),
         1,
-        "the shared (source,summary) row must be folded to one on the HashSet branch"
+        "the shared (source,summary) row must be folded to one on the indexed branch"
+    );
+    assert_eq!(
+        big_a.evidence[0].attributes.get("new").map(String::as_str),
+        Some("value"),
+        "duplicates within the incoming batch must merge their attributes"
     );
 }
 
