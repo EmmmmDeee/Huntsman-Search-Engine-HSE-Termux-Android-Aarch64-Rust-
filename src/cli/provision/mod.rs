@@ -17,7 +17,6 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use crate::core::{
     entity::unix_now,
@@ -26,7 +25,6 @@ use crate::core::{
     module::ModuleContext,
     scan::{Scan, ScanOptions, Target, TargetKind},
 };
-use crate::storage::Store;
 use crate::util::{http::build_client, keys, uid::scan_id};
 
 /// Canonical env-file template, embedded at compile time. Edit
@@ -396,14 +394,8 @@ struct SmokeResult {
 /// Run one scan synchronously and harvest the diagnostic metrics we
 /// care about (entity count, correlation count, missing-key errors).
 async fn run_smoke(target: Target, options: ScanOptions) -> Result<SmokeResult> {
-    let store: Arc<dyn crate::core::port::StoragePort> =
-        Arc::new(Store::open(&crate::default_db_path())?);
-    let (bus, _rx) = tokio::sync::broadcast::channel(256);
-    let engine = Arc::new(crate::core::engine::ScanEngine::new(
-        crate::modules::registry(),
-        Arc::clone(&store),
-        bus.clone(),
-    ));
+    let crate::app::runtime::ApplicationRuntime { store, bus, engine } =
+        crate::app::runtime::build_runtime(256)?;
 
     let sid = scan_id(target.kind.canonical_str(), &target.value);
     let scan = Scan::new(sid.clone(), target.clone()).with_options(options);

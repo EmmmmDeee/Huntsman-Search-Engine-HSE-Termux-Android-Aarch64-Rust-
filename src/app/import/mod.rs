@@ -33,7 +33,7 @@ use oathnet_report::{cmd_import_oathnet_report, looks_like_oathnet_report, parse
 use stealer::{cmd_import_stealerlogs, looks_like_stealerlogs, parse_stealerlogs};
 use txt::{cmd_import_txt, parse_oathnet_txt};
 
-pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
+pub async fn cmd_import(path: &str, output: &str) -> Result<()> {
     // File-size cap before read_to_string — mirrors MAX_UPLOAD_BYTES in the API
     // upload handler (16 MB) so both paths enforce the same memory bound.
     const MAX_IMPORT_BYTES: u64 = 16 * 1024 * 1024;

@@ -7,7 +7,7 @@
 //! real scan comes back empty, so this sweep surfaces it up front.
 //!
 //! The whole fleet is swept through one shared implementation,
-//! [`huntsman_search_engine::util::capability_probe`], the same code that backs
+//! [`huntsman_search_engine::selftest::capability_probe`], the same code that backs
 //! `hse doctor --live`. Each keyless, network module is probed against a
 //! canonical stable target and its outcome classified:
 //!   * **alive**       — provider reached, parser produced ≥1 entity (healthy).
@@ -32,7 +32,7 @@
 //! cargo test --test live_drift -- --ignored --nocapture
 //! ```
 
-use huntsman_search_engine::util::capability_probe::{self, ProbeOutcome};
+use huntsman_search_engine::selftest::capability_probe::{self, ProbeOutcome};
 
 /// Sweep the whole keyless module fleet against live providers. Fails only on a
 /// **confirmed** drift (a canary that reached its provider yet parsed nothing);

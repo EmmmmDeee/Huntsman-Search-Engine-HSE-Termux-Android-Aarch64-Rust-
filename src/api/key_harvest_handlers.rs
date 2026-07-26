@@ -295,10 +295,16 @@ mod tests {
         assert!(a["seeknow"]["invalid"].is_boolean());
         assert!(a["oathnet"]["quota_exhausted"].is_boolean());
         assert!(a["oathnet"].get("scan_cap").is_some());
-        // `real_quota` is `null` until a real OathNet search succeeds this
-        // process (none has, in this unit test) — the key present-with-null
-        // is the well-formed "not observed yet" state, not an omission.
-        assert!(a["oathnet"]["real_quota"].is_null());
+        // Other tests may have populated the process-global observation already,
+        // so accept either valid state without depending on test execution order.
+        let real_quota = &a["oathnet"]["real_quota"];
+        assert!(
+            real_quota.is_null()
+                || (real_quota["used_today"].is_u64()
+                    && real_quota["left_today"].is_u64()
+                    && real_quota["daily_limit"].is_u64()
+                    && real_quota["is_unlimited"].is_boolean())
+        );
         assert!(a["wigle"].get("verified").is_some());
         // The WiGLE probe's freshness timestamp is always present (value may be
         // `null` when never polled) so the card can render "checked …".

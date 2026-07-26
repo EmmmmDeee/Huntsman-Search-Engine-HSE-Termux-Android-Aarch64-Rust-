@@ -66,6 +66,7 @@ pub const MAX_BLOCKING_THREADS: usize = 16;
 pub const LIVE_DEFAULT_INTERVAL_SECS: u64 = 30;
 
 pub mod api;
+pub mod app;
 pub mod audit;
 pub mod cli;
 pub mod core;

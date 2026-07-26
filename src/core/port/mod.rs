@@ -18,10 +18,9 @@
 //!
 //! `core/` and `api/` never import `storage::Store` directly —
 //! architecture tests in `tests/architecture.rs` scan the source tree
-//! and fail CI if a direct import is introduced. The only legitimate
-//! `Store::open()` call sites are the CLI composition roots
-//! (`cli/mod.rs`, `cli/provision.rs`) which construct the concrete
-//! instance and immediately upcast to `Arc<dyn StoragePort>`.
+//! and fail CI if a direct import is introduced. Shared runtime construction
+//! belongs to `app::runtime`, which opens the concrete store and immediately
+//! upcasts it to `Arc<dyn StoragePort>` for the CLI and HTTP adapters.
 
 use crate::core::{
     correlator::Correlation, entity::Entity, error::Result, event::Event, relation::Relation,

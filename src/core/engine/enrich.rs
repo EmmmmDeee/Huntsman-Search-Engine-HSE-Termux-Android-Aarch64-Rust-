@@ -345,8 +345,10 @@ pub(super) fn tag_platform_infra(entity: &mut crate::core::entity::Entity) {
 /// the global key pool (the force-multiplier loop: a key found in breach/leak data
 /// unlocks more modules). Best-effort and side-effecting only on the pool; the
 /// entity is read-only. Runs outside `catch_unwind`, so it uses panic-free slicing.
-pub(super) fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {
-    use crate::core::hooks::identify_api_key;
+pub(super) fn scan_entity_for_keys(
+    entity: &crate::core::entity::Entity,
+    module_runtime: &dyn crate::core::module_runtime::ModuleRuntime,
+) {
     use crate::util::key_pool::{KeyEntry, KeyStatus, global_pool};
 
     let pool = global_pool();
@@ -361,7 +363,7 @@ pub(super) fn scan_entity_for_keys(entity: &crate::core::entity::Entity) {
     );
 
     let harvest = |text: &str, source: &str, notes: Option<String>| {
-        if let Some((service, key_val)) = identify_api_key(text) {
+        if let Some((service, key_val)) = module_runtime.identify_api_key(text) {
             let mut entry = KeyEntry::new(key_val);
             entry.status = KeyStatus::Untested;
             entry.discovered_at = Some(now);

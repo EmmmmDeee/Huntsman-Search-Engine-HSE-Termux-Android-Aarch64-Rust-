@@ -19,7 +19,7 @@ pub(super) async fn cmd_diagnostics(json: bool) -> Result<()> {
     banner("1/3", "Environment — doctor");
     // `diagnostics` stays offline/fast — the live capability preflight is an
     // explicit `hse doctor --live` opt-in, not part of the bundled check.
-    if let Err(e) = super::doctor::cmd_doctor(false).await {
+    if let Err(e) = crate::app::doctor::cmd_doctor(false).await {
         eprintln!("  ✗ doctor failed: {e}");
         failed.push("doctor");
     }

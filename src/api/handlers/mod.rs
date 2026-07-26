@@ -311,7 +311,7 @@ pub async fn engines_health() -> Json<Value> {
 /// Shape a module-health snapshot into the `GET /api/v1/modules/health` wire
 /// JSON. Split out of the handler so the mapping is unit-testable without
 /// depending on the live process-global health state — that state is shared
-/// across the whole test binary (mirrors why `cli::doctor::format_module_health`
+/// across the whole test binary (mirrors why `app::doctor::format_module_health`
 /// takes a plain [`crate::core::engine::ModuleHealth`] rather than reading the
 /// global directly).
 pub(crate) fn module_health_json(unhealthy: &[crate::core::engine::ModuleHealth]) -> Value {
@@ -405,9 +405,9 @@ pub async fn scraper_health(State(s): State<Arc<AppState>>) -> impl IntoResponse
 /// touching the network (the handler just runs the real fleet probe and hands
 /// its reports here).
 pub(crate) fn capability_probe_json(
-    reports: &[crate::util::capability_probe::ProbeReport],
+    reports: &[crate::selftest::capability_probe::ProbeReport],
 ) -> Value {
-    use crate::util::capability_probe::{ProbeOutcome, is_canary};
+    use crate::selftest::capability_probe::{ProbeOutcome, is_canary};
 
     let (mut alive, mut empty, mut unreachable, mut timed_out) = (0usize, 0usize, 0usize, 0usize);
     let modules: Vec<Value> = reports
@@ -464,7 +464,7 @@ pub(crate) fn capability_probe_json(
 /// alive / empty / unreachable / timed-out per module, flagging confirmed drift
 /// (a curated canary that reached its provider yet parsed nothing). This is the
 /// on-demand, network-bound HTTP twin of `hse doctor --live`, sharing the exact
-/// probe implementation ([`crate::util::capability_probe`]) so the Web UI, the
+/// probe implementation ([`crate::selftest::capability_probe`]) so the Web UI, the
 /// CLI, and the weekly CI drift sweep can never diverge.
 ///
 /// Distinct from the two passive health endpoints: `/modules/health` (this
@@ -474,12 +474,12 @@ pub(crate) fn capability_probe_json(
 /// page's "Run live capability probe" panel. Bounded concurrency keeps a
 /// full-fleet sweep from opening a socket storm on a low-power Termux device.
 pub async fn capabilities_probe() -> Json<Value> {
-    let reports = crate::util::capability_probe::probe_keyless_fleet(8).await;
+    let reports = crate::selftest::capability_probe::probe_keyless_fleet(8).await;
     // Persist any confirmed drift so it survives past this one response — the
     // CLI's offline `hse doctor` can then surface it (see
     // `capability_probe::recent_confirmed_drift`) without the operator having
     // to re-run the live probe.
-    crate::util::capability_probe::record_confirmed_drift(&reports);
+    crate::selftest::capability_probe::record_confirmed_drift(&reports);
     Json(capability_probe_json(&reports))
 }
 
@@ -589,11 +589,11 @@ pub async fn system_debug_bundle(
     };
     // Value-free per-service key-pool summary (reuses `keys_status`'
     // `summarize_pool`; never copies a key value). Mapped to the renderer's own
-    // owned type so `cli::export` stays self-contained.
-    let key_pool: Vec<crate::cli::export::KeyPoolSummary> =
+    // owned type so `app::export` stays self-contained.
+    let key_pool: Vec<crate::app::export::KeyPoolSummary> =
         super::settings_handlers::summarize_pool(&crate::util::key_pool::global_pool().snapshot())
             .into_iter()
-            .map(|q| crate::cli::export::KeyPoolSummary {
+            .map(|q| crate::app::export::KeyPoolSummary {
                 service: q.service,
                 total: q.total,
                 active: q.active,
@@ -605,7 +605,7 @@ pub async fn system_debug_bundle(
                 avg_health: q.avg_health,
             })
             .collect();
-    let inputs = crate::cli::export::SystemDebugInputs {
+    let inputs = crate::app::export::SystemDebugInputs {
         selftest,
         scans,
         scraper_health,
@@ -623,7 +623,7 @@ pub async fn system_debug_bundle(
     // environment fingerprint) — both blocking — and builds a potentially large
     // string, so on the ~2-worker reactor it would otherwise stall peers.
     let rendered = tokio::task::spawn_blocking(move || {
-        crate::cli::export::render_system_debug_bundle(&inputs)
+        crate::app::export::render_system_debug_bundle(&inputs)
     })
     .await;
     let body = match rendered {

@@ -176,7 +176,7 @@ fn record_hit(name: &'static str) {
 }
 
 /// Clear all per-engine session liveness state. Called once per scan (see
-/// `modules::install_core_hooks`'s `reset_per_scan` hook) for the same reason
+/// the built-in module runtime's `reset_per_scan` implementation) for the same reason
 /// `oathnet_pro`/`see_know`/`wigle` reset their own per-scan state there: under
 /// a long-lived `hse serve`/`hse live` process, [`SESSION_EMPTY_COUNTS`] is
 /// process-global and previously outlived the scan that built it — an engine

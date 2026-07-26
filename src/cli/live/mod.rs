@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::core::error::Result;
 use crate::core::scan::{ScanOptions, Target};
 
-use super::{build_runtime, parse_target_kind, split_csv};
+use super::{parse_target_kind, split_csv};
 
 pub(super) struct LiveCmd {
     /// `None` (or `"auto"`) auto-detects the kind from `value` — the unified scan.
@@ -78,7 +78,11 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
         radar: cmd.radar,
     };
 
-    let (_store, bus, engine) = build_runtime(1024)?;
+    let crate::app::runtime::ApplicationRuntime {
+        store: _store,
+        bus,
+        engine,
+    } = crate::app::runtime::build_runtime(1024)?;
     let scanner = LiveScanner::new(
         Arc::clone(&engine),
         bus.clone(),

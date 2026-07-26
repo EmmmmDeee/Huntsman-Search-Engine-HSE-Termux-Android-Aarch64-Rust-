@@ -16,7 +16,7 @@
 use crate::audit::{AuditEntity, AuditReport, LogSignals, Severity, audit};
 use crate::core::error::{Error, Result};
 
-pub(super) async fn cmd_audit(
+pub async fn cmd_audit(
     csv: Option<String>,
     scan_id: Option<String>,
     log: Option<String>,
@@ -182,8 +182,8 @@ fn load_from_store(scan_id: &str) -> Result<Vec<AuditEntity>> {
     use crate::storage::Store;
     let store = Store::open(&crate::default_db_path())?;
     // `latest` → most-recent Complete scan; explicit id existence-checked.
-    // Shared with `export`/`diff` via `super::resolve_scan_id`.
-    let sid = super::resolve_scan_id(&store, scan_id)?;
+    // Shared with the other store-backed app use cases through app::runtime.
+    let sid = crate::app::runtime::resolve_scan_id(&store, scan_id)?;
     Ok(store
         .entities_for_scan(&sid)?
         .iter()

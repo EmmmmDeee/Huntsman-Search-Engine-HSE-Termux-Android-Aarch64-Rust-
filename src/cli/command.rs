@@ -635,7 +635,7 @@ pub enum Command {
     /// `hse cells clear [--yes]` — truncate the cells table.
     Cells {
         #[command(subcommand)]
-        action: super::cells::CellsAction,
+        action: crate::app::cells::CellsAction,
     },
 
     /// Upgrade hse in place: `git pull` + rebuild + atomic binary swap.

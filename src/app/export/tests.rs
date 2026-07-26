@@ -330,7 +330,7 @@ fn debug_bundle_includes_dossier_sequence_and_audit() {
     // The source-file manifest incorporates EVERY file, not just modules.
     assert!(out.contains("── SOURCE FILES"));
     assert!(out.contains("src/lib.rs"));
-    assert!(out.contains("src/cli/export/mod.rs"));
+    assert!(out.contains("src/app/export/mod.rs"));
     assert!(out.contains("HUNTSMAN FULL DOSSIER")); // §1 embeds render_full
     assert!(out.contains("── EXPOSURE INDEX")); // §1 headline mirrors live dossier
     assert!(out.contains("── CORRELATIONS")); // §2
@@ -403,7 +403,7 @@ fn event_log_renders_a_readable_aligned_timeline() {
             },
         ),
     ];
-    let out = crate::cli::export::render_event_log(&evs);
+    let out = crate::app::export::render_event_log(&evs);
 
     // Structure: header with count, a by-type breakdown, and a UTC timeline.
     assert!(out.contains("── SCAN SEQUENCE · 8 events ──"));
@@ -732,7 +732,7 @@ fn explicit_scan_id_is_existence_checked_no_silent_empty_export() {
 
     // Unknown id -> a clear "not found" error (no silent empty export). The
     // existence check now lives in the shared `cli::resolve_scan_id`.
-    let err = crate::cli::resolve_scan_id(&store, "no-such-scan")
+    let err = crate::app::runtime::resolve_scan_id(&store, "no-such-scan")
         .unwrap_err()
         .to_string();
     assert!(
@@ -746,7 +746,7 @@ fn explicit_scan_id_is_existence_checked_no_silent_empty_export() {
     scan.status = ScanStatus::Complete;
     store.upsert_scan(&scan).unwrap();
     assert_eq!(
-        crate::cli::resolve_scan_id(&store, "scan-present").unwrap(),
+        crate::app::runtime::resolve_scan_id(&store, "scan-present").unwrap(),
         "scan-present"
     );
 }

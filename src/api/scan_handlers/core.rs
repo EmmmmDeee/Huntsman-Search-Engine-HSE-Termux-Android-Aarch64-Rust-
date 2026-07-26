@@ -600,9 +600,9 @@ pub async fn scan_import(
     // `scan_id` is collision-free per call, so the value just needs to be
     // descriptive — the upload size, not a redundant timestamp.
     let sid = scan_id("import-upload", &body.len().to_string());
-    // Detect the format from content and parse via the SAME `cli::import` path
+    // Detect the format from content and parse via the SAME `app::import` path
     // the CLI uses — OathNet JSON/HTML/stealer-TXT and breach/dossier all work.
-    let (entities, format) = match crate::cli::import::entities_from_upload(&body, &sid).await {
+    let (entities, format) = match crate::app::import::entities_from_upload(&body, &sid).await {
         Ok(pair) => pair,
         Err(e) => return bad_request(format!("could not parse upload: {e}")),
     };
@@ -613,7 +613,7 @@ pub async fn scan_import(
     // together) for the Stealer Logs Viewer — empty for every non-stealer
     // upload format. See `stealer_rows_from_upload`'s own doc for why this
     // is a second, separate parse rather than a widened `entities_from_upload`.
-    let stealer_rows = crate::cli::import::stealer_rows_from_upload(&body);
+    let stealer_rows = crate::app::import::stealer_rows_from_upload(&body);
 
     // A readable scan label: the strongest identity in the file, else a generic.
     let label = entities

@@ -10,10 +10,7 @@ use crate::core::module::ModuleContext;
 use crate::core::scan::{Scan, ScanOptions, Target};
 use crate::util::{keys, uid::scan_id};
 
-use super::{
-    build_runtime, color_confidence, color_severity, parse_target_kind, split_csv, truncate,
-    use_color,
-};
+use super::{color_confidence, color_severity, parse_target_kind, split_csv, truncate, use_color};
 
 #[derive(Clone)]
 pub(super) struct ScanCmd {
@@ -288,7 +285,8 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     }
 
     let sid = scan_id(target_kind.canonical_str(), &cmd.value);
-    let (store, bus, engine) = build_runtime(64)?;
+    let crate::app::runtime::ApplicationRuntime { store, bus, engine } =
+        crate::app::runtime::build_runtime(64)?;
 
     let scan = Scan::new(sid.clone(), target.clone()).with_options(options);
     let keys = keys::populate_and_load().await;
@@ -329,7 +327,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     // dossier (every entity, full provenance, every raw API response embedded)
     // and announce its path on stderr — regardless of the chosen stdout format.
     // Best-effort: a dossier write failure must never fail the scan itself.
-    match crate::cli::export::write_full_dossier(store.as_ref(), &sid) {
+    match crate::app::export::write_full_dossier(store.as_ref(), &sid) {
         Ok(path) => eprintln!("full dossier: {}", path.display()),
         Err(e) => eprintln!("warning: could not write full dossier: {e}"),
     }

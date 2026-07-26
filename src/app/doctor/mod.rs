@@ -23,9 +23,9 @@ use crate::{
     util::{cell_db, keys, scraper_health, timefmt},
 };
 
-use super::cost_label;
+use crate::app::export::cost_label;
 
-pub(super) async fn cmd_doctor(live: bool) -> Result<()> {
+pub async fn cmd_doctor(live: bool) -> Result<()> {
     let mods = registry();
     println!("HSE v{} — doctor\n", crate::VERSION);
     println!(
@@ -139,7 +139,7 @@ pub(super) async fn cmd_doctor(live: bool) -> Result<()> {
     // weekly CI drift-sweep cadence) — a stale finding may well be resolved by
     // now, so it is dropped rather than nagging forever.
     const DRIFT_TTL_SECS: u64 = 7 * 24 * 60 * 60;
-    let persisted_drift = crate::util::capability_probe::recent_confirmed_drift(DRIFT_TTL_SECS);
+    let persisted_drift = crate::selftest::capability_probe::recent_confirmed_drift(DRIFT_TTL_SECS);
     if !persisted_drift.is_empty() {
         println!(
             "\n⚠ Capability drift (from a previous live probe, last {} days):",
@@ -546,11 +546,11 @@ fn format_module_health(h: &crate::core::engine::ModuleHealth) -> String {
 /// Run the live capability preflight and print a per-module alive/empty/
 /// unreachable table plus a one-line summary. Shares the exact probe
 /// implementation the weekly `live_drift` sweep uses
-/// ([`crate::util::capability_probe`]), so what the operator sees on-device and
+/// ([`crate::selftest::capability_probe`]), so what the operator sees on-device and
 /// what CI asserts can never diverge. Confirmed drift (a curated canary that
 /// reached its provider yet parsed nothing) is called out explicitly.
 async fn print_live_capability_report() {
-    use crate::util::capability_probe::{self, ProbeOutcome};
+    use crate::selftest::capability_probe::{self, ProbeOutcome};
 
     println!("\nLive capability probe (keyless modules):");
     // Bounded concurrency — a full-fleet sweep without a socket storm on a phone.

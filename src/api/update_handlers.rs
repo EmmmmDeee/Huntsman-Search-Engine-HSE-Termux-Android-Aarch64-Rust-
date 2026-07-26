@@ -132,7 +132,7 @@ pub(crate) async fn post_trigger(
     let update_info = Arc::clone(&state.update_info);
     let state_for_restart = Arc::clone(&state);
     tokio::spawn(async move {
-        match crate::cli::update::apply_update(None).await {
+        match crate::app::update::apply_update(None).await {
             Ok(()) => {
                 set_phase(&update_info, UpdatePhase::Restarting);
                 // Brief pause so the SPA can fetch the Restarting status before
@@ -149,7 +149,7 @@ pub(crate) async fn post_trigger(
                     crate::api::SHUTDOWN_DRAIN_GRACE,
                 )
                 .await;
-                crate::cli::update::self_restart();
+                crate::app::update::self_restart();
             }
             Err(e) => {
                 set_phase(&update_info, UpdatePhase::Error(e.to_string()));

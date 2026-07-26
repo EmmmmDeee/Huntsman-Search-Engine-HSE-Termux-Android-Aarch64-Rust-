@@ -522,7 +522,7 @@ pub fn alias_handles(entity: &Entity) -> Vec<String> {
         return Vec::new();
     }
 
-    let canonical = crate::core::correlator::canonical_handle(base);
+    let canonical = crate::core::entity::canonical_handle(base);
     if canonical == base {
         vec![base.to_string()]
     } else {

@@ -25,7 +25,7 @@ use crate::core::{
 };
 use crate::util::{http::build_client, keys, uid::scan_id};
 
-use super::{build_runtime, color_confidence, truncate, use_color};
+use super::{color_confidence, truncate, use_color};
 
 use crate::core::engine::LOCAL_PASSIVE_MODULES as SENSOR_MODULES;
 
@@ -107,7 +107,8 @@ pub(super) async fn cmd_radar() -> Result<()> {
         )
     );
 
-    let (store, bus, engine) = build_runtime(1024)?;
+    let crate::app::runtime::ApplicationRuntime { store, bus, engine } =
+        crate::app::runtime::build_runtime(1024)?;
     let mut seen_entities: HashSet<String> = HashSet::new();
     let mut sweep_num = 0u32;
     // Set by `run_sub_scan` the moment Ctrl-C interrupts an in-flight sweep or

@@ -12,12 +12,10 @@ use crate::core::scan::{Target, TargetKind};
 use crate::default_db_path;
 use crate::storage::Store;
 
-use super::resolve_scan_id;
-
 /// `hse gaps [--scan-id <id|latest>] [--json]` — print the scan's discovery-gap report.
 pub fn cmd_gaps(scan_id: Option<String>, json: bool) -> Result<()> {
     let store = Store::open(&default_db_path())?;
-    let id = resolve_scan_id(&store, scan_id.as_deref().unwrap_or("latest"))?;
+    let id = crate::app::runtime::resolve_scan_id(&store, scan_id.as_deref().unwrap_or("latest"))?;
     let entities = store.entities_for_scan(&id)?;
     let relations = store.relations_for_scan(&id)?;
     let report = gap::analyze(&entities, &relations);

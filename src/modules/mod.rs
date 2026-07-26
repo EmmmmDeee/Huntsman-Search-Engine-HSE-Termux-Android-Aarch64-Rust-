@@ -284,28 +284,35 @@ pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
         .collect()
 }
 
-/// Built-in module set. The engine sorts by priority — order here is irrelevant.
-/// Install the cross-cutting module hooks into `core` (per-scan budget resets,
-/// the found-key sink, and the vendor-key matcher). Idempotent; called from
-/// [`registry`] so the engine — always built from `registry()` — has the
-/// hooks before it runs. This is the single place the `modules → core` hook
-/// edge is wired; `core` never imports `modules`. The regional-search flag is
-/// NOT a hook — it's a pure per-scan ambient the engine sets directly via
-/// `util::regional::with_regional` (see `core::hooks`'s module doc).
-fn install_core_hooks() {
-    crate::core::hooks::install(crate::core::hooks::ModuleHooks {
-        reset_per_scan: |scan_id| {
-            oathnet_pro::reset_budget();
-            see_know::reset_budget();
-            wigle::reset_budget();
-            typosquat::reset_seen();
-            search_engines::reset_session_liveness();
-            reset_found_keys(scan_id);
-        },
-        refresh_round_budget: see_know::refresh_round_budget,
-        identify_api_key: crate::util::key_harvest::identify_api_key,
-        drain_found_keys: drain_found_key_entities,
-    });
+/// Built-in implementation of the engine's module-layer runtime contract.
+struct BuiltinModuleRuntime;
+
+impl crate::core::module_runtime::ModuleRuntime for BuiltinModuleRuntime {
+    fn reset_per_scan(&self, scan_id: &str) {
+        oathnet_pro::reset_budget();
+        see_know::reset_budget();
+        wigle::reset_budget();
+        typosquat::reset_seen();
+        search_engines::reset_session_liveness();
+        reset_found_keys(scan_id);
+    }
+
+    fn refresh_round_budget(&self) {
+        see_know::refresh_round_budget();
+    }
+
+    fn identify_api_key<'a>(&self, value: &'a str) -> Option<(&'static str, &'a str)> {
+        crate::util::key_harvest::identify_api_key(value)
+    }
+
+    fn drain_found_keys(&self, scan_id: &str) -> Vec<crate::core::entity::Entity> {
+        drain_found_key_entities(scan_id)
+    }
+}
+
+/// Runtime effects paired with the built-in module registry.
+pub fn module_runtime() -> std::sync::Arc<dyn crate::core::module_runtime::ModuleRuntime> {
+    std::sync::Arc::new(BuiltinModuleRuntime)
 }
 
 /// The built-in module list, built exactly once. `registry()` is called from
@@ -498,7 +505,6 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
     });
 
 pub fn registry() -> Vec<Arc<dyn Module>> {
-    install_core_hooks();
     MODULE_REGISTRY.clone()
 }
 

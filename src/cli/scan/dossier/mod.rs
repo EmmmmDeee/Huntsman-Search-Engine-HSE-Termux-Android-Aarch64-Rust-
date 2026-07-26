@@ -67,7 +67,7 @@ fn truncation_note(shown: usize, total: usize) -> Option<String> {
 /// near-identical closure, differing only in truncation width and whether the
 /// kind was appended — five chances for one uid to render five ways, and five
 /// allocations over the same slice. The unresolvable-uid fallback is delegated
-/// to [`crate::cli::relation_endpoint_label`], whose whole purpose is to be the
+/// to [`crate::app::export::relation_endpoint_label`], whose whole purpose is to be the
 /// single place that stub is spelled; four of those closures had quietly grown
 /// their own copy of it.
 struct Labeller<'a> {
@@ -83,7 +83,7 @@ impl<'a> Labeller<'a> {
 
     /// Just the value, truncated to `width`.
     fn value(&self, uid: &str, width: usize) -> String {
-        crate::cli::relation_endpoint_label(&self.by_uid, uid, |e| {
+        crate::app::export::relation_endpoint_label(&self.by_uid, uid, |e| {
             crate::cli::truncate(&e.value, width)
         })
     }
@@ -91,7 +91,7 @@ impl<'a> Labeller<'a> {
     /// `value (kind)` — for lists of bare identifiers with no other column to
     /// carry the kind.
     fn with_kind(&self, uid: &str, width: usize) -> String {
-        crate::cli::relation_endpoint_label(&self.by_uid, uid, |e| {
+        crate::app::export::relation_endpoint_label(&self.by_uid, uid, |e| {
             format!("{} ({})", crate::cli::truncate(&e.value, width), e.kind)
         })
     }

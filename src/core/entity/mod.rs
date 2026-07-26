@@ -13,8 +13,10 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::hash_map::RandomState;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
+use std::hash::BuildHasher;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -75,6 +77,17 @@ pub const ENRICHMENT_ONLY_SOURCES: &[&str] = &["geo_normalize", "name_intel", "p
 #[inline]
 pub fn is_enrichment_source(source: &str) -> bool {
     ENRICHMENT_ONLY_SOURCES.contains(&source)
+}
+
+/// Canonical comparison form of a handle: ASCII-lowercased with the handle
+/// separators (`.`, `_`, `-`) removed, so equivalent spellings across services
+/// collapse to one token.
+pub(in crate::core) fn canonical_handle(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| !matches!(c, '.' | '_' | '-'))
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
 }
 
 /// Evidence source name of the recall pass — the local-database replay that
@@ -970,23 +983,45 @@ impl Entity {
                 }
             }
         } else {
-            // Owned keys: a borrowed `&str` map would alias `self.evidence`, which
-            // we mutate. Seed it with the existing rows; a later incoming row
-            // duplicating an existing record OR an earlier incoming one merges
-            // into it (so duplicates within `other` are folded too).
-            let mut index: std::collections::HashMap<(String, String), usize> = self
-                .evidence
-                .iter()
-                .enumerate()
-                .map(|(i, e)| ((e.source.clone(), e.summary.clone()), i))
-                .collect();
+            // Index compact identity fingerprints instead of cloning every source
+            // and summary. Each bucket retains all matching indices and the lookup
+            // verifies the original strings, so hash collisions cannot merge
+            // unrelated evidence.
+            let identity_hash_builder = RandomState::new();
+            // Existing rows establish the minimum useful capacity. Incoming rows
+            // grow the map only when they introduce unique identities, avoiding
+            // an upper-bound allocation when a batch is mostly duplicates.
+            let mut index: HashMap<u64, EvidenceIdentityBucket> =
+                HashMap::with_capacity(self.evidence.len());
+            for (i, evidence) in self.evidence.iter().enumerate() {
+                index
+                    .entry(evidence_identity_hash(
+                        &identity_hash_builder,
+                        &evidence.source,
+                        &evidence.summary,
+                    ))
+                    .and_modify(|bucket| bucket.push(i))
+                    .or_insert_with(|| EvidenceIdentityBucket::new(i));
+            }
             self.evidence.reserve(other.evidence.len());
             for ev in other.evidence {
-                let key = (ev.source.clone(), ev.summary.clone());
-                match index.get(&key) {
-                    Some(&i) => merge_evidence_attrs(&mut self.evidence[i], ev),
+                let identity_hash =
+                    evidence_identity_hash(&identity_hash_builder, &ev.source, &ev.summary);
+                // A randomized 64-bit fingerprint makes multi-entry buckets
+                // exceptional; the exact comparison is the collision-safe path.
+                let existing_index = index.get(&identity_hash).and_then(|bucket| {
+                    bucket.indices().find(|&i| {
+                        self.evidence[i].source == ev.source
+                            && self.evidence[i].summary == ev.summary
+                    })
+                });
+                match existing_index {
+                    Some(i) => merge_evidence_attrs(&mut self.evidence[i], ev),
                     None => {
-                        index.insert(key, self.evidence.len());
+                        index
+                            .entry(identity_hash)
+                            .and_modify(|bucket| bucket.push(self.evidence.len()))
+                            .or_insert_with(|| EvidenceIdentityBucket::new(self.evidence.len()));
                         self.evidence.push(ev);
                     }
                 }
@@ -1013,6 +1048,38 @@ impl Entity {
             self.tags.retain(|t| t != crate::core::tags::CANDIDATE);
         }
     }
+}
+
+/// Index bucket that stores the common single fingerprint match inline and
+/// allocates only when a real hash collision creates additional candidates.
+struct EvidenceIdentityBucket {
+    first: usize,
+    collisions: Vec<usize>,
+}
+
+impl EvidenceIdentityBucket {
+    fn new(first: usize) -> Self {
+        Self {
+            first,
+            collisions: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, index: usize) {
+        self.collisions.push(index);
+    }
+
+    fn indices(&self) -> impl Iterator<Item = usize> + '_ {
+        std::iter::once(self.first).chain(self.collisions.iter().copied())
+    }
+}
+
+/// Compact fingerprint for an evidence `(source, summary)` identity.
+///
+/// The per-merge randomized state resists adversarial collision batches. Callers
+/// must still resolve every collision by comparing both original strings.
+fn evidence_identity_hash(state: &RandomState, source: &str, summary: &str) -> u64 {
+    state.hash_one((source, summary))
 }
 
 /// Merge `incoming`'s attributes into `existing` — they are the same evidence

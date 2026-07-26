@@ -2,7 +2,7 @@
 //! bundle — plus the pure rendering functions shared with the CLI.
 //!
 //! The rendering functions (`entities_to_csv`, `build_scan_report`,
-//! `extract_au_location_fix`) are `pub(crate)` so `cli::export` can reuse them
+//! `extract_au_location_fix`) are `pub(crate)` so `app::export` can reuse them
 //! and produce byte-identical output to the HTTP endpoints.
 
 use axum::{
@@ -417,7 +417,7 @@ pub async fn scan_debug_bundle(
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
     match tokio::task::spawn_blocking(move || {
-        crate::cli::export::render_debug_bundle(store.as_ref(), &id2)
+        crate::app::export::render_debug_bundle(store.as_ref(), &id2)
     })
     .await
     {
@@ -439,7 +439,7 @@ pub async fn scan_debug_bundle(
 /// matching the web "Scan Log" view) — everything the web "Scan Log" tab shows, as one downloadable
 /// file, without the rest of the [`scan_debug_bundle`] dossier. `hse export
 /// {id} --format events` produces the byte-identical body via
-/// [`crate::cli::export::render_event_log`].
+/// [`crate::app::export::render_event_log`].
 pub async fn scan_events_log(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -454,7 +454,7 @@ pub async fn scan_events_log(
         // `download_response` redacts those proprietary source names for the
         // customer copy.
         Ok(Ok(events)) => download_response(
-            crate::cli::export::render_event_log(&events),
+            crate::app::export::render_event_log(&events),
             "text/plain; charset=utf-8",
             &id,
             "events",

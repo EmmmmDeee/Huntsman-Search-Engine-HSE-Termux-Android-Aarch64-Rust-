@@ -26,7 +26,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::api::{AppState, CellsImportPhase};
-use crate::cli::cells::{
+use crate::app::cells::{
     clear_cells_db, mcc_for_country, opencellid_download_url, opencellid_filename,
 };
 use crate::util::cell_db;
@@ -193,7 +193,7 @@ pub async fn cells_import(
         let mcc = mcc_for_country(&country);
         let filename = opencellid_filename(&country, mcc);
         let url = opencellid_download_url(&filename, &api_key);
-        let result = crate::cli::cells::download_and_import(&url, &filename, mcc).await;
+        let result = crate::app::cells::download_and_import(&url, &filename, mcc).await;
         let mut phase = cells_import_state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -203,7 +203,7 @@ pub async fn cells_import(
             // `GET /cells/status` `import_error` field, so a key that reached it
             // through any path (the download URL carries `token=<key>`) is masked
             // before it can be read by a LAN peer under a non-loopback bind. The
-            // primary fix strips the URL at the source (see cli::cells
+            // primary fix strips the URL at the source (see app::cells
             // `.without_url()`); this guarantees the invariant at the sink.
             Err(e) => {
                 CellsImportPhase::Error(crate::util::http::redact_credentials(&e.to_string()))

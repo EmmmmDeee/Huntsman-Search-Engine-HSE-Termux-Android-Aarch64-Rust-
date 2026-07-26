@@ -12,6 +12,15 @@ Pure-Rust OSINT / GEOINT platform with **167 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 dark-console Web UI, zero native dependencies, keyless-first.
 
+### Application architecture
+
+`src/app` is the public application/composition layer shared by the CLI and
+HTTP adapters. It exclusively owns concrete SQLite and engine construction,
+including shared runtime assembly and store-backed audit, benchmark, diff,
+doctor, and gap workflows; `app::update` owns the update lifecycle. CLI and API
+code provide transport and presentation only, and architecture tests prevent
+presentation code from importing CLI internals or concrete storage.
+
 ---
 
 ## Install (Termux Android aarch64, no root)

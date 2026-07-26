@@ -297,9 +297,7 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
         let by_uid: std::collections::HashMap<&str, &crate::core::entity::Entity> =
             entities.iter().map(|e| (e.uid.as_str(), e)).collect();
         let label = |uid: &str| {
-            super::super::relation_endpoint_label(&by_uid, uid, |e| {
-                format!("{} ({})", e.value, e.kind)
-            })
+            super::relation_endpoint_label(&by_uid, uid, |e| format!("{} ({})", e.value, e.kind))
         };
         let _ = writeln!(s, "\n── RELATIONS ──");
         for r in &relations {

@@ -25,7 +25,27 @@ use crate::core::error::{Error, Result};
 use crate::default_db_path;
 use crate::storage::Store;
 
-pub(super) async fn cmd_export(
+/// Human-display form of a module cost for reports and CLI tables.
+pub(crate) fn cost_label(c: crate::core::module::ModuleCost) -> &'static str {
+    match c {
+        crate::core::module::ModuleCost::Free => "free",
+        crate::core::module::ModuleCost::KeyGated => "key-gated",
+        crate::core::module::ModuleCost::Paid => "paid",
+    }
+}
+
+/// Resolve a relation endpoint to a label or a short UID fallback.
+pub(crate) fn relation_endpoint_label(
+    by_uid: &std::collections::HashMap<&str, &crate::core::entity::Entity>,
+    uid: &str,
+    found: impl FnOnce(&crate::core::entity::Entity) -> String,
+) -> String {
+    by_uid
+        .get(uid)
+        .map_or_else(|| format!("{}…", &uid[..uid.len().min(8)]), |e| found(e))
+}
+
+pub async fn cmd_export(
     scan_id: String,
     format: String,
     out: Option<String>,
@@ -37,7 +57,7 @@ pub(super) async fn cmd_export(
     // a typo fails loudly instead of emitting an empty CSV/JSON/GEXF (which is
     // indistinguishable from a real scan that found nothing). Shared with
     // `diff`/`audit` via `super::resolve_scan_id`.
-    let sid = super::resolve_scan_id(&store, &scan_id)?;
+    let sid = crate::app::runtime::resolve_scan_id(&store, &scan_id)?;
     let fmt = format.to_lowercase();
     // `--redact` masks subject credential-class values and coarsens precise
     // coordinates, for the SHAREABLE entity exports only. It is deliberately

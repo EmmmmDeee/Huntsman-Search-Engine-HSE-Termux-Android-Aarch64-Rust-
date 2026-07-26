@@ -642,7 +642,7 @@ impl super::ScanEngine {
                             entity: entity.clone(),
                         },
                     );
-                    super::scan_entity_for_keys(&entity);
+                    super::scan_entity_for_keys(&entity, self.module_runtime.as_ref());
                     super::enrich_geospatial(&mut entity);
                     if let Some(existing) = state.entity_map.get_mut(&entity.uid) {
                         existing.merge(entity);
