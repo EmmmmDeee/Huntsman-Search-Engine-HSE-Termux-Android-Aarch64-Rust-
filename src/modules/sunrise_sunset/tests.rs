@@ -28,9 +28,9 @@ use super::*;
                 "civil_twilight_end": "2024-06-16T07:30:00+00:00"
             }
         }"#;
-        let r: SsResp = serde_json::from_str(raw).unwrap();
+        let r: SsResp = serde_json::from_str(raw).expect("should succeed");
         assert_eq!(r.status.as_deref(), Some("OK"));
-        let res = r.results.unwrap();
+        let res = r.results.expect("should succeed");
         assert!(res.sunrise.is_some());
         assert!(res.sunset.is_some());
     }
@@ -48,7 +48,7 @@ use super::*;
     }
 
     fn results(json: &str) -> SsResults {
-        serde_json::from_str(json).unwrap()
+        serde_json::from_str(json).expect("should succeed")
     }
 
     fn attr<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {

@@ -44,10 +44,10 @@ fn profile_parses_the_full_live_shape_including_accounts_and_photos() {
 
 #[test]
 fn account_verified_accepts_both_bool_and_legacy_string() {
-    let b: Account = serde_json::from_value(serde_json::json!({"verified": true})).unwrap();
+    let b: Account = serde_json::from_value(serde_json::json!({"verified": true})).expect("should succeed");
     assert_eq!(b.verified, Some(true));
-    let s: Account = serde_json::from_value(serde_json::json!({"verified": "false"})).unwrap();
+    let s: Account = serde_json::from_value(serde_json::json!({"verified": "false"})).expect("should succeed");
     assert_eq!(s.verified, Some(false));
-    let none: Account = serde_json::from_value(serde_json::json!({})).unwrap();
+    let none: Account = serde_json::from_value(serde_json::json!({})).expect("should succeed");
     assert_eq!(none.verified, None);
 }

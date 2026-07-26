@@ -36,7 +36,7 @@ fn parse_numverify_response() {
       "carrier": "AT&T Mobility LLC",
       "line_type": "mobile"
     }"#;
-    let r: NumverifyResp = serde_json::from_str(raw).unwrap();
+    let r: NumverifyResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(r.valid, Some(true));
     assert_eq!(r.country_code.as_deref(), Some("US"));
     assert_eq!(r.carrier.as_deref(), Some("AT&T Mobility LLC"));
@@ -56,7 +56,7 @@ fn parse_gravatar_response() {
         "photos": [{"value": "https://gravatar.com/avatar/abc"}]
       }]
     }"#;
-    let r: ProfileResp = serde_json::from_str(raw).unwrap();
+    let r: ProfileResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(r.entry.len(), 1);
     let e = &r.entry[0];
     assert_eq!(e.display_name.as_deref(), Some("John Doe"));

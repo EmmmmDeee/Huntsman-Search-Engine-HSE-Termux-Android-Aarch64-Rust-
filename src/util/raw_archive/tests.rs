@@ -69,7 +69,7 @@ fn build_body_keeps_paid_secret_in_full_with_meta_header() {
         1_780_726_449,
         r#"{"results":[{"password":"PLAINTEXT-kept"}]}"#,
     );
-    let v: Value = serde_json::from_str(&body).unwrap();
+    let v: Value = serde_json::from_str(&body).expect("should succeed");
     assert_eq!(v["_meta"]["provider"], "see_know");
     assert_eq!(v["_meta"]["endpoint"], "stealer");
     assert_eq!(v["_meta"]["query"], "seed@x.com");
@@ -87,7 +87,7 @@ fn build_body_falls_back_to_verbatim_string_for_non_json() {
         0,
         "503 Service Unavailable",
     );
-    let v: Value = serde_json::from_str(&body).unwrap();
+    let v: Value = serde_json::from_str(&body).expect("should succeed");
     assert_eq!(v["raw"], "503 Service Unavailable");
 }
 
@@ -177,7 +177,7 @@ fn records_filtered_dir_recovers_full_responses_and_filters_by_time() {
             r#"{"results":[{"source":"INF0SEC Leaks"}]}"#,
         ),
     )
-    .unwrap();
+    .expect("should succeed");
     write_file(
         &dir.join(build_filename(
             "oathnet",
@@ -194,12 +194,12 @@ fn records_filtered_dir_recovers_full_responses_and_filters_by_time() {
             r#"{"data":{"items":[{"password":"PLAINTEXT"}]}}"#,
         ),
     )
-    .unwrap();
+    .expect("should succeed");
     write_file(
         &dir.join(build_filename("see-know", "search-email", "old", 50, 3)),
         &build_body("see-know", "search-email", "old", 50, r#"{"x":1}"#),
     )
-    .unwrap();
+    .expect("should succeed");
 
     let got = records_filtered_dir(&dir, 900, 1100, None);
     assert_eq!(got.len(), 2, "only the two in-window responses");
@@ -261,7 +261,7 @@ fn records_for_a_mixed_case_query_are_not_dropped_by_the_filename_prefilter() {
             r#"{"data":{"items":[{"email":"brett.lawnton@gmail.com"}]}}"#,
         ),
     )
-    .unwrap();
+    .expect("should succeed");
 
     // Mirrors renderers.rs's `scan.target.value.to_lowercase()` exactly.
     let mut queries: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -296,7 +296,7 @@ fn records_filtered_dir_matches_query_set_case_insensitively() {
         &dir.join(build_filename("see-know", "search", "JaneSmith", 1000, 1)),
         &build_body("see-know", "search", "JaneSmith", 1000, r#"{"hit":true}"#),
     )
-    .unwrap();
+    .expect("should succeed");
     // The caller passes the lower-cased query set (as the authoritative check
     // itself requires); the mixed-case archived response must still be returned.
     let mut want: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -339,11 +339,11 @@ fn write_file_persists_individual_named_response_on_disk() {
 
     assert!(path.exists());
     assert_eq!(
-        path.file_name().unwrap().to_str().unwrap(),
+        path.file_name().expect("should succeed").to_str().expect("should succeed"),
         "see_know__search-email__vanamill_at_hotmail.com__20260606T061409Z__0003.json"
     );
-    let read = std::fs::read_to_string(&path).unwrap();
-    let v: Value = serde_json::from_str(&read).unwrap();
+    let read = std::fs::read_to_string(&path).expect("should succeed");
+    let v: Value = serde_json::from_str(&read).expect("should succeed");
     assert_eq!(v["raw"]["x"], 1);
 
     let _ = std::fs::remove_dir_all(&dir);

@@ -65,7 +65,7 @@ fn dossier_renders_every_present_kind_never_dropping_one() {
 
     // Curated kinds keep their relative order (person before email), and the
     // uncurated `other:*` kind is appended AFTER all curated ones.
-    let pos = |k: &str| ordered.iter().position(|x| *x == k).unwrap();
+    let pos = |k: &str| ordered.iter().position(|x| *x == k).expect("should succeed");
     assert!(pos("person") < pos("email"));
     assert!(pos("crypto_address") < pos("other:passport"));
     assert!(

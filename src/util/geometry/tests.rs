@@ -57,7 +57,7 @@ fn footprint_centroid_is_the_polygon_area_centre_not_the_vertex_mean() {
         (2.0, 3.0),
         (2.0, 0.0), // top edge spans lon 0..3
     ];
-    let fp = geo_footprint(&pts).unwrap();
+    let fp = geo_footprint(&pts).expect("should succeed");
     assert_eq!(fp.hull.len(), 4, "all four points must be hull vertices");
 
     // Independent shoelace reference over the returned hull (x=lon, y=lat).
@@ -114,7 +114,7 @@ fn min_enclosing_circle_basics() {
     // Empty → None.
     assert!(min_enclosing_circle(&[]).is_none());
     // Single point → zero-radius circle centred on it.
-    let c = min_enclosing_circle(&[(10.0, 20.0)]).unwrap();
+    let c = min_enclosing_circle(&[(10.0, 20.0)]).expect("should succeed");
     assert_eq!(c.center, (10.0, 20.0));
     assert_eq!(c.radius_km, 0.0);
 }
@@ -142,7 +142,7 @@ fn min_enclosing_circle_covers_every_point_and_is_order_independent() {
     // centre and radius (determinism the correlator relies on).
     let mut rev = pts;
     rev.reverse();
-    let c2 = min_enclosing_circle(&rev).unwrap();
+    let c2 = min_enclosing_circle(&rev).expect("should succeed");
     assert!((c.center.0 - c2.center.0).abs() < 1e-9);
     assert!((c.center.1 - c2.center.1).abs() < 1e-9);
     assert!((c.radius_km - c2.radius_km).abs() < 1e-6);
@@ -159,8 +159,8 @@ fn min_enclosing_circle_chebyshev_beats_centroid_for_worst_case() {
         (0.01, 0.0),
         (0.0, 0.5), // outlier
     ];
-    let mec = min_enclosing_circle(&pts).unwrap();
-    let fp = geo_footprint(&pts).unwrap();
+    let mec = min_enclosing_circle(&pts).expect("should succeed");
+    let fp = geo_footprint(&pts).expect("should succeed");
     let centroid_worst = pts
         .iter()
         .map(|&(lat, lon)| haversine_km(fp.centroid.0, fp.centroid.1, lat, lon))
@@ -184,7 +184,7 @@ fn geometric_median_basics_and_robustness() {
     // the cluster, while the plain mean is dragged a quarter of the way to
     // the outlier.
     let pts = [(0.0, 0.0), (0.0, 0.02), (0.02, 0.0), (10.0, 10.0)];
-    let med = geometric_median(&pts).unwrap();
+    let med = geometric_median(&pts).expect("should succeed");
     let mean = (
         pts.iter().map(|p| p.0).sum::<f64>() / 4.0,
         pts.iter().map(|p| p.1).sum::<f64>() / 4.0,
@@ -203,8 +203,8 @@ fn geometric_median_basics_and_robustness() {
 fn weighted_geometric_median_reduces_to_unweighted_under_uniform_weights() {
     let pts = [(-33.87, 151.21), (-33.80, 151.10), (-33.95, 151.20)];
     let uniform: Vec<((f64, f64), f64)> = pts.iter().map(|&p| (p, 1.0)).collect();
-    let w = weighted_geometric_median(&uniform).unwrap();
-    let u = geometric_median(&pts).unwrap();
+    let w = weighted_geometric_median(&uniform).expect("should succeed");
+    let u = geometric_median(&pts).expect("should succeed");
     assert!(
         (w.0 - u.0).abs() < 1e-9 && (w.1 - u.1).abs() < 1e-9,
         "{w:?} vs {u:?}"
@@ -222,8 +222,8 @@ fn weighted_geometric_median_pulls_toward_high_confidence() {
     // aware at once.
     let a = (0.0, 0.0);
     let pts = [a, (0.0, 1.0), (0.8, 0.5)];
-    let unweighted = geometric_median(&pts).unwrap();
-    let weighted = weighted_geometric_median(&[(a, 12.0), (pts[1], 1.0), (pts[2], 1.0)]).unwrap();
+    let unweighted = geometric_median(&pts).expect("should succeed");
+    let weighted = weighted_geometric_median(&[(a, 12.0), (pts[1], 1.0), (pts[2], 1.0)]).expect("should succeed");
     let d = |p: (f64, f64)| haversine_km(a.0, a.1, p.0, p.1);
     assert!(
         d(weighted) < d(unweighted),
@@ -265,7 +265,7 @@ fn location_fix_summary_describes_the_estimates() {
         ((-33.8720, 151.2150), 0.6),
         ((-33.8680, 151.2080), 0.7),
     ];
-    let s = location_fix(&wp).unwrap().location_summary();
+    let s = location_fix(&wp).expect("should succeed").location_summary();
     assert!(s.contains("geometric median"));
     assert!(s.contains("Chebyshev centre"));
     assert!(s.contains('±'));
@@ -287,17 +287,17 @@ fn location_fix_bundles_every_estimator_consistently() {
     ];
     let pts: Vec<(f64, f64)> = wp.iter().map(|&(p, _)| p).collect();
     let fix = location_fix(&wp).expect("three points bound an area");
-    assert_eq!(fix.footprint, geo_footprint(&pts).unwrap());
-    assert_eq!(fix.weighted_centroid, weighted_centroid(&wp).unwrap());
+    assert_eq!(fix.footprint, geo_footprint(&pts).expect("should succeed"));
+    assert_eq!(fix.weighted_centroid, weighted_centroid(&wp).expect("should succeed"));
     assert_eq!(
         fix.geometric_median,
-        weighted_geometric_median(&wp).unwrap()
+        weighted_geometric_median(&wp).expect("should succeed")
     );
     assert_eq!(
         fix.median_radius_km,
         median_distance_km(fix.geometric_median, &pts)
     );
-    assert_eq!(fix.enclosing, min_enclosing_circle(&pts).unwrap());
+    assert_eq!(fix.enclosing, min_enclosing_circle(&pts).expect("should succeed"));
 }
 
 #[test]
@@ -312,7 +312,7 @@ fn geometric_median_is_equirectangular_corrected_at_high_latitude() {
         (60.02, 9.20),
         (59.97, 10.40),
     ];
-    let corrected = geometric_median(&pts).unwrap();
+    let corrected = geometric_median(&pts).expect("should succeed");
 
     // Naive median: identical Weiszfeld but WITHOUT the cos(lat) scale.
     let naive = {
@@ -362,7 +362,7 @@ fn geometric_median_minimises_total_distance() {
         (-33.70, 151.30),
         (-33.88, 151.00),
     ];
-    let med = geometric_median(&pts).unwrap();
+    let med = geometric_median(&pts).expect("should succeed");
     let total = |q: (f64, f64)| {
         pts.iter()
             .map(|&p| haversine_km(q.0, q.1, p.0, p.1))
@@ -383,12 +383,12 @@ fn weighted_centroid_pulls_toward_confidence_and_stays_in_hull() {
     // Empty → None.
     assert!(weighted_centroid(&[]).is_none());
     // All-zero weights → unweighted mean (no divide-by-zero).
-    let mean = weighted_centroid(&[((0.0, 0.0), 0.0), ((0.0, 2.0), 0.0)]).unwrap();
+    let mean = weighted_centroid(&[((0.0, 0.0), 0.0), ((0.0, 2.0), 0.0)]).expect("should succeed");
     assert!((mean.1 - 1.0).abs() < 1e-9);
     // A trusted point and a shaky one: the centre is pulled toward the
     // high-confidence sighting and remains a convex combination (inside the
     // segment, i.e. between the two longitudes).
-    let c = weighted_centroid(&[((0.0, 0.0), 0.95), ((0.0, 1.0), 0.30)]).unwrap();
+    let c = weighted_centroid(&[((0.0, 0.0), 0.95), ((0.0, 1.0), 0.30)]).expect("should succeed");
     assert!(c.1 > 0.0 && c.1 < 0.5, "pulled toward 0.0: {}", c.1);
 }
 
@@ -397,7 +397,7 @@ fn point_in_convex_hull_uses_real_hull_orientation() {
     // Build the hull the same way the footprint does, then test membership —
     // proves the in-hull test agrees with the hull builder's CCW order.
     let pts = [(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0), (0.5, 0.5)];
-    let fp = geo_footprint(&pts).unwrap();
+    let fp = geo_footprint(&pts).expect("should succeed");
     assert!(point_in_convex_hull(&fp.hull, (0.5, 0.5)), "interior point");
     assert!(
         point_in_convex_hull(&fp.hull, (0.0, 0.5)),
@@ -442,7 +442,7 @@ fn assert_wolfram_latlon(got: (f64, f64), want: (f64, f64), tol: f64, what: &str
 fn geometric_median_matches_wolfram_ground_truth() {
     // Tight cluster at the origin + a far outlier at (10,10): Wolfram's Weber
     // point stays in the cluster — the 0.5 breakdown point in action.
-    let m = geometric_median(&[(0.0, 0.0), (0.0, 0.01), (0.01, 0.0), (10.0, 10.0)]).unwrap();
+    let m = geometric_median(&[(0.0, 0.0), (0.0, 0.01), (0.01, 0.0), (10.0, 10.0)]).expect("should succeed");
     assert_wolfram_latlon(
         m,
         (0.005_000_000, 0.004_999_994),
@@ -459,7 +459,7 @@ fn geometric_median_matches_wolfram_ground_truth() {
         (-27.4705, 153.0255),
         (-33.8688, 151.2093),
     ])
-    .unwrap();
+    .expect("should succeed");
     assert_wolfram_latlon(
         m,
         (-27.470_500_8, 153.025_496_9),
@@ -468,7 +468,7 @@ fn geometric_median_matches_wolfram_ground_truth() {
     );
 
     // Equilateral triangle: the Fermat point is the centroid (all angles 60deg).
-    let m = geometric_median(&[(0.0, 0.0), (0.0, 1.0), (0.866_025_403_784_438_6, 0.5)]).unwrap();
+    let m = geometric_median(&[(0.0, 0.0), (0.0, 1.0), (0.866_025_403_784_438_6, 0.5)]).expect("should succeed");
     assert_wolfram_latlon(
         m,
         (0.288_671_468, 0.499_999_995),
@@ -487,14 +487,14 @@ fn weighted_geometric_median_snaps_onto_a_dominant_high_confidence_point() {
     // condition and the estimate sits ON the trusted sighting — exactly the
     // outlier/low-confidence rejection the weighting is meant to deliver.
     let m = weighted_geometric_median(&[((0.0, 0.0), 0.9), ((0.0, 0.1), 0.2), ((0.1, 0.0), 0.2)])
-        .unwrap();
+        .expect("should succeed");
     assert_wolfram_latlon(m, (0.0, 0.0), 1e-3, "dominant-confidence weighted median");
 }
 
 #[test]
 fn min_enclosing_circle_matches_wolfram_min_disk() {
     // Chebyshev centres = Wolfram BoundingRegion[.., "MinDisk"], unprojected.
-    let c = min_enclosing_circle(&[(0.0, 0.0), (0.0, 0.01), (0.01, 0.0), (10.0, 10.0)]).unwrap();
+    let c = min_enclosing_circle(&[(0.0, 0.0), (0.0, 0.01), (0.01, 0.0), (10.0, 10.0)]).expect("should succeed");
     assert_wolfram_latlon(c.center, (5.0, 5.0), 1e-6, "outlier-cluster MEC centre");
 
     let c = min_enclosing_circle(&[
@@ -504,7 +504,7 @@ fn min_enclosing_circle_matches_wolfram_min_disk() {
         (-27.4705, 153.0255),
         (-33.8688, 151.2093),
     ])
-    .unwrap();
+    .expect("should succeed");
     assert_wolfram_latlon(
         c.center,
         (-30.668_900, 152.116_650),
@@ -513,7 +513,7 @@ fn min_enclosing_circle_matches_wolfram_min_disk() {
     );
 
     let c =
-        min_enclosing_circle(&[(0.0, 0.0), (0.0, 1.0), (0.866_025_403_784_438_6, 0.5)]).unwrap();
+        min_enclosing_circle(&[(0.0, 0.0), (0.0, 1.0), (0.866_025_403_784_438_6, 0.5)]).expect("should succeed");
     assert_wolfram_latlon(
         c.center,
         (0.288_678_799, 0.5),

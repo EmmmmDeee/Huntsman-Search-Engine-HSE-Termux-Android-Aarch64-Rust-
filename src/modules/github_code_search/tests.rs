@@ -9,7 +9,7 @@ use crate::core::{
 };
 
 fn item_from_json(json: &str) -> CodeItem {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 #[test]
@@ -37,14 +37,14 @@ fn build_repo_entities_exact_owner_match() {
             "description":"my configs","owner":{"login":"haigen","html_url":"https://github.com/haigen"}}}"#,
     );
     let ents = build_repo_entities(&item, "haigen", TargetKind::Username, "s");
-    let url_e = ents.iter().find(|e| e.kind == EntityKind::Url).unwrap();
+    let url_e = ents.iter().find(|e| e.kind == EntityKind::Url).expect("should succeed");
     assert!(url_e.confidence >= 0.58);
     assert!(url_e.has_tag("code-repo") && url_e.has_tag("github"));
 
     let user_e = ents
         .iter()
         .find(|e| e.kind == EntityKind::Username)
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(user_e.value, "haigen");
     assert!(user_e.confidence >= confidence::HIGH);
     assert!(user_e.has_tag("repo-owner"));
@@ -58,7 +58,7 @@ fn build_repo_entities_low_conf_unrelated() {
             "description":"unrelated","owner":{"login":"other","html_url":"https://github.com/other"}}}"#,
     );
     let ents = build_repo_entities(&item, "haigen@example.com", TargetKind::Email, "s");
-    let url_e = ents.iter().find(|e| e.kind == EntityKind::Url).unwrap();
+    let url_e = ents.iter().find(|e| e.kind == EntityKind::Url).expect("should succeed");
     assert!(
         url_e.confidence < confidence::MEDIUM,
         "unrelated repo should be sub-floor"

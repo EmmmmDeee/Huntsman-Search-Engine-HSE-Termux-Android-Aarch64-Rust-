@@ -453,8 +453,8 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "alice");
         assert!(u.is_some(), "must emit Username entity");
-        assert!((u.unwrap().confidence - 0.82).abs() < 0.01);
-        assert!(u.unwrap().has_tag("stackoverflow") && u.unwrap().has_tag("forum"));
+        assert!((u.expect("should succeed").confidence - 0.82).abs() < 0.01);
+        assert!(u.expect("should succeed").has_tag("stackoverflow") && u.expect("should succeed").has_tag("forum"));
     }
 
     #[test]
@@ -483,7 +483,7 @@ mod tests {
         let ents = build_entities(user, &[], "scan-so-002");
         let p = ents.iter().find(|e| e.kind == EntityKind::Person);
         assert!(p.is_some(), "must emit Person from multi-word display name");
-        assert_eq!(p.unwrap().value, "Alice Developer");
+        assert_eq!(p.expect("should succeed").value, "Alice Developer");
     }
 
     #[test]
@@ -524,8 +524,8 @@ mod tests {
         let ents = build_entities(user, &[], "scan-so-005");
         let a = ents.iter().find(|e| e.kind == EntityKind::Address);
         assert!(a.is_some(), "must emit Address from location");
-        assert_eq!(a.unwrap().value, "Berlin, DE");
-        assert!(a.unwrap().has_tag("self-asserted"));
+        assert_eq!(a.expect("should succeed").value, "Berlin, DE");
+        assert!(a.expect("should succeed").has_tag("self-asserted"));
     }
 
     #[test]
@@ -579,7 +579,7 @@ mod tests {
         let u = ents
             .iter()
             .find(|e| e.kind == EntityKind::Username)
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(
             u.evidence[0]
                 .attributes

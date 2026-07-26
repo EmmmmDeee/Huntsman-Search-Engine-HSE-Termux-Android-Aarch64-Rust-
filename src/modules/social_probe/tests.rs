@@ -163,13 +163,13 @@ fn module_metadata() {
 fn build_target_summary_evidence_lists_confirmed_platforms() {
     let t = Target::new(TargetKind::Username, "testuser");
     let confirmed = &["github", "reddit"];
-    let e = build_target_summary(&t, 2, 30, confirmed, "scan").unwrap();
+    let e = build_target_summary(&t, 2, 30, confirmed, "scan").expect("should succeed");
     let attr = e.evidence[0]
         .attributes
         .get("platforms")
         .map(String::as_str);
     assert!(attr.is_some(), "platforms attribute must be present");
-    let platforms = attr.unwrap();
+    let platforms = attr.expect("should succeed");
     assert!(platforms.contains("github") && platforms.contains("reddit"));
 }
 
@@ -185,7 +185,7 @@ fn build_target_summary_stamps_platforms_count_for_au011() {
     // canonical count attribute must now be present and equal the number of
     // confirmed platforms.
     let t = Target::new(TargetKind::Username, "testuser");
-    let e = build_target_summary(&t, 3, 30, &["github", "reddit", "twitch"], "scan").unwrap();
+    let e = build_target_summary(&t, 3, 30, &["github", "reddit", "twitch"], "scan").expect("should succeed");
     assert_eq!(
         e.evidence[0]
             .attributes

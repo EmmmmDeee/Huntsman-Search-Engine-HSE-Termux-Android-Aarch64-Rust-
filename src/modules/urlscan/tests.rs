@@ -23,7 +23,7 @@ use super::*;
     #[test]
     fn deserialize_empty_results() {
         let raw = r#"{"results":[]}"#;
-        let resp: SearchResp = serde_json::from_str(raw).unwrap();
+        let resp: SearchResp = serde_json::from_str(raw).expect("should succeed");
         assert!(resp.results.is_empty());
     }
 
@@ -57,19 +57,19 @@ use super::*;
                 }
             ]
         }"#;
-        let resp: SearchResp = serde_json::from_str(raw).unwrap();
+        let resp: SearchResp = serde_json::from_str(raw).expect("should succeed");
         assert_eq!(resp.results.len(), 2);
 
         let first = &resp.results[0];
-        let page = first.page.as_ref().unwrap();
+        let page = first.page.as_ref().expect("should succeed");
         assert_eq!(page.domain.as_deref(), Some("example.com"));
         assert_eq!(page.ip.as_deref(), Some("93.184.216.34"));
         assert_eq!(page.country.as_deref(), Some("US"));
         assert_eq!(page.server.as_deref(), Some("nginx"));
-        assert_eq!(first.verdicts.as_ref().unwrap().malicious, Some(false));
+        assert_eq!(first.verdicts.as_ref().expect("should succeed").malicious, Some(false));
 
         let second = &resp.results[1];
-        assert_eq!(second.verdicts.as_ref().unwrap().malicious, Some(true));
+        assert_eq!(second.verdicts.as_ref().expect("should succeed").malicious, Some(true));
     }
 
     #[test]
@@ -85,11 +85,11 @@ use super::*;
                 {}
             ]
         }"#;
-        let resp: SearchResp = serde_json::from_str(raw).unwrap();
+        let resp: SearchResp = serde_json::from_str(raw).expect("should succeed");
         assert_eq!(resp.results.len(), 2);
 
         let first = &resp.results[0];
-        let page = first.page.as_ref().unwrap();
+        let page = first.page.as_ref().expect("should succeed");
         assert_eq!(page.url.as_deref(), Some("https://example.com/"));
         assert!(page.ip.is_none());
         assert!(page.country.is_none());
@@ -102,20 +102,20 @@ use super::*;
     }
 
     fn results(raw: &str) -> Vec<ScanResult> {
-        serde_json::from_str::<SearchResp>(raw).unwrap().results
+        serde_json::from_str::<SearchResp>(raw).expect("should succeed").results
     }
 
     #[test]
     fn deserialize_parses_the_true_total_when_present() {
         let raw = r#"{"results":[{}],"total":12345,"took":3,"has_more":true}"#;
-        let resp: SearchResp = serde_json::from_str(raw).unwrap();
+        let resp: SearchResp = serde_json::from_str(raw).expect("should succeed");
         assert_eq!(resp.total, Some(12345));
     }
 
     #[test]
     fn deserialize_total_is_none_when_the_field_is_absent() {
         let raw = r#"{"results":[{}]}"#;
-        let resp: SearchResp = serde_json::from_str(raw).unwrap();
+        let resp: SearchResp = serde_json::from_str(raw).expect("should succeed");
         assert_eq!(resp.total, None);
     }
 
@@ -159,7 +159,7 @@ use super::*;
         // Caller passes results.len() as the fallback, matching process()'s
         // `data.total.unwrap_or(data.results.len() as u64)`.
         let entity = build_target_entity(&target, &intel, 1, "s");
-        let ev = entity.evidence.first().unwrap();
+        let ev = entity.evidence.first().expect("should succeed");
         assert_eq!(ev.attributes.get("scan_count").map(String::as_str), Some("1"));
     }
 
@@ -250,11 +250,11 @@ use super::*;
     fn build_query_uses_correct_field_and_max_page_size() {
         // Page size is the keyless per-page maximum (100), verified live — a 10×
         // enumeration widening over the former size=10/5 at no extra request cost.
-        let d = build_query(TargetKind::Domain, "github.com").unwrap();
+        let d = build_query(TargetKind::Domain, "github.com").expect("should succeed");
         assert!(d.contains("q=domain:\"github.com\"") && d.contains("size=100"));
-        let u = build_query(TargetKind::Url, "https://x.com/a").unwrap();
+        let u = build_query(TargetKind::Url, "https://x.com/a").expect("should succeed");
         assert!(u.contains("q=page.url:") && u.contains("size=100"));
-        let i = build_query(TargetKind::IpAddress, "1.2.3.4").unwrap();
+        let i = build_query(TargetKind::IpAddress, "1.2.3.4").expect("should succeed");
         assert!(i.contains("q=page.ip:\"1.2.3.4\"") && i.contains("size=100"));
         // A kind URLScan can't be keyed on yields no query.
         assert!(build_query(TargetKind::Email, "a@b.com").is_none());

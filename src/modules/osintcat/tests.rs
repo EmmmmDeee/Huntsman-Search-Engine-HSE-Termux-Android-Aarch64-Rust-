@@ -71,7 +71,7 @@ fn emit_footprint_noop_on_zero_registrations() {
         "stats": {"total_checked": 50, "registered_count": 0},
         "results": []
     }))
-    .unwrap();
+    .expect("should succeed");
     let target = Target::new(TargetKind::Email, "x@y.com");
     let mut entity = target.to_entity(confidence::VERY_HIGH, "s");
     let mut result = ModuleResult::new();
@@ -89,7 +89,7 @@ fn emit_footprint_tags_taken_platform() {
             {"domain": "twitter.com", "taken": false}
         ]
     }))
-    .unwrap();
+    .expect("should succeed");
     let target = Target::new(TargetKind::Email, "x@y.com");
     let mut entity = target.to_entity(confidence::VERY_HIGH, "s");
     let mut result = ModuleResult::new();

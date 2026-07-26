@@ -50,11 +50,11 @@ fn relation_kind_as_str_matches_serde() {
             | RelationKind::SameIdentity
             | RelationKind::SharesSecretWith => {}
         }
-        let json = serde_json::to_string(&k).unwrap();
+        let json = serde_json::to_string(&k).expect("should succeed");
         let tag = json.trim_matches('"');
         assert_eq!(tag, k.as_str(), "as_str vs serde: {k:?}");
         assert_eq!(k.to_string(), k.as_str(), "Display vs as_str: {k:?}");
-        let back: RelationKind = serde_json::from_str(&json).unwrap();
+        let back: RelationKind = serde_json::from_str(&json).expect("should succeed");
         assert_eq!(back, k, "serde round-trip: {k:?}");
     }
     assert_eq!(EVERY.len(), 15, "one entry per RelationKind variant");
@@ -1116,8 +1116,8 @@ fn identity_ownership_evidence_then_fingerprint() {
             "Person is the `from` (owner) endpoint"
         );
     }
-    let owned_edge = rels.iter().find(|r| r.to_uid == owned.uid).unwrap();
-    let fp_edge = rels.iter().find(|r| r.to_uid == fp.uid).unwrap();
+    let owned_edge = rels.iter().find(|r| r.to_uid == owned.uid).expect("should succeed");
+    let fp_edge = rels.iter().find(|r| r.to_uid == fp.uid).expect("should succeed");
     // Evidence edge carries full endpoint trust; fingerprint edge is damped.
     assert!((owned_edge.confidence - 0.6_f64.min(0.9)).abs() < 1e-9);
     assert!(
@@ -1391,7 +1391,7 @@ fn diegmann_family_connects_from_any_seed_angle() {
             adj.entry(&r.from_uid).or_default().push(&r.to_uid);
             adj.entry(&r.to_uid).or_default().push(&r.from_uid);
         }
-        let subject = ents.iter().find(|e| e.value == seed).unwrap();
+        let subject = ents.iter().find(|e| e.value == seed).expect("should succeed");
         let mut reached = std::collections::HashSet::new();
         let mut stack = vec![subject.uid.as_str()];
         while let Some(u) = stack.pop() {

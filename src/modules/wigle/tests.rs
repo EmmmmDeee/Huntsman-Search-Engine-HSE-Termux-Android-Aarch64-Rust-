@@ -62,7 +62,7 @@ fn wifi_ap_entities_emit_each_aps_own_observed_position() {
     let ap1 = macs
         .iter()
         .find(|e| e.value == "aa:bb:cc:dd:ee:01")
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(
         ap1.evidence[0]
             .attributes
@@ -75,7 +75,7 @@ fn wifi_ap_entities_emit_each_aps_own_observed_position() {
     let ap2 = macs
         .iter()
         .find(|e| e.value == "aa:bb:cc:dd:ee:02")
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(
         ap2.evidence[0]
             .attributes
@@ -159,7 +159,7 @@ fn mode_breaks_ties_deterministically() {
 
 #[test]
 fn parse_coords_valid() {
-    let (lat, lon) = parse_coords("-27.4766,153.0166").unwrap();
+    let (lat, lon) = parse_coords("-27.4766,153.0166").expect("should succeed");
     assert!((lat - (-27.4766)).abs() < 0.001);
     assert!((lon - 153.0166).abs() < 0.001);
 }
@@ -203,7 +203,7 @@ fn resp_deserializes_with_full_fields() {
             "type": "infra"
         }]
     }"#;
-    let r: Resp = serde_json::from_str(json).unwrap();
+    let r: Resp = serde_json::from_str(json).expect("should succeed");
     assert_eq!(r.success, Some(true));
     assert_eq!(r.total_results, Some(42));
     let net = &r.results[0];
@@ -701,7 +701,7 @@ fn account_status_state_transitions_and_unverified_detection() {
     let s = account_status();
     assert_eq!(s.verified, Some(true));
     assert_eq!(s.user.as_deref(), Some("MattDieg"));
-    let json = serde_json::to_string(&s).unwrap();
+    let json = serde_json::to_string(&s).expect("should succeed");
     assert!(json.contains("\"verified\":true"));
     assert!(json.contains("\"user\":\"MattDieg\""));
 }
@@ -753,7 +753,7 @@ fn profile_user_resp_parses_real_wigle_person_shape() {
         "admin": false,
         "success": "true"
     }"#;
-    let body: ProfileUserResp = serde_json::from_str(json).unwrap();
+    let body: ProfileUserResp = serde_json::from_str(json).expect("should succeed");
     assert_eq!(body.userid.as_deref(), Some("MattDieg "));
     assert_eq!(body.email_verified, Some(false));
 
@@ -765,10 +765,10 @@ fn profile_user_resp_parses_real_wigle_person_shape() {
 
 #[test]
 fn status_from_profile_treats_absent_and_blank_userid_as_none() {
-    let blank: ProfileUserResp = serde_json::from_str(r#"{"userid": "   "}"#).unwrap();
+    let blank: ProfileUserResp = serde_json::from_str(r#"{"userid": "   "}"#).expect("should succeed");
     assert!(status_from_profile(blank, 0).user.is_none());
 
-    let absent: ProfileUserResp = serde_json::from_str(r#"{"emailVerified": true}"#).unwrap();
+    let absent: ProfileUserResp = serde_json::from_str(r#"{"emailVerified": true}"#).expect("should succeed");
     let status = status_from_profile(absent, 0);
     assert!(status.user.is_none());
     assert_eq!(status.verified, Some(true));
@@ -935,8 +935,8 @@ async fn serve_429_then_200(
     use std::sync::atomic::{AtomicU32, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
     let hits = Arc::new(AtomicU32::new(0));
     let hits_srv = hits.clone();
     tokio::spawn(async move {
@@ -1006,8 +1006,8 @@ async fn get_with_retry_gives_up_after_one_retry_on_a_persistent_429() {
     // retrying) — the module-level circuit breaker's soft/hard classification
     // takes over from there, exactly as before this fix.
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
     tokio::spawn(async move {
         for _ in 0..2 {
             let Ok((mut sock, _)) = listener.accept().await else {

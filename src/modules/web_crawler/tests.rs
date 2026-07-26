@@ -113,9 +113,9 @@ use super::*;
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             "strict-transport-security",
-            "max-age=31536000".parse().unwrap(),
+            "max-age=31536000".parse().expect("should succeed"),
         );
-        headers.insert("x-frame-options", "DENY".parse().unwrap());
+        headers.insert("x-frame-options", "DENY".parse().expect("should succeed"));
 
         let mut results = Vec::new();
         audit_security_headers(&headers, &mut results);

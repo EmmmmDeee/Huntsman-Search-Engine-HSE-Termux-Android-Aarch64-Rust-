@@ -227,7 +227,7 @@ use super::{
         // `İ` is 2 bytes; an offset from `to_lowercase()` would be wrong here.
         // The returned offset must index the ORIGINAL string on a char boundary.
         let s = "İ division of x";
-        let off = find_ascii_ci(s, "DIVISION OF ").unwrap();
+        let off = find_ascii_ci(s, "DIVISION OF ").expect("should succeed");
         assert_eq!(off, 3); // İ(2 bytes) + ' '(1)
         assert!(s[off..].starts_with("division of ")); // slice must not panic
     }

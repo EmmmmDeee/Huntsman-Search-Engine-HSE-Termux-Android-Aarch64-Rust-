@@ -611,7 +611,7 @@ mod tests {
         let relation = entity(EntityKind::Email, "j@example.com", &["cross-scan-relation"]);
         let plain = entity(EntityKind::Email, "nobody@example.com", &[]);
         for e in [&alias, &relation, &plain] {
-            store.upsert_entity(e).unwrap();
+            store.upsert_entity(e).expect("should succeed");
         }
 
         let category = category_for_scan(&store, "scan-1").expect("category");
@@ -647,7 +647,7 @@ mod tests {
         for s in scans {
             let e = Entity::new(kind.clone(), value, conf, *s);
             uid = e.uid.clone();
-            store.upsert_entity(&e).unwrap();
+            store.upsert_entity(&e).expect("should succeed");
         }
         uid
     }
@@ -677,7 +677,7 @@ mod tests {
                 "jordan@corp.test",
                 &["cross-scan"],
             ))
-            .unwrap();
+            .expect("should succeed");
         // scan-2 also saw a username that scan-3 saw — reachable only THROUGH
         // the bridge, and never seen by scan-1.
         let link_uid = observe(
@@ -730,7 +730,7 @@ mod tests {
                 "jordan@corp.test",
                 &["cross-scan"],
             ))
-            .unwrap();
+            .expect("should succeed");
         // A chain one hop longer than the walk is allowed to follow:
         //   scan-2 →(jmeyers)→ scan-3 →(+61400111222)→ scan-4 →(deep)→ scan-5
         observe(
@@ -795,7 +795,7 @@ mod tests {
                 "jordan@corp.test",
                 &["cross-scan"],
             ))
-            .unwrap();
+            .expect("should succeed");
         for (kind, value) in [
             (EntityKind::IpAddress, "104.20.37.187"),
             (EntityKind::Domain, "cloudflare.com"),
@@ -841,11 +841,11 @@ mod tests {
                 "jordan@corp.test",
                 &["cross-scan"],
             ))
-            .unwrap();
+            .expect("should succeed");
         for scan in ["scan-2", "scan-3"] {
             let mut c = Entity::new(EntityKind::Email, "stranger@breach.test", 0.9, scan);
             c.tag(crate::core::tags::CANDIDATE);
-            store.upsert_entity(&c).unwrap();
+            store.upsert_entity(&c).expect("should succeed");
         }
 
         let closure = transitive_closure(&store, "scan-1", &direct_bridges(&store, "scan-1"));
@@ -873,7 +873,7 @@ mod tests {
                 "jordan@corp.test",
                 &["cross-scan"],
             ))
-            .unwrap();
+            .expect("should succeed");
         observe(
             &store,
             EntityKind::Username,
@@ -911,7 +911,7 @@ mod tests {
                 "jordan@corp.test",
                 &["cross-scan"],
             ))
-            .unwrap();
+            .expect("should succeed");
         // An identifier in far more investigations than MAX_HUB_DEGREE — the
         // operator's own recurring fixture, not a link between subjects.
         let hub_scans: Vec<String> = (0..MAX_HUB_DEGREE + 3)
@@ -960,7 +960,7 @@ mod tests {
             );
             store
                 .upsert_entity(&entity(EntityKind::Email, value, &["cross-scan"]))
-                .unwrap();
+                .expect("should succeed");
         }
 
         let closure = transitive_closure(&store, "scan-1", &direct_bridges(&store, "scan-1"));
@@ -989,7 +989,7 @@ mod tests {
                 "jordan@corp.test",
                 &["cross-scan"],
             ))
-            .unwrap();
+            .expect("should succeed");
         for i in 0..MAX_TRANSITIVE_SCANS + 5 {
             observe(
                 &store,
@@ -1034,7 +1034,7 @@ mod tests {
                 "jordan@corp.test",
                 &["cross-scan"],
             ))
-            .unwrap();
+            .expect("should succeed");
         observe(
             &store,
             EntityKind::Username,
@@ -1073,7 +1073,7 @@ mod tests {
         let store = InMemoryStore::new();
         store
             .upsert_entity(&entity(EntityKind::Email, "lonely@corp.test", &[]))
-            .unwrap();
+            .expect("should succeed");
 
         let closure = transitive_closure(&store, "scan-1", &direct_bridges(&store, "scan-1"));
 

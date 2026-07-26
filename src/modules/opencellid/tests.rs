@@ -71,7 +71,7 @@ fn parse_full_area_response() {
             }
         ]
     }"#;
-    let resp: AreaResp = serde_json::from_str(raw).unwrap();
+    let resp: AreaResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(resp.cells.len(), 2);
 
     let c0 = &resp.cells[0];
@@ -80,8 +80,8 @@ fn parse_full_area_response() {
     assert_eq!(c0.lac, Some(12345));
     assert_eq!(c0.cid, Some(67890));
     assert_eq!(c0.radio.as_deref(), Some("LTE"));
-    assert!((c0.lat.unwrap() - (-27.476600_f64)).abs() < 1e-6);
-    assert!((c0.lon.unwrap() - 153.016600_f64).abs() < 1e-6);
+    assert!((c0.lat.expect("should succeed") - (-27.476600_f64)).abs() < 1e-6);
+    assert!((c0.lon.expect("should succeed") - 153.016600_f64).abs() < 1e-6);
     assert_eq!(c0.range, Some(500));
     assert_eq!(c0.average_signal, Some(-75));
     assert_eq!(c0.samples, Some(42));
@@ -94,14 +94,14 @@ fn parse_full_area_response() {
 #[test]
 fn parse_empty_cells_array() {
     let raw = r#"{"count": 0, "cells": []}"#;
-    let resp: AreaResp = serde_json::from_str(raw).unwrap();
+    let resp: AreaResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(resp.cells.len(), 0);
 }
 
 #[test]
 fn parse_missing_cells_key_defaults_empty() {
     let raw = r#"{}"#;
-    let resp: AreaResp = serde_json::from_str(raw).unwrap();
+    let resp: AreaResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(resp.cells.len(), 0);
 }
 
@@ -122,7 +122,7 @@ fn confidence_bands_match_cell_intel_scale() {
 #[test]
 fn cell_entry_optional_fields_default_to_none() {
     let raw = r#"{"mcc": 505, "net": 1, "area": 100, "cell": 200}"#;
-    let c: super::CellEntry = serde_json::from_str(raw).unwrap();
+    let c: super::CellEntry = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(c.radio, None);
     assert_eq!(c.lat, None);
     assert_eq!(c.lon, None);
@@ -141,7 +141,7 @@ fn cell_entry_captures_the_real_live_confirmed_bad_key_error_shape() {
     // found" — `process_tower`'s `error.is_some()` check is what tells the
     // two apart and reports the key to the pool.
     let raw = r#"{"error":"API Key not known: garbage00000invalid","code":2}"#;
-    let c: super::CellEntry = serde_json::from_str(raw).unwrap();
+    let c: super::CellEntry = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(
         c.error.as_deref(),
         Some("API Key not known: garbage00000invalid")
@@ -154,7 +154,7 @@ fn area_resp_captures_the_real_live_confirmed_bad_key_error_shape() {
     // Same live-confirmed shape as `cell/get`, for `cell/getInArea` — no
     // "cells" key at all on an error response.
     let raw = r#"{"error":"API Key not known: garbage00000invalid","code":2}"#;
-    let resp: AreaResp = serde_json::from_str(raw).unwrap();
+    let resp: AreaResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(
         resp.error.as_deref(),
         Some("API Key not known: garbage00000invalid")

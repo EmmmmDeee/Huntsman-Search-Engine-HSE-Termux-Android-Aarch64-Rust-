@@ -423,7 +423,7 @@ pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 /// ```
 /// use huntsman_search_engine::util::geo::nearest_au_locality;
 ///
-/// let (name, state, km) = nearest_au_locality(-27.47, 153.02).unwrap(); // Brisbane CBD
+/// let (name, state, km) = nearest_au_locality(-27.47, 153.02).expect("should succeed"); // Brisbane CBD
 /// assert_eq!((name, state), ("Brisbane", "QLD"));
 /// assert!(km < 5.0);
 /// assert!(nearest_au_locality(40.71, -74.0).is_none()); // New York → not AU

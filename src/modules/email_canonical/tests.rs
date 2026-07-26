@@ -73,7 +73,7 @@ use super::*;
     #[tokio::test]
     async fn process_emits_canonical_email_above_floor() {
         let t = Target::new(TargetKind::Email, "j.doe+work@googlemail.com");
-        let r = EmailCanonical.process(&t, &ctx()).await.unwrap();
+        let r = EmailCanonical.process(&t, &ctx()).await.expect("should succeed");
         assert_eq!(r.entities.len(), 1);
         let e = &r.entities[0];
         assert_eq!(e.kind, EntityKind::Email);
@@ -89,7 +89,7 @@ use super::*;
     #[tokio::test]
     async fn process_emits_nothing_when_already_canonical() {
         let t = Target::new(TargetKind::Email, "jdoe@gmail.com");
-        let r = EmailCanonical.process(&t, &ctx()).await.unwrap();
+        let r = EmailCanonical.process(&t, &ctx()).await.expect("should succeed");
         assert!(r.entities.is_empty());
     }
 

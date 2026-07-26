@@ -31,7 +31,7 @@ async fn no_mx_produces_unreachable() {
         keys: Default::default(),
         cancel: Default::default(),
     };
-    let r = m.process(&target, &ctx).await.unwrap();
+    let r = m.process(&target, &ctx).await.expect("should succeed");
     assert_eq!(r.len(), 1);
     assert!(r.entities[0].has_tag("smtp-unreachable"));
 }
@@ -124,8 +124,8 @@ async fn read_line_timeout_caps_a_giant_newline_less_line() {
     // Send 100 KiB with no newline; the capped reader must stop at the 8 KiB
     // ceiling rather than buffer the whole blob.
     use tokio::io::{AsyncWriteExt, BufReader};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
     tokio::spawn(async move {
         if let Ok((mut sock, _)) = listener.accept().await {
             let blob = vec![b'A'; 100 * 1024]; // no newline anywhere
@@ -134,13 +134,13 @@ async fn read_line_timeout_caps_a_giant_newline_less_line() {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
     });
-    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let stream = tokio::net::TcpStream::connect(addr).await.expect("should succeed");
     let (rd, _wr) = stream.into_split();
     let mut reader = BufReader::new(rd);
     let mut buf = String::new();
     super::read_line_timeout(&mut reader, &mut buf)
         .await
-        .unwrap();
+        .expect("should succeed");
     assert!(
         buf.len() <= 8 * 1024,
         "capped line read must not exceed the 8 KiB ceiling, got {}",

@@ -15,7 +15,7 @@ fn extract_name_simple() {
     let buf = [
         7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 3, b'c', b'o', b'm', 0,
     ];
-    let name = extract_name(&buf, 0).unwrap();
+    let name = extract_name(&buf, 0).expect("should succeed");
     assert_eq!(name, "example.com");
 }
 
@@ -50,7 +50,7 @@ fn extract_name_with_multiple_labels() {
         3, b'c', b'o', b'm',
         0,
     ];
-    let name = extract_name(&buf, 0).unwrap();
+    let name = extract_name(&buf, 0).expect("should succeed");
     assert_eq!(name, "sub.example.com");
 }
 

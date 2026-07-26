@@ -210,12 +210,12 @@ fn text_search_withholds_the_strong_exposure_tags() {
 
 #[test]
 fn result_resp_terminal_status_parsing() {
-    let running: ResultResp = serde_json::from_str(r#"{"status":1,"records":[]}"#).unwrap();
+    let running: ResultResp = serde_json::from_str(r#"{"status":1,"records":[]}"#).expect("should succeed");
     assert_eq!(running.status, Some(1)); // must NOT be treated as terminal
     let finished: ResultResp = serde_json::from_str(
         r#"{"status":2,"records":[{"bucket":"leaks.public.general","media":24,"date":"2024-01-01"}]}"#,
     )
-    .unwrap();
+    .expect("should succeed");
     assert_eq!(finished.status, Some(2));
     assert_eq!(finished.records[0].media, Some(24));
     assert_eq!(
@@ -228,7 +228,7 @@ fn result_resp_terminal_status_parsing() {
 fn record_tolerates_missing_and_human_bucket() {
     let r: ResultResp =
         serde_json::from_str(r#"{"status":2,"records":[{"bucketh":"Public Leaks","media":1}]}"#)
-            .unwrap();
+            .expect("should succeed");
     assert_eq!(r.records[0].bucketh.as_deref(), Some("Public Leaks"));
     assert!(r.records[0].bucket.is_none());
     assert!(r.records[0].date.is_none());

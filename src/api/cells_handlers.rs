@@ -256,8 +256,8 @@ mod tests {
 
     #[test]
     fn reject_non_loopback_allows_loopback_and_refuses_lan() {
-        let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
-        let lan: SocketAddr = "192.168.1.50:40000".parse().unwrap();
+        let loopback: SocketAddr = "127.0.0.1:9999".parse().expect("should succeed");
+        let lan: SocketAddr = "192.168.1.50:40000".parse().expect("should succeed");
         assert!(reject_non_loopback(&loopback).is_none());
         assert!(reject_non_loopback(&lan).is_some());
     }
@@ -318,7 +318,7 @@ mod tests {
         use std::collections::HashMap;
 
         let store: Arc<dyn crate::core::StoragePort> =
-            Arc::new(crate::storage::Store::open(":memory:").unwrap());
+            Arc::new(crate::storage::Store::open(":memory:").expect("should succeed"));
         let (bus, _rx) = tokio::sync::broadcast::channel(16);
         let engine = Arc::new(crate::core::engine::ScanEngine::new(
             Vec::new(),
@@ -358,7 +358,7 @@ mod tests {
             .uri(uri)
             .header("content-type", "application/json")
             .body(Body::from(body.to_string()))
-            .unwrap();
+            .expect("should succeed");
         r.extensions_mut().insert(axum::extract::ConnectInfo(peer));
         r
     }
@@ -371,15 +371,15 @@ mod tests {
                 Request::builder()
                     .uri("/api/v1/cells/status")
                     .body(Body::empty())
-                    .unwrap(),
+                    .expect("should succeed"),
             )
             .await
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(resp.status(), 200);
         let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
             .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            .expect("should succeed");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("should succeed");
         assert!(json.get("total").is_some());
         assert!(json.get("path").is_some());
         assert!(json.get("by_mcc").is_some());
@@ -389,16 +389,16 @@ mod tests {
     #[tokio::test]
     async fn cells_import_refuses_a_non_loopback_peer() {
         let app = cells_router();
-        let lan: SocketAddr = "192.168.1.50:40000".parse().unwrap();
+        let lan: SocketAddr = "192.168.1.50:40000".parse().expect("should succeed");
         let req = req_with_peer("POST", "/api/v1/cells/import", r#"{"country":"AU"}"#, lan);
-        let resp = app.oneshot(req).await.unwrap();
+        let resp = app.oneshot(req).await.expect("should succeed");
         assert_eq!(resp.status(), 403);
     }
 
     #[tokio::test]
     async fn cells_import_rejects_an_empty_country() {
         let app = cells_router();
-        let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+        let loopback: SocketAddr = "127.0.0.1:9999".parse().expect("should succeed");
         // No HUNTSMAN_OPENCELLID_KEY needed to reach this check — empty
         // country is rejected before the key is even resolved.
         let req = req_with_peer(
@@ -407,44 +407,44 @@ mod tests {
             r#"{"country":"  "}"#,
             loopback,
         );
-        let resp = app.oneshot(req).await.unwrap();
+        let resp = app.oneshot(req).await.expect("should succeed");
         assert_eq!(resp.status(), 400);
     }
 
     #[tokio::test]
     async fn cells_clear_refuses_a_non_loopback_peer() {
         let app = cells_router();
-        let lan: SocketAddr = "192.168.1.50:40000".parse().unwrap();
+        let lan: SocketAddr = "192.168.1.50:40000".parse().expect("should succeed");
         let req = req_with_peer("POST", "/api/v1/cells/clear", r#"{"confirm":true}"#, lan);
-        let resp = app.oneshot(req).await.unwrap();
+        let resp = app.oneshot(req).await.expect("should succeed");
         assert_eq!(resp.status(), 403);
     }
 
     #[tokio::test]
     async fn cells_clear_requires_explicit_confirm() {
         let app = cells_router();
-        let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+        let loopback: SocketAddr = "127.0.0.1:9999".parse().expect("should succeed");
         let req = req_with_peer(
             "POST",
             "/api/v1/cells/clear",
             r#"{"confirm":false}"#,
             loopback,
         );
-        let resp = app.oneshot(req).await.unwrap();
+        let resp = app.oneshot(req).await.expect("should succeed");
         assert_eq!(resp.status(), 400);
     }
 
     #[tokio::test]
     async fn cells_clear_succeeds_with_confirm_true() {
         let app = cells_router();
-        let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+        let loopback: SocketAddr = "127.0.0.1:9999".parse().expect("should succeed");
         let req = req_with_peer(
             "POST",
             "/api/v1/cells/clear",
             r#"{"confirm":true}"#,
             loopback,
         );
-        let resp = app.oneshot(req).await.unwrap();
+        let resp = app.oneshot(req).await.expect("should succeed");
         assert_eq!(resp.status(), 200);
     }
 }

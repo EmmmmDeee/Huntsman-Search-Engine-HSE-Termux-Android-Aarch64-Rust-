@@ -56,7 +56,7 @@ fn emits_username_and_profile_url_from_url_field() {
     let u = ents
         .iter()
         .find(|e| e.kind == EntityKind::Username)
-        .unwrap();
+        .expect("should succeed");
     assert!(u.has_tag("sourceforge") && u.has_tag("public-profile"));
     assert!((u.confidence - 0.86).abs() < 0.01);
 }
@@ -89,8 +89,8 @@ fn emits_person_from_matching_developer_name() {
         p.is_some(),
         "must emit Person from the matching developer name"
     );
-    assert_eq!(p.unwrap().value, "Source Forge Developer");
-    assert!(p.unwrap().has_tag("sourceforge"));
+    assert_eq!(p.expect("should succeed").value, "Source Forge Developer");
+    assert!(p.expect("should succeed").has_tag("sourceforge"));
 }
 
 #[test]

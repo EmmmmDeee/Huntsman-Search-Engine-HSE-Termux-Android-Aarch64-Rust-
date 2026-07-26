@@ -4,8 +4,8 @@ use super::*;
         // `Tdddd` or `Tdddd.ddd` → (base, sub) with sub = -1 for a parent.
         let core = id.trim_start_matches('T');
         match core.split_once('.') {
-            Some((b, s)) => (b.parse().unwrap(), s.parse().unwrap()),
-            None => (core.parse().unwrap(), -1),
+            Some((b, s)) => (b.parse().expect("should succeed"), s.parse().expect("should succeed")),
+            None => (core.parse().expect("should succeed"), -1),
         }
     }
 
@@ -296,18 +296,18 @@ use super::*;
         assert_eq!(layer["domain"], "enterprise-attack");
         assert_eq!(layer["versions"]["layer"], "4.5");
         // Exactly one technique per catalogued id (covered + gaps = whole tactic).
-        let techs = layer["techniques"].as_array().unwrap();
+        let techs = layer["techniques"].as_array().expect("should succeed");
         assert_eq!(techs.len(), reconnaissance().len());
         // The exercised technique is enabled and scored by its entity count.
         let whois = techs
             .iter()
             .find(|t| t["techniqueID"] == "T1596.002")
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(whois["score"], 5);
         assert_eq!(whois["enabled"], true);
         assert_eq!(whois["tactic"], "reconnaissance");
         // A gap is present, disabled, score 0 — the honest picture.
-        let phishing = techs.iter().find(|t| t["techniqueID"] == "T1598").unwrap();
+        let phishing = techs.iter().find(|t| t["techniqueID"] == "T1598").expect("should succeed");
         assert_eq!(phishing["score"], 0);
         assert_eq!(phishing["enabled"], false);
         assert_eq!(layer["gradient"]["maxValue"], 5);

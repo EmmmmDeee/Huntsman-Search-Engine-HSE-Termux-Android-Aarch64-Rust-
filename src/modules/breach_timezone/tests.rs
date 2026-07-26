@@ -4,7 +4,7 @@ use super::*;
     fn histogram_us_eastern() {
         // Activity at UTC hours 13-23 = 08:00-18:00 at UTC-5 (US Eastern)
         let hours: Vec<u32> = vec![13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23];
-        let tz = infer_timezone(&hours).unwrap();
+        let tz = infer_timezone(&hours).expect("should succeed");
         assert_eq!(tz.utc_offset, -5);
         assert!(tz.region.contains("Eastern"));
     }

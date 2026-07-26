@@ -198,7 +198,7 @@ fn state_capital_coords_covers_eight_states_and_rejects_others() {
         ("ACT", -35.2809, 149.1300),
         ("NT", -12.4634, 130.8456),
     ] {
-        let (got_lat, got_lon) = state_capital_coords(code).unwrap();
+        let (got_lat, got_lon) = state_capital_coords(code).expect("should succeed");
         assert!((got_lat - lat).abs() < 1e-9, "{code} lat");
         assert!((got_lon - lon).abs() < 1e-9, "{code} lon");
     }
@@ -234,7 +234,7 @@ fn record_to_entities_address_includes_postcode_when_present() {
         postcode: Some("3065".into()),
     };
     let ents = record_to_entities(&rec, "s");
-    let addr = ents.iter().find(|e| e.kind == EntityKind::Address).unwrap();
+    let addr = ents.iter().find(|e| e.kind == EntityKind::Address).expect("should succeed");
     assert!(
         addr.value.contains("3065"),
         "address must include postcode: {}",

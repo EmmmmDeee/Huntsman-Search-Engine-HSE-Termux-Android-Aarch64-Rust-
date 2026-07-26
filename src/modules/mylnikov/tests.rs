@@ -18,10 +18,10 @@ use super::*;
     #[test]
     fn parse_response() {
         let raw = r#"{"result": 200, "data": {"lat": -33.8688, "lon": 151.2093, "range": 250.0}}"#;
-        let r: MylnikovResp = serde_json::from_str(raw).unwrap();
+        let r: MylnikovResp = serde_json::from_str(raw).expect("should succeed");
         assert_eq!(r.result, Some(200));
-        let d = r.data.unwrap();
-        assert!((d.lat.unwrap() - (-33.8688)).abs() < 0.001);
+        let d = r.data.expect("should succeed");
+        assert!((d.lat.expect("should succeed") - (-33.8688)).abs() < 0.001);
     }
 
     #[test]
@@ -48,7 +48,7 @@ use super::*;
             &data(Some(-33.8688), Some(151.2093), Some(150.0)),
             "s",
         )
-        .unwrap();
+        .expect("should succeed");
         assert_eq!(e.kind, EntityKind::Coordinates);
         assert_eq!(e.value, "-33.868800,151.209300");
         assert!(e.has_tag("mylnikov") && e.has_tag("geoint") && e.has_tag("bssid-located"));
@@ -63,7 +63,7 @@ use super::*;
 
     #[test]
     fn missing_range_omits_attr_and_uses_default_band() {
-        let e = build_location_entity("m", &data(Some(10.0), Some(20.0), None), "s").unwrap();
+        let e = build_location_entity("m", &data(Some(10.0), Some(20.0), None), "s").expect("should succeed");
         assert!((e.confidence - confidence::MEDIUM).abs() < 1e-9);
         assert_eq!(e.evidence[0].attributes.get("range_m"), None);
     }

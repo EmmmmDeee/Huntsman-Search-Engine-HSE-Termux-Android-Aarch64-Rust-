@@ -774,9 +774,9 @@ fn extract_surrounding_text_does_not_leak_a_straddling_svg_paths_raw_data() {
     let html = format!(
         r#"<svg><path d="{long_path}" clip-rule="evenodd"></path></svg><p>Real Co</p><a href="ANCHOR"><svg><path d="M5 6L7 8Z"></path></svg></a>"#
     );
-    let pos = html.find("ANCHOR").unwrap();
+    let pos = html.find("ANCHOR").expect("should succeed");
     assert!(
-        pos.saturating_sub(300) < html.find("<svg").unwrap() + 400,
+        pos.saturating_sub(300) < html.find("<svg").expect("should succeed") + 400,
         "test setup sanity: the naive window start must land inside the first \
          svg block, or this test doesn't reproduce the bug"
     );

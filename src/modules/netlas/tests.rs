@@ -42,7 +42,7 @@ fn build_entities_surfaces_previously_dropped_cert_issuer_and_http_fields() {
             }
         }]
     }))
-    .unwrap();
+    .expect("should succeed");
     let r = super::build_entities(&body, "203.0.113.10", "scan");
     let ip = r
         .entities
@@ -81,7 +81,7 @@ fn build_entities_emits_every_unique_cve_with_a_disclosed_count() {
                         "cve": cves_b.iter().map(|n| serde_json::json!({"name": n})).collect::<Vec<_>>() } }
         ]
     }))
-    .unwrap();
+    .expect("should succeed");
     let r = super::build_entities(&body, "203.0.113.10", "scan");
     let ip = r
         .entities
@@ -113,7 +113,7 @@ fn build_entities_discloses_technology_count() {
         "items": [ { "data": { "ip": "203.0.113.10", "port": 443, "protocol": "tcp",
                                "technologies": techs } } ]
     }))
-    .unwrap();
+    .expect("should succeed");
     let r = super::build_entities(&body, "203.0.113.10", "scan");
     let ip = r
         .entities
@@ -146,7 +146,7 @@ fn build_entities_emits_every_unique_san_domain_and_email() {
             "http": { "emails": emails }
         }}]
     }))
-    .unwrap();
+    .expect("should succeed");
     let r = super::build_entities(&body, "203.0.113.10", "scan");
     let domain_ct = r
         .entities
@@ -181,7 +181,7 @@ fn build_entities_emits_every_unique_cert_subject_org() {
             "certificate": { "subject": { "organization": orgs } }
         }}]
     }))
-    .unwrap();
+    .expect("should succeed");
     let r = super::build_entities(&body, "203.0.113.10", "scan");
     let org_ct = r
         .entities
@@ -210,7 +210,7 @@ fn build_entities_emits_a_deterministic_jarm_fingerprint() {
             { "data": { "ip": "203.0.113.10", "port": 9443, "jarm": "bbbb2222" } },
         ]
     }))
-    .unwrap();
+    .expect("should succeed");
     let r = super::build_entities(&body, "203.0.113.10", "scan");
     let ip = r
         .entities
@@ -241,7 +241,7 @@ fn build_entities_suppresses_geo_for_cdn_edge_but_keeps_isp() {
             "geo": { "latitude": 37.7757, "longitude": -122.395, "country": "United States", "city": "San Francisco" }
         }}]
     }))
-    .unwrap();
+    .expect("should succeed");
     let r = super::build_entities(&body, "104.16.0.1", "scan");
     assert!(
         !r.entities.iter().any(|e| e.kind == EntityKind::Coordinates),
@@ -272,7 +272,7 @@ fn build_entities_rejects_out_of_range_coordinates() {
             "geo": { "latitude": 200.0, "longitude": 200.0, "country": "Nowhere", "city": "Nowhere" }
         }}]
     }))
-    .unwrap();
+    .expect("should succeed");
     let r = super::build_entities(&body, "203.0.113.10", "scan");
     assert!(
         !r.entities.iter().any(|e| e.kind == EntityKind::Coordinates),

@@ -18,13 +18,13 @@ use super::*;
     fn deserializes_user_and_missing() {
         let json = r#"{"user":{"id":1,"login":"alice","name":"Alice Smith",
             "avatar":"https://x/a","url":"https://github.com/alice"}}"#;
-        let r: UserResp = serde_json::from_str(json).unwrap();
-        let u = r.user.unwrap();
+        let r: UserResp = serde_json::from_str(json).expect("should succeed");
+        let u = r.user.expect("should succeed");
         assert_eq!(u.login, "alice");
         assert_eq!(u.name.as_deref(), Some("Alice Smith"));
         assert_eq!(u.url.as_deref(), Some("https://github.com/alice"));
         // A no-user body deserializes to None.
-        let empty: UserResp = serde_json::from_str(r#"{}"#).unwrap();
+        let empty: UserResp = serde_json::from_str(r#"{}"#).expect("should succeed");
         assert!(empty.user.is_none());
     }
 
@@ -73,7 +73,7 @@ use super::*;
         let gh = ents.iter().find(|e| e.kind == EntityKind::Username && e.value == "alice"
             && e.has_tag("github"));
         assert!(gh.is_some(), "must emit GitHub username pivot");
-        assert!(gh.unwrap().has_tag("crates-io-pivot"));
+        assert!(gh.expect("should succeed").has_tag("crates-io-pivot"));
 
         let p = of_kind(&ents, EntityKind::Person).expect("person entity");
         assert_eq!(p.value, "Alice Smith");
@@ -100,7 +100,7 @@ use super::*;
                 "created_at":"2012-07-09T03:55:40Z"}}"#,
         );
         assert_eq!(
-            body.user.as_ref().unwrap().created_at.as_deref(),
+            body.user.as_ref().expect("should succeed").created_at.as_deref(),
             Some("2012-07-09T03:55:40Z"),
             "the real response's created_at must deserialise"
         );
@@ -117,7 +117,7 @@ use super::*;
     fn blank_created_at_adds_no_attr() {
         let body = user_resp(r#"{"user":{"login":"frank","created_at":""}}"#);
         let ents = build_entities(&body, "s");
-        let u = of_kind(&ents, EntityKind::Username).unwrap();
+        let u = of_kind(&ents, EntityKind::Username).expect("should succeed");
         assert!(
             !u.evidence[0].attributes.contains_key("created_at"),
             "a blank created_at must not become an attribute"
@@ -136,7 +136,7 @@ use super::*;
         let body = user_resp(r#"{"user":{"login":"bob","name":"bob"}}"#);
         let ents = build_entities(&body, "s");
         assert!(of_kind(&ents, EntityKind::Person).is_none());
-        let u = of_kind(&ents, EntityKind::Username).unwrap();
+        let u = of_kind(&ents, EntityKind::Username).expect("should succeed");
         assert_eq!(
             u.evidence[0].attributes.get("name").map(String::as_str),
             Some("bob")
@@ -148,7 +148,7 @@ use super::*;
         let body = user_resp(r#"{"user":{"login":"carol","name":""}}"#);
         let ents = build_entities(&body, "s");
         assert!(of_kind(&ents, EntityKind::Person).is_none());
-        let u = of_kind(&ents, EntityKind::Username).unwrap();
+        let u = of_kind(&ents, EntityKind::Username).expect("should succeed");
         assert!(
             !u.evidence[0].attributes.contains_key("name"),
             "a blank name must not become a `name` attribute"
@@ -221,7 +221,7 @@ use super::*;
         assert!(
             ents.iter()
                 .find(|e| e.kind == EntityKind::Username)
-                .unwrap()
+                .expect("should succeed")
                 .has_tag("github")
         );
     }
@@ -255,7 +255,7 @@ use super::*;
             of_kind(&ents, EntityKind::Person).is_none(),
             "a placeholder full name must not yield a Person entity"
         );
-        let u = of_kind(&ents, EntityKind::Username).unwrap();
+        let u = of_kind(&ents, EntityKind::Username).expect("should succeed");
         assert_eq!(
             u.evidence[0].attributes.get("name").map(String::as_str),
             Some("John Doe")

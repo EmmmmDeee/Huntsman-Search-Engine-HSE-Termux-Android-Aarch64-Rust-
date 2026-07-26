@@ -264,7 +264,7 @@ fn label_reflects_dominant_kind_and_a_stable_exemplar() {
     let exemplar_person = [&p1, &p2]
         .into_iter()
         .min_by(|a, b| a.uid.cmp(&b.uid))
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(
         label,
         &format!("person cluster: {}", exemplar_person.value),

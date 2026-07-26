@@ -12,7 +12,7 @@ use crate::core::module::Module;
 
 #[test]
 fn division_centroid_returns_sydney_for_sydney() {
-    let info = division_centroid("Sydney").unwrap();
+    let info = division_centroid("Sydney").expect("should succeed");
     assert_eq!(info.state, "NSW");
     assert!((info.lat - -33.8688).abs() < 0.01);
     assert!((info.lon - 151.2093).abs() < 0.01);
@@ -59,7 +59,7 @@ fn extract_division_parses_aec_pattern() {
     for (html, expected_div, _suburb) in cases {
         let result = extract_division(html);
         assert!(result.is_some(), "expected a division from: {html}");
-        let (div, _) = result.unwrap();
+        let (div, _) = result.expect("should succeed");
         assert!(
             div.to_lowercase().contains(&expected_div.to_lowercase()),
             "expected '{expected_div}' in div '{div}'"
@@ -121,7 +121,7 @@ fn address_confidence_reflects_whether_a_suburb_was_resolved() {
     let addr = with_suburb
         .iter()
         .find(|e| e.kind == EntityKind::Address)
-        .unwrap();
+        .expect("should succeed");
     assert!(
         (addr.confidence - 0.72).abs() < 1e-9,
         "suburb-level match must score 0.72, got {}",
@@ -136,7 +136,7 @@ fn address_confidence_reflects_whether_a_suburb_was_resolved() {
     let addr2 = division_only
         .iter()
         .find(|e| e.kind == EntityKind::Address)
-        .unwrap();
+        .expect("should succeed");
     assert!(
         (addr2.confidence - 0.58).abs() < 1e-9,
         "division-only match must score 0.58, not the suburb-level 0.72: got {}",
@@ -147,7 +147,7 @@ fn address_confidence_reflects_whether_a_suburb_was_resolved() {
 #[test]
 fn build_electoral_entities_suburb_hint_overrides_centroid_suburb() {
     let ents = build_electoral_entities("Sydney", Some("Newtown"), "Test", "s");
-    let addr = ents.iter().find(|e| e.kind == EntityKind::Address).unwrap();
+    let addr = ents.iter().find(|e| e.kind == EntityKind::Address).expect("should succeed");
     assert!(
         addr.value.contains("Newtown"),
         "suburb hint should override centroid suburb: {}",

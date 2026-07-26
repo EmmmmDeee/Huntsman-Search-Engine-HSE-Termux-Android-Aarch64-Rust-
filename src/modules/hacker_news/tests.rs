@@ -24,13 +24,13 @@ fn deserializes_account_and_null() {
     let json = r#"{"id":"pg","created":1160418092,"karma":157222,
         "about":"Reach me at paul@example.com or https://paulgraham.com/",
         "submitted":[1,2,3]}"#;
-    let u: Option<HnUser> = serde_json::from_str(json).unwrap();
-    let u = u.unwrap();
+    let u: Option<HnUser> = serde_json::from_str(json).expect("should succeed");
+    let u = u.expect("should succeed");
     assert_eq!(u.id, "pg");
     assert_eq!(u.karma, Some(157222));
-    assert_eq!(u.submitted.as_ref().unwrap().len(), 3);
+    assert_eq!(u.submitted.as_ref().expect("should succeed").len(), 3);
     // The literal `null` (unknown handle) is a clean None.
-    let none: Option<HnUser> = serde_json::from_str("null").unwrap();
+    let none: Option<HnUser> = serde_json::from_str("null").expect("should succeed");
     assert!(none.is_none());
 }
 
@@ -39,12 +39,12 @@ fn bio_extracts_email_and_url() {
     use crate::util::extract::{EMAIL_RE, URL_RE};
     let about = "Contact: Paul@Example.com — site https://paulgraham.com/bio.html.";
     assert_eq!(
-        EMAIL_RE.find(about).unwrap().as_str().to_lowercase(),
+        EMAIL_RE.find(about).expect("should succeed").as_str().to_lowercase(),
         "paul@example.com"
     );
     let link = URL_RE
         .find(about)
-        .unwrap()
+        .expect("should succeed")
         .as_str()
         .trim_end_matches(['.', ',', ')']);
     assert_eq!(link, "https://paulgraham.com/bio.html");
@@ -120,7 +120,7 @@ fn build_entities_bio_email_emits_email_entity() {
     };
     let pool = crate::util::key_pool::global_pool();
     let ents = build_entities(u, "scan-3", &pool);
-    let email = ents.iter().find(|e| e.kind == EntityKind::Email).unwrap();
+    let email = ents.iter().find(|e| e.kind == EntityKind::Email).expect("should succeed");
     assert_eq!(email.value, "alice@example.com");
     assert!(email.has_tag("hacker-news") && email.has_tag("public-profile"));
 }
@@ -136,7 +136,7 @@ fn build_entities_bio_url_emits_url_entity_without_trailing_punct() {
     };
     let pool = crate::util::key_pool::global_pool();
     let ents = build_entities(u, "scan-4", &pool);
-    let url = ents.iter().find(|e| e.kind == EntityKind::Url).unwrap();
+    let url = ents.iter().find(|e| e.kind == EntityKind::Url).expect("should succeed");
     assert!(url.value.starts_with("https://"));
     assert!(!url.value.ends_with('.'), "trailing dot must be stripped");
     assert!(url.has_tag("personal-site"));

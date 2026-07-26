@@ -192,7 +192,7 @@ fn parse_falls_back_to_the_author_uri_when_the_title_changes_shape() {
         "<title>overview for spez</title>",
         "<title>spez on Reddit</title>",
     );
-    assert_eq!(parse(&retitled).unwrap().username, "spez");
+    assert_eq!(parse(&retitled).expect("should succeed").username, "spez");
 }
 
 #[test]
@@ -212,7 +212,7 @@ fn parse_refuses_a_document_that_names_no_account() {
 fn parse_survives_a_truncated_document() {
     // A body cut mid-entry must yield the entries that completed, never a field
     // running to the end of the file.
-    let cut = &FEED[..FEED.find("t1_abc1234").unwrap()];
+    let cut = &FEED[..FEED.find("t1_abc1234").expect("should succeed")];
     let f = parse(cut).expect("the head still identifies the account");
     assert_eq!(f.username, "spez");
     assert_eq!(f.items.len(), 1, "the incomplete entry contributes nothing");
@@ -399,7 +399,7 @@ fn a_self_published_url_keeps_its_bio_grading_even_if_also_posted() {
         "&lt;a href=&quot;https://investor.redditinc.com/q2&quot;&gt;investor page&lt;/a&gt;",
         "&lt;a href=&quot;https://example.com/spez&quot;&gt;my site&lt;/a&gt;",
     );
-    let ents = feed_to_entities(&parse(&doubled).unwrap(), "scan-2");
+    let ents = feed_to_entities(&parse(&doubled).expect("should succeed"), "scan-2");
     let hits: Vec<&crate::core::entity::Entity> = ents
         .iter()
         .filter(|e| e.kind == EntityKind::Url && e.value == "https://example.com/spez")
@@ -421,7 +421,7 @@ fn the_posted_link_cap_never_fires_silently() {
         "&lt;a href=&quot;https://investor.redditinc.com/q2&quot;&gt;investor page&lt;/a&gt;",
         &links,
     );
-    let ents = feed_to_entities(&parse(&flooded).unwrap(), "scan-3");
+    let ents = feed_to_entities(&parse(&flooded).expect("should succeed"), "scan-3");
 
     let kept = ents
         .iter()
@@ -503,7 +503,7 @@ fn mining_a_feed_labels_a_bio_hit_distinctly_from_an_item_hit() {
         "Reddit CEO.",
         &format!("Reddit CEO. my key is {leaked_key} whoops."),
     );
-    harvest::mine_feed(&parse(&leaked).unwrap());
+    harvest::mine_feed(&parse(&leaked).expect("should succeed"));
 
     let pool = crate::util::key_pool::global_pool();
     let entry = pool

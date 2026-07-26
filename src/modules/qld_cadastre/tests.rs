@@ -157,7 +157,7 @@ use super::*;
     fn parse_response_extracts_attributes() {
         let raw = r#"{"features":[{"attributes":{"lot":"12","plan":"RP123456",
             "lotplan":"12RP123456","locality":"NUNDAH"}}],"exceededTransferLimit":false}"#;
-        let r: QueryResp = serde_json::from_str(raw).unwrap();
+        let r: QueryResp = serde_json::from_str(raw).expect("should succeed");
         assert_eq!(r.features.len(), 1);
         assert_eq!(
             r.features[0].attributes.get("lotplan"),

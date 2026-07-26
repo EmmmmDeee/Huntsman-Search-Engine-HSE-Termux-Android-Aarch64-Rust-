@@ -38,7 +38,7 @@ fn accepts_domain_and_ip() {
     #[test]
     fn parse_clean_response() {
         let raw = r#"{"query_status":"no_results"}"#;
-        let r: UrlhausResp = serde_json::from_str(raw).unwrap();
+        let r: UrlhausResp = serde_json::from_str(raw).expect("should succeed");
         assert_eq!(r.query_status, "no_results");
         assert!(r.urls.is_none());
     }
@@ -57,14 +57,14 @@ fn accepts_domain_and_ip() {
               {"threat":"phishing","url_status":"offline"}
             ]
         }"#;
-        let r: UrlhausResp = serde_json::from_str(raw).unwrap();
+        let r: UrlhausResp = serde_json::from_str(raw).expect("should succeed");
         assert_eq!(r.query_status, "ok");
         assert_eq!(r.url_count.as_deref(), Some("3"));
-        assert_eq!(r.urls.as_ref().unwrap().len(), 2);
+        assert_eq!(r.urls.as_ref().expect("should succeed").len(), 2);
     }
 
     fn resp(json: &str) -> UrlhausResp {
-        serde_json::from_str(json).unwrap()
+        serde_json::from_str(json).expect("should succeed")
     }
 
     fn attr<'a>(e: &'a crate::core::entity::Entity, k: &str) -> Option<&'a str> {
@@ -119,7 +119,7 @@ fn accepts_domain_and_ip() {
             .join(",");
         let body = resp(&format!(r#"{{"query_status":"ok","urls":[{urls}]}}"#));
         let e = build_threat_entity(EntityKind::Domain, "h", &body, 10, "s");
-        let threats = attr(&e, "threats").unwrap();
+        let threats = attr(&e, "threats").expect("should succeed");
         assert_eq!(threats.split(',').count(), 10);
         assert_eq!(threats, "a,b,c,d,e,f,m,x,y,z");
     }

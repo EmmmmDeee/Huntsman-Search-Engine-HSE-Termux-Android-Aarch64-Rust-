@@ -6,8 +6,8 @@ use crate::api::scan_export::csv_escape;
         use crate::core::scan::TargetKind;
         let ok = validated_target(TargetKind::Domain, "cloudflare.com".to_string());
         assert!(ok.is_ok());
-        assert_eq!(ok.unwrap().value, "cloudflare.com");
-        let err = validated_target(TargetKind::Domain, "no-dot".to_string()).unwrap_err();
+        assert_eq!(ok.expect("should succeed").value, "cloudflare.com");
+        let err = validated_target(TargetKind::Domain, "no-dot".to_string()).expect("should be an error");
         assert!(
             err.starts_with("invalid target: "),
             "must carry client-facing prefix, got: {err}"
@@ -63,7 +63,7 @@ use crate::api::scan_export::csv_escape;
         ];
         let v = module_health_json(&unhealthy);
         assert_eq!(v["count"], 2);
-        let modules = v["modules"].as_array().unwrap();
+        let modules = v["modules"].as_array().expect("should succeed");
         assert_eq!(modules[0]["name"], "hackertarget");
         assert_eq!(modules[0]["consecutive_failures"], 3);
         assert!(
@@ -79,7 +79,7 @@ use crate::api::scan_export::csv_escape;
         use super::module_health_json;
         let v = module_health_json(&[]);
         assert_eq!(v["count"], 0);
-        assert!(v["modules"].as_array().unwrap().is_empty());
+        assert!(v["modules"].as_array().expect("should succeed").is_empty());
     }
 
     #[test]
@@ -123,16 +123,16 @@ use crate::api::scan_export::csv_escape;
         assert_eq!(v["empty"], 2);
         assert_eq!(v["unreachable"], 1);
         // Only the ip_geo canary's empty is confirmed drift.
-        assert_eq!(v["drift"].as_array().unwrap().len(), 1);
+        assert_eq!(v["drift"].as_array().expect("should succeed").len(), 1);
         assert_eq!(v["drift"][0], "ip_geo");
-        let mods = v["modules"].as_array().unwrap();
-        let ip_geo = mods.iter().find(|m| m["module"] == "ip_geo").unwrap();
+        let mods = v["modules"].as_array().expect("should succeed");
+        let ip_geo = mods.iter().find(|m| m["module"] == "ip_geo").expect("should succeed");
         assert_eq!(ip_geo["canary"], true);
         assert_eq!(ip_geo["drift"], true);
-        let breach = mods.iter().find(|m| m["module"] == "some_breach").unwrap();
+        let breach = mods.iter().find(|m| m["module"] == "some_breach").expect("should succeed");
         assert_eq!(breach["canary"], false);
         assert_eq!(breach["drift"], false);
-        let cs = mods.iter().find(|m| m["module"] == "certspotter").unwrap();
+        let cs = mods.iter().find(|m| m["module"] == "certspotter").expect("should succeed");
         assert_eq!(cs["outcome"], "alive");
         assert_eq!(cs["found"], 9);
     }

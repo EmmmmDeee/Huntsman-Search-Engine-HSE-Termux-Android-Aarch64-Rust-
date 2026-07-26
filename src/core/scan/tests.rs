@@ -629,9 +629,9 @@ fn options_round_trip_json() {
         free_only: true,
         ..Default::default()
     };
-    let s = serde_json::to_string(&o).unwrap();
-    let back: ScanOptions = serde_json::from_str(&s).unwrap();
-    assert_eq!(back.modules.as_ref().unwrap().len(), 2);
+    let s = serde_json::to_string(&o).expect("should succeed");
+    let back: ScanOptions = serde_json::from_str(&s).expect("should succeed");
+    assert_eq!(back.modules.as_ref().expect("should succeed").len(), 2);
     assert_eq!(back.throttle_ms, 250);
     assert!(back.free_only);
 }
@@ -643,14 +643,14 @@ fn scan_request_round_trip() {
         value: "x@y.com".into(),
         options: ScanOptions::default(),
     };
-    let s = serde_json::to_string(&req).unwrap();
+    let s = serde_json::to_string(&req).expect("should succeed");
     assert!(s.contains("\"kind\":\"email\""));
 
     // Omitted kind → None → auto-detected; the field is skipped on the wire.
-    let auto: ScanRequest = serde_json::from_str(r#"{"value":"x@y.com"}"#).unwrap();
+    let auto: ScanRequest = serde_json::from_str(r#"{"value":"x@y.com"}"#).expect("should succeed");
     assert_eq!(auto.kind, None);
     assert_eq!(auto.resolved_kind(), TargetKind::Email);
-    assert!(!serde_json::to_string(&auto).unwrap().contains("kind"));
+    assert!(!serde_json::to_string(&auto).expect("should succeed").contains("kind"));
 }
 
 // ── TargetKind::detect — unified-scan auto-detection ──────────────────────
@@ -1179,7 +1179,7 @@ fn target_kind_canonical_str_matches_serde() {
     // a future TargetKind rename can't split the hand-written string from the
     // derive. Iterates the canonical list, so a new variant is forced through.
     for &k in crate::core::dependency::ALL_TARGET_KINDS {
-        let json = serde_json::to_string(&k).unwrap();
+        let json = serde_json::to_string(&k).expect("should succeed");
         assert_eq!(json.trim_matches('"'), k.canonical_str(), "{k:?}");
     }
 }
@@ -1197,7 +1197,7 @@ fn scan_status_as_str_matches_serde() {
         ScanStatus::Failed,
         ScanStatus::Aborted,
     ] {
-        let json = serde_json::to_string(&st).unwrap();
+        let json = serde_json::to_string(&st).expect("should succeed");
         assert_eq!(json.trim_matches('"'), st.as_str(), "{st:?}");
     }
 }
@@ -1225,24 +1225,24 @@ fn expansion_strategy_every_variant_round_trips_as_str_serde_and_from_str() {
             | ExpansionStrategy::DepthFirst
             | ExpansionStrategy::RichestFirst => {}
         }
-        let json = serde_json::to_string(&s).unwrap();
+        let json = serde_json::to_string(&s).expect("should succeed");
         assert_eq!(json.trim_matches('"'), s.as_str(), "as_str vs serde: {s:?}");
-        let back: ExpansionStrategy = serde_json::from_str(&json).unwrap();
+        let back: ExpansionStrategy = serde_json::from_str(&json).expect("should succeed");
         assert_eq!(back, s, "serde round-trip: {s:?}");
-        let parsed: ExpansionStrategy = s.as_str().parse().unwrap();
+        let parsed: ExpansionStrategy = s.as_str().parse().expect("should succeed");
         assert_eq!(parsed, s, "FromStr(as_str) round-trip: {s:?}");
     }
 }
 
 #[test]
 fn expansion_strategy_from_str_treats_empty_as_default() {
-    let parsed: ExpansionStrategy = "".parse().unwrap();
+    let parsed: ExpansionStrategy = "".parse().expect("should succeed");
     assert_eq!(parsed, ExpansionStrategy::default());
 }
 
 #[test]
 fn expansion_strategy_from_str_rejects_unknown_with_useful_message() {
-    let err = "wat".parse::<ExpansionStrategy>().unwrap_err();
+    let err = "wat".parse::<ExpansionStrategy>().expect("should be an error");
     assert!(err.contains("wat"));
     assert!(err.contains("geo_converge"));
     assert!(err.contains("breadth_first"));
@@ -1344,8 +1344,8 @@ fn scan_options_serde_round_trips_expansion_strategy() {
         expansion_strategy: ExpansionStrategy::RichestFirst,
         ..Default::default()
     };
-    let json = serde_json::to_string(&opts).unwrap();
-    let back: ScanOptions = serde_json::from_str(&json).unwrap();
+    let json = serde_json::to_string(&opts).expect("should succeed");
+    let back: ScanOptions = serde_json::from_str(&json).expect("should succeed");
     assert_eq!(back.expansion_strategy, ExpansionStrategy::RichestFirst);
 }
 
@@ -1380,7 +1380,7 @@ fn validate_url() {
 /// request ran at the product default of 2.
 #[test]
 fn empty_options_object_matches_product_defaults() {
-    let from_empty: ScanOptions = serde_json::from_str("{}").unwrap();
+    let from_empty: ScanOptions = serde_json::from_str("{}").expect("should succeed");
     let product = ScanOptions::default();
     assert_eq!(
         from_empty.max_concurrent, product.max_concurrent,
@@ -1396,7 +1396,7 @@ fn empty_options_object_matches_product_defaults() {
     assert!((from_empty.min_expand_confidence - DEFAULT_MIN_EXPAND_CONFIDENCE).abs() < 1e-9);
     assert_eq!(from_empty.max_entities, Some(DEFAULT_MAX_ENTITIES));
     // An explicit 0 is still honoured as fully-sequential.
-    let explicit: ScanOptions = serde_json::from_str(r#"{"max_concurrent":0}"#).unwrap();
+    let explicit: ScanOptions = serde_json::from_str(r#"{"max_concurrent":0}"#).expect("should succeed");
     assert_eq!(explicit.max_concurrent, 0);
 }
 
@@ -1428,7 +1428,7 @@ fn library_default_stays_conservative_and_decoupled_from_serde() {
 #[test]
 fn scan_request_defaults_to_comprehensive_options() {
     for body in [r#"{"value":"x"}"#, r#"{"value":"x","options":{}}"#] {
-        let req: ScanRequest = serde_json::from_str(body).unwrap();
+        let req: ScanRequest = serde_json::from_str(body).expect("should succeed");
         assert_eq!(req.options.depth, DEFAULT_SCAN_DEPTH, "depth for {body}");
         assert_eq!(req.options.depth, 3, "depth literal for {body}");
         assert!(

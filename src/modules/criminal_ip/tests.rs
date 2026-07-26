@@ -81,10 +81,10 @@ fn full_report_yields_subject_org_and_asn() {
     assert!(attr("is_proxy").is_none(), "false flags emit no attr");
 
     assert_eq!(
-        of_kind(&ents, EntityKind::Organisation).unwrap().value,
+        of_kind(&ents, EntityKind::Organisation).expect("should succeed").value,
         "Google LLC"
     );
-    assert_eq!(of_kind(&ents, EntityKind::Asn).unwrap().value, "AS15169");
+    assert_eq!(of_kind(&ents, EntityKind::Asn).expect("should succeed").value, "AS15169");
 }
 
 #[test]
@@ -107,7 +107,7 @@ fn blank_org_skips_organisation_but_asn_survives() {
         of_kind(&ents, EntityKind::Organisation).is_none(),
         "a blank org name must not produce an Organisation pivot"
     );
-    assert_eq!(of_kind(&ents, EntityKind::Asn).unwrap().value, "AS64500");
+    assert_eq!(of_kind(&ents, EntityKind::Asn).expect("should succeed").value, "AS64500");
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn org_without_asn_yields_organisation_only() {
     let body = report(r#"{ "status": 200, "whois": { "data": [ { "org_name": "Acme Networks" } ] } }"#);
     let ents = build_entities(&body, &ip_target("9.9.9.9"), "s");
     assert_eq!(
-        of_kind(&ents, EntityKind::Organisation).unwrap().value,
+        of_kind(&ents, EntityKind::Organisation).expect("should succeed").value,
         "Acme Networks"
     );
     assert!(of_kind(&ents, EntityKind::Asn).is_none());
@@ -182,7 +182,7 @@ fn null_island_whois_coords_are_rejected_but_city_still_maps() {
         "null-island (0,0) must be rejected by is_valid_coords"
     );
     assert_eq!(
-        of_kind(&ents, EntityKind::Address).unwrap().value,
+        of_kind(&ents, EntityKind::Address).expect("should succeed").value,
         "Ashburn, US"
     );
 }

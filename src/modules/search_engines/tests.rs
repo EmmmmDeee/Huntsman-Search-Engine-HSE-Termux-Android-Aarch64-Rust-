@@ -38,7 +38,7 @@ fn primary_engine_order_floats_reliable_and_proven_engines_first() {
             seen_back = true;
         }
     }
-    let pos = |name: &str| ordered.iter().position(|e| e.name == name).unwrap();
+    let pos = |name: &str| ordered.iter().position(|e| e.name == name).expect("should succeed");
     // The key win: a reliable engine declared late (swisscows) now precedes an
     // unproven engine declared early (bing).
     assert!(pos("swisscows") < pos("bing"));
@@ -778,9 +778,9 @@ fn new_engines_present() {
 
 #[test]
 fn startpage_uses_post() {
-    let sp = ENGINES.iter().find(|e| e.name == "startpage").unwrap();
+    let sp = ENGINES.iter().find(|e| e.name == "startpage").expect("should succeed");
     assert!(sp.build_post.is_some());
-    let body = (sp.build_post.unwrap())("test query");
+    let body = (sp.build_post.expect("should succeed"))("test query");
     assert!(body.contains("query=test+query"));
     assert!(body.contains("cat=web"));
 }
@@ -2202,7 +2202,7 @@ fn address_normalise_strips_punctuation() {
 fn known_city_coords_gatton() {
     let coords = known_city_coords("Gatton, QLD");
     assert!(coords.is_some(), "Gatton should have known coordinates");
-    let (lat, lon) = coords.unwrap();
+    let (lat, lon) = coords.expect("should succeed");
     assert!((lat - (-27.5567)).abs() < 0.01);
     assert!((lon - 152.2767).abs() < 0.01);
 }

@@ -12,7 +12,7 @@ const FIXTURE: &str = r#"{
 
 #[test]
 fn extract_pulls_profile_actor_and_username() {
-    let wf: WebFinger = serde_json::from_str(FIXTURE).unwrap();
+    let wf: WebFinger = serde_json::from_str(FIXTURE).expect("should succeed");
     let mut result = ModuleResult::new();
     extract_webfinger(&wf, "Gargron@mastodon.social", "mastodon.social", "scan", &mut result);
     let e = &result.entities;
@@ -59,7 +59,7 @@ const ALIAS_DIVERGES_FIXTURE: &str = r#"{
 
 #[test]
 fn extract_emits_alias_uris_that_diverge_from_links() {
-    let wf: WebFinger = serde_json::from_str(ALIAS_DIVERGES_FIXTURE).unwrap();
+    let wf: WebFinger = serde_json::from_str(ALIAS_DIVERGES_FIXTURE).expect("should succeed");
     let mut result = ModuleResult::new();
     extract_webfinger(&wf, "alice@example.social", "example.social", "scan", &mut result);
     let e = &result.entities;

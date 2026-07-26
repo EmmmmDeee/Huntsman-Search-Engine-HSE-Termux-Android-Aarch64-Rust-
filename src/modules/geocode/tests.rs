@@ -35,14 +35,14 @@ fn rejects_ip_address() {
 
 #[test]
 fn parse_coords_valid() {
-    let (lat, lon) = parse_coords("-33.8688,151.2093").unwrap();
+    let (lat, lon) = parse_coords("-33.8688,151.2093").expect("should succeed");
     assert!((lat - (-33.8688)).abs() < 1e-4);
     assert!((lon - 151.2093).abs() < 1e-4);
 }
 
 #[test]
 fn parse_coords_with_spaces() {
-    let (lat, lon) = parse_coords(" 40.7128 , -74.0060 ").unwrap();
+    let (lat, lon) = parse_coords(" 40.7128 , -74.0060 ").expect("should succeed");
     assert!((lat - 40.7128).abs() < 1e-4);
     assert!((lon - (-74.0060)).abs() < 1e-4);
 }
@@ -66,7 +66,7 @@ fn module_metadata() {
 // -- AU-relevance shaping of reverse geocode --------------------------
 
 fn resp(json: serde_json::Value) -> NominatimResp {
-    serde_json::from_value(json).unwrap()
+    serde_json::from_value(json).expect("should succeed")
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn reverse_without_country_code_falls_back_to_the_bounding_box() {
 }
 
 fn addr(json: serde_json::Value) -> NominatimAddr {
-    serde_json::from_value(json).unwrap()
+    serde_json::from_value(json).expect("should succeed")
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn nominatim_result_deserializes_the_requested_address_breakdown() {
             "country_code": "au"
         }
     });
-    let r: NominatimResult = serde_json::from_value(json).unwrap();
+    let r: NominatimResult = serde_json::from_value(json).expect("should succeed");
     let a = r.address.expect("address must deserialize, not be dropped");
     assert_eq!(a.city.as_deref(), Some("Brisbane"));
     assert_eq!(a.state.as_deref(), Some("Queensland"));
@@ -209,7 +209,7 @@ fn nominatim_result_without_address_still_parses() {
         "display_name": "Australia",
         "type": "country"
     });
-    let r: NominatimResult = serde_json::from_value(json).unwrap();
+    let r: NominatimResult = serde_json::from_value(json).expect("should succeed");
     assert!(r.address.is_none());
 }
 

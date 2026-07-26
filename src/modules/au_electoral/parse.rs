@@ -130,21 +130,21 @@ mod extract_division_tests {
     fn aec_division_of_pattern() {
         // Typical AEC format: "Division of Sydney" followed by punctuation/digits.
         let html = "<div>You are enrolled for the Division of Sydney (2026)</div>";
-        let (name, _) = extract_division(html).unwrap();
+        let (name, _) = extract_division(html).expect("should succeed");
         assert_eq!(name, "Sydney");
     }
 
     #[test]
     fn state_ec_enrolled_for_pattern() {
         let html = "<p>You are enrolled for Bondi Beach 2026</p>";
-        let (name, _) = extract_division(html).unwrap();
+        let (name, _) = extract_division(html).expect("should succeed");
         assert_eq!(name, "Bondi Beach");
     }
 
     #[test]
     fn state_ec_enrolled_in_pattern() {
         let html = "<p>You are enrolled in Parramatta</p>";
-        let (name, _) = extract_division(html).unwrap();
+        let (name, _) = extract_division(html).expect("should succeed");
         assert_eq!(name, "Parramatta");
     }
 
@@ -156,7 +156,7 @@ mod extract_division_tests {
     #[test]
     fn case_insensitive_match() {
         let html = "<p>DIVISION OF Melbourne</p>";
-        let (name, _) = extract_division(html).unwrap();
+        let (name, _) = extract_division(html).expect("should succeed");
         assert_eq!(name, "Melbourne");
     }
 }

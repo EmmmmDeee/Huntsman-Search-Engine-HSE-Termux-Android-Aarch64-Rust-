@@ -2,19 +2,19 @@ use super::*;
 
     #[test]
     fn swedish_surname() {
-        let geo = detect_locale_from_local_part("erik.johansson").unwrap();
+        let geo = detect_locale_from_local_part("erik.johansson").expect("should succeed");
         assert!(geo.region.contains("Scandinavia"));
     }
 
     #[test]
     fn polish_surname() {
-        let geo = detect_locale_from_local_part("jan.kowalczyk").unwrap();
+        let geo = detect_locale_from_local_part("jan.kowalczyk").expect("should succeed");
         assert!(geo.region.contains("Poland"));
     }
 
     #[test]
     fn french_given_name() {
-        let geo = detect_locale_from_local_part("guillaume.martin").unwrap();
+        let geo = detect_locale_from_local_part("guillaume.martin").expect("should succeed");
         assert!(geo.region.contains("France"));
     }
 
@@ -25,13 +25,13 @@ use super::*;
         // lowercase form — not silently miss.
         assert!(
             detect_locale_from_local_part("Guillaume.Martin")
-                .unwrap()
+                .expect("should succeed")
                 .region
                 .contains("France")
         );
         assert!(
             detect_locale_from_local_part("ERIK.JOHANSSON")
-                .unwrap()
+                .expect("should succeed")
                 .region
                 .contains("Scandinavia")
         );
@@ -54,8 +54,8 @@ use super::*;
         // be folded into the "parent language" country's centroid (Madrid /
         // Lisbon) — Mexico City is not Madrid, Buenos Aires is not Madrid, and
         // Brasília is not Lisbon.
-        let (mx_lat, mx_lon) = locale_centroid("es-mx").unwrap();
-        let (es_lat, es_lon) = locale_centroid("es").unwrap();
+        let (mx_lat, mx_lon) = locale_centroid("es-mx").expect("should succeed");
+        let (es_lat, es_lon) = locale_centroid("es").expect("should succeed");
         assert!(
             (mx_lat - es_lat).abs() > 1.0 || (mx_lon - es_lon).abs() > 1.0,
             "es-mx must not resolve to Spain's centroid: got ({mx_lat}, {mx_lon})"
@@ -65,7 +65,7 @@ use super::*;
             "es-mx must resolve to Mexico City: got ({mx_lat}, {mx_lon})"
         );
 
-        let (ar_lat, ar_lon) = locale_centroid("es-ar").unwrap();
+        let (ar_lat, ar_lon) = locale_centroid("es-ar").expect("should succeed");
         assert!(
             (ar_lat - es_lat).abs() > 1.0 || (ar_lon - es_lon).abs() > 1.0,
             "es-ar must not resolve to Spain's centroid: got ({ar_lat}, {ar_lon})"
@@ -75,8 +75,8 @@ use super::*;
             "es-ar must resolve to Buenos Aires: got ({ar_lat}, {ar_lon})"
         );
 
-        let (br_lat, br_lon) = locale_centroid("pt-br").unwrap();
-        let (pt_lat, pt_lon) = locale_centroid("pt").unwrap();
+        let (br_lat, br_lon) = locale_centroid("pt-br").expect("should succeed");
+        let (pt_lat, pt_lon) = locale_centroid("pt").expect("should succeed");
         assert!(
             (br_lat - pt_lat).abs() > 1.0 || (br_lon - pt_lon).abs() > 1.0,
             "pt-br must not resolve to Portugal's centroid: got ({br_lat}, {br_lon})"
@@ -122,11 +122,11 @@ use super::*;
         let r1 = EmailLocale
             .process(&Target::new(TargetKind::Email, "erik.hansson@example.com"), &ctx)
             .await
-            .unwrap();
+            .expect("should succeed");
         let r2 = EmailLocale
             .process(&Target::new(TargetKind::Email, "lars.svensson@example.net"), &ctx)
             .await
-            .unwrap();
+            .expect("should succeed");
 
         let mut addr1 = r1
             .entities

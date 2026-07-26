@@ -106,7 +106,7 @@ impl LatLon {
 /// ```
 /// use huntsman_search_engine::util::geo::coords::{parse, CoordFormat};
 ///
-/// let p = parse("27°28'35.8\"S 153°00'59.8\"E").unwrap();
+/// let p = parse("27°28'35.8\"S 153°00'59.8\"E").expect("should succeed");
 /// assert!((p.lat - -27.476611).abs() < 1e-5);
 /// assert!((p.lon - 153.016611).abs() < 1e-5);
 /// assert_eq!(p.format, CoordFormat::Dms);

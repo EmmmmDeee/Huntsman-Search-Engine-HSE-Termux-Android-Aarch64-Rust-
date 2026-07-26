@@ -46,20 +46,20 @@ fn attack_techniques_are_all_catalogued_and_precise() {
 #[test]
 fn deserialises_matches() {
     let json = r#"{"total": 1, "matches": [{"ip":"8.8.8.8","portinfo":{"port":53}}]}"#;
-    let resp: ZoomResp = serde_json::from_str(json).unwrap();
+    let resp: ZoomResp = serde_json::from_str(json).expect("should succeed");
     assert_eq!(resp.matches.len(), 1);
     assert_eq!(vstr(&resp.matches[0], "ip").as_deref(), Some("8.8.8.8"));
 }
 
 #[test]
 fn error_body_deserialises_to_empty_matches() {
-    let resp: ZoomResp = serde_json::from_str(r#"{"error":"invalid key","status":401}"#).unwrap();
+    let resp: ZoomResp = serde_json::from_str(r#"{"error":"invalid key","status":401}"#).expect("should succeed");
     assert!(resp.matches.is_empty());
 }
 
 #[test]
 fn coords_read_nested_geoinfo_location_strings_or_numbers() {
-    let (lat, lon) = coords(&sample_match()).unwrap();
+    let (lat, lon) = coords(&sample_match()).expect("should succeed");
     assert!((lat - 39.0438).abs() < 1e-6 && (lon + 77.4874).abs() < 1e-6);
     // Numeric (not string) lat/lon also parse.
     let numeric = serde_json::json!({"geoinfo":{"location":{"lat":10.0,"lon":20.0}}});

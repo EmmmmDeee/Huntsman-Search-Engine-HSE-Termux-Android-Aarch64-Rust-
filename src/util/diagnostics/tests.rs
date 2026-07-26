@@ -71,19 +71,19 @@ fn analyse_output_is_byte_reproducible() {
         ent(EntityKind::Phone, "+61412345678", 0.5, "modD"),
     ];
     let pure = |d: ScanDiagnostics| {
-        let mut v = serde_json::to_value(d).unwrap();
-        v.as_object_mut().unwrap().remove("adaptive_routing");
+        let mut v = serde_json::to_value(d).expect("should succeed");
+        v.as_object_mut().expect("should succeed").remove("adaptive_routing");
         v
     };
     let a = pure(analyse("sid", "email", "seed", 100, &entities));
     let b = pure(analyse("sid", "email", "seed", 100, &entities));
     if a != b {
-        for (k, av) in a.as_object().unwrap() {
+        for (k, av) in a.as_object().expect("should succeed") {
             assert!(
                 av == &b[k],
                 "non-deterministic diagnostics field `{k}`:\n  A={}\n  B={}",
-                serde_json::to_string(av).unwrap(),
-                serde_json::to_string(&b[k]).unwrap()
+                serde_json::to_string(av).expect("should succeed"),
+                serde_json::to_string(&b[k]).expect("should succeed")
             );
         }
     }

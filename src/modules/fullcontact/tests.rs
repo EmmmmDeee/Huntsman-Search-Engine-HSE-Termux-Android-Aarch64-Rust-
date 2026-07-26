@@ -15,7 +15,7 @@ use super::*;
                 }
             }
         });
-        serde_json::from_value(json).unwrap()
+        serde_json::from_value(json).expect("should succeed")
     }
 
     #[test]
@@ -36,8 +36,8 @@ use super::*;
         // Every entity carries the source tag.
         assert!(es.iter().all(|e| e.has_tag("fullcontact")));
         // Current employer outranks historical.
-        let acme = es.iter().find(|e| e.value == "Acme Pty Ltd").unwrap();
-        let globex = es.iter().find(|e| e.value == "Globex").unwrap();
+        let acme = es.iter().find(|e| e.value == "Acme Pty Ltd").expect("should succeed");
+        let globex = es.iter().find(|e| e.value == "Globex").expect("should succeed");
         assert!(acme.confidence > globex.confidence);
     }
 
@@ -64,7 +64,7 @@ use super::*;
                 ]
             }
         });
-        let r: FcResp = serde_json::from_value(json).unwrap();
+        let r: FcResp = serde_json::from_value(json).expect("should succeed");
         let es = build_entities(&r, "scan");
         let has = |k: EntityKind, v: &str| es.iter().any(|e| e.kind == k && e.value == v);
         assert!(has(EntityKind::Email, "jordan@acme.com"));
@@ -104,7 +104,7 @@ use super::*;
                 "locations": [{ "formatted": "Melbourne, VIC, AU" }]
             }
         });
-        let r: FcResp = serde_json::from_value(json).unwrap();
+        let r: FcResp = serde_json::from_value(json).expect("should succeed");
         let es = build_entities(&r, "scan");
         assert!(es.iter().any(|e| e.kind == EntityKind::Person && e.value == "Solo Person"));
         assert!(es.iter().any(|e| e.kind == EntityKind::Address));

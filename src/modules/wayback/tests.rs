@@ -58,7 +58,7 @@ use super::*;
             row(&["20160101000000", "301"]),
             row(&["20200722120000", "200"]), // most recent
         ];
-        let e = build_entity(EntityKind::Domain, "example.com", &rows, "s").unwrap();
+        let e = build_entity(EntityKind::Domain, "example.com", &rows, "s").expect("should succeed");
         assert_eq!(e.kind, EntityKind::Domain);
         assert!(e.has_tag("archived"));
         assert!((e.confidence - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
@@ -83,7 +83,7 @@ use super::*;
             &rows,
             "s",
         )
-        .unwrap();
+        .expect("should succeed");
         assert_eq!(e.kind, EntityKind::Url);
         assert_eq!(e.value, "https://example.com/page");
         assert!(e.has_tag("archived"));

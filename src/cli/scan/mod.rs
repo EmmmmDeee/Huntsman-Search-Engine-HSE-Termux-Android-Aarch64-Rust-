@@ -823,7 +823,7 @@ alice@example.com
             regional_search: false,
             ..ScanOptions::default()
         };
-        let merged = apply_named_profile("skiptrace", options.clone()).unwrap();
+        let merged = apply_named_profile("skiptrace", options.clone()).expect("should succeed");
         assert_eq!(
             merged.modules, options.modules,
             "--modules must survive the overlay"
@@ -832,7 +832,7 @@ alice@example.com
             merged.min_confidence, options.min_confidence,
             "--min-confidence must survive the overlay"
         );
-        let skiptrace = crate::core::profiles::resolve_profile("skiptrace").unwrap();
+        let skiptrace = crate::core::profiles::resolve_profile("skiptrace").expect("should succeed");
         assert_eq!(merged.depth, skiptrace.depth);
         assert_eq!(
             merged.expansion_strategy, skiptrace.expansion_strategy,
@@ -846,7 +846,7 @@ alice@example.com
 
     #[test]
     fn apply_named_profile_rejects_unknown_name() {
-        let err = apply_named_profile("not-a-real-profile", ScanOptions::default()).unwrap_err();
+        let err = apply_named_profile("not-a-real-profile", ScanOptions::default()).expect("should be an error");
         assert!(
             err.starts_with("unknown --profile "),
             "error must carry the client-facing prefix, got: {err}"

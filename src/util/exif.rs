@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn dms_converts_degrees_minutes_seconds() {
         // 33°52'30" = 33 + 52/60 + 30/3600 = 33.875
-        let d = dms_to_decimal(&dms(33, 52, 30)).unwrap();
+        let d = dms_to_decimal(&dms(33, 52, 30)).expect("should succeed");
         assert!((d - 33.875).abs() < 1e-9, "got {d}");
     }
 

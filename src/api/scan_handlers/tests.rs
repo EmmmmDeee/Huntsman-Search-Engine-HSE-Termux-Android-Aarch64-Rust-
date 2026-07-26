@@ -85,7 +85,7 @@ use super::*;
             value: "cloudflare.com".to_string(),
             options: Default::default(),
         };
-        let (_, target2) = build_scan_from_request(req2).unwrap();
+        let (_, target2) = build_scan_from_request(req2).expect("should succeed");
         assert_eq!(target.kind, target2.kind);
         assert_eq!(target.value, target2.value);
     }
@@ -137,7 +137,7 @@ use super::*;
         );
         // The named profile's own tuning still takes effect (depth is clamped
         // to MAX_DEPTH by `clamp_depth`, same as any other scan).
-        let investigate = crate::core::profiles::resolve_profile("investigate").unwrap();
+        let investigate = crate::core::profiles::resolve_profile("investigate").expect("should succeed");
         assert_eq!(scan.options.depth, crate::core::scan::MAX_DEPTH);
         assert_eq!(scan.options.max_entities, investigate.max_entities);
     }
@@ -149,7 +149,7 @@ use super::*;
             value: "no-dot-here".to_string(),
             options: Default::default(),
         };
-        let err = build_scan_from_request(req).unwrap_err();
+        let err = build_scan_from_request(req).expect("should be an error");
         assert!(
             err.starts_with("invalid target: "),
             "error must carry the client-facing prefix, got: {err}"

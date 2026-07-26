@@ -33,7 +33,7 @@ fn extract_acn_finds_nine_digits() {
 fn extract_au_address_finds_state_postcode() {
     let addr = extract_au_address("Level 5 Collins St Melbourne VIC 3000 Australia");
     assert!(addr.is_some());
-    let a = addr.unwrap();
+    let a = addr.expect("should succeed");
     assert!(a.contains("VIC") && a.contains("3000"));
 }
 
@@ -50,7 +50,7 @@ fn build_director_entities_emits_org_acn_address() {
     assert!(ents.iter().any(|e| e.kind == EntityKind::AbnAcn));
     let addr = ents.iter().find(|e| e.kind == EntityKind::Address);
     assert!(addr.is_some());
-    assert!(addr.unwrap().has_tag("registered-office"));
+    assert!(addr.expect("should succeed").has_tag("registered-office"));
 }
 
 #[test]

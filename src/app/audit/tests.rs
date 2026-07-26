@@ -13,7 +13,7 @@ use super::*;
         let csv = "kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,tags\n\
             ip_address,172.66.147.185,172.66.147.185,0.950,1.000,258,VERIFIED,1780814281,dns_intel|shodan,cloudflare|hosting\n\
             email,jordanavery@gmail.com,jordanavery@gmail.com,0.850,1.000,4,VERIFIED,1780814282,oathnet_pro|smtp_vrfy,verified\n";
-        let ents = parse_csv(csv).unwrap();
+        let ents = parse_csv(csv).expect("should succeed");
         assert_eq!(ents.len(), 2);
         assert_eq!(ents[0].kind, "ip_address");
         assert_eq!(ents[0].corroboration, 258);
@@ -27,7 +27,7 @@ use super::*;
         // Header order differs and adds columns — must still map by name.
         let csv = "kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,evidence_urls,evidence,tags\n\
             domain,cloudflare.com,cloudflare.com,1.0,1.0,5,VERIFIED,1,whois,https://x,e,infra\n";
-        let ents = parse_csv(csv).unwrap();
+        let ents = parse_csv(csv).expect("should succeed");
         assert_eq!(ents.len(), 1);
         assert_eq!(ents[0].kind, "domain");
         assert_eq!(ents[0].tags, vec!["infra"]);
@@ -36,7 +36,7 @@ use super::*;
     #[test]
     fn csv_handles_quoted_commas() {
         let csv = "kind,value\nperson,\"Doe, Jane\"\n";
-        let ents = parse_csv(csv).unwrap();
+        let ents = parse_csv(csv).expect("should succeed");
         assert_eq!(ents[0].value, "Doe, Jane");
     }
 

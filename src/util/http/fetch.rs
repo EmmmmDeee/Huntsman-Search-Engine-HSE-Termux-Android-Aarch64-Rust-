@@ -791,14 +791,14 @@ mod tests {
         // A connection to a just-closed local port is a real connect error —
         // exactly the transient class the keyed retry should re-send on. Bind a
         // listener to grab a free port, then drop it so the port is closed.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("should succeed");
+        let addr = listener.local_addr().expect("should succeed");
         drop(listener);
         let err = reqwest::Client::builder()
             .no_proxy()
             .timeout(std::time::Duration::from_secs(2))
             .build()
-            .unwrap()
+            .expect("should succeed")
             .get(format!("http://{addr}/"))
             .send()
             .await

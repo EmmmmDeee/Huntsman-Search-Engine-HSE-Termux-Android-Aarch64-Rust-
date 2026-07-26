@@ -418,14 +418,14 @@ mod tests {
 
     #[test]
     fn format_jsonl() {
-        let output = format_output(&sample(), "jsonl", "notes.txt").unwrap();
+        let output = format_output(&sample(), "jsonl", "notes.txt").expect("should succeed");
         assert!(output.contains("test@example.com"));
         assert!(output.contains("email"));
     }
 
     #[test]
     fn format_hse_emits_scannable_entities() {
-        let output = format_output(&sample(), "hse", "notes.txt").unwrap();
+        let output = format_output(&sample(), "hse", "notes.txt").expect("should succeed");
         let parsed: Vec<crate::core::entity::Entity> =
             serde_json::from_str(&output).expect("hse output must round-trip as core entities");
 

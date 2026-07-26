@@ -9,14 +9,14 @@ use super::*;
         let es = build_asns(&ni, "scan");
         // One ASN entity + one Cidr entity from the covering prefix.
         assert_eq!(es.len(), 2, "valid numeric ASN + covering Cidr");
-        let asn_e = es.iter().find(|e| e.kind == EntityKind::Asn).unwrap();
+        let asn_e = es.iter().find(|e| e.kind == EntityKind::Asn).expect("should succeed");
         assert_eq!(asn_e.value, "AS15169");
         assert!(asn_e.has_tag("ripestat"));
         assert_eq!(
-            asn_e.evidence[0].attributes.get("prefix").unwrap(),
+            asn_e.evidence[0].attributes.get("prefix").expect("should succeed"),
             "8.8.8.0/24"
         );
-        let cidr_e = es.iter().find(|e| e.kind == EntityKind::Cidr).unwrap();
+        let cidr_e = es.iter().find(|e| e.kind == EntityKind::Cidr).expect("should succeed");
         assert_eq!(cidr_e.value, "8.8.8.0/24");
         assert!(cidr_e.has_tag("network-prefix"));
         // Single announcing ASN ⇒ the covering Cidr carries the origin `asn`
@@ -52,7 +52,7 @@ use super::*;
         let ao = AsOverview {
             holder: Some("GOOGLE - Google LLC".into()),
         };
-        let e = build_org(&ao, "scan").unwrap();
+        let e = build_org(&ao, "scan").expect("should succeed");
         assert_eq!(e.kind, EntityKind::Organisation);
         assert_eq!(e.value, "GOOGLE - Google LLC");
         assert!(e.has_tag("network-holder"));

@@ -6,31 +6,31 @@ use super::*;
     fn report_hides_candidates_by_default_and_includes_on_request() {
         use crate::core::entity::{Entity, EntityKind};
         use crate::core::scan::{Scan, Target, TargetKind};
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should succeed");
         let db = dir.path().join("report.db");
-        let store = crate::storage::Store::open(db.to_str().unwrap()).unwrap();
+        let store = crate::storage::Store::open(db.to_str().expect("should succeed")).expect("should succeed");
         let sid = "rep-scan";
         store
             .upsert_scan(&Scan::new(
                 sid,
                 Target::new(TargetKind::FullName, "Jordan Avery"),
             ))
-            .unwrap();
+            .expect("should succeed");
         store
             .upsert_entity(&Entity::new(EntityKind::Email, "me@real.com", 0.85, sid))
-            .unwrap();
+            .expect("should succeed");
         let mut candidate = Entity::new(EntityKind::Email, "stranger@bank.com", 0.25, sid);
         candidate.tag(crate::core::tags::CANDIDATE);
-        store.upsert_entity(&candidate).unwrap();
+        store.upsert_entity(&candidate).expect("should succeed");
 
         let port = &store as &dyn crate::core::port::StoragePort;
-        let default = build_scan_report(port, sid, false, false).unwrap().unwrap();
+        let default = build_scan_report(port, sid, false, false).expect("should succeed").expect("should succeed");
         assert_eq!(
             default["entity_count"].as_u64(),
             Some(1),
             "default report hides the candidate"
         );
-        let full = build_scan_report(port, sid, true, false).unwrap().unwrap();
+        let full = build_scan_report(port, sid, true, false).expect("should succeed").expect("should succeed");
         assert_eq!(
             full["entity_count"].as_u64(),
             Some(2),
@@ -60,31 +60,31 @@ use super::*;
     fn report_hides_platform_infra_by_default_and_includes_on_request() {
         use crate::core::entity::{Entity, EntityKind};
         use crate::core::scan::{Scan, Target, TargetKind};
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should succeed");
         let db = dir.path().join("infra.db");
-        let store = crate::storage::Store::open(db.to_str().unwrap()).unwrap();
+        let store = crate::storage::Store::open(db.to_str().expect("should succeed")).expect("should succeed");
         let sid = "infra-scan";
         store
             .upsert_scan(&Scan::new(
                 sid,
                 Target::new(TargetKind::Username, "testuser"),
             ))
-            .unwrap();
+            .expect("should succeed");
         store
             .upsert_entity(&Entity::new(EntityKind::Email, "me@real.com", 0.85, sid))
-            .unwrap();
+            .expect("should succeed");
         let mut infra = Entity::new(EntityKind::Domain, "s3.amazonaws.com", 0.40, sid);
         infra.tag("platform-infra");
-        store.upsert_entity(&infra).unwrap();
+        store.upsert_entity(&infra).expect("should succeed");
 
         let port = &store as &dyn crate::core::port::StoragePort;
-        let default = build_scan_report(port, sid, false, false).unwrap().unwrap();
+        let default = build_scan_report(port, sid, false, false).expect("should succeed").expect("should succeed");
         assert_eq!(
             default["entity_count"].as_u64(),
             Some(1),
             "default report hides platform-infra entity"
         );
-        let with_infra = build_scan_report(port, sid, false, true).unwrap().unwrap();
+        let with_infra = build_scan_report(port, sid, false, true).expect("should succeed").expect("should succeed");
         assert_eq!(
             with_infra["entity_count"].as_u64(),
             Some(2),
@@ -100,26 +100,26 @@ use super::*;
         // even under default (infra-suppressed) export.
         use crate::core::entity::{Entity, EntityKind};
         use crate::core::scan::{Scan, Target, TargetKind};
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should succeed");
         let db = dir.path().join("seed_infra.db");
-        let store = crate::storage::Store::open(db.to_str().unwrap()).unwrap();
+        let store = crate::storage::Store::open(db.to_str().expect("should succeed")).expect("should succeed");
         let sid = "seed-infra-scan";
         store
             .upsert_scan(&Scan::new(
                 sid,
                 Target::new(TargetKind::IpAddress, "104.16.0.1"),
             ))
-            .unwrap();
+            .expect("should succeed");
         // The seed anchor that also got classified as hosting infrastructure.
         let mut seed = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.90, sid);
         seed.tag("seed");
         seed.tag("subject");
         seed.tag("hosting");
         seed.tag("platform-infra");
-        store.upsert_entity(&seed).unwrap();
+        store.upsert_entity(&seed).expect("should succeed");
 
         let port = &store as &dyn crate::core::port::StoragePort;
-        let default = build_scan_report(port, sid, false, false).unwrap().unwrap();
+        let default = build_scan_report(port, sid, false, false).expect("should succeed").expect("should succeed");
         assert_eq!(
             default["entity_count"].as_u64(),
             Some(1),
@@ -183,7 +183,7 @@ use super::*;
                 .with_attr("profile_url", "https://github.com/jordanavery?tab=overview"),
         );
         let csv = entities_to_csv(&[e]);
-        let row = csv.lines().nth(1).unwrap();
+        let row = csv.lines().nth(1).expect("should succeed");
         assert!(
             row.contains("https://github.com/jordanavery"),
             "evidence URL missing: {row}"
@@ -219,7 +219,7 @@ use super::*;
                 .with_attr("password_hash", "5f4dcc3b5aa765d61d8327deb882cf99"),
         );
         let csv = entities_to_csv(&[e]);
-        let row = csv.lines().nth(1).unwrap();
+        let row = csv.lines().nth(1).expect("should succeed");
         assert!(
             row.contains("date_of_birth=1990-04-12"),
             "structured DOB attribute missing from CSV evidence cell: {row}"
@@ -254,11 +254,11 @@ use super::*;
         e.add_evidence(Evidence::new("geo_normalize", "Address parse + normalization"));
 
         let csv = entities_to_csv(&[e]);
-        let header: Vec<&str> = csv.lines().next().unwrap().split(',').collect();
-        let row: Vec<&str> = csv.lines().nth(1).unwrap().split(',').collect();
+        let header: Vec<&str> = csv.lines().next().expect("should succeed").split(',').collect();
+        let row: Vec<&str> = csv.lines().nth(1).expect("should succeed").split(',').collect();
 
         let col = |name: &str| {
-            let idx = header.iter().position(|h| *h == name).unwrap();
+            let idx = header.iter().position(|h| *h == name).expect("should succeed");
             row[idx]
         };
         assert_eq!(col("corroboration"), "8", "raw magnitude is unchanged");
@@ -283,7 +283,7 @@ use super::*;
         let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.5, "src");
         e.add_evidence(Evidence::new("some_module", "found it").with_attr("country", ""));
         let csv = entities_to_csv(&[e]);
-        let row = csv.lines().nth(1).unwrap();
+        let row = csv.lines().nth(1).expect("should succeed");
         assert!(
             !row.contains("country="),
             "an empty attribute value must not be emitted: {row}"
@@ -328,21 +328,21 @@ use super::*;
         assert!(fix.is_object(), "fix must be a structured object, got {fix}");
         assert_eq!(fix["state"], "NSW");
         assert_eq!(fix["rule_id"], "AU-059");
-        let lat = fix["lat"].as_f64().unwrap();
-        let lon = fix["lon"].as_f64().unwrap();
+        let lat = fix["lat"].as_f64().expect("should succeed");
+        let lon = fix["lon"].as_f64().expect("should succeed");
         assert!((-34.0..-33.0).contains(&lat), "lat off Sydney: {lat}");
         assert!((150.0..152.0).contains(&lon), "lon off Sydney: {lon}");
         assert!(
-            !fix["geohash"].as_str().unwrap().is_empty(),
+            !fix["geohash"].as_str().expect("should succeed").is_empty(),
             "geohash empty"
         );
-        let sc = fix["synergy_confidence"].as_f64().unwrap();
+        let sc = fix["synergy_confidence"].as_f64().expect("should succeed");
         assert!(
             (0.0..=0.97).contains(&sc) && sc > 0.0,
             "synergy_conf range: {sc}"
         );
         assert_eq!(fix["class_count"], 2);
-        assert!(fix["source_count"].as_u64().unwrap() >= 2);
+        assert!(fix["source_count"].as_u64().expect("should succeed") >= 2);
         assert_eq!(fix["severity"], "medium", "2 classes ⇒ medium");
         // Confidence radius: present, finite, non-negative, and tight for two
         // coordinates ~150 m apart.
@@ -367,7 +367,7 @@ use super::*;
         assert_eq!(fix["source"], "single-signal");
         assert_eq!(fix["state"], "NSW");
         assert!(fix["basis"].is_string());
-        assert!(fix["radius_km"].as_f64().unwrap() > 0.0);
+        assert!(fix["radius_km"].as_f64().expect("should succeed") > 0.0);
 
         // But with NO location signal at all (an email only), it stays Null —
         // the fallback never fabricates a location out of nothing.
@@ -400,15 +400,15 @@ use super::*;
         assert!(fix.is_object(), "fix must survive a corrupted description");
         assert_eq!(fix["state"], "NSW");
         assert_eq!(fix["class_count"], 2);
-        let lat = fix["lat"].as_f64().unwrap();
-        let lon = fix["lon"].as_f64().unwrap();
+        let lat = fix["lat"].as_f64().expect("should succeed");
+        let lon = fix["lon"].as_f64().expect("should succeed");
         assert!((-34.0..-33.0).contains(&lat) && (150.0..152.0).contains(&lon));
 
         // It is exactly the canonical helper — the single source of truth.
-        let direct = crate::core::correlator::au059_synergy_fix(&ents).unwrap();
+        let direct = crate::core::correlator::au059_synergy_fix(&ents).expect("should succeed");
         assert!((lat - direct.lat).abs() < 1e-9);
         assert!((lon - direct.lon).abs() < 1e-9);
-        assert_eq!(fix["geohash"].as_str().unwrap(), direct.geohash);
+        assert_eq!(fix["geohash"].as_str().expect("should succeed"), direct.geohash);
     }
 
 // ── canonical download helper (attachment_response / download_response) ───────
@@ -428,13 +428,13 @@ fn download_response_sets_attachment_disposition_with_scan_scoped_filename() {
         .headers()
         .get(axum::http::header::CONTENT_DISPOSITION)
         .and_then(|v| v.to_str().ok())
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(cd, "attachment; filename=\"hse-navigator-abcdef012345.json\"");
     let ct = resp
         .headers()
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(ct, "application/json; charset=utf-8");
 }
 
@@ -452,6 +452,6 @@ fn attachment_response_uses_the_filename_verbatim_for_system_downloads() {
         .headers()
         .get(axum::http::header::CONTENT_DISPOSITION)
         .and_then(|v| v.to_str().ok())
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(cd, "attachment; filename=\"hse-debug-1700000000.log\"");
 }

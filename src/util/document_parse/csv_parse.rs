@@ -74,12 +74,12 @@ mod tests {
 
     #[test]
     fn csv_parse_basic() {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "name,email,phone").unwrap();
-        writeln!(file, "John Doe,john@example.com,1234567890").unwrap();
-        writeln!(file, "Jane Smith,jane@example.com,0987654321").unwrap();
+        let mut file = NamedTempFile::new().expect("should succeed");
+        writeln!(file, "name,email,phone").expect("should succeed");
+        writeln!(file, "John Doe,john@example.com,1234567890").expect("should succeed");
+        writeln!(file, "Jane Smith,jane@example.com,0987654321").expect("should succeed");
 
-        let csv_data = parse_csv(file.path()).unwrap();
+        let csv_data = parse_csv(file.path()).expect("should succeed");
         assert_eq!(csv_data.headers, vec!["name", "email", "phone"]);
         assert_eq!(csv_data.records.len(), 2);
         assert_eq!(csv_data.records[0][0], "John Doe");

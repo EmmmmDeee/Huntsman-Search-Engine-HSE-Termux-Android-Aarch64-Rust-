@@ -13,7 +13,7 @@ fn cost_is_key_gated() {
 }
 
 fn parse(json: &str) -> Common {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 fn attr<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {

@@ -18,7 +18,7 @@ fn decimal_comma_and_space() {
         "-27.4766, 153.0166",
         "-27.4766 153.0166",
     ] {
-        let p = parse(s).unwrap();
+        let p = parse(s).expect("should succeed");
         near(p.lat, -27.4766, 1e-9, "lat");
         near(p.lon, 153.0166, 1e-9, "lon");
         assert_eq!(p.format, CoordFormat::Decimal);
@@ -28,7 +28,7 @@ fn decimal_comma_and_space() {
 #[test]
 fn decimal_zero_and_signs() {
     assert!(parse("0,0").is_some()); // Null Island kept at the parse boundary
-    let p = parse("+12.5, -34.25").unwrap();
+    let p = parse("+12.5, -34.25").expect("should succeed");
     near(p.lat, 12.5, 1e-9, "lat");
     near(p.lon, -34.25, 1e-9, "lon");
 }
@@ -47,7 +47,7 @@ fn decimal_rejects_non_pairs_and_out_of_range() {
 
 #[test]
 fn geo_uri_basic_params_and_altitude() {
-    let p = parse("geo:-27.4766,153.0166").unwrap();
+    let p = parse("geo:-27.4766,153.0166").expect("should succeed");
     near(p.lat, -27.4766, 1e-9, "lat");
     assert_eq!(p.format, CoordFormat::GeoUri);
     // Uncertainty / CRS parameters and an altitude field are ignored.
@@ -80,7 +80,7 @@ fn geo_uri_rejects_malformed() {
 #[test]
 fn dms_suffix_hemisphere() {
     // Brisbane City Hall, suffix N/S/E/W with ASCII glyphs.
-    let p = parse("27°28'35.8\"S 153°00'59.8\"E").unwrap();
+    let p = parse("27°28'35.8\"S 153°00'59.8\"E").expect("should succeed");
     near(p.lat, -27.476611, 1e-5, "lat");
     near(p.lon, 153.016611, 1e-5, "lon");
     assert_eq!(p.format, CoordFormat::Dms);
@@ -89,16 +89,16 @@ fn dms_suffix_hemisphere() {
 #[test]
 fn dms_unicode_glyph_variants() {
     // Prime ′, double-prime ″, masculine-ordinal º, right-quote ’.
-    let a = parse("27º28′35.8″S 153º00′59.8″E").unwrap();
+    let a = parse("27º28′35.8″S 153º00′59.8″E").expect("should succeed");
     near(a.lat, -27.476611, 1e-5, "lat");
     near(a.lon, 153.016611, 1e-5, "lon");
-    let b = parse("27°28’35.8”S, 153°00’59.8”E").unwrap();
+    let b = parse("27°28’35.8”S, 153°00’59.8”E").expect("should succeed");
     near(b.lat, -27.476611, 1e-5, "lat");
 }
 
 #[test]
 fn ddm_degrees_decimal_minutes() {
-    let p = parse("27 28.6 S, 153 01.0 E").unwrap();
+    let p = parse("27 28.6 S, 153 01.0 E").expect("should succeed");
     near(p.lat, -(27.0 + 28.6 / 60.0), 1e-9, "lat");
     near(p.lon, 153.0 + 1.0 / 60.0, 1e-9, "lon");
     assert_eq!(p.format, CoordFormat::Ddm);
@@ -107,7 +107,7 @@ fn ddm_degrees_decimal_minutes() {
 #[test]
 fn dd_with_hemisphere_spaced() {
     // Whitespace between the value and the hemisphere letter must still suffix.
-    let p = parse("27.4766 S 153.0166 E").unwrap();
+    let p = parse("27.4766 S 153.0166 E").expect("should succeed");
     near(p.lat, -27.4766, 1e-9, "lat");
     near(p.lon, 153.0166, 1e-9, "lon");
 }
@@ -115,17 +115,17 @@ fn dd_with_hemisphere_spaced() {
 #[test]
 fn hemisphere_letters_reorder_axes() {
     // Longitude written first; E/W vs N/S pins the axis regardless of order.
-    let p = parse("153.0166E, 27.4766S").unwrap();
+    let p = parse("153.0166E, 27.4766S").expect("should succeed");
     near(p.lat, -27.4766, 1e-9, "lat");
     near(p.lon, 153.0166, 1e-9, "lon");
 }
 
 #[test]
 fn prefix_hemisphere() {
-    let p = parse("N33 E151").unwrap();
+    let p = parse("N33 E151").expect("should succeed");
     near(p.lat, 33.0, 1e-9, "lat");
     near(p.lon, 151.0, 1e-9, "lon");
-    let q = parse("S33.5 W151.25").unwrap();
+    let q = parse("S33.5 W151.25").expect("should succeed");
     near(q.lat, -33.5, 1e-9, "lat");
     near(q.lon, -151.25, 1e-9, "lon");
 }
@@ -133,7 +133,7 @@ fn prefix_hemisphere() {
 #[test]
 fn dms_halved_no_delimiter() {
     // Glyph DMS with neither comma nor hemisphere: the six numbers split 3/3.
-    let p = parse("33°52'12\" 151°12'36\"").unwrap();
+    let p = parse("33°52'12\" 151°12'36\"").expect("should succeed");
     near(p.lat, 33.0 + 52.0 / 60.0 + 12.0 / 3600.0, 1e-9, "lat");
     near(p.lon, 151.0 + 12.0 / 60.0 + 36.0 / 3600.0, 1e-9, "lon");
 }
@@ -151,11 +151,11 @@ fn dms_rejects_bad_minutes_seconds() {
 fn maidenhead_hand_computed_corners() {
     // Centre of the south-west-most subsquare and the north-east-most one,
     // computed by hand from the grid definition.
-    let sw = parse("AA00aa").unwrap();
+    let sw = parse("AA00aa").expect("should succeed");
     near(sw.lat, -90.0 + 1.0 / 48.0, 1e-9, "sw lat");
     near(sw.lon, -180.0 + 1.0 / 24.0, 1e-9, "sw lon");
     assert_eq!(sw.format, CoordFormat::Maidenhead);
-    let ne = parse("RR99xx").unwrap();
+    let ne = parse("RR99xx").expect("should succeed");
     near(ne.lat, 89.9791667, 1e-6, "ne lat");
     near(ne.lon, 179.9583333, 1e-6, "ne lon");
 }
@@ -163,11 +163,11 @@ fn maidenhead_hand_computed_corners() {
 #[test]
 fn maidenhead_known_point_in_australia() {
     // QG62kn sits in SE Queensland; QG62 is the coarser 4-char square.
-    let p = parse("QG62kn").unwrap();
+    let p = parse("QG62kn").expect("should succeed");
     near(p.lat, -27.4375, 1e-4, "lat");
     near(p.lon, 152.875, 1e-4, "lon");
     assert!(crate::util::geo::is_in_australia(p.lat, p.lon));
-    let coarse = parse("QG62").unwrap();
+    let coarse = parse("QG62").expect("should succeed");
     near(coarse.lat, -27.5, 1e-9, "coarse lat");
     near(coarse.lon, 153.0, 1e-9, "coarse lon");
 }
@@ -184,16 +184,16 @@ fn maidenhead_rejects_bad_shapes() {
 #[test]
 fn plus_code_hand_computed_pairs() {
     // All-zero-index pairs land at the SW corner cell centre.
-    let sw = parse("22222222+22").unwrap();
+    let sw = parse("22222222+22").expect("should succeed");
     near(sw.lat, -90.0 + 0.0000625, 1e-9, "sw lat");
     near(sw.lon, -180.0 + 0.0000625, 1e-9, "sw lon");
     assert_eq!(sw.format, CoordFormat::PlusCode);
     // First latitude digit = 'C' (index 8) → +8·20° = +160°.
-    let lat_set = parse("C2222222+22").unwrap();
+    let lat_set = parse("C2222222+22").expect("should succeed");
     near(lat_set.lat, 70.0000625, 1e-9, "lat");
     near(lat_set.lon, -179.9999375, 1e-9, "lon");
     // First longitude digit = 'C' → +160° in longitude.
-    let lon_set = parse("2C222222+22").unwrap();
+    let lon_set = parse("2C222222+22").expect("should succeed");
     near(lon_set.lat, -89.9999375, 1e-9, "lat");
     near(lon_set.lon, -19.9999375, 1e-9, "lon");
 }
@@ -202,7 +202,7 @@ fn plus_code_hand_computed_pairs() {
 fn plus_code_reference_vector() {
     // Google's documented example: encode(47.365590, 8.524997) == "8FVC9G8F+6X".
     // Decoding it must land within the code's cell of that point.
-    let p = parse("8FVC9G8F+6X").unwrap();
+    let p = parse("8FVC9G8F+6X").expect("should succeed");
     near(p.lat, 47.365590, 1e-4, "lat");
     near(p.lon, 8.524997, 1e-4, "lon");
     assert_eq!(p.format, CoordFormat::PlusCode);

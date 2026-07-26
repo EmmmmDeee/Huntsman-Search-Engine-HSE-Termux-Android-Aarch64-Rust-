@@ -4,17 +4,17 @@ use super::*;
 #[test]
 fn deserialize_prefix_response() {
     let json = r#"{"data":{"ipv4_prefixes":[{"prefix":"1.0.0.0/24","name":"APNIC"}]}}"#;
-    let r: BgpPrefixResponse = serde_json::from_str(json).unwrap();
-    assert_eq!(r.data.unwrap().ipv4_prefixes[0].prefix, "1.0.0.0/24");
+    let r: BgpPrefixResponse = serde_json::from_str(json).expect("should succeed");
+    assert_eq!(r.data.expect("should succeed").ipv4_prefixes[0].prefix, "1.0.0.0/24");
 }
 
 #[test]
 fn deserialize_ip_response() {
     let json = r#"{"data":{"ptr_record":["dns.google"],"prefixes":[{"prefix":"8.8.8.0/24","asn":{"asn":15169,"name":"GOOGLE"}}]}}"#;
-    let r: BgpIpResponse = serde_json::from_str(json).unwrap();
-    let d = r.data.unwrap();
+    let r: BgpIpResponse = serde_json::from_str(json).expect("should succeed");
+    let d = r.data.expect("should succeed");
     assert_eq!(d.ptr_record[0], "dns.google");
-    assert_eq!(d.prefixes[0].asn.as_ref().unwrap().asn, 15169);
+    assert_eq!(d.prefixes[0].asn.as_ref().expect("should succeed").asn, 15169);
 }
 
 #[tokio::test]
@@ -35,7 +35,7 @@ fn asn_prefix_entities_map_blocks_with_org_name() {
             {"prefix":"  "}
         ]}"#,
     )
-    .unwrap();
+    .expect("should succeed");
     let es = asn_prefix_entities(&data, "13335", "s");
     // The blank prefix is skipped.
     assert_eq!(es.len(), 2);
@@ -76,7 +76,7 @@ fn asn_prefix_entities_emit_every_block_v4_and_v6() {
         v4.join(","),
         v6.join(",")
     ))
-    .unwrap();
+    .expect("should succeed");
     let es = asn_prefix_entities(&data, "1", "s");
     assert_eq!(
         es.len(),
@@ -102,7 +102,7 @@ fn ip_entities_map_ptr_and_asn_with_prefix() {
             "prefixes":[{"prefix":"8.8.8.0/24","asn":{"asn":15169,"name":"GOOGLE"}}]
         }"#,
     )
-    .unwrap();
+    .expect("should succeed");
     let es = ip_entities(&data, "8.8.8.8", "s");
 
     // PTRs: trailing dot stripped, lowercased, deduped, non-host dropped.
@@ -135,12 +135,12 @@ fn ip_entities_map_ptr_and_asn_with_prefix() {
 fn ip_entities_skip_prefix_without_asn() {
     let data: BgpIpData =
         serde_json::from_str(r#"{"ptr_record":[],"prefixes":[{"prefix":"1.0.0.0/24"}]}"#)
-            .unwrap();
+            .expect("should succeed");
     assert!(ip_entities(&data, "1.1.1.1", "s").is_empty());
 }
 
 #[test]
 fn ip_entities_empty_data_yields_nothing() {
-    let data: BgpIpData = serde_json::from_str("{}").unwrap();
+    let data: BgpIpData = serde_json::from_str("{}").expect("should succeed");
     assert!(ip_entities(&data, "9.9.9.9", "s").is_empty());
 }

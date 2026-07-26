@@ -30,7 +30,7 @@ use super::*;
         let r = HudsonRock
             .process(&Target::new(TargetKind::Username, "javery88"), &ctx)
             .await
-            .unwrap();
+            .expect("should succeed");
         assert!(
             r.is_empty(),
             "username must not call the email-only endpoint"
@@ -56,7 +56,7 @@ use super::*;
                 &ctx,
             )
             .await
-            .unwrap();
+            .expect("should succeed");
         assert!(
             r.is_empty(),
             "an app package must not trigger a search-by-domain call"
@@ -276,7 +276,7 @@ use super::*;
         let r = HudsonRock
             .process(&Target::new(TargetKind::Email, "notanemail"), &ctx)
             .await
-            .unwrap();
+            .expect("should succeed");
         assert!(
             r.is_empty(),
             "email without '@' must not fire the HTTP request"

@@ -325,8 +325,8 @@ mod tests {
             em.is_some(),
             "must emit Email from the top-level email field"
         );
-        assert_eq!(em.unwrap().value, "alice@personal.dev");
-        assert!(em.unwrap().has_tag("codeberg"));
+        assert_eq!(em.expect("should succeed").value, "alice@personal.dev");
+        assert!(em.expect("should succeed").has_tag("codeberg"));
     }
 
     #[test]
@@ -374,8 +374,8 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "alice");
         assert!(u.is_some(), "must emit Username entity");
-        assert!((u.unwrap().confidence - confidence::EXPERT).abs() < 0.01);
-        assert!(u.unwrap().has_tag("codeberg") && u.unwrap().has_tag("code"));
+        assert!((u.expect("should succeed").confidence - confidence::EXPERT).abs() < 0.01);
+        assert!(u.expect("should succeed").has_tag("codeberg") && u.expect("should succeed").has_tag("code"));
     }
 
     #[test]
@@ -384,7 +384,7 @@ mod tests {
         let ents = build_entities(user, "scan-cb-002");
         let p = ents.iter().find(|e| e.kind == EntityKind::Person);
         assert!(p.is_some(), "must emit Person from multi-word full name");
-        assert_eq!(p.unwrap().value, "Alice Developer");
+        assert_eq!(p.expect("should succeed").value, "Alice Developer");
     }
 
     #[test]
@@ -409,8 +409,8 @@ mod tests {
         let ents = build_entities(user, "scan-cb-004");
         let a = ents.iter().find(|e| e.kind == EntityKind::Address);
         assert!(a.is_some(), "must emit Address from location");
-        assert_eq!(a.unwrap().value, "Berlin, DE");
-        assert!(a.unwrap().has_tag("self-asserted"));
+        assert_eq!(a.expect("should succeed").value, "Berlin, DE");
+        assert!(a.expect("should succeed").has_tag("self-asserted"));
     }
 
     #[test]

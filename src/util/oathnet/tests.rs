@@ -503,7 +503,7 @@ use super::*;
         // Every login-indexable field must itself be a real selector field.
         use crate::core::scan::TargetKind;
         for kind in [TargetKind::Email, TargetKind::Username] {
-            let f = selector_field(kind).unwrap();
+            let f = selector_field(kind).expect("should succeed");
             assert!(stealer_indexable(f));
         }
     }

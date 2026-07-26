@@ -57,8 +57,8 @@ fn next_excluding_is_the_failover_primitive() {
     let mut p = EgressPool::from_specs(["a", "b"]);
     p.report("a", true, 100, 1);
     p.report("b", true, 100, 1);
-    let first = p.select().unwrap();
-    let second = p.next_excluding(std::slice::from_ref(&first)).unwrap();
+    let first = p.select().expect("should succeed");
+    let second = p.next_excluding(std::slice::from_ref(&first)).expect("should succeed");
     assert_ne!(first, second, "failover must pick a different healthy egress");
 }
 

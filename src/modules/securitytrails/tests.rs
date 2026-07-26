@@ -18,7 +18,7 @@ use super::*;
 
     #[test]
     fn subdomain_entity_qualifies_host_and_carries_count() {
-        let e = build_subdomain_entity("example.com", "mail", "42", "s").unwrap();
+        let e = build_subdomain_entity("example.com", "mail", "42", "s").expect("should succeed");
         assert_eq!(e.kind, EntityKind::Domain);
         assert_eq!(e.value, "mail.example.com");
         assert!(e.has_tag("subdomain") && e.has_tag("securitytrails"));
@@ -34,7 +34,7 @@ use super::*;
 
     #[test]
     fn associated_entity_accepts_real_hostname() {
-        let e = build_associated_entity("1.2.3.4", Some("mail.acme.com."), "7", "s").unwrap();
+        let e = build_associated_entity("1.2.3.4", Some("mail.acme.com."), "7", "s").expect("should succeed");
         assert_eq!(e.kind, EntityKind::Domain);
         // Trailing dot stripped before the value reaches the entity.
         assert_eq!(e.value, "mail.acme.com");
@@ -69,7 +69,7 @@ use super::*;
                 serde_json::from_str::<AssociatedRecord>(&format!(
                     r#"{{"hostname":"h{i}.example.com"}}"#
                 ))
-                .unwrap()
+                .expect("should succeed")
             })
             .collect();
         let es = associated_entities(&records, Some(5000), "1.2.3.4", "s");

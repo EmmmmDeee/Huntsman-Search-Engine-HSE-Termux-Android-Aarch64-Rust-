@@ -71,7 +71,7 @@ use super::*;
     #[tokio::test]
     async fn process_emits_candidate_usernames() {
         let t = Target::new(TargetKind::Username, "john.doe");
-        let r = UsernameVariants.process(&t, &ctx()).await.unwrap();
+        let r = UsernameVariants.process(&t, &ctx()).await.expect("should succeed");
         assert!(!r.entities.is_empty());
         for e in &r.entities {
             assert_eq!(e.kind, EntityKind::Username);
@@ -86,7 +86,7 @@ use super::*;
     #[tokio::test]
     async fn process_emits_nothing_for_plain_handle() {
         let t = Target::new(TargetKind::Username, "jdoe");
-        let r = UsernameVariants.process(&t, &ctx()).await.unwrap();
+        let r = UsernameVariants.process(&t, &ctx()).await.expect("should succeed");
         assert!(r.entities.is_empty());
     }
 

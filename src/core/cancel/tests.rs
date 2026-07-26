@@ -52,7 +52,7 @@ use super::*;
         });
         controller.cancel();
         assert!(
-            handle.join().unwrap(),
+            handle.join().expect("should succeed"),
             "cancel() must become visible to is_cancelled() on another thread",
         );
         assert!(controller.is_cancelled());

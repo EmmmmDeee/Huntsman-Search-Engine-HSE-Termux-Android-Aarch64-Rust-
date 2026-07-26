@@ -99,7 +99,7 @@ fn primary_fans_out_person_website_and_handles() {
     let gh = ents
         .iter()
         .find(|e| e.kind == EntityKind::Username && e.value == "torvalds")
-        .unwrap();
+        .expect("should succeed");
     assert!(gh.tags.iter().any(|t| t == "github"));
 }
 

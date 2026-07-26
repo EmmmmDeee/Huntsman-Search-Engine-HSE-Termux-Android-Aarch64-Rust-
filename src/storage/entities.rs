@@ -517,21 +517,21 @@ mod tests {
         let mut weak = Entity::new(EntityKind::Username, "ghost", 0.20, "scan-a");
         weak.add_evidence(Evidence::new("username_search", "speculative handle"));
         weak.observed_at = now;
-        store.upsert_entity(&weak).unwrap();
+        store.upsert_entity(&weak).expect("should succeed");
 
         // Strong + recent → above the threshold, not an anomaly.
         let mut strong = Entity::new(EntityKind::Email, "real@example.com", 0.80, "scan-a");
         strong.observed_at = now;
-        store.upsert_entity(&strong).unwrap();
+        store.upsert_entity(&strong).expect("should succeed");
 
         // Weak but OLD → outside the since-window, not flagged.
         let mut stale = Entity::new(EntityKind::Username, "stale", 0.10, "scan-a");
         stale.observed_at = now.saturating_sub(100_000);
-        store.upsert_entity(&stale).unwrap();
+        store.upsert_entity(&stale).expect("should succeed");
 
         let anomalies = store
             .low_confidence_evidence(Store::DEFAULT_LOW_CONFIDENCE_THRESHOLD, 3_600)
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(
             anomalies.len(),
             1,
@@ -546,7 +546,7 @@ mod tests {
         assert!(
             store
                 .low_confidence_evidence(0.15, 3_600)
-                .unwrap()
+                .expect("should succeed")
                 .is_empty(),
             "0.20 is not below a 0.15 threshold"
         );

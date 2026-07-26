@@ -32,9 +32,9 @@ async fn json_decode_parses_ok_and_tags_decode_errors_with_module() {
         http::Response::builder()
             .status(200)
             .body(r#"{"a":7,"b":"x"}"#.to_string())
-            .unwrap(),
+            .expect("should succeed"),
     );
-    let v: V = json_decode("test_mod", ok).await.unwrap();
+    let v: V = json_decode("test_mod", ok).await.expect("should succeed");
     assert_eq!(
         v,
         V {
@@ -47,9 +47,9 @@ async fn json_decode_parses_ok_and_tags_decode_errors_with_module() {
         http::Response::builder()
             .status(200)
             .body("not json".to_string())
-            .unwrap(),
+            .expect("should succeed"),
     );
-    let err = json_decode::<V>("test_mod", bad).await.unwrap_err();
+    let err = json_decode::<V>("test_mod", bad).await.expect("should be an error");
     assert!(
         err.to_string().contains("test_mod"),
         "decode error must name the module: {err}"
@@ -62,7 +62,7 @@ async fn send_tagged_maps_transport_errors_to_the_module() {
         .get("ftp://example.invalid/")
         .send_tagged("test_mod")
         .await
-        .unwrap_err();
+        .expect("should be an error");
     assert!(
         err.to_string().contains("test_mod"),
         "transport error must name the module: {err}"
@@ -100,7 +100,7 @@ async fn send_tagged_strips_url_so_secrets_and_pii_dont_leak() {
         .get("ftp://example.invalid/v1/lookup?apikey=SECRETKEY123&q=target@example.com")
         .send_tagged("test_mod")
         .await
-        .unwrap_err();
+        .expect("should be an error");
     let msg = err.to_string();
     assert!(
         !msg.contains("SECRETKEY123"),
@@ -132,23 +132,23 @@ async fn keyed_ok_or_404_classifies_miss_success_and_error() {
             http::Response::builder()
                 .status(code)
                 .body(String::new())
-                .unwrap(),
+                .expect("should succeed"),
         )
     };
 
     let miss = keyed_ok_or_404("test_mod", "k", &ctx, resp(404))
         .await
-        .unwrap();
+        .expect("should succeed");
     assert!(miss.is_none(), "404 must classify as a miss");
 
     let ok = keyed_ok_or_404("test_mod", "k", &ctx, resp(200))
         .await
-        .unwrap();
+        .expect("should succeed");
     assert!(ok.is_some(), "2xx must hand back the response");
 
     let err = keyed_ok_or_404("test_mod", "k", &ctx, resp(500))
         .await
-        .unwrap_err();
+        .expect("should be an error");
     assert!(
         err.to_string().contains("test_mod"),
         "non-2xx error must name the module: {err}"
@@ -167,13 +167,13 @@ async fn fetch_keyed_json_retries_once_on_a_transient_timeout() {
     // answered immediately with a 200 JSON body. Each connection is handled in
     // its own task, so conn2 is served while conn1 is still being held — no
     // head-of-line blocking, so the timing margin is generous (not flaky).
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
     let count = Arc::new(AtomicUsize::new(0));
     let count_srv = count.clone();
     tokio::spawn(async move {
         loop {
-            let (mut sock, _) = listener.accept().await.unwrap();
+            let (mut sock, _) = listener.accept().await.expect("should succeed");
             let n = count_srv.fetch_add(1, Ordering::SeqCst);
             tokio::spawn(async move {
                 if n == 0 {
@@ -202,7 +202,7 @@ async fn fetch_keyed_json_retries_once_on_a_transient_timeout() {
             .no_proxy()
             .timeout(std::time::Duration::from_millis(400))
             .build()
-            .unwrap(),
+            .expect("should succeed"),
         keys: HashMap::from([("HUNTSMAN_TEST_KEY".to_string(), "k".to_string())]),
         cancel: crate::core::cancel::CancelHandle::new(),
     };
@@ -238,12 +238,12 @@ fn curl_download_cap_mirrors_the_json_body_cap() {
 #[tokio::test]
 async fn traced_client_sends_x_huntsman_trace_header() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
     let server = tokio::spawn(async move {
-        let (mut sock, _) = listener.accept().await.unwrap();
+        let (mut sock, _) = listener.accept().await.expect("should succeed");
         let mut buf = vec![0u8; 4096];
-        let n = sock.read(&mut buf).await.unwrap();
+        let n = sock.read(&mut buf).await.expect("should succeed");
         let req = String::from_utf8_lossy(&buf[..n]).to_string();
         let _ = sock
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
@@ -252,7 +252,7 @@ async fn traced_client_sends_x_huntsman_trace_header() {
     });
     let client = build_client_with_trace("scan-abc123");
     let _ = client.get(format!("http://{addr}/")).send().await;
-    let req = server.await.unwrap().to_lowercase();
+    let req = server.await.expect("should succeed").to_lowercase();
     assert!(
         req.contains("x-huntsman-trace: scan-abc123"),
         "trace header missing; raw request was:\n{req}"
@@ -271,18 +271,18 @@ async fn client_transparently_decompresses_a_gzip_encoded_response() {
     // gzip-compress it — flate2 is already a direct dependency (see `cli::cells`).
     let gz = {
         let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        e.write_all(json.as_bytes()).unwrap();
-        e.finish().unwrap()
+        e.write_all(json.as_bytes()).expect("should succeed");
+        e.finish().expect("should succeed")
     };
     assert!(
         gz != json.as_bytes(),
         "sanity: the served body is actually compressed"
     );
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
     tokio::spawn(async move {
-        let (mut sock, _) = listener.accept().await.unwrap();
+        let (mut sock, _) = listener.accept().await.expect("should succeed");
         let mut buf = vec![0u8; 2048];
         let _ = sock.read(&mut buf).await;
         let head = format!(
@@ -313,10 +313,10 @@ async fn fetch_json_or_absent_maps_400_to_none_while_or_404_still_errors() {
 
     // A one-shot local server that answers with HTTP 400 + a Bluesky-shaped body.
     async fn serve_one_400() -> std::net::SocketAddr {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+        let addr = listener.local_addr().expect("should succeed");
         tokio::spawn(async move {
-            let (mut sock, _) = listener.accept().await.unwrap();
+            let (mut sock, _) = listener.accept().await.expect("should succeed");
             let mut buf = vec![0u8; 2048];
             let _ = sock.read(&mut buf).await;
             let body = br#"{"error":"InvalidRequest","message":"Profile not found"}"#;
@@ -368,10 +368,10 @@ async fn fetch_json_propagates_a_non_2xx_status_as_err_not_a_silent_default() {
     // on the strength of this contract). A genuine fetch/status failure must
     // surface as `Err`, never be silently indistinguishable from a real
     // "nothing found" result.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
     tokio::spawn(async move {
-        let (mut sock, _) = listener.accept().await.unwrap();
+        let (mut sock, _) = listener.accept().await.expect("should succeed");
         let mut buf = vec![0u8; 2048];
         let _ = sock.read(&mut buf).await;
         let body = b"{}";
@@ -414,10 +414,10 @@ async fn fetch_json_or_404_maps_404_to_none_but_propagates_5xx_as_err() {
     // above, which pins the no-absent-list `fetch_json` variant for the T2.115
     // (psbdmp) case; this one pins the 404-is-absent `fetch_json_or_404` variant.
     async fn serve_once(status: u16, reason: &'static str) -> std::net::SocketAddr {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+        let addr = listener.local_addr().expect("should succeed");
         tokio::spawn(async move {
-            let (mut sock, _) = listener.accept().await.unwrap();
+            let (mut sock, _) = listener.accept().await.expect("should succeed");
             let mut buf = vec![0u8; 2048];
             let _ = sock.read(&mut buf).await;
             let body = b"{}";
@@ -475,7 +475,7 @@ fn ssrf_dns_filter_drops_private_and_metadata() {
         "[2606:4700:4700::1111]:443",
     ]
     .iter()
-    .map(|x| x.parse().unwrap())
+    .map(|x| x.parse().expect("should succeed"))
     .collect();
     let kept: Vec<String> = filter_public(addrs.into_iter())
         .iter()
@@ -599,7 +599,7 @@ fn urlencode_slashes_and_ampersands() {
 fn hdrs(retry_after: Option<&str>) -> reqwest::header::HeaderMap {
     let mut h = reqwest::header::HeaderMap::new();
     if let Some(v) = retry_after {
-        h.insert("retry-after", v.parse().unwrap());
+        h.insert("retry-after", v.parse().expect("should succeed"));
     }
     h
 }
@@ -760,8 +760,8 @@ async fn read_text_reads_body_with_module_tagged_errors() {
         http::Response::builder()
             .status(200)
             .body("plain text body".to_string())
-            .unwrap(),
+            .expect("should succeed"),
     );
-    let body = super::fetch::read_text("test_mod", ok).await.unwrap();
+    let body = super::fetch::read_text("test_mod", ok).await.expect("should succeed");
     assert_eq!(body, "plain text body");
 }

@@ -38,7 +38,7 @@ fn parse_abn_response() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Organisation)
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(org.value, "BHP GROUP LIMITED");
     assert!(org.tags.contains(&"abr".to_string()));
     assert!(org.tags.contains(&"active".to_string()));
@@ -47,14 +47,14 @@ fn parse_abn_response() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::AbnAcn)
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(abn.value, "19415776361");
 
     let addr = result
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Address)
-        .unwrap();
+        .expect("should succeed");
     assert!(addr.value.contains("VIC"));
 }
 
@@ -175,7 +175,7 @@ fn jsonp_strip() {
 #[test]
 fn parse_jsonp_body_strips_wrapper_and_deserializes() {
     use super::fetch::parse_jsonp_body;
-    let v = parse_jsonp_body(r#"cb({"Abn":"123","EntityName":"ACME"})"#).unwrap();
+    let v = parse_jsonp_body(r#"cb({"Abn":"123","EntityName":"ACME"})"#).expect("should succeed");
     assert_eq!(v.get("Abn").and_then(|x| x.as_str()), Some("123"));
     assert_eq!(v.get("EntityName").and_then(|x| x.as_str()), Some("ACME"));
 }

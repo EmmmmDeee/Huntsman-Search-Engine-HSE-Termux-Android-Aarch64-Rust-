@@ -5,61 +5,61 @@ use super::*;
 
     #[test]
     fn parse_email() {
-        assert_eq!(parse_target_kind("email").unwrap(), TargetKind::Email);
-        assert_eq!(parse_target_kind("EMAIL").unwrap(), TargetKind::Email);
-        assert_eq!(parse_target_kind(" Email ").unwrap(), TargetKind::Email);
+        assert_eq!(parse_target_kind("email").expect("should succeed"), TargetKind::Email);
+        assert_eq!(parse_target_kind("EMAIL").expect("should succeed"), TargetKind::Email);
+        assert_eq!(parse_target_kind(" Email ").expect("should succeed"), TargetKind::Email);
     }
 
     #[test]
     fn parse_username() {
-        assert_eq!(parse_target_kind("username").unwrap(), TargetKind::Username);
+        assert_eq!(parse_target_kind("username").expect("should succeed"), TargetKind::Username);
     }
 
     #[test]
     fn parse_phone() {
-        assert_eq!(parse_target_kind("phone").unwrap(), TargetKind::Phone);
+        assert_eq!(parse_target_kind("phone").expect("should succeed"), TargetKind::Phone);
     }
 
     #[test]
     fn parse_name_aliases() {
-        assert_eq!(parse_target_kind("name").unwrap(), TargetKind::FullName);
-        assert_eq!(parse_target_kind("fullname").unwrap(), TargetKind::FullName);
+        assert_eq!(parse_target_kind("name").expect("should succeed"), TargetKind::FullName);
+        assert_eq!(parse_target_kind("fullname").expect("should succeed"), TargetKind::FullName);
     }
 
     #[test]
     fn parse_ip_aliases() {
-        assert_eq!(parse_target_kind("ip").unwrap(), TargetKind::IpAddress);
+        assert_eq!(parse_target_kind("ip").expect("should succeed"), TargetKind::IpAddress);
         assert_eq!(
-            parse_target_kind("ipaddress").unwrap(),
+            parse_target_kind("ipaddress").expect("should succeed"),
             TargetKind::IpAddress
         );
     }
 
     #[test]
     fn parse_domain() {
-        assert_eq!(parse_target_kind("domain").unwrap(), TargetKind::Domain);
+        assert_eq!(parse_target_kind("domain").expect("should succeed"), TargetKind::Domain);
     }
 
     #[test]
     fn parse_asn() {
-        assert_eq!(parse_target_kind("asn").unwrap(), TargetKind::Asn);
+        assert_eq!(parse_target_kind("asn").expect("should succeed"), TargetKind::Asn);
     }
 
     #[test]
     fn parse_coords_aliases() {
         assert_eq!(
-            parse_target_kind("coords").unwrap(),
+            parse_target_kind("coords").expect("should succeed"),
             TargetKind::Coordinates
         );
         assert_eq!(
-            parse_target_kind("coordinates").unwrap(),
+            parse_target_kind("coordinates").expect("should succeed"),
             TargetKind::Coordinates
         );
     }
 
     #[test]
     fn parse_address() {
-        assert_eq!(parse_target_kind("address").unwrap(), TargetKind::Address);
+        assert_eq!(parse_target_kind("address").expect("should succeed"), TargetKind::Address);
     }
 
     #[test]
@@ -95,19 +95,19 @@ use super::*;
 
     #[test]
     fn split_csv_single_entry() {
-        let r = split_csv(Some("dns_resolver".into())).unwrap();
+        let r = split_csv(Some("dns_resolver".into())).expect("should succeed");
         assert_eq!(r, vec!["dns_resolver"]);
     }
 
     #[test]
     fn split_csv_multiple_entries() {
-        let r = split_csv(Some("a, b ,c".into())).unwrap();
+        let r = split_csv(Some("a, b ,c".into())).expect("should succeed");
         assert_eq!(r, vec!["a", "b", "c"]);
     }
 
     #[test]
     fn split_csv_empty_string() {
-        let r = split_csv(Some(String::new())).unwrap();
+        let r = split_csv(Some(String::new())).expect("should succeed");
         assert_eq!(r, vec![""]);
     }
 
@@ -159,32 +159,32 @@ use super::*;
 
     #[test]
     fn resolve_seed_prefers_explicit_cli_value() {
-        let got = resolve_seed(Some("alice".to_string()), Some("default".to_string())).unwrap();
+        let got = resolve_seed(Some("alice".to_string()), Some("default".to_string())).expect("should succeed");
         assert_eq!(got, "alice");
     }
 
     #[test]
     fn resolve_seed_falls_back_to_default_when_value_absent() {
-        let got = resolve_seed(None, Some("default".to_string())).unwrap();
+        let got = resolve_seed(None, Some("default".to_string())).expect("should succeed");
         assert_eq!(got, "default");
     }
 
     #[test]
     fn resolve_seed_blank_cli_value_falls_back_to_default() {
         // `-v "  "` is treated as absent, not as a blank target.
-        let got = resolve_seed(Some("   ".to_string()), Some("default".to_string())).unwrap();
+        let got = resolve_seed(Some("   ".to_string()), Some("default".to_string())).expect("should succeed");
         assert_eq!(got, "default");
     }
 
     #[test]
     fn resolve_seed_trims_explicit_value() {
-        let got = resolve_seed(Some("  bob  ".to_string()), None).unwrap();
+        let got = resolve_seed(Some("  bob  ".to_string()), None).expect("should succeed");
         assert_eq!(got, "bob");
     }
 
     #[test]
     fn resolve_seed_errors_when_nothing_set() {
-        let err = resolve_seed(None, None).unwrap_err().to_string();
+        let err = resolve_seed(None, None).expect("should be an error").to_string();
         assert!(err.contains("--value"), "{err}");
         assert!(err.contains("HUNTSMAN_DEFAULT_SEED"), "{err}");
     }
@@ -196,17 +196,17 @@ use super::*;
         use crate::core::scan::{Scan, ScanStatus, Target};
         use crate::storage::Store;
 
-        let store = Store::open(":memory:").unwrap();
+        let store = Store::open(":memory:").expect("should succeed");
         let target = Target { kind: TargetKind::Email, value: "test@example.com".to_string() };
         let mut scan = Scan::new("abc123", target);
         scan.status = ScanStatus::Running;
-        store.upsert_scan(&scan).unwrap();
+        store.upsert_scan(&scan).expect("should succeed");
 
         // An interrupted (non-complete) scan's checkpointed data must be
         // RECOVERABLE — resolve returns Ok so export/audit can read its partial
         // entities, never discarding collected findings (warning goes to stderr).
         assert_eq!(
-            crate::app::runtime::resolve_scan_id(&store, "abc123").unwrap(),
+            crate::app::runtime::resolve_scan_id(&store, "abc123").expect("should succeed"),
             "abc123"
         );
         // A genuinely-absent scan still errors loudly.

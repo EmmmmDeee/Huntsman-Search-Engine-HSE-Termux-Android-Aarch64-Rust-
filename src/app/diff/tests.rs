@@ -10,8 +10,8 @@ use super::*;
 
     #[test]
     fn resolve_errors_on_unknown_scan() {
-        let store = Store::open(":memory:").unwrap();
-        let err = crate::app::runtime::resolve_scan_id(&store, "deadbeef").unwrap_err();
+        let store = Store::open(":memory:").expect("should succeed");
+        let err = crate::app::runtime::resolve_scan_id(&store, "deadbeef").expect("should be an error");
         assert!(
             err.to_string().contains("deadbeef"),
             "error should name the missing scan: {err}"
@@ -20,7 +20,7 @@ use super::*;
 
     #[test]
     fn resolve_latest_errors_when_store_empty() {
-        let store = Store::open(":memory:").unwrap();
+        let store = Store::open(":memory:").expect("should succeed");
         assert!(crate::app::runtime::resolve_scan_id(&store, "latest").is_err());
     }
 
@@ -30,10 +30,10 @@ use super::*;
         // same id is what `cmd_diff` detects as a self-diff. Seed a scan and
         // confirm both the id is set and it round-trips equal for the same arg.
         use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
-        let store = Store::open(":memory:").unwrap();
+        let store = Store::open(":memory:").expect("should succeed");
         let mut scan = Scan::new("scan-x", Target::new(TargetKind::Domain, "example.com"));
         scan.status = ScanStatus::Complete;
-        store.upsert_scan(&scan).unwrap();
+        store.upsert_scan(&scan).expect("should succeed");
         store
             .upsert_entity(&Entity::new(
                 EntityKind::Domain,
@@ -41,10 +41,10 @@ use super::*;
                 0.9,
                 "scan-x",
             ))
-            .unwrap();
+            .expect("should succeed");
 
-        let a = load_side(&store, "scan-x").unwrap();
-        let b = load_side(&store, "scan-x").unwrap();
+        let a = load_side(&store, "scan-x").expect("should succeed");
+        let b = load_side(&store, "scan-x").expect("should succeed");
         assert_eq!(a.scan_id.as_deref(), Some("scan-x"));
         assert_eq!(a.scan_id, b.scan_id, "same arg → same id → self-diff");
         assert_eq!(a.entities.len(), 1);
@@ -59,10 +59,10 @@ use super::*;
         // export-then-diff workflow — every candidate on a re-scan would show
         // up as spuriously "added" even when nothing about the target changed.
         use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
-        let store = Store::open(":memory:").unwrap();
+        let store = Store::open(":memory:").expect("should succeed");
         let mut scan = Scan::new("scan-y", Target::new(TargetKind::Domain, "example.org"));
         scan.status = ScanStatus::Complete;
-        store.upsert_scan(&scan).unwrap();
+        store.upsert_scan(&scan).expect("should succeed");
         store
             .upsert_entity(&Entity::new(
                 EntityKind::Domain,
@@ -70,12 +70,12 @@ use super::*;
                 0.9,
                 "scan-y",
             ))
-            .unwrap();
+            .expect("should succeed");
         let mut stranger = Entity::new(EntityKind::Email, "stranger@other.com", 0.4, "scan-y");
         stranger.tag(crate::core::tags::CANDIDATE);
-        store.upsert_entity(&stranger).unwrap();
+        store.upsert_entity(&stranger).expect("should succeed");
 
-        let side = load_side(&store, "scan-y").unwrap();
+        let side = load_side(&store, "scan-y").expect("should succeed");
         assert_eq!(
             side.entities.len(),
             1,
@@ -93,16 +93,16 @@ use super::*;
 
     #[test]
     fn load_side_reads_json_entity_snapshot_file() {
-        let store = Store::open(":memory:").unwrap();
+        let store = Store::open(":memory:").expect("should succeed");
         let ents = vec![Entity::new(EntityKind::Email, "a@b.com", 0.8, "s")];
-        let json = serde_json::to_string(&ents).unwrap();
+        let json = serde_json::to_string(&ents).expect("should succeed");
         let path = std::env::temp_dir().join(format!(
             "hse-diff-snap-{}-{}.json",
             std::process::id(),
             "load"
         ));
-        std::fs::write(&path, json).unwrap();
-        let loaded = load_side(&store, path.to_str().unwrap()).unwrap();
+        std::fs::write(&path, json).expect("should succeed");
+        let loaded = load_side(&store, path.to_str().expect("should succeed")).expect("should succeed");
         assert_eq!(loaded.entities.len(), 1);
         assert_eq!(loaded.entities[0].value, "a@b.com");
         // A snapshot-file side carries no scan id (so it's never flagged as a

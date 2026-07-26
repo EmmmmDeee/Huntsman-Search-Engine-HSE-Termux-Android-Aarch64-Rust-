@@ -57,7 +57,7 @@ fn composes_person_and_org_and_social_handles() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Person)
-        .unwrap();
+        .expect("should succeed");
     assert!(p.tags.iter().any(|t| t == "see-know"));
 }
 
@@ -211,7 +211,7 @@ fn hardware_serials_become_deviceid_without_duplicate_other_nodes() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::DeviceId && e.value == "359881234567890")
-        .unwrap();
+        .expect("should succeed");
     assert!(dev.tags.iter().any(|t| t == "device"));
 }
 

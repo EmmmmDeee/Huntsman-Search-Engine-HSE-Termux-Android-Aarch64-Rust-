@@ -81,7 +81,7 @@ fn connected_bssid_is_geolocatable_and_banded() {
         .expect("BSSID entity");
     assert!(mac.has_tag("geolocatable"));
     assert!(mac.has_tag("band:5GHz"));
-    assert_eq!(mac.evidence[0].attributes.get("band").unwrap(), "5GHz");
+    assert_eq!(mac.evidence[0].attributes.get("band").expect("should succeed"), "5GHz");
 }
 
 #[test]
@@ -91,8 +91,8 @@ fn wifi_ssid_in_evidence() {
         "supplicant_state":"COMPLETED"}"#;
     let r = parse_conn(json, "test");
     let mac_ev = &r.entities[0].evidence[0];
-    assert_eq!(mac_ev.attributes.get("ssid").unwrap(), "CafeNet");
-    assert_eq!(mac_ev.attributes.get("frequency_mhz").unwrap(), "5180");
+    assert_eq!(mac_ev.attributes.get("ssid").expect("should succeed"), "CafeNet");
+    assert_eq!(mac_ev.attributes.get("frequency_mhz").expect("should succeed"), "5180");
 }
 
 #[test]
@@ -213,13 +213,13 @@ fn evidence_attributes_populated() {
     let r = parse_fix(json, "test");
     let ev = &r.entities[0].evidence[0];
     assert_eq!(ev.source, "device_sensors");
-    assert_eq!(ev.attributes.get("latitude").unwrap(), "37.7749");
-    assert_eq!(ev.attributes.get("longitude").unwrap(), "-122.4194");
-    assert_eq!(ev.attributes.get("altitude").unwrap(), "15.5");
-    assert_eq!(ev.attributes.get("accuracy_m").unwrap(), "8.2");
-    assert_eq!(ev.attributes.get("speed").unwrap(), "1.5");
-    assert_eq!(ev.attributes.get("bearing").unwrap(), "90");
-    assert_eq!(ev.attributes.get("provider").unwrap(), "gps");
+    assert_eq!(ev.attributes.get("latitude").expect("should succeed"), "37.7749");
+    assert_eq!(ev.attributes.get("longitude").expect("should succeed"), "-122.4194");
+    assert_eq!(ev.attributes.get("altitude").expect("should succeed"), "15.5");
+    assert_eq!(ev.attributes.get("accuracy_m").expect("should succeed"), "8.2");
+    assert_eq!(ev.attributes.get("speed").expect("should succeed"), "1.5");
+    assert_eq!(ev.attributes.get("bearing").expect("should succeed"), "90");
+    assert_eq!(ev.attributes.get("provider").expect("should succeed"), "gps");
 }
 
 #[test]
@@ -228,11 +228,11 @@ fn missing_optional_fields_default_to_zero() {
     let r = parse_fix(json, "test");
     assert_eq!(r.entities.len(), 1);
     let ev = &r.entities[0].evidence[0];
-    assert_eq!(ev.attributes.get("provider").unwrap(), "network");
-    assert_eq!(ev.attributes.get("altitude").unwrap(), "0");
-    assert_eq!(ev.attributes.get("accuracy_m").unwrap(), "0");
-    assert_eq!(ev.attributes.get("speed").unwrap(), "0");
-    assert_eq!(ev.attributes.get("bearing").unwrap(), "0");
+    assert_eq!(ev.attributes.get("provider").expect("should succeed"), "network");
+    assert_eq!(ev.attributes.get("altitude").expect("should succeed"), "0");
+    assert_eq!(ev.attributes.get("accuracy_m").expect("should succeed"), "0");
+    assert_eq!(ev.attributes.get("speed").expect("should succeed"), "0");
+    assert_eq!(ev.attributes.get("bearing").expect("should succeed"), "0");
     assert!((r.entities[0].confidence - confidence::HIGH).abs() < 1e-6);
 }
 

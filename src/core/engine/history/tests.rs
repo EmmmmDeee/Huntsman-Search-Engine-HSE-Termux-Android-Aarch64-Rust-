@@ -65,7 +65,7 @@ fn bridges_a_finding_seen_in_an_earlier_scan_without_inflating_confidence() {
     // A PRIOR scan (a different investigation) recorded this phone.
     store
         .upsert_entity(&ent(EntityKind::Phone, "+61400111222", 0.7, "prior-scan"))
-        .unwrap();
+        .expect("should succeed");
 
     // This scan freshly discovers the same phone plus a brand-new email.
     let shared = ent(EntityKind::Phone, "+61400111222", 0.55, "this-scan");
@@ -80,7 +80,7 @@ fn bridges_a_finding_seen_in_an_earlier_scan_without_inflating_confidence() {
     let shared = entities
         .iter()
         .find(|e| e.kind == EntityKind::Phone)
-        .unwrap();
+        .expect("should succeed");
     assert!(shared.has_tag("cross-scan"));
     assert!(
         shared.evidence.iter().any(|ev| ev.source
@@ -97,7 +97,7 @@ fn bridges_a_finding_seen_in_an_earlier_scan_without_inflating_confidence() {
     let fresh = entities
         .iter()
         .find(|e| e.kind == EntityKind::Email)
-        .unwrap();
+        .expect("should succeed");
     assert!(!fresh.has_tag("cross-scan"));
 
     // Idempotent: a second pass bridges nothing new.
@@ -113,7 +113,7 @@ fn cooccurrence_bridges_a_pair_seen_together_before() {
     // A PRIOR investigation recorded a phone and an email TOGETHER.
     store
         .upsert_entity(&ent(EntityKind::Phone, "+61400111222", 0.7, "prior-scan"))
-        .unwrap();
+        .expect("should succeed");
     store
         .upsert_entity(&ent(
             EntityKind::Email,
@@ -121,7 +121,7 @@ fn cooccurrence_bridges_a_pair_seen_together_before() {
             0.7,
             "prior-scan",
         ))
-        .unwrap();
+        .expect("should succeed");
 
     // This scan freshly rediscovers BOTH of them (not yet persisted).
     let mut entities = vec![
@@ -135,11 +135,11 @@ fn cooccurrence_bridges_a_pair_seen_together_before() {
     let phone = entities
         .iter()
         .find(|e| e.kind == EntityKind::Phone)
-        .unwrap();
+        .expect("should succeed");
     let email = entities
         .iter()
         .find(|e| e.kind == EntityKind::Email)
-        .unwrap();
+        .expect("should succeed");
     assert!(phone.has_tag("cross-scan-cooccurrence"));
     assert!(email.has_tag("cross-scan-cooccurrence"));
     // Each endpoint's evidence names the OTHER as the co-occurring partner.
@@ -164,10 +164,10 @@ fn no_cooccurrence_when_pair_never_shared_a_prior_scan() {
     // were never seen together, so there is no recurring association to bridge.
     store
         .upsert_entity(&ent(EntityKind::Phone, "+61400111222", 0.7, "prior-a"))
-        .unwrap();
+        .expect("should succeed");
     store
         .upsert_entity(&ent(EntityKind::Email, "jane@example.com", 0.7, "prior-b"))
-        .unwrap();
+        .expect("should succeed");
 
     let mut entities = vec![
         ent(EntityKind::Phone, "+61400111222", 0.55, "this-scan"),
@@ -191,7 +191,7 @@ fn cooccurrence_is_idempotent_and_never_inflates_confidence() {
     let store = InMemoryStore::new();
     store
         .upsert_entity(&ent(EntityKind::Phone, "+61400111222", 0.7, "prior-scan"))
-        .unwrap();
+        .expect("should succeed");
     store
         .upsert_entity(&ent(
             EntityKind::Email,
@@ -199,7 +199,7 @@ fn cooccurrence_is_idempotent_and_never_inflates_confidence() {
             0.7,
             "prior-scan",
         ))
-        .unwrap();
+        .expect("should succeed");
 
     // Capture the phone endpoint's pre-link confidence/sources.
     let phone = ent(EntityKind::Phone, "+61400111222", 0.55, "this-scan");
@@ -217,7 +217,7 @@ fn cooccurrence_is_idempotent_and_never_inflates_confidence() {
     let phone_after = entities
         .iter()
         .find(|e| e.kind == EntityKind::Phone)
-        .unwrap();
+        .expect("should succeed");
     let evidence_after = phone_after.evidence.len();
     // Non-corroborating: the co-occurrence evidence reuses CROSS_SCAN_SOURCE, so
     // it must not raise the effective confidence or the corroborating-source count.
@@ -233,7 +233,7 @@ fn cooccurrence_is_idempotent_and_never_inflates_confidence() {
         entities
             .iter()
             .find(|e| e.kind == EntityKind::Phone)
-            .unwrap()
+            .expect("should succeed")
             .evidence
             .len(),
         evidence_after,
@@ -280,13 +280,13 @@ fn cooccurrence_partners_recorded_in_deterministic_order() {
     // One prior scan recorded a phone alongside TWO emails.
     store
         .upsert_entity(&ent(EntityKind::Phone, "+61400111222", 0.7, "prior-scan"))
-        .unwrap();
+        .expect("should succeed");
     store
         .upsert_entity(&ent(EntityKind::Email, "aaa@example.com", 0.7, "prior-scan"))
-        .unwrap();
+        .expect("should succeed");
     store
         .upsert_entity(&ent(EntityKind::Email, "zzz@example.com", 0.7, "prior-scan"))
-        .unwrap();
+        .expect("should succeed");
 
     // Insert the current entities in a DIFFERENT (reverse-sorted) order than the
     // partners' value order, so a stable result can only come from sorting.
@@ -303,7 +303,7 @@ fn cooccurrence_partners_recorded_in_deterministic_order() {
     let phone = entities
         .iter()
         .find(|e| e.kind == EntityKind::Phone)
-        .unwrap();
+        .expect("should succeed");
     let partners: Vec<&str> = phone
         .evidence
         .iter()
@@ -330,8 +330,8 @@ fn relation_recall_surfaces_a_prior_linked_connection() {
         0.7,
         "prior-scan",
     );
-    store.upsert_entity(&prior_phone).unwrap();
-    store.upsert_entity(&prior_addr).unwrap();
+    store.upsert_entity(&prior_phone).expect("should succeed");
+    store.upsert_entity(&prior_addr).expect("should succeed");
     store
         .upsert_relation(&Relation::new(
             prior_phone.uid.clone(),
@@ -340,7 +340,7 @@ fn relation_recall_surfaces_a_prior_linked_connection() {
             0.7,
             "prior-scan",
         ))
-        .unwrap();
+        .expect("should succeed");
 
     // This scan rediscovers ONLY the phone — the address is NOT present, so the
     // recall is the only way the prior connection resurfaces.
@@ -366,7 +366,7 @@ fn relation_recall_is_silent_without_a_prior_link() {
     // The phone recurs, but it was never part of any relation in the prior scan.
     store
         .upsert_entity(&ent(EntityKind::Phone, "+61400111222", 0.7, "prior-scan"))
-        .unwrap();
+        .expect("should succeed");
     let mut entities = vec![ent(EntityKind::Phone, "+61400111222", 0.55, "this-scan")];
     assert_eq!(
         link_cross_scan_relations(&store, &mut entities, "this-scan"),
@@ -383,9 +383,9 @@ fn relation_recall_ignores_infrastructure_relations() {
     let prior_person = ent(EntityKind::Person, "Jane Citizen", 0.7, "prior-scan");
     let prior_email = ent(EntityKind::Email, "jane@example.com", 0.7, "prior-scan");
     let prior_domain = ent(EntityKind::Domain, "example.com", 0.7, "prior-scan");
-    store.upsert_entity(&prior_person).unwrap();
-    store.upsert_entity(&prior_email).unwrap();
-    store.upsert_entity(&prior_domain).unwrap();
+    store.upsert_entity(&prior_person).expect("should succeed");
+    store.upsert_entity(&prior_email).expect("should succeed");
+    store.upsert_entity(&prior_domain).expect("should succeed");
     store
         .upsert_relation(&Relation::new(
             prior_person.uid.clone(),
@@ -394,7 +394,7 @@ fn relation_recall_ignores_infrastructure_relations() {
             0.7,
             "prior-scan",
         ))
-        .unwrap();
+        .expect("should succeed");
     store
         .upsert_relation(&Relation::new(
             prior_email.uid.clone(),
@@ -403,7 +403,7 @@ fn relation_recall_ignores_infrastructure_relations() {
             0.7,
             "prior-scan",
         ))
-        .unwrap();
+        .expect("should succeed");
 
     let mut entities = vec![ent(EntityKind::Email, "jane@example.com", 0.55, "this-scan")];
     let linked = link_cross_scan_relations(&store, &mut entities, "this-scan");
@@ -437,8 +437,8 @@ fn relation_recall_is_idempotent_and_never_inflates_confidence() {
         0.7,
         "prior-scan",
     );
-    store.upsert_entity(&prior_phone).unwrap();
-    store.upsert_entity(&prior_addr).unwrap();
+    store.upsert_entity(&prior_phone).expect("should succeed");
+    store.upsert_entity(&prior_addr).expect("should succeed");
     store
         .upsert_relation(&Relation::new(
             prior_phone.uid.clone(),
@@ -447,7 +447,7 @@ fn relation_recall_is_idempotent_and_never_inflates_confidence() {
             0.7,
             "prior-scan",
         ))
-        .unwrap();
+        .expect("should succeed");
 
     let phone = ent(EntityKind::Phone, "+61400111222", 0.55, "this-scan");
     let conf_before = phone.c_effective();
@@ -478,7 +478,7 @@ fn bridges_an_email_to_a_username_recorded_under_a_different_kind() {
     // A PRIOR investigation recorded the handle as a Username.
     store
         .upsert_entity(&ent(EntityKind::Username, "jordanmeyers", 0.7, "prior-scan"))
-        .unwrap();
+        .expect("should succeed");
 
     // This scan only ever sees the address. The UID-keyed recurrence pass cannot
     // bridge it — different kind means a different UID.
@@ -533,10 +533,10 @@ fn alias_pass_skips_entities_the_stronger_recurrence_pass_already_bridged() {
             0.7,
             "prior-scan",
         ))
-        .unwrap();
+        .expect("should succeed");
     store
         .upsert_entity(&ent(EntityKind::Username, "jordanmeyers", 0.7, "prior-scan"))
-        .unwrap();
+        .expect("should succeed");
 
     let mut entities = vec![ent(
         EntityKind::Email,
@@ -562,7 +562,7 @@ fn alias_pass_ignores_role_mailboxes_and_unseen_handles() {
     let store = InMemoryStore::new();
     store
         .upsert_entity(&ent(EntityKind::Username, "admin", 0.7, "prior-scan"))
-        .unwrap();
+        .expect("should succeed");
 
     let mut entities = vec![
         // Role mailbox: the handle identifies nobody.

@@ -137,18 +137,18 @@ fn parse_email_response_matches_the_real_v3_schema() {
     // Red/green anchor for the whole fix: this MUST deserialize into real
     // (non-None) values, unlike the pre-fix structs which silently matched
     // nothing in this shape.
-    let r: SeonEmailResp = serde_json::from_str(REAL_EMAIL_RESPONSE).unwrap();
+    let r: SeonEmailResp = serde_json::from_str(REAL_EMAIL_RESPONSE).expect("should succeed");
     assert_eq!(r.success, Some(true));
-    let data = r.data.unwrap();
-    assert!((data.risk_scores.unwrap().global_network_score.unwrap() - 11.26).abs() < 0.01);
-    assert_eq!(data.email_domain_details.unwrap().disposable, Some(false));
+    let data = r.data.expect("should succeed");
+    assert!((data.risk_scores.expect("should succeed").global_network_score.expect("should succeed") - 11.26).abs() < 0.01);
+    assert_eq!(data.email_domain_details.expect("should succeed").disposable, Some(false));
     assert_eq!(
-        data.breach_details.unwrap().breaches.len(),
+        data.breach_details.expect("should succeed").breaches.len(),
         2,
         "breach_details.breaches must deserialize — it didn't exist in the pre-fix struct at all"
     );
     assert_eq!(
-        data.associated_domain_registrations.unwrap().domains.len(),
+        data.associated_domain_registrations.expect("should succeed").domains.len(),
         1,
         "associated_domain_registrations must deserialize — genuinely new signal this fix recovers"
     );
@@ -156,10 +156,10 @@ fn parse_email_response_matches_the_real_v3_schema() {
 
 // ── Core: email entity building against the real schema ─────────────
 fn email(json: &str) -> Vec<crate::core::entity::Entity> {
-    let r: SeonEmailResp = serde_json::from_str(json).unwrap();
+    let r: SeonEmailResp = serde_json::from_str(json).expect("should succeed");
     build_email_entities(
         &Target::new(TargetKind::Email, "jane@acme.com"),
-        &r.data.unwrap(),
+        &r.data.expect("should succeed"),
         "s",
     )
 }
@@ -225,7 +225,7 @@ fn email_emits_a_domain_per_breach_with_breach_date_stamped() {
         .filter(|e| e.kind == EntityKind::Domain && e.has_tag(crate::core::tags::BREACH))
         .collect();
     assert_eq!(domains.len(), 2, "one Domain per breach entry");
-    let apollo = domains.iter().find(|d| d.value == "apollo.io").unwrap();
+    let apollo = domains.iter().find(|d| d.value == "apollo.io").expect("should succeed");
     assert!(apollo.has_tag(crate::core::tags::BREACH_DERIVED));
     assert_eq!(
         apollo.evidence[0]
@@ -455,31 +455,31 @@ fn parse_phone_response_matches_the_real_v2_schema() {
     // Red/green anchor for the phone-path leg of this fix: this MUST
     // deserialize into real (non-None) values, unlike the pre-fix structs
     // which silently matched nothing in this shape.
-    let r: SeonPhoneResp = serde_json::from_str(REAL_PHONE_RESPONSE).unwrap();
+    let r: SeonPhoneResp = serde_json::from_str(REAL_PHONE_RESPONSE).expect("should succeed");
     assert_eq!(r.success, Some(true));
-    let data = r.data.unwrap();
-    assert!((data.risk_scores.unwrap().global_network_score.unwrap() - 5.0).abs() < 0.01);
-    let pcd = data.provider_carrier_details.unwrap();
+    let data = r.data.expect("should succeed");
+    assert!((data.risk_scores.expect("should succeed").global_network_score.expect("should succeed") - 5.0).abs() < 0.01);
+    let pcd = data.provider_carrier_details.expect("should succeed");
     assert_eq!(pcd.carrier.as_deref(), Some("Telstra"));
     assert_eq!(pcd.phone_is_valid, Some(true));
-    let hlr = data.hlr_details.unwrap();
+    let hlr = data.hlr_details.expect("should succeed");
     assert_eq!(
         hlr.imsi.as_deref(),
         Some("505013873220912"),
         "hlr_details must deserialize — it didn't exist in the pre-fix struct at all"
     );
     assert_eq!(
-        data.cnam_details.unwrap().name.as_deref(),
+        data.cnam_details.expect("should succeed").name.as_deref(),
         Some("Jordan Avery"),
         "cnam_details must deserialize — genuinely new signal this fix recovers"
     );
 }
 
 fn phone(json: &str) -> Vec<crate::core::entity::Entity> {
-    let r: SeonPhoneResp = serde_json::from_str(json).unwrap();
+    let r: SeonPhoneResp = serde_json::from_str(json).expect("should succeed");
     build_phone_entities(
         &Target::new(TargetKind::Phone, "+61400000000"),
-        &r.data.unwrap(),
+        &r.data.expect("should succeed"),
         "s",
     )
 }

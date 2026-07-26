@@ -73,7 +73,7 @@ fn breach_deser_full_payload() {
         "IsSubscriptionFree": false,
         "LogoPath": "https://haveibeenpwned.com/Content/Images/PwnedLogos/Adobe.png"
     }]"#;
-    let breaches: Vec<Breach> = serde_json::from_str(json).unwrap();
+    let breaches: Vec<Breach> = serde_json::from_str(json).expect("should succeed");
     assert_eq!(breaches.len(), 1);
     assert_eq!(breaches[0].name, "Adobe");
     assert_eq!(breaches[0].domain.as_deref(), Some("adobe.com"));
@@ -86,7 +86,7 @@ fn breach_deser_full_payload() {
 #[test]
 fn breach_deser_minimal() {
     let json = r#"[{"Name": "Unknown"}]"#;
-    let breaches: Vec<Breach> = serde_json::from_str(json).unwrap();
+    let breaches: Vec<Breach> = serde_json::from_str(json).expect("should succeed");
     assert_eq!(breaches.len(), 1);
     assert_eq!(breaches[0].name, "Unknown");
     assert!(breaches[0].domain.is_none());
@@ -95,9 +95,9 @@ fn breach_deser_minimal() {
 
 fn one_breach(json: &str) -> Breach {
     serde_json::from_str::<Vec<Breach>>(json)
-        .unwrap()
+        .expect("should succeed")
         .pop()
-        .unwrap()
+        .expect("should succeed")
 }
 
 #[test]
@@ -179,13 +179,13 @@ fn paste_deser_live_shape() {
     // real key): the module must decode Source/Title/Date/EmailCount.
     let json = r#"[{"Id":"X5VHhh4q","Source":"Pastebin","Title":"nmd",
         "Date":"2014-11-28T06:11:00Z","EmailCount":245}]"#;
-    let pastes: Vec<Paste> = serde_json::from_str(json).unwrap();
+    let pastes: Vec<Paste> = serde_json::from_str(json).expect("should succeed");
     assert_eq!(pastes.len(), 1);
     assert_eq!(pastes[0].source.as_deref(), Some("Pastebin"));
     assert_eq!(pastes[0].title.as_deref(), Some("nmd"));
     assert_eq!(pastes[0].email_count, Some(245));
     // A minimal paste (only Source) still decodes.
-    let minimal: Vec<Paste> = serde_json::from_str(r#"[{"Source":"AdHocUrl"}]"#).unwrap();
+    let minimal: Vec<Paste> = serde_json::from_str(r#"[{"Source":"AdHocUrl"}]"#).expect("should succeed");
     assert_eq!(minimal[0].source.as_deref(), Some("AdHocUrl"));
     assert!(minimal[0].email_count.is_none());
 }
@@ -297,7 +297,7 @@ fn tag_breach_quality_no_stealer_log_tag_for_ordinary_breach() {
 }
 
 fn pastes(json: &str) -> Vec<Paste> {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 #[test]
@@ -341,14 +341,14 @@ fn paste_entities_empty_input_yields_nothing() {
 fn paste_url_only_reconstructs_pastebin() {
     let p = pastes(r#"[{"Source":"Pastebin","Id":"XYZ"}]"#)
         .pop()
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(paste_url(&p).as_deref(), Some("https://pastebin.com/XYZ"));
     // Unknown source → no fabricated URL.
     let q = pastes(r#"[{"Source":"SomeForum","Id":"XYZ"}]"#)
         .pop()
-        .unwrap();
+        .expect("should succeed");
     assert!(paste_url(&q).is_none());
     // Missing id → no URL even for Pastebin.
-    let r = pastes(r#"[{"Source":"Pastebin"}]"#).pop().unwrap();
+    let r = pastes(r#"[{"Source":"Pastebin"}]"#).pop().expect("should succeed");
     assert!(paste_url(&r).is_none());
 }

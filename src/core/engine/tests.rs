@@ -35,7 +35,7 @@ async fn injected_module_runtime_is_used_by_the_engine() {
         cancel: Default::default(),
     };
 
-    engine.run(scan, target, ctx).await.unwrap();
+    engine.run(scan, target, ctx).await.expect("should succeed");
 
     assert_eq!(resets.load(std::sync::atomic::Ordering::Relaxed), 1);
 }
@@ -110,7 +110,7 @@ fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
         "only the in-area relative is promoted"
     );
 
-    let erik = ents.iter().find(|e| e.value == "Erik Moreau").unwrap();
+    let erik = ents.iter().find(|e| e.value == "Erik Moreau").expect("should succeed");
     assert!(erik.has_tag("geo-corroborated"));
     assert!(
         erik.evidence
@@ -128,7 +128,7 @@ fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
     );
     assert_eq!(erik.classify(), Classification::Probable);
 
-    let far = ents.iter().find(|e| e.value.contains("4870")).unwrap();
+    let far = ents.iter().find(|e| e.value.contains("4870")).expect("should succeed");
     assert!(
         !far.has_tag("geo-corroborated"),
         "a far namesake stays a candidate"
@@ -178,7 +178,7 @@ fn promote_breach_candidate_geo_corroborated_lifts_same_place_same_name_records(
         "only the same-metro breach record is re-promoted"
     );
 
-    let near = ents.iter().find(|e| e.value == "matt@example.com").unwrap();
+    let near = ents.iter().find(|e| e.value == "matt@example.com").expect("should succeed");
     assert!(
         !near.has_tag(crate::core::tags::CANDIDATE),
         "un-quarantined out of candidate"
@@ -194,7 +194,7 @@ fn promote_breach_candidate_geo_corroborated_lifts_same_place_same_name_records(
     let far = ents
         .iter()
         .find(|e| e.value == "matt2@example.com")
-        .unwrap();
+        .expect("should succeed");
     assert!(
         far.has_tag(crate::core::tags::CANDIDATE),
         "an interstate same-name namesake stays quarantined"
@@ -255,7 +255,7 @@ fn promote_multipath_corroborated_lifts_only_orthogonally_linked_endpoints() {
         "both identity endpoints are promoted"
     );
     for v in ["a@x.com", "bob"] {
-        let e = ents.iter().find(|e| e.value == v).unwrap();
+        let e = ents.iter().find(|e| e.value == v).expect("should succeed");
         assert!(e.has_tag("multipath-corroborated"), "{v} must be tagged");
         assert!(
             e.evidence
@@ -266,7 +266,7 @@ fn promote_multipath_corroborated_lifts_only_orthogonally_linked_endpoints() {
     }
     // The conduit intermediates are NOT themselves corroborated.
     for v in ["x.com", "Acme Pty"] {
-        let e = ents.iter().find(|e| e.value == v).unwrap();
+        let e = ents.iter().find(|e| e.value == v).expect("should succeed");
         assert!(
             !e.has_tag("multipath-corroborated"),
             "{v} is a conduit, not a corroborated endpoint"
@@ -317,7 +317,7 @@ fn promote_cross_scan_corroborated_lifts_queued_endpoints_idempotently() {
         "both queued endpoints are promoted"
     );
     for uid in [&ua, &ub] {
-        let e = ents.iter().find(|e| &e.uid == uid).unwrap();
+        let e = ents.iter().find(|e| &e.uid == uid).expect("should succeed");
         assert!(
             e.has_tag("cross-scan-corroborated"),
             "endpoint must be tagged"
@@ -330,7 +330,7 @@ fn promote_cross_scan_corroborated_lifts_queued_endpoints_idempotently() {
         );
     }
     // An entity not in the boost set is untouched.
-    let other = ents.iter().find(|e| e.value == "x.com").unwrap();
+    let other = ents.iter().find(|e| e.value == "x.com").expect("should succeed");
     assert!(!other.has_tag("cross-scan-corroborated"));
 
     // Idempotent, and an empty boost set is a no-op.
@@ -374,7 +374,7 @@ fn flag_geo_discordant_namesakes_is_surname_aware_and_tag_only() {
         "only the far COMMON-surname namesake is flagged"
     );
 
-    let common = ents.iter().find(|e| e.value == "Curt Smith").unwrap();
+    let common = ents.iter().find(|e| e.value == "Curt Smith").expect("should succeed");
     assert!(common.has_tag("geo-discordant"));
     // Tag-only: confidence and the corroboration count are untouched, so a
     // negative signal can never PROMOTE the namesake it means to demote.
@@ -386,12 +386,12 @@ fn flag_geo_discordant_namesakes_is_surname_aware_and_tag_only() {
     );
 
     // A far DISTINCTIVE surname is distant kin, not a namesake.
-    let rare = ents.iter().find(|e| e.value == "Curt Moreau").unwrap();
+    let rare = ents.iter().find(|e| e.value == "Curt Moreau").expect("should succeed");
     assert!(
         !rare.has_tag("geo-discordant"),
         "a far distinctive surname is kin, never a namesake"
     );
-    let near = ents.iter().find(|e| e.value.contains("4519")).unwrap();
+    let near = ents.iter().find(|e| e.value.contains("4519")).expect("should succeed");
     assert!(
         !near.has_tag("geo-discordant"),
         "an in-area relative is never a namesake"
@@ -712,7 +712,7 @@ fn module_dispatch_is_logged_keyed_by_module_name() {
     struct VecWriter(Arc<Mutex<Vec<u8>>>);
     impl Write for VecWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
+            self.0.lock().expect("should succeed").extend_from_slice(buf);
             Ok(buf.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
@@ -735,7 +735,7 @@ fn module_dispatch_is_logged_keyed_by_module_name() {
     tracing::subscriber::with_default(subscriber, || {
         log_module_dispatch("hibp", &Target::new(TargetKind::Email, "a@b.com"));
     });
-    let out = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+    let out = String::from_utf8(buf.lock().expect("should succeed").clone()).expect("should succeed");
     assert!(
         out.contains("dispatch"),
         "dispatch event missing; got: {out:?}"
@@ -1306,7 +1306,7 @@ fn target_distinct_sources_excludes_geo_normalize_enrichment() {
     );
 
     // A genuine second geo source lifts it to 2 → WiGLE may fire.
-    let e = map.get_mut(&coord.uid).unwrap();
+    let e = map.get_mut(&coord.uid).expect("should succeed");
     e.add_evidence(Evidence::new("geocode", "reverse geocode"));
     assert_eq!(target_distinct_sources(&map, &target), 2);
 
@@ -1714,8 +1714,8 @@ async fn recall_prior_entities_pulls_and_tags_prior_scan_findings() {
     );
     email.tag("planted");
     email.add_evidence(Evidence::new("plant", "found in an earlier scan"));
-    store.upsert_entity(&seed).unwrap();
-    store.upsert_entity(&email).unwrap();
+    store.upsert_entity(&seed).expect("should succeed");
+    store.upsert_entity(&email).expect("should succeed");
 
     let (bus, _rx) = tokio::sync::broadcast::channel(8);
     let engine = ScanEngine::new(vec![], store_port, bus);
@@ -1769,8 +1769,8 @@ async fn recall_resets_generation_to_zero() {
     let mut deep = Entity::new(EntityKind::Email, "deeplead@gmail.com", 0.8, "prior-scan");
     deep.generation = 5; // was a deep pivot in the PRIOR scan
     deep.add_evidence(Evidence::new("plant", "found deep in an earlier scan"));
-    store.upsert_entity(&seed).unwrap();
-    store.upsert_entity(&deep).unwrap();
+    store.upsert_entity(&seed).expect("should succeed");
+    store.upsert_entity(&deep).expect("should succeed");
 
     let (bus, _rx) = tokio::sync::broadcast::channel(8);
     let engine = ScanEngine::new(vec![], store_port, bus);
@@ -1814,9 +1814,9 @@ async fn recall_never_resurrects_a_role_mailbox_email() {
     ));
     let mut personal = Entity::new(EntityKind::Email, "owner@see-know.xyz", 0.8, "prior-scan");
     personal.add_evidence(Evidence::new("whois", "Registrant contact"));
-    store.upsert_entity(&seed).unwrap();
-    store.upsert_entity(&role).unwrap();
-    store.upsert_entity(&personal).unwrap();
+    store.upsert_entity(&seed).expect("should succeed");
+    store.upsert_entity(&role).expect("should succeed");
+    store.upsert_entity(&personal).expect("should succeed");
 
     let (bus, _rx) = tokio::sync::broadcast::channel(8);
     let engine = ScanEngine::new(vec![], store_port, bus);
@@ -1911,9 +1911,9 @@ async fn expansion_stamps_entity_generation_per_round() {
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
     };
-    engine.run(scan, target, ctx).await.unwrap();
+    engine.run(scan, target, ctx).await.expect("should succeed");
 
-    let ents = store.entities_for_scan(&scan_id).unwrap();
+    let ents = store.entities_for_scan(&scan_id).expect("should succeed");
     let gen_of = |v: &str| ents.iter().find(|e| e.value == v).map(|e| e.generation);
     // The seed's own anchor and its direct module output are generation 0 (zero pivots).
     assert_eq!(gen_of("seed"), Some(0), "seed anchor is generation 0");
@@ -1997,7 +1997,7 @@ async fn recall_prior_entities_tie_breaks_equal_confidence_by_uid() {
     // make the recalled run monotonic — a stable sort alone preserves the
     // randomised HashMap order.
     let seed = Entity::new(EntityKind::Username, "tiebreaksubject", 0.95, "prior-scan");
-    store.upsert_entity(&seed).unwrap();
+    store.upsert_entity(&seed).expect("should succeed");
     for i in 0..24u32 {
         let mut email = Entity::new(
             EntityKind::Email,
@@ -2006,7 +2006,7 @@ async fn recall_prior_entities_tie_breaks_equal_confidence_by_uid() {
             "prior-scan",
         );
         email.add_evidence(Evidence::new("plant", "found in an earlier scan"));
-        store.upsert_entity(&email).unwrap();
+        store.upsert_entity(&email).expect("should succeed");
     }
 
     let (bus, _rx) = tokio::sync::broadcast::channel(8);
@@ -2067,7 +2067,7 @@ async fn recall_resolves_a_fullname_seed_despite_reformatting() {
         let _ = std::fs::remove_file(format!("{p}-shm"));
     };
     cleanup(&path);
-    let store: Arc<dyn StoragePort> = Arc::new(Store::open(&path).unwrap());
+    let store: Arc<dyn StoragePort> = Arc::new(Store::open(&path).expect("should succeed"));
 
     // A prior scan stored the Person anchor TITLE-CASED (as name parsing does)
     // plus a discovered email no live module will re-emit.
@@ -2076,13 +2076,13 @@ async fn recall_resolves_a_fullname_seed_despite_reformatting() {
             "prior",
             Target::new(TargetKind::FullName, "Jordan Meyers"),
         ))
-        .unwrap();
+        .expect("should succeed");
     let mut person = Entity::new(EntityKind::Person, "Jordan Meyers", 0.9, "prior");
     person.add_evidence(Evidence::new("name_intel", "seed"));
     let mut email = Entity::new(EntityKind::Email, "jordanlead@gmail.com", 0.8, "prior");
     email.add_evidence(Evidence::new("hibp", "breach"));
-    store.upsert_entity(&person).unwrap();
-    store.upsert_entity(&email).unwrap();
+    store.upsert_entity(&person).expect("should succeed");
+    store.upsert_entity(&email).expect("should succeed");
 
     let (bus, _rx) = tokio::sync::broadcast::channel(8);
     let engine = ScanEngine::new(vec![], store, bus);
@@ -2547,7 +2547,7 @@ async fn convex_budget_dispatches_the_highest_query_value_module_first() {
             .await
             .expect("dispatch runs");
         assert_eq!(entity_map.len(), 1, "max_entities=1 must admit exactly one");
-        entity_map.into_inner().into_values().next().unwrap().value
+        entity_map.into_inner().into_values().next().expect("should succeed").value
     }
 
     // Flag OFF: established priority order — the priority-90 module wins.
@@ -2571,7 +2571,7 @@ fn rank_enrichment_leverage_orders_join_keys_by_cross_scan_degree() {
     use crate::core::test_support::InMemoryStore;
 
     let store = InMemoryStore::new();
-    let up = |k, v, s| store.upsert_entity(&Entity::new(k, v, 0.7, s)).unwrap();
+    let up = |k, v, s| store.upsert_entity(&Entity::new(k, v, 0.7, s)).expect("should succeed");
 
     // An email observed across THREE investigations — in the in-memory store the
     // accumulated corroboration is the observation_count, i.e. cross-scan degree 3.
@@ -2648,8 +2648,8 @@ async fn checkpoint_entities_canonicalizes_evidence_order_regardless_of_arrival_
     let engine_b = ScanEngine::new(vec![], store_b.clone(), bus);
     engine_b.checkpoint_entities("scan-a", &mut [aaa_then_zzz]);
 
-    let recovered_a = store_a.entities_for_scan("scan-a").unwrap();
-    let recovered_b = store_b.entities_for_scan("scan-a").unwrap();
+    let recovered_a = store_a.entities_for_scan("scan-a").expect("should succeed");
+    let recovered_b = store_b.entities_for_scan("scan-a").expect("should succeed");
     assert_eq!(recovered_a.len(), 1);
     assert_eq!(recovered_b.len(), 1);
     let sources_a: Vec<&str> = recovered_a[0]
@@ -2980,7 +2980,7 @@ fn identity_aware_ranking_collapses_clusters_and_aggregates_leverage() {
         ranked[0].cluster_size, 2,
         "the richer identity is investigated first"
     );
-    let solo = ranked.iter().find(|t| t.cluster_size == 1).unwrap();
+    let solo = ranked.iter().find(|t| t.cluster_size == 1).expect("should succeed");
     assert!(cluster.representative.score > solo.representative.score);
 }
 
@@ -3150,8 +3150,8 @@ async fn scan_completion_fires_the_configured_webhook() {
     // One-shot local HTTP sink on an ephemeral port: accept a single connection,
     // read the request, reply 200, and hand the raw request back over a channel.
     // Blocking IO on a std thread, off the async runtime.
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("should succeed");
+    let port = listener.local_addr().expect("should succeed").port();
     let (tx, rx) = mpsc::channel::<String>();
     let sink = std::thread::spawn(move || {
         if let Ok((mut sock, _)) = listener.accept() {
@@ -3305,7 +3305,7 @@ async fn run_panic_safe_force_fails_a_scan_that_panics_outside_process() {
 
     let persisted = store
         .get_scan(&scan_id)
-        .unwrap()
+        .expect("should succeed")
         .expect("the scan row must still exist");
     assert_eq!(
         persisted.status,
@@ -3415,7 +3415,7 @@ fn tracked_entity_map_only_reports_entities_touched_since_the_last_drain() {
         "round 1's checkpoint sees everything inserted so far"
     );
 
-    map.get_mut(&a.uid).unwrap().confidence = 0.99;
+    map.get_mut(&a.uid).expect("should succeed").confidence = 0.99;
     let round2 = map.take_dirty();
     assert_eq!(
         round2.len(),
@@ -3575,7 +3575,7 @@ async fn a_scan_runs_the_final_breach_sweep_and_then_audits_it() {
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
     };
-    engine.run(scan, target, ctx).await.unwrap();
+    engine.run(scan, target, ctx).await.expect("should succeed");
 
     let events = drain_events(&mut rx);
     let sweep = events
@@ -3616,7 +3616,7 @@ async fn a_scan_runs_the_final_breach_sweep_and_then_audits_it() {
     );
 
     // The sweep's dispatches actually reached the store, tagged and attributed.
-    let ents = store.entities_for_scan(&scan_id).unwrap();
+    let ents = store.entities_for_scan(&scan_id).expect("should succeed");
     let swept: Vec<&Entity> = ents
         .iter()
         .filter(|e| e.has_tag(crate::core::breach_consensus::SWEEP_TAG))
@@ -3674,7 +3674,7 @@ async fn the_audit_runs_on_a_depth_zero_scan_but_the_sweep_does_not() {
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
     };
-    engine.run(scan, target, ctx).await.unwrap();
+    engine.run(scan, target, ctx).await.expect("should succeed");
 
     let events = drain_events(&mut rx);
     assert!(
@@ -3729,9 +3729,9 @@ async fn the_audit_does_not_inflate_the_confidence_it_grades() {
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
     };
-    engine.run(scan, target, ctx).await.unwrap();
+    engine.run(scan, target, ctx).await.expect("should succeed");
 
-    let ents = store.entities_for_scan(&scan_id).unwrap();
+    let ents = store.entities_for_scan(&scan_id).expect("should succeed");
     let graded: Vec<&Entity> = ents
         .iter()
         .filter(|e| {

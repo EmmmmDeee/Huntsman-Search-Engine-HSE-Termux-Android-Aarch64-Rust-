@@ -246,8 +246,8 @@ fn v2_record_surfaces_identity_and_hash_for_entity_linking() {
             }
         ]
     }"#;
-    let r: DehashedResp = serde_json::from_str(raw).unwrap();
-    let entries = r.entries.unwrap();
+    let r: DehashedResp = serde_json::from_str(raw).expect("should succeed");
+    let entries = r.entries.expect("should succeed");
     assert_eq!(entries.len(), 1);
     assert_eq!(db_names(&entries[0]["database_name"]), vec!["Collection#1"]);
 
@@ -278,7 +278,7 @@ fn v2_record_surfaces_identity_and_hash_for_entity_linking() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Password && e.value.starts_with("5f4"))
-        .unwrap();
+        .expect("should succeed");
     assert!(hash_ent.has_tag("password-hash"));
     assert!(result.entities.iter().all(|e| !e.has_tag(tags::CANDIDATE)));
 
@@ -289,7 +289,7 @@ fn v2_record_surfaces_identity_and_hash_for_entity_linking() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Email)
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(
         attr(email_ent, "hashed_password"),
         Some("5f4dcc3b5aa765d61d8327deb882cf99")
@@ -314,8 +314,8 @@ fn email_in_the_password_slot_is_recovered_as_an_email_lead() {
             }
         ]
     }"#;
-    let r: DehashedResp = serde_json::from_str(raw).unwrap();
-    let entries = r.entries.unwrap();
+    let r: DehashedResp = serde_json::from_str(raw).expect("should succeed");
+    let entries = r.entries.expect("should succeed");
     let mut seen = HashSet::new();
     let mut result = ModuleResult::new();
     extract_records(
@@ -340,7 +340,7 @@ fn email_in_the_password_slot_is_recovered_as_an_email_lead() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Email && e.value == "leaked@corp.com")
-        .unwrap();
+        .expect("should succeed");
     assert!(recovered.has_tag("recovered-from-password"));
 }
 
@@ -421,7 +421,7 @@ fn weak_hash_is_cracked_offline_to_its_plaintext() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Password && e.value == "5f4dcc3b5aa765d61d8327deb882cf99")
-        .unwrap();
+        .expect("should succeed");
     assert!(hash_ent.has_tag("cracked"));
     assert!(hash_ent.has_tag("hash:md5"));
     assert!(hash_ent.has_tag("crackable:fast"));

@@ -38,7 +38,7 @@ fn profile_url_falls_back_when_link_not_http() {
 
 #[test]
 fn person_emitted_from_multi_word_name() {
-    let p = person_from_name("Alice Q. Developer", 0.72, SCAN).unwrap();
+    let p = person_from_name("Alice Q. Developer", 0.72, SCAN).expect("should succeed");
     assert_eq!(p.kind, EntityKind::Person);
     assert_eq!(p.value, "Alice Q. Developer");
     assert!((p.confidence - 0.72).abs() < 1e-9);
@@ -95,7 +95,7 @@ fn website_returns_empty_for_non_http() {
 
 #[test]
 fn address_emitted_for_short_location() {
-    let a = location_address("Berlin, Germany", 0.36, SCAN).unwrap();
+    let a = location_address("Berlin, Germany", 0.36, SCAN).expect("should succeed");
     assert_eq!(a.kind, EntityKind::Address);
     assert_eq!(a.value, "Berlin, Germany");
 }

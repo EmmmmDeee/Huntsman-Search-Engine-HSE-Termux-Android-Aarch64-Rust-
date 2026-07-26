@@ -25,7 +25,7 @@ use super::*;
         // over-runs the trailing '.' (callers trim it) and stops at the space.
         let m = URL_RE
             .find("site https://paulgraham.com/bio.html. and more")
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(
             m.as_str().trim_end_matches(['.', ',', ')']),
             "https://paulgraham.com/bio.html"

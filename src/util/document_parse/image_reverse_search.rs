@@ -304,7 +304,7 @@ mod tests {
         // bytes are actually something else would be rejected by the engine it
         // was built for. Decode each variant back and confirm the guessed
         // format matches the declaration.
-        let set = generate_variants_from_image(&gradient(1200, 900)).unwrap();
+        let set = generate_variants_from_image(&gradient(1200, 900)).expect("should succeed");
         assert_eq!(set.variants.len(), SEARCH_ENGINES.len());
 
         for variant in &set.variants {
@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn variants_fit_within_their_engine_bounds() {
-        let set = generate_variants_from_image(&gradient(1200, 900)).unwrap();
+        let set = generate_variants_from_image(&gradient(1200, 900)).expect("should succeed");
         for config in SEARCH_ENGINES {
             let variant = set
                 .variants
@@ -391,7 +391,7 @@ mod tests {
             "got {resized:?}"
         );
         // And it must still be encodable end-to-end.
-        let set = generate_variants_from_image(&gradient(10_000, 1)).unwrap();
+        let set = generate_variants_from_image(&gradient(10_000, 1)).expect("should succeed");
         assert!(set.variants.iter().all(|v| !v.data.is_empty()));
     }
 

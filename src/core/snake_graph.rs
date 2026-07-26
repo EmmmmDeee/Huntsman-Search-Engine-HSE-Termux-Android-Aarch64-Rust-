@@ -405,7 +405,7 @@ mod tests {
 
         assert_eq!(graph.nodes.len(), 2);
         assert_eq!(graph.max_ring, 1);
-        let n = graph.nodes.iter().find(|n| n.uid == neighbour.uid).unwrap();
+        let n = graph.nodes.iter().find(|n| n.uid == neighbour.uid).expect("should succeed");
         assert_eq!(n.ring, 1);
         assert_eq!(graph.edges.len(), 1);
     }

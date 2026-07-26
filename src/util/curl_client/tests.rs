@@ -31,7 +31,7 @@ use super::*;
         let err = C
             .get("https://10.255.255.1/definitely-not-real", "")
             .await
-            .unwrap_err()
+            .expect("should be an error")
             .to_string();
         assert!(
             err.contains("curl exited"),
@@ -171,7 +171,7 @@ use super::*;
         let w = args.iter().position(|a| a == "-w").expect("-w present");
         let dd = args.iter().position(|a| a == "--").expect("-- present");
         assert!(w < dd, "-w must precede --");
-        assert_eq!(args.last().unwrap(), "https://api.example/x", "url is last");
+        assert_eq!(args.last().expect("should succeed"), "https://api.example/x", "url is last");
     }
 
     #[test]

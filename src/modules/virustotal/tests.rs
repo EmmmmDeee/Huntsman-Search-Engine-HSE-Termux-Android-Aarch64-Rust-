@@ -2,15 +2,15 @@ use super::*;
     use crate::core::entity::EntityKind;
 
     fn build_all(target: &Target, json: &str) -> Vec<Entity> {
-        let r: VtResponse = serde_json::from_str(json).unwrap();
-        let attrs = r.data.unwrap().attributes.unwrap();
+        let r: VtResponse = serde_json::from_str(json).expect("should succeed");
+        let attrs = r.data.expect("should succeed").attributes.expect("should succeed");
         build_entities(target, &attrs, "s")
     }
 
     /// The scanned entity is always element 0.
     fn build(json: &str) -> Entity {
         let target = Target::new(TargetKind::Domain, "evil.example");
-        build_all(&target, json).into_iter().next().unwrap()
+        build_all(&target, json).into_iter().next().expect("should succeed")
     }
 
     #[test]
@@ -48,7 +48,7 @@ use super::*;
         )
         .into_iter()
         .next()
-        .unwrap();
+        .expect("should succeed");
         assert_eq!(e.kind, EntityKind::Url);
         assert!(e.has_tag(crate::core::tags::MALICIOUS));
         assert!(e.has_tag("suspicious"));

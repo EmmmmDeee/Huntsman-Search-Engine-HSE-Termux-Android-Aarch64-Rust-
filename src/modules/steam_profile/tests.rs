@@ -32,25 +32,25 @@ fn extract_tag_handles_cdata_and_plain() {
 #[test]
 fn steam_lookup_url_routes_id_and_vanity() {
     // SteamID64 (public 7656119… range) → /profiles, high confidence.
-    let (url, conf) = steam_lookup_url("76561197960287930").unwrap();
+    let (url, conf) = steam_lookup_url("76561197960287930").expect("should succeed");
     assert!(url.contains("/profiles/76561197960287930?xml=1"));
     assert!((conf - confidence::HIGH_PLUSPLUS_PLUS).abs() < 1e-9);
     // `steam:`-prefixed id64 still routes to /profiles.
     assert!(
         steam_lookup_url("steam:76561197960265728")
-            .unwrap()
+            .expect("should succeed")
             .0
             .contains("/profiles/")
     );
     // `steam:`-prefixed vanity → /id.
     assert!(
         steam_lookup_url("steam:gabelogannewell")
-            .unwrap()
+            .expect("should succeed")
             .0
             .contains("/id/gabelogannewell")
     );
     // Bare plausible vanity → /id, moderate confidence.
-    let (url, conf) = steam_lookup_url("gabelogannewell").unwrap();
+    let (url, conf) = steam_lookup_url("gabelogannewell").expect("should succeed");
     assert!(url.contains("/id/gabelogannewell"));
     assert!((conf - confidence::MEDIUM_PLUS).abs() < 1e-9);
     // A Discord snowflake (18 digits, not 7656119…) must NOT trigger a Steam

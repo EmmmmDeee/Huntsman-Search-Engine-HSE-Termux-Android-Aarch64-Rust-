@@ -1242,6 +1242,7 @@ dependencies = [
  "base64",
  "clap",
  "criterion",
+ "crossbeam-channel",
  "csv",
  "dotenvy",
  "flate2",

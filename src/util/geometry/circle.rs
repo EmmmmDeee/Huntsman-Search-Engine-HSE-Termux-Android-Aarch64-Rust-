@@ -37,7 +37,7 @@ pub struct EnclosingCircle {
 /// use huntsman_search_engine::util::geometry::min_enclosing_circle;
 ///
 /// // Three points spanning a small triangle; the centre sits between them.
-/// let c = min_enclosing_circle(&[(0.0, 0.0), (0.0, 0.2), (0.2, 0.1)]).unwrap();
+/// let c = min_enclosing_circle(&[(0.0, 0.0), (0.0, 0.2), (0.2, 0.1)]).expect("should succeed");
 /// assert!(c.radius_km > 0.0 && c.radius_km < 30.0);
 /// ```
 pub fn min_enclosing_circle(points: &[(f64, f64)]) -> Option<EnclosingCircle> {

@@ -132,13 +132,13 @@ fn paid_host_resp_deserializes_the_new_geo_and_domain_fields() {
     let body: HostResp = serde_json::from_str(
         r#"{"latitude":-27.5,"longitude":153.0,"city":"Brisbane","domains":["example.com"]}"#,
     )
-    .unwrap();
+    .expect("should succeed");
     assert_eq!(body.latitude, Some(-27.5));
     assert_eq!(body.longitude, Some(153.0));
     assert_eq!(body.city.as_deref(), Some("Brisbane"));
     assert_eq!(body.domains, ["example.com"]);
     // Absent → defaults, no deserialize failure.
-    let bare: HostResp = serde_json::from_str(r#"{"ports":[80]}"#).unwrap();
+    let bare: HostResp = serde_json::from_str(r#"{"ports":[80]}"#).expect("should succeed");
     assert!(bare.latitude.is_none() && bare.domains.is_empty());
 }
 
@@ -149,9 +149,9 @@ fn paid_host_resp_deserializes_the_tags_array() {
     // HostResp must capture it, not silently drop it.
     let body: HostResp =
         serde_json::from_str(r#"{"ports":[443],"tags":["compromised","cloud","self-signed"]}"#)
-            .unwrap();
+            .expect("should succeed");
     assert_eq!(body.tags, ["compromised", "cloud", "self-signed"]);
     // Absent `tags` defaults to empty (no deserialize failure).
-    let bare: HostResp = serde_json::from_str(r#"{"ports":[80]}"#).unwrap();
+    let bare: HostResp = serde_json::from_str(r#"{"ports":[80]}"#).expect("should succeed");
     assert!(bare.tags.is_empty());
 }

@@ -40,7 +40,7 @@ fn deserialises_summary_and_flags_success() {
             {"@category":"resolver","ip":"8.8.8.8","hostname":["dns.google"],"domain":["google.com"]}
         ]
     }"#;
-    let resp: OnypheResp = serde_json::from_str(json).unwrap();
+    let resp: OnypheResp = serde_json::from_str(json).expect("should succeed");
     assert_eq!(resp.error, 0);
     assert_eq!(resp.results.len(), 2);
     // Field extraction over the raw documents.
@@ -53,7 +53,7 @@ fn deserialises_summary_and_flags_success() {
 #[test]
 fn nonzero_error_is_treated_as_no_data() {
     // ONYPHE returns error != 0 for "no results" / rate-limit / plan limit.
-    let resp: OnypheResp = serde_json::from_str(r#"{"error": 2, "results": []}"#).unwrap();
+    let resp: OnypheResp = serde_json::from_str(r#"{"error": 2, "results": []}"#).expect("should succeed");
     assert_ne!(resp.error, 0);
     assert!(resp.results.is_empty());
 }
@@ -64,7 +64,7 @@ fn coords_from_separate_fields_or_location_string() {
     let sep = serde_json::json!({"latitude": -27.47, "longitude": 153.02});
     assert_eq!(coords(&sep), Some((-27.47, 153.02)));
     // ONYPHE's `location` is a "lat,lon" string.
-    let (lat, lon) = coords(&serde_json::json!({"location": "37.4056,-122.0775"})).unwrap();
+    let (lat, lon) = coords(&serde_json::json!({"location": "37.4056,-122.0775"})).expect("should succeed");
     assert!((lat - 37.4056).abs() < 1e-6 && (lon + 122.0775).abs() < 1e-6);
     // Numbers carried as strings still parse.
     assert_eq!(

@@ -58,11 +58,11 @@ fn issuance_deserialises_from_the_expanded_api_shape() {
          "not_after":"2024-04-01T00:00:00Z",
          "cert_sha256":"deadbeef"}
     ]"#;
-    let entries: Vec<Issuance> = serde_json::from_str(json).unwrap();
+    let entries: Vec<Issuance> = serde_json::from_str(json).expect("should succeed");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].dns_names.len(), 3);
     assert_eq!(
-        entries[0].issuer.as_ref().unwrap().name.as_deref(),
+        entries[0].issuer.as_ref().expect("should succeed").name.as_deref(),
         Some("C=US, O=Let's Encrypt, CN=R3")
     );
     assert_eq!(entries[0].cert_sha256.as_deref(), Some("deadbeef"));
@@ -74,7 +74,7 @@ fn missing_fields_degrade_gracefully() {
     // field is optional so a partial/renamed response yields fewer entities
     // rather than a hard error.
     let entries: Vec<Issuance> =
-        serde_json::from_str(r#"[{"dns_names":["a.example.com"]}]"#).unwrap();
+        serde_json::from_str(r#"[{"dns_names":["a.example.com"]}]"#).expect("should succeed");
     let es = build_entities(&entries, "example.com", "scan1");
     assert!(has_domain(&es, "a.example.com"));
 }

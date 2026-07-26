@@ -66,14 +66,14 @@ mod tests {
         let f = data_file("key_pool.json");
         assert!(f.ends_with(".huntsman/key_pool.json"), "{f:?}");
         // The parent is exactly the base dir.
-        assert_eq!(f.parent().unwrap(), huntsman_dir());
+        assert_eq!(f.parent().expect("should succeed"), huntsman_dir());
     }
 
     #[test]
     fn subdir_is_a_child_of_the_base_dir() {
         let d = subdir("raw");
         assert!(d.ends_with(".huntsman/raw"), "{d:?}");
-        assert_eq!(d.parent().unwrap(), huntsman_dir());
+        assert_eq!(d.parent().expect("should succeed"), huntsman_dir());
     }
 
     #[test]

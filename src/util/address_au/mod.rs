@@ -393,7 +393,7 @@ pub fn au_area_code_region(
 /// ```
 /// use huntsman_search_engine::util::address_au::au_phone_region;
 ///
-/// let (_slug, name, states) = au_phone_region("+61 2 9876 5432").unwrap();
+/// let (_slug, name, states) = au_phone_region("+61 2 9876 5432").expect("should succeed");
 /// assert_eq!(name, "Central East");
 /// assert_eq!(states, &["NSW", "ACT"]);
 /// assert!(au_phone_region("+61 412 345 678").is_none()); // mobile — no region
@@ -472,10 +472,10 @@ impl AuLineType {
 /// ```
 /// use huntsman_search_engine::util::address_au::{au_phone_line_type, AuLineType};
 ///
-/// assert_eq!(au_phone_line_type("0412 345 678").unwrap().0, AuLineType::Mobile);
-/// assert_eq!(au_phone_line_type("(07) 3739 4511").unwrap().0, AuLineType::GeographicFixed);
-/// assert_eq!(au_phone_line_type("1800 123 456").unwrap().0, AuLineType::Freephone);
-/// assert_eq!(au_phone_line_type("1300 975 707").unwrap().0, AuLineType::LocalRate);
+/// assert_eq!(au_phone_line_type("0412 345 678").expect("should succeed").0, AuLineType::Mobile);
+/// assert_eq!(au_phone_line_type("(07) 3739 4511").expect("should succeed").0, AuLineType::GeographicFixed);
+/// assert_eq!(au_phone_line_type("1800 123 456").expect("should succeed").0, AuLineType::Freephone);
+/// assert_eq!(au_phone_line_type("1300 975 707").expect("should succeed").0, AuLineType::LocalRate);
 /// assert!(au_phone_line_type("+1 555 123 4567").is_none()); // not Australian
 /// ```
 #[must_use]

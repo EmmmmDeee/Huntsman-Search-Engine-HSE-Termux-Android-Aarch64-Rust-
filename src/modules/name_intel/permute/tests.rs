@@ -258,7 +258,7 @@ use super::*;
     fn primary_outranks_secondary() {
         let u = usernames(&p("Jordan Meyers"));
         let by = |h: &str| u.iter().find(|s| s.handle == h).map(|s| s.weight);
-        assert!(by("jordan.meyers").unwrap() > by("meyers.jordan").unwrap());
+        assert!(by("jordan.meyers").expect("should succeed") > by("meyers.jordan").expect("should succeed"));
     }
 
     #[test]
@@ -341,7 +341,7 @@ use super::*;
             .split("/avatar/")
             .nth(1)
             .and_then(|t| t.split('?').next())
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(hash.len(), 32);
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
     }
@@ -531,7 +531,7 @@ use super::*;
     fn hyphenated_surname_yields_last_parts() {
         let n = p("Emily Smith-Jones");
         assert_eq!(n.last, "smithjones");
-        let parts = n.last_parts.as_deref().unwrap();
+        let parts = n.last_parts.as_deref().expect("should succeed");
         assert_eq!(parts, ["smith", "jones"]);
     }
 

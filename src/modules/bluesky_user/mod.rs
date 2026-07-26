@@ -380,8 +380,8 @@ mod tests {
             u.is_some(),
             "must strip .bsky.social and emit bare username"
         );
-        assert!((u.unwrap().confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
-        assert!(u.unwrap().has_tag("bluesky"));
+        assert!((u.expect("should succeed").confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
+        assert!(u.expect("should succeed").has_tag("bluesky"));
     }
 
     #[test]
@@ -393,7 +393,7 @@ mod tests {
             person.is_some(),
             "must emit Person from multi-word display name"
         );
-        assert_eq!(person.unwrap().value, "Alice Example");
+        assert_eq!(person.expect("should succeed").value, "Alice Example");
     }
 
     #[test]
@@ -453,8 +453,8 @@ mod tests {
             d.is_some(),
             "DID must be promoted to its own Other(\"bluesky-did\") entity, not just folded into evidence"
         );
-        assert!(d.unwrap().has_tag("bluesky"));
-        assert!(d.unwrap().has_tag("did"));
+        assert!(d.expect("should succeed").has_tag("bluesky"));
+        assert!(d.expect("should succeed").has_tag("did"));
         // Must not be emitted as Username — a raw DID fed into username
         // enumeration modules would produce noisy, doomed lookups.
         assert!(
