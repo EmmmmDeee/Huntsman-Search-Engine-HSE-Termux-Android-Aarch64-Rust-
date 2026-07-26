@@ -48,9 +48,9 @@ use super::*;
         // this third field surviving the match.
         let s3 = matching_fingerprints("bucket.s3.amazonaws.com")
             .next()
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(s3.2, Some("NoSuchBucket"));
-        let azure = matching_fingerprints("svc.cloudapp.net").next().unwrap();
+        let azure = matching_fingerprints("svc.cloudapp.net").next().expect("should succeed");
         assert_eq!(azure.2, None);
     }
 

@@ -100,15 +100,15 @@ fn parse_response() {
             "total_count": 1
         }
     }"#;
-    let r: OcResp = serde_json::from_str(raw).unwrap();
-    let results = r.results.unwrap();
-    let co = results.companies[0].company.as_ref().unwrap();
+    let r: OcResp = serde_json::from_str(raw).expect("should succeed");
+    let results = r.results.expect("should succeed");
+    let co = results.companies[0].company.as_ref().expect("should succeed");
     assert_eq!(co.name.as_deref(), Some("ATLASSIAN PTY LTD"));
     assert_eq!(co.jurisdiction_code.as_deref(), Some("au"));
 }
 
 fn company(json: &str) -> OcCompany {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 fn org_attr<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {
@@ -224,7 +224,7 @@ fn blank_name_yields_nothing() {
 }
 
 fn officer(json: &str) -> OcOfficer {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 #[test]

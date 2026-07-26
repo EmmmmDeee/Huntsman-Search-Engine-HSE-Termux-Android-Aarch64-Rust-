@@ -118,7 +118,7 @@ mod format_tests {
             1_700_000_000,
             1,
         );
-        let stem = name.strip_suffix(".json").unwrap();
+        let stem = name.strip_suffix(".json").expect("should succeed");
         let fields: Vec<&str> = stem.split("__").collect();
         assert_eq!(
             fields.len(),

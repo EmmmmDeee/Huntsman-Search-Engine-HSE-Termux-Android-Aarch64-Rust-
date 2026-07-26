@@ -33,7 +33,7 @@ use super::*;
         assert!(locs.iter().any(|l| l.suburb == "Booroobin"));
         assert!(locs.iter().any(|l| l.suburb == "Conondale"));
         // Centroids match the online Zippopotam values (offline == online).
-        let maleny = locs.iter().find(|l| l.suburb == "Maleny").unwrap();
+        let maleny = locs.iter().find(|l| l.suburb == "Maleny").expect("should succeed");
         assert!((maleny.lat - -26.729).abs() < 1e-6 && (maleny.lon - 152.7554).abs() < 1e-6);
         // Capital city postcodes now resolve offline.
         assert!(!offline_fallback("2000").is_empty());

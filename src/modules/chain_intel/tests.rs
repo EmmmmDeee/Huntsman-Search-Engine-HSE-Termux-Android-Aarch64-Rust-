@@ -56,11 +56,11 @@ fn evidence_omits_unknown_fields_and_never_fabricates() {
         !ev.attributes.contains_key("total_received"),
         "must NOT fabricate a total_received it doesn't have"
     );
-    assert_eq!(ev.attributes.get("tx_count").unwrap(), "78246");
-    assert_eq!(ev.attributes.get("activity").unwrap(), "active");
-    assert_eq!(ev.attributes.get("ens_name").unwrap(), "vitalik.eth");
+    assert_eq!(ev.attributes.get("tx_count").expect("should succeed"), "78246");
+    assert_eq!(ev.attributes.get("activity").expect("should succeed"), "active");
+    assert_eq!(ev.attributes.get("ens_name").expect("should succeed"), "vitalik.eth");
     assert_eq!(
-        ev.attributes.get("balance").unwrap(),
+        ev.attributes.get("balance").expect("should succeed"),
         "5.688240446715981478 ETH"
     );
 }
@@ -83,7 +83,7 @@ fn activity_falls_back_to_funded_empty_without_tx_count() {
         build_evidence("eth", &funded)
             .attributes
             .get("activity")
-            .unwrap(),
+            .expect("should succeed"),
         "funded"
     );
     let empty = Enrichment {
@@ -94,7 +94,7 @@ fn activity_falls_back_to_funded_empty_without_tx_count() {
         build_evidence("eth", &empty)
             .attributes
             .get("activity")
-            .unwrap(),
+            .expect("should succeed"),
         "empty"
     );
     // A dormant (seen but zero-tx) address is distinct from unknown.
@@ -106,7 +106,7 @@ fn activity_falls_back_to_funded_empty_without_tx_count() {
         build_evidence("eth", &dormant)
             .attributes
             .get("activity")
-            .unwrap(),
+            .expect("should succeed"),
         "dormant"
     );
 }
@@ -116,7 +116,7 @@ fn blockcypher_doge_balance_deserialises_real_response() {
     // Real response fetched live during this module's extension (a
     // high-activity address, so all three fields are non-trivial).
     let raw = r#"{"address":"DEgDVFa2DoW1533dxeDVdTxQFhMzs1pMke","total_received":3966353566733115617,"total_sent":1249953212756293574,"balance":2716400353976822043,"unconfirmed_balance":0,"final_balance":2716400353976822043,"n_tx":358,"unconfirmed_n_tx":0,"final_n_tx":358}"#;
-    let b: BlockcypherBalance = serde_json::from_str(raw).unwrap();
+    let b: BlockcypherBalance = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(b.balance, 2_716_400_353_976_822_043);
     assert_eq!(b.total_received, 3_966_353_566_733_115_617);
     assert_eq!(b.n_tx, 358);
@@ -140,10 +140,10 @@ fn doge_enrichment_reports_full_fields_like_esplora() {
         public_tags: Vec::new(),
     };
     let ev = build_evidence("doge", &e);
-    assert_eq!(ev.attributes.get("balance").unwrap(), "1.5 DOGE");
-    assert_eq!(ev.attributes.get("total_received").unwrap(), "2 DOGE");
-    assert_eq!(ev.attributes.get("tx_count").unwrap(), "3");
-    assert_eq!(ev.attributes.get("activity").unwrap(), "active");
+    assert_eq!(ev.attributes.get("balance").expect("should succeed"), "1.5 DOGE");
+    assert_eq!(ev.attributes.get("total_received").expect("should succeed"), "2 DOGE");
+    assert_eq!(ev.attributes.get("tx_count").expect("should succeed"), "3");
+    assert_eq!(ev.attributes.get("activity").expect("should succeed"), "active");
 }
 
 #[test]
@@ -169,13 +169,13 @@ fn sol_balance_response_deserialises() {
     // in the real payload; this struct only needs `value`, so extra fields
     // must not break deserialisation).
     let raw = r#"{"jsonrpc":"2.0","result":{"context":{"apiVersion":"2.0.15","slot":123456789},"value":1500000000},"id":1}"#;
-    let resp: SolBalanceResp = serde_json::from_str(raw).unwrap();
-    assert_eq!(resp.result.unwrap().value, Some(1_500_000_000));
+    let resp: SolBalanceResp = serde_json::from_str(raw).expect("should succeed");
+    assert_eq!(resp.result.expect("should succeed").value, Some(1_500_000_000));
 }
 
 #[test]
 fn sol_balance_response_missing_result_degrades_cleanly() {
-    let resp: SolBalanceResp = serde_json::from_str(r#"{"jsonrpc":"2.0","id":1}"#).unwrap();
+    let resp: SolBalanceResp = serde_json::from_str(r#"{"jsonrpc":"2.0","id":1}"#).expect("should succeed");
     assert!(resp.result.is_none());
 }
 
@@ -199,9 +199,9 @@ fn sol_style_enrichment_never_fabricates_tx_count_or_received() {
     let ev = build_evidence("sol", &e);
     assert!(!ev.attributes.contains_key("total_received"));
     assert!(!ev.attributes.contains_key("tx_count"));
-    assert_eq!(ev.attributes.get("balance").unwrap(), "1.5 SOL");
+    assert_eq!(ev.attributes.get("balance").expect("should succeed"), "1.5 SOL");
     // No tx_count and a positive balance -> "funded", not "active"/"dormant".
-    assert_eq!(ev.attributes.get("activity").unwrap(), "funded");
+    assert_eq!(ev.attributes.get("activity").expect("should succeed"), "funded");
 }
 
 #[test]
@@ -215,7 +215,7 @@ fn blockscout_address_deserialises_scam_reputation_name_and_tags() {
         {"label":"phishing","display_name":"Phishing"},
         {"label":"scam-address","display_name":null}
     ]}"#;
-    let a: BlockscoutAddress = serde_json::from_str(raw).unwrap();
+    let a: BlockscoutAddress = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(a.is_scam, Some(true));
     assert_eq!(a.reputation.as_deref(), Some("scam"));
     assert_eq!(a.name.as_deref(), Some("Fake Uniswap"));
@@ -227,7 +227,7 @@ fn blockscout_address_defaults_scam_fields_when_absent() {
     // A clean address (the common case) doesn't even set these keys — must
     // degrade to `None`/empty, never a fabricated default.
     let raw = r#"{"coin_balance":"1000","ens_domain_name":null}"#;
-    let a: BlockscoutAddress = serde_json::from_str(raw).unwrap();
+    let a: BlockscoutAddress = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(a.is_scam, None);
     assert_eq!(a.reputation, None);
     assert_eq!(a.name, None);
@@ -273,11 +273,11 @@ fn evidence_reports_blockscout_reputation_signals_when_present() {
         public_tags: vec!["Phishing".into(), "scam-address".into()],
     };
     let ev = build_evidence("eth", &e);
-    assert_eq!(ev.attributes.get("is_scam").unwrap(), "true");
-    assert_eq!(ev.attributes.get("reputation").unwrap(), "scam");
-    assert_eq!(ev.attributes.get("known_name").unwrap(), "Fake Uniswap");
+    assert_eq!(ev.attributes.get("is_scam").expect("should succeed"), "true");
+    assert_eq!(ev.attributes.get("reputation").expect("should succeed"), "scam");
+    assert_eq!(ev.attributes.get("known_name").expect("should succeed"), "Fake Uniswap");
     assert_eq!(
-        ev.attributes.get("public_tags").unwrap(),
+        ev.attributes.get("public_tags").expect("should succeed"),
         "Phishing, scam-address"
     );
 }
@@ -351,8 +351,8 @@ fn known_name_entity_mints_organisation_tagged_via_apply_scam_tags() {
     );
     assert_eq!(org.evidence.len(), 1);
     let ev = &org.evidence[0];
-    assert_eq!(ev.attributes.get("known_name").unwrap(), "Fake Uniswap");
-    assert_eq!(ev.attributes.get("address").unwrap(), "0xdeadbeef");
+    assert_eq!(ev.attributes.get("known_name").expect("should succeed"), "Fake Uniswap");
+    assert_eq!(ev.attributes.get("address").expect("should succeed"), "0xdeadbeef");
 }
 
 #[test]
@@ -364,7 +364,7 @@ fn known_name_entity_omits_scam_tags_when_not_flagged() {
         is_scam: None,
         ..enr()
     };
-    let org = known_name_entity("UniswapV2Router02", "0xrouter", &e, "scan-1").unwrap();
+    let org = known_name_entity("UniswapV2Router02", "0xrouter", &e, "scan-1").expect("should succeed");
     assert_eq!(org.value, "UniswapV2Router02");
     assert!(!org.tags.contains(&crate::core::tags::MALICIOUS.to_string()));
     assert!(!org.tags.contains(&crate::core::tags::THREAT_INTEL.to_string()));
@@ -415,8 +415,8 @@ fn live_ctx() -> ModuleContext {
 /// `ip_reputation`/`pwned_passwords` tests use.
 async fn serve_once(status: u16, body: &'static str) -> std::net::SocketAddr {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
     tokio::spawn(async move {
         let Ok((mut sock, _)) = listener.accept().await else {
             return;

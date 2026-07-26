@@ -118,8 +118,8 @@ use crate::core::{confidence, entity::EntityKind};
     /// pattern `ip_reputation::tests::serve_once` uses).
     async fn serve_once(status: u16, body: &'static [u8]) -> std::net::SocketAddr {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+        let addr = listener.local_addr().expect("should succeed");
         tokio::spawn(async move {
             let Ok((mut sock, _)) = listener.accept().await else {
                 return;

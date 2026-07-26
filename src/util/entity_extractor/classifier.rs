@@ -18,25 +18,25 @@ impl EntityClassifier {
         // Email: must have @ and valid domain structure
         kind_patterns.insert(
             EntityKind::Email,
-            vec![Regex::new(r"^[^@]+@[^@]+\.[a-z]{2,}$").unwrap()],
+            vec![Regex::new(r"^[^@]+@[^@]+\.[a-z]{2,}$").expect("should succeed")],
         );
 
         // Phone: 7-15 digits, optional +
         kind_patterns.insert(
             EntityKind::Phone,
-            vec![Regex::new(r"^\+?[1-9]\d{6,14}$").unwrap()],
+            vec![Regex::new(r"^\+?[1-9]\d{6,14}$").expect("should succeed")],
         );
 
         // IPv4: 4 octets
         kind_patterns.insert(
             EntityKind::Ipv4,
-            vec![Regex::new(r"^(\d{1,3}\.){3}\d{1,3}$").unwrap()],
+            vec![Regex::new(r"^(\d{1,3}\.){3}\d{1,3}$").expect("should succeed")],
         );
 
         // Domain: labels + TLD
         kind_patterns.insert(
             EntityKind::Domain,
-            vec![Regex::new(r"^([a-z0-9-]+\.)+[a-z]{2,}$").unwrap()],
+            vec![Regex::new(r"^([a-z0-9-]+\.)+[a-z]{2,}$").expect("should succeed")],
         );
 
         Ok(Self { kind_patterns })
@@ -126,7 +126,7 @@ impl EntityClassifier {
 
 impl Default for EntityClassifier {
     fn default() -> Self {
-        Self::new().unwrap()
+        Self::new().expect("should succeed")
     }
 }
 
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn classify_email() {
-        let classifier = EntityClassifier::new().unwrap();
+        let classifier = EntityClassifier::new().expect("should succeed");
         assert_eq!(
             classifier.classify("test@example.com", None),
             EntityKind::Email
@@ -164,13 +164,13 @@ mod tests {
 
     #[test]
     fn classify_ipv4() {
-        let classifier = EntityClassifier::new().unwrap();
+        let classifier = EntityClassifier::new().expect("should succeed");
         assert_eq!(classifier.classify("192.168.1.1", None), EntityKind::Ipv4);
     }
 
     #[test]
     fn boost_email_confidence() {
-        let classifier = EntityClassifier::new().unwrap();
+        let classifier = EntityClassifier::new().expect("should succeed");
         let mut entity = ExtractedEntity {
             kind: EntityKind::Email,
             value: "test@example.com".to_string(),

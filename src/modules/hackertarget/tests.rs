@@ -39,14 +39,14 @@ use super::*;
 
         let domains = of_kind(&ents, EntityKind::Domain);
         assert_eq!(domains.len(), 3);
-        let sub = domains.iter().find(|e| e.value == "mail.example.com").unwrap();
+        let sub = domains.iter().find(|e| e.value == "mail.example.com").expect("should succeed");
         assert!((sub.confidence - confidence::VERY_HIGH).abs() < 1e-9);
         assert!(sub.has_tag("hackertarget") && sub.has_tag(tags::SUBDOMAIN));
         assert_eq!(
             sub.evidence[0].attributes.get("resolved_ip").map(String::as_str),
             Some("93.184.216.34")
         );
-        let ext = domains.iter().find(|e| e.value == "cdn.fastly.net").unwrap();
+        let ext = domains.iter().find(|e| e.value == "cdn.fastly.net").expect("should succeed");
         assert!((ext.confidence - confidence::MEDIUM).abs() < 1e-9, "external host → confidence::MEDIUM");
         assert!(!ext.has_tag(tags::SUBDOMAIN));
 

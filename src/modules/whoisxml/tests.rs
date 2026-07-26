@@ -60,7 +60,7 @@ use super::*;
         assert_eq!(values(&es, EntityKind::Organisation), vec!["Acme Pty Ltd"]);
         assert_eq!(values(&es, EntityKind::Email), vec!["jane@acme.com"]);
         // The kept node carries the highest-priority role (registrant).
-        let person = es.iter().find(|e| e.kind == EntityKind::Person).unwrap();
+        let person = es.iter().find(|e| e.kind == EntityKind::Person).expect("should succeed");
         assert!(person.tags.iter().any(|t| t == "whois-registrant"));
     }
 
@@ -130,7 +130,7 @@ use super::*;
         // Queried a subdomain; registry holds the parent → pivot.
         let es = build_entities(&rec, "shop.acme.com", "t");
         assert_eq!(values(&es, EntityKind::Domain), vec!["acme.com"]);
-        let dom = es.iter().find(|e| e.kind == EntityKind::Domain).unwrap();
+        let dom = es.iter().find(|e| e.kind == EntityKind::Domain).expect("should succeed");
         assert!(dom.tags.iter().any(|t| t == "registered-domain"));
     }
 

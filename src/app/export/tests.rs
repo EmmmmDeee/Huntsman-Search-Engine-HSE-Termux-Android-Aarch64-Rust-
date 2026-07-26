@@ -10,13 +10,13 @@ use crate::storage::Store;
 #[test]
 fn render_full_dumps_every_field_and_provenance() {
     use crate::core::entity::{Entity, EntityKind, Evidence};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("should succeed");
     let db = dir.path().join("full_test.db");
-    let store = Store::open(db.to_str().unwrap()).unwrap();
+    let store = Store::open(db.to_str().expect("should succeed")).expect("should succeed");
 
     let target = Target::new(TargetKind::Email, "vanamill@hotmail.com");
     let scan = Scan::new("scan-full", target);
-    store.upsert_scan(&scan).unwrap();
+    store.upsert_scan(&scan).expect("should succeed");
 
     // A password entity carrying full provenance + a raw source field.
     let mut e = Entity::new(EntityKind::Password, "thelord", 0.75, "scan-full");
@@ -35,9 +35,9 @@ fn render_full_dumps_every_field_and_provenance() {
     // Password fixture above (a passthrough-normalise kind) can't.
     let mut mixed = Entity::new(EntityKind::Email, "TestUser@Example.COM", 0.6, "scan-full");
     mixed.observed_at = 1_700_000_000;
-    store.upsert_entities_batch(&[e, mixed]).unwrap();
+    store.upsert_entities_batch(&[e, mixed]).expect("should succeed");
 
-    let out = render_full(&store, "scan-full").unwrap();
+    let out = render_full(&store, "scan-full").expect("should succeed");
     // Header + provenance roll-up.
     assert!(out.contains("HUNTSMAN FULL DOSSIER"));
     assert!(out.contains("providers      : see-know"));
@@ -83,13 +83,13 @@ fn render_full_carries_generation_and_every_per_evidence_qualifier() {
     // `verification` — so an INFERRED derivation rendered identically to a
     // direct observation and an account attribution gave no basis.
     use crate::core::entity::{Entity, EntityKind, Evidence, VerificationMethod};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("should succeed");
     let db = dir.path().join("qualifiers_test.db");
-    let store = Store::open(db.to_str().unwrap()).unwrap();
+    let store = Store::open(db.to_str().expect("should succeed")).expect("should succeed");
 
     let target = Target::new(TargetKind::Username, "jmally");
     let scan = Scan::new("scan-qual", target);
-    store.upsert_scan(&scan).unwrap();
+    store.upsert_scan(&scan).expect("should succeed");
 
     let mut e = Entity::new(EntityKind::Person, "James Mally", 0.6, "scan-qual");
     // Two pivots out from the seed — must not read as operator input.
@@ -99,9 +99,9 @@ fn render_full_carries_generation_and_every_per_evidence_qualifier() {
         .with_inferred(true);
     inferred.recorded_at = 1_700_000_000;
     e.add_evidence(inferred);
-    store.upsert_entities_batch(&[e]).unwrap();
+    store.upsert_entities_batch(&[e]).expect("should succeed");
 
-    let out = render_full(&store, "scan-qual").unwrap();
+    let out = render_full(&store, "scan-qual").expect("should succeed");
     assert!(
         out.contains("generation=2"),
         "entity generation (hops from seed) must be surfaced: {out}"
@@ -135,22 +135,22 @@ fn render_full_carries_generation_and_every_per_evidence_qualifier() {
 fn render_full_resolves_relation_labels_and_reports_all_module_counts() {
     use crate::core::entity::{Entity, EntityKind};
     use crate::core::relation::{Relation, RelationKind};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("should succeed");
     let db = dir.path().join("full_rel.db");
-    let store = Store::open(db.to_str().unwrap()).unwrap();
+    let store = Store::open(db.to_str().expect("should succeed")).expect("should succeed");
 
     let mut scan = Scan::new("scan-fr", Target::new(TargetKind::FullName, "Jordan Avery"));
     scan.modules_run = 12;
     scan.modules_timed_out = 3;
     scan.modules_skipped = 1;
     scan.modules_cached = 2;
-    store.upsert_scan(&scan).unwrap();
+    store.upsert_scan(&scan).expect("should succeed");
 
     let email = Entity::new(EntityKind::Email, "jordan@real.com", 0.85, "scan-fr");
     let user = Entity::new(EntityKind::Username, "jordanavery", 0.80, "scan-fr");
     store
         .upsert_entities_batch(&[email.clone(), user.clone()])
-        .unwrap();
+        .expect("should succeed");
     store
         .upsert_relation(&Relation::new(
             &email.uid,
@@ -159,9 +159,9 @@ fn render_full_resolves_relation_labels_and_reports_all_module_counts() {
             0.8,
             "scan-fr",
         ))
-        .unwrap();
+        .expect("should succeed");
 
-    let out = render_full(&store, "scan-fr").unwrap();
+    let out = render_full(&store, "scan-fr").expect("should succeed");
     // Relation endpoints resolve to `value (kind)`, not opaque hex→hex.
     assert!(out.contains("── RELATIONS ──"));
     assert!(
@@ -194,13 +194,13 @@ fn render_full_explains_the_gap_between_corroboration_and_source_count() {
     // sitting next to each other. When they diverge, an explanatory note and
     // per-evidence markers must make the real driver of c_eff explicit.
     use crate::core::entity::{Entity, EntityKind, Evidence};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("should succeed");
     let db = dir.path().join("source_count_test.db");
-    let store = Store::open(db.to_str().unwrap()).unwrap();
+    let store = Store::open(db.to_str().expect("should succeed")).expect("should succeed");
 
     let target = Target::new(TargetKind::Address, "1 Example St");
     let scan = Scan::new("scan-sc", target);
-    store.upsert_scan(&scan).unwrap();
+    store.upsert_scan(&scan).expect("should succeed");
 
     let mut e = Entity::new(EntityKind::Address, "1 Example St", 0.82, "scan-sc");
     e.corroboration = 8;
@@ -209,9 +209,9 @@ fn render_full_explains_the_gap_between_corroboration_and_source_count() {
         "geo_normalize",
         "Address parse + normalization",
     ));
-    store.upsert_entities_batch(&[e]).unwrap();
+    store.upsert_entities_batch(&[e]).expect("should succeed");
 
-    let out = render_full(&store, "scan-sc").unwrap();
+    let out = render_full(&store, "scan-sc").expect("should succeed");
     assert!(
         out.contains("corroboration=8") && out.contains("source_count=1"),
         "both counters must be visible and distinct: {out}"
@@ -238,23 +238,23 @@ fn structured_exports_quarantine_candidates_but_full_retains_them() {
     // exports now default to the subject's confirmed footprint, while the
     // nothing-hidden `full` bundle still retains everything for transparency.
     use crate::core::entity::{Entity, EntityKind};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("should succeed");
     let db = dir.path().join("quarantine_test.db");
-    let store = Store::open(db.to_str().unwrap()).unwrap();
+    let store = Store::open(db.to_str().expect("should succeed")).expect("should succeed");
 
     let target = Target::new(TargetKind::Email, "subject@example-real.com");
     let scan = Scan::new("scan-q", target);
-    store.upsert_scan(&scan).unwrap();
+    store.upsert_scan(&scan).expect("should succeed");
 
     let confirmed = Entity::new(EntityKind::Email, "subject@example-real.com", 0.8, "scan-q");
     let mut stranger = Entity::new(EntityKind::Person, "Random Stranger", 0.25, "scan-q");
     stranger.demote_to_candidate(); // tags `candidate`
-    store.upsert_entities_batch(&[confirmed, stranger]).unwrap();
+    store.upsert_entities_batch(&[confirmed, stranger]).expect("should succeed");
 
     for body in [
-        render_csv(&store, "scan-q", false).unwrap(),
-        render_json(&store, "scan-q", false).unwrap(),
-        render_gexf(&store, "scan-q", false).unwrap(),
+        render_csv(&store, "scan-q", false).expect("should succeed"),
+        render_json(&store, "scan-q", false).expect("should succeed"),
+        render_gexf(&store, "scan-q", false).expect("should succeed"),
     ] {
         assert!(
             body.contains("subject@example-real.com"),
@@ -267,7 +267,7 @@ fn structured_exports_quarantine_candidates_but_full_retains_them() {
     }
 
     // The full (nothing-hidden) bundle still carries the quarantined row.
-    let full = render_full(&store, "scan-q").unwrap();
+    let full = render_full(&store, "scan-q").expect("should succeed");
     assert!(
         full.contains("Random Stranger"),
         "the full bundle retains quarantined rows for transparency"
@@ -278,13 +278,13 @@ fn structured_exports_quarantine_candidates_but_full_retains_them() {
 fn debug_bundle_includes_dossier_sequence_and_audit() {
     use crate::core::entity::{Entity, EntityKind};
     use crate::core::event::{Event, EventKind};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("should succeed");
     let db = dir.path().join("debug_test.db");
-    let store = Store::open(db.to_str().unwrap()).unwrap();
+    let store = Store::open(db.to_str().expect("should succeed")).expect("should succeed");
 
     let target = Target::new(TargetKind::Email, "isaac@example-real.com");
     let scan = Scan::new("scan-dbg", target);
-    store.upsert_scan(&scan).unwrap();
+    store.upsert_scan(&scan).expect("should succeed");
     store
         .upsert_entities_batch(&[Entity::new(
             EntityKind::Email,
@@ -292,7 +292,7 @@ fn debug_bundle_includes_dossier_sequence_and_audit() {
             0.8,
             "scan-dbg",
         )])
-        .unwrap();
+        .expect("should succeed");
     // A recorded sequence including an exclusion (so the audit ledger fires).
     store
         .insert_event(&Event::new(
@@ -301,7 +301,7 @@ fn debug_bundle_includes_dossier_sequence_and_audit() {
                 module: "hibp".into(),
             },
         ))
-        .unwrap();
+        .expect("should succeed");
     store
         .insert_event(&Event::new(
             "scan-dbg",
@@ -311,9 +311,9 @@ fn debug_bundle_includes_dossier_sequence_and_audit() {
                 reason: "identity_mismatch".into(),
             },
         ))
-        .unwrap();
+        .expect("should succeed");
 
-    let out = render_debug_bundle(&store, "scan-dbg").unwrap();
+    let out = render_debug_bundle(&store, "scan-dbg").expect("should succeed");
     // The pillars are all present in the single artifact.
     assert!(out.contains("HUNTSMAN DEBUG BUNDLE"));
     // Environment fingerprint (secret-free) frames the run.
@@ -430,15 +430,15 @@ fn event_log_renders_a_readable_aligned_timeline() {
 fn debug_bundle_correlation_histogram_surfaces_a_dominant_rule() {
     use crate::core::correlator::{Correlation, Severity};
     use crate::core::entity::{Entity, EntityKind};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("should succeed");
     let db = dir.path().join("debug_histo.db");
-    let store = Store::open(db.to_str().unwrap()).unwrap();
+    let store = Store::open(db.to_str().expect("should succeed")).expect("should succeed");
 
     let scan = Scan::new("scan-histo", Target::new(TargetKind::Email, "x@y.com"));
-    store.upsert_scan(&scan).unwrap();
+    store.upsert_scan(&scan).expect("should succeed");
     store
         .upsert_entities_batch(&[Entity::new(EntityKind::Email, "x@y.com", 0.8, "scan-histo")])
-        .unwrap();
+        .expect("should succeed");
     // Three AU-099 hits and one AU-076 hit — AU-099 dominates the histogram.
     for i in 0..3 {
         store
@@ -451,7 +451,7 @@ fn debug_bundle_correlation_histogram_surfaces_a_dominant_rule() {
                 "scan-histo",
                 0,
             ))
-            .unwrap();
+            .expect("should succeed");
     }
     store
         .upsert_correlation(&Correlation::new(
@@ -463,9 +463,9 @@ fn debug_bundle_correlation_histogram_surfaces_a_dominant_rule() {
             "scan-histo",
             0,
         ))
-        .unwrap();
+        .expect("should succeed");
 
-    let out = render_debug_bundle(&store, "scan-histo").unwrap();
+    let out = render_debug_bundle(&store, "scan-histo").expect("should succeed");
     assert!(
         out.contains("rule histogram"),
         "the debug bundle must include a correlation rule histogram"
@@ -476,10 +476,10 @@ fn debug_bundle_correlation_histogram_surfaces_a_dominant_rule() {
         "the histogram must show the dominant rule's share: {out}"
     );
     // Histogram is frequency-ordered: AU-099 (3) appears before AU-076 (1).
-    let hi = out.find("rule histogram").unwrap();
+    let hi = out.find("rule histogram").expect("should succeed");
     let tail = &out[hi..];
     assert!(
-        tail.find("AU-099").unwrap() < tail.find("AU-076").unwrap(),
+        tail.find("AU-099").expect("should succeed") < tail.find("AU-076").expect("should succeed"),
         "histogram must be ordered by frequency (AU-099 before AU-076)"
     );
 }
@@ -498,13 +498,13 @@ fn debug_bundle_labels_a_true_au059_synergy_fix_distinctly_from_single_signal() 
     // synergy_confidence/severity.
     use crate::core::correlator::{Correlation, Severity};
     use crate::core::entity::{Entity, EntityKind, Evidence};
-    let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(dir.path().join("au059.db").to_str().unwrap()).unwrap();
+    let dir = tempfile::tempdir().expect("should succeed");
+    let store = Store::open(dir.path().join("au059.db").to_str().expect("should succeed")).expect("should succeed");
     let scan = Scan::new(
         "scan-au059",
         Target::new(TargetKind::Email, "au059@example-real.com"),
     );
-    store.upsert_scan(&scan).unwrap();
+    store.upsert_scan(&scan).expect("should succeed");
 
     let sighting = |source: &str, lat: f64, lon: f64, conf: f64| {
         let mut e = Entity::new(
@@ -524,7 +524,7 @@ fn debug_bundle_labels_a_true_au059_synergy_fix_distinctly_from_single_signal() 
         sighting("wigle", -33.8700, 151.2100, 0.78),
     ];
     let uids: Vec<String> = entities.iter().map(|e| e.uid.clone()).collect();
-    store.upsert_entities_batch(&entities).unwrap();
+    store.upsert_entities_batch(&entities).expect("should succeed");
     store
         .upsert_correlation(&Correlation::new(
             "AU-059",
@@ -535,9 +535,9 @@ fn debug_bundle_labels_a_true_au059_synergy_fix_distinctly_from_single_signal() 
             "scan-au059",
             0,
         ))
-        .unwrap();
+        .expect("should succeed");
 
-    let out = render_debug_bundle(&store, "scan-au059").unwrap();
+    let out = render_debug_bundle(&store, "scan-au059").expect("should succeed");
     assert!(
         out.contains("BEST AU LOCATION FIX (AU-059)"),
         "a true multi-class synergy fix must be labelled AU-059: {out}"
@@ -572,13 +572,13 @@ fn debug_bundle_single_signal_fallback_fix_is_not_mislabelled_au059() {
     // (absent) `synergy_confidence` as a silently-defaulted 0.00 — overstating
     // a single hardcoded/low-rigour signal as a corroborated cross-seed fix.
     use crate::core::entity::{Entity, EntityKind, Evidence};
-    let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(dir.path().join("single_signal.db").to_str().unwrap()).unwrap();
+    let dir = tempfile::tempdir().expect("should succeed");
+    let store = Store::open(dir.path().join("single_signal.db").to_str().expect("should succeed")).expect("should succeed");
     let scan = Scan::new(
         "scan-single",
         Target::new(TargetKind::Email, "single@example-real.com"),
     );
-    store.upsert_scan(&scan).unwrap();
+    store.upsert_scan(&scan).expect("should succeed");
 
     let mut coord = Entity::new(
         EntityKind::Coordinates,
@@ -589,10 +589,10 @@ fn debug_bundle_single_signal_fallback_fix_is_not_mislabelled_au059() {
     coord.tag("au-state:NSW");
     coord.tag("country:AU");
     coord.add_evidence(Evidence::new("exif_geo", "fixture"));
-    store.upsert_entities_batch(&[coord]).unwrap();
+    store.upsert_entities_batch(&[coord]).expect("should succeed");
     // No AU-059 correlation stored — a lone coordinate never fires the rule.
 
-    let out = render_debug_bundle(&store, "scan-single").unwrap();
+    let out = render_debug_bundle(&store, "scan-single").expect("should succeed");
     assert!(
         out.contains("BEST AU LOCATION FIX (single-signal)"),
         "a lone coordinate must fall back to the single-signal label: {out}"
@@ -618,13 +618,13 @@ fn debug_bundle_is_deterministic() {
     // diffable across runs/time. This is the experiment that proves it.
     use crate::core::entity::{Entity, EntityKind};
     use crate::core::event::{Event, EventKind};
-    let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(dir.path().join("det.db").to_str().unwrap()).unwrap();
+    let dir = tempfile::tempdir().expect("should succeed");
+    let store = Store::open(dir.path().join("det.db").to_str().expect("should succeed")).expect("should succeed");
     let scan = Scan::new(
         "scan-det",
         Target::new(TargetKind::Email, "a@example-real.com"),
     );
-    store.upsert_scan(&scan).unwrap();
+    store.upsert_scan(&scan).expect("should succeed");
     // Several entities + events so any unstable iteration order would surface.
     store
         .upsert_entities_batch(&[
@@ -633,17 +633,17 @@ fn debug_bundle_is_deterministic() {
             Entity::new(EntityKind::Username, "bravo", 0.6, "scan-det"),
             Entity::new(EntityKind::Domain, "example-real.com", 0.5, "scan-det"),
         ])
-        .unwrap();
+        .expect("should succeed");
     for m in ["hibp", "gravatar", "crtsh"] {
         store
             .insert_event(&Event::new(
                 "scan-det",
                 EventKind::ModuleStart { module: m.into() },
             ))
-            .unwrap();
+            .expect("should succeed");
     }
-    let a = render_debug_bundle(&store, "scan-det").unwrap();
-    let b = render_debug_bundle(&store, "scan-det").unwrap();
+    let a = render_debug_bundle(&store, "scan-det").expect("should succeed");
+    let b = render_debug_bundle(&store, "scan-det").expect("should succeed");
     assert_eq!(
         a, b,
         "debug bundle is not byte-deterministic across exports"
@@ -660,20 +660,20 @@ fn export_formats_determinism_audit() {
     // documented exception. If a future change adds non-determinism anywhere
     // else, this fails.
     use crate::core::entity::{Entity, EntityKind};
-    let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(dir.path().join("audit.db").to_str().unwrap()).unwrap();
+    let dir = tempfile::tempdir().expect("should succeed");
+    let store = Store::open(dir.path().join("audit.db").to_str().expect("should succeed")).expect("should succeed");
     let scan = Scan::new(
         "scan-au",
         Target::new(TargetKind::Email, "z@example-real.com"),
     );
-    store.upsert_scan(&scan).unwrap();
+    store.upsert_scan(&scan).expect("should succeed");
     store
         .upsert_entities_batch(&[
             Entity::new(EntityKind::Email, "z@example-real.com", 0.8, "scan-au"),
             Entity::new(EntityKind::Username, "zeta", 0.6, "scan-au"),
             Entity::new(EntityKind::Domain, "example-real.com", 0.5, "scan-au"),
         ])
-        .unwrap();
+        .expect("should succeed");
 
     use crate::core::error::Result;
     type StoreFmt = fn(&Store, &str, bool) -> Result<String>;
@@ -688,8 +688,8 @@ fn export_formats_determinism_audit() {
     ];
     for (name, render) in store_fmts {
         for redact in [false, true] {
-            let a = render(&store, "scan-au", redact).unwrap();
-            let b = render(&store, "scan-au", redact).unwrap();
+            let a = render(&store, "scan-au", redact).expect("should succeed");
+            let b = render(&store, "scan-au", redact).expect("should succeed");
             assert_eq!(
                 a, b,
                 "format `{name}` (redact={redact}) is not byte-deterministic"
@@ -699,8 +699,8 @@ fn export_formats_determinism_audit() {
     // full + debug take `&dyn StoragePort`.
     let port_fmts: &[(&str, PortFmt)] = &[("full", render_full), ("debug", render_debug_bundle)];
     for (name, render) in port_fmts {
-        let a = render(&store, "scan-au").unwrap();
-        let b = render(&store, "scan-au").unwrap();
+        let a = render(&store, "scan-au").expect("should succeed");
+        let b = render(&store, "scan-au").expect("should succeed");
         assert_eq!(a, b, "format `{name}` is not byte-deterministic");
     }
 
@@ -708,15 +708,15 @@ fn export_formats_determinism_audit() {
     // structurally with that one field removed — robust regardless of whether
     // the two renders happened to land in the same wall-clock second.
     let mut r1: serde_json::Value =
-        serde_json::from_str(&render_report(&store, "scan-au", false).unwrap()).unwrap();
+        serde_json::from_str(&render_report(&store, "scan-au", false).expect("should succeed")).expect("should succeed");
     let mut r2: serde_json::Value =
-        serde_json::from_str(&render_report(&store, "scan-au", false).unwrap()).unwrap();
+        serde_json::from_str(&render_report(&store, "scan-au", false).expect("should succeed")).expect("should succeed");
     assert!(
         r1.get("exported_at").is_some(),
         "exported_at must be present"
     );
     for r in [&mut r1, &mut r2] {
-        r.as_object_mut().unwrap().remove("exported_at");
+        r.as_object_mut().expect("should succeed").remove("exported_at");
     }
     assert_eq!(
         r1, r2,
@@ -726,14 +726,14 @@ fn export_formats_determinism_audit() {
 
 #[test]
 fn explicit_scan_id_is_existence_checked_no_silent_empty_export() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("should succeed");
     let db = dir.path().join("export_test.db");
-    let store = Store::open(db.to_str().unwrap()).unwrap();
+    let store = Store::open(db.to_str().expect("should succeed")).expect("should succeed");
 
     // Unknown id -> a clear "not found" error (no silent empty export). The
     // existence check now lives in the shared `cli::resolve_scan_id`.
     let err = crate::app::runtime::resolve_scan_id(&store, "no-such-scan")
-        .unwrap_err()
+        .expect("should be an error")
         .to_string();
     assert!(
         err.contains("not found"),
@@ -744,9 +744,9 @@ fn explicit_scan_id_is_existence_checked_no_silent_empty_export() {
     let target = Target::new(TargetKind::Email, "x@b.com");
     let mut scan = Scan::new("scan-present", target);
     scan.status = ScanStatus::Complete;
-    store.upsert_scan(&scan).unwrap();
+    store.upsert_scan(&scan).expect("should succeed");
     assert_eq!(
-        crate::app::runtime::resolve_scan_id(&store, "scan-present").unwrap(),
+        crate::app::runtime::resolve_scan_id(&store, "scan-present").expect("should succeed"),
         "scan-present"
     );
 }
@@ -844,13 +844,13 @@ mod prop {
 
     /// Build a fresh store under `dir` holding `order`-sequenced entities.
     fn store_with(dir: &std::path::Path, name: &str, order: &[Entity]) -> Store {
-        let store = Store::open(dir.join(name).to_str().unwrap()).unwrap();
+        let store = Store::open(dir.join(name).to_str().expect("should succeed")).expect("should succeed");
         let scan = Scan::new(
             "scan-prop",
             Target::new(TargetKind::Email, "seed@example-real.com"),
         );
-        store.upsert_scan(&scan).unwrap();
-        store.upsert_entities_batch(order).unwrap();
+        store.upsert_scan(&scan).expect("should succeed");
+        store.upsert_entities_batch(order).expect("should succeed");
         store
     }
 
@@ -868,31 +868,31 @@ mod prop {
         fn exports_are_insertion_order_independent(
             mut ents in prop::collection::vec(any_entity(), 1..6),
         ) {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = tempfile::tempdir().expect("should succeed");
             let forward = store_with(dir.path(), "fwd.db", &ents);
             ents.reverse();
             let reversed = store_with(dir.path(), "rev.db", &ents);
 
             // Store-typed formats.
             prop_assert_eq!(
-                render_json(&forward, "scan-prop", false).unwrap(),
-                render_json(&reversed, "scan-prop", false).unwrap(),
+                render_json(&forward, "scan-prop", false).expect("should succeed"),
+                render_json(&reversed, "scan-prop", false).expect("should succeed"),
                 "json leaked insertion order"
             );
             prop_assert_eq!(
-                render_csv(&forward, "scan-prop", false).unwrap(),
-                render_csv(&reversed, "scan-prop", false).unwrap(),
+                render_csv(&forward, "scan-prop", false).expect("should succeed"),
+                render_csv(&reversed, "scan-prop", false).expect("should succeed"),
                 "csv leaked insertion order"
             );
             prop_assert_eq!(
-                render_gexf(&forward, "scan-prop", false).unwrap(),
-                render_gexf(&reversed, "scan-prop", false).unwrap(),
+                render_gexf(&forward, "scan-prop", false).expect("should succeed"),
+                render_gexf(&reversed, "scan-prop", false).expect("should succeed"),
                 "gexf leaked insertion order"
             );
             // Port-typed formats (`&dyn StoragePort`).
             prop_assert_eq!(
-                render_full(&forward, "scan-prop").unwrap(),
-                render_full(&reversed, "scan-prop").unwrap(),
+                render_full(&forward, "scan-prop").expect("should succeed"),
+                render_full(&reversed, "scan-prop").expect("should succeed"),
                 "full dossier leaked insertion order"
             );
             // The debug bundle embeds an ENVIRONMENT snapshot whose
@@ -907,8 +907,8 @@ mod prop {
             // lines before comparing — the property under test is entity-order
             // independence, and every other line of the bundle is still asserted.
             prop_assert_eq!(
-                strip_ambient_env_keys(&render_debug_bundle(&forward, "scan-prop").unwrap()),
-                strip_ambient_env_keys(&render_debug_bundle(&reversed, "scan-prop").unwrap()),
+                strip_ambient_env_keys(&render_debug_bundle(&forward, "scan-prop").expect("should succeed")),
+                strip_ambient_env_keys(&render_debug_bundle(&reversed, "scan-prop").expect("should succeed")),
                 "debug bundle leaked insertion order"
             );
         }
@@ -1087,7 +1087,7 @@ fn detect_issues_flags_a_fully_dead_key_pool_as_a_warning() {
     let seeknow = issues
         .iter()
         .find(|i| i.detail.contains("seeknow"))
-        .unwrap();
+        .expect("should succeed");
     assert!(seeknow.detail.contains("all 2 pooled key"));
     assert!(seeknow.detail.contains("hse keys"));
 }

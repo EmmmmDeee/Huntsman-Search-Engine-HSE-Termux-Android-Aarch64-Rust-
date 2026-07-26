@@ -220,13 +220,13 @@ fn to_json_is_stable_and_complete() {
     assert!(
         j["grade"]
             .as_str()
-            .unwrap()
+            .expect("should succeed")
             .starts_with(|c: char| c.is_ascii_uppercase())
     );
     assert!(
         j["findings"]
             .as_array()
-            .unwrap()
+            .expect("should succeed")
             .iter()
             .any(|f| { f["category"] == "role-mailbox-as-pii" })
     );

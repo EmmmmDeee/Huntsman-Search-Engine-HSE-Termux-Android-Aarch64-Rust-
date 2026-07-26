@@ -25,7 +25,7 @@ fn emits_username_and_profile_url() {
     let u = ents
         .iter()
         .find(|e| e.kind == EntityKind::Username && e.value == "alice")
-        .unwrap();
+        .expect("should succeed");
     assert!(u.has_tag("rubygems") && u.has_tag("public-profile"));
     assert!(
         ents.iter()
@@ -43,7 +43,7 @@ fn emits_person_from_multi_word_author() {
     );
     let p = ents.iter().find(|e| e.kind == EntityKind::Person);
     assert!(p.is_some(), "must emit Person from multi-word author");
-    assert_eq!(p.unwrap().value, "Alice Smith");
+    assert_eq!(p.expect("should succeed").value, "Alice Smith");
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn extracts_github_username_from_source_code_uri() {
         gh.is_some(),
         "must emit GitHub username from source_code_uri"
     );
-    assert!(gh.unwrap().has_tag("github") && gh.unwrap().has_tag("rubygems-pivot"));
+    assert!(gh.expect("should succeed").has_tag("github") && gh.expect("should succeed").has_tag("rubygems-pivot"));
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn scans_every_gem_not_capped() {
     let u = ents
         .iter()
         .find(|e| e.kind == EntityKind::Username && e.value == "prolific")
-        .unwrap();
+        .expect("should succeed");
     assert!(
         u.evidence.iter().any(|ev| ev
             .attributes

@@ -12,7 +12,7 @@ use super::*;
     }
 
     fn body(json: &str) -> HostResp {
-        serde_json::from_str(json).unwrap()
+        serde_json::from_str(json).expect("should succeed")
     }
 
     fn attr<'a>(e: &'a crate::core::entity::Entity, k: &str) -> Option<&'a str> {
@@ -86,5 +86,5 @@ use super::*;
             .join(",");
         let b = body(&format!(r#"{{"services":[{services}],"leaks":[]}}"#));
         let e = build_exposure_entity(EntityKind::IpAddress, "1.2.3.4", &b, "s");
-        assert_eq!(attr(&e, "ports").unwrap().split(',').count(), MAX_PORTS);
+        assert_eq!(attr(&e, "ports").expect("should succeed").split(',').count(), MAX_PORTS);
     }

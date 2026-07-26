@@ -316,7 +316,7 @@ mod tests {
         static N: AtomicU64 = AtomicU64::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
         let d = std::env::temp_dir().join(format!("hse_seek_log_{}_{}", std::process::id(), n));
-        std::fs::create_dir_all(&d).unwrap();
+        std::fs::create_dir_all(&d).expect("should succeed");
         d
     }
 
@@ -357,7 +357,7 @@ mod tests {
         assert!(dir.join(LOG_FILE).exists(), "the active file must exist");
         // The active file holds only the newest record (rotation happened before
         // each append once the previous file reached the cap).
-        let active = std::fs::read_to_string(dir.join(LOG_FILE)).unwrap();
+        let active = std::fs::read_to_string(dir.join(LOG_FILE)).expect("should succeed");
         assert_eq!(
             active.lines().count(),
             1,
@@ -370,11 +370,11 @@ mod tests {
         let all = read_all_from(&dir);
         assert_eq!(all.len(), 2, "retention is bounded to ~2 generations");
         assert_eq!(
-            all.first().unwrap().query,
+            all.first().expect("should succeed").query,
             "q1",
             "oldest kept (rotated) first"
         );
-        assert_eq!(all.last().unwrap().query, "q2", "newest (active) last");
+        assert_eq!(all.last().expect("should succeed").query, "q2", "newest (active) last");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -407,7 +407,7 @@ mod tests {
         // hard-coded byte count) so it reliably holds exactly one line but not two.
         let dir = temp_dir();
         let one_line = serde_json::to_string(&build_record("/search", "q0", "", &[json!({"n": 0})]))
-            .unwrap()
+            .expect("should succeed")
             .len() as u64
             + 1; // trailing newline
         let cap = one_line * 2 - 1; // one record fits; two would exceed
@@ -609,7 +609,7 @@ mod tests {
     #[test]
     fn test_malformed_lines_skipped() {
         let dir = temp_dir();
-        std::fs::write(dir.join(LOG_FILE), "not json\n{\"broken\":\n").unwrap();
+        std::fs::write(dir.join(LOG_FILE), "not json\n{\"broken\":\n").expect("should succeed");
         assert_eq!(read_all_from(&dir).len(), 0);
         // A valid record still reads back after the garbage.
         append_record(&dir, &build_record("/search", "ok", "", &[json!({"y": 1})]));

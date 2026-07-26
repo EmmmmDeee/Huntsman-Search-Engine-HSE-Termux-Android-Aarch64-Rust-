@@ -45,14 +45,14 @@ fn parse_dn_org_extracts_first_nonempty_o_field() {
 #[test]
 fn crt_entry_deser() {
     let json = r#"[{"common_name":"www.example.com","name_value":"www.example.com\nexample.com","issuer_name":"Let's Encrypt","not_before":"2024-01-01","not_after":"2024-04-01","serial_number":"abc123"}]"#;
-    let entries: Vec<CrtEntry> = serde_json::from_str(json).unwrap();
+    let entries: Vec<CrtEntry> = serde_json::from_str(json).expect("should succeed");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].common_name.as_deref(), Some("www.example.com"));
     assert!(
         entries[0]
             .name_value
             .as_deref()
-            .unwrap()
+            .expect("should succeed")
             .contains("example.com")
     );
 }
@@ -117,7 +117,7 @@ fn url_seed_subdomains_are_classified_against_the_host_not_the_raw_url() {
 }
 
 fn entries(json: &str) -> Vec<CrtEntry> {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 #[test]
@@ -140,7 +140,7 @@ fn classifies_subdomains_dedups_and_skips_wildcards() {
     assert!(by_val("*.example.com").is_none());
 
     // Subdomain → high confidence + subdomain tag.
-    let api = by_val("api.example.com").unwrap();
+    let api = by_val("api.example.com").expect("should succeed");
     assert!((api.confidence - confidence::VERY_HIGH).abs() < 1e-9);
     assert!(api.has_tag(tags::CT_LOG) && api.has_tag(tags::SUBDOMAIN));
     assert_eq!(
@@ -149,7 +149,7 @@ fn classifies_subdomains_dedups_and_skips_wildcards() {
     );
 
     // Unrelated domain → lower confidence, no subdomain tag.
-    let other = by_val("unrelated.org").unwrap();
+    let other = by_val("unrelated.org").expect("should succeed");
     assert!((other.confidence - confidence::LOW_MEDIUM).abs() < 1e-9);
     assert!(!other.has_tag(tags::SUBDOMAIN));
 }
@@ -159,7 +159,7 @@ fn subdomain_match_is_case_insensitive_against_base() {
     // Mixed-case target base must still classify the SAN as a subdomain.
     let e = entries(r#"[{"name_value":"api.example.com"}]"#);
     let out = build_entities(&e, "Example.COM", "s");
-    let api = out.iter().find(|x| x.value == "api.example.com").unwrap();
+    let api = out.iter().find(|x| x.value == "api.example.com").expect("should succeed");
     assert!((api.confidence - confidence::VERY_HIGH).abs() < 1e-9);
     assert!(api.has_tag(tags::SUBDOMAIN));
 }
@@ -171,7 +171,7 @@ fn surfaces_san_emails_above_min_length() {
     );
     let out = build_entities(&e, "example.com", "s");
     let email = out.iter().find(|x| x.kind == EntityKind::Email);
-    let email = email.unwrap();
+    let email = email.expect("should succeed");
     assert_eq!(email.value, "admin@example.com");
     assert!((email.confidence - confidence::HIGH_PLUS).abs() < 1e-9);
     assert!(email.has_tag(tags::CT_LOG));
@@ -232,7 +232,7 @@ fn recovers_certificate_serial_as_attribution_pivot() {
              "not_after":"2024-04-01","serial_number":"04ab9f"}]"#,
     );
     let out = build_entities(&e, "example.com", "s");
-    let dom = out.iter().find(|x| x.kind == EntityKind::Domain).unwrap();
+    let dom = out.iter().find(|x| x.kind == EntityKind::Domain).expect("should succeed");
     assert_eq!(
         dom.evidence[0].attributes.get("cert_serial").map(String::as_str),
         Some("04ab9f")
@@ -248,7 +248,7 @@ fn recovers_certificate_serial_as_attribution_pivot() {
 fn absent_serial_omits_the_attribute() {
     let e = entries(r#"[{"name_value":"a.example.com","issuer_name":"CA"}]"#);
     let out = build_entities(&e, "example.com", "s");
-    let dom = out.iter().find(|x| x.kind == EntityKind::Domain).unwrap();
+    let dom = out.iter().find(|x| x.kind == EntityKind::Domain).expect("should succeed");
     assert!(!dom.evidence[0].attributes.contains_key("cert_serial"));
 }
 
@@ -257,7 +257,7 @@ fn cert_evidence_always_stamps_issuer_and_validity() {
     let entries: Vec<CrtEntry> = serde_json::from_str(
         r#"[{"issuer_name":"Let's Encrypt","not_before":"2024-01-01","not_after":"2024-04-01","serial_number":"abc123"}]"#,
     )
-    .unwrap();
+    .expect("should succeed");
     let ev = cert_evidence(&entries[0], "summary text");
     assert_eq!(ev.source, SRC);
     assert_eq!(ev.summary, "summary text");
@@ -281,7 +281,7 @@ fn cert_evidence_always_stamps_issuer_and_validity() {
 
 #[test]
 fn cert_evidence_stamps_empty_strings_when_fields_absent_and_omits_blank_serial() {
-    let entries: Vec<CrtEntry> = serde_json::from_str(r#"[{}]"#).unwrap();
+    let entries: Vec<CrtEntry> = serde_json::from_str(r#"[{}]"#).expect("should succeed");
     let ev = cert_evidence(&entries[0], "s");
     assert_eq!(ev.attributes.get("issuer").map(String::as_str), Some(""));
     assert_eq!(ev.attributes.get("not_before").map(String::as_str), Some(""));
@@ -290,7 +290,7 @@ fn cert_evidence_stamps_empty_strings_when_fields_absent_and_omits_blank_serial(
         !ev.attributes.contains_key("cert_serial"),
         "blank serial omitted"
     );
-    let empty_serial: Vec<CrtEntry> = serde_json::from_str(r#"[{"serial_number":""}]"#).unwrap();
+    let empty_serial: Vec<CrtEntry> = serde_json::from_str(r#"[{"serial_number":""}]"#).expect("should succeed");
     let ev2 = cert_evidence(&empty_serial[0], "s");
     assert!(!ev2.attributes.contains_key("cert_serial"));
 }

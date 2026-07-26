@@ -40,18 +40,18 @@ use super::*;
                 "domain": "cloudflare.com"
             }
         }"#;
-        let r: Resp = serde_json::from_str(json).unwrap();
+        let r: Resp = serde_json::from_str(json).expect("should succeed");
         assert_eq!(r.success, Some(true));
-        assert!((r.latitude.unwrap() - (-27.4766)).abs() < 0.001);
-        assert!((r.longitude.unwrap() - 153.0166).abs() < 0.001);
+        assert!((r.latitude.expect("should succeed") - (-27.4766)).abs() < 0.001);
+        assert!((r.longitude.expect("should succeed") - 153.0166).abs() < 0.001);
         assert_eq!(r.city.as_deref(), Some("South Brisbane"));
-        assert_eq!(r.connection.as_ref().unwrap().asn_num, Some(13335));
+        assert_eq!(r.connection.as_ref().expect("should succeed").asn_num, Some(13335));
     }
 
     #[test]
     fn resp_deserializes_failure() {
         let json = r#"{"success": false, "message": "Invalid IP address"}"#;
-        let r: Resp = serde_json::from_str(json).unwrap();
+        let r: Resp = serde_json::from_str(json).expect("should succeed");
         assert_eq!(r.success, Some(false));
         assert!(r.latitude.is_none());
     }
@@ -59,7 +59,7 @@ use super::*;
     #[test]
     fn resp_tolerates_missing_fields() {
         let json = r#"{"success": true, "latitude": 0.0, "longitude": 0.0}"#;
-        let r: Resp = serde_json::from_str(json).unwrap();
+        let r: Resp = serde_json::from_str(json).expect("should succeed");
         assert_eq!(r.success, Some(true));
         assert!(r.connection.is_none());
         assert!(r.city.is_none());
@@ -317,7 +317,7 @@ use super::*;
             r#"{"success": true, "latitude": -27.4766, "longitude": 153.0166,
                 "connection": { "isp": "Cloudflare Inc", "org": "APNIC Research", "asn": 13335 }}"#,
         );
-        assert!(body.connection.as_ref().unwrap().domain.is_none());
+        assert!(body.connection.as_ref().expect("should succeed").domain.is_none());
         let ents = build_entities(&body, "1.1.1.1", "s");
         assert!(of_kind(&ents, EntityKind::Domain).is_none());
     }
@@ -340,8 +340,8 @@ use super::*;
         let ents = build_entities(&body, "1.2.3.4", "s");
         assert!(of_kind(&ents, EntityKind::Coordinates).is_none());
         assert_eq!(
-            of_kind(&ents, EntityKind::Organisation).unwrap().value,
+            of_kind(&ents, EntityKind::Organisation).expect("should succeed").value,
             "Telstra"
         );
-        assert_eq!(of_kind(&ents, EntityKind::Asn).unwrap().value, "AS1221");
+        assert_eq!(of_kind(&ents, EntityKind::Asn).expect("should succeed").value, "AS1221");
     }

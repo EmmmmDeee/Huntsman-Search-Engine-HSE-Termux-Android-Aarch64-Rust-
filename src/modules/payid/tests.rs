@@ -24,7 +24,7 @@ fn accepts_only_payid_eligible_kinds() {
 
 #[test]
 fn recognises_email_payid_lowercased() {
-    let r = recognise(&Target::new(TargetKind::Email, "Alice@Example.com")).unwrap();
+    let r = recognise(&Target::new(TargetKind::Email, "Alice@Example.com")).expect("should succeed");
     assert_eq!(r.kind, EntityKind::Email);
     assert_eq!(r.canonical, "alice@example.com");
     assert_eq!(r.kind_label, "email");
@@ -39,7 +39,7 @@ fn rejects_email_fragment() {
 
 #[test]
 fn recognises_phone_payid_as_e164() {
-    let r = recognise(&Target::new(TargetKind::Phone, "0410 959 140")).unwrap();
+    let r = recognise(&Target::new(TargetKind::Phone, "0410 959 140")).expect("should succeed");
     assert_eq!(r.kind, EntityKind::Phone);
     assert_eq!(r.canonical, "+61410959140");
     assert_eq!(r.kind_label, "phone");
@@ -54,7 +54,7 @@ fn rejects_unparseable_phone() {
 #[test]
 fn recognises_abn_payid_as_registry_resolvable() {
     // ATO worked-example ABN, spaced as a user would paste it.
-    let r = recognise(&Target::new(TargetKind::AbnAcn, "51 824 753 556")).unwrap();
+    let r = recognise(&Target::new(TargetKind::AbnAcn, "51 824 753 556")).expect("should succeed");
     assert_eq!(r.kind, EntityKind::AbnAcn);
     assert_eq!(r.canonical, "51824753556");
     assert_eq!(r.kind_label, "abn");
@@ -75,7 +75,7 @@ async fn process_annotates_email_with_payid_tags_and_pivot() {
     let out = PayId
         .process(&Target::new(TargetKind::Email, "alice@example.com"), &ctx())
         .await
-        .unwrap();
+        .expect("should succeed");
     let e = &out.entities[0];
     assert_eq!(e.kind, EntityKind::Email);
     assert!(e.tags.iter().any(|t| t == "payid"));
@@ -94,7 +94,7 @@ async fn process_flags_abn_payid_registry_resolvable() {
     let out = PayId
         .process(&Target::new(TargetKind::AbnAcn, "51824753556"), &ctx())
         .await
-        .unwrap();
+        .expect("should succeed");
     let e = &out.entities[0];
     assert!(e.tags.iter().any(|t| t == "payid:abn"));
     assert!(e.tags.iter().any(|t| t == "payid:registry-resolvable"));
@@ -109,6 +109,6 @@ async fn process_emits_nothing_for_invalid_abn() {
     let out = PayId
         .process(&Target::new(TargetKind::AbnAcn, "00000000000"), &ctx())
         .await
-        .unwrap();
+        .expect("should succeed");
     assert!(out.entities.is_empty());
 }

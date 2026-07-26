@@ -82,7 +82,7 @@ mod qld {
                 ]
             }
         }"#;
-        serde_json::from_str(raw).unwrap()
+        serde_json::from_str(raw).expect("should succeed")
     }
 
     #[test]
@@ -100,7 +100,7 @@ mod qld {
 
     #[test]
     fn classifies_exact_person_vs_surname_only_family() {
-        let recs = sample().result.unwrap().records;
+        let recs = sample().result.expect("should succeed").records;
         let curt = records_to_entities(&recs, 3, "Curt Avery", true, "s");
         let exact = |e: &Entity| e.tags.iter().any(|t| t.as_str() == "exact-name-match");
         let addrs: Vec<&Entity> = curt
@@ -138,9 +138,9 @@ mod qld {
             {"_id":101,"Owner":"FLANNAN MORLEY & GERALDINE F MORLEY","Amount":"55.65","PCode":"4001"}
         ]}}"#;
         let recs = serde_json::from_str::<CkanResp>(raw)
-            .unwrap()
+            .expect("should succeed")
             .result
-            .unwrap()
+            .expect("should succeed")
             .records;
         let ents = records_to_entities(&recs, 2, "Riley Morley", true, "s");
         let addrs: Vec<&Entity> = ents
@@ -168,9 +168,9 @@ mod qld {
             {"_id":7,"Owner":"ACME WIDGETS PTY LTD","Amount":"1200.00","SenderName":"ASX","PCode":"4000"}
         ]}}"#;
         let recs = serde_json::from_str::<CkanResp>(raw)
-            .unwrap()
+            .expect("should succeed")
             .result
-            .unwrap()
+            .expect("should succeed")
             .records;
         let ents = records_to_entities(&recs, 1, "ACME Widgets", true, "s");
         let org = ents
@@ -190,9 +190,9 @@ mod qld {
             {"_id":8,"Owner":"Jane Citizen","Amount":"500.00","SenderName":"GLOBEX EMPLOYMENT PTY LTD","PCode":"4000"}
         ]}}"#;
         let recs = serde_json::from_str::<CkanResp>(raw)
-            .unwrap()
+            .expect("should succeed")
             .result
-            .unwrap()
+            .expect("should succeed")
             .records;
         let ents = records_to_entities(&recs, 1, "Jane Citizen", true, "s");
         let sender = ents
@@ -213,10 +213,10 @@ mod qld {
     #[test]
     fn parses_records_into_geo_addresses_tagged_qld_source() {
         let resp = sample();
-        let result = resp.result.unwrap();
+        let result = resp.result.expect("should succeed");
         let ents = records_to_entities(
             &result.records,
-            result.total.unwrap(),
+            result.total.expect("should succeed"),
             "Avery",
             true,
             "scan-1",

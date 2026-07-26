@@ -933,8 +933,8 @@ fn evidence_with_attr_chaining() {
         .with_attr("key1", "val1")
         .with_attr("key2", "val2");
     assert_eq!(ev.attributes.len(), 2);
-    assert_eq!(ev.attributes.get("key1").unwrap(), "val1");
-    assert_eq!(ev.attributes.get("key2").unwrap(), "val2");
+    assert_eq!(ev.attributes.get("key1").expect("should succeed"), "val1");
+    assert_eq!(ev.attributes.get("key2").expect("should succeed"), "val2");
 }
 
 #[test]
@@ -946,7 +946,7 @@ fn evidence_attributes_serialize_in_stable_sorted_order() {
         .with_attr("alpha", "2")
         .with_attr("mike", "3");
     assert_eq!(
-        serde_json::to_string(&ev.attributes).unwrap(),
+        serde_json::to_string(&ev.attributes).expect("should succeed"),
         r#"{"alpha":"2","mike":"3","zulu":"1"}"#
     );
 }
@@ -1133,16 +1133,16 @@ fn generation_serde_round_trips_and_defaults_for_legacy_rows() {
     // New rows carry the generation through data_json.
     let mut e = email("x@y.com");
     e.generation = 2;
-    let json = serde_json::to_string(&e).unwrap();
-    let back: Entity = serde_json::from_str(&json).unwrap();
+    let json = serde_json::to_string(&e).expect("should succeed");
+    let back: Entity = serde_json::from_str(&json).expect("should succeed");
     assert_eq!(back.generation, 2);
 
     // A legacy row persisted before the field existed has no `generation` key;
     // #[serde(default)] must decode it to 0 (no storage migration needed).
-    let legacy = serde_json::to_value(&e).unwrap();
-    let mut obj = legacy.as_object().unwrap().clone();
+    let legacy = serde_json::to_value(&e).expect("should succeed");
+    let mut obj = legacy.as_object().expect("should succeed").clone();
     obj.remove("generation");
-    let recovered: Entity = serde_json::from_value(serde_json::Value::Object(obj)).unwrap();
+    let recovered: Entity = serde_json::from_value(serde_json::Value::Object(obj)).expect("should succeed");
     assert_eq!(
         recovered.generation, 0,
         "legacy rows default to generation 0"

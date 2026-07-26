@@ -35,7 +35,7 @@ use super::*;
             "link": "https://viz.greynoise.io/ip/8.8.8.8",
             "message": "Success"
         }"#;
-        let resp: CommunityResp = serde_json::from_str(json).unwrap();
+        let resp: CommunityResp = serde_json::from_str(json).expect("should succeed");
         assert!(resp.noise);
         assert!(resp.riot);
         assert_eq!(resp.classification.as_deref(), Some("benign"));
@@ -56,7 +56,7 @@ use super::*;
             "riot": false,
             "message": "IP not observed scanning the internet or contained in RIOT data set."
         }"#;
-        let resp: CommunityResp = serde_json::from_str(json).unwrap();
+        let resp: CommunityResp = serde_json::from_str(json).expect("should succeed");
         assert!(!resp.noise);
         assert!(!resp.riot);
         assert!(resp.classification.is_none());
@@ -74,7 +74,7 @@ use super::*;
             "name": "unknown",
             "link": "https://viz.greynoise.io/ip/71.6.135.131"
         }"#;
-        let resp: CommunityResp = serde_json::from_str(json).unwrap();
+        let resp: CommunityResp = serde_json::from_str(json).expect("should succeed");
         assert!(resp.noise);
         assert!(!resp.riot);
         assert_eq!(resp.classification.as_deref(), Some("malicious"));
@@ -227,7 +227,7 @@ use super::*;
             "name": "unknown",
             "link": "https://viz.greynoise.io/ip/71.6.135.131"
         }"#;
-        let resp: PaidResp = serde_json::from_str(json).unwrap();
+        let resp: PaidResp = serde_json::from_str(json).expect("should succeed");
         assert!(resp.seen);
         assert!(resp.noise);
         assert!(!resp.riot);

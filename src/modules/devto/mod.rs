@@ -323,8 +323,8 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "devuser");
         assert!(u.is_some(), "must emit Username entity");
-        assert!((u.unwrap().confidence - confidence::EXPERT).abs() < 0.01);
-        assert!(u.unwrap().has_tag("devto"));
+        assert!((u.expect("should succeed").confidence - confidence::EXPERT).abs() < 0.01);
+        assert!(u.expect("should succeed").has_tag("devto"));
     }
 
     #[test]
@@ -333,7 +333,7 @@ mod tests {
         let ents = build_entities(user, "scan-dt-002");
         let p = ents.iter().find(|e| e.kind == EntityKind::Person);
         assert!(p.is_some(), "must emit Person from multi-word name");
-        assert_eq!(p.unwrap().value, "Alice Developer");
+        assert_eq!(p.expect("should succeed").value, "Alice Developer");
     }
 
     #[test]
@@ -361,14 +361,14 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "devuser-gh");
         assert!(
-            gh.is_some() && gh.unwrap().has_tag("github"),
+            gh.is_some() && gh.expect("should succeed").has_tag("github"),
             "must emit GitHub pivot"
         );
         let tw = ents
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "devtw");
         assert!(
-            tw.is_some() && tw.unwrap().has_tag("twitter"),
+            tw.is_some() && tw.expect("should succeed").has_tag("twitter"),
             "must emit Twitter pivot"
         );
     }
@@ -401,7 +401,7 @@ mod tests {
         let ents = build_entities(user, "scan-dt-006");
         let a = ents.iter().find(|e| e.kind == EntityKind::Address);
         assert!(a.is_some(), "must emit Address from location field");
-        assert!(a.unwrap().has_tag("self-asserted"));
+        assert!(a.expect("should succeed").has_tag("self-asserted"));
     }
 
     #[test]

@@ -14,7 +14,7 @@ use super::*;
     #[test]
     fn deser_gatton() {
         let j = r#"{"ip":"101.169.42.148","country_code":"AU","country_name":"Australia","region_name":"Queensland","city_name":"Gatton","zip_code":"4343","latitude":-27.55873,"longitude":152.27618,"time_zone":"+10:00","asn":"1221","as":"Telstra Limited","is_proxy":false}"#;
-        let r: Resp = serde_json::from_str(j).unwrap();
+        let r: Resp = serde_json::from_str(j).expect("should succeed");
         assert_eq!(r.city_name.as_deref(), Some("Gatton"));
         assert_eq!(r.region_name.as_deref(), Some("Queensland"));
         assert_eq!(r.zip_code.as_deref(), Some("4343"));
@@ -28,7 +28,7 @@ use super::*;
 
     #[test]
     fn build_entities_surfaces_timezone_and_country_iso_on_geo() {
-        let r: Resp = serde_json::from_str(GATTON_JSON).unwrap();
+        let r: Resp = serde_json::from_str(GATTON_JSON).expect("should succeed");
         let es = build_entities(&r, "101.169.42.148", false, "t");
 
         // Coordinates carry the previously-discarded timezone + ISO country.
@@ -55,7 +55,7 @@ use super::*;
         // subject, so BOTH the Coordinates and the Address must carry the PROXY
         // tag (the Address previously emitted the exit's city untagged).
         let j = r#"{"ip":"1.2.3.4","country_code":"NL","country_name":"Netherlands","region_name":"North Holland","city_name":"Amsterdam","latitude":52.37,"longitude":4.89,"is_proxy":true}"#;
-        let r: Resp = serde_json::from_str(j).unwrap();
+        let r: Resp = serde_json::from_str(j).expect("should succeed");
         let es = build_entities(&r, "1.2.3.4", false, "t");
         let addr = entity(&es, EntityKind::Address).expect("address");
         assert!(
@@ -69,7 +69,7 @@ use super::*;
 
     #[test]
     fn build_entities_emits_asn_and_isp() {
-        let r: Resp = serde_json::from_str(GATTON_JSON).unwrap();
+        let r: Resp = serde_json::from_str(GATTON_JSON).expect("should succeed");
         let es = build_entities(&r, "101.169.42.148", false, "t");
         assert_eq!(entity(&es, EntityKind::Asn).map(|e| e.value.as_str()), Some("AS1221"));
         assert_eq!(
@@ -81,7 +81,7 @@ use super::*;
     #[test]
     fn build_entities_skip_geo_drops_location_keeps_infrastructure() {
         // A CDN/anycast edge IP: no Coordinates/Address, but ASN/ISP still emit.
-        let r: Resp = serde_json::from_str(GATTON_JSON).unwrap();
+        let r: Resp = serde_json::from_str(GATTON_JSON).expect("should succeed");
         let es = build_entities(&r, "101.169.42.148", true, "t");
         assert!(entity(&es, EntityKind::Coordinates).is_none());
         assert!(entity(&es, EntityKind::Address).is_none());
@@ -92,7 +92,7 @@ use super::*;
     #[test]
     fn build_entities_non_au_address_not_tagged_au() {
         let j = r#"{"country_code":"US","country_name":"United States","region_name":"California","city_name":"Mountain View","zip_code":"94043","latitude":37.4,"longitude":-122.08,"asn":"15169","as":"Google LLC"}"#;
-        let r: Resp = serde_json::from_str(j).unwrap();
+        let r: Resp = serde_json::from_str(j).expect("should succeed");
         let es = build_entities(&r, "8.8.8.8", false, "t");
         let addr = entity(&es, EntityKind::Address).expect("address");
         assert!(!addr.tags.iter().any(|t| t == "country:AU"));

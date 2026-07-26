@@ -9,7 +9,7 @@ const REC: &str = "{\"BD_ORG_ACN\":\"081402379\",\
   \"BD_ORG_COMMENT\":\"No comment made\"}";
 
 fn rec(json: &str) -> Map<String, Value> {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 #[test]

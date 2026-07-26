@@ -17,9 +17,9 @@ use super::*;
     #[test]
     fn deser() {
         let j = r#"{"ip":"8.8.8.8","isp":{"asn":"AS15169","org":"Google LLC","isp":"Google LLC"},"location":{"country":"United States","country_code":"US","city":"Mountain View","state":"California","latitude":37.41,"longitude":-122.11},"risk":{"is_mobile":false,"is_vpn":false,"is_tor":false,"is_proxy":false,"is_datacenter":true,"risk_score":0}}"#;
-        let r: Resp = serde_json::from_str(j).unwrap();
-        assert_eq!(r.risk.unwrap().risk_score, Some(0));
-        assert_eq!(r.location.unwrap().city.as_deref(), Some("Mountain View"));
+        let r: Resp = serde_json::from_str(j).expect("should succeed");
+        assert_eq!(r.risk.expect("should succeed").risk_score, Some(0));
+        assert_eq!(r.location.expect("should succeed").city.as_deref(), Some("Mountain View"));
     }
 
     fn resp(json: &str) -> Resp {

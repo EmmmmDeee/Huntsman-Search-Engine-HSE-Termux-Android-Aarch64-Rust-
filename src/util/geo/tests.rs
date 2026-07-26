@@ -3,16 +3,16 @@ use super::*;
     #[test]
     fn parse_coords_accepts_well_formed_pairs() {
         assert_eq!(
-            parse_coords("-27.4766,153.0166").unwrap(),
+            parse_coords("-27.4766,153.0166").expect("should succeed"),
             (-27.4766, 153.0166)
         );
         assert_eq!(
-            parse_coords(" 51.5074 , -0.1278 ").unwrap(),
+            parse_coords(" 51.5074 , -0.1278 ").expect("should succeed"),
             (51.5074, -0.1278)
         );
         // Null Island parses: it's a deliberately-typed seed, not a provider
         // sentinel — output filtering (is_valid_coords) is a separate concern.
-        assert_eq!(parse_coords("0,0").unwrap(), (0.0, 0.0));
+        assert_eq!(parse_coords("0,0").expect("should succeed"), (0.0, 0.0));
     }
 
     #[test]
@@ -140,11 +140,11 @@ use super::*;
 
     #[test]
     fn nearest_au_locality_labels_capitals_and_rejects_foreign() {
-        let (name, state, km) = nearest_au_locality(-27.47, 153.02).unwrap();
+        let (name, state, km) = nearest_au_locality(-27.47, 153.02).expect("should succeed");
         assert_eq!((name, state), ("Brisbane", "QLD"));
         assert!(km < 5.0, "Brisbane CBD within 5km of the anchor, got {km}");
         // A regional fix resolves to its nearest centre.
-        let (name, state, _) = nearest_au_locality(-26.729, 152.7554).unwrap();
+        let (name, state, _) = nearest_au_locality(-26.729, 152.7554).expect("should succeed");
         assert_eq!((name, state), ("Maleny", "QLD"));
         // Perth.
         assert_eq!(nearest_au_locality(-31.95, 115.86).map(|(n, s, _)| (n, s)), Some(("Perth", "WA")));

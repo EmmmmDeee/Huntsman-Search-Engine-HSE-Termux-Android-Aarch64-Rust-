@@ -53,7 +53,7 @@ fn emits_username_and_profile_url() {
     let u = ents
         .iter()
         .find(|e| e.kind == EntityKind::Username && e.value == "ecto_dev")
-        .unwrap();
+        .expect("should succeed");
     assert!(u.has_tag("hexpm") && u.has_tag("public-profile"));
 }
 
@@ -63,8 +63,8 @@ fn emits_person_from_multi_word_full_name() {
     let ents = build_entities(user, "scan-hx-002");
     let p = ents.iter().find(|e| e.kind == EntityKind::Person);
     assert!(p.is_some(), "must emit Person from two-word full_name");
-    assert_eq!(p.unwrap().value, "Chris McCord");
-    assert!(p.unwrap().has_tag("hexpm"));
+    assert_eq!(p.expect("should succeed").value, "Chris McCord");
+    assert!(p.expect("should succeed").has_tag("hexpm"));
 }
 
 #[test]
@@ -85,8 +85,8 @@ fn emits_email_when_published() {
         em.is_some(),
         "must emit Email from the published email field"
     );
-    assert_eq!(em.unwrap().value, "jose.valim@gmail.com");
-    assert!(em.unwrap().has_tag("hexpm"));
+    assert_eq!(em.expect("should succeed").value, "jose.valim@gmail.com");
+    assert!(em.expect("should succeed").has_tag("hexpm"));
 }
 
 #[test]
@@ -104,8 +104,8 @@ fn emits_github_handle_from_display_key_and_url_value() {
         .iter()
         .find(|e| e.kind == EntityKind::Username && e.value == "elixir-lang");
     assert!(gh.is_some(), "must emit Username for the GitHub URL handle");
-    assert!(gh.unwrap().has_tag("github") && gh.unwrap().has_tag("hexpm"));
-    assert!((gh.unwrap().confidence - 0.72).abs() < 0.01);
+    assert!(gh.expect("should succeed").has_tag("github") && gh.expect("should succeed").has_tag("hexpm"));
+    assert!((gh.expect("should succeed").confidence - 0.72).abs() < 0.01);
 }
 
 #[test]
@@ -122,8 +122,8 @@ fn emits_twitter_handle_from_x_com_display_key() {
         .iter()
         .find(|e| e.kind == EntityKind::Username && e.value == "hex_dev_tw");
     assert!(tw.is_some(), "must emit Username for the X.com URL handle");
-    assert!(tw.unwrap().has_tag("twitter"));
-    assert!((tw.unwrap().confidence - 0.62).abs() < 0.01);
+    assert!(tw.expect("should succeed").has_tag("twitter"));
+    assert!((tw.expect("should succeed").confidence - 0.62).abs() < 0.01);
 }
 
 #[test]

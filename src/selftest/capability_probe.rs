@@ -364,7 +364,7 @@ mod tests {
 
     #[test]
     fn record_confirmed_drift_persists_only_confirmed_entries() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should succeed");
         let path = dir.path().join("capability_drift.json");
         let reports = vec![
             canary_report("ip_geo"),
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn record_confirmed_drift_is_a_no_op_when_nothing_confirmed() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should succeed");
         let path = dir.path().join("capability_drift.json");
         let reports = vec![ProbeReport {
             module: "ip_geo",
@@ -411,7 +411,7 @@ mod tests {
     fn record_confirmed_drift_keeps_a_prior_entry_a_clean_resweep_did_not_touch() {
         // A single re-probe run where module A comes back clean must not erase
         // module B's still-unresolved drift from an earlier run.
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should succeed");
         let path = dir.path().join("capability_drift.json");
         record_confirmed_drift_at(&path, &[canary_report("crtsh")], 1_000);
         record_confirmed_drift_at(
@@ -434,7 +434,7 @@ mod tests {
 
     #[test]
     fn record_confirmed_drift_updates_the_timestamp_on_repeat_confirmation() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should succeed");
         let path = dir.path().join("capability_drift.json");
         record_confirmed_drift_at(&path, &[canary_report("ip_geo")], 1_000);
         record_confirmed_drift_at(&path, &[canary_report("ip_geo")], 5_000);
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn read_drift_map_is_empty_on_missing_file() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should succeed");
         let path = dir.path().join("does_not_exist.json");
         assert!(read_drift_map(&path).is_empty());
     }

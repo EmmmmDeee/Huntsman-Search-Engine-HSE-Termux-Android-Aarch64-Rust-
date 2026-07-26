@@ -15,7 +15,7 @@ use super::*;
     #[test]
     fn deser() {
         let j = r#"{"ip":"8.8.8.8","hostname":"dns.google","city":"Mountain View","region":"California","country":"US","loc":"37.4056,-122.0775","org":"AS15169 Google LLC","postal":"94043","timezone":"America/Los_Angeles"}"#;
-        let r: IpInfoResp = serde_json::from_str(j).unwrap();
+        let r: IpInfoResp = serde_json::from_str(j).expect("should succeed");
         assert_eq!(r.city.as_deref(), Some("Mountain View"));
         assert_eq!(r.org.as_deref(), Some("AS15169 Google LLC"));
         assert_eq!(r.postal.as_deref(), Some("94043"));
@@ -23,7 +23,7 @@ use super::*;
     }
 
     fn data(json: &str) -> IpInfoResp {
-        serde_json::from_str(json).unwrap()
+        serde_json::from_str(json).expect("should succeed")
     }
 
     fn one(ents: &[Entity], kind: EntityKind) -> Option<&Entity> {
@@ -41,7 +41,7 @@ use super::*;
         let ents = build_entities("8.8.8.8", &d, "s");
         assert_eq!(ents.len(), 5);
 
-        let coords = one(&ents, EntityKind::Coordinates).unwrap();
+        let coords = one(&ents, EntityKind::Coordinates).expect("should succeed");
         // Entity::new normalises Coordinates to 6-decimal lat,lon.
         assert_eq!(coords.value, "37.405600,-122.077500");
         assert!(coords.has_tag(tags::GEOINT) && coords.has_tag("ipinfo"));
@@ -60,7 +60,7 @@ use super::*;
             Some("America/Los_Angeles")
         );
 
-        let address = one(&ents, EntityKind::Address).unwrap();
+        let address = one(&ents, EntityKind::Address).expect("should succeed");
         assert_eq!(address.value, "Mountain View, California, US");
         assert_eq!(
             address.evidence[0]
@@ -70,13 +70,13 @@ use super::*;
             Some("94043")
         );
         assert_eq!(
-            one(&ents, EntityKind::Organisation).unwrap().value,
+            one(&ents, EntityKind::Organisation).expect("should succeed").value,
             "AS15169 Google LLC"
         );
-        let asn = one(&ents, EntityKind::Asn).unwrap();
+        let asn = one(&ents, EntityKind::Asn).expect("should succeed");
         assert_eq!(asn.value, "AS15169");
         assert!((asn.confidence - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
-        let dom = one(&ents, EntityKind::Domain).unwrap();
+        let dom = one(&ents, EntityKind::Domain).expect("should succeed");
         assert_eq!(dom.value, "dns.google");
         assert!(dom.has_tag(tags::PTR));
     }
@@ -94,7 +94,7 @@ use super::*;
         // carries an `ip` attribute equal to that IP.
         let d = data(r#"{"loc":"37.4056,-122.0775","city":"Mountain View"}"#);
         let ents = build_entities("8.8.8.8", &d, "s");
-        let coords = one(&ents, EntityKind::Coordinates).unwrap();
+        let coords = one(&ents, EntityKind::Coordinates).expect("should succeed");
         assert_eq!(
             coords.evidence[0].attributes.get("ip").map(String::as_str),
             Some("8.8.8.8"),
@@ -158,11 +158,11 @@ use super::*;
         );
         // Network-describing entities survive the geo suppression.
         assert_eq!(
-            one(&ents, EntityKind::Organisation).unwrap().value,
+            one(&ents, EntityKind::Organisation).expect("should succeed").value,
             "AS15169 Google LLC"
         );
-        assert_eq!(one(&ents, EntityKind::Asn).unwrap().value, "AS15169");
-        assert_eq!(one(&ents, EntityKind::Domain).unwrap().value, "dns.google");
+        assert_eq!(one(&ents, EntityKind::Asn).expect("should succeed").value, "AS15169");
+        assert_eq!(one(&ents, EntityKind::Domain).expect("should succeed").value, "dns.google");
 
         // Counter-case: the identical record with anycast absent/false DOES
         // yield the geo entities, proving the flag is what suppressed them.
@@ -187,7 +187,7 @@ use super::*;
     #[test]
     fn address_omits_region_when_absent() {
         let ents = build_entities("1.2.3.4", &data(r#"{"city":"Sydney","country":"AU"}"#), "s");
-        assert_eq!(one(&ents, EntityKind::Address).unwrap().value, "Sydney, AU");
+        assert_eq!(one(&ents, EntityKind::Address).expect("should succeed").value, "Sydney, AU");
     }
 
     #[test]

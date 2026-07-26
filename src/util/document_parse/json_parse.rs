@@ -109,28 +109,28 @@ mod tests {
 
     #[test]
     fn json_parse_basic() {
-        let mut file = NamedTempFile::new().unwrap();
+        let mut file = NamedTempFile::new().expect("should succeed");
         let json = serde_json::json!({
             "name": "John Doe",
             "email": "john@example.com",
             "age": 30
         });
-        writeln!(file, "{json}").unwrap();
-        file.flush().unwrap();
+        writeln!(file, "{json}").expect("should succeed");
+        file.flush().expect("should succeed");
 
-        let result = parse_json(file.path()).unwrap();
+        let result = parse_json(file.path()).expect("should succeed");
         assert!(result.text.contains("John Doe"));
         assert!(result.text.contains("john@example.com"));
     }
 
     #[test]
     fn jsonl_parse_basic() {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, r#"{{"name":"John","email":"john@example.com"}}"#).unwrap();
-        writeln!(file, r#"{{"name":"Jane","email":"jane@example.com"}}"#).unwrap();
-        file.flush().unwrap();
+        let mut file = NamedTempFile::new().expect("should succeed");
+        writeln!(file, r#"{{"name":"John","email":"john@example.com"}}"#).expect("should succeed");
+        writeln!(file, r#"{{"name":"Jane","email":"jane@example.com"}}"#).expect("should succeed");
+        file.flush().expect("should succeed");
 
-        let result = parse_jsonl(file.path()).unwrap();
+        let result = parse_jsonl(file.path()).expect("should succeed");
         assert!(result.text.contains("John"));
         assert!(result.text.contains("Jane"));
     }

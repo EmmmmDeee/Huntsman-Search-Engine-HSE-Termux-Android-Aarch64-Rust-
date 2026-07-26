@@ -8,46 +8,46 @@ lazy_static! {
     // Email: RFC 5322 simplified (high confidence if matches)
     pub static ref EMAIL_PATTERN: Regex = Regex::new(
         r"[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*"
-    ).unwrap();
+    ).expect("should succeed");
 
     // Phone: E.164 format (optional + prefix, 7-15 digits)
-    pub static ref PHONE_E164: Regex = Regex::new(r"\+?[1-9]\d{6,14}").unwrap();
+    pub static ref PHONE_E164: Regex = Regex::new(r"\+?[1-9]\d{6,14}").expect("should succeed");
 
     // IPv4: quad-dotted decimal
     pub static ref IPV4_PATTERN: Regex = Regex::new(
         r"(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)"
-    ).unwrap();
+    ).expect("should succeed");
 
     // IPv6: simplified (colons + hex groups)
     pub static ref IPV6_PATTERN: Regex = Regex::new(
         r"(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}"
-    ).unwrap();
+    ).expect("should succeed");
 
     // Domain: label.label.tld (RFC 1035)
     pub static ref DOMAIN_PATTERN: Regex = Regex::new(
         r"(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}"
-    ).unwrap();
+    ).expect("should succeed");
 
     // URL: http(s)://... (simplified, without escapes in raw string)
-    pub static ref URL_PATTERN: Regex = Regex::new(r"https?://\S+").unwrap();
+    pub static ref URL_PATTERN: Regex = Regex::new(r"https?://\S+").expect("should succeed");
 
     // Hash: MD5 (32 hex), SHA1 (40), SHA256 (64), SHA512 (128)
-    pub static ref MD5_HASH: Regex = Regex::new(r"[a-fA-F0-9]{32}").unwrap();
-    pub static ref SHA1_HASH: Regex = Regex::new(r"[a-fA-F0-9]{40}").unwrap();
-    pub static ref SHA256_HASH: Regex = Regex::new(r"[a-fA-F0-9]{64}").unwrap();
-    pub static ref SHA512_HASH: Regex = Regex::new(r"[a-fA-F0-9]{128}").unwrap();
+    pub static ref MD5_HASH: Regex = Regex::new(r"[a-fA-F0-9]{32}").expect("should succeed");
+    pub static ref SHA1_HASH: Regex = Regex::new(r"[a-fA-F0-9]{40}").expect("should succeed");
+    pub static ref SHA256_HASH: Regex = Regex::new(r"[a-fA-F0-9]{64}").expect("should succeed");
+    pub static ref SHA512_HASH: Regex = Regex::new(r"[a-fA-F0-9]{128}").expect("should succeed");
 
     // Username: alphanumeric + underscore/dash (3-32 chars)
-    pub static ref USERNAME_PATTERN: Regex = Regex::new(r"[a-zA-Z0-9_-]{3,32}").unwrap();
+    pub static ref USERNAME_PATTERN: Regex = Regex::new(r"[a-zA-Z0-9_-]{3,32}").expect("should succeed");
 
     // Social handle: @ + alphanumeric (Twitter, Instagram style)
-    pub static ref SOCIAL_HANDLE: Regex = Regex::new(r"@[a-zA-Z0-9_]{1,30}").unwrap();
+    pub static ref SOCIAL_HANDLE: Regex = Regex::new(r"@[a-zA-Z0-9_]{1,30}").expect("should succeed");
 
     // Person name: Title-cased words (heuristic: Name Surname)
-    pub static ref PERSON_NAME: Regex = Regex::new(r"[A-Z][a-z]+\s+[A-Z][a-z]+").unwrap();
+    pub static ref PERSON_NAME: Regex = Regex::new(r"[A-Z][a-z]+\s+[A-Z][a-z]+").expect("should succeed");
 
     // License/ID: Uppercase alphanumeric (8-20 chars, like "AB123CD456")
-    pub static ref LICENSE_ID: Regex = Regex::new(r"[A-Z0-9]{6,20}").unwrap();
+    pub static ref LICENSE_ID: Regex = Regex::new(r"[A-Z0-9]{6,20}").expect("should succeed");
 }
 
 /// Extract entities from text using pattern matching.

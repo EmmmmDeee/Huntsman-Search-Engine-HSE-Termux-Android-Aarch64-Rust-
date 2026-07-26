@@ -186,8 +186,8 @@ use super::*;
     /// (not mocked) endpoint for the curl-subprocess `probe_endpoint` to hit.
     async fn serve_once_json(body: &'static str) -> std::net::SocketAddr {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+        let addr = listener.local_addr().expect("should succeed");
         tokio::spawn(async move {
             if let Ok((mut sock, _)) = listener.accept().await {
                 let mut buf = vec![0u8; 2048];

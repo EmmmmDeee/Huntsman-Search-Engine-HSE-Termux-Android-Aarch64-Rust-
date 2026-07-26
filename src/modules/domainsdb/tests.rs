@@ -2,7 +2,7 @@ use crate::core::confidence;
 use super::*;
 
     fn entry(json: &str) -> DomainEntry {
-        serde_json::from_str(json).unwrap()
+        serde_json::from_str(json).expect("should succeed")
     }
 
     #[test]
@@ -54,7 +54,7 @@ use super::*;
     #[test]
     fn deser() {
         let j = r#"{"domains":[{"domain":"example.com","create_date":"2020-01-01","isDead":"False"}],"total":1}"#;
-        let r: DbResp = serde_json::from_str(j).unwrap();
+        let r: DbResp = serde_json::from_str(j).expect("should succeed");
         assert_eq!(r.domains.len(), 1);
         assert_eq!(r.total, Some(1));
     }
@@ -69,7 +69,7 @@ use super::*;
             false,
             "s",
         )
-        .unwrap();
+        .expect("should succeed");
         assert_eq!(e.kind, EntityKind::Domain);
         assert!(e.has_tag("domainsdb") && !e.has_tag("dead-domain") && !e.has_tag("broad-match"));
         assert!((e.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
@@ -93,7 +93,7 @@ use super::*;
             false,
             "s",
         )
-        .unwrap();
+        .expect("should succeed");
         assert!(e.has_tag("dead-domain"));
         assert!((e.confidence - 0.35).abs() < 1e-9);
     }
@@ -101,12 +101,12 @@ use super::*;
     #[test]
     fn broad_match_dampens_and_tags() {
         // A generic keyword (high `total`) → broad-match: tagged + 0.7× damped.
-        let e = build_domain_entity(&entry(r#"{"domain":"john-smith.com"}"#), true, "s").unwrap();
+        let e = build_domain_entity(&entry(r#"{"domain":"john-smith.com"}"#), true, "s").expect("should succeed");
         assert!(e.has_tag("broad-match"));
         assert!((e.confidence - confidence::MEDIUM_HIGH * 0.7).abs() < 1e-9);
         // Dead + broad stacks both penalties.
         let dead = build_domain_entity(&entry(r#"{"domain":"x.com","isDead":"True"}"#), true, "s")
-            .unwrap();
+            .expect("should succeed");
         assert!((dead.confidence - 0.35 * 0.7).abs() < 1e-9);
     }
 

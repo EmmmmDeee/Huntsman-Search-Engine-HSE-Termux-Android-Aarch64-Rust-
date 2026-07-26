@@ -103,7 +103,7 @@ fn flatten_record(item: &Value) -> Value {
                     let strs = field_strings(item, k);
                     match strs.len() {
                         0 => v.clone(),
-                        1 => Value::String(strs.into_iter().next().unwrap()),
+                        1 => Value::String(strs.into_iter().next().expect("should succeed")),
                         _ => Value::String(strs.join(", ")),
                     }
                 }

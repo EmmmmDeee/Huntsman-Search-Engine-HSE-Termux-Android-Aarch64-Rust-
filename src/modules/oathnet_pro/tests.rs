@@ -515,7 +515,7 @@ use crate::core::confidence;
             .entities
             .iter()
             .find(|e| e.kind == EntityKind::Phone)
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(phone.tags, ["breach", "oathnet-pro", "candidate"]);
         assert!(
             (phone.confidence - 0.25).abs() < 1e-9,

@@ -119,8 +119,8 @@ fn meaningful_tag_keeps_threat_categories_drops_noise() {
     /// to hit so its failure classification is exercised end to end.
     async fn serve_once(status: u16, body: &'static [u8]) -> std::net::SocketAddr {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+        let addr = listener.local_addr().expect("should succeed");
         tokio::spawn(async move {
             let Ok((mut sock, _)) = listener.accept().await else {
                 return;
@@ -179,7 +179,7 @@ fn meaningful_tag_keeps_threat_categories_drops_noise() {
 
 fn passive_rows(json: &str) -> Vec<PassiveDnsRow> {
     serde_json::from_str::<PassiveDnsResp>(json)
-        .unwrap()
+        .expect("should succeed")
         .passive_dns
 }
 
@@ -208,7 +208,7 @@ fn passive_dns_emits_historical_ips_and_subdomains() {
     let ip_ent = out
         .iter()
         .find(|e| e.kind == EntityKind::IpAddress)
-        .unwrap();
+        .expect("should succeed");
     assert!(ip_ent.has_tag("otx") && ip_ent.has_tag("passive-dns") && ip_ent.has_tag("historical"));
 
     // Subdomains surface as Domain entities; the apex is a Domain but NOT tagged
@@ -223,7 +223,7 @@ fn passive_dns_emits_historical_ips_and_subdomains() {
     let sub = out
         .iter()
         .find(|e| e.kind == EntityKind::Domain && e.value == "check.torproject.org")
-        .unwrap();
+        .expect("should succeed");
     assert!(sub.has_tag(crate::core::tags::SUBDOMAIN) && sub.has_tag("passive-dns"));
 }
 

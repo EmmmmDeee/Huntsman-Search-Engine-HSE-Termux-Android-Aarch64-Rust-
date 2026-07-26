@@ -16,7 +16,7 @@ use super::*;
 
     #[test]
     fn deser_keeps_stringly_typed_verdict() {
-        let r: Resp = serde_json::from_str(r#"{"disposable":"true"}"#).unwrap();
+        let r: Resp = serde_json::from_str(r#"{"disposable":"true"}"#).expect("should succeed");
         assert_eq!(r.disposable, "true");
     }
 

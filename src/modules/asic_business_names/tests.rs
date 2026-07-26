@@ -5,7 +5,7 @@ const REC: &str = r#"{
   "BN_REG_DT":"04/12/2019","BN_ABN":"86634681397","BN_STATE_OF_REG":"QLD"}"#;
 
 fn rec(json: &str) -> Map<String, Value> {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 #[test]

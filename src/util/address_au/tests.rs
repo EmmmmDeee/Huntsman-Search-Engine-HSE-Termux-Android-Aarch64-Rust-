@@ -301,36 +301,36 @@ use super::*;
     fn au_phone_line_type_classifies_every_au_number_class() {
         // Mobile, geographic, VoIP, and the three service classes.
         assert_eq!(
-            au_phone_line_type("0412 345 678").unwrap().0,
+            au_phone_line_type("0412 345 678").expect("should succeed").0,
             AuLineType::Mobile
         );
         assert_eq!(
-            au_phone_line_type("(07) 3739 4511").unwrap().0,
+            au_phone_line_type("(07) 3739 4511").expect("should succeed").0,
             AuLineType::GeographicFixed
         );
         assert_eq!(
-            au_phone_line_type("+61 2 9876 5432").unwrap().0,
+            au_phone_line_type("+61 2 9876 5432").expect("should succeed").0,
             AuLineType::GeographicFixed
         );
         assert_eq!(
-            au_phone_line_type("0512 345 678").unwrap().0,
+            au_phone_line_type("0512 345 678").expect("should succeed").0,
             AuLineType::Voip
         );
         assert_eq!(
-            au_phone_line_type("1800 123 456").unwrap().0,
+            au_phone_line_type("1800 123 456").expect("should succeed").0,
             AuLineType::Freephone
         );
         assert_eq!(
-            au_phone_line_type("1300 975 707").unwrap().0,
+            au_phone_line_type("1300 975 707").expect("should succeed").0,
             AuLineType::LocalRate
         );
         // The 6-digit `13xxxx` short form the normaliser doesn't tabulate.
         assert_eq!(
-            au_phone_line_type("13 11 14").unwrap().0,
+            au_phone_line_type("13 11 14").expect("should succeed").0,
             AuLineType::LocalRate
         );
         assert_eq!(
-            au_phone_line_type("1902 123 456").unwrap().0,
+            au_phone_line_type("1902 123 456").expect("should succeed").0,
             AuLineType::Premium
         );
         // Not Australian / not a phone.
@@ -407,7 +407,7 @@ use super::*;
         assert_eq!(cat("JANE.ID.AU"), Some("individual"));
         assert_eq!(cat("acme.com.au."), Some("commercial"));
         // Each carries a human label distinct from the bare tag.
-        assert!(au_domain_registrant("john.id.au").unwrap().1.contains("natural-person"));
+        assert!(au_domain_registrant("john.id.au").expect("should succeed").1.contains("natural-person"));
     }
 
     #[test]

@@ -54,7 +54,7 @@ use super::*;
         let infra: Vec<String> = DNS_PROVIDER_IPS
             .iter()
             .find(|(n, _)| *n == "cloudflare")
-            .unwrap()
+            .expect("should succeed")
             .1
             .iter()
             .map(|s| (*s).to_string())

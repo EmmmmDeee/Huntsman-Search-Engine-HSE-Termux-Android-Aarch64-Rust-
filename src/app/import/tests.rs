@@ -136,7 +136,7 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
         "s",
     )
     .await
-    .unwrap();
+    .expect("should succeed");
     assert_eq!(label, "oathnet-html");
     assert!(has(&html, EntityKind::Email, "jo@acme-corp.com"));
 
@@ -146,7 +146,7 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
         "s",
     )
     .await
-    .unwrap();
+    .expect("should succeed");
     assert_eq!(label, "dossier");
     assert!(has(&dos, EntityKind::Email, "isaacfrost@gmail.com"));
     assert!(has(&dos, EntityKind::Person, "Isaac Frost"));
@@ -157,7 +157,7 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
         "s",
     )
     .await
-    .unwrap();
+    .expect("should succeed");
     assert_eq!(label, "oathnet-txt");
     assert!(txt.iter().any(|e| e.kind == EntityKind::Url));
 
@@ -168,13 +168,13 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
         "s",
     )
     .await
-    .unwrap();
+    .expect("should succeed");
     assert_eq!(label, "dehashed-csv");
     assert!(has(&csvents, EntityKind::Email, "jordanavery@gmail.com"));
     assert!(has(&csvents, EntityKind::Person, "Jordan Avery"));
 
     // Combined Search aggregator export → the breach-aggregator branch.
-    let (comb, label) = entities_from_upload(COMBINED, "s").await.unwrap();
+    let (comb, label) = entities_from_upload(COMBINED, "s").await.expect("should succeed");
     assert_eq!(label, "combined-search");
     assert!(has(&comb, EntityKind::Email, "jordanavery@gmail.com"));
     assert!(has(&comb, EntityKind::Person, "Jordan Avery"));
@@ -182,7 +182,7 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
     // HSE's own CSV export → round-trip branch (not the DeHashed table).
     let hse = "kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,evidence_urls,evidence,tags\n\
         person,Jordan Avery,Jordan Avery,0.850,1.000,3,VERIFIED,1,name_intel,,[name_intel] x,au\n";
-    let (hents, label) = entities_from_upload(hse, "s").await.unwrap();
+    let (hents, label) = entities_from_upload(hse, "s").await.expect("should succeed");
     assert_eq!(label, "hse-csv");
     assert!(has(&hents, EntityKind::Person, "Jordan Avery"));
 
@@ -190,7 +190,7 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
     let (_json, label) =
         entities_from_upload(r#"{"exportInfo":{"query":"x"},"searchResults":{}}"#, "s")
             .await
-            .unwrap();
+            .expect("should succeed");
     assert_eq!(label, "oathnet-json");
 
     // Malformed JSON is a clean error, not a panic.
@@ -222,7 +222,7 @@ async fn oathnet_json_stealer_victim_emits_every_distinct_field_uncapped() {
         }
     })
     .to_string();
-    let (ents, label) = entities_from_upload(&body, "s").await.unwrap();
+    let (ents, label) = entities_from_upload(&body, "s").await.expect("should succeed");
     assert_eq!(label, "oathnet-json");
     let count = |k: EntityKind, tag: &str| {
         ents.iter()
@@ -265,7 +265,7 @@ async fn import_extracts_wifi_bssid_as_geolocation_seed() {
         "s",
     )
     .await
-    .unwrap();
+    .expect("should succeed");
     assert_eq!(label, "oathnet-txt");
     assert!(
         ents.iter().any(|e| e.kind == EntityKind::MacAddress
@@ -286,7 +286,7 @@ async fn import_extracts_every_distinct_mac_address_uncapped() {
     for i in 0..60u32 {
         body.push_str(&format!("Router BSSID: A4:B1:C2:00:11:{i:02X}\n"));
     }
-    let (ents, _label) = entities_from_upload(&body, "s").await.unwrap();
+    let (ents, _label) = entities_from_upload(&body, "s").await.expect("should succeed");
     let mac_count = ents
         .iter()
         .filter(|e| e.kind == EntityKind::MacAddress)
@@ -306,7 +306,7 @@ async fn import_extracts_crypto_wallet_as_chain_seed() {
         "s",
     )
     .await
-    .unwrap();
+    .expect("should succeed");
     assert_eq!(label, "oathnet-txt");
     assert!(
         ents.iter().any(|e| e.kind == EntityKind::CryptoAddress
@@ -326,7 +326,7 @@ async fn import_extracts_leaked_api_key_from_body() {
         "s",
     )
     .await
-    .unwrap();
+    .expect("should succeed");
     assert_eq!(label, "oathnet-txt");
     assert!(
         ents.iter()
@@ -345,7 +345,7 @@ async fn dehashed_csv_also_mines_wallets_from_any_field() {
         "s",
     )
     .await
-    .unwrap();
+    .expect("should succeed");
     assert_eq!(label, "dehashed-csv");
     assert!(
         ents.iter()
@@ -362,7 +362,7 @@ async fn import_extracts_iban_as_financial_finding() {
         "s",
     )
     .await
-    .unwrap();
+    .expect("should succeed");
     assert_eq!(label, "oathnet-txt");
     assert!(
         ents.iter()
@@ -381,7 +381,7 @@ async fn import_extracts_labeled_ssid_for_wigle_geolocation() {
         "s",
     )
     .await
-    .unwrap();
+    .expect("should succeed");
     assert_eq!(label, "oathnet-txt");
     assert!(
         ents.iter().any(|e| e.kind == EntityKind::Ssid
@@ -548,7 +548,7 @@ fn combined_search_parses_records_and_skips_metadata() {
     let em = ents
         .iter()
         .find(|e| e.kind == EntityKind::Email && e.value == "jordanavery@gmail.com")
-        .unwrap();
+        .expect("should succeed");
     assert!(em.evidence.iter().any(|ev| {
         ev.attributes
             .get("source")
@@ -746,7 +746,7 @@ fn combined_search_json_extracts_entities_and_coerces_heterogeneous_fields() {
     let em1 = ents
         .iter()
         .find(|e| e.kind == EntityKind::Email && e.value == "jordanavery@gmail.com")
-        .unwrap();
+        .expect("should succeed");
     assert!(
         em1.evidence
             .iter()
@@ -757,7 +757,7 @@ fn combined_search_json_extracts_entities_and_coerces_heterogeneous_fields() {
     let em2 = ents
         .iter()
         .find(|e| e.kind == EntityKind::Email && e.value == "jordan.reeves@gmail.com")
-        .unwrap();
+        .expect("should succeed");
     assert!(
         em2.evidence.iter().any(|ev| ev
             .attributes
@@ -781,7 +781,7 @@ async fn upload_dispatcher_imports_combined_search_json_not_zero_entities() {
     // entities, silently discarding every result of a paid multi-source breach
     // search uploaded through the Termux web UI. The upload must now yield the
     // breach entities and label the branch it actually parsed.
-    let (ents, label) = entities_from_upload(COMBINED_JSON, "s").await.unwrap();
+    let (ents, label) = entities_from_upload(COMBINED_JSON, "s").await.expect("should succeed");
     assert_eq!(label, "combined-search-json");
     assert!(
         ents.iter()
@@ -801,25 +801,25 @@ fn local_scrape_enumerates_deterministically_and_skips_noise() {
     // The local-storage scrape must walk the tree in a fully deterministic order
     // (sorted by path) and skip build/binary noise and hidden/heavy directories,
     // so scraping the same installation always ingests the same files.
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("should succeed");
     let root = dir.path();
-    std::fs::write(root.join("a.json"), "{}").unwrap();
-    std::fs::write(root.join("b.txt"), "hi").unwrap();
-    std::fs::write(root.join("photo.png"), [0u8, 1, 2, 3]).unwrap(); // ext-skipped
-    std::fs::write(root.join("Cargo.toml"), "x").unwrap(); // name-skipped
-    std::fs::create_dir_all(root.join("sub")).unwrap();
-    std::fs::write(root.join("sub").join("c.csv"), "x").unwrap();
-    std::fs::create_dir_all(root.join("target")).unwrap();
-    std::fs::write(root.join("target").join("skip.json"), "{}").unwrap(); // dir-skipped
-    std::fs::create_dir_all(root.join("Target")).unwrap();
-    std::fs::write(root.join("Target").join("skip.json"), "{}").unwrap(); // mixed-case dir-skipped
-    std::fs::create_dir_all(root.join(".git")).unwrap();
-    std::fs::write(root.join(".git").join("skip.txt"), "x").unwrap(); // hidden dir-skipped
+    std::fs::write(root.join("a.json"), "{}").expect("should succeed");
+    std::fs::write(root.join("b.txt"), "hi").expect("should succeed");
+    std::fs::write(root.join("photo.png"), [0u8, 1, 2, 3]).expect("should succeed"); // ext-skipped
+    std::fs::write(root.join("Cargo.toml"), "x").expect("should succeed"); // name-skipped
+    std::fs::create_dir_all(root.join("sub")).expect("should succeed");
+    std::fs::write(root.join("sub").join("c.csv"), "x").expect("should succeed");
+    std::fs::create_dir_all(root.join("target")).expect("should succeed");
+    std::fs::write(root.join("target").join("skip.json"), "{}").expect("should succeed"); // dir-skipped
+    std::fs::create_dir_all(root.join("Target")).expect("should succeed");
+    std::fs::write(root.join("Target").join("skip.json"), "{}").expect("should succeed"); // mixed-case dir-skipped
+    std::fs::create_dir_all(root.join(".git")).expect("should succeed");
+    std::fs::write(root.join(".git").join("skip.txt"), "x").expect("should succeed"); // hidden dir-skipped
 
     let files = collect_importable_files(root);
     let names: Vec<String> = files
         .iter()
-        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .map(|p| p.file_name().expect("should succeed").to_string_lossy().into_owned())
         .collect();
     // Sorted by full path: a.json < b.txt < sub/c.csv; the rest are skipped.
     assert_eq!(names, vec!["a.json", "b.txt", "c.csv"]);
@@ -832,21 +832,21 @@ async fn local_scrape_aggregates_recognized_files_across_the_tree() {
     // the shared dispatcher and aggregates them into one entity set — the
     // network-free "scrape local storage" capability. Files under skipped
     // directories are never read.
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("should succeed");
     let root = dir.path();
-    std::fs::write(root.join("dossier.txt"), DOSSIER).unwrap();
-    std::fs::create_dir_all(root.join("scans")).unwrap();
-    std::fs::write(root.join("scans").join("s.json"), COMBINED_JSON).unwrap();
-    std::fs::write(root.join("t.csv"), HSE_CSV).unwrap();
+    std::fs::write(root.join("dossier.txt"), DOSSIER).expect("should succeed");
+    std::fs::create_dir_all(root.join("scans")).expect("should succeed");
+    std::fs::write(root.join("scans").join("s.json"), COMBINED_JSON).expect("should succeed");
+    std::fs::write(root.join("t.csv"), HSE_CSV).expect("should succeed");
     // Noise that MUST NOT be ingested — a distinctive, non-placeholder marker in a
     // skipped dir and a binary file.
-    std::fs::create_dir_all(root.join("target")).unwrap();
+    std::fs::create_dir_all(root.join("target")).expect("should succeed");
     std::fs::write(
         root.join("target").join("x.json"),
         r#"{"modules":[{"results":[{"email":"skiptarget@gmail.com"}]}]}"#,
     )
-    .unwrap();
-    std::fs::write(root.join("pic.png"), [0u8, 159, 146, 150]).unwrap();
+    .expect("should succeed");
+    std::fs::write(root.join("pic.png"), [0u8, 159, 146, 150]).expect("should succeed");
 
     let (ents, scanned, imported) = import_local_dir_entities(root, "s").await;
     let has = |v: &str| {
@@ -1083,7 +1083,7 @@ fn dossier_captures_seeknow_contact_summary_sections() {
 
 #[tokio::test]
 async fn upload_dispatcher_routes_seeknow_summary_to_dossier() {
-    let (ents, label) = entities_from_upload(SEEKNOW, "s").await.unwrap();
+    let (ents, label) = entities_from_upload(SEEKNOW, "s").await.expect("should succeed");
     assert_eq!(label, "dossier");
     assert!(
         ents.iter()
@@ -1573,7 +1573,7 @@ fn stealerlogs_credential_pwned_at_survives_onto_its_own_entities() {
 
 #[tokio::test]
 async fn upload_dispatcher_routes_stealerlogs() {
-    let (ents, label) = entities_from_upload(STEALER, "s").await.unwrap();
+    let (ents, label) = entities_from_upload(STEALER, "s").await.expect("should succeed");
     assert_eq!(label, "stealerlogs");
     assert!(
         ents.iter()
@@ -1716,7 +1716,7 @@ fn oathnet_report_parses_entries_and_osint_geolocation() {
 
 #[tokio::test]
 async fn upload_dispatcher_routes_oathnet_report() {
-    let (ents, label) = entities_from_upload(OATHNET_REPORT, "s").await.unwrap();
+    let (ents, label) = entities_from_upload(OATHNET_REPORT, "s").await.expect("should succeed");
     assert_eq!(label, "oathnet-report");
     assert!(
         ents.iter()

@@ -224,15 +224,15 @@ fn run_ranks_by_severity_times_max_child_ceff() {
         strong_email.add_evidence(Evidence::new(src, "seen"));
     }
 
-    store.upsert_entity(&weak_key).unwrap();
-    store.upsert_entity(&strong_email).unwrap();
+    store.upsert_entity(&weak_key).expect("should succeed");
+    store.upsert_entity(&strong_email).expect("should succeed");
 
     let corr = Correlator::new(Arc::clone(&store));
-    let hits = corr.run(sid).unwrap();
+    let hits = corr.run(sid).expect("should succeed");
 
     // Both rules fired.
-    let key_hit = hits.iter().find(|c| c.rule_id == "AU-021").unwrap();
-    let email_hit = hits.iter().find(|c| c.rule_id == "AU-003").unwrap();
+    let key_hit = hits.iter().find(|c| c.rule_id == "AU-021").expect("should succeed");
+    let email_hit = hits.iter().find(|c| c.rule_id == "AU-003").expect("should succeed");
 
     // Critical×low-C_eff vs Medium×high-C_eff: 4×~0.20 = 0.8 vs 2×~0.99 ≈ 1.98.
     assert!(
@@ -318,9 +318,9 @@ fn severity_json_round_trip() {
         (Severity::High, "\"high\""),
         (Severity::Critical, "\"critical\""),
     ] {
-        let json = serde_json::to_string(&variant).unwrap();
+        let json = serde_json::to_string(&variant).expect("should succeed");
         assert_eq!(json, expected_str);
-        let back: Severity = serde_json::from_str(&json).unwrap();
+        let back: Severity = serde_json::from_str(&json).expect("should succeed");
         assert_eq!(back, variant);
     }
 }
@@ -363,8 +363,8 @@ fn correlation_json_round_trip() {
         1700000001,
     );
 
-    let json = serde_json::to_string(&original).unwrap();
-    let back: Correlation = serde_json::from_str(&json).unwrap();
+    let json = serde_json::to_string(&original).expect("should succeed");
+    let back: Correlation = serde_json::from_str(&json).expect("should succeed");
 
     assert_eq!(back.rule_id, original.rule_id);
     assert_eq!(back.rule_name, original.rule_name);
@@ -2500,7 +2500,7 @@ fn au_040_fires_only_on_breach_harvested_wallets() {
     ];
     let out = rule_au_040_wallet_breach_exposure(&RuleContext::new(&ents), "scan", 0);
     let fired: HashSet<&String> = out.iter().flat_map(|c| c.entity_uids.iter()).collect();
-    let uid = |v: &str| ents.iter().find(|e| e.value == v).unwrap().uid.clone();
+    let uid = |v: &str| ents.iter().find(|e| e.value == v).expect("should succeed").uid.clone();
     assert_eq!(out.len(), 2, "only genuine breach exposures fire: {out:?}");
     assert!(fired.contains(&uid("0xleaked")) && fired.contains(&uid("0xfield")));
     assert!(!fired.contains(&uid("0xexplorer")) && !fired.contains(&uid("0xseed")));
@@ -3201,7 +3201,7 @@ fn au073_age_advances_after_the_birthday() {
     let f = r
         .iter()
         .find(|c| c.description.contains("1992-07-01"))
-        .unwrap();
+        .expect("should succeed");
     assert!(f.description.contains("age 34"), "{}", f.description);
 }
 
@@ -3218,7 +3218,7 @@ fn au073_omits_age_for_a_non_iso_dob() {
     let f = r
         .iter()
         .find(|c| c.description.contains("08/11/1980"))
-        .unwrap();
+        .expect("should succeed");
     assert!(
         !f.description.contains("age "),
         "no age for a non-ISO DOB: {}",
@@ -4366,7 +4366,7 @@ fn best_location_prefers_a_coordinate_over_an_address() {
     coord.add_evidence(Evidence::new("geocode", "Brisbane fix"));
     let mut addr = Entity::new(EntityKind::Address, "Perth WA 6000", 0.7, "s");
     addr.tag("exact-name-match");
-    let est = best_au_location_estimate(&[coord, addr]).unwrap();
+    let est = best_au_location_estimate(&[coord, addr]).expect("should succeed");
     assert_eq!(est.basis, "confirmed coordinate");
     assert_eq!(est.state, Some("QLD"));
 }
@@ -4428,7 +4428,7 @@ fn best_location_prefers_any_finer_signal_over_a_landline_region() {
     let mut coord = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.7, "s");
     coord.add_evidence(Evidence::new("geocode", "Brisbane fix"));
     let phone = Entity::new(EntityKind::Phone, "+61 2 9876 5432", 0.9, "s");
-    let est = best_au_location_estimate(&[coord, phone]).unwrap();
+    let est = best_au_location_estimate(&[coord, phone]).expect("should succeed");
     assert_eq!(est.basis, "confirmed coordinate");
     assert_eq!(est.state, Some("QLD"));
 }
@@ -4472,7 +4472,7 @@ fn best_location_prefers_a_postcode_over_a_breach_login_ip() {
     let mut coord = Entity::new(EntityKind::Coordinates, "-27.4683,153.0322", 0.6, "s");
     coord.add_evidence(Evidence::new("ip_geo", "g").with_attr("ip", "1.132.97.84"));
 
-    let est = best_au_location_estimate(&[addr, ip, coord]).unwrap();
+    let est = best_au_location_estimate(&[addr, ip, coord]).expect("should succeed");
     assert_eq!(
         est.basis, "name-matched address (postcode grain)",
         "a postcode is finer than an IP city"
@@ -4513,7 +4513,7 @@ fn location_corroboration_same_source_class_is_single_source() {
     let mut b = Entity::new(EntityKind::Person, "B Person", 0.6, "s");
     b.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("postcode", "4000"));
 
-    let c = au_location_corroboration(&[a, b]).unwrap();
+    let c = au_location_corroboration(&[a, b]).expect("should succeed");
     assert_eq!(c.independent_classes, 1, "one breach source = one method");
     assert!(
         c.confidence < 0.5,
@@ -4534,7 +4534,7 @@ fn location_corroboration_prefers_the_better_corroborated_locality() {
     let mut perth = Entity::new(EntityKind::Person, "C Person", 0.6, "s");
     perth.add_evidence(Evidence::new("au_people", "directory").with_attr("postcode", "6000"));
 
-    let c = au_location_corroboration(&[a, b, perth]).unwrap();
+    let c = au_location_corroboration(&[a, b, perth]).expect("should succeed");
     assert_eq!(
         c.state, "QLD",
         "the 2-class Brisbane cluster beats the lone Perth signal"
@@ -4577,7 +4577,7 @@ fn location_corroboration_breach_ip_corroborates_a_postcode() {
     let mut coord = Entity::new(EntityKind::Coordinates, "-27.4683,153.0322", 0.6, "s");
     coord.add_evidence(Evidence::new("ip_geo", "g").with_attr("ip", "1.132.97.84"));
 
-    let c = au_location_corroboration(&[person, ip, coord]).unwrap();
+    let c = au_location_corroboration(&[person, ip, coord]).expect("should succeed");
     assert_eq!(c.independent_classes, 2, "electoral + network-ip");
     assert!(c.class_names.contains(&"electoral") && c.class_names.contains(&"network-ip"));
     assert!(c.confidence > 0.65);
@@ -6143,13 +6143,13 @@ fn au100_work_email_surfaces_employer_affiliation() {
     let commercial = r
         .iter()
         .find(|c| c.description.contains("acme-widgets.com.au"))
-        .unwrap();
+        .expect("should succeed");
     assert!(commercial.description.contains("commercial"));
     assert!(commercial.description.contains("ABN/ACN"));
     let gov = r
         .iter()
         .find(|c| c.description.contains("health.nsw.gov.au"))
-        .unwrap();
+        .expect("should succeed");
     assert!(gov.description.contains("government"));
 }
 
@@ -6405,7 +6405,7 @@ fn severity_as_canonical_matches_serde() {
         match sev {
             Severity::Low | Severity::Medium | Severity::High | Severity::Critical => {}
         }
-        let json = serde_json::to_string(&sev).unwrap();
+        let json = serde_json::to_string(&sev).expect("should succeed");
         assert_eq!(
             json.trim_matches('"'),
             sev.as_canonical(),
@@ -6418,7 +6418,7 @@ fn severity_as_canonical_matches_serde() {
             "Display vs as_canonical: {sev:?}"
         );
         // The persisted string must deserialise back to the same variant.
-        let back: Severity = serde_json::from_str(&json).unwrap();
+        let back: Severity = serde_json::from_str(&json).expect("should succeed");
         assert_eq!(back, sev, "serde round-trip: {sev:?}");
     }
 
@@ -7629,11 +7629,11 @@ fn au059_synergy_fix_resists_a_single_high_confidence_outlier() {
     let weighted: Vec<((f64, f64), f64)> = entities
         .iter()
         .map(|e| {
-            let ll = crate::util::geohash::parse_coords(&e.value).unwrap();
+            let ll = crate::util::geohash::parse_coords(&e.value).expect("should succeed");
             (ll, e.confidence)
         })
         .collect();
-    let centroid = crate::util::geometry::weighted_centroid(&weighted).unwrap();
+    let centroid = crate::util::geometry::weighted_centroid(&weighted).expect("should succeed");
     assert!(
         centroid.1 < 145.0,
         "sanity: the plain centroid must itself be pulled toward Perth for this \
@@ -9202,7 +9202,7 @@ fn au080_gates_sub_floor_endpoints_and_bounds_the_tail() {
         13,
         "12 strongest pairs kept + 1 honest rollup summary"
     );
-    let rollup = r.last().unwrap();
+    let rollup = r.last().expect("should succeed");
     assert_eq!(
         rollup.severity,
         super::Severity::Low,
@@ -9570,7 +9570,7 @@ fn ts_blind_entities_json(ents: &[Entity]) -> String {
             e
         })
         .collect();
-    serde_json::to_string(&blinded).unwrap()
+    serde_json::to_string(&blinded).expect("should succeed")
 }
 
 #[test]
@@ -9658,7 +9658,7 @@ fn ts_blind_json(corrs: &[Correlation]) -> String {
             c
         })
         .collect();
-    serde_json::to_string(&blinded).unwrap()
+    serde_json::to_string(&blinded).expect("should succeed")
 }
 
 #[test]

@@ -16,7 +16,7 @@ fn cost_is_key_gated() {
 }
 
 fn ioc(json: &str) -> Ioc {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 fn attr<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {
@@ -105,7 +105,7 @@ fn family_and_tag_lists_are_capped() {
         .map(|i| ioc(&format!(r#"{{"malware":"fam{i:02}"}}"#)))
         .collect();
     let e = build_ioc_entity(EntityKind::Domain, "x.test", &many_families, "s");
-    let fams = attr(&e, "malware_families").unwrap();
+    let fams = attr(&e, "malware_families").expect("should succeed");
     assert_eq!(fams.split(',').count(), MAX_FAMILIES);
 
     let big_tags = ioc(&format!(
@@ -117,7 +117,7 @@ fn family_and_tag_lists_are_capped() {
     ));
     let e = build_ioc_entity(EntityKind::Domain, "x.test", &[big_tags], "s");
     assert_eq!(
-        attr(&e, "ioc_tags").unwrap().split(',').count(),
+        attr(&e, "ioc_tags").expect("should succeed").split(',').count(),
         MAX_IOC_TAGS
     );
 }

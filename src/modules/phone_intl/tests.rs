@@ -9,21 +9,21 @@ fn accepts_only_phone() {
 
 #[test]
 fn longest_prefix_wins() {
-    let (prefix, iso, _name) = match_country("18764567890").unwrap();
+    let (prefix, iso, _name) = match_country("18764567890").expect("should succeed");
     assert_eq!(prefix, "1876");
     assert_eq!(iso, "JM");
 
-    let (prefix, iso, _name) = match_country("12025550100").unwrap();
+    let (prefix, iso, _name) = match_country("12025550100").expect("should succeed");
     assert_eq!(prefix, "1");
     assert_eq!(iso, "US");
 }
 
 #[test]
 fn international_codes() {
-    assert_eq!(match_country("442071838750").unwrap().1, "GB");
-    assert_eq!(match_country("61400000000").unwrap().1, "AU");
-    assert_eq!(match_country("33123456789").unwrap().1, "FR");
-    assert_eq!(match_country("861234567890").unwrap().1, "CN");
+    assert_eq!(match_country("442071838750").expect("should succeed").1, "GB");
+    assert_eq!(match_country("61400000000").expect("should succeed").1, "AU");
+    assert_eq!(match_country("33123456789").expect("should succeed").1, "FR");
+    assert_eq!(match_country("861234567890").expect("should succeed").1, "CN");
 }
 
 #[test]

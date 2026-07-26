@@ -17,7 +17,7 @@ const ADVISER: &str = r#"{
   "ADV_DA_TYPE":"","ADV_DA_DESCRIPTION":""}"#;
 
 fn rec(json: &str) -> Map<String, Value> {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 #[test]
@@ -98,7 +98,7 @@ fn adviser_with_disciplinary_action_is_flagged() {
         .entities
         .iter()
         .find(|x| x.kind == EntityKind::Person)
-        .unwrap();
+        .expect("should succeed");
     assert!(p.has_tag("regulatory-action") && p.has_tag("disciplinary-action"));
     assert!(p.evidence.iter().any(|ev| ev.attributes.contains_key("disciplinary_action")));
 }
@@ -125,7 +125,7 @@ fn adviser_emits_licensee_controllers_and_distinct_appointer() {
     let org_named = |name: &str| orgs.iter().find(|o| o.value == name).copied();
 
     // The AFS licensee itself.
-    assert!(org_named("VIRIDIAN ADVISORY PTY LTD").unwrap().has_tag("afs-licensee"));
+    assert!(org_named("VIRIDIAN ADVISORY PTY LTD").expect("should succeed").has_tag("afs-licensee"));
 
     // Both controllers of the licensee, one current, one ceased.
     let nab = org_named("NATIONAL AUSTRALIA BANK LIMITED").expect("current-then-ceased controller");

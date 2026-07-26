@@ -319,9 +319,9 @@ use super::*;
         let mut h = HeaderMap::new();
         h.insert(
             "content-security-policy",
-            "default-src 'self'".parse().unwrap(),
+            "default-src 'self'".parse().expect("should succeed"),
         );
-        h.insert("x-frame-options", "DENY".parse().unwrap());
+        h.insert("x-frame-options", "DENY".parse().expect("should succeed"));
         let mut results = Vec::new();
         audit_security_headers(&h, &mut results);
         assert_eq!(results.len(), 6);

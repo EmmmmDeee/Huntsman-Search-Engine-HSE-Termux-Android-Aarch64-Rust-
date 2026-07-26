@@ -34,7 +34,7 @@ use super::*;
                 &ctx("scan-x"),
             )
             .await
-            .unwrap();
+            .expect("should succeed");
 
         let mut persons = 0;
         let mut usernames = 0;
@@ -94,7 +94,7 @@ use super::*;
                 &ctx("scan-z"),
             )
             .await
-            .unwrap();
+            .expect("should succeed");
         assert!(!out.entities.is_empty(), "the contaminated name still parses");
         for e in &out.entities {
             for ev in &e.evidence {
@@ -123,7 +123,7 @@ use super::*;
                 &ctx("scan-y"),
             )
             .await
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(
             out.entities.len(),
             1,
@@ -150,7 +150,7 @@ use super::*;
                 &ctx("scan-z"),
             )
             .await
-            .unwrap();
+            .expect("should succeed");
 
         assert!(
             out.entities.iter().any(|e| e.kind == EntityKind::Person),
@@ -179,7 +179,7 @@ use super::*;
                 &ctx("scan-p"),
             )
             .await
-            .unwrap();
+            .expect("should succeed");
         let person = out
             .entities
             .iter()
@@ -237,7 +237,7 @@ use super::*;
         let out = m
             .process(&Target::new(TargetKind::FullName, "Onur Ada"), &ctx("scan-onur-ada"))
             .await
-            .unwrap();
+            .expect("should succeed");
 
         let person = out
             .entities

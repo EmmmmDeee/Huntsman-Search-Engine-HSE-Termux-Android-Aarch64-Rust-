@@ -128,21 +128,21 @@ mod tests {
 
     #[test]
     fn extracts_domain() {
-        let (h, ip) = host("https://github.com/jdoe/repo").unwrap();
+        let (h, ip) = host("https://github.com/jdoe/repo").expect("should succeed");
         assert_eq!(h, "github.com");
         assert!(!ip);
     }
 
     #[test]
     fn extracts_subdomain() {
-        let (h, ip) = host("https://api.example.org/v1/users").unwrap();
+        let (h, ip) = host("https://api.example.org/v1/users").expect("should succeed");
         assert_eq!(h, "api.example.org");
         assert!(!ip);
     }
 
     #[test]
     fn extracts_ipv4() {
-        let (h, ip) = host("http://192.168.1.1/admin").unwrap();
+        let (h, ip) = host("http://192.168.1.1/admin").expect("should succeed");
         assert_eq!(h, "192.168.1.1");
         assert!(ip);
     }

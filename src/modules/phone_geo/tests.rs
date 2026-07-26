@@ -8,14 +8,14 @@ use data::{
 
 #[test]
 fn au_sydney_landline() {
-    let geo = lookup_area_code("61212345678").unwrap();
+    let geo = lookup_area_code("61212345678").expect("should succeed");
     assert_eq!(geo.location, "Sydney / NSW / ACT");
     assert_eq!(geo.country_code, "AU");
 }
 
 #[test]
 fn au_melbourne_landline() {
-    let geo = lookup_area_code("61312345678").unwrap();
+    let geo = lookup_area_code("61312345678").expect("should succeed");
     assert_eq!(geo.location, "Melbourne / VIC");
 }
 
@@ -23,7 +23,7 @@ fn au_melbourne_landline() {
 fn au_tasmania_landline_resolves_to_tas_not_vic() {
     // 03 6234 5678 — the 03 6x block is exclusively Tasmania, so it must beat
     // the "3" Victoria catch-all rather than fall through to it.
-    let geo = lookup_area_code("61362345678").unwrap();
+    let geo = lookup_area_code("61362345678").expect("should succeed");
     assert_eq!(geo.location, "Hobart / TAS");
 }
 
@@ -37,27 +37,27 @@ fn au_mobile_returns_none() {
 
 #[test]
 fn uk_london() {
-    let geo = lookup_area_code("442012345678").unwrap();
+    let geo = lookup_area_code("442012345678").expect("should succeed");
     assert_eq!(geo.location, "London");
     assert_eq!(geo.country_code, "GB");
 }
 
 #[test]
 fn us_nyc() {
-    let geo = lookup_area_code("12125551234").unwrap();
+    let geo = lookup_area_code("12125551234").expect("should succeed");
     assert_eq!(geo.location, "New York City");
     assert_eq!(geo.country_code, "US");
 }
 
 #[test]
 fn de_berlin() {
-    let geo = lookup_area_code("493012345678").unwrap();
+    let geo = lookup_area_code("493012345678").expect("should succeed");
     assert_eq!(geo.location, "Berlin");
 }
 
 #[test]
 fn jp_tokyo() {
-    let geo = lookup_area_code("81312345678").unwrap();
+    let geo = lookup_area_code("81312345678").expect("should succeed");
     assert_eq!(geo.location, "Tokyo");
 }
 
@@ -142,26 +142,26 @@ fn country_name_unknown_iso_falls_back() {
 
 #[test]
 fn au_telstra_prefix() {
-    let c = identify_carrier("61412345678").unwrap();
+    let c = identify_carrier("61412345678").expect("should succeed");
     assert_eq!(c.carrier, "Telstra");
     assert_eq!(c.country, "Australia");
 }
 
 #[test]
 fn au_optus_prefix() {
-    let c = identify_carrier("61431234567").unwrap();
+    let c = identify_carrier("61431234567").expect("should succeed");
     assert_eq!(c.carrier, "Optus");
 }
 
 #[test]
 fn au_vodafone_prefix() {
-    let c = identify_carrier("61420123456").unwrap();
+    let c = identify_carrier("61420123456").expect("should succeed");
     assert_eq!(c.carrier, "Vodafone");
 }
 
 #[test]
 fn uk_ee_prefix() {
-    let c = identify_carrier("447400123456").unwrap();
+    let c = identify_carrier("447400123456").expect("should succeed");
     assert_eq!(c.carrier, "EE");
     assert_eq!(c.country, "United Kingdom");
 }
@@ -178,21 +178,21 @@ fn carrier_too_short_returns_none() {
 
 #[test]
 fn au_carrier_maps_prefixes_with_full_fields() {
-    let telstra = au_carrier("400").unwrap();
+    let telstra = au_carrier("400").expect("should succeed");
     assert_eq!(telstra.carrier, "Telstra");
     assert_eq!(telstra.country, "Australia");
     assert_eq!(telstra.confidence, 0.42);
     assert_eq!(telstra.network_hint, "dominant_rural_regional");
 
-    let vodafone = au_carrier("420").unwrap();
+    let vodafone = au_carrier("420").expect("should succeed");
     assert_eq!(vodafone.carrier, "Vodafone");
     assert_eq!(vodafone.network_hint, "metro_only");
 
-    let optus = au_carrier("430").unwrap();
+    let optus = au_carrier("430").expect("should succeed");
     assert_eq!(optus.carrier, "Optus");
     assert_eq!(optus.network_hint, "metro_suburban");
 
-    let mvno = au_carrier("450").unwrap();
+    let mvno = au_carrier("450").expect("should succeed");
     assert_eq!(mvno.carrier, "Pivotel/MVNOs");
     assert_eq!(mvno.network_hint, "mvno");
 }
@@ -204,15 +204,15 @@ fn au_carrier_unknown_prefix_is_none() {
 
 #[test]
 fn uk_carrier_maps_prefixes_with_full_fields() {
-    let ee = uk_carrier("7400").unwrap();
+    let ee = uk_carrier("7400").expect("should succeed");
     assert_eq!(ee.carrier, "EE");
     assert_eq!(ee.country, "United Kingdom");
     assert_eq!(ee.confidence, confidence::LOW);
     assert_eq!(ee.network_hint, "mobile");
 
-    assert_eq!(uk_carrier("7410").unwrap().carrier, "Vodafone UK");
-    assert_eq!(uk_carrier("7420").unwrap().carrier, "Three UK");
-    assert_eq!(uk_carrier("7450").unwrap().carrier, "O2 UK");
+    assert_eq!(uk_carrier("7410").expect("should succeed").carrier, "Vodafone UK");
+    assert_eq!(uk_carrier("7420").expect("should succeed").carrier, "Three UK");
+    assert_eq!(uk_carrier("7450").expect("should succeed").carrier, "O2 UK");
 }
 
 #[test]
@@ -251,14 +251,14 @@ fn test_ctx() -> ModuleContext {
 async fn landline_runs_area_pass_and_emits_phone_area_geo_source() {
     let m = PhoneGeo;
     let target = Target::new(TargetKind::Phone, "+61 2 1234 5678");
-    let r = m.process(&target, &test_ctx()).await.unwrap();
+    let r = m.process(&target, &test_ctx()).await.expect("should succeed");
     // Address always emitted; Coordinates emitted when city_coords matches.
     assert!(!r.is_empty());
     let addr = r
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Address)
-        .unwrap();
+        .expect("should succeed");
     assert!(addr.value.contains("Sydney"));
     assert!(addr.has_tag("phone-area-code"));
     // The area pass must keep stamping the former source string (the correlator
@@ -278,7 +278,7 @@ async fn au_multistate_area_code_does_not_fabricate_one_state() {
     // Address/Coordinates are still emitted; only the ambiguous state tag is held.
     let m = PhoneGeo;
     let target = Target::new(TargetKind::Phone, "+61 8 9325 0000");
-    let r = m.process(&target, &test_ctx()).await.unwrap();
+    let r = m.process(&target, &test_ctx()).await.expect("should succeed");
     assert!(
         r.entities.iter().any(|e| e.has_tag("phone-area-code")),
         "08 landline must still emit an area-code entity"
@@ -298,7 +298,7 @@ async fn au_single_state_area_code_still_tags_state() {
     // guard must still stamp the legitimate single-state jurisdiction.
     let m = PhoneGeo;
     let target = Target::new(TargetKind::Phone, "+61 3 9000 0000");
-    let r = m.process(&target, &test_ctx()).await.unwrap();
+    let r = m.process(&target, &test_ctx()).await.expect("should succeed");
     let addr = r
         .entities
         .iter()
@@ -316,7 +316,7 @@ async fn mobile_runs_carrier_pass_and_emits_phone_carrier_geo_source() {
     let m = PhoneGeo;
     // AU Telstra mobile: no geographic area code, but a carrier hit.
     let target = Target::new(TargetKind::Phone, "+61 412 345 678");
-    let r = m.process(&target, &test_ctx()).await.unwrap();
+    let r = m.process(&target, &test_ctx()).await.expect("should succeed");
     let addr = r
         .entities
         .iter()
@@ -341,7 +341,7 @@ async fn both_passes_independent_no_match_does_not_suppress() {
     // Unknown number: neither pass matches, and process() still succeeds empty.
     let m = PhoneGeo;
     let target = Target::new(TargetKind::Phone, "+99 9 1234 5678");
-    let r = m.process(&target, &test_ctx()).await.unwrap();
+    let r = m.process(&target, &test_ctx()).await.expect("should succeed");
     assert!(
         r.is_empty(),
         "an unmatched number yields nothing from either pass"

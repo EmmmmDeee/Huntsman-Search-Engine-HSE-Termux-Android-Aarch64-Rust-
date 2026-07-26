@@ -17,7 +17,7 @@ fn ctx() -> ModuleContext {
 #[tokio::test]
 async fn extracts_corporate_domain() {
     let t = Target::new(TargetKind::Email, "ceo@acme.com");
-    let r = EmailParse.process(&t, &ctx()).await.unwrap();
+    let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
     let domains: Vec<&Entity> = r
         .entities
         .iter()
@@ -33,7 +33,7 @@ async fn extracts_corporate_domain() {
 async fn skips_freemail_providers() {
     for addr in ["user@gmail.com", "user@yahoo.com", "user@protonmail.com"] {
         let t = Target::new(TargetKind::Email, addr);
-        let r = EmailParse.process(&t, &ctx()).await.unwrap();
+        let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
         let domains: Vec<&Entity> = r
             .entities
             .iter()
@@ -52,7 +52,7 @@ async fn skips_noncentral_provider_domains_beyond_freemail() {
     // (Regression for the CRITICAL infrastructure-pollution an on-device scan hit.)
     for addr in ["user@web.de", "user@rochester.rr.com", "user@peekyou.com"] {
         let t = Target::new(TargetKind::Email, addr);
-        let r = EmailParse.process(&t, &ctx()).await.unwrap();
+        let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
         let domains: Vec<&Entity> = r
             .entities
             .iter()
@@ -62,7 +62,7 @@ async fn skips_noncentral_provider_domains_beyond_freemail() {
     }
     // A genuine corporate/self-owned mail domain is still surfaced.
     let t = Target::new(TargetKind::Email, "jane@acmecorp.com.au");
-    let r = EmailParse.process(&t, &ctx()).await.unwrap();
+    let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
     assert!(
         r.entities
             .iter()
@@ -74,7 +74,7 @@ async fn skips_noncentral_provider_domains_beyond_freemail() {
 #[tokio::test]
 async fn skips_domain_for_malformed_email() {
     let t = Target::new(TargetKind::Email, "noatsign");
-    let r = EmailParse.process(&t, &ctx()).await.unwrap();
+    let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
     let domains: Vec<&Entity> = r
         .entities
         .iter()
@@ -88,7 +88,7 @@ async fn skips_domain_for_malformed_email() {
 #[tokio::test]
 async fn derives_multiple_username_candidates() {
     let t = Target::new(TargetKind::Email, "john.doe+work@example.com");
-    let r = EmailParse.process(&t, &ctx()).await.unwrap();
+    let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
     let usernames: Vec<&str> = r
         .entities
         .iter()
@@ -107,7 +107,7 @@ async fn username_candidates_emerge_in_deterministic_sorted_order() {
     // would very likely disagree with the sorted order across the HashSet's
     // randomised per-process seed.
     let t = Target::new(TargetKind::Email, "john.doe+work42@example.com");
-    let r = EmailParse.process(&t, &ctx()).await.unwrap();
+    let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
     let usernames: Vec<&str> = r
         .entities
         .iter()
@@ -140,7 +140,7 @@ fn accepts_email_only() {
 async fn emits_both_domain_and_usernames() {
     // A personal local-part yields the Domain AND derived usernames.
     let t = Target::new(TargetKind::Email, "jane.doe@corp.io");
-    let r = EmailParse.process(&t, &ctx()).await.unwrap();
+    let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
     let has_domain = r.entities.iter().any(|e| e.kind == EntityKind::Domain);
     let has_username = r.entities.iter().any(|e| e.kind == EntityKind::Username);
     assert!(has_domain, "should emit a Domain entity for corp.io");
@@ -159,7 +159,7 @@ async fn role_localpart_yields_domain_but_no_username_or_person() {
         let r = EmailParse
             .process(&Target::new(TargetKind::Email, addr), &ctx())
             .await
-            .unwrap();
+            .expect("should succeed");
         assert!(
             !r.entities
                 .iter()
@@ -173,7 +173,7 @@ async fn role_localpart_yields_domain_but_no_username_or_person() {
     let corp = EmailParse
         .process(&Target::new(TargetKind::Email, "admin@corp.io"), &ctx())
         .await
-        .unwrap();
+        .expect("should succeed");
     assert!(
         corp.entities.iter().any(|e| e.kind == EntityKind::Domain),
         "a real corporate domain (corp.io) is still extracted"
@@ -184,7 +184,7 @@ async fn role_localpart_yields_domain_but_no_username_or_person() {
             &ctx(),
         )
         .await
-        .unwrap();
+        .expect("should succeed");
     assert!(
         !infra.entities.iter().any(|e| e.kind == EntityKind::Domain),
         "a shared-infrastructure host (cloudflare.com) must be suppressed"
@@ -209,7 +209,7 @@ async fn isp_freemail_infers_person_at_lower_confidence() {
         let r = EmailParse
             .process(&Target::new(TargetKind::Email, addr), &ctx())
             .await
-            .unwrap();
+            .expect("should succeed");
         let persons: Vec<&Entity> = r
             .entities
             .iter()
@@ -246,7 +246,7 @@ async fn isp_freemail_infers_person_at_lower_confidence() {
             &ctx(),
         )
         .await
-        .unwrap();
+        .expect("should succeed");
     let corp_person = r
         .entities
         .iter()
@@ -273,7 +273,7 @@ async fn isp_freemail_infers_person_at_lower_confidence() {
 #[tokio::test]
 async fn freemail_still_derives_usernames() {
     let t = Target::new(TargetKind::Email, "john.doe@gmail.com");
-    let r = EmailParse.process(&t, &ctx()).await.unwrap();
+    let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
     let domains: Vec<&Entity> = r
         .entities
         .iter()
@@ -294,7 +294,7 @@ async fn freemail_still_derives_usernames() {
 #[tokio::test]
 async fn evidence_source_is_email_parse() {
     let t = Target::new(TargetKind::Email, "alice@widgets.co");
-    let r = EmailParse.process(&t, &ctx()).await.unwrap();
+    let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
     for entity in &r.entities {
         for ev in &entity.evidence {
             assert_eq!(

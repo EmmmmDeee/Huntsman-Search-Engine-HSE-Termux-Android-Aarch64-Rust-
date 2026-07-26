@@ -42,7 +42,7 @@ fn parse_arin_rdap_response() {
         {"eventAction":"registration","eventDate":"2014-03-14T16:52:05-04:00"}
       ]
     }"#;
-    let r: RdapResp = serde_json::from_str(raw).unwrap();
+    let r: RdapResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(r.handle.as_deref(), Some("NET-8-8-8-0-1"));
     assert_eq!(r.country.as_deref(), Some("US"));
     assert_eq!(r.cidr0_cidrs.len(), 1);
@@ -63,9 +63,9 @@ fn parse_bgpview_asn_response() {
         "website": "https://about.google"
       }
     }"#;
-    let r: AsnResp = serde_json::from_str(raw).unwrap();
+    let r: AsnResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(r.status, "ok");
-    let data = r.data.unwrap();
+    let data = r.data.expect("should succeed");
     assert_eq!(data.name.as_deref(), Some("GOOGLE"));
     assert_eq!(data.country_code.as_deref(), Some("US"));
 }
@@ -272,7 +272,7 @@ fn asn_record_yields_registry_contacts_and_website() {
     // registry ASN + operator org + admin email + abuse email + website URL
     assert_eq!(ents.len(), 5);
 
-    let asn = of_kind(&ents, EntityKind::Asn).unwrap();
+    let asn = of_kind(&ents, EntityKind::Asn).expect("should succeed");
     assert_eq!(asn.value, "AS15169");
     assert!(asn.has_tag("registered"));
     let attr = |k: &str| asn.evidence[0].attributes.get(k).map(String::as_str);
@@ -281,7 +281,7 @@ fn asn_record_yields_registry_contacts_and_website() {
     assert_eq!(attr("rir"), Some("ARIN"));
     assert_eq!(attr("allocated"), Some("2000-03-30"));
 
-    let org = of_kind(&ents, EntityKind::Organisation).unwrap();
+    let org = of_kind(&ents, EntityKind::Organisation).expect("should succeed");
     assert_eq!(org.value, "Google LLC");
     assert!(org.has_tag("bgpview"));
     assert!(org.has_tag("asn-operator"));
@@ -294,7 +294,7 @@ fn asn_record_yields_registry_contacts_and_website() {
     assert_eq!(emails.len(), 2);
     assert!(emails.contains(&"noc@google.com") && emails.contains(&"abuse@google.com"));
 
-    let url = of_kind(&ents, EntityKind::Url).unwrap();
+    let url = of_kind(&ents, EntityKind::Url).expect("should succeed");
     assert_eq!(url.value, "https://about.google");
     assert!(url.has_tag("asn-website"));
 }
@@ -314,7 +314,7 @@ fn asn_non_http_website_yields_no_url_entity() {
         "a non-http(s) website must not become a Url entity"
     );
     // ...but it is still recorded as an attribute on the ASN evidence.
-    let asn = of_kind(&ents, EntityKind::Asn).unwrap();
+    let asn = of_kind(&ents, EntityKind::Asn).expect("should succeed");
     assert_eq!(
         asn.evidence[0]
             .attributes

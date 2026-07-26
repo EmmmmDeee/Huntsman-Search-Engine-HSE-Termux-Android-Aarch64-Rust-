@@ -82,7 +82,7 @@ impl EntityExtractor {
 
 impl Default for EntityExtractor {
     fn default() -> Self {
-        Self::new(0.30).unwrap() // MVP: confidence floor 0.30 (candidate tier)
+        Self::new(0.30).expect("should succeed") // MVP: confidence floor 0.30 (candidate tier)
     }
 }
 
@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn extract_from_mixed_text() {
-        let extractor = EntityExtractor::new(0.60).unwrap();
+        let extractor = EntityExtractor::new(0.60).expect("should succeed");
         let text =
             "Contact: john.doe@example.com or call +1 415-555-0123. Visit https://example.com";
 
@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn extract_and_batch() {
-        let extractor = EntityExtractor::new(0.60).unwrap();
+        let extractor = EntityExtractor::new(0.60).expect("should succeed");
         let text = "test1@example.com test2@example.com https://example.com";
 
         let batches = extractor.extract_and_batch(text);

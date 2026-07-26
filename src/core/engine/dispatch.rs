@@ -217,7 +217,7 @@ pub(super) async fn run_module_guarded(
 }
 
 /// Best-effort human-readable message from a caught panic payload — the
-/// `&str`/`String` cases `panic!`/`.unwrap()`/`.expect()` produce, or a
+/// `&str`/`String` cases `panic!`/`.expect("should succeed")`/`.expect()` produce, or a
 /// generic fallback for anything else (a custom payload type via
 /// `panic_any`). Shared by every `catch_unwind` site in the engine so the
 /// extraction logic can't drift between them.

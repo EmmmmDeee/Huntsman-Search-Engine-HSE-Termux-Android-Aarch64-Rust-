@@ -67,27 +67,27 @@ fn deserialise_full_response() {
         }
     }"#;
 
-    let resp: CensysResp = serde_json::from_str(json).unwrap();
-    let host = resp.result.unwrap();
+    let resp: CensysResp = serde_json::from_str(json).expect("should succeed");
+    let host = resp.result.expect("should succeed");
     assert_eq!(host.services.len(), 3);
     assert_eq!(host.services[0].port, Some(80));
     assert_eq!(host.services[0].service_name.as_deref(), Some("HTTP"));
     assert_eq!(host.services[0].transport_protocol.as_deref(), Some("TCP"));
 
-    let loc = host.location.unwrap();
+    let loc = host.location.expect("should succeed");
     assert_eq!(loc.country.as_deref(), Some("Australia"));
     assert_eq!(loc.country_code.as_deref(), Some("AU"));
     assert_eq!(loc.city.as_deref(), Some("Sydney"));
-    let coords = loc.coordinates.unwrap();
-    assert!((coords.latitude.unwrap() - (-33.8688)).abs() < 1e-4);
-    assert!((coords.longitude.unwrap() - 151.2093).abs() < 1e-4);
+    let coords = loc.coordinates.expect("should succeed");
+    assert!((coords.latitude.expect("should succeed") - (-33.8688)).abs() < 1e-4);
+    assert!((coords.longitude.expect("should succeed") - 151.2093).abs() < 1e-4);
 }
 
 #[test]
 fn deserialise_empty_result() {
     let json = r#"{ "result": { "services": [], "location": null } }"#;
-    let resp: CensysResp = serde_json::from_str(json).unwrap();
-    let host = resp.result.unwrap();
+    let resp: CensysResp = serde_json::from_str(json).expect("should succeed");
+    let host = resp.result.expect("should succeed");
     assert!(host.services.is_empty());
     assert!(host.location.is_none());
 }
@@ -95,8 +95,8 @@ fn deserialise_empty_result() {
 #[test]
 fn deserialise_missing_fields() {
     let json = r#"{ "result": { "services": [{ "port": 53 }] } }"#;
-    let resp: CensysResp = serde_json::from_str(json).unwrap();
-    let host = resp.result.unwrap();
+    let resp: CensysResp = serde_json::from_str(json).expect("should succeed");
+    let host = resp.result.expect("should succeed");
     assert_eq!(host.services.len(), 1);
     assert_eq!(host.services[0].port, Some(53));
     assert!(host.services[0].service_name.is_none());
@@ -106,7 +106,7 @@ fn deserialise_missing_fields() {
 #[test]
 fn deserialise_no_result() {
     let json = r"{}";
-    let resp: CensysResp = serde_json::from_str(json).unwrap();
+    let resp: CensysResp = serde_json::from_str(json).expect("should succeed");
     assert!(resp.result.is_none());
 }
 
@@ -224,7 +224,7 @@ fn autonomous_system_yields_asn_org_and_reverse_dns_domains() {
     assert!(
         ents.iter()
             .find(|e| e.kind == EntityKind::Domain)
-            .unwrap()
+            .expect("should succeed")
             .has_tag("ptr")
     );
 }
@@ -245,7 +245,7 @@ fn zero_or_absent_asn_is_skipped_but_operator_org_survives() {
     );
     // Falls back to `description` when `name` is absent.
     assert_eq!(
-        of_kind(&ents, EntityKind::Organisation).unwrap().value,
+        of_kind(&ents, EntityKind::Organisation).expect("should succeed").value,
         "Some Net"
     );
 }
@@ -331,7 +331,7 @@ fn address_omits_province_when_absent() {
         "s",
     );
     assert_eq!(
-        of_kind(&ents, EntityKind::Address).unwrap().value,
+        of_kind(&ents, EntityKind::Address).expect("should succeed").value,
         "Sydney, Australia"
     );
 }

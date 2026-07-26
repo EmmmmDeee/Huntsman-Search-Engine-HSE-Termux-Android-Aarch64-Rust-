@@ -226,7 +226,7 @@ mod tests {
             keys: std::collections::HashMap::new(),
             cancel: crate::core::cancel::CancelHandle::new(),
         };
-        let out = srv_enumerate(&target, &ctx).await.unwrap();
+        let out = srv_enumerate(&target, &ctx).await.expect("should succeed");
         assert!(
             out.is_empty(),
             "a subdomain has no apex-level SRV probe set"

@@ -34,7 +34,7 @@ fn emits_username_and_uppercase_profile_url() {
     let u = ents
         .iter()
         .find(|e| e.kind == EntityKind::Username)
-        .unwrap();
+        .expect("should succeed");
     // Username value is normalised lowercase so it dedups with the same handle
     // on GitHub/GitLab/etc (cross-platform correlation), while raw_value keeps
     // the canonical uppercase PAUSE ID as observed from the API.
@@ -56,8 +56,8 @@ fn emits_person_from_multi_word_name() {
     let ents = build_entities(author, "scan-cpan-002");
     let p = ents.iter().find(|e| e.kind == EntityKind::Person);
     assert!(p.is_some(), "must emit Person from multi-word name");
-    assert_eq!(p.unwrap().value, "John H. Doe");
-    assert!(p.unwrap().has_tag("cpan"));
+    assert_eq!(p.expect("should succeed").value, "John H. Doe");
+    assert!(p.expect("should succeed").has_tag("cpan"));
 }
 
 #[test]
@@ -194,7 +194,7 @@ fn deserializes_scalar_or_array_email() {
     let scalar = r#"{"pauseid":"RJBS","email":"cpan@semiotic.systems",
         "website":["http://rjbs.cloud/"],"location":[39.952778,-75.163611],
         "profile":[{"id":"rjbs","name":"github"}],"blog":[{"url":"http://rjbs.cloud/blog"}]}"#;
-    let a: CpanAuthor = serde_json::from_str(scalar).unwrap();
+    let a: CpanAuthor = serde_json::from_str(scalar).expect("should succeed");
     assert_eq!(a.email, vec!["cpan@semiotic.systems".to_string()]);
     assert_eq!(a.website, vec!["http://rjbs.cloud/".to_string()]);
     assert_eq!(a.location, Some(vec![39.952778, -75.163611]));
@@ -204,12 +204,12 @@ fn deserializes_scalar_or_array_email() {
     assert!(!build_entities(a, "s").is_empty());
     // An array of emails still decodes.
     let arr = r#"{"pauseid":"X","email":["a@b.com","c@d.com"]}"#;
-    let a2: CpanAuthor = serde_json::from_str(arr).unwrap();
+    let a2: CpanAuthor = serde_json::from_str(arr).expect("should succeed");
     assert_eq!(a2.email.len(), 2);
     // Missing / null email → empty, never an error.
-    let none: CpanAuthor = serde_json::from_str(r#"{"pauseid":"Y","email":null}"#).unwrap();
+    let none: CpanAuthor = serde_json::from_str(r#"{"pauseid":"Y","email":null}"#).expect("should succeed");
     assert!(none.email.is_empty());
-    let absent: CpanAuthor = serde_json::from_str(r#"{"pauseid":"Z"}"#).unwrap();
+    let absent: CpanAuthor = serde_json::from_str(r#"{"pauseid":"Z"}"#).expect("should succeed");
     assert!(absent.email.is_empty());
 }
 

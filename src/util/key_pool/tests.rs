@@ -10,15 +10,15 @@ fn export_import_roundtrips_and_is_idempotent() {
     src.add("shodan", a);
     src.add("intelx", KeyEntry::new("key-b")); // default env
 
-    let json = src.export_json(None).unwrap();
+    let json = src.export_json(None).expect("should succeed");
     let dst = KeyPool::new();
     assert_eq!(
-        dst.import_json(&json, None).unwrap(),
+        dst.import_json(&json, None).expect("should succeed"),
         2,
         "both keys imported"
     );
     // Re-import is idempotent (dedup by value).
-    assert_eq!(dst.import_json(&json, None).unwrap(), 0, "no duplicates");
+    assert_eq!(dst.import_json(&json, None).expect("should succeed"), 0, "no duplicates");
     // Environment survives the round-trip.
     let snap = dst.snapshot();
     assert_eq!(snap.services["shodan"][0].environment(), "prod");
@@ -33,7 +33,7 @@ fn export_filters_by_environment() {
     pool.add("shodan", p);
     pool.add("shodan", KeyEntry::new("default-key")); // default env
 
-    let only_prod = pool.export_json(Some("prod")).unwrap();
+    let only_prod = pool.export_json(Some("prod")).expect("should succeed");
     assert!(only_prod.contains("prod-key"));
     assert!(
         !only_prod.contains("default-key"),
@@ -54,8 +54,8 @@ fn revoke_and_rotate_by_id_reference_keys_without_plaintext() {
     assert!(pool.rotate_by_id("shodan", &id, "new-secret"));
     let snap = pool.snapshot();
     let entries = &snap.services["shodan"];
-    let old = entries.iter().find(|e| e.value == "old-secret").unwrap();
-    let new = entries.iter().find(|e| e.value == "new-secret").unwrap();
+    let old = entries.iter().find(|e| e.value == "old-secret").expect("should succeed");
+    let new = entries.iter().find(|e| e.value == "new-secret").expect("should succeed");
     assert_eq!(old.status, KeyStatus::Revoked);
     assert_eq!(new.environment(), "prod");
     assert_eq!(pool.next_key("shodan").as_deref(), Some("new-secret"));
@@ -100,8 +100,8 @@ fn rotate_revokes_old_adds_new_carrying_environment() {
     assert!(pool.rotate("shodan", "old-key", "new-key"));
     let snap = pool.snapshot();
     let entries = &snap.services["shodan"];
-    let old_e = entries.iter().find(|e| e.value == "old-key").unwrap();
-    let new_e = entries.iter().find(|e| e.value == "new-key").unwrap();
+    let old_e = entries.iter().find(|e| e.value == "old-key").expect("should succeed");
+    let new_e = entries.iter().find(|e| e.value == "new-key").expect("should succeed");
     assert_eq!(old_e.status, KeyStatus::Revoked, "old key revoked");
     assert_eq!(new_e.environment(), "prod", "new key inherits environment");
     assert_eq!(
@@ -125,9 +125,9 @@ fn add_and_cycle() {
 
     assert_eq!(pool.service_count("shodan"), 2);
 
-    let k1 = pool.next_key("shodan").unwrap();
-    let k2 = pool.next_key("shodan").unwrap();
-    let k3 = pool.next_key("shodan").unwrap();
+    let k1 = pool.next_key("shodan").expect("should succeed");
+    let k2 = pool.next_key("shodan").expect("should succeed");
+    let k3 = pool.next_key("shodan").expect("should succeed");
     assert_eq!(k1, "key-a");
     assert_eq!(k2, "key-b");
     assert_eq!(k3, "key-a");
@@ -144,7 +144,7 @@ fn next_key_excluding_cascades_past_tried_keys() {
 
     let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
     tried.insert("key-a".to_string());
-    let next = pool.next_key_excluding("shodan", &tried).unwrap();
+    let next = pool.next_key_excluding("shodan", &tried).expect("should succeed");
     assert_eq!(next, "key-b");
 
     tried.insert("key-b".to_string());
@@ -173,8 +173,8 @@ fn skips_invalid_keys() {
     pool.add("intelx", KeyEntry::new("bad"));
     pool.mark_status("intelx", "bad", KeyStatus::Invalid);
 
-    let k1 = pool.next_key("intelx").unwrap();
-    let k2 = pool.next_key("intelx").unwrap();
+    let k1 = pool.next_key("intelx").expect("should succeed");
+    let k2 = pool.next_key("intelx").expect("should succeed");
     assert_eq!(k1, "good");
     assert_eq!(k2, "good");
 }
@@ -222,7 +222,7 @@ fn merge_fills_gaps() {
 
     let mut keys = HashMap::new();
     merge_pool_into_env(&pool, &mut keys);
-    assert_eq!(keys.get("HUNTSMAN_SHODAN_KEY").unwrap(), "pool-key");
+    assert_eq!(keys.get("HUNTSMAN_SHODAN_KEY").expect("should succeed"), "pool-key");
 }
 
 #[test]
@@ -233,7 +233,7 @@ fn merge_does_not_override_existing() {
     let mut keys = HashMap::new();
     keys.insert("HUNTSMAN_SHODAN_KEY".to_string(), "env-key".to_string());
     merge_pool_into_env(&pool, &mut keys);
-    assert_eq!(keys.get("HUNTSMAN_SHODAN_KEY").unwrap(), "env-key");
+    assert_eq!(keys.get("HUNTSMAN_SHODAN_KEY").expect("should succeed"), "env-key");
 }
 
 #[test]
@@ -273,7 +273,7 @@ fn load_pool_from_backs_up_an_unreadable_file_instead_of_silently_dropping_it() 
         .map_or(0, |d| d.as_nanos());
     let dir = std::env::temp_dir().join(format!("hse_kp_{}_{nanos}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&dir).expect("should succeed");
     let path = dir.join("key_pool.json");
     let bak = path.with_extension("json.bak");
 
@@ -285,7 +285,7 @@ fn load_pool_from_backs_up_an_unreadable_file_instead_of_silently_dropping_it() 
     );
 
     // (2) Present but unreadable (invalid UTF-8) → empty pool, file preserved as .bak.
-    std::fs::write(&path, [0xff, 0xfe, 0x00, 0x01, 0x80]).unwrap();
+    std::fs::write(&path, [0xff, 0xfe, 0x00, 0x01, 0x80]).expect("should succeed");
     assert_eq!(load_pool_from(&path).total_keys(), 0);
     assert!(
         !path.exists(),
@@ -311,7 +311,7 @@ fn next_key_prefers_higher_tier() {
     pool.add("shodan", basic);
     pool.add("shodan", premium);
 
-    let k = pool.next_key("shodan").unwrap();
+    let k = pool.next_key("shodan").expect("should succeed");
     assert_eq!(k, "premium-key", "should prefer higher-tier key");
 }
 
@@ -327,7 +327,7 @@ fn next_key_avoids_error_prone_key() {
     pool.add("shodan", good);
     pool.add("shodan", bad);
 
-    let k = pool.next_key("shodan").unwrap();
+    let k = pool.next_key("shodan").expect("should succeed");
     assert_eq!(k, "good-key", "should prefer key with fewer errors");
 }
 
@@ -447,7 +447,7 @@ fn prune_degraded_removes_bad_keys() {
     let pruned = pool.prune_degraded(0.50, 10);
     assert_eq!(pruned, 1);
     assert_eq!(pool.service_count("shodan"), 1);
-    assert!(pool.next_key("shodan").unwrap() == "good");
+    assert!(pool.next_key("shodan").expect("should succeed") == "good");
 }
 
 #[test]
@@ -726,7 +726,7 @@ fn key_status_as_str_matches_snake_case_serde_wire_form() {
     ];
     for (status, want) in cases {
         assert_eq!(status.as_str(), want);
-        let wire = serde_json::to_value(status).unwrap();
+        let wire = serde_json::to_value(status).expect("should succeed");
         assert_eq!(wire, serde_json::Value::String(want.to_string()));
     }
 }
@@ -741,7 +741,7 @@ fn key_tier_as_str_matches_snake_case_serde_wire_form() {
     ];
     for (tier, want) in cases {
         assert_eq!(tier.as_str(), want);
-        let wire = serde_json::to_value(tier).unwrap();
+        let wire = serde_json::to_value(tier).expect("should succeed");
         assert_eq!(wire, serde_json::Value::String(want.to_string()));
     }
 }

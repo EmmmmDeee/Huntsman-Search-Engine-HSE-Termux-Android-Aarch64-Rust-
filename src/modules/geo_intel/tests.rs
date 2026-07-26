@@ -37,7 +37,7 @@ fn cost_is_free() {
 
 #[test]
 fn phone_prefix_au() {
-    let (country, cc, lat, lon) = phone_prefix_to_country("61400000000").unwrap();
+    let (country, cc, lat, lon) = phone_prefix_to_country("61400000000").expect("should succeed");
     assert_eq!(cc, "AU");
     assert!(country.contains("Australia"));
     assert!(lat < 0.0);
@@ -46,7 +46,7 @@ fn phone_prefix_au() {
 
 #[test]
 fn phone_prefix_us() {
-    let (_, cc, _, _) = phone_prefix_to_country("12025551234").unwrap();
+    let (_, cc, _, _) = phone_prefix_to_country("12025551234").expect("should succeed");
     assert_eq!(cc, "US");
 }
 
@@ -58,18 +58,18 @@ fn caribbean_nanp_is_not_geolocated_to_the_us() {
     assert!(phone_prefix_to_country("12424567890").is_none()); // Bahamas (1242)
     assert!(phone_prefix_to_country("18764567890").is_none()); // Jamaica (1876)
     // A genuine US/Canada +1 number is unaffected.
-    assert_eq!(phone_prefix_to_country("14165551234").unwrap().1, "US"); // Toronto (NANP)
+    assert_eq!(phone_prefix_to_country("14165551234").expect("should succeed").1, "US"); // Toronto (NANP)
 }
 
 #[test]
 fn phone_prefix_uk() {
-    let (_, cc, _, _) = phone_prefix_to_country("447911123456").unwrap();
+    let (_, cc, _, _) = phone_prefix_to_country("447911123456").expect("should succeed");
     assert_eq!(cc, "GB");
 }
 
 #[test]
 fn phone_prefix_3digit() {
-    let (_, cc, _, _) = phone_prefix_to_country("971501234567").unwrap();
+    let (_, cc, _, _) = phone_prefix_to_country("971501234567").expect("should succeed");
     assert_eq!(cc, "AE");
 }
 
@@ -96,7 +96,7 @@ async fn national_number_without_marker_yields_no_coordinate() {
     // emitting Cairo coordinates. It must now emit nothing.
     let ctx = offline_ctx();
     let t = Target::new(TargetKind::Phone, "202-555-0100");
-    let out = process_phone_prefix_only(&t, &ctx).await.unwrap();
+    let out = process_phone_prefix_only(&t, &ctx).await.expect("should succeed");
     assert!(
         out.entities.is_empty(),
         "national number must not produce a (wrong-country) coordinate: {:?}",
@@ -105,7 +105,7 @@ async fn national_number_without_marker_yields_no_coordinate() {
 
     // An explicit E.164 number still geolocates (here Egypt, correctly).
     let t = Target::new(TargetKind::Phone, "+20 100 000 0000");
-    let out = process_phone_prefix_only(&t, &ctx).await.unwrap();
+    let out = process_phone_prefix_only(&t, &ctx).await.expect("should succeed");
     assert_eq!(out.entities.len(), 1);
     assert!(out.entities[0].has_tag("country:EG"));
 }
@@ -117,20 +117,20 @@ fn ip_geo_rejects_the_null_island_band_not_just_exact_zero() {
     // placeholder is rejected, not emitted as a 0.68-confidence GPS-grade fix
     // that poisons AU-014 geo-clustering with a false Null-Island convergence.
     let band: IpApiCoResp =
-        serde_json::from_str(r#"{"latitude":0.004,"longitude":0.004}"#).unwrap();
+        serde_json::from_str(r#"{"latitude":0.004,"longitude":0.004}"#).expect("should succeed");
     assert!(
         build_ipapico_entity(&band, "1.2.3.4", false, "t").is_empty(),
         "null-island band must be rejected, not just exact (0,0)"
     );
     let zero_lat: IpApiCoResp =
-        serde_json::from_str(r#"{"latitude":0.0,"longitude":151.0}"#).unwrap();
+        serde_json::from_str(r#"{"latitude":0.0,"longitude":151.0}"#).expect("should succeed");
     assert!(build_ipapico_entity(&zero_lat, "1.2.3.4", false, "t").is_empty());
     let band2: FreeIpApiResp =
-        serde_json::from_str(r#"{"latitude":0.005,"longitude":-0.002}"#).unwrap();
+        serde_json::from_str(r#"{"latitude":0.005,"longitude":-0.002}"#).expect("should succeed");
     assert!(build_freeipapi_entity(&band2, "1.2.3.4", false, "t").is_none());
     // A real fix still passes; the shared helper draws the same line.
     let real: IpApiCoResp =
-        serde_json::from_str(r#"{"latitude":-27.4766,"longitude":153.0166}"#).unwrap();
+        serde_json::from_str(r#"{"latitude":-27.4766,"longitude":153.0166}"#).expect("should succeed");
     assert!(!build_ipapico_entity(&real, "1.2.3.4", false, "t").is_empty());
     assert!(!is_plausible_provider_coord(0.004, 0.004));
     assert!(is_plausible_provider_coord(-27.4766, 153.0166));
@@ -151,8 +151,8 @@ fn ipapico_resp_deserializes() {
         "org": "APNIC",
         "asn": "AS13335"
     }"#;
-    let r: IpApiCoResp = serde_json::from_str(json).unwrap();
-    assert!((r.latitude.unwrap() - (-27.4766)).abs() < 0.001);
+    let r: IpApiCoResp = serde_json::from_str(json).expect("should succeed");
+    assert!((r.latitude.expect("should succeed") - (-27.4766)).abs() < 0.001);
     assert_eq!(r.country_code.as_deref(), Some("AU"));
     assert_eq!(r.error, None);
 }
@@ -171,8 +171,8 @@ fn freeipapi_resp_deserializes() {
         "timeZone": "+10:00",
         "isProxy": false
     }"#;
-    let r: FreeIpApiResp = serde_json::from_str(json).unwrap();
-    assert!((r.latitude.unwrap() - (-27.4766)).abs() < 0.001);
+    let r: FreeIpApiResp = serde_json::from_str(json).expect("should succeed");
+    assert!((r.latitude.expect("should succeed") - (-27.4766)).abs() < 0.001);
     assert_eq!(r.country_code.as_deref(), Some("AU"));
     assert_eq!(r.is_proxy, Some(false));
 }
@@ -180,7 +180,7 @@ fn freeipapi_resp_deserializes() {
 #[test]
 fn ipapico_builder_emits_for_clean_ip_with_iso_and_skips_untrusted() {
     let json = r#"{"city":"South Brisbane","region":"Queensland","country_name":"Australia","country_code":"AU","postal":"4101","latitude":-27.4766,"longitude":153.0166,"timezone":"Australia/Brisbane","org":"APNIC","asn":"AS13335"}"#;
-    let r: IpApiCoResp = serde_json::from_str(json).unwrap();
+    let r: IpApiCoResp = serde_json::from_str(json).expect("should succeed");
     let entities = build_ipapico_entity(&r, "1.2.3.4", false, "t");
     let e = entities
         .iter()
@@ -196,7 +196,7 @@ fn ipapico_builder_emits_for_clean_ip_with_iso_and_skips_untrusted() {
     assert!(e.tags.iter().any(|t| t == "country:AU"));
     assert!(e.tags.iter().any(|t| t.starts_with("au-state:")));
     assert!(build_ipapico_entity(&r, "104.16.0.1", true, "t").is_empty());
-    let err: IpApiCoResp = serde_json::from_str(r#"{"error":true}"#).unwrap();
+    let err: IpApiCoResp = serde_json::from_str(r#"{"error":true}"#).expect("should succeed");
     assert!(build_ipapico_entity(&err, "1.2.3.4", false, "t").is_empty());
 }
 
@@ -207,7 +207,7 @@ fn ipapico_builder_promotes_asn_to_standalone_entity() {
     // entity, unlike the sibling ip_geo module's identical field via the same
     // shared ip_asn_entity helper. Both entities must now come back together.
     let json = r#"{"city":"South Brisbane","region":"Queensland","country_name":"Australia","country_code":"AU","postal":"4101","latitude":-27.4766,"longitude":153.0166,"timezone":"Australia/Brisbane","org":"APNIC","asn":"AS13335"}"#;
-    let r: IpApiCoResp = serde_json::from_str(json).unwrap();
+    let r: IpApiCoResp = serde_json::from_str(json).expect("should succeed");
     let entities = build_ipapico_entity(&r, "1.2.3.4", false, "t");
     assert_eq!(entities.len(), 2);
     assert!(entities.iter().any(|e| e.kind == EntityKind::Coordinates));
@@ -222,12 +222,12 @@ fn ipapico_builder_promotes_asn_to_standalone_entity() {
 #[test]
 fn freeipapi_builder_suppresses_proxy_and_untrusted() {
     let clean = r#"{"latitude":-27.47,"longitude":153.02,"countryName":"Australia","countryCode":"AU","cityName":"South Brisbane","isProxy":false}"#;
-    let r: FreeIpApiResp = serde_json::from_str(clean).unwrap();
+    let r: FreeIpApiResp = serde_json::from_str(clean).expect("should succeed");
     assert!(build_freeipapi_entity(&r, "1.2.3.4", false, "t").is_some());
     assert!(build_freeipapi_entity(&r, "104.16.0.1", true, "t").is_none());
     let proxy: FreeIpApiResp = serde_json::from_str(
         r#"{"latitude":52.37,"longitude":4.89,"countryCode":"NL","isProxy":true}"#,
     )
-    .unwrap();
+    .expect("should succeed");
     assert!(build_freeipapi_entity(&proxy, "1.2.3.4", false, "t").is_none());
 }

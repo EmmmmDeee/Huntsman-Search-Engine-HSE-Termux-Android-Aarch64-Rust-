@@ -78,7 +78,7 @@ fn emits_username_and_profile_url_from_web_link() {
     let u = ents
         .iter()
         .find(|e| e.kind == EntityKind::Username)
-        .unwrap();
+        .expect("should succeed");
     assert!(u.has_tag("launchpad") && u.has_tag("public-profile"));
     assert!((u.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
 }
@@ -102,8 +102,8 @@ fn emits_person_from_multi_word_display_name() {
         pe.is_some(),
         "must emit Person from multi-word display_name"
     );
-    assert_eq!(pe.unwrap().value, "Alice Ubuntu Developer");
-    assert!(pe.unwrap().has_tag("launchpad"));
+    assert_eq!(pe.expect("should succeed").value, "Alice Ubuntu Developer");
+    assert!(pe.expect("should succeed").has_tag("launchpad"));
 }
 
 #[test]
@@ -125,10 +125,10 @@ fn extracts_email_from_bio() {
     let ents = build_entities(p, "scan-lp-005");
     let em = ents.iter().find(|e| e.kind == EntityKind::Email);
     assert!(em.is_some(), "must extract email from bio");
-    assert_eq!(em.unwrap().value, "alice@ubuntu.com");
-    assert!(em.unwrap().has_tag("launchpad"));
+    assert_eq!(em.expect("should succeed").value, "alice@ubuntu.com");
+    assert!(em.expect("should succeed").has_tag("launchpad"));
     let attr = em
-        .unwrap()
+        .expect("should succeed")
         .evidence
         .iter()
         .find_map(|ev| ev.attributes.get("source_field"))

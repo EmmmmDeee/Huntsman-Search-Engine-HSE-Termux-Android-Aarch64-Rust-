@@ -846,7 +846,7 @@ alice@example.com
 
     #[test]
     fn apply_named_profile_rejects_unknown_name() {
-        let err = apply_named_profile("not-a-real-profile", ScanOptions::default()).unwrap_err();
+        let err = apply_named_profile("not-a-real-profile", ScanOptions::default()).expect("should be an error");
         assert!(
             err.starts_with("unknown --profile "),
             "error must carry the client-facing prefix, got: {err}"

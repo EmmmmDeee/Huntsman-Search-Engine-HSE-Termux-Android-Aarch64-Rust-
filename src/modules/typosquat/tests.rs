@@ -29,7 +29,7 @@ fn never_returns_the_original_and_all_valid() {
         // Every candidate's first label is a valid LDH label, or an `xn--` ACE
         // label (validated by the punycode layer, whose internal `--` the
         // stricter `is_valid_label` rejects).
-        let (label, _) = d.split_once('.').unwrap();
+        let (label, _) = d.split_once('.').expect("should succeed");
         assert!(
             is_valid_label(label) || label.starts_with("xn--"),
             "invalid label in {d}"
@@ -66,7 +66,7 @@ fn bitsquat_only_yields_valid_chars() {
     // bit-flips that land on punctuation/control bytes).
     for (d, tech) in permutations("example.com", 1000) {
         if tech == "bitsquat" {
-            let (label, _) = d.split_once('.').unwrap();
+            let (label, _) = d.split_once('.').expect("should succeed");
             assert!(is_valid_label(label), "invalid bitsquat label {label}");
         }
     }
@@ -142,7 +142,7 @@ fn idn_homoglyph_is_emitted_as_punycode() {
     // — never a raw Unicode hostname no resolver would accept.
     for (d, tech) in permutations("example.com", 5000) {
         if tech == "homoglyph-idn" {
-            let (label, suffix) = d.split_once('.').unwrap();
+            let (label, suffix) = d.split_once('.').expect("should succeed");
             assert!(label.starts_with("xn--"), "ACE label expected, got {d}");
             assert!(label.is_ascii(), "ACE label must be ASCII, got {d}");
             assert_eq!(suffix, "com");

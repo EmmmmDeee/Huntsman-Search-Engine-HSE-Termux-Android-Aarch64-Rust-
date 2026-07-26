@@ -51,8 +51,8 @@ use super::*;
         // Strongest base query first, then AU dorks, then the rest.
         assert_eq!(q, ["base0", "au0", "au1", "base1", "base2"]);
         // AU dorks land before the tail base queries (won't be starved).
-        let au_pos = q.iter().position(|x| x == "au0").unwrap();
-        let tail_pos = q.iter().position(|x| x == "base1").unwrap();
+        let au_pos = q.iter().position(|x| x == "au0").expect("should succeed");
+        let tail_pos = q.iter().position(|x| x == "base1").expect("should succeed");
         assert!(au_pos < tail_pos);
         // Degenerate inputs.
         assert_eq!(interleave_regional(vec![], vec!["a".into()]), ["a"]);

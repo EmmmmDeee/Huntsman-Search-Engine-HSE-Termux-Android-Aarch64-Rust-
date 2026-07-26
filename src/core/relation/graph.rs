@@ -1371,7 +1371,7 @@ mod tests {
         assert_eq!(paths.len(), 2, "two independent routes");
         for p in &paths {
             assert_eq!(p.len(), 2);
-            assert_eq!(p.last().unwrap().to_uid, b.uid);
+            assert_eq!(p.last().expect("should succeed").to_uid, b.uid);
         }
         let mids: HashSet<&str> = paths.iter().map(|p| p[0].to_uid.as_str()).collect();
         assert_eq!(mids.len(), 2, "the routes go through different nodes");
@@ -1525,7 +1525,7 @@ mod tests {
                     prop_assert_eq!(p.steps.len(), p.hops);
                     prop_assert!(p.hops >= 1 && p.hops <= 4);
                     prop_assert!(p.from_uid < p.to_uid);
-                    prop_assert_eq!(&p.steps.last().unwrap().to_uid, &p.to_uid);
+                    prop_assert_eq!(&p.steps.last().expect("should succeed").to_uid, &p.to_uid);
                 }
             }
 
@@ -1548,12 +1548,12 @@ mod tests {
                 if let Some(sp) = shortest {
                     let widest = strongest_path(&ents, &rels, a, b, 4);
                     prop_assert!(widest.is_some(), "reachable shortest ⇒ reachable widest");
-                    let w = widest.unwrap();
+                    let w = widest.expect("should succeed");
                     prop_assert!(w.min_confidence >= sp.min_confidence - 1e-9);
                     // …and it is itself a well-formed, hop-bounded chain.
                     prop_assert_eq!(w.steps.len(), w.hops);
                     prop_assert!(w.hops >= 1 && w.hops <= 4);
-                    prop_assert_eq!(&w.steps.last().unwrap().to_uid, b);
+                    prop_assert_eq!(&w.steps.last().expect("should succeed").to_uid, b);
                 }
             }
 

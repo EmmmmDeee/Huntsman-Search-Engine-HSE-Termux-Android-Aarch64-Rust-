@@ -36,18 +36,18 @@ fn parse_response() {
             }
         }
     }"#;
-    let r: KbResp = serde_json::from_str(raw).unwrap();
-    assert_eq!(r.status.unwrap().code, Some(0));
-    let user = r.them.unwrap();
+    let r: KbResp = serde_json::from_str(raw).expect("should succeed");
+    assert_eq!(r.status.expect("should succeed").code, Some(0));
+    let user = r.them.expect("should succeed");
     assert_eq!(
-        user.basics.as_ref().unwrap().username.as_deref(),
+        user.basics.as_ref().expect("should succeed").username.as_deref(),
         Some("alice")
     );
     assert_eq!(
-        user.profile.as_ref().unwrap().full_name.as_deref(),
+        user.profile.as_ref().expect("should succeed").full_name.as_deref(),
         Some("Alice Smith")
     );
-    assert_eq!(user.proofs_summary.as_ref().unwrap().all.len(), 3);
+    assert_eq!(user.proofs_summary.as_ref().expect("should succeed").all.len(), 3);
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn extract_proofs_maps_verified_links_and_urls() {
             {"proof_type":"twitter","nametag":"revoked","state":2,"service_url":"https://twitter.com/revoked"}
         ]"#,
     )
-    .unwrap();
+    .expect("should succeed");
     let mut r = ModuleResult::new();
     extract_proofs(&proofs, "chris", "scan", &mut r);
     let has = |k: EntityKind, v: &str| r.entities.iter().any(|e| e.kind == k && e.value == v);
@@ -85,7 +85,7 @@ fn extract_proofs_maps_verified_links_and_urls() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Username && e.value == "malgorithms")
-        .unwrap();
+        .expect("should succeed");
     assert!(gh.has_tag("verified") && gh.has_tag("keybase"));
 }
 

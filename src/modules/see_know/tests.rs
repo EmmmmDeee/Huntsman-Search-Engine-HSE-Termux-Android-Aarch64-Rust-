@@ -722,7 +722,7 @@ fn extract_entities(
             .entities
             .iter()
             .find(|e| e.value == "mail.acme.com")
-            .unwrap();
+            .expect("should succeed");
         assert!(sd.has_tag("subdomain") && !sd.has_tag("breach"));
 
         // Endpoint gate: the SAME record via a non-domain_intel endpoint mints
@@ -784,7 +784,7 @@ fn extract_entities(
             .entities
             .iter()
             .find(|e| e.value == "twitch:ninja")
-            .unwrap();
+            .expect("should succeed");
         assert!(tw.has_tag("discord-linked") && tw.has_tag("twitch"));
     }
 

@@ -15,21 +15,21 @@ use super::*;
 
     #[test]
     fn passive_profile_is_passive_and_free() {
-        let opts = resolve_profile("passive").unwrap();
+        let opts = resolve_profile("passive").expect("should succeed");
         assert!(opts.passive_only);
         assert!(opts.free_only);
     }
 
     #[test]
     fn investigate_profile_has_max_depth() {
-        let opts = resolve_profile("investigate").unwrap();
+        let opts = resolve_profile("investigate").expect("should succeed");
         assert_eq!(opts.depth, 5);
         assert!(opts.max_entities.is_some());
     }
 
     #[test]
     fn fast_profile_is_depth_zero() {
-        let opts = resolve_profile("fast").unwrap();
+        let opts = resolve_profile("fast").expect("should succeed");
         assert_eq!(opts.depth, 0);
         assert!(opts.free_only);
     }
@@ -46,7 +46,7 @@ use super::*;
 
     #[test]
     fn skiptrace_focuses_person_location_and_geo_converges() {
-        let opts = resolve_profile("skiptrace").unwrap();
+        let opts = resolve_profile("skiptrace").expect("should succeed");
         // Focused on the person-locating categories — and pointedly NOT on the
         // noise categories (infra/threat/DNS/sensor).
         assert_eq!(opts.category_focus, SKIPTRACE_CATEGORIES.to_vec());
@@ -79,7 +79,7 @@ use super::*;
         assert!(opts.min_expand_confidence <= 0.45);
         assert!(opts.max_entities.is_some() && opts.max_wall_time_secs.is_some());
         // `locate` is an alias for the same profile.
-        assert_eq!(resolve_profile("locate").unwrap().depth, opts.depth);
+        assert_eq!(resolve_profile("locate").expect("should succeed").depth, opts.depth);
     }
 
     #[test]
@@ -87,7 +87,7 @@ use super::*;
         // The out-of-box default: needs no keys (free-only), and expands exactly
         // one round so the cross-service correlation rules can actually fire —
         // depth 0 would find entities but never link them. `default` is an alias.
-        let opts = resolve_profile("recommended").unwrap();
+        let opts = resolve_profile("recommended").expect("should succeed");
         assert!(opts.free_only, "must need no manual key setup");
         assert_eq!(
             opts.depth, 1,
@@ -99,7 +99,7 @@ use super::*;
             "phone-safe wall-time bound"
         );
         // The `default` alias resolves to the same options.
-        let aliased = resolve_profile("default").unwrap();
+        let aliased = resolve_profile("default").expect("should succeed");
         assert_eq!(aliased.depth, opts.depth);
         assert_eq!(aliased.free_only, opts.free_only);
     }
@@ -118,7 +118,7 @@ use super::*;
             throttle_ms: 250,
             ..ScanOptions::default()
         };
-        let profile = resolve_profile("investigate").unwrap();
+        let profile = resolve_profile("investigate").expect("should succeed");
         let merged = apply_profile_overlay(base.clone(), profile.clone());
 
         assert_eq!(
@@ -149,7 +149,7 @@ use super::*;
         // `ScanOptions::default()` happened to coincide with skiptrace's
         // values for both).
         let base = ScanOptions::default();
-        let profile = resolve_profile("skiptrace").unwrap();
+        let profile = resolve_profile("skiptrace").expect("should succeed");
         let merged = apply_profile_overlay(base, profile.clone());
 
         assert_eq!(merged.category_focus, profile.category_focus);

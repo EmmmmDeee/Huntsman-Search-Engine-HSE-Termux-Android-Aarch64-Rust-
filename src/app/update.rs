@@ -420,7 +420,7 @@ mod tests {
     }
 
     fn commit_file(dir: &Path, name: &str, contents: &str, message: &str) {
-        std::fs::write(dir.join(name), contents).unwrap();
+        std::fs::write(dir.join(name), contents).expect("should succeed");
         run_git(dir, &["add", name]);
         run_git(dir, &["commit", "--quiet", "-m", message]);
     }
@@ -430,7 +430,7 @@ mod tests {
         // A real git repo with no remote/tracking branch — `@{u}` cannot resolve,
         // mirroring the "git absent or remote unreachable" contract in the doc
         // comment without needing an actually-unreachable network remote.
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("should succeed");
         init_git_repo(dir.path());
         commit_file(dir.path(), "a.txt", "1", "solo commit");
         assert_eq!(
@@ -516,10 +516,10 @@ mod tests {
             );
             return;
         }
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir().expect("should succeed");
         let remote = tmp.path().join("remote");
         let local = tmp.path().join("local");
-        std::fs::create_dir(&remote).unwrap();
+        std::fs::create_dir(&remote).expect("should succeed");
 
         git_fixture(&remote, &["init", "-q", "--initial-branch=main"]);
         git_fixture(&remote, &["commit", "-q", "-m", "init", "--allow-empty"]);
@@ -528,8 +528,8 @@ mod tests {
             &[
                 "clone",
                 "-q",
-                remote.to_str().unwrap(),
-                local.to_str().unwrap(),
+                remote.to_str().expect("should succeed"),
+                local.to_str().expect("should succeed"),
             ],
         );
 
@@ -538,10 +538,10 @@ mod tests {
         assert!(changelog_lines(&local).is_empty());
 
         // Advance the "remote" by two commits without touching the clone.
-        std::fs::write(remote.join("a.txt"), "a").unwrap();
+        std::fs::write(remote.join("a.txt"), "a").expect("should succeed");
         git_fixture(&remote, &["add", "a.txt"]);
         git_fixture(&remote, &["commit", "-q", "-m", "add a"]);
-        std::fs::write(remote.join("b.txt"), "b").unwrap();
+        std::fs::write(remote.join("b.txt"), "b").expect("should succeed");
         git_fixture(&remote, &["add", "b.txt"]);
         git_fixture(&remote, &["commit", "-q", "-m", "add b"]);
 
@@ -571,7 +571,7 @@ mod tests {
 
         // No git repo at all → the documented "git absent/unreachable" fallback.
         let not_git = tmp.path().join("not_a_repo");
-        std::fs::create_dir(&not_git).unwrap();
+        std::fs::create_dir(&not_git).expect("should succeed");
         assert_eq!(commits_behind(&not_git), None);
         assert!(changelog_lines(&not_git).is_empty());
     }

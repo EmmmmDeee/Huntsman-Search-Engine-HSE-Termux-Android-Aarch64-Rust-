@@ -709,7 +709,7 @@ mod tests {
         );
 
         // Every relative carries the declared edge data + corroboration tag.
-        let erik = persons.iter().find(|e| e.value == "Erik Diegmann").unwrap();
+        let erik = persons.iter().find(|e| e.value == "Erik Diegmann").expect("should succeed");
         assert!(erik.has_tag("family-candidate"));
         let related_to = erik
             .evidence
@@ -718,7 +718,7 @@ mod tests {
             .map(String::as_str);
         assert_eq!(related_to, Some("Kyle Diegmann"));
         // Associates are not in the surname cluster → tagged differently.
-        let jane = persons.iter().find(|e| e.value == "Jane Smith").unwrap();
+        let jane = persons.iter().find(|e| e.value == "Jane Smith").expect("should succeed");
         assert!(jane.has_tag("associate-candidate"));
     }
 

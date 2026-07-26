@@ -21,14 +21,14 @@ use super::*;
             "links":{"homepage":"https://foo.dev","repository":"https://github.com/k/foo"},
             "author":{"name":"K","email":"k@example.com","url":"https://k.dev"},
             "maintainers":[{"username":"kylo4kylo","email":"k@example.com"}]}}],"total":3}"#;
-        let r: SearchResp = serde_json::from_str(json).unwrap();
+        let r: SearchResp = serde_json::from_str(json).expect("should succeed");
         assert_eq!(r.total, 3);
-        let p = r.objects[0].package.as_ref().unwrap();
+        let p = r.objects[0].package.as_ref().expect("should succeed");
         assert_eq!(p.name.as_deref(), Some("foo"));
         assert_eq!(p.maintainers[0].username.as_deref(), Some("kylo4kylo"));
         assert_eq!(p.maintainers[0].email.as_deref(), Some("k@example.com"));
         // Empty registry response deserializes to no objects.
-        let empty: SearchResp = serde_json::from_str(r#"{"objects":[],"total":0}"#).unwrap();
+        let empty: SearchResp = serde_json::from_str(r#"{"objects":[],"total":0}"#).expect("should succeed");
         assert!(empty.objects.is_empty());
     }
 

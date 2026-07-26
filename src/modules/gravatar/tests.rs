@@ -35,7 +35,7 @@ use crate::util::gravatar::Account;
             ],
             "urls": [ { "value": "https://javery.dev", "title": "Blog" } ]
         });
-        let entry: Entry = serde_json::from_value(json).unwrap();
+        let entry: Entry = serde_json::from_value(json).expect("should succeed");
         let mut r = ModuleResult::new();
         extract_entry(&entry, "abc", "scan", &mut r);
 
@@ -90,7 +90,7 @@ use crate::util::gravatar::Account;
             "contactInfo": [ { "type": "contactform", "value": "https://beau.blog/about" } ],
             "pronouns": "he/him"
         });
-        let entry: Entry = serde_json::from_value(json).unwrap();
+        let entry: Entry = serde_json::from_value(json).expect("should succeed");
         let mut r = ModuleResult::new();
         extract_entry(&entry, "h", "scan", &mut r);
 
@@ -216,15 +216,15 @@ use crate::util::gravatar::Account;
         // Gravatar's real, live-confirmed "no such profile" signal (a 404 —
         // reconfirmed live 2026-07-15 against a random unregistered email);
         // `fetch_json_or_404` maps it to `Ok(None)` before any body is read.
-        let result = resolve_profile(Ok(None), "deadbeef", "scan-1").unwrap();
+        let result = resolve_profile(Ok(None), "deadbeef", "scan-1").expect("should succeed");
         assert!(result.entities.is_empty());
     }
 
     #[test]
     fn resolve_profile_builds_entities_from_a_real_profile() {
         let resp: GravatarResp =
-            serde_json::from_str(r#"{"entry":[{"preferredUsername":"matt"}]}"#).unwrap();
-        let result = resolve_profile(Ok(Some(resp)), "deadbeef", "scan-1").unwrap();
+            serde_json::from_str(r#"{"entry":[{"preferredUsername":"matt"}]}"#).expect("should succeed");
+        let result = resolve_profile(Ok(Some(resp)), "deadbeef", "scan-1").expect("should succeed");
         assert!(
             result
                 .entities
@@ -237,8 +237,8 @@ use crate::util::gravatar::Account;
     fn resolve_profile_is_a_clean_miss_when_the_profile_has_no_entry() {
         // A `200` whose `entry` array is empty (no linked identity data) is
         // not an error either — just nothing to extract.
-        let resp: GravatarResp = serde_json::from_str(r#"{"entry":[]}"#).unwrap();
-        let result = resolve_profile(Ok(Some(resp)), "deadbeef", "scan-1").unwrap();
+        let resp: GravatarResp = serde_json::from_str(r#"{"entry":[]}"#).expect("should succeed");
+        let result = resolve_profile(Ok(Some(resp)), "deadbeef", "scan-1").expect("should succeed");
         assert!(result.entities.is_empty());
     }
 
@@ -248,14 +248,14 @@ use crate::util::gravatar::Account;
         // the fix must stay backward-compatible with it, not just add the bool
         // shape.
         let json = serde_json::json!({"shortname": "github", "verified": "true"});
-        let acct: Account = serde_json::from_value(json).unwrap();
+        let acct: Account = serde_json::from_value(json).expect("should succeed");
         assert_eq!(acct.verified, Some(true));
 
         let json = serde_json::json!({"shortname": "github", "verified": "false"});
-        let acct: Account = serde_json::from_value(json).unwrap();
+        let acct: Account = serde_json::from_value(json).expect("should succeed");
         assert_eq!(acct.verified, Some(false));
 
         let json = serde_json::json!({"shortname": "github"});
-        let acct: Account = serde_json::from_value(json).unwrap();
+        let acct: Account = serde_json::from_value(json).expect("should succeed");
         assert_eq!(acct.verified, None);
     }

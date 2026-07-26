@@ -26,7 +26,7 @@ use super::*;
     #[test]
     fn bracketed_ipv6_and_plain_ipv4() {
         assert_eq!(bracketed(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4))), "1.2.3.4");
-        assert_eq!(bracketed("2001:db8::1".parse().unwrap()), "[2001:db8::1]");
+        assert_eq!(bracketed("2001:db8::1".parse().expect("should succeed")), "[2001:db8::1]");
     }
 
     #[tokio::test]
@@ -35,9 +35,9 @@ use super::*;
         // that exact port open and a definitely-closed port shut. Uses 127.0.0.1
         // directly (the module's non-routable guard is applied by `process`, not
         // `scan_ports`, so the primitive is testable offline).
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+        let port = listener.local_addr().expect("should succeed").port();
+        let ip: IpAddr = "127.0.0.1".parse().expect("should succeed");
         // A port almost-certainly closed.
         let closed = port.wrapping_add(1).max(1);
         let open = scan_ports(ip, &[(port, "test"), (closed, "closed")], 4).await;

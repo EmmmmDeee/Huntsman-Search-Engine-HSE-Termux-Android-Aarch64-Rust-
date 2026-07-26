@@ -40,10 +40,10 @@ fn produces_domains() {
 fn null_body_deserialises_as_empty() {
     // The endpoint returns `null` (not `[]`) when it indexes nothing; the module
     // decodes through Option so that is a clean empty result.
-    let parsed: Option<Vec<String>> = serde_json::from_str("null").unwrap();
+    let parsed: Option<Vec<String>> = serde_json::from_str("null").expect("should succeed");
     assert!(parsed.unwrap_or_default().is_empty());
     let parsed: Option<Vec<String>> =
-        serde_json::from_str(r#"["a.example.com","b.example.com"]"#).unwrap();
+        serde_json::from_str(r#"["a.example.com","b.example.com"]"#).expect("should succeed");
     assert_eq!(parsed.unwrap_or_default().len(), 2);
 }
 

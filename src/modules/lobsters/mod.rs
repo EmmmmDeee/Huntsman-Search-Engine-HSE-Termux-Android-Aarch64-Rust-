@@ -376,7 +376,7 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "devuser");
         assert!(u.is_some(), "must emit Username entity for the account");
-        assert!((u.unwrap().confidence - confidence::VERY_HIGH_PLUS).abs() < 0.01);
+        assert!((u.expect("should succeed").confidence - confidence::VERY_HIGH_PLUS).abs() < 0.01);
     }
 
     #[test]
@@ -388,7 +388,7 @@ mod tests {
             .find(|e| e.kind == EntityKind::Username && e.value == "devuser-gh");
         assert!(gh.is_some(), "must emit GitHub username pivot");
         assert!(
-            gh.unwrap().has_tag("github"),
+            gh.expect("should succeed").has_tag("github"),
             "pivot entity must carry 'github' tag"
         );
     }

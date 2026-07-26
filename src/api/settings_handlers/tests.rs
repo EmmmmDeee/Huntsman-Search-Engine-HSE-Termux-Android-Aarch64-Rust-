@@ -28,7 +28,7 @@
         assert_eq!(summary[0].invalid, 1);
 
         // CRITICAL: no key value may appear in the serialised summary.
-        let json = serde_json::to_string(&summary).unwrap();
+        let json = serde_json::to_string(&summary).expect("should succeed");
         assert!(
             !json.contains("SECRET"),
             "key values must never be exposed: {json}"
@@ -62,7 +62,7 @@
             .insert("shodan".into(), vec![invalid, untested_c, untested_d]);
 
         let summary = summarize_pool(&data);
-        let airtable = summary.iter().find(|q| q.service == "airtable").unwrap();
+        let airtable = summary.iter().find(|q| q.service == "airtable").expect("should succeed");
         assert_eq!(airtable.untested, 2);
         assert_eq!(airtable.tested, 0);
         assert_eq!(
@@ -70,7 +70,7 @@
             "an all-untested pool has no proven health to report"
         );
 
-        let shodan = summary.iter().find(|q| q.service == "shodan").unwrap();
+        let shodan = summary.iter().find(|q| q.service == "shodan").expect("should succeed");
         assert_eq!(shodan.untested, 2);
         assert_eq!(shodan.invalid, 1);
         assert_eq!(shodan.tested, 1, "only the invalid key has a verdict");

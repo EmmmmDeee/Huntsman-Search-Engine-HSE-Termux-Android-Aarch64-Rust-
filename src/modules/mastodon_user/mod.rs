@@ -463,8 +463,8 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "alice");
         assert!(u.is_some(), "must emit Username entity");
-        assert!((u.unwrap().confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
-        assert!(u.unwrap().has_tag("mastodon") && u.unwrap().has_tag("fediverse"));
+        assert!((u.expect("should succeed").confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
+        assert!(u.expect("should succeed").has_tag("mastodon") && u.expect("should succeed").has_tag("fediverse"));
     }
 
     #[test]
@@ -473,7 +473,7 @@ mod tests {
         let ents = build_entities(acct, "mastodon.social", "scan-mst-002");
         let p = ents.iter().find(|e| e.kind == EntityKind::Person);
         assert!(p.is_some(), "must emit Person from multi-word display name");
-        assert_eq!(p.unwrap().value, "Alice Hacker");
+        assert_eq!(p.expect("should succeed").value, "Alice Hacker");
     }
 
     #[test]
@@ -511,13 +511,13 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Url && e.value.contains("alice.dev"));
         assert!(url_e.is_some(), "must emit URL from verified field");
-        assert!(url_e.unwrap().has_tag("rel-me-verified"));
-        assert!(url_e.unwrap().confidence >= confidence::HIGH_PLUSPLUS);
+        assert!(url_e.expect("should succeed").has_tag("rel-me-verified"));
+        assert!(url_e.expect("should succeed").confidence >= confidence::HIGH_PLUSPLUS);
         let dom = ents
             .iter()
             .find(|e| e.kind == EntityKind::Domain && e.value == "alice.dev");
         assert!(dom.is_some(), "must emit Domain from verified field");
-        assert!(dom.unwrap().has_tag("rel-me-verified"));
+        assert!(dom.expect("should succeed").has_tag("rel-me-verified"));
     }
 
     #[test]
@@ -532,7 +532,7 @@ mod tests {
         let ents = build_entities(acct, "mastodon.social", "scan-mst-005");
         let a = ents.iter().find(|e| e.kind == EntityKind::Address);
         assert!(a.is_some(), "must emit Address from location field");
-        assert_eq!(a.unwrap().value, "Berlin, Germany");
+        assert_eq!(a.expect("should succeed").value, "Berlin, Germany");
     }
 
     #[test]
@@ -550,10 +550,10 @@ mod tests {
             .find(|e| e.kind == EntityKind::Url && e.value.contains("alice.dev"));
         assert!(url_e.is_some());
         assert!(
-            url_e.unwrap().confidence < confidence::VERY_HIGH,
+            url_e.expect("should succeed").confidence < confidence::VERY_HIGH,
             "unverified field URL should be below confidence::VERY_HIGH"
         );
-        assert!(!url_e.unwrap().has_tag("rel-me-verified"));
+        assert!(!url_e.expect("should succeed").has_tag("rel-me-verified"));
     }
 
     #[test]
