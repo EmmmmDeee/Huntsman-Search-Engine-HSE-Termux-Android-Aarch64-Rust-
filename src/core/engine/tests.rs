@@ -5,6 +5,41 @@
 
 use super::*;
 
+#[tokio::test]
+async fn injected_module_runtime_is_used_by_the_engine() {
+    use crate::core::test_support::InMemoryStore;
+
+    struct RecordingRuntime(Arc<std::sync::atomic::AtomicU64>);
+
+    impl ModuleRuntime for RecordingRuntime {
+        fn reset_per_scan(&self, _scan_id: &str) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    let resets = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let runtime: Arc<dyn ModuleRuntime> = Arc::new(RecordingRuntime(Arc::clone(&resets)));
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(16);
+    let engine = ScanEngine::with_module_runtime(vec![], store, bus.clone(), runtime);
+    let target = Target::new(TargetKind::Username, "subject");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("username", "subject"),
+        target.clone(),
+    );
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: Default::default(),
+        cancel: Default::default(),
+    };
+
+    engine.run(scan, target, ctx).await.unwrap();
+
+    assert_eq!(resets.load(std::sync::atomic::Ordering::Relaxed), 1);
+}
+
 #[test]
 fn consolidate_address_localities_folds_postcode_variants_codebase_wide() {
     use crate::core::entity::{Entity, EntityKind, Evidence};
