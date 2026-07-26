@@ -40,11 +40,12 @@ use crate::util::domains::registrable_domain;
 /// of ≥3 registrable domains bound through ≥2 IP nodes. `entity_uids` carries
 /// every domain and IP in the footprint, in entity order.
 pub(in crate::core::correlator) fn rule_au_116_infrastructure_pivot_closure(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     /// Weakest edge confidence that still counts as a real infrastructure link
     /// (mirrors the Probable floor the identity-graph rules resolve under).
     const MIN_CONF: f64 = 0.50;
@@ -216,7 +217,7 @@ mod tests {
             edge(&c, &ip2, RelationKind::ResolvesTo),
         ];
         let ents = [a, b, c, ip1, ip2];
-        let out = rule_au_116_infrastructure_pivot_closure(&ents, &rels, "s", 0);
+        let out = rule_au_116_infrastructure_pivot_closure(&RuleContext::new(&ents), &rels, "s", 0);
         assert_eq!(out.len(), 1, "the transitive chain must fire once");
         assert_eq!(out[0].rule_id, "AU-116");
         assert_eq!(out[0].severity, Severity::Medium);
@@ -236,7 +237,13 @@ mod tests {
             edge(&c, &ip1, RelationKind::ResolvesTo),
         ];
         assert!(
-            rule_au_116_infrastructure_pivot_closure(&[a, b, c, ip1], &rels, "s", 0).is_empty(),
+            rule_au_116_infrastructure_pivot_closure(
+                &RuleContext::new(&[a, b, c, ip1]),
+                &rels,
+                "s",
+                0
+            )
+            .is_empty(),
             "a single shared host is AU-110's job, not a transitive chain"
         );
     }
@@ -258,8 +265,13 @@ mod tests {
             edge(&c, &ip2, RelationKind::ResolvesTo),
         ];
         assert!(
-            rule_au_116_infrastructure_pivot_closure(&[a, b, c, cdn, ip2], &rels, "s", 0)
-                .is_empty(),
+            rule_au_116_infrastructure_pivot_closure(
+                &RuleContext::new(&[a, b, c, cdn, ip2]),
+                &rels,
+                "s",
+                0
+            )
+            .is_empty(),
             "a benign CDN IP must never bridge domains"
         );
     }
@@ -280,8 +292,13 @@ mod tests {
             edge(&c, &ip2, RelationKind::ResolvesTo),
         ];
         assert!(
-            rule_au_116_infrastructure_pivot_closure(&[a, b, c, ip1, ip2], &rels, "s", 0)
-                .is_empty(),
+            rule_au_116_infrastructure_pivot_closure(
+                &RuleContext::new(&[a, b, c, ip1, ip2]),
+                &rels,
+                "s",
+                0
+            )
+            .is_empty(),
             "one owner's subdomains are not a multi-owner footprint"
         );
     }

@@ -46,13 +46,17 @@ pub(super) fn render_gexf(store: &Store, sid: &str, redact: bool) -> Result<Stri
 
 /// The **full dossier** — Huntsman's standard of maximum output detail. Emits
 /// EVERY entity (including quarantined `candidate` rows — nothing is hidden),
-/// each with its confidence/corroboration/tags and its COMPLETE evidence chain:
+/// each with its confidence/corroboration/tags, its `generation` (how many
+/// pivots out from the seed it was found), and its COMPLETE evidence chain:
 /// every attribute verbatim — the full raw source record, the provenance
 /// (`provider`, `api_key_origin`, `via_endpoint`), and the source website/db —
-/// nothing hashed, masked, truncated, or omitted. A leading provenance summary
-/// lists every provider, API-key origin, and source seen. This is the on-disk
-/// counterpart to the live dossier and the raw archive: the contract is total
-/// transparency for a professional interpreter.
+/// nothing hashed, masked, truncated, or omitted. Each evidence record also
+/// carries its own `recorded_at`, and the two qualifiers that decide how much
+/// weight it deserves: `(inferred)` when it is a derivation rather than an
+/// observation, and `verification` when it establishes account ownership. A
+/// leading provenance summary lists every provider, API-key origin, and source
+/// seen. This is the on-disk counterpart to the live dossier and the raw
+/// archive: the contract is total transparency for a professional interpreter.
 pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str) -> Result<String> {
     use std::collections::BTreeSet;
     use std::fmt::Write as _;
@@ -185,13 +189,20 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
         // reading the full dossier previously never saw. `raw_value` genuinely
         // diverges from `value` for Email/Username/Domain (case-folding, sigil
         // stripping, …), so it is real provenance, not noise.
+        // `generation` is the entity's pivot distance from the seed (0 = seed
+        // itself, N = N hops out along its derivation trail). The web Browse
+        // detail pane already shows it ("Generation: N hops from seed"), so a
+        // bundle that advertises "every field" must not be the one artifact
+        // that drops it — without it a finding two pivots deep is
+        // indistinguishable from the operator's own input.
         let _ = writeln!(
             s,
-            "    uid={}  raw_value={}  observed_at={} ({})",
+            "    uid={}  raw_value={}  observed_at={} ({})  generation={}",
             e.uid,
             e.raw_value,
             e.observed_at,
-            crate::util::timefmt::compact_utc(e.observed_at)
+            crate::util::timefmt::compact_utc(e.observed_at),
+            e.generation
         );
         let _ = writeln!(
             s,
@@ -246,7 +257,28 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
             } else {
                 ""
             };
-            let _ = writeln!(s, "    ├─ [{}] {}{marker}", ev.source, ev.summary);
+            // An INFERRED record is a derivation (a name permuted from a
+            // username, coordinates computed from an address), not something
+            // anyone observed. That distinction decides how much the reader
+            // should trust the line, so it belongs in the line itself — the
+            // bundle previously rendered inferences and direct observations
+            // identically.
+            let inferred = if ev.is_inferred { "  (inferred)" } else { "" };
+            let _ = writeln!(s, "    ├─ [{}] {}{marker}{inferred}", ev.source, ev.summary);
+            // Per-evidence provenance the entity-level `observed_at` cannot
+            // convey: WHEN this particular record was taken, and (for account
+            // attributions) HOW ownership was established. `verification` gates
+            // the correlator's account-attribution rules, so showing it is what
+            // lets a reader audit why an account was tied to the subject.
+            let _ = writeln!(
+                s,
+                "    │    recorded_at = {} ({})",
+                ev.recorded_at,
+                crate::util::timefmt::compact_utc(ev.recorded_at)
+            );
+            if let Some(v) = ev.verification {
+                let _ = writeln!(s, "    │    verification = {v:?}");
+            }
             for (k, v) in &ev.attributes {
                 if !v.is_empty() {
                     let _ = writeln!(s, "    │    {k} = {v}");
@@ -494,12 +526,19 @@ pub(crate) fn render_debug_bundle(
         }
     }
     for c in &correlations {
+        // `rank` (severity × max child C_eff) is what `correlations_for_scan`
+        // sorts this list by, and the web Correlations view prints it beside
+        // each hit. Showing it here too means a reader of the bundle can
+        // explain the ordering they are looking at instead of inferring it —
+        // and can see when a LOW-severity rule outranks a MEDIUM one because
+        // its child entities are far better corroborated.
         let _ = writeln!(
             s,
-            "  • [{}] {} ({}) — {}  · entities: {}",
+            "  • [{}] {} ({}, rank {:.2}) — {}  · entities: {}",
             c.rule_id,
             c.rule_name,
             c.severity,
+            c.rank,
             c.description,
             c.entity_uids.len()
         );
@@ -900,7 +939,10 @@ pub(crate) struct KeyPoolSummary {
     pub exhausted: usize,
     pub invalid: usize,
     pub revoked: usize,
-    pub avg_health: f64,
+    /// Mean health across the pool's *tested* keys, or `None` when every key is
+    /// still untested (no operational history to grade). Rendered as "n/a"
+    /// rather than a fabricated score in that case.
+    pub avg_health: Option<f64>,
 }
 
 impl KeyPoolSummary {
@@ -1330,9 +1372,13 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
     }
     for k in &inp.key_pool {
         let dead = if k.is_dead() { "  · ALL DEAD" } else { "" };
+        // "n/a" (not a fabricated 0.00) when no key has been exercised yet.
+        let health = k
+            .avg_health
+            .map_or_else(|| "n/a".to_string(), |h| format!("{h:.2}"));
         let _ = writeln!(
             s,
-            "  {:<14} {}/{} active · {} untested · {} rate-limited · {} exhausted · {} invalid · {} revoked · health {:.2}{}",
+            "  {:<14} {}/{} active · {} untested · {} rate-limited · {} exhausted · {} invalid · {} revoked · health {}{}",
             k.service,
             k.active,
             k.total,
@@ -1341,7 +1387,7 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             k.exhausted,
             k.invalid,
             k.revoked,
-            k.avg_health,
+            health,
             dead
         );
     }

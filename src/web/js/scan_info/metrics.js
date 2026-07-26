@@ -23,6 +23,15 @@ export async function renderMetrics(host, id){
     + stat('Graph density', pct(m.graph_density)+'%')
     + stat('Cross-scan', m.cross_scan_bridges)
     + stat('Mean conf', (Number(m.mean_confidence)||0).toFixed(2))
+    // Median sits beside the mean: a long candidate tail drags the mean down
+    // while the median reports the typical finding — the backend computes both,
+    // the view only showed the mean.
+    + (m.median_confidence!=null ? stat('Median conf', (Number(m.median_confidence)||0).toFixed(2)) : '')
+    // The k-core degeneracy and the size of that main core describe the
+    // structural HEART of the footprint (a redundantly-corroborated cluster vs a
+    // tree of one-off leads). Both were computed and dropped; surfaced only when
+    // there is a core (degeneracy ≥ 1) so an edgeless scan stays uncluttered.
+    + (m.graph_degeneracy ? stat('Core (k)', m.graph_degeneracy) + stat('Core size', m.main_core_size) : '')
     + stat('Sources', m.distinct_evidence_sources)
     + `</div>`;
 }

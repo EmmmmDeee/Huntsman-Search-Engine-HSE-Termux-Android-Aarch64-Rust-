@@ -229,13 +229,14 @@ pub(super) fn promote_multipath_corroborated(
     entities: &mut [Entity],
     relations: &[Relation],
 ) -> usize {
-    use crate::core::correlator::multipath_corroborated_links;
+    use crate::core::correlator::{RuleContext, multipath_corroborated_links};
     use crate::core::entity::Evidence;
 
     // Resolve the corroborated endpoints (and the reason for each) up front, so
     // the immutable borrow the detector takes on `entities` is released before
     // the mutable promotion walk below.
-    let links = multipath_corroborated_links(entities, relations);
+    let context = RuleContext::new(entities);
+    let links = multipath_corroborated_links(&context, relations);
     if links.is_empty() {
         return 0;
     }

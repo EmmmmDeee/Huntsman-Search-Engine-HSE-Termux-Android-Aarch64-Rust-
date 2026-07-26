@@ -30,6 +30,56 @@ pub async fn scan_entities(
     }
 }
 
+/// `GET /api/v1/scans/{id}/exposure` — the scan's **Exposure Index**: the
+/// calibrated 0–100 headline verdict with its transparent per-signal breakdown
+/// (breach exposure, sensitive PII, identifier surface, correlation severity).
+///
+/// [`crate::core::exposure::assess`] already headlines the CLI dossier and the
+/// debug bundle, but had no API consumer at all — so the operator working from
+/// the web console (the primary interface on a Termux/Android device, where
+/// there is no second terminal to run `hse export` in) never saw the one number
+/// that summarises the whole scan. Same assessment, same inputs, same
+/// candidate-gating as `/entities`, so the browser and the on-disk artifacts
+/// cannot disagree about how exposed a subject is.
+pub async fn scan_exposure(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    // Both reads are blocking SQLite work, so they share one off-reactor hop
+    // rather than two — matching how the other analysis handlers stay off the
+    // async runtime.
+    let loaded = tokio::task::spawn_blocking(move || {
+        let entities = store.entities_for_scan(&id2)?;
+        let correlations = store.correlations_for_scan(&id2)?;
+        Ok::<_, crate::core::error::Error>((entities, correlations))
+    })
+    .await;
+    match loaded {
+        Ok(Ok((mut entities, correlations))) => {
+            super::apply_candidate_gate(&mut entities, &params);
+            let idx = crate::core::exposure::assess(&entities, &correlations);
+            // `summary_line` is the exact headline the CLI prints, carried over
+            // so the web console can render the identical wording instead of
+            // reassembling it (and drifting from it) client-side.
+            Json(json!({
+                "score": idx.score,
+                "band": idx.band.label(),
+                "summary": idx.summary_line(),
+                "components": idx.components,
+            }))
+            .into_response()
+        }
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
+    }
+}
+
 /// `GET /api/v1/scans/{id}/diamond` — the scan's entities rolled up by **Diamond
 /// Model vertex** (`victim` / `infrastructure` / `capability`; `adversary` is a
 /// relational role the kind classifier never produces — see [`crate::core::diamond`]).

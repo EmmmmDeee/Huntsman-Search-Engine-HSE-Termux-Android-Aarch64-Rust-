@@ -39,10 +39,11 @@ use crate::util::oui;
 /// unfollowable). `entity_uids` carries the trackable MACs — the actionable
 /// subset — in entity order for a stable render.
 pub(in crate::core::correlator) fn rule_au_122_trackable_rf_device(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     /// A MacAddress entity is an RF observation (radar / WiGLE), not a
     /// breach-sourced BSSID, iff it carries one of these provenance tags.
     fn is_rf_observed(e: &Entity) -> bool {
@@ -138,7 +139,8 @@ mod tests {
         // but only the first is a followable device.
         let hw = rf_mac("3C:5A:B4:11:22:33", "bluetooth");
         let rnd = rf_mac("36:32:62:36:31:33", "bluetooth");
-        let out = rule_au_122_trackable_rf_device(&[hw.clone(), rnd.clone()], "s", 0);
+        let out =
+            rule_au_122_trackable_rf_device(&RuleContext::new(&[hw.clone(), rnd.clone()]), "s", 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rule_id, "AU-122");
         assert_eq!(out[0].severity, Severity::Medium);
@@ -158,7 +160,7 @@ mod tests {
         let a = rf_mac("36:32:62:36:31:33", "bluetooth");
         let b = rf_mac("7A:11:22:33:44:55", "wifi-ap"); // 0x7A U/L bit set
         assert!(
-            rule_au_122_trackable_rf_device(&[a, b], "s", 0).is_empty(),
+            rule_au_122_trackable_rf_device(&RuleContext::new(&[a, b]), "s", 0).is_empty(),
             "an all-randomized sweep has no trackable device"
         );
     }
@@ -170,7 +172,8 @@ mod tests {
         let breach_bssid = Entity::new(EntityKind::MacAddress, "3C:5A:B4:11:22:33", 0.6, "s");
         let rnd = rf_mac("36:32:62:36:31:33", "bluetooth");
         assert!(
-            rule_au_122_trackable_rf_device(&[breach_bssid, rnd], "s", 0).is_empty(),
+            rule_au_122_trackable_rf_device(&RuleContext::new(&[breach_bssid, rnd]), "s", 0)
+                .is_empty(),
             "only RF-observed MACs count toward a vicinity device finding"
         );
     }

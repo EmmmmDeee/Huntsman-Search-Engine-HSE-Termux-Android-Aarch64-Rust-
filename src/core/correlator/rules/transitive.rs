@@ -31,11 +31,12 @@ use crate::core::relation::identity_paths;
 /// link is filtered — it is covered by the direct-edge rules). Pair
 /// deduplication and deterministic ordering come from the primitive.
 pub(in crate::core::correlator) fn rule_au_060_transitive_identity_closure(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const MAX_HOPS: usize = 4;
     // Weakest-link confidence floor, mirroring AU-067's `MIN_CONF`. A transitive
     // chain is only as trustworthy as its weakest edge, so a path that routes
@@ -138,7 +139,8 @@ mod tests {
         ];
         let entities = [email, person, person2];
         assert!(
-            rule_au_060_transitive_identity_closure(&entities, &rels, "s", 0).is_empty(),
+            rule_au_060_transitive_identity_closure(&RuleContext::new(&entities), &rels, "s", 0)
+                .is_empty(),
             "a chain through a sub-0.50 damped edge must be suppressed"
         );
     }
@@ -156,7 +158,8 @@ mod tests {
             rel_conf(&person, &username, RelationKind::AssociatedWith, 0.60),
         ];
         let entities = [email, person, username];
-        let r = rule_au_060_transitive_identity_closure(&entities, &rels, "s", 0);
+        let r =
+            rule_au_060_transitive_identity_closure(&RuleContext::new(&entities), &rels, "s", 0);
         assert_eq!(
             r.len(),
             1,
@@ -175,7 +178,7 @@ mod tests {
             rel(&domain, &person, RelationKind::RegisteredBy),
         ];
         let r = rule_au_060_transitive_identity_closure(
-            &[email.clone(), domain.clone(), person.clone()],
+            &RuleContext::new(&[email.clone(), domain.clone(), person.clone()]),
             &rels,
             "s",
             0,
@@ -203,7 +206,8 @@ mod tests {
             rel(&n3, &uname, RelationKind::DerivedFrom),
         ];
         let entities = [email.clone(), n1, n2, n3, uname.clone()];
-        let r = rule_au_060_transitive_identity_closure(&entities, &rels, "s", 0);
+        let r =
+            rule_au_060_transitive_identity_closure(&RuleContext::new(&entities), &rels, "s", 0);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].severity, Severity::Low);
         assert!(r[0].entity_uids.contains(&email.uid));
@@ -217,7 +221,13 @@ mod tests {
         let person = mk(EntityKind::Person, "Alice Doe");
         let rels = [rel(&email, &person, RelationKind::DerivedFrom)];
         assert!(
-            rule_au_060_transitive_identity_closure(&[email, person], &rels, "s", 0).is_empty()
+            rule_au_060_transitive_identity_closure(
+                &RuleContext::new(&[email, person]),
+                &rels,
+                "s",
+                0
+            )
+            .is_empty()
         );
     }
 
@@ -234,8 +244,13 @@ mod tests {
             rel(&domain, &person, RelationKind::RegisteredBy),
         ];
         assert!(
-            rule_au_060_transitive_identity_closure(&[email, domain, person], &rels, "s", 0)
-                .is_empty()
+            rule_au_060_transitive_identity_closure(
+                &RuleContext::new(&[email, domain, person]),
+                &rels,
+                "s",
+                0
+            )
+            .is_empty()
         );
     }
 
@@ -246,7 +261,13 @@ mod tests {
         let domain = mk(EntityKind::Domain, "x.com");
         let rels = [rel(&email, &domain, RelationKind::BelongsToDomain)];
         assert!(
-            rule_au_060_transitive_identity_closure(&[email, domain], &rels, "s", 0).is_empty()
+            rule_au_060_transitive_identity_closure(
+                &RuleContext::new(&[email, domain]),
+                &rels,
+                "s",
+                0
+            )
+            .is_empty()
         );
     }
 
@@ -267,7 +288,8 @@ mod tests {
             rel(&mid2, &c, RelationKind::RegisteredBy),
         ];
         let entities = [a, mid, b, mid2, c];
-        let r = rule_au_060_transitive_identity_closure(&entities, &rels, "s", 0);
+        let r =
+            rule_au_060_transitive_identity_closure(&RuleContext::new(&entities), &rels, "s", 0);
         // (A,B) at 2 hops, (B,C) at 2 hops, (A,C) at 4 hops → 3 correlations
         assert_eq!(r.len(), 3);
         // Rule ids all AU-060
@@ -282,7 +304,15 @@ mod tests {
     fn au060_no_fire_when_relations_empty() {
         let email = mk(EntityKind::Email, "a@x.com");
         let person = mk(EntityKind::Person, "Alice");
-        assert!(rule_au_060_transitive_identity_closure(&[email, person], &[], "s", 0).is_empty());
+        assert!(
+            rule_au_060_transitive_identity_closure(
+                &RuleContext::new(&[email, person]),
+                &[],
+                "s",
+                0
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -308,7 +338,13 @@ mod tests {
         );
         // No path exists (phantom filtered out) → no firing
         assert!(
-            rule_au_060_transitive_identity_closure(&[email, person], &[r1, r2], "s", 0).is_empty()
+            rule_au_060_transitive_identity_closure(
+                &RuleContext::new(&[email, person]),
+                &[r1, r2],
+                "s",
+                0
+            )
+            .is_empty()
         );
     }
 }

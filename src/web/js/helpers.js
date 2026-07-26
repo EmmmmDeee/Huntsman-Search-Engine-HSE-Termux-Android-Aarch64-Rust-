@@ -21,6 +21,30 @@ export function fmtDuration(secs){
 export function fmtClock(){const d=new Date(),p=n=>String(n).padStart(2,'0');return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;}
 export function statusPill(s){const m={complete:'s-complete',running:'s-running',failed:'s-failed',pending:'s-pending',aborted:'s-aborted'};return `<span class="status-pill ${m[s]||'s-pending'}">${esc(s||'pending')}</span>`;}
 export function costPill(c){return `<span class="cost-pill cost-${attr(c)}">${esc(c)}</span>`;}
+// Render a per-service pool's mean health for a table cell, honestly. The
+// backend sends `avg_health: null` when a service has NO tested key yet (every
+// key is still Untested) — an untested key carries no operational history, so
+// its internal score defaults optimistically to ~0.97 and folding that in would
+// paint a wholly-unproven pool as "healthy". In that case show "untested", not
+// a fabricated percentage (and "—" for a genuinely empty pool). Otherwise the
+// value is the mean over the exercised keys only.
+export function healthCell(s){
+  const total = (s && s.total) || 0;
+  if (s == null || s.avg_health == null){
+    return total
+      ? '<span class="text-muted" title="no key exercised yet — health is unknown until the first real dispatch grades one">untested</span>'
+      : '<span class="text-muted">—</span>';
+  }
+  const pct = Math.round(s.avg_health*100);
+  // The score is a mean over the *tested* keys only; surface that population in
+  // a tooltip so the number is self-explanatory (and untested keys visibly do
+  // not count toward it). `tested` may be absent on older payloads.
+  const tested = s.tested;
+  const title = (tested != null)
+    ? `mean over ${tested} of ${total} key(s) that have been exercised${tested < total ? ` (${total - tested} still untested)` : ''}`
+    : 'mean health over exercised keys';
+  return `<span title="${attr(title)}">${pct}%</span>`;
+}
 // Flatten an EntityKind to a display string. Unit variants arrive as plain
 // strings; the catch-all `Other(s)` arrives as {"other":"…"} (externally-tagged
 // enum) and must become "other:…" rather than "[object Object]".
@@ -37,18 +61,21 @@ export function kindToStr(k){
 export function kindPill(k){const s=kindToStr(k);return `<span class="kind-pill k-${attr(s)}">${esc(s)}</span>`;}
 // Non-corroborating evidence sources — NOT independent intelligence, so they
 // must not count toward the C_eff boost. Mirrors the backend's
-// is_non_corroborating_source() exactly: the deterministic self-enrichment
-// passes ENRICHMENT_ONLY_SOURCES ('geo_normalize', 'name_intel', 'payid'),
-// the recall replay ('recall'), and the cross-scan history link
-// ('cross_scan_history'). This set previously carried only 2 of the 5 —
-// missing 'name_intel', 'payid', and 'cross_scan_history' — so an entity
-// corroborated only by those sources (e.g. a name-permuted email plus a
-// cross-scan hit) rendered a higher C_eff/tier in Browse than the server's
-// authoritative classification, reintroducing the exact over-credit bugs
-// those three exclusions exist to close (see the backend doc comments on
-// ENRICHMENT_ONLY_SOURCES/RECALL_SOURCE/CROSS_SCAN_SOURCE in
-// core::entity), just in the display layer instead of the confidence engine.
-export const ENRICHMENT_SOURCES = new Set(['geo_normalize', 'name_intel', 'payid', 'recall', 'cross_scan_history']);
+// is_non_corroborating_source() exactly — all SIX members: the deterministic
+// self-enrichment passes ENRICHMENT_ONLY_SOURCES ('geo_normalize',
+// 'name_intel', 'payid'), the recall replay ('recall'), the cross-scan history
+// link ('cross_scan_history'), and the breach-consensus grading summary
+// ('breach_consensus' = core::entity::CONSENSUS_SOURCE). Any omission
+// reintroduces over-credit: an entity corroborated only by these sources (e.g.
+// a name-permuted email plus a cross-scan hit, or a breach_consensus summary
+// plus one real source) renders a higher C_eff/tier in Browse than the
+// server's authoritative classification (CSV export, CLI dossier, debug
+// bundle) — the exact bug these exclusions exist to close, reopened in the
+// display layer. 'breach_consensus' was added to the backend set after this
+// JS copy was last synced and drifted out; keep the two in lockstep (see the
+// backend doc comments on ENRICHMENT_ONLY_SOURCES/RECALL_SOURCE/
+// CROSS_SCAN_SOURCE/CONSENSUS_SOURCE in core::entity).
+export const ENRICHMENT_SOURCES = new Set(['geo_normalize', 'name_intel', 'payid', 'recall', 'cross_scan_history', 'breach_consensus']);
 // Distinct corroborating sources drive the C_eff boost — must match the
 // backend's Entity::source_count() exactly, branch for branch: (1) evidence
 // exists with >=1 distinct non-enrichment source -> that distinct count; (2)

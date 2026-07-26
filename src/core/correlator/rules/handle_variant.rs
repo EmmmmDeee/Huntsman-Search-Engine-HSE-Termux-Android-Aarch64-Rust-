@@ -48,10 +48,11 @@ const MIN_STEM_LEN: usize = 5;
 /// from ≥2 distinct sources. `entity_uids` carries every variant's entity, in
 /// entity order, so the SPA can render the linked persona.
 pub(in crate::core::correlator) fn rule_au_123_numeric_variant_handle_persona(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     #[derive(Default)]
     struct Group {
         /// Distinct canonical handles sharing the stem (the variation count).
@@ -150,7 +151,11 @@ mod tests {
     fn au123_links_numeric_variants_across_sources() {
         let a = handle("jdiegmann", "github_user");
         let b = handle("jdiegmann92", "keybase");
-        let out = rule_au_123_numeric_variant_handle_persona(&[a.clone(), b.clone()], "s", 0);
+        let out = rule_au_123_numeric_variant_handle_persona(
+            &RuleContext::new(&[a.clone(), b.clone()]),
+            "s",
+            0,
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rule_id, "AU-123");
         assert_eq!(out[0].severity, Severity::Medium);
@@ -161,11 +166,11 @@ mod tests {
     #[test]
     fn au123_links_three_variants_by_shared_stem() {
         let out = rule_au_123_numeric_variant_handle_persona(
-            &[
+            &RuleContext::new(&[
                 handle("steven", "github_user"),
                 handle("steven90", "keybase"),
                 handle("steven_2024", "mastodon_user"), // separator + digits fold too
-            ],
+            ]),
             "s",
             0,
         );
@@ -178,10 +183,10 @@ mod tests {
         // Two numeric variants, but both from the SAME module — could be one
         // module's permutation output, not independent corroboration.
         let out = rule_au_123_numeric_variant_handle_persona(
-            &[
+            &RuleContext::new(&[
                 handle("jdiegmann", "github_user"),
                 handle("jdiegmann92", "github_user"),
-            ],
+            ]),
             "s",
             0,
         );
@@ -193,10 +198,10 @@ mod tests {
         // The SAME handle from two sources is exact reuse (AU-011's job), not a
         // numeric variant — one distinct canonical, so AU-123 stays silent.
         let out = rule_au_123_numeric_variant_handle_persona(
-            &[
+            &RuleContext::new(&[
                 handle("jdiegmann", "github_user"),
                 handle("jdiegmann", "keybase"),
-            ],
+            ]),
             "s",
             0,
         );
@@ -209,7 +214,7 @@ mod tests {
         // nothing — too common to attribute a persona.
         assert!(
             rule_au_123_numeric_variant_handle_persona(
-                &[handle("dev", "github_user"), handle("dev92", "keybase")],
+                &RuleContext::new(&[handle("dev", "github_user"), handle("dev92", "keybase")]),
                 "s",
                 0
             )
@@ -218,10 +223,10 @@ mod tests {
         );
         assert!(
             rule_au_123_numeric_variant_handle_persona(
-                &[
+                &RuleContext::new(&[
                     handle("support", "github_user"),
                     handle("support2", "keybase")
-                ],
+                ]),
                 "s",
                 0
             )
@@ -239,10 +244,10 @@ mod tests {
         // credential reuse (AU-105): shared popularity is not shared identity.
         assert!(
             rule_au_123_numeric_variant_handle_persona(
-                &[
+                &RuleContext::new(&[
                     handle("dragon1", "github_user"),
                     handle("dragon2", "keybase")
-                ],
+                ]),
                 "s",
                 0
             )
@@ -251,10 +256,10 @@ mod tests {
         );
         assert!(
             rule_au_123_numeric_variant_handle_persona(
-                &[
+                &RuleContext::new(&[
                     handle("michael1", "github_user"),
                     handle("michael2", "keybase")
-                ],
+                ]),
                 "s",
                 0
             )
@@ -277,11 +282,11 @@ mod tests {
         // canonical figure (2), or the finding text would understate what it
         // actually lists.
         let out = rule_au_123_numeric_variant_handle_persona(
-            &[
+            &RuleContext::new(&[
                 handle("jdiegmann_92", "github_user"), // canonical: jdiegmann92
                 handle("jdiegmann-92", "keybase"),     // canonical: jdiegmann92 (same!)
                 handle("jdiegmann87", "mastodon_user"), // canonical: jdiegmann87 (distinct)
-            ],
+            ]),
             "s",
             0,
         );
@@ -303,7 +308,8 @@ mod tests {
         let mut d2 = Entity::new(EntityKind::Domain, "jdiegmann92.com", 0.8, "s");
         d2.add_evidence(Evidence::new("dns_intel", "found"));
         assert!(
-            rule_au_123_numeric_variant_handle_persona(&[d1, d2], "s", 0).is_empty(),
+            rule_au_123_numeric_variant_handle_persona(&RuleContext::new(&[d1, d2]), "s", 0)
+                .is_empty(),
             "AU-123 is a Username-only persona rule"
         );
     }

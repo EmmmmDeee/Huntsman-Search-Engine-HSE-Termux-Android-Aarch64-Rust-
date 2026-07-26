@@ -31,6 +31,9 @@ export const API = {
   scan:      id=>API._req('/api/v1/scans/'+encodeURIComponent(id)),
   entities:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/entities'),
   correlations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/correlations'),
+  // The calibrated 0–100 Exposure Index + its per-signal breakdown — the same
+  // headline verdict the CLI dossier and debug bundle open with.
+  exposure:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/exposure'),
   relations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/relations'),
   // Paired stealer-log credential rows (login+password+domain+machine, kept
   // together) — powers the Stealer Logs Viewer sub-tab.

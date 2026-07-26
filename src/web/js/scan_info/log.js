@@ -27,6 +27,9 @@ import { API } from '/static/js/api.js';
    a monotonic per-event id on the engine side. */
 export async function renderLog(host, scan){
   const running = scan.status==='running' || scan.status==='pending';
+  // Fresh tally per view — otherwise opening a second scan's log would add its
+  // events to the previous scan's breakdown.
+  typeCounts.clear();
   host.innerHTML = `
     <div class="panel panel-default">
       <div class="panel-heading">
@@ -41,11 +44,19 @@ export async function renderLog(host, scan){
         </div>
       </div>
       <div class="panel-body" style="padding:0">
+        <div id="log-bytype" class="text-muted"
+             style="display:none;padding:6px 10px;border-bottom:1px solid var(--border,#eee);font-size:11px"></div>
         <div id="log-box"><div class="empty-state"><p>Fetching event history…</p></div></div>
       </div>
     </div>
   `;
-  $('#log-clear').addEventListener('click', ()=>{ $('#log-box').innerHTML=''; });
+  // Clearing the rows clears the breakdown with them — it describes what is
+  // shown, so leaving stale counts above an empty box would misreport.
+  $('#log-clear').addEventListener('click', ()=>{
+    $('#log-box').innerHTML='';
+    typeCounts.clear();
+    renderTypeCounts();
+  });
   // "Save shown" — serialise exactly the rendered rows to a .log file. This is
   // the always-available path: it captures a live/streaming scan's rows as they
   // appear, and works even when the server-side history fetch failed (the
@@ -162,8 +173,38 @@ export async function renderLog(host, scan){
     status.textContent = history.length ? `${history.length} events` : 'not streaming';
   }
 }
+/* ── "By type" breakdown ──
+   The Rust event-log renderer (`render_event_log`, cli/export/renderers.rs)
+   prints a per-event-kind histogram above the timeline, and the debug bundle's
+   SCAN SEQUENCE reuses it — so both on-disk renderings answer "how many
+   entities / skips / errors was that?" at a glance. The browser log showed only
+   the timeline, leaving the operator to count 764 rows by eye. Same data, same
+   summary, tallied client-side from the rows already in hand (no extra
+   round-trip), and kept live as SSE rows stream in. */
+const typeCounts = new Map();
+export function bumpTypeCount(type){
+  if (!type) return;
+  typeCounts.set(type, (typeCounts.get(type) || 0) + 1);
+}
+export function renderTypeCounts(){
+  const host = $('#log-bytype'); if (!host) return;
+  if (!typeCounts.size){ host.style.display = 'none'; return; }
+  // Sorted by type name, matching render_event_log's BTreeMap ordering so the
+  // on-screen breakdown lists in the same order as the downloaded log.
+  const parts = Array.from(typeCounts.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([t, n]) => `<span style="display:inline-block;margin-right:12px"><code>${esc(t)}</code> <b>${n}</b></span>`);
+  const total = Array.from(typeCounts.values()).reduce((a, b) => a + b, 0);
+  host.innerHTML = `<b>By type</b> <span style="margin-right:12px">(${total} event${total===1?'':'s'})</span>${parts.join('')}`;
+  host.style.display = '';
+}
+
 export function appendLog(ev, ts){
   const box = $('#log-box'); if (!box) return;
+  // Count every rendered row exactly once — history rows and live SSE rows both
+  // land here — so the breakdown always describes precisely what is on screen.
+  bumpTypeCount(ev && ev.type);
+  renderTypeCounts();
   const m = mapEvent(ev);
   const row = document.createElement('div');
   row.className = `log-row lv-${m.lv}`;
@@ -186,7 +227,19 @@ export function mapEvent(ev){
   if (t==='module_done')    return {typ:'module', lv:'ok',    msg:`✓ ${esc(ev.module)} <span class="text-muted">(${ev.found} found)</span>`};
   if (t==='module_error')   return {typ:'module', lv:'err',   msg:`✗ ${esc(ev.module)} <span class="text-muted">${esc(ev.error)}</span>`};
   if (t==='module_skipped') return {typ:'module', lv:'skip',  msg:`◌ ${esc(ev.module)} <span class="text-muted">${esc(ev.reason)}</span>`};
-  if (t==='entity_found')   return {typ:'entity', lv:'found', msg:`${kindPill(ev.entity?.kind)} ${esc(ev.entity?.value)}`};
+  // Confidence and the candidate marker are part of the line, not decoration:
+  // the Rust twin (`EventKind::log_summary`, core/event/mod.rs) renders
+  // "+ {kind}  {value}  ·{conf}{  (candidate)}", and the downloaded events.log
+  // / debug-bundle sequence therefore carry both. Dropping them here made the
+  // on-screen log disagree with the on-disk one for every single entity row —
+  // a 0.30 speculative username read identically to a 0.95 observed AP.
+  if (t==='entity_found'){
+    const e = ev.entity || {};
+    const conf = typeof e.confidence === 'number' ? e.confidence.toFixed(2) : null;
+    const cand = (e.tags||[]).includes('candidate') ? ' <span class="text-muted">(candidate)</span>' : '';
+    return {typ:'entity', lv:'found',
+      msg:`${kindPill(e.kind)} ${esc(e.value)}${conf!=null?` <span class="text-muted">·${esc(conf)}</span>`:''}${cand}`};
+  }
   if (t==='scan_start')     return {typ:'scan',   lv:'info',  msg:`scan started · ${esc(ev.target_kind)}=${esc(ev.target_value)}`};
   if (t==='scan_complete')  return {typ:'scan',   lv:'ok',    msg:`scan complete · ${ev.entity_count} entities`};
   if (t==='expansion_tick') return {typ:'expand', lv:'info',  msg:`depth ${ev.depth} · queued ${ev.queued} · visited ${ev.visited}`};

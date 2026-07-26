@@ -34,10 +34,11 @@ const CREATOR_CATEGORIES: &[&str] = &["cat:fans", "cat:cam", "cat:adult"];
 /// profiles, names their platforms, and emits one finding. `entity_uids`
 /// carries the profile entities in entity order.
 pub(in crate::core::correlator) fn rule_au_120_monetized_creator_exposure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::BTreeSet;
 
     let mut platforms: BTreeSet<String> = BTreeSet::new();
@@ -124,7 +125,9 @@ mod tests {
     #[test]
     fn au120_fires_on_a_confirmed_creator_profile() {
         let a = creator_profile("https://onlyfans.com/rhino", "OnlyFans", "fans", true);
-        let out = rule_au_120_monetized_creator_exposure(std::slice::from_ref(&a), "s", 0);
+        let ents = [a.clone()];
+        let ctx = RuleContext::new(&ents);
+        let out = rule_au_120_monetized_creator_exposure(&ctx, "s", 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rule_id, "AU-120");
         assert_eq!(out[0].severity, Severity::Medium);
@@ -139,7 +142,8 @@ mod tests {
             creator_profile("https://chaturbate.com/x", "Chaturbate", "cam", true),
             creator_profile("https://pornhub.com/model/x", "Pornhub", "adult", true),
         ];
-        let out = rule_au_120_monetized_creator_exposure(&ents, "s", 0);
+        let ctx = RuleContext::new(&ents);
+        let out = rule_au_120_monetized_creator_exposure(&ctx, "s", 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].severity, Severity::High);
     }
@@ -147,8 +151,10 @@ mod tests {
     #[test]
     fn au120_ignores_status_only_weak_detections() {
         let a = creator_profile("https://onlyfans.com/x", "OnlyFans", "fans", false);
+        let ents = [a];
+        let ctx = RuleContext::new(&ents);
         assert!(
-            rule_au_120_monetized_creator_exposure(std::slice::from_ref(&a), "s", 0).is_empty(),
+            rule_au_120_monetized_creator_exposure(&ctx, "s", 0).is_empty(),
             "a status-only creator hit is not a confirmed profile"
         );
     }
@@ -159,7 +165,8 @@ mod tests {
         let dating = creator_profile("https://tinder.com/x", "Tinder", "dating", true);
         let dev = creator_profile("https://github.com/x", "GitHub", "dev", true);
         assert!(
-            rule_au_120_monetized_creator_exposure(&[dating, dev], "s", 0).is_empty(),
+            rule_au_120_monetized_creator_exposure(&RuleContext::new(&[dating, dev]), "s", 0)
+                .is_empty(),
             "only fans/cam/adult categories are creator exposure"
         );
     }

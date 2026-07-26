@@ -20,11 +20,12 @@ use crate::core::relation::connection_templates;
 
 /// AU-064 — Generalized pathway template.
 pub(in crate::core::correlator) fn rule_au_064_generalized_pathway_template(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const MAX_HOPS: usize = 4;
 
     let mut out = Vec::new();
@@ -90,8 +91,12 @@ mod tests {
             rel(&e2, &d2, RelationKind::BelongsToDomain),
             rel(&d2, &p2, RelationKind::RegisteredBy),
         ];
-        let out =
-            rule_au_064_generalized_pathway_template(&[e1, d1, p1, e2, d2, p2], &rels, "s", 0);
+        let out = rule_au_064_generalized_pathway_template(
+            &RuleContext::new(&[e1, d1, p1, e2, d2, p2]),
+            &rels,
+            "s",
+            0,
+        );
         assert_eq!(
             out.len(),
             1,
@@ -111,6 +116,14 @@ mod tests {
             rel(&e1, &d1, RelationKind::BelongsToDomain),
             rel(&d1, &p1, RelationKind::RegisteredBy),
         ];
-        assert!(rule_au_064_generalized_pathway_template(&[e1, d1, p1], &rels, "s", 0).is_empty());
+        assert!(
+            rule_au_064_generalized_pathway_template(
+                &RuleContext::new(&[e1, d1, p1]),
+                &rels,
+                "s",
+                0
+            )
+            .is_empty()
+        );
     }
 }

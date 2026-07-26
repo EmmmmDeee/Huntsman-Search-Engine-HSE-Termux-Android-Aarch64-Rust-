@@ -85,7 +85,8 @@ pub fn entities_to_gexf(entities: &[Entity], relations: &[Relation], scan_id: &s
 
 /// XML header, `<meta>`, the `<graph>` open tag, and the node attribute
 /// declarations (kind / confidence / c_effective / classification /
-/// corroboration). Leaves `xml` positioned to receive `<nodes>`.
+/// corroboration / coreness / tags / diamond_vertex / generation). Leaves `xml`
+/// positioned to receive `<nodes>`.
 fn write_preamble(xml: &mut String, scan_id: &str) {
     let _ = writeln!(xml, r#"<?xml version="1.0" encoding="UTF-8"?>"#);
     let _ = writeln!(xml, r#"<gexf xmlns="http://gexf.net/1.3" version="1.3">"#);
@@ -139,10 +140,19 @@ fn write_preamble(xml: &mut String, scan_id: &str) {
         xml,
         r#"      <attribute id="7" title="diamond_vertex" type="string"/>"#
     );
+    // `generation` — how many pivots out from the seed this node was found
+    // (0 = the seed itself). Exported so a Gephi analyst can size/colour the
+    // graph by expansion depth and see the pivot frontier at a glance. The
+    // debug bundle and the CSV export already carry it; GEXF was the last graph
+    // artifact dropping it.
+    let _ = writeln!(
+        xml,
+        r#"      <attribute id="8" title="generation" type="integer"/>"#
+    );
     let _ = writeln!(xml, r#"    </attributes>"#);
 }
 
-/// One `<node>` element with its eight `<attvalue>`s. The id is the truncated
+/// One `<node>` element with its nine `<attvalue>`s. The id is the truncated
 /// uid (see [`short_uid`]) so relation/co-occurrence edges can reference it.
 /// `coreness` is the k-core index (0 = isolated periphery, higher = more
 /// deeply embedded in a densely-connected cluster). `tags` is `|`-joined (the
@@ -199,6 +209,12 @@ fn write_node(xml: &mut String, e: &Entity, coreness: usize) {
         xml,
         r#"          <attvalue for="7" value="{}"/>"#,
         e.diamond_vertex().as_str()
+    );
+    // Expansion depth (hops from the seed) — integer, XML-safe by construction.
+    let _ = writeln!(
+        xml,
+        r#"          <attvalue for="8" value="{}"/>"#,
+        e.generation
     );
     let _ = writeln!(xml, r#"        </attvalues>"#);
     let _ = writeln!(xml, r#"      </node>"#);

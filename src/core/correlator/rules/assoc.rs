@@ -230,10 +230,11 @@ fn residence_groups(entities: &[Entity]) -> std::collections::BTreeMap<String, G
 /// ≥2 *distinct person names* — two of one person's own emails at one address is
 /// not an association, so the anchor is named people, not raw handle count.
 pub(in crate::core::correlator) fn rule_au_049_shared_address_association(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Cheap precondition: every firing needs ≥2 distinct persons in one group,
     // so fewer than two Person entities anywhere means no household can form —
     // bail before building the residence-group map.
@@ -284,10 +285,11 @@ pub(in crate::core::correlator) fn rule_au_049_shared_address_association(
 /// the cluster must contain ≥2 *distinct person names*, never one person's two
 /// addresses on a single line.
 pub(in crate::core::correlator) fn rule_au_050_shared_phone_association(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Cheap precondition: every firing needs ≥2 distinct persons on one line, so
     // fewer than two Person entities anywhere means no association can form.
     if entities
@@ -374,10 +376,11 @@ pub(in crate::core::correlator) fn rule_au_050_shared_phone_association(
 /// asserting a confirmed kin pivot at Critical would be a confident false
 /// claim.
 pub(in crate::core::correlator) fn rule_au_051_shared_surname_kin(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Cheap precondition: kin needs ≥2 distinct persons sharing a residence, so
     // fewer than two Person entities anywhere can never fire — bail before
     // building the residence-group map.

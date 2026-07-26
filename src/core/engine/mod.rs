@@ -1306,7 +1306,8 @@ impl ScanEngine {
         let mut rels = relations.clone();
         rels.extend(crate::core::relation::derive_all(&ents, scan_id));
 
-        let probes = crate::core::correlator::gap_fill_probes(&ents, &rels);
+        let context = crate::core::correlator::RuleContext::new(&ents);
+        let probes = crate::core::correlator::gap_fill_probes(&context, &rels);
         if probes.is_empty() {
             return 0;
         }
@@ -2442,8 +2443,9 @@ fn learn_cross_scan_pathway_templates(
         // The fragile single-route identity pairs (a<b) — exactly AU-063's
         // notion of an uncorroborated link, via the shared detector so the
         // gap the lead flags is the gap the engine fills.
+        let context = crate::core::correlator::RuleContext::new(&ents);
         let fragile: HashSet<(String, String)> =
-            crate::core::correlator::single_route_identity_links(&ents, &rels)
+            crate::core::correlator::single_route_identity_links(&context, &rels)
                 .into_iter()
                 .map(|l| (l.a_uid, l.b_uid))
                 .collect();

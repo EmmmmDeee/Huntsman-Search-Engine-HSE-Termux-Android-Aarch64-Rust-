@@ -149,7 +149,14 @@ impl<'a> Linkage<'a> {
                 "MEDIUM" => "🟡 MEDIUM",
                 _ => "🔵 LOW",
             };
-            println!("  {} [{}] {}", c.rule_id, sev, c.rule_name);
+            // Correlations arrive ranked (severity × max child C_eff, applied in
+            // `correlations_for_scan`), and both the web view and the debug
+            // bundle print that score. Printing it here as well keeps the live
+            // dossier's ordering self-explanatory rather than looking arbitrary.
+            println!(
+                "  {} [{}] {}  (rank {:.2})",
+                c.rule_id, sev, c.rule_name, c.rank
+            );
             println!("    {}", c.description);
             println!();
         }

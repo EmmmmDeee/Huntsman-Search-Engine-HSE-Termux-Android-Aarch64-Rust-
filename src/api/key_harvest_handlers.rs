@@ -63,9 +63,19 @@ pub async fn keys_harvest(ConnectInfo(peer): ConnectInfo<SocketAddr>) -> impl In
 }
 
 /// The `vault` section: total count, the OSINT-provider census (category +
-/// service + how many keys), and the most recently seen OSINT entries
-/// (masked, with each service's ROI tier attached for the dashboard's
-/// "prioritise these" ordering).
+/// service + how many keys), and the most recently seen entries — **every**
+/// harvested key, not just OSINT/recon ones (masked, with each service's ROI
+/// tier and OSINT category attached for the dashboard's "prioritise these"
+/// ordering).
+///
+/// The recent list is deliberately drawn from [`key_vault::all_entries`], not
+/// [`key_vault::osint_entries`]: `total_count` counts every key ever seen, so
+/// feeding the entry list from the OSINT-only subset left the dashboard
+/// claiming "N key(s) ever seen" above an empty table whenever those N keys
+/// were generic infra (AWS, Stripe, JWTs, …) rather than catalogued OSINT
+/// tooling — the count and the rows disagreed. The census stays OSINT-only (its
+/// job is to profile practitioner tooling); the `category` field is `null` on
+/// an infra key so the client can tag it accordingly.
 fn vault_block() -> Value {
     let total = key_vault::total_count();
     let census: Vec<Value> = key_vault::osint_provider_census()
@@ -79,7 +89,11 @@ fn vault_block() -> Value {
             })
         })
         .collect();
-    let recent: Vec<Value> = key_vault::osint_entries()
+    // `all_entries()` is already ordered most-recently-seen first, so a simple
+    // `take` yields the recent-activity view across the whole bank.
+    let all = key_vault::all_entries();
+    let osint_total = all.iter().filter(|e| e.is_osint()).count();
+    let recent: Vec<Value> = all
         .into_iter()
         .take(RECENT_ENTRIES_LIMIT)
         .map(|e| {
@@ -97,6 +111,7 @@ fn vault_block() -> Value {
         .collect();
     json!({
         "total_count": total,
+        "osint_count": osint_total,
         "osint_provider_census": census,
         "recent": recent,
         "recent_limit": RECENT_ENTRIES_LIMIT,
@@ -123,6 +138,7 @@ fn pool_block() -> Value {
                 "revoked": q.revoked,
                 "uses": q.uses,
                 "errors": q.errors,
+                "tested": q.tested,
                 "avg_health": q.avg_health,
                 "roi_tier": key_roi::classify(&q.service).label(),
             })
@@ -203,6 +219,9 @@ async fn accounts_block() -> Value {
         "wigle": {
             "verified": wigle_status.verified,
             "user": wigle_status.user,
+            // When the `/profile/user` probe last ran (unix seconds), so the
+            // card can show the check's freshness; `null` if never polled.
+            "last_polled_ts": wigle_status.last_polled_ts,
         },
     })
 }
@@ -219,8 +238,14 @@ mod tests {
         // present with the right JSON type.
         let v = vault_block();
         assert!(v["total_count"].is_u64());
+        assert!(v["osint_count"].is_u64());
+        // The OSINT subset can never exceed the whole bank.
+        assert!(v["osint_count"].as_u64().unwrap() <= v["total_count"].as_u64().unwrap());
         assert!(v["osint_provider_census"].is_array());
         assert!(v["recent"].is_array());
+        // The recent list is capped but otherwise tracks the full bank, so it can
+        // never report more rows than the vault holds keys.
+        assert!(v["recent"].as_array().unwrap().len() as u64 <= v["total_count"].as_u64().unwrap());
         assert_eq!(v["recent_limit"], RECENT_ENTRIES_LIMIT);
         for row in v["osint_provider_census"].as_array().unwrap() {
             assert!(row["category"].is_string());
@@ -248,6 +273,14 @@ mod tests {
                 row["roi_tier"].as_str(),
                 Some("multiplier" | "expansion" | "terminal")
             ));
+            // Health is honest about the unknown: a number when at least one key
+            // has been exercised, JSON `null` ("untested") when none have.
+            let h = &row["avg_health"];
+            assert!(h.is_null() || h.is_f64(), "avg_health is null or a float");
+            assert!(row["tested"].is_u64());
+            // A null health must coincide with zero tested keys, and vice-versa —
+            // the two can never disagree.
+            assert_eq!(h.is_null(), row["tested"].as_u64() == Some(0));
         }
     }
 
@@ -267,5 +300,8 @@ mod tests {
         // is the well-formed "not observed yet" state, not an omission.
         assert!(a["oathnet"]["real_quota"].is_null());
         assert!(a["wigle"].get("verified").is_some());
+        // The WiGLE probe's freshness timestamp is always present (value may be
+        // `null` when never polled) so the card can render "checked …".
+        assert!(a["wigle"].get("last_polled_ts").is_some());
     }
 }

@@ -19,10 +19,11 @@ use super::*;
 /// or only addresses, yields nothing (there is nothing to cross-check). Pure
 /// over the confirmed entity set.
 pub(in crate::core::correlator) fn rule_au_056_jurisdiction_cross_check(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::{BTreeMap, BTreeSet};
 
     // state -> contributing uids, for each signal class.
@@ -150,10 +151,11 @@ fn join_slash<'a>(it: impl Iterator<Item = &'a str>) -> String {
 /// [`crate::util::address_au::au_phone_region`]), so it fires on any AU Phone
 /// entity — imported numbers too, not only `phone_au`-tagged ones. Pure.
 pub(in crate::core::correlator) fn rule_au_085_phone_region_jurisdiction(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::{BTreeMap, BTreeSet};
 
     // The union of state codes implied by every AU geographic phone, the region
@@ -275,10 +277,11 @@ fn plural(n: usize) -> &'static str {
 /// value itself (via [`crate::util::address_au::au_phone_line_type`]), so it
 /// fires on any AU `Phone` entity. Pure over the confirmed set.
 pub(in crate::core::correlator) fn rule_au_102_phone_line_type_profile(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use crate::util::address_au::AuLineType;
     use crate::util::address_au::au_phone_line_type;
     use crate::util::address_au::au_phone_region;

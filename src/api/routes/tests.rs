@@ -278,6 +278,38 @@ use super::*;
     }
 
     #[test]
+    fn embedded_spa_surfaces_the_exposure_index() {
+        // `core::exposure::assess` headlines the CLI dossier and the debug
+        // bundle, but had no API consumer at all — so the web console (the only
+        // interface on a Termux/Android device without a second terminal) never
+        // showed the calibrated 0–100 verdict that summarises the whole scan.
+        // Guard both ends of the wire so it cannot go dead again.
+        let api = app_file("js/api.js");
+        assert!(
+            api.contains("/exposure"),
+            "SPA must fetch the per-scan /exposure endpoint"
+        );
+        let info = app_file("js/scan_info/info.js");
+        assert!(
+            info.contains("API.exposure("),
+            "the Info tab must call API.exposure()"
+        );
+        assert!(
+            info.contains("Exposure Index"),
+            "the Exposure Index panel must be rendered"
+        );
+        // Every component field the backend serialises must be consumed — a
+        // breakdown that drops `detail` or `max` reduces the transparent
+        // per-signal explanation to a bare number.
+        for field in ["c.name", "c.score", "c.max", "c.detail"] {
+            assert!(
+                info.contains(field),
+                "the Exposure breakdown must render {field}"
+            );
+        }
+    }
+
+    #[test]
     fn embedded_spa_wires_the_autonomous_plan_and_sweep_endpoints() {
         // The autonomous loop's read-only queue preview (/scan/auto/plan) and the
         // multi-target sweep (/scan/auto/sweep) are routed + tested server-side but
@@ -536,18 +568,40 @@ use super::*;
         // used by `sourceCount()`/`effC()` in spa.html to reproduce
         // `Entity::c_effective()` for Browse) must exclude exactly the same
         // evidence sources as the backend's authoritative
-        // `is_non_corroborating_source()`. It once carried only 2 of the 5 real
-        // exclusions (missing `name_intel`, `payid`, `cross_scan_history`), so
-        // an entity corroborated only by one of those rendered a higher
+        // `is_non_corroborating_source()`. It once carried only 2 of the real
+        // exclusions (missing `name_intel`, `payid`, `cross_scan_history`), and
+        // later lagged again on `breach_consensus`, so an entity corroborated
+        // only by one of those rendered a higher
         // C_eff/tier in Browse than the server's own classification —
         // reintroducing, client-side, the exact over-credit bugs those
         // exclusions were added to close.
-        use crate::core::entity::{CROSS_SCAN_SOURCE, ENRICHMENT_ONLY_SOURCES, RECALL_SOURCE};
+        //
+        // NOTE when adding a new non-corroborating source: append its constant
+        // to `expected` below as well. This list is a hand-assembled mirror of
+        // `is_non_corroborating_source`'s arms (a predicate's domain can't be
+        // enumerated), so it is itself drift-prone — it once omitted
+        // `CONSENSUS_SOURCE` after that arm was added, which made this guard
+        // demand the *stale* 5-member set and fail the corrected 6-member SPA
+        // copy. The `is_non_corroborating_source` assertion below catches the
+        // reverse slip (a constant listed here that the predicate no longer
+        // excludes).
+        use crate::core::entity::{
+            CONSENSUS_SOURCE, CROSS_SCAN_SOURCE, ENRICHMENT_ONLY_SOURCES, RECALL_SOURCE,
+            is_non_corroborating_source,
+        };
         let expected: Vec<&str> = ENRICHMENT_ONLY_SOURCES
             .iter()
             .copied()
-            .chain([RECALL_SOURCE, CROSS_SCAN_SOURCE])
+            .chain([RECALL_SOURCE, CROSS_SCAN_SOURCE, CONSENSUS_SOURCE])
             .collect();
+        for name in &expected {
+            assert!(
+                is_non_corroborating_source(name),
+                "`{name}` is listed as an expected exclusion but the backend's \
+                 is_non_corroborating_source() no longer excludes it — this \
+                 guard's mirror of the predicate has gone stale"
+            );
+        }
         let js = app_file("js/helpers.js")
             .split_once("const ENRICHMENT_SOURCES = new Set([")
             .and_then(|(_, rest)| rest.split_once(']'))
