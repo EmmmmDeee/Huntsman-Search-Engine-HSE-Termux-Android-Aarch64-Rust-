@@ -10,7 +10,7 @@ use crate::{
         port::{EVENTS_MAX_ROWS, EVENTS_RETENTION_SECS, RAW_ARCHIVE_MAX_ROWS, StoragePort},
     },
     default_db_path,
-    modules::registry,
+    modules::{module_runtime, registry},
     storage::Store,
 };
 
@@ -32,7 +32,12 @@ pub fn build_runtime(bus_capacity: usize) -> Result<ApplicationRuntime> {
     let _ = db.prune_raw_archive(RAW_ARCHIVE_MAX_ROWS);
     let store: Arc<dyn StoragePort> = Arc::new(db);
     let (bus, _rx) = tokio::sync::broadcast::channel(bus_capacity);
-    let engine = Arc::new(ScanEngine::new(registry(), Arc::clone(&store), bus.clone()));
+    let engine = Arc::new(ScanEngine::with_module_runtime(
+        registry(),
+        Arc::clone(&store),
+        bus.clone(),
+        module_runtime(),
+    ));
     Ok(ApplicationRuntime { store, bus, engine })
 }
 

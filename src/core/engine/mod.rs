@@ -84,6 +84,7 @@ use crate::core::{
     error::{Error, Result},
     event::{Event, EventBus, EventKind},
     module::{Module, ModuleContext},
+    module_runtime::{ModuleRuntime, NoopModuleRuntime},
     port::StoragePort,
     relation::{Relation, RelationKind},
     scan::{Scan, ScanOptions, ScanStatus, Target, TargetKind},
@@ -102,6 +103,8 @@ pub struct ScanEngine {
     /// Handle to the DB-writer actor; used to flush pending events at scan
     /// completion before returning the finished scan to the caller.
     writer: DbWriter,
+    /// Module-owned effects supplied by the application composition root.
+    module_runtime: Arc<dyn ModuleRuntime>,
 }
 
 /// Reason an expansion round stopped before depth was exhausted.
@@ -286,10 +289,16 @@ impl EventEmitter {
 }
 
 impl ScanEngine {
-    pub fn new(
+    pub fn new(modules: Vec<Arc<dyn Module>>, store: Arc<dyn StoragePort>, bus: EventBus) -> Self {
+        Self::with_module_runtime(modules, store, bus, Arc::new(NoopModuleRuntime))
+    }
+
+    /// Construct an engine with explicit module-layer runtime effects.
+    pub fn with_module_runtime(
         mut modules: Vec<Arc<dyn Module>>,
         store: Arc<dyn StoragePort>,
         bus: EventBus,
+        module_runtime: Arc<dyn ModuleRuntime>,
     ) -> Self {
         modules.sort_by_key(|m| std::cmp::Reverse(m.priority()));
         let writer = DbWriter::spawn(Arc::clone(&store));
@@ -302,6 +311,7 @@ impl ScanEngine {
             emitter,
             graph,
             writer,
+            module_runtime,
         }
     }
 
@@ -498,9 +508,8 @@ impl ScanEngine {
         // Reset every module's per-scan state — rate budgets + the foreign-API-key
         // sink — so long-lived processes (`hse serve` / `hse live`) get a fresh
         // budget per scan, and this scan reports only the keys IT retrieves.
-        // Driven through the module-hook registry so core stays module-agnostic
-        // (see `core::hooks`).
-        crate::core::hooks::reset_per_scan(&scan.id);
+        // Driven through the injected module runtime so core stays module-agnostic.
+        self.module_runtime.reset_per_scan(&scan.id);
         // The regional-search ambient is already established by
         // `run_with_ledger` (the caller), which wraps this whole function's
         // future in `util::regional::with_regional` — nothing to do here.
@@ -814,6 +823,7 @@ impl ScanEngine {
     ) -> Result<Scan> {
         let store = Arc::clone(&self.store);
         let emitter = self.emitter.clone();
+        let module_runtime = Arc::clone(&self.module_runtime);
         // Snapshot the cancellation state before crossing into the blocking
         // thread: CancellationToken is not 'static and cannot be moved.
         let cancelled = ctx.cancel.is_cancelled();
@@ -822,7 +832,8 @@ impl ScanEngine {
             // endpoint responses, run the finalise-time offline enrichment passes,
             // then persist the batch (falling back to per-entity upserts on a
             // rolled-back transaction) — see each phase helper's own doc comment.
-            let mut entities = merge_found_keys_and_flatten(&scan.id, entity_map);
+            let mut entities =
+                merge_found_keys_and_flatten(module_runtime.as_ref(), &scan.id, entity_map);
             apply_finalise_enrichment_passes(store.as_ref(), &scan.id, &mut entities);
             let total = entities.len();
             let (persisted, first_err) =
@@ -1724,7 +1735,7 @@ impl ScanEngine {
             // Refresh SeekNow's per-round budget so it is utilised in EVERY
             // iteration (not just until a wide first round drains it). The
             // per-session ceiling still bounds total volume across all rounds.
-            crate::core::hooks::refresh_round_budget();
+            self.module_runtime.refresh_round_budget();
 
             if ctx.cancel.is_cancelled() {
                 let stop = StopReason::Cancelled;
@@ -2264,9 +2275,13 @@ pub(crate) const LOCAL_PASSIVE_MODULES: &[&str] = &[
 /// excluded by the sink) into `entity_map` by UID — so a key a specialised
 /// module already emitted with richer tags/evidence is GREATEST-merged, never
 /// duplicated or blindly overwritten — then flatten to the working `Vec`.
-fn merge_found_keys_and_flatten(scan_id: &str, entity_map: HashMap<String, Entity>) -> Vec<Entity> {
+fn merge_found_keys_and_flatten(
+    module_runtime: &dyn ModuleRuntime,
+    scan_id: &str,
+    entity_map: HashMap<String, Entity>,
+) -> Vec<Entity> {
     let mut entity_map = entity_map;
-    for e in crate::core::hooks::drain_found_keys(scan_id) {
+    for e in module_runtime.drain_found_keys(scan_id) {
         match entity_map.get_mut(&e.uid) {
             Some(existing) => existing.merge(e),
             None => {

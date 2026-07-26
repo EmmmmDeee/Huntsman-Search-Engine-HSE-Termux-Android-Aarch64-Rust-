@@ -56,7 +56,7 @@ const MAX_CANDIDATES: usize = 128;
 const MAX_CONCURRENT: usize = 12;
 
 /// Clear the session dedup set at the start of each scan. Installed into the
-/// engine's per-scan reset hook ([`crate::core::hooks::reset_per_scan`]). Without
+/// engine's injected per-scan runtime reset. Without
 /// it the process-global [`SEEN_REGISTRABLE`] set (a) grows without bound across a
 /// long-lived `serve` / `live` process and (b) silently suppresses ALL typosquat
 /// findings for any registrable domain scanned a SECOND time — a cross-scan

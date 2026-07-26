@@ -2450,7 +2450,7 @@ fn reset_session_liveness_clears_silenced_and_proven_state_across_scans() {
     // scan in one `hse serve`/`hse live` process), so a fresh scan against a
     // DIFFERENT target must not inherit a prior scan's block-streak silencing
     // or "proven live" exemptions. Before `reset_session_liveness` was wired
-    // into `modules::install_core_hooks`'s `reset_per_scan`, an engine
+    // into the built-in module runtime's `reset_per_scan`, an engine
     // silenced (or proven) in scan A stayed that way for every later scan in
     // the same process, even though a fresh scan has no basis to assume the
     // same engine will behave the same way against a new target.

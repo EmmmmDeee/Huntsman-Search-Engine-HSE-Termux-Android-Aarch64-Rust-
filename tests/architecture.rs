@@ -95,7 +95,12 @@ fn app_does_not_import_cli() {
 fn application_layer_owns_runtime_composition() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let runtime = fs::read_to_string(root.join("src/app/runtime.rs")).unwrap();
-    for required in ["Store::open(", "ScanEngine::new(", "registry()"] {
+    for required in [
+        "Store::open(",
+        "ScanEngine::with_module_runtime(",
+        "registry()",
+        "module_runtime()",
+    ] {
         assert!(
             runtime.contains(required),
             "src/app/runtime.rs must own shared runtime composition token {required:?}"
@@ -108,6 +113,7 @@ fn application_layer_owns_runtime_composition() {
             &[
                 "fn build_runtime(",
                 "ScanEngine::new(",
+                "ScanEngine::with_module_runtime(",
                 "Store::open(",
                 "crate::storage",
             ],
@@ -385,16 +391,31 @@ fn core_does_not_import_util_directly() {
 
 #[test]
 fn core_does_not_import_modules() {
-    // core is module-agnostic: the engine drives modules through the registry
-    // and the `core::hooks` function-pointer registry, never the reverse
-    // (PROBLEM_TREE T1.4). The one legal `modules → core` hook edge is the
-    // install in `modules::registry`; `core` itself names no `crate::modules`.
+    // core is module-agnostic: the application layer injects the implementation
+    // of core's `ModuleRuntime` contract; core never names `crate::modules`.
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core");
     let v = scan_for_violations(&dir, &["crate::modules"]);
     assert!(
         v.is_empty(),
-        "core/ must not import modules/ — invert via `core::hooks`.\nViolations:\n{}",
+        "core/ must not import modules/ — invert via `core::module_runtime`.\nViolations:\n{}",
         v.join("\n")
+    );
+}
+
+#[test]
+fn module_runtime_has_no_process_global_installation() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let contract = fs::read_to_string(root.join("src/core/module_runtime.rs")).unwrap();
+    for forbidden in ["OnceLock", "static HOOKS", "fn install("] {
+        assert!(
+            !contract.contains(forbidden),
+            "ModuleRuntime must be injected per engine, not installed globally: {forbidden}"
+        );
+    }
+    let registry = fs::read_to_string(root.join("src/modules/mod.rs")).unwrap();
+    assert!(
+        !registry.contains("install_core_hooks"),
+        "module registry construction must remain free of process-global side effects"
     );
 }
 
