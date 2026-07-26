@@ -139,8 +139,7 @@ pub(super) async fn cmd_doctor(live: bool) -> Result<()> {
     // weekly CI drift-sweep cadence) — a stale finding may well be resolved by
     // now, so it is dropped rather than nagging forever.
     const DRIFT_TTL_SECS: u64 = 7 * 24 * 60 * 60;
-    let persisted_drift =
-        crate::selftest::capability_probe::recent_confirmed_drift(DRIFT_TTL_SECS);
+    let persisted_drift = crate::selftest::capability_probe::recent_confirmed_drift(DRIFT_TTL_SECS);
     if !persisted_drift.is_empty() {
         println!(
             "\n⚠ Capability drift (from a previous live probe, last {} days):",
