@@ -25,7 +25,7 @@ use crate::{
 
 use crate::app::export::cost_label;
 
-pub(super) async fn cmd_doctor(live: bool) -> Result<()> {
+pub async fn cmd_doctor(live: bool) -> Result<()> {
     let mods = registry();
     println!("HSE v{} — doctor\n", crate::VERSION);
     println!(

@@ -58,7 +58,7 @@ fn load_side(store: &Store, arg: &str) -> Result<Side> {
     })
 }
 
-pub(super) fn cmd_diff(from: String, to: String, format: String) -> Result<()> {
+pub fn cmd_diff(from: String, to: String, format: String) -> Result<()> {
     let store = Store::open(&default_db_path())?;
     let a = load_side(&store, &from)?;
     let b = load_side(&store, &to)?;

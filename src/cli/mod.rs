@@ -7,14 +7,9 @@
 //! the binary in place via `install.sh`. See `docs/USAGE.md` for the
 //! full reference.
 
-mod audit;
-mod benchmark;
 pub(crate) mod config;
 mod diagnostics;
-mod diff;
-mod doctor;
 mod engines;
-mod gap;
 mod ingest;
 mod keys_cmd;
 mod live;
@@ -154,10 +149,10 @@ async fn run_command(command: Command) -> Result<()> {
             scan_id,
             log,
             json,
-        } => audit::cmd_audit(csv, scan_id, log, json).await,
-        Command::Benchmark { scan_id, json } => benchmark::cmd_benchmark(scan_id, json),
-        Command::Gaps { scan_id, json } => gap::cmd_gaps(scan_id, json),
-        Command::Doctor { live } => doctor::cmd_doctor(live).await,
+        } => crate::app::audit::cmd_audit(csv, scan_id, log, json).await,
+        Command::Benchmark { scan_id, json } => crate::app::benchmark::cmd_benchmark(scan_id, json),
+        Command::Gaps { scan_id, json } => crate::app::gap::cmd_gaps(scan_id, json),
+        Command::Doctor { live } => crate::app::doctor::cmd_doctor(live).await,
         Command::Selftest { json } => selftest::cmd_selftest(json).await,
         Command::Provision {
             env_only,
@@ -262,7 +257,7 @@ async fn run_command(command: Command) -> Result<()> {
             include_infra,
             redact,
         } => crate::app::export::cmd_export(scan_id, format, out, include_infra, redact).await,
-        Command::Diff { from, to, format } => diff::cmd_diff(from, to, format),
+        Command::Diff { from, to, format } => crate::app::diff::cmd_diff(from, to, format),
         Command::Update { check, r#ref } => update::cmd_update(check, r#ref).await,
         Command::OathnetBatch {
             value,

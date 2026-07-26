@@ -15,10 +15,11 @@ dark-console Web UI, zero native dependencies, keyless-first.
 ### Application architecture
 
 `src/app` is the public application/composition layer shared by the CLI and
-HTTP adapters. `app::runtime` exclusively constructs the SQLite-backed
-`StoragePort`, event bus, module registry, and `ScanEngine`; `app::update` owns
-the update lifecycle. CLI and API code provide transport and presentation only,
-and the architecture tests prevent `src/api` from depending on `src/cli`.
+HTTP adapters. It exclusively owns concrete SQLite and engine construction,
+including shared runtime assembly and store-backed audit, benchmark, diff,
+doctor, and gap workflows; `app::update` owns the update lifecycle. CLI and API
+code provide transport and presentation only, and architecture tests prevent
+presentation code from importing CLI internals or concrete storage.
 
 ---
 

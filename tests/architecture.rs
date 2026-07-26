@@ -105,11 +105,16 @@ fn application_layer_owns_runtime_composition() {
     for layer in ["src/cli", "src/api"] {
         let v = scan_for_violations(
             &root.join(layer),
-            &["fn build_runtime(", "ScanEngine::new("],
+            &[
+                "fn build_runtime(",
+                "ScanEngine::new(",
+                "Store::open(",
+                "crate::storage",
+            ],
         );
         assert!(
             v.is_empty(),
-            "{layer} must consume app::runtime rather than compose ScanEngine directly.\n\
+            "{layer} must consume app/ use cases rather than construct Store or ScanEngine.\n\
              Violations:\n{}",
             v.join("\n")
         );

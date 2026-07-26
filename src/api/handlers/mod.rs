@@ -311,7 +311,7 @@ pub async fn engines_health() -> Json<Value> {
 /// Shape a module-health snapshot into the `GET /api/v1/modules/health` wire
 /// JSON. Split out of the handler so the mapping is unit-testable without
 /// depending on the live process-global health state — that state is shared
-/// across the whole test binary (mirrors why `cli::doctor::format_module_health`
+/// across the whole test binary (mirrors why `app::doctor::format_module_health`
 /// takes a plain [`crate::core::engine::ModuleHealth`] rather than reading the
 /// global directly).
 pub(crate) fn module_health_json(unhealthy: &[crate::core::engine::ModuleHealth]) -> Value {
