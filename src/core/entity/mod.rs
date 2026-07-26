@@ -975,7 +975,7 @@ impl Entity {
             // and summary. Each bucket retains all matching indices and the lookup
             // verifies the original strings, so hash collisions cannot merge
             // unrelated evidence.
-            let mut index: HashMap<u64, Vec<usize>> = HashMap::new();
+            let mut index: HashMap<u64, Vec<usize>> = HashMap::with_capacity(self.evidence.len());
             for (i, evidence) in self.evidence.iter().enumerate() {
                 index
                     .entry(evidence_identity_hash(&evidence.source, &evidence.summary))
@@ -1026,6 +1026,9 @@ impl Entity {
     }
 }
 
+/// Compact fingerprint for an evidence `(source, summary)` identity.
+///
+/// Callers must resolve collisions by comparing both original strings.
 fn evidence_identity_hash(source: &str, summary: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     source.hash(&mut hasher);
