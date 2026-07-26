@@ -33,7 +33,6 @@ pub(crate) mod update;
 use std::io::IsTerminal;
 use std::sync::Arc;
 
-use clap::Parser;
 use crate::{
     core::{
         engine::ScanEngine,
@@ -46,6 +45,7 @@ use crate::{
     storage::Store,
     util::keys,
 };
+use clap::Parser;
 
 /// Resolve a scan-id selector for the read commands (`export` / `diff` / `audit`):
 /// `latest` → the most-recent completed scan, anything else → itself, but only
