@@ -13,7 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, hash_map::RandomState};
+use std::collections::hash_map::RandomState;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::hash::BuildHasher;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -979,7 +980,8 @@ impl Entity {
             // Existing rows establish the minimum useful capacity. Incoming rows
             // grow the map only when they introduce unique identities, avoiding
             // an upper-bound allocation when a batch is mostly duplicates.
-            let mut index: HashMap<u64, Vec<usize>> = HashMap::with_capacity(self.evidence.len());
+            let mut index: HashMap<u64, EvidenceIdentityBucket> =
+                HashMap::with_capacity(self.evidence.len());
             for (i, evidence) in self.evidence.iter().enumerate() {
                 index
                     .entry(evidence_identity_hash(
@@ -987,8 +989,8 @@ impl Entity {
                         &evidence.source,
                         &evidence.summary,
                     ))
-                    .or_default()
-                    .push(i);
+                    .and_modify(|bucket| bucket.push(i))
+                    .or_insert_with(|| EvidenceIdentityBucket::new(i));
             }
             self.evidence.reserve(other.evidence.len());
             for ev in other.evidence {
@@ -996,8 +998,8 @@ impl Entity {
                     evidence_identity_hash(&identity_hasher, &ev.source, &ev.summary);
                 // A randomized 64-bit fingerprint makes multi-entry buckets
                 // exceptional; the exact comparison is the collision-safe path.
-                let existing_index = index.get(&identity_hash).and_then(|indices| {
-                    indices.iter().copied().find(|&i| {
+                let existing_index = index.get(&identity_hash).and_then(|bucket| {
+                    bucket.indices().find(|&i| {
                         self.evidence[i].source == ev.source
                             && self.evidence[i].summary == ev.summary
                     })
@@ -1007,8 +1009,8 @@ impl Entity {
                     None => {
                         index
                             .entry(identity_hash)
-                            .or_default()
-                            .push(self.evidence.len());
+                            .and_modify(|bucket| bucket.push(self.evidence.len()))
+                            .or_insert_with(|| EvidenceIdentityBucket::new(self.evidence.len()));
                         self.evidence.push(ev);
                     }
                 }
@@ -1034,6 +1036,30 @@ impl Entity {
         if !other_is_candidate {
             self.tags.retain(|t| t != crate::core::tags::CANDIDATE);
         }
+    }
+}
+
+/// Index bucket that stores the common single fingerprint match inline and
+/// allocates only when a real hash collision creates additional candidates.
+struct EvidenceIdentityBucket {
+    first: usize,
+    collisions: Vec<usize>,
+}
+
+impl EvidenceIdentityBucket {
+    fn new(first: usize) -> Self {
+        Self {
+            first,
+            collisions: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, index: usize) {
+        self.collisions.push(index);
+    }
+
+    fn indices(&self) -> impl Iterator<Item = usize> + '_ {
+        std::iter::once(self.first).chain(self.collisions.iter().copied())
     }
 }
 
