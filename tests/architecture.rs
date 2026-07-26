@@ -69,6 +69,54 @@ fn api_does_not_import_storage_directly() {
 }
 
 #[test]
+fn api_does_not_import_cli() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api");
+    let v = scan_for_violations(&dir, &["crate::cli", "use crate::cli"]);
+    assert!(
+        v.is_empty(),
+        "api/ must not import the CLI presentation layer; move shared use cases to app/.\n\
+         Violations:\n{}",
+        v.join("\n")
+    );
+}
+
+#[test]
+fn app_does_not_import_cli() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
+    let v = scan_for_violations(&dir, &["crate::cli", "use crate::cli"]);
+    assert!(
+        v.is_empty(),
+        "app/ owns shared use cases and must not depend on CLI presentation.\nViolations:\n{}",
+        v.join("\n")
+    );
+}
+
+#[test]
+fn application_layer_owns_runtime_composition() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let runtime = fs::read_to_string(root.join("src/app/runtime.rs")).unwrap();
+    for required in ["Store::open(", "ScanEngine::new(", "registry()"] {
+        assert!(
+            runtime.contains(required),
+            "src/app/runtime.rs must own shared runtime composition token {required:?}"
+        );
+    }
+
+    for layer in ["src/cli", "src/api"] {
+        let v = scan_for_violations(
+            &root.join(layer),
+            &["fn build_runtime(", "ScanEngine::new("],
+        );
+        assert!(
+            v.is_empty(),
+            "{layer} must consume app::runtime rather than compose ScanEngine directly.\n\
+             Violations:\n{}",
+            v.join("\n")
+        );
+    }
+}
+
+#[test]
 fn modules_do_not_import_engine_or_storage() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/modules");
     let v = scan_for_violations(&dir, &["crate::core::engine", "crate::storage"]);

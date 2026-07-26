@@ -23,7 +23,7 @@ use crate::{
     util::{cell_db, keys, scraper_health, timefmt},
 };
 
-use super::cost_label;
+use crate::app::export::cost_label;
 
 pub(super) async fn cmd_doctor(live: bool) -> Result<()> {
     let mods = registry();

@@ -49,7 +49,7 @@ fn load_side(store: &Store, arg: &str) -> Result<Side> {
             scan_id: None,
         });
     }
-    let sid = super::resolve_scan_id(store, arg)?;
+    let sid = crate::app::runtime::resolve_scan_id(store, arg)?;
     let mut entities = store.entities_for_scan(&sid)?;
     entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
     Ok(Side {

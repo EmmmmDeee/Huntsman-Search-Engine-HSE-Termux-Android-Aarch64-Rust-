@@ -11,7 +11,7 @@ use super::*;
     #[test]
     fn resolve_errors_on_unknown_scan() {
         let store = Store::open(":memory:").unwrap();
-        let err = crate::cli::resolve_scan_id(&store, "deadbeef").unwrap_err();
+        let err = crate::app::runtime::resolve_scan_id(&store, "deadbeef").unwrap_err();
         assert!(
             err.to_string().contains("deadbeef"),
             "error should name the missing scan: {err}"
@@ -21,7 +21,7 @@ use super::*;
     #[test]
     fn resolve_latest_errors_when_store_empty() {
         let store = Store::open(":memory:").unwrap();
-        assert!(crate::cli::resolve_scan_id(&store, "latest").is_err());
+        assert!(crate::app::runtime::resolve_scan_id(&store, "latest").is_err());
     }
 
     #[test]

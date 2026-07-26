@@ -11,12 +11,10 @@ use crate::core::error::{Error, Result};
 use crate::default_db_path;
 use crate::storage::Store;
 
-use super::resolve_scan_id;
-
 /// `hse benchmark [--scan-id <id|latest>] [--json]` — print the scan's benchmark report.
 pub fn cmd_benchmark(scan_id: Option<String>, json: bool) -> Result<()> {
     let store = Store::open(&default_db_path())?;
-    let id = resolve_scan_id(&store, scan_id.as_deref().unwrap_or("latest"))?;
+    let id = crate::app::runtime::resolve_scan_id(&store, scan_id.as_deref().unwrap_or("latest"))?;
     let scan = store
         .get_scan(&id)?
         .ok_or_else(|| Error::Other(format!("scan {id} not found")))?;

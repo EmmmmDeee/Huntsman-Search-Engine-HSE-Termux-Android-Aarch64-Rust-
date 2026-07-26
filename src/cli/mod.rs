@@ -9,13 +9,11 @@
 
 mod audit;
 mod benchmark;
-pub(crate) mod cells;
-mod config;
+pub(crate) mod config;
 mod diagnostics;
 mod diff;
 mod doctor;
 mod engines;
-pub(crate) mod export;
 mod gap;
 mod ingest;
 mod keys_cmd;
@@ -30,58 +28,15 @@ mod selftest;
 mod serve;
 pub(crate) mod update;
 
-use std::io::IsTerminal;
-use std::sync::Arc;
-
 use crate::{
     core::{
-        engine::ScanEngine,
         error::{Error, Result},
-        module::ModuleCost,
-        scan::{ScanStatus, TargetKind},
+        scan::TargetKind,
     },
-    default_db_path,
-    modules::registry,
-    storage::Store,
     util::keys,
 };
 use clap::Parser;
-
-/// Resolve a scan-id selector for the read commands (`export` / `diff` / `audit`):
-/// `latest` → the most-recent completed scan, anything else → itself, but only
-/// after confirming the scan exists so a typo errors loudly instead of silently
-/// operating on an empty/absent scan. One definition shared by all three so the
-/// selector semantics can't drift (they were three near-identical copies).
-pub(crate) fn resolve_scan_id(store: &Store, raw: &str) -> Result<String> {
-    if raw == "latest" {
-        return store
-            .latest_completed_scan()?
-            .map(|s| s.id)
-            .ok_or_else(|| Error::Other("no completed scans in store".into()));
-    }
-    match store.get_scan(raw)? {
-        None => Err(Error::Other(format!("scan {raw} not found"))),
-        Some(scan) => {
-            // A scan interrupted before finalise — a hang, a kill, an OOM, a power
-            // loss — still CHECKPOINTED its enumerated/validated entities to the
-            // store; its status simply never flipped to Complete. Refusing to read
-            // it (the old behaviour) silently lost every collected identifier: a
-            // breach-confirmed email, a SeekNow-enumerated handle, gone because the
-            // run didn't reach the end. Never discard collected data: surface the
-            // partial scan with a loud warning instead, so the findings are always
-            // recoverable. (`latest` still resolves to the most-recent COMPLETE
-            // scan, so routine reads are unaffected.)
-            if scan.status != ScanStatus::Complete {
-                eprintln!(
-                    "⚠ scan {raw} is {status}, not complete — recovering its checkpointed \
-                     (partial) entities; results may be incomplete",
-                    status = scan.status.as_str()
-                );
-            }
-            Ok(raw.to_string())
-        }
-    }
-}
+use std::io::IsTerminal;
 
 mod command;
 pub use command::{Cli, Command};
@@ -93,7 +48,7 @@ pub async fn run() -> Result<()> {
     // Opportunistic, throttled, non-blocking self-update: any routine CLI use
     // keeps the binary current with GitHub main (the server has its own loop).
     // Best-effort and time-boxed — never delays or fails the command below.
-    update::maybe_auto_update_cli(&cli.command).await;
+    update::maybe_auto_update(&cli.command).await;
     run_command(cli.command).await
 }
 
@@ -306,7 +261,7 @@ async fn run_command(command: Command) -> Result<()> {
             out,
             include_infra,
             redact,
-        } => export::cmd_export(scan_id, format, out, include_infra, redact).await,
+        } => crate::app::export::cmd_export(scan_id, format, out, include_infra, redact).await,
         Command::Diff { from, to, format } => diff::cmd_diff(from, to, format),
         Command::Update { check, r#ref } => update::cmd_update(check, r#ref).await,
         Command::OathnetBatch {
@@ -335,7 +290,7 @@ async fn run_command(command: Command) -> Result<()> {
             })
             .await
         }
-        Command::Cells { action } => cells::cmd_cells(action).await,
+        Command::Cells { action } => crate::app::cells::cmd_cells(action).await,
     }
 }
 
@@ -358,8 +313,7 @@ fn resolve_seed(cli_value: Option<String>, default_seed: Option<String>) -> Resu
         })
 }
 
-pub(crate) mod import;
-use import::cmd_import;
+pub(crate) use crate::app::import::cmd_import;
 
 // ─── Shared helpers (used by subcommand files) ─────────────────────────────
 
@@ -397,45 +351,10 @@ pub(super) fn parse_target_kind(s: &str) -> Result<TargetKind> {
     }
 }
 
-/// Human-display form of a module cost for CLI tables ("key-gated", hyphen).
-/// Deliberately distinct from the canonical machine identifier
-/// [`ModuleCost::as_str`] ("key_gated"), which serde/the API/the module graph
-/// emit — this is presentation, that is wire format.
-pub(super) fn cost_label(c: ModuleCost) -> &'static str {
-    match c {
-        ModuleCost::Free => "free",
-        ModuleCost::KeyGated => "key-gated",
-        ModuleCost::Paid => "paid",
-    }
-}
-
 /// Split a comma-separated CLI option (e.g. `--modules a,b,c`) into trimmed
 /// parts, or `None` when the option was absent.
 pub(super) fn split_csv(s: Option<String>) -> Option<Vec<String>> {
     s.map(|s| s.split(',').map(|m| m.trim().to_string()).collect())
-}
-
-/// Build the shared on-device CLI runtime: open the SQLite store (pruning aged
-/// events first), create the broadcast [`EventBus`](crate::core::event::EventBus),
-/// and construct the [`ScanEngine`] over the full module registry. Every
-/// scan/live/audit command starts from this one setup.
-pub(super) fn build_runtime(
-    bus_capacity: usize,
-) -> Result<(
-    Arc<dyn crate::core::port::StoragePort>,
-    crate::core::event::EventBus,
-    Arc<ScanEngine>,
-)> {
-    let db = Store::open(&default_db_path())?;
-    let _ = db.prune_events(
-        crate::core::port::EVENTS_RETENTION_SECS,
-        crate::core::port::EVENTS_MAX_ROWS,
-    );
-    let _ = db.prune_raw_archive(crate::core::port::RAW_ARCHIVE_MAX_ROWS);
-    let store: Arc<dyn crate::core::port::StoragePort> = Arc::new(db);
-    let (bus, _rx) = tokio::sync::broadcast::channel(bus_capacity);
-    let engine = Arc::new(ScanEngine::new(registry(), Arc::clone(&store), bus.clone()));
-    Ok((store, bus, engine))
 }
 
 /// Whether to emit ANSI colour: false when `NO_COLOR` is set (the de-facto
@@ -490,22 +409,6 @@ pub(super) fn truncate(s: &str, max: usize) -> String {
         out.push('…');
         out
     }
-}
-
-/// Resolve a relation-endpoint UID to a human label: apply `found` to the
-/// entity when `by_uid` resolves it, else a short-uid stub `"abcd1234…"`. The
-/// hex-slice fallback lives HERE, in one place, so every relations renderer
-/// (dossier RELATIONS, the `export` full render, and any future one) shows the
-/// identical stub for an unresolvable endpoint and can never drift. UIDs are
-/// hex ASCII, so the byte slice is char-boundary safe.
-pub(super) fn relation_endpoint_label(
-    by_uid: &std::collections::HashMap<&str, &crate::core::entity::Entity>,
-    uid: &str,
-    found: impl FnOnce(&crate::core::entity::Entity) -> String,
-) -> String {
-    by_uid
-        .get(uid)
-        .map_or_else(|| format!("{}…", &uid[..uid.len().min(8)]), |e| found(e))
 }
 
 #[cfg(test)]

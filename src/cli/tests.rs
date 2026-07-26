@@ -115,9 +115,18 @@ use super::*;
 
     #[test]
     fn cost_labels() {
-        assert_eq!(cost_label(ModuleCost::Free), "free");
-        assert_eq!(cost_label(ModuleCost::KeyGated), "key-gated");
-        assert_eq!(cost_label(ModuleCost::Paid), "paid");
+        assert_eq!(
+            crate::app::export::cost_label(crate::core::ModuleCost::Free),
+            "free"
+        );
+        assert_eq!(
+            crate::app::export::cost_label(crate::core::ModuleCost::KeyGated),
+            "key-gated"
+        );
+        assert_eq!(
+            crate::app::export::cost_label(crate::core::ModuleCost::Paid),
+            "paid"
+        );
     }
 
     // ── truncate ────────────────────────────────────────────────────────────
@@ -196,7 +205,10 @@ use super::*;
         // An interrupted (non-complete) scan's checkpointed data must be
         // RECOVERABLE — resolve returns Ok so export/audit can read its partial
         // entities, never discarding collected findings (warning goes to stderr).
-        assert_eq!(resolve_scan_id(&store, "abc123").unwrap(), "abc123");
+        assert_eq!(
+            crate::app::runtime::resolve_scan_id(&store, "abc123").unwrap(),
+            "abc123"
+        );
         // A genuinely-absent scan still errors loudly.
-        assert!(resolve_scan_id(&store, "no-such-scan").is_err());
+        assert!(crate::app::runtime::resolve_scan_id(&store, "no-such-scan").is_err());
     }

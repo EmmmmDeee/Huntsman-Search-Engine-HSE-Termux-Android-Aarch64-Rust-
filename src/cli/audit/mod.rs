@@ -183,7 +183,7 @@ fn load_from_store(scan_id: &str) -> Result<Vec<AuditEntity>> {
     let store = Store::open(&crate::default_db_path())?;
     // `latest` → most-recent Complete scan; explicit id existence-checked.
     // Shared with `export`/`diff` via `super::resolve_scan_id`.
-    let sid = super::resolve_scan_id(&store, scan_id)?;
+    let sid = crate::app::runtime::resolve_scan_id(&store, scan_id)?;
     Ok(store
         .entities_for_scan(&sid)?
         .iter()

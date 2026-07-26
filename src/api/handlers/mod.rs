@@ -589,11 +589,11 @@ pub async fn system_debug_bundle(
     };
     // Value-free per-service key-pool summary (reuses `keys_status`'
     // `summarize_pool`; never copies a key value). Mapped to the renderer's own
-    // owned type so `cli::export` stays self-contained.
-    let key_pool: Vec<crate::cli::export::KeyPoolSummary> =
+    // owned type so `app::export` stays self-contained.
+    let key_pool: Vec<crate::app::export::KeyPoolSummary> =
         super::settings_handlers::summarize_pool(&crate::util::key_pool::global_pool().snapshot())
             .into_iter()
-            .map(|q| crate::cli::export::KeyPoolSummary {
+            .map(|q| crate::app::export::KeyPoolSummary {
                 service: q.service,
                 total: q.total,
                 active: q.active,
@@ -605,7 +605,7 @@ pub async fn system_debug_bundle(
                 avg_health: q.avg_health,
             })
             .collect();
-    let inputs = crate::cli::export::SystemDebugInputs {
+    let inputs = crate::app::export::SystemDebugInputs {
         selftest,
         scans,
         scraper_health,
@@ -623,7 +623,7 @@ pub async fn system_debug_bundle(
     // environment fingerprint) — both blocking — and builds a potentially large
     // string, so on the ~2-worker reactor it would otherwise stall peers.
     let rendered = tokio::task::spawn_blocking(move || {
-        crate::cli::export::render_system_debug_bundle(&inputs)
+        crate::app::export::render_system_debug_bundle(&inputs)
     })
     .await;
     let body = match rendered {
