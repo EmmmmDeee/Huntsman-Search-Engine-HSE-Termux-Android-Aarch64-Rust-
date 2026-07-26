@@ -147,6 +147,7 @@ pdf                = "0.10"
 image              = "0.25"
 # Entity extraction: lazy regex initialization for pattern matching.
 lazy_static        = "1.4"
+crossbeam-channel = "0.5.16"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
