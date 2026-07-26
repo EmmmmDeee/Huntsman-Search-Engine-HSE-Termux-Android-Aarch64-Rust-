@@ -201,15 +201,6 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
                 )));
             }
 
-            pub(super) fn cmd_set_key(name: String, value: String) -> Result<()> {
-                use std::collections::BTreeMap;
-
-                let mut updates = BTreeMap::new();
-                updates.insert(name.clone(), value);
-                crate::util::keys::write_keys(&updates, &[]).map_err(|e| Error::Other(e.to_string()))?;
-                println!("✓ {name} set in {}", crate::util::keys::env_path());
-                Ok(())
-            }
             let mut entry = KeyEntry::new(&key);
             entry.notes = notes;
             entry.environment = env;
@@ -658,6 +649,16 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+pub(super) fn cmd_set_key(name: String, value: String) -> Result<()> {
+    use std::collections::BTreeMap;
+
+    let mut updates = BTreeMap::new();
+    updates.insert(name.clone(), value);
+    crate::util::keys::write_keys(&updates, &[]).map_err(|e| Error::Other(e.to_string()))?;
+    println!("✓ {name} set in {}", crate::util::keys::env_path());
     Ok(())
 }
 

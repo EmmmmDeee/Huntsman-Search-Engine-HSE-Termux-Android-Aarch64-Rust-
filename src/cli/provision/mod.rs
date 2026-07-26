@@ -201,11 +201,7 @@ fn read_existing_env(path: &Path) -> Result<String> {
     }
 }
 
-pub(super) async fn cmd_provision(
-    env_only: bool,
-    verify_only: bool,
-    dry_run: bool,
-) -> Result<()> {
+pub(super) async fn cmd_provision(env_only: bool, verify_only: bool, dry_run: bool) -> Result<()> {
     println!("HSE v{} — provision", crate::VERSION);
     if !verify_only {
         cmd_provision_env(dry_run)?;
