@@ -21,7 +21,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use crate::core::entity::{Entity, EntityKind, Evidence};
+use crate::core::entity::{Entity, EntityKind, Evidence, canonical_handle};
 use crate::core::error::Result;
 use crate::core::port::StoragePort;
 use crate::core::relation::Relation;
@@ -276,7 +276,7 @@ pub(in crate::core) use rules::source_family;
 // edge and the AU-047/AU-048/AU-106 correlations can never disagree on which
 // secrets/handles qualify.
 pub(in crate::core) use rules::Secret;
-pub(in crate::core) use rules::{canonical_handle, is_anchorable_handle};
+pub(in crate::core) use rules::is_anchorable_handle;
 // The breach/stealer corpus classifier: `core::breach_consensus` grades an
 // entity's corroboration by counting DISTINCT breach sources, and must agree
 // exactly with the correlator on which sources those are — a second, drifting

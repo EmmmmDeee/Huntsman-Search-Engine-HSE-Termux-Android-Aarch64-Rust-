@@ -79,6 +79,17 @@ pub fn is_enrichment_source(source: &str) -> bool {
     ENRICHMENT_ONLY_SOURCES.contains(&source)
 }
 
+/// Canonical comparison form of a handle: ASCII-lowercased with the handle
+/// separators (`.`, `_`, `-`) removed, so equivalent spellings across services
+/// collapse to one token.
+pub(in crate::core) fn canonical_handle(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| !matches!(c, '.' | '_' | '-'))
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
 /// Evidence source name of the recall pass — the local-database replay that
 /// re-injects a prior scan's entity into the working set.
 ///

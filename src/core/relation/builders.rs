@@ -739,7 +739,7 @@ pub fn derive_handles(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
 /// real edge instead of only reading it off a standalone correlation.
 ///
 /// Delegates to the correlator's own [`crate::core::correlator::Secret`]
-/// classification and [`crate::core::correlator::canonical_handle`]
+/// classification and [`crate::core::entity::canonical_handle`]
 /// handle-folding (Rule 4: one classifier/one folder, so the graph edge and
 /// the correlation can never disagree on which secrets qualify or which
 /// handles are the same account). Emits a full pairwise clique over every
@@ -747,7 +747,8 @@ pub fn derive_handles(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
 /// through one arbitrarily-chosen hub), so `identity_paths`' BFS finds the
 /// direct edge between ANY two accounts a shared secret ties together.
 pub fn derive_reused_secret_link(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
-    use crate::core::correlator::{Secret, canonical_handle};
+    use crate::core::correlator::Secret;
+    use crate::core::entity::canonical_handle;
     use std::collections::BTreeSet;
 
     let secrets: Vec<&Entity> = entities

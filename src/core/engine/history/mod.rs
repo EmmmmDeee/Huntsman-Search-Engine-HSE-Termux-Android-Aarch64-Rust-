@@ -18,7 +18,9 @@
 
 use std::collections::HashMap;
 
-use crate::core::entity::{CROSS_SCAN_SOURCE, Entity, EntityKind, Evidence};
+use crate::core::entity::{
+    CROSS_SCAN_SOURCE, Entity, EntityKind, Evidence, canonical_handle,
+};
 use crate::core::port::StoragePort;
 use crate::core::relation::RelationKind;
 
@@ -62,18 +64,6 @@ const MAX_PARTNERS_PER_ENTITY: usize = 8;
 /// the store — distinguishing it from the plain recurrence evidence, which shares
 /// the [`CROSS_SCAN_SOURCE`] source but never contains this phrase.
 const COOCCURRENCE_MARKER: &str = "Co-occurred with `";
-
-/// Strip ASCII handle separators (`.`, `_`, `-`) and lowercase — the canonical
-/// form used for handle comparison across platforms. Duplicated here (rather than
-/// calling into `correlator::rules`) to keep the history module independent of the
-/// correlator's internals.
-fn canonical_username(value: &str) -> String {
-    value
-        .chars()
-        .filter(|&c| c != '.' && c != '_' && c != '-')
-        .flat_map(char::to_lowercase)
-        .collect()
-}
 
 /// True if `e` is a SPECIFIC personal identifier worth checking against history —
 /// the kind of value whose recurrence across scans genuinely bridges two
@@ -134,7 +124,7 @@ pub(super) fn link_cross_scan_history(
             // one canonical form — a prior scan that recorded the canonical variant
             // should still bridge to the current entity.
             if e.kind == EntityKind::Username {
-                let canon = canonical_username(&e.value);
+                let canon = canonical_handle(&e.value);
                 if canon != e.value && canon.len() >= 4 {
                     let canon_uid = crate::core::entity::derive_uid(&EntityKind::Username, &canon);
                     if canon_uid != e.uid {
@@ -175,7 +165,7 @@ pub(super) fn link_cross_scan_history(
             // For Usernames: attempt canonical probe even when the exact UID has
             // no prior history, for the same separator-variant bridging reason.
             if e.kind == EntityKind::Username && !e.has_tag("cross-scan") {
-                let canon = canonical_username(&e.value);
+                let canon = canonical_handle(&e.value);
                 if canon != e.value && canon.len() >= 4 {
                     let canon_uid = crate::core::entity::derive_uid(&EntityKind::Username, &canon);
                     if canon_uid != e.uid {

@@ -8,7 +8,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::{Correlation, RuleContext, Severity};
-use crate::core::entity::{Entity, EntityKind};
+use crate::core::entity::{Entity, EntityKind, canonical_handle};
 use crate::core::relation::{Relation, RelationKind};
 
 fn entities_of_kind(entities: &[Entity], kind: EntityKind) -> Vec<&Entity> {
@@ -166,24 +166,6 @@ const GENERIC_HANDLES: &[&str] = &[
 const NON_IDENTITY_TOKENS: &[&str] = &[
     "from", "dns", "www", "http", "https", "html", "href", "mailto", "tel", "url",
 ];
-
-/// Canonical comparison form of a handle: ASCII-lowercased with the handle
-/// separators (`.`, `_`, `-`) removed, so the same handle written with
-/// inconsistent punctuation collapses to one token (`jordan.meyers`,
-/// `jordan_meyers`, `jordanmeyers` → `jordanmeyers`). People reuse a single
-/// handle across services with different separators; this is the comparison
-/// the match needs.
-///
-/// `pub(in crate::core)` (re-exported from `correlator::mod`): shared with
-/// `core::relation::builders::derive_reused_secret_link`, which folds handles
-/// identically to AU-047/AU-048/AU-106 so the graph edge and the correlations
-/// agree on which handles are the same account.
-pub(in crate::core) fn canonical_handle(s: &str) -> String {
-    s.chars()
-        .filter(|c| !matches!(c, '.' | '_' | '-'))
-        .map(|c| c.to_ascii_lowercase())
-        .collect()
-}
 
 /// Join at most `cap` of `values` with ", ", appending "(+N more)" when there
 /// are more — the single disclosure policy for every rule that names a
