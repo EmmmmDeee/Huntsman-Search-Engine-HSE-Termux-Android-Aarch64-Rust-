@@ -976,8 +976,10 @@ impl Entity {
             // verifies the original strings, so hash collisions cannot merge
             // unrelated evidence.
             let identity_hasher = RandomState::new();
-            let mut index: HashMap<u64, Vec<usize>> =
-                HashMap::with_capacity(self.evidence.len().saturating_add(other.evidence.len()));
+            // Existing rows establish the minimum useful capacity. Incoming rows
+            // grow the map only when they introduce unique identities, avoiding
+            // an upper-bound allocation when a batch is mostly duplicates.
+            let mut index: HashMap<u64, Vec<usize>> = HashMap::with_capacity(self.evidence.len());
             for (i, evidence) in self.evidence.iter().enumerate() {
                 index
                     .entry(evidence_identity_hash(
@@ -992,6 +994,8 @@ impl Entity {
             for ev in other.evidence {
                 let identity_hash =
                     evidence_identity_hash(&identity_hasher, &ev.source, &ev.summary);
+                // A randomized 64-bit fingerprint makes multi-entry buckets
+                // exceptional; the exact comparison is the collision-safe path.
                 let existing_index = index.get(&identity_hash).and_then(|indices| {
                     indices.iter().copied().find(|&i| {
                         self.evidence[i].source == ev.source
