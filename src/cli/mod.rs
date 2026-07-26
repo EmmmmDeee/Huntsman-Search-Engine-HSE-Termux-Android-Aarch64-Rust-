@@ -208,8 +208,8 @@ async fn run_command(command: Command) -> Result<()> {
             env_only,
             verify_only,
             dry_run,
-        } => cmd_provision(env_only, verify_only, dry_run).await,
-        Command::SetKey { name, value } => cmd_set_key(name, value),
+        } => provision::cmd_provision(env_only, verify_only, dry_run).await,
+        Command::SetKey { name, value } => keys_cmd::cmd_set_key(name, value),
         Command::Keys { action } => keys_cmd::cmd_keys(action).await,
         Command::Import { file, output } => cmd_import(&file, &output).await,
         Command::Ingest {
@@ -356,31 +356,6 @@ fn resolve_seed(cli_value: Option<String>, default_seed: Option<String>) -> Resu
                     .to_string(),
             )
         })
-}
-
-// ─── Inline commands (small enough not to warrant their own file) ───────────
-
-async fn cmd_provision(env_only: bool, verify_only: bool, dry_run: bool) -> Result<()> {
-    println!("HSE v{} — provision", crate::VERSION);
-    if !verify_only {
-        provision::cmd_provision_env(dry_run)?;
-    }
-    if !env_only && !dry_run {
-        provision::cmd_provision_verify().await?;
-    } else if !env_only && dry_run {
-        println!("==> Phase: verify (skipped under --dry-run)");
-    }
-    println!("\nDone.");
-    Ok(())
-}
-
-fn cmd_set_key(name: String, value: String) -> Result<()> {
-    use std::collections::BTreeMap;
-    let mut updates = BTreeMap::new();
-    updates.insert(name.clone(), value);
-    keys::write_keys(&updates, &[]).map_err(|e| Error::Other(e.to_string()))?;
-    println!("✓ {name} set in {}", keys::env_path());
-    Ok(())
 }
 
 pub(crate) mod import;

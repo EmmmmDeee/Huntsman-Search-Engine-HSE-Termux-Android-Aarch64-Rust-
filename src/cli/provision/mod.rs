@@ -201,8 +201,26 @@ fn read_existing_env(path: &Path) -> Result<String> {
     }
 }
 
+pub(super) async fn cmd_provision(
+    env_only: bool,
+    verify_only: bool,
+    dry_run: bool,
+) -> Result<()> {
+    println!("HSE v{} — provision", crate::VERSION);
+    if !verify_only {
+        cmd_provision_env(dry_run)?;
+    }
+    if !env_only && !dry_run {
+        cmd_provision_verify().await?;
+    } else if !env_only && dry_run {
+        println!("==> Phase: verify (skipped under --dry-run)");
+    }
+    println!("\nDone.");
+    Ok(())
+}
+
 /// Run the env-merge phase. Prints a summary of what changed.
-pub fn cmd_provision_env(dry_run: bool) -> Result<()> {
+fn cmd_provision_env(dry_run: bool) -> Result<()> {
     let path = PathBuf::from(keys::env_path());
     let existing = read_existing_env(&path)?;
     let merged = merge_template(&existing, ENV_TEMPLATE);
@@ -255,7 +273,7 @@ fn count_keys(existing: &str) -> (usize, usize, usize) {
 
 /// Run the verify phase: doctor + passive smoke test + missing-key
 /// micro-test pinned to `oathnet_pro`.
-pub async fn cmd_provision_verify() -> Result<()> {
+async fn cmd_provision_verify() -> Result<()> {
     use crate::modules::registry;
 
     println!("==> Phase: verify");
