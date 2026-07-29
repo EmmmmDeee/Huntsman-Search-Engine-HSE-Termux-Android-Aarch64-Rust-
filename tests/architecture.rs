@@ -2508,3 +2508,90 @@ fn every_checked_feature_flag_is_registered() {
         "expected several literal feature.* checks outside settings, saw {checked}"
     );
 }
+
+// ── Canonical entity classifier convergence tests ─────────────────────────────
+// Phase 1, item 1: `core::classifier` owns the canonical embedded-entity locators;
+// `util::entity_extractor` re-uses them. These tests assert that the re-exported
+// patterns are identical to the canonical ones and that classification is
+// deterministic.
+
+use huntsman_search_engine::core::classifier as core_classifier;
+use huntsman_search_engine::util::entity_extractor::classifier::EntityClassifier;
+use huntsman_search_engine::util::entity_extractor::patterns;
+use huntsman_search_engine::util::entity_extractor::EntityKind;
+
+#[test]
+fn entity_extractor_reuses_core_patterns() {
+    // The patterns re-exported by `util::entity_extractor::patterns` must be the
+    // *same* `Regex` instances as the canonical `core::classifier` patterns.
+    assert!(std::ptr::addr_eq(
+        &*patterns::EMAIL_PATTERN,
+        &*core_classifier::EMAIL_RE
+    ));
+    assert!(std::ptr::addr_eq(
+        &*patterns::IPV4_PATTERN,
+        &*core_classifier::IPV4_RE
+    ));
+    assert!(std::ptr::addr_eq(
+        &*patterns::DOMAIN_PATTERN,
+        &*core_classifier::DOMAIN_RE
+    ));
+    assert!(std::ptr::addr_eq(
+        &*patterns::URL_PATTERN,
+        &*core_classifier::URL_RE
+    ));
+}
+
+#[test]
+fn core_and_extractor_classifiers_agree_on_canonical_values() {
+    let classifier = EntityClassifier::new().expect("should succeed");
+
+    let cases: &[(&str, EntityKind)] = &[
+        ("test@example.com", EntityKind::Email),
+        ("https://example.com/path", EntityKind::Url),
+        ("192.168.1.1", EntityKind::Ipv4),
+        ("example.com", EntityKind::Domain),
+    ];
+
+    for (value, expected) in cases {
+        assert_eq!(
+            classifier.classify(value, None),
+            *expected,
+            "classifier mismatch for {value}"
+        );
+        let core = core_classifier::classify(value);
+        assert_eq!(
+            core.value, *value,
+            "core classifier must preserve the raw value"
+        );
+        assert!(
+            core.confidence > 0.0,
+            "core classifier must assign non-zero confidence to {value}"
+        );
+    }
+}
+
+#[test]
+fn core_extract_is_deterministic() {
+    let text = "Contact: alice@example.com or https://example.com and 8.8.8.8. \
+                Also example.org and @handle.";
+    let first = core_classifier::extract(text);
+    let second = core_classifier::extract(text);
+    assert_eq!(
+        first, second,
+        "core::classifier::extract must be deterministic for the same input"
+    );
+    // Smoke-check that the canonical locators actually found the expected entities.
+    assert!(
+        first.iter().any(|c| c.kind == huntsman_search_engine::core::entity::EntityKind::Email),
+        "expected an email entity"
+    );
+    assert!(
+        first.iter().any(|c| c.kind == huntsman_search_engine::core::entity::EntityKind::Url),
+        "expected a URL entity"
+    );
+    assert!(
+        first.iter().any(|c| c.kind == huntsman_search_engine::core::entity::EntityKind::IpAddress),
+        "expected an IP entity"
+    );
+}

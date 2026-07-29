@@ -1,45 +1,38 @@
 //! Entity kind classifier with heuristic-based detection + confidence boosting.
+//!
+//! This module now delegates canonical kind detection to [`crate::core::classifier`],
+//! so there is a single source of truth for entity classification. The local
+//! `EntityClassifier` keeps only the context-aware confidence-boosting logic used
+//! by the document-ingestion pipeline.
 
 use super::{EntityKind, ExtractedEntity, ExtractionResult};
-use regex::Regex;
-use std::collections::HashMap;
-use std::sync::LazyLock;
+use crate::core::classifier as core_classifier;
+use crate::core::entity::EntityKind as CoreEntityKind;
 
-/// Compiled heuristic patterns, initialised once per process.
-///
-/// Previously `EntityClassifier::new()` recompiled these regexes on every call,
-/// which wasted ~50-200 ms per 1,000 calls on the hot extraction path. Caching
-/// them in a `LazyLock` keeps the public API unchanged while removing the
-/// recompilation hotspot (Phase 1, item 2).
-static KIND_PATTERNS: LazyLock<HashMap<EntityKind, Vec<Regex>>> = LazyLock::new(|| {
-    let mut kind_patterns: HashMap<EntityKind, Vec<Regex>> = HashMap::new();
-
-    // Email: must have @ and valid domain structure
-    kind_patterns.insert(
-        EntityKind::Email,
-        vec![Regex::new(r"^[^@]+@[^@]+\.[a-z]{2,}$").expect("valid email regex")],
-    );
-
-    // Phone: 7-15 digits, optional +
-    kind_patterns.insert(
-        EntityKind::Phone,
-        vec![Regex::new(r"^\+?[1-9]\d{6,14}$").expect("valid phone regex")],
-    );
-
-    // IPv4: 4 octets
-    kind_patterns.insert(
-        EntityKind::Ipv4,
-        vec![Regex::new(r"^(\d{1,3}\.){3}\d{1,3}$").expect("valid ipv4 regex")],
-    );
-
-    // Domain: labels + TLD
-    kind_patterns.insert(
-        EntityKind::Domain,
-        vec![Regex::new(r"^([a-z0-9-]+\.)+[a-z]{2,}$").expect("valid domain regex")],
-    );
-
-    kind_patterns
-});
+/// Map a canonical core [`EntityKind`](crate::core::entity::EntityKind) back to the
+/// extractor's local taxonomy.
+fn core_kind_to_extractor(core: &CoreEntityKind, value: &str) -> EntityKind {
+    match core {
+        CoreEntityKind::Email => EntityKind::Email,
+        CoreEntityKind::Phone => EntityKind::Phone,
+        CoreEntityKind::IpAddress => {
+            if value.contains(':') {
+                EntityKind::Ipv6
+            } else {
+                EntityKind::Ipv4
+            }
+        }
+        CoreEntityKind::Domain => EntityKind::Domain,
+        CoreEntityKind::Url => EntityKind::Url,
+        CoreEntityKind::Username => EntityKind::Username,
+        CoreEntityKind::Person => EntityKind::Person,
+        CoreEntityKind::Organisation => EntityKind::Organization,
+        CoreEntityKind::Cidr => EntityKind::IpRange,
+        CoreEntityKind::Other(s) if s == "hash" => EntityKind::Hash,
+        CoreEntityKind::Other(s) => EntityKind::Unknown(s.clone()),
+        _ => EntityKind::Unknown("unclassified".to_string()),
+    }
+}
 
 /// Classifier for assigning entity kinds + confidence scores.
 pub struct EntityClassifier;
@@ -54,40 +47,17 @@ impl EntityClassifier {
     }
 
     /// Classify an entity and assign kind + confidence.
+    ///
+    /// Delegates to the canonical [`crate::core::classifier::classify`] so the
+    /// extractor and the engine agree on type decisions. A caller-supplied hint
+    /// still takes precedence.
     pub fn classify(&self, value: &str, hint_kind: Option<EntityKind>) -> EntityKind {
         // If hint provided, prefer it
         if let Some(kind) = hint_kind {
             return kind;
         }
 
-        // Heuristic: Try to infer from value format
-        if value.contains('@') && !value.contains(' ') {
-            return EntityKind::Email;
-        }
-
-        if value.split('.').all(|part| part.parse::<u8>().is_ok()) {
-            return EntityKind::Ipv4;
-        }
-
-        if value.contains(':') && value.len() > 10 {
-            return EntityKind::Ipv6;
-        }
-
-        if value.starts_with("http://") || value.starts_with("https://") {
-            return EntityKind::Url;
-        }
-
-        // Regex validation against patterns
-        for (kind, patterns) in &*KIND_PATTERNS {
-            for pattern in patterns {
-                if pattern.is_match(value) {
-                    return kind.clone();
-                }
-            }
-        }
-
-        // Default to Unknown
-        EntityKind::Unknown("unclassified".to_string())
+        core_kind_to_extractor(&core_classifier::classify(value).kind, value)
     }
 
     /// Boost confidence based on contextual validation.
