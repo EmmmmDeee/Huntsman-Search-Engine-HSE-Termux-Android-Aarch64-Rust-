@@ -18,7 +18,7 @@ pub(super) struct Site {
 /// Canonical category set for this module's [`Site::cat`] field.
 /// Enforced at test time so a typo fails CI rather than silently
 /// mis-classifying (same discipline as `username_search`).
-
+#[allow(dead_code)]
 pub(super) const CATEGORIES: &[&str] = &[
     "adult", // Adult-video profile pages (Pornhub model, xHamster, xVideos, …)
     "cam",   // Live webcam / streaming platforms (Chaturbate, Stripchat, …)

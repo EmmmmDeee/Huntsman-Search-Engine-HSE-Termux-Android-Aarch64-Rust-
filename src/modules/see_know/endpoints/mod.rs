@@ -37,6 +37,7 @@ use super::pivots::{looks_like_discord_id, looks_like_steam_id};
 /// (`util::see_know::endpoints::RATE_LIMIT_BACKOFF`) are the rate limiters.
 /// Kept as a named constant for documentation and in case a future env-flag
 /// wants to restore conservative mode.
+#[allow(dead_code)]
 const FREE_COVERED_SINGLE_ORIGIN: &[EndpointCall] = &[
     EndpointCall::GithubProfile,
     EndpointCall::TwitterProfile,
@@ -142,7 +143,7 @@ fn order_by_roi(plan: Vec<EndpointCall>, target_type: &str, scan_id: &str) -> Ve
 /// True if `call` is a platform-presence check that SeekNow covers at
 /// platform-profile depth. Retained for documentation and future policy
 /// control; not used by [`effective_plan`].
-
+#[allow(dead_code)]
 fn is_free_covered_single_origin(call: EndpointCall) -> bool {
     FREE_COVERED_SINGLE_ORIGIN.contains(&call)
 }
