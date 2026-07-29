@@ -250,7 +250,9 @@ mod tests {
             keys: std::collections::HashMap::new(),
             cancel: crate::core::cancel::CancelHandle::new(),
         };
-        let out = permute_subdomains(&target, &ctx).await.expect("should succeed");
+        let out = permute_subdomains(&target, &ctx)
+            .await
+            .expect("should succeed");
         assert!(
             out.is_empty(),
             "a 2-label apex has no discovered subdomain label to permute"

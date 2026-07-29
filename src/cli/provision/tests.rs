@@ -47,7 +47,7 @@ use super::*;
         // overwrite them all with template placeholders. The error must
         // surface instead.
         let dir = tempfile::tempdir().expect("should succeed");
-        let err = read_existing_env(dir.path()).expect("should be an error");
+        let err = read_existing_env(dir.path()).expect_err("should be an error");
         assert!(
             err.to_string().contains("read "),
             "expected a read error, got: {err}"

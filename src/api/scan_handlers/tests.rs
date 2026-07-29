@@ -149,7 +149,7 @@ use super::*;
             value: "no-dot-here".to_string(),
             options: Default::default(),
         };
-        let err = build_scan_from_request(req).expect("should be an error");
+        let err = build_scan_from_request(req).expect_err("should be an error");
         assert!(
             err.starts_with("invalid target: "),
             "error must carry the client-facing prefix, got: {err}"

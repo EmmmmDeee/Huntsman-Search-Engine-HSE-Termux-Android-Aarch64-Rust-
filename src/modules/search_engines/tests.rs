@@ -38,7 +38,12 @@ fn primary_engine_order_floats_reliable_and_proven_engines_first() {
             seen_back = true;
         }
     }
-    let pos = |name: &str| ordered.iter().position(|e| e.name == name).expect("should succeed");
+    let pos = |name: &str| {
+        ordered
+            .iter()
+            .position(|e| e.name == name)
+            .expect("should succeed")
+    };
     // The key win: a reliable engine declared late (swisscows) now precedes an
     // unproven engine declared early (bing).
     assert!(pos("swisscows") < pos("bing"));
@@ -778,7 +783,10 @@ fn new_engines_present() {
 
 #[test]
 fn startpage_uses_post() {
-    let sp = ENGINES.iter().find(|e| e.name == "startpage").expect("should succeed");
+    let sp = ENGINES
+        .iter()
+        .find(|e| e.name == "startpage")
+        .expect("should succeed");
     assert!(sp.build_post.is_some());
     let body = (sp.build_post.expect("should succeed"))("test query");
     assert!(body.contains("query=test+query"));

@@ -148,31 +148,31 @@ fn score(tk: TargetKind) -> (f64, &'static str) {
 // be permissive *locators*, not validators. Compiled once, reused for the process life.
 
 /// A URL with an explicit scheme — the most unambiguous embedded entity.
-static URL_RE: LazyLock<Regex> =
+pub static URL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)\bhttps?://[^\s<>"'`)\]}]+"#).expect("valid url regex"));
 
 /// An email address: `local@host.tld`.
-static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
+pub static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}\b").expect("valid email regex")
 });
 
 /// A dotted-quad IPv4 candidate (range-checked downstream by the IP parser).
-static IPV4_RE: LazyLock<Regex> =
+pub static IPV4_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").expect("valid ipv4 regex"));
 
 /// A bare domain candidate: one or more dot-separated labels ending in an alpha TLD.
-static DOMAIN_RE: LazyLock<Regex> = LazyLock::new(|| {
+pub static DOMAIN_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\b")
         .expect("valid domain regex")
 });
 
 /// A run of digits with phone/registry punctuation — resolved to ABN, phone, or excluded
 /// by the detector's checksum/shape rules.
-static DIGITS_RE: LazyLock<Regex> =
+pub static DIGITS_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\+?\d[\d \-]{5,18}\d").expect("valid digit-run regex"));
 
 /// A social `@handle` — a strong intent signal for a username worth pivoting on.
-static HANDLE_RE: LazyLock<Regex> = LazyLock::new(|| {
+pub static HANDLE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:^|[\s(<])@([a-zA-Z0-9_]{2,30})\b").expect("valid handle regex")
 });
 

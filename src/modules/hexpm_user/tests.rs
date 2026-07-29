@@ -104,7 +104,10 @@ fn emits_github_handle_from_display_key_and_url_value() {
         .iter()
         .find(|e| e.kind == EntityKind::Username && e.value == "elixir-lang");
     assert!(gh.is_some(), "must emit Username for the GitHub URL handle");
-    assert!(gh.expect("should succeed").has_tag("github") && gh.expect("should succeed").has_tag("hexpm"));
+    assert!(
+        gh.expect("should succeed").has_tag("github")
+            && gh.expect("should succeed").has_tag("hexpm")
+    );
     assert!((gh.expect("should succeed").confidence - 0.72).abs() < 0.01);
 }
 

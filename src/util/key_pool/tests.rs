@@ -18,7 +18,11 @@ fn export_import_roundtrips_and_is_idempotent() {
         "both keys imported"
     );
     // Re-import is idempotent (dedup by value).
-    assert_eq!(dst.import_json(&json, None).expect("should succeed"), 0, "no duplicates");
+    assert_eq!(
+        dst.import_json(&json, None).expect("should succeed"),
+        0,
+        "no duplicates"
+    );
     // Environment survives the round-trip.
     let snap = dst.snapshot();
     assert_eq!(snap.services["shodan"][0].environment(), "prod");
@@ -54,8 +58,14 @@ fn revoke_and_rotate_by_id_reference_keys_without_plaintext() {
     assert!(pool.rotate_by_id("shodan", &id, "new-secret"));
     let snap = pool.snapshot();
     let entries = &snap.services["shodan"];
-    let old = entries.iter().find(|e| e.value == "old-secret").expect("should succeed");
-    let new = entries.iter().find(|e| e.value == "new-secret").expect("should succeed");
+    let old = entries
+        .iter()
+        .find(|e| e.value == "old-secret")
+        .expect("should succeed");
+    let new = entries
+        .iter()
+        .find(|e| e.value == "new-secret")
+        .expect("should succeed");
     assert_eq!(old.status, KeyStatus::Revoked);
     assert_eq!(new.environment(), "prod");
     assert_eq!(pool.next_key("shodan").as_deref(), Some("new-secret"));
@@ -100,8 +110,14 @@ fn rotate_revokes_old_adds_new_carrying_environment() {
     assert!(pool.rotate("shodan", "old-key", "new-key"));
     let snap = pool.snapshot();
     let entries = &snap.services["shodan"];
-    let old_e = entries.iter().find(|e| e.value == "old-key").expect("should succeed");
-    let new_e = entries.iter().find(|e| e.value == "new-key").expect("should succeed");
+    let old_e = entries
+        .iter()
+        .find(|e| e.value == "old-key")
+        .expect("should succeed");
+    let new_e = entries
+        .iter()
+        .find(|e| e.value == "new-key")
+        .expect("should succeed");
     assert_eq!(old_e.status, KeyStatus::Revoked, "old key revoked");
     assert_eq!(new_e.environment(), "prod", "new key inherits environment");
     assert_eq!(
@@ -144,7 +160,9 @@ fn next_key_excluding_cascades_past_tried_keys() {
 
     let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
     tried.insert("key-a".to_string());
-    let next = pool.next_key_excluding("shodan", &tried).expect("should succeed");
+    let next = pool
+        .next_key_excluding("shodan", &tried)
+        .expect("should succeed");
     assert_eq!(next, "key-b");
 
     tried.insert("key-b".to_string());
@@ -222,7 +240,10 @@ fn merge_fills_gaps() {
 
     let mut keys = HashMap::new();
     merge_pool_into_env(&pool, &mut keys);
-    assert_eq!(keys.get("HUNTSMAN_SHODAN_KEY").expect("should succeed"), "pool-key");
+    assert_eq!(
+        keys.get("HUNTSMAN_SHODAN_KEY").expect("should succeed"),
+        "pool-key"
+    );
 }
 
 #[test]
@@ -233,7 +254,10 @@ fn merge_does_not_override_existing() {
     let mut keys = HashMap::new();
     keys.insert("HUNTSMAN_SHODAN_KEY".to_string(), "env-key".to_string());
     merge_pool_into_env(&pool, &mut keys);
-    assert_eq!(keys.get("HUNTSMAN_SHODAN_KEY").expect("should succeed"), "env-key");
+    assert_eq!(
+        keys.get("HUNTSMAN_SHODAN_KEY").expect("should succeed"),
+        "env-key"
+    );
 }
 
 #[test]

@@ -407,7 +407,10 @@ mod geo_tests {
             }
         }
         // DuckDuckGo is explicitly worldwide (kl=wt-wt), not US-pinned.
-        let ddg = ENGINES.iter().find(|e| e.name == "duckduckgo").expect("should succeed");
+        let ddg = ENGINES
+            .iter()
+            .find(|e| e.name == "duckduckgo")
+            .expect("should succeed");
         let post = (ddg.build_post.expect("should succeed"))("probe");
         assert!(post.contains("kl=wt-wt"), "ddg must be worldwide: {post}");
     }

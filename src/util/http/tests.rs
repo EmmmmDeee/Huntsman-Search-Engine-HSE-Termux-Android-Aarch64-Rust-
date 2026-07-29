@@ -49,7 +49,9 @@ async fn json_decode_parses_ok_and_tags_decode_errors_with_module() {
             .body("not json".to_string())
             .expect("should succeed"),
     );
-    let err = json_decode::<V>("test_mod", bad).await.expect("should be an error");
+    let err = json_decode::<V>("test_mod", bad)
+        .await
+        .expect_err("should be an error");
     assert!(
         err.to_string().contains("test_mod"),
         "decode error must name the module: {err}"
@@ -62,7 +64,7 @@ async fn send_tagged_maps_transport_errors_to_the_module() {
         .get("ftp://example.invalid/")
         .send_tagged("test_mod")
         .await
-        .expect("should be an error");
+        .expect_err("should be an error");
     assert!(
         err.to_string().contains("test_mod"),
         "transport error must name the module: {err}"
@@ -100,7 +102,7 @@ async fn send_tagged_strips_url_so_secrets_and_pii_dont_leak() {
         .get("ftp://example.invalid/v1/lookup?apikey=SECRETKEY123&q=target@example.com")
         .send_tagged("test_mod")
         .await
-        .expect("should be an error");
+        .expect_err("should be an error");
     let msg = err.to_string();
     assert!(
         !msg.contains("SECRETKEY123"),
@@ -148,7 +150,7 @@ async fn keyed_ok_or_404_classifies_miss_success_and_error() {
 
     let err = keyed_ok_or_404("test_mod", "k", &ctx, resp(500))
         .await
-        .expect("should be an error");
+        .expect_err("should be an error");
     assert!(
         err.to_string().contains("test_mod"),
         "non-2xx error must name the module: {err}"
@@ -167,7 +169,9 @@ async fn fetch_keyed_json_retries_once_on_a_transient_timeout() {
     // answered immediately with a 200 JSON body. Each connection is handled in
     // its own task, so conn2 is served while conn1 is still being held — no
     // head-of-line blocking, so the timing margin is generous (not flaky).
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
     let addr = listener.local_addr().expect("should succeed");
     let count = Arc::new(AtomicUsize::new(0));
     let count_srv = count.clone();
@@ -238,7 +242,9 @@ fn curl_download_cap_mirrors_the_json_body_cap() {
 #[tokio::test]
 async fn traced_client_sends_x_huntsman_trace_header() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
     let addr = listener.local_addr().expect("should succeed");
     let server = tokio::spawn(async move {
         let (mut sock, _) = listener.accept().await.expect("should succeed");
@@ -279,7 +285,9 @@ async fn client_transparently_decompresses_a_gzip_encoded_response() {
         "sanity: the served body is actually compressed"
     );
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
     let addr = listener.local_addr().expect("should succeed");
     tokio::spawn(async move {
         let (mut sock, _) = listener.accept().await.expect("should succeed");
@@ -313,7 +321,9 @@ async fn fetch_json_or_absent_maps_400_to_none_while_or_404_still_errors() {
 
     // A one-shot local server that answers with HTTP 400 + a Bluesky-shaped body.
     async fn serve_one_400() -> std::net::SocketAddr {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("should succeed");
         let addr = listener.local_addr().expect("should succeed");
         tokio::spawn(async move {
             let (mut sock, _) = listener.accept().await.expect("should succeed");
@@ -368,7 +378,9 @@ async fn fetch_json_propagates_a_non_2xx_status_as_err_not_a_silent_default() {
     // on the strength of this contract). A genuine fetch/status failure must
     // surface as `Err`, never be silently indistinguishable from a real
     // "nothing found" result.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
     let addr = listener.local_addr().expect("should succeed");
     tokio::spawn(async move {
         let (mut sock, _) = listener.accept().await.expect("should succeed");
@@ -414,7 +426,9 @@ async fn fetch_json_or_404_maps_404_to_none_but_propagates_5xx_as_err() {
     // above, which pins the no-absent-list `fetch_json` variant for the T2.115
     // (psbdmp) case; this one pins the 404-is-absent `fetch_json_or_404` variant.
     async fn serve_once(status: u16, reason: &'static str) -> std::net::SocketAddr {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("should succeed");
         let addr = listener.local_addr().expect("should succeed");
         tokio::spawn(async move {
             let (mut sock, _) = listener.accept().await.expect("should succeed");
@@ -762,6 +776,8 @@ async fn read_text_reads_body_with_module_tagged_errors() {
             .body("plain text body".to_string())
             .expect("should succeed"),
     );
-    let body = super::fetch::read_text("test_mod", ok).await.expect("should succeed");
+    let body = super::fetch::read_text("test_mod", ok)
+        .await
+        .expect("should succeed");
     assert_eq!(body, "plain text body");
 }

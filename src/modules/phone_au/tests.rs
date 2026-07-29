@@ -38,27 +38,37 @@ fn classifies_fixed_line_regions() {
 fn classifies_service_numbers_with_correct_precedence() {
     // 1800 freephone — must win over the bare `1`/`13` checks.
     assert_eq!(
-        classify_au_phone("1800123456").expect("should succeed").line_type,
+        classify_au_phone("1800123456")
+            .expect("should succeed")
+            .line_type,
         LineType::Freephone
     );
     // 1300 local-rate — must win over the `13` shortcode check.
     assert_eq!(
-        classify_au_phone("1300123456").expect("should succeed").line_type,
+        classify_au_phone("1300123456")
+            .expect("should succeed")
+            .line_type,
         LineType::LocalRate
     );
     // 13 XX XX shortcode local-rate.
     assert_eq!(
-        classify_au_phone("131234").expect("should succeed").line_type,
+        classify_au_phone("131234")
+            .expect("should succeed")
+            .line_type,
         LineType::LocalRate
     );
     // 190x premium.
     assert_eq!(
-        classify_au_phone("1900123456").expect("should succeed").line_type,
+        classify_au_phone("1900123456")
+            .expect("should succeed")
+            .line_type,
         LineType::Premium
     );
     // 05 VoIP/digital.
     assert_eq!(
-        classify_au_phone("512345678").expect("should succeed").line_type,
+        classify_au_phone("512345678")
+            .expect("should succeed")
+            .line_type,
         LineType::Voip
     );
 }
@@ -131,7 +141,10 @@ fn accepts_only_phone() {
 async fn enriches_fixed_line_with_region_tags_and_evidence() {
     let m = PhoneAu;
     let target = Target::new(TargetKind::Phone, "+61 2 9876 5432");
-    let r = m.process(&target, &test_ctx()).await.expect("should succeed");
+    let r = m
+        .process(&target, &test_ctx())
+        .await
+        .expect("should succeed");
     let e = r
         .entities
         .iter()
@@ -159,7 +172,10 @@ async fn enriches_fixed_line_with_region_tags_and_evidence() {
 async fn enriches_mobile_without_region() {
     let m = PhoneAu;
     let target = Target::new(TargetKind::Phone, "0412 345 678");
-    let r = m.process(&target, &test_ctx()).await.expect("should succeed");
+    let r = m
+        .process(&target, &test_ctx())
+        .await
+        .expect("should succeed");
     let e = r
         .entities
         .iter()
@@ -177,7 +193,10 @@ async fn enriches_mobile_without_region() {
 async fn flags_freephone_as_non_geographic_org_signal() {
     let m = PhoneAu;
     let target = Target::new(TargetKind::Phone, "+61 1800 123 456");
-    let r = m.process(&target, &test_ctx()).await.expect("should succeed");
+    let r = m
+        .process(&target, &test_ctx())
+        .await
+        .expect("should succeed");
     let e = r
         .entities
         .iter()
@@ -192,7 +211,10 @@ async fn flags_freephone_as_non_geographic_org_signal() {
 async fn non_au_phone_yields_nothing() {
     let m = PhoneAu;
     let target = Target::new(TargetKind::Phone, "+1 555 123 4567");
-    let r = m.process(&target, &test_ctx()).await.expect("should succeed");
+    let r = m
+        .process(&target, &test_ctx())
+        .await
+        .expect("should succeed");
     assert!(
         r.entities.is_empty(),
         "a non-AU number must not be claimed by phone_au"

@@ -76,7 +76,8 @@ fn write_preserves_comments_and_appends_new_keys() {
     let path = dir.path().join(".huntsman.env");
     std::fs::write(&path, "# template\n#HUNTSMAN_HIBP_KEY=\n").expect("should succeed");
 
-    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "abc123")]), &[]).expect("should succeed");
+    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "abc123")]), &[])
+        .expect("should succeed");
 
     let got = std::fs::read_to_string(&path).expect("should succeed");
     assert!(got.contains("# template"), "comment preserved");
@@ -94,7 +95,8 @@ fn write_preserves_comments_and_appends_new_keys() {
 fn write_replaces_existing_key_in_place() {
     let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
-    std::fs::write(&path, "HUNTSMAN_OATHNET_KEY=old\nHUNTSMAN_HIBP_KEY=stay\n").expect("should succeed");
+    std::fs::write(&path, "HUNTSMAN_OATHNET_KEY=old\nHUNTSMAN_HIBP_KEY=stay\n")
+        .expect("should succeed");
 
     write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "new")]), &[]).expect("should succeed");
 
@@ -159,7 +161,8 @@ fn delete_removes_key_entirely() {
 fn missing_file_is_created_with_appended_keys() {
     let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
-    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "seed")]), &[]).expect("should succeed");
+    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "seed")]), &[])
+        .expect("should succeed");
     let got = std::fs::read_to_string(&path).expect("should succeed");
     assert!(got.contains("HUNTSMAN_OATHNET_KEY=\"seed\""));
 }
@@ -168,7 +171,8 @@ fn missing_file_is_created_with_appended_keys() {
 fn rejects_non_huntsman_keys() {
     let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
-    let err = write_keys_at(&path, &map_of(&[("PATH", "/etc")]), &[]).expect("should be an error");
+    let err =
+        write_keys_at(&path, &map_of(&[("PATH", "/etc")]), &[]).expect_err("should be an error");
     assert!(err.to_string().contains("HUNTSMAN_"));
 }
 
@@ -237,7 +241,8 @@ fn load_from_file_strips_double_quotes_from_written_values() {
     // return the bare value so SUPERSEDED rotation comparisons work correctly.
     let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
-    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "mykey123")]), &[]).expect("should succeed");
+    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "mykey123")]), &[])
+        .expect("should succeed");
     let m = load_from_file_only(&path);
     assert_eq!(
         m.get("HUNTSMAN_OATHNET_KEY").map(String::as_str),
@@ -307,8 +312,8 @@ fn update_matches_key_with_whitespace_around_equals() {
 #[test]
 fn read_error_other_than_not_found_surfaces() {
     let dir = tempdir().expect("should succeed");
-    let err =
-        write_keys_at(dir.path(), &map_of(&[("HUNTSMAN_OATHNET_KEY", "v")]), &[]).expect("should be an error");
+    let err = write_keys_at(dir.path(), &map_of(&[("HUNTSMAN_OATHNET_KEY", "v")]), &[])
+        .expect_err("should be an error");
     let msg = err.to_string();
     assert!(
         msg.contains("read ") || msg.contains("open ") || msg.contains("write "),
@@ -564,7 +569,8 @@ fn concurrent_vault_writes_never_corrupt_or_strand() {
     // straggler. (Mirrors `atomic_file`'s own concurrency property test.)
     let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
-    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "seed")]), &[]).expect("should succeed");
+    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "seed")]), &[])
+        .expect("should succeed");
 
     let handles: Vec<_> = (0..8)
         .map(|i| {

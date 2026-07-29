@@ -35,7 +35,9 @@ fn render_full_dumps_every_field_and_provenance() {
     // Password fixture above (a passthrough-normalise kind) can't.
     let mut mixed = Entity::new(EntityKind::Email, "TestUser@Example.COM", 0.6, "scan-full");
     mixed.observed_at = 1_700_000_000;
-    store.upsert_entities_batch(&[e, mixed]).expect("should succeed");
+    store
+        .upsert_entities_batch(&[e, mixed])
+        .expect("should succeed");
 
     let out = render_full(&store, "scan-full").expect("should succeed");
     // Header + provenance roll-up.
@@ -249,7 +251,9 @@ fn structured_exports_quarantine_candidates_but_full_retains_them() {
     let confirmed = Entity::new(EntityKind::Email, "subject@example-real.com", 0.8, "scan-q");
     let mut stranger = Entity::new(EntityKind::Person, "Random Stranger", 0.25, "scan-q");
     stranger.demote_to_candidate(); // tags `candidate`
-    store.upsert_entities_batch(&[confirmed, stranger]).expect("should succeed");
+    store
+        .upsert_entities_batch(&[confirmed, stranger])
+        .expect("should succeed");
 
     for body in [
         render_csv(&store, "scan-q", false).expect("should succeed"),
@@ -499,7 +503,13 @@ fn debug_bundle_labels_a_true_au059_synergy_fix_distinctly_from_single_signal() 
     use crate::core::correlator::{Correlation, Severity};
     use crate::core::entity::{Entity, EntityKind, Evidence};
     let dir = tempfile::tempdir().expect("should succeed");
-    let store = Store::open(dir.path().join("au059.db").to_str().expect("should succeed")).expect("should succeed");
+    let store = Store::open(
+        dir.path()
+            .join("au059.db")
+            .to_str()
+            .expect("should succeed"),
+    )
+    .expect("should succeed");
     let scan = Scan::new(
         "scan-au059",
         Target::new(TargetKind::Email, "au059@example-real.com"),
@@ -524,7 +534,9 @@ fn debug_bundle_labels_a_true_au059_synergy_fix_distinctly_from_single_signal() 
         sighting("wigle", -33.8700, 151.2100, 0.78),
     ];
     let uids: Vec<String> = entities.iter().map(|e| e.uid.clone()).collect();
-    store.upsert_entities_batch(&entities).expect("should succeed");
+    store
+        .upsert_entities_batch(&entities)
+        .expect("should succeed");
     store
         .upsert_correlation(&Correlation::new(
             "AU-059",
@@ -573,7 +585,13 @@ fn debug_bundle_single_signal_fallback_fix_is_not_mislabelled_au059() {
     // a single hardcoded/low-rigour signal as a corroborated cross-seed fix.
     use crate::core::entity::{Entity, EntityKind, Evidence};
     let dir = tempfile::tempdir().expect("should succeed");
-    let store = Store::open(dir.path().join("single_signal.db").to_str().expect("should succeed")).expect("should succeed");
+    let store = Store::open(
+        dir.path()
+            .join("single_signal.db")
+            .to_str()
+            .expect("should succeed"),
+    )
+    .expect("should succeed");
     let scan = Scan::new(
         "scan-single",
         Target::new(TargetKind::Email, "single@example-real.com"),
@@ -589,7 +607,9 @@ fn debug_bundle_single_signal_fallback_fix_is_not_mislabelled_au059() {
     coord.tag("au-state:NSW");
     coord.tag("country:AU");
     coord.add_evidence(Evidence::new("exif_geo", "fixture"));
-    store.upsert_entities_batch(&[coord]).expect("should succeed");
+    store
+        .upsert_entities_batch(&[coord])
+        .expect("should succeed");
     // No AU-059 correlation stored — a lone coordinate never fires the rule.
 
     let out = render_debug_bundle(&store, "scan-single").expect("should succeed");
@@ -619,7 +639,8 @@ fn debug_bundle_is_deterministic() {
     use crate::core::entity::{Entity, EntityKind};
     use crate::core::event::{Event, EventKind};
     let dir = tempfile::tempdir().expect("should succeed");
-    let store = Store::open(dir.path().join("det.db").to_str().expect("should succeed")).expect("should succeed");
+    let store = Store::open(dir.path().join("det.db").to_str().expect("should succeed"))
+        .expect("should succeed");
     let scan = Scan::new(
         "scan-det",
         Target::new(TargetKind::Email, "a@example-real.com"),
@@ -661,7 +682,13 @@ fn export_formats_determinism_audit() {
     // else, this fails.
     use crate::core::entity::{Entity, EntityKind};
     let dir = tempfile::tempdir().expect("should succeed");
-    let store = Store::open(dir.path().join("audit.db").to_str().expect("should succeed")).expect("should succeed");
+    let store = Store::open(
+        dir.path()
+            .join("audit.db")
+            .to_str()
+            .expect("should succeed"),
+    )
+    .expect("should succeed");
     let scan = Scan::new(
         "scan-au",
         Target::new(TargetKind::Email, "z@example-real.com"),
@@ -708,15 +735,19 @@ fn export_formats_determinism_audit() {
     // structurally with that one field removed — robust regardless of whether
     // the two renders happened to land in the same wall-clock second.
     let mut r1: serde_json::Value =
-        serde_json::from_str(&render_report(&store, "scan-au", false).expect("should succeed")).expect("should succeed");
+        serde_json::from_str(&render_report(&store, "scan-au", false).expect("should succeed"))
+            .expect("should succeed");
     let mut r2: serde_json::Value =
-        serde_json::from_str(&render_report(&store, "scan-au", false).expect("should succeed")).expect("should succeed");
+        serde_json::from_str(&render_report(&store, "scan-au", false).expect("should succeed"))
+            .expect("should succeed");
     assert!(
         r1.get("exported_at").is_some(),
         "exported_at must be present"
     );
     for r in [&mut r1, &mut r2] {
-        r.as_object_mut().expect("should succeed").remove("exported_at");
+        r.as_object_mut()
+            .expect("should succeed")
+            .remove("exported_at");
     }
     assert_eq!(
         r1, r2,
@@ -733,7 +764,7 @@ fn explicit_scan_id_is_existence_checked_no_silent_empty_export() {
     // Unknown id -> a clear "not found" error (no silent empty export). The
     // existence check now lives in the shared `cli::resolve_scan_id`.
     let err = crate::app::runtime::resolve_scan_id(&store, "no-such-scan")
-        .expect("should be an error")
+        .expect_err("should be an error")
         .to_string();
     assert!(
         err.contains("not found"),
@@ -844,7 +875,8 @@ mod prop {
 
     /// Build a fresh store under `dir` holding `order`-sequenced entities.
     fn store_with(dir: &std::path::Path, name: &str, order: &[Entity]) -> Store {
-        let store = Store::open(dir.join(name).to_str().expect("should succeed")).expect("should succeed");
+        let store =
+            Store::open(dir.join(name).to_str().expect("should succeed")).expect("should succeed");
         let scan = Scan::new(
             "scan-prop",
             Target::new(TargetKind::Email, "seed@example-real.com"),

@@ -164,7 +164,10 @@ fn profiles_are_emitted_in_full() {
         r#"{{"details":{{"profiles":[{}]}}}}"#,
         profiles.join(",")
     ));
-    let csv = e.evidence[0].attributes.get("profiles").expect("should succeed");
+    let csv = e.evidence[0]
+        .attributes
+        .get("profiles")
+        .expect("should succeed");
     assert_eq!(csv.split(',').count(), 30);
     // …and the reported count matches the true total.
     assert_eq!(

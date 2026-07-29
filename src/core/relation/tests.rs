@@ -1116,8 +1116,14 @@ fn identity_ownership_evidence_then_fingerprint() {
             "Person is the `from` (owner) endpoint"
         );
     }
-    let owned_edge = rels.iter().find(|r| r.to_uid == owned.uid).expect("should succeed");
-    let fp_edge = rels.iter().find(|r| r.to_uid == fp.uid).expect("should succeed");
+    let owned_edge = rels
+        .iter()
+        .find(|r| r.to_uid == owned.uid)
+        .expect("should succeed");
+    let fp_edge = rels
+        .iter()
+        .find(|r| r.to_uid == fp.uid)
+        .expect("should succeed");
     // Evidence edge carries full endpoint trust; fingerprint edge is damped.
     assert!((owned_edge.confidence - 0.6_f64.min(0.9)).abs() < 1e-9);
     assert!(
@@ -1391,7 +1397,10 @@ fn diegmann_family_connects_from_any_seed_angle() {
             adj.entry(&r.from_uid).or_default().push(&r.to_uid);
             adj.entry(&r.to_uid).or_default().push(&r.from_uid);
         }
-        let subject = ents.iter().find(|e| e.value == seed).expect("should succeed");
+        let subject = ents
+            .iter()
+            .find(|e| e.value == seed)
+            .expect("should succeed");
         let mut reached = std::collections::HashSet::new();
         let mut stack = vec![subject.uid.as_str()];
         while let Some(u) = stack.pop() {

@@ -164,7 +164,10 @@ fn trading_names_split_and_emit_organisations() {
     assert!(orgs.contains(&"SUBS"));
     assert!(orgs.contains(&"Sydney University Business Society"));
     // Website with a scheme is normalised to a bare host.
-    let dom = ents.iter().find(|e| e.kind == EntityKind::Domain).expect("should succeed");
+    let dom = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain)
+        .expect("should succeed");
     assert_eq!(dom.value, "subsoc.com.au");
 }
 
@@ -176,9 +179,15 @@ fn numeric_abn_and_postcode_are_stringified_not_dropped() {
     ]"#;
     let recs: Vec<Map<String, Value>> = serde_json::from_str(raw).expect("should succeed");
     let ents = records_to_entities(&recs, 1, "Numeric Fields Trust", "s");
-    let abn = ents.iter().find(|e| e.kind == EntityKind::AbnAcn).expect("should succeed");
+    let abn = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::AbnAcn)
+        .expect("should succeed");
     assert_eq!(abn.value, "28000030179");
-    let addr = ents.iter().find(|e| e.kind == EntityKind::Address).expect("should succeed");
+    let addr = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("should succeed");
     assert_eq!(addr.value, "Perth, WA 6000, Australia");
 }
 
@@ -205,7 +214,8 @@ fn ckan_success_false_is_captured() {
     assert_eq!(err.success, Some(false));
     assert!(err.result.is_none());
     let ok: CkanResp =
-        serde_json::from_str(r#"{"success":true,"result":{"total":0,"records":[]}}"#).expect("should succeed");
+        serde_json::from_str(r#"{"success":true,"result":{"total":0,"records":[]}}"#)
+            .expect("should succeed");
     assert_eq!(ok.success, Some(true));
     assert_eq!(ok.result.expect("should succeed").records.len(), 0);
 }

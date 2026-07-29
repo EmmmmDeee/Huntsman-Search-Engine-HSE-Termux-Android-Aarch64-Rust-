@@ -20,10 +20,22 @@ fn longest_prefix_wins() {
 
 #[test]
 fn international_codes() {
-    assert_eq!(match_country("442071838750").expect("should succeed").1, "GB");
-    assert_eq!(match_country("61400000000").expect("should succeed").1, "AU");
-    assert_eq!(match_country("33123456789").expect("should succeed").1, "FR");
-    assert_eq!(match_country("861234567890").expect("should succeed").1, "CN");
+    assert_eq!(
+        match_country("442071838750").expect("should succeed").1,
+        "GB"
+    );
+    assert_eq!(
+        match_country("61400000000").expect("should succeed").1,
+        "AU"
+    );
+    assert_eq!(
+        match_country("33123456789").expect("should succeed").1,
+        "FR"
+    );
+    assert_eq!(
+        match_country("861234567890").expect("should succeed").1,
+        "CN"
+    );
 }
 
 #[test]
