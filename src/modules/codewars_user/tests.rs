@@ -54,7 +54,10 @@ fn emits_organisation_from_clan() {
     let o = ents.iter().find(|e| e.kind == EntityKind::Organisation);
     assert!(o.is_some(), "must emit Organisation from clan field");
     assert_eq!(o.expect("should succeed").value, "Hack The Planet");
-    assert!(o.expect("should succeed").has_tag("self-asserted") && o.expect("should succeed").has_tag("codewars"));
+    assert!(
+        o.expect("should succeed").has_tag("self-asserted")
+            && o.expect("should succeed").has_tag("codewars")
+    );
     assert!((o.expect("should succeed").confidence - 0.48).abs() < 0.01);
 }
 

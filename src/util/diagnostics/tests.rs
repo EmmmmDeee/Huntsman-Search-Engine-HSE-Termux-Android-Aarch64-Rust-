@@ -72,7 +72,9 @@ fn analyse_output_is_byte_reproducible() {
     ];
     let pure = |d: ScanDiagnostics| {
         let mut v = serde_json::to_value(d).expect("should succeed");
-        v.as_object_mut().expect("should succeed").remove("adaptive_routing");
+        v.as_object_mut()
+            .expect("should succeed")
+            .remove("adaptive_routing");
         v
     };
     let a = pure(analyse("sid", "email", "seed", 100, &entities));

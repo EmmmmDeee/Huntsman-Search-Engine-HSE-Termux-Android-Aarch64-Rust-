@@ -32,7 +32,11 @@ fn parse_forward_response() {
     let raw = r#"{"features":[{"geometry":{"type":"Point","coordinates":[151.2093,-33.8688]},
         "properties":{"name":"Sydney","country":"Australia","countrycode":"AU","type":"city"}}]}"#;
     let r: PhotonResp = serde_json::from_str(raw).expect("should succeed");
-    let coords = &r.features[0].geometry.as_ref().expect("should succeed").coordinates;
+    let coords = &r.features[0]
+        .geometry
+        .as_ref()
+        .expect("should succeed")
+        .coordinates;
     assert!((coords[0] - 151.2093).abs() < 0.001);
 }
 
@@ -71,9 +75,11 @@ fn build_forward_emits_coordinates_with_name_and_osm() {
 
 #[test]
 fn build_forward_without_geometry_is_none() {
-    let feature: Feature = serde_json::from_str(r#"{"properties":{"name":"X"}}"#).expect("should succeed");
+    let feature: Feature =
+        serde_json::from_str(r#"{"properties":{"name":"X"}}"#).expect("should succeed");
     assert!(build_forward("x", &feature, "s").is_none());
-    let no_coords: Feature = serde_json::from_str(r#"{"geometry":{"coordinates":[1.0]}}"#).expect("should succeed");
+    let no_coords: Feature =
+        serde_json::from_str(r#"{"geometry":{"coordinates":[1.0]}}"#).expect("should succeed");
     assert!(build_forward("x", &no_coords, "s").is_none());
 }
 
@@ -81,8 +87,8 @@ fn build_forward_without_geometry_is_none() {
 fn build_forward_rejects_out_of_range_and_null_island() {
     // A malformed geometry must not become a Coordinates entity (it would be
     // a high-confidence false fix). Longitude is `coordinates[0]`.
-    let oob: Feature =
-        serde_json::from_str(r#"{"geometry":{"coordinates":[999.0,500.0]}}"#).expect("should succeed");
+    let oob: Feature = serde_json::from_str(r#"{"geometry":{"coordinates":[999.0,500.0]}}"#)
+        .expect("should succeed");
     assert!(build_forward("x", &oob, "s").is_none());
     let null_island: Feature =
         serde_json::from_str(r#"{"geometry":{"coordinates":[0.0,0.0]}}"#).expect("should succeed");

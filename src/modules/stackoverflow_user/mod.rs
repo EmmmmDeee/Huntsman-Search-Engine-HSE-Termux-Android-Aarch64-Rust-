@@ -454,7 +454,10 @@ mod tests {
             .find(|e| e.kind == EntityKind::Username && e.value == "alice");
         assert!(u.is_some(), "must emit Username entity");
         assert!((u.expect("should succeed").confidence - 0.82).abs() < 0.01);
-        assert!(u.expect("should succeed").has_tag("stackoverflow") && u.expect("should succeed").has_tag("forum"));
+        assert!(
+            u.expect("should succeed").has_tag("stackoverflow")
+                && u.expect("should succeed").has_tag("forum")
+        );
     }
 
     #[test]

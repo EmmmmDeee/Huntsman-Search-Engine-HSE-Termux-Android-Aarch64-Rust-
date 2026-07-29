@@ -234,7 +234,10 @@ fn record_to_entities_address_includes_postcode_when_present() {
         postcode: Some("3065".into()),
     };
     let ents = record_to_entities(&rec, "s");
-    let addr = ents.iter().find(|e| e.kind == EntityKind::Address).expect("should succeed");
+    let addr = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("should succeed");
     assert!(
         addr.value.contains("3065"),
         "address must include postcode: {}",

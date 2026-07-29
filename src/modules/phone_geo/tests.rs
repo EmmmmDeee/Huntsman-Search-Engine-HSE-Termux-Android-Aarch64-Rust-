@@ -210,8 +210,14 @@ fn uk_carrier_maps_prefixes_with_full_fields() {
     assert_eq!(ee.confidence, confidence::LOW);
     assert_eq!(ee.network_hint, "mobile");
 
-    assert_eq!(uk_carrier("7410").expect("should succeed").carrier, "Vodafone UK");
-    assert_eq!(uk_carrier("7420").expect("should succeed").carrier, "Three UK");
+    assert_eq!(
+        uk_carrier("7410").expect("should succeed").carrier,
+        "Vodafone UK"
+    );
+    assert_eq!(
+        uk_carrier("7420").expect("should succeed").carrier,
+        "Three UK"
+    );
     assert_eq!(uk_carrier("7450").expect("should succeed").carrier, "O2 UK");
 }
 
@@ -251,7 +257,10 @@ fn test_ctx() -> ModuleContext {
 async fn landline_runs_area_pass_and_emits_phone_area_geo_source() {
     let m = PhoneGeo;
     let target = Target::new(TargetKind::Phone, "+61 2 1234 5678");
-    let r = m.process(&target, &test_ctx()).await.expect("should succeed");
+    let r = m
+        .process(&target, &test_ctx())
+        .await
+        .expect("should succeed");
     // Address always emitted; Coordinates emitted when city_coords matches.
     assert!(!r.is_empty());
     let addr = r
@@ -278,7 +287,10 @@ async fn au_multistate_area_code_does_not_fabricate_one_state() {
     // Address/Coordinates are still emitted; only the ambiguous state tag is held.
     let m = PhoneGeo;
     let target = Target::new(TargetKind::Phone, "+61 8 9325 0000");
-    let r = m.process(&target, &test_ctx()).await.expect("should succeed");
+    let r = m
+        .process(&target, &test_ctx())
+        .await
+        .expect("should succeed");
     assert!(
         r.entities.iter().any(|e| e.has_tag("phone-area-code")),
         "08 landline must still emit an area-code entity"
@@ -298,7 +310,10 @@ async fn au_single_state_area_code_still_tags_state() {
     // guard must still stamp the legitimate single-state jurisdiction.
     let m = PhoneGeo;
     let target = Target::new(TargetKind::Phone, "+61 3 9000 0000");
-    let r = m.process(&target, &test_ctx()).await.expect("should succeed");
+    let r = m
+        .process(&target, &test_ctx())
+        .await
+        .expect("should succeed");
     let addr = r
         .entities
         .iter()
@@ -316,7 +331,10 @@ async fn mobile_runs_carrier_pass_and_emits_phone_carrier_geo_source() {
     let m = PhoneGeo;
     // AU Telstra mobile: no geographic area code, but a carrier hit.
     let target = Target::new(TargetKind::Phone, "+61 412 345 678");
-    let r = m.process(&target, &test_ctx()).await.expect("should succeed");
+    let r = m
+        .process(&target, &test_ctx())
+        .await
+        .expect("should succeed");
     let addr = r
         .entities
         .iter()
@@ -341,7 +359,10 @@ async fn both_passes_independent_no_match_does_not_suppress() {
     // Unknown number: neither pass matches, and process() still succeeds empty.
     let m = PhoneGeo;
     let target = Target::new(TargetKind::Phone, "+99 9 1234 5678");
-    let r = m.process(&target, &test_ctx()).await.expect("should succeed");
+    let r = m
+        .process(&target, &test_ctx())
+        .await
+        .expect("should succeed");
     assert!(
         r.is_empty(),
         "an unmatched number yields nothing from either pass"

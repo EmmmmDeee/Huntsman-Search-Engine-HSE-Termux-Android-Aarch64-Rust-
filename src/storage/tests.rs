@@ -39,7 +39,10 @@ fn open_restricts_the_db_file_to_owner_only() {
     let path = tmp_db();
     let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "s-perm"); // a write so the -wal/-shm siblings exist too
-    let mode = std::fs::metadata(&path).expect("should succeed").permissions().mode();
+    let mode = std::fs::metadata(&path)
+        .expect("should succeed")
+        .permissions()
+        .mode();
     assert_eq!(mode & 0o777, 0o600, "the DB must be owner-only (§7 S3)");
     drop(store);
     let _ = std::fs::remove_file(&path);
@@ -83,7 +86,10 @@ fn integrity_check_reports_ok_on_healthy_db() {
     insert_scan(&store, "scan-ic");
     let e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "scan-ic");
     store.upsert_entity(&e).expect("should succeed");
-    assert_eq!(store.integrity_check().expect("should succeed"), vec!["ok".to_string()]);
+    assert_eq!(
+        store.integrity_check().expect("should succeed"),
+        vec!["ok".to_string()]
+    );
 }
 
 #[test]
@@ -124,14 +130,22 @@ fn latest_completed_scan_is_deterministic_on_same_second_ties() {
     mk("scan-aaa");
     mk("scan-zzz");
     // id DESC tie-break ⇒ the lexicographically larger id wins on every call.
-    let winner = store.latest_completed_scan().expect("should succeed").expect("should succeed").id;
+    let winner = store
+        .latest_completed_scan()
+        .expect("should succeed")
+        .expect("should succeed")
+        .id;
     assert_eq!(
         winner, "scan-zzz",
         "tie must break deterministically on id DESC"
     );
     for _ in 0..5 {
         assert_eq!(
-            store.latest_completed_scan().expect("should succeed").expect("should succeed").id,
+            store
+                .latest_completed_scan()
+                .expect("should succeed")
+                .expect("should succeed")
+                .id,
             winner,
             "latest must be stable across repeated calls on identical state"
         );
@@ -341,10 +355,18 @@ fn delete_scan_cascade_removes_orphans_but_keeps_shared_entities() {
     store.upsert_entity(&shared2).expect("should succeed");
     let only_doomed = Entity::new(EntityKind::Email, "lonely@example.com", 0.6, "scan-doomed");
     store.upsert_entity(&only_doomed).expect("should succeed");
-    assert_eq!(store.entities_for_scan("scan-doomed").expect("should succeed").len(), 2);
+    assert_eq!(
+        store
+            .entities_for_scan("scan-doomed")
+            .expect("should succeed")
+            .len(),
+        2
+    );
     let removed = store.delete_scan("scan-doomed").expect("should succeed");
     assert!(removed);
-    let keeper = store.entities_for_scan("scan-keeper").expect("should succeed");
+    let keeper = store
+        .entities_for_scan("scan-keeper")
+        .expect("should succeed");
     assert_eq!(keeper.len(), 1);
     assert_eq!(keeper[0].value, "example.com");
     assert!(
@@ -353,9 +375,24 @@ fn delete_scan_cascade_removes_orphans_but_keeps_shared_entities() {
             .expect("should succeed")
             .is_empty()
     );
-    assert_eq!(store.observation_count(&only_doomed.uid).expect("should succeed"), 0);
-    assert!(store.get_scan("scan-doomed").expect("should succeed").is_none());
-    assert!(store.get_scan("scan-keeper").expect("should succeed").is_some());
+    assert_eq!(
+        store
+            .observation_count(&only_doomed.uid)
+            .expect("should succeed"),
+        0
+    );
+    assert!(
+        store
+            .get_scan("scan-doomed")
+            .expect("should succeed")
+            .is_none()
+    );
+    assert!(
+        store
+            .get_scan("scan-keeper")
+            .expect("should succeed")
+            .is_some()
+    );
     assert!(!store.delete_scan("scan-doomed").expect("should succeed"));
     let _ = std::fs::remove_file(&path);
 }
@@ -374,7 +411,11 @@ fn delete_scan_with_unknown_id_does_not_purge_orphans() {
                 [],
             ).expect("should succeed");
     }
-    assert!(!store.delete_scan("nonexistent-scan-id").expect("should succeed"));
+    assert!(
+        !store
+            .delete_scan("nonexistent-scan-id")
+            .expect("should succeed")
+    );
     let count: i64 = {
         let c = conn.lock();
         c.query_row(
@@ -507,7 +548,10 @@ fn upsert_scan_updates_existing() {
     scan.status = ScanStatus::Complete;
     scan.entity_count = 42;
     store.upsert_scan(&scan).expect("should succeed");
-    let fetched = store.get_scan("update-me").expect("should succeed").expect("should succeed");
+    let fetched = store
+        .get_scan("update-me")
+        .expect("should succeed")
+        .expect("should succeed");
     assert_eq!(fetched.status, ScanStatus::Complete);
     assert_eq!(fetched.entity_count, 42);
     let _ = std::fs::remove_file(&path);
@@ -538,7 +582,9 @@ fn upsert_correlation_and_correlations_for_scan_round_trip() {
         12345,
     );
     store.upsert_correlation(&c).expect("should succeed");
-    let corrs = store.correlations_for_scan("corr-scan").expect("should succeed");
+    let corrs = store
+        .correlations_for_scan("corr-scan")
+        .expect("should succeed");
     assert_eq!(corrs.len(), 1);
     assert_eq!(corrs[0].rule_id, "AU-001");
     assert_eq!(corrs[0].rule_name, "Test rule");
@@ -595,13 +641,22 @@ fn upsert_correlation_supersedes_growing_aggregate_cluster() {
     store
         .upsert_correlation(&mk("2 entities on the local network", vec!["A", "B"], 3))
         .expect("should succeed");
-    assert_eq!(store.correlations_for_scan("agg").expect("should succeed").len(), 1);
+    assert_eq!(
+        store
+            .correlations_for_scan("agg")
+            .expect("should succeed")
+            .len(),
+        1
+    );
     // A genuinely distinct cluster (disjoint uids) coexists as its own row.
     store
         .upsert_correlation(&mk("cluster 2", vec!["X", "Y"], 4))
         .expect("should succeed");
     assert_eq!(
-        store.correlations_for_scan("agg").expect("should succeed").len(),
+        store
+            .correlations_for_scan("agg")
+            .expect("should succeed")
+            .len(),
         2,
         "disjoint clusters must coexist"
     );
@@ -612,7 +667,9 @@ fn upsert_correlation_supersedes_growing_aggregate_cluster() {
 fn correlations_for_scan_empty_scan_returns_empty() {
     let path = tmp_db();
     let store = Store::open(&path).expect("should succeed");
-    let corrs = store.correlations_for_scan("unknown-scan").expect("should succeed");
+    let corrs = store
+        .correlations_for_scan("unknown-scan")
+        .expect("should succeed");
     assert!(corrs.is_empty());
     let _ = std::fs::remove_file(&path);
 }
@@ -653,7 +710,9 @@ fn correlations_for_scan_orders_by_severity() {
     store.upsert_correlation(&c_low).expect("should succeed");
     store.upsert_correlation(&c_crit).expect("should succeed");
     store.upsert_correlation(&c_high).expect("should succeed");
-    let corrs = store.correlations_for_scan("sev-scan").expect("should succeed");
+    let corrs = store
+        .correlations_for_scan("sev-scan")
+        .expect("should succeed");
     assert_eq!(corrs.len(), 3);
     assert_eq!(corrs[0].severity, Severity::Critical);
     assert_eq!(corrs[1].severity, Severity::High);
@@ -678,7 +737,9 @@ fn duplicate_correlation_is_ignored_upsert_idempotent() {
     );
     store.upsert_correlation(&c).expect("should succeed");
     store.upsert_correlation(&c).expect("should succeed");
-    let corrs = store.correlations_for_scan("dup-scan").expect("should succeed");
+    let corrs = store
+        .correlations_for_scan("dup-scan")
+        .expect("should succeed");
     assert_eq!(corrs.len(), 1, "duplicate correlation should be ignored");
     let _ = std::fs::remove_file(&path);
 }
@@ -784,7 +845,9 @@ fn recent_module_outcome_events_filters_orders_and_bounds_across_scans() {
         store.insert_event(&ev).expect("should succeed");
     }
 
-    let outcomes = store.recent_module_outcome_events(100).expect("should succeed");
+    let outcomes = store
+        .recent_module_outcome_events(100)
+        .expect("should succeed");
     assert_eq!(
         outcomes.len(),
         2,
@@ -801,7 +864,9 @@ fn recent_module_outcome_events_filters_orders_and_bounds_across_scans() {
     ));
 
     // limit is respected.
-    let bounded = store.recent_module_outcome_events(1).expect("should succeed");
+    let bounded = store
+        .recent_module_outcome_events(1)
+        .expect("should succeed");
     assert_eq!(bounded.len(), 1);
     assert!(matches!(&bounded[0].kind, EventKind::ModuleError { .. }));
 
@@ -834,7 +899,9 @@ fn entities_for_scan_recovers_from_event_log_when_not_finalised() {
     }
 
     // entities_for_scan transparently falls back to the event log.
-    let recovered = store.entities_for_scan("scan-live").expect("should succeed");
+    let recovered = store
+        .entities_for_scan("scan-live")
+        .expect("should succeed");
     assert_eq!(
         recovered.len(),
         2,
@@ -850,12 +917,23 @@ fn entities_for_scan_recovers_from_event_log_when_not_finalised() {
     );
 
     // The direct reconstruction agrees with the fallback.
-    assert_eq!(store.entities_from_events("scan-live").expect("should succeed").len(), 2);
+    assert_eq!(
+        store
+            .entities_from_events("scan-live")
+            .expect("should succeed")
+            .len(),
+        2
+    );
 
     // A genuinely empty scan (no EntityFound events) recovers empty — the
     // fallback never invents a false positive.
     insert_scan(&store, "scan-empty");
-    assert!(store.entities_for_scan("scan-empty").expect("should succeed").is_empty());
+    assert!(
+        store
+            .entities_for_scan("scan-empty")
+            .expect("should succeed")
+            .is_empty()
+    );
 
     // A FINALISED scan (rows in the entities table) keeps using them, never the
     // event log: upsert one entity, log a DIFFERENT one as an event, and confirm
@@ -871,7 +949,9 @@ fn entities_for_scan_recovers_from_event_log_when_not_finalised() {
             },
         ))
         .expect("should succeed");
-    let finalised = store.entities_for_scan("scan-final").expect("should succeed");
+    let finalised = store
+        .entities_for_scan("scan-final")
+        .expect("should succeed");
     assert_eq!(
         finalised.len(),
         1,
@@ -925,8 +1005,12 @@ fn entities_from_events_canonicalizes_evidence_order_regardless_of_arrival_order
         store.insert_event(&ev).expect("should succeed");
     }
 
-    let recovered_a = store.entities_from_events("scan-order-a").expect("should succeed");
-    let recovered_b = store.entities_from_events("scan-order-b").expect("should succeed");
+    let recovered_a = store
+        .entities_from_events("scan-order-a")
+        .expect("should succeed");
+    let recovered_b = store
+        .entities_from_events("scan-order-b")
+        .expect("should succeed");
     assert_eq!(recovered_a.len(), 1);
     assert_eq!(recovered_b.len(), 1);
     let sources_a: Vec<&str> = recovered_a[0]
@@ -956,7 +1040,9 @@ fn entities_from_events_canonicalizes_evidence_order_regardless_of_arrival_order
 fn events_for_scan_returns_empty_for_unknown_id() {
     let path = tmp_db();
     let store = Store::open(&path).expect("should succeed");
-    let evs = store.events_for_scan("never-existed").expect("should succeed");
+    let evs = store
+        .events_for_scan("never-existed")
+        .expect("should succeed");
     assert!(evs.is_empty());
     let _ = std::fs::remove_file(&path);
 }
@@ -992,15 +1078,31 @@ fn delete_scan_cascades_to_events() {
             },
         ))
         .expect("should succeed");
-    assert_eq!(store.events_for_scan("scan-with-events").expect("should succeed").len(), 2);
-    assert!(store.delete_scan("scan-with-events").expect("should succeed"));
+    assert_eq!(
+        store
+            .events_for_scan("scan-with-events")
+            .expect("should succeed")
+            .len(),
+        2
+    );
+    assert!(
+        store
+            .delete_scan("scan-with-events")
+            .expect("should succeed")
+    );
     assert!(
         store
             .events_for_scan("scan-with-events")
             .expect("should succeed")
             .is_empty()
     );
-    assert_eq!(store.events_for_scan("scan-keeper").expect("should succeed").len(), 1);
+    assert_eq!(
+        store
+            .events_for_scan("scan-keeper")
+            .expect("should succeed")
+            .len(),
+        1
+    );
     let _ = std::fs::remove_file(&path);
 }
 
@@ -1038,7 +1140,11 @@ fn delete_scan_cascades_to_stealer_rows() {
 
     // Deleting the scan must purge its stolen credentials — they are the most
     // sensitive payload in the store and have no other prune path.
-    assert!(store.delete_scan("scan-with-creds").expect("should succeed"));
+    assert!(
+        store
+            .delete_scan("scan-with-creds")
+            .expect("should succeed")
+    );
     assert!(
         store
             .stealer_rows_for_scan("scan-with-creds")
@@ -1047,7 +1153,13 @@ fn delete_scan_cascades_to_stealer_rows() {
         "delete_scan must cascade to stealer_rows so stolen credentials do not persist"
     );
     // An unrelated scan's credentials are untouched.
-    assert_eq!(store.stealer_rows_for_scan("scan-keeper").expect("should succeed").len(), 1);
+    assert_eq!(
+        store
+            .stealer_rows_for_scan("scan-keeper")
+            .expect("should succeed")
+            .len(),
+        1
+    );
     let _ = std::fs::remove_file(&path);
 }
 
@@ -1215,7 +1327,10 @@ fn get_entity_found() {
     let e = Entity::new(EntityKind::Email, "found@example.com", 0.8, "get-scan");
     let uid = e.uid.clone();
     store.upsert_entity(&e).expect("should succeed");
-    let fetched = store.get_entity(&uid).expect("should succeed").expect("should succeed");
+    let fetched = store
+        .get_entity(&uid)
+        .expect("should succeed")
+        .expect("should succeed");
     assert_eq!(fetched.uid, uid);
     assert_eq!(fetched.value, "found@example.com");
     assert_eq!(fetched.kind, EntityKind::Email);
@@ -1247,7 +1362,10 @@ fn entity_survives_a_full_fidelity_storage_roundtrip() {
     // serialise must be byte-identical. Catches any dropped/reordered field.
     let before = serde_json::to_string(&e).expect("should succeed");
     store.upsert_entity(&e).expect("should succeed");
-    let got = store.get_entity(&uid).expect("should succeed").expect("should succeed");
+    let got = store
+        .get_entity(&uid)
+        .expect("should succeed")
+        .expect("should succeed");
     assert_eq!(
         before,
         serde_json::to_string(&got).expect("should succeed"),
@@ -1312,7 +1430,9 @@ fn search_entities_respects_limit() {
         );
         store.upsert_entity(&e).expect("should succeed");
     }
-    let results = store.search_entities("matching", 1).expect("should succeed");
+    let results = store
+        .search_entities("matching", 1)
+        .expect("should succeed");
     assert_eq!(results.len(), 1, "should return exactly 1 result");
     let _ = std::fs::remove_file(&path);
 }
@@ -1324,7 +1444,9 @@ fn search_entities_empty_query_returns_nothing() {
     insert_scan(&store, "empty-scan");
     let e = Entity::new(EntityKind::Email, "x@y.com", 0.8, "empty-scan");
     store.upsert_entity(&e).expect("should succeed");
-    let results = store.search_entities("zzzz_no_match_xyzzy_42", 10).expect("should succeed");
+    let results = store
+        .search_entities("zzzz_no_match_xyzzy_42", 10)
+        .expect("should succeed");
     assert!(results.is_empty());
     let _ = std::fs::remove_file(&path);
 }
@@ -1380,11 +1502,28 @@ fn fts_prefix_token_search_matches_partial_word() {
         ))
         .expect("should succeed");
     // Token prefix: "jord" -> "Jordan"; "mey" -> "Meyer".
-    assert_eq!(store.search_entities("jord", 10).expect("should succeed").len(), 1);
-    assert_eq!(store.search_entities("mey", 10).expect("should succeed").len(), 1);
+    assert_eq!(
+        store
+            .search_entities("jord", 10)
+            .expect("should succeed")
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .search_entities("mey", 10)
+            .expect("should succeed")
+            .len(),
+        1
+    );
     // A non-matching token returns nothing (and doesn't fall through to a
     // spurious LIKE hit).
-    assert!(store.search_entities("smith", 10).expect("should succeed").is_empty());
+    assert!(
+        store
+            .search_entities("smith", 10)
+            .expect("should succeed")
+            .is_empty()
+    );
     let _ = std::fs::remove_file(&path);
 }
 
@@ -1406,7 +1545,10 @@ fn fts_matches_tokens_in_any_order_unlike_like() {
         ))
         .expect("should succeed");
     assert_eq!(
-        store.search_entities("meyer jordan", 10).expect("should succeed").len(),
+        store
+            .search_entities("meyer jordan", 10)
+            .expect("should succeed")
+            .len(),
         1,
         "FTS must match tokens in any order; the LIKE fallback alone cannot"
     );
@@ -1432,7 +1574,13 @@ fn fts_index_stays_synchronized_on_value_change() {
         ))
         .expect("should succeed");
     // Immediately visible via FTS, no separate index step.
-    assert_eq!(store.search_entities("syncexample", 10).expect("should succeed").len(), 1);
+    assert_eq!(
+        store
+            .search_entities("syncexample", 10)
+            .expect("should succeed")
+            .len(),
+        1
+    );
     // Re-upsert the same entity (merge path) — index must remain correct,
     // not duplicate.
     store
@@ -1444,7 +1592,10 @@ fn fts_index_stays_synchronized_on_value_change() {
         ))
         .expect("should succeed");
     assert_eq!(
-        store.search_entities("syncexample", 10).expect("should succeed").len(),
+        store
+            .search_entities("syncexample", 10)
+            .expect("should succeed")
+            .len(),
         1,
         "merge must not duplicate the FTS row"
     );
@@ -1469,11 +1620,15 @@ fn fts_backfill_indexes_preexisting_rows() {
             .expect("should succeed");
         // Drop the FTS table to emulate a pre-index DB, then reopen.
         let conn = store.conn.lock();
-        conn.execute_batch("DROP TABLE entities_fts;").expect("should succeed");
+        conn.execute_batch("DROP TABLE entities_fts;")
+            .expect("should succeed");
     }
     let store = Store::open(&path).expect("should succeed");
     assert_eq!(
-        store.search_entities("backfill", 10).expect("should succeed").len(),
+        store
+            .search_entities("backfill", 10)
+            .expect("should succeed")
+            .len(),
         1,
         "reopen must backfill the FTS index from existing rows"
     );
@@ -1495,7 +1650,10 @@ fn upsert_entity_cross_scan_merge_preserves_evidence_and_tags() {
     e_b.add_evidence(Evidence::new("module_b", "found in source B"));
     e_b.tag("tag-b");
     store.upsert_entity(&e_b).expect("should succeed");
-    let merged = store.get_entity(&e_a.uid).expect("should succeed").expect("should succeed");
+    let merged = store
+        .get_entity(&e_a.uid)
+        .expect("should succeed")
+        .expect("should succeed");
     assert!(
         (merged.confidence - 0.9).abs() < 1e-9,
         "confidence should be max(0.6, 0.9) = 0.9, got {}",
@@ -1541,7 +1699,10 @@ fn upsert_entity_merge_result_is_insertion_order_independent() {
         b.add_evidence(Evidence::new(second_source, "seen"));
         b.tag("a-tag");
         store.upsert_entity(&b).expect("should succeed");
-        let merged = store.get_entity(&a.uid).expect("should succeed").expect("should succeed");
+        let merged = store
+            .get_entity(&a.uid)
+            .expect("should succeed")
+            .expect("should succeed");
         let _ = std::fs::remove_file(&path);
         (
             merged.evidence.iter().map(|e| e.source.clone()).collect(),
@@ -1568,9 +1729,13 @@ fn upsert_entities_batch_persists_all_and_records_observations() {
         Entity::new(EntityKind::Domain, "x.com", 0.7, "batch-scan"),
         Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.9, "batch-scan"),
     ];
-    let n = store.upsert_entities_batch(&entities).expect("should succeed");
+    let n = store
+        .upsert_entities_batch(&entities)
+        .expect("should succeed");
     assert_eq!(n, 3, "batch should report every entity persisted");
-    let got = store.entities_for_scan("batch-scan").expect("should succeed");
+    let got = store
+        .entities_for_scan("batch-scan")
+        .expect("should succeed");
     assert_eq!(got.len(), 3);
     // The observation junction must be populated for every entity, exactly
     // as the per-entity upsert path does.
@@ -1593,7 +1758,10 @@ fn upsert_entities_batch_merges_on_conflict() {
         .upsert_entities_batch(std::slice::from_ref(&again))
         .expect("should succeed");
     assert_eq!(n, 1);
-    let merged = store.get_entity(&first.uid).expect("should succeed").expect("should succeed");
+    let merged = store
+        .get_entity(&first.uid)
+        .expect("should succeed")
+        .expect("should succeed");
     assert!(
         (merged.confidence - 0.9).abs() < 1e-9,
         "GREATEST-merge must apply inside the batch path"
@@ -1631,7 +1799,9 @@ fn relation_round_trip_and_idempotent_upsert() {
     store.upsert_relation(&r).expect("should succeed");
     // Re-inserting the same deterministic id is a no-op (no duplicate row).
     store.upsert_relation(&r).expect("should succeed");
-    let got = store.relations_for_scan("rel-scan").expect("should succeed");
+    let got = store
+        .relations_for_scan("rel-scan")
+        .expect("should succeed");
     assert_eq!(got.len(), 1, "idempotent on deterministic id");
     assert_eq!(got[0].from_uid, "childUid");
     assert_eq!(got[0].to_uid, "parentUid");
@@ -1651,13 +1821,28 @@ fn upsert_relations_batch_persists_all_and_is_idempotent() {
     ];
     let n = store.upsert_relations_batch(&rels).expect("should succeed");
     assert_eq!(n, 2, "batch reports every relation persisted");
-    assert_eq!(store.relations_for_scan("relb-scan").expect("should succeed").len(), 2);
+    assert_eq!(
+        store
+            .relations_for_scan("relb-scan")
+            .expect("should succeed")
+            .len(),
+        2
+    );
     // Idempotent on the deterministic id — re-batching the same set adds no rows,
     // exactly as the per-relation `upsert_relation` path (ON CONFLICT DO NOTHING).
     store.upsert_relations_batch(&rels).expect("should succeed");
-    assert_eq!(store.relations_for_scan("relb-scan").expect("should succeed").len(), 2);
+    assert_eq!(
+        store
+            .relations_for_scan("relb-scan")
+            .expect("should succeed")
+            .len(),
+        2
+    );
     // An empty batch is a clean zero, not an error.
-    assert_eq!(store.upsert_relations_batch(&[]).expect("should succeed"), 0);
+    assert_eq!(
+        store.upsert_relations_batch(&[]).expect("should succeed"),
+        0
+    );
     let _ = std::fs::remove_file(&path);
 }
 
@@ -1713,8 +1898,19 @@ fn relations_for_scan_is_scan_scoped() {
             "rs-a",
         ))
         .expect("should succeed");
-    assert_eq!(store.relations_for_scan("rs-a").expect("should succeed").len(), 1);
-    assert!(store.relations_for_scan("rs-b").expect("should succeed").is_empty());
+    assert_eq!(
+        store
+            .relations_for_scan("rs-a")
+            .expect("should succeed")
+            .len(),
+        1
+    );
+    assert!(
+        store
+            .relations_for_scan("rs-b")
+            .expect("should succeed")
+            .is_empty()
+    );
     let _ = std::fs::remove_file(&path);
 }
 
@@ -1733,9 +1929,20 @@ fn delete_scan_cascades_to_relations() {
             "rd-scan",
         ))
         .expect("should succeed");
-    assert_eq!(store.relations_for_scan("rd-scan").expect("should succeed").len(), 1);
+    assert_eq!(
+        store
+            .relations_for_scan("rd-scan")
+            .expect("should succeed")
+            .len(),
+        1
+    );
     assert!(store.delete_scan("rd-scan").expect("should succeed"));
-    assert!(store.relations_for_scan("rd-scan").expect("should succeed").is_empty());
+    assert!(
+        store
+            .relations_for_scan("rd-scan")
+            .expect("should succeed")
+            .is_empty()
+    );
     let _ = std::fs::remove_file(&path);
 }
 /// Characterisation: pins the EXACT schema (tables + indexes) and the
@@ -1861,7 +2068,10 @@ fn checkpoint_truncate_resets_wal_file_and_keeps_data() {
     assert_eq!(post, 0, "TRUNCATE checkpoint must reset the -wal to zero");
     // Data survived the fold-back into the main DB.
     assert_eq!(
-        store.entities_for_scan("wal-scan").expect("should succeed").len(),
+        store
+            .entities_for_scan("wal-scan")
+            .expect("should succeed")
+            .len(),
         300,
         "checkpoint must not lose committed entities"
     );
@@ -1913,7 +2123,12 @@ fn search_entities_never_errors_on_adversarial_queries() {
             .unwrap_or_else(|e| panic!("search_entities({q:?}) ERRORED: {e}"));
     }
     // entities table still present after the injection-y query
-    assert!(!store.search_entities("jordan", 10).expect("should succeed").is_empty());
+    assert!(
+        !store
+            .search_entities("jordan", 10)
+            .expect("should succeed")
+            .is_empty()
+    );
     let _ = std::fs::remove_file(&path);
 }
 
@@ -1937,7 +2152,13 @@ fn delete_scan_syncs_fts_so_rowid_reuse_cannot_poison_search() {
             "scan-old",
         ))
         .expect("should succeed");
-    assert_eq!(store.search_entities("jordan", 10).expect("should succeed").len(), 1);
+    assert_eq!(
+        store
+            .search_entities("jordan", 10)
+            .expect("should succeed")
+            .len(),
+        1
+    );
 
     // Purge the scan — the entity is orphaned and deleted; its rowid (the
     // table's highest) is freed for reuse.
@@ -1957,7 +2178,10 @@ fn delete_scan_syncs_fts_so_rowid_reuse_cannot_poison_search() {
     // The deleted value must match NOTHING — a stale posting would join the
     // reused rowid and hand back "Casey Smith" for a "jordan" query.
     assert!(
-        store.search_entities("jordan", 10).expect("should succeed").is_empty(),
+        store
+            .search_entities("jordan", 10)
+            .expect("should succeed")
+            .is_empty(),
         "deleted entity's text must not resolve to the entity that reused its rowid"
     );
     // The new entity is still searchable normally.
@@ -1984,7 +2208,10 @@ fn delete_scan_syncs_fts_so_rowid_reuse_cannot_poison_search() {
 struct VecWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
 impl std::io::Write for VecWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().expect("should succeed").extend_from_slice(buf);
+        self.0
+            .lock()
+            .expect("should succeed")
+            .extend_from_slice(buf);
         Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -2006,7 +2233,8 @@ fn capture_warn_logs<T>(f: impl FnOnce() -> T) -> (T, String) {
         .without_time()
         .finish();
     let out = tracing::subscriber::with_default(subscriber, f);
-    let log = String::from_utf8(buf.lock().expect("should succeed").clone()).expect("should succeed");
+    let log =
+        String::from_utf8(buf.lock().expect("should succeed").clone()).expect("should succeed");
     (out, log)
 }
 

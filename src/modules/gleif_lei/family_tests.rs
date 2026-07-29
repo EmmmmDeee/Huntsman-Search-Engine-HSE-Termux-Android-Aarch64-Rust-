@@ -40,7 +40,8 @@ fn a_relative_grades_between_the_expansion_floor_and_the_seed_that_found_it() {
     // must grade BELOW the seed — but above the noisy-OR expansion floor, or the
     // family would be inert and the walk decorative.
     let rec = record(PARENT_LEI, "ACME HOLDINGS LIMITED", "AU", "ACTIVE");
-    let e = build_relative(&rec, SEED_LEI, "ACME PTY LTD", Kinship::DirectParent, "s").expect("should succeed");
+    let e = build_relative(&rec, SEED_LEI, "ACME PTY LTD", Kinship::DirectParent, "s")
+        .expect("should succeed");
     assert!(
         e.confidence < ORG_EXACT,
         "a relative must not outrank the exact match it was reached through"
@@ -92,7 +93,8 @@ fn direct_parent_becomes_an_organisation_carrying_the_edge_it_came_from() {
 #[test]
 fn ultimate_parent_is_graded_alike_but_labelled_differently() {
     let rec = record(PARENT_LEI, "ACME GLOBAL INC", "US", "ACTIVE");
-    let e = build_relative(&rec, SEED_LEI, "ACME PTY LTD", Kinship::UltimateParent, "s").expect("should succeed");
+    let e = build_relative(&rec, SEED_LEI, "ACME PTY LTD", Kinship::UltimateParent, "s")
+        .expect("should succeed");
 
     // Same tier — both are separately reported RR-CDF records, so the difference
     // is in meaning, not in a number.
@@ -112,7 +114,8 @@ fn a_child_edge_states_the_direction_the_right_way_round() {
     // The seed consolidates the child, not the other way about. Getting this
     // backwards in a dossier inverts the entire ownership claim.
     let rec = record(PARENT_LEI, "ACME SUBSIDIARY PTY LTD", "AU", "ACTIVE");
-    let e = build_relative(&rec, SEED_LEI, "ACME PTY LTD", Kinship::DirectChild, "s").expect("should succeed");
+    let e = build_relative(&rec, SEED_LEI, "ACME PTY LTD", Kinship::DirectChild, "s")
+        .expect("should succeed");
 
     let summary = &e.evidence[0].summary;
     let seed_at = summary.find("ACME PTY LTD").expect("seed named");
@@ -129,7 +132,8 @@ fn a_child_edge_states_the_direction_the_right_way_round() {
 #[test]
 fn a_dissolved_relative_is_downgraded_and_tagged_like_a_level_one_hit() {
     let rec = record(PARENT_LEI, "DEFUNCT HOLDINGS LIMITED", "GB", "INACTIVE");
-    let e = build_relative(&rec, SEED_LEI, "ACME PTY LTD", Kinship::DirectParent, "s").expect("should succeed");
+    let e = build_relative(&rec, SEED_LEI, "ACME PTY LTD", Kinship::DirectParent, "s")
+        .expect("should succeed");
     assert!(e.tags.iter().any(|t| t == "inactive"));
     assert!(
         e.confidence < KIN_CONFIDENCE,
@@ -149,8 +153,8 @@ fn a_nameless_record_is_dropped_rather_than_given_a_placeholder() {
     // No-fabrication: a relative with no legal name is not a finding, and
     // inventing "Unknown entity (LEI …)" would put a manufactured organisation
     // into the graph.
-    let blank: GleifRecord =
-        serde_json::from_str(r#"{"attributes": {"lei": "X", "entity": {}}}"#).expect("should succeed");
+    let blank: GleifRecord = serde_json::from_str(r#"{"attributes": {"lei": "X", "entity": {}}}"#)
+        .expect("should succeed");
     assert!(build_relative(&blank, SEED_LEI, "ACME PTY LTD", Kinship::DirectParent, "s").is_none());
 
     let empty: GleifRecord = serde_json::from_str(r#"{}"#).expect("should succeed");
@@ -217,7 +221,8 @@ fn a_two_level_group_is_one_organisation_holding_both_roles() {
 #[test]
 fn child_coverage_records_the_true_total_and_flags_a_partial_walk() {
     let rec = record(PARENT_LEI, "ACME SUBSIDIARY PTY LTD", "AU", "ACTIVE");
-    let mut e = build_relative(&rec, SEED_LEI, "ACME PTY LTD", Kinship::DirectChild, "s").expect("should succeed");
+    let mut e = build_relative(&rec, SEED_LEI, "ACME PTY LTD", Kinship::DirectChild, "s")
+        .expect("should succeed");
     note_child_coverage(&mut e, 50, 480);
 
     let a = &e.evidence[0].attributes;
@@ -239,7 +244,8 @@ fn child_coverage_records_the_true_total_and_flags_a_partial_walk() {
 #[test]
 fn a_complete_walk_claims_no_truncation() {
     let rec = record(PARENT_LEI, "ACME SUBSIDIARY PTY LTD", "AU", "ACTIVE");
-    let mut e = build_relative(&rec, SEED_LEI, "ACME PTY LTD", Kinship::DirectChild, "s").expect("should succeed");
+    let mut e = build_relative(&rec, SEED_LEI, "ACME PTY LTD", Kinship::DirectChild, "s")
+        .expect("should succeed");
     note_child_coverage(&mut e, 3, 3);
 
     let a = &e.evidence[0].attributes;

@@ -2516,9 +2516,9 @@ fn every_checked_feature_flag_is_registered() {
 // deterministic.
 
 use huntsman_search_engine::core::classifier as core_classifier;
+use huntsman_search_engine::util::entity_extractor::EntityKind;
 use huntsman_search_engine::util::entity_extractor::classifier::EntityClassifier;
 use huntsman_search_engine::util::entity_extractor::patterns;
-use huntsman_search_engine::util::entity_extractor::EntityKind;
 
 #[test]
 fn entity_extractor_reuses_core_patterns() {
@@ -2583,15 +2583,21 @@ fn core_extract_is_deterministic() {
     );
     // Smoke-check that the canonical locators actually found the expected entities.
     assert!(
-        first.iter().any(|c| c.kind == huntsman_search_engine::core::entity::EntityKind::Email),
+        first
+            .iter()
+            .any(|c| c.kind == huntsman_search_engine::core::entity::EntityKind::Email),
         "expected an email entity"
     );
     assert!(
-        first.iter().any(|c| c.kind == huntsman_search_engine::core::entity::EntityKind::Url),
+        first
+            .iter()
+            .any(|c| c.kind == huntsman_search_engine::core::entity::EntityKind::Url),
         "expected a URL entity"
     );
     assert!(
-        first.iter().any(|c| c.kind == huntsman_search_engine::core::entity::EntityKind::IpAddress),
+        first
+            .iter()
+            .any(|c| c.kind == huntsman_search_engine::core::entity::EntityKind::IpAddress),
         "expected an IP entity"
     );
 }

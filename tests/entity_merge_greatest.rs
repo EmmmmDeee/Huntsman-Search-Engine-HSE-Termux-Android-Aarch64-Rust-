@@ -123,7 +123,10 @@ fn merge_is_commutative_for_confidence_corroboration_tags_evidence() {
     let mut ba = b.clone();
     ba.merge(a);
 
-    assert_eq!(ab.confidence, ba.confidence, "confidence merge is commutative");
+    assert_eq!(
+        ab.confidence, ba.confidence,
+        "confidence merge is commutative"
+    );
     assert_eq!(
         ab.corroboration, ba.corroboration,
         "corroboration merge is commutative"
@@ -158,7 +161,10 @@ fn merge_chooses_lexicographically_smaller_raw_value() {
     // the upper-case spelling to win.
     let upper = "X@Example.Com";
     let lower = "x@example.com";
-    assert!(upper < lower, "test precondition: upper-case spelling sorts first in ASCII");
+    assert!(
+        upper < lower,
+        "test precondition: upper-case spelling sorts first in ASCII"
+    );
 
     let mut a = Entity::new(EntityKind::Email, lower, 0.6, "scan");
     let b = Entity::new(EntityKind::Email, upper, 0.8, "scan");

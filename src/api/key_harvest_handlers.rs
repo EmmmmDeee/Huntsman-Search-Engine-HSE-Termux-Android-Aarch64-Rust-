@@ -240,14 +240,23 @@ mod tests {
         assert!(v["total_count"].is_u64());
         assert!(v["osint_count"].is_u64());
         // The OSINT subset can never exceed the whole bank.
-        assert!(v["osint_count"].as_u64().expect("should succeed") <= v["total_count"].as_u64().expect("should succeed"));
+        assert!(
+            v["osint_count"].as_u64().expect("should succeed")
+                <= v["total_count"].as_u64().expect("should succeed")
+        );
         assert!(v["osint_provider_census"].is_array());
         assert!(v["recent"].is_array());
         // The recent list is capped but otherwise tracks the full bank, so it can
         // never report more rows than the vault holds keys.
-        assert!(v["recent"].as_array().expect("should succeed").len() as u64 <= v["total_count"].as_u64().expect("should succeed"));
+        assert!(
+            v["recent"].as_array().expect("should succeed").len() as u64
+                <= v["total_count"].as_u64().expect("should succeed")
+        );
         assert_eq!(v["recent_limit"], RECENT_ENTRIES_LIMIT);
-        for row in v["osint_provider_census"].as_array().expect("should succeed") {
+        for row in v["osint_provider_census"]
+            .as_array()
+            .expect("should succeed")
+        {
             assert!(row["category"].is_string());
             assert!(row["service"].is_string());
             assert!(row["count"].is_u64());

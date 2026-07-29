@@ -332,7 +332,10 @@ mod tests {
             vec!["shodan", "zoomeye"],
             "sorted, not insertion order"
         );
-        let shodan = health.iter().find(|h| h.module == "shodan").expect("should succeed");
+        let shodan = health
+            .iter()
+            .find(|h| h.module == "shodan")
+            .expect("should succeed");
         assert_eq!(shodan.consecutive_failures, 1);
         assert_eq!(shodan.last_success_at, Some(100));
     }

@@ -51,7 +51,11 @@ mod tests {
         let store = Store::open(":memory:").expect("in-memory store");
         let t = "email →belongs_to_domain→ domain →registered_by→ person";
 
-        assert_eq!(store.pathway_template_count(t).expect("should succeed"), 0, "never seen");
+        assert_eq!(
+            store.pathway_template_count(t).expect("should succeed"),
+            0,
+            "never seen"
+        );
         store.record_pathway_template(t).expect("should succeed");
         assert_eq!(
             store.pathway_template_count(t).expect("should succeed"),
@@ -65,7 +69,12 @@ mod tests {
             "after two scans"
         );
         // A different template is independent.
-        assert_eq!(store.pathway_template_count("other").expect("should succeed"), 0);
+        assert_eq!(
+            store
+                .pathway_template_count("other")
+                .expect("should succeed"),
+            0
+        );
     }
 
     /// End-to-end of the engine's universal-learning loop, exercised against a
@@ -100,18 +109,25 @@ mod tests {
         // Scan 1: every route is new — nothing is credited, everything recorded.
         for ct in &templates {
             assert_eq!(
-                store.pathway_template_count(&ct.template).expect("should succeed"),
+                store
+                    .pathway_template_count(&ct.template)
+                    .expect("should succeed"),
                 0,
                 "first sight is uncredited"
             );
-            store.record_pathway_template(&ct.template).expect("should succeed");
+            store
+                .record_pathway_template(&ct.template)
+                .expect("should succeed");
         }
 
         // Scan 2 (consult step): the same route is now known, so the engine would
         // emit AU-065 for it.
         for ct in &templates {
             assert!(
-                store.pathway_template_count(&ct.template).expect("should succeed") >= 1,
+                store
+                    .pathway_template_count(&ct.template)
+                    .expect("should succeed")
+                    >= 1,
                 "a route proven in scan 1 is credited in scan 2"
             );
         }

@@ -231,8 +231,14 @@ fn run_ranks_by_severity_times_max_child_ceff() {
     let hits = corr.run(sid).expect("should succeed");
 
     // Both rules fired.
-    let key_hit = hits.iter().find(|c| c.rule_id == "AU-021").expect("should succeed");
-    let email_hit = hits.iter().find(|c| c.rule_id == "AU-003").expect("should succeed");
+    let key_hit = hits
+        .iter()
+        .find(|c| c.rule_id == "AU-021")
+        .expect("should succeed");
+    let email_hit = hits
+        .iter()
+        .find(|c| c.rule_id == "AU-003")
+        .expect("should succeed");
 
     // Critical×low-C_eff vs Medium×high-C_eff: 4×~0.20 = 0.8 vs 2×~0.99 ≈ 1.98.
     assert!(
@@ -2500,7 +2506,13 @@ fn au_040_fires_only_on_breach_harvested_wallets() {
     ];
     let out = rule_au_040_wallet_breach_exposure(&RuleContext::new(&ents), "scan", 0);
     let fired: HashSet<&String> = out.iter().flat_map(|c| c.entity_uids.iter()).collect();
-    let uid = |v: &str| ents.iter().find(|e| e.value == v).expect("should succeed").uid.clone();
+    let uid = |v: &str| {
+        ents.iter()
+            .find(|e| e.value == v)
+            .expect("should succeed")
+            .uid
+            .clone()
+    };
     assert_eq!(out.len(), 2, "only genuine breach exposures fire: {out:?}");
     assert!(fired.contains(&uid("0xleaked")) && fired.contains(&uid("0xfield")));
     assert!(!fired.contains(&uid("0xexplorer")) && !fired.contains(&uid("0xseed")));
