@@ -148,6 +148,30 @@ fn merge_is_commutative_for_confidence_corroboration_tags_evidence() {
 }
 
 #[test]
+fn merge_chooses_lexicographically_smaller_raw_value() {
+    // Same UID because kind + normalised value are identical; different original
+    // casing. The canonical display value must be the lexicographically smaller
+    // raw spelling, independent of merge order.
+    //
+    // Note: Rust's `String` ordering is byte/ASCII ordering, so uppercase 'X'
+    // (0x58) is *smaller* than lowercase 'x' (0x78). The test therefore expects
+    // the upper-case spelling to win.
+    let upper = "X@Example.Com";
+    let lower = "x@example.com";
+    assert!(upper < lower, "test precondition: upper-case spelling sorts first in ASCII");
+
+    let mut a = Entity::new(EntityKind::Email, lower, 0.6, "scan");
+    let b = Entity::new(EntityKind::Email, upper, 0.8, "scan");
+
+    a.merge(b);
+
+    assert_eq!(
+        a.raw_value, upper,
+        "merge must pick the lexicographically smaller raw_value"
+    );
+}
+
+#[test]
 #[should_panic(expected = "merge: UID mismatch")]
 fn merge_panics_on_different_uids_in_debug() {
     // `Entity::merge` uses `debug_assert_eq!` for the UID precondition. In

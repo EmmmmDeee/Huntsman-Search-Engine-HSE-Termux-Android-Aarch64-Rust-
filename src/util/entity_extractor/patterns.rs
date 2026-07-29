@@ -11,8 +11,8 @@ use lazy_static::lazy_static;
 use regex::Regex;
 
 // Canonical locators from `core::classifier`. Re-exported under the legacy names
-// so existing call sites keep compiling while the duplicate regex definitions are
-// removed.
+// so existing call sites keep compiling after the duplicate regex definitions
+// were removed.
 pub use crate::core::classifier::DOMAIN_RE as DOMAIN_PATTERN;
 pub use crate::core::classifier::EMAIL_RE as EMAIL_PATTERN;
 pub use crate::core::classifier::IPV4_RE as IPV4_PATTERN;

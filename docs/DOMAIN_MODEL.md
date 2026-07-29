@@ -36,7 +36,7 @@ regress confidence or drop evidence.
 | `confidence` | `max(self.confidence, other.confidence)` | Confidence never decreases |
 | `corroboration` | `saturating_add(self.corroboration, other.corroboration).max(1)` | Observation magnitude accumulates |
 | `observed_at` | `max(self.observed_at, other.observed_at)` | Recency only increases |
-| `generation` | Keeps `self.generation` | Preserves the earliest expansion round the entity actually entered the graph |
+| `generation` | `min(self.generation, other.generation)` | Preserves the earliest expansion round the entity actually entered the graph |
 | `tags` | Set union | Both tag sets are retained, duplicates removed |
 | `evidence` | Union by `(source, summary)`; attributes merged on conflict | Repeated observations by the same source with the same summary are one record, but new attributes are folded in deterministically |
 

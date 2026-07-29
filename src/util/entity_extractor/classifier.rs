@@ -9,6 +9,10 @@ use super::{EntityKind, ExtractedEntity, ExtractionResult};
 use crate::core::classifier as core_classifier;
 use crate::core::entity::EntityKind as CoreEntityKind;
 
+/// Fallback label for extractor-side unknown entities. Kept as a single constant
+/// so the two fallback sites cannot drift apart.
+const UNCLASSIFIED: &str = "unclassified";
+
 /// Map a canonical core [`EntityKind`](crate::core::entity::EntityKind) back to the
 /// extractor's local taxonomy.
 fn core_kind_to_extractor(core: &CoreEntityKind, value: &str) -> EntityKind {
@@ -34,7 +38,7 @@ fn core_kind_to_extractor(core: &CoreEntityKind, value: &str) -> EntityKind {
         // Password, Asn, Address, Coordinates, MacAddress, DeviceId, Ssid,
         // TrackingId, …) map to Unknown so the extractor never invents its own
         // type decision.
-        _ => EntityKind::Unknown("unclassified".to_string()),
+        _ => EntityKind::Unknown(UNCLASSIFIED.to_string()),
     }
 }
 
