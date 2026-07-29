@@ -168,7 +168,7 @@ fn missing_file_is_created_with_appended_keys() {
 fn rejects_non_huntsman_keys() {
     let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
-    let err = write_keys_at(&path, &map_of(&[("PATH", "/etc")]), &[]).expect("should be an error");
+    let err = write_keys_at(&path, &map_of(&[("PATH", "/etc")]), &[]).expect_err("should be an error");
     assert!(err.to_string().contains("HUNTSMAN_"));
 }
 
@@ -308,7 +308,7 @@ fn update_matches_key_with_whitespace_around_equals() {
 fn read_error_other_than_not_found_surfaces() {
     let dir = tempdir().expect("should succeed");
     let err =
-        write_keys_at(dir.path(), &map_of(&[("HUNTSMAN_OATHNET_KEY", "v")]), &[]).expect("should be an error");
+        write_keys_at(dir.path(), &map_of(&[("HUNTSMAN_OATHNET_KEY", "v")]), &[]).expect_err("should be an error");
     let msg = err.to_string();
     assert!(
         msg.contains("read ") || msg.contains("open ") || msg.contains("write "),

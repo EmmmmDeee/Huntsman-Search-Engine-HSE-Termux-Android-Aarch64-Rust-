@@ -49,7 +49,7 @@ async fn json_decode_parses_ok_and_tags_decode_errors_with_module() {
             .body("not json".to_string())
             .expect("should succeed"),
     );
-    let err = json_decode::<V>("test_mod", bad).await.expect("should be an error");
+    let err = json_decode::<V>("test_mod", bad).await.expect_err("should be an error");
     assert!(
         err.to_string().contains("test_mod"),
         "decode error must name the module: {err}"
@@ -62,7 +62,7 @@ async fn send_tagged_maps_transport_errors_to_the_module() {
         .get("ftp://example.invalid/")
         .send_tagged("test_mod")
         .await
-        .expect("should be an error");
+        .expect_err("should be an error");
     assert!(
         err.to_string().contains("test_mod"),
         "transport error must name the module: {err}"
@@ -100,7 +100,7 @@ async fn send_tagged_strips_url_so_secrets_and_pii_dont_leak() {
         .get("ftp://example.invalid/v1/lookup?apikey=SECRETKEY123&q=target@example.com")
         .send_tagged("test_mod")
         .await
-        .expect("should be an error");
+        .expect_err("should be an error");
     let msg = err.to_string();
     assert!(
         !msg.contains("SECRETKEY123"),
@@ -148,7 +148,7 @@ async fn keyed_ok_or_404_classifies_miss_success_and_error() {
 
     let err = keyed_ok_or_404("test_mod", "k", &ctx, resp(500))
         .await
-        .expect("should be an error");
+        .expect_err("should be an error");
     assert!(
         err.to_string().contains("test_mod"),
         "non-2xx error must name the module: {err}"

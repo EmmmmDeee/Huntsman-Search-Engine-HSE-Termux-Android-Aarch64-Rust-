@@ -78,7 +78,7 @@ mod tests {
     fn any_failure_maps_to_err_naming_the_count() {
         // The failure must be a returned `Err` (so `hse diagnostics` can catch it
         // and still run its remaining sections), never a `process::exit`.
-        let err = report_to_result(&report(7, 2)).expect("should be an error");
+        let err = report_to_result(&report(7, 2)).expect_err("should be an error");
         let msg = err.to_string();
         assert!(msg.contains("2 of 9"), "unexpected message: {msg}");
     }

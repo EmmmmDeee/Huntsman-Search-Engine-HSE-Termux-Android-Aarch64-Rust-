@@ -1242,7 +1242,7 @@ fn expansion_strategy_from_str_treats_empty_as_default() {
 
 #[test]
 fn expansion_strategy_from_str_rejects_unknown_with_useful_message() {
-    let err = "wat".parse::<ExpansionStrategy>().expect("should be an error");
+    let err = "wat".parse::<ExpansionStrategy>().expect_err("should be an error");
     assert!(err.contains("wat"));
     assert!(err.contains("geo_converge"));
     assert!(err.contains("breadth_first"));
