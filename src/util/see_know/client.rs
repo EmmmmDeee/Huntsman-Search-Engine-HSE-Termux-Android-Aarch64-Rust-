@@ -152,7 +152,6 @@ pub(super) fn base_urls_for(primary: String) -> Vec<String> {
     urls
 }
 
-
 /// The SeekNow API key to use for a request: the per-scan context key `ctx_key`
 /// when the operator supplied one, otherwise the built-in default
 /// ([`crate::util::keys::resolve_or_default`]). Mirrors `oathnet::resolve_key`.
