@@ -650,15 +650,11 @@ fn scan_request_round_trip() {
     let auto: ScanRequest = serde_json::from_str(r#"{"value":"x@y.com"}"#).expect("should succeed");
     assert_eq!(auto.kind, None);
     assert_eq!(auto.resolved_kind(), TargetKind::Email);
-<<<<<<< HEAD
-    assert!(!serde_json::to_string(&auto).expect("should succeed").contains("kind"));
-=======
     assert!(
         !serde_json::to_string(&auto)
             .expect("should succeed")
             .contains("kind")
     );
->>>>>>> origin/main
 }
 
 // ── TargetKind::detect — unified-scan auto-detection ──────────────────────
@@ -1250,13 +1246,9 @@ fn expansion_strategy_from_str_treats_empty_as_default() {
 
 #[test]
 fn expansion_strategy_from_str_rejects_unknown_with_useful_message() {
-<<<<<<< HEAD
-    let err = "wat".parse::<ExpansionStrategy>().expect("should be an error");
-=======
     let err = "wat"
         .parse::<ExpansionStrategy>()
         .expect_err("should be an error");
->>>>>>> origin/main
     assert!(err.contains("wat"));
     assert!(err.contains("geo_converge"));
     assert!(err.contains("breadth_first"));
@@ -1410,12 +1402,8 @@ fn empty_options_object_matches_product_defaults() {
     assert!((from_empty.min_expand_confidence - DEFAULT_MIN_EXPAND_CONFIDENCE).abs() < 1e-9);
     assert_eq!(from_empty.max_entities, Some(DEFAULT_MAX_ENTITIES));
     // An explicit 0 is still honoured as fully-sequential.
-<<<<<<< HEAD
-    let explicit: ScanOptions = serde_json::from_str(r#"{"max_concurrent":0}"#).expect("should succeed");
-=======
     let explicit: ScanOptions =
         serde_json::from_str(r#"{"max_concurrent":0}"#).expect("should succeed");
->>>>>>> origin/main
     assert_eq!(explicit.max_concurrent, 0);
 }
 

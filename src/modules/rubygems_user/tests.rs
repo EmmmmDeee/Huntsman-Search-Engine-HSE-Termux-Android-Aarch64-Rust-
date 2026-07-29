@@ -118,14 +118,10 @@ fn extracts_github_username_from_source_code_uri() {
         gh.is_some(),
         "must emit GitHub username from source_code_uri"
     );
-<<<<<<< HEAD
-    assert!(gh.expect("should succeed").has_tag("github") && gh.expect("should succeed").has_tag("rubygems-pivot"));
-=======
     assert!(
         gh.expect("should succeed").has_tag("github")
             && gh.expect("should succeed").has_tag("rubygems-pivot")
     );
->>>>>>> origin/main
 }
 
 #[test]

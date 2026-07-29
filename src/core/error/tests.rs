@@ -21,11 +21,7 @@ use super::*;
     #[test]
     fn error_from_json() {
         let bad = serde_json::from_str::<serde_json::Value>("not json");
-<<<<<<< HEAD
-        let e: Error = bad.expect("should be an error").into();
-=======
         let e: Error = bad.expect_err("should be an error").into();
->>>>>>> origin/main
         assert!(e.to_string().contains("json"));
     }
 
@@ -80,11 +76,7 @@ use super::*;
         assert_display(&Error::Storage(rusqlite::Error::QueryReturnedNoRows));
         assert_display(&Error::Io(std::io::Error::other("x")));
         assert_display(&Error::Json(
-<<<<<<< HEAD
-            serde_json::from_str::<serde_json::Value>("nope").expect("should be an error"),
-=======
             serde_json::from_str::<serde_json::Value>("nope").expect_err("should be an error"),
->>>>>>> origin/main
         ));
         assert_display(&Error::Http("boom".into()));
         assert_display(&Error::InvalidTarget("1.2.3".into()));
@@ -107,11 +99,7 @@ use super::*;
             .get("ftp://example.invalid/v1/lookup?apikey=SECRETKEY123&q=target@example.com")
             .send()
             .await
-<<<<<<< HEAD
-            .expect("should be an error");
-=======
             .expect_err("should be an error");
->>>>>>> origin/main
         // Exercise the crate's `From<reqwest::Error>` (what a bare `?` invokes).
         let e: Error = transport.into();
         let s = e.to_string();

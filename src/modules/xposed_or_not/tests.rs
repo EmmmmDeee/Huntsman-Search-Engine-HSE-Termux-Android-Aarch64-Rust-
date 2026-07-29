@@ -44,9 +44,6 @@ fn populated_response_yields_breach_tagged_email() {
 
     assert_eq!(e.evidence.len(), 1);
     assert_eq!(e.evidence[0].source, "xposed_or_not");
-<<<<<<< HEAD
-    assert_eq!(e.evidence[0].attributes.get("count").expect("should succeed"), "3");
-=======
     assert_eq!(
         e.evidence[0]
             .attributes
@@ -54,7 +51,6 @@ fn populated_response_yields_breach_tagged_email() {
             .expect("should succeed"),
         "3"
     );
->>>>>>> origin/main
 }
 
 #[test]
@@ -93,27 +89,19 @@ fn analytics_surfaces_breach_summaries_and_descriptions() {
     let r = build_result(&breaches, Some(&analytics), &target, "s");
 
     let ev = &r.entities[0].evidence[0];
-<<<<<<< HEAD
-    let summaries = ev.attributes.get("breach_summaries").expect("should succeed");
-=======
     let summaries = ev
         .attributes
         .get("breach_summaries")
         .expect("should succeed");
->>>>>>> origin/main
     assert!(summaries.contains("LinkedIn"));
     assert!(summaries.contains("2012"));
     assert!(summaries.contains("117M records"));
     assert!(summaries.contains("Emails;Passwords"));
 
-<<<<<<< HEAD
-    let descs = ev.attributes.get("breach_descriptions").expect("should succeed");
-=======
     let descs = ev
         .attributes
         .get("breach_descriptions")
         .expect("should succeed");
->>>>>>> origin/main
     assert!(descs.contains("LinkedIn: LinkedIn suffered a data breach in 2012"));
 }
 
@@ -137,14 +125,10 @@ fn analytics_without_desc_omits_descriptions_attr() {
     let r = build_result(&breaches, Some(&analytics), &target, "s");
 
     let ev = &r.entities[0].evidence[0];
-<<<<<<< HEAD
-    let summaries = ev.attributes.get("breach_summaries").expect("should succeed");
-=======
     let summaries = ev
         .attributes
         .get("breach_summaries")
         .expect("should succeed");
->>>>>>> origin/main
     assert!(summaries.contains("SomeService"));
     assert!(summaries.contains("500 records"));
     assert!(!ev.attributes.contains_key("breach_descriptions"));

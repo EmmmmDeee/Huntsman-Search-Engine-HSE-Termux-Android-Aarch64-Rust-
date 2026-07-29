@@ -104,14 +104,10 @@ fn evidence_attributes_populated() {
     assert_eq!(ev.attributes.get("dbm").expect("should succeed"), "-95");
     assert_eq!(ev.attributes.get("asu").expect("should succeed"), "8");
     assert_eq!(ev.attributes.get("level").expect("should succeed"), "1");
-<<<<<<< HEAD
-    assert_eq!(ev.attributes.get("registered").expect("should succeed"), "false");
-=======
     assert_eq!(
         ev.attributes.get("registered").expect("should succeed"),
         "false"
     );
->>>>>>> origin/main
 }
 
 #[test]
@@ -245,13 +241,6 @@ fn from_cell_prefers_lac_over_tac_and_defaults_missing_type() {
 #[test]
 fn is_geolocatable_requires_mnc_and_nonzero_lac() {
     let ok = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","cid":1,"lac":42}"#);
-<<<<<<< HEAD
-    assert!(TowerKey::from_cell(&ok).expect("should succeed").is_geolocatable());
-    let no_mnc = cell_from_json(r#"{"type":"lte","mcc":"505","cid":1,"lac":42}"#);
-    assert!(!TowerKey::from_cell(&no_mnc).expect("should succeed").is_geolocatable());
-    let no_lac = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","cid":1}"#);
-    assert!(!TowerKey::from_cell(&no_lac).expect("should succeed").is_geolocatable());
-=======
     assert!(
         TowerKey::from_cell(&ok)
             .expect("should succeed")
@@ -269,7 +258,6 @@ fn is_geolocatable_requires_mnc_and_nonzero_lac() {
             .expect("should succeed")
             .is_geolocatable()
     );
->>>>>>> origin/main
 }
 
 #[test]

@@ -1142,12 +1142,8 @@ fn generation_serde_round_trips_and_defaults_for_legacy_rows() {
     let legacy = serde_json::to_value(&e).expect("should succeed");
     let mut obj = legacy.as_object().expect("should succeed").clone();
     obj.remove("generation");
-<<<<<<< HEAD
-    let recovered: Entity = serde_json::from_value(serde_json::Value::Object(obj)).expect("should succeed");
-=======
     let recovered: Entity =
         serde_json::from_value(serde_json::Value::Object(obj)).expect("should succeed");
->>>>>>> origin/main
     assert_eq!(
         recovered.generation, 0,
         "legacy rows default to generation 0"

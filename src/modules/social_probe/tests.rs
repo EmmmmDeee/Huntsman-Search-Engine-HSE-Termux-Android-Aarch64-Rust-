@@ -185,12 +185,8 @@ fn build_target_summary_stamps_platforms_count_for_au011() {
     // canonical count attribute must now be present and equal the number of
     // confirmed platforms.
     let t = Target::new(TargetKind::Username, "testuser");
-<<<<<<< HEAD
-    let e = build_target_summary(&t, 3, 30, &["github", "reddit", "twitch"], "scan").expect("should succeed");
-=======
     let e = build_target_summary(&t, 3, 30, &["github", "reddit", "twitch"], "scan")
         .expect("should succeed");
->>>>>>> origin/main
     assert_eq!(
         e.evidence[0]
             .attributes

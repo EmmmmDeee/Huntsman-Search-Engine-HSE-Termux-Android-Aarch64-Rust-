@@ -11,11 +11,7 @@ use super::*;
     #[test]
     fn resolve_errors_on_unknown_scan() {
         let store = Store::open(":memory:").expect("should succeed");
-<<<<<<< HEAD
-        let err = crate::app::runtime::resolve_scan_id(&store, "deadbeef").expect("should be an error");
-=======
         let err = crate::app::runtime::resolve_scan_id(&store, "deadbeef").expect_err("should be an error");
->>>>>>> origin/main
         assert!(
             err.to_string().contains("deadbeef"),
             "error should name the missing scan: {err}"

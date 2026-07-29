@@ -245,13 +245,9 @@ fn zero_or_absent_asn_is_skipped_but_operator_org_survives() {
     );
     // Falls back to `description` when `name` is absent.
     assert_eq!(
-<<<<<<< HEAD
-        of_kind(&ents, EntityKind::Organisation).expect("should succeed").value,
-=======
         of_kind(&ents, EntityKind::Organisation)
             .expect("should succeed")
             .value,
->>>>>>> origin/main
         "Some Net"
     );
 }
@@ -337,13 +333,9 @@ fn address_omits_province_when_absent() {
         "s",
     );
     assert_eq!(
-<<<<<<< HEAD
-        of_kind(&ents, EntityKind::Address).expect("should succeed").value,
-=======
         of_kind(&ents, EntityKind::Address)
             .expect("should succeed")
             .value,
->>>>>>> origin/main
         "Sydney, Australia"
     );
 }

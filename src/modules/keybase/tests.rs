@@ -40,16 +40,6 @@ fn parse_response() {
     assert_eq!(r.status.expect("should succeed").code, Some(0));
     let user = r.them.expect("should succeed");
     assert_eq!(
-<<<<<<< HEAD
-        user.basics.as_ref().expect("should succeed").username.as_deref(),
-        Some("alice")
-    );
-    assert_eq!(
-        user.profile.as_ref().expect("should succeed").full_name.as_deref(),
-        Some("Alice Smith")
-    );
-    assert_eq!(user.proofs_summary.as_ref().expect("should succeed").all.len(), 3);
-=======
         user.basics
             .as_ref()
             .expect("should succeed")
@@ -73,7 +63,6 @@ fn parse_response() {
             .len(),
         3
     );
->>>>>>> origin/main
 }
 
 #[test]

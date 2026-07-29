@@ -185,12 +185,8 @@ fn paste_deser_live_shape() {
     assert_eq!(pastes[0].title.as_deref(), Some("nmd"));
     assert_eq!(pastes[0].email_count, Some(245));
     // A minimal paste (only Source) still decodes.
-<<<<<<< HEAD
-    let minimal: Vec<Paste> = serde_json::from_str(r#"[{"Source":"AdHocUrl"}]"#).expect("should succeed");
-=======
     let minimal: Vec<Paste> =
         serde_json::from_str(r#"[{"Source":"AdHocUrl"}]"#).expect("should succeed");
->>>>>>> origin/main
     assert_eq!(minimal[0].source.as_deref(), Some("AdHocUrl"));
     assert!(minimal[0].email_count.is_none());
 }
@@ -354,12 +350,8 @@ fn paste_url_only_reconstructs_pastebin() {
         .expect("should succeed");
     assert!(paste_url(&q).is_none());
     // Missing id → no URL even for Pastebin.
-<<<<<<< HEAD
-    let r = pastes(r#"[{"Source":"Pastebin"}]"#).pop().expect("should succeed");
-=======
     let r = pastes(r#"[{"Source":"Pastebin"}]"#)
         .pop()
         .expect("should succeed");
->>>>>>> origin/main
     assert!(paste_url(&r).is_none());
 }

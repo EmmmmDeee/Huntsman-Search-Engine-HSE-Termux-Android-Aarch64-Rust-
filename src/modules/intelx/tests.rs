@@ -210,12 +210,8 @@ fn text_search_withholds_the_strong_exposure_tags() {
 
 #[test]
 fn result_resp_terminal_status_parsing() {
-<<<<<<< HEAD
-    let running: ResultResp = serde_json::from_str(r#"{"status":1,"records":[]}"#).expect("should succeed");
-=======
     let running: ResultResp =
         serde_json::from_str(r#"{"status":1,"records":[]}"#).expect("should succeed");
->>>>>>> origin/main
     assert_eq!(running.status, Some(1)); // must NOT be treated as terminal
     let finished: ResultResp = serde_json::from_str(
         r#"{"status":2,"records":[{"bucket":"leaks.public.general","media":24,"date":"2024-01-01"}]}"#,

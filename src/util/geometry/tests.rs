@@ -223,12 +223,8 @@ fn weighted_geometric_median_pulls_toward_high_confidence() {
     let a = (0.0, 0.0);
     let pts = [a, (0.0, 1.0), (0.8, 0.5)];
     let unweighted = geometric_median(&pts).expect("should succeed");
-<<<<<<< HEAD
-    let weighted = weighted_geometric_median(&[(a, 12.0), (pts[1], 1.0), (pts[2], 1.0)]).expect("should succeed");
-=======
     let weighted = weighted_geometric_median(&[(a, 12.0), (pts[1], 1.0), (pts[2], 1.0)])
         .expect("should succeed");
->>>>>>> origin/main
     let d = |p: (f64, f64)| haversine_km(a.0, a.1, p.0, p.1);
     assert!(
         d(weighted) < d(unweighted),
@@ -270,13 +266,9 @@ fn location_fix_summary_describes_the_estimates() {
         ((-33.8720, 151.2150), 0.6),
         ((-33.8680, 151.2080), 0.7),
     ];
-<<<<<<< HEAD
-    let s = location_fix(&wp).expect("should succeed").location_summary();
-=======
     let s = location_fix(&wp)
         .expect("should succeed")
         .location_summary();
->>>>>>> origin/main
     assert!(s.contains("geometric median"));
     assert!(s.contains("Chebyshev centre"));
     assert!(s.contains('±'));
@@ -299,14 +291,10 @@ fn location_fix_bundles_every_estimator_consistently() {
     let pts: Vec<(f64, f64)> = wp.iter().map(|&(p, _)| p).collect();
     let fix = location_fix(&wp).expect("three points bound an area");
     assert_eq!(fix.footprint, geo_footprint(&pts).expect("should succeed"));
-<<<<<<< HEAD
-    assert_eq!(fix.weighted_centroid, weighted_centroid(&wp).expect("should succeed"));
-=======
     assert_eq!(
         fix.weighted_centroid,
         weighted_centroid(&wp).expect("should succeed")
     );
->>>>>>> origin/main
     assert_eq!(
         fix.geometric_median,
         weighted_geometric_median(&wp).expect("should succeed")
@@ -315,14 +303,10 @@ fn location_fix_bundles_every_estimator_consistently() {
         fix.median_radius_km,
         median_distance_km(fix.geometric_median, &pts)
     );
-<<<<<<< HEAD
-    assert_eq!(fix.enclosing, min_enclosing_circle(&pts).expect("should succeed"));
-=======
     assert_eq!(
         fix.enclosing,
         min_enclosing_circle(&pts).expect("should succeed")
     );
->>>>>>> origin/main
 }
 
 #[test]
@@ -467,12 +451,8 @@ fn assert_wolfram_latlon(got: (f64, f64), want: (f64, f64), tol: f64, what: &str
 fn geometric_median_matches_wolfram_ground_truth() {
     // Tight cluster at the origin + a far outlier at (10,10): Wolfram's Weber
     // point stays in the cluster — the 0.5 breakdown point in action.
-<<<<<<< HEAD
-    let m = geometric_median(&[(0.0, 0.0), (0.0, 0.01), (0.01, 0.0), (10.0, 10.0)]).expect("should succeed");
-=======
     let m = geometric_median(&[(0.0, 0.0), (0.0, 0.01), (0.01, 0.0), (10.0, 10.0)])
         .expect("should succeed");
->>>>>>> origin/main
     assert_wolfram_latlon(
         m,
         (0.005_000_000, 0.004_999_994),
@@ -498,12 +478,8 @@ fn geometric_median_matches_wolfram_ground_truth() {
     );
 
     // Equilateral triangle: the Fermat point is the centroid (all angles 60deg).
-<<<<<<< HEAD
-    let m = geometric_median(&[(0.0, 0.0), (0.0, 1.0), (0.866_025_403_784_438_6, 0.5)]).expect("should succeed");
-=======
     let m = geometric_median(&[(0.0, 0.0), (0.0, 1.0), (0.866_025_403_784_438_6, 0.5)])
         .expect("should succeed");
->>>>>>> origin/main
     assert_wolfram_latlon(
         m,
         (0.288_671_468, 0.499_999_995),
@@ -529,12 +505,8 @@ fn weighted_geometric_median_snaps_onto_a_dominant_high_confidence_point() {
 #[test]
 fn min_enclosing_circle_matches_wolfram_min_disk() {
     // Chebyshev centres = Wolfram BoundingRegion[.., "MinDisk"], unprojected.
-<<<<<<< HEAD
-    let c = min_enclosing_circle(&[(0.0, 0.0), (0.0, 0.01), (0.01, 0.0), (10.0, 10.0)]).expect("should succeed");
-=======
     let c = min_enclosing_circle(&[(0.0, 0.0), (0.0, 0.01), (0.01, 0.0), (10.0, 10.0)])
         .expect("should succeed");
->>>>>>> origin/main
     assert_wolfram_latlon(c.center, (5.0, 5.0), 1e-6, "outlier-cluster MEC centre");
 
     let c = min_enclosing_circle(&[
@@ -552,13 +524,8 @@ fn min_enclosing_circle_matches_wolfram_min_disk() {
         "brisbane MEC centre",
     );
 
-<<<<<<< HEAD
-    let c =
-        min_enclosing_circle(&[(0.0, 0.0), (0.0, 1.0), (0.866_025_403_784_438_6, 0.5)]).expect("should succeed");
-=======
     let c = min_enclosing_circle(&[(0.0, 0.0), (0.0, 1.0), (0.866_025_403_784_438_6, 0.5)])
         .expect("should succeed");
->>>>>>> origin/main
     assert_wolfram_latlon(
         c.center,
         (0.288_678_799, 0.5),

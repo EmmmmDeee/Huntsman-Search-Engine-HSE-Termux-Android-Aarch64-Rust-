@@ -53,12 +53,8 @@ fn deserialises_summary_and_flags_success() {
 #[test]
 fn nonzero_error_is_treated_as_no_data() {
     // ONYPHE returns error != 0 for "no results" / rate-limit / plan limit.
-<<<<<<< HEAD
-    let resp: OnypheResp = serde_json::from_str(r#"{"error": 2, "results": []}"#).expect("should succeed");
-=======
     let resp: OnypheResp =
         serde_json::from_str(r#"{"error": 2, "results": []}"#).expect("should succeed");
->>>>>>> origin/main
     assert_ne!(resp.error, 0);
     assert!(resp.results.is_empty());
 }
@@ -69,12 +65,8 @@ fn coords_from_separate_fields_or_location_string() {
     let sep = serde_json::json!({"latitude": -27.47, "longitude": 153.02});
     assert_eq!(coords(&sep), Some((-27.47, 153.02)));
     // ONYPHE's `location` is a "lat,lon" string.
-<<<<<<< HEAD
-    let (lat, lon) = coords(&serde_json::json!({"location": "37.4056,-122.0775"})).expect("should succeed");
-=======
     let (lat, lon) =
         coords(&serde_json::json!({"location": "37.4056,-122.0775"})).expect("should succeed");
->>>>>>> origin/main
     assert!((lat - 37.4056).abs() < 1e-6 && (lon + 122.0775).abs() < 1e-6);
     // Numbers carried as strings still parse.
     assert_eq!(

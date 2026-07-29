@@ -17,14 +17,10 @@ fn ctx() -> ModuleContext {
 #[tokio::test]
 async fn extracts_corporate_domain() {
     let t = Target::new(TargetKind::Email, "ceo@acme.com");
-<<<<<<< HEAD
-    let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
-=======
     let r = EmailParse
         .process(&t, &ctx())
         .await
         .expect("should succeed");
->>>>>>> origin/main
     let domains: Vec<&Entity> = r
         .entities
         .iter()
@@ -40,14 +36,10 @@ async fn extracts_corporate_domain() {
 async fn skips_freemail_providers() {
     for addr in ["user@gmail.com", "user@yahoo.com", "user@protonmail.com"] {
         let t = Target::new(TargetKind::Email, addr);
-<<<<<<< HEAD
-        let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
-=======
         let r = EmailParse
             .process(&t, &ctx())
             .await
             .expect("should succeed");
->>>>>>> origin/main
         let domains: Vec<&Entity> = r
             .entities
             .iter()
@@ -66,14 +58,10 @@ async fn skips_noncentral_provider_domains_beyond_freemail() {
     // (Regression for the CRITICAL infrastructure-pollution an on-device scan hit.)
     for addr in ["user@web.de", "user@rochester.rr.com", "user@peekyou.com"] {
         let t = Target::new(TargetKind::Email, addr);
-<<<<<<< HEAD
-        let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
-=======
         let r = EmailParse
             .process(&t, &ctx())
             .await
             .expect("should succeed");
->>>>>>> origin/main
         let domains: Vec<&Entity> = r
             .entities
             .iter()
@@ -83,14 +71,10 @@ async fn skips_noncentral_provider_domains_beyond_freemail() {
     }
     // A genuine corporate/self-owned mail domain is still surfaced.
     let t = Target::new(TargetKind::Email, "jane@acmecorp.com.au");
-<<<<<<< HEAD
-    let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
-=======
     let r = EmailParse
         .process(&t, &ctx())
         .await
         .expect("should succeed");
->>>>>>> origin/main
     assert!(
         r.entities
             .iter()
@@ -102,14 +86,10 @@ async fn skips_noncentral_provider_domains_beyond_freemail() {
 #[tokio::test]
 async fn skips_domain_for_malformed_email() {
     let t = Target::new(TargetKind::Email, "noatsign");
-<<<<<<< HEAD
-    let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
-=======
     let r = EmailParse
         .process(&t, &ctx())
         .await
         .expect("should succeed");
->>>>>>> origin/main
     let domains: Vec<&Entity> = r
         .entities
         .iter()
@@ -123,14 +103,10 @@ async fn skips_domain_for_malformed_email() {
 #[tokio::test]
 async fn derives_multiple_username_candidates() {
     let t = Target::new(TargetKind::Email, "john.doe+work@example.com");
-<<<<<<< HEAD
-    let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
-=======
     let r = EmailParse
         .process(&t, &ctx())
         .await
         .expect("should succeed");
->>>>>>> origin/main
     let usernames: Vec<&str> = r
         .entities
         .iter()
@@ -149,14 +125,10 @@ async fn username_candidates_emerge_in_deterministic_sorted_order() {
     // would very likely disagree with the sorted order across the HashSet's
     // randomised per-process seed.
     let t = Target::new(TargetKind::Email, "john.doe+work42@example.com");
-<<<<<<< HEAD
-    let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
-=======
     let r = EmailParse
         .process(&t, &ctx())
         .await
         .expect("should succeed");
->>>>>>> origin/main
     let usernames: Vec<&str> = r
         .entities
         .iter()
@@ -189,14 +161,10 @@ fn accepts_email_only() {
 async fn emits_both_domain_and_usernames() {
     // A personal local-part yields the Domain AND derived usernames.
     let t = Target::new(TargetKind::Email, "jane.doe@corp.io");
-<<<<<<< HEAD
-    let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
-=======
     let r = EmailParse
         .process(&t, &ctx())
         .await
         .expect("should succeed");
->>>>>>> origin/main
     let has_domain = r.entities.iter().any(|e| e.kind == EntityKind::Domain);
     let has_username = r.entities.iter().any(|e| e.kind == EntityKind::Username);
     assert!(has_domain, "should emit a Domain entity for corp.io");
@@ -329,14 +297,10 @@ async fn isp_freemail_infers_person_at_lower_confidence() {
 #[tokio::test]
 async fn freemail_still_derives_usernames() {
     let t = Target::new(TargetKind::Email, "john.doe@gmail.com");
-<<<<<<< HEAD
-    let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
-=======
     let r = EmailParse
         .process(&t, &ctx())
         .await
         .expect("should succeed");
->>>>>>> origin/main
     let domains: Vec<&Entity> = r
         .entities
         .iter()
@@ -357,14 +321,10 @@ async fn freemail_still_derives_usernames() {
 #[tokio::test]
 async fn evidence_source_is_email_parse() {
     let t = Target::new(TargetKind::Email, "alice@widgets.co");
-<<<<<<< HEAD
-    let r = EmailParse.process(&t, &ctx()).await.expect("should succeed");
-=======
     let r = EmailParse
         .process(&t, &ctx())
         .await
         .expect("should succeed");
->>>>>>> origin/main
     for entity in &r.entities {
         for ev in &entity.evidence {
             assert_eq!(

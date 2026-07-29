@@ -110,14 +110,10 @@ fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
         "only the in-area relative is promoted"
     );
 
-<<<<<<< HEAD
-    let erik = ents.iter().find(|e| e.value == "Erik Moreau").expect("should succeed");
-=======
     let erik = ents
         .iter()
         .find(|e| e.value == "Erik Moreau")
         .expect("should succeed");
->>>>>>> origin/main
     assert!(erik.has_tag("geo-corroborated"));
     assert!(
         erik.evidence
@@ -135,14 +131,10 @@ fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
     );
     assert_eq!(erik.classify(), Classification::Probable);
 
-<<<<<<< HEAD
-    let far = ents.iter().find(|e| e.value.contains("4870")).expect("should succeed");
-=======
     let far = ents
         .iter()
         .find(|e| e.value.contains("4870"))
         .expect("should succeed");
->>>>>>> origin/main
     assert!(
         !far.has_tag("geo-corroborated"),
         "a far namesake stays a candidate"
@@ -192,14 +184,10 @@ fn promote_breach_candidate_geo_corroborated_lifts_same_place_same_name_records(
         "only the same-metro breach record is re-promoted"
     );
 
-<<<<<<< HEAD
-    let near = ents.iter().find(|e| e.value == "matt@example.com").expect("should succeed");
-=======
     let near = ents
         .iter()
         .find(|e| e.value == "matt@example.com")
         .expect("should succeed");
->>>>>>> origin/main
     assert!(
         !near.has_tag(crate::core::tags::CANDIDATE),
         "un-quarantined out of candidate"
@@ -351,14 +339,10 @@ fn promote_cross_scan_corroborated_lifts_queued_endpoints_idempotently() {
         );
     }
     // An entity not in the boost set is untouched.
-<<<<<<< HEAD
-    let other = ents.iter().find(|e| e.value == "x.com").expect("should succeed");
-=======
     let other = ents
         .iter()
         .find(|e| e.value == "x.com")
         .expect("should succeed");
->>>>>>> origin/main
     assert!(!other.has_tag("cross-scan-corroborated"));
 
     // Idempotent, and an empty boost set is a no-op.
@@ -402,14 +386,10 @@ fn flag_geo_discordant_namesakes_is_surname_aware_and_tag_only() {
         "only the far COMMON-surname namesake is flagged"
     );
 
-<<<<<<< HEAD
-    let common = ents.iter().find(|e| e.value == "Curt Smith").expect("should succeed");
-=======
     let common = ents
         .iter()
         .find(|e| e.value == "Curt Smith")
         .expect("should succeed");
->>>>>>> origin/main
     assert!(common.has_tag("geo-discordant"));
     // Tag-only: confidence and the corroboration count are untouched, so a
     // negative signal can never PROMOTE the namesake it means to demote.
@@ -421,26 +401,18 @@ fn flag_geo_discordant_namesakes_is_surname_aware_and_tag_only() {
     );
 
     // A far DISTINCTIVE surname is distant kin, not a namesake.
-<<<<<<< HEAD
-    let rare = ents.iter().find(|e| e.value == "Curt Moreau").expect("should succeed");
-=======
     let rare = ents
         .iter()
         .find(|e| e.value == "Curt Moreau")
         .expect("should succeed");
->>>>>>> origin/main
     assert!(
         !rare.has_tag("geo-discordant"),
         "a far distinctive surname is kin, never a namesake"
     );
-<<<<<<< HEAD
-    let near = ents.iter().find(|e| e.value.contains("4519")).expect("should succeed");
-=======
     let near = ents
         .iter()
         .find(|e| e.value.contains("4519"))
         .expect("should succeed");
->>>>>>> origin/main
     assert!(
         !near.has_tag("geo-discordant"),
         "an in-area relative is never a namesake"
@@ -761,14 +733,10 @@ fn module_dispatch_is_logged_keyed_by_module_name() {
     struct VecWriter(Arc<Mutex<Vec<u8>>>);
     impl Write for VecWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-<<<<<<< HEAD
-            self.0.lock().expect("should succeed").extend_from_slice(buf);
-=======
             self.0
                 .lock()
                 .expect("should succeed")
                 .extend_from_slice(buf);
->>>>>>> origin/main
             Ok(buf.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
@@ -791,12 +759,8 @@ fn module_dispatch_is_logged_keyed_by_module_name() {
     tracing::subscriber::with_default(subscriber, || {
         log_module_dispatch("hibp", &Target::new(TargetKind::Email, "a@b.com"));
     });
-<<<<<<< HEAD
-    let out = String::from_utf8(buf.lock().expect("should succeed").clone()).expect("should succeed");
-=======
     let out =
         String::from_utf8(buf.lock().expect("should succeed").clone()).expect("should succeed");
->>>>>>> origin/main
     assert!(
         out.contains("dispatch"),
         "dispatch event missing; got: {out:?}"
@@ -2608,16 +2572,12 @@ async fn convex_budget_dispatches_the_highest_query_value_module_first() {
             .await
             .expect("dispatch runs");
         assert_eq!(entity_map.len(), 1, "max_entities=1 must admit exactly one");
-<<<<<<< HEAD
-        entity_map.into_inner().into_values().next().expect("should succeed").value
-=======
         entity_map
             .into_inner()
             .into_values()
             .next()
             .expect("should succeed")
             .value
->>>>>>> origin/main
     }
 
     // Flag OFF: established priority order — the priority-90 module wins.
@@ -2641,15 +2601,11 @@ fn rank_enrichment_leverage_orders_join_keys_by_cross_scan_degree() {
     use crate::core::test_support::InMemoryStore;
 
     let store = InMemoryStore::new();
-<<<<<<< HEAD
-    let up = |k, v, s| store.upsert_entity(&Entity::new(k, v, 0.7, s)).expect("should succeed");
-=======
     let up = |k, v, s| {
         store
             .upsert_entity(&Entity::new(k, v, 0.7, s))
             .expect("should succeed");
     };
->>>>>>> origin/main
 
     // An email observed across THREE investigations — in the in-memory store the
     // accumulated corroboration is the observation_count, i.e. cross-scan degree 3.
@@ -3058,14 +3014,10 @@ fn identity_aware_ranking_collapses_clusters_and_aggregates_leverage() {
         ranked[0].cluster_size, 2,
         "the richer identity is investigated first"
     );
-<<<<<<< HEAD
-    let solo = ranked.iter().find(|t| t.cluster_size == 1).expect("should succeed");
-=======
     let solo = ranked
         .iter()
         .find(|t| t.cluster_size == 1)
         .expect("should succeed");
->>>>>>> origin/main
     assert!(cluster.representative.score > solo.representative.score);
 }
 

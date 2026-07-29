@@ -107,12 +107,8 @@ fn module_metadata() {
 fn profile_url_per_kind() {
     let email = profile_url(&Target::new(TargetKind::Email, "a@b.com")).expect("should succeed");
     assert!(email.contains("resolve/email?work_email="));
-<<<<<<< HEAD
-    let url = profile_url(&Target::new(TargetKind::Url, "https://linkedin.com/in/x")).expect("should succeed");
-=======
     let url = profile_url(&Target::new(TargetKind::Url, "https://linkedin.com/in/x"))
         .expect("should succeed");
->>>>>>> origin/main
     assert!(url.contains("api/v2/linkedin?url="));
     let user = profile_url(&Target::new(TargetKind::Username, "x")).expect("should succeed");
     assert!(user.contains("linkedin.com%2Fin%2Fx"));
@@ -201,12 +197,8 @@ fn certification_describe_combines_name_and_authority() {
 #[test]
 fn build_entities_omits_certifications_attr_when_absent() {
     // A profile with no certifications must not carry an empty attr.
-<<<<<<< HEAD
-    let profile: LinkedInProfile = serde_json::from_str(r#"{"full_name": "Jane Doe"}"#).expect("should succeed");
-=======
     let profile: LinkedInProfile =
         serde_json::from_str(r#"{"full_name": "Jane Doe"}"#).expect("should succeed");
->>>>>>> origin/main
     let r = build_entities(&profile, &target(), "scan");
     let person = r
         .entities
@@ -344,14 +336,10 @@ fn build_entities_extracts_full_profile() {
             .map(String::as_str),
         Some("Computer Science")
     );
-<<<<<<< HEAD
-    let atlassian = orgs.iter().find(|e| e.value == "Atlassian").expect("should succeed");
-=======
     let atlassian = orgs
         .iter()
         .find(|e| e.value == "Atlassian")
         .expect("should succeed");
->>>>>>> origin/main
     assert!(atlassian.has_tag("current-employer"));
     assert_eq!(
         atlassian.evidence[0]
@@ -367,14 +355,10 @@ fn build_entities_extracts_full_profile() {
             .map(String::as_str),
         Some("2020-01")
     );
-<<<<<<< HEAD
-    let canva = orgs.iter().find(|e| e.value == "Canva").expect("should succeed");
-=======
     let canva = orgs
         .iter()
         .find(|e| e.value == "Canva")
         .expect("should succeed");
->>>>>>> origin/main
     assert!(!canva.has_tag("current-employer"));
     assert_eq!(
         canva.evidence[0]
@@ -394,13 +378,8 @@ fn build_entities_empty_profile_yields_nothing() {
 #[test]
 fn build_entities_resolves_name_from_first_last_only() {
     // The email-resolve endpoint shape: no full_name, just first/last.
-<<<<<<< HEAD
-    let p: LinkedInProfile =
-        serde_json::from_str(r#"{"first_name":"Sam","last_name":"Vimes"}"#).expect("should succeed");
-=======
     let p: LinkedInProfile = serde_json::from_str(r#"{"first_name":"Sam","last_name":"Vimes"}"#)
         .expect("should succeed");
->>>>>>> origin/main
     let r = build_entities(&p, &target(), "scan");
     let person: Vec<_> = r
         .entities
@@ -414,12 +393,8 @@ fn build_entities_resolves_name_from_first_last_only() {
 #[test]
 fn build_entities_single_location_part_is_not_an_address() {
     let p: LinkedInProfile =
-<<<<<<< HEAD
-        serde_json::from_str(r#"{"full_name":"A B","country_full_name":"Australia"}"#).expect("should succeed");
-=======
         serde_json::from_str(r#"{"full_name":"A B","country_full_name":"Australia"}"#)
             .expect("should succeed");
->>>>>>> origin/main
     let r = build_entities(&p, &target(), "scan");
     assert!(!r.entities.iter().any(|e| e.kind == EntityKind::Address));
 }

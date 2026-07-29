@@ -82,13 +82,6 @@ fn parses_three_aps_with_all_fields() {
     // Verify evidence attributes on first AP
     let ev0 = &ap0.evidence[0];
     assert_eq!(ev0.source, SOURCE);
-<<<<<<< HEAD
-    assert_eq!(ev0.attributes.get("ssid").expect("should succeed"), "HomeNet");
-    assert_eq!(ev0.attributes.get("bssid").expect("should succeed"), "aa:bb:cc:dd:ee:ff");
-    assert_eq!(ev0.attributes.get("frequency_mhz").expect("should succeed"), "2437");
-    assert_eq!(ev0.attributes.get("rssi_dbm").expect("should succeed"), "-42");
-    assert_eq!(ev0.attributes.get("timestamp").expect("should succeed"), "100");
-=======
     assert_eq!(
         ev0.attributes.get("ssid").expect("should succeed"),
         "HomeNet"
@@ -109,20 +102,15 @@ fn parses_three_aps_with_all_fields() {
         ev0.attributes.get("timestamp").expect("should succeed"),
         "100"
     );
->>>>>>> origin/main
 
     // Verify third AP (5 GHz band)
     let ap2 = &r.entities[2];
     assert_eq!(ap2.value, "de:ad:be:ef:ca:fe");
     assert_eq!(
-<<<<<<< HEAD
-        ap2.evidence[0].attributes.get("frequency_mhz").expect("should succeed"),
-=======
         ap2.evidence[0]
             .attributes
             .get("frequency_mhz")
             .expect("should succeed"),
->>>>>>> origin/main
         "2462"
     );
 }
@@ -134,14 +122,10 @@ fn hidden_ssid_shows_placeholder() {
     let r = parse_aps(json, "test");
     assert_eq!(r.entities.len(), 1);
     let ev = &r.entities[0].evidence[0];
-<<<<<<< HEAD
-    assert_eq!(ev.attributes.get("ssid").expect("should succeed"), "<hidden>");
-=======
     assert_eq!(
         ev.attributes.get("ssid").expect("should succeed"),
         "<hidden>"
     );
->>>>>>> origin/main
     assert!(ev.summary.contains("<hidden>"));
 }
 
@@ -151,14 +135,10 @@ fn missing_optional_fields_default_to_zero() {
     let r = parse_aps(json, "test");
     assert_eq!(r.entities.len(), 1);
     let ev = &r.entities[0].evidence[0];
-<<<<<<< HEAD
-    assert_eq!(ev.attributes.get("frequency_mhz").expect("should succeed"), "0");
-=======
     assert_eq!(
         ev.attributes.get("frequency_mhz").expect("should succeed"),
         "0"
     );
->>>>>>> origin/main
     assert_eq!(ev.attributes.get("rssi_dbm").expect("should succeed"), "0");
     assert_eq!(ev.attributes.get("timestamp").expect("should succeed"), "0");
 }

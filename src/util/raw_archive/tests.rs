@@ -339,14 +339,10 @@ fn write_file_persists_individual_named_response_on_disk() {
 
     assert!(path.exists());
     assert_eq!(
-<<<<<<< HEAD
-        path.file_name().expect("should succeed").to_str().expect("should succeed"),
-=======
         path.file_name()
             .expect("should succeed")
             .to_str()
             .expect("should succeed"),
->>>>>>> origin/main
         "see_know__search-email__vanamill_at_hotmail.com__20260606T061409Z__0003.json"
     );
     let read = std::fs::read_to_string(&path).expect("should succeed");

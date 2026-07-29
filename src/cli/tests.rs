@@ -184,11 +184,7 @@ use super::*;
 
     #[test]
     fn resolve_seed_errors_when_nothing_set() {
-<<<<<<< HEAD
-        let err = resolve_seed(None, None).expect("should be an error").to_string();
-=======
         let err = resolve_seed(None, None).expect_err("should be an error").to_string();
->>>>>>> origin/main
         assert!(err.contains("--value"), "{err}");
         assert!(err.contains("HUNTSMAN_DEFAULT_SEED"), "{err}");
     }

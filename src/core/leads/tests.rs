@@ -32,14 +32,10 @@ fn recommend_ranks_untapped_relatives() {
     let leads = recommend(&entities, &relations, 0.50);
     // Two pivotable leads (person, email); the address is not pivotable.
     assert_eq!(leads.len(), 2, "address is not an actionable lead");
-<<<<<<< HEAD
-    let erik_lead = leads.iter().find(|l| l.value == "Erik Diegmann").expect("should succeed");
-=======
     let erik_lead = leads
         .iter()
         .find(|l| l.value == "Erik Diegmann")
         .expect("should succeed");
->>>>>>> origin/main
     let email_lead = leads
         .iter()
         .find(|l| l.value == "kyle@example.com")
@@ -104,14 +100,10 @@ fn recommend_ranks_geo_corroborated_family_top() {
     );
     // Both are relatives, but the confirmed one scores strictly higher than the
     // unconfirmed guess — reliability is what separates them.
-<<<<<<< HEAD
-    let guess_lead = leads.iter().find(|l| l.value == "Curt Diegmann").expect("should succeed");
-=======
     let guess_lead = leads
         .iter()
         .find(|l| l.value == "Curt Diegmann")
         .expect("should succeed");
->>>>>>> origin/main
     assert!(
         top.score > guess_lead.score,
         "confirmed ({}) must outrank unconfirmed ({})",
@@ -155,10 +147,6 @@ fn recommend_demotes_geo_discordant_namesakes() {
     let entities = vec![subject, local.clone(), namesake.clone()];
 
     let leads = recommend(&entities, &relations, 0.50);
-<<<<<<< HEAD
-    let local_lead = leads.iter().find(|l| l.value == "Aaron Smith").expect("should succeed");
-    let namesake_lead = leads.iter().find(|l| l.value == "Zane Smith").expect("should succeed");
-=======
     let local_lead = leads
         .iter()
         .find(|l| l.value == "Aaron Smith")
@@ -167,7 +155,6 @@ fn recommend_demotes_geo_discordant_namesakes() {
         .iter()
         .find(|l| l.value == "Zane Smith")
         .expect("should succeed");
->>>>>>> origin/main
     assert!(
         local_lead.score > namesake_lead.score,
         "the local candidate ({}) outranks the namesake ({})",
@@ -204,10 +191,6 @@ fn recommend_weights_family_by_surname_distinctiveness() {
     ];
     let leads = recommend(&[subject, rare.clone(), common.clone()], &relations, 0.50);
 
-<<<<<<< HEAD
-    let rare_lead = leads.iter().find(|l| l.value == "Alex Bamford").expect("should succeed");
-    let common_lead = leads.iter().find(|l| l.value == "Alex Smith").expect("should succeed");
-=======
     let rare_lead = leads
         .iter()
         .find(|l| l.value == "Alex Bamford")
@@ -216,7 +199,6 @@ fn recommend_weights_family_by_surname_distinctiveness() {
         .iter()
         .find(|l| l.value == "Alex Smith")
         .expect("should succeed");
->>>>>>> origin/main
     assert!(
         rare_lead.score > common_lead.score,
         "a distinctive shared surname ({}) outranks a common one ({})",
@@ -349,14 +331,10 @@ fn history_bridge_boosts_lead_priority_and_is_flagged() {
 
     let base = leads_for(None);
     let bridged = leads_for(Some("cross-scan-relation"));
-<<<<<<< HEAD
-    let base_email = base.iter().find(|l| l.value == "kyle@example.com").expect("should succeed");
-=======
     let base_email = base
         .iter()
         .find(|l| l.value == "kyle@example.com")
         .expect("should succeed");
->>>>>>> origin/main
     let bridged_email = bridged
         .iter()
         .find(|l| l.value == "kyle@example.com")
@@ -465,10 +443,6 @@ fn recommend_lifts_a_lead_that_bridges_the_graph() {
     assert!(values.contains("Erik Diegmann") && values.contains("Otto Diegmann"));
     assert!(!values.contains("Rita Diegmann") && !values.contains("Sven Diegmann"));
 
-<<<<<<< HEAD
-    let bridge_lead = leads.iter().find(|l| l.value == "Erik Diegmann").expect("should succeed");
-    let pendant_lead = leads.iter().find(|l| l.value == "Otto Diegmann").expect("should succeed");
-=======
     let bridge_lead = leads
         .iter()
         .find(|l| l.value == "Erik Diegmann")
@@ -477,7 +451,6 @@ fn recommend_lifts_a_lead_that_bridges_the_graph() {
         .iter()
         .find(|l| l.value == "Otto Diegmann")
         .expect("should succeed");
->>>>>>> origin/main
 
     assert!(
         bridge_lead.structural,

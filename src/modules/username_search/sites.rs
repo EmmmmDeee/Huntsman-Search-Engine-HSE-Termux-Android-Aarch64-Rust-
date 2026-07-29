@@ -18,11 +18,7 @@ pub(super) struct Site {
 /// bucket can't slip into the 1600-line table unnoticed. Sorted.
 // Consumed only by the test that enforces it; it stands as living documentation
 // of the allowed buckets in non-test builds.
-<<<<<<< HEAD
-
-=======
 #[allow(dead_code)]
->>>>>>> origin/main
 pub(super) const CATEGORIES: &[&str] = &[
     "blog",
     "business",

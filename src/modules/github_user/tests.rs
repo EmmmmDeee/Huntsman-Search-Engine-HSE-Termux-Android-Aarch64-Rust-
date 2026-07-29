@@ -118,12 +118,8 @@ fn commit_email_entities_emits_every_distinct_email_not_a_capped_ten() {
         })
         .collect::<Vec<_>>()
         .join(",");
-<<<<<<< HEAD
-    let events: Vec<GhEvent> = serde_json::from_str(&format!("[{events_json}]")).expect("should succeed");
-=======
     let events: Vec<GhEvent> =
         serde_json::from_str(&format!("[{events_json}]")).expect("should succeed");
->>>>>>> origin/main
     let out = commit_email_entities(&events, "scan-ce", "octocat");
     assert_eq!(
         out.len(),
