@@ -102,7 +102,14 @@ fn parse_response() {
     }"#;
     let r: OcResp = serde_json::from_str(raw).expect("should succeed");
     let results = r.results.expect("should succeed");
+<<<<<<< HEAD
     let co = results.companies[0].company.as_ref().expect("should succeed");
+=======
+    let co = results.companies[0]
+        .company
+        .as_ref()
+        .expect("should succeed");
+>>>>>>> origin/main
     assert_eq!(co.name.as_deref(), Some("ATLASSIAN PTY LTD"));
     assert_eq!(co.jurisdiction_code.as_deref(), Some("au"));
 }

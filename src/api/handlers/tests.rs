@@ -7,7 +7,11 @@ use crate::api::scan_export::csv_escape;
         let ok = validated_target(TargetKind::Domain, "cloudflare.com".to_string());
         assert!(ok.is_ok());
         assert_eq!(ok.expect("should succeed").value, "cloudflare.com");
+<<<<<<< HEAD
         let err = validated_target(TargetKind::Domain, "no-dot".to_string()).expect("should be an error");
+=======
+        let err = validated_target(TargetKind::Domain, "no-dot".to_string()).expect_err("should be an error");
+>>>>>>> origin/main
         assert!(
             err.starts_with("invalid target: "),
             "must carry client-facing prefix, got: {err}"

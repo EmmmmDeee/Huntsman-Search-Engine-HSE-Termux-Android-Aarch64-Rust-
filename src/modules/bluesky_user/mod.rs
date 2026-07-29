@@ -380,7 +380,13 @@ mod tests {
             u.is_some(),
             "must strip .bsky.social and emit bare username"
         );
+<<<<<<< HEAD
         assert!((u.expect("should succeed").confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
+=======
+        assert!(
+            (u.expect("should succeed").confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01
+        );
+>>>>>>> origin/main
         assert!(u.expect("should succeed").has_tag("bluesky"));
     }
 

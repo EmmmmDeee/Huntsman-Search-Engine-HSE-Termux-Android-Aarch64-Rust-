@@ -765,10 +765,19 @@ fn profile_user_resp_parses_real_wigle_person_shape() {
 
 #[test]
 fn status_from_profile_treats_absent_and_blank_userid_as_none() {
+<<<<<<< HEAD
     let blank: ProfileUserResp = serde_json::from_str(r#"{"userid": "   "}"#).expect("should succeed");
     assert!(status_from_profile(blank, 0).user.is_none());
 
     let absent: ProfileUserResp = serde_json::from_str(r#"{"emailVerified": true}"#).expect("should succeed");
+=======
+    let blank: ProfileUserResp =
+        serde_json::from_str(r#"{"userid": "   "}"#).expect("should succeed");
+    assert!(status_from_profile(blank, 0).user.is_none());
+
+    let absent: ProfileUserResp =
+        serde_json::from_str(r#"{"emailVerified": true}"#).expect("should succeed");
+>>>>>>> origin/main
     let status = status_from_profile(absent, 0);
     assert!(status.user.is_none());
     assert_eq!(status.verified, Some(true));
@@ -935,7 +944,13 @@ async fn serve_429_then_200(
     use std::sync::atomic::{AtomicU32, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+<<<<<<< HEAD
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+=======
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
+>>>>>>> origin/main
     let addr = listener.local_addr().expect("should succeed");
     let hits = Arc::new(AtomicU32::new(0));
     let hits_srv = hits.clone();
@@ -1006,7 +1021,13 @@ async fn get_with_retry_gives_up_after_one_retry_on_a_persistent_429() {
     // retrying) — the module-level circuit breaker's soft/hard classification
     // takes over from there, exactly as before this fix.
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+<<<<<<< HEAD
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+=======
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
+>>>>>>> origin/main
     let addr = listener.local_addr().expect("should succeed");
     tokio::spawn(async move {
         for _ in 0..2 {

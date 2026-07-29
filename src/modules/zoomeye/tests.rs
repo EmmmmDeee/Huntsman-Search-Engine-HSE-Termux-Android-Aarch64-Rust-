@@ -53,7 +53,12 @@ fn deserialises_matches() {
 
 #[test]
 fn error_body_deserialises_to_empty_matches() {
+<<<<<<< HEAD
     let resp: ZoomResp = serde_json::from_str(r#"{"error":"invalid key","status":401}"#).expect("should succeed");
+=======
+    let resp: ZoomResp =
+        serde_json::from_str(r#"{"error":"invalid key","status":401}"#).expect("should succeed");
+>>>>>>> origin/main
     assert!(resp.matches.is_empty());
 }
 

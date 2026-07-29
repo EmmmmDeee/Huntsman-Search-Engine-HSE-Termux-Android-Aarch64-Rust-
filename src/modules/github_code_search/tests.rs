@@ -37,7 +37,14 @@ fn build_repo_entities_exact_owner_match() {
             "description":"my configs","owner":{"login":"haigen","html_url":"https://github.com/haigen"}}}"#,
     );
     let ents = build_repo_entities(&item, "haigen", TargetKind::Username, "s");
+<<<<<<< HEAD
     let url_e = ents.iter().find(|e| e.kind == EntityKind::Url).expect("should succeed");
+=======
+    let url_e = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Url)
+        .expect("should succeed");
+>>>>>>> origin/main
     assert!(url_e.confidence >= 0.58);
     assert!(url_e.has_tag("code-repo") && url_e.has_tag("github"));
 
@@ -58,7 +65,14 @@ fn build_repo_entities_low_conf_unrelated() {
             "description":"unrelated","owner":{"login":"other","html_url":"https://github.com/other"}}}"#,
     );
     let ents = build_repo_entities(&item, "haigen@example.com", TargetKind::Email, "s");
+<<<<<<< HEAD
     let url_e = ents.iter().find(|e| e.kind == EntityKind::Url).expect("should succeed");
+=======
+    let url_e = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Url)
+        .expect("should succeed");
+>>>>>>> origin/main
     assert!(
         url_e.confidence < confidence::MEDIUM,
         "unrelated repo should be sub-floor"

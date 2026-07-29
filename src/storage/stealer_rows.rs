@@ -124,8 +124,23 @@ mod tests {
     #[test]
     fn insert_empty_batch_is_a_no_op_not_an_error() {
         let store = Store::open(":memory:").expect("in-memory store");
+<<<<<<< HEAD
         assert_eq!(store.insert_stealer_rows_batch("scan-1", &[]).expect("should succeed"), 0);
         assert!(store.stealer_rows_for_scan("scan-1").expect("should succeed").is_empty());
+=======
+        assert_eq!(
+            store
+                .insert_stealer_rows_batch("scan-1", &[])
+                .expect("should succeed"),
+            0
+        );
+        assert!(
+            store
+                .stealer_rows_for_scan("scan-1")
+                .expect("should succeed")
+                .is_empty()
+        );
+>>>>>>> origin/main
     }
 
     #[test]
@@ -137,8 +152,17 @@ mod tests {
         store
             .insert_stealer_rows_batch("scan-b", &[row("m2", Some("b.com"), "u2", "p2")])
             .expect("should succeed");
+<<<<<<< HEAD
         let a = store.stealer_rows_for_scan("scan-a").expect("should succeed");
         let b = store.stealer_rows_for_scan("scan-b").expect("should succeed");
+=======
+        let a = store
+            .stealer_rows_for_scan("scan-a")
+            .expect("should succeed");
+        let b = store
+            .stealer_rows_for_scan("scan-b")
+            .expect("should succeed");
+>>>>>>> origin/main
         assert_eq!(a.len(), 1);
         assert_eq!(b.len(), 1);
         assert_eq!(a[0].login.as_deref(), Some("u1"));

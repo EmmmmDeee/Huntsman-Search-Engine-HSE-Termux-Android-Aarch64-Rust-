@@ -147,7 +147,14 @@ fn address_confidence_reflects_whether_a_suburb_was_resolved() {
 #[test]
 fn build_electoral_entities_suburb_hint_overrides_centroid_suburb() {
     let ents = build_electoral_entities("Sydney", Some("Newtown"), "Test", "s");
+<<<<<<< HEAD
     let addr = ents.iter().find(|e| e.kind == EntityKind::Address).expect("should succeed");
+=======
+    let addr = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("should succeed");
+>>>>>>> origin/main
     assert!(
         addr.value.contains("Newtown"),
         "suburb hint should override centroid suburb: {}",

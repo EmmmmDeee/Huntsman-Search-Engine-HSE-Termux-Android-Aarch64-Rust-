@@ -124,7 +124,13 @@ async fn read_line_timeout_caps_a_giant_newline_less_line() {
     // Send 100 KiB with no newline; the capped reader must stop at the 8 KiB
     // ceiling rather than buffer the whole blob.
     use tokio::io::{AsyncWriteExt, BufReader};
+<<<<<<< HEAD
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+=======
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
+>>>>>>> origin/main
     let addr = listener.local_addr().expect("should succeed");
     tokio::spawn(async move {
         if let Ok((mut sock, _)) = listener.accept().await {
@@ -134,7 +140,13 @@ async fn read_line_timeout_caps_a_giant_newline_less_line() {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
     });
+<<<<<<< HEAD
     let stream = tokio::net::TcpStream::connect(addr).await.expect("should succeed");
+=======
+    let stream = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("should succeed");
+>>>>>>> origin/main
     let (rd, _wr) = stream.into_split();
     let mut reader = BufReader::new(rd);
     let mut buf = String::new();

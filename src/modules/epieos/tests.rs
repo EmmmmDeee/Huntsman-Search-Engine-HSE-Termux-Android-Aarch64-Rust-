@@ -57,7 +57,14 @@ fn extracts_full_profile_with_review_rating_and_text() {
     );
 
     // Enriched email anchor carries the Skype name (previously discarded).
+<<<<<<< HEAD
     let anchor = es.iter().find(|e| e.kind == EntityKind::Email).expect("should succeed");
+=======
+    let anchor = es
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("should succeed");
+>>>>>>> origin/main
     let ev = &anchor.evidence[0];
     assert!(
         anchor.has_tag("google-account")
@@ -110,7 +117,14 @@ fn extracts_full_profile_with_review_rating_and_text() {
         .iter()
         .filter(|e| e.kind == EntityKind::Address)
         .collect();
+<<<<<<< HEAD
     let skype_loc = addrs.iter().find(|a| a.value == "Sydney, AU").expect("should succeed");
+=======
+    let skype_loc = addrs
+        .iter()
+        .find(|a| a.value == "Sydney, AU")
+        .expect("should succeed");
+>>>>>>> origin/main
     assert!(skype_loc.has_tag("skype"));
     let place = addrs
         .iter()
@@ -148,7 +162,14 @@ fn profile_picture_is_emitted_as_url_entity() {
     assert_eq!(pic.confidence, confidence::MEDIUM_HIGH);
 
     // The anchor's evidence attr is unchanged — the Url is additive.
+<<<<<<< HEAD
     let anchor = es.iter().find(|e| e.kind == EntityKind::Email).expect("should succeed");
+=======
+    let anchor = es
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("should succeed");
+>>>>>>> origin/main
     assert_eq!(
         anchor.evidence[0]
             .attributes
@@ -184,8 +205,19 @@ fn review_text_is_preserved_verbatim() {
     let es = build(&format!(
         r#"{{"maps_reviews":[{{"place_name":"Café ☕","text":"{long}"}}]}}"#
     ));
+<<<<<<< HEAD
     let place = es.iter().find(|e| e.value == "Café ☕").expect("should succeed");
     let text = place.evidence[0].attributes.get("review_text").expect("should succeed");
+=======
+    let place = es
+        .iter()
+        .find(|e| e.value == "Café ☕")
+        .expect("should succeed");
+    let text = place.evidence[0]
+        .attributes
+        .get("review_text")
+        .expect("should succeed");
+>>>>>>> origin/main
     assert_eq!(text, &long);
 }
 

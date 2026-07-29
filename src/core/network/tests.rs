@@ -59,9 +59,21 @@ fn synthesize_groups_connections_by_relationship() {
         group("identifiers").expect("should succeed").items[0].value,
         "kyle@example.com"
     );
+<<<<<<< HEAD
     assert_eq!(group("identifiers").expect("should succeed").items[0].label, "email");
     assert_eq!(group("aliases").expect("should succeed").items[0].value, "kdiegmann");
     assert_eq!(
+=======
+    assert_eq!(
+        group("identifiers").expect("should succeed").items[0].label,
+        "email"
+    );
+    assert_eq!(
+        group("aliases").expect("should succeed").items[0].value,
+        "kdiegmann"
+    );
+    assert_eq!(
+>>>>>>> origin/main
         group("locations").expect("should succeed").items[0].value,
         "QLD 4552, Australia"
     );
@@ -89,7 +101,15 @@ fn synthesize_ranks_and_dedups() {
     let entities = vec![subject, weak, strong.clone()];
 
     let net = synthesize(&entities, &relations);
+<<<<<<< HEAD
     let people = net.groups.iter().find(|g| g.key == "people").expect("should succeed");
+=======
+    let people = net
+        .groups
+        .iter()
+        .find(|g| g.key == "people")
+        .expect("should succeed");
+>>>>>>> origin/main
     assert_eq!(people.total, 2, "two distinct people, not three edges");
     assert_eq!(people.items.len(), 2);
     assert_eq!(
@@ -114,7 +134,14 @@ fn synthesize_falls_back_and_survives_bad_input() {
         &[hub.clone(), leaf.clone()],
         &[rel(&hub, &leaf, RelationKind::AliasOf, 0.5)],
     );
+<<<<<<< HEAD
     assert_eq!(net.subject.expect("should succeed").value, "hub@example.com");
+=======
+    assert_eq!(
+        net.subject.expect("should succeed").value,
+        "hub@example.com"
+    );
+>>>>>>> origin/main
 
     // Dangling edge (the `to` endpoint isn't in the entity set) is skipped.
     let only = ent(EntityKind::Person, "Lonely Subject", 0.8);

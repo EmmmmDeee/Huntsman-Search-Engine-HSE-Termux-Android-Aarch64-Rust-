@@ -174,7 +174,13 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
     assert!(has(&csvents, EntityKind::Person, "Jordan Avery"));
 
     // Combined Search aggregator export → the breach-aggregator branch.
+<<<<<<< HEAD
     let (comb, label) = entities_from_upload(COMBINED, "s").await.expect("should succeed");
+=======
+    let (comb, label) = entities_from_upload(COMBINED, "s")
+        .await
+        .expect("should succeed");
+>>>>>>> origin/main
     assert_eq!(label, "combined-search");
     assert!(has(&comb, EntityKind::Email, "jordanavery@gmail.com"));
     assert!(has(&comb, EntityKind::Person, "Jordan Avery"));
@@ -182,7 +188,13 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
     // HSE's own CSV export → round-trip branch (not the DeHashed table).
     let hse = "kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,evidence_urls,evidence,tags\n\
         person,Jordan Avery,Jordan Avery,0.850,1.000,3,VERIFIED,1,name_intel,,[name_intel] x,au\n";
+<<<<<<< HEAD
     let (hents, label) = entities_from_upload(hse, "s").await.expect("should succeed");
+=======
+    let (hents, label) = entities_from_upload(hse, "s")
+        .await
+        .expect("should succeed");
+>>>>>>> origin/main
     assert_eq!(label, "hse-csv");
     assert!(has(&hents, EntityKind::Person, "Jordan Avery"));
 
@@ -222,7 +234,13 @@ async fn oathnet_json_stealer_victim_emits_every_distinct_field_uncapped() {
         }
     })
     .to_string();
+<<<<<<< HEAD
     let (ents, label) = entities_from_upload(&body, "s").await.expect("should succeed");
+=======
+    let (ents, label) = entities_from_upload(&body, "s")
+        .await
+        .expect("should succeed");
+>>>>>>> origin/main
     assert_eq!(label, "oathnet-json");
     let count = |k: EntityKind, tag: &str| {
         ents.iter()
@@ -286,7 +304,13 @@ async fn import_extracts_every_distinct_mac_address_uncapped() {
     for i in 0..60u32 {
         body.push_str(&format!("Router BSSID: A4:B1:C2:00:11:{i:02X}\n"));
     }
+<<<<<<< HEAD
     let (ents, _label) = entities_from_upload(&body, "s").await.expect("should succeed");
+=======
+    let (ents, _label) = entities_from_upload(&body, "s")
+        .await
+        .expect("should succeed");
+>>>>>>> origin/main
     let mac_count = ents
         .iter()
         .filter(|e| e.kind == EntityKind::MacAddress)
@@ -781,7 +805,13 @@ async fn upload_dispatcher_imports_combined_search_json_not_zero_entities() {
     // entities, silently discarding every result of a paid multi-source breach
     // search uploaded through the Termux web UI. The upload must now yield the
     // breach entities and label the branch it actually parsed.
+<<<<<<< HEAD
     let (ents, label) = entities_from_upload(COMBINED_JSON, "s").await.expect("should succeed");
+=======
+    let (ents, label) = entities_from_upload(COMBINED_JSON, "s")
+        .await
+        .expect("should succeed");
+>>>>>>> origin/main
     assert_eq!(label, "combined-search-json");
     assert!(
         ents.iter()
@@ -819,7 +849,16 @@ fn local_scrape_enumerates_deterministically_and_skips_noise() {
     let files = collect_importable_files(root);
     let names: Vec<String> = files
         .iter()
+<<<<<<< HEAD
         .map(|p| p.file_name().expect("should succeed").to_string_lossy().into_owned())
+=======
+        .map(|p| {
+            p.file_name()
+                .expect("should succeed")
+                .to_string_lossy()
+                .into_owned()
+        })
+>>>>>>> origin/main
         .collect();
     // Sorted by full path: a.json < b.txt < sub/c.csv; the rest are skipped.
     assert_eq!(names, vec!["a.json", "b.txt", "c.csv"]);
@@ -1083,7 +1122,13 @@ fn dossier_captures_seeknow_contact_summary_sections() {
 
 #[tokio::test]
 async fn upload_dispatcher_routes_seeknow_summary_to_dossier() {
+<<<<<<< HEAD
     let (ents, label) = entities_from_upload(SEEKNOW, "s").await.expect("should succeed");
+=======
+    let (ents, label) = entities_from_upload(SEEKNOW, "s")
+        .await
+        .expect("should succeed");
+>>>>>>> origin/main
     assert_eq!(label, "dossier");
     assert!(
         ents.iter()
@@ -1573,7 +1618,13 @@ fn stealerlogs_credential_pwned_at_survives_onto_its_own_entities() {
 
 #[tokio::test]
 async fn upload_dispatcher_routes_stealerlogs() {
+<<<<<<< HEAD
     let (ents, label) = entities_from_upload(STEALER, "s").await.expect("should succeed");
+=======
+    let (ents, label) = entities_from_upload(STEALER, "s")
+        .await
+        .expect("should succeed");
+>>>>>>> origin/main
     assert_eq!(label, "stealerlogs");
     assert!(
         ents.iter()
@@ -1716,7 +1767,13 @@ fn oathnet_report_parses_entries_and_osint_geolocation() {
 
 #[tokio::test]
 async fn upload_dispatcher_routes_oathnet_report() {
+<<<<<<< HEAD
     let (ents, label) = entities_from_upload(OATHNET_REPORT, "s").await.expect("should succeed");
+=======
+    let (ents, label) = entities_from_upload(OATHNET_REPORT, "s")
+        .await
+        .expect("should succeed");
+>>>>>>> origin/main
     assert_eq!(label, "oathnet-report");
     assert!(
         ents.iter()

@@ -27,7 +27,11 @@ use super::*;
     #[test]
     fn key_returns_missing_key_error_when_absent() {
         let ctx = make_ctx(HashMap::new());
+<<<<<<< HEAD
         let err = ctx.key("NO_SUCH_KEY").expect("should be an error");
+=======
+        let err = ctx.key("NO_SUCH_KEY").expect_err("should be an error");
+>>>>>>> origin/main
         assert!(
             matches!(err, Error::MissingKey(ref k) if k == "NO_SUCH_KEY"),
             "expected MissingKey, got: {err:?}",

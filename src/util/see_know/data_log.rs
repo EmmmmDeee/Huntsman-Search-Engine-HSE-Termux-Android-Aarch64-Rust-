@@ -374,7 +374,15 @@ mod tests {
             "q1",
             "oldest kept (rotated) first"
         );
+<<<<<<< HEAD
         assert_eq!(all.last().expect("should succeed").query, "q2", "newest (active) last");
+=======
+        assert_eq!(
+            all.last().expect("should succeed").query,
+            "q2",
+            "newest (active) last"
+        );
+>>>>>>> origin/main
         std::fs::remove_dir_all(&dir).ok();
     }
 

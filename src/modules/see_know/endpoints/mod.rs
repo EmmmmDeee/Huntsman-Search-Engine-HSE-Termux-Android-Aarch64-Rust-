@@ -37,6 +37,7 @@ use super::pivots::{looks_like_discord_id, looks_like_steam_id};
 /// (`util::see_know::endpoints::RATE_LIMIT_BACKOFF`) are the rate limiters.
 /// Kept as a named constant for documentation and in case a future env-flag
 /// wants to restore conservative mode.
+#[allow(dead_code)]
 const FREE_COVERED_SINGLE_ORIGIN: &[EndpointCall] = &[
     EndpointCall::GithubProfile,
     EndpointCall::TwitterProfile,

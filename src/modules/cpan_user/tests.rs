@@ -207,7 +207,12 @@ fn deserializes_scalar_or_array_email() {
     let a2: CpanAuthor = serde_json::from_str(arr).expect("should succeed");
     assert_eq!(a2.email.len(), 2);
     // Missing / null email → empty, never an error.
+<<<<<<< HEAD
     let none: CpanAuthor = serde_json::from_str(r#"{"pauseid":"Y","email":null}"#).expect("should succeed");
+=======
+    let none: CpanAuthor =
+        serde_json::from_str(r#"{"pauseid":"Y","email":null}"#).expect("should succeed");
+>>>>>>> origin/main
     assert!(none.email.is_empty());
     let absent: CpanAuthor = serde_json::from_str(r#"{"pauseid":"Z"}"#).expect("should succeed");
     assert!(absent.email.is_empty());

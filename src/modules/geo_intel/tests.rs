@@ -58,7 +58,16 @@ fn caribbean_nanp_is_not_geolocated_to_the_us() {
     assert!(phone_prefix_to_country("12424567890").is_none()); // Bahamas (1242)
     assert!(phone_prefix_to_country("18764567890").is_none()); // Jamaica (1876)
     // A genuine US/Canada +1 number is unaffected.
+<<<<<<< HEAD
     assert_eq!(phone_prefix_to_country("14165551234").expect("should succeed").1, "US"); // Toronto (NANP)
+=======
+    assert_eq!(
+        phone_prefix_to_country("14165551234")
+            .expect("should succeed")
+            .1,
+        "US"
+    ); // Toronto (NANP)
+>>>>>>> origin/main
 }
 
 #[test]
@@ -96,7 +105,13 @@ async fn national_number_without_marker_yields_no_coordinate() {
     // emitting Cairo coordinates. It must now emit nothing.
     let ctx = offline_ctx();
     let t = Target::new(TargetKind::Phone, "202-555-0100");
+<<<<<<< HEAD
     let out = process_phone_prefix_only(&t, &ctx).await.expect("should succeed");
+=======
+    let out = process_phone_prefix_only(&t, &ctx)
+        .await
+        .expect("should succeed");
+>>>>>>> origin/main
     assert!(
         out.entities.is_empty(),
         "national number must not produce a (wrong-country) coordinate: {:?}",
@@ -105,7 +120,13 @@ async fn national_number_without_marker_yields_no_coordinate() {
 
     // An explicit E.164 number still geolocates (here Egypt, correctly).
     let t = Target::new(TargetKind::Phone, "+20 100 000 0000");
+<<<<<<< HEAD
     let out = process_phone_prefix_only(&t, &ctx).await.expect("should succeed");
+=======
+    let out = process_phone_prefix_only(&t, &ctx)
+        .await
+        .expect("should succeed");
+>>>>>>> origin/main
     assert_eq!(out.entities.len(), 1);
     assert!(out.entities[0].has_tag("country:EG"));
 }
@@ -129,8 +150,13 @@ fn ip_geo_rejects_the_null_island_band_not_just_exact_zero() {
         serde_json::from_str(r#"{"latitude":0.005,"longitude":-0.002}"#).expect("should succeed");
     assert!(build_freeipapi_entity(&band2, "1.2.3.4", false, "t").is_none());
     // A real fix still passes; the shared helper draws the same line.
+<<<<<<< HEAD
     let real: IpApiCoResp =
         serde_json::from_str(r#"{"latitude":-27.4766,"longitude":153.0166}"#).expect("should succeed");
+=======
+    let real: IpApiCoResp = serde_json::from_str(r#"{"latitude":-27.4766,"longitude":153.0166}"#)
+        .expect("should succeed");
+>>>>>>> origin/main
     assert!(!build_ipapico_entity(&real, "1.2.3.4", false, "t").is_empty());
     assert!(!is_plausible_provider_coord(0.004, 0.004));
     assert!(is_plausible_provider_coord(-27.4766, 153.0166));

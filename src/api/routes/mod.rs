@@ -2,55 +2,97 @@
 //!
 //! Endpoint surface:
 //!
-//! | Method | Path                              | Handler                  |
-//! |--------|-----------------------------------|--------------------------|
-//! | GET    | `/api/v1/health`                  | `health`                 |
-//! | GET    | `/api/v1/version`                 | `version`                |
-//! | GET    | `/api/v1/modules`                 | `modules_list`           |
-//! | GET    | `/api/v1/modules/graph`           | `modules_graph` (v1.1+)  |
-//! | GET    | `/api/v1/modules/health`          | `modules_health`         |
-//! | POST   | `/api/v1/capabilities/probe`      | `capabilities_probe` (v1.14+) |
-//! | GET    | `/api/v1/engines/health`          | `engines_health` (v1.3+) |
-//! | GET    | `/api/v1/health/scrapers`         | `scraper_health` (v1.13+) |
-//! | GET    | `/api/v1/keys/patterns`           | `keys_patterns` (v1.4+)  |
-//! | GET    | `/api/v1/keys/health`             | `keys_health` (v1.17+)   |
-//! | GET    | `/api/v1/keys/harvest`            | `keys_harvest`           |
-//! | POST   | `/api/v1/scans`                   | `scan_create`            |
-//! | GET    | `/api/v1/scans`                   | `scan_list`              |
-//! | GET    | `/api/v1/scans/{id}`              | `scan_get`               |
-//! | DELETE | `/api/v1/scans/{id}`              | `scan_delete`            |
-//! | POST   | `/api/v1/scans/{id}/rerun`        | `scan_rerun`             |
-//! | GET    | `/api/v1/scans/{id}/entities`     | `scan_entities`          |
-//! | GET    | `/api/v1/scans/{id}/diamond`      | `scan_diamond`           |
-//! | GET    | `/api/v1/scans/{id}/exposure`     | `scan_exposure`          |
-//! | GET    | `/api/v1/scans/{id}/attack`       | `scan_attack` (v1.13+)   |
-//! | GET    | `/api/v1/scans/{id}/entities.csv` | `scan_entities_csv`      |
-//! | GET    | `/api/v1/scans/{id}/correlations` | `scan_correlations` (v0.4+) |
-//! | GET    | `/api/v1/scans/{id}/relations`    | `scan_relations`         |
-//! | GET    | `/api/v1/scans/{id}/cross-scan`   | `scan_cross_scan` (v1.35+) |
-//! | GET    | `/api/v1/scans/{id}/snake.svg`    | `scan_snake_svg` (v1.35+) |
-//! | GET    | `/api/v1/scans/{id}/stealer-rows` | `scan_stealer_rows` (v1.13+) |
-//! | GET    | `/api/v1/scans/{id}/audit`        | `scan_audit` (v1.3+)     |
-//! | GET    | `/api/v1/scans/{id}/events`       | `scan_events_sse` (SSE)  |
-//! | GET    | `/api/v1/scans/{id}/events.log`   | `scan_events_log` (v1.31+, download) |
-//! | POST   | `/api/v1/live`                    | `live_create` (v0.5+)    |
-//! | GET    | `/api/v1/live`                    | `live_list`              |
-//! | GET    | `/api/v1/live/{id}`               | `live_get`               |
-//! | DELETE | `/api/v1/live/{id}`               | `live_stop`              |
-//! | GET    | `/api/v1/live/{id}/events`        | `live_events_sse` (SSE)  |
-//! | GET    | `/api/v1/settings/keys`           | `settings_keys_get` (v0.10+) |
-//! | PUT    | `/api/v1/settings/keys`           | `settings_keys_put`      |
-//! | GET    | `/api/v1/settings/toggles`        | `settings_toggles_get` (v1.4+) |
-//! | PUT    | `/api/v1/settings/toggles`        | `settings_toggles_put`   |
-//! | GET    | `/api/v1/update/status`           | `get_status` (v1.5+)     |
-//! | POST   | `/api/v1/update/trigger`          | `post_trigger` (v1.5+)   |
-//! | GET    | `/api/v1/cells/status`            | `cells_status` (v1.13+)  |
-//! | POST   | `/api/v1/cells/import`            | `cells_import` (v1.13+)  |
-//! | POST   | `/api/v1/cells/clear`             | `cells_clear` (v1.13+)   |
-//! | GET    | `/api/v1/scan/profiles`           | `scan_profiles` (v1.13+) |
-//! | *      | `/api/*` (unmatched)              | `api_not_found` (JSON 404) |
-//! | GET    | `/static/{*file}`                 | `vendor_handler`         |
-//! | GET    | `/*` (fallback)                   | `spa_handler` (static)   |
+//! | Method | Path                                     | Handler                        |
+//! |--------|------------------------------------------|--------------------------------|
+//! | GET    | `/api/v1/health`                         | `health`                       |
+//! | GET    | `/api/v1/version`                        | `version`                      |
+//! | GET    | `/api/v1/stats`                          | `stats`                        |
+//! | GET    | `/api/v1/modules`                        | `modules_list`                 |
+//! | GET    | `/api/v1/modules/graph`                  | `modules_graph` (v1.1+)        |
+//! | GET    | `/api/v1/modules/health`                 | `modules_health`               |
+//! | POST   | `/api/v1/capabilities/probe`             | `capabilities_probe` (v1.14+)  |
+//! | GET    | `/api/v1/engines/health`                 | `engines_health` (v1.3+)       |
+//! | GET    | `/api/v1/health/scrapers`                | `scraper_health` (v1.13+)      |
+//! | GET    | `/api/v1/selftest`                       | `selftest_run`                 |
+//! | GET    | `/api/v1/logs`                           | `logs_download`                |
+//! | GET    | `/api/v1/debug/bundle`                   | `system_debug_bundle`          |
+//! | GET    | `/api/v1/keys/patterns`                  | `keys_patterns` (v1.4+)        |
+//! | GET    | `/api/v1/keys/status`                    | `keys_status` (v1.17+)         |
+//! | GET    | `/api/v1/keys/health`                    | `keys_health` (v1.17+)         |
+//! | GET    | `/api/v1/keys/harvest`                   | `keys_harvest`                 |
+//! | GET    | `/api/v1/keys/pool`                      | `keys_pool_get`                |
+//! | POST   | `/api/v1/keys/pool/add`                  | `keys_pool_add`                |
+//! | POST   | `/api/v1/keys/pool/revoke`               | `keys_pool_revoke`             |
+//! | POST   | `/api/v1/keys/pool/rotate`               | `keys_pool_rotate`             |
+//! | POST   | `/api/v1/scans`                          | `scan_create`                  |
+//! | GET    | `/api/v1/scans`                          | `scan_list`                    |
+//! | POST   | `/api/v1/scans/batch`                    | `scan_batch`                   |
+//! | POST   | `/api/v1/scans/import`                   | `scan_import` (16 MB body cap) |
+//! | GET    | `/api/v1/scans/{id}`                     | `scan_get`                     |
+//! | DELETE | `/api/v1/scans/{id}`                     | `scan_delete`                  |
+//! | POST   | `/api/v1/scans/{id}/rerun`               | `scan_rerun`                   |
+//! | POST   | `/api/v1/scans/{id}/cancel`              | `scan_cancel`                  |
+//! | GET    | `/api/v1/scans/{id}/entities`            | `scan_entities`                |
+//! | GET    | `/api/v1/scans/{id}/entities/filter`     | `scan_entities_filter`         |
+//! | GET    | `/api/v1/scans/{id}/entities/facets`     | `scan_entities_facets`         |
+//! | GET    | `/api/v1/scans/{id}/diamond`             | `scan_diamond`                 |
+//! | GET    | `/api/v1/scans/{id}/exposure`            | `scan_exposure`                |
+//! | GET    | `/api/v1/scans/{id}/attack`              | `scan_attack` (v1.13+)         |
+//! | GET    | `/api/v1/scans/{id}/entities.csv`        | `scan_entities_csv`            |
+//! | GET    | `/api/v1/scans/{id}/report.json`         | `scan_report_json`             |
+//! | GET    | `/api/v1/scans/{id}/graph.gexf`          | `scan_export_gexf`             |
+//! | GET    | `/api/v1/scans/{id}/debug.txt`           | `scan_debug_bundle`            |
+//! | GET    | `/api/v1/scans/{id}/events.log`          | `scan_events_log` (download)   |
+//! | GET    | `/api/v1/scans/{id}/correlations`        | `scan_correlations` (v0.4+)    |
+//! | GET    | `/api/v1/scans/{id}/relations`           | `scan_relations`               |
+//! | GET    | `/api/v1/scans/{id}/network`             | `scan_network`                 |
+//! | GET    | `/api/v1/scans/{id}/cross-scan`          | `scan_cross_scan` (v1.35+)     |
+//! | GET    | `/api/v1/scans/{id}/snake.svg`           | `scan_snake_svg` (v1.35+)      |
+//! | GET    | `/api/v1/scans/{id}/stealer-rows`        | `scan_stealer_rows` (v1.13+)   |
+//! | GET    | `/api/v1/scans/{id}/identities`          | `scan_identities`              |
+//! | GET    | `/api/v1/scans/{id}/leads`               | `scan_leads`                   |
+//! | GET    | `/api/v1/scans/{id}/timeline`            | `scan_timeline`                |
+//! | GET    | `/api/v1/scans/{id}/communities`         | `scan_communities`             |
+//! | GET    | `/api/v1/scans/{id}/trust`               | `scan_trust`                   |
+//! | GET    | `/api/v1/scans/{id}/path`                | `scan_path`                    |
+//! | GET    | `/api/v1/scans/{id}/metrics`             | `scan_metrics`                 |
+//! | GET    | `/api/v1/scans/{id}/duplicates`          | `scan_duplicates`              |
+//! | GET    | `/api/v1/scans/{id}/pivots`              | `scan_pivots`                  |
+//! | GET    | `/api/v1/scans/{id}/gaps`                | `scan_gaps`                    |
+//! | GET    | `/api/v1/scans/{id}/location`            | `scan_location`                |
+//! | GET    | `/api/v1/scans/{id}/benchmark`           | `scan_benchmark`               |
+//! | GET    | `/api/v1/scans/{id}/audit`               | `scan_audit` (v1.3+)           |
+//! | GET    | `/api/v1/scans/{a}/diff/{b}`             | `scan_diff`                    |
+//! | GET    | `/api/v1/scans/{id}/events`              | `scan_events_sse` (SSE)        |
+//! | GET    | `/api/v1/scans/{id}/events.history`      | `scan_events_history`          |
+//! | GET    | `/api/v1/scan/profiles`                  | `scan_profiles` (v1.13+)       |
+//! | POST   | `/api/v1/scan/auto`                      | `scan_auto`                    |
+//! | GET    | `/api/v1/scan/auto/plan`                 | `scan_auto_plan`               |
+//! | POST   | `/api/v1/scan/auto/sweep`                | `scan_auto_sweep`              |
+//! | GET    | `/api/v1/plan`                           | `plan_preview`                 |
+//! | POST   | `/api/v1/radar`                          | `radar_sweep`                  |
+//! | POST   | `/api/v1/radar/live`                     | `radar_live`                   |
+//! | GET    | `/api/v1/radar/history`                  | `radar_history`                |
+//! | GET    | `/api/v1/radar/recurring`                | `radar_recurring`              |
+//! | POST   | `/api/v1/live`                           | `live_create` (v0.5+)          |
+//! | GET    | `/api/v1/live`                           | `live_list`                    |
+//! | GET    | `/api/v1/live/{id}`                      | `live_get`                     |
+//! | DELETE | `/api/v1/live/{id}`                      | `live_stop`                    |
+//! | GET    | `/api/v1/live/{id}/events`               | `live_events_sse` (SSE)        |
+//! | GET    | `/api/v1/entities/{uid}`                 | `entity_get`                   |
+//! | GET    | `/api/v1/search`                         | `search_entities`              |
+//! | GET    | `/api/v1/settings/keys`                  | `settings_keys_get` (v0.10+)   |
+//! | PUT    | `/api/v1/settings/keys`                  | `settings_keys_put`            |
+//! | GET    | `/api/v1/settings/toggles`               | `settings_toggles_get` (v1.4+) |
+//! | PUT    | `/api/v1/settings/toggles`               | `settings_toggles_put`         |
+//! | GET    | `/api/v1/update/status`                  | `get_status` (v1.5+)           |
+//! | POST   | `/api/v1/update/trigger`                 | `post_trigger` (v1.5+)         |
+//! | GET    | `/api/v1/cells/status`                   | `cells_status` (v1.13+)        |
+//! | POST   | `/api/v1/cells/import`                   | `cells_import` (v1.13+)        |
+//! | POST   | `/api/v1/cells/clear`                    | `cells_clear` (v1.13+)         |
+//! | *      | `/api/*` (unmatched)                     | `api_not_found` (JSON 404)     |
+//! | GET    | `/static/{*file}`                        | `vendor_handler`               |
+//! | GET    | `/*` (fallback)                          | `spa_handler` (static)         |
 
 use std::sync::Arc;
 

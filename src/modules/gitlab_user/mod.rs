@@ -405,7 +405,14 @@ mod tests {
             .find(|e| e.kind == EntityKind::Username && e.value == "gluser");
         assert!(u.is_some(), "must emit Username entity");
         assert!((u.expect("should succeed").confidence - confidence::VERY_HIGH_PLUS).abs() < 0.01);
+<<<<<<< HEAD
         assert!(u.expect("should succeed").has_tag("gitlab") && u.expect("should succeed").has_tag("code"));
+=======
+        assert!(
+            u.expect("should succeed").has_tag("gitlab")
+                && u.expect("should succeed").has_tag("code")
+        );
+>>>>>>> origin/main
     }
 
     #[test]

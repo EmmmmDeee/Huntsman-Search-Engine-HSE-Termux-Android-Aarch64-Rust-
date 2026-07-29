@@ -140,15 +140,42 @@ fn parse_email_response_matches_the_real_v3_schema() {
     let r: SeonEmailResp = serde_json::from_str(REAL_EMAIL_RESPONSE).expect("should succeed");
     assert_eq!(r.success, Some(true));
     let data = r.data.expect("should succeed");
+<<<<<<< HEAD
     assert!((data.risk_scores.expect("should succeed").global_network_score.expect("should succeed") - 11.26).abs() < 0.01);
     assert_eq!(data.email_domain_details.expect("should succeed").disposable, Some(false));
     assert_eq!(
+=======
+    assert!(
+        (data
+            .risk_scores
+            .expect("should succeed")
+            .global_network_score
+            .expect("should succeed")
+            - 11.26)
+            .abs()
+            < 0.01
+    );
+    assert_eq!(
+        data.email_domain_details
+            .expect("should succeed")
+            .disposable,
+        Some(false)
+    );
+    assert_eq!(
+>>>>>>> origin/main
         data.breach_details.expect("should succeed").breaches.len(),
         2,
         "breach_details.breaches must deserialize — it didn't exist in the pre-fix struct at all"
     );
     assert_eq!(
+<<<<<<< HEAD
         data.associated_domain_registrations.expect("should succeed").domains.len(),
+=======
+        data.associated_domain_registrations
+            .expect("should succeed")
+            .domains
+            .len(),
+>>>>>>> origin/main
         1,
         "associated_domain_registrations must deserialize — genuinely new signal this fix recovers"
     );
@@ -225,7 +252,14 @@ fn email_emits_a_domain_per_breach_with_breach_date_stamped() {
         .filter(|e| e.kind == EntityKind::Domain && e.has_tag(crate::core::tags::BREACH))
         .collect();
     assert_eq!(domains.len(), 2, "one Domain per breach entry");
+<<<<<<< HEAD
     let apollo = domains.iter().find(|d| d.value == "apollo.io").expect("should succeed");
+=======
+    let apollo = domains
+        .iter()
+        .find(|d| d.value == "apollo.io")
+        .expect("should succeed");
+>>>>>>> origin/main
     assert!(apollo.has_tag(crate::core::tags::BREACH_DERIVED));
     assert_eq!(
         apollo.evidence[0]
@@ -458,7 +492,20 @@ fn parse_phone_response_matches_the_real_v2_schema() {
     let r: SeonPhoneResp = serde_json::from_str(REAL_PHONE_RESPONSE).expect("should succeed");
     assert_eq!(r.success, Some(true));
     let data = r.data.expect("should succeed");
+<<<<<<< HEAD
     assert!((data.risk_scores.expect("should succeed").global_network_score.expect("should succeed") - 5.0).abs() < 0.01);
+=======
+    assert!(
+        (data
+            .risk_scores
+            .expect("should succeed")
+            .global_network_score
+            .expect("should succeed")
+            - 5.0)
+            .abs()
+            < 0.01
+    );
+>>>>>>> origin/main
     let pcd = data.provider_carrier_details.expect("should succeed");
     assert_eq!(pcd.carrier.as_deref(), Some("Telstra"));
     assert_eq!(pcd.phone_is_valid, Some(true));

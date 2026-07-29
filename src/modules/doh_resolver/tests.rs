@@ -103,7 +103,14 @@ fn spf_txt_extracts_ip4_ip6_and_includes_others_ignored() {
         .find(|e| e.kind == EntityKind::IpAddress)
         .expect("should succeed");
     assert!(first_ip.has_tag("spf"));
+<<<<<<< HEAD
     let inc = out.iter().find(|e| e.kind == EntityKind::Domain).expect("should succeed");
+=======
+    let inc = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain)
+        .expect("should succeed");
+>>>>>>> origin/main
     assert_eq!(inc.value, "_spf.google.com");
     assert!(inc.has_tag("spf-include"));
 }
@@ -212,7 +219,14 @@ fn chunked_spf_record_parses_into_members() {
 #[test]
 fn spf_redirect_surfaces_target_as_domain() {
     let out = run("TXT", &["v=spf1 redirect=_spf.example.net"]);
+<<<<<<< HEAD
     let red = out.iter().find(|e| e.kind == EntityKind::Domain).expect("should succeed");
+=======
+    let red = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain)
+        .expect("should succeed");
+>>>>>>> origin/main
     assert_eq!(red.value, "_spf.example.net");
     assert!(red.has_tag("spf-redirect"));
 }
@@ -302,7 +316,14 @@ fn answer_classified_by_actual_record_type_not_queried_type() {
             .any(|e| e.kind == EntityKind::IpAddress && e.value == "1.2.3.4")
     );
     // The owner name is surfaced as evidence on the CNAME finding.
+<<<<<<< HEAD
     let cn = out.iter().find(|e| e.has_tag("cname")).expect("should succeed");
+=======
+    let cn = out
+        .iter()
+        .find(|e| e.has_tag("cname"))
+        .expect("should succeed");
+>>>>>>> origin/main
     assert_eq!(
         cn.evidence[0]
             .attributes
@@ -374,10 +395,23 @@ fn soa_record_extracts_primary_ns_and_zone_admin_email() {
         2,
         "SOA must emit nameserver domain + zone-admin email"
     );
+<<<<<<< HEAD
     let ns = out.iter().find(|e| e.kind == EntityKind::Domain).expect("should succeed");
     assert_eq!(ns.value, "ns1.example.com");
     assert!(ns.has_tag("soa") && ns.has_tag("nameserver"));
     let email = out.iter().find(|e| e.kind == EntityKind::Email).expect("should succeed");
+=======
+    let ns = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Domain)
+        .expect("should succeed");
+    assert_eq!(ns.value, "ns1.example.com");
+    assert!(ns.has_tag("soa") && ns.has_tag("nameserver"));
+    let email = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("should succeed");
+>>>>>>> origin/main
     assert_eq!(email.value, "hostmaster@example.com");
     assert!(email.has_tag("soa") && email.has_tag("zone-admin"));
 }
