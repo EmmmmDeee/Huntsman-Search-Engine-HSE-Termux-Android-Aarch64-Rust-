@@ -68,10 +68,10 @@ mod seeknow_full_integration {
     ///
     /// `path`/`method`/`description` are the ledger's documentation payload —
     /// read by a human auditing this ledger against `docs/SEEKNOW_SETUP.md`,
-    /// not by any assertion below — so `` on them is
+    /// not by any assertion below — so `#[expect(dead_code)]` on them is
     /// deliberate rather than a fixable lint; deleting the fields would
     /// silently drop the citation each `ENDPOINTS` entry exists to record.
-    
+    #[expect(dead_code)]
     struct EndpointSpec {
         name: &'static str,
         path: &'static str,
