@@ -733,7 +733,7 @@ fn explicit_scan_id_is_existence_checked_no_silent_empty_export() {
     // Unknown id -> a clear "not found" error (no silent empty export). The
     // existence check now lives in the shared `cli::resolve_scan_id`.
     let err = crate::app::runtime::resolve_scan_id(&store, "no-such-scan")
-        .expect("should be an error")
+        .expect_err("should be an error")
         .to_string();
     assert!(
         err.contains("not found"),

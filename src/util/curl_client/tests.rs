@@ -31,7 +31,7 @@ use super::*;
         let err = C
             .get("https://10.255.255.1/definitely-not-real", "")
             .await
-            .expect("should be an error")
+            .expect_err("should be an error")
             .to_string();
         assert!(
             err.contains("curl exited"),
