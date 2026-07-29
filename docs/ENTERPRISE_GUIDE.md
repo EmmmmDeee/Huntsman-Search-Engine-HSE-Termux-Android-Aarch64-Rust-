@@ -22,7 +22,7 @@ This guide covers enterprise-only features in the See-Know module, including Dis
 ## Upgrade Process
 
 ### Step 1: Purchase Enterprise Plan
-1. Visit https://see-know.eu/plans
+1. Visit https://see-know.ru/plans
 2. Select "Enterprise" tier
 3. Provide billing information
 4. Receive new API key (seek-...)
@@ -177,7 +177,7 @@ hse scan --value "status-check"
 ```
 
 ### Escalation
-- Outage/Critical: Email support@see-know.eu
+- Outage/Critical: Email support@see-know.ru
 - Response time SLA: 1 hour for P1 issues
 
 ## Troubleshooting
@@ -185,7 +185,7 @@ hse scan --value "status-check"
 ### "Plan tier verification failed"
 - Ensure API key is up to date
 - Check `hse doctor` for tier detection
-- Verify outbound connectivity to see-know.eu
+- Verify outbound connectivity to see-know.ru
 
 ### "Insufficient credits"
 - Current daily limit: `hse scan --dry-run` to preview cost

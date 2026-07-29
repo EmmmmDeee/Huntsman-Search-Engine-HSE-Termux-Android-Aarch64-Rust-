@@ -47,7 +47,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **PSBDMP** | pastebin dump search | free/key | — | M D |
 | **GhostProject / Scylla / WeLeakInfo / HackCheck / Scrubd / NuclearLeaks** | breach/credential search (varied availability) | varies | — | D |
 | **OathNet** | unified breach + stealer (HSE multiplier) | keyed plan | login-gated | M K D |
-| **SeekNow (see-know.eu)** | unified breach + stealer + external (HSE multiplier) | keyed plan | login-gated | M K D |
+| **SeekNow (see-know.ru)** | unified breach + stealer + external (HSE multiplier) | keyed plan | login-gated | M K D |
 | **NiamonX** | concurrent PBS v1/v2 breach search + ULP infostealer lookup | keyed | opaque | M K D |
 | **OsintCat** | email footprint (100+ platforms), breach lookup, deep email OSINT | free preflight; paid deep search | `x-api-key` | M K D |
 | **IntelTechniques** | OSINT tooling / search tools | — | — | D |

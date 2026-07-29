@@ -110,7 +110,7 @@ src/util/see_know/
 
 **Configuration:**
 - API Key: `HUNTSMAN_SEEKNOW_KEY` (required, 64+ chars, starts with `seek-`)
-- Base URL: `HUNTSMAN_SEEKNOW_BASE` (optional, default: `https://see-know.eu/api/v1`)
+- Base URL: `HUNTSMAN_SEEKNOW_BASE` (optional, default: `https://see-know.ru/api/v1`)
 - Scan Cap: `HUNTSMAN_SEEKNOW_SCAN_CAP` (optional, 1–2500, auto-scaled)
 
 **Execution Parameters:**

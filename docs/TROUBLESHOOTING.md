@@ -5,10 +5,10 @@
 
 ### API Connectivity
 
-#### Issue: "Connection refused" or "Cannot reach see-know.eu"
+#### Issue: "Connection refused" or "Cannot reach see-know.ru"
 **Cause:** Network connectivity issue or upstream maintenance
 **Solutions:**
-1. Verify internet connectivity: `ping see-know.eu`
+1. Verify internet connectivity: `ping see-know.ru`
 2. Check outbound proxy settings
 3. Try alternate domain: `.vip` or `.ru`
 4. Check upstream status: `hse scan --value status-check`
@@ -29,7 +29,7 @@
 **Cause:** Tier detection failed; using default tier
 **Solutions:**
 1. Force tier re-detection: Clear cache and retry
-2. Check account status: Log in to see-know.eu dashboard
+2. Check account status: Log in to see-know.ru dashboard
 3. Verify plan is active (not suspended/expired)
 4. Run: `hse doctor` to see tier detection status
 
@@ -58,7 +58,7 @@
 **Solutions:**
 1. Retry query (transient issue): `hse scan --retry 3`
 2. Use fast path only: `--fast-only` (skip /search/deep)
-3. Check latency to server: `curl -w "@/dev/stdin" -o /dev/null -s https://see-know.eu/api/v1`
+3. Check latency to server: `curl -w "@/dev/stdin" -o /dev/null -s https://see-know.ru/api/v1`
 4. For very slow queries, increase timeout: Check Phase 1.4 timeout tuning
 
 #### Issue: "High latency on /search/deep"

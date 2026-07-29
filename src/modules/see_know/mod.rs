@@ -1,4 +1,4 @@
-//! SeekNow (see-know.xyz) — parallel breach + stealer + OSINT pool.
+//! SeekNow (see-know.ru) — parallel breach + stealer + OSINT pool.
 //!
 //! Direct OathNet competitor with its own 15,000-lookup daily quota
 //! (`util::see_know::enterprise_config::ENTERPRISE` — the single source of
@@ -104,7 +104,7 @@ impl Module for SeekNow {
     }
 
     fn description(&self) -> &'static str {
-        "SeekNow (see-know.xyz) — sweeps the full 18-endpoint OSINT/breach pool with discord and gaming pivots"
+        "SeekNow (see-know.ru) — sweeps the full 18-endpoint OSINT/breach pool with discord and gaming pivots"
     }
 
     fn priority(&self) -> u8 {
