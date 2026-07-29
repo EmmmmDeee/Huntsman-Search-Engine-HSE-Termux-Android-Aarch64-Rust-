@@ -3,43 +3,54 @@
 use super::{EntityKind, ExtractedEntity, ExtractionResult};
 use regex::Regex;
 use std::collections::HashMap;
+use std::sync::LazyLock;
+
+/// Compiled heuristic patterns, initialised once per process.
+///
+/// Previously `EntityClassifier::new()` recompiled these regexes on every call,
+/// which wasted ~50-200 ms per 1,000 calls on the hot extraction path. Caching
+/// them in a `LazyLock` keeps the public API unchanged while removing the
+/// recompilation hotspot (Phase 1, item 2).
+static KIND_PATTERNS: LazyLock<HashMap<EntityKind, Vec<Regex>>> = LazyLock::new(|| {
+    let mut kind_patterns: HashMap<EntityKind, Vec<Regex>> = HashMap::new();
+
+    // Email: must have @ and valid domain structure
+    kind_patterns.insert(
+        EntityKind::Email,
+        vec![Regex::new(r"^[^@]+@[^@]+\.[a-z]{2,}$").expect("valid email regex")],
+    );
+
+    // Phone: 7-15 digits, optional +
+    kind_patterns.insert(
+        EntityKind::Phone,
+        vec![Regex::new(r"^\+?[1-9]\d{6,14}$").expect("valid phone regex")],
+    );
+
+    // IPv4: 4 octets
+    kind_patterns.insert(
+        EntityKind::Ipv4,
+        vec![Regex::new(r"^(\d{1,3}\.){3}\d{1,3}$").expect("valid ipv4 regex")],
+    );
+
+    // Domain: labels + TLD
+    kind_patterns.insert(
+        EntityKind::Domain,
+        vec![Regex::new(r"^([a-z0-9-]+\.)+[a-z]{2,}$").expect("valid domain regex")],
+    );
+
+    kind_patterns
+});
 
 /// Classifier for assigning entity kinds + confidence scores.
-pub struct EntityClassifier {
-    // Heuristic rules for kind detection
-    kind_patterns: HashMap<EntityKind, Vec<Regex>>,
-}
+pub struct EntityClassifier;
 
 impl EntityClassifier {
     /// Create a new classifier with built-in heuristics.
+    ///
+    /// The underlying regex patterns are compiled lazily on first access and
+    /// shared across all classifier instances.
     pub fn new() -> ExtractionResult<Self> {
-        let mut kind_patterns: HashMap<EntityKind, Vec<Regex>> = HashMap::new();
-
-        // Email: must have @ and valid domain structure
-        kind_patterns.insert(
-            EntityKind::Email,
-            vec![Regex::new(r"^[^@]+@[^@]+\.[a-z]{2,}$").expect("should succeed")],
-        );
-
-        // Phone: 7-15 digits, optional +
-        kind_patterns.insert(
-            EntityKind::Phone,
-            vec![Regex::new(r"^\+?[1-9]\d{6,14}$").expect("should succeed")],
-        );
-
-        // IPv4: 4 octets
-        kind_patterns.insert(
-            EntityKind::Ipv4,
-            vec![Regex::new(r"^(\d{1,3}\.){3}\d{1,3}$").expect("should succeed")],
-        );
-
-        // Domain: labels + TLD
-        kind_patterns.insert(
-            EntityKind::Domain,
-            vec![Regex::new(r"^([a-z0-9-]+\.)+[a-z]{2,}$").expect("should succeed")],
-        );
-
-        Ok(Self { kind_patterns })
+        Ok(Self)
     }
 
     /// Classify an entity and assign kind + confidence.
@@ -67,7 +78,7 @@ impl EntityClassifier {
         }
 
         // Regex validation against patterns
-        for (kind, patterns) in &self.kind_patterns {
+        for (kind, patterns) in &*KIND_PATTERNS {
             for pattern in patterns {
                 if pattern.is_match(value) {
                     return kind.clone();
