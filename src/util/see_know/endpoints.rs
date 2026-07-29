@@ -1,4 +1,4 @@
-//! Public API endpoint functions for the SeekNow (see-know.eu) service.
+//! Public API endpoint functions for the SeekNow (see-know.ru) service.
 
 use serde_json::Value;
 
@@ -12,7 +12,7 @@ use super::client::{
 };
 use super::enterprise_config::ENTERPRISE;
 
-/// Retry pacing for a transient see-know.eu rate-limit response
+/// Retry pacing for a transient see-know.ru rate-limit response
 /// (`Error::RateLimited`, distinct from true quota exhaustion — see
 /// `client::Terminal::RateLimited`'s doc comment). [`ENTERPRISE`]`.max_retries`
 /// attempts (the initial call plus 2 retries), doubling 2s → 4s, capped at
@@ -24,13 +24,13 @@ use super::enterprise_config::ENTERPRISE;
 const RATE_LIMIT_BACKOFF: BackoffPolicy =
     BackoffPolicy::new(ENTERPRISE.max_retries, 2_000, 8_000, true);
 
-/// Max records per the see-know.eu Universal Search spec (`limit`, default 100,
+/// Max records per the see-know.ru Universal Search spec (`limit`, default 100,
 /// **max 500**). Requested in full — the standing directive is to use
-/// see-know.eu maximally, and one richer response costs the same budget slot as
+/// see-know.ru maximally, and one richer response costs the same budget slot as
 /// a thin one.
 pub(super) const SEARCH_LIMIT: u32 = 500;
 
-/// Build the `POST /api/v1/search` request body per the see-know.eu spec:
+/// Build the `POST /api/v1/search` request body per the see-know.ru spec:
 /// `{"query": <q>, "type": <t>?, "limit": <n>}`. An empty `query_type` omits
 /// `type` so the server auto-detects. Pure (JSON-escapes `query`) so it is
 /// unit-tested.

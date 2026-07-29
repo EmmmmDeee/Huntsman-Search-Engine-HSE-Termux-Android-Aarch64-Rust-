@@ -12,9 +12,13 @@ pub(super) const API_SERVICE_DOMAINS: &[(&str, &str)] = &[
     ("dashboard.oathnet.org", "oathnet"),
     ("docs.oathnet.org", "oathnet"),
     // ── OathNet competitors (same data, parallel quota pools) ───────────
-    // SeekNow rotates across three domains (`.xyz` primary, `.eu`/`.icu`
+    // SeekNow rotates across domains (`.ru` primary, `.xyz`/`.eu`/`.icu`
     // fallback — see `see_know::client::all_base_urls`); a leaked key can
-    // surface tagged to any of the three, so all are routed to `see_know`.
+    // surface tagged to any of them, so all are routed to `see_know`.
+    ("see-know.ru", "see_know"),
+    ("api.see-know.ru", "see_know"),
+    ("app.see-know.ru", "see_know"),
+    ("dashboard.see-know.ru", "see_know"),
     ("see-know.xyz", "see_know"),
     ("api.see-know.xyz", "see_know"),
     ("app.see-know.xyz", "see_know"),
