@@ -163,8 +163,10 @@ fn merge_keeps_earliest_generation() {
     let mut a = Entity::new(EntityKind::Email, "x@example.com", 0.6, "scan");
     a.generation = 5;
 
-    let mut b = Entity::new(EntityKind::Email, "x@example.com", 0.8, "scan");
-    b.generation = 0; // module-built entities carry the default
+    let b = Entity::new(EntityKind::Email, "x@example.com", 0.8, "scan");
+    // `generation` defaults to 0 for a freshly-built entity that has not yet been
+    // assigned a real expansion round; merging it must not reset an existing,
+    // earlier-or-equal real generation.
 
     a.merge(b);
 
