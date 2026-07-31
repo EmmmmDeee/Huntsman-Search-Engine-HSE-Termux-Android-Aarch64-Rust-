@@ -215,3 +215,46 @@ fn host_of_extracts_and_lowercases_host() {
     // No host / unparseable → None, so the caller leaves the fetch un-gated.
     assert_eq!(host_of("not a url"), None);
 }
+
+// ---- server-requested backoff ----------------------------------------------
+
+#[test]
+fn open_until_honours_a_server_deadline_without_five_failures_first() {
+    // A 429 carrying Retry-After is a statement, not a guess: it must stop the
+    // next request immediately rather than after FAILURE_THRESHOLD refusals.
+    let mut b = Breaker::new();
+    assert!(b.allow(1_000), "a fresh breaker is closed");
+    b.open_until(1_060);
+    assert_eq!(b.state(), BreakerState::Open);
+    assert!(!b.allow(1_000), "still inside the requested backoff");
+    assert!(!b.allow(1_059), "still inside the requested backoff");
+    assert!(b.allow(1_060), "the named deadline has passed — probe allowed");
+}
+
+#[test]
+fn open_until_never_shortens_an_existing_cooldown() {
+    // A short server-stated backoff must not release a breaker that repeated
+    // failures already opened for longer.
+    let mut b = Breaker::new();
+    for _ in 0..FAILURE_THRESHOLD {
+        b.on_failure(1_000);
+    }
+    assert_eq!(b.state(), BreakerState::Open);
+    b.open_until(1_005); // much shorter than COOLDOWN_SECS from 1_000
+    assert!(
+        !b.allow(1_010),
+        "the longer failure-driven cooldown must still stand"
+    );
+    assert!(b.allow(1_000 + COOLDOWN_SECS));
+}
+
+#[test]
+fn a_success_clears_a_server_requested_backoff() {
+    // Once the host serves us again the breaker must recover, so one
+    // rate-limited burst cannot shun a host permanently.
+    let mut b = Breaker::new();
+    b.open_until(9_999);
+    b.on_success();
+    assert_eq!(b.state(), BreakerState::Closed);
+    assert!(b.allow(1_000));
+}

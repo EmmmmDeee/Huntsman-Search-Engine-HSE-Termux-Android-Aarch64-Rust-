@@ -41,6 +41,20 @@ pub async fn get(
     url: &str,
     src: &'static str,
 ) -> Result<Option<reqwest::Response>> {
+    // WiGLE previously issued this request through a bare `send_tagged`, which
+    // — unlike the shared JSON fetch helpers — consults no circuit breaker and
+    // records no outcome. The host was therefore invisible to the one component
+    // that decides whether we may talk to it, so a rate-limit answered one
+    // caller and nothing at all stopped the next. Observed on-device: five 429s
+    // in 1.4s from a single `wifi_intel` sweep, then three more from `wigle` on
+    // the pivot, every one of them AFTER the server had asked for a 60s backoff.
+    let host = crate::util::circuit_breaker::host_of(url);
+    if let Some(h) = host.as_deref()
+        && !crate::util::circuit_breaker::allow_host(h, crate::core::entity::unix_now())
+    {
+        return Err(Error::module(src, "rate-limited (429), still backing off"));
+    }
+
     let resp = http
         .get(url)
         .basic_auth(user, Some(token))
@@ -51,8 +65,25 @@ pub async fn get(
     let status = resp.status();
     if status.as_u16() == 429 {
         let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 60, 120);
-        tracing::warn!("WiGLE 429 — rate-limited (server requested {retry_secs}s backoff)");
+        // Honour the interval the server named, immediately. Still no sleeping
+        // here — a sleep would overrun the calling module's wall-clock budget
+        // and get its whole result discarded, which is why this function has
+        // never slept. Recording the deadline achieves what the sleep was for
+        // (stop sending) without paying that cost: subsequent calls are refused
+        // above, before a request is built.
+        if let Some(h) = host.as_deref() {
+            crate::util::circuit_breaker::record_backoff(
+                h,
+                crate::core::entity::unix_now().saturating_add(retry_secs),
+            );
+        }
+        tracing::warn!("WiGLE 429 — rate-limited (backing off {retry_secs}s as requested)");
         return Err(Error::module(src, "rate-limited (429)"));
+    }
+    // Any other answer is a live round-trip: let the breaker recover, so one
+    // rate-limited burst cannot leave the host permanently shunned.
+    if let Some(h) = host.as_deref() {
+        crate::util::circuit_breaker::record_success(h);
     }
     if status.as_u16() == 404 {
         return Ok(None);

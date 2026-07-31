@@ -181,6 +181,24 @@ impl Breaker {
         self.state = BreakerState::Open;
         self.retry_at = now.saturating_add(COOLDOWN_SECS);
     }
+
+    /// Open the breaker until an epoch second the **server named**, rather than
+    /// one this side inferred.
+    ///
+    /// [`Self::on_failure`] needs [`FAILURE_THRESHOLD`] consecutive failures
+    /// before it opens, which is right when we are guessing a host is unhealthy
+    /// from repeated errors. A `429` carrying `Retry-After` is not a guess: the
+    /// server has stated when it will serve us again, and continuing to send
+    /// until we have independently accumulated five refusals is both wasteful
+    /// and discourteous — on a metered mobile link it is also the user's data
+    /// and battery, and on an authenticated API it risks their account.
+    ///
+    /// Never shortens an existing cooldown: if the breaker is already open
+    /// longer than the server asked for, the longer wait stands.
+    pub fn open_until(&mut self, until: u64) {
+        self.state = BreakerState::Open;
+        self.retry_at = self.retry_at.max(until);
+    }
 }
 
 /// Process-global per-host breaker registry.
@@ -218,6 +236,15 @@ pub fn record_success(host: &str) {
 pub fn record_failure(host: &str, now: u64) {
     let mut reg = REGISTRY.lock();
     reg.entry(host.to_owned()).or_default().on_failure(now);
+}
+
+/// Record a server-requested backoff for `host` — open its breaker until epoch
+/// second `until`, without waiting to accumulate [`FAILURE_THRESHOLD`] refusals
+/// first. For a `429`/`503` that names a `Retry-After`. See
+/// [`Breaker::open_until`].
+pub fn record_backoff(host: &str, until: u64) {
+    let mut reg = REGISTRY.lock();
+    reg.entry(host.to_owned()).or_default().open_until(until);
 }
 
 /// Snapshot of `host`'s current stored [`BreakerState`], or `None` if the host
