@@ -116,9 +116,27 @@ pub(super) async fn port_sweep(ips: &[String]) -> Vec<String> {
 /// `open_ports` evidence is added as tags to the already-emitted IP
 /// entities where a port was found open.
 pub(super) async fn scan_lan(scan_id: &str) -> ModuleResult {
+    // `/proc/net/arp` is unreadable to an unprivileged app on the primary
+    // target platform: on non-root Termux (Android 14 / SDK 34, SELinux
+    // domain `untrusted_app`) the read returns EACCES — the file exists but
+    // access is denied (reconfirmed live on-device 2026-07-31). That is the
+    // normal, permanent condition here, not a fault, so it must stay a clean
+    // empty result: promoting the denial to a `ModuleError` would fire on
+    // every sweep and trip signal_radar's circuit breaker. The errno kind is
+    // surfaced at debug level only, so a verbose diagnostics run can still
+    // tell "denied" (EACCES, on-device) and "no such file" (ENOENT, off-Linux)
+    // apart from a genuinely empty ARP table — without that distinction ever
+    // reaching the operator as a finding or the breaker as a failure.
     let content = match tokio::fs::read_to_string("/proc/net/arp").await {
         Ok(s) => s,
-        Err(_) => return ModuleResult::new(),
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                kind = ?e.kind(),
+                "signal_radar: /proc/net/arp unreadable — treating as empty",
+            );
+            return ModuleResult::new();
+        }
     };
 
     let mut result = parse_arp(&content, scan_id);

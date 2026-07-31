@@ -2,8 +2,13 @@
 //! cell tower survey, GPS fix, and LAN ARP discovery in a single parallel pass.
 //!
 //! All sensors run concurrently via `tokio::join!`.  Off-device (no Termux
-//! binaries) every termux-backed sub-sensor no-ops cleanly.  `/proc/net/arp`
-//! and the TCP port sweep work anywhere on Linux.
+//! binaries) every termux-backed sub-sensor no-ops cleanly.  The LAN ARP
+//! sensor reads `/proc/net/arp`, which an unprivileged app cannot read on the
+//! primary target: on non-root Termux (Android 14 / SDK 34) the read returns
+//! EACCES, so LAN ARP discovery and the port sweep that depends on it are
+//! inert on-device and active only where that file is readable (desktop
+//! Linux, or a rooted device).  The denial degrades to a clean empty result,
+//! never an error — see `lan::scan_lan`.
 //!
 //! MITRE ATT&CK Reconnaissance (TA0043):
 //!   T1590.005 — IP Addresses (LAN ARP)
