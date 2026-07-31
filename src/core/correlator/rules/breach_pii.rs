@@ -1244,8 +1244,18 @@ pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
 
     // Date of birth: a breach DOB field whose value normalises (the AU-073
     // detector), counted as one facet regardless of how many records carry it.
-    for (raw, _src, uid) in scan_evidence(entities, DOB_KEYS) {
-        if normalise_dob(&raw).is_some() {
+    //
+    // The `is_breach_source` gate below is what makes "breach DOB field" true.
+    // It was missing: the source was bound to `_src` and dropped, so ANY module
+    // emitting a `DOB_KEYS` attribute counted — `wikidata` and `opensanctions`
+    // both emit `birth_date`. A subject with Person + Email + Username (three
+    // facets) plus a Wikidata birth date reached n=4 and fired a Medium
+    // "resolved across 4 independent identity facets", claiming a breach-derived
+    // DOB facet it did not have. The sibling detector this comment names
+    // (AU-073) has always gated; so do AU-074 and every other `scan_evidence`
+    // caller in this file. This rule was the exception.
+    for (raw, src, uid) in scan_evidence(entities, DOB_KEYS) {
+        if is_breach_source(src) && normalise_dob(&raw).is_some() {
             facets
                 .entry("date of birth")
                 .or_default()
@@ -1255,9 +1265,14 @@ pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
 
     // Government ID: any breach gov-ID field passing its validator (the AU-074
     // detector), counted as a single "government ID" facet across all classes.
+    // Same gate, same reason. Ungated, `acma_rrl` emitting `licence_number` — a
+    // PUBLIC radio-licence registry field whose `GOV_IDS` class carries
+    // `validate: None`, so `is_none_or` returned true unconditionally — counted
+    // as a "government ID" facet. A public registry entry matched on name is
+    // exactly the namesake risk this rule's severity should not absorb.
     for gid in GOV_IDS {
-        for (raw, _src, uid) in scan_evidence(entities, gid.keys) {
-            if gid.validate.is_none_or(|v| v(&raw)) {
+        for (raw, src, uid) in scan_evidence(entities, gid.keys) {
+            if is_breach_source(src) && gid.validate.is_none_or(|v| v(&raw)) {
                 facets
                     .entry("government ID")
                     .or_default()
@@ -1274,17 +1289,23 @@ pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
     // facet label, so a subject who has BOTH a Phone entity and a phone attribute
     // still counts "phone" exactly once — no double-count, n stays honest.
     const PHONE_ATTR_KEYS: &[&str] = &["phone", "phone_number", "mobile", "cell"];
-    for (raw, _src, uid) in scan_evidence(entities, PHONE_ATTR_KEYS) {
+    for (raw, src, uid) in scan_evidence(entities, PHONE_ATTR_KEYS) {
         // The same validity gate the phone rules use: ≥8 digits and not a single
-        // repeated digit (a placeholder like 0000000000).
+        // repeated digit (a placeholder like 0000000000) — plus the breach-source
+        // gate this block's own "from breach evidence ATTRIBUTES" claim requires.
+        // Ungated, a WHOIS/registrar contact phone counted as a resolved facet of
+        // the SUBJECT, which it is not.
         let digits: Vec<char> = raw.chars().filter(char::is_ascii_digit).collect();
-        if digits.len() >= 8 && !digits.iter().all(|c| *c == digits[0]) {
+        if is_breach_source(src) && digits.len() >= 8 && !digits.iter().all(|c| *c == digits[0]) {
             facets.entry("phone").or_default().insert(uid.to_string());
         }
     }
     const EMAIL_ATTR_KEYS: &[&str] = &["email", "email_address", "mail"];
-    for (raw, _src, uid) in scan_evidence(entities, EMAIL_ATTR_KEYS) {
-        if raw.contains('@') && raw.split('@').nth(1).is_some_and(|d| d.contains('.')) {
+    for (raw, src, uid) in scan_evidence(entities, EMAIL_ATTR_KEYS) {
+        if is_breach_source(src)
+            && raw.contains('@')
+            && raw.split('@').nth(1).is_some_and(|d| d.contains('.'))
+        {
             facets.entry("email").or_default().insert(uid.to_string());
         }
     }

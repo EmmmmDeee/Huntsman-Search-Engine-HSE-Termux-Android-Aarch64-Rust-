@@ -3938,6 +3938,60 @@ fn au101_counts_phone_and_email_facets_from_breach_evidence_attributes() {
     );
 }
 
+/// AU-101's attribute-derived facets must carry breach provenance, as its doc,
+/// its inline comments, its sibling detectors (AU-073/AU-074) and the two tests
+/// above all state.
+///
+/// The four `scan_evidence` loops bound the source to `_src` and discarded it,
+/// so ANY module emitting a matching attribute key counted. `wikidata` and
+/// `opensanctions` both emit `birth_date`; `acma_rrl` emits `licence_number`,
+/// whose `GOV_IDS` class has `validate: None` so its check passed
+/// unconditionally. A subject with three ordinary entity facets plus one such
+/// public-registry attribute reached n=4 and fired a Medium claiming a
+/// breach-derived facet it did not have — a namesake-matched public record
+/// presented as resolved subject identity.
+#[test]
+fn au101_attribute_facets_require_breach_provenance() {
+    // Three genuine entity facets: legal name, email, username.
+    let base = || {
+        vec![
+            Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s"),
+            Entity::new(EntityKind::Email, "h@example.com", 0.8, "s"),
+            Entity::new(EntityKind::Username, "haigenb", 0.8, "s"),
+        ]
+    };
+
+    // A public-registry DOB must NOT supply the fourth facet.
+    for (src, key, value) in [
+        ("wikidata", "birth_date", "1990-04-12"),
+        ("opensanctions", "birth_date", "1990-04-12"),
+        ("acma_rrl", "licence_number", "1234567"),
+    ] {
+        let mut ents = base();
+        ents[0].add_evidence(Evidence::new(src, "public registry").with_attr(key, value));
+        assert!(
+            super::rules::rule_au_101_identity_resolution(&RuleContext::new(&ents), "s", 0)
+                .is_empty(),
+            "{src}'s {key} is not breach provenance — it must not complete a \
+             4-facet identity resolution"
+        );
+    }
+
+    // The identical attribute from a real breach corpus DOES count, so the gate
+    // suppresses provenance rather than the facet itself.
+    let mut ents = base();
+    ents[0].add_evidence(
+        Evidence::new("oathnet_pro", "breach").with_attr("date_of_birth", "1990-04-12"),
+    );
+    let r = super::rules::rule_au_101_identity_resolution(&RuleContext::new(&ents), "s", 0);
+    assert_eq!(
+        r.len(),
+        1,
+        "the same DOB from a breach corpus must still complete the fourth facet"
+    );
+    assert!(r[0].description.contains("date of birth"));
+}
+
 #[test]
 fn au101_thin_footprint_and_low_confidence_do_not_fire() {
     // Three facets is below the threshold — the single-facet rules' job.
