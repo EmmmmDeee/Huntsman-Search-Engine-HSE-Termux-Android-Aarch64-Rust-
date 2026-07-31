@@ -2653,7 +2653,7 @@ pub(crate) fn module_health_report() -> Vec<ModuleHealth> {
 
 /// Rank recalled entities strongest-first and cap to `max` (`recall_prior_entities`'s
 /// sort+truncate step, split out so it's directly testable). Deterministic uid
-/// tie-break (CONVENTIONS.md §5): the incoming `Vec`'s order inherits a `HashMap`'s
+/// tie-break (determinism): the incoming `Vec`'s order inherits a `HashMap`'s
 /// randomised-per-process iteration order, and modules routinely stamp flat
 /// literal confidences (0.6, 0.7, 0.8, …), so exact ties at the cutoff are
 /// realistic, not contrived — without a tiebreak, two otherwise-identical

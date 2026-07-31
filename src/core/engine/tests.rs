@@ -1960,7 +1960,7 @@ async fn expansion_stamps_entity_generation_per_round() {
     );
 }
 
-/// CONVENTIONS.md §5 determinism: `recall_prior_entities`'s cap (`MAX_ENTITIES`
+/// Determinism: `recall_prior_entities`'s cap (`MAX_ENTITIES`
 /// = 300, matched here) sorts by confidence and truncates — the WHICH-SURVIVES
 /// question, not just display order. Modules routinely stamp flat literal
 /// confidences, so exact ties at the cutoff are realistic, and the entities'

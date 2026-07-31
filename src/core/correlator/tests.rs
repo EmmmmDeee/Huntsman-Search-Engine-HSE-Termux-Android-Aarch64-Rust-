@@ -6396,7 +6396,7 @@ fn au053_ignores_infrastructure_and_needs_an_established_area() {
 
 #[test]
 fn severity_as_canonical_matches_serde() {
-    // CONVENTIONS.md §3 pin. as_canonical feeds the persisted
+    // Single-source pin: as_canonical feeds the persisted
     // `correlations.severity` column AND the SQL `ORDER BY CASE` in
     // `correlations_for_scan` hard-codes these exact strings in this exact ORDER,
     // so a drift between as_canonical, the serde wire form, and the weight/Ord

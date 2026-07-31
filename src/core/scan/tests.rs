@@ -1177,7 +1177,7 @@ fn effective_confidence_floors_coerce_non_finite_to_safe_defaults() {
 
 #[test]
 fn target_kind_canonical_str_matches_serde() {
-    // CONVENTIONS.md §3: canonical_str is the persisted `scans.target_kind`
+    // Single-source pin: canonical_str is the persisted `scans.target_kind`
     // column, a scan_id hash input, and the event/API wire label — and its
     // doc explicitly promises it equals the serde form. Pin every variant so
     // a future TargetKind rename can't split the hand-written string from the

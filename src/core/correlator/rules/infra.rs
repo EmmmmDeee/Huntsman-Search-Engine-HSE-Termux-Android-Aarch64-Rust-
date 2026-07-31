@@ -745,7 +745,7 @@ pub(in crate::core::correlator) fn rule_au_112_shared_cidr_infrastructure(
     if blocks.is_empty() {
         return Vec::new();
     }
-    // Deterministic (CONVENTIONS.md §5): `entities` order is not guaranteed
+    // Deterministic: `entities` order is not guaranteed
     // stable across runs, so fix the iteration order explicitly rather than
     // let it leak into which pair's Correlation is constructed first.
     blocks.sort_by(|a, b| a.0.value.cmp(&b.0.value).then(a.0.uid.cmp(&b.0.uid)));

@@ -365,7 +365,7 @@ pub(super) fn build_entities(
         // preferring the postcode-qualified (more informative) form, before
         // the corroboration loop below ever sees more than one entry for it.
         // Vec-based (not a HashMap) and insertion-ordered so the choice is
-        // deterministic (CONVENTIONS.md §5), not dependent on hash iteration.
+        // deterministic, not dependent on hash iteration.
         let snippet_addresses: Vec<String> = {
             let mut deduped: Vec<(String, String)> = Vec::new();
             for addr in snippet_addresses {

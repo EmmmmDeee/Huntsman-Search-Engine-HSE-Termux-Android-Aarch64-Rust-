@@ -2135,7 +2135,7 @@ fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
     );
 }
 
-/// CONVENTIONS.md §2 — hubs declare, never house. Outside `#[cfg(test)]`
+/// Hubs declare, never house. Outside `#[cfg(test)]`
 /// code, a module body belongs in its own file: `pub mod name;` in the hub,
 /// code in `name.rs`. This pin turns the convention into a mechanical check
 /// (the same treatment the AI-independence charter got), so the consistency
@@ -2149,8 +2149,11 @@ fn no_inline_module_bodies_outside_allowed_exceptions() {
     const ALLOWED: &[(&str, &str)] = &[
         // 3-line include! wrapper for the build.rs-generated source manifest.
         ("src/lib.rs", "source_manifest"),
-        // 5-line path-constants shim local to the oathnet util.
-        ("src/util/oathnet.rs", "paths"),
+        // NB: the former `("src/util/oathnet.rs", "paths")` exception is gone.
+        // `src/util/oathnet.rs` became the directory `src/util/oathnet/`, and
+        // `paths` is now declared (`pub mod paths;` in its `mod.rs`) rather than
+        // housed inline — so the exception could never match again. A dead
+        // allowlist entry reads as sanctioned inline code that no longer exists.
     ];
 
     fn visit(dir: &Path, offenders: &mut Vec<String>) {
@@ -2205,7 +2208,7 @@ fn no_inline_module_bodies_outside_allowed_exceptions() {
     );
     assert!(
         offenders.is_empty(),
-        "inline module bodies outside the allow-list (CONVENTIONS.md §2 — \
+        "inline module bodies outside the allow-list (hubs declare, never house — \
          move the body to its own file, or allow-list a trivial wrapper \
          with a justification): {offenders:#?}"
     );
@@ -2783,14 +2786,16 @@ fn every_cited_docs_file_exists() {
     for path in &files {
         let content = fs::read_to_string(path).unwrap();
         for (i, line) in content.lines().enumerate() {
-            for cited in cited_docs_paths(line) {
-                if !root.join(&cited).is_file() {
-                    dangling.push(format!(
-                        "{}:{}: cites {cited}",
-                        path.strip_prefix(root).unwrap_or(path).display(),
-                        i + 1
-                    ));
+            for candidates in cited_markdown_candidates(line) {
+                if candidates.iter().any(|c| root.join(c).is_file()) {
+                    continue;
                 }
+                dangling.push(format!(
+                    "{}:{}: cites {}",
+                    path.strip_prefix(root).unwrap_or(path).display(),
+                    i + 1,
+                    candidates.join(" or "),
+                ));
             }
         }
     }
@@ -2804,30 +2809,62 @@ fn every_cited_docs_file_exists() {
     );
 }
 
-/// Every repo-relative `docs/<NAME>.md` mentioned on one line.
+/// Every Markdown document this line cites, as repo-relative candidate paths.
 ///
-/// Deliberately literal on both ends. It only matches a path under the `docs/`
-/// directory, so prose that merely names a concept (the bare
-/// `PROBLEM_TREE T2.11`-style change-tracking tags scattered through this
-/// crate) is untouched — this guard is about references that promise a *file*.
-/// And an occurrence preceded by `/` is a URL segment, not a repo path
-/// (`npm_author` cites the npm registry's own
-/// `github.com/npm/registry/blob/master/docs/REGISTRY-API.md`), so it is
-/// skipped: this guard resolves paths against *this* tree and has no business
-/// asserting anything about someone else's.
-fn cited_docs_paths(line: &str) -> Vec<String> {
+/// Returns the candidates for one citation together, because a bare name is
+/// ambiguous: `README.md` lives at the repo root, while a project-convention
+/// note would live under `docs/`. The caller treats a citation as resolved if
+/// ANY candidate exists.
+///
+/// Deliberately literal about what counts as a citation:
+///
+/// * Prose that merely names a concept (the bare `PROBLEM_TREE T2.11`-style
+///   change-tracking tags scattered through this crate) has no `.md` and is
+///   untouched — this guard is about references that promise a *file*.
+/// * A line mentioning a URL is skipped entirely. `npm_author` cites the npm
+///   registry's own `github.com/npm/registry/blob/master/docs/REGISTRY-API.md`;
+///   this guard resolves paths against *this* tree and has no business
+///   asserting anything about someone else's.
+/// * A path with a directory component other than `docs/` is skipped for the
+///   same reason — it is not ours to resolve.
+///
+/// The bare-name case matters: an earlier revision matched only `docs/`-prefixed
+/// paths and so missed twelve citations written as a plain, unprefixed
+/// filename, including one inside an assertion message in this very file.
+fn cited_markdown_candidates(line: &str) -> Vec<Vec<String>> {
+    if line.contains("http") {
+        return Vec::new();
+    }
+    let is_path_char =
+        |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/';
+
     let mut out = Vec::new();
-    for (at, _) in line.match_indices("docs/") {
-        if line[..at].ends_with('/') {
+    for (at, _) in line.match_indices(".md") {
+        // Reject `.md` that is merely a prefix of a longer word (`.mdx`).
+        let after = line[at + ".md".len()..].chars().next();
+        if after.is_some_and(is_path_char) {
             continue;
         }
-        let tail = &line[at + "docs/".len()..];
-        let end = tail
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.'))
-            .unwrap_or(tail.len());
-        let name = &tail[..end];
-        if name.ends_with(".md") && name.len() > 3 {
-            out.push(format!("docs/{name}"));
+        // Walk back over the path token this `.md` terminates.
+        let start = line[..at]
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| is_path_char(*c))
+            .last()
+            .map_or(at, |(i, _)| i);
+        let token = &line[start..at + ".md".len()];
+        // A bare `.md` with no stem is this guard's own string literals and the
+        // `<NAME>.md` placeholders in the prose above, not a citation.
+        if token.len() == ".md".len() {
+            continue;
+        }
+
+        match token.rsplit_once('/') {
+            None => out.push(vec![format!("docs/{token}"), token.to_string()]),
+            Some(("docs", name)) if name.len() > ".md".len() => {
+                out.push(vec![format!("docs/{name}")]);
+            }
+            Some(_) => {}
         }
     }
     out

@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn relation_kind_as_str_matches_serde() {
-    // CONVENTIONS.md §3 / no-silent-drift: the type owns its canonical string and
+    // No-silent-drift: the type owns its canonical string and
     // this pins it to the serde wire form so the two can't split. as_str is the
     // stored `relations.kind` column AND the API/SPA edge label; the serde derive
     // is what crosses the wire — a rename touching only one would silently fork

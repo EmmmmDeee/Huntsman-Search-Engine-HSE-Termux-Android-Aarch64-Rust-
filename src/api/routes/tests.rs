@@ -689,7 +689,7 @@ use super::*;
         // preset — the name simply stops matching — quietly shrinking coverage in
         // the web UI with no error anywhere. Pin every preset name to the live
         // registry so a module rename/removal can't rot a preset unnoticed: the
-        // same no-silent-drift guard the README / MODULES.md counts already carry.
+        // same no-silent-drift guard the README module counts already carry.
         let registered: std::collections::BTreeSet<&str> =
             crate::modules::registry().iter().map(|m| m.name()).collect();
 
