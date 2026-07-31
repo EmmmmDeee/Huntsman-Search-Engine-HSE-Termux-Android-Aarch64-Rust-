@@ -350,6 +350,60 @@ use super::*;
         assert!(radius.is_finite() && (0.0..5.0).contains(&radius), "radius: {radius}");
     }
 
+    /// Pin WHERE the Residency-fix view must read `locality` and `classes`.
+    ///
+    /// `best_location` has two shapes and the SPA renders both. The AU-059
+    /// synergy fix carries no top-level `locality`, and NEITHER shape has ever
+    /// carried a top-level `classes` — both live under `corroboration`.
+    /// `web/js/scan_info/location.js` read them off the top level only, so the
+    /// class labels never rendered at all and the place line degraded to a bare
+    /// state on the very path the panel is named after.
+    ///
+    /// There is no JavaScript test harness in this repo, so the client/server
+    /// contract is pinned from the side that can be tested. If the emitted
+    /// nesting ever changes, this fails and names the file that must change
+    /// with it — which is the failure mode that went unnoticed before.
+    #[test]
+    fn au_059_nests_locality_and_classes_under_corroboration_for_the_spa() {
+        let ents = vec![
+            au_sighting("-33.8688,151.2093", 0.80, "abn_lookup", "NSW"),
+            au_sighting("-33.8700,151.2100", 0.70, "exif_geo", "NSW"),
+        ];
+        let corrs = crate::core::correlator::correlate_entities(&ents, "s");
+        let fix = extract_au_location_fix(&corrs, &ents);
+        assert_eq!(fix["rule_id"], "AU-059", "fixture must take the synergy path");
+
+        // The shape the SPA has to cope with: these are NOT at the top level.
+        assert!(
+            fix.get("classes").is_none(),
+            "if `classes` is ever promoted to the top level, web/js/scan_info/location.js \
+             must be updated to prefer it; it currently reads corroboration.classes"
+        );
+        assert!(
+            fix.get("locality").is_none(),
+            "the AU-059 shape has no top-level locality — web/js/scan_info/location.js \
+             falls through to corroboration.locality"
+        );
+
+        // …and this is where they actually are, which is what the view reads.
+        let corr = &fix["corroboration"];
+        assert!(
+            corr.is_object(),
+            "AU-059 must attach corroboration; the SPA reads locality/classes from it: {fix}"
+        );
+        let classes = corr["classes"]
+            .as_array()
+            .expect("corroboration.classes must be an array the SPA can render as labels");
+        assert!(
+            classes.len() >= 2,
+            "two orthogonal sources must yield >=2 class names, got {classes:?}"
+        );
+        assert!(
+            classes.iter().all(serde_json::Value::is_string),
+            "each class must be a string — the SPA renders them as text labels"
+        );
+    }
+
     #[test]
     fn extract_au_location_fix_falls_back_to_single_signal_without_au_059() {
         use crate::core::entity::{Entity, EntityKind};

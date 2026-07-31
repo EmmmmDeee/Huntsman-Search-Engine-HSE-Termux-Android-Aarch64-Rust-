@@ -12,10 +12,29 @@ export async function renderLocation(host, id){
   const loc = data && data.best_location;
   if (!loc || loc.lat == null || loc.lon == null){ host.innerHTML = ''; return; }
   const lat = Number(loc.lat), lon = Number(loc.lon);
-  const place = [loc.locality, loc.state].filter(Boolean).join(', ');
+  /* `best_location` has TWO server shapes and this view has to read both.
+     The AU-059 synergy fix carries {synergy_confidence, rule_id, class_count}
+     and no top-level locality; the single-signal fallback carries
+     {locality, confidence, basis, source}. BOTH nest the independent-source
+     agreement under `corroboration`, which is the only place `classes` has
+     ever existed.
+
+     This view previously read `loc.locality` and `loc.classes` off the top
+     level only. `loc.classes` is emitted at the top level by neither shape, so
+     the class labels never rendered at all; and `locality` is absent from the
+     AU-059 shape — the headline case this panel is named after — so the place
+     line degraded to the bare state exactly when the verdict was strongest.
+     The server had computed both and put them one level down the whole time.
+
+     Read through to `corroboration` rather than asking the server to also
+     promote these to the top level: duplicating them would give the same value
+     two homes in one payload, and one of them would eventually drift. */
+  const corr = loc.corroboration || {};
+  const locality = loc.locality != null ? loc.locality : corr.locality;
+  const place = [locality, loc.state || corr.state].filter(Boolean).join(', ');
   const conf = loc.synergy_confidence != null ? loc.synergy_confidence
              : (loc.confidence != null ? loc.confidence : null);
-  const classes = loc.classes || [];
+  const classes = loc.classes || corr.classes || [];
   const osm = `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=12/${lat}/${lon}`;
   let rows = '';
   if (place) rows += `<div style="font-size:14px"><b>${esc(place)}</b></div>`;
