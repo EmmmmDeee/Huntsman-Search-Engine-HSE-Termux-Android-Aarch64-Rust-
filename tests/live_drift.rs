@@ -109,3 +109,64 @@ async fn fleet_capability_drift() {
         drifted.join("\n  ")
     );
 }
+
+/// `beacondb` must never turn an unknown BSSID into a location.
+///
+/// This is a *safety* drift test, not a coverage one, and it is the inverse of
+/// the sweep above: it asserts the module yields **nothing**. beaconDB's
+/// documented fallback chain ends in an IP-based estimate of whoever is asking,
+/// and that path is live — querying two BSSIDs it had never seen returned a
+/// well-formed `HTTP 200` carrying the *caller's own* position, 25 km wide, on
+/// another continent from the access points:
+///
+/// ```text
+/// {"accuracy":25000,"fallback":"ipf","location":{"lat":37.7901,"lng":-122.401}}
+/// ```
+///
+/// The module suppresses that two ways — it pins `considerIp:false` on the
+/// request, and it discards any response carrying a `fallback` marker — but the
+/// first of those is a promise the *server* keeps, and a unit test with a canned
+/// fixture cannot notice the server breaking it. This can. A failure here means
+/// live scans are at risk of reporting the operator's own location as a target
+/// access point's, which is far worse than returning nothing.
+///
+/// The probe MAC is locally-administered (the `x2` first octet), so it belongs
+/// to no manufacturer and cannot legitimately appear in a wardriving corpus —
+/// any location returned for it is fabricated by definition. An outage or
+/// transport error is tolerated (that is coverage, not a safety regression);
+/// only an actual location is a failure.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "live network — run via the live-drift workflow or `--ignored`"]
+async fn beacondb_never_fabricates_a_location_for_an_unknown_bssid() {
+    use huntsman_search_engine::core::module::Module as _;
+    use huntsman_search_engine::core::scan::{Target, TargetKind};
+
+    let module = huntsman_search_engine::modules::beacondb::BeaconDb;
+    let http = huntsman_search_engine::util::http::build_client();
+    let ctx = huntsman_search_engine::core::module::ModuleContext {
+        scan_id: "beacondb-safety-probe".into(),
+        bus: tokio::sync::broadcast::channel(8).0,
+        http,
+        keys: std::collections::HashMap::new(),
+        cancel: huntsman_search_engine::core::cancel::CancelHandle::new(),
+    };
+    let target = Target::new(TargetKind::MacAddress, "02:00:5e:10:00:00");
+
+    match module.process(&target, &ctx).await {
+        Ok(result) => assert!(
+            result.is_empty(),
+            "SAFETY DRIFT: beaconDB returned {} entit(ies) for a locally-administered \
+             BSSID that cannot exist in any wardriving corpus. The IP/cell fallback \
+             suppression has broken — a live scan may now report the OPERATOR's own \
+             position as a target access point's. Entities: {:?}",
+            result.len(),
+            result
+                .entities
+                .iter()
+                .map(|e| e.value.as_str())
+                .collect::<Vec<_>>()
+        ),
+        // Provider down or network throttled: coverage, not a safety regression.
+        Err(e) => println!("beacondb unreachable ({e}) — skipping safety assertion"),
+    }
+}

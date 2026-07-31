@@ -486,6 +486,11 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "geo",
         "wigle",
         "mylnikov",
+        // Exact module name: `beacondb` contains no earlier needle (its "db"
+        // suffix matches nothing), so without it a beaconDB BSSID fix fell to
+        // `other` and was dropped from cross-family corroboration entirely —
+        // the same silent under-count documented for `anubis` above.
+        "beacondb",
         "overpass",
         "registry",
         // Internet-wide asset/IP scanners and IP-reputation feeds — exact registry

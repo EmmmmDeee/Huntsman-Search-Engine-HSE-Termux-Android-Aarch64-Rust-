@@ -24,6 +24,7 @@ pub mod au_people;
 pub mod au_property;
 pub mod au_unclaimed;
 pub mod austlii;
+pub mod beacondb;
 pub mod bgpview;
 pub mod bitbucket_user;
 pub mod bluesky_user;
@@ -461,6 +462,10 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(numverify::NumVerify),
             Arc::new(photon::Photon),
             Arc::new(mylnikov::Mylnikov),
+            // Keyless BSSID geolocation alongside `mylnikov`: two independent
+            // free corpora answering the same question, so an outage or a miss
+            // in one still leaves the radar a way to locate an observed AP.
+            Arc::new(beacondb::BeaconDb),
             Arc::new(exif_geo::ExifGeo),
             Arc::new(overpass::Overpass),
             Arc::new(wiki_geosearch::WikiGeoSearch),

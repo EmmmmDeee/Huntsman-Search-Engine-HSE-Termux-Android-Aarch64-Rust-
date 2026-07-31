@@ -451,6 +451,48 @@ pub fn tag_au_state(entity: &mut crate::core::entity::Entity, lat: f64, lon: f64
     }
 }
 
+/// Score a wireless-geolocation fix by the accuracy radius (in metres) its
+/// provider reported: a fix good to a doorway is worth more than one good to a
+/// suburb.
+///
+/// Shared by the BSSID-geolocation providers (`mylnikov`, `beacondb`) so two
+/// answers to the same question are scored on one scale — a provider-local copy
+/// of this ladder would let the same 150 m fix outrank or undercut its peer
+/// purely by which module happened to return it, and the correlator ranks
+/// coordinates across sources.
+///
+/// A missing radius is treated as the wide 5000 m default. Untrusted JSON is
+/// handled up front: a negative, NaN or infinite radius also degrades to that
+/// default, because `f64 as u64` saturates (negative and NaN both land on `0`)
+/// and would otherwise score a malformed value as the *tightest* possible fix.
+///
+/// ```
+/// use huntsman_search_engine::util::geo::confidence_for_accuracy_m;
+/// use huntsman_search_engine::core::confidence;
+///
+/// assert_eq!(confidence_for_accuracy_m(Some(25.0)), confidence::VERY_HIGH);
+/// assert_eq!(confidence_for_accuracy_m(Some(2_000.0)), confidence::MEDIUM);
+/// // A 25 km IP-derived radius is not a wireless fix.
+/// assert_eq!(confidence_for_accuracy_m(Some(25_000.0)), 0.35);
+/// // Malformed input degrades to the wide default, never to a tight fix.
+/// assert_eq!(confidence_for_accuracy_m(Some(-1.0)), confidence_for_accuracy_m(None));
+/// assert_eq!(confidence_for_accuracy_m(Some(f64::NAN)), confidence_for_accuracy_m(None));
+/// ```
+#[must_use]
+pub fn confidence_for_accuracy_m(metres: Option<f64>) -> f64 {
+    use crate::core::confidence;
+    let metres = match metres {
+        Some(m) if m.is_finite() && m >= 0.0 => m,
+        _ => 5000.0,
+    };
+    match metres as u64 {
+        0..=200 => confidence::VERY_HIGH,
+        201..=1000 => confidence::HIGH,
+        1001..=5000 => confidence::MEDIUM,
+        _ => 0.35,
+    }
+}
+
 /// Magnitude (in degrees) below which a *coarse* geolocation provider's
 /// coordinate component is treated as that provider's "no fix" placeholder
 /// rather than a real position. Several IP/WiFi-geo APIs return `0.0000` or a

@@ -48,6 +48,10 @@ const ANCHORING_GEO_SOURCES: &[&str] = &[
     "exif_geo",
     "wigle",
     "mylnikov",
+    // Same measurement as `mylnikov` (a keyless BSSID→coordinates corpus), so it
+    // anchors identically. Omitting it would make a beaconDB fix the only
+    // wardriving-database result the person-anchor allowlist silently ignored.
+    "beacondb",
     // The subject's OWN device sensors — the most precise person-fix the product
     // can obtain, and for a long time the only class excluded from every rule
     // that answers "where is this person".
@@ -502,7 +506,7 @@ pub(crate) fn geo_source_class(source: &str) -> GeoSourceClass {
         "exif_geo" => GeoSourceClass::PhotoGps,
         // `wifi_intel` resolves the APs the subject's device can see, so it is
         // the same measurement class as a wardriving-database lookup.
-        "wigle" | "mylnikov" | "wifi_intel" => GeoSourceClass::WifiSensor,
+        "wigle" | "mylnikov" | "beacondb" | "wifi_intel" => GeoSourceClass::WifiSensor,
         "geocode" | "photon" => GeoSourceClass::Geocode,
         "abn_lookup" | "opencorporates" | "acnc_charities" | "gleif_lei" | "asic_director" => {
             GeoSourceClass::Registry
