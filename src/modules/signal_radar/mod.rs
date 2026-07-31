@@ -39,23 +39,14 @@ use crate::core::{
 
 pub(super) const SRC: &str = "signal_radar";
 
-/// True when a sensor tool exited 0 but printed nothing meaningful.
-///
-/// [`crate::util::termux::termux_cmd`] returns `Some(stdout)` for *any*
-/// zero-exit run, empty stdout included, so blank output reaches the parsers
-/// as an unparseable JSON error. That is an honest "nothing to report", not a
-/// malfunction, and must stay an empty `Ok` — treating it as a hard failure
-/// would make a quiet sensor (a Termux:API stub that exits 0 and prints
-/// nothing, common where a runtime permission is withheld) error on every
-/// sweep and trip the circuit breaker.
-pub(super) fn is_blank(stdout: &[u8]) -> bool {
-    stdout.iter().all(u8::is_ascii_whitespace)
-}
+// The blank-vs-unparseable contract is single-sourced in
+// `crate::modules::termux_sensor`; re-exported here so this module's sensor
+// submodules keep calling `super::is_blank` / `super::unparseable`.
+pub(super) use crate::modules::termux_sensor::is_blank;
 
-/// A sensor tool answered with output that could not be parsed — a genuine
-/// malfunction, distinct from both an absent tool and an empty answer.
+/// [`crate::modules::termux_sensor::unparseable`] bound to this module's `SRC`.
 pub(super) fn unparseable(sensor: &str, e: &serde_json::Error) -> Error {
-    Error::module(SRC, format!("{sensor}: unparseable tool output ({e})"))
+    crate::modules::termux_sensor::unparseable(SRC, sensor, e)
 }
 
 pub struct SignalRadar;

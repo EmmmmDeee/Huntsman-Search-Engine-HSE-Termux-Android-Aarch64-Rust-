@@ -173,6 +173,13 @@ pub mod streaming_probe;
 pub mod structured_id;
 pub mod subdomain_takeover;
 pub mod sunrise_sunset;
+// Shared Termux sensor-tool output contract (blank vs unparseable) — a
+// `pub(crate)` HELPER (no `Module` impl), consumed by signal_radar,
+// device_sensors, wifi_intel and cell_intel so the rule distinguishing "the
+// tool answered with nothing" from "the tool is broken" lives once.
+// `pub(crate)` (like `breach_rich`) keeps it out of the
+// `every_declared_module_is_registered` guard.
+pub(crate) mod termux_sensor;
 pub mod threatfox;
 pub mod trove_au;
 pub mod typosquat;

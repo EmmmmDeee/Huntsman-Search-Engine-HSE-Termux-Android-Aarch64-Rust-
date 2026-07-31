@@ -20,10 +20,11 @@ use async_trait::async_trait;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::modules::termux_sensor;
 use crate::util::geo::is_valid_coords;
 use crate::util::termux::termux_cmd;
 
@@ -116,15 +117,11 @@ impl Module for WifiIntel {
         // surface as a real error: reporting it as zero access points would be
         // indistinguishable from "no Wi-Fi in range". Mirrors
         // `signal_radar::wifi::parse_scan`, which shares this tool.
-        if stdout.iter().all(u8::is_ascii_whitespace) {
+        if termux_sensor::is_blank(&stdout) {
             return Ok(ModuleResult::new());
         }
-        let mut aps: Vec<types::Ap> = serde_json::from_slice(&stdout).map_err(|e| {
-            Error::module(
-                SOURCE,
-                format!("wifi-scaninfo: unparseable tool output ({e})"),
-            )
-        })?;
+        let mut aps: Vec<types::Ap> = serde_json::from_slice(&stdout)
+            .map_err(|e| termux_sensor::unparseable(SOURCE, "wifi-scaninfo", &e))?;
 
         if aps.is_empty() {
             return Ok(ModuleResult::new());
@@ -288,15 +285,11 @@ impl Module for WifiIntel {
 
 #[cfg(test)]
 fn parse_aps(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
-    if stdout.iter().all(u8::is_ascii_whitespace) {
+    if termux_sensor::is_blank(stdout) {
         return Ok(ModuleResult::new());
     }
-    let aps: Vec<types::Ap> = serde_json::from_slice(stdout).map_err(|e| {
-        Error::module(
-            SOURCE,
-            format!("wifi-scaninfo: unparseable tool output ({e})"),
-        )
-    })?;
+    let aps: Vec<types::Ap> = serde_json::from_slice(stdout)
+        .map_err(|e| termux_sensor::unparseable(SOURCE, "wifi-scaninfo", &e))?;
 
     let mut result = ModuleResult::with_capacity(aps.len());
     for ap in aps {
