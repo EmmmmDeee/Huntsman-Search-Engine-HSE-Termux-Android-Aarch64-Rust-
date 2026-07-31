@@ -49,16 +49,33 @@ fn parses_sample_payload() {
         {"bssid":"aa:bb:cc:dd:ee:ff","ssid":"MyNet","frequency":2412,"rssi":-45,"timestamp":1},
         {"bssid":"11:22:33:44:55:66","ssid":null,"frequency":5180,"rssi":-72,"timestamp":2}
     ]"#;
-    let r = parse_aps(json, "test");
+    let r = parse_aps(json, "test").expect("valid AP JSON parses");
     assert_eq!(r.entities.len(), 2);
     assert_eq!(r.entities[0].kind, EntityKind::MacAddress);
     assert_eq!(r.entities[0].value, "aa:bb:cc:dd:ee:ff");
 }
 
+/// Unparseable tool output is a malfunction, not an empty answer. Reporting it
+/// as zero access points would be indistinguishable from "no Wi-Fi in range",
+/// which is the conflation this contract exists to prevent.
 #[test]
-fn malformed_json_no_ops() {
-    let r = parse_aps(b"not json", "test");
-    assert_eq!(r.entities.len(), 0);
+fn malformed_json_is_an_error() {
+    assert!(parse_aps(b"not json", "test").is_err());
+}
+
+/// The complement: a tool that exits 0 and prints nothing has answered
+/// "nothing to report", which stays a clean empty Ok. Together with the test
+/// above, an empty result unambiguously means "no APs observed".
+#[test]
+fn blank_output_is_an_empty_ok() {
+    for blank in [&b""[..], b"   ", b"\n\t "] {
+        assert!(
+            parse_aps(blank, "test")
+                .expect("blank output is an empty answer, not an error")
+                .entities
+                .is_empty()
+        );
+    }
 }
 
 #[test]
@@ -68,7 +85,7 @@ fn parses_three_aps_with_all_fields() {
         {"bssid":"11:22:33:44:55:66","ssid":"Office5G","frequency":5745,"rssi":-68,"timestamp":200},
         {"bssid":"de:ad:be:ef:ca:fe","ssid":"CafeWifi","frequency":2462,"rssi":-55,"timestamp":300}
     ]"#;
-    let r = parse_aps(json, "scan-001");
+    let r = parse_aps(json, "scan-001").expect("valid AP JSON parses");
     assert_eq!(r.entities.len(), 3);
 
     // Verify first AP entity
@@ -119,7 +136,7 @@ fn parses_three_aps_with_all_fields() {
 fn hidden_ssid_shows_placeholder() {
     let json =
         br#"[{"bssid":"ff:ff:ff:ff:ff:ff","ssid":null,"frequency":2412,"rssi":-80,"timestamp":0}]"#;
-    let r = parse_aps(json, "test");
+    let r = parse_aps(json, "test").expect("valid AP JSON parses");
     assert_eq!(r.entities.len(), 1);
     let ev = &r.entities[0].evidence[0];
     assert_eq!(
@@ -132,7 +149,7 @@ fn hidden_ssid_shows_placeholder() {
 #[test]
 fn missing_optional_fields_default_to_zero() {
     let json = br#"[{"bssid":"ab:cd:ef:01:23:45"}]"#;
-    let r = parse_aps(json, "test");
+    let r = parse_aps(json, "test").expect("valid AP JSON parses");
     assert_eq!(r.entities.len(), 1);
     let ev = &r.entities[0].evidence[0];
     assert_eq!(
@@ -145,7 +162,7 @@ fn missing_optional_fields_default_to_zero() {
 
 #[test]
 fn empty_json_array_no_ops() {
-    let r = parse_aps(b"[]", "test");
+    let r = parse_aps(b"[]", "test").expect("valid AP JSON parses");
     assert_eq!(r.entities.len(), 0);
 }
 

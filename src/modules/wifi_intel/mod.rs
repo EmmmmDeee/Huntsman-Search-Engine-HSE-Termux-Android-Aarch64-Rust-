@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -110,10 +110,21 @@ impl Module for WifiIntel {
             return Ok(ModuleResult::new());
         };
 
-        let mut aps: Vec<types::Ap> = match serde_json::from_slice(&stdout) {
-            Ok(v) => v,
-            Err(_) => return Ok(ModuleResult::new()),
-        };
+        // Blank output means the tool exited 0 with nothing to report — an
+        // honest empty answer. Non-blank output that will not parse means the
+        // tool answered with something broken, which is a malfunction and must
+        // surface as a real error: reporting it as zero access points would be
+        // indistinguishable from "no Wi-Fi in range". Mirrors
+        // `signal_radar::wifi::parse_scan`, which shares this tool.
+        if stdout.iter().all(u8::is_ascii_whitespace) {
+            return Ok(ModuleResult::new());
+        }
+        let mut aps: Vec<types::Ap> = serde_json::from_slice(&stdout).map_err(|e| {
+            Error::module(
+                SOURCE,
+                format!("wifi-scaninfo: unparseable tool output ({e})"),
+            )
+        })?;
 
         if aps.is_empty() {
             return Ok(ModuleResult::new());
@@ -267,14 +278,25 @@ impl Module for WifiIntel {
     }
 }
 
-// ── Standalone AP parser (used by tests, mirrors old wifi_scan logic) ──
+// ── Standalone AP parser ───────────────────────────────────────────────
+//
+// A test-only shadow of the AP-parsing half of `process()`, which cannot be
+// unit-tested directly because it needs a live `termux-wifi-scaninfo` and a
+// `ModuleContext`. It must therefore keep the SAME blank/unparseable contract
+// as `process()`: a shadow that silently diverges would let its tests report
+// coverage of behaviour the production path no longer has.
 
 #[cfg(test)]
-fn parse_aps(stdout: &[u8], scan_id: &str) -> ModuleResult {
-    let aps: Vec<types::Ap> = match serde_json::from_slice(stdout) {
-        Ok(v) => v,
-        Err(_) => return ModuleResult::new(),
-    };
+fn parse_aps(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
+    if stdout.iter().all(u8::is_ascii_whitespace) {
+        return Ok(ModuleResult::new());
+    }
+    let aps: Vec<types::Ap> = serde_json::from_slice(stdout).map_err(|e| {
+        Error::module(
+            SOURCE,
+            format!("wifi-scaninfo: unparseable tool output ({e})"),
+        )
+    })?;
 
     let mut result = ModuleResult::with_capacity(aps.len());
     for ap in aps {
@@ -296,5 +318,5 @@ fn parse_aps(stdout: &[u8], scan_id: &str) -> ModuleResult {
         );
         result.push(e);
     }
-    result
+    Ok(result)
 }
