@@ -2595,6 +2595,124 @@ async fn convex_budget_dispatches_the_highest_query_value_module_first() {
     );
 }
 
+/// `--throttle` must pace **every** dispatch loop, including the concurrent
+/// dispatcher's paid Phase 1.
+///
+/// It did not. `run_paid_phase` had no throttle at all, and `max_concurrent`
+/// defaults to 2 on both the CLI and the API — so the throttled sequential loop
+/// is opt-in (`--max-concurrent 0`) and the DEFAULT path silently ignored the
+/// knob for every `ModuleCost::Paid` module. Those are the only dispatches that
+/// cost the operator money and the ones upstreams rate-limit hardest, so the one
+/// class of module the pacing knob could not reach was the class that needed it.
+///
+/// Differential, so it proves causation rather than just observing a delay: the
+/// same dispatch runs with the throttle on and off, on BOTH paths. Virtual time
+/// (`start_paused`) makes it exact and instant — no wall-clock flake.
+#[tokio::test(start_paused = true)]
+async fn throttle_paces_paid_modules_on_the_concurrent_path_too() {
+    use crate::core::entity::EntityKind;
+    use crate::core::module::ModuleCategory;
+    use crate::core::test_support::InMemoryStore;
+    use tokio::time::Instant;
+
+    const OUT: &[EntityKind] = &[EntityKind::Coordinates];
+    const THROTTLE_MS: u64 = 500;
+
+    /// Dispatch two Paid modules and return the virtual time the loop spent.
+    async fn elapsed_ms(throttle_ms: u64, max_concurrent: usize) -> u64 {
+        let modules: Vec<Arc<dyn Module>> = vec![
+            Arc::new(ConvexProbe {
+                name: "paid_one",
+                value: "paid_one_hit",
+                priority: 90,
+                cost: ModuleCost::Paid,
+                category: ModuleCategory::Threat,
+                produces: OUT,
+            }),
+            Arc::new(ConvexProbe {
+                name: "paid_two",
+                value: "paid_two_hit",
+                priority: 80,
+                cost: ModuleCost::Paid,
+                category: ModuleCategory::Threat,
+                produces: OUT,
+            }),
+        ];
+        let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+        let (bus, _rx) = tokio::sync::broadcast::channel(64);
+        let engine = ScanEngine::new(modules, store, bus.clone());
+
+        let target = Target::new(TargetKind::Username, "throttle-seed");
+        let opts = ScanOptions {
+            max_concurrent,
+            throttle_ms,
+            ..Default::default()
+        };
+        let mut ctx = ModuleContext {
+            scan_id: "throttle-scan".to_string(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+        let cx = DispatchCx {
+            scan_id: "throttle-scan",
+            target: &target,
+            opts: &opts,
+            is_expansion: false,
+            seed_kind: TargetKind::Username,
+            quarantined: no_quarantine(),
+        };
+        let mut entity_map: TrackedEntityMap = TrackedEntityMap::new();
+        let mut stats = ModuleStats::default();
+        let mut dispatched: DispatchLog = DispatchLog::new();
+        let mut newly_inserted: Vec<String> = Vec::new();
+        let mut state = DispatchState {
+            entity_map: &mut entity_map,
+            stats: &mut stats,
+            dispatched: &mut dispatched,
+            newly_inserted: &mut newly_inserted,
+        };
+
+        let started = Instant::now();
+        engine
+            .dispatch_target(&cx, &mut ctx, &mut state)
+            .await
+            .expect("dispatch runs");
+        let spent = started.elapsed();
+
+        assert_eq!(
+            stats.run, 2,
+            "both paid modules must actually dispatch, or this measures nothing"
+        );
+        u64::try_from(spent.as_millis()).expect("elapsed fits in u64")
+    }
+
+    // The concurrent path (max_concurrent = 2) is the DEFAULT one, and the
+    // regression: two paid dispatches, each followed by the operator's gap.
+    let concurrent_throttled = elapsed_ms(THROTTLE_MS, 2).await;
+    let concurrent_free = elapsed_ms(0, 2).await;
+    assert!(
+        concurrent_throttled >= THROTTLE_MS * 2,
+        "the concurrent dispatcher's paid phase must honour --throttle: two paid \
+         dispatches at {THROTTLE_MS}ms should spend >= {}ms, spent {concurrent_throttled}ms",
+        THROTTLE_MS * 2
+    );
+    assert!(
+        concurrent_free < THROTTLE_MS,
+        "control: with throttle off the same dispatch must not pace \
+         (spent {concurrent_free}ms)"
+    );
+
+    // The sequential path already paced; pin that it still does, so the two
+    // loops are held to one shared policy rather than drifting apart again.
+    let sequential_throttled = elapsed_ms(THROTTLE_MS, 0).await;
+    assert!(
+        sequential_throttled >= THROTTLE_MS * 2,
+        "the sequential loop must still honour --throttle (spent {sequential_throttled}ms)"
+    );
+}
+
 #[test]
 fn rank_enrichment_leverage_orders_join_keys_by_cross_scan_degree() {
     use crate::core::entity::{Entity, EntityKind};

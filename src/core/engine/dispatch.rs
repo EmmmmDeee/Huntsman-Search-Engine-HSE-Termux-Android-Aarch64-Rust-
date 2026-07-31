@@ -251,6 +251,44 @@ pub(super) struct DispatchOutcome {
 /// where `value` is normalised identically to the dispatch dedup key so a
 /// repeat scan of the same target always hits the same entry.
 #[inline]
+/// Pace a dispatch loop after one module has been handled: the operator's
+/// `--throttle` gap between dispatches, with a cancel check in front of it.
+/// Returns `false` when the scan has been cancelled and the caller should stop
+/// looping.
+///
+/// The cancel check comes BEFORE the sleep so an operator cancel between modules
+/// doesn't pay the full `throttle_ms` latency before the next gate at the top of
+/// the loop is reached. The throttle exists to be polite to upstreams; once the
+/// operator has asked us to stop there's nothing left to be polite about.
+///
+/// Shared by the sequential loop and the concurrent dispatcher's paid Phase 1 so
+/// the two cannot disagree about what `--throttle` means — they did.
+/// [`ScanEngine::run_paid_phase`](super::ScanEngine) had no pacing at all, and
+/// since `max_concurrent` defaults to 2 on both the CLI and the API
+/// (`default_max_concurrent`), the throttled sequential loop is opt-in via
+/// `--max-concurrent 0`. So on the DEFAULT path every `ModuleCost::Paid` module —
+/// the most expensive and most rate-sensitive dispatches there are, and the only
+/// ones that cost the operator money — silently ignored a knob documented as
+/// "Delay between module dispatches" and defaulted to 250 ms by `hse scan`.
+///
+/// Phase 2's throttle is deliberately NOT this function: it sleeps inside each
+/// spawned task after that module's own response, while still holding its
+/// semaphore permit, which paces concurrency rather than a loop.
+///
+/// Always reads `effective_throttle_ms()`, never the raw field — the sleep is
+/// uninterruptible and the wall-time watchdog only sets the cancel flag, so the
+/// value has to stay under `THROTTLE_CEILING_MS`.
+async fn pace_after_dispatch(cx: &DispatchCx<'_>, ctx: &ModuleContext) -> bool {
+    if ctx.cancel.is_cancelled() {
+        return false;
+    }
+    let throttle_ms = cx.opts.effective_throttle_ms();
+    if throttle_ms > 0 {
+        sleep(Duration::from_millis(throttle_ms)).await;
+    }
+    true
+}
+
 fn archive_key(name: &str, target: &Target) -> String {
     let entity_kind = target.kind.to_entity_kind();
     let normalised = normalise(&entity_kind, &target.value);
@@ -853,11 +891,8 @@ impl super::ScanEngine {
             {
                 self.replay_cached_result(cx, &**module, cached, state);
                 super::hot_inject_keys(&mut ctx.keys);
-                if ctx.cancel.is_cancelled() {
+                if !pace_after_dispatch(cx, ctx).await {
                     return Ok(());
-                }
-                if cx.opts.effective_throttle_ms() > 0 {
-                    sleep(Duration::from_millis(cx.opts.effective_throttle_ms())).await;
                 }
                 continue;
             }
@@ -895,17 +930,8 @@ impl super::ScanEngine {
 
             super::hot_inject_keys(&mut ctx.keys);
 
-            // Re-check the cancel flag before the throttle sleep so an
-            // operator cancel between modules doesn't pay the full
-            // `throttle_ms` latency before the next gate at the top of
-            // the loop is reached. The throttle exists to be polite to
-            // upstreams; once the operator has asked us to stop there's
-            // nothing left to be polite about.
-            if ctx.cancel.is_cancelled() {
+            if !pace_after_dispatch(cx, ctx).await {
                 return Ok(());
-            }
-            if cx.opts.effective_throttle_ms() > 0 {
-                sleep(Duration::from_millis(cx.opts.effective_throttle_ms())).await;
             }
         }
         Ok(())
@@ -989,6 +1015,9 @@ impl super::ScanEngine {
             {
                 self.replay_cached_result(cx, &**module, cached, state);
                 super::hot_inject_keys(&mut ctx.keys);
+                if !pace_after_dispatch(cx, ctx).await {
+                    break;
+                }
                 continue;
             }
 
@@ -1019,6 +1048,10 @@ impl super::ScanEngine {
             // cascade — their outputs feed web_crawler/search_engines, which
             // discover MORE keys.
             super::hot_inject_keys(&mut ctx.keys);
+
+            if !pace_after_dispatch(cx, ctx).await {
+                break;
+            }
         }
     }
 
