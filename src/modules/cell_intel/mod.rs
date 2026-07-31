@@ -25,7 +25,7 @@ use async_trait::async_trait;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -99,10 +99,21 @@ impl Module for CellIntel {
             return Ok(ModuleResult::new());
         };
 
-        let cells: Vec<types::Cell> = match serde_json::from_slice(&stdout) {
-            Ok(v) => v,
-            Err(_) => return Ok(ModuleResult::new()),
-        };
+        // Blank output means the tool exited 0 with nothing to report — an
+        // honest empty answer. Non-blank output that will not parse means the
+        // tool answered with something broken, which is a malfunction and must
+        // surface as a real error: reporting it as zero cells would be
+        // indistinguishable from "no towers in range". Mirrors
+        // `signal_radar::cell::parse_cells`, which shares this tool.
+        if stdout.iter().all(u8::is_ascii_whitespace) {
+            return Ok(ModuleResult::new());
+        }
+        let cells: Vec<types::Cell> = serde_json::from_slice(&stdout).map_err(|e| {
+            Error::module(
+                SRC,
+                format!("telephony-cellinfo: unparseable tool output ({e})"),
+            )
+        })?;
 
         let api_key = ctx.key_opt(OPENCELLID_KEY_ENV);
         let mut result = ModuleResult::new();
