@@ -29,13 +29,33 @@ pub(crate) struct UpdateStatusResponse {
     update_notify: bool,
 }
 
+/// Read the current update state, recovering from a poisoned mutex the same way
+/// [`try_start_update`] and [`set_phase`] do.
+///
+/// This used to be `.map(|g| g.clone()).unwrap_or_default()`, which on a
+/// poisoned lock threw the real state away and substituted
+/// `UpdateInfo::default()` — reporting `phase: "idle"`, `commits_behind: null`
+/// and `last_checked: 0` regardless of what was actually happening. A poisoning
+/// panic does not stop an update: `POST /update/trigger` still claims the phase
+/// (`try_start_update` recovers the guard) and the background task still drives
+/// it to `Restarting` (`set_phase` recovers too), so status was the one reader
+/// of the three that answered with a state the process was not in — and it
+/// answered "idle" while a binary replacement was in flight, which is the
+/// reading most likely to be acted on. The poisoned data is intact and
+/// recoverable; reporting it is strictly better than inventing a quiet one.
+///
+/// Pure over the mutex so the poison path is unit-testable without building an
+/// `AppState`, matching the seam its two siblings already use.
+fn snapshot(update_info: &std::sync::Mutex<UpdateInfo>) -> UpdateInfo {
+    update_info
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
 /// `GET /api/v1/update/status` — snapshot of the current update state.
 pub(crate) async fn get_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let info = state
-        .update_info
-        .lock()
-        .map(|g| g.clone())
-        .unwrap_or_default();
+    let info = snapshot(&state.update_info);
     let phase_str: &'static str = match &info.phase {
         UpdatePhase::Idle => "idle",
         UpdatePhase::Checking => "checking",
@@ -162,7 +182,9 @@ pub(crate) async fn post_trigger(
 
 #[cfg(test)]
 mod tests {
-    use super::{UpdateInfo, UpdatePhase, reject_non_loopback, set_phase, try_start_update};
+    use super::{
+        UpdateInfo, UpdatePhase, reject_non_loopback, set_phase, snapshot, try_start_update,
+    };
     use axum::http::StatusCode;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::sync::Mutex;
@@ -196,6 +218,36 @@ mod tests {
             UpdatePhase::Restarting,
             "phase must progress past a poisoned lock, not stay stuck at Applying"
         );
+    }
+
+    /// Status must report the state the process is actually in, even after the
+    /// mutex is poisoned. The previous `.unwrap_or_default()` answered
+    /// `phase: Idle, commits_behind: None, last_checked: 0` — a state the
+    /// process was demonstrably not in, since the update it was reporting on
+    /// had already reached `Restarting` through a lock its two siblings recover
+    /// from. Reporting a quiet fabrication is the one outcome worse than
+    /// reporting the poisoned truth.
+    #[test]
+    fn snapshot_reports_the_real_state_through_a_poisoned_mutex() {
+        let info = Mutex::new(UpdateInfo {
+            phase: UpdatePhase::Restarting,
+            commits_behind: Some(7),
+            last_checked: 1_700_000_000,
+        });
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = info.lock().expect("should succeed");
+            panic!("simulated panic while holding the update_info lock");
+        }));
+        assert!(info.is_poisoned(), "the mutex must be poisoned above");
+
+        let got = snapshot(&info);
+        assert_eq!(
+            got.phase,
+            UpdatePhase::Restarting,
+            "a poisoned lock must not be reported as idle — an update was in flight"
+        );
+        assert_eq!(got.commits_behind, Some(7));
+        assert_eq!(got.last_checked, 1_700_000_000);
     }
 
     #[test]
