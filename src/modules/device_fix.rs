@@ -2,10 +2,14 @@
 //! consumers (`signal_radar`, `device_sensors`) — a `pub(crate)` HELPER (no
 //! `Module` impl). Both modules parse the same `termux-location` JSON and score
 //! it on the same accuracy ladder; this is the single definition of the fix
-//! shape, its confidence policy, and its parse-to-entity mapping, so the two can
-//! never drift. Each module keeps only a three-line wrapper binding its own
-//! evidence-source tag — the entity framing they once differed in has since
-//! converged, so keeping two copies bought nothing but drift risk.
+//! shape, its confidence policy, its parse-to-entity mapping, AND the staged
+//! ladder that drives them, so the two can never drift.
+//!
+//! The ladder ([`scan_location_ladder`]) moved here after the parse did: both
+//! modules had been running byte-identical copies of it, differing only in the
+//! evidence-source tag they passed in, which meant the GNSS-fallback defect the
+//! ladder's argv-keyed cache exists to prevent lived in two places at once.
+//! Each module now keeps only a one-line call binding its own `SRC`.
 //!
 //! Like `breach_rich`, this stays `pub(crate)` so it is not caught by the
 //! `every_declared_module_is_registered` architecture guard (which flags an
@@ -70,6 +74,92 @@ pub(crate) fn fix_confidence(provider: &str, accuracy_m: Option<f64>) -> f64 {
         }
         _ => ceiling,
     }
+}
+
+/// The location ladder: each stage as `(provider, request, timeout_ms)`, tried
+/// in order until one establishes a fix.
+///
+/// Most precise first, degrading to the OS's passively-cached last-known
+/// position so a fix is STILL established when no fresh lock is available —
+/// a fresh GPS lock (12 s), a fresh network (cell/Wi-Fi) fix (8 s), then the
+/// last-known GPS and network positions (near-instant reads of the phone's
+/// location cache). Every stage reads only the device's own sensors; none takes
+/// a seed or any input.
+///
+/// The `last` stages are the reason the ladder exists, and are why
+/// [`crate::util::termux`] keys its skip cache on the full argv: under
+/// binary-wide keying the 12 s fresh-lock timeout suppressed these three cheap
+/// fallbacks behind it, so the fallback that exists precisely for "no fresh lock
+/// available" could never run.
+const LOCATION_STAGES: &[(&str, &str, u64)] = &[
+    ("gps", "once", 12_000),
+    ("network", "once", 8_000),
+    ("gps", "last", 3_000),
+    ("network", "last", 3_000),
+];
+
+/// Run one ladder stage: `termux-location -p <provider> -r <request>`.
+///
+/// A `last` request reads the OS's passively-cached position rather than taking
+/// a fresh lock, so its entities are tagged `fix-age:last-known` — a cached
+/// position must never be mistaken for a live sensor lock.
+async fn fetch_fix(
+    provider: &str,
+    request: &str,
+    timeout_ms: u64,
+    scan_id: &str,
+    src: &'static str,
+) -> Result<ModuleResult> {
+    match crate::util::termux::termux_cmd(
+        "termux-location",
+        &["-p", provider, "-r", request],
+        timeout_ms,
+    )
+    .await
+    {
+        Some(stdout) => {
+            let mut r = parse_fix(&stdout, scan_id, src)?;
+            if request == "last" {
+                for e in &mut r.entities {
+                    e.tag("fix-age:last-known");
+                }
+            }
+            Ok(r)
+        }
+        // Absent tool / timeout / non-zero exit: nothing observed, nothing to
+        // attest — the absent-tool row of `termux_sensor`'s contract table.
+        None => Ok(ModuleResult::new()),
+    }
+}
+
+/// Walk [`LOCATION_STAGES`] until a stage establishes a fix, tagging entities
+/// with `src` as their evidence source.
+///
+/// `signal_radar::gps` and `device_sensors` each carried a byte-identical copy
+/// of this ladder — the same four stages, the same budgets, the same
+/// `fix-age:last-known` tagging and the same first-failure semantics — differing
+/// only in which module's `SRC` tag they passed to [`parse_fix`]. The parse was
+/// single-sourced here previously; the ladder wrapped around it was not, so the
+/// GNSS-fallback defect this ladder's argv-keyed cache exists to prevent lived
+/// in two places at once, and fixing either copy would have left the other
+/// silently broken.
+///
+/// Each stage is an independent attempt at the same question, so a stage that
+/// malfunctions must not abort the ladder — a later one may still succeed. The
+/// first failure is remembered and surfaces only if no stage produced a fix, via
+/// [`ModuleResult::or_hard_failure`].
+pub(crate) async fn scan_location_ladder(scan_id: &str, src: &'static str) -> Result<ModuleResult> {
+    let mut first_failure = None;
+    for &(provider, request, timeout_ms) in LOCATION_STAGES {
+        match fetch_fix(provider, request, timeout_ms, scan_id, src).await {
+            Ok(r) if !r.is_empty() => return Ok(r),
+            Ok(_) => {}
+            Err(e) => {
+                first_failure.get_or_insert(e);
+            }
+        }
+    }
+    ModuleResult::new().or_hard_failure(first_failure)
 }
 
 /// Parse `termux-location`'s JSON into a `Coordinates` entity — the device's own
@@ -204,5 +294,53 @@ mod tests {
     fn fix_confidence_zero_accuracy_falls_through_to_ceiling() {
         // a = 0.0 does not satisfy `a > 0.0`; falls through to the `_ =>` arm.
         assert!((fix_confidence("gps", Some(0.0)) - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
+    }
+
+    /// A stage whose tool is absent is a clean empty answer, not an error —
+    /// the absent-tool row of the sensor contract. Moved here from
+    /// `device_sensors` along with the ladder itself.
+    #[tokio::test]
+    async fn fetch_fix_is_empty_off_device() {
+        for request in ["once", "last"] {
+            let r = fetch_fix("gps", request, 1000, "test", "device_sensors")
+                .await
+                .expect("an absent tool is a clean empty answer");
+            assert!(r.entities.is_empty(), "{request}: must be empty off-device");
+        }
+    }
+
+    /// The ladder itself degrades cleanly when every stage is unavailable: an
+    /// empty `Ok`, not a hard failure. Off-device (no `termux-location`) every
+    /// stage returns empty, which is the same shape as a phone with location
+    /// permission withheld.
+    #[tokio::test]
+    async fn the_ladder_is_a_clean_empty_answer_when_no_stage_can_fix() {
+        let r = scan_location_ladder("test", "signal_radar")
+            .await
+            .expect("an absent tool must not be a hard failure");
+        assert!(r.is_empty());
+    }
+
+    /// The ladder's stage order is the contract: most precise first, degrading
+    /// to the near-instant last-known reads that exist for when no fresh lock
+    /// is available. Pinned so a reorder (or a dropped fallback) is a test
+    /// failure — the fallback stages were unreachable for a whole radar session
+    /// once already.
+    #[test]
+    fn the_ladder_tries_fresh_locks_before_cached_positions() {
+        let requests: Vec<&str> = LOCATION_STAGES.iter().map(|&(_, r, _)| r).collect();
+        assert_eq!(requests, ["once", "once", "last", "last"]);
+        let providers: Vec<&str> = LOCATION_STAGES.iter().map(|&(p, ..)| p).collect();
+        assert_eq!(providers, ["gps", "network", "gps", "network"]);
+        // The cached reads must stay cheap: they exist precisely because the
+        // fresh locks are expensive, so budgeting them alike would defeat them.
+        let (fresh, cached): (Vec<u64>, Vec<u64>) = (
+            LOCATION_STAGES[..2].iter().map(|&(.., t)| t).collect(),
+            LOCATION_STAGES[2..].iter().map(|&(.., t)| t).collect(),
+        );
+        assert!(
+            cached.iter().max() < fresh.iter().min(),
+            "every cached read must be cheaper than every fresh lock: {cached:?} vs {fresh:?}"
+        );
     }
 }

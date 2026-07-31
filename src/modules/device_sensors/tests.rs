@@ -2,9 +2,18 @@ use crate::core::{confidence, entity::EntityKind, scan::Target, scan::TargetKind
 
 use super::{
     DeviceSensors,
-    gps::parse_fix,
     wifi::{parse_conn, wifi_band},
 };
+
+/// The canonical `termux-location` parse bound to THIS module's evidence-source
+/// tag — the binding these tests exercise. Test scaffolding, so it lives here
+/// rather than as a production forwarder no production code calls.
+fn parse_fix(
+    stdout: &[u8],
+    scan_id: &str,
+) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+    crate::modules::device_fix::parse_fix(stdout, scan_id, super::SRC)
+}
 use crate::core::module::Module;
 
 #[test]
@@ -160,19 +169,6 @@ fn gps_provider_tag() {
     let r = parse_fix(json, "test").expect("valid sensor JSON parses");
     assert!(r.entities[0].has_tag("provider:gps"));
     assert!(r.entities[0].has_tag("device-sensor"));
-}
-
-#[tokio::test]
-async fn fetch_fix_is_empty_off_device() {
-    let r = super::fetch_fix("gps", "once", 1000, "test")
-        .await
-        .expect("an absent tool is a clean empty answer");
-    assert!(r.entities.is_empty());
-    // The last-known fallback is likewise empty off-device (no location cache).
-    let last = super::fetch_fix("gps", "last", 1000, "test")
-        .await
-        .expect("an absent tool is a clean empty answer");
-    assert!(last.entities.is_empty());
 }
 
 #[test]
