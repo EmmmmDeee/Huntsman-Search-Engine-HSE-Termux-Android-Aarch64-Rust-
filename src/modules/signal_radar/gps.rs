@@ -1,67 +1,18 @@
-//! GPS / network location fix for signal_radar — mirrors device_sensors/gps.rs.
+//! GPS / network location fix for signal_radar — the sensor shell around the
+//! canonical parse in `crate::modules::device_fix`, shared with `device_sensors`.
 
-use crate::core::{
-    entity::{Entity, EntityKind, Evidence},
-    error::Result,
-    module::ModuleResult,
-};
-use crate::modules::device_fix::{Fix, fix_confidence, is_valid_fix};
+use crate::core::{error::Result, module::ModuleResult};
+use crate::modules::device_fix;
 use crate::util::termux::termux_cmd;
 
 use super::SRC;
 
+/// This module's binding of the canonical
+/// [`crate::modules::device_fix::parse_fix`] — the shared parse-to-entity
+/// mapping for `termux-location` output, differing only in the evidence-source
+/// tag. Kept as a wrapper so this module's tests exercise it by its local name.
 fn parse_fix(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
-    if super::is_blank(stdout) {
-        return Ok(ModuleResult::new());
-    }
-    let fix: Fix =
-        serde_json::from_slice(stdout).map_err(|e| super::unparseable("location", &e))?;
-
-    // A fix outside the valid coordinate range is a real answer that simply
-    // does not locate anything (null island, a clipped sentinel) — an honest
-    // empty result, not a malfunction.
-    if !is_valid_fix(fix.latitude, fix.longitude) {
-        return Ok(ModuleResult::new());
-    }
-
-    let provider = fix.provider.as_deref().unwrap_or("network");
-    let confidence = fix_confidence(provider, fix.accuracy);
-    let coords = format!("{:.7},{:.7}", fix.latitude, fix.longitude);
-
-    let mut e = Entity::new(EntityKind::Coordinates, &coords, confidence, scan_id);
-    e.tag("geoint");
-    e.tag("device-sensor");
-    e.tag(format!("provider:{provider}"));
-    if let Some(a) = fix.accuracy.filter(|a| *a > 0.0) {
-        e.tag(format!("accuracy:{}m", a as u64));
-    }
-
-    // Optional sensor fields are recorded only when the OS actually supplied
-    // them — see the matching note in `device_sensors::gps::parse_fix`. An
-    // absent reading defaulted to `0.0` is indistinguishable from a genuine
-    // measurement of zero, so it is left absent instead.
-    let ev = [
-        ("altitude", fix.altitude),
-        ("accuracy_m", fix.accuracy),
-        ("speed", fix.speed),
-        ("bearing", fix.bearing),
-    ]
-    .into_iter()
-    .filter_map(|(key, value)| value.map(|v| (key, v)))
-    .fold(
-        Evidence::new(SRC, format!("Location fix via {provider}"))
-            .with_attr("latitude", fix.latitude.to_string())
-            .with_attr("longitude", fix.longitude.to_string()),
-        |ev, (key, v)| ev.with_attr(key, v.to_string()),
-    )
-    .with_attr("provider", provider);
-    e.add_evidence(ev);
-
-    let mut result = ModuleResult {
-        entities: Vec::with_capacity(1),
-    };
-    result.push(e);
-    Ok(result)
+    device_fix::parse_fix(stdout, scan_id, SRC)
 }
 
 /// Fetch a location fix from `termux-location -p <provider> -r <request>`.
@@ -129,6 +80,7 @@ pub(super) async fn scan_gps(scan_id: &str) -> Result<ModuleResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::entity::EntityKind;
 
     // The `Fix` shape and the `is_valid_fix` / `fix_confidence` ladder now live
     // in `crate::modules::device_fix` and are tested there; these tests cover
