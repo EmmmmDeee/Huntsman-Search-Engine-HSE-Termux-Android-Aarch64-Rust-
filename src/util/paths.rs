@@ -25,10 +25,23 @@ use std::path::PathBuf;
 /// (typically `/data/data/com.termux/files/home`) — this falls back to
 /// `.huntsman` under the current directory, keeping the whole layout together
 /// rather than scattering bare files.
+/// The base `$HOME/.huntsman` path — **derived only, never created**.
+///
+/// [`huntsman_dir`] is the ensure-it-exists variant and is what almost every
+/// caller wants. This one exists for the read-only callers that must not have a
+/// side effect: a `--dry-run` that promises to change nothing cannot resolve a
+/// path through an accessor that silently mkdirs, and reporting on a layout is
+/// not the same act as creating it. Splitting the two keeps the derivation a
+/// single source of truth while letting the side effect be opt-in.
+#[must_use]
+pub fn huntsman_dir_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home).join(".huntsman")
+}
+
 #[must_use]
 pub fn huntsman_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let dir = PathBuf::from(home).join(".huntsman");
+    let dir = huntsman_dir_path();
     // 0700 owner-only; best-effort so a read path still resolves on failure.
     // `create_dir_private` also RE-TIGHTENS a pre-existing dir (an older install's
     // `~/.huntsman` made 0755 by a plain `create_dir_all`), so the key pool /

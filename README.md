@@ -165,7 +165,9 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 ## Quick Start
 
 ```bash
-hse doctor                                                  # verify environment
+hse doctor                                                  # verify environment (read-only)
+hse repair                                                  # fix a drifted install: reclaim disk, layout, DB, update
+hse repair --deep --dry-run                                 # show what a full reclaim would free, change nothing
 hse modules                                                 # list all 167 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)

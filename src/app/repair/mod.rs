@@ -224,6 +224,7 @@ pub async fn run(opts: RepairOptions) -> RepairReport {
     stages.push(stage_store(opts));
     stages.push(stage_keys());
     stages.push(stage_update(opts).await);
+    stages.push(stage_verify(opts).await);
 
     let bytes_freed = stages.iter().map(|s| s.bytes_freed).sum();
     RepairReport {
@@ -412,7 +413,16 @@ fn stage_layout(opts: RepairOptions) -> StageReport {
 fn stage_store(opts: RepairOptions) -> StageReport {
     let mut r = StageReport::new("store", "Intelligence database");
 
-    let db_path = crate::default_db_path();
+    // Derive without creating: `crate::default_db_path()` resolves through
+    // `paths::huntsman_dir()`, which mkdirs as a side effect of a getter — so a
+    // dry run that merely REPORTED on the database was creating the data
+    // directory. Observed, not assumed: a `--dry-run` against a pristine HOME
+    // left `~/.huntsman` behind. This stage now derives the path purely, and
+    // the layout stage remains the one place that creates anything.
+    let db_path = crate::util::paths::huntsman_dir_path()
+        .join("huntsman.db")
+        .to_string_lossy()
+        .into_owned();
     if !Path::new(&db_path).exists() {
         r.say(format!("{db_path} does not exist yet — nothing to repair"))
             .say("it is created on the first scan");
@@ -599,6 +609,68 @@ async fn stage_update(opts: RepairOptions) -> StageReport {
         }
     }
 
+    r
+}
+
+// ── Stage 7: verify ─────────────────────────────────────────────────────────
+
+/// Prove the repaired install actually works, rather than asserting it does
+/// because the earlier stages returned `Ok`.
+///
+/// Runs the existing [`crate::selftest`] suite — which is offline and
+/// side-effect-free (bar a throwaway temp DB it creates and deletes) and never
+/// panics — instead of a second, parallel set of checks that could drift from
+/// it. That is the whole reason this stage is last: every preceding stage
+/// changed something, and this is the evidence the changes left a working
+/// system. A repair command whose final word is "I ran some steps" is not a
+/// repair command.
+async fn stage_verify(opts: RepairOptions) -> StageReport {
+    let mut r = StageReport::new("verify", "Post-repair verification");
+
+    if opts.dry_run {
+        r.set(StageStatus::Skipped)
+            .say("dry-run: would run the offline self-test suite");
+        return r;
+    }
+
+    let report = crate::selftest::run().await;
+    r.say(format!(
+        "{}/{} checks passed in {} ms",
+        report.passed, report.total, report.elapsed_ms
+    ));
+
+    if report.failed > 0 {
+        r.set(StageStatus::Failed);
+        for c in report
+            .checks
+            .iter()
+            .filter(|c| c.status == crate::selftest::Status::Fail)
+        {
+            r.say(format!("FAIL  {} — {}", c.name, c.detail));
+        }
+        r.fix(
+            "The install is still not healthy. Re-run the installer, which rebuilds from a \
+             clean state:\n  {INSTALL}"
+                .replace("{INSTALL}", crate::app::update::INSTALL_CMD),
+        );
+        return r;
+    }
+
+    if report.warned > 0 {
+        // Warnings here are configuration facts (an absent optional key, no
+        // Termux:API on a desktop), not damage — reported, never escalated.
+        r.set(StageStatus::Warn);
+        for c in report
+            .checks
+            .iter()
+            .filter(|c| c.status == crate::selftest::Status::Warn)
+            .take(5)
+        {
+            r.say(format!("warn  {} — {}", c.name, c.detail));
+        }
+    } else {
+        r.say("all checks green");
+    }
     r
 }
 

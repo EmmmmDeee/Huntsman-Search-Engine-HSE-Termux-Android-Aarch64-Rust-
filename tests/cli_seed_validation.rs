@@ -182,3 +182,77 @@ fn import_json_stdout_is_pure_json_summary_on_stderr() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── `hse repair --dry-run` must change nothing ───────────────────────────────
+
+/// `--dry-run` is documented as "Report exactly what would change and change
+/// nothing." That promise has to hold against a PRISTINE home, which is the
+/// case where any accidental write is visible — and it did not hold when the
+/// flag was first shipped. A dry run against an empty directory created both
+/// `~/.huntsman` (because `default_db_path()` resolves through an accessor that
+/// mkdirs as a side effect of a getter) and `~/.cache/hse-autoupdate` (because
+/// the opportunistic auto-update checker still fired underneath a command that
+/// owns its own update decision).
+///
+/// Deliberately run WITHOUT `--no-update`, so the auto-update exemption is part
+/// of what this asserts: the bare `--dry-run` an operator would actually type
+/// is the one that must be inert. Spawns the real binary because both defects
+/// lived in the wiring between the CLI and the services, which no unit test of
+/// either half would have caught.
+#[test]
+fn repair_dry_run_leaves_a_pristine_home_untouched() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let out = Command::new(BIN)
+        .args(["repair", "--dry-run", "--deep"])
+        .env("RUST_LOG", "off")
+        .env("HOME", home.path())
+        .output()
+        .expect("spawn hse repair");
+
+    assert!(
+        out.status.success(),
+        "a dry run must succeed on a pristine home; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let leftovers: Vec<String> = std::fs::read_dir(home.path())
+        .expect("read home")
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "`hse repair --dry-run` must create nothing, found: {leftovers:?}"
+    );
+}
+
+/// The complement: a real (non-dry) run is allowed to create the data
+/// directory, and must do so owner-only. Without this, the test above could be
+/// satisfied by a repair that had quietly stopped doing its job.
+#[test]
+fn repair_creates_the_data_directory_owner_only_on_a_real_run() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let out = Command::new(BIN)
+        .args(["repair", "--no-update"])
+        .env("RUST_LOG", "off")
+        .env("HOME", home.path())
+        .output()
+        .expect("spawn hse repair");
+    assert!(
+        out.status.success(),
+        "repair must succeed on a fresh home; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let base = home.path().join(".huntsman");
+    assert!(base.is_dir(), "a real run must create the data directory");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&base).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o700,
+            "the data directory holds keys and intelligence — it must be owner-only"
+        );
+    }
+}

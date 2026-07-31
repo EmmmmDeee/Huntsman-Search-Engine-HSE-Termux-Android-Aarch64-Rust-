@@ -37,8 +37,24 @@ pub(super) async fn cmd_update(check: bool, ref_: Option<String>) -> Result<()> 
     update::apply_update(ref_).await
 }
 
+/// Commands that OWN the update decision and must never have this opportunistic
+/// check run underneath them.
+///
+/// `Serve` and `Update` were always here. `Repair` joins them because it carries
+/// its own update stage and its own `--no-update` opt-out: without this, a
+/// `hse repair --no-update` still performed a network check and could apply an
+/// update in the background, which makes the flag a lie. Observed rather than
+/// reasoned — a `--dry-run --no-update` against a pristine HOME left an
+/// `hse-autoupdate` stamp behind, which is how the check announced itself.
+fn owns_its_update_decision(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Serve { .. } | Command::Update { .. } | Command::Repair { .. }
+    )
+}
+
 pub(super) async fn maybe_auto_update(command: &Command) {
-    if matches!(command, Command::Serve { .. } | Command::Update { .. }) {
+    if owns_its_update_decision(command) {
         return;
     }
 
@@ -63,23 +79,44 @@ mod tests {
 
     #[test]
     fn update_owners_skip_opportunistic_check() {
-        assert!(matches!(
-            Command::Serve {
-                bind: "127.0.0.1:8080".into(),
-                no_key_write: false,
-            },
-            Command::Serve { .. } | Command::Update { .. }
-        ));
-        assert!(matches!(
-            Command::Update {
-                check: false,
-                r#ref: None,
-            },
-            Command::Serve { .. } | Command::Update { .. }
-        ));
-        assert!(!matches!(
-            Command::Doctor { live: false },
-            Command::Serve { .. } | Command::Update { .. }
-        ));
+        assert!(owns_its_update_decision(&Command::Serve {
+            bind: "127.0.0.1:8080".into(),
+            no_key_write: false,
+        }));
+        assert!(owns_its_update_decision(&Command::Update {
+            check: false,
+            r#ref: None,
+        }));
+        assert!(!owns_its_update_decision(&Command::Doctor { live: false }));
+    }
+
+    /// `hse repair` runs its own update stage and offers `--no-update`, so the
+    /// opportunistic checker must not also fire underneath it — otherwise
+    /// `--no-update` still reaches the network and can apply an update in the
+    /// background, which is the opposite of what the flag says.
+    ///
+    /// Asserted for EVERY flag combination, because the exemption is a property
+    /// of the command, not of how it was invoked: an operator who passes
+    /// `--no-update` and one who does not must both get exactly one update
+    /// decision, made by the repair stage.
+    #[test]
+    fn repair_owns_its_own_update_decision() {
+        for (dry_run, deep, no_update, json) in [
+            (false, false, false, false),
+            (true, true, true, true),
+            (false, false, true, false),
+            (true, false, false, true),
+        ] {
+            assert!(
+                owns_its_update_decision(&Command::Repair {
+                    dry_run,
+                    deep,
+                    no_update,
+                    json,
+                }),
+                "repair must own its update decision (dry_run={dry_run}, deep={deep}, \
+                 no_update={no_update}, json={json})"
+            );
+        }
     }
 }

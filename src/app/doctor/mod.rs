@@ -433,9 +433,16 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
     }
 
     if critical {
+        // Name the remedy, not just the fault. `doctor` is deliberately
+        // read-only — it diagnoses and changes nothing — so an operator who
+        // reaches this line has been told their database is broken and left
+        // with nowhere to go. `hse repair` is the command that acts on it, and
+        // it will not delete the database: it compacts what it can and reports
+        // recovery steps for what it cannot.
         return Err(crate::core::error::Error::Other(
             "critical storage fault — the database could not be opened or failed its \
-             integrity check (see the FAIL line(s) above)"
+             integrity check (see the FAIL line(s) above). Run `hse repair` to attempt \
+             recovery; it never deletes your data"
                 .into(),
         ));
     }
