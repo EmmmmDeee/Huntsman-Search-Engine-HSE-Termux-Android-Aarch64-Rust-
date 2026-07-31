@@ -1,12 +1,17 @@
 //! Device location sensors — WiFi connection info and GPS/network fix via Termux.
 //!
-//! Merges the former `wifi_connect` and `gps_fix` modules into a single
-//! passive sensor pass.  Invokes `termux-wifi-connectioninfo` (3 s ceiling),
-//! then a location fix that degrades from a fresh lock to the phone's
-//! passively-cached last-known position so a fix is established with no input:
-//! `-p gps -r once` (12 s) → `-p network -r once` (8 s) → `-p gps -r last` →
-//! `-p network -r last` (the last-known stages are near-instant and tagged
-//! `fix-age:last-known`).
+//! Merges the former `wifi_connect` and `gps_fix` modules into a single passive
+//! sensor pass: the associated-network read
+//! ([`crate::modules::termux_sensor::Sensor::WifiConnection`]) and a location
+//! fix ([`crate::modules::device_fix::scan_location_ladder`], which degrades
+//! from a fresh lock to the phone's passively-cached last-known position so a
+//! fix is established with no input).
+//!
+//! Both the tool budgets and the ladder's stages live at those two definitions
+//! and are deliberately NOT restated here. This header used to spell out all
+//! four stages and their timeouts, which made it a third copy of a fact the
+//! compiler cannot check — the same drift the two definitions exist to end,
+//! displaced into prose.
 //!
 //! Off-device behaviour: termux-api binary missing → no-op (no error).
 

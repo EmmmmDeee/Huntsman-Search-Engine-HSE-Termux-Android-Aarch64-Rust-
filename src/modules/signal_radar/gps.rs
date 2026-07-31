@@ -1,5 +1,7 @@
-//! GPS / network location fix for signal_radar — the sensor shell around the
-//! canonical parse in `crate::modules::device_fix`, shared with `device_sensors`.
+//! GPS / network location fix for signal_radar — the source-tag binding around
+//! the canonical ladder and parse in [`crate::modules::device_fix`], shared with
+//! `device_sensors`. The stages, their budgets and the last-known-fix fallback
+//! semantics live there, not here.
 
 use crate::core::{error::Result, module::ModuleResult};
 use crate::modules::device_fix;

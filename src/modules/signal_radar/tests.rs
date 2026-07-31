@@ -192,7 +192,7 @@ async fn scan_cell_does_not_spawn_the_discarded_signalstrength_tool() {
     use crate::util::termux::{clear_unavailable_for_test, is_marked_unavailable_for_test};
 
     // Known state regardless of what earlier tests in this process did.
-    clear_unavailable_for_test("termux-telephony-cellinfo");
+    clear_unavailable_for_test(crate::modules::termux_sensor::Sensor::CellInfo.tool());
     clear_unavailable_for_test("termux-telephony-signalstrength");
 
     let _ = scan_cell("test-scan").await;
@@ -201,7 +201,7 @@ async fn scan_cell_does_not_spawn_the_discarded_signalstrength_tool() {
     // which caches it unavailable — proves the harness genuinely exercised
     // termux_cmd rather than short-circuiting before ever calling it.
     assert!(
-        is_marked_unavailable_for_test("termux-telephony-cellinfo"),
+        is_marked_unavailable_for_test(crate::modules::termux_sensor::Sensor::CellInfo.tool()),
         "cellinfo must actually be invoked by scan_cell"
     );
     // signalstrength's result was always discarded (`_sigstrength`), so it
