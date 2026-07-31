@@ -51,7 +51,8 @@ pub enum Command {
         /// is ignored; each seed's findings are stored and exportable per scan_id.
         #[arg(long, value_name = "PATH")]
         input_file: Option<String>,
-        /// Comma-separated allowlist of module names.
+        /// Comma-separated allowlist of module names: ONLY these modules run,
+        /// on the seed round and on every expansion round alike.
         #[arg(short, long)]
         modules: Option<String>,
         /// Comma-separated exclude list.
@@ -437,7 +438,7 @@ pub enum Command {
         /// Same as `scan --passive-only`.
         #[arg(long)]
         passive_only: bool,
-        /// Comma-separated module allowlist.
+        /// Same as `scan --modules` — ONLY these modules run, every round.
         #[arg(short, long)]
         modules: Option<String>,
         /// Same as `scan --exclude`.

@@ -505,7 +505,7 @@ fn seeknow_unreachable_guidance(detail: &str) -> String {
 /// The loaded `HUNTSMAN_*` key names, sorted for stable, run-to-run-identical
 /// output — `loaded` is a `HashMap`, so an unsorted iteration would print a
 /// different order on every invocation against the identical environment
-/// (`docs/CONVENTIONS.md` §5: "no HashMap-iteration-order leaks into output"),
+/// — no `HashMap` iteration order may leak into output —
 /// exactly the class of bug `rank_unset_keys` just below already guards
 /// against for the unset-keys listing.
 ///

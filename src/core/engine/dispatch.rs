@@ -289,7 +289,7 @@ pub(super) fn module_skip_reason(
     target_distinct_sources: usize,
 ) -> Option<&'static str> {
     let name = module.name();
-    // The allowlist means "ONLY these modules run" (docs/USAGE.md) — and that
+    // The allowlist means "ONLY these modules run" (`hse scan --help`) — and that
     // must hold on EVERY round, not just the seed. Gating it with `!is_expansion`
     // let every non-allowlisted module run on discovered entities during
     // expansion, contradicting the documented contract and (on the Termux target)

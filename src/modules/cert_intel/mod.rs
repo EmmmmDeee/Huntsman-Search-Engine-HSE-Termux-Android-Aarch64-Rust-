@@ -486,8 +486,8 @@ fn extract_serial_hex(der: &[u8]) -> String {
         .join(":")
 }
 
-/// `cargo-fuzz` harness entry point (F.3, the standing "proof & measurement
-/// infrastructure" foundation — `docs/PROBLEM_TREE.md` §3.F). `der` is a
+/// `cargo-fuzz` harness entry point (the standing "proof & measurement
+/// infrastructure" foundation). `der` is a
 /// leaf certificate's raw DER bytes read straight off a live TLS socket
 /// (`process()`'s live-probe path) — fully attacker-controlled, arbitrary
 /// bytes that need not even be valid X.509. This hand-rolled scanner already

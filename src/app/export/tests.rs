@@ -806,14 +806,13 @@ fn join_or_dash_empty_iterator_is_explicit_none() {
 //
 // `export_formats_determinism_audit` above proves byte-reproducibility for one
 // hand-built fixture (double-rendering the same store). This generalises that
-// to the stronger, doctrine-defining property (`docs/CONVENTIONS.md` §5:
-// output is "independent of `HashMap` iteration or task-completion order"):
-// the SAME entities inserted in TWO different orders must export byte-
-// identically. That exercises both order-sensitive legs at once — the store's
-// merge-on-conflict fold and every renderer's own attribute/tag/evidence
-// serialisation — over arbitrary well-formed input rather than a single
-// scenario, closing `SOLUTION_TREE` §4a's C7 "general property, not
-// case-by-case" gap.
+// to the stronger, doctrine-defining property — output must be independent of
+// `HashMap` iteration and task-completion order: the SAME entities inserted in
+// TWO different orders must export byte-identically. That exercises both
+// order-sensitive legs at once — the store's merge-on-conflict fold and every
+// renderer's own attribute/tag/evidence serialisation — over arbitrary
+// well-formed input rather than a single scenario, closing the "general
+// property, not case-by-case" gap.
 mod prop {
     use super::{
         Scan, Store, Target, TargetKind, render_csv, render_debug_bundle, render_full, render_gexf,

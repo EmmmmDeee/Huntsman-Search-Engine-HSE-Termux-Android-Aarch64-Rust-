@@ -128,8 +128,7 @@ const SPA_HTML: &str = include_str!("../../web/spa.html");
 /// look-and-feel dependency: every visual property of the graph (node
 /// colours, sizes, the canvas background) is already this project's own
 /// code. Dropping the vendored alertify build also happens to close a
-/// standing licensing question noted in `docs/PROBLEM_TREE.md` §7
-/// (Deferred — Privacy/Legal/Licensing): alertify was GPL-licensed with no
+/// standing licensing question: alertify was GPL-licensed with no
 /// accompanying `NOTICE`.
 ///
 /// Embedded at compile time so the release artefact is still a single

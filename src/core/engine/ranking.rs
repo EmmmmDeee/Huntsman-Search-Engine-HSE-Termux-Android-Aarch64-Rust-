@@ -20,10 +20,10 @@
 use super::*;
 
 /// One retained identifier ranked by its realised cross-investigation leverage —
-/// the output of [`rank_enrichment_leverage`]. The enrichment-priority asset
-/// `docs/data_retention_design.md` (§3–4.1) names: an identifier observed across
-/// many distinct investigations is the one that most empowers the rest, because
-/// each recurrence is a join that connects two otherwise-separate dossiers.
+/// the output of [`rank_enrichment_leverage`]. The enrichment-priority asset:
+/// an identifier observed across many distinct investigations is the one that
+/// most empowers the rest, because each recurrence is a join that connects two
+/// otherwise-separate dossiers.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct LeverageRanked {
     /// SHA-256 UID of the identifier.
@@ -74,7 +74,7 @@ pub fn enrich_offline_geo(entities: &mut Vec<Entity>, scan_id: &str) {
 
 /// Rank the high-leverage identifiers in `entities` by how many distinct
 /// investigations each one bridges — the "which of my retained data most empowers
-/// the rest" query (`docs/data_retention_design.md` §4.1), and the read-only
+/// the rest" query, and the read-only
 /// counterpart to [`history::link_cross_scan_history`], which writes the same
 /// bridge as evidence.
 ///

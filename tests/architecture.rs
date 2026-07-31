@@ -1760,7 +1760,7 @@ fn correlation_rule_ids_match_their_function_number() {
 /// semantically unrelated findings overwrite/merge into one, corrupting
 /// whichever fires second. This exact collision shipped once — a missed
 /// renumbering from a 2026-06-25 `origin/main` merge that unioned two
-/// independently-numbered rule sets (see `docs/SOLUTION_TREE.md`) — and was
+/// independently-numbered rule sets — and was
 /// only caught by a dedicated audit, not by the test suite. This closes that
 /// gap permanently: a number is collected with EVERY distinct
 /// `rule_au_<NNN>_<name>` function that declares it, and fails if any number
@@ -1947,7 +1947,7 @@ fn readme_module_overview_count_matches_registry() {
 /// The README's "Deterministic correlator: N rules (E entity + R graph-aware
 /// relation)" line is hand-maintained prose and had already drifted once
 /// (stated 108 while the registry held 109, immediately after a rule was
-/// added and only `docs/ARCHITECTURE_AUDIT.md` was reconciled). Tie it to
+/// added and the README was left unreconciled). Tie it to
 /// [`huntsman_search_engine::core::correlator::rule_counts`] so it can't
 /// silently rot again — the same no-silent-drift guard as
 /// `readme_module_overview_count_matches_registry`.
@@ -1963,7 +1963,7 @@ fn readme_correlator_rule_count_matches_registry() {
     assert!(
         readme.contains(&needle),
         "README must cite the live correlator rule split ({needle:?}); update \
-         README.md (and docs/ARCHITECTURE_AUDIT.md) after adding/removing a rule"
+         README.md after adding/removing a rule"
     );
 }
 
@@ -1975,7 +1975,8 @@ fn readme_correlator_rule_count_matches_registry() {
 /// into a mechanical CI check — adding e.g. `candle`, `onnxruntime`, an LLM SDK,
 /// `tokenizers`, or `qdrant-client` fails here. External OSINT *data* APIs
 /// (registries, breach corpora, geocoders) are data sources, not AI services,
-/// and are deliberately unaffected. See `docs/RUNTIME_INDEPENDENCE.md`.
+/// and are deliberately unaffected. The charter is the architecture-invariant
+/// header of `src/lib.rs`.
 #[test]
 fn runtime_carries_no_ai_ml_inference_dependency() {
     let lock = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"))
@@ -2044,7 +2045,8 @@ fn runtime_carries_no_ai_ml_inference_dependency() {
         "RUNTIME_INDEPENDENCE violation — AI/ML/inference crate(s) entered the \
          dependency tree: {offenders:?}. HSE's runtime must stay deterministic \
          Rust with no AI / LLM / vector / embedding dependency (AI is a \
-         development-time accelerator only). See docs/RUNTIME_INDEPENDENCE.md."
+         development-time accelerator only). The charter is the \
+         architecture-invariant header of src/lib.rs."
     );
 }
 
@@ -2600,4 +2602,233 @@ fn core_extract_is_deterministic() {
             .any(|c| c.kind == huntsman_search_engine::core::entity::EntityKind::IpAddress),
         "expected an IP entity"
     );
+}
+
+/// The SeekNow coverage ledger in `src/util/see_know/integration_tests.rs`
+/// declares, per endpoint, whether HSE actually calls it. Its own header calls
+/// it an "honest coverage ledger … each with its REAL, live-verified-or-code-
+/// confirmed wiring status — not an assumption". Being hand-maintained, it
+/// drifted the moment the code moved: `/search/deep` was wired (dispatched by
+/// `modules::see_know` on a typed fast-search miss, implemented as a real
+/// `POST` in `util::see_know::endpoints::search_deep`) while the ledger still
+/// carried it as `NotImplemented` and pinned "18 wired" — against
+/// `docs/SEEKNOW_SETUP.md`'s correct 19.
+///
+/// A ledger that asserts its own honesty while being wrong is worse than no
+/// ledger, and the ledger cannot check itself: `util::see_know` may not reach
+/// `modules::see_know::endpoints` (`modules` depends on `util`, never the
+/// reverse), so the check has to live outside the layering — here. Both
+/// directions are enforced: a path the ledger calls wired must actually be
+/// requested, and a path it calls unwired must not be.
+#[test]
+fn see_know_endpoint_ledger_matches_the_dispatch_code() {
+    use std::collections::BTreeSet;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    // ── What the code actually requests ─────────────────────────────────────
+    let mut dispatched: BTreeSet<String> = BTreeSet::new();
+
+    // The table-driven single-parameter GETs: `EndpointCall::spec` is the single
+    // source of truth for `(label, path, param)`, and `invoke` drives every one
+    // of them through `get_path`.
+    let spec_src = fs::read_to_string(root.join("src/modules/see_know/endpoints/mod.rs"))
+        .expect("see_know endpoint spec table must exist");
+    let spec_body = spec_src
+        .split_once("fn spec(self)")
+        .expect("EndpointCall::spec must exist")
+        .1
+        .split_once("\n    }")
+        .expect("EndpointCall::spec must be a closed block")
+        .0;
+    for line in spec_body.lines() {
+        // `Self::Variant => ("label", "path", "param"),`
+        let lits = double_quoted_literals(line);
+        if lits.len() == 3 {
+            dispatched.insert(normalise_endpoint_path(&lits[1]));
+        }
+    }
+
+    // The hand-written call sites that name their path literally.
+    let endpoints_src = fs::read_to_string(root.join("src/util/see_know/endpoints.rs"))
+        .expect("see_know endpoints module must exist");
+    for line in endpoints_src.lines() {
+        for needle in [
+            "post_json_with_fallback(",
+            "get_raw_with_fallback(",
+            "get_path(key, ",
+        ] {
+            if let Some((_, rest)) = line.split_once(needle)
+                && let Some(lit) = double_quoted_literals(rest).into_iter().next()
+            {
+                dispatched.insert(normalise_endpoint_path(&lit));
+            }
+        }
+    }
+
+    assert!(
+        dispatched.len() >= 15,
+        "endpoint extraction found only {} path(s) — the parser has drifted from \
+         the dispatch code's shape, so this guard would pass vacuously. Fix the \
+         extraction above before trusting a green run: {dispatched:?}",
+        dispatched.len()
+    );
+
+    // `gaming/steam` is dispatched but deliberately absent from the ledger: the
+    // ledger enumerates the vendor's own documented 24, and SeekNow does not
+    // publish this one (`docs/SEEKNOW_SETUP.md`: "Also wired but not part of the
+    // vendor's own documented 24").
+    let undocumented_but_wired: BTreeSet<String> = ["/gaming/steam".to_string()].into();
+
+    // ── What the ledger claims ──────────────────────────────────────────────
+    let ledger_src = fs::read_to_string(root.join("src/util/see_know/integration_tests.rs"))
+        .expect("see_know coverage ledger must exist");
+    let mut ledger: Vec<(String, String)> = Vec::new();
+    let mut pending_path: Option<String> = None;
+    for line in ledger_src.lines() {
+        let t = line.trim();
+        if let Some(v) = t.strip_prefix("path: ") {
+            if let Some(lit) = double_quoted_literals(v).into_iter().next() {
+                pending_path = Some(normalise_endpoint_path(&lit));
+            }
+        } else if let Some(v) = t.strip_prefix("wired: Wired::")
+            && let Some(p) = pending_path.take()
+        {
+            ledger.push((p, v.trim_end_matches(',').to_string()));
+        }
+    }
+    assert_eq!(
+        ledger.len(),
+        24,
+        "the ledger must enumerate SeekNow's 24 documented endpoints; parsed {} \
+         — check the `EndpointSpec` literal shape this guard scans for",
+        ledger.len()
+    );
+
+    // ── Both directions ─────────────────────────────────────────────────────
+    let mut drift: Vec<String> = Vec::new();
+    for (path, wired) in &ledger {
+        let claims_wired = wired == "Yes";
+        let is_dispatched = dispatched.contains(path);
+        if claims_wired != is_dispatched {
+            drift.push(format!(
+                "{path}: ledger says Wired::{wired} but the dispatch code {} request it",
+                if is_dispatched { "DOES" } else { "does NOT" }
+            ));
+        }
+    }
+    let ledger_paths: BTreeSet<&String> = ledger.iter().map(|(p, _)| p).collect();
+    for path in &dispatched {
+        if !ledger_paths.contains(path) && !undocumented_but_wired.contains(path) {
+            drift.push(format!(
+                "{path}: requested by the dispatch code but absent from the ledger \
+                 (add it, or record it as deliberately-undocumented in this guard)"
+            ));
+        }
+    }
+
+    assert!(
+        drift.is_empty(),
+        "SeekNow coverage ledger has drifted from the dispatch code:\n  {}\n\
+         Update `ENDPOINTS` in src/util/see_know/integration_tests.rs (and the \
+         wired counts in docs/SEEKNOW_SETUP.md) to match what the code calls.",
+        drift.join("\n  ")
+    );
+}
+
+/// Every double-quoted literal on `line`. Naive on escapes — no endpoint path
+/// or spec label in the tables this scans contains one.
+fn double_quoted_literals(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = line;
+    while let Some(open) = rest.find('"') {
+        let tail = &rest[open + 1..];
+        let Some(close) = tail.find('"') else { break };
+        out.push(tail[..close].to_string());
+        rest = &tail[close + 1..];
+    }
+    out
+}
+
+/// SeekNow paths are written with a leading slash in some call sites
+/// (`post_json_with_fallback("/search")`) and without in others
+/// (`get_path(key, "gaming/steam")`). Compare on one canonical form.
+fn normalise_endpoint_path(p: &str) -> String {
+    format!("/{}", p.trim_start_matches('/'))
+}
+
+/// Every `docs/<NAME>.md` path cited from `src/` or `tests/` must actually
+/// exist. A citation is a promise that the reader can follow it; 23 citations
+/// across 16 files pointed at nine documents that have never existed in this
+/// repository — including the crate-root architecture header in `src/lib.rs`
+/// and, worse, the remediation text of two assertions in this very file, which
+/// told a developer who had just tripped a guard to go read something they
+/// could never open.
+///
+/// Unresolvable provenance is the failure the Operational Constitution names
+/// directly: an authority that cannot be consulted reads as support while
+/// supplying none. This makes the citation mechanical — either the document is
+/// in the tree, or the reference is not in the code. When there is no document,
+/// cite the real authority instead: the running software (`hse --help`,
+/// `hse modules`), the enforcing test, or the code that defines the contract.
+#[test]
+fn every_cited_docs_file_exists() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    collect_rs_files(&root.join("src"), &mut files);
+    collect_rs_files(&root.join("tests"), &mut files);
+    files.sort();
+
+    let mut dangling: Vec<String> = Vec::new();
+    for path in &files {
+        let content = fs::read_to_string(path).unwrap();
+        for (i, line) in content.lines().enumerate() {
+            for cited in cited_docs_paths(line) {
+                if !root.join(&cited).is_file() {
+                    dangling.push(format!(
+                        "{}:{}: cites {cited}",
+                        path.strip_prefix(root).unwrap_or(path).display(),
+                        i + 1
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        dangling.is_empty(),
+        "source cites documentation that does not exist — add the document, or \
+         cite the real authority (the running software, the enforcing test, or \
+         the code that defines the contract):\n  {}",
+        dangling.join("\n  ")
+    );
+}
+
+/// Every repo-relative `docs/<NAME>.md` mentioned on one line.
+///
+/// Deliberately literal on both ends. It only matches a path under the `docs/`
+/// directory, so prose that merely names a concept (the bare
+/// `PROBLEM_TREE T2.11`-style change-tracking tags scattered through this
+/// crate) is untouched — this guard is about references that promise a *file*.
+/// And an occurrence preceded by `/` is a URL segment, not a repo path
+/// (`npm_author` cites the npm registry's own
+/// `github.com/npm/registry/blob/master/docs/REGISTRY-API.md`), so it is
+/// skipped: this guard resolves paths against *this* tree and has no business
+/// asserting anything about someone else's.
+fn cited_docs_paths(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (at, _) in line.match_indices("docs/") {
+        if line[..at].ends_with('/') {
+            continue;
+        }
+        let tail = &line[at + "docs/".len()..];
+        let end = tail
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.'))
+            .unwrap_or(tail.len());
+        let name = &tail[..end];
+        if name.ends_with(".md") && name.len() > 3 {
+            out.push(format!("docs/{name}"));
+        }
+    }
+    out
 }

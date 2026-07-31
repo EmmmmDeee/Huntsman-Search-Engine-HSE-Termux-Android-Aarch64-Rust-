@@ -64,7 +64,7 @@ impl Module for CellIntel {
         // still egress. This is intentional (it lives in
         // engine::LOCAL_PASSIVE_MODULES as a seed-round sensor); a strict
         // no-egress guarantee would require gating the OpenCellID step on a
-        // passive flag. Documented in docs/MODULES.md.
+        // passive flag. Surfaced to the operator by `hse modules`.
         true
     }
 
