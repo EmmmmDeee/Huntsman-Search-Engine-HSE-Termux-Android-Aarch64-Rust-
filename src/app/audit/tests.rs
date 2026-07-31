@@ -92,3 +92,79 @@ use super::*;
             "empty-result should produce a HIGH finding that triggers non-zero exit"
         );
     }
+
+/// `hse export --format csv` then `hse audit --csv` must round-trip values
+/// byte-for-byte.
+///
+/// The exporter defangs spreadsheet formula injection by prepending `'` to any
+/// value starting with `= + - @ TAB CR '` (OWASP guidance — a hostile
+/// `first_name = "=cmd|'/c calc'!A1"` would otherwise be RCE on the operator's
+/// workstation when they open the file). `csv_escape`'s own doc calls that a
+/// "clean bijection", and the import path reverses it. This parser did not, so
+/// the guard leaked into the audited data:
+///
+///   * a southern-hemisphere coordinate `-33.8688,151.2093` audited as
+///     `'-33.8688,151.2093`, which `parse_coords` cannot read — so the finding
+///     vanished from the geo cross-validation that is the whole point of
+///     auditing coordinates;
+///   * an E.164 phone `+61...` audited as `'+61...`, failing the same validity
+///     shape the phone rules apply.
+///
+/// Every affected value is one an Australian-focused OSINT tool sees constantly.
+#[test]
+fn csv_audit_reverses_the_export_formula_guard() {
+    use crate::api::scan_export::csv_escape;
+
+    // The exact values an export would defang, escaped by the real exporter so
+    // this test cannot drift from the escaping it is meant to invert.
+    let cases = [
+        ("coordinates", "-33.8688,151.2093"),
+        ("phone", "+61712345678"),
+        ("person", "=cmd|'/c calc'!A1"),
+        ("username", "@handle"),
+        ("domain", "'quoted.example"),
+        ("email", "plain@example.com"), // untouched by the guard
+    ];
+
+    let mut csv = String::from("kind,value,confidence,c_effective,corroboration,sources,tags\n");
+    for (kind, value) in cases {
+        csv.push_str(&format!(
+            "{},{},0.900,0.900,1,test,\n",
+            csv_escape(kind),
+            csv_escape(value)
+        ));
+    }
+
+    let parsed = super::parse_csv(&csv).expect("parse");
+    assert_eq!(parsed.len(), cases.len(), "every row must parse");
+    for (got, (kind, want)) in parsed.iter().zip(cases) {
+        assert_eq!(got.kind, kind);
+        assert_eq!(
+            got.value, want,
+            "value must survive the export guard unchanged; a leading apostrophe here \
+             means the audit is analysing a value the scan never found"
+        );
+    }
+}
+
+/// The audited coordinate must actually be parseable — the consequence the test
+/// above exists to prevent, asserted against the real geo path rather than
+/// inferred from the string.
+#[test]
+fn a_guarded_negative_coordinate_still_reaches_the_geo_audit() {
+    use crate::api::scan_export::csv_escape;
+
+    let mut csv = String::from("kind,value,confidence,c_effective,corroboration,sources,tags\n");
+    for coord in ["-33.8688,151.2093", "-33.8700,151.2100"] {
+        csv.push_str(&format!(
+            "coordinates,{},0.900,0.900,1,exif_geo,\n",
+            csv_escape(coord)
+        ));
+    }
+    let parsed = super::parse_csv(&csv).expect("parse");
+    let report = crate::audit::audit(&parsed, crate::audit::LogSignals::default());
+    assert_eq!(
+        report.geo.coord_count, 2,
+        "both guarded coordinates must be recognised as coordinates by the geo audit"
+    );
+}

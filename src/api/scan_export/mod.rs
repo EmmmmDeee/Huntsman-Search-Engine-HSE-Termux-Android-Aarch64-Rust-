@@ -578,6 +578,35 @@ pub(crate) fn csv_escape(s: &str) -> String {
     }
 }
 
+/// Reverse [`csv_escape`]'s anti-formula-injection guard: strip a SINGLE leading
+/// apostrophe.
+///
+/// Defined here, beside the escape it inverts, because the two are one
+/// bijection and a bijection with its halves in different modules is not one
+/// for long. It previously lived private to `app::import::csv`, so the CSV
+/// reader in `app::audit` — a SECOND reader of the very same file format in the
+/// same binary — never applied it. `hse export --format csv | hse audit --csv`
+/// therefore audited `'-33.8688,151.2093` for a Sydney coordinate and
+/// `'+61712345678` for an E.164 phone: values the scan never found. The
+/// coordinate case was silently destructive, since `parse_coords` cannot read
+/// the guarded form, so the finding dropped out of the geo cross-validation
+/// that is the entire reason to audit coordinates.
+///
+/// Exact inverse by construction: `csv_escape` prepends `'` iff the first byte
+/// is a formula trigger (`= + - @ TAB CR`) **or** is itself `'`, so stripping
+/// exactly one leading `'` restores any value byte-for-byte at any nesting.
+/// Stripping only on `'`+trigger would not be invertible — a genuine `'=hunter`
+/// exports unchanged and would lose its real apostrophe. HSE is the only source
+/// of that prefix. Pure.
+#[must_use]
+pub(crate) fn strip_csv_formula_guard(v: &str) -> &str {
+    if v.as_bytes().first() == Some(&b'\'') {
+        &v[1..]
+    } else {
+        v
+    }
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

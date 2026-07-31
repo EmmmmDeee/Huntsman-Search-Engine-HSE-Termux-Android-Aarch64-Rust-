@@ -123,8 +123,23 @@ fn parse_csv(text: &str) -> Result<Vec<AuditEntity>> {
         }
         let f = split_csv(line);
         let get = |i: Option<usize>| i.and_then(|i| f.get(i)).map_or("", String::as_str);
-        let kind = f.get(ci_kind).cloned().unwrap_or_default();
-        let value = f.get(ci_val).cloned().unwrap_or_default();
+        // Reverse the exporter's anti-formula-injection guard. `csv_escape`
+        // prepends `'` to any cell starting with `= + - @ TAB CR '`, and without
+        // undoing it this parser audited values the scan never found: a Sydney
+        // coordinate arrived as `'-33.8688,151.2093`, which `parse_coords`
+        // cannot read, so it dropped out of the geo cross-validation entirely;
+        // an E.164 phone arrived as `'+61…`. Both shapes are everyday data for
+        // an AU-focused tool. The import parser had always done this — the two
+        // readers of the same format simply disagreed, which is why the inverse
+        // now lives beside the escape rather than private to one of them.
+        let kind = crate::api::scan_export::strip_csv_formula_guard(
+            f.get(ci_kind).map_or("", String::as_str),
+        )
+        .to_string();
+        let value = crate::api::scan_export::strip_csv_formula_guard(
+            f.get(ci_val).map_or("", String::as_str),
+        )
+        .to_string();
         if kind.is_empty() {
             continue;
         }

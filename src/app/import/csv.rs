@@ -297,25 +297,11 @@ fn kind_from_str(s: &str) -> Option<EntityKind> {
 }
 
 /// Reconstruct entities from HSE's own CSV export, faithfully restoring each
-/// Reverse HSE's CSV anti-formula-injection guard. `api::scan_export::csv_escape`
-/// prepends a single apostrophe when a cell's first byte is a formula trigger
-/// (`= + - @ TAB CR`) OR is itself an apostrophe (so Excel/LibreOffice render it
-/// as text, not a formula). That escape is a bijection: it adds a `'` iff the
-/// first byte is a trigger or `'`, so its exact inverse is to strip a SINGLE
-/// leading `'`. HSE is the only source of that prefix, so an export→re-import
-/// round-trip restores the value byte-for-byte — otherwise it would accrete an
-/// apostrophe every cycle (or, for genuine leading-apostrophe values, LOSE one).
-///
-/// Stripping only on `'`+trigger (the previous rule) was NOT invertible: a
-/// genuine `'=hunter` exported unchanged and then had its real apostrophe
-/// stripped on import. Matching the export's full guard set closes that. Pure.
-fn strip_csv_formula_guard(v: &str) -> &str {
-    if v.as_bytes().first() == Some(&b'\'') {
-        &v[1..]
-    } else {
-        v
-    }
-}
+/// The shared CSV formula-guard inverse. Re-exported rather than redefined:
+/// `api::scan_export` owns both halves of the bijection so a second reader
+/// cannot silently diverge from the escape (which is exactly what happened to
+/// `app::audit`'s reader while this lived here privately).
+use crate::api::scan_export::strip_csv_formula_guard;
 
 /// row's kind, value, confidence, tags, and evidence (the `[source] summary`
 /// trail). Pure — unit-tested. The `import`/`hse-csv` tags mark the provenance
