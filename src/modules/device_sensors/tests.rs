@@ -252,8 +252,13 @@ fn evidence_attributes_populated() {
     );
 }
 
+/// A field the OS did not supply must be *absent* from the evidence, not
+/// recorded as `0`. Zero is a legitimate reading for every one of these —
+/// sea level, stationary, due north — so defaulting an unknown to zero would
+/// publish an assumption as an observation. The always-present fields and the
+/// `provider` fallback still hold.
 #[test]
-fn missing_optional_fields_default_to_zero() {
+fn missing_optional_fields_are_omitted_not_zeroed() {
     let json = br#"{"latitude":10.0,"longitude":20.0}"#;
     let r = parse_fix(json, "test");
     assert_eq!(r.entities.len(), 1);
@@ -262,14 +267,35 @@ fn missing_optional_fields_default_to_zero() {
         ev.attributes.get("provider").expect("should succeed"),
         "network"
     );
-    assert_eq!(ev.attributes.get("altitude").expect("should succeed"), "0");
+    assert_eq!(ev.attributes.get("latitude").expect("should succeed"), "10");
     assert_eq!(
-        ev.attributes.get("accuracy_m").expect("should succeed"),
-        "0"
+        ev.attributes.get("longitude").expect("should succeed"),
+        "20"
     );
+    for absent in ["altitude", "accuracy_m", "speed", "bearing"] {
+        assert!(
+            !ev.attributes.contains_key(absent),
+            "{absent} was not supplied by the OS and must be omitted, not defaulted to 0"
+        );
+    }
+    assert!((r.entities[0].confidence - confidence::HIGH).abs() < 1e-6);
+}
+
+/// The complement of the test above: a genuine zero reading that the OS *did*
+/// supply must still be recorded, so omission unambiguously means "unknown".
+#[test]
+fn supplied_zero_readings_are_recorded() {
+    let json = br#"{"latitude":10.0,"longitude":20.0,"altitude":0.0,"speed":0.0,"bearing":0.0}"#;
+    let r = parse_fix(json, "test");
+    assert_eq!(r.entities.len(), 1);
+    let ev = &r.entities[0].evidence[0];
+    assert_eq!(ev.attributes.get("altitude").expect("should succeed"), "0");
     assert_eq!(ev.attributes.get("speed").expect("should succeed"), "0");
     assert_eq!(ev.attributes.get("bearing").expect("should succeed"), "0");
-    assert!((r.entities[0].confidence - confidence::HIGH).abs() < 1e-6);
+    assert!(
+        !ev.attributes.contains_key("accuracy_m"),
+        "accuracy was not supplied and must stay absent"
+    );
 }
 
 #[test]

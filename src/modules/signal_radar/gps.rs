@@ -31,16 +31,26 @@ fn parse_fix(stdout: &[u8], scan_id: &str) -> ModuleResult {
         e.tag(format!("accuracy:{}m", a as u64));
     }
 
-    e.add_evidence(
+    // Optional sensor fields are recorded only when the OS actually supplied
+    // them — see the matching note in `device_sensors::gps::parse_fix`. An
+    // absent reading defaulted to `0.0` is indistinguishable from a genuine
+    // measurement of zero, so it is left absent instead.
+    let ev = [
+        ("altitude", fix.altitude),
+        ("accuracy_m", fix.accuracy),
+        ("speed", fix.speed),
+        ("bearing", fix.bearing),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| value.map(|v| (key, v)))
+    .fold(
         Evidence::new(SRC, format!("Location fix via {provider}"))
             .with_attr("latitude", fix.latitude.to_string())
-            .with_attr("longitude", fix.longitude.to_string())
-            .with_attr("altitude", fix.altitude.unwrap_or(0.0).to_string())
-            .with_attr("accuracy_m", fix.accuracy.unwrap_or(0.0).to_string())
-            .with_attr("speed", fix.speed.unwrap_or(0.0).to_string())
-            .with_attr("bearing", fix.bearing.unwrap_or(0.0).to_string())
-            .with_attr("provider", provider),
-    );
+            .with_attr("longitude", fix.longitude.to_string()),
+        |ev, (key, v)| ev.with_attr(key, v.to_string()),
+    )
+    .with_attr("provider", provider);
+    e.add_evidence(ev);
 
     let mut result = ModuleResult {
         entities: Vec::with_capacity(1),

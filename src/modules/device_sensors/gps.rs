@@ -37,16 +37,28 @@ pub(super) fn parse_fix(stdout: &[u8], scan_id: &str) -> ModuleResult {
     if let Some(a) = fix.accuracy.filter(|a| *a > 0.0) {
         e.tag(format!("accuracy:{}m", a as u64));
     }
-    e.add_evidence(
+    // Optional sensor fields are recorded only when the OS actually supplied
+    // them. Defaulting an absent reading to `0.0` would be indistinguishable
+    // from a real measurement of zero — sea level, stationary, due north are
+    // all legitimate values — so a missing field is left absent rather than
+    // asserted as an observation. Same `filter_map`/`fold` shape as
+    // `gravatar::extract_entry`.
+    let ev = [
+        ("altitude", fix.altitude),
+        ("accuracy_m", fix.accuracy),
+        ("speed", fix.speed),
+        ("bearing", fix.bearing),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| value.map(|v| (key, v)))
+    .fold(
         Evidence::new(SRC, format!("Location fix via {provider}"))
             .with_attr("latitude", fix.latitude.to_string())
-            .with_attr("longitude", fix.longitude.to_string())
-            .with_attr("altitude", fix.altitude.unwrap_or(0.0).to_string())
-            .with_attr("accuracy_m", fix.accuracy.unwrap_or(0.0).to_string())
-            .with_attr("speed", fix.speed.unwrap_or(0.0).to_string())
-            .with_attr("bearing", fix.bearing.unwrap_or(0.0).to_string())
-            .with_attr("provider", provider),
-    );
+            .with_attr("longitude", fix.longitude.to_string()),
+        |ev, (key, v)| ev.with_attr(key, v.to_string()),
+    )
+    .with_attr("provider", provider);
+    e.add_evidence(ev);
 
     let mut result = ModuleResult {
         entities: Vec::with_capacity(1),
