@@ -48,7 +48,7 @@ pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> Result<ModuleResult
         return Ok(ModuleResult::new());
     }
     let cells: Vec<Cell> = serde_json::from_slice(cellinfo)
-        .map_err(|e| super::unparseable("telephony-cellinfo", &e))?;
+        .map_err(|e| super::unparseable(super::Sensor::CellInfo, &e))?;
 
     let mut result = ModuleResult::with_capacity(cells.len());
 

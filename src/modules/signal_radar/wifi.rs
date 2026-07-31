@@ -48,8 +48,8 @@ pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
     if super::is_blank(stdout) {
         return Ok(ModuleResult::new());
     }
-    let aps: Vec<Ap> =
-        serde_json::from_slice(stdout).map_err(|e| super::unparseable("wifi-scaninfo", &e))?;
+    let aps: Vec<Ap> = serde_json::from_slice(stdout)
+        .map_err(|e| super::unparseable(super::Sensor::WifiScan, &e))?;
 
     let mut result = ModuleResult::with_capacity(aps.len());
 

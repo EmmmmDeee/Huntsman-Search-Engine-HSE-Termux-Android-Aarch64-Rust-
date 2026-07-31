@@ -45,6 +45,125 @@
 
 use crate::core::error::Error;
 
+/// One fixed-invocation Termux sensor tool: its name, its timeout budget, and
+/// the label its malfunctions are reported under.
+///
+/// These three facts belong together and were previously written out by hand at
+/// every call site, in two different vocabularies — the tool as
+/// `"termux-wifi-scaninfo"` and the label as `"wifi-scaninfo"` — so nothing tied
+/// them to each other or to the timeout. They drifted: `termux-wifi-scaninfo`
+/// was invoked at 8 s by `signal_radar` and at 5 s by `wifi_intel`, which is not
+/// merely untidy. Both callers key the same entry in
+/// [`crate::util::termux`]'s skip cache (same binary, same empty argv), so the
+/// 5 s caller could time out and back the tool off for the 8 s caller — which
+/// might have succeeded had it been allowed its own budget. One tool cannot
+/// coherently have two deadlines; this type is where it gets one.
+///
+/// `termux-location` is deliberately absent. It is invoked as a ladder of four
+/// differently-parameterised stages with per-stage budgets (12 s fresh GPS lock
+/// down to 3 s cache reads), so it has no single timeout to own; that ladder is
+/// already single-sourced in `signal_radar::gps` and `crate::modules::device_fix`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Sensor {
+    /// Full Wi-Fi AP scan — the radar's primary sighting source.
+    WifiScan,
+    /// The currently-associated network only (fast, no scan).
+    WifiConnection,
+    /// Serving + neighbour cell towers.
+    CellInfo,
+    /// BLE/BT beacon scan.
+    BluetoothScan,
+}
+
+impl Sensor {
+    /// Every variant, so the invariant tests below cover the whole family
+    /// rather than whichever variants someone remembered to list.
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 4] = [
+        Self::WifiScan,
+        Self::WifiConnection,
+        Self::CellInfo,
+        Self::BluetoothScan,
+    ];
+
+    /// The `termux-*` executable.
+    pub(crate) const fn tool(self) -> &'static str {
+        match self {
+            Self::WifiScan => "termux-wifi-scaninfo",
+            Self::WifiConnection => "termux-wifi-connectioninfo",
+            Self::CellInfo => "termux-telephony-cellinfo",
+            Self::BluetoothScan => "termux-bluetooth-scaninfo",
+        }
+    }
+
+    /// Hard timeout for this tool, in milliseconds — the single deadline every
+    /// caller shares.
+    ///
+    /// Where callers disagreed, the LONGER budget wins: a scan that genuinely
+    /// needs 8 s must not be killed at 5 s and reported as "nothing in range",
+    /// and since a timeout now backs the invocation off along an escalating
+    /// ladder rather than latching, a truly wedged tool costs its full budget
+    /// rarely instead of once per sweep.
+    pub(crate) const fn timeout_ms(self) -> u64 {
+        match self {
+            // Was 8 s (signal_radar) vs 5 s (wifi_intel) — reconciled upward.
+            Self::WifiScan => 8_000,
+            Self::WifiConnection => 3_000,
+            Self::CellInfo => 5_000,
+            // A BT scan is a timed radio sweep, not a query; it is slow by design.
+            Self::BluetoothScan => 10_000,
+        }
+    }
+
+    /// Short name used when reporting a malfunction — the tool without its
+    /// `termux-` prefix. Kept in lockstep with [`Self::tool`] by
+    /// `label_is_the_tool_without_its_prefix`, so the two spellings of one fact
+    /// cannot drift.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::WifiScan => "wifi-scaninfo",
+            Self::WifiConnection => "wifi-connectioninfo",
+            Self::CellInfo => "telephony-cellinfo",
+            Self::BluetoothScan => "bluetooth-scaninfo",
+        }
+    }
+
+    /// Run the tool under its own timeout, returning stdout on a clean exit.
+    ///
+    /// The `None` arm keeps [`crate::util::termux::termux_cmd`]'s contract: tool
+    /// absent, timed out, or exited non-zero — nothing observed, and nothing
+    /// this module can attest to. Most callers want [`read_and_parse`], which
+    /// applies that contract for them.
+    pub(crate) async fn read(self) -> Option<Vec<u8>> {
+        crate::util::termux::termux_cmd(self.tool(), &[], self.timeout_ms()).await
+    }
+}
+
+/// Read `sensor` and hand its stdout to `parse`, applying the absent-tool row of
+/// this module's contract table: no output at all is an empty `Ok` — nothing was
+/// observed, and nothing malfunctioned that the caller can attest to.
+///
+/// That row was documented here but *implemented* separately by each of the four
+/// sensor call sites, every one re-deriving the same `match … { Some => parse,
+/// None => empty }` and re-stating the same reasoning in a comment. Documenting a
+/// contract in one place while implementing it in four is how the family drifted
+/// apart the first time; this is the contract as code.
+///
+/// The blank and unparseable rows stay with `parse`, because only the caller
+/// knows the payload's shape — it applies [`is_blank`] and [`unparseable_for`].
+pub(crate) async fn read_and_parse<F>(
+    sensor: Sensor,
+    parse: F,
+) -> crate::core::error::Result<crate::core::module::ModuleResult>
+where
+    F: FnOnce(&[u8]) -> crate::core::error::Result<crate::core::module::ModuleResult>,
+{
+    match sensor.read().await {
+        Some(stdout) => parse(&stdout),
+        None => Ok(crate::core::module::ModuleResult::new()),
+    }
+}
+
 /// True when a sensor tool exited 0 but printed nothing meaningful.
 ///
 /// Whitespace-only counts as blank: a tool that emits a bare newline has
@@ -61,8 +180,19 @@ pub(crate) fn is_blank(stdout: &[u8]) -> bool {
 /// `src` is the emitting module's evidence-source tag (its `SRC`/`SOURCE`
 /// constant); `sensor` names the specific tool (e.g. `"wifi-scaninfo"`) so a
 /// multi-sensor module's error identifies which one failed.
+///
+/// Prefer [`unparseable_for`], which takes the [`Sensor`] itself and so cannot
+/// name a tool the caller did not actually read. This string form remains for
+/// the one sensor outside [`Sensor`]'s remit — `termux-location`, whose ladder
+/// lives in [`crate::modules::device_fix`].
 pub(crate) fn unparseable(src: &'static str, sensor: &str, e: &serde_json::Error) -> Error {
     Error::module(src, format!("{sensor}: unparseable tool output ({e})"))
+}
+
+/// [`unparseable`] with the sensor's label taken from the [`Sensor`] itself, so
+/// the reported tool is necessarily the one that was read.
+pub(crate) fn unparseable_for(src: &'static str, sensor: Sensor, e: &serde_json::Error) -> Error {
+    unparseable(src, sensor.label(), e)
 }
 
 #[cfg(test)]
@@ -91,6 +221,63 @@ mod tests {
                 "{:?} must not count as blank",
                 String::from_utf8_lossy(payload)
             );
+        }
+    }
+
+    /// The two spellings of one fact must stay in lockstep. Without this, a new
+    /// sensor can be added whose error label names a different tool than the one
+    /// actually invoked — which is precisely the class of drift this type exists
+    /// to end.
+    #[test]
+    fn label_is_the_tool_without_its_prefix() {
+        for s in Sensor::ALL {
+            assert_eq!(
+                s.tool().strip_prefix("termux-"),
+                Some(s.label()),
+                "{s:?}: label must be its tool minus the `termux-` prefix"
+            );
+        }
+    }
+
+    /// Every sensor is a distinct tool, and every budget is a real one. A zero
+    /// timeout would make `termux_cmd` cancel the spawn instantly and cache the
+    /// tool as backing-off, silently disabling the sensor forever.
+    #[test]
+    fn every_sensor_is_distinct_and_has_a_usable_budget() {
+        let mut tools: Vec<&str> = Sensor::ALL.iter().map(|s| s.tool()).collect();
+        tools.sort_unstable();
+        let before = tools.len();
+        tools.dedup();
+        assert_eq!(before, tools.len(), "two variants name the same tool");
+
+        for s in Sensor::ALL {
+            assert!(
+                s.timeout_ms() > 0,
+                "{s:?}: a zero budget disables the sensor"
+            );
+            assert!(
+                s.tool().starts_with("termux-"),
+                "{s:?}: not a termux-api tool"
+            );
+        }
+    }
+
+    /// The drift that motivated this type: one tool, one deadline. Both callers
+    /// of the Wi-Fi scan share a skip-cache entry, so two budgets meant the
+    /// shorter one could back the tool off for the longer one. Pinned at the
+    /// reconciled (longer) value so a future edit back to 5s is a test failure,
+    /// not a silent regression.
+    #[test]
+    fn the_wifi_scan_budget_is_the_reconciled_longer_one() {
+        assert_eq!(Sensor::WifiScan.timeout_ms(), 8_000);
+    }
+
+    #[test]
+    fn unparseable_for_derives_the_label_from_the_sensor() {
+        let e = serde_json::from_slice::<Vec<u32>>(b"nope").expect_err("must fail to parse");
+        for s in Sensor::ALL {
+            let msg = unparseable_for("m", s, &e).to_string();
+            assert!(msg.contains(s.label()), "{s:?}: label missing from {msg}");
         }
     }
 

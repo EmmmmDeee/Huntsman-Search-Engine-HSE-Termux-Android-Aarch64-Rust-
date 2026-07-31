@@ -42,11 +42,13 @@ pub(super) const SRC: &str = "signal_radar";
 // The blank-vs-unparseable contract is single-sourced in
 // `crate::modules::termux_sensor`; re-exported here so this module's sensor
 // submodules keep calling `super::is_blank` / `super::unparseable`.
-pub(super) use crate::modules::termux_sensor::is_blank;
+pub(super) use crate::modules::termux_sensor::{Sensor, is_blank};
 
-/// [`crate::modules::termux_sensor::unparseable`] bound to this module's `SRC`.
-pub(super) fn unparseable(sensor: &str, e: &serde_json::Error) -> Error {
-    crate::modules::termux_sensor::unparseable(SRC, sensor, e)
+/// [`crate::modules::termux_sensor::unparseable_for`] bound to this module's
+/// `SRC`. Takes the [`Sensor`] rather than a label string, so an error can only
+/// name a tool this module actually reads.
+pub(super) fn unparseable(sensor: Sensor, e: &serde_json::Error) -> Error {
+    crate::modules::termux_sensor::unparseable_for(SRC, sensor, e)
 }
 
 pub struct SignalRadar;
@@ -152,12 +154,10 @@ fn combine_sensors(outcomes: [Result<ModuleResult>; 5]) -> Result<ModuleResult> 
 
 /// Fetch and parse `termux-wifi-scaninfo`.
 async fn scan_wifi(scan_id: &str) -> Result<ModuleResult> {
-    use crate::util::termux::termux_cmd;
-    match termux_cmd("termux-wifi-scaninfo", &[], 8000).await {
-        Some(stdout) => wifi::parse_scan(&stdout, scan_id),
-        // Absent tool / non-zero exit: nothing observed, nothing to attest.
-        None => Ok(ModuleResult::new()),
-    }
+    crate::modules::termux_sensor::read_and_parse(Sensor::WifiScan, |stdout| {
+        wifi::parse_scan(stdout, scan_id)
+    })
+    .await
 }
 
 /// Fetch and parse `termux-telephony-cellinfo`. Per-cell `dbm`/signal data
@@ -167,11 +167,8 @@ async fn scan_wifi(scan_id: &str) -> Result<ModuleResult> {
 /// result, wasting a real ~3s on-device subprocess round-trip every scan for
 /// nothing (`PROBLEM_TREE` T2.109).
 async fn scan_cell(scan_id: &str) -> Result<ModuleResult> {
-    use crate::util::termux::termux_cmd;
-
-    match termux_cmd("termux-telephony-cellinfo", &[], 5000).await {
-        Some(stdout) => cell::parse_cells(&stdout, scan_id),
-        // Absent tool / non-zero exit: nothing observed, nothing to attest.
-        None => Ok(ModuleResult::new()),
-    }
+    crate::modules::termux_sensor::read_and_parse(Sensor::CellInfo, |stdout| {
+        cell::parse_cells(stdout, scan_id)
+    })
+    .await
 }

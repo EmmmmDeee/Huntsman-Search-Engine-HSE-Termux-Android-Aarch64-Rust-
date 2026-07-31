@@ -31,11 +31,13 @@ pub(super) const SRC: &str = "device_sensors";
 // The blank-vs-unparseable contract is single-sourced in
 // `crate::modules::termux_sensor`; re-exported here so this module's sensor
 // submodules keep calling `super::is_blank` / `super::unparseable`.
-pub(super) use crate::modules::termux_sensor::is_blank;
+pub(super) use crate::modules::termux_sensor::{Sensor, is_blank};
 
-/// [`crate::modules::termux_sensor::unparseable`] bound to this module's `SRC`.
-pub(super) fn unparseable(sensor: &str, e: &serde_json::Error) -> Error {
-    crate::modules::termux_sensor::unparseable(SRC, sensor, e)
+/// [`crate::modules::termux_sensor::unparseable_for`] bound to this module's
+/// `SRC`. Takes the [`Sensor`] rather than a label string, so an error can only
+/// name a tool this module actually reads.
+pub(super) fn unparseable(sensor: Sensor, e: &serde_json::Error) -> Error {
+    crate::modules::termux_sensor::unparseable_for(SRC, sensor, e)
 }
 
 pub struct DeviceSensors;
@@ -88,11 +90,11 @@ impl Module for DeviceSensors {
         // a failure in one must never discard the other's evidence: everything
         // collected is kept, and a failure surfaces only when nothing at all
         // was observed. Same `or_hard_failure` contract as `signal_radar`.
-        let wifi_out = match termux_cmd("termux-wifi-connectioninfo", &[], 3000).await {
-            Some(stdout) => wifi::parse_conn(&stdout, &ctx.scan_id),
-            // Absent tool / non-zero exit: nothing observed, nothing to attest.
-            None => Ok(ModuleResult::new()),
-        };
+        let wifi_out =
+            crate::modules::termux_sensor::read_and_parse(Sensor::WifiConnection, |stdout| {
+                wifi::parse_conn(stdout, &ctx.scan_id)
+            })
+            .await;
         let loc_out = scan_location(&ctx.scan_id).await;
 
         let mut result = ModuleResult::new();

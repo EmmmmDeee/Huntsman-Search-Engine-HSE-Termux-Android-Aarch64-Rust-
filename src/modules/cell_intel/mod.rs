@@ -30,7 +30,6 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::modules::termux_sensor;
-use crate::util::termux::termux_cmd;
 
 use helpers::{accuracy_to_confidence, build_tower_device, mcc_to_centroid, query_opencellid};
 use types::TowerKey;
@@ -96,7 +95,7 @@ impl Module for CellIntel {
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         // Single invocation — the key performance win over two separate modules.
-        let Some(stdout) = termux_cmd("termux-telephony-cellinfo", &[], 5000).await else {
+        let Some(stdout) = termux_sensor::Sensor::CellInfo.read().await else {
             return Ok(ModuleResult::new());
         };
 
@@ -109,8 +108,9 @@ impl Module for CellIntel {
         if termux_sensor::is_blank(&stdout) {
             return Ok(ModuleResult::new());
         }
-        let cells: Vec<types::Cell> = serde_json::from_slice(&stdout)
-            .map_err(|e| termux_sensor::unparseable(SRC, "telephony-cellinfo", &e))?;
+        let cells: Vec<types::Cell> = serde_json::from_slice(&stdout).map_err(|e| {
+            termux_sensor::unparseable_for(SRC, termux_sensor::Sensor::CellInfo, &e)
+        })?;
 
         let api_key = ctx.key_opt(OPENCELLID_KEY_ENV);
         let mut result = ModuleResult::new();

@@ -26,7 +26,6 @@ use crate::core::{
 };
 use crate::modules::termux_sensor;
 use crate::util::geo::is_valid_coords;
-use crate::util::termux::termux_cmd;
 
 // ── WiGLE credentials ──────────────────────────────────────────────────
 
@@ -107,7 +106,7 @@ impl Module for WifiIntel {
         let (user, token) = crate::util::keys::wigle_credentials(ctx);
 
         // ── Single termux-wifi-scaninfo call ────────────────────────────
-        let Some(stdout) = termux_cmd("termux-wifi-scaninfo", &[], 5000).await else {
+        let Some(stdout) = termux_sensor::Sensor::WifiScan.read().await else {
             return Ok(ModuleResult::new());
         };
 
@@ -120,8 +119,9 @@ impl Module for WifiIntel {
         if termux_sensor::is_blank(&stdout) {
             return Ok(ModuleResult::new());
         }
-        let mut aps: Vec<types::Ap> = serde_json::from_slice(&stdout)
-            .map_err(|e| termux_sensor::unparseable(SOURCE, "wifi-scaninfo", &e))?;
+        let mut aps: Vec<types::Ap> = serde_json::from_slice(&stdout).map_err(|e| {
+            termux_sensor::unparseable_for(SOURCE, termux_sensor::Sensor::WifiScan, &e)
+        })?;
 
         if aps.is_empty() {
             return Ok(ModuleResult::new());
@@ -305,7 +305,7 @@ fn parse_aps(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
         return Ok(ModuleResult::new());
     }
     let aps: Vec<types::Ap> = serde_json::from_slice(stdout)
-        .map_err(|e| termux_sensor::unparseable(SOURCE, "wifi-scaninfo", &e))?;
+        .map_err(|e| termux_sensor::unparseable_for(SOURCE, termux_sensor::Sensor::WifiScan, &e))?;
 
     let mut result = ModuleResult::with_capacity(aps.len());
     for ap in aps {

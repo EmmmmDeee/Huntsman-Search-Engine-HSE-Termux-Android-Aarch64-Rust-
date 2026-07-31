@@ -45,7 +45,7 @@ pub(super) fn parse_conn(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
         return Ok(ModuleResult::new());
     }
     let info: ConnInfo = serde_json::from_slice(stdout)
-        .map_err(|e| super::unparseable("wifi-connectioninfo", &e))?;
+        .map_err(|e| super::unparseable(super::Sensor::WifiConnection, &e))?;
 
     let mut result = ModuleResult::new();
     let ssid = info.ssid.as_deref().unwrap_or("<hidden>");
