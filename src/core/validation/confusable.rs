@@ -70,6 +70,20 @@ pub fn strip_invisible(s: &str) -> Cow<'_, str> {
 /// Covers Cyrillic and Greek letters that share a glyph with ASCII Latin, plus
 /// the full-width ASCII block (U+FF01..=U+FF5E) which maps mechanically to its
 /// ASCII equivalent. Intentionally curated — not full TR39.
+///
+/// **Case-insensitive.** The table below is written entirely in lowercase, so
+/// the lookup folds its input to lowercase first. It did not, and the table was
+/// consulted before [`skeleton`]'s own `to_lowercase()` ran — so an UPPERCASE
+/// lookalike met no entry and was returned unchanged, only then being lowercased
+/// into the *foreign* lowercase letter rather than ASCII. `PАYPAL.com`
+/// (U+0410 CYRILLIC CAPITAL A) skeletonised to `pаypal.com` with a Cyrillic `а`:
+/// visually identical to the ASCII skeleton, but a different string, so neither
+/// the skeleton collision nor [`is_confusable_mixed_script`] fired and
+/// `Target::validate` accepted it as a legitimate distinct target. Capitals are
+/// if anything the more natural way to write a spoofed brand.
+///
+/// Folding at lookup keeps ONE lowercase table authoritative for both cases,
+/// rather than a second uppercase copy that could be extended out of step.
 fn skeleton_char(c: char) -> char {
     // Full-width ASCII variants (U+FF01 '！' .. U+FF5E '～') are a fixed +0xFEE0
     // offset from their ASCII counterpart; fold them back mechanically.
@@ -79,7 +93,16 @@ fn skeleton_char(c: char) -> char {
             return ascii;
         }
     }
-    match c {
+    // Lookup key only. Every arm below is a non-ASCII codepoint, so a plain
+    // ASCII input can never gain a mapping by being lowercased here, and a
+    // non-confusable still falls through to `_ => c` with its case intact —
+    // `skeleton` lowercases the whole string afterwards, and
+    // `is_confusable_mixed_script` only asks whether the fold produced ASCII.
+    // `.next()` is exact for every codepoint in the table (all lowercase to a
+    // single char); a multi-char lowercasing like `İ` cannot match an arm
+    // regardless, so truncating it is inert.
+    let key = c.to_lowercase().next().unwrap_or(c);
+    match key {
         // Cyrillic letters that share an ASCII Latin glyph.
         'а' => 'a',
         'е' | 'ё' => 'e',

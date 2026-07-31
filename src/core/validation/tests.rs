@@ -512,6 +512,41 @@ mod confusable_tests {
     }
 
     #[test]
+    fn homograph_detection_is_case_insensitive() {
+        // The confusable table is written in lowercase, but `skeleton_char` runs
+        // BEFORE `to_lowercase`, so an UPPERCASE Cyrillic lookalike never met the
+        // table: `PАYPAL.com` (U+0410 CYRILLIC CAPITAL LETTER A) folded to itself,
+        // then lowercased to Cyrillic `а` — never ASCII `a`. A spoof typed in
+        // capitals therefore slipped both the skeleton collapse and the
+        // mixed-script gate, and `Target::validate` scanned it as a legitimate
+        // distinct target. Uppercase is if anything the more natural way to write
+        // a spoofed brand.
+        //
+        // U+0410 is CYRILLIC CAPITAL A; the rest of the string is ASCII.
+        let upper_spoof = "P\u{0410}YPAL.com";
+        assert_eq!(
+            skeleton(upper_spoof),
+            "paypal.com",
+            "an uppercase Cyrillic lookalike must collapse to the same skeleton \
+             as its ASCII twin"
+        );
+        assert!(
+            is_confusable_mixed_script(upper_spoof),
+            "an uppercase Cyrillic lookalike mixed with ASCII is the same \
+             homograph spoof as the lowercase form"
+        );
+
+        // Mixed case, Greek capitals (U+039F CYRILLIC/GREEK CAPITAL O is Greek
+        // Omicron; U+0421 is CYRILLIC CAPITAL ES).
+        assert_eq!(skeleton("G\u{039F}\u{0421}gle"), "gocgle");
+        assert!(is_confusable_mixed_script("G\u{039F}\u{0421}gle"));
+
+        // Control: a genuine all-ASCII uppercase value is untouched and clean.
+        assert_eq!(skeleton("PAYPAL.com"), "paypal.com");
+        assert!(!is_confusable_mixed_script("PAYPAL.com"));
+    }
+
+    #[test]
     fn skeleton_folds_cyrillic_homograph_to_ascii() {
         // The Cyrillic-`а` paypal collapses to the ASCII skeleton.
         assert_eq!(skeleton("p\u{0430}ypal.com"), "paypal.com");
