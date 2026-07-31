@@ -5,6 +5,7 @@ use serde::Deserialize;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
+    error::Result,
     module::ModuleResult,
 };
 
@@ -43,11 +44,12 @@ pub(super) fn rssi_confidence(rssi: Option<i64>) -> f64 {
 }
 
 /// Parse the JSON array from `termux-wifi-scaninfo` into entities.
-pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> ModuleResult {
-    let aps: Vec<Ap> = match serde_json::from_slice(stdout) {
-        Ok(v) => v,
-        Err(_) => return ModuleResult::new(),
-    };
+pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
+    if super::is_blank(stdout) {
+        return Ok(ModuleResult::new());
+    }
+    let aps: Vec<Ap> =
+        serde_json::from_slice(stdout).map_err(|e| super::unparseable("wifi-scaninfo", &e))?;
 
     let mut result = ModuleResult::with_capacity(aps.len());
 
@@ -119,5 +121,5 @@ pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> ModuleResult {
         }
     }
 
-    result
+    Ok(result)
 }

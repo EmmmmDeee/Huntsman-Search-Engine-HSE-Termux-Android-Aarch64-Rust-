@@ -2,6 +2,7 @@
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
+    error::Result,
     module::ModuleResult,
 };
 use crate::modules::device_fix::{Fix, fix_confidence, is_valid_fix};
@@ -9,14 +10,18 @@ use crate::util::termux::termux_cmd;
 
 use super::SRC;
 
-fn parse_fix(stdout: &[u8], scan_id: &str) -> ModuleResult {
-    let fix: Fix = match serde_json::from_slice(stdout) {
-        Ok(v) => v,
-        Err(_) => return ModuleResult::new(),
-    };
+fn parse_fix(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
+    if super::is_blank(stdout) {
+        return Ok(ModuleResult::new());
+    }
+    let fix: Fix =
+        serde_json::from_slice(stdout).map_err(|e| super::unparseable("location", &e))?;
 
+    // A fix outside the valid coordinate range is a real answer that simply
+    // does not locate anything (null island, a clipped sentinel) — an honest
+    // empty result, not a malfunction.
     if !is_valid_fix(fix.latitude, fix.longitude) {
-        return ModuleResult::new();
+        return Ok(ModuleResult::new());
     }
 
     let provider = fix.provider.as_deref().unwrap_or("network");
@@ -56,14 +61,19 @@ fn parse_fix(stdout: &[u8], scan_id: &str) -> ModuleResult {
         entities: Vec::with_capacity(1),
     };
     result.push(e);
-    result
+    Ok(result)
 }
 
 /// Fetch a location fix from `termux-location -p <provider> -r <request>`.
 /// A `last` request reads the OS's passively-cached last-known location (no
 /// fresh lock, near-instant); those entities are tagged `fix-age:last-known` so
 /// a cached position is never mistaken for a fresh sensor lock.
-async fn fetch_fix(provider: &str, request: &str, timeout_ms: u64, scan_id: &str) -> ModuleResult {
+async fn fetch_fix(
+    provider: &str,
+    request: &str,
+    timeout_ms: u64,
+    scan_id: &str,
+) -> Result<ModuleResult> {
     match termux_cmd(
         "termux-location",
         &["-p", provider, "-r", request],
@@ -72,15 +82,15 @@ async fn fetch_fix(provider: &str, request: &str, timeout_ms: u64, scan_id: &str
     .await
     {
         Some(stdout) => {
-            let mut r = parse_fix(&stdout, scan_id);
+            let mut r = parse_fix(&stdout, scan_id)?;
             if request == "last" {
                 for e in &mut r.entities {
                     e.tag("fix-age:last-known");
                 }
             }
-            r
+            Ok(r)
         }
-        None => ModuleResult::new(),
+        None => Ok(ModuleResult::new()),
     }
 }
 
@@ -92,20 +102,28 @@ async fn fetch_fix(provider: &str, request: &str, timeout_ms: u64, scan_id: &str
 /// (8 s), the last-known GPS fix, then the last-known network fix (both
 /// near-instant, read straight from the phone's location cache). Every stage
 /// reads only the phone's own sensors/cache — no seed, no input.
-pub(super) async fn scan_gps(scan_id: &str) -> ModuleResult {
+pub(super) async fn scan_gps(scan_id: &str) -> Result<ModuleResult> {
     const STAGES: &[(&str, &str, u64)] = &[
         ("gps", "once", 12_000),
         ("network", "once", 8_000),
         ("gps", "last", 3_000),
         ("network", "last", 3_000),
     ];
+    // Each stage is an independent attempt at the same question, so a stage
+    // that malfunctions must not abort the ladder — a later stage may still
+    // establish a fix. The first failure is remembered and only surfaces if
+    // no stage produced one, via `or_hard_failure`.
+    let mut first_failure = None;
     for &(provider, request, timeout_ms) in STAGES {
-        let r = fetch_fix(provider, request, timeout_ms, scan_id).await;
-        if !r.is_empty() {
-            return r;
+        match fetch_fix(provider, request, timeout_ms, scan_id).await {
+            Ok(r) if !r.is_empty() => return Ok(r),
+            Ok(_) => {}
+            Err(e) => {
+                first_failure.get_or_insert(e);
+            }
         }
     }
-    ModuleResult::new()
+    ModuleResult::new().or_hard_failure(first_failure)
 }
 
 #[cfg(test)]
@@ -119,7 +137,7 @@ mod tests {
     #[test]
     fn parse_fix_valid_gps_json_emits_coordinates_entity() {
         let json = br#"{"latitude":-27.4705,"longitude":153.0260,"altitude":10.0,"accuracy":5.0,"speed":0.0,"bearing":0.0,"provider":"gps"}"#;
-        let result = parse_fix(json, "test-scan");
+        let result = parse_fix(json, "test-scan").expect("valid fix JSON parses");
         assert_eq!(result.len(), 1);
         let e = &result.entities[0];
         assert_eq!(e.kind, EntityKind::Coordinates);
@@ -132,18 +150,40 @@ mod tests {
     #[test]
     fn parse_fix_null_island_returns_empty() {
         let json = br#"{"latitude":0.0,"longitude":0.0,"provider":"gps"}"#;
-        assert!(parse_fix(json, "test-scan").is_empty());
+        // An out-of-range fix is a real answer that locates nothing — an
+        // honest empty Ok, not a malfunction.
+        assert!(
+            parse_fix(json, "test-scan")
+                .expect("null island is a clean answer, not an error")
+                .is_empty()
+        );
     }
 
+    /// Unparseable output means the tool answered with something broken. That
+    /// is a malfunction and must surface as an error — reporting it as an empty
+    /// result would be indistinguishable from "no fix available".
     #[test]
-    fn parse_fix_malformed_json_returns_empty() {
-        assert!(parse_fix(b"not valid json", "test-scan").is_empty());
+    fn parse_fix_malformed_json_is_an_error() {
+        assert!(parse_fix(b"not valid json", "test-scan").is_err());
+    }
+
+    /// Blank output is the other half of that contract: a tool that exits 0 and
+    /// prints nothing has answered "nothing to report", which is an empty Ok.
+    #[test]
+    fn parse_fix_blank_output_is_an_empty_ok() {
+        for blank in [&b""[..], b"   ", b"\n\t "] {
+            assert!(
+                parse_fix(blank, "test-scan")
+                    .expect("blank output is an empty answer, not an error")
+                    .is_empty()
+            );
+        }
     }
 
     #[test]
     fn parse_fix_absent_provider_defaults_to_network_tag() {
         let json = br#"{"latitude":51.5074,"longitude":-0.1278}"#;
-        let result = parse_fix(json, "test-scan");
+        let result = parse_fix(json, "test-scan").expect("valid fix JSON parses");
         assert_eq!(result.len(), 1);
         assert!(result.entities[0].has_tag("provider:network"));
     }

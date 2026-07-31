@@ -10,7 +10,7 @@ fn wifi_parse_valid_aps() {
         {"bssid":"AA:BB:CC:DD:EE:FF","ssid":"TestNet","rssi":-45,"frequency":2437,"channel_width":"20","timestamp":1000},
         {"bssid":"11:22:33:44:55:66","ssid":"WeakAP","rssi":-80,"frequency":5180,"channel_width":"40","timestamp":2000}
     ]"#;
-    let result = wifi::parse_scan(json, "test-scan");
+    let result = wifi::parse_scan(json, "test-scan").expect("valid AP JSON parses");
     // 2 APs, each with a non-empty SSID → 2 MacAddress entities + 2 Ssid
     // entities (one Ssid pushed right after its AP's MacAddress entity).
     assert_eq!(result.len(), 4);
@@ -60,7 +60,7 @@ fn wifi_skip_placeholder_bssids() {
         {"bssid":"","ssid":"Bad3","rssi":-40,"frequency":2437},
         {"bssid":"AA:BB:CC:DD:EE:FF","ssid":"Good","rssi":-40,"frequency":2437}
     ]"#;
-    let result = wifi::parse_scan(json, "test-scan");
+    let result = wifi::parse_scan(json, "test-scan").expect("valid AP JSON parses");
     // Only the last AP survives the placeholder/empty-BSSID filter, and its
     // non-empty SSID ("Good") mints a second, Ssid entity alongside its
     // MacAddress entity.
@@ -72,14 +72,29 @@ fn wifi_skip_placeholder_bssids() {
 
 #[test]
 fn wifi_parse_empty_array() {
-    let result = wifi::parse_scan(b"[]", "test-scan");
+    let result = wifi::parse_scan(b"[]", "test-scan").expect("an empty array parses");
     assert!(result.is_empty());
 }
 
+/// Unparseable tool output is a malfunction, not an empty answer: reporting it
+/// as zero access points would make a broken termux-api indistinguishable from
+/// "no Wi-Fi in range".
 #[test]
-fn wifi_parse_invalid_json() {
-    let result = wifi::parse_scan(b"not json", "test-scan");
-    assert!(result.is_empty());
+fn wifi_parse_invalid_json_is_an_error() {
+    assert!(wifi::parse_scan(b"not json", "test-scan").is_err());
+}
+
+/// Blank output is the complement: a tool that exits 0 and prints nothing has
+/// answered "nothing to report", which stays a clean empty Ok.
+#[test]
+fn wifi_parse_blank_output_is_an_empty_ok() {
+    for blank in [&b""[..], b"  \n"] {
+        assert!(
+            wifi::parse_scan(blank, "test-scan")
+                .expect("blank output is an empty answer, not an error")
+                .is_empty()
+        );
+    }
 }
 
 // ── wifi_band helper ──────────────────────────────────────────────────────
@@ -112,7 +127,7 @@ fn bluetooth_parse_valid_devices() {
         {"address":"AA:BB:CC:DD:EE:01","name":"Headphones","type":"classic","bondState":"bonded"},
         {"address":"AA:BB:CC:DD:EE:02","name":"Speaker","type":"le","bondState":"none"}
     ]"#;
-    let result = bluetooth::parse_bt_json(json, "test-scan");
+    let result = bluetooth::parse_bt_json(json, "test-scan").expect("valid BT JSON parses");
     assert_eq!(result.len(), 2);
 
     let d1 = &result.entities[0];
@@ -131,7 +146,7 @@ fn bluetooth_skip_placeholder_address() {
         {"address":"","name":"Empty"},
         {"address":"AA:BB:CC:DD:EE:FF","name":"Good"}
     ]"#;
-    let result = bluetooth::parse_bt_json(json, "test-scan");
+    let result = bluetooth::parse_bt_json(json, "test-scan").expect("valid BT JSON parses");
     assert_eq!(result.len(), 1);
 }
 
@@ -143,7 +158,7 @@ fn cell_parse_valid_towers() {
         {"type":"LTE","registered":true,"dbm":-80,"cid":12345,"lac":null,"tac":678,"mcc":"505","mnc":"01"},
         {"type":"GSM","registered":false,"dbm":-95,"cid":999,"lac":100,"tac":null,"mcc":505,"mnc":3}
     ]"#;
-    let result = cell::parse_cells(json, "test-scan");
+    let result = cell::parse_cells(json, "test-scan").expect("valid cell JSON parses");
     assert_eq!(result.len(), 2);
 
     let t1 = &result.entities[0];
@@ -166,7 +181,7 @@ fn cell_skip_incomplete_towers() {
         {"type":"LTE","cid":1234,"mcc":"","mnc":"01"},
         {"type":"LTE","cid":null,"mcc":"505","mnc":"01"}
     ]"#;
-    let result = cell::parse_cells(json, "test-scan");
+    let result = cell::parse_cells(json, "test-scan").expect("valid cell JSON parses");
     assert!(result.is_empty());
 }
 

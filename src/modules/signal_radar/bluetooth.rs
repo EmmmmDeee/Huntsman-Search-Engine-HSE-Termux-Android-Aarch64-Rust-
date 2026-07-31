@@ -13,6 +13,7 @@ use serde::Deserialize;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
+    error::Result,
     module::ModuleResult,
 };
 use crate::util::termux::termux_cmd;
@@ -30,11 +31,12 @@ pub(super) struct BtDevice {
 }
 
 /// Parse the JSON array from `termux-bluetooth-scaninfo`.
-pub(super) fn parse_bt_json(stdout: &[u8], scan_id: &str) -> ModuleResult {
-    let devices: Vec<BtDevice> = match serde_json::from_slice(stdout) {
-        Ok(v) => v,
-        Err(_) => return ModuleResult::new(),
-    };
+pub(super) fn parse_bt_json(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
+    if super::is_blank(stdout) {
+        return Ok(ModuleResult::new());
+    }
+    let devices: Vec<BtDevice> =
+        serde_json::from_slice(stdout).map_err(|e| super::unparseable("bluetooth-scaninfo", &e))?;
 
     let mut result = ModuleResult::with_capacity(devices.len());
 
@@ -85,14 +87,16 @@ pub(super) fn parse_bt_json(stdout: &[u8], scan_id: &str) -> ModuleResult {
         result.push(e);
     }
 
-    result
+    Ok(result)
 }
 
 /// Run bluetooth scan via `termux-bluetooth-scaninfo` (the Termux:API BLE/BT
 /// scan shim — no root, no raw socket).
-pub(super) async fn scan_bluetooth(scan_id: &str) -> ModuleResult {
+pub(super) async fn scan_bluetooth(scan_id: &str) -> Result<ModuleResult> {
     match termux_cmd("termux-bluetooth-scaninfo", &[], 10_000).await {
         Some(stdout) => parse_bt_json(&stdout, scan_id),
-        None => ModuleResult::new(),
+        // Absent tool / non-zero exit: nothing was observed and nothing
+        // malfunctioned that this module can attest to.
+        None => Ok(ModuleResult::new()),
     }
 }

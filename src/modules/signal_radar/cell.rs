@@ -6,6 +6,7 @@ use serde::Deserialize;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
+    error::Result,
     module::ModuleResult,
 };
 
@@ -42,11 +43,12 @@ fn tech_tag(cell_type: Option<&str>) -> &'static str {
 }
 
 /// Parse `termux-telephony-cellinfo` JSON array into DeviceId entities.
-pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> ModuleResult {
-    let cells: Vec<Cell> = match serde_json::from_slice(cellinfo) {
-        Ok(v) => v,
-        Err(_) => return ModuleResult::new(),
-    };
+pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> Result<ModuleResult> {
+    if super::is_blank(cellinfo) {
+        return Ok(ModuleResult::new());
+    }
+    let cells: Vec<Cell> = serde_json::from_slice(cellinfo)
+        .map_err(|e| super::unparseable("telephony-cellinfo", &e))?;
 
     let mut result = ModuleResult::with_capacity(cells.len());
 
@@ -91,5 +93,5 @@ pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> ModuleResult {
         result.push(e);
     }
 
-    result
+    Ok(result)
 }

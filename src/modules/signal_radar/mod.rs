@@ -27,12 +27,31 @@ use async_trait::async_trait;
 
 use crate::core::{
     entity::EntityKind,
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 
 pub(super) const SRC: &str = "signal_radar";
+
+/// True when a sensor tool exited 0 but printed nothing meaningful.
+///
+/// [`crate::util::termux::termux_cmd`] returns `Some(stdout)` for *any*
+/// zero-exit run, empty stdout included, so blank output reaches the parsers
+/// as an unparseable JSON error. That is an honest "nothing to report", not a
+/// malfunction, and must stay an empty `Ok` — treating it as a hard failure
+/// would make a quiet sensor (a Termux:API stub that exits 0 and prints
+/// nothing, common where a runtime permission is withheld) error on every
+/// sweep and trip the circuit breaker.
+pub(super) fn is_blank(stdout: &[u8]) -> bool {
+    stdout.iter().all(u8::is_ascii_whitespace)
+}
+
+/// A sensor tool answered with output that could not be parsed — a genuine
+/// malfunction, distinct from both an absent tool and an empty answer.
+pub(super) fn unparseable(sensor: &str, e: &serde_json::Error) -> Error {
+    Error::module(SRC, format!("{sensor}: unparseable tool output ({e})"))
+}
 
 pub struct SignalRadar;
 
@@ -103,23 +122,45 @@ impl Module for SignalRadar {
 
         let cell_out = scan_cell(scan_id).await;
 
-        let mut result = ModuleResult::new();
-        result.extend(wifi_out.entities);
-        result.extend(bt_out.entities);
-        result.extend(gps_out.entities);
-        result.extend(lan_out.entities);
-        result.extend(cell_out.entities);
-
-        Ok(result)
+        combine_sensors([wifi_out, bt_out, gps_out, Ok(lan_out), cell_out])
     }
 }
 
+/// Fold the five independent sensors into `process()`'s return value.
+///
+/// Sensors are independent observations of different things, so a failure in
+/// one must never discard another's evidence: everything collected is kept,
+/// and a failure is surfaced only when *nothing at all* was observed. That is
+/// exactly [`ModuleResult::or_hard_failure`]'s contract, shared with
+/// `ip_reputation` (T2.111) and `niamonx` (T2.114).
+///
+/// The distinction this preserves: before, a malfunctioning sensor returned an
+/// empty result, so "termux-api is broken" and "no devices in range" were the
+/// same answer. Now a total sensor failure reaches the engine as a real
+/// `ModuleError` — visible to the operator, counted in `modules_errored`, and
+/// fed to the circuit breaker and health streak.
+fn combine_sensors(outcomes: [Result<ModuleResult>; 5]) -> Result<ModuleResult> {
+    let mut combined = ModuleResult::new();
+    let mut first_failure = None;
+    for outcome in outcomes {
+        match outcome {
+            Ok(r) => combined.extend(r.entities),
+            Err(e) => {
+                tracing::warn!(module = SRC, error = %e, "signal_radar: sensor failed");
+                first_failure.get_or_insert(e);
+            }
+        }
+    }
+    combined.or_hard_failure(first_failure)
+}
+
 /// Fetch and parse `termux-wifi-scaninfo`.
-async fn scan_wifi(scan_id: &str) -> ModuleResult {
+async fn scan_wifi(scan_id: &str) -> Result<ModuleResult> {
     use crate::util::termux::termux_cmd;
     match termux_cmd("termux-wifi-scaninfo", &[], 8000).await {
         Some(stdout) => wifi::parse_scan(&stdout, scan_id),
-        None => ModuleResult::new(),
+        // Absent tool / non-zero exit: nothing observed, nothing to attest.
+        None => Ok(ModuleResult::new()),
     }
 }
 
@@ -129,11 +170,12 @@ async fn scan_wifi(scan_id: &str) -> ModuleResult {
 /// revision issued that second call and unconditionally discarded its
 /// result, wasting a real ~3s on-device subprocess round-trip every scan for
 /// nothing (`PROBLEM_TREE` T2.109).
-async fn scan_cell(scan_id: &str) -> ModuleResult {
+async fn scan_cell(scan_id: &str) -> Result<ModuleResult> {
     use crate::util::termux::termux_cmd;
 
     match termux_cmd("termux-telephony-cellinfo", &[], 5000).await {
         Some(stdout) => cell::parse_cells(&stdout, scan_id),
-        None => ModuleResult::new(),
+        // Absent tool / non-zero exit: nothing observed, nothing to attest.
+        None => Ok(ModuleResult::new()),
     }
 }
