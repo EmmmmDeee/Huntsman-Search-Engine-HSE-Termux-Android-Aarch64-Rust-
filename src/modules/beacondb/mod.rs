@@ -34,6 +34,23 @@
 //! deliberately redundant: one is a request the server must honour, the other
 //! holds even if it does not.
 //!
+//! ## Corpora
+//!
+//! A `MacAddress` target is not necessarily a Wi-Fi BSSID — `signal_radar` also
+//! emits Bluetooth addresses from `termux-bluetooth-scaninfo` — so both the
+//! Wi-Fi and Bluetooth corpora are probed (see [`Corpus`]).
+//!
+//! Verification boundary, stated because it is not closable from a build host:
+//! `bluetoothBeacons` is a documented field of the Ichnaea/MLS API beaconDB
+//! implements, and beaconDB's own history carries a "weighted average for
+//! bluetooth and cell" change, but **no positive Bluetooth fix has been
+//! observed here**. The endpoint answers `404` both for a corpus it does not
+//! support and for one it supports but has no data in — confirmed by sending a
+//! deliberately invented field name and getting the same `404` — so a live
+//! probe cannot distinguish the two. The Bluetooth path is therefore believed
+//! correct and known safe (a miss costs one extra request and yields nothing),
+//! but is not evidenced as productive.
+//!
 //! Coverage is crowd-sourced and self-described as experimental, so a miss is
 //! ordinary and returns an empty result rather than an error.
 
@@ -60,6 +77,44 @@ const ENDPOINT: &str = "https://beacondb.net/v1/geolocate";
 const CONSIDER_IP: bool = false;
 
 pub struct BeaconDb;
+
+/// Which of beaconDB's wireless corpora a lookup asks about.
+///
+/// The two are queried as separate requests rather than one combined body. The
+/// combined form is legal in the API, but beaconDB estimates a position by
+/// weighted average over the transmitters it is given, so submitting one MAC
+/// under both keys risks it being treated as two distinct sightings and blended
+/// into a position belonging to neither. Sequential probes cannot blend, and
+/// match `wigle::bssid_lookup`, which walks its wifi/cell/bt corpora the same
+/// way. The second request only happens on a miss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Corpus {
+    Wifi,
+    Bluetooth,
+}
+
+impl Corpus {
+    /// Probed in this order: a `MacAddress` reaching this module is far more
+    /// often a Wi-Fi BSSID (every `wifi_intel` / `signal_radar` Wi-Fi sighting)
+    /// than a Bluetooth address, so the common case costs one request.
+    pub(crate) const ALL: [Self; 2] = [Self::Wifi, Self::Bluetooth];
+
+    /// The Ichnaea/MLS request field carrying this corpus's transmitters.
+    pub(crate) const fn field(self) -> &'static str {
+        match self {
+            Self::Wifi => "wifiAccessPoints",
+            Self::Bluetooth => "bluetoothBeacons",
+        }
+    }
+
+    /// Tag recorded on a fix, so a consumer can tell which radio located it.
+    pub(crate) const fn tag(self) -> &'static str {
+        match self {
+            Self::Wifi => "bssid-located",
+            Self::Bluetooth => "bluetooth-located",
+        }
+    }
+}
 
 /// A geolocate response. `fallback` is present only when the server answered
 /// from something other than the wireless data we asked about.
@@ -94,12 +149,17 @@ struct Location {
 /// * the position is missing a component; or
 /// * the coordinates fail the shared validator (Null Island, out of range,
 ///   non-finite).
-fn build_location_entity(bssid: &str, resp: &GeolocateResp, scan_id: &str) -> Option<Entity> {
+fn build_location_entity(
+    mac: &str,
+    corpus: Corpus,
+    resp: &GeolocateResp,
+    scan_id: &str,
+) -> Option<Entity> {
     if let Some(kind) = resp.fallback.as_deref() {
         // Not an error: the server answered honestly, it just answered a
         // different question than the one asked.
         tracing::debug!(
-            bssid,
+            mac,
             fallback = kind,
             "beacondb: discarding non-wireless fallback fix"
         );
@@ -120,11 +180,12 @@ fn build_location_entity(bssid: &str, resp: &GeolocateResp, scan_id: &str) -> Op
     );
     e.tag("beacondb");
     e.tag("geoint");
-    e.tag("bssid-located");
+    e.tag(corpus.tag());
     crate::util::geo::tag_au_state(&mut e, lat, lon);
 
-    let mut ev = Evidence::new(SRC, format!("beaconDB BSSID {bssid} -> {coords}"))
-        .with_attr("bssid", bssid)
+    let mut ev = Evidence::new(SRC, format!("beaconDB {mac} -> {coords}"))
+        .with_attr("bssid", mac)
+        .with_attr("corpus", corpus.field())
         .with_attr("latitude", format!("{lat:.6}"))
         .with_attr("longitude", format!("{lon:.6}"));
     if let Some(accuracy) = resp.accuracy {
@@ -140,7 +201,7 @@ impl Module for BeaconDb {
         "beacondb"
     }
     fn description(&self) -> &'static str {
-        "beaconDB WiFi geolocation — resolves a BSSID to coordinates (free, no key)"
+        "beaconDB wireless geolocation — resolves a WiFi/Bluetooth MAC to coordinates (free, no key)"
     }
     fn priority(&self) -> u8 {
         // Peer of `mylnikov`: the same question, the same cost, no credential.
@@ -166,38 +227,60 @@ impl Module for BeaconDb {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let bssid = target.value.trim();
-        if bssid.len() < 12 {
+        let mac = target.value.trim();
+        if mac.len() < 12 {
             return Ok(ModuleResult::new());
         }
 
+        // A `MacAddress` target is not necessarily a Wi-Fi BSSID — `signal_radar`
+        // also emits Bluetooth addresses from `termux-bluetooth-scaninfo`, and
+        // querying the wifi corpus for one can never match. Probe each corpus in
+        // turn and stop at the first fix, mirroring `wigle::bssid_lookup`.
+        for corpus in Corpus::ALL {
+            if ctx.cancel.is_cancelled() {
+                break;
+            }
+            if let Some(entity) = self.lookup(mac, corpus, ctx).await? {
+                let mut result = ModuleResult::new();
+                result.push(entity);
+                return Ok(result);
+            }
+        }
+        Ok(ModuleResult::new())
+    }
+}
+
+impl BeaconDb {
+    /// One corpus lookup. `Ok(None)` is an honest miss (the documented 404, or a
+    /// fix this module refuses to trust); `Err` is a real transport/server fault.
+    async fn lookup(
+        &self,
+        mac: &str,
+        corpus: Corpus,
+        ctx: &ModuleContext,
+    ) -> Result<Option<Entity>> {
         let resp = ctx
             .http
             .post(ENDPOINT)
             .json(&serde_json::json!({
                 "considerIp": CONSIDER_IP,
-                "wifiAccessPoints": [{ "macAddress": bssid }],
+                corpus.field(): [{ "macAddress": mac }],
             }))
             .send_tagged(SRC)
             .await?;
 
         // 404 is this API's documented "no location could be estimated" — the
-        // ordinary outcome for a BSSID outside a crowd-sourced corpus, and a
-        // clean empty result rather than a module error.
+        // ordinary outcome for a MAC outside a crowd-sourced corpus, and a clean
+        // miss rather than a module error.
         if resp.status().as_u16() == 404 {
-            return Ok(ModuleResult::new());
+            return Ok(None);
         }
         if !resp.status().is_success() {
             return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
         let body: GeolocateResp = crate::util::http::json_decode(SRC, resp).await?;
-
-        let mut result = ModuleResult::new();
-        if let Some(e) = build_location_entity(bssid, &body, &ctx.scan_id) {
-            result.push(e);
-        }
-        Ok(result)
+        Ok(build_location_entity(mac, corpus, &body, &ctx.scan_id))
     }
 }
 

@@ -36,6 +36,55 @@ use crate::core::confidence;
         }
     }
 
+    /// The corpus keys must be the Ichnaea/MLS field names verbatim — beaconDB
+    /// answers 404 for a field it does not recognise exactly as it does for one
+    /// it has no data in (confirmed live with an invented field name), so a typo
+    /// here would degrade the module to permanent silent misses with no error
+    /// anywhere to notice it.
+    #[test]
+    fn corpus_field_names_match_the_ichnaea_api() {
+        assert_eq!(Corpus::Wifi.field(), "wifiAccessPoints");
+        assert_eq!(Corpus::Bluetooth.field(), "bluetoothBeacons");
+    }
+
+    /// Wi-Fi is probed first: the overwhelming majority of MacAddress targets
+    /// reaching this module are Wi-Fi BSSIDs, so the common case must cost one
+    /// request, not two.
+    #[test]
+    fn wifi_is_probed_before_bluetooth_and_both_are_covered() {
+        assert_eq!(Corpus::ALL, [Corpus::Wifi, Corpus::Bluetooth]);
+    }
+
+    /// A fix must say which radio located it — the two are different evidence
+    /// (a Bluetooth beacon is typically a far tighter proximity claim than an
+    /// AP), so they must not be collapsed into one indistinguishable tag.
+    #[test]
+    fn each_corpus_tags_its_fix_distinctly() {
+        assert_ne!(Corpus::Wifi.tag(), Corpus::Bluetooth.tag());
+        let r = parse(r#"{"location":{"lat":-33.8,"lng":151.2},"accuracy":50}"#);
+        let bt = build_location_entity("m", Corpus::Bluetooth, &r, "s").expect("a fix");
+        assert!(bt.has_tag("bluetooth-located"));
+        assert!(!bt.has_tag("bssid-located"));
+        assert_eq!(
+            bt.evidence[0].attributes.get("corpus").map(String::as_str),
+            Some("bluetoothBeacons"),
+            "evidence must record which corpus answered"
+        );
+    }
+
+    /// The IP-fallback guard is corpus-independent — a Bluetooth query that
+    /// falls back to the caller's IP is exactly as dangerous as a Wi-Fi one.
+    #[test]
+    fn the_fallback_guard_applies_to_every_corpus() {
+        let r = parse(r#"{"accuracy":25000,"fallback":"ipf","location":{"lat":37.79,"lng":-122.40}}"#);
+        for corpus in Corpus::ALL {
+            assert!(
+                build_location_entity("m", corpus, &r, "s").is_none(),
+                "{corpus:?} must reject an IP-fallback answer"
+            );
+        }
+    }
+
     fn parse(raw: &str) -> GeolocateResp {
         serde_json::from_str(raw).expect("fixture must deserialize")
     }
@@ -44,7 +93,7 @@ use crate::core::confidence;
     #[test]
     fn a_wireless_fix_builds_a_located_entity() {
         let r = parse(r#"{"location":{"lat":-33.8688,"lng":151.2093},"accuracy":150}"#);
-        let e = build_location_entity("AA:BB:CC:DD:EE:FF", &r, "s").expect("a fix must build");
+        let e = build_location_entity("AA:BB:CC:DD:EE:FF", Corpus::Wifi, &r, "s").expect("a fix must build");
         assert_eq!(e.kind, EntityKind::Coordinates);
         assert_eq!(e.value, "-33.868800,151.209300");
         assert!(e.has_tag("beacondb") && e.has_tag("geoint") && e.has_tag("bssid-located"));
@@ -71,7 +120,7 @@ use crate::core::confidence;
         // The coordinates are well-formed and would otherwise pass every check.
         assert!(is_valid_coords(37.7901, -122.401));
         assert!(
-            build_location_entity("AA:BB:CC:DD:EE:FF", &r, "s").is_none(),
+            build_location_entity("AA:BB:CC:DD:EE:FF", Corpus::Wifi, &r, "s").is_none(),
             "an IP-fallback answer must never become a BSSID location"
         );
     }
@@ -86,7 +135,7 @@ use crate::core::confidence;
                 r#"{{"location":{{"lat":-33.8,"lng":151.2}},"accuracy":50,"fallback":"{marker}"}}"#
             );
             assert!(
-                build_location_entity("m", &parse(&raw), "s").is_none(),
+                build_location_entity("m", Corpus::Wifi, &parse(&raw), "s").is_none(),
                 "fallback marker {marker:?} must disqualify the fix"
             );
         }
@@ -95,17 +144,17 @@ use crate::core::confidence;
     #[test]
     fn missing_or_invalid_coordinates_yield_no_entity() {
         // Absent location block entirely.
-        assert!(build_location_entity("m", &parse(r#"{"accuracy":50}"#), "s").is_none());
+        assert!(build_location_entity("m", Corpus::Wifi, &parse(r#"{"accuracy":50}"#), "s").is_none());
         // Half a position.
-        assert!(build_location_entity("m", &parse(r#"{"location":{"lat":1.0}}"#), "s").is_none());
-        assert!(build_location_entity("m", &parse(r#"{"location":{"lng":1.0}}"#), "s").is_none());
+        assert!(build_location_entity("m", Corpus::Wifi, &parse(r#"{"location":{"lat":1.0}}"#), "s").is_none());
+        assert!(build_location_entity("m", Corpus::Wifi, &parse(r#"{"location":{"lng":1.0}}"#), "s").is_none());
         // Null Island and out-of-range, rejected by the shared validator.
         assert!(
-            build_location_entity("m", &parse(r#"{"location":{"lat":0.0,"lng":0.0}}"#), "s")
+            build_location_entity("m", Corpus::Wifi, &parse(r#"{"location":{"lat":0.0,"lng":0.0}}"#), "s")
                 .is_none()
         );
         assert!(
-            build_location_entity("m", &parse(r#"{"location":{"lat":91.0,"lng":10.0}}"#), "s")
+            build_location_entity("m", Corpus::Wifi, &parse(r#"{"location":{"lat":91.0,"lng":10.0}}"#), "s")
                 .is_none()
         );
     }
@@ -116,7 +165,7 @@ use crate::core::confidence;
     fn accuracy_radius_drives_confidence_on_the_shared_ladder() {
         let at = |acc: f64| {
             let raw = format!(r#"{{"location":{{"lat":-33.8,"lng":151.2}},"accuracy":{acc}}}"#);
-            build_location_entity("m", &parse(&raw), "s")
+            build_location_entity("m", Corpus::Wifi, &parse(&raw), "s")
                 .expect("a valid fix")
                 .confidence
         };
@@ -133,7 +182,7 @@ use crate::core::confidence;
     /// rather than being treated as a perfect fix.
     #[test]
     fn missing_accuracy_omits_the_attr_and_uses_the_wide_default() {
-        let e = build_location_entity("m", &parse(r#"{"location":{"lat":-33.8,"lng":151.2}}"#), "s")
+        let e = build_location_entity("m", Corpus::Wifi, &parse(r#"{"location":{"lat":-33.8,"lng":151.2}}"#), "s")
             .expect("a fix without an accuracy radius is still a fix");
         assert!((e.confidence - confidence::MEDIUM).abs() < 1e-9);
         assert_eq!(e.evidence[0].attributes.get("accuracy_m"), None);
@@ -146,5 +195,5 @@ use crate::core::confidence;
         let r = parse(
             r#"{"error":{"code":404,"errors":[{"domain":"geolocation","message":"No location could be estimated based on the data provided","reason":"notFound"}],"message":"Not found"}}"#,
         );
-        assert!(build_location_entity("m", &r, "s").is_none());
+        assert!(build_location_entity("m", Corpus::Wifi, &r, "s").is_none());
     }
