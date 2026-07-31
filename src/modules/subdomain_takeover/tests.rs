@@ -98,3 +98,82 @@ use super::*;
         assert!(!e.evidence[0].attributes.contains_key("cname_target"));
         assert!(e.has_tag("takeover:Heroku"));
     }
+
+    // ---- dangling_verdict: a takeover claim needs an authority's "no" ----
+
+    /// Build the exact `NetError` hickory delivers for a negative answer — no
+    /// resolver, no runtime, no network. Mirrors the fixture in
+    /// `crate::util::dns`'s tests.
+    fn negative(name: &str, code: hickory_resolver::proto::op::ResponseCode) -> hickory_resolver::net::NetError {
+        use hickory_resolver::net::NoRecords;
+        use hickory_resolver::proto::op::Query;
+        use hickory_resolver::proto::rr::{Name, RecordType};
+        hickory_resolver::net::NetError::from(NoRecords::new(
+            Query::query(Name::from_ascii(name).expect("valid test name"), RecordType::A),
+            code,
+        ))
+    }
+
+    #[test]
+    fn a_resolver_malfunction_is_not_a_dangling_cname() {
+        // THE regression test. `check_nxdomain` was
+        // `lookup_ip(..).await.is_err()`, so a 2s timeout on a flaky link
+        // returned the VULNERABLE signal and fabricated a Severity::High
+        // finding at confidence::VERY_HIGH_PLUS. A malfunction must now refuse
+        // to answer rather than answer wrongly.
+        let timeout = hickory_resolver::net::NetError::Timeout;
+        assert!(
+            dangling_verdict::<()>("x.cloudapp.net", Err(timeout)).is_err(),
+            "a timeout must not be reported as a dangling CNAME"
+        );
+        let no_conns = hickory_resolver::net::NetError::NoConnections;
+        assert!(
+            dangling_verdict::<()>("x.cloudapp.net", Err(no_conns)).is_err(),
+            "an exhausted resolver pool must not be reported as a dangling CNAME"
+        );
+    }
+
+    #[test]
+    fn nxdomain_is_the_only_dangling_signal() {
+        use hickory_resolver::proto::op::ResponseCode;
+        // The label does not exist -> genuinely claimable.
+        assert!(
+            dangling_verdict::<()>(
+                "x.cloudapp.net",
+                Err(negative("x.cloudapp.net.", ResponseCode::NXDomain))
+            )
+            .expect("NXDOMAIN is a clean answer, not an error"),
+            "NXDOMAIN means the label is unregistered and therefore claimable"
+        );
+        // NODATA: the label exists and publishes some other type, so it is NOT
+        // free to claim.
+        assert!(
+            !dangling_verdict::<()>(
+                "x.cloudapp.net",
+                Err(negative("x.cloudapp.net.", ResponseCode::NoError))
+            )
+            .expect("NODATA is a clean answer, not an error"),
+            "NODATA means the label exists, so it is not free to claim"
+        );
+        // It resolves -> someone owns it.
+        assert!(
+            !dangling_verdict("x.cloudapp.net", Ok(())).expect("Ok resolves cleanly"),
+            "a target that resolves belongs to someone"
+        );
+    }
+
+    #[test]
+    fn a_servfail_does_not_become_a_takeover_finding() {
+        // SERVFAIL can travel INSIDE hickory's NoRecordsFound, so the obvious
+        // `is_no_records_found()` shorthand would call this a clean miss. Here
+        // that would mean a broken authority manufacturing a High finding.
+        use hickory_resolver::proto::op::ResponseCode;
+        assert!(
+            dangling_verdict::<()>(
+                "x.cloudapp.net",
+                Err(negative("x.cloudapp.net.", ResponseCode::ServFail))
+            )
+            .is_err(),
+            "a broken authority must not be reported as a dangling CNAME"
+        );
+    }

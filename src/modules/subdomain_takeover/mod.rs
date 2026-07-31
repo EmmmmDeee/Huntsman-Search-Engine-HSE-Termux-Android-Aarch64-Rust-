@@ -144,7 +144,7 @@ impl Module for SubdomainTakeover {
             let vulnerable = if let Some(path) = fingerprint_path {
                 check_http_fingerprint(&ctx.http, &domain, path).await
             } else {
-                check_nxdomain(&cname_target).await
+                check_nxdomain(&cname_target).await?
             };
 
             if vulnerable {
@@ -162,9 +162,42 @@ impl Module for SubdomainTakeover {
     }
 }
 
-async fn check_nxdomain(cname_target: &str) -> bool {
+async fn check_nxdomain(cname_target: &str) -> Result<bool> {
     let resolver = crate::util::dns::shared_resolver();
-    resolver.lookup_ip(cname_target).await.is_err()
+    dangling_verdict(cname_target, resolver.lookup_ip(cname_target).await)
+}
+
+/// Is this CNAME target *dangling* — i.e. unregistered and therefore claimable
+/// by whoever registers it next?
+///
+/// **Pure**, so the one judgement that decides whether this module fabricates a
+/// `Severity::High` finding is unit-testable without a resolver.
+///
+/// * `Ok(_)` → `false`. The target resolves; it belongs to someone.
+/// * `NXDOMAIN` → `true`. The label does not exist at all — the takeover
+///   signal, and the only thing that should produce a finding here.
+/// * `NODATA` → `false`. The label *does* exist and publishes some other record
+///   type, so it is not free to claim.
+/// * malfunction → `Err`. **This is the fix.** The previous
+///   `lookup_ip(..).await.is_err()` treated every failure as the vulnerable
+///   signal, so a 2 s timeout on a flaky mobile link — the module's ordinary
+///   operating condition — fabricated a VULNERABLE finding at
+///   `confidence::VERY_HIGH_PLUS`. A takeover claim must rest on an authority
+///   actually saying the name does not exist, never on our failure to ask.
+fn dangling_verdict<T>(
+    cname_target: &str,
+    outcome: std::result::Result<T, hickory_resolver::net::NetError>,
+) -> Result<bool> {
+    use crate::util::dns::{DnsVerdict, classify, lookup_error};
+
+    match outcome {
+        Ok(_) => Ok(false),
+        Err(e) => match classify(&e) {
+            DnsVerdict::NxDomain => Ok(true),
+            DnsVerdict::NoData => Ok(false),
+            DnsVerdict::Malfunction => Err(lookup_error(SRC, "A/AAAA", cname_target, &e)),
+        },
+    }
 }
 
 async fn check_http_fingerprint(http: &reqwest::Client, domain: &str, fingerprint: &str) -> bool {
