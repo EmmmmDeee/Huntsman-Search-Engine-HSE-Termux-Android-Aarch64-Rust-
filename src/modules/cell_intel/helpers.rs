@@ -8,6 +8,7 @@ use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
 };
+use crate::modules::termux_sensor;
 use crate::util::geo::is_valid_coords;
 use crate::util::http::urlencode;
 
@@ -205,6 +206,35 @@ pub(super) fn mcc_to_centroid(mcc: &str) -> Option<(f64, f64, &'static str)> {
 }
 
 // ---------------------------------------------------------------------------
+// Tool-output contract
+// ---------------------------------------------------------------------------
+
+/// Decode `termux-telephony-cellinfo` stdout into the cells it reports.
+///
+/// Single source of truth for this module's tool-output contract, called by
+/// both the live `process()` path and [`parse_cells_survey`]. Blank output
+/// means the tool exited 0 with nothing to report — an honest empty answer,
+/// since `termux_cmd` returns `Some(stdout)` for any zero-exit run and a
+/// Termux:API stub that exits 0 printing nothing must not hard-fail on the
+/// primary target platform. Non-blank output that will not parse means the tool
+/// answered with something broken: that is a malfunction and surfaces as a real
+/// `ModuleError`, because reporting it as zero cells would be
+/// indistinguishable from "no towers in range".
+///
+/// This contract previously lived inline in `process()` while a `#[cfg(test)]`
+/// copy in this file still swallowed the parse error into an empty result — so
+/// the unit tests asserted the *pre-fix* behaviour and reverting the fix left
+/// the suite green. Both paths now share this function, so the contract can
+/// only be changed in one place, and the tests below see the change when it is.
+pub(super) fn parse_cells(stdout: &[u8]) -> Result<Vec<Cell>> {
+    if termux_sensor::is_blank(stdout) {
+        return Ok(Vec::new());
+    }
+    serde_json::from_slice(stdout)
+        .map_err(|e| termux_sensor::unparseable(SRC, "telephony-cellinfo", &e))
+}
+
+// ---------------------------------------------------------------------------
 // Standalone parse helper (used in tests to exercise survey logic without
 // needing a ModuleContext / async runtime).
 // ---------------------------------------------------------------------------
@@ -213,11 +243,8 @@ pub(super) fn mcc_to_centroid(mcc: &str) -> Option<(f64, f64, &'static str)> {
 pub(super) fn parse_cells_survey(
     stdout: &[u8],
     scan_id: &str,
-) -> crate::core::module::ModuleResult {
-    let cells: Vec<Cell> = match serde_json::from_slice(stdout) {
-        Ok(v) => v,
-        Err(_) => return crate::core::module::ModuleResult::new(),
-    };
+) -> Result<crate::core::module::ModuleResult> {
+    let cells = parse_cells(stdout)?;
 
     let mut result = crate::core::module::ModuleResult {
         entities: Vec::with_capacity(cells.len()),
@@ -230,7 +257,7 @@ pub(super) fn parse_cells_survey(
         };
         result.push(build_tower_device(cell, &key, scan_id));
     }
-    result
+    Ok(result)
 }
 
 // Suppress unused-import warning: Result is needed by query_opencellid's

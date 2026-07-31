@@ -51,7 +51,7 @@ fn parses_mcc_as_string_or_number() {
         {"type":"gsm","registered":true,"cid":99,"lac":42,
          "mcc":505,"mnc":1,"dbm":-90,"asu":10,"level":2}
     ]"#;
-    let r = parse_cells_survey(json, "test");
+    let r = parse_cells_survey(json, "test").unwrap();
     assert_eq!(r.entities.len(), 2);
     assert_eq!(r.entities[0].value, "505-01-54321-12345");
     assert_eq!(r.entities[1].value, "505-1-42-99");
@@ -60,14 +60,35 @@ fn parses_mcc_as_string_or_number() {
 #[test]
 fn skips_cells_without_mcc_or_cid() {
     let json = br#"[{"type":"lte","registered":true}]"#;
-    let r = parse_cells_survey(json, "test");
+    let r = parse_cells_survey(json, "test").unwrap();
     assert_eq!(r.entities.len(), 0);
 }
 
+/// A malfunctioning tool must never be reported as "no towers in range".
+/// Non-blank output that will not parse is a real `ModuleError`; this is the
+/// guard for that contract, and it lives on the same `helpers::parse_cells`
+/// the live `process()` path uses — so reverting the fix in `process()` is not
+/// possible without failing here.
 #[test]
-fn malformed_json_no_ops() {
-    let r = parse_cells_survey(b"{", "test");
-    assert_eq!(r.entities.len(), 0);
+fn malformed_output_surfaces_an_error_not_an_empty_survey() {
+    let err = parse_cells_survey(b"{", "test").expect_err("unparseable output must be an error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("telephony-cellinfo"),
+        "error must name the tool whose output failed to parse, got: {msg}"
+    );
+}
+
+/// Blank output is the honest empty answer, not a malfunction: `termux_cmd`
+/// returns `Some(stdout)` for any zero-exit run, so a Termux:API stub that
+/// exits 0 printing nothing must not hard-fail on the primary target platform.
+#[test]
+fn blank_output_is_an_empty_survey_not_an_error() {
+    for blank in [b"".as_slice(), b"   ".as_slice(), b"\n\t\n".as_slice()] {
+        let r = parse_cells_survey(blank, "test")
+            .unwrap_or_else(|e| panic!("blank output must not error, got: {e}"));
+        assert_eq!(r.entities.len(), 0);
+    }
 }
 
 #[test]
@@ -76,7 +97,7 @@ fn entity_tags_include_cell_tower_and_radio_type() {
         {"type":"lte","registered":true,"cid":5678,"tac":1234,
          "mcc":"310","mnc":"260","dbm":-85,"asu":25,"level":3,"pci":42}
     ]"#;
-    let r = parse_cells_survey(json, "scan-x");
+    let r = parse_cells_survey(json, "scan-x").unwrap();
     assert_eq!(r.entities.len(), 1);
     let e = &r.entities[0];
     assert_eq!(e.kind, EntityKind::DeviceId);
@@ -93,7 +114,7 @@ fn evidence_attributes_populated() {
         {"type":"gsm","registered":false,"cid":100,"lac":200,
          "mcc":"505","mnc":"01","dbm":-95,"asu":8,"level":1,"pci":0}
     ]"#;
-    let r = parse_cells_survey(json, "test");
+    let r = parse_cells_survey(json, "test").unwrap();
     let ev = &r.entities[0].evidence[0];
     assert_eq!(ev.source, "cell_intel");
     assert_eq!(ev.attributes.get("type").expect("should succeed"), "gsm");
@@ -113,34 +134,34 @@ fn evidence_attributes_populated() {
 #[test]
 fn lac_falls_back_to_tac_for_lte() {
     let json = br#"[{"type":"lte","cid":999,"tac":555,"mcc":"310","mnc":"410"}]"#;
-    let r = parse_cells_survey(json, "test");
+    let r = parse_cells_survey(json, "test").unwrap();
     assert_eq!(r.entities[0].value, "310-410-555-999");
 }
 
 #[test]
 fn lac_preferred_over_tac_when_both_present() {
     let json = br#"[{"type":"gsm","cid":1,"lac":10,"tac":20,"mcc":"505","mnc":"01"}]"#;
-    let r = parse_cells_survey(json, "test");
+    let r = parse_cells_survey(json, "test").unwrap();
     assert_eq!(r.entities[0].value, "505-01-10-1");
 }
 
 #[test]
 fn skips_cell_with_zero_cid() {
     let json = br#"[{"type":"lte","cid":0,"tac":123,"mcc":"310","mnc":"260"}]"#;
-    let r = parse_cells_survey(json, "test");
+    let r = parse_cells_survey(json, "test").unwrap();
     assert_eq!(r.entities.len(), 0);
 }
 
 #[test]
 fn empty_json_array() {
-    let r = parse_cells_survey(b"[]", "test");
+    let r = parse_cells_survey(b"[]", "test").unwrap();
     assert_eq!(r.entities.len(), 0);
 }
 
 #[test]
 fn missing_type_defaults_to_unknown() {
     let json = br#"[{"cid":42,"lac":7,"mcc":"001","mnc":"01"}]"#;
-    let r = parse_cells_survey(json, "test");
+    let r = parse_cells_survey(json, "test").unwrap();
     assert_eq!(r.entities.len(), 1);
     assert!(r.entities[0].has_tag("radio:unknown"));
     assert!(r.entities[0].evidence[0].summary.contains("unknown"));

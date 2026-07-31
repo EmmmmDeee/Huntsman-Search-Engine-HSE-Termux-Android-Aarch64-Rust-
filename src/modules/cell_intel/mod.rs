@@ -29,7 +29,6 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::modules::termux_sensor;
 use crate::util::termux::termux_cmd;
 
 use helpers::{accuracy_to_confidence, build_tower_device, mcc_to_centroid, query_opencellid};
@@ -100,17 +99,12 @@ impl Module for CellIntel {
             return Ok(ModuleResult::new());
         };
 
-        // Blank output means the tool exited 0 with nothing to report — an
-        // honest empty answer. Non-blank output that will not parse means the
-        // tool answered with something broken, which is a malfunction and must
-        // surface as a real error: reporting it as zero cells would be
-        // indistinguishable from "no towers in range". Mirrors
-        // `signal_radar::cell::parse_cells`, which shares this tool.
-        if termux_sensor::is_blank(&stdout) {
-            return Ok(ModuleResult::new());
-        }
-        let cells: Vec<types::Cell> = serde_json::from_slice(&stdout)
-            .map_err(|e| termux_sensor::unparseable(SRC, "telephony-cellinfo", &e))?;
+        // Blank-vs-unparseable policy lives in `helpers::parse_cells`, which the
+        // unit tests drive through `parse_cells_survey` — so a change to this
+        // module's tool-output contract cannot be made in only one of the two
+        // places. Mirrors `signal_radar::cell::parse_cells`, which shares this
+        // tool.
+        let cells = helpers::parse_cells(&stdout)?;
 
         let api_key = ctx.key_opt(OPENCELLID_KEY_ENV);
         let mut result = ModuleResult::new();
