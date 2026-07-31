@@ -1,5 +1,6 @@
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
+    error::Result,
     module::ModuleResult,
 };
 use crate::modules::device_fix::{Fix, fix_confidence, is_valid_fix};
@@ -7,15 +8,20 @@ use crate::modules::device_fix::{Fix, fix_confidence, is_valid_fix};
 use super::SRC;
 
 /// Parse `termux-location`'s JSON into a `Coordinates` entity — the device's own
-/// GPS fix, the strongest first-party geolocation signal. Empty result on
-/// unparseable JSON (the tool absent / no fix) or an invalid lat/lon, so a missing
-/// fix degrades to "no signal" rather than a bad coordinate. Pure given `stdout`,
-/// so it is unit-testable without a device.
-pub(super) fn parse_fix(stdout: &[u8], scan_id: &str) -> ModuleResult {
-    let fix: Fix = match serde_json::from_slice(stdout) {
-        Ok(v) => v,
-        Err(_) => return ModuleResult::new(),
-    };
+/// GPS fix, the strongest first-party geolocation signal.
+///
+/// An invalid lat/lon, or blank output from a tool that exited 0, is a real
+/// answer that locates nothing — an honest empty `Ok`. Non-blank output that
+/// will not parse is a malfunction and surfaces as an `Err`: reporting it as
+/// "no fix" would make a broken tool indistinguishable from a device that
+/// simply has no signal. Pure given `stdout`, so it is unit-testable without a
+/// device.
+pub(super) fn parse_fix(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
+    if super::is_blank(stdout) {
+        return Ok(ModuleResult::new());
+    }
+    let fix: Fix =
+        serde_json::from_slice(stdout).map_err(|e| super::unparseable("location", &e))?;
 
     if !is_valid_fix(fix.latitude, fix.longitude) {
         tracing::debug!(
@@ -23,7 +29,7 @@ pub(super) fn parse_fix(stdout: &[u8], scan_id: &str) -> ModuleResult {
             lon = fix.longitude,
             "device_sensors: rejecting invalid location fix"
         );
-        return ModuleResult::new();
+        return Ok(ModuleResult::new());
     }
 
     let provider = fix.provider.as_deref().unwrap_or("network");
@@ -64,5 +70,5 @@ pub(super) fn parse_fix(stdout: &[u8], scan_id: &str) -> ModuleResult {
         entities: Vec::with_capacity(1),
     };
     result.push(e);
-    result
+    Ok(result)
 }

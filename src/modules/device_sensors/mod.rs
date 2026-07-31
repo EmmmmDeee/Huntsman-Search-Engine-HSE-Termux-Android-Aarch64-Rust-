@@ -14,7 +14,7 @@ use async_trait::async_trait;
 
 use crate::core::{
     entity::EntityKind,
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -27,6 +27,24 @@ mod wifi;
 mod tests;
 
 pub(super) const SRC: &str = "device_sensors";
+
+/// True when a sensor tool exited 0 but printed nothing meaningful.
+///
+/// [`crate::util::termux::termux_cmd`] returns `Some(stdout)` for *any*
+/// zero-exit run, empty stdout included, so blank output reaches the parsers
+/// as an unparseable JSON error. That is an honest "nothing to report", not a
+/// malfunction, and must stay an empty `Ok` — treating it as a hard failure
+/// would make a quiet sensor error on every scan and trip the circuit breaker.
+/// Mirrors `signal_radar::is_blank`, which shares these tools.
+pub(super) fn is_blank(stdout: &[u8]) -> bool {
+    stdout.iter().all(u8::is_ascii_whitespace)
+}
+
+/// A sensor tool answered with output that could not be parsed — a genuine
+/// malfunction, distinct from both an absent tool and an empty answer.
+pub(super) fn unparseable(sensor: &str, e: &serde_json::Error) -> Error {
+    Error::module(SRC, format!("{sensor}: unparseable tool output ({e})"))
+}
 
 pub struct DeviceSensors;
 
@@ -74,15 +92,29 @@ impl Module for DeviceSensors {
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        // The two sensors are independent observations of different things, so
+        // a failure in one must never discard the other's evidence: everything
+        // collected is kept, and a failure surfaces only when nothing at all
+        // was observed. Same `or_hard_failure` contract as `signal_radar`.
+        let wifi_out = match termux_cmd("termux-wifi-connectioninfo", &[], 3000).await {
+            Some(stdout) => wifi::parse_conn(&stdout, &ctx.scan_id),
+            // Absent tool / non-zero exit: nothing observed, nothing to attest.
+            None => Ok(ModuleResult::new()),
+        };
+        let loc_out = scan_location(&ctx.scan_id).await;
+
         let mut result = ModuleResult::new();
-
-        if let Some(stdout) = termux_cmd("termux-wifi-connectioninfo", &[], 3000).await {
-            result.extend(wifi::parse_conn(&stdout, &ctx.scan_id).entities);
+        let mut first_failure = None;
+        for outcome in [wifi_out, loc_out] {
+            match outcome {
+                Ok(r) => result.extend(r.entities),
+                Err(e) => {
+                    tracing::warn!(module = SRC, error = %e, "device_sensors: sensor failed");
+                    first_failure.get_or_insert(e);
+                }
+            }
         }
-
-        result.extend(scan_location(&ctx.scan_id).await.entities);
-
-        Ok(result)
+        result.or_hard_failure(first_failure)
     }
 }
 
@@ -91,7 +123,12 @@ impl Module for DeviceSensors {
 /// missing), on timeout, or on an invalid/no-fix payload. A `last` request reads
 /// the OS's passively-cached last-known location and the entities are tagged
 /// `fix-age:last-known` so a cached position is never read as a fresh lock.
-async fn fetch_fix(provider: &str, request: &str, timeout_ms: u64, scan_id: &str) -> ModuleResult {
+async fn fetch_fix(
+    provider: &str,
+    request: &str,
+    timeout_ms: u64,
+    scan_id: &str,
+) -> Result<ModuleResult> {
     match termux_cmd(
         "termux-location",
         &["-p", provider, "-r", request],
@@ -100,15 +137,15 @@ async fn fetch_fix(provider: &str, request: &str, timeout_ms: u64, scan_id: &str
     .await
     {
         Some(stdout) => {
-            let mut r = gps::parse_fix(&stdout, scan_id);
+            let mut r = gps::parse_fix(&stdout, scan_id)?;
             if request == "last" {
                 for e in &mut r.entities {
                     e.tag("fix-age:last-known");
                 }
             }
-            r
+            Ok(r)
         }
-        None => ModuleResult::new(),
+        None => Ok(ModuleResult::new()),
     }
 }
 
@@ -116,18 +153,26 @@ async fn fetch_fix(provider: &str, request: &str, timeout_ms: u64, scan_id: &str
 /// first and degrading to the OS's passively-cached last-known location so a
 /// position is still established when no fresh lock is available — needs no
 /// input: fresh GPS → fresh network → last-known GPS → last-known network.
-async fn scan_location(scan_id: &str) -> ModuleResult {
+async fn scan_location(scan_id: &str) -> Result<ModuleResult> {
     const STAGES: &[(&str, &str, u64)] = &[
         ("gps", "once", 12_000),
         ("network", "once", 8_000),
         ("gps", "last", 3_000),
         ("network", "last", 3_000),
     ];
+    // Each stage is an independent attempt at the same question, so a stage
+    // that malfunctions must not abort the ladder — a later stage may still
+    // establish a fix. The first failure is remembered and only surfaces if
+    // no stage produced one.
+    let mut first_failure = None;
     for &(provider, request, timeout_ms) in STAGES {
-        let r = fetch_fix(provider, request, timeout_ms, scan_id).await;
-        if !r.is_empty() {
-            return r;
+        match fetch_fix(provider, request, timeout_ms, scan_id).await {
+            Ok(r) if !r.is_empty() => return Ok(r),
+            Ok(_) => {}
+            Err(e) => {
+                first_failure.get_or_insert(e);
+            }
         }
     }
-    ModuleResult::new()
+    ModuleResult::new().or_hard_failure(first_failure)
 }
