@@ -101,3 +101,9 @@ pub(super) struct OpenCellidResp {
     #[serde(default)]
     pub(super) error: Option<String>,
 }
+
+impl crate::modules::opencellid::KeyFailure for OpenCellidResp {
+    fn key_error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+}

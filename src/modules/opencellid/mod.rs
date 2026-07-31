@@ -168,10 +168,13 @@ fn parse_tower_id(value: &str) -> Option<(i64, i64, i64, i64)> {
     Some((mcc, mnc, lac, cid))
 }
 
-/// The body-level key failure both response shapes can carry — see
-/// [`CellEntry::error`]. Implemented by both so [`fetch_cell`] can run the one
-/// authoritative check for it, rather than each endpoint repeating its own.
-trait KeyFailure {
+/// The body-level key failure an OpenCelliD response can carry — see
+/// [`CellEntry::error`]. Implemented by every shape [`fetch_cell`] decodes so
+/// the check has one authoritative implementation rather than one per caller.
+///
+/// Visible to sibling modules because `cell_intel` decodes the same `cell/get`
+/// endpoint into its own narrower projection of the body.
+pub(super) trait KeyFailure {
     fn key_error(&self) -> Option<&str>;
 }
 
@@ -214,7 +217,15 @@ impl KeyFailure for CellEntry {
 /// Decoding goes through `json_scanned`, not `json_decode`: OpenCelliD echoes
 /// the submitted key back in its bad-key body (`"API Key not known: <key>"`),
 /// so the response text must run through the key scanner.
-async fn fetch_cell<T: serde::de::DeserializeOwned + KeyFailure>(
+///
+/// `cell_intel` drives the same `cell/get` endpoint with the same key and
+/// shares this function rather than keeping its own copy of the sequence — the
+/// duplication that let the two implementations drift apart. Note that key
+/// failures are deliberately reported against this module's `SRC`
+/// (`"opencellid"`), the name the key pool registers, regardless of which
+/// module made the call: reporting under the *calling* module's name would
+/// silently no-op and the pool would never learn the key was rejected.
+pub(super) async fn fetch_cell<T: serde::de::DeserializeOwned + KeyFailure>(
     ctx: &ModuleContext,
     api_key: &str,
     url: &str,

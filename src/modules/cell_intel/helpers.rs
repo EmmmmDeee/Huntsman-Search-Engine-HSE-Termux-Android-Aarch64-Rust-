@@ -43,12 +43,39 @@ pub(super) fn build_tower_device(cell: &Cell, key: &TowerKey, scan_id: &str) -> 
     e
 }
 
+/// Geolocate one tower against OpenCelliD.
+///
+/// The two negative outcomes are distinct and must not be conflated:
+///
+/// * `Ok(None)` — a **genuine miss**. OpenCelliD answered correctly and simply
+///   has no usable fix for this tower (`status: "error"`, or absent /
+///   out-of-range coordinates). The caller's MCC-centroid fallback is the right
+///   response, and this is the common case for towers outside the crowdsourced
+///   database.
+/// * `Err` — a **malfunction**. The network is down, the endpoint is broken, or
+///   the key was rejected. No statement about the tower was obtained at all.
+///
+/// Previously both collapsed into `None`, so a dead key or a downed network was
+/// indistinguishable from "this tower isn't in the database": every tower
+/// quietly degraded to a coarse country centroid and the operator was given no
+/// signal that precise geolocation had been attempted and had failed. That is
+/// the same conflation fixed in the standalone `opencellid` module, in a
+/// sibling driving the same endpoint with the same key.
+///
+/// The request/status/decode/key-check sequence itself is
+/// [`crate::modules::opencellid::fetch_cell`] — shared rather than copied, so
+/// the two callers of this endpoint cannot drift apart again. It reports key
+/// failures against the registered `"opencellid"` service (not this module's
+/// `SRC`), which is required here: `HUNTSMAN_OPENCELLID_KEY` is the same key
+/// the standalone module uses, and reporting under `"cell_intel"` would
+/// silently no-op against an unregistered service, leaving the pool unaware the
+/// real key was rejected (the T2.153 class).
 pub(super) async fn query_opencellid(
     ctx: &crate::core::module::ModuleContext,
     api_key: &str,
     tower: &TowerKey<'_>,
     radio: &str,
-) -> Option<(f64, f64, u64)> {
+) -> Result<Option<(f64, f64, u64)>> {
     // URL-encode every interpolated value (consistent with censys). mcc/mnc
     // come from json_to_str of arbitrary cellinfo JSON; a malformed value with
     // a `&`/space would otherwise corrupt the query string. Numeric codes
@@ -63,44 +90,32 @@ pub(super) async fn query_opencellid(
         urlencode(radio),
     );
 
-    let resp = ctx
-        .http
-        .get(&url)
-        .header("Accept", "application/json")
-        .send()
-        .await
-        .ok()?;
+    // A 404 is `Ok(None)` from `fetch_cell` — the tower is genuinely not in the
+    // database, which is a miss rather than a malfunction.
+    let Some(data): Option<OpenCellidResp> =
+        crate::modules::opencellid::fetch_cell(ctx, api_key, &url).await?
+    else {
+        return Ok(None);
+    };
 
-    let status = resp.status();
-    if !status.is_success() {
-        // Reported against the registered "opencellid" SERVICE, not this
-        // module's own `SRC` ("cell_intel") — `HUNTSMAN_OPENCELLID_KEY` is
-        // the same key the standalone `opencellid` module uses and reports
-        // against; reporting under "cell_intel" would silently no-op (no
-        // such service registered) and the pool would never learn the real
-        // "opencellid" key was rejected/throttled, exactly the T2.153 class
-        // of bug this fixes.
-        crate::util::http::note_keyed_error(status.as_u16(), "opencellid", api_key, ctx);
-        return None;
-    }
+    Ok(fix_from_resp(&data))
+}
 
-    let data: OpenCellidResp = crate::util::http::json_scanned(resp, SRC).await.ok()?;
-
-    if data.error.is_some() {
-        // See `OpenCellidResp::error`'s doc comment — a body-level key
-        // failure OpenCelliD signals as a plain 200, so this can't be
-        // caught by the status check above. Distinct from the `status:
-        // "error"` case just below (a genuine "couldn't geolocate this
-        // tower" negative with a real key — not a key problem).
-        crate::util::http::note_keyed_error(401, "opencellid", api_key, ctx);
-        return None;
-    }
+/// The decoded-response → fix projection, split out of [`query_opencellid`] so
+/// the miss classification is **pure** and directly testable: the live path
+/// hardcodes the OpenCelliD host and so offers no seam to exercise it through.
+///
+/// Every `None` here is a genuine miss — OpenCelliD answered, it just has no
+/// usable fix. Malfunctions never reach this function; they are already `Err`
+/// from `fetch_cell`.
+pub(super) fn fix_from_resp(data: &OpenCellidResp) -> Option<(f64, f64, u64)> {
+    // A real key that simply couldn't place this tower — a genuine negative,
+    // distinct from the body-level key failure `fetch_cell` turns into `Err`.
     if data.status.as_deref() == Some("error") {
         return None;
     }
 
-    let lat = data.lat?;
-    let lon = data.lon?;
+    let (lat, lon) = (data.lat?, data.lon?);
     // Shared validator: rejects Null Island AND out-of-range / non-finite
     // values a malformed OpenCelliD payload could carry (see util::geo).
     if !is_valid_coords(lat, lon) {

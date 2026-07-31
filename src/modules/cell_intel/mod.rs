@@ -115,6 +115,12 @@ impl Module for CellIntel {
         let api_key = ctx.key_opt(OPENCELLID_KEY_ENV);
         let mut result = ModuleResult::new();
         let mut seen = HashSet::new();
+        // Set once OpenCelliD has hard-failed (network down, endpoint broken,
+        // key rejected). The failure is a property of the endpoint and the key,
+        // not of any one tower, so retrying it for every remaining tower would
+        // just repeat the same failing HTTPS request — wasted radio time and
+        // battery on the Termux target, which is exactly where this module runs.
+        let mut opencellid_failed = false;
 
         for cell in &cells {
             // Parse + survey-skip policy in one place (TowerKey::from_cell):
@@ -134,9 +140,30 @@ impl Module for CellIntel {
 
             let radio = key.radio_code();
 
-            if let Some(api) = api_key
-                && let Some((lat, lon, range)) = query_opencellid(ctx, api, &key, radio).await
-            {
+            // A malfunction must not abort the scan: the tower survey above
+            // comes from the local sensor and is still valid, and the MCC
+            // centroid below is still a real (coarse) answer. So the failure
+            // degrades rather than propagates — but it is logged rather than
+            // swallowed, so a dead key is visible instead of silently turning
+            // every precise fix into a country centroid.
+            let fix = match api_key.filter(|_| !opencellid_failed) {
+                Some(api) => match query_opencellid(ctx, api, &key, radio).await {
+                    Ok(fix) => fix,
+                    Err(e) => {
+                        tracing::warn!(
+                            module = SRC,
+                            error = %e,
+                            "cell_intel: OpenCelliD geolocation failed — \
+                             falling back to MCC centroids for this scan"
+                        );
+                        opencellid_failed = true;
+                        None
+                    }
+                },
+                None => None,
+            };
+
+            if let Some((lat, lon, range)) = fix {
                 let coords = format!("{lat:.6},{lon:.6}");
                 let confidence = accuracy_to_confidence(range);
                 let mut e = Entity::new(EntityKind::Coordinates, &coords, confidence, &ctx.scan_id);

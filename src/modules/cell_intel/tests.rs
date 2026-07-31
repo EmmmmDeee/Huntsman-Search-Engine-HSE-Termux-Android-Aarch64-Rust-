@@ -326,8 +326,9 @@ fn opencellid_resp_captures_the_real_live_confirmed_bad_key_error_shape() {
     // Live-confirmed 2026-07-15: a garbage key against the real
     // `cell/get` endpoint (the same one `query_opencellid` calls) returns
     // HTTP 200 with exactly this body — no HTTP-level 401/403/429 at all.
-    // `query_opencellid`'s `data.error.is_some()` check is what tells this
-    // apart from a genuine "couldn't geolocate this tower" negative.
+    // The shared `opencellid::fetch_cell` reads this field via the `KeyFailure`
+    // impl below and turns it into an `Err`, which is what tells it apart from
+    // a genuine "couldn't geolocate this tower" negative (`Ok(None)`).
     let raw = r#"{"error":"API Key not known: garbage00000invalid","code":2}"#;
     let resp: OpenCellidResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(
@@ -351,4 +352,72 @@ fn opencellid_resp_status_error_is_distinct_from_the_body_error_field() {
     let resp: OpenCellidResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(resp.status.as_deref(), Some("error"));
     assert_eq!(resp.error, None);
+}
+
+// ---- `fix_from_resp`: every None here is a genuine miss ----
+//
+// `query_opencellid` hardcodes the OpenCelliD host, so the miss classification
+// is split into this pure projection to be testable at all. Malfunctions never
+// reach it — those are already `Err` from `opencellid::fetch_cell`, whose own
+// failure contract is pinned hermetically in that module's tests.
+
+use super::helpers::fix_from_resp;
+use crate::modules::opencellid::KeyFailure;
+
+fn resp(raw: &str) -> OpenCellidResp {
+    serde_json::from_str(raw).expect("fixture should deserialize")
+}
+
+#[test]
+fn fix_from_resp_returns_the_fix_on_a_usable_answer() {
+    let got = fix_from_resp(&resp(r#"{"lat":-37.81,"lon":144.96,"range":250}"#));
+    let (lat, lon, range) = got.expect("a usable fix must be returned");
+    assert!((lat - -37.81).abs() < 1e-9);
+    assert!((lon - 144.96).abs() < 1e-9);
+    assert_eq!(range, 250);
+}
+
+#[test]
+fn fix_from_resp_defaults_a_missing_range_rather_than_dropping_the_fix() {
+    // Range only drives the confidence band, so its absence must not discard an
+    // otherwise good coordinate.
+    let got = fix_from_resp(&resp(r#"{"lat":-37.81,"lon":144.96}"#));
+    assert_eq!(got.expect("fix must survive a missing range").2, 5000);
+}
+
+#[test]
+fn fix_from_resp_treats_status_error_as_a_miss() {
+    // A real key that genuinely couldn't place this tower — the caller's
+    // MCC-centroid fallback is the correct response.
+    assert!(fix_from_resp(&resp(r#"{"status":"error"}"#)).is_none());
+}
+
+#[test]
+fn fix_from_resp_treats_absent_coordinates_as_a_miss() {
+    assert!(fix_from_resp(&resp(r#"{"range":250}"#)).is_none());
+    assert!(fix_from_resp(&resp(r#"{"lat":-37.81}"#)).is_none());
+    assert!(fix_from_resp(&resp(r#"{"lon":144.96}"#)).is_none());
+}
+
+#[test]
+fn fix_from_resp_rejects_null_island_and_out_of_range_coordinates() {
+    // A malformed payload must not become a confident coordinate entity.
+    assert!(fix_from_resp(&resp(r#"{"lat":0,"lon":0}"#)).is_none());
+    assert!(fix_from_resp(&resp(r#"{"lat":91.0,"lon":10.0}"#)).is_none());
+    assert!(fix_from_resp(&resp(r#"{"lat":10.0,"lon":181.0}"#)).is_none());
+}
+
+#[test]
+fn key_failure_impl_exposes_the_body_level_error_to_the_shared_fetch() {
+    // The seam by which `opencellid::fetch_cell` turns OpenCelliD's HTTP-200
+    // bad-key body into an `Err` for this module too, rather than this module
+    // keeping its own copy of that check.
+    assert_eq!(
+        resp(r#"{"error":"API Key not known: x","code":2}"#).key_error(),
+        Some("API Key not known: x")
+    );
+    // A genuine miss must NOT look like a key failure, or a working key would
+    // report itself exhausted on every ordinary tower that isn't in the database.
+    assert_eq!(resp(r#"{"status":"error"}"#).key_error(), None);
+    assert_eq!(resp(r#"{"lat":-37.81,"lon":144.96}"#).key_error(), None);
 }
