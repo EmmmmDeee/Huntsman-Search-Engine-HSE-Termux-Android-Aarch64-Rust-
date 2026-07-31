@@ -631,6 +631,35 @@ impl Entity {
     /// forcing a recompute. `c_effective()` is exactly
     /// `c_effective_with_source_count(self.source_count())`, so the C_eff formula
     /// is single-sourced and the two can never drift apart.
+    ///
+    /// **Quarantined entities earn no corroboration credit.** A `candidate`-tagged
+    /// entity came from a record `util::target_match` judged NOT to be the
+    /// subject. Several such records agreeing with each other is agreement about
+    /// a *stranger* — it corroborates that the stranger exists, never that the
+    /// finding is the subject's — so the agreement term is not applicable and
+    /// `C_eff` stays at the base `confidence`.
+    ///
+    /// Without this, quarantine did not survive corroboration.
+    /// [`demote_to_candidate`](Self::demote_to_candidate) only caps the base
+    /// `confidence` to [`CANDIDATE_CONF`] (0.25), while the tier is derived from
+    /// `C_eff` — and the agreement term climbs on source count alone: at 0.25 it
+    /// reaches 0.5125 at 2 distinct sources, 0.6831 at 3, and **0.7940 at 4**,
+    /// i.e. [`Classification::Verified`]. Four breach pools independently
+    /// surfacing the same non-matching stranger is ordinary on a broad search,
+    /// and nine call sites demote, each attaching its own module-named evidence.
+    /// The consequence was not cosmetic: the engine's subject-identity set
+    /// (`core::engine`, gating the wrong-identity pivot) selects identity-kind
+    /// entities on `c_effective() >= VERIFIED_MIN` with no tag filter, so a
+    /// quarantined stranger's email or name could be adopted as the subject's
+    /// own identity — self-reinforcingly admitting more of that stranger's data,
+    /// which is the exact failure quarantine exists to prevent. It also
+    /// contradicted [`CANDIDATE_CONF`]'s own promise that a demoted entity
+    /// "always classifies as `Candidate`".
+    ///
+    /// This does not strand anything: the two audited ways out of quarantine both
+    /// REMOVE the tag first — [`Self::absorb`] on a non-candidate corroboration of
+    /// the same uid, and the geo-corroboration promotion pass in
+    /// `core::engine::passes` — after which the full agreement term applies again.
     #[inline]
     pub fn c_effective_with_source_count(&self, n: u32) -> f64 {
         // Floor the source count at 1: a lone observation IS one source, and
@@ -642,6 +671,15 @@ impl Entity {
         // `confidence`, so corroboration can only ever ADD confidence, never
         // subtract it.
         let n = f64::from(n.max(1));
+        if self.has_tag(crate::core::tags::CANDIDATE) {
+            // Base confidence only — see the quarantine note above. Returning
+            // `confidence` (not a clamp to `CANDIDATE_CONF`) keeps the model's
+            // `C_eff ≥ confidence` invariant exact rather than merely capping,
+            // and `demote_to_candidate` has already floored `confidence` to
+            // `CANDIDATE_CONF`, so a demoted entity lands below
+            // `Classification::PROBABLE_MIN` exactly as documented.
+            return self.confidence.clamp(0.0, 1.0);
+        }
         let multiplicative = self.confidence * CORROBORATION_COEFF.mul_add(n.ln(), 1.0);
         let residual_doubt = (1.0 - self.confidence) * CORROBORATION_DOUBT_DECAY.powf(n - 1.0);
         let agreement = 1.0 - residual_doubt;

@@ -26,6 +26,104 @@ fn uid_differs_across_kinds() {
     assert_ne!(e.uid, d.uid);
 }
 
+/// Quarantine must survive corroboration.
+///
+/// `demote_to_candidate` only caps the base `confidence`; the tier comes from
+/// `c_effective`, whose agreement term climbs on distinct-source count alone.
+/// At `CANDIDATE_CONF` (0.25) that term reached 0.5125 at 2 sources, 0.6831 at
+/// 3 and 0.7940 at 4 — so four breach pools independently surfacing the SAME
+/// non-matching stranger (ordinary on a broad search; nine call sites demote,
+/// each attaching its own module-named evidence) promoted that stranger to
+/// `Verified` while it still wore the `candidate` tag.
+///
+/// That contradicted `CANDIDATE_CONF`'s own promise that a demoted entity
+/// "always classifies as `Candidate`", and it was not cosmetic: the engine's
+/// subject-identity set selects identity-kind entities on
+/// `c_effective() >= VERIFIED_MIN` with no tag filter, so the stranger could be
+/// adopted as the subject's own identity and disable the wrong-identity pivot
+/// gate against them.
+///
+/// The existing guard above only ever exercised the single-source case (the
+/// `email()` fixture attaches no evidence, so `source_count() == 1`), which is
+/// the one count at which the bug is invisible.
+#[test]
+fn quarantine_survives_any_amount_of_corroboration() {
+    let mut e = Entity::new(EntityKind::Email, "stranger@example.com", 0.70, "s");
+    e.demote_to_candidate();
+
+    // Pile on distinct corroborating sources, well past the 4 that used to
+    // reach Verified.
+    for src in [
+        "oathnet_pro",
+        "see_know",
+        "dehashed",
+        "comb_search",
+        "search_engines",
+        "au_people",
+    ] {
+        e.add_evidence(Evidence::new(src, format!("{src} surfaced this row")));
+        assert!(
+            e.source_count() >= 1,
+            "sanity: evidence must actually register as a source"
+        );
+        assert_eq!(
+            e.classify(),
+            Classification::Candidate,
+            "a quarantined entity must stay Candidate at {} distinct source(s) — \
+             agreement among records that all FAILED to match the subject is \
+             agreement about a stranger, not corroboration of the subject \
+             (c_eff was {})",
+            e.source_count(),
+            e.c_effective()
+        );
+    }
+
+    // The count really did climb — otherwise this test proves nothing.
+    assert!(
+        e.source_count() >= 4,
+        "probe must reach the source count that used to promote to Verified, got {}",
+        e.source_count()
+    );
+    // And C_eff >= confidence still holds (the model's bounded invariant).
+    assert!(e.c_effective() >= e.confidence - f64::EPSILON);
+}
+
+/// Lifting quarantine must restore full corroboration credit — the fix above
+/// suppresses the agreement term only while the `candidate` tag is present, so
+/// the two audited ways out of quarantine are unaffected.
+///
+/// This is the `absorb` route: a single NON-candidate observation of the same
+/// uid drops the tag (`absorb`'s documented "a single non-candidate
+/// corroboration is enough, symmetric with the confidence rule"). The other
+/// route is the geo-corroboration promotion pass in `core::engine::passes`,
+/// which likewise removes the tag before raising confidence.
+#[test]
+fn lifting_quarantine_restores_corroboration_credit() {
+    let mut e = Entity::new(EntityKind::Email, "stranger@example.com", 0.70, "s");
+    e.demote_to_candidate();
+    for src in ["oathnet_pro", "see_know", "dehashed"] {
+        e.add_evidence(Evidence::new(src, "breach row"));
+    }
+    let quarantined_c_eff = e.c_effective();
+    assert_eq!(e.classify(), Classification::Candidate);
+
+    // A confirmed, non-candidate sighting of the same uid.
+    let mut confirmed = Entity::new(EntityKind::Email, "stranger@example.com", 0.70, "s");
+    confirmed.add_evidence(Evidence::new("confirmed_source", "matched the subject"));
+    e.absorb(confirmed);
+
+    assert!(
+        !e.has_tag(crate::core::tags::CANDIDATE),
+        "a non-candidate corroboration must lift the quarantine tag"
+    );
+    assert!(
+        e.c_effective() > quarantined_c_eff,
+        "once out of quarantine the agreement term must apply again \
+         ({} should exceed the quarantined {quarantined_c_eff})",
+        e.c_effective()
+    );
+}
+
 #[test]
 fn demote_to_candidate_caps_confidence_tags_and_is_idempotent() {
     let mut e = Entity::new(EntityKind::Email, "stranger@example.com", 0.70, "s");
