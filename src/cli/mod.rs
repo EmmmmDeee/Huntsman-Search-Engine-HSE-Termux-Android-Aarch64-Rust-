@@ -260,6 +260,32 @@ async fn run_command(command: Command) -> Result<()> {
         } => crate::app::export::cmd_export(scan_id, format, out, include_infra, redact).await,
         Command::Diff { from, to, format } => crate::app::diff::cmd_diff(from, to, format),
         Command::Update { check, r#ref } => update::cmd_update(check, r#ref).await,
+        Command::Repair {
+            dry_run,
+            deep,
+            no_update,
+            json,
+        } => {
+            let report = crate::app::repair::run(crate::app::repair::RepairOptions {
+                dry_run,
+                deep,
+                no_update,
+            })
+            .await;
+            if json {
+                // Serialised whole, so `--json` is the same report the text
+                // renderer prints — not a second, hand-built projection that
+                // could drift from it.
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report)
+                        .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+                );
+            } else {
+                crate::app::repair::print_report(&report);
+            }
+            crate::app::repair::into_result(&report)
+        }
         Command::OathnetBatch {
             value,
             kind,

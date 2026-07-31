@@ -390,6 +390,32 @@ impl Store {
         Ok(rows)
     }
 
+    /// `VACUUM` the database, rebuilding it into the smallest file that holds
+    /// the same rows.
+    ///
+    /// Deleting rows (event pruning, a dropped scan) leaves free pages inside
+    /// the file that SQLite reuses but never returns to the filesystem, so a
+    /// store that has churned through many scans keeps its high-water-mark size
+    /// forever. On the Termux target that is the operator's own limited phone
+    /// storage, so reclaiming it is worth the rewrite. Callers should
+    /// [`checkpoint_truncate`](Self::checkpoint_truncate) first — `VACUUM`
+    /// cannot run with a hot WAL holding uncommitted frames.
+    ///
+    /// Costly and exclusive: it rewrites the whole file and needs free space for
+    /// a full second copy, so this is an explicit maintenance operation
+    /// (`hse repair`), never something a scan does implicitly. Returns `Err`
+    /// when another connection holds the database.
+    ///
+    /// Deliberately returns no size: `Store` does not retain its path (only the
+    /// pooled connection), and re-deriving it here would be a second source of
+    /// truth for a value the caller already holds. The caller measures the file
+    /// either side — see `app::repair`'s store stage.
+    pub fn vacuum(&self) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute_batch("VACUUM;")?;
+        Ok(())
+    }
+
     // ── Scans ──────────────────────────────────────────────────────────────
 
     pub fn upsert_scan(&self, scan: &Scan) -> Result<()> {

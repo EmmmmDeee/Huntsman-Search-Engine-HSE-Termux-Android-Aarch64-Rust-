@@ -655,6 +655,33 @@ pub enum Command {
         #[arg(long, value_name = "REF")]
         r#ref: Option<String>,
     },
+
+    /// Repair the installation end to end: reclaim regenerable disk, fix the
+    /// data-directory layout and permissions, compact the database, and bring
+    /// the build up to date.
+    ///
+    /// The one command to run when an install has drifted. Every stage runs
+    /// independently, so one failure (no network, say) never denies you the
+    /// others. Nothing under `~/.huntsman` is ever deleted — your scans, keys
+    /// and dossiers are data, not cache; the database is compacted in place and
+    /// a corrupt one is reported with recovery steps rather than discarded.
+    /// Exits non-zero only when a stage could not complete.
+    #[command(visible_alias = "fix")]
+    Repair {
+        /// Report exactly what would change and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Also reclaim the Cargo build cache (a rebuild is ~15-20 min on
+        /// aarch64) and the install/server logs.
+        #[arg(long)]
+        deep: bool,
+        /// Skip the network check for a newer build.
+        #[arg(long)]
+        no_update: bool,
+        /// Emit the report as JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[cfg(test)]
