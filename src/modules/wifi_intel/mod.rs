@@ -175,8 +175,24 @@ impl Module for WifiIntel {
                 break;
             }
 
-            if let Ok(Some(detail)) =
-                wigle::query_wigle_detail(&ctx.http, user, token, &ap.bssid).await
+            // A refusal is about the ACCOUNT, not this BSSID: a 429 (or an auth
+            // failure) will refuse the next four APs identically. Continuing
+            // used to spend a shared BSSID_BUDGET unit per remaining AP on
+            // requests that could not succeed — a live radar sweep was observed
+            // burning all five on one rate-limited dispatch. A miss (`Ok(None)`)
+            // is per-BSSID and does keep the loop going.
+            let detail = match wigle::query_wigle_detail(&ctx.http, user, token, &ap.bssid).await {
+                Ok(found) => found,
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        "wifi_intel: WiGLE refused — stopping this dispatch's BSSID lookups"
+                    );
+                    break;
+                }
+            };
+
+            if let Some(detail) = detail
                 && let (Some(lat), Some(lon)) = (detail.trilat, detail.trilong)
             {
                 // Shared validator: Null Island + out-of-range + non-finite.
