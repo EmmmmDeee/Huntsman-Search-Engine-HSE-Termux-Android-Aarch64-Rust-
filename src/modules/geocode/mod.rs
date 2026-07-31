@@ -28,7 +28,8 @@ use crate::util::http::urlencode;
 
 // ── Nominatim response types (forward) ──────────────────────────────
 
-#[derive(Deserialize)]
+// `Debug` so the decode contract's tests can `expect_err` on the parsed type.
+#[derive(Deserialize, Debug)]
 pub(super) struct NominatimResult {
     #[serde(default)]
     pub(super) lat: Option<String>,
@@ -53,7 +54,7 @@ pub(super) struct NominatimResp {
     pub(super) address: Option<NominatimAddr>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub(super) struct NominatimAddr {
     pub(super) road: Option<String>,
     pub(super) house_number: Option<String>,
@@ -148,15 +149,37 @@ impl Geocode {
             .send()
             .await;
 
+        // A failure must never look like "no such address". Every arm below
+        // either yields parsed results or returns a real `ModuleError` — see
+        // `decode_forward` for why, and note `reverse` has always behaved this
+        // way; the two halves of this module simply disagreed.
         let results: Vec<NominatimResult> = match resp {
-            Ok(r) if r.status().is_success() => crate::util::http::json_scanned(r, SRC)
-                .await
-                .unwrap_or_default(),
-            _ => {
-                if let Some(body) = crate::util::curl::fetch(&url, crate::MODULE_TIMEOUT_MS).await {
-                    serde_json::from_str(&body).unwrap_or_default()
-                } else {
-                    return Ok(ModuleResult::new());
+            Ok(r) if r.status().is_success() => {
+                // `read_text` is the shared, size-capped body reader — the
+                // same cap `no_module_reads_an_http_body_without_a_size_cap`
+                // enforces crate-wide.
+                let body = crate::util::http::read_text(SRC, r).await?;
+                decode_forward(&body)?
+            }
+            other => {
+                // Non-success status or transport error: fall back to curl (the
+                // documented DoH/proxy path), but a failure of BOTH is an
+                // outage, not a negative result.
+                let status_note = match &other {
+                    Ok(r) => format!("HTTP {}", r.status()),
+                    Err(e) => e.to_string(),
+                };
+                match crate::util::curl::fetch(&url, crate::MODULE_TIMEOUT_MS).await {
+                    Some(body) => decode_forward(&body)?,
+                    None => {
+                        return Err(Error::module(
+                            SRC,
+                            format!(
+                                "Nominatim unreachable ({status_note}) and the curl fallback \
+                                 also failed — this is an outage, not \"address not found\""
+                            ),
+                        ));
+                    }
                 }
             }
         };
@@ -218,6 +241,39 @@ impl Geocode {
         result.push(build_reverse_entity(lat, lon, &data, &ctx.scan_id));
         Ok(result)
     }
+}
+
+/// Decode a Nominatim `/search` body into its results, treating an unparseable
+/// body as a real failure rather than an empty answer.
+///
+/// This module's two halves used to disagree about what failure means.
+/// `reverse` returned `Err` on a non-success status, a transport error and a
+/// bad decode alike. `forward` funnelled all three into `Ok(empty)` — via
+/// `unwrap_or_default()` on the decode and an `Ok(ModuleResult::new())` when the
+/// curl fallback also failed — which is byte-identical to the honest answer for
+/// an address that genuinely does not exist.
+///
+/// That mattered because Nominatim's documented behaviour when a client exceeds
+/// its 1 req/s policy is to answer with a non-JSON block page, and this module
+/// has no rate limiter. So the common failure — being throttled — reported
+/// "address not found" for every address in the scan, the operator saw a clean
+/// negative, and the circuit breaker and scraper-health tracker never learned
+/// the source was down (a zero-result `Ok` is yield-drift, a much weaker signal
+/// than a failure streak).
+///
+/// A successfully-parsed EMPTY array stays `Ok(empty)`: that is Nominatim
+/// genuinely reporting no match, and the one case that should look like one.
+/// Pure, so the contract is unit-testable without a live Nominatim.
+fn decode_forward(body: &str) -> Result<Vec<NominatimResult>> {
+    serde_json::from_str(body).map_err(|e| {
+        Error::module(
+            SRC,
+            format!(
+                "Nominatim /search returned a body that is not the documented JSON array \
+                 ({e}) — treating this as a failure, not \"address not found\""
+            ),
+        )
+    })
 }
 
 /// Build the forward-geocode Coordinates entity, shaping confidence and tags by

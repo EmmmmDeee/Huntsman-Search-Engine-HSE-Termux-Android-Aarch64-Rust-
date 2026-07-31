@@ -287,3 +287,54 @@ fn fold_address_attrs_empty_address_adds_no_attrs() {
     let ev = fold_address_attrs(Evidence::new(SRC, "test"), &a);
     assert!(ev.attributes.is_empty());
 }
+
+/// A broken Nominatim answer must never be reported as "address not found".
+///
+/// `forward` used to funnel every failure into `Ok(empty)`: `unwrap_or_default()`
+/// on the JSON decode, and `Ok(ModuleResult::new())` when the curl fallback also
+/// failed. That is byte-identical to the honest answer for an address that
+/// genuinely does not exist, so an operator could not tell the two apart — and
+/// `reverse`, in the same module, had always returned `Err` for the same
+/// conditions.
+///
+/// This is not a rare path. Nominatim's documented response to a client
+/// exceeding its 1 req/s policy is a non-JSON block page, and this module has no
+/// rate limiter, so being throttled reported "not found" for every address in
+/// the scan while the circuit breaker and scraper-health tracker saw only a
+/// zero-result success.
+#[test]
+fn a_broken_nominatim_body_is_an_error_not_an_empty_answer() {
+    for body in [
+        "<!DOCTYPE html><html><body>Rate limited</body></html>", // the throttle page
+        "Bandwidth limit exceeded",                              // a proxy/CDN notice
+        "{\"error\":\"Unable to geocode\"}",                     // an object, not the array
+        "",                                                      // truncated/empty body
+        "[{\"lat\":",                                            // truncated JSON
+    ] {
+        let err = super::decode_forward(body)
+            .expect_err("a body that is not the documented JSON array must be an error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("geocode"),
+            "the error must name the module so scraper-health attributes it: {msg}"
+        );
+    }
+}
+
+/// The one case that SHOULD look like a negative: Nominatim parsed fine and
+/// genuinely reported no match. Without this, the fix above could be satisfied
+/// by a module that simply errors on everything.
+#[test]
+fn a_genuine_no_match_stays_an_empty_success() {
+    let results = super::decode_forward("[]").expect("an empty array is a real negative");
+    assert!(results.is_empty());
+}
+
+/// A real hit still decodes, so the failure contract did not cost the happy path.
+#[test]
+fn a_real_nominatim_hit_still_decodes() {
+    let body = r#"[{"lat":"-33.8688","lon":"151.2093","display_name":"Sydney NSW"}]"#;
+    let results = super::decode_forward(body).expect("a valid array must decode");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].lat.as_deref(), Some("-33.8688"));
+}
