@@ -1,5 +1,19 @@
 use super::*;
 
+    /// A pinned clock for the freshness tests, parsed with the module's own
+    /// [`parse_iso_epoch`] so the fixtures and the clock share one definition
+    /// of time.
+    ///
+    /// These tests assert a verdict that is *relative* to now, so they must
+    /// supply now rather than read it. Reading the real clock is what made
+    /// `fresh_compromise_gets_higher_confidence` fail on 2026-07-30: its
+    /// fixture was dated 2026-05-01 and simply aged out of the 90-day
+    /// [`FRESHNESS_WINDOW_DAYS`] window. Every fixture below is positioned
+    /// relative to this constant, so they stay valid indefinitely.
+    fn pinned_now() -> u64 {
+        parse_iso_epoch("2026-06-01T00:00:00Z").expect("pinned test clock must parse")
+    }
+
     #[test]
     fn accepts_only_email_and_domain() {
         let m = HudsonRock;
@@ -75,7 +89,7 @@ use super::*;
             malware_path: None,
             credentials: vec![],
         };
-        assert!((compute_confidence(&[recent]) - FRESH_CONFIDENCE).abs() < 1e-9);
+        assert!((compute_confidence(&[recent], pinned_now()) - FRESH_CONFIDENCE).abs() < 1e-9);
     }
 
     #[test]
@@ -90,7 +104,7 @@ use super::*;
             malware_path: None,
             credentials: vec![],
         };
-        assert!((compute_confidence(&[old]) - BASE_CONFIDENCE).abs() < 1e-9);
+        assert!((compute_confidence(&[old], pinned_now()) - BASE_CONFIDENCE).abs() < 1e-9);
     }
 
     #[test]
@@ -184,12 +198,12 @@ use super::*;
             malware_path: None,
             credentials: vec![],
         };
-        assert!((compute_confidence(&[old, recent]) - FRESH_CONFIDENCE).abs() < 1e-9);
+        assert!((compute_confidence(&[old, recent], pinned_now()) - FRESH_CONFIDENCE).abs() < 1e-9);
     }
 
     #[test]
     fn compute_confidence_empty_yields_base() {
-        assert!((compute_confidence(&[]) - BASE_CONFIDENCE).abs() < 1e-9);
+        assert!((compute_confidence(&[], pinned_now()) - BASE_CONFIDENCE).abs() < 1e-9);
     }
 
     #[test]

@@ -228,7 +228,7 @@ fn build_result(target: &Target, data: &CavalierResp, scan_id: &str) -> ModuleRe
         return ModuleResult::new();
     }
 
-    let confidence = compute_confidence(&data.stealers);
+    let confidence = compute_confidence(&data.stealers, crate::core::entity::unix_now());
     let mut entity = target.to_entity(confidence, scan_id);
     entity.tag(tags::BREACH);
     entity.tag(tags::STEALER_LOG);
@@ -304,8 +304,18 @@ fn build_result(target: &Target, data: &CavalierResp, scan_id: &str) -> ModuleRe
     result
 }
 
-fn compute_confidence(stealers: &[Stealer]) -> f64 {
-    let now_secs = crate::core::entity::unix_now();
+/// Freshness verdict for a stealer set, relative to an explicitly supplied
+/// `now_secs`.
+///
+/// The clock is a parameter rather than an internal `unix_now()` call so the
+/// function is pure and its tests are deterministic. Taking the clock from
+/// inside made the freshness verdict depend on the wall clock at test time:
+/// a test pinning an absolute `date_compromised` and asserting
+/// [`FRESH_CONFIDENCE`] necessarily starts failing once real time drifts past
+/// [`FRESHNESS_WINDOW_DAYS`] from that date — which is exactly what happened
+/// (a fixture dated 2026-05-01 went stale, and CI red, on 2026-07-30). A
+/// caller-supplied clock removes the whole failure class.
+fn compute_confidence(stealers: &[Stealer], now_secs: u64) -> f64 {
     let cutoff = now_secs.saturating_sub(FRESHNESS_WINDOW_DAYS * 86400);
 
     let has_recent = stealers.iter().any(|s| {
