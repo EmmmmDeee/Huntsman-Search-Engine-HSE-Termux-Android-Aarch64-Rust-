@@ -709,17 +709,46 @@ pub(super) async fn blocklist_check(target: &Target, ctx: &ModuleContext) -> Res
 
     let resolver = shared_resolver();
     let mut listed_on: Vec<&str> = Vec::new();
-    let mut checked = 0u32;
+    // Zones that actually answered — the only ones this check may speak for.
+    let mut answered = 0u32;
+    // Zones that never answered (timeout, SERVFAIL, blocked port 53).
+    let mut unanswered = 0u32;
 
     for (zone, label) in BLOCKLISTS {
         if ctx.cancel.is_cancelled() {
             break;
         }
         let query = format!("{reversed}.{zone}");
-        if resolver.lookup_ip(query.as_str()).await.is_ok() {
-            listed_on.push(label);
+        match resolver.lookup_ip(query.as_str()).await {
+            // A DNSBL signals a listing by answering with a 127.0.0.x address.
+            // An `Ok` carrying NO address is not a listing: hickory also
+            // returns `Ok` for a truncated response and for an NXDOMAIN
+            // bearing a CNAME referral, and the previous `.is_ok()` counted
+            // those as listed — manufacturing a `blocklisted` tag, and at three
+            // of them the shared `high-risk` tag that
+            // `core::correlator::rules::infra` turns into a reputation finding.
+            Ok(lookup) if lookup.iter().next().is_some() => {
+                answered += 1;
+                listed_on.push(label);
+            }
+            Ok(_) => answered += 1,
+            // NXDOMAIN / NODATA is this zone's way of saying "not listed" —
+            // the ordinary answer, and a genuine data point.
+            Err(e) if crate::util::dns::classify(&e).is_clean_miss() => answered += 1,
+            // No answer at all. This zone must not be counted as checked: the
+            // previous code incremented unconditionally, so eight timed-out
+            // lookups produced "clean on 8 blocklists" with status `clean` —
+            // silence rendered as a clean bill of health.
+            Err(e) => {
+                unanswered += 1;
+                tracing::debug!(
+                    module = SRC,
+                    zone,
+                    error = %e,
+                    "DNSBL zone did not answer — excluded from the coverage count"
+                );
+            }
         }
-        checked += 1;
     }
 
     let mut entity = Entity::new(
@@ -728,36 +757,80 @@ pub(super) async fn blocklist_check(target: &Target, ctx: &ModuleContext) -> Res
         confidence::VERY_HIGH_PLUS,
         &ctx.scan_id,
     );
-    entity.tag("dnsbl-checked");
-
-    if listed_on.is_empty() {
-        entity.add_evidence(
-            Evidence::new(SRC, format!("{ip} clean on {checked} blocklists"))
-                .with_attr("listed_count", "0")
-                .with_attr("checked_count", checked.to_string())
-                .with_attr("status", "clean"),
-        );
-    } else {
+    // Only claim the IP was checked if at least one zone actually answered.
+    if answered > 0 {
+        entity.tag("dnsbl-checked");
+    }
+    if !listed_on.is_empty() {
         entity.tag("blocklisted");
         if listed_on.len() >= 3 {
             entity.tag("high-risk");
         }
-        listed_on.sort_unstable();
-        entity.add_evidence(
-            Evidence::new(
-                SRC,
-                format!(
-                    "{ip} listed on {} of {} blocklists",
-                    listed_on.len(),
-                    checked
-                ),
-            )
-            .with_attr("listed_count", listed_on.len().to_string())
-            .with_attr("checked_count", checked.to_string())
-            .with_attr("listed_on", listed_on.join(", "))
-            .with_attr("status", "listed"),
-        );
     }
+    listed_on.sort_unstable();
+    entity.add_evidence(blocklist_evidence(ip, &listed_on, answered, unanswered));
 
     Ok(vec![entity])
+}
+
+/// Render the DNSBL result honestly, given how many zones actually answered.
+///
+/// **Pure**, so the one claim this module makes to an operator is testable
+/// without a resolver.
+///
+/// The `status` attribute now has three values rather than two:
+///
+/// * `clean` — every zone answered and none listed the IP. Unchanged, and
+///   byte-identical to the previous output on a healthy network.
+/// * `listed` — at least one zone listed it.
+/// * `partial` — some zones never answered, so the coverage is incomplete and
+///   is stated as such.
+/// * `unknown` — no zone answered at all. Nothing was established.
+///
+/// The last two are the fix: `checked` was previously incremented for every
+/// zone regardless of outcome, so eight timed-out lookups rendered as
+/// `"{ip} clean on 8 blocklists"` with `status: clean`. That is the one place in
+/// this module where silence became a spoken claim.
+pub(super) fn blocklist_evidence(
+    ip: &str,
+    listed_on: &[&str],
+    answered: u32,
+    unanswered: u32,
+) -> Evidence {
+    let base = if !listed_on.is_empty() {
+        Evidence::new(
+            SRC,
+            format!(
+                "{ip} listed on {} of {answered} blocklists",
+                listed_on.len()
+            ),
+        )
+        .with_attr("listed_on", listed_on.join(", "))
+        .with_attr("status", "listed")
+    } else if answered == 0 {
+        Evidence::new(
+            SRC,
+            format!("{ip} could not be checked — no blocklist answered"),
+        )
+        .with_attr("status", "unknown")
+    } else if unanswered > 0 {
+        Evidence::new(
+            SRC,
+            format!("{ip} clean on {answered} blocklists, {unanswered} did not answer"),
+        )
+        .with_attr("status", "partial")
+    } else {
+        Evidence::new(SRC, format!("{ip} clean on {answered} blocklists"))
+            .with_attr("status", "clean")
+    };
+
+    let ev = base
+        .with_attr("listed_count", listed_on.len().to_string())
+        .with_attr("checked_count", answered.to_string());
+
+    if unanswered > 0 {
+        ev.with_attr("unanswered_count", unanswered.to_string())
+    } else {
+        ev
+    }
 }

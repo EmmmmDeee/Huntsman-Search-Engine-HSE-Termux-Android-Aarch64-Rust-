@@ -386,3 +386,67 @@ fn metadata() {
     assert_eq!(m.priority(), 31);
     assert_eq!(m.max_timeout_ms(), 15_000);
 }
+
+// ---- DNSBL: coverage must be counted, not assumed --------------------------
+//
+// `blocklist_check` hardcodes the resolver, so the claim it renders is split
+// into the pure `blocklist_evidence` to be testable at all. Each of these pins
+// one half of the defect: silence counted as coverage, and an empty answer
+// counted as a listing.
+
+use super::resolve::blocklist_evidence;
+
+fn attr<'a>(ev: &'a crate::core::entity::Evidence, k: &str) -> Option<&'a str> {
+    ev.attributes.get(k).map(String::as_str)
+}
+
+#[test]
+fn blocklist_evidence_with_full_coverage_is_unchanged() {
+    // The no-op proof: on a healthy network the operator-visible output is
+    // exactly what it was before this fix.
+    let ev = blocklist_evidence("1.2.3.4", &[], 8, 0);
+    assert_eq!(ev.summary, "1.2.3.4 clean on 8 blocklists");
+    assert_eq!(attr(&ev, "status"), Some("clean"));
+    assert_eq!(attr(&ev, "listed_count"), Some("0"));
+    assert_eq!(attr(&ev, "checked_count"), Some("8"));
+    assert_eq!(
+        attr(&ev, "unanswered_count"),
+        None,
+        "a fully-covered check must not carry the new attribute at all"
+    );
+}
+
+#[test]
+fn a_dnsbl_zone_that_never_answered_is_not_counted_as_clean() {
+    // Three answered, five timed out. The old code said "clean on 8".
+    let ev = blocklist_evidence("1.2.3.4", &[], 3, 5);
+    assert_eq!(attr(&ev, "status"), Some("partial"));
+    assert_eq!(attr(&ev, "checked_count"), Some("3"));
+    assert_eq!(attr(&ev, "unanswered_count"), Some("5"));
+    assert!(
+        !ev.summary.contains("clean on 8"),
+        "must not claim coverage it does not have: {}",
+        ev.summary
+    );
+}
+
+#[test]
+fn a_total_dnsbl_outage_establishes_nothing() {
+    let ev = blocklist_evidence("1.2.3.4", &[], 0, 8);
+    assert_eq!(attr(&ev, "status"), Some("unknown"));
+    assert_eq!(attr(&ev, "checked_count"), Some("0"));
+    assert!(
+        !ev.summary.contains("clean"),
+        "an IP nothing answered for is not clean: {}",
+        ev.summary
+    );
+}
+
+#[test]
+fn a_listing_reports_the_answered_denominator_not_the_attempted_one() {
+    let ev = blocklist_evidence("1.2.3.4", &["Spamhaus", "SpamCop"], 6, 2);
+    assert_eq!(attr(&ev, "status"), Some("listed"));
+    assert_eq!(ev.summary, "1.2.3.4 listed on 2 of 6 blocklists");
+    assert_eq!(attr(&ev, "listed_count"), Some("2"));
+    assert_eq!(attr(&ev, "unanswered_count"), Some("2"));
+}
