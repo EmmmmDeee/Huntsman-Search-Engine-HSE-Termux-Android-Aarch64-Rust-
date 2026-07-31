@@ -154,7 +154,14 @@ async fn resolve_srv_concurrently(domain: &str, max_concurrent: usize) -> Vec<Sr
         let (prefix, label) = (*prefix, *label);
         set.spawn(async move {
             let _permit = sem.acquire_owned().await.ok()?;
-            let lookup = resolver.lookup(name.as_str(), RecordType::SRV).await.ok()?;
+            // Speculative service probe over 35 candidates — see the note in
+            // `dkim.rs`; same exemption, same reasoning.
+            let lookup = crate::util::dns::lookup_probe(
+                SRC,
+                "SRV",
+                name.as_str(),
+                resolver.lookup(name.as_str(), RecordType::SRV).await,
+            )?;
             let hits: Vec<SrvHit> = lookup
                 .answers()
                 .iter()

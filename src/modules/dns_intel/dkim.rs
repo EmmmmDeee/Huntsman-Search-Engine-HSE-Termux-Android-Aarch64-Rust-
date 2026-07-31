@@ -170,7 +170,17 @@ async fn resolve_selectors_concurrently(domain: &str, max_concurrent: usize) -> 
         let (selector, vendor) = (*selector, vendor.unwrap_or(""));
         set.spawn(async move {
             let _permit = sem.acquire_owned().await.ok()?;
-            let lookup = resolver.txt_lookup(name.as_str()).await.ok()?;
+            // A speculative selector probe: 41 candidates the zone is
+            // overwhelmingly expected NOT to publish, so a malfunction and a
+            // clean miss are the same negative here. `lookup_probe` keeps that
+            // behaviour identical while recording a malfunction at debug, so a
+            // sweep-wide outage is traceable instead of invisible.
+            let lookup = crate::util::dns::lookup_probe(
+                SRC,
+                "DKIM TXT",
+                name.as_str(),
+                resolver.txt_lookup(name.as_str()).await,
+            )?;
             // Concatenate all TXT segments of all answers (a DKIM record is often
             // split into 255-byte character-strings that must be rejoined).
             let record: String = lookup

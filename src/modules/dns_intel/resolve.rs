@@ -523,9 +523,18 @@ pub(super) async fn lookup_caa(target: &Target, ctx: &ModuleContext) -> Result<V
     }
     let resolver = shared_resolver();
 
-    let lookup = match resolver.lookup(domain, RecordType::CAA).await {
-        Ok(l) => l,
-        Err(_) => return Ok(Vec::new()),
+    // "This domain publishes no CAA policy" is a real security finding — it
+    // means any CA may issue for it. A resolver malfunction reported as an
+    // absent policy is therefore a false negative, not a missing datum, so only
+    // an authoritative NXDOMAIN/NODATA yields the empty result.
+    let Some(lookup) = crate::util::dns::lookup_or_absent(
+        SRC,
+        "CAA",
+        domain,
+        resolver.lookup(domain, RecordType::CAA).await,
+    )?
+    else {
+        return Ok(Vec::new());
     };
 
     let mut issuers: Vec<String> = Vec::new();
@@ -656,9 +665,17 @@ pub(super) async fn reverse_lookup(target: &Target, ctx: &ModuleContext) -> Resu
     };
 
     let resolver = shared_resolver();
-    let lookup = match resolver.reverse_lookup(ip).await {
-        Ok(l) => l,
-        Err(_) => return Ok(Vec::new()),
+    // No PTR record is the common, unremarkable case and stays an empty Ok. A
+    // malfunction is reported so it can be told apart from it; the caller folds
+    // this leg with `fold_leg`, so surfacing it costs no other findings.
+    let Some(lookup) = crate::util::dns::lookup_or_absent(
+        SRC,
+        "PTR",
+        &ip.to_string(),
+        resolver.reverse_lookup(ip).await,
+    )?
+    else {
+        return Ok(Vec::new());
     };
 
     let entities: Vec<Entity> = lookup

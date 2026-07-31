@@ -450,3 +450,61 @@ fn a_listing_reports_the_answered_denominator_not_the_attempted_one() {
     assert_eq!(attr(&ev, "listed_count"), Some("2"));
     assert_eq!(attr(&ev, "unanswered_count"), Some("2"));
 }
+
+// ---- pipeline fold: a failed leg must not discard the others ---------------
+
+#[test]
+fn a_failed_leg_keeps_what_the_other_legs_found() {
+    use crate::core::entity::EntityKind;
+    use crate::core::module::ModuleResult;
+
+    let mut result = ModuleResult::new();
+    let mut failure = None;
+
+    super::fold_leg(
+        &mut result,
+        &mut failure,
+        "records",
+        Ok(vec![crate::core::entity::Entity::new(
+            EntityKind::Domain,
+            "found.example.com",
+            0.9,
+            "s",
+        )]),
+    );
+    super::fold_leg(
+        &mut result,
+        &mut failure,
+        "caa",
+        Err(crate::core::error::Error::module("dns_intel", "timed out")),
+    );
+
+    assert!(failure.is_some(), "the malfunction must be latched");
+    let folded = result
+        .or_hard_failure(failure)
+        .expect("a leg that found something keeps the result Ok");
+    assert_eq!(
+        folded.entities.len(),
+        1,
+        "the CAA timeout must not discard the record leg's finding"
+    );
+}
+
+#[test]
+fn a_total_pipeline_outage_surfaces_instead_of_reporting_nothing_found() {
+    use crate::core::module::ModuleResult;
+
+    let mut result = ModuleResult::new();
+    let mut failure = None;
+    super::fold_leg(
+        &mut result,
+        &mut failure,
+        "records",
+        Err(crate::core::error::Error::module("dns_intel", "timed out")),
+    );
+
+    assert!(
+        result.or_hard_failure(failure).is_err(),
+        "nothing collected and something broken is an outage, not a clean negative"
+    );
+}

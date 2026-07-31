@@ -46,7 +46,7 @@ mod wildcard;
 use async_trait::async_trait;
 
 use crate::core::{
-    entity::EntityKind,
+    entity::{Entity, EntityKind},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
@@ -134,12 +134,49 @@ impl Module for DnsIntel {
 // Domain pipeline: resolver → brute → CAA
 // ---------------------------------------------------------------------------
 
+/// Fold one pipeline leg into the running result.
+///
+/// A leg that fails must not discard what the other legs already found: these
+/// are independent sub-fetches over the same target, and on a flaky mobile link
+/// one of six timing out is ordinary. The first failure is latched and handed to
+/// [`ModuleResult::or_hard_failure`] at the end, so the module errors only on a
+/// total outage — nothing collected at all AND something genuinely broke.
+///
+/// Previously each leg was folded with `?`, which discarded every entity
+/// gathered so far the moment any later leg failed. That is also what made it
+/// unsafe for an individual leg to report a malfunction honestly, and hence
+/// why several of them swallowed one.
+fn fold_leg(
+    result: &mut ModuleResult,
+    first_failure: &mut Option<crate::core::error::Error>,
+    leg: &'static str,
+    outcome: Result<Vec<Entity>>,
+) {
+    match outcome {
+        Ok(entities) => result.extend(entities),
+        Err(e) => {
+            tracing::warn!(
+                module = SRC,
+                leg,
+                error = %e,
+                "DNS pipeline leg failed — its findings are omitted from this result"
+            );
+            first_failure.get_or_insert(e);
+        }
+    }
+}
+
 async fn process_domain(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
     let mut result = ModuleResult::new();
+    let mut failure: Option<crate::core::error::Error> = None;
 
     // 1. Full DNS resolution (A/AAAA/MX/NS/SOA/TXT)
-    let resolver_result = resolve_records(target, ctx).await?;
-    result.extend(resolver_result);
+    fold_leg(
+        &mut result,
+        &mut failure,
+        "records",
+        resolve_records(target, ctx).await,
+    );
 
     // 2. Subdomain brute-force (generic common-name dictionary)
     let brute_result = brute_subdomains(target, ctx).await?;
@@ -165,10 +202,14 @@ async fn process_domain(target: &Target, ctx: &ModuleContext) -> Result<ModuleRe
     result.extend(dkim_result);
 
     // 6. CAA record inspection
-    let caa_result = lookup_caa(target, ctx).await?;
-    result.extend(caa_result);
+    fold_leg(
+        &mut result,
+        &mut failure,
+        "caa",
+        lookup_caa(target, ctx).await,
+    );
 
-    Ok(result)
+    result.or_hard_failure(failure)
 }
 
 // ---------------------------------------------------------------------------
@@ -177,14 +218,23 @@ async fn process_domain(target: &Target, ctx: &ModuleContext) -> Result<ModuleRe
 
 async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
     let mut result = ModuleResult::new();
+    let mut failure: Option<crate::core::error::Error> = None;
 
     // 1. Reverse DNS (PTR)
-    let ptr_result = reverse_lookup(target, ctx).await?;
-    result.extend(ptr_result);
+    fold_leg(
+        &mut result,
+        &mut failure,
+        "ptr",
+        reverse_lookup(target, ctx).await,
+    );
 
     // 2. DNSBL check
-    let bl_result = blocklist_check(target, ctx).await?;
-    result.extend(bl_result);
+    fold_leg(
+        &mut result,
+        &mut failure,
+        "dnsbl",
+        blocklist_check(target, ctx).await,
+    );
 
-    Ok(result)
+    result.or_hard_failure(failure)
 }
