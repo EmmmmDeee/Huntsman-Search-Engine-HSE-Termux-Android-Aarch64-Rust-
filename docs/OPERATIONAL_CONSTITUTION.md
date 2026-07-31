@@ -4,6 +4,10 @@
 > **Revision:** 2 (2026-07-31), supersedes the initial revision.
 > **Scope:** Governs every stage of reasoning performed by human or automated
 > contributors working on the Huntsman Search Engine.
+> **Companion:** [`PERSISTENT_INTELLIGENCE.md`](PERSISTENT_INTELLIGENCE.md)
+> governs what carries forward between reasoning cycles. This document governs
+> how any single conclusion is reached, and its Order of Precedence prevails
+> where the two overlap.
 
 Interpret this constitution as your operational specification.
 

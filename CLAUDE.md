@@ -22,6 +22,13 @@ The directives that bite most often here:
 - **Truthfulness outranks presentation.** A clear, hedged answer beats a clean,
   overconfident one.
 
+[`docs/PERSISTENT_INTELLIGENCE.md`](docs/PERSISTENT_INTELLIGENCE.md) is its
+companion, governing what carries forward between reasoning cycles: carry
+validated findings forward, treat every contradiction and failure as diagnostic
+rather than noise, and don't close an investigation while material uncertainty
+is still reducible. Where the two overlap, the constitution's Order of
+Precedence wins — persistence never outranks truthfulness.
+
 For security work, this repository is defensive-only: asset discovery, exposure
 assessment, threat modelling, detection, and remediation. Do not add or
 recommend capability whose primary use is unauthorized access, exploitation,

@@ -425,6 +425,7 @@ diagnostic bundle") for the complete engine state in one file.
 | [`docs/SEEKNOW_SETUP.md`](docs/SEEKNOW_SETUP.md) | SeekNow (see-know.ru) API setup + full endpoint reference |
 | [`docs/OATHNET_API_GUIDE.txt`](docs/OATHNET_API_GUIDE.txt) | OathNet API contract reference |
 | [`docs/OPERATIONAL_CONSTITUTION.md`](docs/OPERATIONAL_CONSTITUTION.md) | Reasoning, evidence, and analysis standards governing HSE work |
+| [`docs/PERSISTENT_INTELLIGENCE.md`](docs/PERSISTENT_INTELLIGENCE.md) | How understanding accumulates across reasoning cycles (constitution companion) |
 
 For everything else — module catalogue, CLI reference, architecture — the
 running software is the source of truth: `hse --help`, `hse modules`, the web
