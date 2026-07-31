@@ -78,7 +78,10 @@ pub async fn cells_status(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     // whole read set to the blocking pool in one task, mirroring the offloading
     // discipline every sibling handler already follows.
     let db = tokio::task::spawn_blocking(|| {
-        let conn = cell_db::open_ro().ok()?;
+        // Best-effort status payload: both "absent" and "unreadable" leave the
+        // db block null here, but the two are no longer conflated at the
+        // source, so `hse doctor` and `hse cells status` can tell them apart.
+        let conn = cell_db::open_ro_if_present().ok().flatten()?;
         let total = cell_db::total_count(&conn).unwrap_or(0);
         let by_mcc: Vec<serde_json::Value> = cell_db::count_by_mcc(&conn)
             .unwrap_or_default()

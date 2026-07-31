@@ -325,8 +325,8 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
     // `cell_intel`/`cell_local`) aware their local dataset may no longer
     // reflect current tower deployments, rather than trusting it silently.
     println!("\nCell tower database:");
-    match cell_db::open_ro() {
-        Ok(conn) => match cell_db::last_import(&conn) {
+    match cell_db::open_ro_if_present() {
+        Ok(Some(conn)) => match cell_db::last_import(&conn) {
             Ok(Some(rec)) => {
                 let total = cell_db::total_count(&conn).unwrap_or(0);
                 let now = crate::core::entity::unix_now() as i64;
@@ -344,9 +344,18 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
             Ok(None) => println!("  populated but no import history recorded"),
             Err(e) => println!("  could not read import history — {e}"),
         },
-        Err(_) => println!(
+        Ok(None) => println!(
             "  not populated — run `hse cells import --country AU` (or --file PATH) to enable \
              local cell-tower lookups"
+        ),
+        // A DB that exists but will not open is a fault to report, not an
+        // absent one. Reporting it as "not populated" in the very command an
+        // operator runs to diagnose their install points them at an import they
+        // have already done, and hides the real problem.
+        Err(e) => println!(
+            "  PRESENT BUT UNREADABLE — {} could not be opened ({e}); it may be corrupt or \
+             truncated. Re-import with `hse cells import --country AU` to rebuild it.",
+            cell_db::cell_db_path().display()
         ),
     }
 

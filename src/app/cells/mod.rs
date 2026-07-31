@@ -71,12 +71,23 @@ pub async fn cmd_cells(action: CellsAction) -> Result<()> {
 // ── status ──────────────────────────────────────────────────────────────────
 
 fn cmd_status() -> Result<()> {
-    let conn = match cell_db::open_ro() {
-        Ok(c) => c,
-        Err(_) => {
+    let conn = match cell_db::open_ro_if_present() {
+        Ok(Some(c)) => c,
+        Ok(None) => {
             println!("Cell tower database: not populated.");
             println!(
                 "Run `hse cells import --country AU` or `hse cells import --file <path>` to import data."
+            );
+            return Ok(());
+        }
+        // Present but unopenable is not "not populated" — telling an operator to
+        // import over a corrupt DB sends them at the wrong problem.
+        Err(e) => {
+            println!("Cell tower database: present but unreadable — {e}");
+            println!(
+                "The file at {} exists but could not be opened; it may be corrupt or truncated. \
+                 Re-import with `hse cells import --country AU` to rebuild it.",
+                cell_db::cell_db_path().display()
             );
             return Ok(());
         }

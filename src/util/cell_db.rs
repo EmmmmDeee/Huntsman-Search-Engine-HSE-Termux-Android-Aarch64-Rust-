@@ -28,18 +28,33 @@ pub fn open_rw() -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
-/// Open the cell towers DB read-only.
+/// Open the cell towers DB read-only, distinguishing "not imported yet" from a
+/// real failure to open it.
 ///
-/// Returns `Err` when the file does not exist (DB not populated yet).
-pub fn open_ro() -> rusqlite::Result<Connection> {
-    let path = cell_db_path();
+/// * `Ok(None)` — the file genuinely does not exist. This is the expected state
+///   before `hse cells import` has ever run, and a legitimate quiet no-op.
+/// * `Ok(Some(conn))` — open succeeded.
+/// * `Err` — the file is present but could not be opened: corrupt, truncated,
+///   or unreadable.
+///
+/// The previous `open_ro` signalled absence *as* an error, so every caller
+/// collapsed the two and reported a broken database as an unpopulated one. That
+/// is worst in `hse doctor`, the command an operator runs precisely to find out
+/// what is wrong with their installation, and in `cell_local`, where it became
+/// an ordinary "no towers near you" result.
+pub fn open_ro_if_present() -> rusqlite::Result<Option<Connection>> {
+    open_ro_at(&cell_db_path())
+}
+
+/// [`open_ro_if_present`] against an explicit path.
+///
+/// The path-taking seam exists so the absent-vs-unreadable split can be tested
+/// without mutating the process-wide data directory, which parallel tests share.
+pub fn open_ro_at(path: &std::path::Path) -> rusqlite::Result<Option<Connection>> {
     if !path.exists() {
-        return Err(rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
-            Some("cell_towers.db not found — run `hse cells import` first".into()),
-        ));
+        return Ok(None);
     }
-    Connection::open(path)
+    Connection::open(path).map(Some)
 }
 
 // ── Schema ──────────────────────────────────────────────────────────────────
@@ -276,6 +291,53 @@ mod tests {
         let conn = Connection::open_in_memory().expect("in-memory db");
         init_schema(&conn).expect("schema");
         conn
+    }
+
+    // ── absent vs unreadable ────────────────────────────────────────────
+    //
+    // These two outcomes drive different operator advice: "run `hse cells
+    // import`" versus "your DB is corrupt". The old `open_ro` returned `Err`
+    // for both, so every caller collapsed them.
+
+    #[test]
+    fn open_ro_at_reports_a_missing_file_as_absent_not_as_a_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("cell_towers.db");
+        let got = open_ro_at(&missing).expect("an absent DB is not an error");
+        assert!(got.is_none(), "a missing file must report as absent");
+    }
+
+    #[test]
+    fn open_ro_at_opens_an_existing_database() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cell_towers.db");
+        {
+            let conn = Connection::open(&path).expect("create db");
+            init_schema(&conn).expect("schema");
+        }
+        let got = open_ro_at(&path).expect("a real DB must open");
+        assert!(got.is_some());
+    }
+
+    #[test]
+    fn open_ro_at_reports_a_corrupt_database_as_an_error_not_as_absent() {
+        // The case the old signature could not express: the file is right
+        // there, so telling the operator to import is pointing them at the
+        // wrong problem.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cell_towers.db");
+        std::fs::write(&path, b"this is definitely not a sqlite database").expect("write");
+        // `Connection::open` is lazy about the header, so force a real read.
+        let opened = open_ro_at(&path);
+        let is_err = match opened {
+            Err(_) => true,
+            Ok(Some(conn)) => total_count(&conn).is_err(),
+            Ok(None) => panic!("a present file must never report as absent"),
+        };
+        assert!(
+            is_err,
+            "a present but corrupt DB must not be indistinguishable from an absent one"
+        );
     }
 
     #[test]

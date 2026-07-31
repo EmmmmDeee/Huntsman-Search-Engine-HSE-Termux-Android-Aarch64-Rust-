@@ -64,10 +64,20 @@ impl Module for CellLocal {
         let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
 
         let cells = tokio::task::spawn_blocking(move || {
-            let conn = match crate::util::cell_db::open_ro() {
-                // DB not yet populated — silent no-op until `hse cells import` is run.
-                Err(_) => return Ok(vec![]),
-                Ok(c) => c,
+            // DB not yet populated — silent no-op until `hse cells import` is
+            // run. A DB that is present but won't open is a different thing
+            // entirely (corrupt, truncated, unreadable) and must surface: as a
+            // quiet empty it would read as "no towers near this coordinate",
+            // the module's ordinary negative answer.
+            let conn = match crate::util::cell_db::open_ro_if_present() {
+                Ok(None) => return Ok(vec![]),
+                Ok(Some(c)) => c,
+                Err(e) => {
+                    return Err(crate::core::error::Error::module(
+                        "cell_local",
+                        format!("cell tower DB present but unreadable: {e}"),
+                    ));
+                }
             };
             crate::util::cell_db::query_bbox(
                 &conn,
