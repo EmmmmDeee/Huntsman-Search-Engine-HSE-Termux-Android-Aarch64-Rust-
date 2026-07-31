@@ -424,6 +424,7 @@ diagnostic bundle") for the complete engine state in one file.
 | [`docs/OSINT_API_REFERENCE.md`](docs/OSINT_API_REFERENCE.md) | External OSINT-provider API reference (free tiers, key shapes, integration status) |
 | [`docs/SEEKNOW_SETUP.md`](docs/SEEKNOW_SETUP.md) | SeekNow (see-know.ru) API setup + full endpoint reference |
 | [`docs/OATHNET_API_GUIDE.txt`](docs/OATHNET_API_GUIDE.txt) | OathNet API contract reference |
+| [`docs/OPERATIONAL_CONSTITUTION.md`](docs/OPERATIONAL_CONSTITUTION.md) | Reasoning, evidence, and analysis standards governing HSE work |
 
 For everything else — module catalogue, CLI reference, architecture — the
 running software is the source of truth: `hse --help`, `hse modules`, the web
