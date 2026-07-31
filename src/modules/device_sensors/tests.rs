@@ -163,16 +163,14 @@ fn gps_provider_tag() {
 }
 
 #[tokio::test]
-async fn fetch_fix_is_empty_off_device() {
-    let r = super::fetch_fix("gps", "once", 1000, "test")
+async fn location_ladder_is_empty_off_device() {
+    // The ladder itself now lives in `crate::modules::device_fix`; this asserts
+    // this module's binding of it still answers a clean empty when
+    // `termux-location` is absent, rather than erroring.
+    let r = super::scan_location("test")
         .await
         .expect("an absent tool is a clean empty answer");
     assert!(r.entities.is_empty());
-    // The last-known fallback is likewise empty off-device (no location cache).
-    let last = super::fetch_fix("gps", "last", 1000, "test")
-        .await
-        .expect("an absent tool is a clean empty answer");
-    assert!(last.entities.is_empty());
 }
 
 #[test]

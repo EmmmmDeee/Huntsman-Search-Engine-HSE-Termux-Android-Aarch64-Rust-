@@ -143,6 +143,89 @@ pub(crate) fn parse_fix(stdout: &[u8], scan_id: &str, src: &'static str) -> Resu
     Ok(result)
 }
 
+/// The canonical `termux-location` acquisition ladder, shared by
+/// `signal_radar` and `device_sensors`.
+///
+/// Both modules ask the device the same question — "where are you?" — and
+/// previously each carried a byte-identical copy of this ladder, differing only
+/// in the evidence-source tag they hand to [`parse_fix`]. The parse half was
+/// already converged here; this is the fetch half.
+///
+/// Most precise first, degrading to the OS's passively-cached last-known
+/// position so a fix is still established when no fresh lock is available. Every
+/// stage reads only the phone's own sensors/cache — no seed, no input, no
+/// network.
+///
+/// A stage that malfunctions must not abort the ladder: a later stage may still
+/// answer. The first failure is remembered and surfaces only if no stage
+/// produced a fix, via [`ModuleResult::or_hard_failure`].
+pub(crate) async fn scan_device_fix(scan_id: &str, src: &'static str) -> Result<ModuleResult> {
+    const STAGES: &[(&str, &str, u64)] = &[
+        ("gps", "once", 12_000),
+        ("network", "once", 8_000),
+        ("gps", "last", 3_000),
+        ("network", "last", 3_000),
+    ];
+
+    // Availability is a property of the `termux-location` binary, not of the
+    // provider/request arguments, so when it is already known absent EVERY stage
+    // below is futile. Entering `termux_cmd` four times to be turned away four
+    // times cost four `debug!` lines per module per sweep — and `hse radar`
+    // sweeps every 25s indefinitely on a battery-powered device, where that is
+    // pure log-ring churn and storage I/O carrying no information after the
+    // first. Observed directly in a live radar run: `termux_cmd: skipped
+    // (recently unavailable)` for `termux-location` repeated 4-6x per module,
+    // per sweep, for the whole run.
+    if crate::util::termux::is_unavailable("termux-location") {
+        return Ok(ModuleResult::new());
+    }
+
+    let mut first_failure = None;
+    for &(provider, request, timeout_ms) in STAGES {
+        match fetch_fix(provider, request, timeout_ms, scan_id, src).await {
+            Ok(r) if !r.is_empty() => return Ok(r),
+            Ok(_) => {}
+            Err(e) => {
+                first_failure.get_or_insert(e);
+            }
+        }
+    }
+    ModuleResult::new().or_hard_failure(first_failure)
+}
+
+/// One rung of [`scan_device_fix`]: run `termux-location -p <provider>
+/// -r <request>` under `timeout_ms` and map its output.
+///
+/// A `last` request reads the OS's passively-cached last-known location, so
+/// those entities are tagged `fix-age:last-known` and a cached position is never
+/// read as a fresh sensor lock.
+async fn fetch_fix(
+    provider: &str,
+    request: &str,
+    timeout_ms: u64,
+    scan_id: &str,
+    src: &'static str,
+) -> Result<ModuleResult> {
+    match crate::util::termux::termux_cmd(
+        "termux-location",
+        &["-p", provider, "-r", request],
+        timeout_ms,
+    )
+    .await
+    {
+        Some(stdout) => {
+            let mut r = parse_fix(&stdout, scan_id, src)?;
+            if request == "last" {
+                for e in &mut r.entities {
+                    e.tag("fix-age:last-known");
+                }
+            }
+            Ok(r)
+        }
+        None => Ok(ModuleResult::new()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

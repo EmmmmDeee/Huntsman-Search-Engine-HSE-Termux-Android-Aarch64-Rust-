@@ -110,61 +110,11 @@ impl Module for DeviceSensors {
     }
 }
 
-/// Run `termux-location -p <provider> -r <request>`, bounded by `timeout_ms`,
-/// and parse the result. Returns an empty `ModuleResult` off-device (binary
-/// missing), on timeout, or on an invalid/no-fix payload. A `last` request reads
-/// the OS's passively-cached last-known location and the entities are tagged
-/// `fix-age:last-known` so a cached position is never read as a fresh lock.
-async fn fetch_fix(
-    provider: &str,
-    request: &str,
-    timeout_ms: u64,
-    scan_id: &str,
-) -> Result<ModuleResult> {
-    match termux_cmd(
-        "termux-location",
-        &["-p", provider, "-r", request],
-        timeout_ms,
-    )
-    .await
-    {
-        Some(stdout) => {
-            let mut r = gps::parse_fix(&stdout, scan_id)?;
-            if request == "last" {
-                for e in &mut r.entities {
-                    e.tag("fix-age:last-known");
-                }
-            }
-            Ok(r)
-        }
-        None => Ok(ModuleResult::new()),
-    }
-}
-
-/// Establish a device location fix from passive on-device signals, most precise
-/// first and degrading to the OS's passively-cached last-known location so a
-/// position is still established when no fresh lock is available — needs no
-/// input: fresh GPS → fresh network → last-known GPS → last-known network.
+/// This module's binding of the canonical
+/// [`crate::modules::device_fix::scan_device_fix`] — the shared
+/// `termux-location` acquisition ladder, differing only in the evidence-source
+/// tag. The ladder itself lives there so this module and `signal_radar` cannot
+/// drift apart in how they ask the device where it is.
 async fn scan_location(scan_id: &str) -> Result<ModuleResult> {
-    const STAGES: &[(&str, &str, u64)] = &[
-        ("gps", "once", 12_000),
-        ("network", "once", 8_000),
-        ("gps", "last", 3_000),
-        ("network", "last", 3_000),
-    ];
-    // Each stage is an independent attempt at the same question, so a stage
-    // that malfunctions must not abort the ladder — a later stage may still
-    // establish a fix. The first failure is remembered and only surfaces if
-    // no stage produced one.
-    let mut first_failure = None;
-    for &(provider, request, timeout_ms) in STAGES {
-        match fetch_fix(provider, request, timeout_ms, scan_id).await {
-            Ok(r) if !r.is_empty() => return Ok(r),
-            Ok(_) => {}
-            Err(e) => {
-                first_failure.get_or_insert(e);
-            }
-        }
-    }
-    ModuleResult::new().or_hard_failure(first_failure)
+    crate::modules::device_fix::scan_device_fix(scan_id, SRC).await
 }

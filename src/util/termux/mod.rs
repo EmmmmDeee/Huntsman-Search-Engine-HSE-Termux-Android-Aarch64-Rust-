@@ -45,6 +45,19 @@ fn skip_until(cmd: &str) -> Option<Instant> {
         .copied()
 }
 
+/// Is `cmd` currently short-circuited as unavailable?
+///
+/// Lets a caller skip a whole *ladder* of attempts at one tool rather than
+/// entering [`termux_cmd`] once per stage only to be turned away each time.
+/// Availability is a property of the binary, not of the arguments, so once it
+/// is known absent every stage of a multi-provider ladder is futile: each costs
+/// a lock, a future, and a `debug!` line, repeated per module per sweep for as
+/// long as `hse radar` runs.
+#[must_use]
+pub fn is_unavailable(cmd: &str) -> bool {
+    skip_until(cmd).is_some_and(|until| Instant::now() < until)
+}
+
 fn mark_unavailable(cmd: &str) {
     UNAVAILABLE
         .lock()
