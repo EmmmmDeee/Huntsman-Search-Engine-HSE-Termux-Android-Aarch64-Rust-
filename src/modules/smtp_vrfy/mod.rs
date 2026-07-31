@@ -207,7 +207,12 @@ pub(super) fn build_entity(
 async fn resolve_spf(domain: &str) -> Option<String> {
     use hickory_resolver::proto::rr::RData;
     let resolver = crate::util::dns::shared_resolver();
-    let lookup = resolver.txt_lookup(domain).await.ok()?;
+    // SPF is supporting evidence, not this module's answer (deliverability is).
+    // Its absence simply omits an evidence line rather than asserting anything,
+    // so a malfunction and a genuine absence are the same outcome here — but
+    // the exemption is stated rather than implied, and a malfunction is traced.
+    let lookup =
+        crate::util::dns::lookup_probe(SRC, "SPF TXT", domain, resolver.txt_lookup(domain).await)?;
     lookup
         .answers()
         .iter()
@@ -230,7 +235,13 @@ async fn resolve_dmarc(domain: &str) -> Option<String> {
     use hickory_resolver::proto::rr::RData;
     let dmarc_domain = format!("_dmarc.{domain}");
     let resolver = crate::util::dns::shared_resolver();
-    let lookup = resolver.txt_lookup(dmarc_domain.as_str()).await.ok()?;
+    // Same exemption as `resolve_spf` above.
+    let lookup = crate::util::dns::lookup_probe(
+        SRC,
+        "DMARC TXT",
+        dmarc_domain.as_str(),
+        resolver.txt_lookup(dmarc_domain.as_str()).await,
+    )?;
     lookup
         .answers()
         .iter()
