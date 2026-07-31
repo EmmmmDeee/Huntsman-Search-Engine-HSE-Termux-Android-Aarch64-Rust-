@@ -128,7 +128,10 @@ pub struct GeoSummary {
 pub struct AuditReport {
     pub entity_total: usize,
     pub by_kind: Vec<(String, usize)>,
-    /// (verified ≥0.75, probable ≥0.40, candidate <0.40) by c_effective.
+    /// `(verified, probable, candidate)` counts, bucketed from `c_effective`
+    /// by [`Classification::from_c_eff`](crate::core::entity::Classification::from_c_eff)
+    /// — the ladder's single source of truth. Deliberately not restated as
+    /// numbers here; read the thresholds off `VERIFIED_MIN` / `PROBABLE_MIN`.
     pub tiers: (usize, usize, usize),
     /// Share of *actionable* entities in the candidate (low-confidence) tier,
     /// 0.0–1.0 — excludes deliberately-quarantined breach co-occurrence.

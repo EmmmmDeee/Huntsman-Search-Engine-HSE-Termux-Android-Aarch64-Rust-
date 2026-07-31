@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use super::types::{AuditEntity, AuditReport, Finding, GeoSummary, LogSignals, Severity};
+use crate::core::entity::Classification;
 
 /// Coordinates within this radius (km) are treated as the same locality/metro —
 /// independent geocoders rarely agree tighter than a city.
@@ -190,12 +191,21 @@ pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
     let (mut verified, mut probable, mut candidate) = (0usize, 0usize, 0usize);
     for e in entities {
         *by_kind_map.entry(e.kind.clone()).or_default() += 1;
-        if e.c_effective >= 0.75 {
-            verified += 1;
-        } else if e.c_effective >= 0.40 {
-            probable += 1;
-        } else {
-            candidate += 1;
+        // Bucket through the canonical ladder, never re-stated literals.
+        // `Classification::VERIFIED_MIN`/`PROBABLE_MIN` are documented as "the
+        // tier ladder's single source of truth", and every other surface —
+        // `Entity::classify`, the CLI's confidence colouring,
+        // `core::metrics::tier_counts`, the engine's subject-identity gate and
+        // the wrong-identity pivot gate — reads them. This loop was the one
+        // place that still hard-coded 0.75/0.40, so a recalibration would have
+        // moved every other surface and left the audit bucketing on the old
+        // ladder: the same entity reported CANDIDATE everywhere and PROBABLE
+        // here, with `noise_ratio` and the audit score derived from a ladder
+        // nothing else used, and nothing failing to say so.
+        match Classification::from_c_eff(e.c_effective) {
+            Classification::Verified => verified += 1,
+            Classification::Probable => probable += 1,
+            Classification::Candidate => candidate += 1,
         }
     }
     let mut by_kind: Vec<(String, usize)> = by_kind_map.into_iter().collect();

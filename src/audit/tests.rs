@@ -12,6 +12,68 @@ fn ent(kind: &str, value: &str, c: f64, corr: u32, tags: &[&str]) -> AuditEntity
     }
 }
 
+/// The audit's tier histogram must bucket on the SAME ladder as everything
+/// else, and keep doing so if the ladder is recalibrated.
+///
+/// `Classification::VERIFIED_MIN`/`PROBABLE_MIN` are documented as "the tier
+/// ladder's single source of truth", read by `Entity::classify`, the CLI's
+/// confidence colouring, `core::metrics::tier_counts`, the engine's
+/// subject-identity gate and the wrong-identity pivot gate. `audit` re-stated
+/// them as bare `0.75` / `0.40` literals — so moving `PROBABLE_MIN` to 0.45
+/// would have left an entity at `c_eff = 0.42` reported CANDIDATE on every
+/// other surface and PROBABLE here, with `noise_ratio` and the audit grade
+/// computed against a ladder nothing else used, and no test to notice.
+///
+/// The probe values are derived FROM the constants rather than written as
+/// numbers, so this test follows a recalibration instead of having to be
+/// rewritten by it — which is the property that makes it a guard rather than a
+/// second copy of the ladder.
+#[test]
+fn tier_bucketing_follows_the_canonical_classification_ladder() {
+    use crate::core::entity::Classification;
+
+    const EPS: f64 = 1e-6;
+    let probes = [
+        Classification::VERIFIED_MIN + EPS,
+        Classification::VERIFIED_MIN, // boundary is inclusive
+        Classification::VERIFIED_MIN - EPS,
+        Classification::PROBABLE_MIN + EPS,
+        Classification::PROBABLE_MIN, // boundary is inclusive
+        Classification::PROBABLE_MIN - EPS,
+        0.0,
+    ];
+
+    let entities: Vec<AuditEntity> = probes
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| ent("email", &format!("probe{i}@example.com"), c, 1, &[]))
+        .collect();
+
+    // What the canonical ladder says these should be.
+    let (mut want_v, mut want_p, mut want_c) = (0usize, 0usize, 0usize);
+    for &c in &probes {
+        match Classification::from_c_eff(c) {
+            Classification::Verified => want_v += 1,
+            Classification::Probable => want_p += 1,
+            Classification::Candidate => want_c += 1,
+        }
+    }
+
+    let r = audit(&entities, LogSignals::default());
+    assert_eq!(
+        r.tiers,
+        (want_v, want_p, want_c),
+        "audit tiers must match Classification::from_c_eff for every probe — \
+         the audit is bucketing on its own copy of the ladder again"
+    );
+    // Guard the guard: if the constants ever collapsed, the probes would all
+    // land in one tier and the assertion above would pass vacuously.
+    assert!(
+        want_v > 0 && want_p > 0 && want_c > 0,
+        "probes must span all three tiers, or this test proves nothing"
+    );
+}
+
 #[test]
 fn quarantined_breach_co_occurrence_is_excluded_from_the_grade() {
     use crate::core::tags;
