@@ -159,8 +159,13 @@ pub(super) async fn cmd_radar() -> Result<()> {
             cancel: crate::core::cancel::CancelHandle::new(),
         };
 
+        // Bracket the sweep with the Termux bridge's activity counters, so an
+        // empty sweep can say WHICH empty it is: radios read and quiet, or
+        // radios never read. See the `no new signals` branch below.
+        let sensors_before = crate::util::termux::activity();
         let sweep_result =
             run_sub_scan(&engine, sweep_scan, sweep_target, sweep_ctx, &radar_stop).await?;
+        let sensors = crate::util::termux::activity().since(sensors_before);
         if radar_stop.load(std::sync::atomic::Ordering::Relaxed) {
             eprintln!("\nradar stopped");
             break 'sweeps;
@@ -188,12 +193,28 @@ pub(super) async fn cmd_radar() -> Result<()> {
         }
 
         if new_targets.is_empty() {
-            eprintln!(
-                "  {} no new signals ({} entities, {} known)",
-                color_confidence(0.3, "○", color),
-                sweep_result.entity_count,
-                seen_entities.len()
-            );
+            // "Nothing new" has two very different causes, and reporting the
+            // second as the first is the radar telling the operator the area is
+            // quiet when in truth it never listened. A sweep in which no Termux
+            // sensor tool returned data observed nothing — it did not observe
+            // nothing being there.
+            if sensors.took_no_readings() {
+                eprintln!(
+                    "  {} no sensor readings this sweep — {} tool call(s) skipped, {} \
+                     unanswered; the radios were NOT read, so this is not evidence that \
+                     nothing is nearby",
+                    color_confidence(0.3, "⚠", color),
+                    sensors.skipped,
+                    sensors.failed,
+                );
+            } else {
+                eprintln!(
+                    "  {} no new signals ({} entities, {} known)",
+                    color_confidence(0.3, "○", color),
+                    sweep_result.entity_count,
+                    seen_entities.len()
+                );
+            }
         } else {
             eprintln!(
                 "  {} {} new signal(s) → pivoting at depth {RADAR_PIVOT_DEPTH}",
