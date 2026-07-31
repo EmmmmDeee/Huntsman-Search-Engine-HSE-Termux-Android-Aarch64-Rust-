@@ -23,6 +23,19 @@ fn tagged_matching_sources<'a>(entity: &'a Entity, allowed: &[&str]) -> HashSet<
         .collect()
 }
 
+/// The entity's distinct evidence sources that satisfy `pred` — the
+/// predicate-driven counterpart to [`tagged_matching_sources`], for rules that
+/// must count sources by the correlator's own taxonomy ([`source_family`])
+/// rather than a hand-maintained name list that can silently fall behind the
+/// module registry.
+fn matching_sources_by(entity: &Entity, pred: impl Fn(&str) -> bool) -> HashSet<&str> {
+    entity
+        .evidence_sources()
+        .into_iter()
+        .filter(|s| pred(s))
+        .collect()
+}
+
 /// Authoritative "known-benign infrastructure" verdicts — GreyNoise RIOT (a
 /// catalogued benign service: a CDN/cloud/SaaS edge) and GreyNoise's `benign`
 /// classification. Both are IP-level.

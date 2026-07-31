@@ -699,6 +699,72 @@ fn au001_ignores_non_breach_sources() {
     assert!(rule_au_001_multi_breach(&RuleContext::new(&[e]), "s1", 0).is_empty());
 }
 
+/// AU-001 must count breach sources by the correlator's canonical taxonomy, not
+/// a hand-maintained name list that falls behind the module registry.
+///
+/// The old literal list named seven sources and omitted EIGHT live breach
+/// corpora — comb_search, intelx, leakix, niamonx, osintcat, psbdmp,
+/// pwned_passwords and see_know. An email confirmed in three genuine corpora
+/// counted zero, so the flagship Critical breach finding stayed silent on a
+/// subject that genuinely had multi-source breach exposure.
+#[test]
+fn au001_counts_the_breach_corpora_the_canonical_predicate_recognises() {
+    // Each of these pairs is two REAL, registered breach corpora that the old
+    // hand-written list did not name.
+    for (a, b) in [
+        ("see_know", "comb_search"),
+        ("intelx", "psbdmp"),
+        ("leakix", "osintcat"),
+        ("niamonx", "pwned_passwords"),
+    ] {
+        let e = email("x@y.com", &[a, b]);
+        let r = rule_au_001_multi_breach(&RuleContext::new(&[e]), "s1", 0);
+        assert_eq!(
+            r.len(),
+            1,
+            "{a} + {b} are both breach corpora — AU-001 must fire"
+        );
+        assert_eq!(r[0].severity, Severity::Critical);
+    }
+}
+
+/// A reputation aggregator is not an independent breach corpus.
+///
+/// `source_family` classes `emailrep` as `"email_intel"`, not `"breach"` — its
+/// `data_breach` flag is a boolean largely derived from the same public data
+/// HIBP exposes. The old list counted it anyway, so `emailrep + hibp` reported
+/// "found in 2 breach sources" at CRITICAL: one corpus counted twice and
+/// presented as multi-source consensus.
+#[test]
+fn au001_does_not_count_a_reputation_aggregator_as_a_second_corpus() {
+    let one = email("x@y.com", &["hibp", "emailrep"]);
+    assert!(
+        rule_au_001_multi_breach(&RuleContext::new(&[one]), "s1", 0).is_empty(),
+        "emailrep is email_intel, not a breach corpus — hibp + emailrep is ONE source"
+    );
+    // Two genuine corpora still fire, so the gate is not simply broken.
+    let two = email("x@y.com", &["hibp", "comb_search"]);
+    assert_eq!(
+        rule_au_001_multi_breach(&RuleContext::new(&[two]), "s1", 0).len(),
+        1
+    );
+}
+
+/// Non-corpus enrichers that nonetheless surface breach-shaped attributes must
+/// never count. `source_family` classes each of these outside `"breach"`, so the
+/// exclusion is structural rather than an omission-by-convention that a future
+/// edit could quietly undo.
+#[test]
+fn au001_ignores_enrichers_that_are_not_breach_corpora() {
+    for enricher in ["geocode", "photon", "au_electoral", "au_property"] {
+        let e = email("x@y.com", &["hibp", enricher]);
+        assert!(
+            rule_au_001_multi_breach(&RuleContext::new(&[e]), "s1", 0).is_empty(),
+            "{enricher} is not a breach corpus — hibp + {enricher} is ONE source"
+        );
+    }
+}
+
 #[test]
 fn au001_does_not_count_generic_search_as_a_breach_source() {
     // A web-search hit alongside ONE real breach source is a single breach

@@ -613,21 +613,41 @@ pub(in crate::core::correlator) fn rule_au_001_multi_breach(
     ts: u64,
 ) -> Vec<Correlation> {
     let entities = context.entities();
-    const BREACH_SOURCES: &[&str] = &[
-        "hudsonrock",
-        "xposed_or_not",
-        "breach_directory",
-        "dehashed",
-        "hibp",
-        "oathnet_pro",
-        "emailrep",
-        // NOTE: the generic `search_engines` source is deliberately NOT listed.
-        // A web-search hit is not breach corroboration, and counting it would let
-        // one real breach + one search result fire a false Critical. (An earlier
-        // `search_engines:oathnet` entry was dead — the module emits the plain
-        // `search_engines` source — so it was removed rather than "fixed" to
-        // `search_engines`, which would introduce exactly that false positive.)
-    ];
+    // Count breach sources by the correlator's canonical predicate, whose own
+    // doc requires it: "A breach-PII rule MUST consult this before counting an
+    // evidence record's `source` as a 'breach record source'". It is built on
+    // `source_family`, so it tracks the module registry instead of falling
+    // behind it.
+    //
+    // This rule previously used a hand-written 7-name list, which had drifted in
+    // both directions:
+    //
+    //  * MISSING eight live breach corpora — `comb_search`, `intelx`, `leakix`,
+    //    `niamonx`, `osintcat`, `psbdmp`, `pwned_passwords` and `see_know`. An
+    //    email confirmed in three genuine corpora (say see_know + comb_search +
+    //    intelx) counted ZERO and AU-001 stayed silent, so the scan reported no
+    //    multi-source breach corroboration for a subject that had it. False
+    //    negatives on the flagship Critical breach finding.
+    //
+    //  * COUNTING `emailrep`, which is not a breach corpus. `source_family`
+    //    classes it `"email_intel"`: it is a reputation aggregator whose
+    //    `data_breach` boolean is largely derived from the same public corpus
+    //    HIBP exposes. Counting it as an independent source let
+    //    `emailrep + hibp` report "found in 2 breach sources" at CRITICAL —
+    //    one corpus counted twice and presented as multi-source consensus,
+    //    precisely the over-claim this rule's severity must never make.
+    //
+    // (The list also carried `breach_directory`, which no module in the
+    // registry emits — it exists only as a key definition and a search dork.
+    // The predicate still admits the name, since `source_family` substring-
+    // matches `breach`, so this is a no-op in practice rather than a fix;
+    // noted so the name is not mistaken for live coverage.)
+    //
+    // The deliberate `search_engines` exclusion is preserved and now structural
+    // rather than an omission-by-convention: `source_family` classes it
+    // `"search"`, so a web-search hit can never count toward the Critical. The
+    // same holds for the other enrichers (`geocode`, `photon`, the AU
+    // registries) that leak breach-shaped attributes without being corpora.
     let mut out = Vec::new();
     for e in entities_of_kind(entities, EntityKind::Email) {
         // A role / provider mailbox (abuse@, noreply@, dns@, …) appears in breach
@@ -639,7 +659,7 @@ pub(in crate::core::correlator) fn rule_au_001_multi_breach(
         if crate::core::validation::is_role_mailbox(&e.value) {
             continue;
         }
-        let sources = tagged_matching_sources(e, BREACH_SOURCES);
+        let sources = matching_sources_by(e, super::breach_pii::is_breach_source);
         if sources.len() >= 2 {
             let mut names: Vec<&str> = sources.into_iter().collect();
             names.sort_unstable();
