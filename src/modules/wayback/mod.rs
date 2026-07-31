@@ -274,8 +274,11 @@ fn mine_url_entity(
 /// `key_pool` (no separate entity/fetch; matches the `web_crawler`/
 /// `username_search` treatment of their own fetched bodies).
 ///
-/// Returns an empty vec when the CDX query fails or no contact pages
-/// are archived — failures here must not abort the main snapshot query.
+/// Returns an empty vec both when the CDX query fails and when no contact
+/// pages are archived — failures here must not abort the main snapshot query,
+/// which has already produced its own evidence by this point. The two cases
+/// share a return value by design, so the failing one is logged to keep them
+/// distinguishable in diagnostics.
 async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> Vec<Entity> {
     let cdx_url = format!(
         "https://web.archive.org/cdx/search/cdx?url={}/*&output=json\
@@ -286,7 +289,19 @@ async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> Vec<
 
     let rows: Vec<Row> = match fetch_json(&ctx.http, SRC, &cdx_url).await {
         Ok(r) => r,
-        Err(_) => return Vec::new(),
+        // Deliberately still an empty vec — see the doc above; a failure here
+        // must not discard the primary snapshot findings. But it is logged so
+        // an outage stays distinguishable from "no contact pages archived",
+        // which is the same empty return value.
+        Err(e) => {
+            tracing::debug!(
+                module = SRC,
+                domain,
+                error = %e,
+                "wayback: contact-mining CDX query failed; continuing without contact enrichment"
+            );
+            return Vec::new();
+        }
     };
 
     // Skip header row, filter to contact-adjacent paths, take the cap.
