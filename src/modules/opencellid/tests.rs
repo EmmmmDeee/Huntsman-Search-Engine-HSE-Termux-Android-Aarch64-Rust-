@@ -161,3 +161,146 @@ fn area_resp_captures_the_real_live_confirmed_bad_key_error_shape() {
     );
     assert_eq!(resp.cells.len(), 0);
 }
+
+// ── `fetch_cell` failure contract ─────────────────────────────────────────────
+//
+// These pin the four cases `fetch_cell` changed from "empty success" to `Err`.
+// Each was a way for a dead network, a broken response, or a rejected key to be
+// reported as zero towers — which on this module is indistinguishable from the
+// genuine and entirely expected "no towers here" answer (the T2.115 class).
+//
+// `fetch_cell` takes its URL as a parameter, so unlike the hardcoded-host
+// modules this contract can be pinned directly and hermetically, on loopback.
+
+use super::{CellEntry, fetch_cell};
+use crate::core::module::ModuleContext;
+
+fn test_ctx() -> ModuleContext {
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    ModuleContext {
+        scan_id: "test".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: Default::default(),
+        cancel: Default::default(),
+    }
+}
+
+/// Serve one request with the given status and body, then close.
+async fn serve_once(status: u16, reason: &'static str, body: &'static str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.expect("should succeed");
+        let mut buf = vec![0u8; 2048];
+        let _ = sock.read(&mut buf).await;
+        let head = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let _ = sock.write_all(head.as_bytes()).await;
+        let _ = sock.write_all(body.as_bytes()).await;
+        let _ = sock.flush().await;
+    });
+    format!("http://{addr}/")
+}
+
+/// The 5xx/non-2xx tests above record a breaker failure for the shared
+/// "127.0.0.1" host; reset it so they can't nudge an unrelated later test
+/// toward FAILURE_THRESHOLD.
+fn reset_breaker() {
+    crate::util::circuit_breaker::record_success("127.0.0.1");
+}
+
+#[tokio::test]
+async fn fetch_cell_returns_the_decoded_body_on_a_healthy_response() {
+    reset_breaker();
+    let url = serve_once(200, "OK", r#"{"cells":[{"mcc":505,"net":1}]}"#).await;
+    let got: Option<AreaResp> = fetch_cell(&test_ctx(), "k", &url)
+        .await
+        .expect("a healthy response must decode");
+    assert_eq!(got.expect("present").cells.len(), 1);
+    reset_breaker();
+}
+
+#[tokio::test]
+async fn fetch_cell_surfaces_a_body_level_bad_key_as_err_not_zero_towers() {
+    reset_breaker();
+    // The live-confirmed bad-key shape: HTTP 200, key failure only in the body.
+    // Previously `note_keyed_error` + empty success — the pool learned the key
+    // was dead while the scan recorded a clean "no towers here".
+    let url = serve_once(
+        200,
+        "OK",
+        r#"{"error":"API Key not known: garbage00000invalid","code":2}"#,
+    )
+    .await;
+    let got: crate::core::error::Result<Option<AreaResp>> =
+        fetch_cell(&test_ctx(), "garbage00000invalid", &url).await;
+    assert!(
+        got.is_err(),
+        "a rejected key must not be reported as zero towers, got {:?}",
+        got.map(|o| o.map(|r| r.cells.len()))
+    );
+    reset_breaker();
+}
+
+#[tokio::test]
+async fn fetch_cell_surfaces_an_unparseable_body_as_err_not_zero_towers() {
+    reset_breaker();
+    let url = serve_once(200, "OK", "<html>not json at all</html>").await;
+    let got: crate::core::error::Result<Option<CellEntry>> =
+        fetch_cell(&test_ctx(), "k", &url).await;
+    assert!(
+        got.is_err(),
+        "a malfunctioning endpoint must not be reported as zero towers"
+    );
+    reset_breaker();
+}
+
+#[tokio::test]
+async fn fetch_cell_surfaces_a_5xx_as_err_not_zero_towers() {
+    reset_breaker();
+    let url = serve_once(500, "Internal Server Error", "{}").await;
+    let got: crate::core::error::Result<Option<CellEntry>> =
+        fetch_cell(&test_ctx(), "k", &url).await;
+    assert!(
+        got.is_err(),
+        "an upstream outage must not be reported as zero towers"
+    );
+    reset_breaker();
+}
+
+#[tokio::test]
+async fn fetch_cell_surfaces_a_transport_failure_as_err_not_zero_towers() {
+    reset_breaker();
+    // Bind and drop, so the port is closed and the connection is refused.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
+    drop(listener);
+    let got: crate::core::error::Result<Option<CellEntry>> =
+        fetch_cell(&test_ctx(), "k", &format!("http://{addr}/")).await;
+    assert!(
+        got.is_err(),
+        "an unreachable network must not be reported as zero towers"
+    );
+    reset_breaker();
+}
+
+#[tokio::test]
+async fn fetch_cell_maps_404_to_a_clean_miss_not_an_error() {
+    reset_breaker();
+    // The one non-2xx that is a real answer rather than a malfunction: the cell
+    // is genuinely not in the database.
+    let url = serve_once(404, "Not Found", "{}").await;
+    let got: Option<CellEntry> = fetch_cell(&test_ctx(), "k", &url)
+        .await
+        .expect("404 is a clean miss, not an error");
+    assert!(got.is_none());
+    reset_breaker();
+}
