@@ -77,11 +77,16 @@ impl Module for SmtpVrfy {
         );
 
         let (mx_host, verdict) = match mx_result {
-            None => (None, SmtpVerdict::NoMx),
-            Some(host) => {
+            Ok(None) => (None, SmtpVerdict::NoMx),
+            Ok(Some(host)) => {
                 let v = smtp_rcpt_check(&host, &email).await;
                 (Some(host), v)
             }
+            // Degrade rather than propagate: the SPF and DMARC legs resolved in
+            // the same `join!` above are still valid findings, and erroring here
+            // would discard them along with the honest "we could not check" the
+            // operator needs.
+            Err(e) => (None, SmtpVerdict::MxUnknown(e.to_string())),
         };
 
         let mut entity = build_entity(&email, domain, mx_host.as_deref(), &verdict, &ctx.scan_id);
@@ -114,6 +119,14 @@ impl Module for SmtpVrfy {
 pub(super) enum SmtpVerdict {
     /// The domain publishes no MX record — nothing to probe.
     NoMx,
+    /// The MX lookup never completed (timeout, SERVFAIL, blocked port 53), so
+    /// whether the domain publishes an MX is **unknown**; carries the reason.
+    ///
+    /// Distinct from [`Self::NoMx`], which is a positive finding about the
+    /// domain. Conflating them let a resolver failure print
+    /// "No MX record for {domain}" — a claim about someone else's DNS drawn
+    /// from our own inability to ask.
+    MxUnknown(String),
     /// RCPT TO accepted (250) and a random-address probe was *not* accepted.
     Valid,
     /// RCPT TO rejected; carries the 3-digit SMTP reply code.
@@ -141,6 +154,12 @@ pub(super) fn build_entity(
             0.30,
             "smtp-unreachable",
             format!("No MX record for {domain}"),
+            None,
+        ),
+        SmtpVerdict::MxUnknown(reason) => (
+            0.30,
+            "smtp-unknown",
+            format!("MX lookup for {domain} failed ({reason}) — recipient not verified"),
             None,
         ),
         SmtpVerdict::Valid => (
@@ -230,13 +249,22 @@ async fn resolve_dmarc(domain: &str) -> Option<String> {
         .next()
 }
 
-async fn resolve_mx(domain: &str) -> Option<String> {
+/// Lowest-preference MX host for `domain`.
+///
+/// `Ok(None)` is a real finding — the domain publishes no MX. `Err` means the
+/// lookup never completed, which is **not** the same thing and must not be
+/// rendered as one.
+async fn resolve_mx(domain: &str) -> Result<Option<String>> {
     use hickory_resolver::proto::rr::RData;
     let resolver = crate::util::dns::shared_resolver();
-    let response = resolver.mx_lookup(domain).await.ok()?;
+    let Some(response) =
+        crate::util::dns::lookup_or_absent(SRC, "MX", domain, resolver.mx_lookup(domain).await)?
+    else {
+        return Ok(None);
+    };
     // Lowest-preference MX wins; min_by_key returns the first among equal
     // minima, matching the original strict-`<` update.
-    response
+    Ok(response
         .answers()
         .iter()
         .filter_map(|record| {
@@ -248,7 +276,7 @@ async fn resolve_mx(domain: &str) -> Option<String> {
             }
         })
         .min_by_key(|(pref, _)| *pref)
-        .map(|(_, h)| h)
+        .map(|(_, h)| h))
 }
 
 async fn smtp_rcpt_check(mx_host: &str, email: &str) -> SmtpVerdict {

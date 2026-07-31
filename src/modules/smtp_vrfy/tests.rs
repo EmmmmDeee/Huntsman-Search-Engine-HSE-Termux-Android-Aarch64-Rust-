@@ -152,3 +152,40 @@ async fn read_line_timeout_caps_a_giant_newline_less_line() {
     );
     assert!(!buf.is_empty(), "should have read the capped prefix");
 }
+
+#[test]
+fn mx_lookup_failure_does_not_claim_the_domain_publishes_no_mx() {
+    // `resolve_mx` used `.ok()?`, so a timeout or SERVFAIL became NoMx and the
+    // module printed "No MX record for {domain}" — a claim about someone
+    // else's DNS drawn from our own failure to ask.
+    let e = build_entity(
+        "a@b.com",
+        "b.com",
+        None,
+        &SmtpVerdict::MxUnknown("request timed out".into()),
+        "s",
+    );
+    let summary = &e.evidence[0].summary;
+    assert!(
+        !summary.contains("No MX record"),
+        "a failed lookup must not be rendered as an absent MX: {summary}"
+    );
+    assert!(
+        summary.contains("failed") && summary.contains("not verified"),
+        "the operator must be told the check did not happen: {summary}"
+    );
+    assert!(e.has_tag("smtp-unknown"));
+    assert!(
+        !e.has_tag("smtp-unreachable"),
+        "an unknown MX is not the same finding as an unreachable mail host"
+    );
+}
+
+#[test]
+fn a_genuine_absence_of_mx_still_reports_as_such() {
+    // The other half of the split: NoMx remains a positive finding and its
+    // rendering is unchanged.
+    let e = build_entity("a@b.com", "b.com", None, &SmtpVerdict::NoMx, "s");
+    assert_eq!(e.evidence[0].summary, "No MX record for b.com");
+    assert!(e.has_tag("smtp-unreachable"));
+}
