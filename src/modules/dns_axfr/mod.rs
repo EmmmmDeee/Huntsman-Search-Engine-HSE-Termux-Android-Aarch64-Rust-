@@ -76,9 +76,20 @@ impl Module for DnsAxfr {
         use hickory_resolver::proto::rr::RData;
 
         let resolver = crate::util::dns::shared_resolver();
-        let ns_records = match resolver.ns_lookup(&domain).await {
-            Ok(ns) => ns,
-            Err(_) => return Ok(result),
+
+        // The NS set is this module's premise: without it there is no zone to
+        // ask about. A clean miss (the domain publishes no NS records) is an
+        // honest empty; a malfunction means we never learned whether the zone
+        // is exposed, and reporting that as "no zone-transfer exposure" is the
+        // false clearance this module must not give.
+        let Some(ns_records) = crate::util::dns::lookup_or_absent(
+            SRC,
+            "NS",
+            &domain,
+            resolver.ns_lookup(&domain).await,
+        )?
+        else {
+            return Ok(result);
         };
 
         let ns_hosts: Vec<String> = ns_records
@@ -93,6 +104,13 @@ impl Module for DnsAxfr {
             })
             .take(3)
             .collect();
+
+        // How many nameservers we actually asked for a transfer. Asking is what
+        // counts — the answer's shape does not, because `attempt_axfr` returns
+        // Err for a refusal delivered as a TCP reset just as it does for a
+        // genuine outage (see the loop below).
+        let mut attempted = 0usize;
+        let mut first_failure: Option<crate::core::error::Error> = None;
 
         for ns_host in &ns_hosts {
             let ns_ip = match resolver.lookup_ip(ns_host.as_str()).await {
@@ -118,8 +136,23 @@ impl Module for DnsAxfr {
                         None => continue,
                     }
                 }
-                Err(_) => continue,
+                // A nameserver host that will not resolve. A clean miss is a
+                // real (if odd) answer; a malfunction is latched so that a run
+                // in which NO nameserver could be reached cannot masquerade as
+                // a clean bill of health.
+                Err(e) => {
+                    if !crate::util::dns::classify(&e).is_clean_miss() {
+                        first_failure.get_or_insert_with(|| {
+                            crate::util::dns::lookup_error(SRC, "A/AAAA", ns_host, &e)
+                        });
+                    }
+                    continue;
+                }
             };
+
+            // We are about to ask this nameserver. Whatever it answers — a
+            // transfer, a refusal, a reset, a timeout — the question was put.
+            attempted += 1;
 
             match attempt_axfr(&ns_ip, &domain).await {
                 Ok(records) if !records.is_empty() => {
@@ -162,11 +195,62 @@ impl Module for DnsAxfr {
                     result.push(zone_e);
                     break;
                 }
-                _ => continue,
+                // Everything else — an empty transfer, a DNS-level refusal, a
+                // dropped or reset connection, a read timeout. `attempt_axfr`
+                // returns Err for connect timeout, TCP reset and read timeout,
+                // and Ok(vec![]) ONLY for `rcode != 0` and `ancount == 0`, so a
+                // hardened nameserver declining by dropping the connection —
+                // and every target on a device whose network blocks outbound
+                // TCP/53 while UDP/53 still works — lands in the Err arm.
+                // Latching that would turn a refused transfer, the single most
+                // common and most correct outcome this module has, into a
+                // module error on every Domain target. It must never latch.
+                other => {
+                    if let Err(e) = other {
+                        tracing::debug!(
+                            module = SRC,
+                            nameserver = %ns_host,
+                            error = %e,
+                            "AXFR attempt did not complete — a refusal and an outage are \
+                             indistinguishable here, so this is not treated as a failure"
+                        );
+                    }
+                    continue;
+                }
             }
         }
 
-        Ok(result)
+        axfr_outcome(result, attempted, first_failure)
+    }
+}
+
+/// Decide whether an empty AXFR sweep is an honest "not exposed" or a failure
+/// to have checked at all.
+///
+/// **Pure**, so the guard that governs whether this module can flood a scan
+/// with errors is testable without a resolver or a nameserver.
+///
+/// Errors only when no nameserver was asked AND something genuinely
+/// malfunctioned — the case where "no zone-transfer exposure" would rest on
+/// never having put the question. Everything else stays `Ok`:
+///
+/// * every nameserver refused (however rudely) → `attempted >= 1` → `Ok`
+/// * the domain publishes no NS records → no latched failure → `Ok`
+/// * one nameserver was flaky, others answered → `attempted >= 1` → `Ok`
+///
+/// That last case is the regression guard. Keying on the result being empty
+/// instead of on `attempted` would error on any well-run zone with a single
+/// flaky nameserver — and an empty result is this module's expected *success*,
+/// which is also why [`crate::core::module::ModuleResult::or_hard_failure`] is
+/// deliberately not used here.
+fn axfr_outcome(
+    result: ModuleResult,
+    attempted: usize,
+    first_failure: Option<crate::core::error::Error>,
+) -> Result<ModuleResult> {
+    match first_failure {
+        Some(e) if attempted == 0 => Err(e),
+        _ => Ok(result),
     }
 }
 

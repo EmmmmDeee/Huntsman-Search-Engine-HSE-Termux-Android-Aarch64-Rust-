@@ -103,3 +103,49 @@ mod prop {
         }
     }
 }
+
+// ---- axfr_outcome: a refusal is an answer, silence is not ------------------
+
+fn err(msg: &str) -> crate::core::error::Error {
+    crate::core::error::Error::module(SRC, msg.to_string())
+}
+
+#[test]
+fn a_zone_whose_nameservers_were_never_asked_is_not_a_clean_bill_of_health() {
+    // No nameserver resolved, so nothing was ever asked — reporting "not
+    // exposed" here would be a false clearance.
+    let out = axfr_outcome(ModuleResult::new(), 0, Some(err("A/AAAA lookup failed")));
+    assert!(out.is_err(), "an unasked zone must not report as not-exposed");
+}
+
+#[test]
+fn a_refused_transfer_is_an_answer_not_a_malfunction() {
+    // THE regression guard. attempt_axfr returns Err for a connect reset and a
+    // read timeout, which is how a hardened nameserver declines AXFR and what
+    // every target looks like on a device blocking outbound TCP/53. Those
+    // never latch, so three nameservers that all decline still leave
+    // attempted == 3 and first_failure == None.
+    let out = axfr_outcome(ModuleResult::new(), 3, None);
+    assert!(
+        out.is_ok(),
+        "nameservers that refused the transfer were still asked"
+    );
+}
+
+#[test]
+fn one_flaky_nameserver_does_not_fail_a_well_run_zone() {
+    // Two nameservers answered and refused, one never resolved. An empty
+    // result is this module's expected success, so keying on emptiness rather
+    // than on `attempted` would error on a perfectly healthy zone.
+    let out = axfr_outcome(ModuleResult::new(), 2, Some(err("A/AAAA lookup failed")));
+    assert!(
+        out.is_ok(),
+        "a zone we did ask must not error because one nameserver was flaky"
+    );
+}
+
+#[test]
+fn a_domain_with_no_nameservers_stays_a_quiet_empty() {
+    let out = axfr_outcome(ModuleResult::new(), 0, None);
+    assert!(out.is_ok(), "no NS records is an honest empty, not an error");
+}
