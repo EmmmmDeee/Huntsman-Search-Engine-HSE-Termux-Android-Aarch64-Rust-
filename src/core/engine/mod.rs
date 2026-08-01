@@ -26,7 +26,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 mod circuit;
 mod dispatch;
@@ -489,7 +489,12 @@ impl ScanEngine {
             persisted.error = Some(format!("panicked: {msg}"));
             persisted.finished_at = Some(crate::core::entity::unix_now());
             if let Err(e) = self.store.upsert_scan(&persisted) {
-                warn!(scan_id = %scan_id, error = %e, "failed to persist panic-failed scan record");
+                // error!, not warn!: the panic itself is contained (warned
+                // above), but failing to persist the Failed status leaves the
+                // stored scan record permanently misrepresenting a crashed scan
+                // as still-running, with no recovery path. This is the highest
+                // severity the log feed carries and the only place it surfaces.
+                error!(scan_id = %scan_id, error = %e, "failed to persist panic-failed scan record");
             }
         }
         Error::module("engine", format!("scan panicked: {msg}"))
@@ -859,7 +864,11 @@ impl ScanEngine {
                 // matching the success path's `upsert_scan(scan)?` and the
                 // "no silent failures" invariant.
                 if let Err(e) = store.upsert_scan(&scan) {
-                    warn!(scan_id = %scan.id, error = %e, "failed to persist failed-scan record");
+                    // error!, not warn!: this is the terminal Failed record for
+                    // a scan that persisted nothing. Losing the write means the
+                    // stored scan never reflects its own failure — an
+                    // unrecoverable integrity gap the operator can only see here.
+                    error!(scan_id = %scan.id, error = %e, "failed to persist failed-scan record");
                 }
                 emitter.emit(
                     &scan.id,
