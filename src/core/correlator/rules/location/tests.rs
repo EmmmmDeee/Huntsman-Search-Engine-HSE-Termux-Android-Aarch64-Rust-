@@ -9,6 +9,65 @@ use super::*;
         e
     }
 
+    /// EVIDENCE (docs/ARCHITECTURE_ANALYSIS.md §3.1) — the person-anchor gate is
+    /// an allowlist of source strings, so two modules that produce *the same
+    /// entity from the same field by the same lookup* reach opposite outcomes
+    /// purely on whether their name was added to the array.
+    ///
+    /// `github_user` resolves its profile `location` field inline via
+    /// `util::city_coords::city_coords` (`github_user/mod.rs:337`) and is listed.
+    /// `gitlab_user`, `codeberg_user`, `bitbucket_user`, `gitea_user`, `devto`,
+    /// `dockerhub_user`, `codewars_user` and `stackoverflow_user` resolve the
+    /// same field through the shared `profile_kit::location_coordinates`, which
+    /// performs the identical `city_coords` lookup — and none is listed.
+    ///
+    /// This test PINS THE CURRENT (defective) BEHAVIOUR so the P1 capability
+    /// refactor has a before/after witness. When capability becomes a module
+    /// declaration, the `assert!(is_infrastructure_geo(...))` lines below must
+    /// flip to `assert!(!...)` — and that flip is the proof the fix landed.
+    #[test]
+    fn profile_location_anchors_only_for_allowlisted_platforms() {
+        let profile_coord = |source: &str| {
+            let mut e = Entity::new(EntityKind::Coordinates, "52.5200,13.4050", 0.28, "s");
+            e.tag("addr-derived");
+            e.tag("geoint");
+            e.add_evidence(Evidence::new(
+                source,
+                "Geocode of self-reported location for 'someone'",
+            ));
+            e
+        };
+
+        // Listed → anchors the subject.
+        assert!(
+            !is_infrastructure_geo(&profile_coord("github_user")),
+            "github_user is in ANCHORING_GEO_SOURCES, so its profile-location \
+             coordinate must anchor the subject"
+        );
+
+        // Identical entity, identical provenance, unlisted source → discarded.
+        for source in [
+            "gitlab_user",
+            "codeberg_user",
+            "bitbucket_user",
+            "gitea_user",
+            "devto",
+            "dockerhub_user",
+            "codewars_user",
+            "stackoverflow_user",
+        ] {
+            assert!(
+                is_infrastructure_geo(&profile_coord(source)),
+                "{source} emits the same profile-location coordinate as \
+                 github_user (both resolve via util::city_coords), but is absent \
+                 from ANCHORING_GEO_SOURCES — so it is currently discarded as \
+                 infrastructure. If this assertion now fails, the P1 capability \
+                 refactor has landed: flip it to assert!(!...) and record the \
+                 change in docs/ARCHITECTURE_ANALYSIS.md."
+            );
+        }
+    }
+
     #[test]
     fn fires_on_two_orthogonal_classes() {
         // A registry address and a photo GPS, both in NSW, converge.
