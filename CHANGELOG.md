@@ -11,7 +11,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Fixed
-<<<<<<< HEAD
+- **The HudsonRock stealer-log freshness tests no longer rot as the calendar
+  advances.** `compute_confidence` boosts a stealer record's confidence when the
+  compromise date falls inside a *rolling* 90-day window, but it sampled the
+  system clock internally while its tests pinned a fixed fixture date — so the
+  fixture aged out of the window on its own and turned the suite red on
+  unchanged code (a record dated `2026-05-01` was 92 days old against a 90-day
+  window). The freshness decision is now a pure function of its inputs, taking
+  the evaluation instant as a parameter the way `circuit_breaker::allow_host`
+  already does; the caller samples the clock. Tests pin the instant, so they are
+  deterministic and cannot expire, and the window boundary is now asserted
+  exactly (on the cutoff → fresh, one day past → base) instead of being probed
+  indirectly by a date that happened to be recent when written. Module behaviour
+  is unchanged.
 - **Netlas emails are now scored by how reliably they identify the host.** The module extracts contact emails from a host's TLS certificate, its WHOIS record, and its HTTP response body, but emitted all of them at one confidence with a single `ssl-extracted` label — so an address merely scraped from a web page (which may belong to a third-party vendor or a privacy policy) looked as trustworthy as one bound to the host by its certificate. Each email is now tiered by provenance — certificate-bound highest, WHOIS registrant next, http-scraped lowest — with an accurate provenance tag, so downstream correlation and the email→breach pivot weight them correctly.
 ### Fixed
 - **A namesake's breach record is no longer attributed to the target on a partial-word name match.** When deciding whether a breach/stealer row identifies the scan target, a multi-word target (a full name or email) required every significant term to appear in one field, but matched each term as a substring — so searching `Jordan Avery` would accept a record for `Jordanna Averyl` (each term buried inside a longer, unrelated word) and fuse that stranger's leaked email, phone, and address onto the subject. Matching is now anchored to whole word/token boundaries, so only genuine rows (including hyphen- or underscore-separated spellings) are attributed; single-word handle targets keep matching concatenated variants as before.

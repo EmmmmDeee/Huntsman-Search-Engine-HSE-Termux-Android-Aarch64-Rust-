@@ -186,6 +186,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (no identity, missing attributes, email fallback, person preference). All
   432 correlator tests pass; full gate clean. ✅ 2026-08-01.
 
+- **`[x]` SOL-PURE-FRESHNESS · Inject the instant; never sample the clock inside a
+  scored decision** — `hudsonrock::compute_confidence(stealers, now_secs)` takes the
+  evaluation instant instead of calling `unix_now()` internally, so a record's
+  confidence is a pure function of (record, instant) rather than of when it happened
+  to be computed. Generalises the existing `circuit_breaker::allow_host(host, now)`
+  convention to the confidence path: **a rolling window compared against a hidden
+  clock cannot be tested without the test expiring**, which is exactly how T2.43
+  reddened the gate. Tests pin `TEST_NOW` and assert the cutoff exactly, so the
+  boundary is *specified* rather than sampled. *Closes:* **T2.43**. *Scope note:*
+  applied only where the window is rolling — `structured_id` / `discord_snowflake`
+  use `[fixed_floor, now]` windows whose fixtures never expire, so they were
+  surveyed and deliberately left unchanged (no behaviour-neutral churn). ✅
+  delivered.
+
 ### S.RESOURCE — Concurrency, throughput & resource safety
 
 - **`[x]` SOL-BLOCKING · Keep the 2-worker reactor unblocked** — `spawn_blocking`
@@ -1099,6 +1113,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ## 5. Maintained log (paired with `PROBLEM_TREE` §8)
 
+- **2026-08-01** — **SOL-PURE-FRESHNESS `[ ]`→`[x]` (closes T2.43): inject the
+  instant instead of sampling the clock inside a scored decision.** The gate was
+  RED on arrival, on an untouched tree: `hudsonrock::compute_confidence` compared a
+  parsed `date_compromised` against a *rolling* `[now - 90d, now]` window while
+  sampling `unix_now()` internally, and its two tests pinned a fixed fixture date —
+  so the fixture aged out of the window on 2026-07-30 and the assertions started
+  failing by the calendar alone. **S→P generalisation:** rather than re-dating the
+  fixture (which only re-arms the bomb), the fix removes the hidden clock read —
+  `compute_confidence(stealers, now_secs)` is pure, the caller samples the clock,
+  exactly as `circuit_breaker::allow_host(host, now)` already does. A rolling window
+  behind a hidden clock is *untestable without expiry*, so purity here is the only
+  stable answer; the boundary is now specified (`WINDOW_EDGE` on the cutoff → fresh,
+  one day older → base) rather than probed by a date that happened to be recent.
+  **Deliberately not generalised further:** surveyed the other two clock-comparing
+  modules (`structured_id`, `discord_snowflake`) — both use `[fixed_floor, now]`
+  windows whose past fixtures never expire, so migrating them would be
+  behaviour-neutral churn; left alone and recorded. +2 tests (12→14). Proven red
+  both ways (boundary mutation; restored internal clock read). Gate green: 4509 lib
+  + 256 integration, 0 failures. Paired: `PROBLEM_TREE` T2.43 §8 — same commit.
 - **2026-07-10** — **SOL-NETLAS-EMAIL-PROVENANCE `[ ]`→`[x]` (closes T2.42): per-source email reliability in netlas.** Cert-bound / WHOIS / http-scraped emails collapsed to a flat 0.65 + blanket `ssl-extracted`; now tiered by provenance (cert>whois>http) with accurate tags. A first, contained instance of the broader per-source-reliability theme (queue rank 8 — the general C_eff source-weighting — remains the larger open node). +1 test. Paired: `PROBLEM_TREE` T2.42 §8 — same commit.
 - **2026-07-10** — **SOL-TARGETMATCH-TOKEN `[ ]`→`[x]` (closes T2.41): token-boundary breach-row attribution.** `TargetMatch` matched multi-term targets by substring, so `Jordan Avery` fused `Jordanna Averyl`'s leaked identifiers onto the subject. Each term must now be a whole token. **S→P:** defined once in `util::target_match` and consumed by BOTH breach pools (oathnet_pro + see_know), so the precision gain lands everywhere the 'is this row the subject?' decision is made — no per-pool drift. Single-term handle substring matching preserved. +1 test. Paired: `PROBLEM_TREE` T2.41 §8 — same commit.
 - **2026-07-10** — **SOL-CACHE-TEST-ISOLATION `[ ]`→`[x]` (closes T2.40): serialise the `util::cache` tests.** They shared one process-global cache under parallel execution; a module-local poison-tolerant `Mutex` guard (no `serial_test` dep) makes them run one-at-a-time while the suite stays parallel. Reproducibility fix — a green gate you can trust. 5 consecutive green full runs verify it. Paired: `PROBLEM_TREE` T2.40 §8 — same commit.

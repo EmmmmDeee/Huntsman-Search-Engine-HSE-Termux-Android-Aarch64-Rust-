@@ -65,34 +65,68 @@ use super::*;
         );
     }
 
-    #[test]
-    fn fresh_compromise_gets_higher_confidence() {
-        let recent = Stealer {
-            computer_name: None,
-            operating_system: None,
-            date_compromised: Some("2026-05-01T00:00:00Z".into()),
-            date_uploaded: None,
-            stealer_family: Some("Lumma".into()),
-            ip: None,
-            malware_path: None,
-            credentials: vec![],
-        };
-        assert!((compute_confidence(&[recent]) - FRESH_CONFIDENCE).abs() < 1e-9);
-    }
+    /// Fixed evaluation instant — 2026-06-15T00:00:00Z — so the *rolling*
+    /// `[now - 90d, now]` freshness window is pinned. These assertions
+    /// previously read the wall clock while pinning the fixture date, so they
+    /// rotted: a record dated 2026-05-01 sat inside the window when written and
+    /// aged out of it 92 days later, turning the suite red on unchanged code.
+    const TEST_NOW: u64 = 1_781_481_600;
 
-    #[test]
-    fn old_compromise_gets_base_confidence() {
-        let old = Stealer {
+    /// `TEST_NOW - 90 * 86400` — exactly 2026-03-17T00:00:00Z, the oldest
+    /// instant the window still admits (`ts >= cutoff` is inclusive).
+    const WINDOW_EDGE: &str = "2026-03-17T00:00:00Z";
+
+    fn stealer_dated(date: Option<&str>) -> Stealer {
+        Stealer {
             computer_name: None,
             operating_system: None,
-            date_compromised: Some("2020-01-01T00:00:00Z".into()),
+            date_compromised: date.map(Into::into),
             date_uploaded: None,
             stealer_family: None,
             ip: None,
             malware_path: None,
             credentials: vec![],
-        };
-        assert!((compute_confidence(&[old]) - BASE_CONFIDENCE).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn fresh_compromise_gets_higher_confidence() {
+        // TEST_NOW - 10 days.
+        let recent = stealer_dated(Some("2026-06-05T00:00:00Z"));
+        assert!((compute_confidence(&[recent], TEST_NOW) - FRESH_CONFIDENCE).abs() < 1e-9);
+    }
+
+    #[test]
+    fn old_compromise_gets_base_confidence() {
+        let old = stealer_dated(Some("2020-01-01T00:00:00Z"));
+        assert!((compute_confidence(&[old], TEST_NOW) - BASE_CONFIDENCE).abs() < 1e-9);
+    }
+
+    #[test]
+    fn freshness_window_boundary_is_inclusive() {
+        // Exactly on the cutoff → still fresh.
+        let edge = stealer_dated(Some(WINDOW_EDGE));
+        assert!(
+            (compute_confidence(&[edge], TEST_NOW) - FRESH_CONFIDENCE).abs() < 1e-9,
+            "a compromise exactly {FRESHNESS_WINDOW_DAYS} days old must stay inside the window"
+        );
+        // One day past it → base.
+        let past_edge = stealer_dated(Some("2026-03-16T00:00:00Z"));
+        assert!(
+            (compute_confidence(&[past_edge], TEST_NOW) - BASE_CONFIDENCE).abs() < 1e-9,
+            "one day older than the window must fall out of it"
+        );
+    }
+
+    #[test]
+    fn undated_compromise_is_never_treated_as_fresh() {
+        // No date is an absence of evidence, not evidence of recency —
+        // inventing freshness here would inflate confidence on every record
+        // the provider returns without a `date_compromised`.
+        let undated = stealer_dated(None);
+        assert!((compute_confidence(&[undated], TEST_NOW) - BASE_CONFIDENCE).abs() < 1e-9);
+        let unparseable = stealer_dated(Some("not-a-date"));
+        assert!((compute_confidence(&[unparseable], TEST_NOW) - BASE_CONFIDENCE).abs() < 1e-9);
     }
 
     #[test]
@@ -119,33 +153,15 @@ use super::*;
 
     #[test]
     fn compute_confidence_mixed_stealers_yields_fresh() {
-        // One old + one recent stealer → FRESH_CONFIDENCE (any-recent wins)
-        let old = Stealer {
-            date_compromised: Some("2020-01-01T00:00:00Z".into()),
-            stealer_family: None,
-            computer_name: None,
-            operating_system: None,
-            date_uploaded: None,
-            ip: None,
-            malware_path: None,
-            credentials: vec![],
-        };
-        let recent = Stealer {
-            date_compromised: Some("2026-05-01T00:00:00Z".into()),
-            stealer_family: None,
-            computer_name: None,
-            operating_system: None,
-            date_uploaded: None,
-            ip: None,
-            malware_path: None,
-            credentials: vec![],
-        };
-        assert!((compute_confidence(&[old, recent]) - FRESH_CONFIDENCE).abs() < 1e-9);
+        // One old + one recent stealer → FRESH_CONFIDENCE (any-recent wins).
+        let old = stealer_dated(Some("2020-01-01T00:00:00Z"));
+        let recent = stealer_dated(Some("2026-06-05T00:00:00Z"));
+        assert!((compute_confidence(&[old, recent], TEST_NOW) - FRESH_CONFIDENCE).abs() < 1e-9);
     }
 
     #[test]
     fn compute_confidence_empty_yields_base() {
-        assert!((compute_confidence(&[]) - BASE_CONFIDENCE).abs() < 1e-9);
+        assert!((compute_confidence(&[], TEST_NOW) - BASE_CONFIDENCE).abs() < 1e-9);
     }
 
     #[test]

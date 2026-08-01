@@ -1297,6 +1297,39 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
 - **`[x]` T2.40 · Flaky test: the `util::cache` tests race on the process-global session cache** — discovered during the precision-program full-suite runs (the same test failed intermittently across T2.36/T2.39 gate runs, always passing in isolation). The 4 `util::cache::tests` all mutate ONE process-global `response_cache` and cargo runs tests in parallel, so a sibling's `clear_session_cache()` interleaved with another's assertions — `cache_distinguishes_by_query_type` read its freshly-cached entry back as `None` because a concurrent `clear_empties_cache` wiped the shared map mid-test. A flaky test violates the §1.7 reproducibility ethos and erodes trust in the gate. → **Solution:** a module-local, poison-tolerant `cache_test_guard()` (`static OnceLock<Mutex<()>>`) that each of the 4 cache tests takes first, serialising them against each other while the rest of the suite stays parallel (no `serial_test` dependency added; the cache has no other test mutators). Verified: 5 consecutive full lib-suite runs green after the fix, where it flaked roughly 1-in-3 before. **P3** (test reliability / reproducibility). Discovered gap, not from the queue.
 - **`[x]` T2.41 · `TargetMatch` attributes a namesake's breach row to the subject via mid-token substring matching** — surfaced by the precision-discovery workflow (2026-07-10, ranked #5). `TargetMatch::matches` (`util/target_match/mod.rs`) required a multi-term target (a full name / email) to match EVERY significant term in one field — which already stopped a shared FIRST name (`Jordan Parker`) — but matched each term with `vl.contains(t)`, i.e. as a SUBSTRING. So a look-alike whose every term is a prefix/substring of an unrelated token (`Jordanna Averyl`: `jordan` ⊂ `jordanna`, `avery` ⊂ `averyl`) still counted as the subject, fusing a stranger's leaked identifiers onto the target — the residual namesake leak on name scans, and a false attribution is the worst error for an evidentiary tool. → **Solution:** token-boundary matching for the multi-term case — each term must be a WHOLE alphanumeric token of the field value, not a substring buried in a longer token. A genuine row (`JORDAN MICHAEL AVERY`, `jordan-avery`, `jordan_avery_23`) still matches; the look-alike no longer does. Single-term handle targets keep substring matching (a concatenated variant `alikareem2024` still counts — pinned behaviour). New test `multi_term_target_matches_at_token_boundary_not_mid_token` (fails against the substring code). Shared by `oathnet_pro` + `see_know` so both pools tighten at once. MITRE T1589.003 (Employee Names). **P1** (accuracy — false victim attribution). Precision queue item 7/20.
 - **`[x]` T2.42 · `netlas` scores an http-scraped email identically to a cert-bound one (per-source reliability collapsed)** — surfaced by the precision-discovery workflow (2026-07-10, ranked #17). `build_entities` merged emails from FOUR provenances of very different reliability — certificate subject/SAN (CA-attested, tied to the host), WHOIS registrant record, and the HTTP response BODY (any address on a scraped page: a third-party vendor, a privacy-policy contact, a CMS template) — into one `all_emails` vec and emitted every one at a FLAT 0.65 with a blanket `ssl-extracted` tag, even for the http-scraped and whois addresses. A weakly-tied stranger's email thus entered the email→breach pivot at the same confidence and with the same (false) provenance as the operator's cert contact. → **Solution:** a provenance-ranked `emails_by_src` map (tier: cert 2 > whois 1 > http 0; strongest source wins on a multi-source address) emits each unique email at a tier-appropriate confidence (0.72 / 0.58 / 0.45) and an ACCURATE tag (`ssl-extracted` / `whois-extracted` / `http-scraped`) with a `provenance` evidence attribute. Cert emails rise (cryptographic binding), http-scraped fall (weak tie). `BTreeMap` → deterministic emit. Tests: `build_entities_tiers_email_confidence_by_provenance` (cert>whois>http, strongest wins on a shared address) + the existing every-unique test updated to the correct `http-scraped` tag. MITRE T1589.002 (Email Addresses). **P2** (accuracy — per-source reliability). Precision queue item 8/20.
+- **`[x]` T2.43 · `hudsonrock::compute_confidence` reads the wall clock, so its
+  tests expire and redden the gate on unchanged code** — discovered by running
+  the gate on arrival: `cargo test --all --locked` failed with 2 failures
+  (`fresh_compromise_gets_higher_confidence`,
+  `compute_confidence_mixed_stealers_yields_fresh`) against a clean tree. The
+  function samples `unix_now()` internally and compares a parsed
+  `date_compromised` against a **rolling** `[now - FRESHNESS_WINDOW_DAYS, now]`
+  window, while both tests pinned a fixed fixture date (`2026-05-01`). On
+  2026-07-30 that fixture turned 91 days old and fell out of the window, so the
+  assertions began failing purely by the passage of time — the tests were time
+  bombs armed the day they were written. → **Solution:** inject the instant.
+  `compute_confidence(stealers, now_secs)` is now a pure function of its inputs,
+  matching the established `util::circuit_breaker::allow_host(host, now)`
+  convention (pure fn takes `now`; the caller samples the clock); the one
+  production call site in `process()` passes `unix_now()`. Tests pin `TEST_NOW`
+  (2026-06-15T00:00:00Z) and assert the boundary EXACTLY — `WINDOW_EDGE`
+  (2026-03-17, on the cutoff) → fresh, one day older → base — which the old
+  tests never did, having only probed the window with a date that happened to be
+  recent when authored. Added `undated_compromise_is_never_treated_as_fresh` (a
+  missing or unparseable date must not read as recent — inventing freshness
+  would inflate confidence on every undated provider record). **Class survey:**
+  `structured_id` and `discord_snowflake` also compare parsed dates against
+  `unix_now()`, but both use `[fixed_floor, now]` windows (2000-01-01 /
+  2015-01-01), where a past fixture stays inside the window forever — not
+  affected, deliberately left alone rather than churned. **P2** (reproducibility
+  / gate integrity — module behaviour is unchanged; a self-reddening gate trains
+  the next cycle to dismiss real failures and blocks every unrelated change).
+  Note the new boundary test is a *permanent* guard, not a reset timer: its
+  pinned date recedes further into the past as the calendar advances, so
+  reintroducing a clock read inside `compute_confidence` fails it immediately and
+  increasingly. Verified both directions — mutating `ts >= cutoff` to
+  `ts > cutoff` reddens the boundary test, and reverting the function to read
+  `unix_now()` internally reddens it too.
 
 ---
 
@@ -1814,6 +1847,29 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
 ## 8. Maintained log
 ## 8. Maintained log
 
+- **2026-08-01** — **Executed T2.43 (new, discovered gap): made
+  `hudsonrock::compute_confidence` pure so the gate stops expiring.** Ran the
+  verification gate on arrival and found it RED on an untouched tree — 2 failures
+  (`fresh_compromise_gets_higher_confidence`,
+  `compute_confidence_mixed_stealers_yields_fresh`). Root cause was not a code
+  regression but time: the function samples `unix_now()` internally against a
+  *rolling* 90-day freshness window while its tests pinned a fixed fixture date
+  (`2026-05-01`), so the fixture aged out of the window on 2026-07-30 and the
+  assertions began failing by the calendar alone. Injected the instant —
+  `compute_confidence(stealers, now_secs)` is now a pure function of its inputs,
+  matching the established `circuit_breaker::allow_host(host, now)` convention;
+  the single production call site samples the clock. Tests pin `TEST_NOW` and now
+  assert the window boundary EXACTLY (on the cutoff → fresh, one day past → base),
+  which the old date-probing tests never did. Surveyed the class before
+  generalising: `structured_id` / `discord_snowflake` compare dates against the
+  clock too but use `[fixed_floor, now]` windows where a past fixture never
+  expires — correctly left alone. +2 tests (12→14 in the module). Proven both
+  directions: mutating `ts >= cutoff`→`ts > cutoff` reddens the boundary test, and
+  restoring the internal `unix_now()` read reddens it too (direct proof the tests
+  are now clock-independent). Module behaviour unchanged. Gate green: fmt/clippy
+  `-D warnings`/rustdoc/doc clean, `cargo test --all --locked` 4509 lib + 256
+  integration, 0 failures. T2.43 `[ ]`→`[x]`. **Paired:** `SOLUTION_TREE` §5
+  SOL-PURE-FRESHNESS — same commit.
 - **2026-08-01** — **Executed T2.39** (AU-039 wallet-attribution relatedness).
   Launched a 4-phase workflow (investigate CryptoAddress/Person/Email emission
   evidence linkage across modules, synthesize relatedness criterion, implement,

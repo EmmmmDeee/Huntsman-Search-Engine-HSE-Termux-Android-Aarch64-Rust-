@@ -161,7 +161,7 @@ impl Module for HudsonRock {
             return Ok(ModuleResult::new());
         }
 
-        let confidence = compute_confidence(&data.stealers);
+        let confidence = compute_confidence(&data.stealers, crate::core::entity::unix_now());
         let mut entity = target.to_entity(confidence, &ctx.scan_id);
         entity.tag(tags::BREACH);
         entity.tag(tags::STEALER_LOG);
@@ -285,8 +285,14 @@ fn search_by_login_url(email: &str) -> String {
     )
 }
 
-fn compute_confidence(stealers: &[Stealer]) -> f64 {
-    let now_secs = crate::core::entity::unix_now();
+/// Confidence for a stealer-log hit evaluated at epoch second `now_secs`.
+///
+/// Takes `now` rather than sampling the clock so the freshness decision is a
+/// pure function of its inputs (the `circuit_breaker::allow_host(host, now)`
+/// convention). The window is *rolling* — `[now - 90d, now]` — so a fixture
+/// pinned to a fixed calendar date silently ages out of it; keeping the clock
+/// at the call site lets a test pin `now` and assert the boundary exactly.
+fn compute_confidence(stealers: &[Stealer], now_secs: u64) -> f64 {
     let cutoff = now_secs.saturating_sub(FRESHNESS_WINDOW_DAYS * 86400);
 
     let has_recent = stealers.iter().any(|s| {
