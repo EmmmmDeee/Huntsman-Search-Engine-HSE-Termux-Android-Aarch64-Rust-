@@ -451,6 +451,23 @@ pub fn tag_au_state(entity: &mut crate::core::entity::Entity, lat: f64, lon: f64
     }
 }
 
+/// Tag `entity` with each label whose flag is `Some(true)`, skipping `None` and
+/// `Some(false)`.
+///
+/// Single-sources the `into_iter().filter(|f| *f == Some(true)).for_each(tag)`
+/// sweep the IP-reputation modules (`ip_geo`, `ipquery`, `ipqs`) each copied to
+/// raise proxy / hosting / vpn / tor / mobile / datacenter tags off a provider's
+/// boolean signals. Crucially it tags **only** on an explicit `true`: a provider
+/// that did not report a signal (`None`) or reported it false never accretes the
+/// tag, so a missing field can't be read as a negative or a positive.
+pub fn tag_flags(entity: &mut crate::core::entity::Entity, flags: &[(Option<bool>, &str)]) {
+    for &(flag, tag) in flags {
+        if flag == Some(true) {
+            entity.tag(tag);
+        }
+    }
+}
+
 /// Score a wireless-geolocation fix by the accuracy radius (in metres) its
 /// provider reported: a fix good to a doorway is worth more than one good to a
 /// suburb.
