@@ -331,19 +331,19 @@ fn address_key_collapses_postcode_variants() {
     // "City, STATE POSTCODE" together so the variants — even from two different
     // search results — collapse into one entity.
     assert_eq!(
-        normalise_address_key("Murrumbateman, NSW"),
-        normalise_address_key("Murrumbateman, NSW 2582"),
+        locality_key("Murrumbateman, NSW"),
+        locality_key("Murrumbateman, NSW 2582"),
     );
     // US 5-digit ZIP folds too.
     assert_eq!(
-        normalise_address_key("Springfield, Illinois"),
-        normalise_address_key("Springfield, Illinois 62704"),
+        locality_key("Springfield, Illinois"),
+        locality_key("Springfield, Illinois 62704"),
     );
     // A leading street number (also numeric) is NOT stripped — only the trailing
     // postcode is — so two genuinely different street addresses stay distinct.
     assert_ne!(
-        normalise_address_key("12 Mary St, Brisbane QLD"),
-        normalise_address_key("99 Mary St, Brisbane QLD"),
+        locality_key("12 Mary St, Brisbane QLD"),
+        locality_key("99 Mary St, Brisbane QLD"),
     );
 }
 
@@ -1095,7 +1095,7 @@ fn address_corroboration_counts_each_result_once_despite_two_extracted_variants(
     // emits BOTH a bare "City, STATE" and a more specific postcode-qualified
     // "City, STATE 1234" for the SAME underlying locality when a snippet's text
     // contains both (its own pass 3: the postcode form is "a more-specific
-    // variant of a matched City, STATE"), and `normalise_address_key`
+    // variant of a matched City, STATE"), and `locality_key`
     // deliberately collapses both to the same dedup key. Without a per-result
     // dedup, ONE search result yielding both variants would be counted as TWO
     // independent corroborations (create + immediate self-merge) — silently
@@ -2187,21 +2187,21 @@ fn family_name_extraction() {
 
 #[test]
 fn address_normalise_qld_variants() {
-    let a = normalise_address_key("Gatton, QLD");
-    let b = normalise_address_key("Gatton, Queensland");
+    let a = locality_key("Gatton, QLD");
+    let b = locality_key("Gatton, Queensland");
     assert_eq!(a, b);
 }
 
 #[test]
 fn address_normalise_nsw_variants() {
-    let a = normalise_address_key("Sydney, NSW");
-    let b = normalise_address_key("Sydney, New South Wales");
+    let a = locality_key("Sydney, NSW");
+    let b = locality_key("Sydney, New South Wales");
     assert_eq!(a, b);
 }
 
 #[test]
 fn address_normalise_strips_punctuation() {
-    let a = normalise_address_key("St Lucia, QLD, 4067");
+    let a = locality_key("St Lucia, QLD, 4067");
     assert!(!a.contains(','));
     assert!(a.contains("queensland"));
 }

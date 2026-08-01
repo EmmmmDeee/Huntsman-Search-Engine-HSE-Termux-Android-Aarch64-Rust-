@@ -274,34 +274,95 @@ use super::*;
         assert_eq!(conf, confidence::MEDIUM_HIGH);
     }
 
-    // ── normalise_address_key ────────────────────────────────────────────────
+    // ── locality_key ────────────────────────────────────────────────
 
     #[test]
     fn normalise_expands_au_state_abbreviations() {
-        let k = normalise_address_key("Gatton, QLD");
+        let k = locality_key("Gatton, QLD");
         assert!(k.contains("queensland"), "QLD must expand: {k:?}");
         assert!(!k.contains("qld"), "abbreviation must be replaced: {k:?}");
     }
 
     #[test]
     fn normalise_strips_trailing_postcode() {
-        let with = normalise_address_key("Gatton, QLD 4343");
-        let without = normalise_address_key("Gatton, QLD");
+        let with = locality_key("Gatton, QLD 4343");
+        let without = locality_key("Gatton, QLD");
         assert_eq!(with, without, "postcode must be stripped for dedup: {with:?} != {without:?}");
     }
 
     #[test]
     fn normalise_does_not_strip_leading_street_number() {
         // "42 Collins Street" — "42" is a leading token, not a trailing postcode
-        let k = normalise_address_key("42 Collins Street, Melbourne VIC 3000");
+        let k = locality_key("42 Collins Street, Melbourne VIC 3000");
         assert!(k.starts_with("42"), "leading street number must be kept: {k:?}");
     }
 
     #[test]
     fn normalise_collapses_punctuation_to_spaces() {
-        let a = normalise_address_key("Sydney, NSW");
-        let b = normalise_address_key("Sydney NSW");
+        let a = locality_key("Sydney, NSW");
+        let b = locality_key("Sydney NSW");
         assert_eq!(a, b, "comma vs space must dedup to same key");
+    }
+
+    /// State abbreviations must expand TOKEN-WISE, never by substring.
+    ///
+    /// The module-local key this now delegates to `util::address_au` replaced
+    /// `s.replace(abbr, full)` over the whole string, so `nsw` became
+    /// `new south wales` and the later `wa` rule then matched the `wa` inside
+    /// `wales` — yielding `new south western australiales`. The equality tests
+    /// above could not catch it because the corruption is symmetric: both
+    /// spellings of a locality mangle to the same wrong string and still
+    /// compare equal. These assert the key's CONTENT, which is what the
+    /// symmetric-equality checks cannot.
+    #[test]
+    fn state_expansion_is_token_wise_not_substring() {
+        for input in ["Sydney, NSW", "Newcastle, NSW", "Sydney, New South Wales"] {
+            let k = locality_key(input);
+            assert!(
+                k.ends_with("new south wales"),
+                "{input:?} must expand to `new south wales`, got {k:?}"
+            );
+            assert!(
+                !k.contains("western australia"),
+                "the `wa` inside `wales` must not expand: {input:?} -> {k:?}"
+            );
+        }
+    }
+
+    /// A non-AU address must survive unmangled: the substring expansion turned
+    /// `Santa Monica, CA` into `south australianorthern territorya monica ca`
+    /// (`sa` inside `santa`, then `nt` inside the result).
+    #[test]
+    fn non_au_address_is_not_mangled_by_state_expansion() {
+        let k = locality_key("Santa Monica, CA");
+        assert_eq!(k, "santa monica ca", "no AU state token is present here");
+    }
+
+    /// A word containing a state code as a substring must be left intact —
+    /// `contact` contains both `act` and (after any naive rewrite) `nt`.
+    #[test]
+    fn words_containing_state_codes_are_left_intact() {
+        let k = locality_key("Contact Street, VIC");
+        assert_eq!(k, "contact street victoria");
+    }
+
+    /// The per-module dedup key and the engine-wide consolidation backstop
+    /// (`core::engine::passes::consolidate_address_localities`) must agree by
+    /// construction. They are now literally the same function; this pins that.
+    #[test]
+    fn module_key_is_the_same_function_as_the_engine_backstop() {
+        for addr in [
+            "Murrumbateman, NSW",
+            "Murrumbateman, NSW 2582",
+            "Kuraby, Queensland",
+            "Wagga Wagga, NSW 2650",
+        ] {
+            assert_eq!(
+                locality_key(addr),
+                crate::util::address_au::locality_key(addr),
+                "module and engine must compute one key for {addr:?}"
+            );
+        }
     }
 
     #[test]

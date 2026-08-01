@@ -353,7 +353,7 @@ pub(super) fn build_entities(
         // STATE" and a more specific postcode-qualified "City, STATE 1234" for
         // the SAME underlying locality when both appear in one result's text
         // (its own pass 3: "an AU postcode... appended as a more-specific
-        // variant of a matched City, STATE"), and `normalise_address_key`
+        // variant of a matched City, STATE"), and `locality_key`
         // deliberately collapses both to the same dedup key — by design, so a
         // bare mention in one result and a postcode-qualified mention in a
         // DIFFERENT result correctly merge into one entity. But without this
@@ -369,7 +369,7 @@ pub(super) fn build_entities(
         let snippet_addresses: Vec<String> = {
             let mut deduped: Vec<(String, String)> = Vec::new();
             for addr in snippet_addresses {
-                let key = normalise_address_key(&addr);
+                let key = locality_key(&addr);
                 match deduped.iter_mut().find(|(k, _)| *k == key) {
                     Some(slot) if has_postcode(&addr) && !has_postcode(&slot.1) => {
                         slot.1 = addr;
@@ -381,7 +381,7 @@ pub(super) fn build_entities(
             deduped.into_iter().map(|(_, addr)| addr).collect()
         };
         for addr in snippet_addresses {
-            let addr_key = format!("@addr:{}", normalise_address_key(&addr));
+            let addr_key = format!("@addr:{}", locality_key(&addr));
             let has_postcode = has_postcode(&addr);
             let base_conf = if has_postcode {
                 confidence::MEDIUM_HIGH
@@ -429,10 +429,12 @@ pub(super) fn build_entities(
                 // Address seen before — boost via merge (corroboration increases).
                 // Use the normalised key for lookup so "Gatton, QLD" and
                 // "Gatton, Queensland" merge rather than forking into two entities.
-                let norm = normalise_address_key(&addr);
-                if let Some(existing) = result.entities.iter_mut().find(|e| {
-                    e.kind == EntityKind::Address && normalise_address_key(&e.value) == norm
-                }) {
+                let norm = locality_key(&addr);
+                if let Some(existing) = result
+                    .entities
+                    .iter_mut()
+                    .find(|e| e.kind == EntityKind::Address && locality_key(&e.value) == norm)
+                {
                     existing.confidence = (existing.confidence + 0.10).min(corr_cap);
                     existing.corroboration = existing.corroboration.saturating_add(1);
                     existing.add_evidence(

@@ -395,7 +395,7 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
 
     // Append the postcode that follows a "City, STATE" as a more-specific
     // variant. The bare and postcode-qualified forms are ONE locality, so they
-    // must not become two Address entities — `normalise_address_key` strips the
+    // must not become two Address entities — `locality_key` strips the
     // trailing postcode, collapsing them to a single dedup key at emission
     // (build.rs), which is where addresses across multiple search results are
     // already merged. (Emitting both strings here is harmless given that dedup,

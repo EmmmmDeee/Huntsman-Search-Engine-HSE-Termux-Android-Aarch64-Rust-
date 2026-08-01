@@ -187,42 +187,38 @@ pub(in crate::modules::search_engines) fn score_username(
     (score, confidence)
 }
 
-/// Normalize an address for fuzzy dedup: lowercased, state abbreviations
-/// expanded, common punctuation and whitespace collapsed. This catches
-/// "Gatton, QLD" ≡ "Gatton, Queensland" ≡ "gatton queensland".
-pub(in crate::modules::search_engines) fn normalise_address_key(addr: &str) -> String {
-    let mut s = addr.to_lowercase();
-    let expansions = [
-        ("qld", "queensland"),
-        ("nsw", "new south wales"),
-        ("vic", "victoria"),
-        ("tas", "tasmania"),
-        ("act", "australian capital territory"),
-        ("sa", "south australia"),
-        ("wa", "western australia"),
-        ("nt", "northern territory"),
-    ];
-    for (abbr, full) in &expansions {
-        if s.contains(abbr) && !s.contains(full) {
-            s = s.replace(abbr, full);
-        }
-    }
-    s.retain(|c| c.is_alphanumeric() || c == ' ');
-    // Drop trailing postcode token(s) so "City, STATE" and "City, STATE 2582"
-    // (one locality, two granularities) share a dedup key and collapse into a
-    // single Address entity — even when each form arrives from a different
-    // search result. A postcode is a 4-(AU)/5-(US) digit run; it is always
-    // trailing, so a leading street number (also numeric) is never stripped.
-    let mut tokens: Vec<&str> = s.split_whitespace().collect();
-    while tokens.len() > 1
-        && tokens
-            .last()
-            .is_some_and(|t| (4..=5).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_digit()))
-    {
-        tokens.pop();
-    }
-    tokens.join(" ")
-}
+/// The address-locality dedup key — reduce a free-text address to a token that
+/// is equal for two spellings of one locality ("Gatton, QLD" ≡ "Gatton,
+/// Queensland" ≡ "Gatton, QLD 4343").
+///
+/// Re-exported from [`crate::util::address_au::locality_key`] rather than
+/// implemented here. This module previously carried its own copy that expanded
+/// state abbreviations by **substring** replace over the whole string
+/// (`s.replace(abbr, full)`) before tokenising, which corrupted any address
+/// containing a state code inside a longer word. `nsw` expanded to
+/// `new south wales`, and the later `wa` rule then matched the `wa` INSIDE
+/// `wales`:
+///
+/// ```text
+/// "Sydney, NSW"        -> "sydney new south western australiales"
+/// "Newcastle, NSW"     -> "newcastle new south western australiales"
+/// "Santa Monica, CA"   -> "south australianorthern territorya monica ca"
+/// "Contact Street, VIC"-> "conorthern territoryaustralian capital territory street victoria"
+/// ```
+///
+/// Measured against the `util` implementation, 5 of 8 representative inputs
+/// diverged — including NSW, the most populous state. The bug survived because
+/// the corruption is *symmetric*: `"Sydney, NSW"` and `"Sydney, New South
+/// Wales"` both mangle to the same wrong string, so the equality tests that
+/// covered this function passed.
+///
+/// `util::address_au::locality_key` expands token-wise (`match t { "nsw" => … }`)
+/// and its doc comment calls out this exact hazard — "never substring, so the
+/// `wa` in `wales` is left alone". It is also what the engine-side backstop
+/// `consolidate_address_localities` uses, so sharing it makes the per-module
+/// dedup and the codebase-wide consolidation agree by construction instead of
+/// by coincidence.
+pub(in crate::modules::search_engines) use crate::util::address_au::locality_key;
 
 // ─── Entity building ────────────────────────────────────────────────────────
 
