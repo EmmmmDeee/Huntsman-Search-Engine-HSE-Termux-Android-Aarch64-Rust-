@@ -233,3 +233,53 @@ fn an_unrecognisable_address_shape_still_emits_the_designation() {
         e.tags
     );
 }
+
+/// A failed OFAC download with NO usable cached list must be an error, never an
+/// empty screening set.
+///
+/// This is the module's worst possible failure: the caller iterates the returned
+/// records to find hits, so an empty set produces zero hits — byte-identical to
+/// the answer for a subject who is genuinely not designated. A transport failure
+/// would therefore render as an affirmative sanctions clearance for a name that
+/// was never actually checked, and that output is used in engagement reporting.
+///
+/// The stale-list path is deliberately NOT an error: OFAC publishes irregularly,
+/// so screening against a previously-downloaded set still answers the question.
+#[test]
+fn failed_download_without_a_cached_list_is_an_error_not_a_clean_screen() {
+    use super::list::degrade_on_fetch_failure;
+
+    let rec = |name: &str| super::parse::SdnRecord {
+        ent_num: 1,
+        name: name.to_string(),
+        kind: SdnKind::Individual,
+        program: "SDN".to_string(),
+        title: String::new(),
+        remarks: String::new(),
+    };
+
+    // Cold cache: nothing has ever loaded. Screening is impossible, not clean.
+    let err = degrade_on_fetch_failure(None)
+        .expect_err("a cold-cache download failure must NOT yield an empty screening set");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("sanctions_ofac"),
+        "error must name the module so it reaches the operator: {msg}"
+    );
+
+    // An empty cached list screens exactly as blindly as no list at all, so it
+    // must be treated the same way rather than passed off as a real set.
+    degrade_on_fetch_failure(Some(Vec::new()))
+        .expect_err("an EMPTY cached list is not a usable screening set");
+
+    // A stale but populated list IS a sound degradation — preserved, not broken.
+    let stale = vec![rec("ABBAS, Abu"), rec("Banco Nacional de Cuba")];
+    let got = degrade_on_fetch_failure(Some(stale.clone()))
+        .expect("a populated cached list must still screen");
+    assert_eq!(
+        got.len(),
+        stale.len(),
+        "the stale list must be returned intact, not truncated or emptied"
+    );
+    assert_eq!(got[0].name, "ABBAS, Abu");
+}
