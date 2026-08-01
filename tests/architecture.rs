@@ -2787,8 +2787,38 @@ fn entity_confidence_uses_named_ladder_constants() {
         .collect();
     expected.sort();
 
-    let added: Vec<_> = found.iter().filter(|f| !expected.contains(f)).collect();
-    let fixed: Vec<_> = expected.iter().filter(|e| !found.contains(e)).collect();
+    // Compare as MULTISETS, not sets. `Vec::contains` tests membership only, so
+    // with a duplicate baseline row (proxycurl/build.rs carries two 0.68 sites) a
+    // third identical literal in that same file would still be "contained" and
+    // slip through, and normalising one of a duplicate pair would leave the stale
+    // row undetected. Counting occurrences is what actually enforces the ratchet.
+    let tally = |rows: &[(String, String)]| {
+        let mut m: std::collections::BTreeMap<(String, String), usize> =
+            std::collections::BTreeMap::new();
+        for r in rows {
+            *m.entry(r.clone()).or_default() += 1;
+        }
+        m
+    };
+    let found_counts = tally(&found);
+    let expected_counts = tally(&expected);
+
+    // Occurrences present more often than the baseline allows.
+    let added: Vec<String> = found_counts
+        .iter()
+        .filter_map(|(k, n)| {
+            let allowed = expected_counts.get(k).copied().unwrap_or(0);
+            (*n > allowed).then(|| format!("{} `{}` x{} (baseline allows {allowed})", k.0, k.1, n))
+        })
+        .collect();
+    // Baseline rows that no longer occur that many times.
+    let fixed: Vec<String> = expected_counts
+        .iter()
+        .filter_map(|(k, n)| {
+            let actual = found_counts.get(k).copied().unwrap_or(0);
+            (*n > actual).then(|| format!("{} `{}` x{} (now only {actual})", k.0, k.1, n))
+        })
+        .collect();
 
     assert!(
         added.is_empty(),

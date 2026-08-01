@@ -53,8 +53,13 @@ impl KeyAuthIssue {
     /// mid-codepoint.
     #[must_use]
     pub fn detail_capped(&self, max_chars: usize) -> String {
-        let mut out: String = self.detail.chars().take(max_chars).collect();
-        let remainder = self.detail.chars().count().saturating_sub(max_chars);
+        // Single pass: `take` consumes the prefix, then the SAME iterator counts
+        // whatever is left. Iterating `self.detail` twice would rescan the whole
+        // body — and the bodies this guards against are exactly the large ones
+        // (a provider answering with a full HTML or JSON error page).
+        let mut chars = self.detail.chars();
+        let mut out: String = chars.by_ref().take(max_chars).collect();
+        let remainder = chars.count();
         if remainder > 0 {
             out.push_str(&format!("…(+{remainder} more chars)"));
         }
