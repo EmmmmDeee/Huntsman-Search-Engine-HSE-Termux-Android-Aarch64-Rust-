@@ -1,7 +1,8 @@
 use super::client::{build_client, build_client_with_trace};
 use super::fetch::{
     JSON_BODY_CAP, fetch_json, fetch_json_or_404, fetch_json_or_absent, fetch_json_probe,
-    is_keyed_error_status, key_tail, keyed_ok_or_404, parse_retry_after_secs, retry_after_secs,
+    is_keyed_error_status, key_tail, keyed_cascade, keyed_ok_or_404, parse_retry_after_secs,
+    retry_after_secs,
 };
 use super::redact::{redact_credentials, redact_literal_secrets};
 use super::ssrf::{filter_public, redirect_to_private_ip};
@@ -780,4 +781,211 @@ async fn read_text_reads_body_with_module_tagged_errors() {
         .await
         .expect("should succeed");
     assert_eq!(body, "plain text body");
+}
+
+// ── keyed_cascade — the general-request-shape cascade `onyphe`/`threatfox`
+// migrated onto in place of their own hand-rolled 'cascade loop. ──────────
+
+fn cascade_ctx(http: reqwest::Client) -> crate::core::module::ModuleContext {
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    crate::core::module::ModuleContext {
+        scan_id: "test".into(),
+        bus,
+        http,
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    }
+}
+
+#[tokio::test]
+async fn keyed_cascade_returns_the_response_on_success() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.expect("should succeed");
+        let mut buf = vec![0u8; 2048];
+        let _ = sock.read(&mut buf).await;
+        let body = b"{\"ok\":true}";
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let _ = sock.write_all(head.as_bytes()).await;
+        let _ = sock.write_all(body).await;
+        let _ = sock.flush().await;
+    });
+
+    let ctx = cascade_ctx(build_client());
+    let url = format!("http://{addr}/");
+    let resp = keyed_cascade(&ctx, "test_cascade_ok", "k1", &[], |key| {
+        ctx.http.get(&url).header("X-Key", key)
+    })
+    .await
+    .expect("must not error")
+    .expect("a 2xx response must come back Some");
+    assert!(resp.status().is_success());
+}
+
+#[tokio::test]
+async fn keyed_cascade_maps_a_listed_status_to_absent_but_errors_on_an_unlisted_one() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    async fn serve_404() -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("should succeed");
+        let addr = listener.local_addr().expect("should succeed");
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("should succeed");
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                .await;
+            let _ = sock.flush().await;
+        });
+        addr
+    }
+
+    // `absent_statuses` names 404 — ONYPHE's shape — so it maps to Ok(None),
+    // not an error, exactly as ONYPHE's own migrated call site now relies on.
+    let ctx = cascade_ctx(build_client());
+    let addr = serve_404().await;
+    let url = format!("http://{addr}/");
+    let absent = keyed_cascade(&ctx, "test_cascade_absent", "k1", &[404], |key| {
+        ctx.http.get(&url).header("X-Key", key)
+    })
+    .await
+    .expect("a listed absent status must not be an error");
+    assert!(absent.is_none(), "404 in absent_statuses must map to None");
+
+    // The identical 404, with an EMPTY absent_statuses list — ThreatFox's
+    // shape, which never special-cased 404 before this consolidation — must
+    // still be a hard error, not silently swallowed into None.
+    let addr2 = serve_404().await;
+    let url2 = format!("http://{addr2}/");
+    let errored = keyed_cascade(&ctx, "test_cascade_no_absent", "k1", &[], |key| {
+        ctx.http.get(&url2).header("X-Key", key)
+    })
+    .await;
+    assert!(
+        errored.is_err(),
+        "404 not in absent_statuses must remain an Err, matching threatfox's pre-migration behaviour: {errored:?}"
+    );
+}
+
+#[tokio::test]
+async fn keyed_cascade_gives_up_cleanly_on_401_with_no_extra_pooled_key() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let hits_srv = hits.clone();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.expect("should succeed");
+        let mut buf = vec![0u8; 2048];
+        let _ = sock.read(&mut buf).await;
+        hits_srv.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let _ = sock
+            .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
+            .await;
+        let _ = sock.flush().await;
+    });
+
+    // A fresh, never-`pool.add()`-ed service name: the global key pool holds
+    // nothing for it, so `next_pooled_key` returns None on the first burn —
+    // the documented single-key-service behaviour every hand-rolled cascade
+    // (and now this primitive) falls back to.
+    let ctx = cascade_ctx(build_client());
+    let url = format!("http://{addr}/");
+    let result = keyed_cascade(&ctx, "test_cascade_401_noextra", "only-key", &[], |key| {
+        ctx.http.get(&url).header("X-Key", key)
+    })
+    .await;
+    assert!(
+        result.is_err(),
+        "a terminal 401 with no rotation target must be Err"
+    );
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "401 is not retried in place — exactly one request"
+    );
+}
+
+#[tokio::test]
+async fn keyed_cascade_retries_the_same_key_once_on_429_before_succeeding() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("should succeed");
+    let addr = listener.local_addr().expect("should succeed");
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let hits_srv = hits.clone();
+    tokio::spawn(async move {
+        for _ in 0..2 {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let n = hits_srv.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                let body = b"{}";
+                // Retry-After: 0 — a real header the retry path still parses
+                // and honours, just without paying an actual wall-clock
+                // second in the test suite for it.
+                let head = format!(
+                    "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(body).await;
+            } else {
+                let body = b"{\"ok\":true}";
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(body).await;
+            }
+            let _ = sock.flush().await;
+        }
+    });
+
+    let ctx = cascade_ctx(build_client());
+    let url = format!("http://{addr}/");
+    let resp = keyed_cascade(&ctx, "test_cascade_429_retry", "same-key", &[], |key| {
+        ctx.http.get(&url).header("X-Key", key)
+    })
+    .await
+    .expect("must recover on the in-place retry")
+    .expect("the retried request must succeed");
+    assert!(resp.status().is_success());
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "exactly two attempts: the 429 + the retry that recovers, both on the same key"
+    );
+}
+
+#[tokio::test]
+async fn keyed_cascade_stops_before_any_request_when_already_cancelled() {
+    // Point at a port nothing listens on: if the cancellation check didn't
+    // fire first, this would be a connection-refused Err, not Ok(None) — the
+    // two outcomes are distinguishable, so this proves the check runs before
+    // the network attempt rather than merely happening to return early.
+    let ctx = cascade_ctx(build_client());
+    ctx.cancel.cancel();
+    let result = keyed_cascade(&ctx, "test_cascade_cancelled", "k1", &[], |key| {
+        ctx.http.get("http://127.0.0.1:1/").header("X-Key", key)
+    })
+    .await
+    .expect("a cancelled scan must not surface as an error");
+    assert!(result.is_none(), "cancellation must short-circuit to None");
 }
