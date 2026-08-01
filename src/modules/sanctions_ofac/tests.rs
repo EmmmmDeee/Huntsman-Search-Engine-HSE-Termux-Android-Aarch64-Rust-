@@ -233,3 +233,92 @@ fn an_unrecognisable_address_shape_still_emits_the_designation() {
         e.tags
     );
 }
+
+/// A failed OFAC download with NO usable cached list must be an error, never an
+/// empty screening set.
+///
+/// This is the module's worst possible failure: the caller iterates the returned
+/// records to find hits, so an empty set produces zero hits — byte-identical to
+/// the answer for a subject who is genuinely not designated. A transport failure
+/// would therefore render as an affirmative sanctions clearance for a name that
+/// was never actually checked, and that output is used in engagement reporting.
+///
+/// The stale-list path is deliberately NOT an error: OFAC publishes irregularly,
+/// so screening against a previously-downloaded set still answers the question.
+#[test]
+fn failed_download_without_a_cached_list_is_an_error_not_a_clean_screen() {
+    use super::list::degrade_on_fetch_failure;
+
+    let rec = |name: &str| super::parse::SdnRecord {
+        ent_num: 1,
+        name: name.to_string(),
+        kind: SdnKind::Individual,
+        program: "SDN".to_string(),
+        title: String::new(),
+        remarks: String::new(),
+    };
+
+    // Cold cache: nothing has ever loaded. Screening is impossible, not clean.
+    let err = degrade_on_fetch_failure(None)
+        .expect_err("a cold-cache download failure must NOT yield an empty screening set");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("sanctions_ofac"),
+        "error must name the module so it reaches the operator: {msg}"
+    );
+
+    // An empty cached list screens exactly as blindly as no list at all, so it
+    // must be treated the same way rather than passed off as a real set.
+    degrade_on_fetch_failure(Some(Vec::new()))
+        .expect_err("an EMPTY cached list is not a usable screening set");
+
+    // A stale but populated list IS a sound degradation — preserved, not broken.
+    let stale = vec![rec("ABBAS, Abu"), rec("Banco Nacional de Cuba")];
+    let got = degrade_on_fetch_failure(Some(stale.clone()))
+        .expect("a populated cached list must still screen");
+    assert_eq!(
+        got.len(),
+        stale.len(),
+        "the stale list must be returned intact, not truncated or emptied"
+    );
+    assert_eq!(got[0].name, "ABBAS, Abu");
+}
+
+/// Every route that can hand the caller a record set must agree on what counts as
+/// screenable, because each one of them is a way to produce a false clean screen.
+///
+/// The first version of this fix guarded only the transport-failure route and left
+/// two others returning `Ok(vec![])`: the cache fast path (an empty cached set was
+/// served straight back as a successful screen) and a 2xx whose body parsed to zero
+/// rows (which was then cached, serving that blindness for the whole 12h TTL).
+/// `is_screenable` is the single definition all three now consult, so they cannot
+/// drift apart again.
+#[test]
+fn an_empty_record_set_is_never_screenable_by_any_route() {
+    use super::list::{degrade_on_fetch_failure, is_screenable};
+
+    let rec = || super::parse::SdnRecord {
+        ent_num: 1,
+        name: "ABBAS, Abu".to_string(),
+        kind: SdnKind::Individual,
+        program: "SDN".to_string(),
+        title: String::new(),
+        remarks: String::new(),
+    };
+
+    // The shared rule itself.
+    assert!(
+        !is_screenable(&[]),
+        "an empty set answers every query with 'no designations' — never screenable"
+    );
+    assert!(is_screenable(&[rec()]), "a populated set is screenable");
+
+    // The degradation route consults the same rule, so an empty cache is an error
+    // rather than a clean screen.
+    degrade_on_fetch_failure(Some(Vec::new()))
+        .expect_err("an empty cached set must not be served as a successful screen");
+    assert!(
+        degrade_on_fetch_failure(Some(vec![rec()])).is_ok(),
+        "a populated cached set must still degrade gracefully"
+    );
+}
