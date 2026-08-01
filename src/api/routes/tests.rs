@@ -268,13 +268,25 @@ use super::*;
                 "SPA report must fetch the {path} per-scan endpoint"
             );
         }
-        // The render sections must be composed into the report.
-        let report = app_file("js/scan_info/report.js");
-        assert!(report.contains("renderIdentities("));
-        assert!(report.contains("renderBenchmark("));
-        // The AU-059 residency fix (the headline "where is the subject" finding)
-        // must be surfaced, not just embedded in the heavy report.json export.
-        assert!(report.contains("renderLocation("));
+        // The render sections must be composed into a scan surface so these
+        // endpoints stay live-from-the-UI. Post-streamline the Summary
+        // (report.js) headlines Location (the "where is the subject" residency
+        // finding); Identities and Benchmark are lenses under the lazy Insights
+        // tab (insights.js). Guard both homes.
+        let summary = app_file("js/scan_info/report.js");
+        let insights = app_file("js/scan_info/insights.js");
+        assert!(
+            summary.contains("renderLocation("),
+            "the Summary must compose renderLocation() (the residency headline)"
+        );
+        assert!(
+            insights.contains("renderIdentities("),
+            "the Insights tab must compose renderIdentities()"
+        );
+        assert!(
+            insights.contains("renderBenchmark("),
+            "the Insights tab must compose renderBenchmark()"
+        );
     }
 
     #[test]
@@ -513,14 +525,13 @@ use super::*;
 
     #[test]
     fn embedded_spa_deep_links_resolve_to_a_visible_section() {
-        // The Report/Location "no leads yet" hint and the correlation-count
-        // callout link to `#/scaninfo?...&tab=network` / `&tab=corr`, but
-        // renderScanInfo's tab dispatch only special-cases 'browse'/'graph'/
-        // 'log' — every other tab value (including these two) silently fell
-        // through to the plain Report view with no indication the link did
-        // anything at all. The Report view already renders both sections
-        // (#rpt-network / #rpt-corr) inline, so the fix is to scroll to the
-        // matching anchor rather than add a redundant sub-tab.
+        // The Location "no leads yet" hint and the status correlation-count
+        // callout link to `#/scaninfo?...&tab=network` / `&tab=corr`. Post
+        // streamline, Correlations is its own tab (the &tab=corr link resolves
+        // straight to it) and the network section lives on the Summary (the
+        // &tab=network link folds onto Summary and scrolls to #sum-network).
+        // Guard both the anchor text and the dispatch so a link can never go
+        // inert again.
         assert!(
             app_file("js/scan_info/leads.js").contains("tab=network\">Network</a>"),
             "expected deep-link anchor text `tab=network\">Network</a>` in leads.js"
@@ -535,14 +546,52 @@ use super::*;
             .map(|(b, _)| b)
             .expect("renderScanInfo's tab dispatch block present");
         assert!(
-            dispatch.contains("tab==='corr'") && dispatch.contains("$('#rpt-corr')"),
-            "tab=corr must scroll to the #rpt-corr section instead of \
-             silently falling through with no visible effect"
+            dispatch.contains("activeTab==='corr'") && dispatch.contains("renderCorrelations("),
+            "tab=corr must render the Correlations tab (renderCorrelations)"
         );
         assert!(
-            dispatch.contains("tab==='network'") && dispatch.contains("$('#rpt-network')"),
-            "tab=network must scroll to the #rpt-network section instead of \
-             silently falling through with no visible effect"
+            dispatch.contains("tab==='network'") && dispatch.contains("$('#sum-network')"),
+            "tab=network must fold onto the Summary and scroll to #sum-network"
+        );
+    }
+
+    #[test]
+    fn embedded_spa_scan_detail_is_streamlined() {
+        // The scan-detail view was streamlined (SpiderFoot-style) from a single
+        // ~90-screen "Report" scroll (~15 sections, ~17 API calls on open) into a
+        // slim Summary + a lazy Insights drawer + a dedicated Correlations tab.
+        // Pin the shape so it cannot regress into the kitchen-sink scroll.
+        let index = app_file("js/scan_info/index.js");
+        for t in [
+            "subTab('summary'",
+            "subTab('browse'",
+            "subTab('graph'",
+            "subTab('corr'",
+            "subTab('insights'",
+        ] {
+            assert!(index.contains(t), "scan-detail tab bar must include {t}");
+        }
+        // The Summary leads with the calibrated Exposure Index (the headline the
+        // CLI dossier opens with) — which was previously dead-from-the-UI.
+        let summary = app_file("js/scan_info/report.js");
+        assert!(
+            summary.contains("renderExposure("),
+            "the Summary must headline the Exposure Index"
+        );
+        // Insights is a lazy lens switcher — it renders one lens on demand, not
+        // all ~10 analytical sections (and their fetches) at once.
+        let insights = app_file("js/scan_info/insights.js");
+        assert!(
+            insights.contains("data-lens") && insights.contains("insights-lens"),
+            "Insights must be a lazy per-lens switcher"
+        );
+        // Correlation member rows are built lazily on expand — a 607-member
+        // cluster must not put tens of thousands of hidden DOM nodes on the page
+        // up front (the same unbounded-render class as the graph clique bug).
+        let corr = app_file("js/scan_info/correlations.js");
+        assert!(
+            corr.contains("data-corr-idx") && corr.contains("dataset.built"),
+            "correlation members must be built lazily on card expand, not up front"
         );
     }
 

@@ -2,9 +2,11 @@ import { API } from '/static/js/api.js';
 import { $, $$, attr, esc, fmtDate, fmtDuration, kindPill, kindToStr, nowSec, statusPill, toast } from '/static/js/helpers.js';
 import { nav } from '/static/js/router.js';
 import { renderBrowse } from '/static/js/scan_info/browse.js';
+import { renderCorrelations } from '/static/js/scan_info/correlations.js';
 import { renderGraph } from '/static/js/scan_info/graph.js';
+import { renderInsights } from '/static/js/scan_info/insights.js';
 import { renderLog } from '/static/js/scan_info/log.js';
-import { renderReport } from '/static/js/scan_info/report.js';
+import { renderSummary } from '/static/js/scan_info/report.js';
 import { renderStealer } from '/static/js/scan_info/stealer.js';
 import { S } from '/static/js/state.js';
 import { clearScanTimer } from '/static/js/timers.js';
@@ -13,6 +15,10 @@ import { render } from '/static/js/main.js';
 /* ═══════════ Page: SCANINFO (#/scaninfo?id=X[&tab=Y]) ═══════════ */
 export async function renderScanInfo(v){
   const {id, tab} = S.route.params;
+  // Streamlined tab set. Legacy/deep-link values fold onto it: 'report' and any
+  // unknown value → Summary; 'network' also → Summary but scrolls to its
+  // section (which now lives there).
+  const activeTab = (!tab || tab === 'report' || tab === 'network') ? 'summary' : tab;
   // Only the scan itself is required; correlations/relations can 500 on a
   // legacy scan, so one failing sub-resource must not blank the whole page.
   const [scanR, entsR, corrsR, relsR] = await Promise.allSettled([
@@ -68,11 +74,13 @@ export async function renderScanInfo(v){
     </div>
 
     <ul class="nav nav-tabs">
-      ${subTab('report',  'Report',       null,              tab)}
-      ${subTab('browse',  'Browse',       S.entities.length, tab)}
-      ${subTab('stealer', 'Stealer Logs', null,              tab)}
-      ${subTab('graph',   'Graph',        null,              tab)}
-      ${subTab('log',     'Scan Log',     null,              tab)}
+      ${subTab('summary', 'Summary',      null,                       activeTab)}
+      ${subTab('browse',  'Browse',       S.entities.length,          activeTab)}
+      ${subTab('graph',   'Graph',        null,                       activeTab)}
+      ${subTab('corr',    'Correlations', S.correlations.length||null, activeTab)}
+      ${subTab('insights','Insights',     null,                       activeTab)}
+      ${subTab('stealer', 'Stealer Logs', null,                       activeTab)}
+      ${subTab('log',     'Scan Log',     null,                       activeTab)}
     </ul>
     <div id="scan-body" style="padding-top:14px"></div>
   `;
@@ -115,17 +123,17 @@ export async function renderScanInfo(v){
   }));
 
   const body = $('#scan-body');
-  if (tab==='browse')        renderBrowse(body);
-  else if (tab==='stealer')  renderStealer(body, id);
-  else if (tab==='graph')    renderGraph(body);
-  else if (tab==='log')      renderLog(body, scan);
+  if (activeTab==='browse')        renderBrowse(body);
+  else if (activeTab==='corr')     renderCorrelations(body);
+  else if (activeTab==='insights') renderInsights(body, id, S.route.query.sub);
+  else if (activeTab==='stealer')  renderStealer(body, id);
+  else if (activeTab==='graph')    renderGraph(body);
+  else if (activeTab==='log')      renderLog(body, scan);
   else {
-    // 'corr'/'network' (and any other unrecognised tab) fall through to the
-    // consolidated Report view, which already contains both sections — just
-    // scroll straight to the relevant one instead of leaving the link inert.
-    renderReport(body, id, scan);
-    if (tab==='corr')         $('#rpt-corr')?.scrollIntoView({behavior:'smooth', block:'start'});
-    else if (tab==='network') $('#rpt-network')?.scrollIntoView({behavior:'smooth', block:'start'});
+    // 'summary' (also legacy 'report'/'network' and any unknown tab). The
+    // network section lives here now, so a &tab=network deep link scrolls to it.
+    renderSummary(body, id, scan);
+    if (tab==='network') $('#sum-network')?.scrollIntoView({behavior:'smooth', block:'start'});
   }
 
   // SpiderFoot-style live refresh: while the scan is still running, re-pull and
@@ -133,7 +141,7 @@ export async function renderScanInfo(v){
   // own. The Log tab is excluded — it owns a live SSE stream a re-render would
   // tear down. Re-render re-arms the timer; it stops once status != running.
   clearScanTimer();
-  if ((scan.status === 'running' || scan.status === 'pending') && tab !== 'log'){
+  if ((scan.status === 'running' || scan.status === 'pending') && activeTab !== 'log'){
     S.scanTimer = setTimeout(()=>{ if (S.route.name === 'scaninfo') render(); }, 8000);
   }
 }

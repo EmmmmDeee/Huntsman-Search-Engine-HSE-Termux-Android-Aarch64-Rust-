@@ -1,8 +1,12 @@
 import { API } from '/static/js/api.js';
-import { $, esc, fmtDate, kindPill, statusPill } from '/static/js/helpers.js';
+import { esc, fmtDate, kindPill, statusPill } from '/static/js/helpers.js';
+import { S } from '/static/js/state.js';
 
-/* ── Info / Scan Settings tab ── */
-export function renderInfo(host, scan){
+/* ── Scan Settings — the scan's configuration + run metadata. Surfaced as the
+   "Scan Settings" lens under Insights (SpiderFoot's Scan Settings tab), and
+   readable from S.scan so it fits the (host) lens signature. ── */
+export function renderScanSettings(host, scan){
+  scan = scan || S.scan || {};
   const opts = scan.options || {};
   const fmtList = xs => !xs || !xs.length ? '<span class="text-muted">all (default)</span>' : xs.map(x=>`<code>${esc(x)}</code>`).join(' ');
   const rows = [
@@ -30,32 +34,27 @@ export function renderInfo(host, scan){
     ['Notes', opts.notes ? `<span style="font-size:12px">${esc(opts.notes)}</span>` : '<span class="text-muted">none</span>'],
   ];
   host.innerHTML = `
-    <div id="exposure-panel"></div>
     <div class="panel panel-default">
       <div class="panel-heading"><b>Scan settings</b></div>
       <table class="table table-striped table-condensed" style="margin-bottom:0">
         <tbody>${rows.map(([k,v])=>`<tr><td style="width:220px;color:var(--text-muted)">${esc(k)}</td><td>${v}</td></tr>`).join('')}</tbody>
       </table>
-    </div>
-  `;
-  renderExposure(scan.id);
+    </div>`;
 }
 
 /* ── Exposure Index ──
    The calibrated 0–100 headline verdict with its per-signal breakdown. The CLI
-   dossier and the debug bundle both OPEN with this; until the /exposure
-   endpoint existed the web console — the primary interface on a Termux/Android
-   device — was the one consumer that never showed it, so the operator had to
-   shell out to `hse export` for the single number that summarises the scan.
-   Fetched separately so a failure here degrades to a quiet notice instead of
-   taking the settings table down with it. */
+   dossier and the debug bundle both OPEN with this; the web console — the
+   primary interface on a Termux/Android device — must too, so the Summary tab
+   leads with it. Fetched separately so a failure here degrades to a quiet
+   notice instead of taking the surrounding view down with it. Writes into
+   `host` directly so it can headline the Summary or stand alone. */
 const BAND_CLASS = { MINIMAL:'label-success', LOW:'label-info', MODERATE:'label-warning', HIGH:'label-danger', CRITICAL:'label-danger' };
-async function renderExposure(scanId){
-  const host = $('#exposure-panel');
+export async function renderExposure(host, scanId){
   if (!host) return;
   let x = null;
   try { x = await API.exposure(scanId); }
-  catch { host.innerHTML = ''; return; }   // never block the settings view
+  catch { host.innerHTML = ''; return; }   // never block the surrounding view
   if (!x || x.score == null){ host.innerHTML = ''; return; }
 
   const band = String(x.band || '');
@@ -95,4 +94,3 @@ async function renderExposure(scanId){
       </div>
     </div>`;
 }
-
