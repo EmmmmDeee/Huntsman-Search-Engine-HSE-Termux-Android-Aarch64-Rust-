@@ -208,3 +208,97 @@ use crate::api::scan_export::csv_escape;
         assert_eq!(csv_escape("3 apples"), "3 apples");
         assert_eq!(csv_escape("Mr. Jones"), "Mr. Jones");
     }
+
+    /// The wire contract of `GET /api/v1/modules/graph`, asserted on the
+    /// response type rather than a live server.
+    ///
+    /// This payload used to be assembled by hand-copying fields out of
+    /// `ModuleGraphSummary` into a `json!` literal, which made the wire format a
+    /// second, unchecked definition of a type that already derives `Serialize`.
+    /// The consequence was silent: `terminal_kinds` was added to the summary and
+    /// reached no client at all, because the handler simply never mentioned it.
+    ///
+    /// Both halves matter here. The flatten must keep `kinds` and `edges` at the
+    /// TOP level, because `web/js/views/engines.js` reads `g.kinds` — nesting
+    /// them under a sub-object would break the capability map without any
+    /// compiler error. And a field present on the summary must actually appear,
+    /// which is the regression that motivated the change.
+    #[test]
+    fn modules_graph_payload_flattens_the_summary_and_keeps_top_level_keys() {
+        use crate::core::dependency::{ModuleGraph, ModuleGraphSummary};
+
+        let modules = crate::modules::registry();
+        let summary: ModuleGraphSummary = ModuleGraph::build(&modules).to_summary(&modules);
+        let value = serde_json::to_value(super::ModuleGraphResponse {
+            produced_kinds: summary.produced_entity_kinds(),
+            module_count: modules.len(),
+            graph: summary,
+        })
+        .expect("the response type must serialize");
+
+        let obj = value.as_object().expect("payload is a JSON object");
+
+        // Back-compat: the SPA's capability map reads these at the top level.
+        for key in ["kinds", "edges", "produced_kinds", "module_count"] {
+            assert!(obj.contains_key(key), "`{key}` must stay top-level");
+        }
+        // The regression: a summary field that the old hand-written payload
+        // dropped on the floor.
+        assert!(
+            obj.contains_key("terminal_kinds"),
+            "every ModuleGraphSummary field must reach the wire, not just the \
+             ones someone remembered to list"
+        );
+
+        // And the joinable edge is present per module, so a client can actually
+        // build the graph these edges exist for.
+        let edges = obj["edges"].as_array().expect("edges is an array");
+        assert!(!edges.is_empty(), "the real registry must produce edges");
+        for e in edges {
+            assert!(
+                e.get("pivots_to").is_some(),
+                "each edge must carry the dispatch-vocabulary join field: {e}"
+            );
+        }
+    }
+
+    /// The whole point of `pivots_to`: joining producers to consumers across the
+    /// REAL registry must connect the graph. Asserted against the live module
+    /// set, because the defect only showed up at that scale — `person` is
+    /// emitted by dozens of modules and consumed under the name `full_name`, so
+    /// a naive join on `produces` leaves them all looking like dead ends.
+    #[test]
+    fn the_real_registry_graph_has_no_false_dead_ends() {
+        use crate::core::dependency::ModuleGraph;
+        use std::collections::HashSet;
+
+        let modules = crate::modules::registry();
+        let summary = ModuleGraph::build(&modules).to_summary(&modules);
+
+        let consumed: HashSet<&str> = summary
+            .edges
+            .iter()
+            .flat_map(|e| e.consumes.iter().copied())
+            .collect();
+        let pivoted: HashSet<&str> = summary
+            .edges
+            .iter()
+            .flat_map(|e| e.pivots_to.iter().copied())
+            .collect();
+
+        // Every kind a module can pivot to is consumed by something. A kind here
+        // that nothing consumes would mean real modules deriving facts no module
+        // can act on.
+        let orphans: Vec<&&str> = pivoted.difference(&consumed).collect();
+        assert!(
+            orphans.is_empty(),
+            "pivotable kinds that no module consumes: {orphans:?}"
+        );
+
+        // The specific case that was broken, pinned by name so a regression is
+        // legible rather than a count changing.
+        assert!(
+            pivoted.contains("full_name"),
+            "person-producing modules must pivot into full_name"
+        );
+    }

@@ -313,12 +313,38 @@ impl ModuleGraph {
                     .iter()
                     .map(std::string::ToString::to_string)
                     .collect(),
+                // The joinable edge: the SAME mapping dispatch uses, so the
+                // rendered graph and the runtime agree by construction rather
+                // than by two hand-maintained lists happening to match.
+                pivots_to: {
+                    let mut v: Vec<&'static str> = m
+                        .produces()
+                        .iter()
+                        .filter_map(TargetKind::from_entity_kind)
+                        .map(|t| t.canonical_str())
+                        .collect();
+                    v.sort_unstable();
+                    v.dedup();
+                    v
+                },
             })
             .collect();
+
+        // Derived from the edges rather than from a hand-written list, so a new
+        // terminal EntityKind is reported the moment a module emits one.
+        let mut terminal_kinds: Vec<String> = modules
+            .iter()
+            .flat_map(|m| m.produces().iter())
+            .filter(|k| TargetKind::from_entity_kind(k).is_none())
+            .map(std::string::ToString::to_string)
+            .collect();
+        terminal_kinds.sort_unstable();
+        terminal_kinds.dedup();
 
         ModuleGraphSummary {
             kinds: consumers_by_kind,
             edges,
+            terminal_kinds,
         }
     }
 }
@@ -333,14 +359,44 @@ pub struct KindNode {
 }
 
 /// JSON-friendly description of one module's data-flow signature.
+///
+/// # Two vocabularies, and which one joins
+///
+/// [`Self::consumes`] is drawn from [`TargetKind`] (what dispatch can hand a
+/// module) and [`Self::produces`] from [`EntityKind`] (what a module emits).
+/// These are different enums. They agree on almost every spelling, which is
+/// exactly what made the difference easy to miss: joining a producer to a
+/// consumer by string equality across the two appears to work, and silently
+/// fails on the one term where they diverge — `EntityKind::Person` is spelled
+/// `person`, but the target kind dispatch routes it to is `full_name`.
+///
+/// `person` is produced by 55 of 168 modules, so that single mismatch made the
+/// most connected pivot in the system look like a dead end: every one of those
+/// modules appeared to feed nothing. Kinds with no [`TargetKind`] at all
+/// (`credential`, `password`) were indistinguishable from it, so a terminal-by-
+/// design kind and a broken join looked the same from outside.
+///
+/// [`Self::pivots_to`] is therefore the field to join on: `produces` mapped
+/// through [`TargetKind::from_entity_kind`], the same authority dispatch itself
+/// uses. `produces` is retained unchanged — it is the truthful record of what a
+/// module emits, and provenance is not the same question as reachability.
 #[derive(Debug, Clone, Serialize)]
 pub struct PivotEdge {
     pub module: &'static str,
     pub category: &'static str,
     pub cost: &'static str,
     pub passive: bool,
+    /// Target kinds dispatch may hand this module — [`TargetKind`] vocabulary.
     pub consumes: Vec<&'static str>,
+    /// Entity kinds this module emits — [`EntityKind`] vocabulary. Provenance,
+    /// not reachability: join on [`Self::pivots_to`] instead.
     pub produces: Vec<String>,
+    /// [`Self::produces`] mapped into the [`TargetKind`] vocabulary — the
+    /// module's real outbound edges. A consumer renders the data-flow graph by
+    /// joining this against another edge's `consumes`. Entity kinds that cannot
+    /// be pivoted at all are absent here and listed in
+    /// [`ModuleGraphSummary::terminal_kinds`].
+    pub pivots_to: Vec<&'static str>,
 }
 
 /// Top-level serializable structure for `/api/v1/modules/graph`.
@@ -348,6 +404,15 @@ pub struct PivotEdge {
 pub struct ModuleGraphSummary {
     pub kinds: Vec<KindNode>,
     pub edges: Vec<PivotEdge>,
+    /// Entity kinds that no module can be dispatched on — they have no
+    /// [`TargetKind`] counterpart, so an entity of this kind is always a leaf.
+    ///
+    /// Stated explicitly because "produced by many, consumed by none" is
+    /// otherwise ambiguous between a deliberate terminal kind (a `password` is
+    /// evidence, never a scan seed) and a genuine coverage gap. A consumer
+    /// auditing the graph for dead ends needs to tell those apart; without this
+    /// it cannot.
+    pub terminal_kinds: Vec<String>,
 }
 
 impl ModuleGraphSummary {
