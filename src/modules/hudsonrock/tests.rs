@@ -1,5 +1,19 @@
 use super::*;
 
+    /// A `YYYY-MM-DDT00:00:00Z` string `days_ago` days before *now*, so the
+    /// freshness assertions below track the real clock instead of rotting the
+    /// day a hardcoded date crosses `FRESHNESS_WINDOW_DAYS` (which is exactly
+    /// what broke `fresh_compromise_*` once a pinned `2026-05-01` aged past the
+    /// 90-day window). Formats via the proven `core::timeline` epoch→civil
+    /// inverse — reached through the public `parse_date` — rather than
+    /// hand-rolling calendar math in a test.
+    fn recent_iso(days_ago: u64) -> String {
+        let secs = crate::core::entity::unix_now().saturating_sub(days_ago * 86400);
+        let (_, ymd) = crate::core::timeline::parse_date(&secs.to_string())
+            .expect("epoch seconds always parse to a civil date");
+        format!("{ymd}T00:00:00Z")
+    }
+
     #[test]
     fn accepts_only_email_and_domain() {
         let m = HudsonRock;
@@ -70,7 +84,7 @@ use super::*;
         let recent = Stealer {
             computer_name: None,
             operating_system: None,
-            date_compromised: Some("2026-05-01T00:00:00Z".into()),
+            date_compromised: Some(recent_iso(10)),
             date_uploaded: None,
             stealer_family: Some("Lumma".into()),
             ip: None,
@@ -131,7 +145,7 @@ use super::*;
             credentials: vec![],
         };
         let recent = Stealer {
-            date_compromised: Some("2026-05-01T00:00:00Z".into()),
+            date_compromised: Some(recent_iso(10)),
             stealer_family: None,
             computer_name: None,
             operating_system: None,
