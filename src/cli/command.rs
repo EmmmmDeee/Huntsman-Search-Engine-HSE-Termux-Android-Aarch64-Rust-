@@ -335,6 +335,14 @@ pub enum Command {
         /// Show the merged env content without writing to disk.
         #[arg(long)]
         dry_run: bool,
+        /// Autonomously discover HUNTSMAN_* API keys already present in the
+        /// process environment (exported in a shell rc, CI, or passed inline)
+        /// that the env file doesn't yet carry, and pre-configure them into
+        /// `~/.huntsman.env`. Turns any key the operator already has into a
+        /// persisted, active one with zero manual `keys set`. No-op under
+        /// `--verify-only` (which never touches the env file).
+        #[arg(long)]
+        discover: bool,
     },
 
     /// Write a single `HUNTSMAN_*` key to `$HOME/.huntsman.env`.

@@ -106,3 +106,77 @@ use super::*;
             "merge_template must be idempotent against the canonical template"
         );
     }
+
+    // ── autonomous key discovery ────────────────────────────────────────────
+
+    #[test]
+    fn discover_finds_env_keys_absent_or_placeholder_in_file() {
+        let existing = "HUNTSMAN_SHODAN_KEY=\"realshodan\"\n\
+                        HUNTSMAN_HIBP_KEY=\"insert_haveibeenpwned_key_here\"\n";
+        let env = vec![
+            // already a real value in the file → not re-discovered
+            ("HUNTSMAN_SHODAN_KEY".to_string(), "realshodan".to_string()),
+            // file only has a placeholder → discovered
+            ("HUNTSMAN_HIBP_KEY".to_string(), "abc123".to_string()),
+            // absent from the file → discovered
+            ("HUNTSMAN_VIRUSTOTAL_KEY".to_string(), "vt456".to_string()),
+            // not a HUNTSMAN_ var → ignored
+            ("PATH".to_string(), "/usr/bin".to_string()),
+            // empty / placeholder / unquotable values → skipped
+            ("HUNTSMAN_EMPTY".to_string(), "   ".to_string()),
+            ("HUNTSMAN_PH".to_string(), "insert_x_here".to_string()),
+            ("HUNTSMAN_BAD".to_string(), "has\"quote".to_string()),
+        ];
+        let found = discover_env_keys(existing, env);
+        let names: Vec<&str> = found.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(names, vec!["HUNTSMAN_HIBP_KEY", "HUNTSMAN_VIRUSTOTAL_KEY"]);
+        assert_eq!(
+            found
+                .iter()
+                .find(|(k, _)| k.as_str() == "HUNTSMAN_HIBP_KEY")
+                .map(|(_, v)| v.as_str()),
+            Some("abc123")
+        );
+    }
+
+    #[test]
+    fn discover_dedups_and_sorts_by_key() {
+        let env = vec![
+            ("HUNTSMAN_B".to_string(), "b1".to_string()),
+            ("HUNTSMAN_A".to_string(), "a1".to_string()),
+            ("HUNTSMAN_A".to_string(), "a2".to_string()), // duplicate key → first wins
+        ];
+        assert_eq!(
+            discover_env_keys("", env),
+            vec![
+                ("HUNTSMAN_A".to_string(), "a1".to_string()),
+                ("HUNTSMAN_B".to_string(), "b1".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn discover_empty_when_env_adds_nothing() {
+        let existing = "HUNTSMAN_SHODAN_KEY=\"real\"\n";
+        let env = vec![("HUNTSMAN_SHODAN_KEY".to_string(), "real".to_string())];
+        assert!(discover_env_keys(existing, env).is_empty());
+    }
+
+    #[test]
+    fn inject_then_merge_activates_discovered_key() {
+        let discovered = vec![("HUNTSMAN_SHODAN_KEY".to_string(), "disc-value".to_string())];
+        let injected = inject_discovered("", &discovered);
+        assert!(injected.contains("HUNTSMAN_SHODAN_KEY=\"disc-value\""));
+        // Through the template merge the discovered value replaces the placeholder.
+        let merged = merge_template(&injected, template_for_test());
+        assert!(merged.contains("HUNTSMAN_SHODAN_KEY=\"disc-value\""));
+        assert!(!merged.contains("insert_shodan_key_here"));
+    }
+
+    #[test]
+    fn inject_is_a_no_op_without_discoveries() {
+        assert_eq!(
+            inject_discovered("HUNTSMAN_X=\"y\"\n", &[]),
+            "HUNTSMAN_X=\"y\"\n"
+        );
+    }
