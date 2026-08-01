@@ -255,7 +255,7 @@ pub(super) async fn fetch_gist_content(
             let mut e = crate::core::entity::Entity::new(
                 crate::core::entity::EntityKind::Email,
                 &email,
-                0.72,
+                confidence::ATTRIBUTED,
                 &ctx.scan_id,
             );
             e.tag("github");

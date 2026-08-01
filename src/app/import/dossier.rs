@@ -197,7 +197,7 @@ pub(super) fn parse_dossier(
             let mut e = crate::core::entity::Entity::new(
                 crate::core::entity::EntityKind::Url,
                 line,
-                0.55,
+                confidence::MEDIUM_HIGH,
                 sid,
             );
             e.tag("import");

@@ -122,7 +122,7 @@ pub(super) fn seed_anchor_entity(
     // subject — ranked above a verified single-source finding (holehe 0.85) but
     // below certainty, so a seed that later proves a dead end still ranks but
     // never claims absolute truth.
-    let mut e = Entity::new(kind, &target.value, 0.90, scan_id);
+    let mut e = Entity::new(kind, &target.value, confidence::VERY_HIGH_PLUS, scan_id);
     // Empty-after-normalisation guard: a blank/placeholder seed must not anchor a
     // valueless node (Entity::new keeps the raw value, but a normalised-empty
     // identifier is not a real subject).

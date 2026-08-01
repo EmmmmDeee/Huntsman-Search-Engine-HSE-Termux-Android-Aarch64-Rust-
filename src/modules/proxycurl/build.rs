@@ -109,7 +109,7 @@ pub(super) fn build_entities(
         let mut ue = Entity::new(
             EntityKind::Username,
             format!("linkedin:{pid}"),
-            0.80,
+            confidence::HIGH_PLUSPLUS,
             scan_id,
         );
         ue.tag("proxycurl");

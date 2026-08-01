@@ -78,7 +78,7 @@ pub(super) fn parse_oathnet_txt(
                 } else {
                     EntityKind::Username
                 };
-                let mut e = Entity::new(kind, uname, 0.40, &sid);
+                let mut e = Entity::new(kind, uname, confidence::LOW, &sid);
                 e.tag("import");
                 e.tag("stealer-username");
                 entities.push(e);

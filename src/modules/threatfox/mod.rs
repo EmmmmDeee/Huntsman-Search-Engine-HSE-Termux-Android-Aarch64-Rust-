@@ -15,6 +15,7 @@
 //! and IOC types but never ingest the underlying malware sample hashes,
 //! credentials, or live C2 URLs.
 
+use crate::core::confidence;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
@@ -80,7 +81,7 @@ pub(super) fn build_ioc_entity(
 ) -> Entity {
     use std::collections::BTreeSet;
 
-    let mut entity = Entity::new(kind, term, 0.92, scan_id);
+    let mut entity = Entity::new(kind, term, confidence::AUTHORITATIVE, scan_id);
     entity.tag("threatfox");
     entity.tag(crate::core::tags::THREAT_INTEL);
     entity.tag(crate::core::tags::MALICIOUS);

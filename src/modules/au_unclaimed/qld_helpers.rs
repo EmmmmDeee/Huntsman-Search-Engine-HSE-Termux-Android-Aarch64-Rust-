@@ -487,7 +487,7 @@ pub(super) fn suburbs_to_entities(
             let mut a = Entity::new(
                 EntityKind::Address,
                 format!("{}, {state} {pc}, Australia", loc.suburb),
-                0.30,
+                confidence::SPECULATIVE,
                 scan_id,
             );
             a.tag(SRC);

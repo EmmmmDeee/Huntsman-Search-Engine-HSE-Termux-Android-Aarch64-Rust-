@@ -412,7 +412,7 @@ async fn check_storage_and_correlator() -> Check {
             .map_err(|e| format!("upsert_scan: {e}"))?;
 
         let mk = |k, v: &str, srcs: &[&str]| -> Entity {
-            let mut x = Entity::new(k, v, 0.85, scan_id);
+            let mut x = Entity::new(k, v, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
             for s in srcs {
                 x.add_evidence(Evidence::new(*s, "selftest"));
             }

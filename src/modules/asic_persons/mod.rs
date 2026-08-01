@@ -387,7 +387,7 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResu
     if let Some(raw) = field(rec, "LICENCE_CONTROLLED_BY") {
         for (name, ceased) in parse_controllers(&raw) {
             let (kind, value) = classify_linked(&name);
-            let mut ent = Entity::new(kind, &value, 0.58, scan_id);
+            let mut ent = Entity::new(kind, &value, confidence::MEDIUM_SOLID, scan_id);
             ent.tag("au");
             ent.tag("asic");
             ent.tag("afs-licensee-controller");

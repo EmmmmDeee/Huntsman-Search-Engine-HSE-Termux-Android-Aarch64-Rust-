@@ -568,7 +568,7 @@ pub fn coarse_provider_coords(
 /// (`ip_geo` / `ipinfo` / `ip2location` / `ipquery` / `ip_whois_geo`).
 ///
 /// Each of those modules emitted exactly
-/// `Entity::new(EntityKind::Asn, asn, 0.80, scan_id)` carrying a single
+/// `Entity::new(EntityKind::Asn, asn, confidence::HIGH_PLUSPLUS, scan_id)` carrying a single
 /// `Evidence::new(src, format!("ASN for {ip}"))`, then optionally stamped one
 /// provider tag on top. That birth was byte-identical across all five, so it
 /// lives here once: the fixed `0.80` confidence and the `"ASN for {ip}"`

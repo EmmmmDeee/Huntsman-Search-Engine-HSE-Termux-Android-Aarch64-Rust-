@@ -402,7 +402,7 @@ pub(super) fn emit_ssid_entities(ssid: &str, results: &[Network], scan_id: &str)
         let mut e = Entity::new(
             EntityKind::Coordinates,
             format!("{lat:.6},{lon:.6}"),
-            0.72,
+            confidence::ATTRIBUTED,
             scan_id,
         );
         e.tag("geoint");
