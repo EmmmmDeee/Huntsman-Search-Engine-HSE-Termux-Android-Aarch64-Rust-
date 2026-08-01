@@ -800,6 +800,136 @@ WRAPPER
     chmod 0755 "$BG_WRAPPER"
     ok "Installed hse-bg wrapper (start|stop|status|log)"
 
+    # Unattended recurring collection. `hse-watch` sweeps a watchlist of seeds on
+    # a fixed interval (wake-lock held) via `hse scan --input-file`, accumulating
+    # findings in the local store for later review in the web UI. Opt-in: it stays
+    # idle until the watchlist has at least one seed.
+    WATCH_WRAPPER="$HSE_BIN_DIR/hse-watch"
+    cat > "$WATCH_WRAPPER" <<'WATCH'
+#!/data/data/com.termux/files/usr/bin/bash
+# hse-watch — unattended, recurring OSINT collection over a watchlist.
+#
+# Sweeps every seed in the watchlist on a fixed interval, accumulating findings
+# in the local store, holding a wake-lock so Android can't kill it when the
+# screen is off. Review results any time in the web UI (hse-bg start →
+# http://127.0.0.1:8080). Opt-in: it stays idle until the watchlist has a seed.
+#
+#   Watchlist : $HSE_WATCHLIST       (default ~/.huntsman/watchlist.txt)
+#               one seed per line; blank lines and # comments are ignored.
+#   Interval  : $HSE_WATCH_INTERVAL  (default 3600 = one sweep per hour)
+#   Scan args : $HSE_WATCH_ARGS      (default empty — hse's comprehensive default)
+#
+# Control: hse-watch [start|stop|status|log|run-once]
+set -euo pipefail
+
+WATCHLIST="${HSE_WATCHLIST:-$HOME/.huntsman/watchlist.txt}"
+INTERVAL="${HSE_WATCH_INTERVAL:-3600}"
+PID_FILE="$HOME/.cache/hse-watch.pid"
+LOG_FILE="$HOME/.cache/hse-watch.log"
+mkdir -p "$(dirname "$PID_FILE")"
+
+stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# Count non-blank, non-comment seeds (0 when the file is absent). `grep -c`
+# exits 1 on a zero count, so `|| true` keeps it from tripping `set -e`.
+seed_count() {
+    [ -f "$WATCHLIST" ] || { echo 0; return; }
+    grep -cvE '^[[:space:]]*(#|$)' "$WATCHLIST" || true
+}
+
+sweep_once() {
+    if [ "$(seed_count)" -eq 0 ]; then
+        echo "$(stamp) no active seeds in $WATCHLIST — nothing to do"
+        return 0
+    fi
+    echo "$(stamp) sweep start — $(seed_count) seed(s) from $WATCHLIST"
+    # SC2086: HSE_WATCH_ARGS is an intentional, user-supplied argument list.
+    # shellcheck disable=SC2086
+    hse scan --input-file "$WATCHLIST" ${HSE_WATCH_ARGS:-} \
+        || echo "$(stamp) sweep reported an error (see log above)"
+    echo "$(stamp) sweep done"
+}
+
+run_loop() {
+    command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock || true
+    trap 'command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock || true; exit 0' TERM INT
+    while true; do
+        sweep_once
+        sleep "$INTERVAL"
+    done
+}
+
+case "${1:-start}" in
+    start)
+        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+            echo "hse-watch already running (pid $(cat "$PID_FILE"))"
+            exit 0
+        fi
+        if [ "$(seed_count)" -eq 0 ]; then
+            echo "watchlist $WATCHLIST has no seeds — add one per line, then: hse-watch start"
+            exit 0
+        fi
+        nohup "$0" run-loop >>"$LOG_FILE" 2>&1 &
+        echo $! >"$PID_FILE"
+        echo "Started hse-watch (pid $(cat "$PID_FILE"); every ${INTERVAL}s; $(seed_count) seed(s))"
+        echo "Logs: $LOG_FILE"
+        ;;
+    run-loop)
+        run_loop
+        ;;
+    run-once)
+        sweep_once
+        ;;
+    stop)
+        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+            kill "$(cat "$PID_FILE")"
+            rm -f "$PID_FILE"
+            command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock || true
+            echo "Stopped"
+        else
+            echo "Not running"
+            rm -f "$PID_FILE"
+        fi
+        ;;
+    status)
+        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+            echo "Running: pid $(cat "$PID_FILE"); $(seed_count) seed(s); every ${INTERVAL}s"
+        else
+            echo "Not running; $(seed_count) seed(s) in $WATCHLIST"
+        fi
+        ;;
+    log)
+        tail -f "$LOG_FILE"
+        ;;
+    *)
+        echo "usage: hse-watch [start|stop|status|log|run-once]"
+        exit 1
+        ;;
+esac
+WATCH
+    chmod 0755 "$WATCH_WRAPPER"
+    ok "Installed hse-watch wrapper (start|stop|status|log|run-once)"
+
+    # Example watchlist so the operator only has to add seeds. Kept empty
+    # (comments only) so `hse-watch` / the boot script stay idle until opted in.
+    WATCHLIST_PATH="$HOME/.huntsman/watchlist.txt"
+    if [[ ! -f "$WATCHLIST_PATH" ]]; then
+        mkdir -p "$(dirname "$WATCHLIST_PATH")"
+        cat > "$WATCHLIST_PATH" <<'WATCHLIST'
+# hse-watch watchlist — one seed per line; blank lines and # comments ignored.
+# The kind is auto-detected from the value; findings accumulate in the store.
+# Add your seeds below, then start recurring collection:
+#   hse-watch start          # sweep every hour (HSE_WATCH_INTERVAL to change)
+#   hse-watch status
+# Examples (uncomment / replace):
+# example.com
+# alice@example.com
+# 8.8.8.8
+WATCHLIST
+        chmod 0600 "$WATCHLIST_PATH"
+        ok "Created example watchlist at $WATCHLIST_PATH (empty → hse-watch idle)"
+    fi
+
     # Termux:Boot autostart — only set up if the boot dir already exists
     # (created by Termux:Boot app). We don't force-create it because that
     # implies the user installed the APK.
@@ -811,6 +941,9 @@ WRAPPER
 #!/data/data/com.termux/files/usr/bin/bash
 termux-wake-lock 2>/dev/null || true
 hse-bg start
+# Recurring collection — no-op while the watchlist is empty, so this is safe to
+# leave on; it begins sweeping only once you add a seed to ~/.huntsman/watchlist.txt.
+hse-watch start
 BOOT
             chmod 0755 "$BOOT_SCRIPT"
             ok "Termux:Boot autostart installed → ${BOOT_SCRIPT}"
@@ -863,6 +996,11 @@ if [[ ! -f "$KEYS_PATH" ]]; then
 # free / key-gated / paid split, or `hse keys status` for the key pool.
 # The Settings page (hse serve → http://127.0.0.1:8080/settings) lets you
 # paste and save any key directly from Chrome on the device.
+#
+# This template lists the commonly-used keys. For EVERY recognised provider
+# (with signup links, free-tier notes, and key formats) see .env.example and
+# docs/OSINT_API_REFERENCE.md in the repo, or docs/AUTONOMY.md for the
+# unattended-operation guide.
 #
 # ── Identity / breach ─────────────────────────────────────────────────────────
 #HUNTSMAN_HIBP_KEY=
@@ -1002,6 +1140,12 @@ if [[ $IS_TERMUX -eq 1 ]]; then
     printf '  hse-bg log                                          # tail the log\n'
     printf '  hse-bg stop                                         # release wake-lock\n'
     printf '  Then open: %shttp://127.0.0.1:8080%s in Chrome on the device\n\n' "$BOLD" "$NC"
+    printf '%sUnattended recurring collection (Termux):%s\n' "$CYAN" "$NC"
+    printf '  Add seeds to %s~/.huntsman/watchlist.txt%s (one per line), then:\n' "$BOLD" "$NC"
+    printf '  hse-watch start                                     # sweep the watchlist hourly\n'
+    printf '  hse-watch status                                    # seeds + running state\n'
+    printf '  hse-watch run-once                                  # one immediate sweep\n'
+    printf '  HSE_WATCH_INTERVAL=1800 hse-watch start             # change the cadence (sec)\n\n'
     printf '%sBattery & process survival:%s\n' "$CYAN" "$NC"
     printf '  Android > Settings > Apps > Termux > Battery: unrestricted\n'
     printf '  Android > Settings > Apps > Termux > Allow background data\n\n'
