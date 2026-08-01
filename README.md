@@ -8,7 +8,7 @@
 **All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
 SpiderFoot-inspired breadth without the daemon or the footprint.**
 
-Pure-Rust OSINT / GEOINT platform with **169 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **170 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 dark-console Web UI, zero native dependencies, keyless-first.
 
@@ -166,7 +166,7 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 169 modules
+hse modules                                                 # list all 170 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
@@ -214,7 +214,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ---
 
-## Module Overview (169 modules — 133 free, 36 key-gated/paid)
+## Module Overview (170 modules — 134 free, 36 key-gated/paid)
 
 > A curated highlight of the modules below (not the full list). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run
@@ -233,7 +233,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 - **Phone**: `phone_au`, `phone_intl`
 - **Corporate**: `acma_rrl`, `acnc_charities`, `asic_director`, `au_unclaimed`, `austlii`, `gleif_lei`, `opencorporates`
 - **Search**: `search_engines`
-- **Web analysis**: `cloud_storage`, `sitemap`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
+- **Web analysis**: `cloud_storage`, `security_txt`, `sitemap`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
 - **Termux sensors**: `cell_intel`, `device_sensors`, `local_net`, `signal_radar`
 - **Other**: `api_key_probe`, `chain_intel`
 

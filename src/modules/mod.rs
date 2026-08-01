@@ -159,6 +159,7 @@ pub mod ripestat;
 pub mod rubygems_user;
 pub mod sanctions_ofac;
 pub mod search_engines;
+pub mod security_txt;
 pub mod securitytrails;
 pub mod see_know;
 pub mod seon;
@@ -442,6 +443,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(phone_au::PhoneAu),
             Arc::new(wayback::Wayback),
             Arc::new(sitemap::Sitemap),
+            Arc::new(security_txt::SecurityTxt),
             Arc::new(device_sensors::DeviceSensors),
             Arc::new(cell_intel::CellIntel),
             Arc::new(cell_local::CellLocal),
