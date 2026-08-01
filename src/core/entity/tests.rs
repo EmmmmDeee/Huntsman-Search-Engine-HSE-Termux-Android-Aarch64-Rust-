@@ -1931,3 +1931,102 @@ mod prop {
         }
     }
 }
+
+// ── Identity vs display: one person, one node ───────────────────────────────
+
+/// The observed fragmentation, pinned. One person spelled three ways by three
+/// sources produced three UIDs — and therefore three graph nodes, each holding
+/// only its own source's evidence.
+#[test]
+fn person_case_and_spacing_variants_resolve_to_one_identity() {
+    let variants = [
+        "Jeremy Stewart",
+        "jeremy stewart",
+        "JEREMY STEWART",
+        "Jeremy  Stewart",
+        "  Jeremy Stewart  ",
+    ];
+    let uids: std::collections::BTreeSet<String> = variants
+        .iter()
+        .map(|v| Entity::new(EntityKind::Person, *v, 0.7, "s").uid)
+        .collect();
+    assert_eq!(
+        uids.len(),
+        1,
+        "one person must be one node; got {} distinct UIDs from {variants:?}",
+        uids.len()
+    );
+}
+
+/// Identity folding must not cost display quality: the dossier still shows the
+/// name as the source spelled it. This is the reason the fold lives in
+/// `derive_uid` rather than in `normalise`, whose output IS the display value.
+#[test]
+fn folding_identity_does_not_downcase_the_displayed_name() {
+    let e = Entity::new(EntityKind::Person, "Jeremy Stewart", 0.7, "s");
+    assert_eq!(e.value, "Jeremy Stewart", "display value is preserved");
+    assert_eq!(e.raw_value, "Jeremy Stewart");
+}
+
+/// The symptom this actually cures. The engine derives the SEED's UID from the
+/// operator's target string via `derive_uid`, while modules derive theirs from
+/// whatever spelling they emit. When those disagree the seed is an isolated node
+/// and every derived edge attaches to a twin it cannot reach — "the subject has
+/// no derived connections yet", on a graph holding thousands of edges.
+#[test]
+fn a_seed_and_the_entity_its_modules_emit_are_the_same_node() {
+    // Exactly what `core::engine` does for the seed.
+    let typed = "Jeremy Stewart";
+    let seed_uid = derive_uid(&EntityKind::Person, &normalise(&EntityKind::Person, typed));
+    // What a module emits after a breach source lower-cased it.
+    let emitted = Entity::new(EntityKind::Person, "jeremy stewart", 0.7, "s");
+    assert_eq!(
+        seed_uid, emitted.uid,
+        "the seed must BE the node its own modules populate"
+    );
+}
+
+/// Organisations carry the same free-text spelling variance as people.
+#[test]
+fn organisation_case_variants_resolve_to_one_identity() {
+    let a = Entity::new(EntityKind::Organisation, "Acme Corp", 0.7, "s");
+    let b = Entity::new(EntityKind::Organisation, "ACME  CORP", 0.7, "s");
+    assert_eq!(a.uid, b.uid);
+    assert_eq!(
+        a.value, "Acme Corp",
+        "display is still the original spelling"
+    );
+}
+
+/// SSIDs are case-SENSITIVE by IEEE 802.11 — folding them would merge two
+/// genuinely different networks, which for a geolocation tool is a false
+/// identity claim about a physical place.
+#[test]
+fn ssids_are_never_folded_because_case_is_significant() {
+    let a = Entity::new(EntityKind::Ssid, "HomeNet", 0.7, "s");
+    let b = Entity::new(EntityKind::Ssid, "homenet", 0.7, "s");
+    assert_ne!(a.uid, b.uid, "two distinct networks must stay distinct");
+}
+
+/// Every kind that already canonicalises in `normalise` must hash exactly as it
+/// did before the fold existed — the change is scoped to free-text name kinds,
+/// and a silent UID shift elsewhere would strand persisted entities.
+#[test]
+fn identifier_kinds_keep_their_pre_existing_uids() {
+    for (kind, value) in [
+        (EntityKind::Email, "Alice@Example.COM"),
+        (EntityKind::Username, "@Alice"),
+        (EntityKind::Domain, "Example.com."),
+        (EntityKind::IpAddress, "1.1.1.1"),
+        (EntityKind::Url, "https://example.com/a"),
+    ] {
+        let normalised = normalise(&kind, value);
+        // The fold must be a no-op for these: UID == hash of the normalised
+        // value with no further transformation.
+        assert_eq!(
+            Entity::new(kind.clone(), value, 0.7, "s").uid,
+            derive_uid(&kind, &normalised),
+            "{kind} UID must be unchanged by identity folding"
+        );
+    }
+}

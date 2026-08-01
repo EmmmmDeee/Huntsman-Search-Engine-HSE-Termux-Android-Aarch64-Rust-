@@ -1150,10 +1150,86 @@ impl From<&Entity> for EntityRef {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/// Fold a normalised value into the form that defines **identity**, as distinct
+/// from the form that is **displayed**.
+///
+/// For most kinds these coincide and this borrows unchanged. For free-text NAME
+/// kinds they must not: a person's identity does not depend on the capitalisation
+/// or the run of spaces a particular source happened to emit, but the display
+/// value very much does — nobody wants a dossier headed `jeremy stewart`.
+///
+/// [`normalise`] cannot do this job, because its output IS the display value
+/// (`Entity::value`). Its catch-all arm is `value.trim()`, so `Person` receives
+/// no folding whatsoever, and three sightings of one person fork into three
+/// graph nodes:
+///
+/// ```text
+/// "Jeremy Stewart"    -> bf2bbc2d…
+/// "jeremy stewart"    -> c9973045…
+/// "Jeremy  Stewart"   -> f0523905…
+/// ```
+///
+/// Each fragment carries only the evidence of the source that spelled it that
+/// way, so `corroborated_fraction` — the share of entities backed by ≥2 distinct
+/// sources — is structurally suppressed toward zero no matter how many sources
+/// agree. A real 1081-entity dossier drawing on 11 sources reported **0%**
+/// corroborated, and listed `Jeremy Stewart` and `jeremy stewart` as separate
+/// co-reference endpoints. `derive_canonical_identities` papers over the split
+/// with `SameAs` edges, but an edge between two half-evidenced nodes is not the
+/// same thing as one fully-evidenced node.
+///
+/// Excluded on purpose:
+/// * `Ssid` — Wi-Fi network names are case-SENSITIVE by IEEE 802.11; folding
+///   them would merge two genuinely different networks.
+/// * `Address` — real address equivalence needs component parsing
+///   (`Street`/`St`, unit notation), not case folding. Folding case alone would
+///   imply a normalisation that has not happened.
+/// * Every identifier kind — `Email`, `Username`, `Domain`, `Phone`,
+///   `IpAddress`, `MacAddress`, `Url`, `Coordinates` — already normalises to a
+///   canonical form in [`normalise`], where identity and display legitimately
+///   coincide. Their UIDs are byte-identical before and after this change.
+fn identity_fold<'a>(kind: &EntityKind, normalised: &'a str) -> std::borrow::Cow<'a, str> {
+    match kind {
+        EntityKind::Person | EntityKind::Organisation => {
+            // `split_whitespace` collapses runs AND trims, so "Jeremy  Stewart"
+            // and " Jeremy Stewart " reach the same key as "Jeremy Stewart".
+            let folded = normalised
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase();
+            if folded == normalised {
+                std::borrow::Cow::Borrowed(normalised)
+            } else {
+                std::borrow::Cow::Owned(folded)
+            }
+        }
+        _ => std::borrow::Cow::Borrowed(normalised),
+    }
+}
+
 /// Derive a deterministic SHA-256 UID from kind + normalised value.
 ///
-/// Format: `hex(SHA-256("<kind_str>:<normalised_value>"))`
+/// Format: `hex(SHA-256("<kind_str>:<identity_fold(normalised_value)>"))`
+///
+/// The fold lives HERE rather than in [`Entity::new`] because `derive_uid` is
+/// not the private helper of one constructor — it is called from six places,
+/// and one of them is the engine deriving the **seed's** UID from the operator's
+/// target string (`core::engine`), with others in dispatch and history. Folding
+/// in the constructor alone would give a seed typed as `Jeremy Stewart` a
+/// different UID from the `jeremy stewart` its own modules emit: the seed would
+/// land in the graph as an isolated node while every derived edge attached to a
+/// twin it could not reach. That is precisely the "subject has no derived
+/// connections" state observed in a real dossier, so fixing identity anywhere
+/// but at the single authoritative definition would have reproduced the defect
+/// while appearing to cure it.
+///
+/// Migration: `Person` and `Organisation` UIDs computed before this change do
+/// not match those computed after, so entities already persisted under a
+/// mixed-case spelling are reachable only by re-scanning. Every other kind is
+/// bit-for-bit unchanged.
 pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
+    let normalised_value = &*identity_fold(kind, normalised_value);
     // digest 0.11 dropped the `io::Write` impl for hashers. Stream the `Display`
     // of `<kind>` straight into the hasher through [`HashWrite`] so the
     // per-entity hot path (every `Entity::new`) allocates NO intermediate
