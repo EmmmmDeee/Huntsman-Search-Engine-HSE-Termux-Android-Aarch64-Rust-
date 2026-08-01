@@ -168,6 +168,37 @@ fn invalid_coordinates_are_skipped() {
 }
 
 #[test]
+fn first_valid_hit_anchors_even_when_earlier_results_are_invalid() {
+    // Regression: a leading invalid-coord result must NOT consume the anchor slot
+    // and demote the first *valid* in-AU hit to a LOW candidate. The anchor is
+    // keyed on the first EMITTED hit, not the raw index.
+    let ents = build_entities(
+        &[
+            res("Bogus", 999.0, 999.0, "AU"),        // invalid coords → skipped
+            res("Sydney", -33.8688, 151.2093, "AU"), // first VALID hit, in AU
+        ],
+        "Sydney",
+        "s",
+    );
+    assert_eq!(ents.len(), 1);
+    assert!(
+        (ents[0].confidence - confidence::HIGH_PLUS).abs() < 1e-9,
+        "first valid hit must anchor at HIGH_PLUS despite a skipped invalid result"
+    );
+    assert!(ents[0].has_tag("au-relevant") && !ents[0].has_tag("candidate"));
+}
+
+#[test]
+fn emits_at_most_result_limit_valid_hits() {
+    // The cap counts EMITTED valid hits, not raw results.
+    let many: Vec<GeoResult> = (0..(RESULT_LIMIT + 3))
+        .map(|k| res("Dup", 10.0 + k as f64, 20.0, "US"))
+        .collect();
+    let ents = build_entities(&many, "Dup", "s");
+    assert_eq!(ents.len(), RESULT_LIMIT);
+}
+
+#[test]
 fn empty_results_yield_nothing() {
     assert!(build_entities(&[], "anywhere", "s").is_empty());
 }
