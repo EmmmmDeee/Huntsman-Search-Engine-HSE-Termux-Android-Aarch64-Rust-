@@ -269,10 +269,7 @@ pub(super) fn link_cross_scan_kind_aliases(
                 break;
             }
             probes += 1;
-            let uid = crate::core::entity::derive_uid(
-                &EntityKind::Username,
-                &crate::core::entity::normalise(&EntityKind::Username, &handle),
-            );
+            let uid = crate::core::entity::uid_for(&EntityKind::Username, &handle);
             let Ok(ids) = store.scan_ids_for_entity(&uid) else {
                 continue;
             };

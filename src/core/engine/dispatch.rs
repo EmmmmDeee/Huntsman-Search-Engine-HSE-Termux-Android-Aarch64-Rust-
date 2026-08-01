@@ -274,8 +274,7 @@ pub(super) fn target_distinct_sources(
     target: &Target,
 ) -> usize {
     let entity_kind = target.kind.to_entity_kind();
-    let normalised = normalise(&entity_kind, &target.value);
-    let uid = crate::core::entity::derive_uid(&entity_kind, &normalised);
+    let uid = crate::core::entity::uid_for(&entity_kind, &target.value);
     entity_map
         .get(&uid)
         .map_or(0, |e| e.corroborating_sources().len())

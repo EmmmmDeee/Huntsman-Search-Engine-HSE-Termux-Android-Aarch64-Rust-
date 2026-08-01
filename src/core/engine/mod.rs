@@ -1091,7 +1091,7 @@ impl ScanEngine {
         scan_id: &str,
         allow_live_sensors: bool,
     ) -> Vec<Entity> {
-        use crate::core::entity::{EntityKind, Evidence, derive_uid, normalise};
+        use crate::core::entity::{EntityKind, Evidence, uid_for};
         const MAX_PRIOR_SCANS: usize = 8;
         const MAX_ENTITIES: usize = 300;
         const VALUE_MATCH_CAP: usize = 64;
@@ -1116,7 +1116,7 @@ impl ScanEngine {
         // Gather candidate scan-id lists from both recall paths, then flatten
         // into a recency-ordered, de-duplicated list (excluding this scan).
         let kind = target.kind.to_entity_kind();
-        let seed_uid = derive_uid(&kind, &normalise(&kind, &target.value));
+        let seed_uid = uid_for(&kind, &target.value);
         let mut id_lists: Vec<Vec<String>> = Vec::new();
         match self.store.scan_ids_for_entity(&seed_uid) {
             Ok(ids) => id_lists.push(ids),
