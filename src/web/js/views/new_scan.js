@@ -14,7 +14,7 @@ export async function previewPlan(){
   out.innerHTML = '<span class="text-muted" style="font-size:12px">Resolving plan…</span>';
   let p;
   try { p = await API.plan(value); }
-  catch(e){ out.innerHTML = `<div class="alert alert-danger" style="margin:0;padding:6px 10px">${esc(e.message)}</div>`; return; }
+  catch(e){ out.innerHTML = `<div class="alert alert-danger" style="margin:0;padding:6px 10px">${esc((e && e.message) || String(e) || 'error')}</div>`; return; }
   const cats = (p.categories || []).map(c=>`<span class="tag" style="margin:0 4px 2px 0;display:inline-block">${esc(c.category)}&nbsp;${c.count}</span>`).join('');
   const shown = (p.modules || []).slice(0, 40);
   // Colour each module chip by its convex OPTIONALITY tier (how much new query
@@ -431,7 +431,7 @@ export function renderDataTypeModules(){
     e.preventDefault();
     W.modules = Array.from(activeFromData);
     W.activeTab = 'module';
-    renderNewScan($('#view')).catch(e=>alertify.error(e.message));
+    renderNewScan($('#view')).catch(err=>alertify.error((err && err.message) || String(err) || 'error'));
   });
 }
 
@@ -449,8 +449,9 @@ export async function uploadDossier(){
     toast(`Imported ${r.entity_count} entities`);
     nav(`#/scaninfo?id=${encodeURIComponent(r.scan_id)}`);
   } catch(e){
-    st.textContent = 'Import failed: ' + e.message;
-    alertify.error('Import failed: ' + e.message);
+    const msg = (e && e.message) || String(e) || 'error';
+    st.textContent = 'Import failed: ' + msg;
+    alertify.error('Import failed: ' + msg);
   }
 }
 
@@ -589,7 +590,7 @@ export async function submitWizard(){
     nav(`#/scaninfo?id=${r.scan_id}&tab=log`);
   } catch(e){
     btn.disabled = false; btn.innerHTML = '<i class="glyphicon glyphicon-play"></i>&nbsp;Run Scan Now';
-    alertify.error(e.message);
+    alertify.error((e && e.message) || String(e) || 'error');
   }
 }
 
@@ -625,6 +626,10 @@ export async function submitBatch(){
     toast(`Batch: ${ok} scan${ok===1?'':'s'} queued`);
     if (errs.length) alertify.warning(errs.map(e=>e.error).slice(0,3).join('; '));
     if (ok) nav('#/scans');
-  } catch(e){ st.textContent = 'Batch failed: ' + e.message; alertify.error(e.message); }
+  } catch(e){
+    const msg = (e && e.message) || String(e) || 'error';
+    st.textContent = 'Batch failed: ' + msg;
+    alertify.error(msg);
+  }
 }
 
