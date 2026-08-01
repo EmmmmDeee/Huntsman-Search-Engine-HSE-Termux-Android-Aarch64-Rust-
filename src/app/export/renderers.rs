@@ -21,7 +21,27 @@ pub(super) fn render_json(store: &Store, sid: &str, redact: bool) -> Result<Stri
     if redact {
         crate::util::redact::redact_entities(&mut entities);
     }
-    serde_json::to_string_pretty(&entities)
+    // Augment each entity object with its derived metrics so JSON consumers
+    // don't have to re-implement the noisy-OR c_effective / source_count /
+    // classification formulas themselves. The raw `confidence` and
+    // `corroboration` fields are kept for backwards compatibility.
+    let augmented: Vec<serde_json::Value> = entities
+        .iter()
+        .map(|e| {
+            let mut v = serde_json::to_value(e)
+                .map_err(|err| Error::Other(format!("entity serialise: {err}")))?;
+            if let serde_json::Value::Object(ref mut m) = v {
+                m.insert("c_effective".into(), serde_json::json!(e.c_effective()));
+                m.insert("source_count".into(), serde_json::json!(e.source_count()));
+                m.insert(
+                    "classification".into(),
+                    serde_json::json!(e.classify().as_str()),
+                );
+            }
+            Ok(v)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    serde_json::to_string_pretty(&augmented)
         .map_err(|e| Error::Other(format!("json serialise: {e}")))
 }
 

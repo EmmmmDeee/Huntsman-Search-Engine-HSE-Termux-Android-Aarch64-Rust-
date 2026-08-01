@@ -242,9 +242,6 @@ pub(crate) async fn entities_from_upload(
         ImportFormat::OathnetTxt => (parse_oathnet_txt(body, sid).0, "oathnet-txt"),
     };
     deduplicate_by_uid(&mut entities);
-    for e in &mut entities {
-        e.canonicalize_order();
-    }
     Ok((entities, label))
 }
 
@@ -338,6 +335,13 @@ pub(crate) fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>
         .into_iter()
         .filter_map(|uid| by_uid.remove(&uid))
         .collect();
+    // `merge` appends evidence in arrival order; the union of two canonical
+    // orderings is not itself canonical. Canonicalise here so every caller —
+    // CLI and web — emits the same byte-identical representation regardless of
+    // the order entities arrived in the source file.
+    for e in entities.iter_mut() {
+        e.canonicalize_order();
+    }
 }
 
 /// Persist a parsed import as a completed scan in the default store — the CLI

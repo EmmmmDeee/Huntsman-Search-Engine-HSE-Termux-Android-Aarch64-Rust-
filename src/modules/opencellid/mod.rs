@@ -287,7 +287,7 @@ fn emit_cell_entities(result: &mut ModuleResult, cell: &CellEntry, scan_id: &str
     let tower_id = format!("{mcc}-{mnc}-{lac}-{cid}");
 
     // DeviceId entity
-    let mut device = Entity::new(EntityKind::DeviceId, &tower_id, 0.78, scan_id);
+    let mut device = Entity::new(EntityKind::DeviceId, &tower_id, confidence::STRONG, scan_id);
     device.tag(crate::core::tags::CELL_TOWER);
     device.tag(format!("radio:{}", radio.to_lowercase()));
     let mut ev = Evidence::new(SRC, format!("OpenCelliD tower {tower_id} ({radio})"))
@@ -332,14 +332,4 @@ fn emit_cell_entities(result: &mut ModuleResult, cell: &CellEntry, scan_id: &str
     result.push(geo);
 }
 
-/// Map the reported accuracy radius (metres) to an entity confidence level.
-/// Tighter coverage → higher confidence. Identical scale to `cell_intel`.
-pub(super) fn accuracy_to_confidence(range_m: u64) -> f64 {
-    match range_m {
-        0..=100 => confidence::HIGH_PLUSPLUS_PLUS,
-        101..=500 => confidence::VERY_HIGH,
-        501..=2000 => confidence::HIGH,
-        2001..=10000 => confidence::MEDIUM,
-        _ => 0.35,
-    }
-}
+use crate::util::cell_db::accuracy_to_confidence;

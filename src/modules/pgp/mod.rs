@@ -21,7 +21,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{read_body_capped, urldecode, urlencode};
+use crate::util::http::{RequestBuilderExt, read_body_capped, urldecode, urlencode};
 
 const SRC: &str = "pgp";
 
@@ -87,7 +87,7 @@ impl Module for Pgp {
             "https://keyserver.ubuntu.com/pks/lookup?op=index&options=mr&exact=on&search={}",
             urlencode(email)
         );
-        let resp = ctx.http.get(&url).send().await?;
+        let resp = ctx.http.get(&url).send_tagged(SRC).await?;
         // 404 is the keyserver's clean "no PGP key for this email" signal — keep
         // it as an empty result. But a transport error (propagated above) or any
         // OTHER non-2xx (5xx outage, 429 throttle, proxy error page) is a real

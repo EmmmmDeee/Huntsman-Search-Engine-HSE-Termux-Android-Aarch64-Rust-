@@ -100,7 +100,7 @@ fn build_entities(coord: &str, attrs: &HashMap<String, Value>, scan_id: &str) ->
 
     let mut out = Vec::new();
 
-    let mut coords = Entity::new(EntityKind::Coordinates, coord, 0.78, scan_id);
+    let mut coords = Entity::new(EntityKind::Coordinates, coord, confidence::STRONG, scan_id);
     coords.tag(SRC);
     coords.tag("geoint");
     coords.tag("country:AU");

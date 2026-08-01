@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -77,10 +77,10 @@ impl Module for CellLocal {
                 lon + DELTA,
                 200,
             )
-            .map_err(|e| crate::core::error::Error::Other(e.to_string()))
+            .map_err(|e| Error::module(SRC, e.to_string()))
         })
         .await
-        .map_err(|e| crate::core::error::Error::Other(e.to_string()))??;
+        .map_err(|e| Error::module(SRC, e.to_string()))??;
 
         if cells.is_empty() {
             return Ok(ModuleResult::new());
@@ -91,7 +91,12 @@ impl Module for CellLocal {
             let tower_id = format!("{}-{}-{}-{}", cell.mcc, cell.mnc, cell.lac, cell.cid);
 
             // ── DeviceId entity ──────────────────────────────────────────────
-            let mut device = Entity::new(EntityKind::DeviceId, &tower_id, 0.78, &ctx.scan_id);
+            let mut device = Entity::new(
+                EntityKind::DeviceId,
+                &tower_id,
+                confidence::STRONG,
+                &ctx.scan_id,
+            );
             device.tag(crate::core::tags::CELL_TOWER);
             device.tag("cell-local");
             device.tag(format!("radio:{}", cell.radio.to_lowercase()));
@@ -133,17 +138,7 @@ impl Module for CellLocal {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Convert a cell tower's reported accuracy radius to a confidence score.
-/// Mirrors the same function in `cell_intel` for consistent output.
-fn accuracy_to_confidence(range_m: u64) -> f64 {
-    match range_m {
-        0..=100 => confidence::HIGH_PLUSPLUS_PLUS,
-        101..=500 => confidence::VERY_HIGH,
-        501..=2000 => confidence::HIGH,
-        2001..=10000 => confidence::MEDIUM,
-        _ => 0.35,
-    }
-}
+use crate::util::cell_db::accuracy_to_confidence;
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

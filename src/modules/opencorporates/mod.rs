@@ -329,7 +329,7 @@ pub(super) fn build_officer_entities(
                 && !num.is_empty()
                 && co.jurisdiction_code.as_deref() == Some("au")
             {
-                let mut acn = Entity::new(EntityKind::AbnAcn, num, 0.78, scan_id);
+                let mut acn = Entity::new(EntityKind::AbnAcn, num, confidence::STRONG, scan_id);
                 acn.tag("opencorporates");
                 acn.tag("company-number");
                 acn.add_evidence(

@@ -206,7 +206,7 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
 
     // Profile URL.
     if !profile_url.is_empty() && profile_url.starts_with("http") {
-        let mut url_e = Entity::new(EntityKind::Url, &profile_url, 0.78, scan_id);
+        let mut url_e = Entity::new(EntityKind::Url, &profile_url, confidence::STRONG, scan_id);
         url_e.tag("mastodon");
         url_e.add_evidence(Evidence::new(
             SRC,

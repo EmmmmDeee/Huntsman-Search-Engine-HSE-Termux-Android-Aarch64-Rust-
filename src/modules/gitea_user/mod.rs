@@ -86,7 +86,7 @@ pub(super) fn build_entities(user: GtUser, scan_id: &str) -> Vec<Entity> {
     out.push(e);
 
     // Profile URL.
-    let mut u = Entity::new(EntityKind::Url, &profile_url, 0.78, scan_id);
+    let mut u = Entity::new(EntityKind::Url, &profile_url, confidence::STRONG, scan_id);
     u.tag("gitea");
     u.add_evidence(ev());
     out.push(u);

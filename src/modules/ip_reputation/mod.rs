@@ -33,7 +33,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{fetch_json_or_404, fetch_keyed_json, urlencode};
+use crate::util::http::{RequestBuilderExt, fetch_json_or_404, fetch_keyed_json, urlencode};
 use crate::util::threat::is_meaningful_tag;
 
 // ── OTX response types ─────────────────────────────────────────────
@@ -101,7 +101,7 @@ const TOR_EXIT_LIST_URL: &str = "https://check.torproject.org/exit-addresses";
 /// "checked, this IP isn't a Tor exit" from the operator's side.
 async fn fetch_exit_set(http: &reqwest::Client, url: &str) -> Result<HashSet<String>> {
     let body_res = tokio::time::timeout(Duration::from_secs(8), async {
-        let resp = http.get(url).send().await?;
+        let resp = http.get(url).send_tagged(SRC).await?;
         if !resp.status().is_success() {
             return Err(Error::module(
                 SRC,

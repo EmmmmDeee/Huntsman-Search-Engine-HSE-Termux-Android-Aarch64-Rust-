@@ -174,7 +174,7 @@ pub(super) fn build_entities(
     result.push(u);
 
     // Profile URL.
-    let mut pu = Entity::new(EntityKind::Url, &profile_url, 0.78, scan_id);
+    let mut pu = Entity::new(EntityKind::Url, &profile_url, confidence::STRONG, scan_id);
     pu.tag("pypi");
     pu.add_evidence(ev_base());
     result.push(pu);

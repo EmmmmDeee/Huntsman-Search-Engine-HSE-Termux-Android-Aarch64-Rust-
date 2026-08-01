@@ -132,7 +132,7 @@ pub(super) async fn fetch_orgs(
     if let Some(t) = token {
         req = req.bearer_auth(t);
     }
-    let Ok(resp) = req.send().await else {
+    let Ok(resp) = req.send_tagged(SRC).await else {
         return Vec::new();
     };
     let status = resp.status();
@@ -173,7 +173,7 @@ pub(super) async fn fetch_gists(
     if let Some(t) = token {
         req = req.bearer_auth(t);
     }
-    let Ok(resp) = req.send().await else {
+    let Ok(resp) = req.send_tagged(SRC).await else {
         return Vec::new();
     };
     let status = resp.status();

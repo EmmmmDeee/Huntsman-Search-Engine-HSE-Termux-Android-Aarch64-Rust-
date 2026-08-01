@@ -266,7 +266,10 @@ pub(super) fn promote_multipath_corroborated(
         }
         if let Some(reason) = reason_by_uid.get(&e.uid) {
             e.tag("multipath-corroborated");
-            e.add_evidence(Evidence::new("multipath_corroboration", reason.clone()));
+            e.add_evidence(Evidence::new(
+                crate::core::entity::MULTIPATH_CORROBORATION_SOURCE,
+                reason.clone(),
+            ));
             promoted += 1;
         }
     }
@@ -313,7 +316,10 @@ pub(super) fn promote_cross_scan_corroborated(
         }
         if let Some(reason) = boost.get(&e.uid) {
             e.tag("cross-scan-corroborated");
-            e.add_evidence(Evidence::new("cross_scan_corroboration", reason.clone()));
+            e.add_evidence(Evidence::new(
+                crate::core::entity::CROSS_SCAN_CORROBORATION_SOURCE,
+                reason.clone(),
+            ));
             promoted += 1;
         }
     }

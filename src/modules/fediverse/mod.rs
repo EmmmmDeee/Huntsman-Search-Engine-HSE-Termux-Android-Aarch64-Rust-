@@ -209,7 +209,7 @@ fn extract_webfinger(
 
     // Flag the seed email itself as a confirmed Fediverse identity (GREATEST-
     // merge only ever adds the tag/evidence, never lowers existing confidence).
-    let mut seed = Entity::new(EntityKind::Email, email, 0.78, scan_id);
+    let mut seed = Entity::new(EntityKind::Email, email, confidence::STRONG, scan_id);
     seed.tag("fediverse");
     seed.add_evidence(ev);
     result.push(seed);

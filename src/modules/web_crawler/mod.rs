@@ -41,6 +41,7 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "web_crawler";
 
@@ -266,7 +267,7 @@ impl Module for WebCrawler {
                 continue;
             }
 
-            let resp = match ctx.http.get(&url).send().await {
+            let resp = match ctx.http.get(&url).send_tagged(SRC).await {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::debug!(url = %url, error = %e, "web_crawler: fetch failed");
