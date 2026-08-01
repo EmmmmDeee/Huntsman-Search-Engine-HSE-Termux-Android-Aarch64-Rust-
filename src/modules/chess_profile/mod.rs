@@ -426,9 +426,18 @@ fn iso_country_from_url(url: &str) -> Option<String> {
 /// whitespace/newline separated and often scheme-less (`github.com/ornicar`); a
 /// missing scheme is filled with `https://`, and only tokens that then parse to
 /// a URL with a dotted host survive — so free-text noise never mints a Url.
+/// Hard cap on links minted from a single profile's free-text `links` field —
+/// it's user-controlled, so an adversarial profile can't be used to bloat the
+/// entity graph with unbounded `Url` pivots.
+const MAX_LINKS: usize = 20;
+
 fn normalise_links(raw: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for tok in raw.split_whitespace() {
+        if out.len() >= MAX_LINKS {
+            break;
+        }
         let tok = tok.trim().trim_end_matches([',', ';']);
         if tok.is_empty() {
             continue;
@@ -441,7 +450,7 @@ fn normalise_links(raw: &str) -> Vec<String> {
         let Ok(parsed) = url::Url::parse(&candidate) else {
             continue;
         };
-        if parsed.host_str().is_some_and(|h| h.contains('.')) && !out.contains(&candidate) {
+        if parsed.host_str().is_some_and(|h| h.contains('.')) && seen.insert(candidate.clone()) {
             out.push(candidate);
         }
     }

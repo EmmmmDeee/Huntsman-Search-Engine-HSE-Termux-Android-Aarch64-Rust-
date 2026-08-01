@@ -154,6 +154,18 @@ fn normalise_links_filters_noise_and_dedups() {
 }
 
 #[test]
+fn normalise_links_caps_output_at_max_links() {
+    let raw = (0..MAX_LINKS + 15)
+        .map(|i| format!("https://example.com/{i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let got = normalise_links(&raw);
+    assert_eq!(got.len(), MAX_LINKS, "must cap at MAX_LINKS, not unbounded");
+    assert_eq!(got[0], "https://example.com/0");
+    assert_eq!(got[MAX_LINKS - 1], format!("https://example.com/{}", MAX_LINKS - 1));
+}
+
+#[test]
 fn iso_country_extraction() {
     assert_eq!(
         iso_country_from_url("https://api.chess.com/pub/country/US"),
