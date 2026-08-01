@@ -19,8 +19,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::RequestBuilderExt;
-use crate::util::http::{handle_keyed_error, urlencode};
+use crate::util::http::urlencode;
 
 const KEY_ENV: &str = "HUNTSMAN_IPQS_KEY";
 
@@ -269,62 +268,47 @@ impl Module for IpQs {
         // credential the pool holds before it fails. The key rides in the URL
         // path, so the URL is rebuilt per cascade iteration. `tried` stops a
         // burned key being re-handed.
-        let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut key = initial_key.to_string();
-        let body: Common = 'cascade: loop {
-            tried.insert(key.clone());
-            let url = format!(
-                "https://www.ipqualityscore.com/api/json/{endpoint}/{}/{}",
-                urlencode(&key),
-                urlencode(value),
-            );
-            let mut retries = 2u8;
-            let parsed: Common = loop {
-                if ctx.cancel.is_cancelled() {
-                    return Ok(ModuleResult::new());
-                }
-                let resp = ctx.http.get(&url).send_tagged(SRC).await?;
-                let status = resp.status();
-                if status.as_u16() == 404 {
-                    return Ok(ModuleResult::new());
-                }
-                if !status.is_success() {
-                    let code = status.as_u16();
-                    if handle_keyed_error(code, resp.headers(), &mut retries, SRC, &key, ctx).await
-                    {
-                        continue;
+        // Key cascade via the shared primitive. IPQS embeds the key in the URL
+        // PATH, so the request builder closure re-renders the URL per key —
+        // rotation changes the URL, not just a header. `success: false` is
+        // EITHER a dead/exhausted key OR a genuinely invalid target, so the
+        // body verdict distinguishes them: a key/quota message rotates (and, if
+        // no untried key remains, surfaces an Err so a paid vendor's dead key is
+        // never silently swallowed); a bad-target message is a clean miss.
+        let Some(body): Option<Common> = crate::util::http::keyed_cascade_json(
+            ctx,
+            SRC,
+            initial_key,
+            // 404 = unknown selector, a clean miss rather than a failure.
+            &[404],
+            |key| {
+                let url = format!(
+                    "https://www.ipqualityscore.com/api/json/{endpoint}/{}/{}",
+                    urlencode(key),
+                    urlencode(value),
+                );
+                ctx.http.get(url)
+            },
+            |parsed: &Common| {
+                if parsed.success == Some(false) {
+                    let msg = parsed.message.as_deref().unwrap_or_default();
+                    if is_key_or_quota_failure(msg) {
+                        // Carry IPQS's own message through: it is the only thing
+                        // that distinguishes quota exhaustion from a bad key
+                        // from a plan limit, and the operator needs that to act.
+                        return crate::util::http::BodyVerdict::KeyFailure {
+                            code: 401,
+                            detail: Some(msg.to_string()),
+                        };
                     }
-                    if crate::util::http::is_keyed_error_status(code)
-                        && let Some(next) = ctx.next_pooled_key(SRC, &tried)
-                    {
-                        key = next;
-                        continue 'cascade;
-                    }
-                    return Err(crate::util::http::http_status_error("ipqs", resp).await);
+                    return crate::util::http::BodyVerdict::Absent;
                 }
-                break crate::util::http::json_decode(SRC, resp).await?;
-            };
-            if parsed.success == Some(false) {
-                // success:false is EITHER a dead/exhausted key OR a genuinely invalid
-                // target. A key/quota failure cascades to the next pooled key (and,
-                // if none remains, SURFACES as report + Err so a paid vendor's dead
-                // key isn't silently swallowed on every lookup); a bad-target
-                // message stays a clean empty Ok.
-                let msg = parsed.message.as_deref().unwrap_or_default();
-                if is_key_or_quota_failure(msg) {
-                    ctx.report_key_exhausted(SRC, &key, 401);
-                    if let Some(next) = ctx.next_pooled_key(SRC, &tried) {
-                        key = next;
-                        continue 'cascade;
-                    }
-                    return Err(crate::core::error::Error::module(
-                        SRC,
-                        format!("ipqs key/quota failure: {msg}"),
-                    ));
-                }
-                return Ok(ModuleResult::new());
-            }
-            break 'cascade parsed;
+                crate::util::http::BodyVerdict::Accept
+            },
+        )
+        .await?
+        else {
+            return Ok(ModuleResult::new());
         };
 
         let mut result = ModuleResult::new();

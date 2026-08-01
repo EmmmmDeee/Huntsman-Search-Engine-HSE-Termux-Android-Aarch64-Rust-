@@ -35,8 +35,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::RequestBuilderExt;
-use crate::util::http::{handle_keyed_error, json_decode, urlencode};
+use crate::util::http::{json_decode, urlencode};
 
 const KEY_ENV: &str = "HUNTSMAN_ZOOMEYE_KEY";
 const SRC: &str = "zoomeye";
@@ -129,49 +128,22 @@ impl Module for ZoomEye {
             urlencode(&dork)
         );
 
-        // Key cascade: begin on the hot-injected key and, on a terminal
-        // 401/403/429, rotate to the next usable pooled ZoomEye key and retry, so
-        // one process() call spends every credential the pool holds before it
-        // fails. `tried` stops a burned key being re-handed.
-        let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut key = initial_key.to_string();
-        let body: ZoomResp = 'cascade: loop {
-            tried.insert(key.clone());
-            let mut retries = 2u8;
-            loop {
-                if ctx.cancel.is_cancelled() {
-                    return Ok(ModuleResult::new());
-                }
-                let resp = ctx
-                    .http
-                    .get(&url)
-                    .header("API-KEY", &key)
-                    .header("Accept", "application/json")
-                    .send_tagged(SRC)
-                    .await?;
-
-                let status = resp.status();
-                // 404 = nothing indexed for this selector — a clean miss, not an error.
-                if status.as_u16() == 404 {
-                    return Ok(ModuleResult::new());
-                }
-                if !status.is_success() {
-                    let code = status.as_u16();
-                    if handle_keyed_error(code, resp.headers(), &mut retries, SRC, &key, ctx).await
-                    {
-                        continue;
-                    }
-                    if crate::util::http::is_keyed_error_status(code)
-                        && let Some(next) = ctx.next_pooled_key(SRC, &tried)
-                    {
-                        key = next;
-                        continue 'cascade;
-                    }
-                    return Err(crate::util::http::http_status_error(SRC, resp).await);
-                }
-                break 'cascade json_decode(SRC, resp).await?;
-            }
+        // Key cascade via the shared primitive: on a terminal key quota/auth
+        // failure, rotate to the next untried usable pooled key so one call
+        // spends every credential the pool holds. `absent_statuses: &[404]` —
+        // 404 means nothing indexed for this selector, a clean miss rather than
+        // an error, exactly as this module treated it before.
+        let Some(resp) = crate::util::http::keyed_cascade(ctx, SRC, initial_key, &[404], |key| {
+            ctx.http
+                .get(&url)
+                .header("API-KEY", key)
+                .header("Accept", "application/json")
+        })
+        .await?
+        else {
+            return Ok(ModuleResult::new());
         };
+        let body: ZoomResp = json_decode(SRC, resp).await?;
 
         if body.matches.is_empty() {
             return Ok(ModuleResult::new());
