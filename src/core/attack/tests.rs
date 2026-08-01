@@ -295,6 +295,15 @@ use super::*;
 
         assert_eq!(layer["domain"], "enterprise-attack");
         assert_eq!(layer["versions"]["layer"], "4.5");
+        // The emitted ATT&CK content version must track the catalogue
+        // (ATTACK_VERSION's major), not a hand-typed literal that drifts behind a
+        // catalogue bump. Derived here independently of attack_spec_major() so a
+        // bug in the derivation can't make both sides agree by construction.
+        assert_eq!(
+            layer["versions"]["attack"].as_str().expect("attack version is a string"),
+            ATTACK_VERSION.split('.').next().expect("ATTACK_VERSION has a major component"),
+            "Navigator attack version must equal the ATTACK_VERSION major"
+        );
         // Exactly one technique per catalogued id (covered + gaps = whole tactic).
         let techs = layer["techniques"].as_array().expect("should succeed");
         assert_eq!(techs.len(), reconnaissance().len());

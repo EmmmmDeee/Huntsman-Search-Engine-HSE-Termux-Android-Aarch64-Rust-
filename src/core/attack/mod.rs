@@ -42,6 +42,22 @@ use serde::Serialize;
 /// regeneration of [`TACTICS`] / [`ENTERPRISE`] from the pinned STIX bundle.
 pub const ATTACK_VERSION: &str = "17.1";
 
+/// The ATT&CK **content major** version, derived from [`ATTACK_VERSION`].
+///
+/// The ATT&CK Navigator's `versions.attack` field carries the content *major*
+/// (MITRE tags a `17.1` catalogue as attack version `"17"`), so
+/// [`navigator_layer`] reads this instead of a hand-typed literal that silently
+/// drifts behind a catalogue bump. Single-sourcing it against `ATTACK_VERSION`
+/// means one edit (the `const` above) moves the whole surface, and the
+/// `navigator_layer_is_a_valid_honest_layer` guard pins the emitted value to it.
+#[must_use]
+pub fn attack_spec_major() -> &'static str {
+    match ATTACK_VERSION.split_once('.') {
+        Some((major, _)) => major,
+        None => ATTACK_VERSION,
+    }
+}
+
 /// The MITRE ATT&CK tactic HSE performs collection for — the one tactic whose
 /// *coverage* the tool honestly claims. Retained as the canonical pair the
 /// coverage report and dossier key on.
@@ -4693,7 +4709,7 @@ pub fn navigator_layer(coverage: &Coverage, scan_label: &str) -> serde_json::Val
     }
     serde_json::json!({
         "name": format!("HSE — {scan_label} (Reconnaissance coverage)"),
-        "versions": { "attack": "16", "navigator": "5.1.0", "layer": "4.5" },
+        "versions": { "attack": attack_spec_major(), "navigator": "5.1.0", "layer": "4.5" },
         "domain": "enterprise-attack",
         "description": "MITRE ATT&CK Reconnaissance (TA0043) coverage produced by \
                         Huntsman Search Engine. score = entities collected via each \
