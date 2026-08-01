@@ -215,10 +215,17 @@ async fn cmd_import(
 /// --country` and `POST /api/v1/cells/import` (`api::cells_handlers`) — the
 /// one place this network+import sequence is implemented.
 pub(crate) async fn download_and_import(url: &str, filename: &str, mcc: Option<i64>) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .build()
-        .map_err(|e| Error::Other(e.to_string()))?;
+    // The shared download client, NOT a hand-rolled `reqwest::Client::builder()`:
+    // this fetch previously set only a total timeout and so inherited none of the
+    // crate's HTTP hardening — no SSRF DNS resolver, no per-hop private-IP
+    // redirect guard, no connect timeout, no read-inactivity backstop. The host
+    // here is hardcoded (`opencellid.org`) and the caller supplies only a country
+    // code, so this was not directly reachable; the exposure was a 3xx from a
+    // compromised or spoofed upstream being followed unvetted, which is precisely
+    // what the shared redirect policy exists to refuse. `build_download_client`
+    // keeps the 300 s ceiling and leaves gzip off, so the streamed bytes are
+    // unchanged.
+    let client = crate::util::http::build_download_client(std::time::Duration::from_secs(300));
 
     let resp = client
         .get(url)

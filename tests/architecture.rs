@@ -16,12 +16,23 @@ fn scan_dir(dir: &Path, patterns: &[&str], violations: &mut Vec<String>) {
         let path = entry.path();
         if path.is_dir() {
             scan_dir(&path, patterns, violations);
-        } else if path.file_name().is_some_and(|n| n == "tests.rs") {
+        } else if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n == "tests.rs" || n.ends_with("_tests.rs"))
+        {
             // A dedicated `tests.rs` submodule file is entirely test code — it's
             // declared `#[cfg(test)] mod tests;` in its parent, so the gating
             // `#[cfg(test)]` marker isn't inside the file for the line-scanner to
             // see. Test code is allowed to reach into `util`, so skip it whole,
             // exactly as the inline-`#[cfg(test)]`-module case already is.
+            //
+            // `*_tests.rs` is the same case under a different name (e.g.
+            // `classify_module_tests.rs`, `family_tests.rs`). Each of the 12 in
+            // the tree was verified to be reached only through a `#[cfg(test)]`
+            // gate — either `include!`d inside a `#[cfg(test)] mod tests { … }`
+            // block or declared `#[cfg(test)] mod x;` — so the whole file is
+            // test code and the gate is likewise invisible from inside it.
             continue;
         } else if path.extension().is_some_and(|e| e == "rs") {
             let content = fs::read_to_string(&path).unwrap();
@@ -2802,4 +2813,44 @@ pub fn offender() {
         "nested braces must not end the skip early, got: {v:?}"
     );
     assert!(v[0].contains(":11:"), "expected line 11, got: {v:?}");
+}
+
+/// HTTP client construction belongs to `util::http`, which is the only place the
+/// crate's transport hardening is applied.
+///
+/// `util::http::ssrf::client_builder` installs four protections every outbound
+/// request depends on: the SSRF DNS resolver (refuses private/reserved
+/// addresses), a per-hop redirect policy that re-checks each 3xx target against
+/// `redirect_to_private_ip`, a `connect_timeout`, and a 30 s read-inactivity
+/// backstop. A hand-rolled `reqwest::Client::builder()` elsewhere silently opts
+/// out of all four while still looking like a configured client.
+///
+/// This is a real regression that occurred: `app::cells::download_and_import`
+/// built its own client with nothing but a 300 s total timeout, so the
+/// OpenCelliD bulk download followed redirects unvetted. `util::http` now
+/// exposes `build_download_client` for that case, and this test keeps the
+/// construction centralised rather than relying on reviewers to notice.
+#[test]
+fn http_client_construction_is_centralised() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut v = Vec::new();
+    for layer in [
+        "src/core",
+        "src/modules",
+        "src/api",
+        "src/app",
+        "src/cli",
+        "src/storage",
+    ] {
+        v.extend(scan_for_violations(
+            &root.join(layer),
+            &["reqwest::Client::builder(", "reqwest::Client::new("],
+        ));
+    }
+    assert!(
+        v.is_empty(),
+        "build HTTP clients via `util::http` (`build_client` / `build_download_client`) so the \
+         SSRF resolver, redirect guard, and timeouts are applied.\nViolations:\n{}",
+        v.join("\n")
+    );
 }

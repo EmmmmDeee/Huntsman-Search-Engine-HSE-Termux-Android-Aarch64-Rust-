@@ -22,6 +22,39 @@ pub fn build_client() -> reqwest::Client {
         .expect("reqwest client (rustls backend) failed to build")
 }
 
+/// Client for a **bulk file download** — a large, container-compressed artefact
+/// streamed to disk rather than a JSON body parsed in memory.
+///
+/// Shares [`build_client`]'s hardening (the SSRF DNS resolver, the per-hop
+/// private-IP redirect guard, `connect_timeout`, and the 30 s read-inactivity
+/// backstop) and differs in exactly two deliberate ways:
+///
+/// * **A total timeout.** The module fetch paths set none on purpose — the
+///   engine bounds them per-module (see the module docstring). A download driven
+///   by `hse cells import` / `POST /cells/import` runs outside that engine
+///   timeout, so it carries its own ceiling.
+/// * **No transparent gzip.** The caller is fetching a `.gz` *container* it
+///   decompresses itself. `gzip(true)` decodes only when the server sends
+///   `Content-Encoding: gzip`, so enabling it would silently hand the caller
+///   already-inflated bytes for such a server and break a downstream
+///   `flate2` pass. Off, so the bytes written to disk are exactly the bytes on
+///   the wire.
+///
+/// Exists so that no caller has to hand-roll a `reqwest::Client::builder()` and
+/// thereby opt out of the crate's HTTP hardening — the bypass this replaced set
+/// only a total timeout and inherited none of the four protections above.
+/// Enforced by `tests/architecture.rs::http_client_construction_is_centralised`.
+pub fn build_download_client(total_timeout: std::time::Duration) -> reqwest::Client {
+    super::ssrf::client_builder()
+        .no_gzip()
+        .timeout(total_timeout)
+        .build()
+        // expect justification: identical static-config / rustls-init-only
+        // failure mode as `build_client` — `total_timeout` is a plain `Duration`
+        // and introduces no fallible build input.
+        .expect("reqwest client (rustls backend) failed to build")
+}
+
 /// Like [`build_client`] but stamps every outbound request with a default
 /// `x-huntsman-trace: <trace_id>` header. End-to-end traceability across external
 /// calls (item #3 of the operator program): the same id the NDJSON scan logs

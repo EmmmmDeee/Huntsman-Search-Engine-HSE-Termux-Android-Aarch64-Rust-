@@ -26,7 +26,7 @@ mod ssrf;
 mod tests;
 mod url;
 
-pub use client::{build_client, build_client_with_trace};
+pub use client::{build_client, build_client_with_trace, build_download_client};
 pub use fetch::{
     JSON_BODY_CAP, error_snippet, fetch_json, fetch_json_or_404, fetch_json_or_absent,
     fetch_json_probe, fetch_keyed_json, handle_keyed_error, http_status_error,
