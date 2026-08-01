@@ -46,7 +46,16 @@ Verify: `hse doctor` (environment + live free/key-gated split) and
 HSE is **keyless-first**: the large majority of modules need no key and work
 immediately. Keys only *escalate* specific sources.
 
-- **Where keys live:** `~/.huntsman.env` (created `0600`). Set them three ways:
+- **Autonomous discovery (zero-touch):** `hse provision --env-only --discover`
+  scans the process environment for any `HUNTSMAN_*` key you already have —
+  exported in a shell rc, injected by CI, or passed inline
+  (`HUNTSMAN_SHODAN_KEY=… hse provision --discover`) — and pre-configures it into
+  `~/.huntsman.env`, so a key you have anywhere becomes a persisted, active one
+  with no manual step. The installer runs exactly this, so a fresh install picks
+  up whatever you already have. Idempotent (only writes when something changed;
+  prints key names, never values).
+- **Where keys live:** `~/.huntsman.env` (created `0600`). Set them manually four
+  ways:
   - edit the file directly, or
   - `hse set-key HUNTSMAN_SHODAN_KEY <value>` (single key), or
   - `hse keys add shodan <value>` (multi-key pool with rotation), or

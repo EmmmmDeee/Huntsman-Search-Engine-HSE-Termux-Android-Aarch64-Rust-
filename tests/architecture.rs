@@ -1392,29 +1392,28 @@ fn key_gated_modules_are_documented_everywhere_an_operator_would_look() {
          it): {missing_from_known_keys:?}"
     );
 
-    // 3. install.sh's hand-maintained `~/.huntsman.env` heredoc (a fresh
-    //    `curl | bash` install writes exactly this, independently of the
-    //    binary — it must offer every key a real module can use).
+    // 3. install.sh must configure the fresh `~/.huntsman.env` through the ONE
+    //    canonical source. It previously carried a second, hand-maintained copy
+    //    of the key list in a `cat > "$KEYS_PATH" <<'TEMPLATE'` heredoc that
+    //    could (and did) drift from env_template.txt; that duplicate was removed
+    //    in favour of delegating to `hse provision --env-only --discover`, which
+    //    embeds env_template.txt (proven complete in step 1). So completeness for
+    //    a fresh `curl | bash` install now flows through that single source, and
+    //    the guard here is that the delegation is present — not that a rival
+    //    template exists to fall behind.
     let install_sh = fs::read_to_string(root.join("install.sh")).unwrap();
-    let heredoc = install_sh
-        .split("cat > \"$KEYS_PATH\" <<'TEMPLATE'")
-        .nth(1)
-        .and_then(|s| s.split("\nTEMPLATE\n").next())
-        .expect("install.sh must contain the `cat > \"$KEYS_PATH\" <<'TEMPLATE' ... TEMPLATE` keys heredoc");
-    let installsh_keys: std::collections::HashSet<&str> = heredoc
-        .lines()
-        .map(|l| l.trim().trim_start_matches('#'))
-        .filter(|l| l.starts_with("HUNTSMAN_"))
-        .filter_map(|l| l.split('=').next())
-        .collect();
-    let missing_from_install_sh: Vec<&String> = consumed
-        .iter()
-        .filter(|k| !installsh_keys.contains(k.as_str()))
-        .collect();
     assert!(
-        missing_from_install_sh.is_empty(),
-        "module(s) read a key install.sh's fresh-install keys template omits: \
-         {missing_from_install_sh:?}"
+        !install_sh.contains("cat > \"$KEYS_PATH\" <<'TEMPLATE'"),
+        "install.sh reintroduced a hand-maintained keys heredoc — that is a second \
+         template that will drift from env_template.txt. Configure keys by \
+         delegating to `hse provision` (the single canonical source) instead."
+    );
+    assert!(
+        install_sh.contains("provision --env-only --discover"),
+        "install.sh must configure ~/.huntsman.env by delegating to \
+         `hse provision --env-only --discover` (the single canonical env-template \
+         source), so a fresh install offers every key with autonomous discovery \
+         and no drift-prone second list"
     );
 }
 
