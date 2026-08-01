@@ -76,3 +76,46 @@ fn diagnoses_only_drifted_auth_failing_sources_most_broken_first() {
 fn empty_health_yields_no_issues() {
     assert!(auth_failing_sources(&[]).is_empty());
 }
+
+/// A capped detail must DISCLOSE that it was capped. Silently clipping an
+/// upstream's auth error makes a truncated message indistinguishable from the
+/// provider's complete reply, so an operator cannot tell the actionable part
+/// may be in the portion they cannot see — an undisclosed limit is a defect
+/// even when the full string survives elsewhere.
+#[test]
+fn detail_capped_discloses_the_truncation_and_never_splits_a_codepoint() {
+    let issue = |detail: &str| KeyAuthIssue {
+        module: "onyphe".to_string(),
+        consecutive_failures: 3,
+        detail: detail.to_string(),
+        likely_env_var: Some("HUNTSMAN_ONYPHE_KEY"),
+    };
+
+    // Under the cap: returned verbatim, with NO disclosure suffix added.
+    let short = issue("Invalid API key format");
+    assert_eq!(short.detail_capped(200), "Invalid API key format");
+    assert!(
+        !short.detail_capped(200).contains("more chars"),
+        "an untruncated detail must not claim a remainder"
+    );
+
+    // Over the cap: clipped AND the remainder disclosed.
+    let long = issue(&"x".repeat(250));
+    let got = long.detail_capped(200);
+    assert!(
+        got.contains("…(+50 more chars)"),
+        "truncation must be disclosed with the remainder size, got: {got:?}"
+    );
+    assert!(got.starts_with(&"x".repeat(200)), "prefix must be preserved");
+
+    // Exactly at the cap: no suffix (the remainder is zero).
+    let exact = issue(&"y".repeat(200));
+    assert_eq!(exact.detail_capped(200), "y".repeat(200));
+
+    // Multi-byte: counts CHARACTERS, never splits a codepoint, and reports the
+    // remainder in characters too.
+    let multi = issue(&"é".repeat(250));
+    let got = multi.detail_capped(200);
+    assert!(got.starts_with(&"é".repeat(200)), "must not split a codepoint");
+    assert!(got.contains("…(+50 more chars)"), "got: {got:?}");
+}

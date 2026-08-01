@@ -1345,7 +1345,9 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
     }
     for i in &auth_rejected {
         let env = i.likely_env_var.unwrap_or("(unmapped)");
-        let detail: String = i.detail.chars().take(200).collect();
+        // Capped for the report line, with the truncation disclosed — the full
+        // string stays on the issue and is served whole by the keys API.
+        let detail = i.detail_capped(200);
         let _ = writeln!(
             s,
             "  [AUTH-REJECT] {:<20} {env} · {} failure(s) · {detail}",

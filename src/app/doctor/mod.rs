@@ -254,8 +254,10 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
                     );
                     for i in &rejected {
                         // The upstream's own words, char-safely capped so a long
-                        // JSON body can't flood the terminal.
-                        let detail: String = i.detail.chars().take(160).collect();
+                        // JSON body can't flood the terminal — and the cap is
+                        // disclosed, so a clipped message is never mistaken for
+                        // the upstream's complete reply.
+                        let detail = i.detail_capped(160);
                         match i.likely_env_var {
                             Some(env) => println!("    - {:<20} {env}\n      {detail}", i.module),
                             None => println!("    - {:<20}\n      {detail}", i.module),

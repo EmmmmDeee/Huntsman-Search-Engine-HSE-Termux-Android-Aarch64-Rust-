@@ -35,6 +35,33 @@ pub struct KeyAuthIssue {
     pub likely_env_var: Option<&'static str>,
 }
 
+impl KeyAuthIssue {
+    /// [`Self::detail`] clipped to `max_chars` for a bounded surface (a terminal
+    /// line, a text report), with the truncation **disclosed** when it engages:
+    /// `"…(+N more chars)"`.
+    ///
+    /// The cap itself is deliberate — an upstream that answers with a full HTML
+    /// or JSON error page would otherwise flood the operator's screen. What is
+    /// not acceptable is clipping in silence: a reader who cannot tell the
+    /// message was cut has no way to know the actionable part might be in the
+    /// part they cannot see, and an undisclosed limit reads as the upstream's
+    /// complete words when it is not.
+    ///
+    /// The unclipped string stays available on the struct and is served in full
+    /// by `GET /api/v1/keys/rejected`; this is a display cap, never a storage
+    /// one. Counts CHARACTERS, so a multi-byte body can never be split
+    /// mid-codepoint.
+    #[must_use]
+    pub fn detail_capped(&self, max_chars: usize) -> String {
+        let mut out: String = self.detail.chars().take(max_chars).collect();
+        let remainder = self.detail.chars().count().saturating_sub(max_chars);
+        if remainder > 0 {
+            out.push_str(&format!("…(+{remainder} more chars)"));
+        }
+        out
+    }
+}
+
 /// True when an error message looks like an authentication/credential rejection
 /// rather than a transport blip (timeout, DNS) or an empty-but-valid response.
 ///
