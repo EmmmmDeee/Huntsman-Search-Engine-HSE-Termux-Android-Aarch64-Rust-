@@ -343,9 +343,30 @@ pub(in crate::modules::search_engines) fn strip_tags(html: &str, max_len: usize)
     let cleaned = strip_inline_blocks(html);
     let mut out = String::with_capacity(max_len);
     let mut in_tag = false;
+    // Track the quote char of an attribute value while inside a tag, so a '>'
+    // that appears INSIDE a quoted attribute — a JS `onerror="a=>b"`, a data URI,
+    // a URL query, a `srcset` — does not prematurely close the tag and leak the
+    // rest of it as visible text. This was dumping Brave's favicon `<img
+    // src="…base64…" loading="lazy" onerror="…"/>` base64 `src` straight into the
+    // result `page_title`. The same class of stray-'>' desync that
+    // `strip_inline_blocks` already defends svg/style/script (and now comments)
+    // against, handled here for every other tag.
+    let mut attr_quote: Option<char> = None;
     for c in cleaned.chars() {
         if out.len() >= max_len {
             break;
+        }
+        if in_tag {
+            match attr_quote {
+                Some(q) if c == q => attr_quote = None,
+                Some(_) => {}
+                None => match c {
+                    '"' | '\'' => attr_quote = Some(c),
+                    '>' => in_tag = false,
+                    _ => {}
+                },
+            }
+            continue;
         }
         match c {
             '<' => {
@@ -353,22 +374,20 @@ pub(in crate::modules::search_engines) fn strip_tags(html: &str, max_len: usize)
                 // (`</h3><span>`) do not fuse into "Facebookhttps…". The same
                 // `!ends_with(' ') && !is_empty()` guards used for whitespace
                 // prevent a leading or doubled space.
-                if !in_tag && !out.is_empty() && !out.ends_with(' ') {
+                if !out.is_empty() && !out.ends_with(' ') {
                     out.push(' ');
                 }
                 in_tag = true;
             }
-            '>' => in_tag = false,
-            _ if !in_tag => {
-                if c.is_whitespace() {
-                    if !out.ends_with(' ') && !out.is_empty() {
-                        out.push(' ');
-                    }
-                } else {
-                    out.push(c);
+            // A '>' outside any tag is stray markup, never visible text — drop it
+            // (the previous scanner never emitted a bare '>' either).
+            '>' => {}
+            _ if c.is_whitespace() => {
+                if !out.ends_with(' ') && !out.is_empty() {
+                    out.push(' ');
                 }
             }
-            _ => {}
+            _ => out.push(c),
         }
     }
     decode_html_entities(out.trim())
@@ -388,13 +407,41 @@ fn strip_inline_blocks(html: &str) -> Cow<'_, str> {
     // `to_ascii_lowercase().contains(ascii_needle)` is exactly ASCII-CI matching,
     // so this is byte-for-byte equivalent while turning two per-call full-buffer
     // allocations into zero on the overwhelmingly common no-block path.
-    if find_ascii_ci(html, "<svg").is_none()
+    if !html.contains("<!--")
+        && find_ascii_ci(html, "<svg").is_none()
         && find_ascii_ci(html, "<style").is_none()
         && find_ascii_ci(html, "<script").is_none()
     {
         return Cow::Borrowed(html);
     }
     let mut s = html.to_string();
+
+    // HTML comments first. Svelte-rendered SERPs (Brave) are dense with hydration
+    // markers (`<!--[-->`, `<!--]-->`), and a comment carrying a stray '>' would
+    // desync the tag scanner and leak the following markup — the same failure the
+    // svg/style/script strip below prevents. Comments delimit with `<!-- … -->`
+    // (not `</tag>`), so they get their own pass; an unclosed comment drops to
+    // end-of-string. Literal markers (comments are not case-folded).
+    if s.contains("<!--") {
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        let mut from = 0;
+        while let Some(rel) = s[from..].find("<!--") {
+            let start = from + rel;
+            let end = match s[start + 4..].find("-->") {
+                Some(r) => start + 4 + r + 3,
+                None => s.len(),
+            };
+            ranges.push((start, end));
+            if end >= s.len() {
+                break;
+            }
+            from = end;
+        }
+        for (start, end) in ranges.into_iter().rev() {
+            s.replace_range(start..end, " ");
+        }
+    }
+
     for tag in ["svg", "style", "script"] {
         let open = format!("<{tag}");
         let close = format!("</{tag}>");

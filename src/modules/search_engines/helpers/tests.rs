@@ -48,6 +48,39 @@ fn strip_tags_inserts_word_boundary_between_adjacent_elements() {
 }
 
 #[test]
+fn strip_tags_does_not_leak_img_attributes_with_gt_in_a_quoted_value() {
+    // Real Brave (Svelte) SERP shape from an on-device scan (target "Jeremy
+    // Stewart"): a favicon <img>'s base64 `src` + `loading`/`onerror` attributes
+    // leaked into the page_title, because a '>' inside a quoted attribute value
+    // desynced the naive tag scanner and dumped the rest of the tag as text.
+    let html = "<div class=\"title search-snippet-title\">\
+                <img class=\"favicon\" onerror=\"if(w>0)this.hidden=1\" \
+                src=\"https://imgs.search.brave.com/aHR0cDovL2Zhdmljb25zLnNlYXJjaC5icmF2ZQ\" \
+                loading=\"lazy\"/>Kylo - YouTube</div>";
+    let got = strip_tags(html, 200);
+    assert_eq!(got, "Kylo - YouTube");
+    assert!(
+        !got.contains("aHR0cDov"),
+        "base64 favicon src must not leak: {got}"
+    );
+    assert!(
+        !got.contains("loading="),
+        "img attributes must not leak: {got}"
+    );
+    assert!(!got.contains("onerror="));
+}
+
+#[test]
+fn strip_tags_drops_html_comments_including_ones_with_a_stray_gt() {
+    // Svelte hydration markers (`<!--[-->`, `<!--]-->`) fill Brave SERPs; a comment
+    // carrying a stray '>' must not desync the scanner and leak following markup.
+    let html = "<!--[--><span>Real Title</span><!-- note: a>b legacy --><img src=\"x\"/><!--]-->";
+    let got = strip_tags(html, 200);
+    assert_eq!(got, "Real Title");
+    assert!(!got.contains("legacy") && !got.contains("a>b") && !got.contains("src="));
+}
+
+#[test]
 fn extract_snippet_near_does_not_dump_anchor_tag_attributes() {
     // Real Startpage capture: the snippet slice begins right after the matched
     // href URL — INSIDE the `<a …>` tag. Its attributes (rel/target/aria-label/
