@@ -54,7 +54,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::urlencode;
+use crate::util::http::{urlencode, RequestBuilderExt};
 
 const SRC: &str = "username_search";
 
@@ -172,7 +172,7 @@ impl Module for UsernameSearch {
                 // the MAX_CONCURRENT_PROBES slots for ~34.5s and shrink coverage on
                 // exactly the flaky mobile links this module targets.
                 let probe = async {
-                    let resp = match req.send().await {
+                    let resp = match req.send_tagged(SRC).await {
                         Ok(r) => r,
                         Err(_) => return ProbeResult::Error,
                     };

@@ -1,5 +1,6 @@
 use super::{BINARY_EXTENSIONS, CrawlState, MAX_DEPTH, MAX_PAGES};
 use crate::core::error::{Error, Result};
+use crate::util::http::RequestBuilderExt;
 use std::collections::HashSet;
 use std::time::Duration;
 use url::Url;
@@ -227,7 +228,7 @@ pub(super) async fn probe_config_leaks(
 pub(super) async fn resolve_seed(http: &reqwest::Client, domain: &str) -> Result<String> {
     for scheme in ["https", "http"] {
         let url = format!("{scheme}://{domain}/");
-        match http.head(&url).send().await {
+        match http.head(&url).send_tagged("web_crawler").await {
             Ok(r) if r.status().is_success() || r.status().is_redirection() => {
                 return Ok(r.url().as_str().to_string());
             }
@@ -246,7 +247,7 @@ pub(super) async fn fetch_robots(http: &reqwest::Client, seed: &Url, rules: &mut
         seed.scheme(),
         seed.host_str().unwrap_or("")
     );
-    let Ok(resp) = http.get(&robots_url).send().await else {
+    let Ok(resp) = http.get(&robots_url).send_tagged("web_crawler").await else {
         return;
     };
     if !resp.status().is_success() {

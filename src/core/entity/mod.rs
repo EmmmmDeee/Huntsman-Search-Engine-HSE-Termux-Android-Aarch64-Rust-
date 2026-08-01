@@ -128,6 +128,36 @@ pub const CROSS_SCAN_SOURCE: &str = "cross_scan_history";
 /// [`Entity::source_count`] / `c_effective`.
 pub const CONSENSUS_SOURCE: &str = "breach_consensus";
 
+/// Evidence source name emitted by the multipath-corroboration promotion pass
+/// ([`crate::core::engine::passes::promote_multipath_corroborated`]).
+///
+/// This is a DERIVED signal: it records that the engine found two identity
+/// endpoints connected across ≥2 edge-disjoint paths — it is NOT a new
+/// independent data source. It may amplify an already-grounded entity's
+/// `source_count`, but it must never be the sole reason an entity is considered
+/// corroborated (see [`source_count`][Entity::source_count]).
+pub const MULTIPATH_CORROBORATION_SOURCE: &str = "multipath_corroboration";
+
+/// Evidence source name emitted by the cross-scan-corroboration promotion pass
+/// ([`crate::core::engine::passes::promote_cross_scan_corroborated`]).
+///
+/// Same semantics as [`MULTIPATH_CORROBORATION_SOURCE`]: engine-derived signal,
+/// not an independent observation.
+pub const CROSS_SCAN_CORROBORATION_SOURCE: &str = "cross_scan_corroboration";
+
+/// True if `source` is an engine **promotion pass** rather than an independent
+/// observation. Promotion passes amplify entities that are already grounded by
+/// real sources; they must never GROUND an entity by themselves.
+///
+/// This is distinct from [`is_non_corroborating_source`]: non-corroborating
+/// sources are NEVER counted; promotion sources ARE counted, but only when the
+/// entity already has at least one real corroborating source (the grounding gate
+/// in [`Entity::source_count`]).
+#[inline]
+pub fn is_promotion_source(source: &str) -> bool {
+    source == MULTIPATH_CORROBORATION_SOURCE || source == CROSS_SCAN_CORROBORATION_SOURCE
+}
+
 /// True if `source` must NOT count toward cross-source corroboration — a
 /// deterministic self-enrichment pass ([`ENRICHMENT_ONLY_SOURCES`]), the recall
 /// replay ([`RECALL_SOURCE`]), the cross-scan history link ([`CROSS_SCAN_SOURCE`]),
@@ -550,21 +580,35 @@ impl Entity {
         // overhead. A source is counted exactly once, at its first occurrence:
         // for each record we scan only the evidence *before* it for the same
         // source. Entity evidence chains are short (a handful of sources), so
-        // this O(k²) scan over tiny `k` beats hashing + heap allocation, and the
-        // distinct set it yields is identical to `corroborating_sources().len()`.
-        let mut distinct: u32 = 0;
+        // this O(k²) scan over tiny `k` beats hashing + heap allocation.
+        //
+        // GROUNDING GATE: promotion-pass sources (`multipath_corroboration`,
+        // `cross_scan_corroboration`) are tracked separately and only COUNT
+        // when at least one REAL source already grounds the entity. Without
+        // this gate, a machine-generated email permutation touched by a
+        // multipath/cross-scan pass appears as source_count=1 with zero
+        // genuine confirmation — promoting it a full confidence tier.
+        let mut real: u32 = 0;
+        let mut promo: u32 = 0;
         for (i, ev) in self.evidence.iter().enumerate() {
             let s = ev.source.as_str();
             if is_non_corroborating_source(s) {
                 continue;
             }
-            if !self.evidence[..i]
+            if self.evidence[..i]
                 .iter()
                 .any(|prev| prev.source == ev.source)
             {
-                distinct += 1;
+                continue; // duplicate source — only count first occurrence
+            }
+            if is_promotion_source(s) {
+                promo += 1;
+            } else {
+                real += 1;
             }
         }
+        // Promotion sources only count when ≥1 real source grounds the entity.
+        let distinct = real + if real >= 1 { promo } else { 0 };
         if distinct > 0 {
             // Evidence is attached: distinct *corroborating* sources is the
             // authoritative cross-correlation count. The summed `corroboration`

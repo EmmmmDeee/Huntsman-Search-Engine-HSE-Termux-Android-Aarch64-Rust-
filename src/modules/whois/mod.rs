@@ -128,8 +128,7 @@ async fn rdap_ip_fallback(target: &Target, ctx: &ModuleContext) -> Result<Module
         .header("Accept", "application/rdap+json")
         .timeout(std::time::Duration::from_secs(10))
         .send_tagged(SRC)
-        .await
-        .map_err(|e| Error::module(SRC, e.to_string()))?;
+        .await?;
 
     let status = resp.status();
     if status.as_u16() == 404 {

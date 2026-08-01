@@ -382,6 +382,59 @@ fn source_count_ignores_stored_field_when_all_evidence_is_noncorroborating() {
 }
 
 #[test]
+fn promotion_source_alone_does_not_ground_entity() {
+    // A multipath_corroboration evidence item with no real source underneath
+    // must NOT push source_count above 1 — the grounding gate is the guard.
+    let mut e = Entity::new(EntityKind::Email, "x@example.com", 0.55, "s");
+    e.add_evidence(Evidence::new(
+        MULTIPATH_CORROBORATION_SOURCE,
+        "Seen on two graph paths",
+    ));
+    assert_eq!(
+        e.source_count(),
+        1,
+        "promotion source alone: no real source → gate blocks it, falls to fallback=1"
+    );
+}
+
+#[test]
+fn promotion_source_amplifies_grounded_entity() {
+    // One real source grounds the entity; a multipath_corroboration on top
+    // must count as a second distinct source (the gate is satisfied).
+    let mut e = Entity::new(EntityKind::Email, "x@example.com", 0.55, "s");
+    e.add_evidence(Evidence::new("haveibeenpwned", "Found in breach dataset"));
+    e.add_evidence(Evidence::new(
+        MULTIPATH_CORROBORATION_SOURCE,
+        "Seen on two graph paths",
+    ));
+    assert_eq!(
+        e.source_count(),
+        2,
+        "real_src=1 satisfies the gate → promotion source counts"
+    );
+}
+
+#[test]
+fn cross_scan_corroboration_gated_same_as_multipath() {
+    // CROSS_SCAN_CORROBORATION_SOURCE is the same tier as multipath — it is a
+    // promotion source and must be gated identically.
+    let mut solo = Entity::new(EntityKind::Email, "y@example.com", 0.55, "s");
+    solo.add_evidence(Evidence::new(
+        CROSS_SCAN_CORROBORATION_SOURCE,
+        "Matched across scan boundary",
+    ));
+    assert_eq!(solo.source_count(), 1, "no real source → gate blocks cross_scan");
+
+    let mut grounded = Entity::new(EntityKind::Email, "y@example.com", 0.55, "s");
+    grounded.add_evidence(Evidence::new("snusbase", "Found in leak"));
+    grounded.add_evidence(Evidence::new(
+        CROSS_SCAN_CORROBORATION_SOURCE,
+        "Matched across scan boundary",
+    ));
+    assert_eq!(grounded.source_count(), 2, "grounded entity → cross_scan counts");
+}
+
+#[test]
 fn c_eff_clamped_to_one() {
     let mut e = email("a@b.com");
     e.confidence = 0.99;
