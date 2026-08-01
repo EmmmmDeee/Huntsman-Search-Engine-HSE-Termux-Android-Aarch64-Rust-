@@ -130,7 +130,14 @@ fn pivot(kind: &str) -> Option<(&'static str, f64)> {
         "email" => Some(("email", 0.9)),
         "username" => Some(("username", 0.7)),
         "phone" => Some(("phone", 0.55)),
-        "domain" => Some(("domain", 0.5)),
+        // An organisation the subject is affiliated with (a company they direct,
+        // an employer) is a rich, scannable seed: re-scanning it surfaces the
+        // other officers, the corporate family and the registered offices — the
+        // person → company → wider-network pivot the affiliation edges enable.
+        // Weighted like a domain (a container to expand), above the ABN that
+        // merely re-identifies it.
+        "organisation" => Some(("organisation", 0.5)),
+        "abn_acn" => Some(("abn_acn", 0.45)),
         "ip_address" => Some(("ip_address", 0.35)),
         _ => None,
     }
@@ -144,6 +151,10 @@ fn group_weight(group: &str) -> f64 {
         "people" => 1.0,
         "aliases" => 0.85,
         "identifiers" => 0.6,
+        // An affiliation is fresh territory to map (a whole organisation's
+        // network sits behind it) but one step removed from the subject
+        // themselves, so it ranks below owned identifiers and above bare places.
+        "affiliations" => 0.55,
         "locations" => 0.4,
         _ => 0.5,
     }
@@ -293,6 +304,7 @@ fn reason(
         "people" => "An associate of the subject",
         "identifiers" => "An identifier the subject owns",
         "aliases" => "An alias of the subject's persona",
+        "affiliations" => "An organisation the subject is affiliated with",
         "locations" => "A place tied to the subject",
         _ => "Connected to the subject's network",
     };

@@ -88,8 +88,9 @@ export function buildD3Graph(){
     for (let i=0;i<uids.length;i++) for (let j=i+1;j<uids.length;j++)
       links.push({source:uids[i], target:uids[j], corr:true});
   }
-  // Typed attribution edges (subdomain_of / belongs_to_domain / hosted_on /
-  // derived_from / co_located_with) between entity nodes.
+  // Typed relation edges between entity nodes — infrastructure, identity,
+  // affiliation (officer_of / employed_by / controlled_by / operated_by …) and
+  // lineage alike; the kind rides on each link for the hover label.
   for (const r of (S.relations||[]))
     links.push({source:r.from_uid, target:r.to_uid, rel:true, kind:r.kind});
 

@@ -471,3 +471,40 @@ fn recommend_lifts_a_lead_that_bridges_the_graph() {
     // The lift must not fabricate a structural flag on the plain pendant's reason.
     assert!(!pendant_lead.reason.contains("bridging pivot"));
 }
+
+/// An affiliation edge to an organisation surfaces as an actionable one-tap
+/// lead: re-scanning the company is the person → company → wider-network pivot,
+/// and it must carry the canonical `organisation` target kind a scan accepts as
+/// a seed. Before the affiliation layer this connection did not exist; before
+/// the `pivot` wiring it existed but generated no lead.
+#[test]
+fn affiliation_to_an_organisation_is_an_actionable_lead() {
+    let mut subject = ent(EntityKind::Person, "Jane Citizen", 0.85);
+    subject.tag("subject");
+    let company = ent(EntityKind::Organisation, "Acme Pty Ltd", 0.6);
+    let acn = ent(EntityKind::AbnAcn, "004085616", 0.6);
+
+    let relations = vec![
+        rel(&subject, &company, RelationKind::OfficerOf, 0.85),
+        rel(&company, &acn, RelationKind::IdentifiedBy, 0.6),
+    ];
+    let entities = vec![subject, company.clone(), acn.clone()];
+
+    let leads = recommend(&entities, &relations, 0.50);
+    let org_lead = leads
+        .iter()
+        .find(|l| l.value == "Acme Pty Ltd")
+        .expect("the affiliated organisation is a lead");
+    assert_eq!(
+        org_lead.target_kind, "organisation",
+        "the lead must carry a target kind a scan can seed with"
+    );
+    assert_eq!(org_lead.action, "scan");
+    assert!(
+        org_lead.reason.contains("affiliated"),
+        "the reason names the affiliation, got: {}",
+        org_lead.reason
+    );
+    // The parser round-trips the emitted kind — the one-tap button actually works.
+    assert!(crate::cli::parse_target_kind(org_lead.target_kind).is_ok());
+}
