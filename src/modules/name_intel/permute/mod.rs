@@ -21,6 +21,8 @@
 //! Every output is bounded by a `MAX_*` cap so the work a name target generates
 //! is constant-bounded — important on low-power Termux/aarch64 devices.
 
+mod translit;
+
 use url::form_urlencoded::byte_serialize;
 
 // ── Output caps (keep a single name target constant-bounded) ────────────────
@@ -48,6 +50,13 @@ const W_SECONDARY: f64 = 0.30;
 const W_MIDDLE: f64 = 0.28;
 /// Year/number-suffixed shapes.
 const W_YEAR: f64 = 0.30;
+/// Alternate-romanization handle shapes (German `mueller`, Cyrillic/Greek scheme
+/// alternates). Below the primary shapes: the primary romanization is the more
+/// common registration, the alternate is a real but secondary convention.
+const W_VARIANT: f64 = 0.25;
+/// Cap on alternate first/last romanizations fed into shape generation, so a
+/// token with several schemes can't blow the handle budget.
+const MAX_VARIANT_TOKENS: usize = 2;
 
 /// Speculative permuted email — deliberately below the default expansion floor
 /// (0.50) so a `--depth` scan does not auto-spend API budget on guesses.
@@ -106,6 +115,15 @@ pub struct ParsedName {
     pub last: String,
     pub number: Option<String>,
     pub display_words: Vec<String>,
+    /// All Latin romanization variants of the first/middle/last tokens, primary
+    /// at index 0 (so `first_variants[0] == first`, etc.). More than one entry
+    /// only when a token has a second common romanization — German `mueller`
+    /// vs `muller`, Cyrillic/Greek scheme alternates. Drives the extra handle
+    /// shapes in [`usernames`]/[`emails`]. Populated by [`parse`]; a directly
+    /// constructed `ParsedName` may leave these empty.
+    pub first_variants: Vec<String>,
+    pub middle_variants: Vec<String>,
+    pub last_variants: Vec<String>,
 }
 
 impl ParsedName {
@@ -168,16 +186,22 @@ pub fn parse(raw: &str) -> Option<ParsedName> {
         return None;
     }
 
-    // ASCII-folded handle tokens. These may be empty for non-Latin names
-    // (e.g. Cyrillic/CJK), in which case username/email permutation is skipped
-    // by the caller but the display-name search pivots still generate.
-    let first = sanitize(display_words.first().map_or("", String::as_str));
-    let last = sanitize(display_words.last().map_or("", String::as_str));
-    let middle = if display_words.len() >= 3 {
-        let m = sanitize(display_words.get(1).map_or("", String::as_str));
-        (!m.is_empty()).then_some(m)
+    // Romanize each name token into its ordered Latin variants; the primary
+    // (index 0) is the handle token used everywhere the old single `sanitize`
+    // was — for Latin input it is byte-identical to `fold_ascii_lower`.
+    let first_variants =
+        translit::romanize_variants(display_words.first().map_or("", String::as_str));
+    let first = first_variants.first().cloned().unwrap_or_default();
+
+    let last_display = display_words.last().map_or("", String::as_str);
+    let last_variants = translit::romanize_variants(last_display);
+    let last = last_variants.first().cloned().unwrap_or_default();
+
+    let (middle, middle_variants) = if display_words.len() >= 3 {
+        let mv = translit::romanize_variants(display_words.get(1).map_or("", String::as_str));
+        (mv.first().filter(|m| !m.is_empty()).cloned(), mv)
     } else {
-        None
+        (None, Vec::new())
     };
 
     Some(ParsedName {
@@ -186,6 +210,9 @@ pub fn parse(raw: &str) -> Option<ParsedName> {
         last,
         number,
         display_words,
+        first_variants,
+        middle_variants,
+        last_variants,
     })
 }
 
@@ -297,7 +324,51 @@ pub fn usernames(p: &ParsedName) -> Vec<ScoredHandle> {
         raw.extend(suffixed.into_iter().map(|h| (h, W_YEAR)));
     }
 
+    // Alternate-romanization core shapes — the load-bearing addition for
+    // non-Latin and umlaut names: "mueller" alongside "muller", the Cyrillic
+    // passport scheme alongside the web scheme, etc. Cross the primary and
+    // secondary romanizations of first/last, skipping the all-primary pair the
+    // blocks above already produced.
+    let fvs = variant_tokens(&p.first_variants, f);
+    let lvs = variant_tokens(&p.last_variants, l);
+    if fvs.len() > 1 || lvs.len() > 1 {
+        for (fx, &vf) in fvs.iter().enumerate() {
+            for (lx, &vl) in lvs.iter().enumerate() {
+                if (fx == 0 && lx == 0) || vf.is_empty() || vl.is_empty() {
+                    continue;
+                }
+                let vfi = initial(vf);
+                let vli = initial(vl);
+                raw.extend(
+                    [
+                        format!("{vf}.{vl}"),
+                        format!("{vf}{vl}"),
+                        format!("{vfi}{vl}"),
+                        format!("{vf}_{vl}"),
+                        format!("{vf}{vli}"),
+                    ]
+                    .map(|h| (h, W_VARIANT)),
+                );
+            }
+        }
+    }
+
     dedup_top(raw, MAX_USERNAMES)
+}
+
+/// The romanization tokens to feed shape generation: the primary plus up to
+/// [`MAX_VARIANT_TOKENS`] alternates. Falls back to `[primary]` when a directly
+/// constructed `ParsedName` left `variants` empty, so behaviour is unchanged for
+/// callers that bypass [`parse`].
+fn variant_tokens<'a>(variants: &'a [String], primary: &'a str) -> Vec<&'a str> {
+    if variants.is_empty() {
+        return vec![primary];
+    }
+    variants
+        .iter()
+        .take(1 + MAX_VARIANT_TOKENS)
+        .map(String::as_str)
+        .collect()
 }
 
 /// Generate speculative emails: likely handle shapes crossed with `domains`,
@@ -339,6 +410,23 @@ pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<String> {
     if let Some(n) = p.number.as_deref() {
         logins.push((format!("{f}.{l}{n}"), 0.45));
         logins.push((format!("{f}{l}{n}"), 0.42));
+    }
+
+    // Alternate-romanization logins (e.g. `mueller.hans`, the Cyrillic passport
+    // form) at reduced handle weight — the primary romanization stays ranked
+    // above them. Skips the all-primary pair already emitted above.
+    let fvs = variant_tokens(&p.first_variants, f);
+    let lvs = variant_tokens(&p.last_variants, l);
+    if fvs.len() > 1 || lvs.len() > 1 {
+        for (fx, &vf) in fvs.iter().enumerate() {
+            for (lx, &vl) in lvs.iter().enumerate() {
+                if (fx == 0 && lx == 0) || vf.is_empty() || vl.is_empty() {
+                    continue;
+                }
+                logins.push((format!("{vf}.{vl}"), 0.50));
+                logins.push((format!("{vf}{vl}"), 0.45));
+            }
+        }
     }
 
     // Full cross-product scored by P(handle) × P(provider), then taken best
@@ -548,15 +636,6 @@ fn titlecase(s: &str) -> String {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => String::new(),
     }
-}
-
-/// Fold a display token to a lowercase ASCII handle token, safe for byte
-/// slicing. Delegates to the shared [`crate::util::str_util::fold_ascii_lower`] so Latin diacritics
-/// map to their base letter (`José` → `jose`, `Müller` → `muller`) and derived
-/// handles match what platforms actually use; non-Latin scripts have no ASCII
-/// fold and yield an empty token (handled by the caller).
-fn sanitize(s: &str) -> String {
-    crate::util::str_util::fold_ascii_lower(s)
 }
 
 /// Deduplicate `(handle, weight)` pairs keeping the highest weight per handle,

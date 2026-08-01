@@ -97,9 +97,12 @@ impl Module for NameIntel {
             result.push(person);
         }
 
-        // Non-Latin names ASCII-fold to empty handle tokens; skip username/email
-        // permutation (which would be meaningless) but still emit search pivots
-        // built from the display name.
+        // Cyrillic and Greek names are transliterated to Latin handle tokens by
+        // `permute::translit`, so they now derive usernames/emails like any Latin
+        // name. Scripts with no offline letter-level romanization (Han, Arabic,
+        // Hebrew) still fold to empty handle tokens — for those, username/email
+        // permutation is skipped (it would be meaningless) but display-name search
+        // pivots are still emitted.
         let has_handle = !name.first.is_empty() && !name.last.is_empty();
 
         // ── Usernames ───────────────────────────────────────────────────────

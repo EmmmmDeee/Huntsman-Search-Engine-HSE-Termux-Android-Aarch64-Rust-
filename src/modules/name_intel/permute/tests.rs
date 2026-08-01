@@ -44,6 +44,9 @@ use super::*;
             last: String::new(),
             number: None,
             display_words: Vec::new(),
+            first_variants: Vec::new(),
+            middle_variants: Vec::new(),
+            last_variants: Vec::new(),
         };
         assert_eq!(empty.display_first(), "");
         assert_eq!(empty.display_last(), "");
@@ -64,28 +67,86 @@ use super::*;
     }
 
     #[test]
-    fn non_latin_name_yields_pivots_but_no_handles() {
-        // Cyrillic ASCII-folds to empty handle tokens: the name still parses so
-        // display-name search pivots generate, but username/email permutation
-        // (which needs ASCII handles) is empty.
+    fn cyrillic_name_transliterates_to_handles() {
+        // "Иван Петров" (Ivan Petrov). Was a coverage hole: Cyrillic folded to
+        // empty handle tokens, so the seed derived ZERO usernames/emails —
+        // measured live at 0/0. The transliteration engine romanizes it, so the
+        // full username/email permutation now fires like any Latin name.
         let n = parse(
             "\u{0418}\u{0432}\u{0430}\u{043d} \u{041f}\u{0435}\u{0442}\u{0440}\u{043e}\u{0432}",
         )
-        .expect("non-Latin name parses for pivots");
-        assert!(n.first.is_empty() && n.last.is_empty());
-        assert!(usernames(&n).is_empty(), "no ASCII handle => no usernames");
-        assert!(emails(&n, &default_domains()).is_empty());
-        let pivots = pivots(&n, None);
-        assert!(!pivots.is_empty(), "display-name pivots still generate");
-        // Handle-only platforms are skipped when there is no ASCII handle.
+        .expect("Cyrillic name parses");
+        assert_eq!(n.first, "ivan");
+        assert_eq!(n.last, "petrov");
+        let u: Vec<String> = usernames(&n).into_iter().map(|h| h.handle).collect();
+        assert!(u.contains(&"ivan.petrov".to_string()));
+        assert!(u.contains(&"ipetrov".to_string()));
         assert!(
-            !pivots
-                .iter()
-                .any(|pv| pv.platform.starts_with("Instagram")
-                    || pv.platform.starts_with("WhatsMyName")),
-            "handle-only pivots must be skipped without an ASCII handle"
+            !emails(&n, &default_domains()).is_empty(),
+            "Cyrillic name now derives speculative emails"
         );
+        // Handle-gated pivots (Instagram, …) now generate too, since a handle exists.
+        let pivots = pivots(&n, None);
+        assert!(
+            pivots.iter().any(|pv| pv.platform.starts_with("Instagram")),
+            "handle pivots generate once a transliterated handle exists"
+        );
+        // The display form keeps the original Cyrillic for quoted searches.
         assert!(pivots.iter().any(|pv| pv.url.contains("google.com/search")));
+    }
+
+    #[test]
+    fn real_cyrillic_surnames_romanize_recognizably() {
+        // Public figures — the primary romanization must be the recognizable
+        // Latin stem their real handles/press use.
+        assert_eq!(p("Мария Шарапова").last, "sharapova"); // Maria Sharapova
+        assert_eq!(p("Владимир Путин").last, "putin"); // Vladimir Putin
+        assert_eq!(p("Сергей Брин").last, "brin"); // Sergey Brin
+        assert_eq!(p("Гарри Каспаров").last, "kasparov"); // Garry Kasparov
+        // -ый surname ending collapses to "-y" in the web scheme (Navalny).
+        assert_eq!(p("Алексей Навальный").last, "navalny");
+    }
+
+    #[test]
+    fn greek_name_transliterates_to_handles() {
+        // "Γιώργος Παπαδόπουλος" (Giorgos Papadopoulos) — the ου digraph must
+        // romanize to "ou" (papadopoulos, not papadopoylos).
+        let n = p("Γιώργος Παπαδόπουλος");
+        assert_eq!(n.first, "giorgos");
+        assert_eq!(n.last, "papadopoulos");
+        let u: Vec<String> = usernames(&n).into_iter().map(|h| h.handle).collect();
+        assert!(u.contains(&"giorgos.papadopoulos".to_string()));
+        // Alexis Tsipras — τσ→ts, ξ→x, η→i.
+        assert_eq!(p("Αλέξης Τσίπρας").first, "alexis");
+        assert_eq!(p("Αλέξης Τσίπρας").last, "tsipras");
+    }
+
+    #[test]
+    fn german_umlaut_yields_both_muller_and_mueller() {
+        // The plain fold stays PRIMARY (muller — unchanged), and the ue-expansion
+        // convention is added as a real alternate handle people register under.
+        let n = p("Hans Müller");
+        assert_eq!(n.last, "muller"); // primary unchanged
+        let u: Vec<String> = usernames(&n).into_iter().map(|h| h.handle).collect();
+        assert!(u.contains(&"hans.muller".to_string()));
+        assert!(
+            u.contains(&"hans.mueller".to_string()),
+            "the German ue-expansion variant must also derive"
+        );
+    }
+
+    #[test]
+    fn han_script_still_yields_no_handles() {
+        // CJK has no letter-level offline romanization (needs a dictionary), so
+        // it honestly stays handle-free — only display-name pivots generate.
+        // Guards against a false claim that we romanize scripts we do not.
+        // (Space-separated so it parses into two tokens; Han names are normally
+        // written without spaces and would parse to None — also handle-free.)
+        let n = parse("\u{674e} \u{660e}").expect("Han name parses for pivots");
+        assert!(n.first.is_empty() && n.last.is_empty());
+        assert!(usernames(&n).is_empty());
+        assert!(emails(&n, &default_domains()).is_empty());
+        assert!(!pivots(&n, None).is_empty(), "display pivots still generate");
     }
 
     #[test]

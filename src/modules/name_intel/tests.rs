@@ -93,3 +93,39 @@ use super::*;
             .unwrap();
         assert!(out.entities.is_empty());
     }
+
+    #[tokio::test]
+    async fn cyrillic_name_derives_handles_end_to_end() {
+        // Cyrillic name: Иван Петров (Ivan Petrov). Previously ASCII-folded to
+        // empty handle tokens, so the module emitted ZERO usernames/emails —
+        // measured live at 0/0. The transliteration engine (permute::translit)
+        // romanizes it, so the full module now derives usernames and emails
+        // through process(), plus the Person anchor and display-name pivots.
+        let m = NameIntel;
+        let out = m
+            .process(
+                &Target::new(TargetKind::FullName, "Иван Петров"),
+                &ctx("scan-z"),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.entities.iter().any(|e| e.kind == EntityKind::Person),
+            "Person anchor must be emitted"
+        );
+        assert!(
+            out.entities.iter().any(|e| e.kind == EntityKind::Url),
+            "search-pivot Urls must be emitted"
+        );
+        // The regression this whole change targets: handles now derive.
+        assert!(
+            out.entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username && e.value == "ivan.petrov"),
+            "transliterated username 'ivan.petrov' must be derived"
+        );
+        assert!(
+            out.entities.iter().any(|e| e.kind == EntityKind::Email),
+            "speculative emails must be derived from the transliterated handle"
+        );
+    }
