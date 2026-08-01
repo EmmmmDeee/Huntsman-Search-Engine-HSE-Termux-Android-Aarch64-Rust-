@@ -85,7 +85,7 @@ so keys never leave the device).
 
 > **Web & API scans are as thorough as the CLI.** A scan launched from the
 > Chrome SPA's **New Scan** wizard, or via `POST /api/v1/scans` with `options`
-> omitted, uses the same comprehensive defaults as `hse scan` — depth 3,
+> omitted, uses the same comprehensive defaults as `hse scan` — full depth,
 > expansion floor 0.20, entity cap 2500 — so you get the full seed → identifiers
 > → pivots → infrastructure sweep without tuning anything.
 

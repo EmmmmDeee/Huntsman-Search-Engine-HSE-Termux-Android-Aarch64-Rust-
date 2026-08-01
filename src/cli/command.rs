@@ -82,7 +82,7 @@ pub enum Command {
         depth: Option<u32>,
         /// Shorthand for deep recursive expansion: pins depth to MAX_DEPTH (3) and
         /// clamps the expansion floor to ≤0.40. With the comprehensive default
-        /// (depth 3, floor 0.20) this now matches the default; kept for explicitness
+        /// (full depth, floor 0.20) this now matches the default; kept for explicitness
         /// and for use alongside a raised `--min-expand-confidence`. Overridden by
         /// an explicit --depth.
         #[arg(short = 'R', long)]
@@ -116,7 +116,7 @@ pub enum Command {
         min_expand_confidence: f64,
         /// Hard cap on total entities; stops expansion when reached. Omitted ⇒ the
         /// product default (2500) — a generous Termux on-device safety bound for the
-        /// comprehensive depth-3 default sweep. Pass a larger value (or use a
+        /// comprehensive full-depth default sweep. Pass a larger value (or use a
         /// profile) to go further.
         #[arg(long)]
         max_entities: Option<usize>,
