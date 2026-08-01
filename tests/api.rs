@@ -2106,6 +2106,100 @@ async fn scan_entities_filter_quarantines_candidate_entities_by_default() {
     );
 }
 
+#[tokio::test]
+async fn scan_entities_pagination_works() {
+    use huntsman_search_engine::core::entity::{Entity, EntityKind};
+    use huntsman_search_engine::core::scan::{Scan, Target, TargetKind};
+    let (app, store) = test_app_with_store("entities_paginate");
+    let sid = "s-paginate";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Test Subject"),
+        ))
+        .unwrap();
+    // Insert 50 entities to test pagination.
+    for i in 0..50 {
+        let entity = Entity::new(
+            EntityKind::Email,
+            format!("test{i:02}@example.com"),
+            0.8,
+            sid,
+        );
+        store.upsert_entity(&entity).unwrap();
+    }
+
+    // Test default pagination (offset=0, limit=1000): should return all 50.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/entities")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["count"], 50, "default should return all 50 entities");
+    assert_eq!(json["total"], 50, "total should be 50");
+    assert_eq!(json["offset"], 0, "default offset should be 0");
+    assert_eq!(json["limit"], 1000, "default limit should be 1000");
+
+    // Test custom limit: offset=0, limit=10.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/entities?offset=0&limit=10"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["count"], 10, "limit=10 should return 10 entities");
+    assert_eq!(json["total"], 50, "total should still be 50");
+    assert_eq!(json["offset"], 0, "offset should be 0");
+    assert_eq!(json["limit"], 10, "limit should be 10");
+
+    // Test middle page: offset=20, limit=15.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/entities?offset=20&limit=15"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["count"], 15, "offset=20,limit=15 should return 15");
+    assert_eq!(json["total"], 50, "total should still be 50");
+    assert_eq!(json["offset"], 20, "offset should be 20");
+    assert_eq!(json["limit"], 15, "limit should be 15");
+
+    // Test out-of-range page: offset=45, limit=20.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/entities?offset=45&limit=20"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(
+        json["count"], 5,
+        "offset=45,limit=20 should return 5 entities (45+5=50)"
+    );
+    assert_eq!(json["total"], 50, "total should still be 50");
+    assert_eq!(json["offset"], 45, "offset should be 45");
+
+    // Test limit capped at 10000.
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{sid}/entities?limit=100000")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["count"], 50, "limit should be capped at 10000");
+    assert_eq!(json["limit"], 10000, "limit should be capped to 10000");
+}
+
 // ── Live list (empty) ───────────────────────────────────────────────────
 
 #[tokio::test]
