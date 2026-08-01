@@ -712,8 +712,9 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
 /// `criminal_ip`, `dehashed`, `leakix`, `securitytrails`, `ipqs`, `zoomeye`,
 /// `intelx`, `hibp`, `niamonx`) hand-rolled identically because
 /// [`fetch_keyed_json`] couldn't cover their request shape: begin on
-/// `initial_key`, retry once per key on a 429 with a real `Retry-After` sleep
-/// (via [`handle_keyed_error`]), and on a terminal key failure — 401/403/429, or
+/// `initial_key`, retry in place on a 429 with a real `Retry-After` sleep, up
+/// to twice per key (via [`handle_keyed_error`]'s own retry budget), and on a
+/// terminal key failure — 401/403/429, or
 /// a 400 whose body is an auth failure in disguise (some providers, e.g.
 /// ONYPHE/Netlas, answer a dead key with 400 rather than 401 — see
 /// [`is_auth_failure_400_body`]) — rotate to the next usable pooled key and
@@ -734,10 +735,13 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
 /// the response *body*, `query_status: "no_result"`), so a caller that never
 /// special-cased 404 must keep not special-casing it — pass `&[]`. Returns
 /// `Ok(None)` for a code in `absent_statuses`, or if the scan is cancelled
-/// mid-cascade (`ctx.cancel`, checked once per attempt so a cancellation
-/// lands promptly even mid-retry) — externally identical either way to what
-/// every hand-rolled copy already did (`return Ok(ModuleResult::new())` at
-/// the `process()` level).
+/// mid-cascade (`ctx.cancel`, checked at the top of every attempt, so a
+/// cancellation before a request is sent or between retries is observed
+/// promptly — the one exception is *during* a 429's own backoff sleep inside
+/// [`handle_keyed_error`], which is not itself cancel-aware and runs to
+/// completion, clamped to 4 s, before the next check) — externally identical
+/// either way to what every hand-rolled copy already did (`return
+/// Ok(ModuleResult::new())` at the `process()` level).
 pub async fn keyed_cascade<F>(
     ctx: &crate::core::module::ModuleContext,
     module: &'static str,

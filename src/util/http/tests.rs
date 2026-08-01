@@ -936,8 +936,11 @@ async fn keyed_cascade_retries_the_same_key_once_on_429_before_succeeding() {
             let n = hits_srv.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if n == 0 {
                 let body = b"{}";
+                // Retry-After: 0 — a real header the retry path still parses
+                // and honours, just without paying an actual wall-clock
+                // second in the test suite for it.
                 let head = format!(
-                    "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nContent-Length: {}\r\n\r\n",
+                    "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: {}\r\n\r\n",
                     body.len()
                 );
                 let _ = sock.write_all(head.as_bytes()).await;

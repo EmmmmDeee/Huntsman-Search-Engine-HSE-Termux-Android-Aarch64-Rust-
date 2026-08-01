@@ -25,10 +25,31 @@ use std::path::PathBuf;
 /// (typically `/data/data/com.termux/files/home`) — this falls back to
 /// `.huntsman` under the current directory, keeping the whole layout together
 /// rather than scattering bare files.
+///
+/// Under `cfg(test)` this is rooted under the OS temp directory instead of the
+/// real `$HOME` — several tests exercise code paths that persist real state
+/// here (e.g. a 401/403/429 response through `keyed_cascade` triggers
+/// `ModuleContext::report_key_exhausted`, which unconditionally saves the
+/// whole key pool). `std::env::set_var("HOME", …)` would be the obvious
+/// per-test fix, but is an `unsafe fn` this crate's `#![forbid(unsafe_code)]`
+/// rules out entirely (see `curl_client::resolve_doh`'s doc comment for the
+/// same constraint elsewhere) — `cfg(test)` is a compile-time switch, not a
+/// runtime env mutation, so it needs no unsafe code and can't race a
+/// fire-and-forget `spawn_blocking` persist that outlives the test function.
+/// Shared across the whole test process (not a fresh directory per call), so
+/// every call site agrees on one location, matching a real `$HOME`'s
+/// single-location semantics — and still ends in `.huntsman`, so this is
+/// invisible to callers and to this module's own path-shape tests below.
 #[must_use]
 pub fn huntsman_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let dir = PathBuf::from(home).join(".huntsman");
+    let dir = if cfg!(test) {
+        std::env::temp_dir()
+            .join("huntsman-test-home")
+            .join(".huntsman")
+    } else {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        PathBuf::from(home).join(".huntsman")
+    };
     // 0700 owner-only; best-effort so a read path still resolves on failure.
     // `create_dir_private` also RE-TIGHTENS a pre-existing dir (an older install's
     // `~/.huntsman` made 0755 by a plain `create_dir_all`), so the key pool /
