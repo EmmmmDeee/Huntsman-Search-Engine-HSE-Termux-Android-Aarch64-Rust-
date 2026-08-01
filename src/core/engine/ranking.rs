@@ -117,6 +117,80 @@ pub fn rank_enrichment_leverage(
     out
 }
 
+/// True if `e` is worth **seeding an autonomous scan on**.
+///
+/// A superset of [`history::is_cross_scan_candidate`], and deliberately a
+/// separate predicate, because the two answer different questions:
+///
+/// - the history gate asks *"does this value bridge two investigations?"* — a
+///   join key across dossiers, which is why it admits only specific personal
+///   identifiers;
+/// - this asks *"is this worth pointing a scan at?"* — which for a GEOINT
+///   engine must include the identifiers that resolve to a **place**.
+///
+/// Reusing the history gate for both silently denied the autonomous sweep the
+/// three kinds that geolocate hardest. A BSSID is a globally unique,
+/// IEEE-assigned identifier bolted to a physical premises: one lookup in an
+/// observation corpus turns it into a coordinate. The engine already knows
+/// this on the *other* recursion path — `scan::scoring::geo_npv` rates
+/// MacAddress and Ssid at 14.0 with a 2.0× geo-proximity boost, above
+/// Organisation and Coordinates — so refusing to seed them was an internal
+/// contradiction, not a policy.
+///
+/// The widening is by **grain, not by kind**: an identifier is admitted only
+/// when it actually resolves to one place. Randomised/local MACs rotate every
+/// few minutes and belong to no premises; vendor-default SSIDs are shared by
+/// thousands of unrelated routers; a country centroid or a datacentre fix
+/// geolocates nobody. Each is refused for its own reason below.
+///
+/// Pure and total. `is_cross_scan_candidate` is called unchanged for the
+/// identity kinds, so every existing history behaviour is preserved exactly.
+#[must_use]
+pub fn is_autonomous_seed_candidate(e: &Entity) -> bool {
+    use crate::core::entity::EntityKind;
+
+    // Never re-seed a node that is already known-historical or speculative —
+    // the same three exclusions the history gate opens with.
+    if e.has_tag(crate::core::tags::RECALLED) || e.has_tag("name-derived") || e.has_tag("permuted")
+    {
+        return false;
+    }
+
+    match e.kind {
+        // A BSSID. `util::oui::is_locally_administered` reads the U/L bit:
+        // `Some(true)` is a randomised privacy address (rotates every ~15 min,
+        // resolves to nothing), `None` means the value isn't even MAC-shaped.
+        // Only a real IEEE-assigned unicast address names a fixed radio.
+        EntityKind::MacAddress => {
+            e.confidence >= 0.50
+                && crate::util::oui::is_locally_administered(&e.value) == Some(false)
+                && !e.value.chars().all(|c| matches!(c, '0' | ':' | '-' | '.'))
+        }
+        // An SSID is a NAME, not an assignment, so it needs the generic-name
+        // filter a BSSID does not: `NETGEAR-7788` is thousands of strangers'
+        // routers. Same classifier the WiGLE module applies before it will
+        // spend a request (`util::wifi`, shared precisely so the two can't
+        // drift). The length floor matches the history gate's Username rule.
+        EntityKind::Ssid => {
+            e.confidence >= 0.50
+                && e.value.trim().len() >= 4
+                && !crate::util::wifi::is_generic_ssid(&e.value)
+        }
+        // A precise fix reverse-geocodes into an address, POIs and property
+        // records. A COARSE centroid (postcode/suburb/country) or a HOSTING
+        // fix (a datacentre — it locates a server, never a person) does not.
+        EntityKind::Coordinates => {
+            e.confidence >= 0.50
+                && !e.has_tag(crate::core::tags::COARSE)
+                && !e.has_tag(crate::core::tags::HOSTING)
+                && !e.has_tag("postcode-only")
+                && !e.has_tag("candidate-suburb")
+        }
+        // Every identity kind keeps the history gate's exact rule.
+        _ => history::is_cross_scan_candidate(e),
+    }
+}
+
 /// Intrinsic pivot value of an identifier kind — how much investigative reach a
 /// scan seeded on it tends to unlock, independent of how many investigations have
 /// already touched it. The ordering encodes Interpol-style tradecraft: a unique
@@ -140,6 +214,25 @@ pub fn kind_pivot_value(kind: &crate::core::entity::EntityKind) -> f64 {
         EntityKind::AbnAcn => 0.66,
         EntityKind::Organisation => 0.58,
         EntityKind::CryptoAddress => 0.52,
+        // A BSSID is a globally unique, IEEE-assigned identifier bolted to a
+        // physical premises: one corpus lookup turns it into a coordinate, and
+        // the networks co-observed around it into a neighbourhood. Below
+        // CryptoAddress because this table measures NEW QUERY SURFACE, not geo
+        // speed — a wallet chains outward across a whole ledger, whereas a
+        // BSSID is near-terminal: it reaches a place, and stops. Above
+        // Coordinates because it is one hop SHORT of the terminal node and
+        // opens the co-location queries a bare fix cannot.
+        EntityKind::MacAddress => 0.48,
+        // The WiGLE peer of the BSSID, and rated identically on the geo axis by
+        // `scoring::geo_npv` (both 14.0). One notch lower here because an SSID
+        // is a NAME rather than an assignment — it can collide worldwide, which
+        // is exactly why seeding on one requires the generic-name filter in
+        // `is_autonomous_seed_candidate` that a BSSID does not need.
+        EntityKind::Ssid => 0.44,
+        // Unchanged, but reachable by the sweep for the first time. Below the
+        // two RF pivots because a coordinate is the CONVERGENCE point rather
+        // than a source of new queries; above Domain because a precise fix
+        // still reverse-geocodes into an address, POIs and property records.
         EntityKind::Coordinates => 0.40,
         EntityKind::Domain => 0.34,
         EntityKind::IpAddress | EntityKind::Asn | EntityKind::Cidr => 0.22,
@@ -194,7 +287,7 @@ pub fn autonomous_target_score(
 /// Rank entities for fully autonomous investigation — the multi-factor,
 /// no-operator-input ranking that a continuous loop drives.
 ///
-/// Scores every pivotable [`history::is_cross_scan_candidate`] identifier by
+/// Scores every pivotable [`is_autonomous_seed_candidate`] identifier by
 /// [`autonomous_target_score`] (pivot-value × leverage × confidence), letting the
 /// platform *classify and prioritise* the whole working set, then work down it.
 /// `degree_of` supplies each UID's cross-investigation degree (typically
@@ -212,7 +305,7 @@ pub fn rank_autonomous_targets<F: Fn(&str) -> usize>(
 ) -> Vec<AutonomousTarget> {
     let mut out: Vec<AutonomousTarget> = entities
         .iter()
-        .filter(|e| !exclude.contains(&e.uid) && history::is_cross_scan_candidate(e))
+        .filter(|e| !exclude.contains(&e.uid) && is_autonomous_seed_candidate(e))
         .filter_map(|e| {
             let kind = crate::core::scan::TargetKind::from_entity_kind(&e.kind)?;
             let degree = degree_of(&e.uid);
@@ -268,7 +361,7 @@ pub struct AutonomousPlan {
 /// values interleave kinds harder.
 ///
 /// Same gates as [`rank_autonomous_targets`] — only pivotable
-/// [`history::is_cross_scan_candidate`] identifiers, with `exclude` honoured so the
+/// [`is_autonomous_seed_candidate`] identifiers, with `exclude` honoured so the
 /// continuous loop converges. Deterministic: ties broken by raw score then UID.
 /// Truncated to `limit`. Pure given `degree_of` — no I/O of its own. A negative
 /// `diversity` is floored to `0.0`.
@@ -282,7 +375,7 @@ pub fn plan_autonomous_sweep<F: Fn(&str) -> usize>(
     // 1) Score every eligible candidate once (same gate as rank_autonomous_targets).
     let mut pool: Vec<AutonomousTarget> = entities
         .iter()
-        .filter(|e| !exclude.contains(&e.uid) && history::is_cross_scan_candidate(e))
+        .filter(|e| !exclude.contains(&e.uid) && is_autonomous_seed_candidate(e))
         .filter_map(|e| {
             let kind = crate::core::scan::TargetKind::from_entity_kind(&e.kind)?;
             let degree = degree_of(&e.uid);
@@ -434,7 +527,7 @@ pub fn rank_identity_aware_targets<F: Fn(&str) -> usize>(
             members: HashSet::new(),
         });
         g.members.insert(e.uid.as_str());
-        if exclude.contains(&e.uid) || !history::is_cross_scan_candidate(e) {
+        if exclude.contains(&e.uid) || !is_autonomous_seed_candidate(e) {
             continue;
         }
         let Some(kind) = crate::core::scan::TargetKind::from_entity_kind(&e.kind) else {

@@ -2903,11 +2903,18 @@ fn rank_autonomous_targets_orders_excludes_and_truncates() {
     use crate::core::scan::TargetKind;
     use std::collections::HashSet;
 
+    // The fixture's coordinate is tagged COARSE so it is excluded for the reason
+    // this test's comment always claimed — its GRAIN. It previously carried no
+    // tag and was excluded merely because the gate refused every Coordinates by
+    // kind, so it passed for the wrong reason; a precise fix is now seedable and
+    // only a coarse centroid is not.
+    let mut coarse_fix = Entity::new(EntityKind::Coordinates, "-33.8,151.2", 0.9, "s");
+    coarse_fix.tag(crate::core::tags::COARSE);
     let entities = vec![
         Entity::new(EntityKind::Email, "a@b.com", 0.9, "s"),
         Entity::new(EntityKind::Phone, "+61400111222", 0.9, "s"),
         Entity::new(EntityKind::Credential, "secret", 0.9, "s"), // not a cross-scan candidate
-        Entity::new(EntityKind::Coordinates, "-33.8,151.2", 0.9, "s"), // coarse geo — gated out
+        coarse_fix,                                              // coarse geo — gated out by grain
         Entity::new(EntityKind::Username, "alice", 0.6, "s"),
     ];
     // Uniform degree so the ordering is decided by pivot × confidence alone.
@@ -2918,7 +2925,8 @@ fn rank_autonomous_targets_orders_excludes_and_truncates() {
     assert_eq!(
         ranked.len(),
         3,
-        "only the cross-scan-candidate pivots (email/phone/username) survive the gate"
+        "the seedable pivots survive; a Credential is non-pivotable and a COARSE \
+         centroid is too imprecise to seed"
     );
     assert_eq!(ranked[0].kind, TargetKind::Email, "email pivots strongest");
     assert_eq!(ranked[1].kind, TargetKind::Phone, "phone next");
@@ -3874,4 +3882,140 @@ async fn the_audit_does_not_inflate_the_confidence_it_grades() {
             e.value
         );
     }
+}
+
+/// The autonomous sweep must be able to seed the GEOLOCATION pivots — a hardware
+/// BSSID, a person-named SSID, a precise fix — while still refusing the ones that
+/// geolocate nobody.
+///
+/// Both halves matter. Before `is_autonomous_seed_candidate` existed, the sweep
+/// gated on `history::is_cross_scan_candidate`, whose `_ => false` arm rejected
+/// all three kinds outright: the engine rated MacAddress/Ssid at `geo_npv` 14.0
+/// with a 2.0x geo-proximity boost on the in-scan path, then refused to point a
+/// scan at them on the autonomous path. And a gate that admitted them
+/// indiscriminately would be just as wrong — it would flood the queue with
+/// randomised privacy MACs and carrier-default network names that no observation
+/// corpus can resolve to a place.
+///
+/// Also pins the two invariants the change must not break: the history gate's own
+/// semantics are untouched, and `kind_pivot_value` ranks the geo kinds explicitly
+/// instead of dumping them on the `_ => 0.12` catch-all floor.
+#[test]
+fn autonomous_sweep_seeds_specific_geo_pivots_and_refuses_generic_ones() {
+    use super::{is_autonomous_seed_candidate, kind_pivot_value, rank_autonomous_targets};
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::scan::TargetKind;
+    use std::collections::HashSet;
+
+    // ── Admitted: each resolves to ONE place ────────────────────────────────
+    let email = Entity::new(EntityKind::Email, "a@b.com", 0.90, "s");
+    // 0x3c: U/L bit clear (a real IEEE-assigned OUI), I/G bit clear (unicast).
+    let bssid = Entity::new(EntityKind::MacAddress, "3C:5A:B4:11:22:33", 0.60, "s");
+    // A person-chosen name — the exact false-positive class the whole-token
+    // matcher in `util::wifi` exists to protect.
+    let ssid = Entity::new(EntityKind::Ssid, "Freeman-Family", 0.55, "s");
+    let fix = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.90, "s");
+
+    // ── Refused: each geolocates nobody ─────────────────────────────────────
+    // 0xaa: U/L bit set — a randomised privacy address that rotates ~15 min.
+    let random_mac = Entity::new(EntityKind::MacAddress, "AA:BB:CC:DD:EE:FF", 0.90, "s");
+    // All-zero placeholder: not a device.
+    let zero_mac = Entity::new(EntityKind::MacAddress, "00:00:00:00:00:00", 0.90, "s");
+    // Vendor default — thousands of unrelated routers share it.
+    let generic_ssid = Entity::new(EntityKind::Ssid, "NETGEAR-7788", 0.90, "s");
+    // Below the 4-character floor.
+    let tiny_ssid = Entity::new(EntityKind::Ssid, "hub", 0.90, "s");
+    // A region centroid a module explicitly flagged as non-specific.
+    let mut coarse_fix = Entity::new(EntityKind::Coordinates, "-25.2744,133.7751", 0.90, "s");
+    coarse_fix.tag(crate::core::tags::COARSE);
+    // A datacentre fix — locates a server, never a person.
+    let mut hosting_fix = Entity::new(EntityKind::Coordinates, "37.7749,-122.4194", 0.90, "s");
+    hosting_fix.tag(crate::core::tags::HOSTING);
+    // A real BSSID heard only faintly: ambient, below the confidence floor.
+    let faint_bssid = Entity::new(EntityKind::MacAddress, "3C:5A:B4:99:88:77", 0.45, "s");
+
+    let admitted = [&email, &bssid, &ssid, &fix];
+    let refused = [
+        &random_mac,
+        &zero_mac,
+        &generic_ssid,
+        &tiny_ssid,
+        &coarse_fix,
+        &hosting_fix,
+        &faint_bssid,
+    ];
+
+    // 1) The predicate itself, named per entity so a regression is diagnosable.
+    for e in admitted {
+        assert!(
+            is_autonomous_seed_candidate(e),
+            "{:?} {} must be seedable — it resolves to one place",
+            e.kind,
+            e.value
+        );
+    }
+    for e in refused {
+        assert!(
+            !is_autonomous_seed_candidate(e),
+            "{:?} {} must NOT seed a scan — it geolocates nobody",
+            e.kind,
+            e.value
+        );
+    }
+
+    // 2) The HISTORY gate is unchanged: none of the geo kinds became a
+    //    cross-investigation join key. This is the constraint the separate
+    //    predicate exists to honour — widening the shared gate instead would
+    //    pass (1) and fail here.
+    for e in [&bssid, &ssid, &fix] {
+        assert!(
+            !super::history::is_cross_scan_candidate(e),
+            "{:?} is a SEED, never a cross-scan join key — history semantics must not move",
+            e.kind
+        );
+    }
+
+    // 3) End to end through the ranker.
+    let mut entities: Vec<Entity> = Vec::new();
+    entities.extend(admitted.iter().map(|e| (*e).clone()));
+    entities.extend(refused.iter().map(|e| (*e).clone()));
+    let degree_of = |_uid: &str| 2usize;
+    let exclude = HashSet::new();
+
+    let ranked = rank_autonomous_targets(&entities, degree_of, &exclude, 50);
+    let kinds: HashSet<TargetKind> = ranked.iter().map(|t| t.kind).collect();
+    for k in [
+        TargetKind::Email,
+        TargetKind::MacAddress,
+        TargetKind::Ssid,
+        TargetKind::Coordinates,
+    ] {
+        assert!(kinds.contains(&k), "{k:?} must be seedable by the sweep");
+    }
+    assert_eq!(ranked.len(), 4, "exactly the four admitted entities");
+    for e in refused {
+        assert!(
+            ranked.iter().all(|t| t.uid != e.uid),
+            "{} leaked into the autonomous queue",
+            e.value
+        );
+    }
+
+    // 4) The geo kinds are ranked on their merits, not on the catch-all floor.
+    let mac = kind_pivot_value(&EntityKind::MacAddress);
+    let net = kind_pivot_value(&EntityKind::Ssid);
+    let coord = kind_pivot_value(&EntityKind::Coordinates);
+    assert!(
+        mac > net && net > coord,
+        "BSSID (unique hardware) > SSID (a colliding name) > coordinate (terminal): \
+         {mac} / {net} / {coord}"
+    );
+    assert!(
+        coord > kind_pivot_value(&EntityKind::Domain),
+        "a precise fix out-pivots shared infrastructure"
+    );
+    assert!(
+        net > kind_pivot_value(&EntityKind::Credential),
+        "the geo kinds must not sit on the `_ => 0.12` catch-all floor"
+    );
 }
