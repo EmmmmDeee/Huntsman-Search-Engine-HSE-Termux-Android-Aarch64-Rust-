@@ -7,6 +7,7 @@ use crate::util::circuit_breaker;
 
 use super::keys::scan_for_api_keys;
 use super::redact::redact_credentials;
+use super::url::RequestBuilderExt;
 
 /// True if an HTTP status is a *server-side* fault that should count against a
 /// host's circuit breaker: any 5xx, or 429 (rate-limited / quota-exhausted).
@@ -698,6 +699,93 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
             return Err(Error::module(module, format!("HTTP {status}: {snippet}")));
         }
         return Ok(Some(decode_json_body(resp, module).await?));
+    }
+}
+
+/// The general form of [`fetch_keyed_json`]'s cascade for a provider whose auth
+/// scheme or HTTP method the GET-plus-single-header-value shape can't express —
+/// a `bearer` prefix, extra headers, or a POST body. [`fetch_keyed_json`] owns
+/// the request; this owns only the cascade, and the caller supplies the request
+/// via `build`.
+///
+/// This is the exact outer loop that 9+ modules (`onyphe`, `threatfox`,
+/// `criminal_ip`, `dehashed`, `leakix`, `securitytrails`, `ipqs`, `zoomeye`,
+/// `intelx`, `hibp`, `niamonx`) hand-rolled identically because
+/// [`fetch_keyed_json`] couldn't cover their request shape: begin on
+/// `initial_key`, retry once per key on a 429 with a real `Retry-After` sleep
+/// (via [`handle_keyed_error`]), and on a terminal key failure — 401/403/429, or
+/// a 400 whose body is an auth failure in disguise (some providers, e.g.
+/// ONYPHE/Netlas, answer a dead key with 400 rather than 401 — see
+/// [`is_auth_failure_400_body`]) — rotate to the next usable pooled key and
+/// retry, so one call spends every credential the pool holds before it fails.
+///
+/// `build(key)` constructs a fresh [`reqwest::RequestBuilder`] for one attempt
+/// (a `RequestBuilder` isn't `Clone`, so it must be rebuilt per attempt, not
+/// reused). On a 2xx the caller decodes the returned `Response` itself — some
+/// providers scan the body for leaked API keys ([`super::json_scanned`]), some
+/// don't ([`super::json_decode`]); that choice is the caller's, not this
+/// primitive's, so it isn't lost in the consolidation.
+///
+/// `absent_statuses` names which non-2xx codes mean "no data for this
+/// selector" rather than a failure — mirrors [`fetch_json_inner`]'s own
+/// parameter for the identical reason: not every provider agrees. ONYPHE
+/// answers an unknown selector with a real `404`, but ThreatFox's fixed POST
+/// endpoint never returns one for a per-query miss (a miss is signalled in
+/// the response *body*, `query_status: "no_result"`), so a caller that never
+/// special-cased 404 must keep not special-casing it — pass `&[]`. Returns
+/// `Ok(None)` for a code in `absent_statuses`, or if the scan is cancelled
+/// mid-cascade (`ctx.cancel`, checked once per attempt so a cancellation
+/// lands promptly even mid-retry) — externally identical either way to what
+/// every hand-rolled copy already did (`return Ok(ModuleResult::new())` at
+/// the `process()` level).
+pub async fn keyed_cascade<F>(
+    ctx: &crate::core::module::ModuleContext,
+    module: &'static str,
+    initial_key: &str,
+    absent_statuses: &[u16],
+    mut build: F,
+) -> Result<Option<reqwest::Response>>
+where
+    F: FnMut(&str) -> reqwest::RequestBuilder,
+{
+    let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut key = initial_key.to_string();
+    'cascade: loop {
+        tried.insert(key.clone());
+        let mut retries = 2u8;
+        loop {
+            if ctx.cancel.is_cancelled() {
+                return Ok(None);
+            }
+            let resp = build(&key).send_tagged(module).await?;
+            let status = resp.status();
+            if absent_statuses.contains(&status.as_u16()) {
+                return Ok(None);
+            }
+            if status.is_success() {
+                return Ok(Some(resp));
+            }
+            let code = status.as_u16();
+            if handle_keyed_error(code, resp.headers(), &mut retries, module, &key, ctx).await {
+                continue;
+            }
+            let snippet = error_snippet(resp).await;
+            // handle_keyed_error already burned 401/403/429 internally; the
+            // ambiguous-400-as-auth-failure case is this cascade's own extra
+            // check, so it burns the key itself when that's what fired.
+            let keyed =
+                is_keyed_error_status(code) || (code == 400 && is_auth_failure_400_body(&snippet));
+            if keyed {
+                if code == 400 {
+                    ctx.report_key_exhausted(module, &key, code);
+                }
+                if let Some(next) = ctx.next_pooled_key(module, &tried) {
+                    key = next;
+                    continue 'cascade;
+                }
+            }
+            return Err(Error::module(module, format!("HTTP {status}: {snippet}")));
+        }
     }
 }
 
