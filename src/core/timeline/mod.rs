@@ -558,8 +558,9 @@ fn civil_to_unix(y: i64, m: i64, d: i64, hh: i64, mm: i64, ss: i64) -> (i64, Str
 
 /// UTC `YYYY-MM-DD` for a Unix-seconds instant — Hinnant's `civil_from_days`,
 /// the exact inverse of [`days_from_civil`]. `div_euclid` floors toward
-/// negative infinity so a negative `ts` (pre-1970) maps to the correct civil
-/// day rather than truncating toward zero. Pure, dependency-free, deterministic.
+/// negative infinity so a negative `unix_secs` (pre-1970) maps to the correct
+/// civil day rather than truncating toward zero. Pure, dependency-free,
+/// deterministic.
 ///
 /// The single home for this calendar conversion. Modules that decode a
 /// timestamp out of an identifier — [`crate::modules::structured_id`] (UUIDv1 /
