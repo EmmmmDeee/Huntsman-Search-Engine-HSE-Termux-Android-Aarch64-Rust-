@@ -242,7 +242,38 @@ impl Correlator {
         for c in &firings {
             self.store.upsert_correlation(c)?;
         }
-        debug!(scan_id, fired = firings.len(), "correlator done");
+        // Report what was EXAMINED, not just what fired. `fired = 0` alone is
+        // ambiguous between "the rules ran over the whole scan and nothing
+        // correlated" and "almost every entity was quarantined, so the rules had
+        // nothing to run over" — opposite conditions demanding opposite operator
+        // responses, previously indistinguishable in the logs.
+        let examined = confirmed.len();
+        let quarantined = entities.len().saturating_sub(examined);
+        debug!(
+            scan_id,
+            fired = firings.len(),
+            examined,
+            quarantined,
+            total = entities.len(),
+            "correlator done"
+        );
+        // A scan whose findings are overwhelmingly quarantined has not been
+        // correlated in any meaningful sense, and the operator cannot see that
+        // from a correlation count of zero. This is the one condition worth
+        // raising above debug: it is actionable (the quarantine lifts when the
+        // subject gains a confirmed location) and it silently voids the entire
+        // correlation phase.
+        if quarantined > 0 && examined * QUARANTINE_ALARM_RATIO < entities.len() {
+            tracing::warn!(
+                scan_id,
+                examined,
+                quarantined,
+                total = entities.len(),
+                "correlation ran over a small fraction of the scan — most entities are \
+                 candidate-quarantined, so a low correlation count reflects what was \
+                 EXAMINED, not what was found"
+            );
+        }
         Ok(firings)
     }
 }
@@ -532,6 +563,17 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
 /// finalise stays deterministic in every realistic case. Generous so legitimate
 /// scans keep every correlation.
 const CORRELATOR_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Raise the quarantine alarm when the examined set is under `1/N` of the scan.
+///
+/// Four (i.e. under 25% examined) is deliberately well clear of a scan that
+/// merely carries some breach candidates — quarantining a minority is the
+/// system working as designed. It fires on the pathological shape actually
+/// observed: a 1081-entity dossier in which every breach record stayed
+/// quarantined because the subject never gained a confirmed location, leaving
+/// ~7 entities for the rules and a correlation count of zero that read as
+/// "nothing correlated" rather than "nothing was examined".
+const QUARANTINE_ALARM_RATIO: usize = 4;
 
 /// Run every entity-only rule over an already quarantine-filtered, confirmed
 /// entity slice using a pre-built RuleContext. Split out from [`evaluate_rules`]

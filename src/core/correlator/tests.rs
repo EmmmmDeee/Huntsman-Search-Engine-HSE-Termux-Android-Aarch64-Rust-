@@ -9738,3 +9738,79 @@ fn bench_correlate_entities_is_ts_blind_deterministic_across_a_real_second_bound
          two calls land in different wall-clock seconds"
     );
 }
+
+/// The condition that voids the whole correlation phase without anyone noticing.
+///
+/// `confirmed_only` strips `candidate`-quarantined entities, and the rules only
+/// ever see what survives. In a real 1081-entity dossier the subject never
+/// gained a confirmed location, so `promote_breach_candidate_geo_corroborated`
+/// promoted nothing and effectively every breach record stayed quarantined —
+/// leaving a handful of entities for the rules. The scan reported 0
+/// correlations, which reads as "nothing correlated" when the truth was
+/// "almost nothing was examined". Those demand opposite operator responses.
+///
+/// This pins the shape so the alarm threshold stays meaningful: a scan can be
+/// overwhelmingly quarantined, and the examined set is what the correlation
+/// count is really a statement about.
+#[test]
+fn a_mostly_quarantined_scan_leaves_the_rules_almost_nothing_to_examine() {
+    let mut ents = vec![ent(
+        EntityKind::Email,
+        "subject@example.com",
+        0.8,
+        "s",
+        false,
+    )];
+    for i in 0..99 {
+        ents.push(ent(
+            EntityKind::Email,
+            &format!("breach{i}@example.com"),
+            0.25,
+            "s",
+            true, // candidate-quarantined
+        ));
+    }
+
+    let examined = confirmed_only(&ents).len();
+    let quarantined = ents.len() - examined;
+    assert_eq!(examined, 1, "only the confirmed entity reaches the rules");
+    assert_eq!(quarantined, 99);
+
+    // The alarm condition the correlator now reports on: under 1/N examined.
+    assert!(
+        examined * QUARANTINE_ALARM_RATIO < ents.len(),
+        "this shape must trip the quarantine alarm"
+    );
+}
+
+/// The alarm must NOT fire for a healthy scan that merely carries some
+/// candidates — quarantining a minority is the system working as intended, and
+/// an alarm that cries wolf on normal scans is worse than none.
+#[test]
+fn a_normally_quarantined_scan_does_not_trip_the_alarm() {
+    let mut ents = Vec::new();
+    for i in 0..90 {
+        ents.push(ent(
+            EntityKind::Email,
+            &format!("ok{i}@example.com"),
+            0.8,
+            "s",
+            false,
+        ));
+    }
+    for i in 0..10 {
+        ents.push(ent(
+            EntityKind::Email,
+            &format!("cand{i}@example.com"),
+            0.25,
+            "s",
+            true,
+        ));
+    }
+    let examined = confirmed_only(&ents).len();
+    assert_eq!(examined, 90);
+    assert!(
+        examined * QUARANTINE_ALARM_RATIO >= ents.len(),
+        "90% examined must not raise an alarm"
+    );
+}
