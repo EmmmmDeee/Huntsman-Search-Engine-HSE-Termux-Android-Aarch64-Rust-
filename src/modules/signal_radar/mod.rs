@@ -120,36 +120,16 @@ impl Module for SignalRadar {
 
         let cell_out = scan_cell(scan_id).await;
 
-        combine_sensors([wifi_out, bt_out, gps_out, Ok(lan_out), cell_out])
+        // Sensors are independent observations of different things, so a
+        // failure in one must never discard another's evidence: everything
+        // collected is kept, and a failure is surfaced only when *nothing at
+        // all* was observed. Before this contract, a malfunctioning sensor
+        // returned an empty result, so "termux-api is broken" and "no devices
+        // in range" were the same answer; now a total sensor failure reaches
+        // the engine as a real `ModuleError`. Shared with `device_sensors` via
+        // [`ModuleResult::collect_sensors`].
+        ModuleResult::collect_sensors(SRC, [wifi_out, bt_out, gps_out, Ok(lan_out), cell_out])
     }
-}
-
-/// Fold the five independent sensors into `process()`'s return value.
-///
-/// Sensors are independent observations of different things, so a failure in
-/// one must never discard another's evidence: everything collected is kept,
-/// and a failure is surfaced only when *nothing at all* was observed. That is
-/// exactly [`ModuleResult::or_hard_failure`]'s contract, shared with
-/// `ip_reputation` (T2.111) and `niamonx` (T2.114).
-///
-/// The distinction this preserves: before, a malfunctioning sensor returned an
-/// empty result, so "termux-api is broken" and "no devices in range" were the
-/// same answer. Now a total sensor failure reaches the engine as a real
-/// `ModuleError` — visible to the operator, counted in `modules_errored`, and
-/// fed to the circuit breaker and health streak.
-fn combine_sensors(outcomes: [Result<ModuleResult>; 5]) -> Result<ModuleResult> {
-    let mut combined = ModuleResult::new();
-    let mut first_failure = None;
-    for outcome in outcomes {
-        match outcome {
-            Ok(r) => combined.extend(r.entities),
-            Err(e) => {
-                tracing::warn!(module = SRC, error = %e, "signal_radar: sensor failed");
-                first_failure.get_or_insert(e);
-            }
-        }
-    }
-    combined.or_hard_failure(first_failure)
 }
 
 /// Fetch and parse `termux-wifi-scaninfo`.

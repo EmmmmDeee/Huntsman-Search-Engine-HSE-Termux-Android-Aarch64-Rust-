@@ -30,7 +30,6 @@ mod tests {
     /// [`crate::modules::device_fix::scan_location_ladder`]: production now reaches
     /// the shared parse through that, and this binding survives solely so this
     /// module's parse tests keep exercising it under this module's own `SRC`.
-    #[cfg(test)]
     fn parse_fix(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
         device_fix::parse_fix(stdout, scan_id, SRC)
     }

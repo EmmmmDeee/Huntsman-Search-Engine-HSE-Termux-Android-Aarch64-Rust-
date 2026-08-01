@@ -100,18 +100,7 @@ impl Module for DeviceSensors {
             .await;
         let loc_out = scan_location(&ctx.scan_id).await;
 
-        let mut result = ModuleResult::new();
-        let mut first_failure = None;
-        for outcome in [wifi_out, loc_out] {
-            match outcome {
-                Ok(r) => result.extend(r.entities),
-                Err(e) => {
-                    tracing::warn!(module = SRC, error = %e, "device_sensors: sensor failed");
-                    first_failure.get_or_insert(e);
-                }
-            }
-        }
-        result.or_hard_failure(first_failure)
+        ModuleResult::collect_sensors(SRC, [wifi_out, loc_out])
     }
 }
 

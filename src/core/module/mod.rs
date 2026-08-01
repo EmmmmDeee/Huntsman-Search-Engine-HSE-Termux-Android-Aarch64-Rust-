@@ -450,6 +450,36 @@ impl ModuleResult {
         }
         Ok(self)
     }
+
+    /// Fold several *independent, homogeneous* sub-fetches — each returning its
+    /// own [`ModuleResult`] — into one result under the [`Self::or_hard_failure`]
+    /// contract: keep every entity any sub-fetch produced, log each failure
+    /// under `module = src`, and surface the first failure only when nothing at
+    /// all was collected. This is the array-of-`Result` form of
+    /// `or_hard_failure`, shared by the sensor modules (`signal_radar`,
+    /// `device_sensors`) whose sub-fetches all return `Result<ModuleResult>`.
+    ///
+    /// Modules whose sub-fetches instead write into a shared result, exclude a
+    /// best-effort branch from the failure, or need per-branch emit logic
+    /// (`ip_reputation`, `niamonx`) build `hard_failure` themselves and call
+    /// [`Self::or_hard_failure`] directly.
+    pub fn collect_sensors(
+        src: &str,
+        outcomes: impl IntoIterator<Item = Result<ModuleResult>>,
+    ) -> Result<Self> {
+        let mut combined = ModuleResult::new();
+        let mut first_failure = None;
+        for outcome in outcomes {
+            match outcome {
+                Ok(r) => combined.extend(r.entities),
+                Err(e) => {
+                    tracing::warn!(module = src, error = %e, "sensor sub-fetch failed");
+                    first_failure.get_or_insert(e);
+                }
+            }
+        }
+        combined.or_hard_failure(first_failure)
+    }
 }
 
 #[cfg(test)]
