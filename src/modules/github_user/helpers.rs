@@ -4,15 +4,15 @@
 /// is the identity, so the same key on two accounts yields the same fingerprint.
 /// Returns `None` for a malformed key (missing algo/base64).
 pub(super) fn ssh_fingerprint(raw: &str) -> Option<String> {
-    use sha2::{Digest, Sha256};
     let mut parts = raw.split_whitespace();
     let algo = parts.next()?;
     let blob = parts.next()?;
     if blob.len() < 16 {
         return None; // not a plausible key body
     }
-    let digest = Sha256::digest(format!("{algo} {blob}").as_bytes());
-    Some(format!("ssh:{}", hex::encode(&digest[..8])))
+    // First 8 digest bytes = the first 16 hex chars of the authoritative digest.
+    let digest = crate::core::crypto::sha256_hex(format!("{algo} {blob}").as_bytes());
+    Some(format!("ssh:{}", &digest[..16]))
 }
 
 /// Normalise and vet a commit-author email for emission: trimmed + lowercased,

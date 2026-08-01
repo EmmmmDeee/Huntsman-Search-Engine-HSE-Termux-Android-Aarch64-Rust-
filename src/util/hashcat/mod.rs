@@ -164,7 +164,9 @@ fn sha1_hex(s: &str) -> String {
     hex::encode(sha1::Sha1::digest(s.as_bytes()))
 }
 fn sha256_hex(s: &str) -> String {
-    hex::encode(sha2::Sha256::digest(s.as_bytes()))
+    // Delegates to the single authoritative SHA-256→hex primitive; the sibling
+    // md5/sha1/sha512 helpers stay local (each is used only here, not fragmented).
+    crate::core::crypto::sha256_hex(s.as_bytes())
 }
 fn sha512_hex(s: &str) -> String {
     hex::encode(sha2::Sha512::digest(s.as_bytes()))

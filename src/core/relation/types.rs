@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::core::entity::{EntityKind, unix_now};
 
@@ -144,16 +143,16 @@ impl Relation {
         let from_uid = from_uid.into();
         let to_uid = to_uid.into();
         let scan_id = scan_id.into();
-        let mut h = Sha256::new();
-        h.update(from_uid.as_bytes());
-        h.update(b"|");
-        h.update(kind.as_str().as_bytes());
-        h.update(b"|");
-        h.update(to_uid.as_bytes());
-        h.update(b"|");
-        h.update(scan_id.as_bytes());
         Self {
-            id: hex::encode(h.finalize()),
+            id: crate::core::crypto::sha256_hex_parts(&[
+                from_uid.as_bytes(),
+                b"|",
+                kind.as_str().as_bytes(),
+                b"|",
+                to_uid.as_bytes(),
+                b"|",
+                scan_id.as_bytes(),
+            ]),
             from_uid,
             to_uid,
             kind,

@@ -1618,15 +1618,21 @@ pub fn scan_id(kind: &str, value: &str) -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.subsec_nanos());
-    let mut h = Sha256::new();
-    h.update(kind.as_bytes());
-    h.update(b":");
-    h.update(value.as_bytes());
-    h.update(b":");
-    h.update(unix_now().to_be_bytes());
-    h.update(nanos.to_be_bytes());
-    h.update(SEQ.fetch_add(1, Ordering::Relaxed).to_be_bytes());
-    hex::encode(h.finalize())
+    // Bind the byte-array temporaries so their slices outlive the call; the part
+    // order is byte-identical to the previous incremental hasher, so scan ids are
+    // unchanged. `SEQ.fetch_add` must run exactly once — it does, bound here.
+    let ts = unix_now().to_be_bytes();
+    let nanos_be = nanos.to_be_bytes();
+    let seq_be = SEQ.fetch_add(1, Ordering::Relaxed).to_be_bytes();
+    crate::core::crypto::sha256_hex_parts(&[
+        kind.as_bytes(),
+        b":",
+        value.as_bytes(),
+        b":",
+        &ts,
+        &nanos_be,
+        &seq_be,
+    ])
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

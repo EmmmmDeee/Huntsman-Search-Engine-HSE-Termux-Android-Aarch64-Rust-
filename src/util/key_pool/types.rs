@@ -8,9 +8,8 @@ use serde::{Deserialize, Serialize};
 /// and collision-safe within a service's handful of keys.
 #[must_use]
 pub fn key_id(value: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(value.as_bytes());
-    hex::encode(&digest[..6])
+    // First 6 digest bytes = the first 12 hex chars of the authoritative digest.
+    crate::core::crypto::sha256_hex(value.as_bytes())[..12].to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

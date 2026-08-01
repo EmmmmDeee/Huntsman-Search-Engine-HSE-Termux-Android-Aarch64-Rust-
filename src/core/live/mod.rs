@@ -557,13 +557,12 @@ fn mark_stopped(inner: &LiveInner, live_id: &str) {
 
 /// `live-<16 hex>` — collision-resistant per-target+timestamp identifier.
 fn new_live_id(target: &Target) -> String {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
     let ns = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    h.update(format!("live-{ns}-{:?}-{}", target.kind, target.value).as_bytes());
-    let full = hex::encode(h.finalize());
+    let full = crate::core::crypto::sha256_hex(
+        format!("live-{ns}-{:?}-{}", target.kind, target.value).as_bytes(),
+    );
     format!("live-{}", &full[..16])
 }
 

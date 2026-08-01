@@ -20,6 +20,46 @@
 
 use sha2::{Digest, Sha256};
 
+// ─── Digest primitives (the single authoritative SHA-256 → hex helpers) ──────
+//
+// Deterministic hex-digest identifiers/fingerprints are computed in many places
+// — entity/relation ids, scan/live ids, pooled-key ids, SSH-key fingerprints,
+// STIX object ids. They used to hand-roll `hex::encode(Sha256::digest(..))` (or
+// an incremental `Sha256::new()` + `update` loop) at each site — the same
+// primitive written eight ways. These two functions are that primitive, owned
+// once, so the hashing can never drift between the identifiers it mints. `core`
+// is the correct home: it depends only on `sha2`, and both `core` and `util`
+// (which is permitted to import `core`) plus every module can reach it.
+//
+// NOTE: `core::entity::derive_uid` deliberately does NOT route through here — it
+// streams a kind's `Display` into the hasher through a `fmt::Write` shim to keep
+// the per-entity hot path allocation-free, and length-prefixes the `Other`
+// variant to disambiguate its preimage. That specialisation is a documented
+// correctness/performance decision, not incidental duplication.
+
+/// Lowercase hex of `SHA-256(bytes)` — the single authoritative "hash these
+/// bytes to a stable 64-char hex digest" primitive. Prefix-takers slice the
+/// result (`&sha256_hex(x)[..k]`, identical to hex-encoding the first `k/2`
+/// digest bytes); multi-field identifiers use [`sha256_hex_parts`].
+#[must_use]
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+/// Lowercase hex of `SHA-256(parts[0] ‖ parts[1] ‖ …)`, feeding each part to the
+/// hasher in order **without** allocating a combined buffer — the multi-field
+/// identifier primitive (a relation's `from|kind|to|scan`, a scan id's
+/// keyed+timestamped tuple). Byte-identical to an incremental `update` loop, so
+/// it is a drop-in for the hand-rolled ones without changing any minted id.
+#[must_use]
+pub fn sha256_hex_parts(parts: &[&[u8]]) -> String {
+    let mut h = Sha256::new();
+    for p in parts {
+        h.update(p);
+    }
+    hex::encode(h.finalize())
+}
+
 /// Base58 alphabet (Bitcoin variant): excludes `0`, `O`, `I`, `l` to avoid
 /// visual ambiguity.
 fn is_base58(c: char) -> bool {

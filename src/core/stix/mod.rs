@@ -48,7 +48,6 @@
 use std::collections::HashMap;
 
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
 
 use crate::core::correlator::Correlation;
 use crate::core::entity::{Entity, EntityKind};
@@ -460,10 +459,11 @@ fn rfc3339(unix_secs: u64) -> String {
 /// the same entity always yields the same STIX id, and re-exporting an unchanged
 /// scan is byte-identical.
 fn det_uuid(seed: &str) -> String {
-    let digest = Sha256::digest(seed.as_bytes());
-    // hex::encode of 16 bytes is exactly 32 lowercase ASCII hex chars, so every
-    // index below is in bounds and every slice lands on a char boundary.
-    let mut ch: Vec<char> = hex::encode(&digest[..16]).chars().collect();
+    // The authoritative SHA-256→hex primitive (`core::crypto`). The first 16
+    // digest bytes are the first 32 of its 64 hex chars, so every index below is
+    // in bounds and every slice lands on a char boundary.
+    let digest = crate::core::crypto::sha256_hex(seed.as_bytes());
+    let mut ch: Vec<char> = digest[..32].chars().collect();
     ch[12] = '5'; // UUID version 5
     ch[16] = '8'; // RFC 4122 variant (10xx)
     let s: String = ch.into_iter().collect();
