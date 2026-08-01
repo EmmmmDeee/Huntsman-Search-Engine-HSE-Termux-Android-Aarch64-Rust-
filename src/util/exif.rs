@@ -121,7 +121,10 @@ pub fn extract_positioning_error(exif: &exif::Exif) -> Option<f64> {
         return None;
     };
     let metres = rs.first()?.to_f64();
-    (metres.is_finite() && metres >= 0.0).then_some(metres)
+    // Require > 0: a 0 m radius would become an `accuracy:0m` tag — a claim of
+    // perfect accuracy (0 km in the fusion ladder). Treat it as absent, the
+    // same rule the codebase's other accuracy fields apply.
+    (metres.is_finite() && metres > 0.0).then_some(metres)
 }
 
 /// Read `GPSImgDirection` — the compass heading (degrees in `0.0..=360.0`) the
@@ -138,8 +141,15 @@ pub fn extract_img_direction(exif: &exif::Exif) -> Option<(f64, char)> {
     if !deg.is_finite() || !(0.0..=360.0).contains(&deg) {
         return None;
     }
-    let reference = ascii_first_byte(exif, Tag::GPSImgDirectionRef)
-        .map_or('T', |b| if b == b'M' || b == b'm' { 'M' } else { 'T' });
+    // `'T'` (true north) only when the ref tag is ABSENT — the EXIF default. A
+    // ref that is present but neither T nor M is untrustworthy: reject the whole
+    // heading rather than silently relabel it true north.
+    let reference = match ascii_first_byte(exif, Tag::GPSImgDirectionRef) {
+        None => 'T',
+        Some(b'T' | b't') => 'T',
+        Some(b'M' | b'm') => 'M',
+        Some(_) => return None,
+    };
     Some((deg, reference))
 }
 
@@ -217,6 +227,9 @@ mod tests {
         // Absent tag → None: never fabricate an accuracy the camera didn't report.
         let empty = exif_with(&[(Tag::Make, Value::Ascii(vec![b"x".to_vec()]))]);
         assert_eq!(extract_positioning_error(&empty), None);
+        // A 0 m radius is a fabricated perfect-accuracy claim → treat as absent.
+        let zero = exif_with(&[(Tag::GPSHPositioningError, Value::Rational(vec![rat(0, 1)]))]);
+        assert_eq!(extract_positioning_error(&zero), None);
     }
 
     #[test]
@@ -231,6 +244,13 @@ mod tests {
         assert_eq!(extract_img_direction(&m), Some((15.0, 'T')));
         let bad = exif_with(&[(Tag::GPSImgDirection, Value::Rational(vec![rat(400, 1)]))]);
         assert_eq!(extract_img_direction(&bad), None);
+        // A present-but-unrecognised reference is untrustworthy → reject the
+        // heading, never silently relabel it true north.
+        let bad_ref = exif_with(&[
+            (Tag::GPSImgDirection, Value::Rational(vec![rat(90, 1)])),
+            (Tag::GPSImgDirectionRef, Value::Ascii(vec![b"X".to_vec()])),
+        ]);
+        assert_eq!(extract_img_direction(&bad_ref), None);
     }
 
     /// Build a minimal EXIF container carrying `fields`, then parse it back —

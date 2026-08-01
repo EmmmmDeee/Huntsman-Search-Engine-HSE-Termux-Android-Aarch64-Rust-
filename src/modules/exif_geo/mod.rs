@@ -255,7 +255,11 @@ impl Module for ExifGeo {
             // photo grain. Absent tag ⇒ no tag — never a fabricated radius.
             let accuracy_m = extract_positioning_error(&exif);
             if let Some(acc) = accuracy_m {
-                e.tag(format!("accuracy:{}m", acc.round() as i64));
+                // Preserve the camera's reported radius — the fusion ladder
+                // parses it as f64. Rounding to an integer metre would understate
+                // a 12.4 m radius as 12 m (claiming better accuracy than
+                // reported); the extractor already rejects a 0 m radius.
+                e.tag(format!("accuracy:{acc:.1}m"));
             }
             // Altitude (3-D fix) and camera heading (what the lens faced) — real
             // GPS-IFD signals the scan path previously dropped; the local-ingest
