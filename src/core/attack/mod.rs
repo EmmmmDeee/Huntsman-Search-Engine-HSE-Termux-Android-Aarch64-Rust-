@@ -35,6 +35,7 @@
 
 use crate::core::entity::EntityKind;
 use crate::core::module::ModuleCategory;
+use crate::core::relation::RelationKind;
 use serde::Serialize;
 
 /// The ATT&CK release these triples were generated from. Bump alongside a
@@ -4423,6 +4424,94 @@ pub fn techniques_for_entity_kind(kind: &EntityKind) -> &'static [&'static str] 
 
         // Uncategorised or no direct mapping
         EntityKind::Other(_) => &[],
+    }
+}
+
+/// The ATT&CK Reconnaissance technique IDs a **relation** exercises — the third
+/// and final layer of the mapping, beside [`techniques_for_category`] (what a
+/// module collects) and [`techniques_for_entity_kind`] (what a finding is).
+///
+/// A relation is a collection *result*, not merely a rendering of one: an
+/// adversary who establishes that a person is a filed director of a company has
+/// performed T1591.004 (Identify Roles) whether or not any single entity in the
+/// scan carries that tag. Without this layer a scan's coverage under-reported
+/// exactly the collection the graph layer contributes — an officership, a
+/// corporate parent, a named network operator — because the technique lived in
+/// the EDGE and the rollup only ever read entity tags.
+///
+/// Two kinds return no technique, and both are deliberate rather than an
+/// omission:
+/// * [`DerivedFrom`](RelationKind::DerivedFrom) is provenance — it records which
+///   entity's expansion surfaced another, which is bookkeeping about HSE's own
+///   traversal, not collection against the target.
+/// * [`SameAs`](RelationKind::SameAs) asserts that two entities already
+///   collected are one identity in two spellings; the collection was done by
+///   whatever produced them, and counting it again would inflate coverage with a
+///   normalisation step.
+#[must_use]
+pub fn techniques_for_relation_kind(kind: RelationKind) -> &'static [&'static str] {
+    match kind {
+        // ── Infrastructure ───────────────────────────────────────────────
+        // Domain structure and hierarchy.
+        RelationKind::SubdomainOf | RelationKind::BelongsToDomain => &["T1590.001"],
+        // A URL bound to the site that serves it.
+        RelationKind::HostedOn => &["T1594"],
+        // The DNS answer itself.
+        RelationKind::ResolvesTo => &["T1590.002"],
+        // Registrant attribution comes out of WHOIS.
+        RelationKind::RegisteredBy => &["T1596.002"],
+        // Two assets proven to share an operator — a second/third-party
+        // relationship established from domain properties.
+        RelationKind::SameOperator => &["T1591.002", "T1590.001"],
+
+        // ── Place ────────────────────────────────────────────────────────
+        RelationKind::CoLocatedWith | RelationKind::LocatedAt => &["T1591.001"],
+
+        // ── Identity ─────────────────────────────────────────────────────
+        RelationKind::IdentifiedBy => &["T1589"],
+        // A handle reused across platforms is social-media collection resolving
+        // to a person's name.
+        RelationKind::AliasOf => &["T1589.003", "T1593.001"],
+        // The authenticated identity behind a profile page.
+        RelationKind::SameIdentity => &["T1593.001"],
+        // A reused, individuating secret is credential collection.
+        RelationKind::SharesSecretWith => &["T1589.001"],
+        // Family, household and declared associates — identity information about
+        // the people around the subject.
+        RelationKind::AssociatedWith => &["T1589"],
+
+        // ── Affiliation ──────────────────────────────────────────────────
+        // A register naming an officeholder IS Identify Roles.
+        RelationKind::OfficerOf => &["T1591.004"],
+        // Employment names both the role and the employee.
+        RelationKind::EmployedBy => &["T1591.004", "T1589.003"],
+        // A membership is organisation information without being a role at the
+        // target, so it maps to the parent technique rather than to .004.
+        RelationKind::MemberOf => &["T1591"],
+        // The corporate hierarchy is the textbook Business Relationships case.
+        RelationKind::ControlledBy | RelationKind::OperatedBy => &["T1591.002"],
+
+        // ── Not collection (see the doc comment) ─────────────────────────
+        RelationKind::DerivedFrom | RelationKind::SameAs => &[],
+    }
+}
+
+/// Count the Reconnaissance techniques a scan's RELATIONS exercised, folded into
+/// an existing per-technique tally (typically the entity-tag counts) so
+/// [`coverage`] sees one combined picture.
+///
+/// The count added per technique is the number of EDGES that exercised it, which
+/// is the same "how much collection of this kind did the scan actually do"
+/// quantity the entity counts carry — a scan establishing forty officerships and
+/// one is not equally covered.
+pub fn fold_relation_techniques(
+    exercised: &mut std::collections::BTreeMap<String, usize>,
+    relations: &[crate::core::relation::Relation],
+) {
+    for r in relations {
+        for id in techniques_for_relation_kind(r.kind) {
+            *exercised.entry((*id).to_string()).or_insert(0) += 1;
+        }
     }
 }
 

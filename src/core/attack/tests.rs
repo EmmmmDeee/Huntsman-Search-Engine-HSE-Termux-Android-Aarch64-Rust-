@@ -354,6 +354,125 @@ use super::*;
     }
 
     #[test]
+    fn every_relation_kind_maps_only_to_catalogued_reconnaissance_ids() {
+        // Relation-mapping drift guard, the third of the trio beside the
+        // category and entity-kind guards. The `match` below has NO `_` arm, so
+        // a new RelationKind fails to compile until it is triaged here — the
+        // graph layer can't silently stop contributing to coverage.
+        use crate::core::relation::RelationKind;
+        const EVERY: &[RelationKind] = &[
+            RelationKind::SubdomainOf,
+            RelationKind::BelongsToDomain,
+            RelationKind::HostedOn,
+            RelationKind::ResolvesTo,
+            RelationKind::RegisteredBy,
+            RelationKind::CoLocatedWith,
+            RelationKind::DerivedFrom,
+            RelationKind::IdentifiedBy,
+            RelationKind::AliasOf,
+            RelationKind::LocatedAt,
+            RelationKind::AssociatedWith,
+            RelationKind::SameAs,
+            RelationKind::SameOperator,
+            RelationKind::SameIdentity,
+            RelationKind::SharesSecretWith,
+            RelationKind::EmployedBy,
+            RelationKind::OfficerOf,
+            RelationKind::MemberOf,
+            RelationKind::ControlledBy,
+            RelationKind::OperatedBy,
+        ];
+        for &k in EVERY {
+            match k {
+                RelationKind::SubdomainOf
+                | RelationKind::BelongsToDomain
+                | RelationKind::HostedOn
+                | RelationKind::ResolvesTo
+                | RelationKind::RegisteredBy
+                | RelationKind::CoLocatedWith
+                | RelationKind::DerivedFrom
+                | RelationKind::IdentifiedBy
+                | RelationKind::AliasOf
+                | RelationKind::LocatedAt
+                | RelationKind::AssociatedWith
+                | RelationKind::SameAs
+                | RelationKind::SameOperator
+                | RelationKind::SameIdentity
+                | RelationKind::SharesSecretWith
+                | RelationKind::EmployedBy
+                | RelationKind::OfficerOf
+                | RelationKind::MemberOf
+                | RelationKind::ControlledBy
+                | RelationKind::OperatedBy => {}
+            }
+            for id in techniques_for_relation_kind(k) {
+                let t = technique(id)
+                    .unwrap_or_else(|| panic!("{k:?} maps to unknown technique {id}"));
+                assert!(
+                    t.tactics.contains(&"reconnaissance"),
+                    "{k:?} maps to {id}, which is not a Reconnaissance technique"
+                );
+            }
+        }
+        assert_eq!(EVERY.len(), 20, "one entry per RelationKind variant");
+    }
+
+    #[test]
+    fn relation_mapping_names_the_affiliation_techniques_exactly() {
+        // The mappings that carry the most weight: an edge derived from a
+        // companies register is Identify Roles, and a corporate hierarchy is
+        // Business Relationships. Pinned so a later edit can't quietly blur them.
+        use crate::core::relation::RelationKind;
+        assert_eq!(
+            techniques_for_relation_kind(RelationKind::OfficerOf),
+            &["T1591.004"],
+            "a filed officeholder IS Identify Roles"
+        );
+        assert_eq!(
+            techniques_for_relation_kind(RelationKind::ControlledBy),
+            &["T1591.002"],
+            "the corporate hierarchy IS Business Relationships"
+        );
+        assert_eq!(technique("T1591.004").map(|t| t.name), Some("Identify Roles"));
+        assert_eq!(
+            technique("T1591.002").map(|t| t.name),
+            Some("Business Relationships")
+        );
+        // Provenance and normalisation are NOT collection against the target.
+        assert!(techniques_for_relation_kind(RelationKind::DerivedFrom).is_empty());
+        assert!(techniques_for_relation_kind(RelationKind::SameAs).is_empty());
+    }
+
+    #[test]
+    fn folding_relations_adds_edge_counts_to_the_entity_tally() {
+        use crate::core::relation::{Relation, RelationKind};
+        let mut exercised = std::collections::BTreeMap::new();
+        exercised.insert("T1591.004".to_string(), 2); // 2 entities already tagged
+        let rels = vec![
+            Relation::new("a", "b", RelationKind::OfficerOf, 0.9, "s"),
+            Relation::new("c", "d", RelationKind::OfficerOf, 0.9, "s"),
+            Relation::new("e", "f", RelationKind::ControlledBy, 0.9, "s"),
+            // Provenance contributes nothing.
+            Relation::new("g", "h", RelationKind::DerivedFrom, 0.9, "s"),
+        ];
+        fold_relation_techniques(&mut exercised, &rels);
+        assert_eq!(
+            exercised.get("T1591.004"),
+            Some(&4),
+            "edge counts add to the entity tally rather than replacing it"
+        );
+        assert_eq!(exercised.get("T1591.002"), Some(&1));
+        assert_eq!(exercised.len(), 2, "DerivedFrom introduced no technique");
+
+        // And the rollup now reports the graph layer's collection as covered.
+        let cov = coverage(&exercised);
+        assert!(
+            cov.covered.iter().any(|c| c.technique.id == "T1591.002"),
+            "Business Relationships is covered once a corporate edge exists"
+        );
+    }
+
+    #[test]
     fn entity_type_mapping_resolves_common_types_correctly() {
         use crate::core::entity::EntityKind;
         // Email addresses → T1589.002
