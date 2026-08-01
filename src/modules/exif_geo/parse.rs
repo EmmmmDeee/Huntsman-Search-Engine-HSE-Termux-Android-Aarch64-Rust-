@@ -7,7 +7,9 @@
 //! geolocation. Re-exported here so call sites and tests keep naming
 //! `parse::{...}`.
 
-pub(super) use crate::util::exif::{extract_gps, read_str};
+pub(super) use crate::util::exif::{
+    extract_altitude, extract_gps, extract_img_direction, extract_positioning_error, read_str,
+};
 
 #[cfg(test)]
 pub(super) use crate::util::exif::dms_to_decimal;
