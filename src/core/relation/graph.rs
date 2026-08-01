@@ -227,11 +227,21 @@ pub fn identity_paths(
     // Identity endpoints in sorted UID order — each pair is computed once from
     // the smaller UID, fixing both orientation and shortest-path tie-breaks.
     let identity_uids = identity_uids(entities);
-    let identity_set: HashSet<&str> = identity_uids.iter().copied().collect();
 
     let mut out: Vec<IdentityPath> = Vec::new();
 
-    for &start in &identity_uids {
+    // Bound the O(identities²) sweep to a deterministic pair-count prefix, exactly
+    // as the AU-062/AU-063 sibling sweeps do (see [`IDENTITY_PAIR_PROBE_CAP`]). A
+    // permutation-heavy `full_name` scan derives hundreds of name-permutation
+    // identity entities; uncapped this both burns CPU and — via AU-060 (transitive
+    // correlation, which persists one correlation per emitted path) — floods the
+    // result with links. `identity_uids` is sorted, so stopping at the cap yields
+    // a byte-identical deterministic prefix.
+    let mut probes = 0usize;
+    'outer: for (i, &start) in identity_uids.iter().enumerate() {
+        if probes >= IDENTITY_PAIR_PROBE_CAP {
+            break;
+        }
         // BFS from `start`, recording each node's shortest-path predecessor edge.
         let mut dist: HashMap<&str, usize> = HashMap::new();
         let mut prev: HashMap<&str, (&str, RelationKind, f64)> = HashMap::new();
@@ -254,11 +264,14 @@ pub fn identity_paths(
         }
 
         // Emit a path to every identity destination with a *larger* UID (the
-        // canonical pair direction), reachable within the hop budget.
-        for &dest in &identity_uids {
-            if dest <= start || !identity_set.contains(dest) {
-                continue;
+        // canonical pair direction), reachable within the hop budget. The sorted
+        // suffix `[i + 1..]` is exactly the larger-UID identities; counting each
+        // as one probe bounds the inner sweep to the same deterministic cap.
+        for &dest in &identity_uids[i + 1..] {
+            if probes >= IDENTITY_PAIR_PROBE_CAP {
+                break 'outer;
             }
+            probes += 1;
             let Some(&hops) = dist.get(dest) else {
                 continue;
             };

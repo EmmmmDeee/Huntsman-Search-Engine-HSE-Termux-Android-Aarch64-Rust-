@@ -388,7 +388,12 @@ async fn persist_import(
     store.upsert_entities_batch(entities)?;
 
     let mut relations = 0usize;
-    for r in &crate::core::relation::derive_all(entities, sid) {
+    // Bound derivation by wall-clock, identically to a live scan
+    // (engine::derive_and_persist_relations): a large imported dossier must not
+    // run the super-linear derivation pass chain for minutes. Partial relations
+    // still persist.
+    let derive_deadline = Some(std::time::Instant::now() + crate::core::relation::DERIVE_BUDGET);
+    for r in &crate::core::relation::derive_all_within(entities, sid, derive_deadline) {
         if store.upsert_relation(r).is_ok() {
             relations += 1;
         }

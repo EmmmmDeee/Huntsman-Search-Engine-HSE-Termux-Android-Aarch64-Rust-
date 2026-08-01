@@ -86,6 +86,15 @@ pub async fn scan_profiles() -> impl IntoResponse {
 /// its own full-history aggregation, so the two full-history reads agree.
 const AUTONOMOUS_POOL_MAX_SCANS: usize = 10_000;
 
+/// Total-entity ceiling on the in-memory autonomous target pool. `MAX_SCANS`
+/// alone bounds the number of scans read, but 10_000 scans × hundreds of
+/// entities each is millions of `Entity` structs in one `Vec` — multi-hundred-MB
+/// on a 2–4 GB Termux phone, before `plan_autonomous_sweep` even runs. The pool
+/// is a target-selection heuristic, so a deterministic prefix of the (recent-
+/// first) scan history is more than enough to pick the top `limit` (≤200)
+/// targets. Loading stops once the pool reaches this size.
+const AUTONOMOUS_POOL_MAX_ENTITIES: usize = 50_000;
+
 /// The operator-local default seed (`HUNTSMAN_DEFAULT_SEED`), with its kind
 /// auto-detected from the value — the autonomous scan's fallback when the local
 /// intelligence base is still empty.
@@ -126,6 +135,9 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
             let mut seen: HashSet<String> = HashSet::new();
             let mut rel_seen: HashSet<String> = HashSet::new();
             for sc in &scans {
+                if pool.len() >= AUTONOMOUS_POOL_MAX_ENTITIES {
+                    break;
+                }
                 for e in store.entities_for_scan(&sc.id)? {
                     if seen.insert(e.uid.clone()) {
                         pool.push(e);
@@ -253,6 +265,9 @@ pub async fn scan_auto_plan(
             let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
             let mut seen: HashSet<String> = HashSet::new();
             for sc in &scans {
+                if pool.len() >= AUTONOMOUS_POOL_MAX_ENTITIES {
+                    break;
+                }
                 for e in store.entities_for_scan(&sc.id)? {
                     if seen.insert(e.uid.clone()) {
                         pool.push(e);
@@ -328,6 +343,9 @@ pub async fn scan_auto_sweep(
             let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
             let mut seen: HashSet<String> = HashSet::new();
             for sc in &scans {
+                if pool.len() >= AUTONOMOUS_POOL_MAX_ENTITIES {
+                    break;
+                }
                 for e in store.entities_for_scan(&sc.id)? {
                     if seen.insert(e.uid.clone()) {
                         pool.push(e);
@@ -660,7 +678,12 @@ pub async fn scan_import(
                 return Ok((0usize, 0usize, false));
             }
             let mut relations = 0usize;
-            for r in &crate::core::relation::derive_all(&entities, &sid2) {
+            // Wall-clock bound on the super-linear derivation chain, matching a
+            // live scan (the entity-count guard above already skips the
+            // pathological case; this bounds the rest).
+            let derive_deadline =
+                Some(std::time::Instant::now() + crate::core::relation::DERIVE_BUDGET);
+            for r in &crate::core::relation::derive_all_within(&entities, &sid2, derive_deadline) {
                 if store.upsert_relation(r).is_ok() {
                     relations += 1;
                 }

@@ -698,6 +698,19 @@ input[type=checkbox],input[type=radio]{ accent-color:var(--accent); width:14px; 
 .graph-legend .sw{ width:10px; height:10px; border-radius:50%; display:inline-block; }
 .graph-ctl{ position:absolute; bottom:10px; left:14px; }
 .graph-hint{ position:absolute; bottom:14px; right:14px; font-size:11px; background:var(--bg-elevated); color:var(--text-dim); padding:3px 9px; border-radius:var(--radius-sm); }
+.graph-cap{ position:absolute; top:8px; left:14px; max-width:52%; font-size:11px; background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--radius-sm); padding:5px 10px; box-shadow:var(--shadow-sm); line-height:1.35; }
+
+/* Insights sub-nav — the lazy lens switcher inside the Insights tab. Each lens
+   renders (and fetches) only when selected, so this stays a drawer, not a wall. */
+.insights-nav{ display:flex; flex-wrap:wrap; gap:6px; border-bottom:1px solid var(--border); padding-bottom:10px; }
+.insights-lens{ font:inherit; font-size:12px; cursor:pointer; padding:5px 11px; border:1px solid var(--border); border-radius:var(--radius-pill); background:var(--bg-elevated); color:var(--text-muted); transition:color .12s,border-color .12s,background .12s; }
+.insights-lens:hover{ color:var(--text); border-color:var(--accent); }
+.insights-lens.active{ background:var(--accent); border-color:var(--accent); color:#fff; }
+
+/* Callout — a one-line highlighted notice (e.g. the Summary's correlation-count
+   jump link). */
+.callout{ padding:10px 14px; border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:var(--radius-sm); background:var(--bg-elevated); font-size:13px; line-height:1.5; }
+.callout-corr{ border-left-color:#9b1f9b; }
 
 .help-panel{ background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--radius-sm); padding:11px; font-size:12px; color:var(--text-muted); }
 .help-panel b{ color:var(--text); }

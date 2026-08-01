@@ -32,7 +32,7 @@
 //! | DELETE | `/api/v1/scans/{id}`                     | `scan_delete`                  |
 //! | POST   | `/api/v1/scans/{id}/rerun`               | `scan_rerun`                   |
 //! | POST   | `/api/v1/scans/{id}/cancel`              | `scan_cancel`                  |
-//! | GET    | `/api/v1/scans/{id}/entities`            | `scan_entities`                |
+//! | GET    | `/api/v1/scans/{id}/entities`            | `scan_entities` (paginated)    |
 //! | GET    | `/api/v1/scans/{id}/entities/filter`     | `scan_entities_filter`         |
 //! | GET    | `/api/v1/scans/{id}/entities/facets`     | `scan_entities_facets`         |
 //! | GET    | `/api/v1/scans/{id}/diamond`             | `scan_diamond`                 |
@@ -229,6 +229,11 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         "js/scan_info/info.js",
         "application/javascript",
         include_bytes!("../../web/js/scan_info/info.js"),
+    ),
+    (
+        "js/scan_info/insights.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/insights.js"),
     ),
     (
         "js/scan_info/leads.js",

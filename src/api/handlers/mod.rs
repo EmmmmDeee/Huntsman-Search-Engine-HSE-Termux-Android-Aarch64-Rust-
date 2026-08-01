@@ -91,6 +91,29 @@ pub(crate) fn ok_list<T: Serialize>(key: &str, items: Vec<T>) -> axum::response:
     (StatusCode::OK, Json(Value::Object(map))).into_response()
 }
 
+/// Paginated list response: `{ "<key>": [items…], "count": <returned>, "total": <all>, "offset": <o>, "limit": <l> }`.
+/// The `count` field holds the returned item count; `total` is the full size before pagination.
+/// Enables clients to track position in a large result set without materialising everything.
+pub(crate) fn ok_paginated_list<T: Serialize>(
+    key: &str,
+    items: Vec<T>,
+    total: usize,
+    offset: usize,
+    limit: usize,
+) -> axum::response::Response {
+    let count = items.len();
+    let mut map = serde_json::Map::new();
+    map.insert(
+        key.to_string(),
+        serde_json::to_value(items).unwrap_or(Value::Null),
+    );
+    map.insert("count".to_string(), Value::Number(count.into()));
+    map.insert("total".to_string(), Value::Number(total.into()));
+    map.insert("offset".to_string(), Value::Number(offset.into()));
+    map.insert("limit".to_string(), Value::Number(limit.into()));
+    (StatusCode::OK, Json(Value::Object(map))).into_response()
+}
+
 /// Dispatch a created `scan` to run on the async runtime — the HTTP layer's
 /// fire-and-forget hand-off to the engine (the request returns `202` immediately).
 ///

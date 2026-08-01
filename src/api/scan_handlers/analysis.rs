@@ -7,7 +7,7 @@ use axum::{
 use serde_json::json;
 use std::sync::Arc;
 
-use super::super::handlers::{bad_request, internal_error, ok_list};
+use super::super::handlers::{bad_request, internal_error, ok_list, ok_paginated_list};
 use crate::api::AppState;
 
 pub async fn scan_entities(
@@ -18,12 +18,42 @@ pub async fn scan_entities(
     if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
+
+    // Parse pagination parameters: offset (default 0) and limit (default 1000, max 10000).
+    // Reject invalid values so clients can detect mistakes.
+    let offset: usize = if let Some(s) = params.get("offset") {
+        match s.parse() {
+            Ok(n) => n,
+            Err(_) => return bad_request("invalid offset: must be a non-negative integer"),
+        }
+    } else {
+        0
+    };
+    let limit: usize = if let Some(s) = params.get("limit") {
+        match s.parse::<usize>() {
+            Ok(0) => return bad_request("invalid limit: must be > 0"),
+            Ok(n) => n.min(10000),
+            Err(_) => return bad_request("invalid limit: must be a positive integer"),
+        }
+    } else {
+        1000
+    };
+
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
     match tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await {
         Ok(Ok(mut entities)) => {
             super::apply_candidate_gate(&mut entities, &params);
-            ok_list("entities", entities)
+            let total = entities.len();
+
+            // Paginate: slice the result set to [offset, offset+limit).
+            let paginated = entities
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .collect::<Vec<_>>();
+
+            ok_paginated_list("entities", paginated, total, offset, limit)
         }
         Ok(Err(e)) => internal_error(&e),
         Err(e) => internal_error(&format!("query task failed: {e}")),

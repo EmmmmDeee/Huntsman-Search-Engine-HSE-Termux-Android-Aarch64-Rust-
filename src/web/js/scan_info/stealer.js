@@ -1,6 +1,18 @@
 import { $, $$, attr, esc, toast, triggerBlobDownload } from '/static/js/helpers.js';
 import { API } from '/static/js/api.js';
 
+// A stealer-log import can carry tens of thousands of rows (the importer caps a
+// dump at 500 victims × 200 creds = up to 100k). Rendering them all builds one
+// giant <table>/<pre> with ~5 event listeners per <tr> in a single synchronous
+// pass — and the search box re-ran that on EVERY keystroke — which freezes the
+// tab on a 2-core Termux phone. Cap what is *rendered* (copy/download/export
+// still act on the full matching set) and debounce the search.
+const STEALER_ROW_CAP = 1000;
+function debounce(fn, ms) {
+  let t;
+  return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
+
 /* ── Stealer Logs Viewer — file-explorer refactor ────────────────────────
    Paired login+password+domain+capture-date credential rows from a stealer-
    log import, powered by /scans/{id}/stealer-rows. The generic entity graph
@@ -142,8 +154,14 @@ export async function renderStealer(host, id) {
       // is already given by "unique password(s)" above).
       `<span class="${dupCount ? 'text-warning' : 'text-muted'}">${dupCount} row${dupCount === 1 ? '' : 's'} with a reused password</span>`;
 
-    tableHost.innerHTML = state.rawView ? renderRawHtml(rs) : renderTableHtml(rs, state, passwordCounts);
-    wireTableEvents(rs);
+    // Render at most STEALER_ROW_CAP rows (the highest-priority slice after any
+    // sort/filter). The stats line above and every copy/download/export button
+    // still operate on the full matching set `rs`.
+    const shown = rs.length > STEALER_ROW_CAP ? rs.slice(0, STEALER_ROW_CAP) : rs;
+    tableHost.innerHTML = state.rawView
+      ? renderRawHtml(shown, rs.length)
+      : renderTableHtml(shown, state, passwordCounts, rs.length);
+    wireTableEvents(shown);
   }
 
   function wireTableEvents(visibleRows) {
@@ -194,7 +212,10 @@ export async function renderStealer(host, id) {
     renderTree();
     refresh();
   });
-  $('#st-q', host).addEventListener('input', (e) => { state.query = e.target.value; refresh(); });
+  // Debounced: a re-render + re-wire per keystroke was the other half of the
+  // freeze on a large dump.
+  const debouncedRefresh = debounce(refresh, 180);
+  $('#st-q', host).addEventListener('input', (e) => { state.query = e.target.value; debouncedRefresh(); });
   $('#st-dup', host).addEventListener('change', (e) => { state.dupOnly = e.target.checked; refresh(); });
   $('#st-raw', host).addEventListener('change', (e) => { state.rawView = e.target.checked; refresh(); });
   $('#st-group', host).addEventListener('change', (e) => {
@@ -344,10 +365,13 @@ function sortArrow(state, col) {
   return state.sortDir === 1 ? ' &#9650;' : ' &#9660;';
 }
 
-function renderTableHtml(rows, state, passwordCounts) {
+function renderTableHtml(rows, state, passwordCounts, total) {
   if (!rows.length) {
     return '<div class="empty-state"><h3>No rows match</h3><p>Adjust the search or filters.</p></div>';
   }
+  const capNote = (total != null && total > rows.length)
+    ? `<div class="text-muted" style="font-size:11px;margin-bottom:6px">Showing the first ${rows.length} of ${total} matching rows — refine the search, or use <b>Copy</b>/<b>Download .txt</b> for the complete set.</div>`
+    : '';
   const q = state.query.trim();
   const body = rows.map(r => {
     const pw = r.password || '';
@@ -366,16 +390,19 @@ function renderTableHtml(rows, state, passwordCounts) {
     </tr>`;
   }).join('');
   const th = (col, label) => `<th data-sort="${col}" style="cursor:pointer;user-select:none">${label}${sortArrow(state, col)}</th>`;
-  return `<div class="table-responsive"><table class="table table-striped table-condensed" id="stealer-table">
+  return `${capNote}<div class="table-responsive"><table class="table table-striped table-condensed" id="stealer-table">
     <thead><tr>${th('domain', 'Domain')}${th('login', 'Login')}${th('password', 'Password')}${th('kind', 'Type')}${th('pwned_at', 'Captured')}</tr></thead>
     <tbody>${body}</tbody></table></div>`;
 }
 
-function renderRawHtml(rows) {
+function renderRawHtml(rows, total) {
   if (!rows.length) {
     return '<div class="empty-state"><h3>No rows match</h3><p>Adjust the search or filters.</p></div>';
   }
-  return `<pre style="white-space:pre-wrap;word-break:break-all;font-size:12px;max-height:calc(100vh - 320px);overflow-y:auto">${esc(exportText(rows))}</pre>`;
+  const capNote = (total != null && total > rows.length)
+    ? `<div class="text-muted" style="font-size:11px;margin-bottom:6px">Showing the first ${rows.length} of ${total} matching rows — use <b>Download .txt</b> for the complete set.</div>`
+    : '';
+  return `${capNote}<pre style="white-space:pre-wrap;word-break:break-all;font-size:12px;max-height:calc(100vh - 320px);overflow-y:auto">${esc(exportText(rows))}</pre>`;
 }
 
 function highlight(text, q) {
