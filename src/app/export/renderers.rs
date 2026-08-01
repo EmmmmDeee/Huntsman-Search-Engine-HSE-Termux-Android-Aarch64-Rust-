@@ -28,7 +28,8 @@ pub(super) fn render_json(store: &Store, sid: &str, redact: bool) -> Result<Stri
     let augmented: Vec<serde_json::Value> = entities
         .iter()
         .map(|e| {
-            let mut v = serde_json::to_value(e).unwrap_or(serde_json::Value::Null);
+            let mut v = serde_json::to_value(e)
+                .map_err(|err| Error::Other(format!("entity serialise: {err}")))?;
             if let serde_json::Value::Object(ref mut m) = v {
                 m.insert("c_effective".into(), serde_json::json!(e.c_effective()));
                 m.insert("source_count".into(), serde_json::json!(e.source_count()));
@@ -37,9 +38,9 @@ pub(super) fn render_json(store: &Store, sid: &str, redact: bool) -> Result<Stri
                     serde_json::json!(e.classify().as_str()),
                 );
             }
-            v
+            Ok(v)
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     serde_json::to_string_pretty(&augmented)
         .map_err(|e| Error::Other(format!("json serialise: {e}")))
 }

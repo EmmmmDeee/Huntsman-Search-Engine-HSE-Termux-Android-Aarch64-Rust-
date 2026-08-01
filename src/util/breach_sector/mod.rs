@@ -202,9 +202,8 @@ const KNOWN_SOURCE_SECTORS: &[(&str, &str)] = &[
 
 /// Single-word descriptors that breach data providers glue directly onto brand
 /// names without a separator: `linkedinscrape`, `adobedump`, `combolinkedin`.
-/// Must be long enough that they can never plausibly be a brand needle
-/// themselves (all entries ≥4 chars; single-char affixes would cause false
-/// positives).
+/// Must not be plausible brand needles themselves; single-char affixes would
+/// cause false positives. Entries are ≥2 chars (shortest: `"db"`).
 const BREACH_DESCRIPTORS: &[&str] = &[
     "scrape",
     "combo",

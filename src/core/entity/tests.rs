@@ -444,13 +444,14 @@ fn cross_scan_corroboration_gated_same_as_multipath() {
 
 #[test]
 fn derived_entity_needs_two_real_sources_for_promotion_to_count() {
-    // A `derived` entity (e.g. a name→email permutation) has its OWN GENERATOR
-    // as one real source. One real source satisfies the gate for observed entities
-    // but NOT for derived ones: the generator is not "independent confirmation."
-    // The promotion pass must wait for a second genuine observation.
+    // A `derived` entity (e.g. a name→email permutation) whose generator is a
+    // non-corroborating source (here: `name_intel`) contributes real=0.
+    // The derived gate requires real≥2, so promotion is blocked even when a
+    // promotion pass has also fired. Two independent corroborating sources are
+    // needed before promotion is allowed to amplify the count.
     let mut one_real = Entity::new(EntityKind::Email, "guess@example.com", 0.55, "s");
     one_real.tag("derived");
-    one_real.add_evidence(Evidence::new("name_intel", "Permuted from name")); // generator
+    one_real.add_evidence(Evidence::new("name_intel", "Permuted from name")); // non-corroborating
     one_real.add_evidence(Evidence::new(
         MULTIPATH_CORROBORATION_SOURCE,
         "Seen on two graph paths",

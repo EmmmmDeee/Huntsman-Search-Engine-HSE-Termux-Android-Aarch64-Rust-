@@ -695,7 +695,7 @@ pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {
 
 /// Wire shape of `GET /api/v1/modules/graph`.
 ///
-/// [`ModuleGraphSummary`] is `#[serde(flatten)]`ed rather than re-listed field
+/// [`crate::core::dependency::ModuleGraphSummary`] is `#[serde(flatten)]`ed rather than re-listed field
 /// by field, which is how this payload used to be built. Hand-copying meant the
 /// wire format was a second, unchecked definition of a type that already derives
 /// `Serialize`: `terminal_kinds` was added to the summary and silently never

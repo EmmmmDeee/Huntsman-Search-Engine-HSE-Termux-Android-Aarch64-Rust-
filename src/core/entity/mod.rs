@@ -129,7 +129,7 @@ pub const CROSS_SCAN_SOURCE: &str = "cross_scan_history";
 pub const CONSENSUS_SOURCE: &str = "breach_consensus";
 
 /// Evidence source name emitted by the multipath-corroboration promotion pass
-/// ([`crate::core::engine::passes::promote_multipath_corroborated`]).
+/// (`promote_multipath_corroborated` in `crate::core::engine::passes`).
 ///
 /// This is a DERIVED signal: it records that the engine found two identity
 /// endpoints connected across ≥2 edge-disjoint paths — it is NOT a new
@@ -139,7 +139,7 @@ pub const CONSENSUS_SOURCE: &str = "breach_consensus";
 pub const MULTIPATH_CORROBORATION_SOURCE: &str = "multipath_corroboration";
 
 /// Evidence source name emitted by the cross-scan-corroboration promotion pass
-/// ([`crate::core::engine::passes::promote_cross_scan_corroborated`]).
+/// (`promote_cross_scan_corroborated` in `crate::core::engine::passes`).
 ///
 /// Same semantics as [`MULTIPATH_CORROBORATION_SOURCE`]: engine-derived signal,
 /// not an independent observation.
@@ -589,8 +589,10 @@ impl Entity {
         // an inferred handle — the `derived` tag) whose lone real source is its
         // own generator must NOT be lifted into apparent cross-source agreement.
         // Gate: for observed entities (no `derived` tag) 1 real source suffices;
-        // for derived entities the generator IS a real source, so we require a
-        // SECOND genuine observation before promotion counts.
+        // for derived entities we require ≥2 real (corroborating, non-promotion)
+        // sources before promotion counts. If the generator is itself
+        // non-corroborating (e.g. `name_intel`), it does not contribute to
+        // `real`, so external confirmation is needed regardless.
         let derived = self.has_tag("derived");
         let mut real: u32 = 0;
         let mut promo: u32 = 0;
@@ -612,8 +614,9 @@ impl Entity {
             }
         }
         // For observed entities: 1 real source satisfies the gate.
-        // For derived entities: need ≥2 real sources (the generator + at least
-        // one genuine confirmation) before promotion passes count.
+        // For derived entities: need ≥2 real corroborating sources before
+        // promotion passes count. Non-corroborating generators (e.g. `name_intel`)
+        // do not contribute to `real`, so they do not satisfy the gate alone.
         let grounded = real >= if derived { 2 } else { 1 };
         let distinct = real + if grounded { promo } else { 0 };
         if distinct > 0 {
