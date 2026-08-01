@@ -655,12 +655,14 @@ pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<String> {
 /// 404 (so a probe can tell "no Gravatar" from a default placeholder),
 /// requesting a 200px image.
 pub fn gravatar_url(email: &str) -> String {
-    use md5::{Digest, Md5};
-    let mut h = Md5::new();
-    h.update(email.trim().to_ascii_lowercase().as_bytes());
+    // Reuse the canonical Gravatar request-hash rather than re-deriving it: the
+    // preimage here (MD5 of the trimmed, ASCII-lowercased address) was
+    // byte-identical to `crate::util::gravatar::hash`, which is unit-tested and
+    // already shared by the `gravatar` and `contact_enrich` modules. One fewer
+    // drift-prone copy of the Gravatar identifier contract.
     format!(
         "https://www.gravatar.com/avatar/{}?d=404&s=200",
-        hex::encode(h.finalize())
+        crate::util::gravatar::hash(email)
     )
 }
 
