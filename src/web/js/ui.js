@@ -103,7 +103,7 @@ export function initModals(){
       e.preventDefault();
       const sel = opener.dataset.target || opener.getAttribute('href');
       const modal = sel && document.querySelector(sel);
-      if (modal) openModal(modal);
+      if (modal) openModal(modal, opener);
       return;
     }
     const dismiss = e.target.closest('[data-dismiss="modal"]');
@@ -122,17 +122,39 @@ export function initModals(){
     if (open) closeModal(open);
   });
 }
-function openModal(modal){
+// The opening trigger + backdrop are stashed ON the modal element itself
+// (not a module-level singleton) so a second modal opened while a first is
+// still open can't steal the first one's focus-return target or strip its
+// backdrop when it closes — only today's single `#aboutmodal` exists, but a
+// singleton here would silently break exactly the WCAG 4.1.2 focus-return
+// this code exists to provide the moment a second modal is added.
+function openModal(modal, trigger){
   modal.classList.add('in');
+  // `aria-hidden="true"` ships hardcoded in the markup so the dialog starts
+  // out of the accessibility tree; it must be cleared here or a screen reader
+  // can never perceive content that's visibly on screen (WCAG 4.1.2).
+  modal.setAttribute('aria-hidden', 'false');
   document.body.classList.add('modal-open');
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop';
   document.body.appendChild(backdrop);
+  modal._hseBackdrop = backdrop;
+  modal._hseTrigger = trigger || document.activeElement;
+  const focusTarget = modal.querySelector('.close, .btn-primary, button, [href]');
+  if (focusTarget) focusTarget.focus();
 }
 function closeModal(modal){
   modal.classList.remove('in');
-  document.body.classList.remove('modal-open');
-  document.querySelectorAll('.modal-backdrop').forEach(b=>b.remove());
+  modal.setAttribute('aria-hidden', 'true');
+  if (modal._hseBackdrop) modal._hseBackdrop.remove();
+  modal._hseBackdrop = null;
+  // Only drop the body-level scroll lock once no OTHER modal is still open.
+  if (!document.querySelector('.modal.in')) {
+    document.body.classList.remove('modal-open');
+  }
+  const trigger = modal._hseTrigger;
+  if (trigger && trigger.focus) trigger.focus();
+  modal._hseTrigger = null;
 }
 
 /* ─── Sortable tables (tablesorter replacement) ───

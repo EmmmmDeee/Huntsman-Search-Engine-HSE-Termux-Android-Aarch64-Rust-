@@ -933,11 +933,16 @@ fn circuit_breaker_trip_skips_the_module_at_the_dispatch_gate() {
         "a tripped module must be skipped at the dispatch gate"
     );
 
-    // A success clears the trip — the gate trusts a recovered provider again.
+    // A concurrent success (e.g. a different in-flight scan's already-started
+    // call to the same module completing after this trip) must NOT clear an
+    // active rate-limit cooldown at the gate — see `circuit::record_success`'s
+    // doc for why: the cooldown is a deterministic property of the endpoint,
+    // and only its own expiry (not an unrelated success) proves recovery.
     super::circuit::record_success(m.name());
-    assert!(
-        module_skip_reason(&m, &pub_target(), &opts, false, 0).is_none(),
-        "a recovered module must dispatch again"
+    assert_eq!(
+        module_skip_reason(&m, &pub_target(), &opts, false, 0),
+        Some("circuit-open — rate-limited/quota/repeated failure (cooling down)"),
+        "a concurrent success must not clear an active rate-limit cooldown at the gate"
     );
 }
 
@@ -1509,31 +1514,46 @@ fn skip_reason_still_rejects_private_ipv6() {
 
 // -- dispatch dedup tests --
 
+// Test-only convenience wrapper matching the OLD 2-arg call shape: the
+// production hot path now takes a pre-computed `normalised_target` (see
+// `normalise_target`'s doc — hoisted once per target, not once per candidate
+// module), but these tests exercise `dispatch_key` per-call against a single
+// `Target`, so computing the normalisation inline here is the right shape.
+fn dispatch_key_for(
+    module_name: &'static str,
+    target: &Target,
+) -> (&'static str, TargetKind, String) {
+    dispatch_key(module_name, target.kind, &normalise_target(target))
+}
+
 #[test]
 fn dispatch_key_normalises_consistently() {
     let t1 = Target::new(TargetKind::Email, "ALICE@Example.COM");
     let t2 = Target::new(TargetKind::Email, "alice@example.com");
-    assert_eq!(dispatch_key("hibp", &t1), dispatch_key("hibp", &t2));
+    assert_eq!(dispatch_key_for("hibp", &t1), dispatch_key_for("hibp", &t2));
 }
 
 #[test]
 fn dispatch_key_differs_across_modules() {
     let t = Target::new(TargetKind::Email, "alice@example.com");
-    assert_ne!(dispatch_key("hibp", &t), dispatch_key("shodan", &t));
+    assert_ne!(dispatch_key_for("hibp", &t), dispatch_key_for("shodan", &t));
 }
 
 #[test]
 fn dispatch_key_differs_across_target_kinds() {
     let email = Target::new(TargetKind::Email, "alice@example.com");
     let domain = Target::new(TargetKind::Domain, "alice@example.com");
-    assert_ne!(dispatch_key("hibp", &email), dispatch_key("hibp", &domain));
+    assert_ne!(
+        dispatch_key_for("hibp", &email),
+        dispatch_key_for("hibp", &domain)
+    );
 }
 
 #[test]
 fn dispatch_log_prevents_duplicate_keyed_module() {
     let mut log: DispatchLog = DispatchLog::new();
     let t = Target::new(TargetKind::Email, "alice@example.com");
-    let key = dispatch_key("hibp", &t);
+    let key = dispatch_key_for("hibp", &t);
     assert!(log.insert(key.clone()), "first insert should succeed");
     assert!(!log.insert(key), "second insert should be rejected");
 }
@@ -1543,16 +1563,16 @@ fn dispatch_log_allows_same_module_on_different_targets() {
     let mut log: DispatchLog = DispatchLog::new();
     let t1 = Target::new(TargetKind::Email, "alice@example.com");
     let t2 = Target::new(TargetKind::Domain, "example.com");
-    assert!(log.insert(dispatch_key("hibp", &t1)));
-    assert!(log.insert(dispatch_key("hibp", &t2)));
+    assert!(log.insert(dispatch_key_for("hibp", &t1)));
+    assert!(log.insert(dispatch_key_for("hibp", &t2)));
 }
 
 #[test]
 fn dispatch_log_allows_different_modules_on_same_target() {
     let mut log: DispatchLog = DispatchLog::new();
     let t = Target::new(TargetKind::IpAddress, "1.2.3.4");
-    assert!(log.insert(dispatch_key("shodan", &t)));
-    assert!(log.insert(dispatch_key("greynoise", &t)));
+    assert!(log.insert(dispatch_key_for("shodan", &t)));
+    assert!(log.insert(dispatch_key_for("greynoise", &t)));
 }
 
 // ── End-to-end engine throughput benchmark (ignored; opt-in) ──────────────

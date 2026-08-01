@@ -93,12 +93,15 @@ impl Module for RipeStat {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // Beyond the Infrastructure default (T1590.005 IP Addresses + T1596.005
-        // Scan Databases), RIPEstat resolves the registered abuse-contact email
-        // (T1589.002 Email Addresses) and the network-holder organisation
-        // (T1591.002 Business Relationships). Superset of the default — coverage
-        // cannot regress.
-        &["T1590.005", "T1596.005", "T1589.002", "T1591.002"]
+        // RIPEstat resolves the registered abuse-contact email (T1589.002
+        // Email Addresses) and the network-holder organisation (T1591.002
+        // Business Relationships) beyond plain T1590.005 IP Addresses.
+        // T1596.005 (Scan Databases) does NOT apply: every endpoint used here
+        // (network-info, as-overview, announced-prefixes, abuse-contact-finder)
+        // is RIR registration/routing data, not a port-scan corpus — the same
+        // exclusion ip_registry's own override comment already establishes for
+        // this exact class of source.
+        &["T1590.005", "T1589.002", "T1591.002"]
     }
 
     fn max_timeout_ms(&self) -> u64 {

@@ -215,40 +215,40 @@ export async function renderNewScan(v){
       <div id="adv-box" style="display:${W.showAdv?'block':'none'}">
         <div class="row">
           <div class="col-sm-3">
-            <label>Expansion depth</label>
+            <label for="w-depth">Expansion depth</label>
             <input type="number" class="form-control input-sm" id="w-depth" min="0" max="5" value="${W.options.depth}">
             <span class="help-block">0 = single round. ≥1 enables autonomous expansion.</span>
           </div>
           <div class="col-sm-3">
-            <label>Min expand C_eff</label>
+            <label for="w-mxc">Min expand C_eff</label>
             <input type="number" class="form-control input-sm" id="w-mxc" min="0" max="1" step="0.05" value="${W.options.min_expand_confidence}">
             <span class="help-block">Only expand entities ≥ this effective confidence.</span>
           </div>
           <div class="col-sm-3">
-            <label>Concurrent modules</label>
+            <label for="w-concurrent">Concurrent modules</label>
             <input type="number" class="form-control input-sm" id="w-concurrent" min="0" value="${W.options.max_concurrent}">
             <span class="help-block">0 = sequential. N&gt;0 = up to N in flight.</span>
           </div>
           <div class="col-sm-3">
-            <label>Module timeout (ms)</label>
+            <label for="w-timeout">Module timeout (ms)</label>
             <input type="number" class="form-control input-sm" id="w-timeout" min="100" placeholder="module default" value="${W.options.module_timeout_ms??''}">
           </div>
         </div>
         <div class="row" style="margin-top:8px">
           <div class="col-sm-3">
-            <label>Throttle (ms)</label>
+            <label for="w-throttle">Throttle (ms)</label>
             <input type="number" class="form-control input-sm" id="w-throttle" min="0" value="${W.options.throttle_ms}">
           </div>
           <div class="col-sm-3">
-            <label>Max entities</label>
+            <label for="w-maxent">Max entities</label>
             <input type="number" class="form-control input-sm" id="w-maxent" min="0" placeholder="unlimited" value="${W.options.max_entities??''}">
           </div>
           <div class="col-sm-3">
-            <label>Max wall time (sec)</label>
+            <label for="w-maxwt">Max wall time (sec)</label>
             <input type="number" class="form-control input-sm" id="w-maxwt" min="0" placeholder="unlimited" value="${W.options.max_wall_time_secs??''}">
           </div>
           <div class="col-sm-3">
-            <label>Min confidence</label>
+            <label for="w-minc">Min confidence</label>
             <input type="number" class="form-control input-sm" id="w-minc" min="0" max="1" step="0.05" placeholder="no filter" value="${W.options.min_confidence??''}">
           </div>
         </div>
@@ -431,7 +431,7 @@ export function renderDataTypeModules(){
     e.preventDefault();
     W.modules = Array.from(activeFromData);
     W.activeTab = 'module';
-    renderNewScan($('#view')).then(()=>{});
+    renderNewScan($('#view')).catch(e=>alertify.error(e.message));
   });
 }
 

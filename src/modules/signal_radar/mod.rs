@@ -12,6 +12,9 @@
 //!
 //! MITRE ATT&CK Reconnaissance (TA0043):
 //!   T1590.005 — IP Addresses (LAN ARP)
+//!   T1591.001 — Physical Locations (the GPS fix, via the shared
+//!               `device_fix::scan_location_ladder` ladder also used by
+//!               `device_sensors`, which carries the identical tag)
 //!   T1592     — Gather Victim Host Information
 //!   T1592.001 — Hardware (Bluetooth / WiFi / cell-radio identifiers)
 //!
@@ -93,7 +96,11 @@ impl Module for SignalRadar {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        &["T1590.005", "T1592", "T1592.001"]
+        // The GPS sensor (`gps::scan_gps`) resolves via the same
+        // `device_fix::scan_location_ladder` function `device_sensors` calls,
+        // which emits a Coordinates entity from the fix — device_sensors
+        // carries T1591.001 for exactly this reason, so this module must too.
+        &["T1590.005", "T1591.001", "T1592", "T1592.001"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {

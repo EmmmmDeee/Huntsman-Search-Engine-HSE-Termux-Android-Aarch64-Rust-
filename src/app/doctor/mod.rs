@@ -454,10 +454,10 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
         // same diagnosis twice under a different heading.
         StatusProbe::InvalidKey => {}
         StatusProbe::Unreachable(detail) => {
-            println!("  status: UNREACHABLE — could not connect to the SeekNow API host: {detail}")
+            println!("  status: UNREACHABLE — could not connect to the SeekNow API host: {detail}");
         }
         StatusProbe::Unparseable => {
-            println!("  status: reachable, but the response body wasn't a recognised JSON object.")
+            println!("  status: reachable, but the response body wasn't a recognised JSON object.");
         }
     }
 

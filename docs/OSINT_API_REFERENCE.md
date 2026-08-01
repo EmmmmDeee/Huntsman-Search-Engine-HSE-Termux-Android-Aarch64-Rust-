@@ -239,7 +239,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **Sunrise-Sunset / Overpass (OSM) / Photon / Geocode / Nominatim** | solar position, map features, geocoding | free | M |
 | **EXIF geo** | image metadata → coordinates | free (offline) | M |
 | **Wayback Machine / archive.org** | historical snapshots | free | M |
-| **Blockchain OSINT** — Etherscan, BscScan, Blockchair, Bitquery, Chainalysis | wallet/tx intelligence | ltd/key | C |
+| **Blockchain OSINT** — `chain_intel` module: Esplora (BTC/LTC), Blockscout (ETH/EVM + reverse-ENS), public Solana RPC, BlockCypher (DOGE); NOT Etherscan/BscScan/Blockchair/Bitquery/Chainalysis, which remain unintegrated | wallet/tx intelligence | free | M |
 
 ---
 

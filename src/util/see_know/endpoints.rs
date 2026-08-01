@@ -150,10 +150,10 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
 ///
 /// Callers should reserve this for a confirmed EMPTY [`search`] result: it
 /// costs the same credit but roughly 8x the latency, so calling it after a
-/// fast HIT would waste both quota and wall-time for zero additional coverage
-/// — this was never wired before (`docs/SEEKNOW_SETUP.md`: "HSE always calls
-/// fast `/search`, never deep"), the single largest documented, unimplemented
-/// coverage gap in the SeekNow integration.
+/// fast HIT would waste both quota and wall-time for zero additional coverage.
+/// Live-dispatched since v1.19 as the typed-query-miss fallback from
+/// `modules::see_know::mod` — see `docs/SEEKNOW_SETUP.md`'s endpoint coverage
+/// table for current wiring status.
 pub async fn search_deep(key: &str, query: &str, query_type: &str) -> Result<Vec<Value>> {
     // Separate cache namespace from `search` (`typed_cache_key` prefixes on
     // `path`) — fast and deep results for the same query never collide, and a

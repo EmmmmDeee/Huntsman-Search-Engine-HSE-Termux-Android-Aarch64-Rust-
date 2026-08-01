@@ -398,6 +398,23 @@ h1,h2,h3,h4,h5{ display:flow-root; }
 .btn:active{ transform:translateY(1px); }
 .btn:disabled,.btn[disabled]{ opacity:.5; cursor:not-allowed; }
 .btn-xs{ font-size:11px; padding:2px 8px; gap:4px; }
+/* Icon-only .btn-xs instances (Scans list row actions, Live session controls,
+   Stealer Logs reveal/copy, Graph view controls) render well under the 44px
+   minimum touch target the bottom nav already documents above — unlike the
+   nav, .btn-xs never grew on a touch device. `pointer:coarse` (not a width
+   breakpoint) targets touch input specifically, including a touch tablet at
+   a wide viewport. */
+@media (pointer:coarse){
+  .btn-xs{ min-height:40px; min-width:40px; padding:8px 10px; }
+  /* The 40px floor roughly doubles a packed icon-only row's footprint. Two
+     containers pack several .btn-xs siblings with no wrap of their own
+     (Scans list row-actions <td>, Stealer Logs .btn-group) — without this,
+     a touch-tablet-width viewport (>=768px, where the <=767px card-restack
+     flex-wrap below doesn't apply) or an already-tight phone-width .btn-group
+     row would widen/clip instead of gracefully wrapping to a second line. */
+  td:has(> .btn-xs + .btn-xs){ display:flex; flex-wrap:wrap; gap:4px; align-items:center; }
+  .btn-group{ flex-wrap:wrap; }
+}
 .btn-sm{ font-size:12px; padding:4px 10px; }
 .btn-block{ display:flex; width:100%; }
 .btn-default{ background:var(--bg-elevated-2); color:var(--text); border-color:var(--border-strong); }
@@ -431,9 +448,6 @@ select.form-control{ appearance:none; background-image:url("data:image/svg+xml,%
 .input-group{ display:flex; width:100%; }
 .input-group .form-control{ flex:1; border-radius:0; }
 .input-group .form-control:first-child{ border-top-left-radius:var(--radius-sm); border-bottom-left-radius:var(--radius-sm); }
-.input-group-btn{ display:flex; }
-.input-group-btn .btn{ border-radius:0; }
-.input-group-btn:last-child .btn{ border-top-right-radius:var(--radius-sm); border-bottom-right-radius:var(--radius-sm); }
 .form-inline{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
 .control-group{ margin-bottom:12px; }
 .control-group label{ display:block; font-size:12px; font-weight:600; color:var(--text-muted); margin-bottom:4px; text-transform:uppercase; letter-spacing:.03em; }
@@ -445,7 +459,6 @@ input[type=checkbox],input[type=radio]{ accent-color:var(--accent); width:14px; 
 .panel{ background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--radius); margin-bottom:16px; box-shadow:var(--shadow-sm); overflow:hidden; }
 .panel-default>.panel-heading,.panel-heading{ background:var(--bg-elevated-2); border-bottom:1px solid var(--border); color:var(--text); padding:9px 14px; font-weight:600; font-size:12.5px; }
 .panel-body{ padding:14px; color:var(--text); }
-.panel-title{ font-size:13px; font-weight:600; margin:0; }
 
 /* ───────────────────────────── Tables ───────────────────────────── */
 
@@ -718,7 +731,6 @@ input[type=checkbox],input[type=radio]{ accent-color:var(--accent); width:14px; 
 .mod-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:5px; max-height:380px; overflow-y:auto; padding:3px; border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--bg); }
 .mod-grid label{ display:flex; align-items:center; gap:6px; padding:6px 9px; background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--radius-sm); font-weight:400; margin:0; cursor:pointer; color:var(--text); }
 .mod-grid label:hover{ border-color:var(--text-dim); background:var(--bg-hover); }
-.mod-grid label.dimmed{ opacity:.4; }
 .mod-grid .mn{ font-family:var(--mono); font-size:11.5px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
 .scan-error{ color:var(--danger); font-family:var(--mono); font-size:11px; }
@@ -731,10 +743,6 @@ input[type=checkbox],input[type=radio]{ accent-color:var(--accent); width:14px; 
 .entity-detail .ev-attr .ak{ color:var(--text-dim); }
 #browse-table tbody tr{ cursor:pointer; }
 #browse-table tbody tr:hover{ background:var(--bg-hover) !important; }
-
-.search-results{ padding:14px; }
-.search-results .sr-item{ padding:9px 13px; border-bottom:1px solid var(--border); cursor:pointer; }
-.search-results .sr-item:hover{ background:var(--bg-hover); }
 
 .empty-state{ padding:36px 20px; text-align:center; color:var(--text-dim); }
 .empty-state h3{ color:var(--text-muted); font-weight:500; font-size:16px; margin-bottom:6px; }

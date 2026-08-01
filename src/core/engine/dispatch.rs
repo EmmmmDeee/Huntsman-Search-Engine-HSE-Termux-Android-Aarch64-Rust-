@@ -21,16 +21,28 @@ use crate::core::event::EventKind;
 use crate::core::module::{Module, ModuleContext, ModuleCost, ModuleResult};
 use crate::core::scan::{ScanOptions, Target, TargetKind};
 
+/// Normalise `target`'s value the same way `Entity::new`/`dispatch_key`/
+/// `archive_key` do — the shared, potentially non-trivial computation (for a
+/// `Url` target: lowercasing, three splits, a `format!`, and a query-parameter
+/// parse/clean pass) that [`dispatch_key`] and [`archive_key`] both key on.
+/// `target` is fixed for the whole per-module dispatch loop of a given
+/// target, so callers hoist this ONCE per target and pass the result to every
+/// per-module `dispatch_key`/`archive_key` call — mirroring how
+/// `target_distinct_sources` is already hoisted once per target rather than
+/// recomputed once per candidate module.
+pub(super) fn normalise_target(target: &Target) -> String {
+    normalise(&target.kind.to_entity_kind(), &target.value)
+}
+
 /// Dispatch-dedup key: a module is invoked at most once per `(module, normalised
-/// target)` across the whole scan. The value is normalised the same way
-/// `Entity::new` does, so the same target reached two ways dedups to one run.
+/// target)` across the whole scan. `normalised_target` is [`normalise_target`]'s
+/// output for the target this call is dispatching against.
 pub(super) fn dispatch_key(
     module_name: &'static str,
-    target: &Target,
+    target_kind: TargetKind,
+    normalised_target: &str,
 ) -> (&'static str, TargetKind, String) {
-    let entity_kind = target.kind.to_entity_kind();
-    let normalised = normalise(&entity_kind, &target.value);
-    (module_name, target.kind, normalised)
+    (module_name, target_kind, normalised_target.to_string())
 }
 
 /// True if `entity` is *incidental infrastructure* noise on a scan with this
@@ -236,9 +248,9 @@ pub(super) struct DispatchOutcome {
     /// Mirrors `module.cache_ttl_secs()` captured before spawning. Zero
     /// means no caching; the join loop skips the archive write.
     pub(super) ttl_secs: u64,
-    /// Pre-computed `archive_key(name, target)` captured before spawning
-    /// (the module and target are no longer available at join time). Empty
-    /// when `ttl_secs == 0`.
+    /// Pre-computed `archive_key(name, target_kind, normalised_target)`
+    /// captured before spawning (the module and target are no longer
+    /// available at join time). Empty when `ttl_secs == 0`.
     pub(super) cache_key: String,
     /// The producing module's ATT&CK Reconnaissance technique IDs
     /// (`module.attack_techniques()`), captured before spawning because the
@@ -250,11 +262,15 @@ pub(super) struct DispatchOutcome {
 /// Stable archive key for the inter-scan entity cache: `module:kind:value`
 /// where `value` is normalised identically to the dispatch dedup key so a
 /// repeat scan of the same target always hits the same entry.
+/// `normalised_target` is [`normalise_target`]'s output for `target_kind`'s target.
 #[inline]
-fn archive_key(name: &str, target: &Target) -> String {
-    let entity_kind = target.kind.to_entity_kind();
-    let normalised = normalise(&entity_kind, &target.value);
-    format!("{}:{}:{}", name, target.kind.canonical_str(), normalised)
+fn archive_key(name: &str, target_kind: TargetKind, normalised_target: &str) -> String {
+    format!(
+        "{}:{}:{}",
+        name,
+        target_kind.canonical_str(),
+        normalised_target
+    )
 }
 
 /// Distinct *corroborating* evidence-source count for the entity a `target`
@@ -538,7 +554,11 @@ impl super::ScanEngine {
                 // hot-inject cascade could never be applied to this target —
                 // defeating the cascade's purpose. No-op for free modules,
                 // which never enter the ledger.
-                state.dispatched.remove(&dispatch_key(name, cx.target));
+                state.dispatched.remove(&dispatch_key(
+                    name,
+                    cx.target.kind,
+                    &normalise_target(cx.target),
+                ));
                 let reason = match crate::util::keys::signup_hint(&key) {
                     Some(hint) => format!("needs API key {key} — {hint}"),
                     None => format!("needs API key {key}"),
@@ -809,6 +829,11 @@ impl super::ScanEngine {
         // Distinct-source count of the target entity (for the high-value-API
         // cross-correlation gate); computed once per target, not per module.
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
+        // Hoisted once per target, not once per candidate module — see
+        // `normalise_target`'s doc for why this matters (a Url target's
+        // normalisation is non-trivial, and this loop runs it once per
+        // accepting module out of the ~75+ registered ones).
+        let normalised_target = normalise_target(cx.target);
         for &idx in self
             .graph
             .dispatch_order_for(cx.target.kind, cx.opts.convex_budget)
@@ -838,7 +863,9 @@ impl super::ScanEngine {
                 continue;
             }
             if !matches!(module.cost(), ModuleCost::Free)
-                && !state.dispatched.insert(dispatch_key(name, cx.target))
+                && !state
+                    .dispatched
+                    .insert(dispatch_key(name, cx.target.kind, &normalised_target))
             {
                 state.stats.deduped += 1;
                 self.emit_skipped(cx.scan_id, name, "already dispatched for this target");
@@ -847,7 +874,8 @@ impl super::ScanEngine {
 
             // Inter-scan entity cache (C9): check before dispatching.
             let ttl = module.cache_ttl_secs();
-            let cache_key = (ttl > 0).then(|| archive_key(name, cx.target));
+            let cache_key =
+                (ttl > 0).then(|| archive_key(name, cx.target.kind, &normalised_target));
             if let Some(ref key) = cache_key
                 && let Ok(Some(cached)) = self.store.lookup_module_result_fresh(key)
             {
@@ -946,6 +974,8 @@ impl super::ScanEngine {
         state: &mut DispatchState<'_>,
     ) {
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
+        // Hoisted once per target — see `normalise_target`'s doc.
+        let normalised_target = normalise_target(cx.target);
         for &idx in self
             .graph
             .dispatch_order_for(cx.target.kind, cx.opts.convex_budget)
@@ -976,14 +1006,18 @@ impl super::ScanEngine {
             if self.gate_skips(cx, &**module, target_sources, state.stats) {
                 continue;
             }
-            if !state.dispatched.insert(dispatch_key(name, cx.target)) {
+            if !state
+                .dispatched
+                .insert(dispatch_key(name, cx.target.kind, &normalised_target))
+            {
                 state.stats.deduped += 1;
                 self.emit_skipped(cx.scan_id, name, "already dispatched for this target");
                 continue;
             }
             // Inter-scan entity cache (C9): check before dispatching.
             let ttl = module.cache_ttl_secs();
-            let cache_key = (ttl > 0).then(|| archive_key(name, cx.target));
+            let cache_key =
+                (ttl > 0).then(|| archive_key(name, cx.target.kind, &normalised_target));
             if let Some(ref key) = cache_key
                 && let Ok(Some(cached)) = self.store.lookup_module_result_fresh(key)
             {
@@ -1057,6 +1091,8 @@ impl super::ScanEngine {
         let ctx_shared: Arc<ModuleContext> = Arc::new(ctx.clone());
 
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
+        // Hoisted once per target — see `normalise_target`'s doc.
+        let normalised_target = normalise_target(cx.target);
         for &idx in self
             .graph
             .dispatch_order_for(cx.target.kind, cx.opts.convex_budget)
@@ -1095,7 +1131,9 @@ impl super::ScanEngine {
                 continue;
             }
             if !matches!(module.cost(), ModuleCost::Free)
-                && !state.dispatched.insert(dispatch_key(name, cx.target))
+                && !state
+                    .dispatched
+                    .insert(dispatch_key(name, cx.target.kind, &normalised_target))
             {
                 state.stats.deduped += 1;
                 self.emit_skipped(cx.scan_id, name, "already dispatched for this target");
@@ -1106,7 +1144,7 @@ impl super::ScanEngine {
             // (module and target are moved into the task and unavailable at join).
             let ttl_secs = module.cache_ttl_secs();
             let cache_key = if ttl_secs > 0 {
-                archive_key(name, cx.target)
+                archive_key(name, cx.target.kind, &normalised_target)
             } else {
                 String::new()
             };

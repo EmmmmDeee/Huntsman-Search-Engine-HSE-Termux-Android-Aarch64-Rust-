@@ -10,8 +10,30 @@ use super::*;
         assert!(!is_open(m));
         record_error(m, "HTTP 429 Too Many Requests: rate limit exceeded");
         assert!(is_open(m), "a 429 must trip the breaker at once");
-        record_success(m); // provider recovered / window reset
-        assert!(!is_open(m));
+    }
+
+    #[test]
+    fn success_does_not_clear_an_active_rate_limit_trip() {
+        // Regression: `record_success` used to unconditionally `remove()` the
+        // whole Trip entry on ANY success, so a rate-limit cooldown set by one
+        // call could be wiped moments later by an unrelated concurrent
+        // success to the SAME module (e.g. a second scan's already-in-flight
+        // call to the same provider completing after the first scan's 429
+        // tripped it — `hse serve` allows several concurrent scans, and the
+        // breaker gate is only consulted once, before dispatch, so both calls
+        // can pass it before either finishes). That reopened the exact
+        // retry-futile window this breaker exists to close, for every scan
+        // sharing the endpoint. A rate limit is a deterministic, timed
+        // property of the endpoint (see the module doc) — a success that
+        // didn't actually observe the cooldown elapsing must not clear it.
+        let m = "t_rate_limit_survives_success";
+        record_error(m, "HTTP 429 Too Many Requests: rate limit exceeded");
+        assert!(is_open(m), "a 429 must trip the breaker at once");
+        record_success(m);
+        assert!(
+            is_open(m),
+            "a concurrent success must not clear an active rate-limit cooldown"
+        );
     }
 
     #[test]

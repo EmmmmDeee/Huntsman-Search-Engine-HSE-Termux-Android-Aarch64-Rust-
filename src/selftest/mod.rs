@@ -142,6 +142,7 @@ pub async fn run() -> Report {
         check_storage_and_correlator().await,
         check_log_capture(),
         check_termux_env().await,
+        check_battery().await,
     ];
     Report::build(checks, started)
 }
@@ -514,6 +515,65 @@ async fn check_termux_env() -> Check {
             Status::Pass,
             "non-Termux host (sensor modules inert)",
         )
+    }
+}
+
+/// Battery level + charging state. The codebase already reasons about
+/// battery as a scarce, dispatch-cost-relevant resource
+/// (`core::convex::module_dispatch_cost`'s doc: a module dispatch "spends...
+/// wall-time, battery"; `util::wigle`'s doc: a wasted request burns "the
+/// phone's battery and radio") but never previously read one — this is the
+/// first actual telemetry source for that reasoning, surfaced via the same
+/// timeout-bounded, failure-cached `termux_cmd` bridge every other termux-*
+/// probe (`check_termux_env` above, the sensor modules) already goes
+/// through. Purely informational here — an unattended `hse serve`/`hse
+/// live`/`hse radar` session running low and unplugged is exactly the
+/// scenario an operator wants a heads-up on before it dies mid-scan.
+async fn check_battery() -> Check {
+    if !crate::is_termux() {
+        return check(
+            "env.battery",
+            Status::Pass,
+            "non-Termux host (battery telemetry not applicable)",
+        );
+    }
+    let Some(out) = crate::util::termux::termux_cmd("termux-battery-status", &[], 1500).await
+    else {
+        return check(
+            "env.battery",
+            Status::Warn,
+            "termux-battery-status unavailable — install/allow Termux:API for battery-aware diagnostics",
+        );
+    };
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out) else {
+        return check(
+            "env.battery",
+            Status::Warn,
+            "termux-battery-status returned an unrecognised response",
+        );
+    };
+    let pct = v.get("percentage").and_then(serde_json::Value::as_i64);
+    let plugged = v
+        .get("plugged")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("UNKNOWN");
+    match pct {
+        // Below 20% and not charging: a long unattended session may not
+        // finish. The threshold is informational only — nothing throttles
+        // or refuses to run on it.
+        Some(p) if p <= 20 && plugged.eq_ignore_ascii_case("UNPLUGGED") => check(
+            "env.battery",
+            Status::Warn,
+            format!(
+                "{p}% and unplugged — a long scan/live/radar session may not finish before the phone dies"
+            ),
+        ),
+        Some(p) => check("env.battery", Status::Pass, format!("{p}% ({plugged})")),
+        None => check(
+            "env.battery",
+            Status::Warn,
+            "termux-battery-status response carried no recognised percentage field",
+        ),
     }
 }
 

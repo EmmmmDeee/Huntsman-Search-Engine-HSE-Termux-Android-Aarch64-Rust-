@@ -826,6 +826,33 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "ip_registry queries RDAP/BGPView — not a scan database (T1596.005)"
     );
 
+    // bgpview: ASN→prefix and IP→ASN mapping (T1590.005) plus PTR-record DNS
+    // findings (T1590.002). T1596.005 (Scan Databases) does not apply — the
+    // same registration/routing-data exclusion ip_registry already establishes
+    // for this exact BGPView data source.
+    assert_eq!(
+        techniques("bgpview"),
+        vec!["T1590.005", "T1590.002"],
+        "bgpview → IP Addresses + DNS (PTR), not a scan database"
+    );
+    assert!(
+        !techniques("bgpview").contains(&"T1596.005"),
+        "bgpview queries BGPView registration/routing data — not a scan database (T1596.005)"
+    );
+
+    // ripestat: RIR registration/routing data (T1590.005) plus the resolved
+    // abuse-contact email (T1589.002) and network-holder org (T1591.002).
+    // T1596.005 does not apply for the same reason as ip_registry/bgpview.
+    assert_eq!(
+        techniques("ripestat"),
+        vec!["T1590.005", "T1589.002", "T1591.002"],
+        "ripestat → IP Addresses + Email Addresses + Business Relationships, not a scan database"
+    );
+    assert!(
+        !techniques("ripestat").contains(&"T1596.005"),
+        "ripestat queries RIPE NCC registration/routing data — not a scan database (T1596.005)"
+    );
+
     // exif_geo: Geo category (T1591.001) but EXIF Author field → Person entity
     // → T1589.003 Employee Names, which the Geo default omits.
     assert_eq!(
@@ -1019,6 +1046,28 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         techniques("device_sensors"),
         vec!["T1590.005", "T1591.001", "T1592"],
         "device_sensors → IP Addresses + Physical Locations + Host Information"
+    );
+
+    // signal_radar: Sensor default (T1592) plus LAN ARP (T1590.005), hardware
+    // identifiers (T1592.001), and — like device_sensors — Physical Locations
+    // (T1591.001), since its GPS sub-sensor resolves via the identical
+    // `device_fix::scan_location_ladder` function device_sensors uses.
+    assert_eq!(
+        techniques("signal_radar"),
+        vec!["T1590.005", "T1591.001", "T1592", "T1592.001"],
+        "signal_radar → IP Addresses + Physical Locations + Host Information + Hardware"
+    );
+
+    // wayback: T1596 (the archive itself is an open technical database) +
+    // T1589.002 (contact mining) + T1594 (every archived page mined is scoped
+    // to the target's OWN site, just via a historical index rather than a live
+    // crawl — the Web default's Search Victim-Owned Websites case). T1592.002
+    // (Software), the Web default's other member, is correctly omitted — this
+    // module never fingerprints a tech stack.
+    assert_eq!(
+        techniques("wayback"),
+        vec!["T1596", "T1589.002", "T1594"],
+        "wayback → Open Technical Databases + Email Addresses + Victim-Owned Websites"
     );
 
     // Every overridden ID is still a real catalogue entry (no typos).

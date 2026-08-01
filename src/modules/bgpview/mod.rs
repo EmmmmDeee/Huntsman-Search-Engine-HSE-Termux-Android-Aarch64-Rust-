@@ -53,8 +53,11 @@ impl Module for BgpView {
         // ASN→prefix and IP→ASN mapping is IP-address recon (T1590.005, the
         // Infrastructure default) but it also surfaces the IP's PTR records as
         // DNS findings — add Gather Victim Network Information: DNS (T1590.002).
-        // Superset of the category default, so coverage never regresses.
-        &["T1590.005", "T1590.002", "T1596.005"]
+        // T1596.005 (Scan Databases) does NOT apply: bgpview.io serves only
+        // BGP-announcement/ASN-prefix/PTR registration data, the same class of
+        // source ip_registry's own override comment names as excluded (RDAP and
+        // BGPView "are registration/routing databases, not port-scan corpora").
+        &["T1590.005", "T1590.002"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {

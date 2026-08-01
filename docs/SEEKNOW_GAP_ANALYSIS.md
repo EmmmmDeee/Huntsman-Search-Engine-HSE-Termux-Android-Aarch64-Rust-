@@ -4,6 +4,14 @@
 **Branch:** `claude/see-know-gap-analysis-3yydci`  
 **Scope:** Comprehensive analysis covering features, infrastructure, documentation, testing, performance, and compliance
 
+> **Historical snapshot, not current status.** This report reflects the
+> codebase as of 2026-07-22 (18/24 endpoints wired) and is intentionally kept
+> unchanged as a point-in-time reference (see `docs/IMPLEMENTATION_BLUEPRINT.md`).
+> `/status` and `/search/deep` have since been wired (commit `ae76403f2`), and
+> coverage is now 20/24. For current SeekNow integration status, see
+> [`docs/SEEKNOW_SETUP.md`](SEEKNOW_SETUP.md) — the "running software is the
+> source of truth" convention `CLAUDE.md` establishes for this repository.
+
 ---
 
 ## Executive Summary

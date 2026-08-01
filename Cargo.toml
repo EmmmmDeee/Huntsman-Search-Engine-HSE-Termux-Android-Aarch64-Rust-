@@ -144,7 +144,18 @@ csv                = "1"
 # Pure-Rust PDF parser — no C deps, aligns with Termux architecture invariant.
 pdf                = "0.10"
 # Pure-Rust image processing for OCR preprocessing (resize, denoise).
-image              = "0.25"
+# default-features=false + an explicit format list: only jpeg/png are ever
+# encoded (image_reverse_search.rs, image_geolocation.rs) and gif/bmp/webp are
+# the other formats DocumentFormat::from_path accepts as ingestible images
+# (util/document_parse/mod.rs) — every format this codebase actually decodes
+# or encodes. The full default set additionally pulls avif (via ravif, which
+# depends on rav1e — one of the heaviest crates in the ecosystem to compile —
+# plus its own rayon thread pool), exr, qoi, and tiff, none of which any code
+# path here references, working against both the aarch64 LTO build-time this
+# crate's own [profile.fast] exists to dodge and the deliberate
+# WORKER_THREADS=2 Termux tuning (rayon spins up an independent, uncontrolled
+# OS thread pool sized to num_cpus by default).
+image              = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "bmp", "webp"] }
 # Entity extraction: lazy regex initialization for pattern matching.
 lazy_static        = "1.4"
 crossbeam-channel = "0.5.16"

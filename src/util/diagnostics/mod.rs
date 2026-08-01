@@ -4,8 +4,10 @@
 //!
 //! The ledger ($HOME/.huntsman/module_stats.json) tracks rolling
 //! averages of entities/sec, error rates, and yield-per-target for
-//! every module. Future scans can read this to deprioritise
-//! consistently weak modules (not yet wired — present as data only).
+//! every module. [`read_adaptive_routing`] reads it to deprioritise
+//! consistently weak modules — wired via `hse scan --adaptive`
+//! (`src/cli/scan/mod.rs`), which extends `exclude_modules` with the
+//! ledger's `recommended_skips` before dispatch.
 
 mod analyse;
 pub mod cluster;

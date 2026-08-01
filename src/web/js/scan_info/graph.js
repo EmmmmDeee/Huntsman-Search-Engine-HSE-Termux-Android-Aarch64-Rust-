@@ -126,8 +126,17 @@ export function buildD3Graph(){
     .style('stroke-opacity', d=>d.rel?0.85:(d.corr?0.7:(dark?0.5:0.3)))
     .style('stroke-width', d=>d.rel?2:(d.corr?1.6:1))
     .style('stroke-dasharray', d=>d.rel?'5,3':'none');
-  // Hover a typed edge to see its relation kind.
-  link.append('title').text(d=>d.rel?('relation: '+d.kind):(d.corr?'correlation':'discovered from seed'));
+  // Hover a typed edge to see its relation kind — the SVG <title> renders as
+  // a native OS tooltip, which has no equivalent on tap (Chrome-for-Android
+  // has no long-press fallback for it). The click handler below is the touch
+  // equivalent: tapping a typed edge shows the same text via the app's own
+  // toast shim, which fires on both mouse click and tap.
+  const edgeKindText = d=>d.rel?('relation: '+d.kind):(d.corr?'correlation':'discovered from seed');
+  link.append('title').text(edgeKindText);
+  link.style('cursor', d=>d.rel?'pointer':null)
+    .on('click', function(d){
+      if (d.rel && typeof alertify !== 'undefined') alertify.notify(edgeKindText(d));
+    });
 
   const drag = force.drag().on('dragstart', function(){ d3.select(this).style('cursor','grabbing'); });
 

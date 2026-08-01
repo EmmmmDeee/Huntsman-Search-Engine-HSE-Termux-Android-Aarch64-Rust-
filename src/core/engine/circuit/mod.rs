@@ -138,10 +138,16 @@ pub(super) fn is_open(name: &str) -> bool {
     }
 }
 
+/// [`Trip::reason`] set by [`record_rate_limit`] — the one hard, deterministic
+/// trip cause (as opposed to a soft failure streak's reason strings). Shared
+/// as a constant so [`record_success`]'s check can never drift from the
+/// literal that actually gets stored.
+const RATE_LIMIT_REASON: &str = "rate-limit/quota";
+
 /// Record that `name` just hit a rate-limit/quota/payment wall → trip now for
 /// [`RATE_LIMIT_COOLDOWN`].
 pub(super) fn record_rate_limit(name: &'static str) {
-    trip(name, RATE_LIMIT_COOLDOWN, "rate-limit/quota");
+    trip(name, RATE_LIMIT_COOLDOWN, RATE_LIMIT_REASON);
 }
 
 /// Record a hard transport error or timeout. Trips only once the failure streak
@@ -164,10 +170,30 @@ pub(super) fn record_soft_failure(name: &'static str) {
 
 /// Record a successful dispatch → clear any failure state for `name`, so a
 /// provider that recovers is immediately trusted again.
+///
+/// Does NOT clear an active [`RATE_LIMIT_REASON`] trip still within its
+/// cooldown. A rate limit is a property of the endpoint, deterministic until
+/// `open_until` elapses (see the module doc) — but `is_open` is consulted only
+/// once, before dispatch, so two concurrent scans (`hse serve` allows up to 8,
+/// `MAX_CONCURRENT_SCANS`) can both pass the gate before either finishes. If
+/// scan A's call then 429s and trips the breaker while scan B's already-in-
+/// flight call to the same module succeeds a moment later, an unconditional
+/// `remove` here would erase the cooldown A just set — reopening the exact
+/// retry-futile window this breaker exists to close, for every scan sharing
+/// the endpoint. A soft (non-rate-limit) trip's "one success resets the
+/// streak" self-healing behaviour (see [`record_soft_failure`]) is preserved:
+/// only a live rate-limit cooldown is protected from a stale concurrent
+/// success.
 pub(super) fn record_success(name: &str) {
     let mut g = state()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(t) = g.get(name)
+        && t.reason == RATE_LIMIT_REASON
+        && t.open_until.is_some_and(|u| Instant::now() < u)
+    {
+        return;
+    }
     g.remove(name);
 }
 

@@ -434,8 +434,14 @@ impl Module for Wayback {
         // T1596 — Search Open Technical Databases (Wayback Machine is a public
         // web archive, an open technical database). T1589.002 — Email Addresses
         // (contact mining extracts email addresses from archived pages).
-        // Superset of the Web default ["T1594", "T1592.002"].
-        &["T1596", "T1589.002"]
+        // T1594 — Search Victim-Owned Websites: every archived page mined here
+        // (contact/about/staff pages, historical subdomains) is scoped to the
+        // target domain's OWN site, just via a third-party historical index
+        // rather than a live crawl — the Web category default's own case, an
+        // archived variant of it, so it is NOT dropped. T1592.002 (Software),
+        // the Web default's other member, does NOT apply — this module never
+        // fingerprints a tech stack, so it is correctly omitted, not a superset.
+        &["T1596", "T1589.002", "T1594"]
     }
 
     fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
