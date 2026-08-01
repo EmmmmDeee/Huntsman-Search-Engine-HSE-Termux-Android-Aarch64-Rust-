@@ -15,24 +15,18 @@ pub mod coords;
 /// an output-filtering policy for provider responses ([`is_valid_coords`]),
 /// not an input-parsing concern for a seed the operator typed deliberately.
 pub fn parse_coords(value: &str) -> Result<(f64, f64)> {
-    let (a, b) = value
-        .split_once(',')
-        .ok_or_else(|| Error::module("geo", "coordinates must be 'lat,lon'"))?;
-    let lat: f64 = a
-        .trim()
-        .parse()
-        .map_err(|_| Error::module("geo", "invalid latitude"))?;
-    let lon: f64 = b
-        .trim()
-        .parse()
-        .map_err(|_| Error::module("geo", "invalid longitude"))?;
-    if !lat.is_finite() || !(-90.0..=90.0).contains(&lat) {
-        return Err(Error::module("geo", "latitude out of range (-90..=90)"));
-    }
-    if !lon.is_finite() || !(-180.0..=180.0).contains(&lon) {
-        return Err(Error::module("geo", "longitude out of range (-180..=180)"));
-    }
-    Ok((lat, lon))
+    // Single source of truth: delegate to `geohash::parse_coords` (the same
+    // split/trim/parse/range gate) and wrap its `Option` in the module `Result`
+    // this boundary hands to `?`. Previously both functions hand-rolled the same
+    // logic; keeping one implementation guarantees they can never drift about
+    // what a valid coordinate is. Null Island (`0,0`) is intentionally accepted
+    // here — it's a deliberately-typed seed, not a provider sentinel.
+    crate::util::geohash::parse_coords(value).ok_or_else(|| {
+        Error::module(
+            "geo",
+            "coordinates must be 'lat,lon' with lat -90..=90 and lon -180..=180",
+        )
+    })
 }
 
 /// Canonical validity check for a geographic coordinate, shared by every
