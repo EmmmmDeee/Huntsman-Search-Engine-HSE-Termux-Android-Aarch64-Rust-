@@ -264,20 +264,23 @@ impl super::Store {
     /// resulting deterministic total order — relevance, then C_eff, then raw
     /// confidence, then uid — serialises identically for identical inputs.
     fn sort_entities_for_display(entities: &mut [Entity]) {
-        entities.sort_by(|a, b| {
-            is_incidental_infra(a)
-                .cmp(&is_incidental_infra(b)) // false (relevant) sorts before true
-                .then_with(|| {
-                    b.c_effective()
-                        .partial_cmp(&a.c_effective())
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .then_with(|| {
-                    b.confidence
-                        .partial_cmp(&a.confidence)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .then_with(|| a.uid.cmp(&b.uid))
+        // Compute the sort key ONCE per entity via `sort_by_cached_key`, rather
+        // than recomputing it inside every one of the O(n log n) comparator
+        // calls: `c_effective()` is an O(k²) evidence-source scan and
+        // `is_incidental_infra` parses CIDRs, so the previous `sort_by` evaluated
+        // both ~2·n·log n times on every read (finalise load, every read API
+        // handler, exports). `c_effective`/`confidence` are in [0, 1] (positive,
+        // non-NaN by the domain invariant), so `f64::to_bits` is monotonic and
+        // `Reverse(bits)` reproduces the prior highest-first `partial_cmp` order
+        // exactly — the deterministic total order (relevance, C_eff, confidence,
+        // uid) is byte-identical.
+        entities.sort_by_cached_key(|e| {
+            (
+                is_incidental_infra(e), // false (relevant) sorts before true
+                std::cmp::Reverse(e.c_effective().to_bits()),
+                std::cmp::Reverse(e.confidence.to_bits()),
+                e.uid.clone(),
+            )
         });
     }
 
