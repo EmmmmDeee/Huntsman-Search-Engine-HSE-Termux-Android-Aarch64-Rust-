@@ -423,7 +423,11 @@ fn cross_scan_corroboration_gated_same_as_multipath() {
         CROSS_SCAN_CORROBORATION_SOURCE,
         "Matched across scan boundary",
     ));
-    assert_eq!(solo.source_count(), 1, "no real source → gate blocks cross_scan");
+    assert_eq!(
+        solo.source_count(),
+        1,
+        "no real source → gate blocks cross_scan"
+    );
 
     let mut grounded = Entity::new(EntityKind::Email, "y@example.com", 0.55, "s");
     grounded.add_evidence(Evidence::new("snusbase", "Found in leak"));
@@ -431,7 +435,11 @@ fn cross_scan_corroboration_gated_same_as_multipath() {
         CROSS_SCAN_CORROBORATION_SOURCE,
         "Matched across scan boundary",
     ));
-    assert_eq!(grounded.source_count(), 2, "grounded entity → cross_scan counts");
+    assert_eq!(
+        grounded.source_count(),
+        2,
+        "grounded entity → cross_scan counts"
+    );
 }
 
 #[test]

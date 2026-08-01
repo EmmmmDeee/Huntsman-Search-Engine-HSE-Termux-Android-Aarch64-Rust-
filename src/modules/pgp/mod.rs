@@ -21,7 +21,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{read_body_capped, urldecode, urlencode, RequestBuilderExt};
+use crate::util::http::{RequestBuilderExt, read_body_capped, urldecode, urlencode};
 
 const SRC: &str = "pgp";
 

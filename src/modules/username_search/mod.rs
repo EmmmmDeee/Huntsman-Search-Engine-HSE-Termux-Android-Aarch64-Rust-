@@ -54,7 +54,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{urlencode, RequestBuilderExt};
+use crate::util::http::{RequestBuilderExt, urlencode};
 
 const SRC: &str = "username_search";
 

@@ -91,7 +91,12 @@ impl Module for CellLocal {
             let tower_id = format!("{}-{}-{}-{}", cell.mcc, cell.mnc, cell.lac, cell.cid);
 
             // ── DeviceId entity ──────────────────────────────────────────────
-            let mut device = Entity::new(EntityKind::DeviceId, &tower_id, confidence::STRONG, &ctx.scan_id);
+            let mut device = Entity::new(
+                EntityKind::DeviceId,
+                &tower_id,
+                confidence::STRONG,
+                &ctx.scan_id,
+            );
             device.tag(crate::core::tags::CELL_TOWER);
             device.tag("cell-local");
             device.tag(format!("radio:{}", cell.radio.to_lowercase()));

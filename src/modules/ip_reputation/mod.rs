@@ -33,7 +33,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{fetch_json_or_404, fetch_keyed_json, urlencode, RequestBuilderExt};
+use crate::util::http::{RequestBuilderExt, fetch_json_or_404, fetch_keyed_json, urlencode};
 use crate::util::threat::is_meaningful_tag;
 
 // ── OTX response types ─────────────────────────────────────────────

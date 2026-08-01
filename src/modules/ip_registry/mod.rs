@@ -458,7 +458,12 @@ fn contact_emails(
         .iter()
         .filter(|email| crate::util::extract::looks_like_email(email))
         .map(|email| {
-            let mut e = Entity::new(EntityKind::Email, email.as_str(), confidence::STRONG, scan_id);
+            let mut e = Entity::new(
+                EntityKind::Email,
+                email.as_str(),
+                confidence::STRONG,
+                scan_id,
+            );
             e.tag("asn-contact");
             e.tag(format!("role:{role}"));
             e.add_evidence(
