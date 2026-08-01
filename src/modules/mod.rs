@@ -118,6 +118,7 @@ pub mod leakix;
 pub mod lobsters;
 pub mod local_net;
 pub mod mastodon_user;
+pub mod mnemonic_pdns;
 pub mod mylnikov;
 pub mod name_intel;
 pub mod netblock;
@@ -128,6 +129,7 @@ pub mod npm_author;
 pub mod numverify;
 pub mod oathnet_pro;
 pub mod onyphe;
+pub mod open_meteo_geo;
 pub mod opencellid;
 pub mod opencorporates;
 pub mod opensanctions;
@@ -386,6 +388,9 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(geo_intel::GeoIntel),
             Arc::new(geocode::Geocode),
             Arc::new(hackertarget::HackerTarget),
+            // Keyless historical passive DNS (domain↔IP over time) — the reverse
+            // and historical view the live resolvers above can't give.
+            Arc::new(mnemonic_pdns::MnemonicPdns),
             Arc::new(threatfox::ThreatFox),
             Arc::new(rdap_domain::RdapDomain),
             Arc::new(ripestat::RipeStat),
@@ -461,6 +466,10 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(fullcontact::FullContact),
             Arc::new(numverify::NumVerify),
             Arc::new(photon::Photon),
+            // Third keyless forward geocoder alongside `geocode` (Nominatim) and
+            // `photon` (Komoot): resolves self-reported place-names to coordinates
+            // and adds timezone/population/place-class the others don't return.
+            Arc::new(open_meteo_geo::OpenMeteoGeo),
             Arc::new(mylnikov::Mylnikov),
             // Keyless BSSID geolocation alongside `mylnikov`: two independent
             // free corpora answering the same question, so an outage or a miss
