@@ -57,11 +57,11 @@ hse scan --kind email --value test@example.com --depth 1
 
 ## How SeekNow Works in HSE
 
-### SeekNow Endpoint Coverage: 19 of 24 documented endpoints wired
+### SeekNow Endpoint Coverage: 20 of 24 documented endpoints wired
 
 SeekNow's own published API surface documents 24 endpoints across 6
-categories. HSE actually calls 19 of them — the table below states each
-one's real status honestly (verified 2026-07-15 against the actual
+categories. HSE actually calls 20 of them — the table below states each
+one's real status honestly (verified 2026-08-01 against the actual
 dispatch code, not assumed from the vendor's docs):
 
 | Category | Endpoints | Credits | Status |
@@ -72,9 +72,9 @@ dispatch code, not assumed from the vendor's docs):
 | **Social/Gaming** | `/username/{github,twitter,tiktok,reddit,social,history}`, `/discord/{user,to-roblox}`, `/gaming/{xbox,roblox,minecraft}` | 1 each | **Wired** (11 endpoints) |
 | **Network** | `/network/{ip,email-check,phone}` | 1 each | **Wired** (3 endpoints) |
 | **Domain** | `/domain/{intel,whois}` | 1 each | **Wired** (2 endpoints) |
-| **Enterprise** | `/enterprise/discord/{history,messages,export}` | 5 each | Not implemented — Enterprise-plan-gated; never built |
+| **Enterprise** | `/enterprise/discord/{history,messages,export}` | 5 each | Not implemented — Enterprise-plan-gated; HSE's embedded/typical operator keys are not confirmed Enterprise-tier, so building against an unverifiable plan gate was deferred rather than shipped blind |
 | **Meta** | `/credits` | 0 | **Wired** — used for quota probing (`hse doctor`, scan-cap scaling) |
-| **Meta** | `/status` | 0 | Not implemented — informational only, no entities to extract |
+| **Meta** | `/status` | 0 | **Wired** — diagnostic-only, like `/credits`: no entities to extract, surfaced in `hse doctor`'s SeekNow account section so an operator sees which upstream sources (snusbase, leakcheck, intelx, etc.) are down before a scan spends budget expecting records from one that isn't answering |
 
 Also wired but not part of the vendor's own documented 24: `/gaming/steam`
 (`gaming/steam?id=<SteamID64>`), dispatched for a target that resolves to a
@@ -128,7 +128,7 @@ export HUNTSMAN_SEEKNOW_SCAN_CAP=250
 
 ### Automatic Data Extraction & Enrichment
 
-HSE extracts **17 entity types** from SeekNow responses across the 19 wired endpoints:
+HSE extracts **17 entity types** from SeekNow responses across the 20 wired endpoints:
 
 | Entity Type | Sources | Examples |
 |-------------|---------|----------|
@@ -411,7 +411,7 @@ Phase 2 (Free Expansion, Unlimited Parallelism)
 1. Discovers most entity types in one call
 2. Returns potential API keys early
 3. Feeds keys to unlock downstream paid modules
-4. Its 19 wired endpoints give overlapping coverage with OathNet (separate data sources)
+4. Its 20 wired endpoints give overlapping coverage with OathNet (separate data sources)
 
 ### The Force-Multiplication Loop
 
@@ -512,7 +512,7 @@ hse scan --kind email --value admin@mycompany.com --depth 3 --full
 **Q: Can I use SeekNow without OathNet Pro?**
 - Yes, SeekNow is standalone
 - OathNet Pro is optional (overlapping data, separate quota)
-- SeekNow's 19 wired endpoints provide broad coverage alone
+- SeekNow's 20 wired endpoints provide broad coverage alone
 
 **Q: Are my API keys kept secret?**
 - ✅ Keys stored in `~/.huntsman.env` only (local disk)

@@ -61,6 +61,33 @@ use super::*;
     }
 
     #[test]
+    fn format_status_value_renders_scalars_directly() {
+        assert_eq!(format_status_value(&serde_json::json!("operational")), "operational");
+        assert_eq!(format_status_value(&serde_json::json!(true)), "up");
+        assert_eq!(format_status_value(&serde_json::json!(false)), "down");
+    }
+
+    #[test]
+    fn format_status_value_extracts_a_nested_status_field() {
+        assert_eq!(
+            format_status_value(&serde_json::json!({"status": "operational", "latency_ms": 42})),
+            "operational"
+        );
+        assert_eq!(
+            format_status_value(&serde_json::json!({"state": "degraded"})),
+            "degraded"
+        );
+    }
+
+    #[test]
+    fn format_status_value_falls_back_to_raw_json_for_an_unrecognised_object() {
+        // No status-ish key present: fall back to the compact JSON rather
+        // than silently dropping the source's data.
+        let v = serde_json::json!({"foo": "bar"});
+        assert_eq!(format_status_value(&v), v.to_string());
+    }
+
+    #[test]
     fn loaded_huntsman_keys_are_sorted_regardless_of_insertion_order() {
         // `loaded` is a HashMap, so an unsorted read would print the keys in a
         // different order on every `hse doctor` invocation against the

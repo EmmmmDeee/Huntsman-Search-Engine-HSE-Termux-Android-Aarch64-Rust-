@@ -432,6 +432,35 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
         ),
     }
 
+    // Probes /status — a second free meta-query, so an operator sees WHICH
+    // upstream data sources (snusbase, leakcheck, intelx, etc.) are down
+    // before a scan spends budget expecting records from a source that
+    // isn't answering, rather than discovering it as an unexplained gap in
+    // scan results.
+    use crate::util::see_know::StatusProbe;
+    match crate::util::see_know::status_probe(seeknow_key).await {
+        StatusProbe::Ok(sources) => {
+            println!("  upstream sources:");
+            match sources.as_object() {
+                Some(map) if !map.is_empty() => {
+                    for (name, val) in map {
+                        println!("    {name}: {}", format_status_value(val));
+                    }
+                }
+                _ => println!("    (status response carried no source entries)"),
+            }
+        }
+        // Already reported by the credits check above — avoid repeating the
+        // same diagnosis twice under a different heading.
+        StatusProbe::InvalidKey => {}
+        StatusProbe::Unreachable(detail) => {
+            println!("  status: UNREACHABLE — could not connect to the SeekNow API host: {detail}")
+        }
+        StatusProbe::Unparseable => {
+            println!("  status: reachable, but the response body wasn't a recognised JSON object.")
+        }
+    }
+
     if critical {
         return Err(crate::core::error::Error::Other(
             "critical storage fault — the database could not be opened or failed its \
@@ -499,6 +528,28 @@ fn seeknow_unreachable_guidance(detail: &str) -> String {
          this request. Verify general internet connectivity and any outbound proxy/firewall \
          settings, or point HUNTSMAN_SEEKNOW_BASE at a reachable https base for the same API."
             .to_string()
+    }
+}
+
+/// Render one `/status` source entry for `hse doctor`. No live `/status`
+/// response has been captured (see [`crate::util::see_know::StatusProbe`]'s
+/// doc), so this makes a best effort at a per-source shape rather than
+/// asserting one: a bare string/bool value prints directly, an object is
+/// searched for a common status-ish field, and anything else falls back to
+/// its raw JSON rather than silently dropping the source.
+fn format_status_value(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Bool(b) => (if *b { "up" } else { "down" }).to_string(),
+        serde_json::Value::Object(o) => {
+            for key in ["status", "state", "operational", "up"] {
+                if let Some(inner) = o.get(key) {
+                    return format_status_value(inner);
+                }
+            }
+            v.to_string()
+        }
+        other => other.to_string(),
     }
 }
 

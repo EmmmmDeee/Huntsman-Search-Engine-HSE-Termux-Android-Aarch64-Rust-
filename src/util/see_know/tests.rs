@@ -9,8 +9,8 @@ use super::client::{
     classify_status, is_auth_error, key_fingerprint, parse_response, resolve_key, typed_cache_key,
 };
 use super::endpoints::{
-    CreditsOutcome, CreditsProbe, SEARCH_LIMIT, build_search_body, classify_credits_probe,
-    extract_items, parse_credits_body,
+    CreditsOutcome, CreditsProbe, SEARCH_LIMIT, StatusProbe, build_search_body,
+    classify_credits_probe, classify_status_probe, extract_items, parse_credits_body,
 };
 use crate::util::curl_client::AuthScheme;
 
@@ -792,6 +792,64 @@ fn credits_probe_maps_an_unrecognised_body_to_unparseable_not_unreachable() {
     match classify_credits_probe(Ok("<html>200 but no json</html>".to_string())) {
         CreditsProbe::Unparseable => {}
         other => panic!("a reachable-but-unrecognised body must be Unparseable, got {other:?}"),
+    }
+}
+
+// ── `status_probe` outcome classification — mirrors the `credits_probe`
+//    tests immediately above; see [`StatusProbe`]'s doc for why `Ok` carries
+//    the parsed object verbatim instead of a strongly-typed per-source shape.
+
+#[test]
+fn status_probe_maps_a_transport_failure_to_unreachable_with_the_curl_detail() {
+    let curl_dns_failure =
+        "curl exited 6: curl: (6) Could not resolve host: see-know.eu".to_string();
+    match classify_status_probe(Err(curl_dns_failure.clone())) {
+        StatusProbe::Unreachable(detail) => assert_eq!(detail, curl_dns_failure),
+        other => panic!("a transport failure must be Unreachable, got {other:?}"),
+    }
+}
+
+#[test]
+fn status_probe_maps_an_auth_rejection_to_invalid_key() {
+    let body = r#"{"error":"invalid_api_key","message":"Invalid API key"}"#.to_string();
+    match classify_status_probe(Ok(body)) {
+        StatusProbe::InvalidKey => {}
+        other => panic!("an auth rejection must be InvalidKey, got {other:?}"),
+    }
+}
+
+#[test]
+fn status_probe_maps_a_json_object_body_to_ok_with_the_object_verbatim() {
+    let body = r#"{"snusbase":"up","leakcheck":"down","intelx":"up"}"#.to_string();
+    match classify_status_probe(Ok(body)) {
+        StatusProbe::Ok(v) => {
+            assert_eq!(v.get("snusbase").and_then(|x| x.as_str()), Some("up"));
+            assert_eq!(v.get("leakcheck").and_then(|x| x.as_str()), Some("down"));
+        }
+        other => panic!("a JSON object body must be Ok, got {other:?}"),
+    }
+}
+
+#[test]
+fn status_probe_unwraps_a_data_envelope() {
+    let body = r#"{"data":{"snusbase":"up"}}"#.to_string();
+    match classify_status_probe(Ok(body)) {
+        StatusProbe::Ok(v) => {
+            assert_eq!(v.get("snusbase").and_then(|x| x.as_str()), Some("up"));
+        }
+        other => panic!("a data-enveloped object body must be Ok, got {other:?}"),
+    }
+}
+
+#[test]
+fn status_probe_maps_a_non_object_body_to_unparseable() {
+    match classify_status_probe(Ok("<html>200 but no json</html>".to_string())) {
+        StatusProbe::Unparseable => {}
+        other => panic!("a non-JSON body must be Unparseable, got {other:?}"),
+    }
+    match classify_status_probe(Ok(r#"["up","down"]"#.to_string())) {
+        StatusProbe::Unparseable => {}
+        other => panic!("a JSON array (not object) body must be Unparseable, got {other:?}"),
     }
 }
 

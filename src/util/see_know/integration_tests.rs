@@ -9,15 +9,25 @@
 //! it never touched `search()`, `get_path()`, or any real client function,
 //! so it could not catch drift between "endpoints we claim to support" and
 //! "endpoints we actually call." Live-verified 2026-07-15: of the 24
-//! documented endpoints, only 18 are ever actually invoked; `/stealer` was
-//! tried and found to live-verified-404 (correctly removed — see
+//! documented endpoints, only 18 were actually invoked; `/stealer` was tried
+//! and found to live-verified-404 (correctly removed — see
 //! `modules::see_know::endpoints::tests::plan_email_addon_is_only_email_check`);
-//! `/search/deep`, the three `/enterprise/discord/*`, and `/status` were
-//! never built at all. [`ENDPOINTS`] now records the REAL status of every
-//! entry with a citation, and the tests assert the table's own internal
-//! bookkeeping is self-consistent — legitimate as a documentation-accuracy
-//! check, but this file still cannot verify real HTTP wiring (that would
-//! mean `util::see_know` depending on `modules::see_know::endpoints`'s
+//! `/search/deep`, the three `/enterprise/discord/*`, and `/status` were not
+//! yet built. Since then `/search/deep` (dispatched from
+//! `modules::see_know::mod` as the v1.19+ typed-query-miss fallback) and
+//! `/status` (`util::see_know::status_probe`, an `hse doctor` diagnostic —
+//! see its doc for why it's `Ok`/`InvalidKey`/`Unreachable`/`Unparseable`
+//! rather than a typed shape) were wired, bringing real coverage to 20 of 24;
+//! the ledger below was updated alongside the code that closed each gap so it
+//! cannot silently drift the way the original "all 24... tested" claim did.
+//! Only the three `/enterprise/discord/*` endpoints remain unbuilt — deferred
+//! because HSE's embedded/typical operator keys are not confirmed
+//! Enterprise-tier, and building against an unverifiable plan gate would ship
+//! blind. [`ENDPOINTS`] records the REAL status of every entry with a
+//! citation, and the tests assert the table's own internal bookkeeping is
+//! self-consistent — legitimate as a documentation-accuracy check, but this
+//! file still cannot verify real HTTP wiring (that would mean
+//! `util::see_know` depending on `modules::see_know::endpoints`'s
 //! `EndpointCall` enum, the wrong direction for this crate's layering
 //! rules — `modules` depends on `util`, never the reverse). A companion
 //! regression test pinning `EndpointCall`'s real variant count lives where
@@ -86,7 +96,7 @@ mod seeknow_full_integration {
     /// `docs/SEEKNOW_INTEGRATION_SUMMARY.md`, each with its REAL,
     /// live-verified-or-code-confirmed wiring status — not an assumption.
     const ENDPOINTS: &[EndpointSpec] = &[
-        // Search (2 endpoints documented, 1 actually wired)
+        // Search (2 endpoints documented, both wired)
         EndpointSpec {
             name: "Search (Fast)",
             path: "/search",
@@ -102,8 +112,10 @@ mod seeknow_full_integration {
             method: "POST",
             credits: 1,
             target_type: "email|username|phone|domain|ip|name",
-            description: "Deep search (~40s), max coverage including slow sources",
-            wired: Wired::NotImplemented,
+            description: "Deep search (~40s), max coverage including slow sources — v1.19+ \
+                          fallback dispatched from modules::see_know::mod when a fast /search \
+                          on a TYPED query (email/username/phone/domain/ip) comes back empty",
+            wired: Wired::Yes,
         },
         // Stealer (1 endpoint documented, removed after live-verified 404)
         EndpointSpec {
@@ -294,7 +306,7 @@ mod seeknow_full_integration {
             description: "ZIP archive download of Discord history (Enterprise-only)",
             wired: Wired::NotImplemented,
         },
-        // Meta (2 endpoints documented, 1 wired)
+        // Meta (2 endpoints documented, both wired)
         EndpointSpec {
             name: "Credits Check",
             path: "/credits",
@@ -310,13 +322,16 @@ mod seeknow_full_integration {
             method: "GET",
             credits: 0,
             target_type: "none",
-            description: "Upstream data source status (snusbase, leakcheck, etc.)",
-            wired: Wired::NotImplemented,
+            description: "Upstream data source status (snusbase, leakcheck, etc.) — \
+                          diagnostic-only, like /credits: no entities to extract, so it is \
+                          called from hse doctor (util::see_know::status_probe), never part \
+                          of a per-target dispatch plan",
+            wired: Wired::Yes,
         },
     ];
 
     #[test]
-    fn endpoint_ledger_matches_the_24_documented_and_18_actually_wired() {
+    fn endpoint_ledger_matches_the_24_documented_and_20_actually_wired() {
         assert_eq!(
             ENDPOINTS.len(),
             24,
@@ -332,16 +347,17 @@ mod seeknow_full_integration {
             .filter(|e| e.wired == Wired::NotImplemented)
             .count();
         assert_eq!(
-            wired, 18,
-            "18 of the 24 documented endpoints are actually called"
+            wired, 20,
+            "20 of the 24 documented endpoints are actually called"
         );
         assert_eq!(
             removed_404, 1,
             "exactly /stealer was live-verified 404 and removed"
         );
         assert_eq!(
-            not_implemented, 5,
-            "/search/deep + the 3 /enterprise/discord/* + /status were never built"
+            not_implemented, 3,
+            "only the 3 /enterprise/discord/* endpoints remain unbuilt \
+             (Enterprise-plan-gated, unverifiable against HSE's keys)"
         );
         assert_eq!(wired + removed_404 + not_implemented, ENDPOINTS.len());
     }
@@ -350,7 +366,7 @@ mod seeknow_full_integration {
     fn credit_cost_calculation_covers_every_documented_endpoint() {
         // This counts documented cost regardless of wiring status — it
         // describes the vendor's published price list, not what HSE spends
-        // (HSE only ever pays the 18 `Wired::Yes` entries' costs).
+        // (HSE only ever pays the 20 `Wired::Yes` entries' costs).
         let free = ENDPOINTS.iter().filter(|e| e.credits == 0).count();
         let paid = ENDPOINTS.iter().filter(|e| e.credits > 0).count();
         assert_eq!(free, 2, "exactly 2 free endpoints (meta)");

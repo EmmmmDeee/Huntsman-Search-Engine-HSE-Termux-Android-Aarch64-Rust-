@@ -64,8 +64,8 @@ pub use client::{base_url, key_fingerprint, resolve_key};
 // Endpoint functions
 pub(crate) use endpoints::get_path;
 pub use endpoints::{
-    CreditsProbe, credits_probe, discord_to_roblox, discord_user, query_credits, search,
-    search_deep, steam_profile,
+    CreditsProbe, StatusProbe, credits_probe, discord_to_roblox, discord_user, query_credits,
+    search, search_deep, status_probe, steam_profile,
 };
 
 /// Extract a string field from a JSON Value.

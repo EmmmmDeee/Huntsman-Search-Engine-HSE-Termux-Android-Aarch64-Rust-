@@ -574,6 +574,74 @@ pub(super) fn parse_credits_body(body: &str) -> CreditsOutcome {
     }
 }
 
+/// The distinguishable outcomes of the `/status` diagnostic probe, for `hse
+/// doctor`'s SeekNow section — mirrors [`CreditsProbe`]'s shape and reasoning
+/// exactly (see its doc for why transport, auth, and schema-drift failures
+/// are kept as distinct variants a caller can tell apart). Unlike `/credits`,
+/// no live `/status` response body has been captured against the real API —
+/// `docs/SEEKNOW_SETUP.md` describes it only as showing "snusbase, leakcheck,
+/// intelx, breachhub, etc. status" with no worked example — so `Ok` carries
+/// the parsed object verbatim rather than a strongly-typed per-source shape
+/// this code has no evidence for.
+#[derive(Debug)]
+pub enum StatusProbe {
+    /// The host answered with a JSON object (top-level, or unwrapped from a
+    /// `data` envelope) — carried verbatim for the caller to render.
+    Ok(Value),
+    /// A classified auth/plan rejection (`invalid_api_key` / `plan_required`).
+    /// [`mark_key_invalid`] has been latched.
+    InvalidKey,
+    /// The API host could not be reached at all — DNS resolution, connection,
+    /// or timeout failure. Carries curl's own diagnostic, same as
+    /// [`CreditsProbe::Unreachable`]. NOT a dead key — never latches
+    /// [`mark_key_invalid`].
+    Unreachable(String),
+    /// The host answered but the body wasn't a JSON object (schema drift, or
+    /// a plan whose `/status` shape differs from what's documented).
+    Unparseable,
+}
+
+/// Diagnostic probe of `GET /api/v1/status`, classifying the outcome for
+/// `hse doctor`. Does NOT consume a budget slot (a free meta-query, like
+/// [`credits_probe`]) and carries no entities to extract, so — like
+/// `/credits` — it is never part of a per-target dispatch plan; it exists
+/// solely so an operator can see upstream source health before a scan spends
+/// budget against a data source that's already down.
+pub async fn status_probe(key: &str) -> StatusProbe {
+    let result = get_raw_with_fallback("/status", key)
+        .await
+        .map_err(|e| e.to_string());
+    classify_status_probe(result)
+}
+
+/// Pure classification of a `/status` fetch result into a [`StatusProbe`].
+/// Split from the network call so every branch is unit-tested directly,
+/// mirroring [`classify_credits_probe`].
+pub(super) fn classify_status_probe(result: std::result::Result<String, String>) -> StatusProbe {
+    let body = match result {
+        Ok(b) => b,
+        // Transport failure (curl non-zero exit): keep the detail so doctor
+        // can tell the operator it was DNS / connect / timeout, not a key
+        // problem — same reasoning as `classify_credits_probe`.
+        Err(detail) => return StatusProbe::Unreachable(detail),
+    };
+    if is_auth_error(&body) {
+        mark_key_invalid(&body);
+        return StatusProbe::InvalidKey;
+    }
+    let Ok(v) = serde_json::from_str::<Value>(body.trim()) else {
+        return StatusProbe::Unparseable;
+    };
+    // Unwrap a `{"data": {...}}` envelope, mirroring `parse_credits_body`'s
+    // root-selection — the same envelope shape `/credits` uses on some plans.
+    let root = v.get("data").cloned().unwrap_or(v);
+    if root.is_object() {
+        StatusProbe::Ok(root)
+    } else {
+        StatusProbe::Unparseable
+    }
+}
+
 /// Escape `s` for embedding inside a JSON string literal — the two body-builder
 /// call sites add the surrounding quotes, so this returns the interior only.
 /// Delegates to `serde_json` so backslash, quote AND the control bytes (`\n`,
