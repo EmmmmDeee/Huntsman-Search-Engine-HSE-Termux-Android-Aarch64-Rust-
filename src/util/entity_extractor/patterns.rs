@@ -7,6 +7,7 @@
 //! the core embedded-entity locator set.
 
 use super::{EntityKind, ExtractedEntity};
+use crate::util::str_util::char_window;
 use lazy_static::lazy_static;
 use regex::Regex;
 
@@ -141,10 +142,21 @@ pub fn extract_by_patterns(text: &str) -> Vec<ExtractedEntity> {
 }
 
 /// Extract surrounding context for an entity (useful for validation).
+///
+/// The window is arithmetic (`pos - 20` … `pos + 40`) over a byte offset, so it
+/// goes through [`char_window`], which rounds both ends to a UTF-8 boundary and
+/// keeps `end >= start`. Slicing `text` directly panicked on any multibyte
+/// character in the window — and unlike a module panic, this one is not
+/// contained: `extract_by_patterns` is reached from `hse ingest` via
+/// [`super::EntityExtractor::extract_from_text`], which dispatches outside every
+/// `catch_unwind` in the engine, so the process died. Ingested documents carry
+/// accented names, typographic quotes and emoji as a matter of course.
+///
+/// `char_window` also bounds `end` by `text.len()`, so the old `.min(text.len())`
+/// is redundant. Same treatment as the sibling arithmetic windows in
+/// `social_location`, `search_engines::helpers::text` and `web_crawler`.
 fn extract_context(text: &str, pos: usize) -> Option<String> {
-    let start = pos.saturating_sub(20);
-    let end = (pos + 40).min(text.len());
-    Some(text[start..end].to_string())
+    Some(char_window(text, pos.saturating_sub(20), pos + 40).to_string())
 }
 
 /// Deduplicate entities by (kind, value).
@@ -222,5 +234,71 @@ mod tests {
         ];
         let deduped = deduplicate(entities);
         assert_eq!(deduped.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod multibyte_tests {
+    use super::*;
+
+    /// Non-ASCII document text must not panic the extractor.
+    ///
+    /// `extract_context` builds its window with raw byte arithmetic around the
+    /// match (`pos - 20`, `pos + 40`). Neither end was clamped to a UTF-8
+    /// boundary, so a multibyte character anywhere in the look-behind window, or
+    /// straddling the look-ahead edge, split a code point and panicked.
+    ///
+    /// This path is NOT inside any `catch_unwind`: `extract_by_patterns` is
+    /// reached from `hse ingest --file` via `EntityExtractor::extract_from_text`,
+    /// and `Command::Ingest` dispatches outside every guard in the engine, so the
+    /// panic terminated the process rather than degrading one module. Accented
+    /// names, typographic quotes, NBSP and emoji are ordinary in ingested
+    /// documents, which makes this routine input rather than a crafted edge case.
+    ///
+    /// The pre-existing tests in the sibling module are all pure ASCII, which is
+    /// why this survived.
+    #[test]
+    fn multibyte_document_text_does_not_panic_the_extractor() {
+        // 'é' occupies bytes 0..2, then 19 spaces, so the email match starts at
+        // byte 21 and the look-behind lands on byte 1 — the continuation byte
+        // inside 'é'. Spaces, not letters: the locator's leading `\b` will not
+        // start a match between two word characters.
+        let behind = format!("é{}john@example.com", " ".repeat(19));
+
+        for text in [
+            behind.as_str(),
+            // Multibyte straddling the +40 look-ahead edge.
+            "john@example.com                       é tail",
+            // Multibyte on both sides of the match.
+            "café                john@example.com café",
+            // 3- and 4-byte code points.
+            "日本語 test john@example.com 日本語",
+            "😀😀😀 john@example.com 😀😀😀",
+            // Multibyte adjacent to each other locator family.
+            "señor 192.168.1.1 señor",
+            "señor https://example.com/x señor",
+            // Degenerate: text shorter than the window.
+            "é",
+            "éj@e.co",
+        ] {
+            let entities = extract_by_patterns(text);
+            // Every emitted context must be real text from the document.
+            for e in &entities {
+                if let Some(ctx) = &e.context {
+                    assert!(
+                        text.contains(ctx.as_str()),
+                        "context {ctx:?} is not a substring of {text:?}"
+                    );
+                }
+            }
+        }
+
+        // The positive path still works beside multibyte text.
+        let hit = extract_by_patterns(&behind);
+        assert!(
+            hit.iter()
+                .any(|e| e.kind == EntityKind::Email && e.value == "john@example.com"),
+            "the email must still be extracted: {hit:?}"
+        );
     }
 }
