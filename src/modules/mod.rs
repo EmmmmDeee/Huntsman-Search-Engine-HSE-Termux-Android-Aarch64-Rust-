@@ -134,6 +134,7 @@ pub mod opensanctions;
 pub mod osintcat;
 pub mod overpass;
 pub mod payid;
+pub mod peeringdb;
 pub mod pgp;
 pub mod phone_au;
 pub mod phone_geo;
@@ -485,6 +486,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(waf_detect::WafDetect),
             Arc::new(cloud_storage::CloudStorage),
             Arc::new(bgpview::BgpView),
+            Arc::new(peeringdb::PeeringDb),
             Arc::new(netblock::Netblock),
             Arc::new(portscan::PortScan),
             Arc::new(typosquat::Typosquat),

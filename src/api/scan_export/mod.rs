@@ -398,6 +398,59 @@ pub async fn scan_export_gexf(
     download_response(body, "application/xml; charset=utf-8", &id, "gexf", "gexf")
 }
 
+/// `GET /api/v1/scans/{id}/stix.json` — the scan as a STIX 2.1 bundle for
+/// threat-intelligence interchange (MISP / OpenCTI / TAXII / any STIX 2.1
+/// consumer). Entities become native STIX objects (`ipv4-addr`, `domain-name`,
+/// `identity`, `location`, …) or a custom `x-huntsman-artifact`; typed relations
+/// become `relationship` SROs; correlator findings become `note` SDOs; and a
+/// framing `report` ties the scan together. Byte-identical to the CLI
+/// `hse export {id} --format stix` (both call [`crate::core::stix`]). Candidates
+/// are quarantined by default (opt in with `?include_candidates=1`), matching
+/// every other scan download.
+pub async fn scan_export_stix(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id).await {
+        return resp;
+    }
+    let (id2, store) = (id.clone(), std::sync::Arc::clone(&s.store));
+    let cand = wants_candidates(&params);
+    let built = tokio::task::spawn_blocking(move || {
+        let Some(scan) = store.get_scan(&id2)? else {
+            return Ok::<Option<String>, crate::core::error::Error>(None);
+        };
+        let mut entities = store.entities_for_scan(&id2)?;
+        // Quarantine candidates by default (opt in with `?include_candidates=1`)
+        // — matches `report.json` / `graph.gexf` / the CLI `render_stix`, so the
+        // bundle can't leak a foreign breach-victim list under the subject's scan.
+        // The relation set stays full; `entities_to_stix` drops any SRO whose
+        // endpoint is no longer present, so filtering here leaves no dangling ref.
+        if !cand {
+            entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+        }
+        let relations = store.relations_for_scan(&id2)?;
+        let correlations = store.correlations_for_scan(&id2)?;
+        Ok(Some(crate::core::stix::entities_to_stix(
+            &entities,
+            &relations,
+            &correlations,
+            &scan,
+        )))
+    })
+    .await;
+    match built {
+        // Redaction of proprietary source names is enforced by `download_response`.
+        Ok(Ok(Some(body))) => {
+            download_response(body, "application/json; charset=utf-8", &id, "stix", "json")
+        }
+        Ok(Ok(None)) => not_found(),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("stix task failed: {e}")),
+    }
+}
+
 /// `GET /api/v1/scans/{id}/debug.txt` — the one-click debug bundle: the entire
 /// scan state (every entity + evidence, relations, correlations, the complete
 /// event sequence, and the scored self-audit with every weakness) in one

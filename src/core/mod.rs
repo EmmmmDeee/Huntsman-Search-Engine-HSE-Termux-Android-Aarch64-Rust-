@@ -47,6 +47,7 @@ pub mod roi;
 pub mod scan;
 pub mod snake_graph;
 pub mod stealer_row;
+pub mod stix;
 pub mod tags;
 #[cfg(test)]
 pub mod test_support;

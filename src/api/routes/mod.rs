@@ -41,6 +41,7 @@
 //! | GET    | `/api/v1/scans/{id}/entities.csv`        | `scan_entities_csv`            |
 //! | GET    | `/api/v1/scans/{id}/report.json`         | `scan_report_json`             |
 //! | GET    | `/api/v1/scans/{id}/graph.gexf`          | `scan_export_gexf`             |
+//! | GET    | `/api/v1/scans/{id}/stix.json`           | `scan_export_stix`             |
 //! | GET    | `/api/v1/scans/{id}/debug.txt`           | `scan_debug_bundle`            |
 //! | GET    | `/api/v1/scans/{id}/events.log`          | `scan_events_log` (download)   |
 //! | GET    | `/api/v1/scans/{id}/correlations`        | `scan_correlations` (v0.4+)    |
@@ -482,6 +483,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             get(scan_export::scan_report_json),
         )
         .route("/scans/{id}/graph.gexf", get(scan_export::scan_export_gexf))
+        .route("/scans/{id}/stix.json", get(scan_export::scan_export_stix))
         .route("/scans/{id}/debug.txt", get(scan_export::scan_debug_bundle))
         .route("/scans/{id}/events.log", get(scan_export::scan_events_log))
         .route(

@@ -168,6 +168,15 @@ fn core_does_not_import_util_directly() {
             !line.contains("util::key_pool")
                 && !line.contains("util::key_roi")
                 && !line.contains("util::geohash")
+                // Pure, offline, dependency-free Unix-epoch → UTC date/time
+                // formatters (Howard Hinnant civil-from-days; no state, no I/O,
+                // no date crate — the module's own doc calls it "pure, total and
+                // deterministic"), same leaf category as `util::geohash`.
+                // `core::stix` composes RFC 3339 timestamps from `ymd_utc` +
+                // `hms_utc` so the STIX bundle stays byte-deterministic while
+                // reusing the project's single-sourced date maths instead of
+                // re-deriving the calendar algorithm.
+                && !line.contains("util::timefmt")
                 // Pure, offline computational geometry (convex hull, geometric
                 // median, …) — the geo correlation rules' location estimators.
                 // Same justification as `util::geohash`: no I/O, no deps.

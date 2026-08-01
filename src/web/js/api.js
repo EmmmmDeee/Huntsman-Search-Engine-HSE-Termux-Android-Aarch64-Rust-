@@ -100,6 +100,7 @@ export const API = {
   // one download needs the toggle.
   reportUrl: (id, includeInfra)=>'/api/v1/scans/'+encodeURIComponent(id)+'/report.json'+(includeInfra?'?include_infra=1':''),
   gexfUrl:   id=>'/api/v1/scans/'+encodeURIComponent(id)+'/graph.gexf',
+  stixUrl:   id=>'/api/v1/scans/'+encodeURIComponent(id)+'/stix.json',
   debugUrl:  id=>'/api/v1/scans/'+encodeURIComponent(id)+'/debug.txt',
   eventsLogUrl: id=>'/api/v1/scans/'+encodeURIComponent(id)+'/events.log',
   keysGet:   ()=>API._req('/api/v1/settings/keys'),

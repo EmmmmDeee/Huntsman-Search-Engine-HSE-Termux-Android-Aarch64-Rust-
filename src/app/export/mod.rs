@@ -66,9 +66,9 @@ pub async fn cmd_export(
     // scan-report shape does not route through the entity redaction pass), so a
     // caller is never lulled into thinking a still-sensitive artifact was
     // scrubbed. `events` carries no entity values to redact.
-    if redact && !matches!(fmt.as_str(), "json" | "csv" | "gexf") {
+    if redact && !matches!(fmt.as_str(), "json" | "csv" | "gexf" | "stix") {
         return Err(Error::Other(format!(
-            "--redact applies to json, csv, gexf only (not '{fmt}'): the full/debug \
+            "--redact applies to json, csv, gexf, stix only (not '{fmt}'): the full/debug \
              dossiers are unredacted by contract, and report/events carry no entity \
              values to mask"
         )));
@@ -77,6 +77,7 @@ pub async fn cmd_export(
         "json" => renderers::render_json(&store, &sid, redact)?,
         "csv" => renderers::render_csv(&store, &sid, redact)?,
         "gexf" => renderers::render_gexf(&store, &sid, redact)?,
+        "stix" => renderers::render_stix(&store, &sid, redact)?,
         "report" => renderers::render_report(&store, &sid, include_infra)?,
         // `full` always includes infra — it is the maximum-detail format.
         "full" => render_full(&store, &sid)?,
@@ -84,7 +85,7 @@ pub async fn cmd_export(
         "events" => render_event_log(&store.events_for_scan(&sid)?),
         other => {
             return Err(Error::Other(format!(
-                "unknown --format '{other}'. Valid: json, csv, gexf, report, full, debug, events"
+                "unknown --format '{other}'. Valid: json, csv, gexf, stix, report, full, debug, events"
             )));
         }
     };

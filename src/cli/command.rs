@@ -525,6 +525,9 @@ pub enum Command {
     ///                  the `/api/v1/scans/{id}/entities.csv` endpoint)
     /// GEXF           — Gephi/Cytoscape-importable graph with
     ///                  scan-id + observed_at on every node
+    /// STIX           — STIX 2.1 bundle (entities, typed relations, and
+    ///                  correlation findings) for MISP / OpenCTI / TAXII /
+    ///                  any STIX 2.1 consumer; deterministic, ATT&CK-tagged
     /// Report         — pretty-printed JSON dossier (scan + entities +
     ///                  correlations + counts; same shape as
     ///                  `/api/v1/scans/{id}/report.json`)
@@ -540,7 +543,7 @@ pub enum Command {
         /// Scan ID (or `latest` for the most-recent completed scan).
         #[arg(short, long)]
         scan_id: String,
-        /// Output format: json | csv | gexf | report | full | debug. Default `json`.
+        /// Output format: json | csv | gexf | stix | report | full | debug. Default `json`.
         #[arg(short, long, default_value = "json")]
         format: String,
         /// File path to write to. Omit for stdout.

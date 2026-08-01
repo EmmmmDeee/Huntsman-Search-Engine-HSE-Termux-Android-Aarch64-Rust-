@@ -44,6 +44,31 @@ pub(super) fn render_gexf(store: &Store, sid: &str, redact: bool) -> Result<Stri
     ))
 }
 
+/// STIX 2.1 bundle export — the scan's confirmed entities, typed relations, and
+/// correlation findings as a STIX 2.1 JSON bundle for threat-intelligence
+/// interchange (MISP / OpenCTI / TAXII / any STIX consumer). Mirrors
+/// `render_gexf`: same candidate-quarantined entity view, same optional
+/// `--redact` pass, so the STIX bundle and the Gephi graph describe the same
+/// footprint. The serialisation itself lives in [`crate::core::stix`] and is
+/// shared byte-for-byte with the HTTP `/stix.json` endpoint.
+pub(super) fn render_stix(store: &Store, sid: &str, redact: bool) -> Result<String> {
+    let mut entities = confirmed_entities(store, sid)?;
+    if redact {
+        crate::util::redact::redact_entities(&mut entities);
+    }
+    let relations = store.relations_for_scan(sid)?;
+    let correlations = store.correlations_for_scan(sid)?;
+    let scan = store
+        .get_scan(sid)?
+        .ok_or_else(|| Error::Other(format!("scan {sid} not found")))?;
+    Ok(crate::core::stix::entities_to_stix(
+        &entities,
+        &relations,
+        &correlations,
+        &scan,
+    ))
+}
+
 /// The **full dossier** — Huntsman's standard of maximum output detail. Emits
 /// EVERY entity (including quarantined `candidate` rows — nothing is hidden),
 /// each with its confidence/corroboration/tags, its `generation` (how many
