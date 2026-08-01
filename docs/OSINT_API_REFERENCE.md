@@ -181,7 +181,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | *(keyless)* **social_probe / social_location / profile_kit** | profile presence, geo, dossier | free | — | M |
 | **GitHub / GitLab / Bitbucket / Gitea / Codeberg** | user/commit/code search | free + token | `ghp_`/`glpat-`/… | M K D |
 | **Reddit / Mastodon / Bluesky / Nostr / Fediverse** | social profile/post data | free/token | varies | M |
-| **Steam / gaming_profile / streaming_probe** | gaming & streaming identity | free/key | Steam key 32-hex | M |
+| **Steam / gaming_profile / chess_profile / streaming_probe** | gaming & streaming identity | free/key | Steam key 32-hex | M |
 | **Keybase / Gravatar / WikiData / Hacker News / Lobsters** | identity/avatar/knowledge | free | — | M |
 | **Social Links / Maltego / Lampyre / SpiderFoot HX** | commercial link-analysis platforms | paid | — | D C |
 | **Discord (snowflake) / discord token** | ID→timestamp; token detection | free | `discord` token | M D |

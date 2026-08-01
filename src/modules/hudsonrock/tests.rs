@@ -63,12 +63,23 @@ use super::*;
         );
     }
 
+    /// A date string well inside the freshness window, computed relative to
+    /// the real clock so the test never goes stale (a hardcoded date ages
+    /// past `FRESHNESS_WINDOW_DAYS` and starts failing on its own).
+    fn recent_date_compromised() -> String {
+        let ts = crate::core::entity::unix_now().saturating_sub(7 * 86400);
+        format!(
+            "{}T00:00:00Z",
+            crate::util::timefmt::ymd_utc(ts as i64).unwrap()
+        )
+    }
+
     #[test]
     fn fresh_compromise_gets_higher_confidence() {
         let recent = Stealer {
             computer_name: None,
             operating_system: None,
-            date_compromised: Some("2026-05-01T00:00:00Z".into()),
+            date_compromised: Some(recent_date_compromised()),
             date_uploaded: None,
             stealer_family: Some("Lumma".into()),
             ip: None,
@@ -175,7 +186,7 @@ use super::*;
             credentials: vec![],
         };
         let recent = Stealer {
-            date_compromised: Some("2026-05-01T00:00:00Z".into()),
+            date_compromised: Some(recent_date_compromised()),
             stealer_family: None,
             computer_name: None,
             operating_system: None,
