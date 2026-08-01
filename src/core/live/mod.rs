@@ -556,13 +556,31 @@ fn mark_stopped(inner: &LiveInner, live_id: &str) {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /// `live-<16 hex>` — collision-resistant per-target+timestamp identifier.
+///
+/// Mirrors `scan_id`'s hardening: a process-wide monotonic counter makes two
+/// live sessions started for the same target in the same nanosecond distinct,
+/// and the kind is hashed via its stable `canonical_str()` rather than its
+/// `Debug` form (`{:?}` is not a stability contract — a derive change would
+/// silently change ids). live-ids are ephemeral session handles, not a
+/// persisted identity key, so the 16-hex (64-bit) truncation is retained; the
+/// counter guarantees uniqueness within the process regardless.
 fn new_live_id(target: &Target) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     let ns = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    h.update(format!("live-{ns}-{:?}-{}", target.kind, target.value).as_bytes());
+    let mut h = Sha256::new();
+    h.update(b"live-");
+    h.update(ns.to_be_bytes());
+    h.update(b":");
+    h.update(target.kind.canonical_str().as_bytes());
+    h.update(b":");
+    h.update(target.value.as_bytes());
+    h.update(SEQ.fetch_add(1, Ordering::Relaxed).to_be_bytes());
     let full = hex::encode(h.finalize());
     format!("live-{}", &full[..16])
 }
