@@ -1380,6 +1380,40 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   the bounded-concurrent code passes; and a full `cargo test --all` run (the
   condition that flaked it twice) is now green. Test-only change; no production
   behaviour altered.
+- **`[x]` T2.46 · `au_property` geolocates a real AU suburb to a same-named
+  foreign city (P0 wrong-country coordinate that looks right)** — surfaced by the
+  geo-route audit and confirmed by direct read. `record_to_entities`
+  (`modules/au_property/parse.rs`) derived a `Coordinates` entity from
+  `city_coords(&rec.suburb.to_lowercase())`. The offline `city_coords` table mixes
+  Australian and foreign cities and matches by UNANCHORED SUBSTRING
+  (`lower.contains(city)`, `util/city_coords/mod.rs:17`) BEFORE any postcode
+  resolution, and its only `"miami"` row is Miami, **Florida** (25.7617,
+  -80.1918). So a Gold Coast owner in **Miami, QLD** (postcode 4220) emitted the
+  Florida coordinate — then tagged `au-state:QLD` + `country:AU` — a confident
+  wrong-country location poisoning the dossier, `best_au_location_estimate`, and
+  every geo pivot. Many AU suburbs share names with overseas cities (Miami,
+  Richmond, Windsor, Newport, Brighton, …), so this was a broad latent
+  mis-geocode. → **Solution:** SOL-AU-PROPERTY-POSTCODE-COORD — a pure
+  `record_coords(suburb_lc, state, postcode)` resolves the postcode FIRST (a
+  4-digit AU token the table maps to an AU centroid/region), accepts the
+  bare-suburb lookup ONLY when `util::geo::is_in_australia(lat, lon)`, and falls
+  back to the state capital — so the emitted coordinate is ALWAYS inside
+  Australia, while an exact suburb centroid is still kept when the postcode or a
+  genuinely-AU suburb resolves it. Tests
+  `au_suburb_sharing_a_foreign_city_name_never_geolocates_overseas` +
+  `falls_back_to_the_state_capital_and_stays_in_australia` (proven to fail against
+  the restored suburb-first/no-guard logic, which emits Florida). **P0** (a
+  fabricated wrong-country finding — the worst error class for an evidentiary
+  GEOINT tool). *Geo-route backlog opened by the same audit (verified-pending,
+  each a separate single-commit unit):* `city_coords` substring-before-postcode
+  root cause also hits `search_engines` (`util/city_coords/mod.rs:17`);
+  `is_australian_coord` trusts the tag over lat/lon
+  (`correlator/rules/location/mod.rs:499`); operator Coordinates seed dropped from
+  convergence as 'infrastructure' (`:134`); AU-057/AU-030 geo determinism —
+  unsorted HashMap-order coords into the weighted median/uid list
+  (`correlator/rules/geo/chain.rs:380,328`); `au_postcode_region` VIC/SA centroid
+  mis-assignment (`util/city_coords/mod.rs:135`); fixed-8 km best-location radius
+  at region grain (`correlator/rules/location/mod.rs:802`).
 
 ---
 
@@ -1897,6 +1931,22 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
 ## 8. Maintained log
 ## 8. Maintained log
 
+- **2026-08-01** — **Executed T2.46 (new, from the geo-route audit; user
+  directive 'fix the geo routes first'): killed a P0 wrong-country geocode in
+  `au_property`.** It derived a `Coordinates` from a bare suburb name via the
+  offline `city_coords` table, which matches by substring and mixes AU + foreign
+  cities — so 'Miami, QLD 4220' resolved to Miami, Florida and was tagged
+  `au-state:QLD`/`country:AU`. Added a pure `record_coords` that prefers the
+  postcode (unambiguously AU), accepts a suburb lookup only when
+  `is_in_australia`, and falls back to the state capital — the emitted coordinate
+  is now always inside Australia. +2 tests, proven red-then-green (old
+  suburb-first logic emits Florida and fails the Miami test). Gate green:
+  fmt/clippy `-D warnings`/rustdoc/doc clean, `cargo test --all --locked` 4604 lib
+  + 256 integration, 0 failures. Opened a verified-pending geo backlog (city_coords
+  substring root cause, is_australian_coord tag-trust, coord-seed drop, AU-057/030
+  determinism, postcode-region centroids, radius grain) — each its own next unit.
+  T2.46 `[ ]`->`[x]`. **Paired:** `SOLUTION_TREE` §5 SOL-AU-PROPERTY-POSTCODE-COORD
+  — same commit.
 - **2026-08-01** — **Executed T2.45 (new, discovered when it reddened this
   session's gate twice): de-flaked `paid_phase_runs_modules_concurrently`.** The
   paid-phase parallelism guard asserted a 500 ms wall-clock ceiling (via

@@ -11,6 +11,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Fixed
+- **An Australian property record whose suburb shares its name with a foreign
+  city is no longer geolocated to the wrong country.** `au_property` derived a
+  Coordinates entity by looking the bare suburb name up in the offline city
+  table, which mixes Australian and overseas cities and matches by substring —
+  so a Gold Coast owner in **Miami, QLD** (postcode 4220) resolved to **Miami,
+  Florida** (25.76, −80.19) and was then stamped `au-state:QLD` / `country:AU`, a
+  confident but wrong-country location in the dossier and every geo pivot. The
+  coordinate is now resolved from the postcode first (an unambiguously Australian
+  token), the suburb-name lookup is accepted only when it lands inside Australia,
+  and the state capital is the final fallback — so an AU property record can
+  never mint an overseas coordinate. A genuinely Australian suburb still resolves
+  to its centroid.
 - **The `geocode` module no longer reports "no location" when Nominatim actually
   rate-limited or blocked the request.** The forward (Address → Coordinates)
   path parsed the `/search` response with `json_scanned(…).unwrap_or_default()`

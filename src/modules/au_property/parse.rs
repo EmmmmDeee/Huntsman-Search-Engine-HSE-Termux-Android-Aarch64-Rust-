@@ -166,12 +166,14 @@ pub(crate) fn record_to_entities(rec: &PropertyRecord, scan_id: &str) -> Vec<Ent
     addr.tag("source:property");
     out.push(addr);
 
-    // Derive coordinates from the suburb centroid via the offline city table.
+    // Derive coordinates, preferring the postcode (an unambiguously Australian
+    // token) over the bare suburb name. The offline city table mixes AU and
+    // foreign cities and matches by substring, so a suburb sharing its name with
+    // an overseas city ("Miami" QLD vs Miami, Florida) would otherwise resolve to
+    // the foreign coordinate and be tagged `country:AU`. `record_coords` rejects
+    // any candidate outside Australia in favour of the state-capital fallback.
     let suburb_lc = rec.suburb.to_lowercase();
-    if let Some((lat, lon)) = crate::util::city_coords::city_coords(&suburb_lc).or_else(|| {
-        // State-capital fallback when suburb not in the offline table.
-        state_capital_coords(rec.state)
-    }) {
+    if let Some((lat, lon)) = record_coords(&suburb_lc, rec.state, rec.postcode.as_deref()) {
         let coord_value = format!("{lat:.4},{lon:.4}");
         let mut coord = Entity::new(EntityKind::Coordinates, &coord_value, 0.60, scan_id);
         coord.add_evidence(evid.with_attr("derived_from", "suburb_centroid"));
@@ -198,6 +200,27 @@ pub(super) fn state_capital_coords(state: &str) -> Option<(f64, f64)> {
     }
 }
 
+/// Resolve an AU property record to a coordinate, preferring the (unambiguously
+/// Australian) postcode over a bare suburb name.
+///
+/// The offline [`city_coords`](crate::util::city_coords::city_coords) table mixes
+/// Australian and foreign cities and matches by substring, so a bare AU suburb
+/// sharing its name with an overseas city — "Miami" (QLD 4220) vs Miami, Florida
+/// — would resolve to the foreign coordinate, which this module then tags
+/// `country:AU`, fabricating a wrong-country location. Resolving the postcode
+/// first (a 4-digit AU token the table maps to an AU centroid/region) and
+/// rejecting any candidate that is not physically inside Australia (falling back
+/// to the state capital) makes that impossible, while still keeping the exact
+/// suburb centroid whenever the postcode or a genuinely-Australian suburb name
+/// resolves it. The returned coordinate is therefore always inside Australia.
+fn record_coords(suburb_lc: &str, state: &str, postcode: Option<&str>) -> Option<(f64, f64)> {
+    let in_au =
+        |c: Option<(f64, f64)>| c.filter(|&(lat, lon)| crate::util::geo::is_in_australia(lat, lon));
+    in_au(postcode.and_then(crate::util::city_coords::city_coords))
+        .or_else(|| in_au(crate::util::city_coords::city_coords(suburb_lc)))
+        .or_else(|| state_capital_coords(state))
+}
+
 // ─── Dedup ────────────────────────────────────────────────────────────────
 
 /// Remove duplicate entities by (kind, value) keeping the highest-confidence
@@ -214,6 +237,48 @@ pub(super) fn dedup_entities(entities: &mut Vec<Entity>) {
             )
     });
     entities.dedup_by(|a, b| a.kind == b.kind && a.value == b.value);
+}
+
+#[cfg(test)]
+mod coord_tests {
+    use super::record_coords;
+    use crate::util::geo::is_in_australia;
+
+    #[test]
+    fn au_suburb_sharing_a_foreign_city_name_never_geolocates_overseas() {
+        // "Miami" is a real Gold Coast suburb (QLD 4220) AND a US city in the
+        // offline table. Before the fix, city_coords("miami") returned Miami,
+        // Florida (25.76, -80.19) and au_property tagged it au-state:QLD /
+        // country:AU — a wrong-country coordinate. The postcode must win, and no
+        // path may ever return a point outside Australia.
+        let (lat, lon) = record_coords("miami", "QLD", Some("4220")).unwrap();
+        assert!(
+            is_in_australia(lat, lon),
+            "postcode-resolved coord must be inside Australia, got {lat},{lon}"
+        );
+        assert!(
+            lat < 0.0,
+            "an AU coordinate has negative latitude, got {lat}"
+        );
+
+        // Even with NO postcode, the bare suburb name must not leak Florida: the
+        // out-of-AU candidate is rejected in favour of the QLD state capital.
+        let (lat, lon) = record_coords("miami", "QLD", None).unwrap();
+        assert!(
+            is_in_australia(lat, lon),
+            "suburb-only fallback must stay inside Australia, got {lat},{lon}"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_state_capital_and_stays_in_australia() {
+        // An untabulated suburb with no postcode resolves to the state capital.
+        let (lat, lon) = record_coords("nowhere-suburb-xyz", "WA", None).unwrap();
+        assert!(is_in_australia(lat, lon));
+        // An unknown state with no resolvable place yields no coordinate (rather
+        // than a fabricated one).
+        assert!(record_coords("nowhere-suburb-xyz", "ZZ", None).is_none());
+    }
 }
 
 #[cfg(test)]

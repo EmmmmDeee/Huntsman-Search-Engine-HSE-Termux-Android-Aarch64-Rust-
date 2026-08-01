@@ -212,6 +212,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   flake waiting for load; measure the property (overlap, ordering, count) directly.
   *Closes:* **T2.45**. ✅ delivered.
 
+- **`[x]` SOL-AU-PROPERTY-POSTCODE-COORD · Postcode-first, AU-gated coordinate
+  derivation** — `au_property` looked a bare suburb name up in the substring-matched
+  offline `city_coords` table (AU + foreign cities), so 'Miami, QLD' resolved to
+  Miami, Florida and was tagged `country:AU`. A pure `record_coords` now resolves the
+  postcode first (unambiguously AU), accepts a suburb hit only when
+  `util::geo::is_in_australia`, then falls back to the state capital — the emitted
+  coordinate is always inside Australia. General rule: a place-name → coordinate
+  lookup with no country context must be gated by geometry, never trusted. *Closes:*
+  **T2.46**. *Root cause left in place for its own unit:* `city_coords` itself still
+  substring-matches before postcode resolution (affects `search_engines`). ✅
+  delivered.
+
 ### S.RESOURCE — Concurrency, throughput & resource safety
 
 - **`[x]` SOL-BLOCKING · Keep the 2-worker reactor unblocked** — `spawn_blocking`
@@ -1125,6 +1137,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ## 5. Maintained log (paired with `PROBLEM_TREE` §8)
 
+- **2026-08-01** — **SOL-AU-PROPERTY-POSTCODE-COORD `[ ]`->`[x]` (closes T2.46):
+  stop `au_property` geolocating AU suburbs to same-named foreign cities.** The bare
+  suburb-name lookup in the substring-matched `city_coords` table returned Miami,
+  Florida for Miami QLD and tagged it `country:AU`. `record_coords` resolves the
+  postcode first, AU-gates the suburb hit (`is_in_australia`), and falls back to the
+  state capital. First unit of the geo-route audit (user: 'fix the geo routes
+  first'); the remaining audit findings (city_coords substring root cause,
+  is_australian_coord tag-trust, coord-seed drop, AU-057/030 determinism,
+  postcode-region centroids, radius grain) are logged as verified-pending units.
+  +2 tests, proven red-then-green. Gate green: 4604 lib + 256 integration, 0
+  failures. Paired: `PROBLEM_TREE` T2.46 §8 — same commit.
 - **2026-08-01** — **SOL-CONCURRENCY-DIRECT-ASSERT `[ ]`→`[x]` (closes T2.45):
   de-flake the paid-phase parallelism guard.** It asserted a 500 ms wall-clock
   ceiling over full engine machinery and reddened under parallel `cargo test --all`
