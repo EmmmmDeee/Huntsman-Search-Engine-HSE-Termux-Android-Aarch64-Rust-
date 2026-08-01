@@ -2270,54 +2270,141 @@ fn mk_tagged(kind: EntityKind, value: &str, src: &str, tags: &[&str]) -> Entity 
 }
 
 #[test]
-fn au_039_links_wallet_to_identity() {
-    let ents = vec![
-        mk_tagged(
-            EntityKind::CryptoAddress,
-            "1A1zP1eP...",
-            "chain_intel",
-            &["crypto-address"],
-        ),
-        mk_tagged(EntityKind::Person, "Jordan Avery", "see_know", &[]),
-    ];
-    let out = rule_au_039_wallet_identity(&ents, "scan", 0);
-    assert_eq!(out.len(), 1);
-    assert_eq!(out[0].rule_id, "AU-039");
-    assert_eq!(out[0].severity, Severity::High);
-    assert_eq!(out[0].entity_uids.len(), 2);
-    // No identity present ⇒ no firing.
-    let only_wallet = vec![mk_tagged(
-        EntityKind::CryptoAddress,
-        "x",
-        "chain_intel",
-        &[],
-    )];
-    assert!(rule_au_039_wallet_identity(&only_wallet, "scan", 0).is_empty());
+fn au_039_fires_only_for_same_breach_record() {
+    // Both wallet and identity from same oathnet_pro record (same dbname + email + username)
+    // → should fire with HIGH severity.
+    let mut person = Entity::new(EntityKind::Person, "Alice Smith", 0.8, "scan");
+    person.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("dbname", "linkedin_2020")
+            .with_attr("email", "alice@example.com")
+            .with_attr("username", "alice.smith123")
+            .with_attr("record_id", "breach_001"),
+    );
+
+    let mut wallet = Entity::new(EntityKind::CryptoAddress, "0x1A2B3C...", 0.8, "scan");
+    wallet.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("dbname", "linkedin_2020")
+            .with_attr("email", "alice@example.com")
+            .with_attr("username", "alice.smith123")
+            .with_attr("field_name", "wallet_address")
+            .with_attr("record_id", "breach_001"),
+    );
+
+    let result = rule_au_039_wallet_identity(&[person, wallet], "scan", 0);
+    assert_eq!(result.len(), 1, "same-record should fire");
+    assert_eq!(result[0].severity, Severity::High);
+    assert_eq!(result[0].entity_uids.len(), 2);
 }
 
 #[test]
-fn au_039_anchor_is_deterministic_under_multiple_identities() {
-    // With ≥2 identities present the anchor must be a stable choice (smallest
-    // Person UID), not whichever the randomized live-pass iteration hit first —
-    // otherwise the live and finalise passes name different people for one wallet
-    // and BOTH rows persist (disjoint entity sets escape containment-dedup).
-    let wallet = mk_tagged(
-        EntityKind::CryptoAddress,
-        "1A1zP1eP...",
-        "chain_intel",
-        &["crypto-address"],
+fn au_039_does_not_fire_for_unrelated_identities() {
+    // Person from see_know (yahoo_2014 record) + Wallet from chain_intel (ethereum)
+    // → different sources, no shared record markers → should NOT fire.
+    let mut person = Entity::new(EntityKind::Person, "Bob Jones", 0.8, "scan");
+    person.add_evidence(
+        Evidence::new("see_know", "breach")
+            .with_attr("dbname", "yahoo_2014")
+            .with_attr("email", "bob@yahoo.com")
+            .with_attr("username", "bob.jones42")
+            .with_attr("record_id", "breach_002"),
     );
-    let p1 = mk_tagged(EntityKind::Person, "Aaron Avery", "see_know", &[]);
-    let p2 = mk_tagged(EntityKind::Person, "Zoe Zimmer", "see_know", &[]);
-    let expected = std::cmp::min(p1.uid.clone(), p2.uid.clone());
 
-    let fwd = rule_au_039_wallet_identity(&[wallet.clone(), p1.clone(), p2.clone()], "scan", 0);
-    let rev = rule_au_039_wallet_identity(&[wallet.clone(), p2.clone(), p1.clone()], "scan", 0);
-    assert_eq!(fwd.len(), 1);
-    assert_eq!(rev.len(), 1);
+    let mut wallet = Entity::new(EntityKind::CryptoAddress, "0xDEF456...", 0.8, "scan");
+    wallet.add_evidence(
+        Evidence::new("chain_intel", "enrichment")
+            .with_attr("chain", "ethereum")
+            .with_attr("address", "0xdef456..."),
+    );
+
+    let result = rule_au_039_wallet_identity(&[person, wallet], "scan", 0);
+    assert_eq!(result.len(), 0, "unrelated sources should NOT fire AU-039");
+}
+
+#[test]
+fn au_039_does_not_fire_without_identity() {
+    // Wallet alone, no identity present → no firing.
+    let wallet = mk_tagged(EntityKind::CryptoAddress, "0xABC123...", "chain_intel", &[]);
+    let result = rule_au_039_wallet_identity(&[wallet], "scan", 0);
+    assert_eq!(result.len(), 0, "wallet without identity should not fire");
+}
+
+#[test]
+fn au_039_anchor_is_deterministic_under_multiple_related_identities() {
+    // Multiple people from the SAME breach record (same dbname + email + username) —
+    // with wallet also from that record. The anchor must be deterministic
+    // (lexicographically smallest Person UID), ensuring live and finalise passes
+    // pick the same identity.
+    let mut person1 = Entity::new(EntityKind::Person, "Aaron Smith", 0.8, "scan");
+    person1.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("dbname", "linkedin_2020")
+            .with_attr("email", "alice@example.com")
+            .with_attr("username", "alice.smith123"),
+    );
+
+    let mut person2 = Entity::new(EntityKind::Person, "Zoe Smith", 0.8, "scan");
+    person2.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("dbname", "linkedin_2020")
+            .with_attr("email", "alice@example.com")
+            .with_attr("username", "alice.smith123"),
+    );
+
+    let mut wallet = Entity::new(EntityKind::CryptoAddress, "0x1A2B3C...", 0.8, "scan");
+    wallet.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("dbname", "linkedin_2020")
+            .with_attr("email", "alice@example.com")
+            .with_attr("username", "alice.smith123"),
+    );
+
+    let expected = std::cmp::min(person1.uid.clone(), person2.uid.clone());
+
+    let fwd = rule_au_039_wallet_identity(
+        &[wallet.clone(), person1.clone(), person2.clone()],
+        "scan",
+        0,
+    );
+    let rev = rule_au_039_wallet_identity(
+        &[wallet.clone(), person2.clone(), person1.clone()],
+        "scan",
+        0,
+    );
+    assert_eq!(fwd.len(), 1, "same-record should fire once");
+    assert_eq!(
+        rev.len(),
+        1,
+        "same-record should fire once (reversed input)"
+    );
     // Same anchor regardless of input order, and it is the min-UID person.
     assert_eq!(fwd[0].entity_uids, rev[0].entity_uids);
     assert!(fwd[0].entity_uids.contains(&expected));
+}
+
+#[test]
+fn au_039_does_not_fire_for_cross_breach_contamination() {
+    // Wallet from one breach (linkedin_2020) + Person from different breach (yahoo_2014)
+    // → different dbname → should NOT fire.
+    let mut wallet = Entity::new(EntityKind::CryptoAddress, "0x1A2B3C...", 0.8, "scan");
+    wallet.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("dbname", "linkedin_2020")
+            .with_attr("email", "alice@example.com")
+            .with_attr("username", "alice.smith123"),
+    );
+
+    let mut person = Entity::new(EntityKind::Person, "Alice Smith", 0.8, "scan");
+    person.add_evidence(
+        Evidence::new("see_know", "breach")
+            .with_attr("dbname", "yahoo_2014")
+            .with_attr("email", "alice@yahoo.com")
+            .with_attr("username", "alice42"),
+    );
+
+    let result = rule_au_039_wallet_identity(&[wallet, person], "scan", 0);
+    assert_eq!(result.len(), 0, "cross-breach should NOT fire");
 }
 
 #[test]
@@ -2369,6 +2456,198 @@ fn au_041_fires_on_ens_handle() {
     // A plain username (no ens tag) must not fire.
     let plain = mk_tagged(EntityKind::Username, "bob", "username_search", &[]);
     assert!(rule_au_041_ens_identity(&[plain], "scan", 0).is_empty());
+}
+
+#[test]
+fn au_039_wallet_with_evidence_identity_without_evidence() {
+    // Edge case: wallet has breach evidence, identity has no evidence
+    // → extract_source_record returns Other for identity, no match
+    let person = Entity::new(EntityKind::Person, "Alice", 0.8, "scan");
+    // No evidence added — empty evidence vec
+
+    let mut wallet = Entity::new(EntityKind::CryptoAddress, "0x1A2B...", 0.8, "scan");
+    wallet.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("dbname", "linkedin_2020")
+            .with_attr("email", "alice@example.com")
+            .with_attr("username", "alice.smith"),
+    );
+
+    let result = rule_au_039_wallet_identity(&[person, wallet], "scan", 0);
+    assert_eq!(
+        result.len(),
+        0,
+        "identity without matching evidence should not fire"
+    );
+}
+
+#[test]
+fn au_039_wallet_missing_evidence_attributes() {
+    // Edge case: wallet evidence missing one of the required attributes
+    // (e.g., missing "username") → extract_source_record returns Other
+    let mut person = Entity::new(EntityKind::Person, "Alice", 0.8, "scan");
+    person.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("dbname", "linkedin_2020")
+            .with_attr("email", "alice@example.com")
+            .with_attr("username", "alice.smith"),
+    );
+
+    let mut wallet = Entity::new(EntityKind::CryptoAddress, "0x1A2B...", 0.8, "scan");
+    wallet.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("dbname", "linkedin_2020")
+            .with_attr("email", "alice@example.com"), // Missing "username" attribute
+    );
+
+    let result = rule_au_039_wallet_identity(&[person, wallet], "scan", 0);
+    assert_eq!(
+        result.len(),
+        0,
+        "missing required attributes should not fire"
+    );
+}
+
+#[test]
+fn au_039_multiple_wallets_one_identity() {
+    // Edge case: many wallets but only one identity from same breach
+    // → each wallet should fire independently with the same anchor
+    let mut person = Entity::new(EntityKind::Person, "Alice", 0.8, "scan");
+    person.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("dbname", "linkedin_2020")
+            .with_attr("email", "alice@example.com")
+            .with_attr("username", "alice.smith"),
+    );
+
+    let mut wallet1 = Entity::new(EntityKind::CryptoAddress, "0x1111...", 0.8, "scan");
+    wallet1.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("dbname", "linkedin_2020")
+            .with_attr("email", "alice@example.com")
+            .with_attr("username", "alice.smith"),
+    );
+
+    let mut wallet2 = Entity::new(EntityKind::CryptoAddress, "0x2222...", 0.8, "scan");
+    wallet2.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("dbname", "linkedin_2020")
+            .with_attr("email", "alice@example.com")
+            .with_attr("username", "alice.smith"),
+    );
+
+    let result = rule_au_039_wallet_identity(
+        &[person.clone(), wallet1.clone(), wallet2.clone()],
+        "scan",
+        0,
+    );
+    assert_eq!(result.len(), 2, "each wallet should fire once");
+    assert!(result.iter().all(|c| c.entity_uids.len() == 2));
+    // Both firings should anchor to the same person
+    assert!(result.iter().all(|c| c.entity_uids.contains(&person.uid)));
+}
+
+#[test]
+fn au_039_chain_record_matching_same_chain_and_address() {
+    // Edge case: chain_intel records must match BOTH chain and address
+    let mut person = Entity::new(EntityKind::Person, "Alice", 0.8, "scan");
+    person.add_evidence(
+        Evidence::new("chain_intel", "blockchain")
+            .with_attr("chain", "ethereum")
+            .with_attr("address", "0xABC123"),
+    );
+
+    let mut wallet = Entity::new(EntityKind::CryptoAddress, "0xABC123", 0.8, "scan");
+    wallet.add_evidence(
+        Evidence::new("chain_intel", "blockchain")
+            .with_attr("chain", "ethereum")
+            .with_attr("address", "0xABC123"),
+    );
+
+    let result = rule_au_039_wallet_identity(&[person, wallet], "scan", 0);
+    assert_eq!(result.len(), 1, "same chain_intel record should fire");
+}
+
+#[test]
+fn au_039_chain_record_different_chain_no_fire() {
+    // Edge case: same address but different chain = no match
+    let mut person = Entity::new(EntityKind::Person, "Alice", 0.8, "scan");
+    person.add_evidence(
+        Evidence::new("chain_intel", "blockchain")
+            .with_attr("chain", "ethereum")
+            .with_attr("address", "0xABC123"),
+    );
+
+    let mut wallet = Entity::new(EntityKind::CryptoAddress, "0xABC123", 0.8, "scan");
+    wallet.add_evidence(
+        Evidence::new("chain_intel", "blockchain")
+            .with_attr("chain", "polygon") // Different chain
+            .with_attr("address", "0xABC123"),
+    );
+
+    let result = rule_au_039_wallet_identity(&[person, wallet], "scan", 0);
+    assert_eq!(result.len(), 0, "different chains should not fire");
+}
+
+#[test]
+fn au_039_email_anchor_when_person_unavailable() {
+    // Edge case: no Person, but Email from same breach record should fire
+    let mut email = Entity::new(EntityKind::Email, "alice@example.com", 0.8, "scan");
+    email.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("dbname", "linkedin_2020")
+            .with_attr("email", "alice@example.com")
+            .with_attr("username", "alice.smith"),
+    );
+
+    let mut wallet = Entity::new(EntityKind::CryptoAddress, "0x1A2B...", 0.8, "scan");
+    wallet.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("dbname", "linkedin_2020")
+            .with_attr("email", "alice@example.com")
+            .with_attr("username", "alice.smith"),
+    );
+
+    let result = rule_au_039_wallet_identity(&[email, wallet], "scan", 0);
+    assert_eq!(
+        result.len(),
+        1,
+        "Email anchor should work when Person unavailable"
+    );
+}
+
+#[test]
+fn au_039_person_preferred_over_email_anchor() {
+    // Edge case: both Person and Email available from same breach —
+    // Person should be preferred as anchor
+    let mut person = Entity::new(EntityKind::Person, "Alice Smith", 0.8, "scan");
+    person.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("dbname", "linkedin_2020")
+            .with_attr("email", "alice@example.com")
+            .with_attr("username", "alice.smith"),
+    );
+
+    let mut email = Entity::new(EntityKind::Email, "alice@example.com", 0.8, "scan");
+    email.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("dbname", "linkedin_2020")
+            .with_attr("email", "alice@example.com")
+            .with_attr("username", "alice.smith"),
+    );
+
+    let mut wallet = Entity::new(EntityKind::CryptoAddress, "0x1A2B...", 0.8, "scan");
+    wallet.add_evidence(
+        Evidence::new("oathnet_pro", "breach")
+            .with_attr("dbname", "linkedin_2020")
+            .with_attr("email", "alice@example.com")
+            .with_attr("username", "alice.smith"),
+    );
+
+    let result = rule_au_039_wallet_identity(&[person.clone(), email, wallet], "scan", 0);
+    assert_eq!(result.len(), 1, "only one firing");
+    // The anchored UID should be the Person, not the Email
+    assert!(result[0].entity_uids.contains(&person.uid));
 }
 
 // A pgp-linked email carrying the `key_fingerprint` evidence attribute the real

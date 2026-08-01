@@ -166,6 +166,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (HTML), `extLink()` (href + scheme gate), CSV formula-defang; the SPA renders
   attacker values via `data-` attributes read with `this.dataset`, never a JS-string
   literal in an inline handler. *Closes:* the **§7 SPA stored XSS** (fixed). ✅
+- **`[x]` SOL-AU-039-RELATEDNESS · Cryptocurrency wallet-to-identity attribution
+  gated on evidence-based relatedness** — investigation phase traced CryptoAddress/
+  Person/Email emission across all modules: found oathnet_pro/see_know emit both
+  wallet and identities from same breach record (keyed by dbname+email+username
+  triplet), and chain_intel emits wallet+identities keyed by (chain, address).
+  Design phase established "Shared Breach Record" criterion — wallet and identity
+  must originate from same source record, not arbitrary uid sort. Implementation:
+  added `SourceRecord` enum (BreachRecord, ChainRecord, Other), `extract_source_
+  record()` helper (reads provenance from Evidence.attributes), and
+  `is_same_source_record()` gate; replaced rule's arbitrary lexicographic anchor
+  selection with filtered selection: for each wallet, find Person/Email anchors
+  that BOTH share the wallet's source record; only fire if related anchor found.
+  *Closes:* **T2.39** (the AU-039 content-blind-attribution bug, same shape as
+  T2.36/T2.37 one layer up in correlator rules instead of entity confidence).
+  Regression tests: 12 new tests covering same-record FIRE (HIGH severity),
+  different-source NO FIRE (the old bug fixed), cross-breach NO FIRE, chain
+  records, determinism under multiple related identities, edge cases
+  (no identity, missing attributes, email fallback, person preference). All
+  432 correlator tests pass; full gate clean. ✅ 2026-08-01.
 
 ### S.RESOURCE — Concurrency, throughput & resource safety
 

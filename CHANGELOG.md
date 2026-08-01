@@ -11,6 +11,7 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Fixed
+<<<<<<< HEAD
 - **Netlas emails are now scored by how reliably they identify the host.** The module extracts contact emails from a host's TLS certificate, its WHOIS record, and its HTTP response body, but emitted all of them at one confidence with a single `ssl-extracted` label — so an address merely scraped from a web page (which may belong to a third-party vendor or a privacy policy) looked as trustworthy as one bound to the host by its certificate. Each email is now tiered by provenance — certificate-bound highest, WHOIS registrant next, http-scraped lowest — with an accurate provenance tag, so downstream correlation and the email→breach pivot weight them correctly.
 ### Fixed
 - **A namesake's breach record is no longer attributed to the target on a partial-word name match.** When deciding whether a breach/stealer row identifies the scan target, a multi-word target (a full name or email) required every significant term to appear in one field, but matched each term as a substring — so searching `Jordan Avery` would accept a record for `Jordanna Averyl` (each term buried inside a longer, unrelated word) and fuse that stranger's leaked email, phone, and address onto the subject. Matching is now anchored to whole word/token boundaries, so only genuine rows (including hyphen- or underscore-separated spellings) are attributed; single-word handle targets keep matching concatenated variants as before.
@@ -384,6 +385,24 @@ versions can include breaking changes; patch versions are bug-fix-only.
   never marked and never rotated. Each module now reports under the canonical
   service name, with a drift-guard test tying it to the `ServiceDef` for its key
   env var so the mismatch cannot silently return.
+- **AU-039 cryptocurrency wallet-to-identity attribution no longer fabricates
+  false positives through arbitrary identity selection.** Previously the rule
+  picked an arbitrary anchor identity (lexicographically smallest UID) from
+  *any* Person/Email entity in the scan with no check that the wallet and that
+  identity actually co-originated from the same source record. This meant a
+  wallet belonging to one person could be confidently reported (High severity)
+  as belonging to an unrelated family member or bystander purely due to UID
+  sort order — especially likely when AU-075 (named associates from breach
+  records) mints multiple Person entities per scan. Now the rule requires the
+  wallet and anchor identity to originate from the same source record: for
+  breach modules (oathnet_pro, see_know), both must carry identical dbname +
+  email + username in their evidence; for chain intelligence (chain_intel),
+  both must carry the same chain + address. Wallets without a related identity
+  do not fire AU-039 (co-presence alone is no longer proof). Anchors are still
+  deterministically selected (lexicographically smallest UID among related
+  identities) to prevent duplicate findings on repeated runs, preserving the
+  rule's original determinism guarantee while eliminating the content-blind
+  attribution bug.
 
 ### Changed
 - **Every configured API key now participates in rotation and dead-key
