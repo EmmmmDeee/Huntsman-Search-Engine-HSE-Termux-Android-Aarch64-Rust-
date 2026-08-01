@@ -15,9 +15,8 @@ use crate::api::scan_export::csv_escape;
     }
 
     #[test]
-    fn aggregate_scan_stats_sums_counts_and_histograms_status() {
-        use super::aggregate_scan_stats;
-        use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
+    fn scan_stats_from_scans_sums_counts_and_histograms_status() {
+        use crate::core::scan::{Scan, ScanStats, ScanStatus, Target, TargetKind};
 
         let mk = |id: &str, status: ScanStatus, ents: usize, dedup: usize| {
             let mut s = Scan::new(id, Target::new(TargetKind::Email, "x@y.com"));
@@ -32,7 +31,8 @@ use crate::api::scan_export::csv_escape;
             mk("c", ScanStatus::Failed, 0, 0),
             mk("d", ScanStatus::Running, 3, 4),
         ];
-        let agg = aggregate_scan_stats(&scans);
+        let agg = ScanStats::from_scans(&scans);
+        assert_eq!(agg.total, 4);
         assert_eq!(agg.total_entities, 18);
         assert_eq!(agg.total_deduped, 7);
         assert_eq!(agg.by_status.get("complete"), Some(&2));
@@ -41,8 +41,8 @@ use crate::api::scan_export::csv_escape;
         assert_eq!(agg.by_status.get("pending"), None);
 
         // Empty input yields all-zero totals and an empty histogram.
-        let empty = aggregate_scan_stats(&[]);
-        assert_eq!(empty, super::ScanStatsAgg::default());
+        let empty = ScanStats::from_scans(&[]);
+        assert_eq!(empty, ScanStats::default());
     }
 
     #[test]

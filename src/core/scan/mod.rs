@@ -703,6 +703,46 @@ impl ScanStatus {
     }
 }
 
+/// Aggregate scan statistics for the dashboard `/stats` endpoint.
+///
+/// Two backends produce this from the same specification: the SQLite `Store`
+/// computes it with a single `GROUP BY status` aggregate (no full-row load),
+/// while in-memory test doubles fold a scan list via [`ScanStats::from_scans`].
+/// Keeping one canonical fold here means the two paths cannot drift in the
+/// numbers they report.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanStats {
+    /// Total scans in the store (uncapped).
+    pub total: u64,
+    /// Count of scans per [`ScanStatus::as_str`] bucket.
+    pub by_status: std::collections::BTreeMap<String, u64>,
+    /// Sum of `entity_count` across all scans.
+    pub total_entities: u64,
+    /// Sum of `modules_deduped` across all scans.
+    pub total_deduped: u64,
+}
+
+impl ScanStats {
+    /// Fold a scan slice into aggregate statistics — the canonical in-memory
+    /// definition the SQLite `GROUP BY` aggregate mirrors in its numbers (same
+    /// `status.as_str()` buckets, same sums).
+    pub fn from_scans(scans: &[Scan]) -> Self {
+        let mut stats = Self {
+            total: scans.len() as u64,
+            ..Self::default()
+        };
+        for scan in scans {
+            *stats
+                .by_status
+                .entry(scan.status.as_str().to_string())
+                .or_insert(0) += 1;
+            stats.total_entities += scan.entity_count as u64;
+            stats.total_deduped += scan.modules_deduped as u64;
+        }
+        stats
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scan {
     pub id: String,

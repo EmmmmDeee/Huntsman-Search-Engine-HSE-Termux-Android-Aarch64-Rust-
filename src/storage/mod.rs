@@ -447,6 +447,43 @@ impl Store {
         Ok(deserialize_rows(raw, "list_scans"))
     }
 
+    /// Aggregate scan statistics for the dashboard in a single `GROUP BY` pass.
+    ///
+    /// Unlike [`Store::list_scans`], this never loads or deserialises a scan
+    /// row: `status` and `entity_count` are dedicated columns and
+    /// `modules_deduped` is pulled with `json_extract`, so the cost is
+    /// O(distinct statuses) — at most five rows — regardless of how large the
+    /// history grows. Backs `GET /api/v1/stats`, which previously deserialised
+    /// up to 10 000 full `Scan` structs on every dashboard poll.
+    pub fn scan_stats(&self) -> Result<crate::core::scan::ScanStats> {
+        let mut stats = crate::core::scan::ScanStats::default();
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT status, \
+                    COUNT(*), \
+                    COALESCE(SUM(entity_count), 0), \
+                    COALESCE(SUM(json_extract(data_json, '$.modules_deduped')), 0) \
+             FROM scans GROUP BY status",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (status, count, entities, deduped) = row?;
+            let count = count.max(0) as u64;
+            stats.total += count;
+            stats.by_status.insert(status, count);
+            stats.total_entities += entities.max(0) as u64;
+            stats.total_deduped += deduped.max(0) as u64;
+        }
+        Ok(stats)
+    }
+
     /// Chronological (newest-first) list of past **radar sweeps** — scans
     /// whose target is one of `radar_scan_spec`'s two sentinel anchors
     /// (`Coordinates "0,0"` or `MacAddress "00:00:00:00:00:00"`; the sensors
@@ -906,6 +943,10 @@ impl crate::core::port::StoragePort for Store {
 
     fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
         Store::list_scans(self, limit)
+    }
+
+    fn scan_stats(&self) -> Result<crate::core::scan::ScanStats> {
+        Store::scan_stats(self)
     }
 
     fn radar_history(&self, limit: usize) -> Result<Vec<Scan>> {

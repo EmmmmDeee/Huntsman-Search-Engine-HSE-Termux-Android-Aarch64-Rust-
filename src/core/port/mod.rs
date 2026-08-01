@@ -51,6 +51,17 @@ pub trait StoragePort: Send + Sync {
     fn radar_history(&self, limit: usize) -> Result<Vec<Scan>>;
     fn delete_scan(&self, scan_id: &str) -> Result<bool>;
 
+    /// Aggregate scan statistics for the dashboard `/stats` endpoint. The
+    /// default folds the full scan list in memory — correct and fine for test
+    /// doubles — but the SQLite `Store` overrides it with a single `GROUP BY`
+    /// aggregate so a growing scan history doesn't cost a full-table load +
+    /// deserialise on every dashboard poll.
+    fn scan_stats(&self) -> Result<crate::core::scan::ScanStats> {
+        Ok(crate::core::scan::ScanStats::from_scans(
+            &self.list_scans(usize::MAX)?,
+        ))
+    }
+
     // ── Entities ───────────────────────────────────────────────────────────
     fn upsert_entity(&self, entity: &Entity) -> Result<()>;
     /// Persist many entities in a single transaction. Takes a slice (not

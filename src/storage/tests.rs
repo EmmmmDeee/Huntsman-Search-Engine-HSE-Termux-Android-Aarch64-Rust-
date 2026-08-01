@@ -465,6 +465,52 @@ fn list_scans_respects_limit() {
 }
 
 #[test]
+fn scan_stats_sql_aggregate_matches_canonical_fold() {
+    use crate::core::scan::{ScanStats, ScanStatus};
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+
+    let mk = |id: &str, status: ScanStatus, ents: usize, dedup: usize| {
+        let mut s = Scan::new(id, Target::new(TargetKind::Email, "x@y.com"));
+        s.status = status;
+        s.entity_count = ents;
+        s.modules_deduped = dedup;
+        s
+    };
+    let scans = [
+        mk("a", ScanStatus::Complete, 10, 2),
+        mk("b", ScanStatus::Complete, 5, 1),
+        mk("c", ScanStatus::Failed, 0, 0),
+        mk("d", ScanStatus::Running, 3, 4),
+        mk("e", ScanStatus::Aborted, 7, 0),
+    ];
+    for s in &scans {
+        store.upsert_scan(s).expect("should succeed");
+    }
+
+    // The SQL GROUP BY aggregate must agree with the canonical in-memory fold
+    // exactly — same buckets, same sums, same uncapped total.
+    let sql = store.scan_stats().expect("should succeed");
+    let folded = ScanStats::from_scans(&scans);
+    assert_eq!(sql, folded, "SQL aggregate must equal the canonical fold");
+    assert_eq!(sql.total, 5);
+    assert_eq!(sql.total_entities, 25);
+    assert_eq!(sql.total_deduped, 7);
+    assert_eq!(sql.by_status.get("complete"), Some(&2));
+    assert_eq!(sql.by_status.get("aborted"), Some(&1));
+
+    // Empty DB → all-zero, empty histogram.
+    let path2 = tmp_db();
+    let empty_store = Store::open(&path2).expect("should succeed");
+    assert_eq!(
+        empty_store.scan_stats().expect("should succeed"),
+        ScanStats::default()
+    );
+    let _ = std::fs::remove_file(&path2);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn list_scans_empty_db_returns_empty_vec() {
     let path = tmp_db();
     let store = Store::open(&path).expect("should succeed");

@@ -184,41 +184,20 @@ pub async fn health() -> Json<Value> {
     Json(json!({ "status": "ok", "version": crate::VERSION }))
 }
 
-/// Pure aggregation of dashboard scan statistics — the per-status histogram and
-/// the entity/dedup totals — over a scan list. Split out of [`stats`] so the
-/// summation logic is unit-testable without a live store + async handler.
-#[derive(Default, PartialEq, Eq, Debug)]
-pub(crate) struct ScanStatsAgg {
-    pub by_status: std::collections::BTreeMap<&'static str, u64>,
-    pub total_entities: u64,
-    pub total_deduped: u64,
-}
-
-pub(crate) fn aggregate_scan_stats(scans: &[crate::core::scan::Scan]) -> ScanStatsAgg {
-    let mut agg = ScanStatsAgg::default();
-    for scan in scans {
-        *agg.by_status.entry(scan.status.as_str()).or_insert(0) += 1;
-        agg.total_entities += scan.entity_count as u64;
-        agg.total_deduped += scan.modules_deduped as u64;
-    }
-    agg
-}
-
 pub async fn stats(
     State(s): State<Arc<AppState>>,
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
 ) -> impl IntoResponse {
     let store = Arc::clone(&s.store);
-    let scans = match tokio::task::spawn_blocking(move || store.list_scans(10_000)).await {
-        Ok(Ok(scans)) => scans,
+    // Aggregate in the storage layer (SQLite `GROUP BY`) rather than loading and
+    // deserialising up to 10 000 full scan rows on every dashboard poll. The
+    // `Store` override is O(distinct statuses); the trait default folds in
+    // memory for test doubles.
+    let stats = match tokio::task::spawn_blocking(move || store.scan_stats()).await {
+        Ok(Ok(st)) => st,
         Ok(Err(e)) => return internal_error(&e),
         Err(e) => return internal_error(&format!("stats query failed: {e}")),
     };
-    let ScanStatsAgg {
-        by_status,
-        total_entities,
-        total_deduped,
-    } = aggregate_scan_stats(&scans);
     let modules = s.engine.modules().len();
     let live_sessions = s.live.list().len();
 
@@ -262,10 +241,10 @@ pub async fn stats(
     (
         StatusCode::OK,
         Json(json!({
-            "scans_total": scans.len(),
-            "scans_by_status": by_status,
-            "entities_total": total_entities,
-            "modules_deduped_total": total_deduped,
+            "scans_total": stats.total,
+            "scans_by_status": stats.by_status,
+            "entities_total": stats.total_entities,
+            "modules_deduped_total": stats.total_deduped,
             "modules": modules,
             "live_sessions": live_sessions,
             "version": crate::VERSION,
