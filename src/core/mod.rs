@@ -35,7 +35,6 @@ pub mod live;
 pub mod metrics;
 pub mod module;
 pub mod module_runtime;
-pub mod mpc;
 pub mod network;
 pub mod path;
 pub mod pivot;
