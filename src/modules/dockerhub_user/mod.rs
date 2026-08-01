@@ -92,7 +92,12 @@ pub(super) fn build_entities(user: DhUser, scan_id: &str) -> Vec<Entity> {
     if let Some(company) = user.company.as_deref()
         && !company.trim().is_empty()
     {
-        let mut o = Entity::new(EntityKind::Organisation, company.trim(), 0.58, scan_id);
+        let mut o = Entity::new(
+            EntityKind::Organisation,
+            company.trim(),
+            confidence::MEDIUM_SOLID,
+            scan_id,
+        );
         o.tag("dockerhub");
         o.tag("self-asserted");
         o.add_evidence(ev().with_attr("source_field", "company"));
@@ -101,13 +106,13 @@ pub(super) fn build_entities(user: DhUser, scan_id: &str) -> Vec<Entity> {
 
     // Location → Address (self-asserted, low confidence).
     if let Some(loc) = user.location.as_deref()
-        && let Some(mut a) = profile_kit::location_address(loc, 0.35, scan_id)
+        && let Some(mut a) = profile_kit::location_address(loc, confidence::TENTATIVE, scan_id)
     {
         a.tag("dockerhub");
         a.tag("self-asserted");
         a.add_evidence(ev().with_attr("source_field", "location"));
         out.push(a);
-        if let Some(mut c) = profile_kit::location_coordinates(loc, 0.25, scan_id) {
+        if let Some(mut c) = profile_kit::location_coordinates(loc, confidence::VERY_LOW, scan_id) {
             c.tag("dockerhub");
             c.add_evidence(ev().with_attr("source_field", "location"));
             out.push(c);
@@ -116,7 +121,7 @@ pub(super) fn build_entities(user: DhUser, scan_id: &str) -> Vec<Entity> {
 
     // Personal website from profile_url (distinct from the canonical hub.docker.com URL).
     if let Some(site) = user.profile_url.as_deref() {
-        for mut e in profile_kit::website_url_and_domain(site, 0.68, 0.62, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(site, 0.68, confidence::NOTABLE, scan_id) {
             e.tag("dockerhub");
             if e.kind == EntityKind::Domain {
                 e.tag("derived");
@@ -130,7 +135,12 @@ pub(super) fn build_entities(user: DhUser, scan_id: &str) -> Vec<Entity> {
     if let Some(email) = user.gravatar_email.as_deref()
         && email.contains('@')
     {
-        let mut em = Entity::new(EntityKind::Email, email.trim(), 0.72, scan_id);
+        let mut em = Entity::new(
+            EntityKind::Email,
+            email.trim(),
+            confidence::ATTRIBUTED,
+            scan_id,
+        );
         em.tag("dockerhub");
         em.tag("gravatar");
         em.add_evidence(ev().with_attr("source_field", "gravatar_email"));

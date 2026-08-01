@@ -140,7 +140,12 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
 
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(addr) {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.62, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::NOTABLE,
+                scan_id,
+            );
             c.tag("addr-derived");
             c.tag("geoint");
             c.tag("opencorporates");
@@ -289,7 +294,12 @@ pub(super) fn build_officer_entities(
     if let Some(co) = officer.company.as_ref() {
         let co_name = co.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
         if let Some(name) = co_name {
-            let mut org = Entity::new(EntityKind::Organisation, name, 0.72, scan_id);
+            let mut org = Entity::new(
+                EntityKind::Organisation,
+                name,
+                confidence::ATTRIBUTED,
+                scan_id,
+            );
             org.tag("opencorporates");
             if co.jurisdiction_code.as_deref() == Some("au") {
                 org.tag("country:AU");
@@ -343,7 +353,7 @@ pub(super) fn build_officer_entities(
 
     // Corroborating Person entity for the officer name (confirms handle→identity).
     if let Some(name) = officer_name.filter(|n| n.contains(' ')) {
-        let mut pe = Entity::new(EntityKind::Person, name, 0.72, scan_id);
+        let mut pe = Entity::new(EntityKind::Person, name, confidence::ATTRIBUTED, scan_id);
         pe.tag("opencorporates");
         pe.tag("officer");
         if let Some(p) = position {

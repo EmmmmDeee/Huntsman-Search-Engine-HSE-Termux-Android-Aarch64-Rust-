@@ -205,7 +205,7 @@ fn paste_entities(pastes: &[Paste], email: &str, scan_id: &str) -> Vec<Entity> {
         .max()
         .unwrap_or("");
 
-    let mut e = Entity::new(EntityKind::Email, email, 0.70, scan_id);
+    let mut e = Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
     e.tag(tags::BREACH);
     e.tag("hibp");
     e.tag("paste");
@@ -222,7 +222,7 @@ fn paste_entities(pastes: &[Paste], email: &str, scan_id: &str) -> Vec<Entity> {
 
     for paste in pastes {
         if let Some(url) = paste_url(paste) {
-            let mut u = Entity::new(EntityKind::Url, &url, 0.55, scan_id);
+            let mut u = Entity::new(EntityKind::Url, &url, confidence::MEDIUM_HIGH, scan_id);
             u.tag("hibp");
             u.tag("paste");
             let mut ev = Evidence::new(SRC, format!("Paste containing {email}"));

@@ -109,7 +109,7 @@ pub(super) fn build_entities(
         let mut ue = Entity::new(
             EntityKind::Username,
             format!("linkedin:{pid}"),
-            0.80,
+            confidence::HIGH_PLUSPLUS,
             scan_id,
         );
         ue.tag("proxycurl");
@@ -155,7 +155,12 @@ pub(super) fn build_entities(
 
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(&location) {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.52, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::MEDIUM_LIGHT,
+                scan_id,
+            );
             c.tag("proxycurl");
             c.tag("linkedin");
             c.tag("addr-derived");
@@ -290,7 +295,7 @@ pub(super) fn build_entities(
         .map(str::trim)
         .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
     {
-        let mut ue = Entity::new(EntityKind::Url, url, 0.72, scan_id);
+        let mut ue = Entity::new(EntityKind::Url, url, confidence::ATTRIBUTED, scan_id);
         ue.tag("proxycurl");
         ue.tag("linkedin");
         ue.add_evidence(Evidence::new(SRC, "Website URL from LinkedIn profile"));

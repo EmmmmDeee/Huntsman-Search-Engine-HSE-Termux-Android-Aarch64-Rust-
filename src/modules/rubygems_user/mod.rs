@@ -141,7 +141,9 @@ pub(super) fn build_entities(gems: Vec<RgGem>, handle: &str, scan_id: &str) -> V
             && (hp.starts_with("http://") || hp.starts_with("https://"))
             && seen_urls.insert(hp.to_string())
         {
-            for mut e in profile_kit::website_url_and_domain(hp, 0.68, 0.58, scan_id) {
+            for mut e in
+                profile_kit::website_url_and_domain(hp, 0.68, confidence::MEDIUM_SOLID, scan_id)
+            {
                 e.tag("rubygems");
                 match e.kind {
                     EntityKind::Domain => {

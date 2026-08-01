@@ -151,8 +151,9 @@ mod tests {
 
     #[test]
     fn expansion_confidence_decays_only_when_the_policy_is_on() {
+        use crate::core::confidence;
         use crate::core::entity::{Entity, EntityKind};
-        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.8, "s");
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", confidence::HIGH_PLUSPLUS, "s");
         e.generation = 2;
 
         // Policy OFF (None) ⇒ plain c_effective, byte-identical to today.
@@ -165,7 +166,7 @@ mod tests {
         assert!((decayed - e.c_effective_depth_decayed(0.75)).abs() < 1e-12);
 
         // A gen-0 (seed-round) entity is never discounted even with the policy on.
-        let mut seed = Entity::new(EntityKind::Email, "z@y.com", 0.8, "s");
+        let mut seed = Entity::new(EntityKind::Email, "z@y.com", confidence::HIGH_PLUSPLUS, "s");
         seed.generation = 0;
         assert!((expansion_confidence(&seed, Some(0.75)) - seed.c_effective()).abs() < 1e-12);
     }

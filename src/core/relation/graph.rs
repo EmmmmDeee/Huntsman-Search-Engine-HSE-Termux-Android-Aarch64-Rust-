@@ -911,6 +911,7 @@ pub fn connection_brokers<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::relation::Relation;
 
     #[test]
@@ -947,8 +948,8 @@ mod tests {
 
     #[test]
     fn resolve_identity_clusters_empty_without_links() {
-        let a = Entity::new(EntityKind::Email, "a@x.com", 0.8, "s");
-        let b = Entity::new(EntityKind::Username, "bob", 0.8, "s");
+        let a = Entity::new(EntityKind::Email, "a@x.com", confidence::HIGH_PLUSPLUS, "s");
+        let b = Entity::new(EntityKind::Username, "bob", confidence::HIGH_PLUSPLUS, "s");
         assert!(resolve_identity_clusters(&[a, b], &[], 4, 0.0).is_empty());
     }
 
@@ -1163,8 +1164,8 @@ mod tests {
 
     #[test]
     fn strongest_path_none_when_unreachable() {
-        let a = Entity::new(EntityKind::Email, "a@x.com", 0.8, "s");
-        let b = Entity::new(EntityKind::Username, "bob", 0.8, "s");
+        let a = Entity::new(EntityKind::Email, "a@x.com", confidence::HIGH_PLUSPLUS, "s");
+        let b = Entity::new(EntityKind::Username, "bob", confidence::HIGH_PLUSPLUS, "s");
         assert!(strongest_path(&[a.clone(), b.clone()], &[], &a.uid, &b.uid, 4).is_none());
     }
 

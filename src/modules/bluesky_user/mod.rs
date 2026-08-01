@@ -311,7 +311,7 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
             if link.contains("bsky.app") {
                 continue;
             }
-            let mut url_e = Entity::new(EntityKind::Url, link, 0.62, scan_id);
+            let mut url_e = Entity::new(EntityKind::Url, link, confidence::NOTABLE, scan_id);
             url_e.tag("bluesky");
             url_e.add_evidence(
                 Evidence::new(SRC, format!("Link in Bluesky bio of '{}'", profile.handle))

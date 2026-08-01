@@ -23,6 +23,7 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 
+use crate::core::confidence;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
@@ -165,7 +166,12 @@ impl Module for CellIntel {
             // Fallback: MCC -> country centroid (coarse but free, offline)
             if let Some((lat, lon, country)) = mcc_to_centroid(&key.mcc) {
                 let coords = format!("{lat:.4},{lon:.4}");
-                let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.25, &ctx.scan_id);
+                let mut e = Entity::new(
+                    EntityKind::Coordinates,
+                    &coords,
+                    confidence::VERY_LOW,
+                    &ctx.scan_id,
+                );
                 e.tag("geoint");
                 e.tag(crate::core::tags::CELL_TOWER);
                 e.tag(crate::core::tags::COARSE);

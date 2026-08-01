@@ -174,7 +174,7 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
 
     // Real name → Person (≥2 tokens, non-placeholder).
     if let Some(name) = user.full_name.as_deref()
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.72, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::ATTRIBUTED, scan_id)
     {
         p.tag("codeberg");
         p.tag("derived");
@@ -212,7 +212,12 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
     // Personal website URL + Domain. The Url and Domain carry distinct evidence,
     // so the kit's stable [Url, Domain] ordering is decorated per-kind.
     if let Some(site) = user.website.as_deref() {
-        for mut e in profile_kit::website_url_and_domain(site, 0.72, confidence::HIGH, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(
+            site,
+            confidence::ATTRIBUTED,
+            confidence::HIGH,
+            scan_id,
+        ) {
             match e.kind {
                 EntityKind::Domain => {
                     e.tag("codeberg");

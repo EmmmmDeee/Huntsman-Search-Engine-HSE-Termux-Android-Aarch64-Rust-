@@ -13,6 +13,7 @@ pub(super) async fn parse_oathnet_json(
     doc: &serde_json::Value,
     sid: &str,
 ) -> (Vec<crate::core::entity::Entity>, ImportStats) {
+    use crate::core::confidence;
     use crate::core::entity::{Entity, EntityKind, Evidence};
     // A Combined Search JSON export (`{ "modules": [ { "results": [ … ] } ] }`) is a
     // `{`-leading body, so the import detector routes it here to the OathNet-native
@@ -45,7 +46,7 @@ pub(super) async fn parse_oathnet_json(
                     .get("dbname")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
-                let mut e = Entity::new(EntityKind::Email, email, 0.75, &sid);
+                let mut e = Entity::new(EntityKind::Email, email, confidence::VERY_HIGH, &sid);
                 e.tag("breach");
                 e.tag("import");
                 e.add_evidence(
@@ -59,7 +60,7 @@ pub(super) async fn parse_oathnet_json(
                 && ip.contains('.')
                 && !ip.contains("UPGRADE")
             {
-                let mut e = Entity::new(EntityKind::IpAddress, ip, 0.65, &sid);
+                let mut e = Entity::new(EntityKind::IpAddress, ip, confidence::HIGH, &sid);
                 e.tag("breach");
                 e.tag("import");
                 entities.push(e);
@@ -90,7 +91,8 @@ pub(super) async fn parse_oathnet_json(
                         && ip.contains('.')
                         && !ip.contains("UPGRADE")
                     {
-                        let mut e = Entity::new(EntityKind::IpAddress, ip, 0.60, &sid);
+                        let mut e =
+                            Entity::new(EntityKind::IpAddress, ip, confidence::MEDIUM_PLUS, &sid);
                         e.tag("stealer-victim");
                         e.tag("import");
                         if total_docs > 100 {
@@ -115,7 +117,8 @@ pub(super) async fn parse_oathnet_json(
                         && email.contains('@')
                         && !email.contains("UPGRADE")
                     {
-                        let mut e = Entity::new(EntityKind::Email, email, 0.55, &sid);
+                        let mut e =
+                            Entity::new(EntityKind::Email, email, confidence::MEDIUM_HIGH, &sid);
                         e.tag("stealer-victim");
                         e.tag("import");
                         entities.push(e);
@@ -130,7 +133,8 @@ pub(super) async fn parse_oathnet_json(
                         && !hwid.is_empty()
                         && seen_hwids.insert(hwid.to_string())
                     {
-                        let mut e = Entity::new(EntityKind::DeviceId, hwid, 0.70, &sid);
+                        let mut e =
+                            Entity::new(EntityKind::DeviceId, hwid, confidence::HIGH_PLUS, &sid);
                         e.tag("hwid");
                         e.tag("import");
                         e.add_evidence(
@@ -152,7 +156,8 @@ pub(super) async fn parse_oathnet_json(
                         && !did.is_empty()
                         && seen_discord.insert(did.to_string())
                     {
-                        let mut e = Entity::new(EntityKind::Username, did, 0.60, &sid);
+                        let mut e =
+                            Entity::new(EntityKind::Username, did, confidence::MEDIUM_PLUS, &sid);
                         e.tag("discord-id");
                         e.tag("import");
                         entities.push(e);
@@ -181,7 +186,8 @@ pub(super) async fn parse_oathnet_json(
                     if let Some(domain) = d.as_str() {
                         let lower = domain.to_lowercase();
                         if seen_domains.insert(lower.clone()) && domain.contains('.') {
-                            let mut e = Entity::new(EntityKind::Domain, &lower, 0.50, &sid);
+                            let mut e =
+                                Entity::new(EntityKind::Domain, &lower, confidence::MEDIUM, &sid);
                             e.tag("stealer-target");
                             e.tag("import");
                             entities.push(e);
@@ -197,7 +203,12 @@ pub(super) async fn parse_oathnet_json(
                     if let Some(sub) = s.as_str() {
                         let lower = sub.to_lowercase();
                         if lower.contains('.') && seen_domains.insert(format!("sub:{lower}")) {
-                            let mut e = Entity::new(EntityKind::Domain, &lower, 0.55, &sid);
+                            let mut e = Entity::new(
+                                EntityKind::Domain,
+                                &lower,
+                                confidence::MEDIUM_HIGH,
+                                &sid,
+                            );
                             e.tag("subdomain");
                             e.tag("stealer-target");
                             e.tag("import");
@@ -213,7 +224,7 @@ pub(super) async fn parse_oathnet_json(
                 && url.starts_with("http")
                 && seen_urls.insert(url.to_string())
             {
-                let mut e = Entity::new(EntityKind::Url, url, 0.45, &sid);
+                let mut e = Entity::new(EntityKind::Url, url, confidence::LOW_MEDIUM, &sid);
                 e.tag("stealer-target");
                 e.tag("import");
                 entities.push(e);
@@ -243,7 +254,7 @@ pub(super) async fn parse_oathnet_json(
             if let Some(lid) = doc_item.get("log_id").and_then(|v| v.as_str())
                 && log_ids.insert(lid.to_string())
             {
-                let mut e = Entity::new(EntityKind::DeviceId, lid, 0.50, &sid);
+                let mut e = Entity::new(EntityKind::DeviceId, lid, confidence::MEDIUM, &sid);
                 e.tag("log-id");
                 e.tag("import");
                 entities.push(e);
@@ -264,7 +275,8 @@ pub(super) async fn parse_oathnet_json(
                             && let Some(dom) = doms.first().and_then(|d| d.as_str())
                         {
                             let full_url = format!("https://{dom}{path}");
-                            let mut e = Entity::new(EntityKind::Url, &full_url, 0.50, &sid);
+                            let mut e =
+                                Entity::new(EntityKind::Url, &full_url, confidence::MEDIUM, &sid);
                             e.tag("admin-panel");
                             e.tag("import");
                             entities.push(e);
@@ -327,7 +339,8 @@ pub(super) async fn parse_oathnet_json(
                         && !name.is_empty()
                         && seen_device_users.insert(name.to_lowercase())
                     {
-                        let mut e = Entity::new(EntityKind::Username, name, 0.35, &sid);
+                        let mut e =
+                            Entity::new(EntityKind::Username, name, confidence::TENTATIVE, &sid);
                         e.tag("device-user");
                         e.tag("import");
                         entities.push(e);
@@ -373,7 +386,12 @@ pub(super) async fn parse_oathnet_json(
             if let Some(domains) = data.pointer("/data/domains").and_then(|v| v.as_array()) {
                 let platforms: Vec<&str> = domains.iter().filter_map(|d| d.as_str()).collect();
                 if !platforms.is_empty() && !email.contains("UPGRADE") {
-                    let mut e = Entity::new(EntityKind::Email, email, 0.85, &sid);
+                    let mut e = Entity::new(
+                        EntityKind::Email,
+                        email,
+                        confidence::HIGH_PLUSPLUS_PLUS,
+                        &sid,
+                    );
                     e.tag("holehe-verified");
                     e.tag("import");
                     e.add_evidence(

@@ -217,7 +217,12 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
                 Some(c) => format!("{city}, {c}"),
                 None => city.to_string(),
             };
-            let mut ae = Entity::new(EntityKind::Address, &location, 0.52, scan_id);
+            let mut ae = Entity::new(
+                EntityKind::Address,
+                &location,
+                confidence::MEDIUM_LIGHT,
+                scan_id,
+            );
             ae.tag("epieos");
             ae.tag("skype");
             ae.tag("geoint");
@@ -249,7 +254,12 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
             else {
                 continue;
             };
-            let mut ae = Entity::new(EntityKind::Address, place, 0.52, scan_id);
+            let mut ae = Entity::new(
+                EntityKind::Address,
+                place,
+                confidence::MEDIUM_LIGHT,
+                scan_id,
+            );
             ae.tag("epieos");
             ae.tag("google-maps");
             ae.tag("geoint");

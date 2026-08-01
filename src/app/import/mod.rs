@@ -20,6 +20,7 @@ mod txt;
 
 // Format parsers live in the per-format submodules; pull their entry points
 // into scope for the dispatcher, the web-upload router and the tests.
+use crate::core::confidence;
 use combined::{cmd_import_combined, looks_like_combined_search, parse_combined_search};
 use csv::{
     cmd_import_csv, cmd_import_hse_csv, looks_like_dehashed_csv, looks_like_hse_csv,
@@ -501,7 +502,7 @@ fn detect_and_create_api_key_entity(
     let prefix: String = pw.chars().take(8).collect();
     let suffix: String = pw.chars().skip(char_len.saturating_sub(4)).collect();
     let display = format!("{service}:{prefix}...{suffix}");
-    let mut e = Entity::new(EntityKind::ApiKey, &display, 0.80, sid);
+    let mut e = Entity::new(EntityKind::ApiKey, &display, confidence::HIGH_PLUSPLUS, sid);
     e.tag("api-key");
     e.tag(format!("service:{service}"));
     e.tag("import");
@@ -531,7 +532,7 @@ fn push_macs(
     use crate::core::entity::{Entity, EntityKind, Evidence};
     let mut n = 0;
     for mac in crate::util::extract::macs(text) {
-        let mut e = Entity::new(EntityKind::MacAddress, &mac, 0.55, sid);
+        let mut e = Entity::new(EntityKind::MacAddress, &mac, confidence::MEDIUM_HIGH, sid);
         e.tag("import");
         e.tag(source_tag);
         e.tag("bssid");
@@ -576,7 +577,7 @@ fn push_crypto(
             continue;
         }
         let coin = chain.strip_prefix("crypto_").unwrap_or(chain);
-        let mut e = Entity::new(EntityKind::CryptoAddress, tok, 0.70, sid);
+        let mut e = Entity::new(EntityKind::CryptoAddress, tok, confidence::HIGH_PLUS, sid);
         e.tag("import");
         e.tag(source_tag);
         e.tag("crypto-address");
@@ -660,7 +661,12 @@ fn push_ibans(
     use crate::core::entity::{Entity, EntityKind, Evidence};
     let mut n = 0;
     for iban in crate::util::extract::ibans(text) {
-        let mut e = Entity::new(EntityKind::Other("iban".into()), &iban, 0.62, sid);
+        let mut e = Entity::new(
+            EntityKind::Other("iban".into()),
+            &iban,
+            confidence::NOTABLE,
+            sid,
+        );
         e.tag("import");
         e.tag(source_tag);
         e.tag("iban");
@@ -692,7 +698,7 @@ fn push_ssids(
     use crate::core::entity::{Entity, EntityKind, Evidence};
     let mut n = 0;
     for ssid in crate::util::extract::labeled_ssids(text) {
-        let mut e = Entity::new(EntityKind::Ssid, &ssid, 0.60, sid);
+        let mut e = Entity::new(EntityKind::Ssid, &ssid, confidence::MEDIUM_PLUS, sid);
         e.tag("import");
         e.tag(source_tag);
         e.tag("wifi-network");
@@ -732,6 +738,7 @@ fn create_geolocation_entities(
     entities: &mut Vec<crate::core::entity::Entity>,
     stats: &mut ImportStats,
 ) {
+    use crate::core::confidence;
     use crate::core::entity::{Entity, EntityKind, Evidence};
 
     if let (Some(la), Some(lo)) = (geo.lat, geo.lon)
@@ -739,7 +746,7 @@ fn create_geolocation_entities(
         && lo.abs() > 0.01
     {
         let coords = format!("{la:.4},{lo:.4}");
-        let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.70, sid);
+        let mut ce = Entity::new(EntityKind::Coordinates, &coords, confidence::HIGH_PLUS, sid);
         ce.tag("geoint");
         ce.tag("import");
         ce.add_evidence(Evidence::new(
@@ -754,7 +761,7 @@ fn create_geolocation_entities(
     }
     if !geo.city.is_empty() {
         let addr = format!("{}, {}, {}", geo.city, geo.region, geo.country);
-        let mut ae = Entity::new(EntityKind::Address, &addr, 0.65, sid);
+        let mut ae = Entity::new(EntityKind::Address, &addr, confidence::HIGH, sid);
         ae.tag("import");
         entities.push(ae);
         stats.addresses += 1;

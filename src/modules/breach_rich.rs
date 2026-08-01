@@ -430,7 +430,7 @@ pub fn extract_rich_detail(
             if seen.insert(email.clone()) {
                 push_breach_entity(
                     result,
-                    Entity::new(EntityKind::Email, &email, 0.50, scan_id),
+                    Entity::new(EntityKind::Email, &email, confidence::MEDIUM, scan_id),
                     ev,
                     source,
                     &["bio-mined"],
@@ -441,7 +441,7 @@ pub fn extract_rich_detail(
             if seen.insert(format!("@bio-phone:{phone}")) {
                 push_breach_entity(
                     result,
-                    Entity::new(EntityKind::Phone, &phone, 0.50, scan_id),
+                    Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM, scan_id),
                     ev,
                     source,
                     &["bio-mined"],

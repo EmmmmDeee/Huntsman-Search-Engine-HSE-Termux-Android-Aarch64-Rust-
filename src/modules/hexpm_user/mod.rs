@@ -129,7 +129,7 @@ pub(super) fn build_entities(user: HexUser, scan_id: &str) -> Vec<Entity> {
     if let Some(email) = user.email.as_deref() {
         let email = email.trim();
         if email.contains('@') {
-            let mut em = Entity::new(EntityKind::Email, email, 0.82, scan_id);
+            let mut em = Entity::new(EntityKind::Email, email, confidence::CORROBORATED, scan_id);
             em.tag("hexpm");
             em.tag("public-profile");
             em.add_evidence(ev().with_attr("source_field", "email"));
@@ -139,7 +139,7 @@ pub(super) fn build_entities(user: HexUser, scan_id: &str) -> Vec<Entity> {
 
     // Full name → Person (multi-word only).
     if let Some(name) = user.full_name.as_deref()
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.72, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::ATTRIBUTED, scan_id)
     {
         p.tag("hexpm");
         p.add_evidence(ev().with_attr("source_field", "full_name"));

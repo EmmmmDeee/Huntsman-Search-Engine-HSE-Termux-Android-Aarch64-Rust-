@@ -49,6 +49,7 @@ const BROWSER_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;\
     q=0.9,image/avif,image/webp,*/*;q=0.8";
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -315,7 +316,12 @@ impl Module for UsernameSearch {
         // the SPA's Entities table shows a single "N platforms" row for
         // the username itself, alongside the per-platform Url entities.
         if !found_names.is_empty() {
-            let mut summary = Entity::new(EntityKind::Username, username, 0.95, &ctx.scan_id);
+            let mut summary = Entity::new(
+                EntityKind::Username,
+                username,
+                confidence::VERY_HIGH_PLUSPLUS,
+                &ctx.scan_id,
+            );
             summary.tag("multi-platform");
 
             // Tag each category that had at least one hit.

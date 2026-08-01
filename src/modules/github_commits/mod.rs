@@ -217,7 +217,7 @@ fn extract(items: &[CommitItem], email: &str, scan_id: &str) -> Vec<Entity> {
         if let Some(name) = item.commit.author.as_ref().and_then(|a| a.name.as_deref()) {
             let name = name.trim();
             if is_real_name(name) && seen_name.insert(name.to_ascii_lowercase()) {
-                let mut p = Entity::new(EntityKind::Person, name, 0.62, scan_id);
+                let mut p = Entity::new(EntityKind::Person, name, confidence::NOTABLE, scan_id);
                 p.tag("derived");
                 p.tag("github-commit");
                 p.add_evidence(

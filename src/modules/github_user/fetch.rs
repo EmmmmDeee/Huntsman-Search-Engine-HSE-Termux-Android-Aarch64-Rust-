@@ -255,7 +255,7 @@ pub(super) async fn fetch_gist_content(
             let mut e = crate::core::entity::Entity::new(
                 crate::core::entity::EntityKind::Email,
                 &email,
-                0.72,
+                confidence::ATTRIBUTED,
                 &ctx.scan_id,
             );
             e.tag("github");
@@ -328,7 +328,7 @@ pub(super) fn commit_email_entities(events: &[GhEvent], scan_id: &str, login: &s
         .filter_map(usable_commit_email)
         .filter(|email| seen.insert(email.clone()))
         .map(|email| {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.82, scan_id);
+            let mut e = Entity::new(EntityKind::Email, &email, confidence::CORROBORATED, scan_id);
             e.tag("github");
             e.tag("commit-email");
             e.tag("public-profile");

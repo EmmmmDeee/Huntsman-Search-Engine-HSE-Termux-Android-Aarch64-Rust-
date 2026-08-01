@@ -477,7 +477,7 @@ fn build_entities(
     let mut subs: Vec<&str> = state.subdomains.iter().map(String::as_str).collect();
     subs.sort_unstable();
     state.result.extend(subs.into_iter().map(|sub| {
-        let mut e = Entity::new(EntityKind::Domain, sub, 0.82, scan_id);
+        let mut e = Entity::new(EntityKind::Domain, sub, confidence::CORROBORATED, scan_id);
         e.tag(tags::WEB);
         e.tag(tags::SUBDOMAIN);
         e.add_evidence(

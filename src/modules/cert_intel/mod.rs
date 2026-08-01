@@ -189,7 +189,7 @@ fn ct_log_entities(
             // than a bogus Domain like `admin@example.com` (which `.contains('.')`
             // alone would have admitted); parity with the sibling crtsh module.
             if crate::util::extract::looks_like_email(&name) {
-                let mut e = Entity::new(EntityKind::Email, &name, 0.70, scan_id);
+                let mut e = Entity::new(EntityKind::Email, &name, confidence::HIGH_PLUS, scan_id);
                 e.tag(tags::CT_LOG);
                 e.add_evidence(cert_ev(entry, format!("Email in certificate SAN: {name}")));
                 return Some(e);
@@ -277,7 +277,7 @@ fn parse_certificate(
         if !seen_subs.insert(email.clone()) {
             continue;
         }
-        let mut e = Entity::new(EntityKind::Email, email, 0.70, scan_id);
+        let mut e = Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
         e.tag("tls-san");
         e.add_evidence(
             Evidence::new(SRC, format!("Email SAN on {target_domain} certificate"))

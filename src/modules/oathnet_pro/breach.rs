@@ -513,7 +513,12 @@ pub(super) fn extract_breach_entities_with(
         {
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.30, scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::SPECULATIVE,
+                    scan_id,
+                );
                 c.tag("addr-derived");
                 c.tag("geoint");
                 c.tag("breach");
@@ -561,7 +566,12 @@ pub(super) fn extract_breach_entities_with(
     {
         push_oathnet_entity(
             result,
-            Entity::new(EntityKind::Username, format!("steam:{sid}"), 0.60, scan_id),
+            Entity::new(
+                EntityKind::Username,
+                format!("steam:{sid}"),
+                confidence::MEDIUM_PLUS,
+                scan_id,
+            ),
             &ev,
             &["steam"],
             is_target_row,

@@ -19,6 +19,7 @@ use std::time::Instant;
 
 use serde::Serialize;
 
+use crate::core::confidence;
 use crate::core::{
     StoragePort,
     correlator::Correlator,
@@ -352,7 +353,12 @@ fn check_core_math() -> Check {
             }
         }
     }
-    let mut e = Entity::new(EntityKind::Email, "selftest@example.com", 0.80, "st");
+    let mut e = Entity::new(
+        EntityKind::Email,
+        "selftest@example.com",
+        confidence::HIGH_PLUSPLUS,
+        "st",
+    );
     let base = e.c_effective();
     e.add_evidence(Evidence::new("src-a", "x"));
     e.add_evidence(Evidence::new("src-b", "y"));
@@ -406,7 +412,7 @@ async fn check_storage_and_correlator() -> Check {
             .map_err(|e| format!("upsert_scan: {e}"))?;
 
         let mk = |k, v: &str, srcs: &[&str]| -> Entity {
-            let mut x = Entity::new(k, v, 0.85, scan_id);
+            let mut x = Entity::new(k, v, confidence::HIGH_PLUSPLUS_PLUS, scan_id);
             for s in srcs {
                 x.add_evidence(Evidence::new(*s, "selftest"));
             }

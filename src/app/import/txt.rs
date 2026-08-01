@@ -12,6 +12,7 @@ pub(super) fn parse_oathnet_txt(
     body: &str,
     sid: &str,
 ) -> (Vec<crate::core::entity::Entity>, ImportStats) {
+    use crate::core::confidence;
     use crate::core::entity::{Entity, EntityKind};
     use std::collections::HashSet;
 
@@ -26,7 +27,7 @@ pub(super) fn parse_oathnet_txt(
         if let Some(rest) = line.strip_prefix("URL: ") {
             let url = rest.trim();
             if url.starts_with("http") && seen.insert(format!("u:{url}")) {
-                let mut e = Entity::new(EntityKind::Url, url, 0.45, &sid);
+                let mut e = Entity::new(EntityKind::Url, url, confidence::LOW_MEDIUM, &sid);
                 e.tag("import");
                 let pl = url.to_lowercase();
                 if pl.contains("admin")
@@ -77,7 +78,7 @@ pub(super) fn parse_oathnet_txt(
                 } else {
                     EntityKind::Username
                 };
-                let mut e = Entity::new(kind, uname, 0.40, &sid);
+                let mut e = Entity::new(kind, uname, confidence::LOW, &sid);
                 e.tag("import");
                 e.tag("stealer-username");
                 entities.push(e);
@@ -120,7 +121,8 @@ pub(super) fn parse_oathnet_txt(
                         Err(_) => false,
                     };
                     if keep && seen.insert(format!("ip:{ip}")) {
-                        let mut e = Entity::new(EntityKind::IpAddress, ip, 0.60, &sid);
+                        let mut e =
+                            Entity::new(EntityKind::IpAddress, ip, confidence::MEDIUM_PLUS, &sid);
                         e.tag("stealer-victim");
                         e.tag("import");
                         entities.push(e);
@@ -131,7 +133,8 @@ pub(super) fn parse_oathnet_txt(
                 for em in rest.split(", ") {
                     let em = em.trim().to_lowercase();
                     if em.contains('@') && em.len() >= 5 && seen.insert(format!("em:{em}")) {
-                        let mut e = Entity::new(EntityKind::Email, &em, 0.55, &sid);
+                        let mut e =
+                            Entity::new(EntityKind::Email, &em, confidence::MEDIUM_HIGH, &sid);
                         e.tag("stealer-victim");
                         e.tag("import");
                         entities.push(e);
@@ -142,7 +145,8 @@ pub(super) fn parse_oathnet_txt(
                 for hwid in rest.split(", ") {
                     let hwid = hwid.trim();
                     if !hwid.is_empty() && seen.insert(format!("hw:{hwid}")) {
-                        let mut e = Entity::new(EntityKind::DeviceId, hwid, 0.70, &sid);
+                        let mut e =
+                            Entity::new(EntityKind::DeviceId, hwid, confidence::HIGH_PLUS, &sid);
                         e.tag("hwid");
                         e.tag("import");
                         entities.push(e);
@@ -153,7 +157,8 @@ pub(super) fn parse_oathnet_txt(
                 for user in rest.split(", ") {
                     let user = user.trim();
                     if !user.is_empty() && seen.insert(format!("du:{user}")) {
-                        let mut e = Entity::new(EntityKind::Username, user, 0.35, &sid);
+                        let mut e =
+                            Entity::new(EntityKind::Username, user, confidence::TENTATIVE, &sid);
                         e.tag("device-user");
                         e.tag("import");
                         entities.push(e);
@@ -163,7 +168,7 @@ pub(super) fn parse_oathnet_txt(
             } else if let Some(rest) = line.strip_prefix("Log ID: ") {
                 let lid = rest.trim();
                 if !lid.is_empty() && seen.insert(format!("lid:{lid}")) {
-                    let mut e = Entity::new(EntityKind::DeviceId, lid, 0.50, &sid);
+                    let mut e = Entity::new(EntityKind::DeviceId, lid, confidence::MEDIUM, &sid);
                     e.tag("log-id");
                     e.tag("import");
                     entities.push(e);
@@ -173,7 +178,8 @@ pub(super) fn parse_oathnet_txt(
                 for did in rest.split(", ") {
                     let did = did.trim();
                     if !did.is_empty() && seen.insert(format!("dc:{did}")) {
-                        let mut e = Entity::new(EntityKind::Username, did, 0.60, &sid);
+                        let mut e =
+                            Entity::new(EntityKind::Username, did, confidence::MEDIUM_PLUS, &sid);
                         e.tag("discord-id");
                         e.tag("import");
                         entities.push(e);

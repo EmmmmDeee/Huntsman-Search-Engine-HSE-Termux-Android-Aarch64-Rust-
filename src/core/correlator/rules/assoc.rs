@@ -465,6 +465,7 @@ pub(in crate::core::correlator) fn rule_au_051_shared_surname_kin(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::entity::Evidence;
 
     // ── normalise_address ─────────────────────────────────────────────────────
@@ -525,7 +526,7 @@ mod tests {
 
     #[test]
     fn entity_phones_normalises_and_dedups_across_evidence() {
-        let mut e = Entity::new(EntityKind::Person, "Jane Doe", 0.6, "s");
+        let mut e = Entity::new(EntityKind::Person, "Jane Doe", confidence::MEDIUM_PLUS, "s");
         e.add_evidence(Evidence::new("oathnet", "hit").with_attr("phone", "+1 (415) 555-0100"));
         // Same line, different formatting → one key after normalisation.
         e.add_evidence(Evidence::new("dehashed", "hit").with_attr("phone", "1-415-555-0100"));
@@ -541,7 +542,7 @@ mod tests {
         // (the with_attr / absorb convention), each must be judged on its own — a
         // whole-string normalise would concatenate the two phones' digits into one
         // bogus key and garble the two addresses into one non-matching key.
-        let mut e = Entity::new(EntityKind::Person, "Jane Doe", 0.6, "s");
+        let mut e = Entity::new(EntityKind::Person, "Jane Doe", confidence::MEDIUM_PLUS, "s");
         e.add_evidence(
             Evidence::new("oathnet", "hit")
                 .with_attr("phone", "+1 (415) 555-0100")
@@ -555,7 +556,7 @@ mod tests {
             "both numbers recovered, not a concatenated digit-run"
         );
 
-        let mut h = Entity::new(EntityKind::Person, "Jane Doe", 0.6, "s");
+        let mut h = Entity::new(EntityKind::Person, "Jane Doe", confidence::MEDIUM_PLUS, "s");
         h.add_evidence(
             Evidence::new("oathnet", "hit")
                 .with_attr("address", "12 Wattle St, Logan QLD 4114")

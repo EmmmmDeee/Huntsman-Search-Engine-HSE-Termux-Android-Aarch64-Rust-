@@ -313,7 +313,12 @@ fn build_entities(host: &HostResult, ip: &str, scan_id: &str) -> Vec<Entity> {
     if let Some(as_block) = &host.autonomous_system {
         if let Some(asn) = as_block.asn.filter(|n| *n > 0) {
             let asn_str = format!("AS{asn}");
-            let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, scan_id);
+            let mut ae = Entity::new(
+                EntityKind::Asn,
+                &asn_str,
+                confidence::HIGH_PLUSPLUS,
+                scan_id,
+            );
             ae.tag("censys");
             let mut ev = Evidence::new(SRC, format!("Announcing ASN for {ip}"));
             if let Some(cc) = as_block
@@ -335,7 +340,7 @@ fn build_entities(host: &HostResult, ip: &str, scan_id: &str) -> Vec<Entity> {
             .map(str::trim)
             .filter(|s| s.len() >= 2)
         {
-            let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, scan_id);
+            let mut oe = Entity::new(EntityKind::Organisation, org, confidence::HIGH, scan_id);
             oe.tag("censys");
             oe.add_evidence(Evidence::new(SRC, format!("Network operator for {ip}")));
             result.push(oe);
@@ -360,7 +365,12 @@ fn build_entities(host: &HostResult, ip: &str, scan_id: &str) -> Vec<Entity> {
             if !seen.insert(host_lc.clone()) {
                 continue;
             }
-            let mut d = Entity::new(EntityKind::Domain, &host_lc, 0.72, scan_id);
+            let mut d = Entity::new(
+                EntityKind::Domain,
+                &host_lc,
+                confidence::ATTRIBUTED,
+                scan_id,
+            );
             d.tag("censys");
             d.tag("ptr");
             d.add_evidence(

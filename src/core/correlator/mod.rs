@@ -16,6 +16,7 @@
 // scan and emitted on the event bus. Rules are deterministic — no LLMs,
 // no fuzzy matching.
 
+use crate::core::confidence;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -689,7 +690,7 @@ pub fn bench_synthetic_entities(n: usize) -> Vec<Entity> {
                 let mut e = Entity::new(
                     EntityKind::Username,
                     format!("handle{:04}", i % handle_space),
-                    0.8,
+                    confidence::HIGH_PLUSPLUS,
                     "scan",
                 );
                 e.add_evidence(Evidence::new("username_search", "observed"));
@@ -701,7 +702,7 @@ pub fn bench_synthetic_entities(n: usize) -> Vec<Entity> {
                 let mut e = Entity::new(
                     EntityKind::Email,
                     format!("handle{:04}@example{}.com", i % handle_space, i % 7),
-                    0.8,
+                    confidence::HIGH_PLUSPLUS,
                     "scan",
                 );
                 e.add_evidence(Evidence::new("hunter_io", "observed"));
@@ -718,7 +719,7 @@ pub fn bench_synthetic_entities(n: usize) -> Vec<Entity> {
                     2 => EntityKind::Person,
                     _ => EntityKind::Address,
                 };
-                let mut e = Entity::new(kind, format!("v{i}"), 0.7, "scan");
+                let mut e = Entity::new(kind, format!("v{i}"), confidence::HIGH_PLUS, "scan");
                 e.add_evidence(Evidence::new("name_intel", "derived"));
                 if i % 11 == 0 {
                     e.tag(crate::core::tags::STEALER_LOG);
@@ -731,7 +732,7 @@ pub fn bench_synthetic_entities(n: usize) -> Vec<Entity> {
                     1 => EntityKind::CryptoAddress,
                     _ => EntityKind::Organisation,
                 };
-                let mut e = Entity::new(kind, format!("w{i}"), 0.6, "scan");
+                let mut e = Entity::new(kind, format!("w{i}"), confidence::MEDIUM_PLUS, "scan");
                 e.add_evidence(Evidence::new("exa_search", "hit"));
                 e
             }

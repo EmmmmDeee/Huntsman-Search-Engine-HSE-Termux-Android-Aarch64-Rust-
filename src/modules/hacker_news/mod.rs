@@ -188,7 +188,7 @@ pub(super) fn build_entities(
             if !seen_urls.insert(link.to_string()) {
                 continue;
             }
-            let mut url_e = Entity::new(EntityKind::Url, link, 0.72, scan_id);
+            let mut url_e = Entity::new(EntityKind::Url, link, confidence::ATTRIBUTED, scan_id);
             url_e.tag("hacker-news");
             url_e.tag("personal-site");
             url_e.add_evidence(

@@ -125,7 +125,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
         let rname_raw = soa_data.rname.to_ascii();
         let admin_email = soa_rname_to_email(rname_raw.trim_end_matches('.'));
 
-        let mut e = Entity::new(EntityKind::Domain, domain, 0.92, &ctx.scan_id);
+        let mut e = Entity::new(
+            EntityKind::Domain,
+            domain,
+            confidence::AUTHORITATIVE,
+            &ctx.scan_id,
+        );
         e.tag("soa");
         let mut ev = Evidence::new(SRC, format!("SOA record for {domain}"))
             .with_attr("record_type", "SOA")
@@ -422,7 +427,12 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                 if crate::util::domains::is_infrastructure_email(addr) {
                     continue;
                 }
-                let mut ee = Entity::new(EntityKind::Email, addr, 0.72, &ctx.scan_id);
+                let mut ee = Entity::new(
+                    EntityKind::Email,
+                    addr,
+                    confidence::ATTRIBUTED,
+                    &ctx.scan_id,
+                );
                 ee.tag("dmarc-report");
                 ee.tag("dns");
                 ee.add_evidence(
@@ -477,7 +487,7 @@ pub(super) fn tlsrpt_entities(txts: &[String], domain: &str, scan_id: &str) -> V
             if crate::util::domains::is_infrastructure_email(addr) {
                 continue;
             }
-            let mut e = Entity::new(EntityKind::Email, addr, 0.72, scan_id);
+            let mut e = Entity::new(EntityKind::Email, addr, confidence::ATTRIBUTED, scan_id);
             e.tag("dns");
             e.tag("tlsrpt-report");
             e.add_evidence(
@@ -495,7 +505,8 @@ pub(super) fn tlsrpt_entities(txts: &[String], domain: &str, scan_id: &str) -> V
                 && host.contains('.')
                 && host != domain
             {
-                let mut d = Entity::new(EntityKind::Domain, &host, 0.58, scan_id);
+                let mut d =
+                    Entity::new(EntityKind::Domain, &host, confidence::MEDIUM_SOLID, scan_id);
                 d.tag("dns");
                 d.tag("tlsrpt-report");
                 d.add_evidence(

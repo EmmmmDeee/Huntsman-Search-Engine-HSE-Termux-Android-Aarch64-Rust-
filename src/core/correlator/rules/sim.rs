@@ -47,10 +47,16 @@ pub(in crate::core::correlator) fn rule_au_068_anonymous_sim(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
 
     #[test]
     fn au068_fires_on_a_voip_tagged_phone() {
-        let mut phone = Entity::new(EntityKind::Phone, "+61400000000", 0.85, "s");
+        let mut phone = Entity::new(
+            EntityKind::Phone,
+            "+61400000000",
+            confidence::HIGH_PLUSPLUS_PLUS,
+            "s",
+        );
         phone.tag("sim-voip");
         let out = rule_au_068_anonymous_sim(&RuleContext::new(&[phone]), "s", 0);
         assert_eq!(out.len(), 1);
@@ -60,7 +66,12 @@ mod tests {
 
     #[test]
     fn au068_fires_on_an_mvno_tagged_phone() {
-        let mut phone = Entity::new(EntityKind::Phone, "+61400000001", 0.85, "s");
+        let mut phone = Entity::new(
+            EntityKind::Phone,
+            "+61400000001",
+            confidence::HIGH_PLUSPLUS_PLUS,
+            "s",
+        );
         phone.tag("sim-mvno-prepaid");
         let out = rule_au_068_anonymous_sim(&RuleContext::new(&[phone]), "s", 0);
         assert_eq!(out.len(), 1);
@@ -70,11 +81,21 @@ mod tests {
     #[test]
     fn au068_silent_on_an_ordinary_phone() {
         // A verified phone with no anonymity tag is not a burner finding.
-        let mut phone = Entity::new(EntityKind::Phone, "+61400000002", 0.85, "s");
+        let mut phone = Entity::new(
+            EntityKind::Phone,
+            "+61400000002",
+            confidence::HIGH_PLUSPLUS_PLUS,
+            "s",
+        );
         phone.tag("hlr-verified");
         assert!(rule_au_068_anonymous_sim(&RuleContext::new(&[phone]), "s", 0).is_empty());
         // Neither is a non-phone entity.
-        let email = Entity::new(EntityKind::Email, "a@x.com", 0.9, "s");
+        let email = Entity::new(
+            EntityKind::Email,
+            "a@x.com",
+            confidence::VERY_HIGH_PLUS,
+            "s",
+        );
         assert!(rule_au_068_anonymous_sim(&RuleContext::new(&[email]), "s", 0).is_empty());
     }
 }

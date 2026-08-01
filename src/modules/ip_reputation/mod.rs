@@ -391,7 +391,12 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
         let name = a.split('(').next().unwrap_or(a).trim();
         let capped: String = name.chars().take(64).collect();
         if capped.len() >= 2 {
-            let mut o = Entity::new(EntityKind::Organisation, &capped, 0.58, &ctx.scan_id);
+            let mut o = Entity::new(
+                EntityKind::Organisation,
+                &capped,
+                confidence::MEDIUM_SOLID,
+                &ctx.scan_id,
+            );
             o.tag(crate::core::tags::THREAT_INTEL);
             o.tag("adversary");
             o.add_evidence(
@@ -479,7 +484,7 @@ fn passive_dns_entities(rows: &[PassiveDnsRow], domain: &str, scan_id: &str) -> 
             && addr.parse::<std::net::IpAddr>().is_ok()
             && seen_ips.insert(addr.to_string())
         {
-            let mut e = Entity::new(EntityKind::IpAddress, addr, 0.62, scan_id);
+            let mut e = Entity::new(EntityKind::IpAddress, addr, confidence::NOTABLE, scan_id);
             e.tag(SRC);
             e.tag("otx");
             e.tag("passive-dns");

@@ -252,7 +252,12 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
             && crate::util::geo::is_valid_coords(lat, lon)
         {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut ce = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+            let mut ce = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::LOW_MEDIUM,
+                scan_id,
+            );
             ce.tag("criminal_ip");
             ce.tag("geoint");
             ce.add_evidence(Evidence::new(SRC, format!("Whois geolocation for {ip}")));
@@ -265,7 +270,7 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
                 .map(str::to_uppercase)
                 .unwrap_or_default();
             let addr = crate::util::geo::compose_address(city, region, &country);
-            let mut ae = Entity::new(EntityKind::Address, &addr, 0.50, scan_id);
+            let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM, scan_id);
             ae.tag("criminal_ip");
             ae.tag("geoint");
             ae.add_evidence(Evidence::new(SRC, format!("Whois location for {ip}")));

@@ -351,7 +351,7 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
         {
             for phone in crate::util::extract::phones(&tel.replace('.', " ")) {
                 if seen.insert(format!("phone:{phone}")) {
-                    let mut e = Entity::new(EntityKind::Phone, &phone, 0.65, scan_id);
+                    let mut e = Entity::new(EntityKind::Phone, &phone, confidence::HIGH, scan_id);
                     e.tag("whoisxml");
                     e.tag(format!("whois-{role}"));
                     e.add_evidence(base_ev.clone().with_attr("contact_role", role));
@@ -374,7 +374,12 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
             out.push(e);
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(&loc) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.35, scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::TENTATIVE,
+                    scan_id,
+                );
                 c.tag("whoisxml");
                 c.tag("addr-derived");
                 c.tag("geoint");

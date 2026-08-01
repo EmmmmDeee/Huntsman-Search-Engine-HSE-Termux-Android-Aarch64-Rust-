@@ -366,7 +366,8 @@ fn tlsrpt_entities(records: &[DohRecord], domain: &str, scan_id: &str) -> Vec<En
                 && host.contains('.')
                 && host != domain
             {
-                let mut d = Entity::new(EntityKind::Domain, &host, 0.58, scan_id);
+                let mut d =
+                    Entity::new(EntityKind::Domain, &host, confidence::MEDIUM_SOLID, scan_id);
                 d.tag("dns");
                 d.tag("tlsrpt-report");
                 d.add_evidence(
@@ -636,7 +637,8 @@ fn records_for_type(
                     // Primary nameserver.
                     let mname = parts[0].trim_end_matches('.');
                     if mname.contains('.') && seen.insert(format!("soa-ns:{mname}")) {
-                        let mut e = Entity::new(EntityKind::Domain, mname, 0.72, scan_id);
+                        let mut e =
+                            Entity::new(EntityKind::Domain, mname, confidence::ATTRIBUTED, scan_id);
                         e.tag("dns");
                         e.tag("soa");
                         e.tag("nameserver");
@@ -653,7 +655,8 @@ fn records_for_type(
                         && email.contains('@')
                         && seen.insert(format!("soa-email:{}", email.to_ascii_lowercase()))
                     {
-                        let mut e = Entity::new(EntityKind::Email, &email, 0.62, scan_id);
+                        let mut e =
+                            Entity::new(EntityKind::Email, &email, confidence::NOTABLE, scan_id);
                         e.tag("dns");
                         e.tag("soa");
                         e.tag("zone-admin");

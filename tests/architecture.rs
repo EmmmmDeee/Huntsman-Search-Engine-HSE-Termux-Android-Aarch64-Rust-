@@ -2600,3 +2600,244 @@ fn core_extract_is_deterministic() {
         "expected an IP entity"
     );
 }
+
+// ── Confidence-ladder invariant ──────────────────────────────────────────────
+
+/// Split the top-level, comma-separated arguments of a call. `s` must start at
+/// the call's opening `(`. Nested delimiters and string literals are skipped so
+/// a multi-line call, or one whose arguments contain commas inside `{}`/`()`,
+/// still yields the correct argument list. Returns `None` if unterminated.
+fn call_args(s: &str) -> Option<Vec<String>> {
+    let mut depth = 0i32;
+    let mut args: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '(' | '[' | '{' => {
+                depth += 1;
+                if depth > 1 {
+                    cur.push(c);
+                }
+            }
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    args.push(cur);
+                    return Some(args);
+                }
+                cur.push(c);
+            }
+            ',' if depth == 1 => args.push(std::mem::take(&mut cur)),
+            '"' => {
+                cur.push(c);
+                while let Some(d) = chars.next() {
+                    cur.push(d);
+                    if d == '\\' {
+                        if let Some(e) = chars.next() {
+                            cur.push(e);
+                        }
+                        continue;
+                    }
+                    if d == '"' {
+                        break;
+                    }
+                }
+            }
+            _ => cur.push(c),
+        }
+    }
+    None
+}
+
+/// True for a bare float literal such as `0.68` — the thing this invariant
+/// forbids. A `confidence::HIGH_PLUS` path, or any compound expression, is not.
+fn is_bare_float(s: &str) -> bool {
+    let t = s.trim();
+    t.strip_prefix("0.")
+        .is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// The production slice of a source file: everything before the first
+/// `#[cfg(test)]`, with comment-only lines blanked. Doc examples are blanked
+/// deliberately — a `///` example is an illustrative fixture, and a doctest
+/// cannot see the parent module's `use` statements, so naming a constant there
+/// would not even compile. Mirrors the scoping `scan_dir` above already uses.
+fn production_source(content: &str) -> String {
+    let mut out = String::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "#[cfg(test)]" {
+            break;
+        }
+        if trimmed.starts_with("//") {
+            out.push('\n');
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// Collect every production `Entity::new` call whose confidence argument is a
+/// bare float literal, as `(repo-relative path, literal)`.
+fn collect_bare_confidence(dir: &Path, root: &Path, out: &mut Vec<(String, String)>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_bare_confidence(&path, root, out);
+            continue;
+        }
+        // `tests.rs` and every `*_tests.rs` are dedicated test-code files,
+        // `mod`/`include!`d under a `#[cfg(test)]` at their declaration site, so
+        // the gating marker is never inside the file itself for the scanner to
+        // see. Skip them whole — test fixtures are deliberately allowed to use
+        // bare literals (a threshold assertion that moves when a constant moves
+        // is a weaker test).
+        if path
+            .file_name()
+            .is_some_and(|n| n == "tests.rs" || n.to_string_lossy().ends_with("_tests.rs"))
+            || path.extension().is_none_or(|e| e != "rs")
+        {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let src = production_source(&fs::read_to_string(&path).unwrap());
+        for (idx, _) in src.match_indices("Entity::new") {
+            // Word boundary: don't match a longer identifier ending in this.
+            if src[..idx]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            {
+                continue;
+            }
+            let rest = &src[idx + "Entity::new".len()..];
+            let Some(open) = rest.find('(') else { continue };
+            if !rest[..open].trim().is_empty() {
+                continue;
+            }
+            let Some(args) = call_args(&rest[open..]) else {
+                continue;
+            };
+            // Entity::new(kind, value, confidence, scan_id)
+            if args.len() >= 3 && is_bare_float(&args[2]) {
+                out.push((rel.clone(), args[2].trim().to_string()));
+            }
+        }
+    }
+}
+
+/// Every production `Entity::new` confidence argument must be a named constant
+/// from [`huntsman_search_engine::core::confidence`], never a bare float.
+///
+/// The ladder exists so confidence is comparable across ~140 independently
+/// written modules; a bare literal is an unauditable magic number that defeats
+/// that. `src/core` is fully normalised and must stay that way.
+///
+/// The baseline below is the frozen inventory of sites that still carry an
+/// unnormalised value. Every one of them sits 0.01–0.03 away from an existing
+/// rung (0.66 vs `HIGH` 0.65, 0.68 vs `HIGH_PLUS` 0.70, 0.74 vs `VERY_HIGH`
+/// 0.75, 0.42 vs `LOW` 0.40, 0.38/0.28 between rungs) — evidence of
+/// uncoordinated drift between modules rather than deliberately designed tiers.
+/// They are NOT normalised here because doing so would change emitted
+/// confidence, which is a behavioural change that needs its own decision and
+/// its own regression evidence.
+///
+/// This is a ratchet, asserted as exact set equality:
+///   * a NEW bare literal fails the test — drift cannot grow;
+///   * normalising one also fails, asking you to delete its baseline row — so
+///     the inventory can only shrink, and never silently misreports.
+#[test]
+fn entity_confidence_uses_named_ladder_constants() {
+    /// Frozen drift inventory. Line-number free so unrelated edits above a site
+    /// don't churn it. Shrink this list; never extend it.
+    const BASELINE: &[(&str, &str)] = &[
+        ("src/modules/asic_business_names/mod.rs", "0.42"),
+        ("src/modules/crates_io/mod.rs", "0.66"),
+        ("src/modules/crates_io/mod.rs", "0.74"),
+        ("src/modules/doh_resolver/mod.rs", "0.68"),
+        ("src/modules/fediverse/mod.rs", "0.68"),
+        ("src/modules/geo_intel/ip_geo.rs", "0.68"),
+        ("src/modules/ip2location/mod.rs", "0.68"),
+        ("src/modules/ip_reputation/mod.rs", "0.68"),
+        ("src/modules/mastodon_user/mod.rs", "0.28"),
+        ("src/modules/mastodon_user/mod.rs", "0.38"),
+        ("src/modules/mastodon_user/mod.rs", "0.68"),
+        ("src/modules/nostr/mod.rs", "0.66"),
+        ("src/modules/npm_author/mod.rs", "0.66"),
+        ("src/modules/npm_author/mod.rs", "0.74"),
+        ("src/modules/proxycurl/build.rs", "0.68"),
+        ("src/modules/proxycurl/build.rs", "0.68"),
+    ];
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut found = Vec::new();
+    collect_bare_confidence(&root.join("src"), root, &mut found);
+    found.sort();
+
+    let mut expected: Vec<(String, String)> = BASELINE
+        .iter()
+        .map(|(p, v)| ((*p).to_string(), (*v).to_string()))
+        .collect();
+    expected.sort();
+
+    // Compare as MULTISETS, not sets. `Vec::contains` tests membership only, so
+    // with a duplicate baseline row (proxycurl/build.rs carries two 0.68 sites) a
+    // third identical literal in that same file would still be "contained" and
+    // slip through, and normalising one of a duplicate pair would leave the stale
+    // row undetected. Counting occurrences is what actually enforces the ratchet.
+    let tally = |rows: &[(String, String)]| {
+        let mut m: std::collections::BTreeMap<(String, String), usize> =
+            std::collections::BTreeMap::new();
+        for r in rows {
+            *m.entry(r.clone()).or_default() += 1;
+        }
+        m
+    };
+    let found_counts = tally(&found);
+    let expected_counts = tally(&expected);
+
+    // Occurrences present more often than the baseline allows.
+    let added: Vec<String> = found_counts
+        .iter()
+        .filter_map(|(k, n)| {
+            let allowed = expected_counts.get(k).copied().unwrap_or(0);
+            (*n > allowed).then(|| format!("{} `{}` x{} (baseline allows {allowed})", k.0, k.1, n))
+        })
+        .collect();
+    // Baseline rows that no longer occur that many times.
+    let fixed: Vec<String> = expected_counts
+        .iter()
+        .filter_map(|(k, n)| {
+            let actual = found_counts.get(k).copied().unwrap_or(0);
+            (*n > actual).then(|| format!("{} `{}` x{} (now only {actual})", k.0, k.1, n))
+        })
+        .collect();
+
+    assert!(
+        added.is_empty(),
+        "new bare confidence literal(s) in production Entity::new — use a \
+         named `confidence::` constant instead of a magic number:\n{added:#?}"
+    );
+    assert!(
+        fixed.is_empty(),
+        "these baseline entries no longer exist (nice — you normalised them). \
+         Delete them from BASELINE so the inventory stays truthful:\n{fixed:#?}"
+    );
+
+    // core must remain fully normalised.
+    assert!(
+        !found.iter().any(|(p, _)| p.starts_with("src/core/")),
+        "src/core must contain no bare confidence literals; found: {:#?}",
+        found
+            .iter()
+            .filter(|(p, _)| p.starts_with("src/core/"))
+            .collect::<Vec<_>>()
+    );
+}

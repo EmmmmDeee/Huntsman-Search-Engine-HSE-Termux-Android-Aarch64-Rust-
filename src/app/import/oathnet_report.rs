@@ -10,6 +10,7 @@
 
 use super::*;
 
+use crate::core::confidence;
 use crate::core::entity::{Entity, EntityKind, Evidence};
 
 /// Detect the OathNet SEARCH REPORT — by its banner or its `=== DATABASE LOGS ===`
@@ -165,7 +166,10 @@ fn emit_oathnet_entry(
         && !is_fragment_value(&EntityKind::Email, &em)
         && seen.insert(format!("em:{em}"))
     {
-        push(Entity::new(EntityKind::Email, &em, 0.72, sid), "breach");
+        push(
+            Entity::new(EntityKind::Email, &em, confidence::ATTRIBUTED, sid),
+            "breach",
+        );
         stats.emails += 1;
     }
     if let Some(un) = get("username")
@@ -173,7 +177,10 @@ fn emit_oathnet_entry(
         && !un.contains('@')
         && seen.insert(format!("un:{}", un.to_lowercase()))
     {
-        push(Entity::new(EntityKind::Username, un, 0.58, sid), "breach");
+        push(
+            Entity::new(EntityKind::Username, un, confidence::MEDIUM_SOLID, sid),
+            "breach",
+        );
         stats.usernames += 1;
     }
     if let Some(nm) = &full_name {
@@ -187,7 +194,10 @@ fn emit_oathnet_entry(
             && !is_placeholder_entity(&EntityKind::Person, nm)
             && seen.insert(format!("pn:{}", nm.to_lowercase()))
         {
-            push(Entity::new(EntityKind::Person, nm, 0.60, sid), "breach");
+            push(
+                Entity::new(EntityKind::Person, nm, confidence::MEDIUM_PLUS, sid),
+                "breach",
+            );
             stats.persons += 1;
         }
     }
@@ -199,7 +209,7 @@ fn emit_oathnet_entry(
                 stats.credentials += 1;
             }
             push(
-                Entity::new(EntityKind::Credential, h, 0.60, sid),
+                Entity::new(EntityKind::Credential, h, confidence::MEDIUM_PLUS, sid),
                 "password-hash",
             );
         }
@@ -211,7 +221,7 @@ fn emit_oathnet_entry(
             stats.credentials += 1;
         }
         push(
-            Entity::new(EntityKind::Credential, pw, 0.55, sid),
+            Entity::new(EntityKind::Credential, pw, confidence::MEDIUM_HIGH, sid),
             "plaintext-credential",
         );
     }
@@ -227,7 +237,10 @@ fn emit_oathnet_entry(
         if let Some(ph) = get(pl).and_then(crate::core::validation::to_e164_au)
             && seen.insert(format!("ph:{ph}"))
         {
-            push(Entity::new(EntityKind::Phone, &ph, 0.62, sid), "breach");
+            push(
+                Entity::new(EntityKind::Phone, &ph, confidence::NOTABLE, sid),
+                "breach",
+            );
             stats.phones += 1;
         }
     }
@@ -236,7 +249,10 @@ fn emit_oathnet_entry(
         && !crate::core::validation::is_bogus_ip(ip)
         && seen.insert(format!("ip:{ip}"))
     {
-        push(Entity::new(EntityKind::IpAddress, ip, 0.62, sid), "breach");
+        push(
+            Entity::new(EntityKind::IpAddress, ip, confidence::NOTABLE, sid),
+            "breach",
+        );
         stats.ips += 1;
     }
     // Entry-level coordinates (the breach row's own lat/lon, not the OSINT
@@ -249,7 +265,7 @@ fn emit_oathnet_entry(
     {
         let coords = format!("{la:.4},{lo:.4}");
         if seen.insert(format!("co:{coords}")) {
-            let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.62, sid);
+            let mut ce = Entity::new(EntityKind::Coordinates, &coords, confidence::NOTABLE, sid);
             ce.tag("geoint");
             push(ce, "breach");
             stats.coordinates += 1;
@@ -281,7 +297,10 @@ fn emit_oathnet_entry(
         let addr = parts.join(", ");
         if is_specific_residence(&addr) && seen.insert(format!("ad:{}", addr.to_ascii_lowercase()))
         {
-            push(Entity::new(EntityKind::Address, &addr, 0.58, sid), "breach");
+            push(
+                Entity::new(EntityKind::Address, &addr, confidence::MEDIUM_SOLID, sid),
+                "breach",
+            );
             stats.addresses += 1;
         }
     }

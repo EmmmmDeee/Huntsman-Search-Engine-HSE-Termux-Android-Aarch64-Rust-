@@ -269,7 +269,12 @@ fn build_registrant_org(contacts: &[RdapContact], ip: &str, scan_id: &str) -> Op
         .map(|s| s.trim().to_string())
         .filter(|s| s.len() >= 3)?;
 
-    let mut oe = Entity::new(EntityKind::Organisation, &name, 0.72, scan_id);
+    let mut oe = Entity::new(
+        EntityKind::Organisation,
+        &name,
+        confidence::ATTRIBUTED,
+        scan_id,
+    );
     oe.tag("rdap");
     oe.tag("ip-registrant");
     oe.add_evidence(
@@ -361,7 +366,12 @@ fn build_asn_entities(body: &AsnResp, asn: u64, scan_id: &str) -> Vec<Entity> {
     let asn_str = asn.to_string();
     let mut result = Vec::new();
 
-    let mut entity = Entity::new(EntityKind::Asn, &asn_label, 0.92, scan_id);
+    let mut entity = Entity::new(
+        EntityKind::Asn,
+        &asn_label,
+        confidence::AUTHORITATIVE,
+        scan_id,
+    );
     entity.tag("registered");
     let mut ev = Evidence::new(SRC, format!("ASN {asn_label} registry record"))
         .with_attr("asn_number", &asn_str);

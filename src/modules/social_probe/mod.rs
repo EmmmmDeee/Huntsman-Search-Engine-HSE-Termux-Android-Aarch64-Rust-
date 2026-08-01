@@ -20,6 +20,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -416,7 +417,8 @@ impl Module for SocialProbe {
                     && host.contains('.')
                     && !crate::core::scan::is_noncentral_domain(&host)
                 {
-                    let mut dom = Entity::new(EntityKind::Domain, &host, 0.40, &ctx.scan_id);
+                    let mut dom =
+                        Entity::new(EntityKind::Domain, &host, confidence::LOW, &ctx.scan_id);
                     dom.tag("social-platform");
                     dom.add_evidence(
                         Evidence::new(

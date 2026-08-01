@@ -291,7 +291,12 @@ pub(super) fn parse_name_results(
                 .or_else(|| crate::util::city_coords::city_coords(&addr))
             {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.58, scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::MEDIUM_SOLID,
+                    scan_id,
+                );
                 c.tag("addr-derived");
                 c.tag("geoint");
                 c.tag("country:AU");

@@ -164,7 +164,12 @@ async fn rdap_ip_fallback(target: &Target, ctx: &ModuleContext) -> Result<Module
             if !country.is_empty() {
                 ev = ev.with_attr("country", country.as_str());
             }
-            let mut oe = Entity::new(EntityKind::Organisation, org, 0.72, &ctx.scan_id);
+            let mut oe = Entity::new(
+                EntityKind::Organisation,
+                org,
+                confidence::ATTRIBUTED,
+                &ctx.scan_id,
+            );
             oe.tag("whois");
             oe.tag("rdap-fallback");
             oe.tag("ip-registrant");
@@ -198,7 +203,12 @@ async fn rdap_ip_fallback(target: &Target, ctx: &ModuleContext) -> Result<Module
         .filter(|e| e.contains('@'))
         .filter(|e| !crate::util::domains::is_infrastructure_email(e))
     {
-        let mut ee = Entity::new(EntityKind::Email, &email, 0.72, &ctx.scan_id);
+        let mut ee = Entity::new(
+            EntityKind::Email,
+            &email,
+            confidence::ATTRIBUTED,
+            &ctx.scan_id,
+        );
         ee.tag("whois-abuse");
         ee.tag("rdap-fallback");
         ee.add_evidence(
@@ -470,7 +480,12 @@ impl Module for Whois {
         if let Some(org) = &registrant_org {
             let org = org.trim();
             if org.len() >= 3 && !crate::core::validation::is_whois_privacy_placeholder(org) {
-                let mut oe = Entity::new(EntityKind::Organisation, org, 0.72, &_ctx.scan_id);
+                let mut oe = Entity::new(
+                    EntityKind::Organisation,
+                    org,
+                    confidence::ATTRIBUTED,
+                    &_ctx.scan_id,
+                );
                 oe.tag("whois");
                 oe.tag(crate::core::tags::REGISTRANT);
                 oe.add_evidence(
@@ -489,7 +504,12 @@ impl Module for Whois {
                 && name.contains(' ')
                 && !crate::core::validation::is_whois_privacy_placeholder(name)
             {
-                let mut pe = Entity::new(EntityKind::Person, name, 0.72, &_ctx.scan_id);
+                let mut pe = Entity::new(
+                    EntityKind::Person,
+                    name,
+                    confidence::ATTRIBUTED,
+                    &_ctx.scan_id,
+                );
                 pe.tag("whois");
                 pe.tag(crate::core::tags::REGISTRANT);
                 pe.add_evidence(
@@ -570,7 +590,12 @@ impl Module for Whois {
                 .map(str::trim)
                 .filter(|o| o.len() >= 3 && !is_redacted(o))
             {
-                let mut oe = Entity::new(EntityKind::Organisation, org, 0.62, &_ctx.scan_id);
+                let mut oe = Entity::new(
+                    EntityKind::Organisation,
+                    org,
+                    confidence::NOTABLE,
+                    &_ctx.scan_id,
+                );
                 oe.tag("whois");
                 oe.tag(role);
                 oe.add_evidence(
@@ -601,7 +626,12 @@ impl Module for Whois {
             if host.is_empty() {
                 return None;
             }
-            let mut e = Entity::new(EntityKind::Domain, &host, 0.82, &_ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Domain,
+                &host,
+                confidence::CORROBORATED,
+                &_ctx.scan_id,
+            );
             e.tag("whois-ns");
             e.add_evidence(
                 Evidence::new(SRC, format!("Nameserver for {}", target.value))

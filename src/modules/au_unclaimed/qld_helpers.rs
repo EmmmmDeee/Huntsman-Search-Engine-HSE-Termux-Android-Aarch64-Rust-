@@ -464,7 +464,12 @@ pub(super) fn suburbs_to_entities(
         let state = crate::util::address_au::state_for_postcode(pc).unwrap_or("QLD");
         if let Some(first) = locs.first() {
             let coords = format!("{:.5},{:.5}", first.lat, first.lon);
-            let mut c = Entity::new(EntityKind::Coordinates, coords, 0.30, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                coords,
+                confidence::SPECULATIVE,
+                scan_id,
+            );
             c.tag(SRC);
             c.tag("country:AU");
             c.tag(format!("au-state:{state}"));
@@ -482,7 +487,7 @@ pub(super) fn suburbs_to_entities(
             let mut a = Entity::new(
                 EntityKind::Address,
                 format!("{}, {state} {pc}, Australia", loc.suburb),
-                0.30,
+                confidence::SPECULATIVE,
                 scan_id,
             );
             a.tag(SRC);

@@ -502,6 +502,7 @@ fn is_incidental_infra(e: &Entity) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::entity::EntityKind;
     use crate::storage::Store;
 
@@ -520,7 +521,12 @@ mod tests {
         store.upsert_entity(&weak).expect("should succeed");
 
         // Strong + recent → above the threshold, not an anomaly.
-        let mut strong = Entity::new(EntityKind::Email, "real@example.com", 0.80, "scan-a");
+        let mut strong = Entity::new(
+            EntityKind::Email,
+            "real@example.com",
+            confidence::HIGH_PLUSPLUS,
+            "scan-a",
+        );
         strong.observed_at = now;
         store.upsert_entity(&strong).expect("should succeed");
 
@@ -586,13 +592,18 @@ mod tests {
     #[test]
     fn is_incidental_infra_flags_cdn_edge_ip() {
         // A Cloudflare anycast edge IP — high-confidence but shared infrastructure.
-        let e = Entity::new(EntityKind::IpAddress, "104.20.37.187", 0.95, "s");
+        let e = Entity::new(
+            EntityKind::IpAddress,
+            "104.20.37.187",
+            confidence::VERY_HIGH_PLUSPLUS,
+            "s",
+        );
         assert!(is_incidental_infra(&e));
     }
 
     #[test]
     fn is_incidental_infra_flags_mega_domain() {
-        let e = Entity::new(EntityKind::Domain, "facebook.com", 0.50, "s");
+        let e = Entity::new(EntityKind::Domain, "facebook.com", confidence::MEDIUM, "s");
         assert!(is_incidental_infra(&e));
     }
 
@@ -600,8 +611,13 @@ mod tests {
     fn is_incidental_infra_ignores_non_infra_kinds() {
         // The default arm: a person/username is never "shared infrastructure",
         // regardless of value.
-        let person = Entity::new(EntityKind::Person, "104.20.37.187", 0.50, "s");
-        let user = Entity::new(EntityKind::Username, "facebook.com", 0.50, "s");
+        let person = Entity::new(EntityKind::Person, "104.20.37.187", confidence::MEDIUM, "s");
+        let user = Entity::new(
+            EntityKind::Username,
+            "facebook.com",
+            confidence::MEDIUM,
+            "s",
+        );
         assert!(!is_incidental_infra(&person));
         assert!(!is_incidental_infra(&user));
     }

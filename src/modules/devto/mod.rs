@@ -164,7 +164,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
     if let Some(ref gh) = user.github_username
         && !gh.is_empty()
     {
-        let mut g = Entity::new(EntityKind::Username, gh, 0.82, scan_id);
+        let mut g = Entity::new(EntityKind::Username, gh, confidence::CORROBORATED, scan_id);
         g.tag("github");
         g.tag("devto-pivot");
         g.add_evidence(
@@ -203,7 +203,12 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
 
     // Personal website URL + Domain extraction.
     if let Some(ref site) = user.website_url {
-        for mut e in profile_kit::website_url_and_domain(site, 0.72, confidence::HIGH, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(
+            site,
+            confidence::ATTRIBUTED,
+            confidence::HIGH,
+            scan_id,
+        ) {
             e.tag("devto");
             match e.kind {
                 EntityKind::Domain => {
@@ -234,7 +239,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
 
     // Location → coarse Address (geo-hint, not a precise address).
     if let Some(ref loc) = user.location
-        && let Some(mut a) = profile_kit::location_address(loc, 0.35, scan_id)
+        && let Some(mut a) = profile_kit::location_address(loc, confidence::TENTATIVE, scan_id)
     {
         a.tag("devto");
         a.tag("self-asserted");
@@ -251,7 +256,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
             .with_attr("devto_user", &user.username),
         );
         result.push(a);
-        if let Some(mut c) = profile_kit::location_coordinates(loc, 0.25, scan_id) {
+        if let Some(mut c) = profile_kit::location_coordinates(loc, confidence::VERY_LOW, scan_id) {
             c.tag("devto");
             c.add_evidence(
                 Evidence::new(
@@ -267,7 +272,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
     // Bio/summary: extract emails and URLs.
     if let Some(bio) = user.summary.as_deref() {
         for email in crate::util::extract::emails(bio) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.72, scan_id);
+            let mut e = Entity::new(EntityKind::Email, &email, confidence::ATTRIBUTED, scan_id);
             e.tag("devto");
             e.tag("public-profile");
             e.add_evidence(

@@ -106,9 +106,15 @@ pub(in crate::core::correlator) fn rule_au_117_personal_device_constellation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
 
     fn bonded_bt(value: &str) -> Entity {
-        let mut e = Entity::new(EntityKind::MacAddress, value, 0.8, "s");
+        let mut e = Entity::new(
+            EntityKind::MacAddress,
+            value,
+            confidence::HIGH_PLUSPLUS,
+            "s",
+        );
         e.tag("bluetooth");
         e.tag("bond:bonded");
         e
@@ -163,7 +169,12 @@ mod tests {
         // A trackable device that is NOT bonded is a stranger's (AU-122's domain),
         // not part of the operator's constellation.
         let mine = bonded_bt("3C:5A:B4:11:22:33");
-        let mut stranger = Entity::new(EntityKind::MacAddress, "3C:5A:B4:99:88:77", 0.8, "s");
+        let mut stranger = Entity::new(
+            EntityKind::MacAddress,
+            "3C:5A:B4:99:88:77",
+            confidence::HIGH_PLUSPLUS,
+            "s",
+        );
         stranger.tag("bluetooth"); // seen, but not bonded
         let out =
             rule_au_117_personal_device_constellation(&RuleContext::new(&[mine, stranger]), "s", 0);
