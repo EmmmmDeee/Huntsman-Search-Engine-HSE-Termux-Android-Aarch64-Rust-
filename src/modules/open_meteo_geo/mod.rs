@@ -113,7 +113,12 @@ fn place_class(feature_code: &str) -> Option<&'static str> {
 fn build_entities(results: &[GeoResult], query: &str, scan_id: &str) -> Vec<Entity> {
     let mut out = Vec::new();
 
-    for (i, r) in results.iter().take(RESULT_LIMIT).enumerate() {
+    for r in results {
+        // Cap on EMITTED (valid) hits, not raw results, so skipped invalid-coord
+        // rows don't shrink the usable result set below RESULT_LIMIT.
+        if out.len() >= RESULT_LIMIT {
+            break;
+        }
         if !is_valid_coords(r.latitude, r.longitude) {
             continue;
         }
@@ -123,7 +128,11 @@ fn build_entities(results: &[GeoResult], query: &str, scan_id: &str) -> Vec<Enti
             .as_deref()
             .is_some_and(|c| c.eq_ignore_ascii_case("AU"))
             || is_in_australia(r.latitude, r.longitude);
-        let anchored = i == 0 && in_au;
+        // The anchor is the first EMITTED (valid) hit — keyed on `out.is_empty()`,
+        // not the raw result index, so an invalid-coord result that is skipped
+        // above never consumes the anchor slot and demotes a valid in-AU hit
+        // sitting behind it to a LOW candidate.
+        let anchored = out.is_empty() && in_au;
 
         let conf = if anchored {
             confidence::HIGH_PLUS
