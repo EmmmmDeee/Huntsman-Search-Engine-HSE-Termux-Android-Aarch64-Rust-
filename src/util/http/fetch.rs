@@ -747,8 +747,35 @@ pub async fn keyed_cascade<F>(
     module: &'static str,
     initial_key: &str,
     absent_statuses: &[u16],
-    mut build: F,
+    build: F,
 ) -> Result<Option<reqwest::Response>>
+where
+    F: FnMut(&str) -> reqwest::RequestBuilder,
+{
+    Ok(
+        keyed_cascade_with_key(ctx, module, initial_key, absent_statuses, build)
+            .await?
+            .map(|(resp, _)| resp),
+    )
+}
+
+/// [`keyed_cascade`], additionally returning **which key actually served the
+/// response** — the cascade may have rotated away from `initial_key`, so a
+/// caller that stamps key provenance onto its findings must fingerprint the
+/// winning key, not the one it started with.
+///
+/// Split out rather than folded into [`keyed_cascade`]'s return type so the
+/// common case (callers that don't care which key won) stays a plain
+/// `Option<Response>` with no destructuring. `dehashed` needs this: it stamps
+/// `api_key_origin` on every emitted record, and pinning that to the initial
+/// key after a rotation would misattribute the finding's provenance.
+pub async fn keyed_cascade_with_key<F>(
+    ctx: &crate::core::module::ModuleContext,
+    module: &'static str,
+    initial_key: &str,
+    absent_statuses: &[u16],
+    mut build: F,
+) -> Result<Option<(reqwest::Response, String)>>
 where
     F: FnMut(&str) -> reqwest::RequestBuilder,
 {
@@ -767,7 +794,7 @@ where
                 return Ok(None);
             }
             if status.is_success() {
-                return Ok(Some(resp));
+                return Ok(Some((resp, key)));
             }
             let code = status.as_u16();
             if handle_keyed_error(code, resp.headers(), &mut retries, module, &key, ctx).await {
