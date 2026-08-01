@@ -174,6 +174,7 @@ pub mod stackoverflow_user;
 pub mod steam_profile;
 pub mod streaming_probe;
 pub mod structured_id;
+pub mod subdomain_center;
 pub mod subdomain_takeover;
 pub mod sunrise_sunset;
 // Shared Termux sensor-tool output contract (blank vs unparseable) — a
@@ -391,6 +392,9 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             // Keyless historical passive DNS (domain↔IP over time) — the reverse
             // and historical view the live resolvers above can't give.
             Arc::new(mnemonic_pdns::MnemonicPdns),
+            // Keyless subdomain enumeration from an aggregated CT/passive corpus,
+            // distinct from crtsh/certspotter/anubis — more independent coverage.
+            Arc::new(subdomain_center::SubdomainCenter),
             Arc::new(threatfox::ThreatFox),
             Arc::new(rdap_domain::RdapDomain),
             Arc::new(ripestat::RipeStat),
