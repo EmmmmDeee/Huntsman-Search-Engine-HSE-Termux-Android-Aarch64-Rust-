@@ -156,6 +156,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **ViewDNS.info** | DNS/WHOIS/reverse tools | ltd | alnum | D C |
 | **DNSDumpster / domainsdb** | subdomain/passive DNS | free / key-gated (domainsdb, 2026: anonymous access disabled) | domainsdb: alnum | M(domainsdb) K D |
 | **IP2WHOIS** | WHOIS lookup | free (500/mo) | alnum | D C |
+| **Mnemonic Passive DNS** | historical domain↔IP resolutions (forward + reverse), CNAME/MX/NS graph | free (keyless, TLP:WHITE) | — | M |
 | *(keyless)* **dns_intel / doh_resolver / dns_axfr / rdap_domain / whois** | DNS records, DoH, AXFR, RDAP, WHOIS | free | — | M |
 
 ## 8. Search / SERP / scraping (recon)
@@ -237,6 +238,7 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **Gravatar** | email→avatar/profile | free | M |
 | **EmailRep / disposable_check / email_locale / email_header_geo** | email reputation, disposable, locale, header geo | free | M |
 | **Sunrise-Sunset / Overpass (OSM) / Photon / Geocode / Nominatim** | solar position, map features, geocoding | free | M |
+| **Open-Meteo Geocoding** (GeoNames) | place-name→coordinates + timezone, population, place-class, elevation, postcodes | free (keyless) | M |
 | **EXIF geo** | image metadata → coordinates | free (offline) | M |
 | **Wayback Machine / archive.org** | historical snapshots | free | M |
 | **Blockchain OSINT** — Etherscan, BscScan, Blockchair, Bitquery, Chainalysis | wallet/tx intelligence | ltd/key | C |
