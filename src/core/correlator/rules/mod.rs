@@ -6,6 +6,9 @@
 //! re-exports every rule so the dispatcher's `use rules::*` is unchanged.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::LazyLock;
+
+use parking_lot::RwLock;
 
 use super::{Correlation, RuleContext, Severity};
 use crate::core::entity::{Entity, EntityKind, canonical_handle};
@@ -335,7 +338,47 @@ fn source_families(e: &Entity) -> BTreeSet<&'static str> {
 /// independent confirmation. `"other"` is the catch-all for unclassified sources
 /// and is excluded from family-diversity counts. Matching is lowercase-substring
 /// over the module names actually in the registry, most-specific first.
+/// Upper bound on the memo below. The real domain is the module registry
+/// (~166 names), so this is never reached in practice; it exists so that a
+/// caller passing unbounded distinct strings cannot grow the map without limit
+/// on a memory-constrained device. Past the cap, classification still happens —
+/// just uncached.
+const SOURCE_FAMILY_CACHE_CAP: usize = 512;
+
+/// Memo for [`source_family`], keyed by the exact source string.
+///
+/// `source_family` is called once per *evidence item* by several rules — twice
+/// per item in `rule_au_105_credential_reuse` alone — and the correlation pass
+/// runs after every expansion round. Measured at **3.27 µs/call** before this
+/// memo (`perf::probe_source_family_cost`), which put it among the largest
+/// single costs in the whole pass.
+///
+/// The cost was never the classification itself but its shape: an allocating
+/// `to_ascii_lowercase()` followed by a cascade of `contains` scans over ~100
+/// needles across every family. The input domain, meanwhile, is the set of
+/// module names — small, fixed, and repeated thousands of times per pass. So the
+/// answer is computed once per distinct source and read back thereafter.
+static SOURCE_FAMILY_MEMO: LazyLock<RwLock<HashMap<Box<str>, &'static str>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Classify an evidence source into a coarse provider family.
+///
+/// Memoised — see [`SOURCE_FAMILY_MEMO`]. The classification proper is
+/// [`classify_source_family`], which stays a pure function of its input so the
+/// memo cannot change behaviour, only cost.
 pub(in crate::core) fn source_family(source: &str) -> &'static str {
+    if let Some(family) = SOURCE_FAMILY_MEMO.read().get(source) {
+        return family;
+    }
+    let family = classify_source_family(source);
+    let mut memo = SOURCE_FAMILY_MEMO.write();
+    if memo.len() < SOURCE_FAMILY_CACHE_CAP {
+        memo.insert(Box::from(source), family);
+    }
+    family
+}
+
+fn classify_source_family(source: &str) -> &'static str {
     let s = source.to_ascii_lowercase();
     let has = |needles: &[&str]| needles.iter().any(|n| s.contains(n));
     if has(&[

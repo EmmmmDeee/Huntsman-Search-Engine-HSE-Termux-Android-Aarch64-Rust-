@@ -153,3 +153,49 @@ fn per_rule_breakdown() {
         );
     }
 }
+
+/// `source_family` is called once per evidence item by several rules — twice per
+/// item in `rule_au_105_credential_reuse` — so its per-call cost is multiplied by
+/// (entities x evidence x rules x expansion rounds). It was measured at
+/// **3273 ns/call**: an allocating `to_ascii_lowercase()` followed by a cascade
+/// of `contains` scans over ~100 needles. Memoising it (the input domain is the
+/// module registry, small and endlessly repeated) took it to **210 ns/call** and
+/// the whole correlation pass from 60.9 ms to 24.1 ms at n=2000 — 2.5x.
+///
+/// The ceiling below is deliberately loose (an order of magnitude above the
+/// measured figure) because this is wall-clock on a shared machine; it is here to
+/// catch the memo being removed or defeated, not to police small drift.
+#[test]
+#[ignore = "perf guard; run with --ignored --nocapture"]
+fn source_family_stays_memoised() {
+    const CEILING_NS: f64 = 2_000.0;
+
+    let sources = [
+        "username_search",
+        "hunter_io",
+        "oathnet_pro",
+        "name_intel",
+        "dns_intel",
+        "wigle",
+        "shodan",
+        "github_user",
+    ];
+    let iters = 200_000u32;
+    let mut best = f64::MAX;
+    for _ in 0..5 {
+        let t = Instant::now();
+        let mut acc = 0usize;
+        for i in 0..iters {
+            let s = sources[(i as usize) % sources.len()];
+            acc += super::rules::source_family(s).len();
+        }
+        std::hint::black_box(acc);
+        best = best.min(t.elapsed().as_secs_f64() * 1e9 / f64::from(iters));
+    }
+    eprintln!("source_family: {best:.1} ns/call (ceiling {CEILING_NS:.0})");
+    assert!(
+        best < CEILING_NS,
+        "source_family regressed to {best:.1} ns/call (ceiling {CEILING_NS:.0}) — \
+         the memo in correlator::rules has probably been removed or defeated"
+    );
+}
