@@ -417,11 +417,19 @@ fn civil_to_unix(y: i64, m: i64, d: i64, hh: i64, mm: i64, ss: i64) -> (i64, Str
 
 /// Convert Unix seconds back into a normalised `YYYY-MM-DD` display string,
 /// pairing it with the input timestamp.
-fn from_unix(ts: i64) -> (i64, String) {
-    // Inverse of days_from_civil (Hinnant's civil_from_days). `div_euclid`
-    // floors toward negative infinity so a negative `ts` (pre-1970) maps to the
-    // correct civil day rather than truncating toward zero.
-    let z = ts.div_euclid(86400) + 719468;
+/// UTC `YYYY-MM-DD` for a Unix-seconds instant — Hinnant's `civil_from_days`,
+/// the exact inverse of [`days_from_civil`]. `div_euclid` floors toward
+/// negative infinity so a negative `ts` (pre-1970) maps to the correct civil
+/// day rather than truncating toward zero. Pure, dependency-free, deterministic.
+///
+/// The single home for this calendar conversion. Modules that decode a
+/// timestamp out of an identifier — [`crate::modules::structured_id`] (UUIDv1 /
+/// ULID) and [`crate::modules::discord_snowflake`] — render it through this
+/// rather than each re-deriving the arithmetic: three divergent copies of
+/// leap-year math is a latent bug-farm where a fix to one silently skips the
+/// others.
+pub(crate) fn utc_date(unix_secs: i64) -> String {
+    let z = unix_secs.div_euclid(86400) + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
     let doe = z - era * 146097;
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
@@ -431,7 +439,11 @@ fn from_unix(ts: i64) -> (i64, String) {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
-    (ts, format!("{y:04}-{m:02}-{d:02}"))
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+fn from_unix(ts: i64) -> (i64, String) {
+    (ts, utc_date(ts))
 }
 
 #[cfg(test)]
