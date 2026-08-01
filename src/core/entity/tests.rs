@@ -435,6 +435,46 @@ fn cross_scan_corroboration_gated_same_as_multipath() {
 }
 
 #[test]
+fn derived_entity_needs_two_real_sources_for_promotion_to_count() {
+    // A `derived` entity (e.g. a name→email permutation) has its OWN GENERATOR
+    // as one real source. One real source satisfies the gate for observed entities
+    // but NOT for derived ones: the generator is not "independent confirmation."
+    // The promotion pass must wait for a second genuine observation.
+    let mut one_real = Entity::new(EntityKind::Email, "guess@example.com", 0.55, "s");
+    one_real.tag("derived");
+    one_real.add_evidence(Evidence::new("name_intel", "Permuted from name")); // generator
+    one_real.add_evidence(Evidence::new(
+        MULTIPATH_CORROBORATION_SOURCE,
+        "Seen on two graph paths",
+    ));
+    // name_intel is non-corroborating, so real=0, gate(derived)=false → promotion blocked
+    assert_eq!(
+        one_real.source_count(),
+        1,
+        "derived with 1 non-corroborating source + promotion: gate still blocks"
+    );
+
+    // Now add a genuine real source — that satisfies the derived gate (real >= 2
+    // counting only corroborating; name_intel is non-corroborating so a real
+    // observed source is the second corroborating one).
+    let mut two_real = Entity::new(EntityKind::Email, "guess@example.com", 0.55, "s");
+    two_real.tag("derived");
+    two_real.add_evidence(Evidence::new("name_intel", "Permuted from name")); // non-corroborating
+    two_real.add_evidence(Evidence::new("haveibeenpwned", "Confirmed in breach")); // real
+    two_real.add_evidence(Evidence::new("snusbase", "Confirmed in second breach")); // real
+    two_real.add_evidence(Evidence::new(
+        MULTIPATH_CORROBORATION_SOURCE,
+        "Seen on two graph paths",
+    ));
+    // real=2 (hibp + snusbase), derived gate: real >= 2 → grounded → promo counts
+    assert_eq!(
+        two_real.source_count(),
+        3,
+        "derived with 2 real sources satisfies the gate → promotion also counts"
+    );
+}
+
+#[test]
 fn c_eff_clamped_to_one() {
     let mut e = email("a@b.com");
     e.confidence = 0.99;

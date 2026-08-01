@@ -584,10 +584,14 @@ impl Entity {
         //
         // GROUNDING GATE: promotion-pass sources (`multipath_corroboration`,
         // `cross_scan_corroboration`) are tracked separately and only COUNT
-        // when at least one REAL source already grounds the entity. Without
-        // this gate, a machine-generated email permutation touched by a
-        // multipath/cross-scan pass appears as source_count=1 with zero
-        // genuine confirmation — promoting it a full confidence tier.
+        // when the entity is already independently grounded. They re-fire every
+        // scan, so a value the engine merely DERIVED (a name→email permutation,
+        // an inferred handle — the `derived` tag) whose lone real source is its
+        // own generator must NOT be lifted into apparent cross-source agreement.
+        // Gate: for observed entities (no `derived` tag) 1 real source suffices;
+        // for derived entities the generator IS a real source, so we require a
+        // SECOND genuine observation before promotion counts.
+        let derived = self.has_tag("derived");
         let mut real: u32 = 0;
         let mut promo: u32 = 0;
         for (i, ev) in self.evidence.iter().enumerate() {
@@ -607,8 +611,11 @@ impl Entity {
                 real += 1;
             }
         }
-        // Promotion sources only count when ≥1 real source grounds the entity.
-        let distinct = real + if real >= 1 { promo } else { 0 };
+        // For observed entities: 1 real source satisfies the gate.
+        // For derived entities: need ≥2 real sources (the generator + at least
+        // one genuine confirmation) before promotion passes count.
+        let grounded = real >= if derived { 2 } else { 1 };
+        let distinct = real + if grounded { promo } else { 0 };
         if distinct > 0 {
             // Evidence is attached: distinct *corroborating* sources is the
             // authoritative cross-correlation count. The summed `corroboration`
