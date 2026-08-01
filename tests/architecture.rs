@@ -442,11 +442,40 @@ fn all_modules_have_descriptions() {
 
 #[test]
 fn module_registry_count_is_stable() {
+    // Coarse scale floor, complementing the exact count pinned by
+    // `readme_module_overview_count_matches_registry`. The old `>= 75` bound sat
+    // so far below the real registry (~168) that it could not catch an accidental
+    // drop of dozens of modules — a mass-removal that also edited the README to
+    // match would slip past the exact guard, and this floor is the second barrier.
+    // Kept a floor (not an exact count) so routine single-module churn does not
+    // touch this test; only a large regression trips it.
     let modules = huntsman_search_engine::modules::registry();
     assert!(
-        modules.len() >= 75,
-        "expected >=75 modules, got {}",
+        modules.len() >= 150,
+        "expected >=150 modules, got {} — a large registry drop; if intentional, \
+         lower this floor deliberately",
         modules.len()
+    );
+}
+
+#[test]
+fn module_names_are_unique() {
+    // Module names are the primary key of the runtime: `MODULE_TECHNIQUES` keys a
+    // HashMap on `m.name()` (src/modules/mod.rs), and `find(|m| m.name() == ..)`
+    // is used pervasively for per-module lookup. Two modules sharing a name would
+    // silently collapse in the index (one entry wins, the other's techniques and
+    // dispatch attribution vanish) with no other test failing. This pins the
+    // uniqueness that the rest of the system already assumes.
+    use std::collections::BTreeMap;
+    let modules = huntsman_search_engine::modules::registry();
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for m in &modules {
+        *counts.entry(m.name()).or_default() += 1;
+    }
+    let dupes: Vec<(&&str, &usize)> = counts.iter().filter(|(_, n)| **n > 1).collect();
+    assert!(
+        dupes.is_empty(),
+        "duplicate module name(s) in the registry — names must be unique: {dupes:?}"
     );
 }
 
@@ -487,10 +516,26 @@ fn every_module_maps_to_valid_attack_reconnaissance_techniques() {
             m.name()
         );
         for id in m.attack_techniques() {
+            let tech = attack::technique(id).unwrap_or_else(|| {
+                panic!(
+                    "module `{}` claims ATT&CK technique `{id}` absent from the catalogue",
+                    m.name()
+                )
+            });
+            // The declared technique must belong to the Reconnaissance tactic
+            // (TA0043) — the one tactic HSE claims. `coverage()` and the Navigator
+            // export iterate `reconnaissance()` only, so a catalogued-but-non-recon
+            // override (e.g. an Impact or Collection technique) passes the
+            // membership check above yet is silently dropped from every coverage
+            // report. Pin the whole-registry override surface to the tactic the
+            // category defaults are already constrained to.
             assert!(
-                attack::technique(id).is_some(),
-                "module `{}` claims ATT&CK technique `{id}` absent from the catalogue",
-                m.name()
+                tech.tactics.contains(&"reconnaissance"),
+                "module `{}` claims ATT&CK technique `{id}` ({}) outside the \
+                 Reconnaissance tactic — coverage() would silently drop it; \
+                 map to a TA0043 technique or correct the override",
+                m.name(),
+                tech.tactics.join("+"),
             );
             covered.insert(*id);
         }

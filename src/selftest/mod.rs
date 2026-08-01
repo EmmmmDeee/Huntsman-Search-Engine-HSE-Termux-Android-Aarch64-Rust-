@@ -138,12 +138,58 @@ pub async fn run() -> Report {
         check_consumes_accepts(),
         check_module_probes(),
         check_core_math(),
+        check_attack_coverage(),
         check_keys(),
         check_storage_and_correlator().await,
         check_log_capture(),
         check_termux_env().await,
     ];
     Report::build(checks, started)
+}
+
+/// The platform's static MITRE ATT&CK **Reconnaissance** envelope: unioning every
+/// registered module's declared techniques with the entity- and relation-surface
+/// mappings, how much of TA0043 HSE can *structurally* ever exercise, and how many
+/// honest gaps remain. Operational telemetry — an operator reads the coverage
+/// fraction and gap count here without running a scan. The exact envelope (which
+/// specific techniques are gaps) is pinned by the
+/// `platform_static_attack_envelope_is_pinned` regression guard; this surfaces the
+/// live number so a build-level ATT&CK regression is visible from `hse selftest`.
+fn check_attack_coverage() -> Check {
+    use crate::core::attack;
+    let modules = crate::modules::registry();
+    let ids = modules
+        .iter()
+        .flat_map(|m| m.attack_techniques().iter().copied());
+    let cov = attack::static_reconnaissance_coverage(ids);
+    let total = attack::reconnaissance().len();
+    if cov.covered.len() + cov.uncovered.len() != total {
+        return check(
+            "attack.coverage",
+            Status::Fail,
+            format!(
+                "coverage partition broken: {} covered + {} gaps != {total} TA0043 techniques",
+                cov.covered.len(),
+                cov.uncovered.len(),
+            ),
+        );
+    }
+    let detail = format!(
+        "{}/{} TA0043 Reconnaissance techniques structurally covered ({:.0}%); {} honest gap(s)",
+        cov.covered.len(),
+        total,
+        cov.coverage_fraction * 100.0,
+        cov.uncovered.len(),
+    );
+    // Reaching under half the tactic would mean a technique surface likely got
+    // disconnected (a category / entity / relation map emptied) — a warn, not a
+    // hard fail, since low coverage is a capability signal, not broken wiring.
+    let status = if cov.coverage_fraction < 0.5 {
+        Status::Warn
+    } else {
+        Status::Pass
+    };
+    check("attack.coverage", status, detail)
 }
 
 /// Every registered module has a unique, non-empty name and a description.

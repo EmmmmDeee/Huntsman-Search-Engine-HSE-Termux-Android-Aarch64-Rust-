@@ -4606,6 +4606,105 @@ pub fn coverage(exercised: &std::collections::BTreeMap<String, usize>) -> Covera
     }
 }
 
+/// Every [`EntityKind`] that carries an ATT&CK mapping — the entity surface of
+/// the static coverage union in [`static_reconnaissance_coverage`]. The catch-all
+/// [`EntityKind::Other`] is deliberately excluded: it has no claimed mapping
+/// ([`techniques_for_entity_kind`] returns `&[]` for it). The
+/// `static_reconnaissance_coverage_is_the_platform_envelope` guard holds an
+/// arm-less match, so a new `EntityKind` fails the build until it is triaged into
+/// this list — the union can never silently stop counting a new surface.
+const MAPPED_ENTITY_KINDS: &[EntityKind] = &[
+    EntityKind::Person,
+    EntityKind::Email,
+    EntityKind::Phone,
+    EntityKind::Username,
+    EntityKind::Credential,
+    EntityKind::ApiKey,
+    EntityKind::Password,
+    EntityKind::IpAddress,
+    EntityKind::Domain,
+    EntityKind::Url,
+    EntityKind::Asn,
+    EntityKind::Cidr,
+    EntityKind::Address,
+    EntityKind::Coordinates,
+    EntityKind::Organisation,
+    EntityKind::AbnAcn,
+    EntityKind::MacAddress,
+    EntityKind::DeviceId,
+    EntityKind::Ssid,
+    EntityKind::TrackingId,
+    EntityKind::CryptoAddress,
+];
+
+/// Every [`RelationKind`] — the graph surface of the static coverage union. All
+/// unit variants; the same arm-less-match guard keeps this list exhaustive.
+const ALL_RELATION_KINDS: &[RelationKind] = &[
+    RelationKind::SubdomainOf,
+    RelationKind::BelongsToDomain,
+    RelationKind::HostedOn,
+    RelationKind::ResolvesTo,
+    RelationKind::RegisteredBy,
+    RelationKind::CoLocatedWith,
+    RelationKind::DerivedFrom,
+    RelationKind::IdentifiedBy,
+    RelationKind::AliasOf,
+    RelationKind::LocatedAt,
+    RelationKind::AssociatedWith,
+    RelationKind::SameAs,
+    RelationKind::SameOperator,
+    RelationKind::SameIdentity,
+    RelationKind::SharesSecretWith,
+    RelationKind::EmployedBy,
+    RelationKind::OfficerOf,
+    RelationKind::MemberOf,
+    RelationKind::ControlledBy,
+    RelationKind::OperatedBy,
+];
+
+/// HSE's **structural** Reconnaissance coverage — the platform's capability
+/// envelope, not a single scan's result.
+///
+/// Where [`coverage`] rolls up one scan's runtime `exercised` counts, this unions
+/// the three *static* ATT&CK surfaces the platform maps — the module registry
+/// (each module's [`attack_techniques`](crate::core::module::Module::attack_techniques)),
+/// every mapped [`EntityKind`]'s [`techniques_for_entity_kind`], and every
+/// [`RelationKind`]'s [`techniques_for_relation_kind`] — to answer which TA0043
+/// techniques HSE can *ever* exercise, and which it structurally never reaches
+/// (e.g. the phishing family `T1598`, which a passive collector performs none of).
+/// This is the "recursive" view: coverage computed across the whole
+/// module→entity→relation chain rather than one scan's tags.
+///
+/// Each covered technique's `entity_count` here is the number of static surfaces
+/// that name it (a coarse structural-reachability weight), *not* a live entity
+/// tally — read it as "how many independent surfaces would exercise this".
+///
+/// `module_technique_ids` is **injected**, not read from the registry: `core`
+/// must not depend on `crate::modules` (the `core_does_not_import_modules`
+/// architecture guard). A caller in a layer that can see the registry — e.g.
+/// `hse selftest` — passes
+/// `registry().iter().flat_map(|m| m.attack_techniques().iter().copied())`.
+#[must_use]
+pub fn static_reconnaissance_coverage<'a>(
+    module_technique_ids: impl IntoIterator<Item = &'a str>,
+) -> Coverage {
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for id in module_technique_ids {
+        *counts.entry(id.to_string()).or_default() += 1;
+    }
+    for kind in MAPPED_ENTITY_KINDS {
+        for id in techniques_for_entity_kind(kind) {
+            *counts.entry((*id).to_string()).or_default() += 1;
+        }
+    }
+    for &kind in ALL_RELATION_KINDS {
+        for id in techniques_for_relation_kind(kind) {
+            *counts.entry((*id).to_string()).or_default() += 1;
+        }
+    }
+    coverage(&counts)
+}
+
 /// Compute Reconnaissance technique coverage broken down by entity type.
 /// This shows what kinds of entities carry each technique, enabling analysis
 /// of collection depth across entity dimensions. For example, if a scan's

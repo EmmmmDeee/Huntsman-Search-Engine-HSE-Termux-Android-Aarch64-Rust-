@@ -1633,6 +1633,86 @@ fn every_registered_module_consumes_at_least_one_kind() {
 }
 
 #[test]
+fn platform_static_attack_envelope_is_pinned() {
+    // The recursive MITRE ATT&CK view: union the platform's THREE static
+    // Reconnaissance surfaces — every registered module's attack_techniques(),
+    // every EntityKind's techniques_for_entity_kind(), every RelationKind's
+    // techniques_for_relation_kind() — into the capability envelope: which TA0043
+    // techniques HSE can EVER exercise, and which it structurally never reaches.
+    //
+    // Unlike the per-scan runtime coverage, this is a property of the codebase, so
+    // pinning it turns any change in the platform's ATT&CK reach — a new module,
+    // a new entity/relation mapping that closes a gap, or a regression that opens
+    // one — into a deliberate, reviewed edit rather than a silent drift. This is
+    // the registry-aware half of the guard `core` cannot express (core must not
+    // import the module registry); the pure function is unit-tested in
+    // `core::attack::tests::static_reconnaissance_coverage_is_the_platform_envelope`.
+    use huntsman_search_engine::core::attack;
+
+    let modules = huntsman_search_engine::modules::registry();
+    let module_ids = modules
+        .iter()
+        .flat_map(|m| m.attack_techniques().iter().copied());
+    let cov = attack::static_reconnaissance_coverage(module_ids);
+
+    // Partition invariant: covered + honest gaps == the whole TA0043 tactic.
+    let total = attack::reconnaissance().len();
+    assert_eq!(cov.covered.len() + cov.uncovered.len(), total);
+
+    // The whole platform covers the great majority of Reconnaissance — but never
+    // all of it (the phishing / active-solicitation techniques are honest gaps a
+    // passive collector never performs).
+    // Coarse, human-readable scale check (the exact envelope is pinned below):
+    // HSE structurally reaches ~73% of the Reconnaissance tactic — most of it,
+    // never all of it.
+    assert!(
+        cov.coverage_fraction > 0.65 && cov.coverage_fraction < 0.80,
+        "platform static Reconnaissance coverage {:.3} ({}/{}) left the expected \
+         ~0.73 band; if the registry/entity/relation surfaces changed \
+         intentionally, re-pin this guard and the gap set below",
+        cov.coverage_fraction,
+        cov.covered.len(),
+        total,
+    );
+
+    // Pin the EXACT structural-gap set: the TA0043 techniques NO static surface
+    // maps — HSE's honest "cannot collect" list. A change here is a change in what
+    // the platform claims it can and cannot collect, so it must be acknowledged
+    // explicitly rather than drifting in silently. Two honest families:
+    //   • active-solicitation / closed-source intel a passive OSINT collector
+    //     never performs: the whole T1598 phishing family + T1597 (buying org
+    //     intel from a vendor);
+    //   • parent techniques whose *sub*-techniques HSE does map but the umbrella
+    //     itself is not directly claimed (T1590, T1593), plus specific
+    //     sub-techniques out of scope (network trust deps, business tempo, device
+    //     firmware / client configs).
+    // (Catalogue-sorted, as `uncovered` returns.)
+    let gaps: Vec<&str> = cov.uncovered.iter().map(|t| t.id).collect();
+    let expected_gaps = [
+        "T1590",     // Gather Victim Network Information (parent; subs are mapped)
+        "T1590.003", // Network Trust Dependencies
+        "T1591.003", // Identify Business Tempo
+        "T1592.003", // Firmware
+        "T1592.004", // Client Configurations
+        "T1593",     // Search Open Websites/Domains (parent; subs are mapped)
+        "T1597",     // Acquire Victim Org Information (closed-source vendor intel)
+        "T1598",     // Phishing for Information
+        "T1598.001", // Spearphishing Service
+        "T1598.002", // Spearphishing Attachment
+        "T1598.003", // Spearphishing Link
+        "T1598.004", // Spearphishing Voice
+    ];
+    assert_eq!(
+        gaps,
+        expected_gaps,
+        "platform structural Reconnaissance gaps changed — HSE's claimed \
+         collection envelope shifted; re-pin deliberately (covered {}/{})",
+        cov.covered.len(),
+        total,
+    );
+}
+
+#[test]
 fn module_graph_richness_is_normalised_and_zero_for_unconsumed_kinds() {
     use huntsman_search_engine::core::dependency::{ALL_TARGET_KINDS, ModuleGraph};
     let modules = huntsman_search_engine::modules::registry();
