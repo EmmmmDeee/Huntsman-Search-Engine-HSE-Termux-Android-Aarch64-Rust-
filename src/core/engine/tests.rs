@@ -2681,12 +2681,19 @@ fn admission_rejection_covers_every_drop_filter_and_order() {
     );
 }
 
-/// Paid stub that sleeps `sleep_ms` then emits one entity named after itself, so
-/// a test can prove both that it ran (its entity is present) and how long the
-/// PHASE took (concurrent ⇒ ~max sleep, serial ⇒ ~sum of sleeps).
+/// Paid stub that emits one entity named after itself, and — while it holds a
+/// `sleep_ms` window open inside `process()` — records the shared high-water mark
+/// of how many stubs are concurrently in flight. A peak of ≥2 proves the paid
+/// phase overlapped them (concurrent); a serial paid loop would peak at 1. This
+/// lets a test assert concurrency *directly* (a logical invariant) rather than by
+/// a wall-clock ceiling, which flakes under parallel test-suite load.
 struct SleepyPaidModule {
     name: &'static str,
     sleep_ms: u64,
+    /// Live count of stubs currently inside `process()`.
+    inflight: Arc<std::sync::atomic::AtomicUsize>,
+    /// Maximum value `inflight` ever reached — the concurrency high-water mark.
+    max_seen: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[async_trait::async_trait]
@@ -2712,7 +2719,14 @@ impl Module for SleepyPaidModule {
         _: &Target,
         ctx: &ModuleContext,
     ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        use std::sync::atomic::Ordering::SeqCst;
+        // Enter: bump the live count and lift the high-water mark if this is a new peak.
+        let now_inflight = self.inflight.fetch_add(1, SeqCst) + 1;
+        self.max_seen.fetch_max(now_inflight, SeqCst);
+        // Hold the window open so a concurrent phase actually overlaps here; a
+        // serial phase would drain each stub before the next enters (peak 1).
         tokio::time::sleep(std::time::Duration::from_millis(self.sleep_ms)).await;
+        self.inflight.fetch_sub(1, SeqCst);
         let mut r = crate::core::module::ModuleResult::new();
         let mut e = Entity::new(EntityKind::Username, self.name, 0.9, &ctx.scan_id);
         e.add_evidence(crate::core::entity::Evidence::new(self.name, "synthetic"));
@@ -2732,18 +2746,26 @@ async fn paid_phase_runs_modules_concurrently() {
     let store = Arc::new(InMemoryStore::new());
     let store_port: Arc<dyn StoragePort> = store.clone();
     let (bus, _rx) = tokio::sync::broadcast::channel(4096);
+    let inflight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let max_seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let modules: Vec<Arc<dyn Module>> = vec![
         Arc::new(SleepyPaidModule {
             name: "paid_a",
             sleep_ms: 200,
+            inflight: inflight.clone(),
+            max_seen: max_seen.clone(),
         }),
         Arc::new(SleepyPaidModule {
             name: "paid_b",
             sleep_ms: 200,
+            inflight: inflight.clone(),
+            max_seen: max_seen.clone(),
         }),
         Arc::new(SleepyPaidModule {
             name: "paid_c",
             sleep_ms: 200,
+            inflight: inflight.clone(),
+            max_seen: max_seen.clone(),
         }),
     ];
     let engine = ScanEngine::new(modules, store_port, bus.clone());
@@ -2772,9 +2794,7 @@ async fn paid_phase_runs_modules_concurrently() {
         cancel: crate::core::cancel::CancelHandle::new(),
         proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
     };
-    let start = std::time::Instant::now();
     let _ = engine.run(scan, target, ctx).await;
-    let elapsed = start.elapsed();
 
     // All three paid modules ran (their entities are present).
     for n in ["paid_a", "paid_b", "paid_c"] {
@@ -2783,10 +2803,16 @@ async fn paid_phase_runs_modules_concurrently() {
             "paid module {n} must have run and emitted its entity"
         );
     }
-    // Concurrent, not serial: 3×200ms serial ≈ 600ms; concurrent ≈ 200ms. A 500ms
-    // ceiling is a wide margin that still fails the old serial behaviour.
+    // Concurrent, not serial — measured DIRECTLY as a logical invariant, not via a
+    // wall-clock ceiling (the old `elapsed < 500ms` assertion flaked under parallel
+    // suite load even though the code was genuinely concurrent). The stubs' shared
+    // in-flight high-water mark reaches ≥2 iff at least two `process()` bodies
+    // overlapped; the regressed serial paid loop drains each stub before the next
+    // enters, so it would peak at exactly 1. This assertion has no timing dependence.
+    let peak = max_seen.load(std::sync::atomic::Ordering::SeqCst);
     assert!(
-        elapsed < std::time::Duration::from_millis(500),
-        "paid phase must run concurrently (took {elapsed:?}, serial would be ~600ms)"
+        peak >= 2,
+        "paid phase must run modules concurrently, not serially \
+         (in-flight peak was {peak}; a serial loop peaks at 1)"
     );
 }

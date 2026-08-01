@@ -1356,8 +1356,30 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   false negative when the geocoder actually blocked the call). *Scope note:* this
   exact `json_scanned(…).unwrap_or_default()` shape is unique to `geocode`
   (surveyed); the broader `.ok()/.unwrap_or_default()`-near-parse class (~66
-  candidate sites across the module fleet) needs per-site review — queued as a
   triage pass, not a blind sweep.
+- **`[x]` T2.45 · `paid_phase_runs_modules_concurrently` is a load-flaky wall-clock
+  test — it reddens the gate on unchanged code under parallel suite load**
+  — observed firsthand this session: the test failed inside two separate
+  `cargo test --all --locked` runs while passing 3/3 in isolation. The paid-phase
+  parallelism regression guard (`core/engine/tests.rs`) asserted
+  `elapsed < Duration::from_millis(500)` for three 200 ms `Paid` stubs (concurrent
+  ≈ 200 ms, serial ≈ 600 ms) using `std::time::Instant` (the REAL wall clock) over
+  the full engine (task spawn, semaphore, store writes, event bus). Under load the
+  200 ms→500 ms margin is not enough and the ceiling is breached even though the
+  code is genuinely concurrent — a timing proxy standing in for a logical property.
+  → **Solution:** SOL-CONCURRENCY-DIRECT-ASSERT — the stubs now share an in-flight
+  `AtomicUsize` and record a high-water mark; on entry each bumps the live count and
+  lifts the mark, holds its sleep window open, then decrements. The test asserts
+  `peak >= 2` — at least two `process()` bodies overlapped — which is the exact
+  logical negation of the serial regression (a serial paid loop drains each stub
+  before the next enters, peaking at 1) and carries NO timing dependence. The
+  wall-clock `elapsed` assertion is removed. **P2** (gate reliability /
+  reproducibility — a self-reddening test erodes trust in the whole gate and can't
+  reliably protect the paid-phase parallelization). Proven red-then-green: forcing
+  the paid `Semaphore` to 1 permit fails the new assertion (`in-flight peak was 1`);
+  the bounded-concurrent code passes; and a full `cargo test --all` run (the
+  condition that flaked it twice) is now green. Test-only change; no production
+  behaviour altered.
 
 ---
 
@@ -1875,6 +1897,20 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
 ## 8. Maintained log
 ## 8. Maintained log
 
+- **2026-08-01** — **Executed T2.45 (new, discovered when it reddened this
+  session's gate twice): de-flaked `paid_phase_runs_modules_concurrently`.** The
+  paid-phase parallelism guard asserted a 500 ms wall-clock ceiling (via
+  `std::time::Instant`) over full engine machinery; under parallel `cargo test --all`
+  load it breached the ceiling and failed on unchanged code, while passing 3/3 in
+  isolation. Replaced the timing proxy with a direct measurement: the `Paid` stubs
+  share an in-flight `AtomicUsize` high-water mark and the test asserts `peak >= 2`
+  (≥2 `process()` bodies overlapped) — zero timing dependence, exact negation of the
+  serial regression. Proven red-then-green (forcing the paid `Semaphore` to 1 permit
+  fails it with `in-flight peak was 1`); load-robustness verified by a full
+  `cargo test --all --locked` run, 4602 lib + 256 integration, 0 failures, where the
+  test now passes in the same parallel run that flaked it twice. Test-only; no
+  production behaviour changed. T2.45 `[ ]`→`[x]`. **Paired:** `SOLUTION_TREE` §5
+  SOL-CONCURRENCY-DIRECT-ASSERT — same commit.
 - **2026-08-01** — **Executed T2.44 (new, discovered while stress-testing the live search surface): surfaced `geocode`'s swallowed non-JSON body.** A common-name self-test scan showed many modules reporting `found:0` where the request was actually blocked/rate-limited — 'what worked' is unknowable while failures masquerade as empty results. Root-caused one clean instance: `Geocode::forward` parsed the Nominatim `/search` response with `json_scanned(…).unwrap_or_default()` (reqwest arm) and `serde_json::from_str(…).unwrap_or_default()` (curl fallback), both discarding the parse error. Since Nominatim returns `[]` for a genuine no-match, a deserialize failure only ever means a non-JSON body (rate-limit / anti-bot challenge as HTTP 200, or a gateway page), so the swallow made a throttled request indistinguishable from 'no location'. The module's own reverse path already surfaces the identical failure via `Error::module`; brought the forward path to parity (reqwest `map_err(…)?`; curl fallback through a new pure `parse_forward_results`). +2 tests, proven red-then-green (reverting to `Ok(from_str(body).unwrap_or_default())` fails the non-JSON test). Gate green: fmt/clippy `-D warnings`/rustdoc/doc clean, `cargo test --all --locked` 4602 lib + 256 integration, 0 failures (one pre-existing load-flaky timing test, `paid_phase_runs_modules_concurrently`, passes 3/3 in isolation — queued next). T2.44 `[ ]`→`[x]`. **Paired:** `SOLUTION_TREE` §5 SOL-GEOCODE-SURFACE-ERR — same commit.
 - **2026-08-01** — **Executed T2.43 (new, discovered gap): made
   `hudsonrock::compute_confidence` pure so the gate stops expiring.** Ran the
