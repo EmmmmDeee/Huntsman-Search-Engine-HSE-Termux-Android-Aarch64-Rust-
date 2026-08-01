@@ -22,9 +22,8 @@ mod tests;
 /// guaranteed 404 for any address carrying capitals or surrounding whitespace.
 #[must_use]
 pub fn hash(email: &str) -> String {
-    use md5::{Digest, Md5};
     let normalised = email.trim().to_ascii_lowercase();
-    hex::encode(Md5::digest(normalised.as_bytes()))
+    crate::core::crypto::md5_hex(normalised.as_bytes())
 }
 
 /// Top-level Gravatar profile response: `{ "entry": [ { … } ] }`.

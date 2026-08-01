@@ -170,11 +170,20 @@ policed. The remaining opportunities are refinements, not rescues.
 
 | # | Opportunity | Priority axis | Impact | Status |
 |---|-------------|---------------|--------|--------|
-| 1 | Authoritative `sha256_hex`/`_parts` in `core::crypto` | Arch. integrity | Medium | **done (this change)** |
-| 2 | Observability split — formalise *developer diagnostics* (debug bundle) vs *operational telemetry* (`/stats`, health) as two named surfaces with a shared, typed event vocabulary | Observability | Medium | proposed |
-| 3 | Provenance as a first-class immutable type — the evidence chain is already immutable-ish `Vec<Evidence>`; lifting `(source, recorded_at, verification)` into a named `Provenance` value would harden the "immutable identifiers **and** provenance" invariant across exports | Arch. integrity | Medium | proposed |
-| 4 | Collection breadth — new keyless modules (CommonCrawl index, `.well-known`, DNSBL) per the module contract; each a one-file addition with fixture proof | Intelligence quality | High (recall) | proposed (roadmap §4.A of `ULTIMATE_ARCHITECTURE.md`) |
+| 1 | Authoritative digest primitives (`sha256_hex` / `sha256_hex_parts` / `md5_hex` / `sha1_hex`) in `core::crypto` | Arch. integrity | Medium | **done** — sha256 first, then md5/sha1 completed the family (hashcat, gravatar, pwned_passwords routed through it) |
+| 2 | Observability split — *developer diagnostics* (debug bundles) vs *operational telemetry* (`/stats`, health) | Observability | — | **investigated — no action.** Evidence: each signal already has a single producer (`module_health_report`, `*::budget_snapshot`, `key_pool::health_report`, `scraper_health`); the two are already separate *presenters* of that single-sourced data. Forcing convergence would reshape the `/stats` wire contract — a Correctness/compat cost above the Simplicity gain, which the priority order forbids. |
+| 3 | Provenance as a first-class immutable type — lift `(source, recorded_at, verification)` off `Evidence` into a named `Provenance` value to harden "immutable identifiers **and** provenance" across exports | Arch. integrity | Low–Medium | proposed (marginal — `Evidence` already is the immutable provenance record) |
+| 4 | Collection breadth — new keyless modules (CommonCrawl index, `.well-known`, DNSBL) per the one-file module contract, each with fixture proof | Intelligence quality | High (recall) | proposed (roadmap §4.A of `ULTIMATE_ARCHITECTURE.md`) — the highest-value remaining lever now that consolidation is largely done |
 | 5 | Interop push — MISP/TAXII on top of the shipped STIX 2.1 serialiser | Convenience | Medium | proposed |
+
+**Honest state after two consolidation cycles:** the genuinely-fragmented
+capability (digest→hex, 9 sites, no owner) is resolved; a broad second scan
+(base64, MD5/SHA1, host/domain normalisation, public-suffix parsing) found the
+rest already single-sourced (e.g. one `util::domains::registrable_domain` with 27
+callers). Further architectural-integrity gains here are low-yield. The highest
+remaining value shifts to **Quality of intelligence** — collection breadth and
+correlation depth (items 4–5) — which is additive feature work under the
+existing safe module contract, not consolidation.
 
 Anti-goal reminder (per `SECURITY.md`): every item is defensive OSINT breadth,
 depth, and interoperability — never intrusion.

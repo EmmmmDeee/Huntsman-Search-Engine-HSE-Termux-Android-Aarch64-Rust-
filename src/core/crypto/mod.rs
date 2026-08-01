@@ -60,6 +60,24 @@ pub fn sha256_hex_parts(parts: &[&[u8]]) -> String {
     hex::encode(h.finalize())
 }
 
+/// Lowercase hex of `MD5(bytes)`. A **legacy, non-cryptographic** digest, used
+/// only where an external contract dictates it (Gravatar's email-hash URL,
+/// breach-dump digest tables) — never for a security decision. The shared
+/// `Digest` trait is already in scope via `sha2`, so `md5::Md5` needs no import.
+#[must_use]
+pub fn md5_hex(bytes: &[u8]) -> String {
+    hex::encode(md5::Md5::digest(bytes))
+}
+
+/// Lowercase hex of `SHA-1(bytes)`. A **legacy** digest, used only where an
+/// external contract dictates it (HIBP range k-anonymity, breach-dump digest
+/// tables) — never for a security decision. Callers that need the uppercase form
+/// (HIBP) apply `.to_uppercase()` at the edge.
+#[must_use]
+pub fn sha1_hex(bytes: &[u8]) -> String {
+    hex::encode(sha1::Sha1::digest(bytes))
+}
+
 /// Base58 alphabet (Bitcoin variant): excludes `0`, `O`, `I`, `l` to avoid
 /// visual ambiguity.
 fn is_base58(c: char) -> bool {

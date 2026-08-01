@@ -8,7 +8,6 @@
 //! SHA-1 hash are sent).
 
 use async_trait::async_trait;
-use sha1::{Digest, Sha1};
 
 use crate::core::{
     confidence,
@@ -148,9 +147,8 @@ impl Module for PwnedPasswords {
             return Ok(ModuleResult::new());
         }
 
-        let mut hasher = Sha1::new();
-        hasher.update(value.as_bytes());
-        let hash = hex::encode(hasher.finalize()).to_uppercase();
+        // HIBP range API keys on the UPPERCASE SHA-1 of the candidate password.
+        let hash = crate::core::crypto::sha1_hex(value.as_bytes()).to_uppercase();
 
         if hash.len() < 5 {
             return Ok(ModuleResult::new());
