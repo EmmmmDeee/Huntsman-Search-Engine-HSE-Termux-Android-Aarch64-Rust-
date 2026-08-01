@@ -54,6 +54,23 @@ fn cached_list() -> Option<Vec<SdnRecord>> {
         .and_then(|g| g.as_ref().map(|(_, r)| r.clone()))
 }
 
+/// Whether a record set can actually be screened against.
+///
+/// The single definition of "usable screening data", consulted by every route
+/// that could otherwise hand callers an empty set: the cache fast path, the
+/// post-fetch parse result, and [`degrade_on_fetch_failure`]. An empty set is
+/// never usable — callers find zero designations in it, which is the same answer
+/// they get for a subject who is genuinely clean, so serving one turns any
+/// upstream problem into a false clearance.
+///
+/// It exists as one predicate rather than three inline `is_empty()` checks
+/// precisely so those routes cannot drift apart: the first version of this fix
+/// guarded only the transport-failure route and left the other two returning
+/// `Ok(vec![])`.
+pub(super) fn is_screenable(records: &[SdnRecord]) -> bool {
+    !records.is_empty()
+}
+
 /// Decide what a failed list download MEANS, given whatever was cached before.
 ///
 /// A stale-but-real list is a sound degradation: OFAC publishes irregularly, so
@@ -76,7 +93,7 @@ fn cached_list() -> Option<Vec<SdnRecord>> {
 /// `all_legs_unreachable` predicate, which encodes the same distinction.
 pub(super) fn degrade_on_fetch_failure(cached: Option<Vec<SdnRecord>>) -> Result<Vec<SdnRecord>> {
     match cached {
-        Some(stale) if !stale.is_empty() => Ok(stale),
+        Some(stale) if is_screenable(&stale) => Ok(stale),
         _ => Err(Error::module(
             SRC,
             "OFAC list download failed and no list has ever been cached — cannot \
@@ -111,8 +128,13 @@ async fn fetch_one_list(ctx: &ModuleContext, url: &str) -> Option<Vec<SdnRecord>
 /// designations matched"; that is an `Ok` with a populated list the caller finds
 /// no hits in.
 pub(super) async fn fetch_sdn_list(ctx: &ModuleContext) -> Result<Vec<SdnRecord>> {
+    // `!records.is_empty()` is load-bearing, not defensive noise: an empty cached
+    // set would be served straight back as a successful screen, which is the very
+    // false-clean-screen this function exists to prevent. Treating it as a miss
+    // falls through to a re-fetch, and to the error path when that also fails.
     if let Ok(guard) = CACHE.read()
         && let Some((fetched_at, records)) = guard.as_ref()
+        && is_screenable(records)
         && fetched_at.elapsed().as_secs() < LIST_CACHE_TTL_SECS
     {
         return Ok(records.clone());
@@ -120,7 +142,15 @@ pub(super) async fn fetch_sdn_list(ctx: &ModuleContext) -> Result<Vec<SdnRecord>
 
     // Primary SDN (full-blocking) list. A failure degrades to the previous
     // cached set when there is one, and is a hard error when there is not.
-    let Some(mut records) = fetch_one_list(ctx, SDN_URL).await else {
+    //
+    // An empty parse is treated exactly like a transport failure. A 2xx whose
+    // body yields zero rows — an empty response, a garbled body, or OFAC
+    // changing the CSV shape under us — screens just as blindly as no download,
+    // and caching it would then serve that blindness for the whole TTL.
+    let records = fetch_one_list(ctx, SDN_URL)
+        .await
+        .filter(|r| is_screenable(r));
+    let Some(mut records) = records else {
         return degrade_on_fetch_failure(cached_list());
     };
     // Consolidated (non-SDN / sectoral) list — same schema, supplementary. A

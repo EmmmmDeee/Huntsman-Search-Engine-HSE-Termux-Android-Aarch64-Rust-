@@ -283,3 +283,42 @@ fn failed_download_without_a_cached_list_is_an_error_not_a_clean_screen() {
     );
     assert_eq!(got[0].name, "ABBAS, Abu");
 }
+
+/// Every route that can hand the caller a record set must agree on what counts as
+/// screenable, because each one of them is a way to produce a false clean screen.
+///
+/// The first version of this fix guarded only the transport-failure route and left
+/// two others returning `Ok(vec![])`: the cache fast path (an empty cached set was
+/// served straight back as a successful screen) and a 2xx whose body parsed to zero
+/// rows (which was then cached, serving that blindness for the whole 12h TTL).
+/// `is_screenable` is the single definition all three now consult, so they cannot
+/// drift apart again.
+#[test]
+fn an_empty_record_set_is_never_screenable_by_any_route() {
+    use super::list::{degrade_on_fetch_failure, is_screenable};
+
+    let rec = || super::parse::SdnRecord {
+        ent_num: 1,
+        name: "ABBAS, Abu".to_string(),
+        kind: SdnKind::Individual,
+        program: "SDN".to_string(),
+        title: String::new(),
+        remarks: String::new(),
+    };
+
+    // The shared rule itself.
+    assert!(
+        !is_screenable(&[]),
+        "an empty set answers every query with 'no designations' — never screenable"
+    );
+    assert!(is_screenable(&[rec()]), "a populated set is screenable");
+
+    // The degradation route consults the same rule, so an empty cache is an error
+    // rather than a clean screen.
+    degrade_on_fetch_failure(Some(Vec::new()))
+        .expect_err("an empty cached set must not be served as a successful screen");
+    assert!(
+        degrade_on_fetch_failure(Some(vec![rec()])).is_ok(),
+        "a populated cached set must still degrade gracefully"
+    );
+}
