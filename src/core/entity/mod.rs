@@ -541,21 +541,22 @@ impl Entity {
     /// by the expansion gate, the diagnostics diversity floor, and 6 correlator
     /// rules. The `corroboration` field is retained as the observation-magnitude
     /// signal for ranking/diagnostics; it no longer drives C_eff.
+    /// Number of DISTINCT *corroborating* evidence sources — exactly
+    /// [`Self::corroborating_sources`]`().len()`, but computed WITHOUT allocating
+    /// the intermediate `HashSet<&str>`. A source is counted once, at its first
+    /// occurrence: for each record only the evidence *before* it is scanned for
+    /// the same source. Evidence chains are short (a handful of sources), so this
+    /// O(k²) scan over tiny `k` beats hashing + heap allocation on the hot paths
+    /// that ask only for the count ([`Self::source_count`] on the merge/dedup path
+    /// and the expansion gate's `target_distinct_sources`). Non-corroborating
+    /// passes (deterministic self-enrichment, `recall` replay; see
+    /// [`is_non_corroborating_source`]) are excluded, so the result is `0` for an
+    /// entity with no independent corroboration — matching the set's `.len()`.
     #[inline]
-    pub fn source_count(&self) -> u32 {
-        // Count DISTINCT corroborating sources WITHOUT allocating a `HashSet`.
-        // This runs for every entity on the merge/dedup hot path (via
-        // `c_effective`/`classify`), so the previous `corroborating_sources().len()`
-        // — which built and dropped a `HashSet<&str>` on every call — was pure
-        // overhead. A source is counted exactly once, at its first occurrence:
-        // for each record we scan only the evidence *before* it for the same
-        // source. Entity evidence chains are short (a handful of sources), so
-        // this O(k²) scan over tiny `k` beats hashing + heap allocation, and the
-        // distinct set it yields is identical to `corroborating_sources().len()`.
-        let mut distinct: u32 = 0;
+    pub fn distinct_corroborating_source_count(&self) -> usize {
+        let mut distinct = 0usize;
         for (i, ev) in self.evidence.iter().enumerate() {
-            let s = ev.source.as_str();
-            if is_non_corroborating_source(s) {
+            if is_non_corroborating_source(ev.source.as_str()) {
                 continue;
             }
             if !self.evidence[..i]
@@ -565,6 +566,15 @@ impl Entity {
                 distinct += 1;
             }
         }
+        distinct
+    }
+
+    #[inline]
+    pub fn source_count(&self) -> u32 {
+        // Distinct corroborating sources, counted WITHOUT allocating a `HashSet`
+        // (see [`Self::distinct_corroborating_source_count`]). This runs for every
+        // entity on the merge/dedup hot path (via `c_effective`/`classify`).
+        let distinct = self.distinct_corroborating_source_count() as u32;
         if distinct > 0 {
             // Evidence is attached: distinct *corroborating* sources is the
             // authoritative cross-correlation count. The summed `corroboration`

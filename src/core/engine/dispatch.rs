@@ -278,7 +278,7 @@ pub(super) fn target_distinct_sources(
     let uid = crate::core::entity::derive_uid(&entity_kind, &normalised);
     entity_map
         .get(&uid)
-        .map_or(0, |e| e.corroborating_sources().len())
+        .map_or(0, Entity::distinct_corroborating_source_count)
 }
 
 pub(super) fn module_skip_reason(

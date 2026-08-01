@@ -140,6 +140,53 @@ fn geo_normalize_does_not_count_as_corroboration() {
 }
 
 #[test]
+fn distinct_corroborating_source_count_equals_set_len() {
+    // The allocation-free count MUST equal `corroborating_sources().len()`
+    // exactly — the invariant that makes swapping the expansion gate's
+    // `target_distinct_sources` off the `HashSet` a pure, behaviour-preserving
+    // optimisation. Cover: multi-source, duplicate-source, no-evidence, and a
+    // real+enrichment mix (deterministic enrichment excluded on both sides).
+    let mut cases: Vec<Entity> = Vec::new();
+
+    // Two distinct real sources → 2.
+    let mut a = Entity::new(EntityKind::Email, "a@b.com", 0.5, "s");
+    a.add_evidence(Evidence::new("hibp", "breach"));
+    a.add_evidence(Evidence::new("dehashed", "breach"));
+    cases.push(a);
+
+    // Same source twice → 1 (deduped by source name).
+    let mut b = Entity::new(EntityKind::Email, "c@d.com", 0.5, "s");
+    b.add_evidence(Evidence::new("hibp", "breach one"));
+    b.add_evidence(Evidence::new("hibp", "breach two"));
+    cases.push(b);
+
+    // No evidence → 0 (matches an empty set; the ≥1 fallback lives only in
+    // `source_count`, not here).
+    cases.push(Entity::new(EntityKind::Domain, "e.com", 0.5, "s"));
+
+    // Real source + deterministic enrichment → 1 (enrichment excluded).
+    let mut d = Entity::new(EntityKind::Address, "Maleny, QLD 4552", 0.3, "s");
+    d.add_evidence(Evidence::new("qld_unclaimed", "locality"));
+    d.add_evidence(Evidence::new("geo_normalize", "parse"));
+    cases.push(d);
+
+    for e in &cases {
+        assert_eq!(
+            e.distinct_corroborating_source_count(),
+            e.corroborating_sources().len(),
+            "count-without-alloc must equal corroborating_sources().len() for {}",
+            e.value
+        );
+    }
+
+    // Spot-check the concrete values.
+    assert_eq!(cases[0].distinct_corroborating_source_count(), 2);
+    assert_eq!(cases[1].distinct_corroborating_source_count(), 1);
+    assert_eq!(cases[2].distinct_corroborating_source_count(), 0);
+    assert_eq!(cases[3].distinct_corroborating_source_count(), 1);
+}
+
+#[test]
 fn name_intel_permutation_does_not_count_as_corroboration() {
     // The H3 flaw: `name_intel` permutes the seed name into speculative
     // `name × freemail` email guesses. Such a guess is a derivation of the
