@@ -781,41 +781,158 @@ where
 {
     let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut key = initial_key.to_string();
-    'cascade: loop {
+    loop {
+        // Record BEFORE attempting: a burned key must never be re-handed by
+        // `next_pooled_key`, including the initial one.
         tried.insert(key.clone());
-        let mut retries = 2u8;
-        loop {
-            if ctx.cancel.is_cancelled() {
-                return Ok(None);
+        match attempt_with_key(ctx, module, &key, absent_statuses, &mut build).await {
+            Attempt::Ok(resp) => return Ok(Some((resp, key))),
+            Attempt::Absent | Attempt::Cancelled => return Ok(None),
+            Attempt::Failed(e) => return Err(e),
+            Attempt::Rotate(e) => match ctx.next_pooled_key(module, &tried) {
+                Some(next) => key = next,
+                None => return Err(e),
+            },
+        }
+    }
+}
+
+/// What one key's attempt produced. The cascade drivers
+/// ([`keyed_cascade_with_key`], [`keyed_cascade_json`]) differ only in what they
+/// do with a 2xx; extracting the attempt keeps the retry/burn/classification
+/// policy in one place instead of duplicating it per driver.
+enum Attempt {
+    /// A 2xx response on this key.
+    Ok(reqwest::Response),
+    /// A status the caller declared absent — a clean miss, not a failure.
+    Absent,
+    /// This key is dead or exhausted and has already been burned. Carries the
+    /// error to surface if no untried key remains to rotate to.
+    Rotate(Error),
+    /// Terminal and not key-related; no rotation can help.
+    Failed(Error),
+    /// The scan was cancelled.
+    Cancelled,
+}
+
+/// Drive ONE key: send, honour a 429 backoff in place (up to
+/// [`handle_keyed_error`]'s budget), and classify the outcome. Never rotates —
+/// key selection belongs to the caller, which owns the `tried` set.
+async fn attempt_with_key<F>(
+    ctx: &crate::core::module::ModuleContext,
+    module: &'static str,
+    key: &str,
+    absent_statuses: &[u16],
+    build: &mut F,
+) -> Attempt
+where
+    F: FnMut(&str) -> reqwest::RequestBuilder,
+{
+    let mut retries = 2u8;
+    loop {
+        if ctx.cancel.is_cancelled() {
+            return Attempt::Cancelled;
+        }
+        let resp = match build(key).send_tagged(module).await {
+            Ok(r) => r,
+            Err(e) => return Attempt::Failed(e),
+        };
+        let status = resp.status();
+        if absent_statuses.contains(&status.as_u16()) {
+            return Attempt::Absent;
+        }
+        if status.is_success() {
+            return Attempt::Ok(resp);
+        }
+        let code = status.as_u16();
+        if handle_keyed_error(code, resp.headers(), &mut retries, module, key, ctx).await {
+            continue;
+        }
+        let snippet = error_snippet(resp).await;
+        // handle_keyed_error already burned 401/403/429 internally; the
+        // ambiguous-400-as-auth-failure case is this cascade's own extra check,
+        // so it burns the key itself when that's what fired.
+        let keyed =
+            is_keyed_error_status(code) || (code == 400 && is_auth_failure_400_body(&snippet));
+        let err = Error::module(module, format!("HTTP {status}: {snippet}"));
+        if keyed {
+            if code == 400 {
+                ctx.report_key_exhausted(module, key, code);
             }
-            let resp = build(&key).send_tagged(module).await?;
-            let status = resp.status();
-            if absent_statuses.contains(&status.as_u16()) {
-                return Ok(None);
-            }
-            if status.is_success() {
-                return Ok(Some((resp, key)));
-            }
-            let code = status.as_u16();
-            if handle_keyed_error(code, resp.headers(), &mut retries, module, &key, ctx).await {
-                continue;
-            }
-            let snippet = error_snippet(resp).await;
-            // handle_keyed_error already burned 401/403/429 internally; the
-            // ambiguous-400-as-auth-failure case is this cascade's own extra
-            // check, so it burns the key itself when that's what fired.
-            let keyed =
-                is_keyed_error_status(code) || (code == 400 && is_auth_failure_400_body(&snippet));
-            if keyed {
-                if code == 400 {
-                    ctx.report_key_exhausted(module, &key, code);
+            return Attempt::Rotate(err);
+        }
+        return Attempt::Failed(err);
+    }
+}
+
+/// What an inspected response BODY says about the key that produced it.
+///
+/// Some providers answer a dead or exhausted key with `HTTP 200` and an
+/// in-body status rather than a 401/403/429 — Criminal IP reports
+/// `status: 401|402|429` inside the JSON, IPQS reports `success: false` with a
+/// quota/auth message. Those are key failures the HTTP-status cascade cannot
+/// see, so without inspecting the body a dead key is indistinguishable from a
+/// clean empty result and the pool never rotates past it.
+pub enum BodyVerdict {
+    /// A real answer; return it.
+    Accept,
+    /// An auth/quota failure reported in the body. `code` is the provider's own
+    /// status, used when reporting the key to the pool.
+    KeyFailure(u16),
+    /// A genuine miss for this query — not a key problem. Yields `Ok(None)`.
+    Absent,
+}
+
+/// [`keyed_cascade`] for a provider that reports key failures **in the response
+/// body on an HTTP 2xx**, which the status-only cascade cannot detect.
+///
+/// Decodes each successful response and asks `verdict` what the body means. On
+/// [`BodyVerdict::KeyFailure`] it burns the key and rotates exactly as an
+/// HTTP 401/403/429 would, so one call still spends every credential the pool
+/// holds. Decoding uses [`super::json_decode`] — both current callers
+/// (`criminal_ip`, `ipqs`) use it; a key-scanning variant belongs here only when
+/// a caller actually needs one.
+pub async fn keyed_cascade_json<T, F, V>(
+    ctx: &crate::core::module::ModuleContext,
+    module: &'static str,
+    initial_key: &str,
+    absent_statuses: &[u16],
+    mut build: F,
+    verdict: V,
+) -> Result<Option<T>>
+where
+    T: DeserializeOwned,
+    F: FnMut(&str) -> reqwest::RequestBuilder,
+    V: Fn(&T) -> BodyVerdict,
+{
+    let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut key = initial_key.to_string();
+    loop {
+        // Record BEFORE attempting — see `keyed_cascade_with_key`.
+        tried.insert(key.clone());
+        let rotate_err =
+            match attempt_with_key(ctx, module, &key, absent_statuses, &mut build).await {
+                Attempt::Absent | Attempt::Cancelled => return Ok(None),
+                Attempt::Failed(e) => return Err(e),
+                Attempt::Rotate(e) => e,
+                Attempt::Ok(resp) => {
+                    let decoded: T = super::json_decode(module, resp).await?;
+                    match verdict(&decoded) {
+                        BodyVerdict::Accept => return Ok(Some(decoded)),
+                        BodyVerdict::Absent => return Ok(None),
+                        BodyVerdict::KeyFailure(code) => {
+                            ctx.report_key_exhausted(module, &key, code);
+                            Error::module(
+                                module,
+                                format!("{module} reported an in-body key failure (status {code})"),
+                            )
+                        }
+                    }
                 }
-                if let Some(next) = ctx.next_pooled_key(module, &tried) {
-                    key = next;
-                    continue 'cascade;
-                }
-            }
-            return Err(Error::module(module, format!("HTTP {status}: {snippet}")));
+            };
+        match ctx.next_pooled_key(module, &tried) {
+            Some(next) => key = next,
+            None => return Err(rotate_err),
         }
     }
 }

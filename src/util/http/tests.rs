@@ -1,8 +1,8 @@
 use super::client::{build_client, build_client_with_trace};
 use super::fetch::{
     JSON_BODY_CAP, fetch_json, fetch_json_or_404, fetch_json_or_absent, fetch_json_probe,
-    is_keyed_error_status, key_tail, keyed_cascade, keyed_ok_or_404, parse_retry_after_secs,
-    retry_after_secs,
+    is_keyed_error_status, key_tail, keyed_cascade, keyed_cascade_json, keyed_ok_or_404,
+    parse_retry_after_secs, retry_after_secs,
 };
 use super::redact::{redact_credentials, redact_literal_secrets};
 use super::ssrf::{filter_public, redirect_to_private_ip};
@@ -988,4 +988,100 @@ async fn keyed_cascade_stops_before_any_request_when_already_cancelled() {
     .await
     .expect("a cancelled scan must not surface as an error");
     assert!(result.is_none(), "cancellation must short-circuit to None");
+}
+
+#[tokio::test]
+async fn keyed_cascade_json_reads_the_verdict_from_a_200_body() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // Serve a 200 whose BODY carries the provider's own status — the shape
+    // criminal_ip and ipqs use to report a dead key. A status-only cascade
+    // cannot see this, which is the whole reason keyed_cascade_json exists.
+    async fn serve_200(body: &'static str) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("should succeed");
+        let addr = listener.local_addr().expect("should succeed");
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("should succeed");
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(body.as_bytes()).await;
+            let _ = sock.flush().await;
+        });
+        addr
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Body {
+        status: Option<i64>,
+    }
+
+    let ctx = cascade_ctx(build_client());
+
+    // Accept: the body reports success, so the decoded value comes back.
+    let addr = serve_200(r#"{"status":200}"#).await;
+    let url = format!("http://{addr}/");
+    let out: Option<Body> = keyed_cascade_json(
+        &ctx,
+        "test_verdict_accept",
+        "k1",
+        &[],
+        |key| ctx.http.get(&url).header("X-Key", key),
+        |b: &Body| match b.status {
+            Some(200) => super::fetch::BodyVerdict::Accept,
+            Some(401) => super::fetch::BodyVerdict::KeyFailure(401),
+            _ => super::fetch::BodyVerdict::Absent,
+        },
+    )
+    .await
+    .expect("a 200 body verdicted Accept must not error");
+    assert_eq!(out.map(|b| b.status), Some(Some(200)));
+
+    // KeyFailure on a 200: no untried pooled key exists for this fresh service
+    // name, so it must surface as Err rather than being mistaken for a clean
+    // empty result — the exact regression this primitive prevents.
+    let addr = serve_200(r#"{"status":401}"#).await;
+    let url = format!("http://{addr}/");
+    let failed: Result<Option<Body>, _> = keyed_cascade_json(
+        &ctx,
+        "test_verdict_keyfail",
+        "k1",
+        &[],
+        |key| ctx.http.get(&url).header("X-Key", key),
+        |b: &Body| match b.status {
+            Some(200) => super::fetch::BodyVerdict::Accept,
+            Some(401) => super::fetch::BodyVerdict::KeyFailure(401),
+            _ => super::fetch::BodyVerdict::Absent,
+        },
+    )
+    .await;
+    assert!(
+        failed.is_err(),
+        "an in-body key failure with no rotation target must be Err, not empty Ok"
+    );
+
+    // Absent: a genuine per-query miss reported in-body is Ok(None), NOT an error.
+    let addr = serve_200(r#"{"status":404}"#).await;
+    let url = format!("http://{addr}/");
+    let absent: Option<Body> = keyed_cascade_json(
+        &ctx,
+        "test_verdict_absent",
+        "k1",
+        &[],
+        |key| ctx.http.get(&url).header("X-Key", key),
+        |b: &Body| match b.status {
+            Some(200) => super::fetch::BodyVerdict::Accept,
+            Some(401) => super::fetch::BodyVerdict::KeyFailure(401),
+            _ => super::fetch::BodyVerdict::Absent,
+        },
+    )
+    .await
+    .expect("a genuine in-body miss must not error");
+    assert!(absent.is_none(), "Absent verdict must yield Ok(None)");
 }
