@@ -450,6 +450,37 @@ fn module_registry_count_is_stable() {
     );
 }
 
+/// Every registered module must have a UNIQUE `name()`. The name is the
+/// module's identity across the whole system: it keys the per-target
+/// dispatch-dedup set (`dispatch_key(name, target)` in
+/// `core/engine/dispatch.rs`) and the `MODULE_TECHNIQUES` map
+/// (`src/modules/mod.rs`). A duplicate name silently corrupts both — two
+/// modules collide on one dispatch slot and the technique map last-wins —
+/// with NO other signal, exactly the way a duplicated AU rule-number would
+/// (guarded by `au_rule_numbers_are_unique`). This makes a copy-pasted
+/// module that forgot to rename `name()` a CI failure instead of a
+/// silent runtime corruption.
+#[test]
+fn module_names_are_unique() {
+    use std::collections::HashMap;
+    let modules = huntsman_search_engine::modules::registry();
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for m in &modules {
+        *counts.entry(m.name()).or_default() += 1;
+    }
+    let collisions: Vec<String> = counts
+        .into_iter()
+        .filter(|(_, n)| *n > 1)
+        .map(|(name, n)| format!("{name} ({n}×)"))
+        .collect();
+    assert!(
+        collisions.is_empty(),
+        "module name() values must be unique — a duplicate corrupts the \
+         dispatch-dedup key and the technique map with no other signal; \
+         rename the copy: {collisions:?}"
+    );
+}
+
 /// Every non-passive (network-reaching) module must declare a
 /// `max_timeout_ms()` strictly greater than the default `MODULE_TIMEOUT_MS`
 /// (3s). The engine wraps each `process()` in a `tokio::time::timeout` at
