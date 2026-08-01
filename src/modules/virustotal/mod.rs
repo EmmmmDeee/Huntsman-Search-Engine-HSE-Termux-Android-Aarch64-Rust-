@@ -155,6 +155,24 @@ fn build_entities(target: &Target, attrs: &VtAttributes, scan_id: &str) -> Vec<E
     let mut out = vec![e];
     let label = target.value.as_str();
 
+    // Never drop silently. Unlike `overpass`, whose per-node cap is backed by a
+    // summary entity carrying the true total, nothing here records the records
+    // beyond the cap — so a domain with 200 historical entries would present 30
+    // as though that were all of them. An operator reading a passive-DNS pivot
+    // list must be able to tell "this domain has 30 records" from "30 of 200 are
+    // shown", exactly as `sanctions_ofac` does for its own bounded emission.
+    let dns_total = attrs.last_dns_records.len();
+    if dns_total > MAX_DNS_RECORDS {
+        tracing::warn!(
+            module = SRC,
+            domain = label,
+            total = dns_total,
+            emitted = MAX_DNS_RECORDS,
+            "VirusTotal passive DNS truncated — the remaining records are NOT in this \
+             scan's results"
+        );
+    }
+
     for rec in attrs.last_dns_records.iter().take(MAX_DNS_RECORDS) {
         let Some(rtype) = rec.record_type.as_deref().map(str::trim) else {
             continue;
