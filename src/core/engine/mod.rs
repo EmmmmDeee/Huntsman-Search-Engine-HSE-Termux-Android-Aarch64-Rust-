@@ -717,8 +717,19 @@ impl ScanEngine {
         // just the dirty subset) — see [`TrackedEntityMap`]'s doc for why.
         let mut seed_dirty: Vec<Entity> = entity_map.take_dirty();
         self.checkpoint_entities(&scan.id, &mut seed_dirty);
-        let seed_snapshot: Vec<Entity> = entity_map.values().cloned().collect();
-        self.correlate_incremental(&scan.id, &seed_snapshot, &mut emitted_corr);
+        // Gate the full-graph clone on working-set size, as the expansion rounds
+        // do: above the threshold the live pass defers to finalise, so building
+        // the seed snapshot here would only be discarded.
+        if entity_map.len() <= Self::INCREMENTAL_CORRELATE_MAX_ENTITIES {
+            let seed_snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+            self.correlate_incremental(&scan.id, &seed_snapshot, &mut emitted_corr);
+        } else {
+            debug!(
+                scan_id = %scan.id,
+                entities = entity_map.len(),
+                "live correlation deferred to finalise (seed working set above the live-pass threshold)"
+            );
+        }
 
         if opts.depth > 0 {
             let est = ExpansionState {
@@ -2202,8 +2213,23 @@ impl ScanEngine {
                 // miss cross-round correlations.
                 let mut dirty: Vec<Entity> = entity_map.take_dirty();
                 self.checkpoint_entities(scan_id, &mut dirty);
-                let snapshot: Vec<Entity> = entity_map.values().cloned().collect();
-                self.correlate_incremental(scan_id, &snapshot, emitted_corr);
+                // Only build the full-graph snapshot when the live correlation
+                // pass will actually run. Above the threshold it defers to the
+                // authoritative finalise pass (see `correlate_incremental`), so
+                // cloning the entire working set here — every Entity with its
+                // evidence + tags — would only be discarded. On a large recall
+                // graph this per-round clone is the dominant waste; mirrors the
+                // geo-promotion size gate above.
+                if entity_map.len() <= Self::INCREMENTAL_CORRELATE_MAX_ENTITIES {
+                    let snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+                    self.correlate_incremental(scan_id, &snapshot, emitted_corr);
+                } else {
+                    debug!(
+                        scan_id,
+                        entities = entity_map.len(),
+                        "live correlation deferred to finalise (working set above the live-pass threshold)"
+                    );
+                }
             }
 
             let floor = opts
