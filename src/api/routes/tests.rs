@@ -461,6 +461,57 @@ use super::*;
     }
 
     #[test]
+    fn embedded_spa_graph_is_bounded_and_never_builds_correlation_cliques() {
+        // buildD3Graph historically drew a *clique* per correlation cluster:
+        //   for (let i=0;i<uids.length;i++) for (let j=i+1;j<uids.length;j++)
+        //     links.push({source:uids[i], target:uids[j], corr:true});
+        // That is O(k²) in the cluster size. Real scans routinely produce
+        // correlation clusters spanning 600+ members (a single 607-member
+        // cluster is 183_921 edges); one observed scan — 1089 entities, several
+        // 607-member clusters — expanded to ~15.27M `<line>` elements, which
+        // hangs or crashes the browser tab and renders an unreadable hairball.
+        // The fix caps the rendered node/edge counts and represents each
+        // correlation as a bounded *star* (O(k)), not a clique. These asserts
+        // pin that so the O(k²) construct cannot silently return.
+        let graph = app_file("js/scan_info/graph.js");
+        for c in ["GRAPH_MAX_NODES", "GRAPH_MAX_LINKS", "CORR_MAX_SPOKES"] {
+            assert!(
+                graph.contains(c),
+                "graph.js must define the rendering ceiling `{c}` — without it a \
+                 large scan builds millions of SVG edges and crashes the tab"
+            );
+        }
+        // The exact clique double-loop over correlation member UIDs must be gone.
+        assert!(
+            !graph.contains("for (let j=i+1;j<uids.length;j++)"),
+            "graph.js still contains the O(k²) correlation-clique double-loop — a \
+             600+-member cluster expands to >180k edges; represent correlations \
+             as a bounded star (CORR_MAX_SPOKES) instead"
+        );
+        let build = graph
+            .split_once("function buildD3Graph(")
+            .map(|(_, b)| b)
+            .expect("buildD3Graph() present in graph.js");
+        assert!(
+            build.contains(".slice(0, GRAPH_MAX_NODES)"),
+            "buildD3Graph must cap rendered entity nodes via \
+             .slice(0, GRAPH_MAX_NODES)"
+        );
+        assert!(
+            build.contains("CORR_MAX_SPOKES") && build.contains("GRAPH_MAX_LINKS"),
+            "buildD3Graph must bound correlation fan-out (CORR_MAX_SPOKES) and \
+             the total edge count (GRAPH_MAX_LINKS)"
+        );
+        // The summary notice element that tells the operator the view is capped
+        // (and where the complete graph lives) must exist and be populated.
+        assert!(
+            graph.contains("id=\"graph-cap\"") && graph.contains("#graph-cap"),
+            "graph.js must render and populate the #graph-cap notice so a capped \
+             graph points the operator to Browse / Relations / GEXF"
+        );
+    }
+
+    #[test]
     fn embedded_spa_deep_links_resolve_to_a_visible_section() {
         // The Report/Location "no leads yet" hint and the correlation-count
         // callout link to `#/scaninfo?...&tab=network` / `&tab=corr`, but

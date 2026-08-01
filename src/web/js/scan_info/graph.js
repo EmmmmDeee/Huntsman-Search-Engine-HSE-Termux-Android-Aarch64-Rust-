@@ -11,6 +11,7 @@ export function renderGraph(host){
   host.innerHTML = `
     <div style="position:relative">
       <svg id="graph-svg" preserveAspectRatio="xMidYMid meet"></svg>
+      <div id="graph-cap" class="graph-cap text-muted" style="display:none"></div>
       <div class="graph-legend">
         <div class="lr"><span class="sw" style="background:#059CD7;border:2px solid #333"></span>seed target</div>
         <div class="lr"><span class="sw" style="background:#31708f"></span>email / ip</div>
@@ -44,6 +45,15 @@ export const NODE_COLOR = {
   other:'#888'
 };
 
+// Graph rendering ceilings — keep the interactive SVG force graph legible and,
+// above all, stop a large scan from locking up the browser tab. Correlation
+// clusters routinely span hundreds of members (real scans produce several
+// 600+-member clusters), so an unbounded render is not a corner case. See
+// buildD3Graph() for how these are applied.
+export const GRAPH_MAX_NODES = 240;  // entity nodes rendered (the seed is extra)
+export const GRAPH_MAX_LINKS = 2000; // hard ceiling on edges handed to D3
+export const CORR_MAX_SPOKES = 8;    // members linked per correlation (star, not clique)
+
 export function buildD3Graph(){
   if (typeof d3==='undefined') return;
   // Theme-aware palette: the graph is drawn by D3 (inline styles), so the
@@ -75,23 +85,81 @@ export function buildD3Graph(){
     container.transition().duration(250).attr('transform', 'translate(0,0)scale(1)');
   };
 
-  // Build nodes/edges.
+  // Build nodes/edges — bounded so the SVG force graph stays legible and, above
+  // all, never locks up the tab. A large scan (1000+ entities, correlation
+  // clusters spanning hundreds of members) is routine; drawing a *clique* per
+  // correlation — the historical behaviour — is O(k²) and, for the 600+-member
+  // clusters real scans produce, builds ~15M edges that hang or crash the
+  // renderer and yield an unreadable hairball. We render the most-connected
+  // slice of nodes and represent each correlation as a bounded *star*, not a
+  // clique. Browse / Relations / GEXF remain the complete, unabridged views.
   const seedId = '__seed__';
   const nodes = [{id:seedId, kind:S.scan.target.kind, label:S.scan.target.value, isSeed:true, r:12}];
-  for (const e of S.entities){
+
+  // Rank entities by relation-degree (structural importance) then corroboration,
+  // so that when we cap, the graph's connected core is what survives.
+  const relList = S.relations || [];
+  const relDegree = new Map();
+  for (const r of relList){
+    relDegree.set(r.from_uid, (relDegree.get(r.from_uid)||0)+1);
+    relDegree.set(r.to_uid,   (relDegree.get(r.to_uid)||0)+1);
+  }
+  const ranked = S.entities.slice().sort((a,b)=>
+    ((relDegree.get(b.uid)||0)-(relDegree.get(a.uid)||0)) ||
+    ((b.corroboration||1)-(a.corroboration||1)));
+  const shown = ranked.slice(0, GRAPH_MAX_NODES);
+  const shownIds = new Set(shown.map(e=>e.uid));
+  for (const e of shown){
     nodes.push({id:e.uid, kind:e.kind, label:e.value, r: 5 + Math.min(8, Math.log(1+(e.corroboration||1))*3)});
   }
+
+  // Links, in priority order so the global ceiling trims the least-important
+  // first: typed relations → seed anchors → correlation stars. Only edges whose
+  // endpoints are both rendered are built.
   const links = [];
-  for (const e of S.entities) links.push({source:seedId, target:e.uid, corr:false});
-  for (const c of S.correlations){
-    const uids = c.entity_uids || c.evidence_uids || c.entities || [];
-    for (let i=0;i<uids.length;i++) for (let j=i+1;j<uids.length;j++)
-      links.push({source:uids[i], target:uids[j], corr:true});
-  }
   // Typed attribution edges (subdomain_of / belongs_to_domain / hosted_on /
   // derived_from / co_located_with) between entity nodes.
-  for (const r of (S.relations||[]))
-    links.push({source:r.from_uid, target:r.to_uid, rel:true, kind:r.kind});
+  for (const r of relList)
+    if (shownIds.has(r.from_uid) && shownIds.has(r.to_uid))
+      links.push({source:r.from_uid, target:r.to_uid, rel:true, kind:r.kind});
+  for (const e of shown) links.push({source:seedId, target:e.uid, corr:false});
+  for (const c of S.correlations){
+    if (links.length >= GRAPH_MAX_LINKS) break;
+    // Star instead of a k² clique — O(k), capped fan-out — keeping the "these
+    // are one group" signal without the hairball or the millions of edges.
+    // Anchor the star at the cluster's *most-connected* rendered member (by
+    // relation degree, then corroboration), not an arbitrary storage-order
+    // one, so the visual hub reflects real centrality rather than misleading.
+    const members = (c.entity_uids || c.evidence_uids || c.entities || []).filter(u=>shownIds.has(u));
+    if (members.length < 2) continue;
+    let hub = members[0], hubScore = -1;
+    for (const u of members){
+      const s = (relDegree.get(u)||0);
+      if (s > hubScore){ hub = u; hubScore = s; }
+    }
+    let spokes = 0;
+    for (const u of members){
+      if (u === hub) continue;
+      if (spokes >= CORR_MAX_SPOKES || links.length >= GRAPH_MAX_LINKS) break;
+      links.push({source:hub, target:u, corr:true});
+      spokes++;
+    }
+  }
+
+  // Surface when the view is a summary, and point to the complete surfaces.
+  const nodesCapped = shown.length < S.entities.length;
+  const linksCapped = links.length >= GRAPH_MAX_LINKS;
+  const capEl = $('#graph-cap');
+  if (capEl){
+    if (nodesCapped || linksCapped){
+      capEl.style.display = '';
+      capEl.textContent = `Showing the ${shown.length} most-connected of ${S.entities.length} entities`
+        + (linksCapped ? ` · edges capped at ${GRAPH_MAX_LINKS}` : '')
+        + ' — Browse, Relations, and the GEXF export carry the complete graph.';
+    } else {
+      capEl.style.display = 'none';
+    }
+  }
 
   // Drop links to unknown nodes, then resolve source/target to the actual
   // node object references. D3 v3's force layout only auto-resolves
