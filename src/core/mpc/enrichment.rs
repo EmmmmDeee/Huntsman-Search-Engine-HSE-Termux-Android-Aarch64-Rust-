@@ -48,10 +48,11 @@ impl Enricher {
     /// Enriched entity dataset and enrichment statistics
     pub fn enrich(
         &self,
-        mut local_entities: Vec<Entity>,
+        local_entities: Vec<Entity>,
         remote_datasets: Vec<(PartyId, Vec<Entity>)>,
     ) -> (Vec<Entity>, EnrichmentResult) {
         let original_count = local_entities.len();
+        let remote_parties_count = remote_datasets.len();
         let mut enriched_by_uid: HashMap<String, Entity> =
             local_entities.into_iter().map(|e| (e.uid.clone(), e)).collect();
 
@@ -99,7 +100,7 @@ impl Enricher {
             entities_enriched,
             entities_added,
             duplicates_merged,
-            parties_count: remote_datasets.len() + 1, // +1 for local party
+            parties_count: remote_parties_count + 1, // +1 for local party
         };
 
         (enriched_entities, result)
@@ -131,7 +132,7 @@ impl Enricher {
 
     /// Add evidence indicating this entity was enriched from a remote party.
     fn add_enrichment_evidence(&self, entity: &mut Entity, remote_party: &PartyId) {
-        let mut evidence = Evidence::new(
+        let evidence = Evidence::new(
             "mpc_enrichment",
             format!("Data enriched from party: {}", remote_party),
         )

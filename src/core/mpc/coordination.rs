@@ -1,6 +1,5 @@
 //! MPC Coordinator: orchestrates data sharing and enrichment across parties.
 
-use crate::core::entity::Entity;
 use crate::core::mpc::protocol::{MPCConfig, MPCPhase, Party, PartyId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
