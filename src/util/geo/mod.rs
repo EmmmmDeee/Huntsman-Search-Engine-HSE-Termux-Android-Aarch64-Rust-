@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use crate::core::error::{Error, Result};
 
 pub mod coords;
@@ -594,8 +595,12 @@ pub fn coarse_provider_coords(
 /// ```
 #[must_use]
 pub fn ip_asn_entity(asn: &str, src: &str, ip: &str, scan_id: &str) -> crate::core::entity::Entity {
-    let mut e =
-        crate::core::entity::Entity::new(crate::core::entity::EntityKind::Asn, asn, 0.80, scan_id);
+    let mut e = crate::core::entity::Entity::new(
+        crate::core::entity::EntityKind::Asn,
+        asn,
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
     e.add_evidence(crate::core::entity::Evidence::new(
         src,
         format!("ASN for {ip}"),

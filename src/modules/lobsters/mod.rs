@@ -160,7 +160,7 @@ pub(super) fn build_entities(user: LobstersUser, scan_id: &str) -> Vec<Entity> {
     if let Some(ref gh) = user.github_username
         && !gh.is_empty()
     {
-        let mut g = Entity::new(EntityKind::Username, gh, 0.82, scan_id);
+        let mut g = Entity::new(EntityKind::Username, gh, confidence::CORROBORATED, scan_id);
         g.tag("github");
         g.tag("lobsters-pivot");
         g.add_evidence(

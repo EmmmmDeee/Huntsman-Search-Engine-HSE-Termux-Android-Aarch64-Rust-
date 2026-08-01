@@ -296,7 +296,12 @@ pub(super) fn build_phone_entities(
         ));
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.35, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::TENTATIVE,
+                scan_id,
+            );
             c.tag("numverify");
             c.tag("addr-derived");
             c.tag("geoint");

@@ -3,6 +3,7 @@
 //! `use super::*`.
 
 use super::*;
+use crate::core::confidence;
 
 /// Which `-> value` list a run of lines belongs to.
 #[derive(PartialEq, Clone, Copy)]
@@ -269,7 +270,10 @@ fn emit_dossier_entry(
             && !is_fragment_value(&EntityKind::Email, &em)
             && seen.insert(format!("em:{em}"))
         {
-            push(Entity::new(EntityKind::Email, &em, 0.72, sid), "breach");
+            push(
+                Entity::new(EntityKind::Email, &em, confidence::ATTRIBUTED, sid),
+                "breach",
+            );
             stats.emails += 1;
         }
     }
@@ -278,7 +282,10 @@ fn emit_dossier_entry(
         && !un.contains('@')
         && seen.insert(format!("un:{}", un.to_lowercase()))
     {
-        push(Entity::new(EntityKind::Username, un, 0.60, sid), "breach");
+        push(
+            Entity::new(EntityKind::Username, un, confidence::MEDIUM_PLUS, sid),
+            "breach",
+        );
         stats.usernames += 1;
     }
     if let Some(nm) = name {
@@ -287,7 +294,10 @@ fn emit_dossier_entry(
             && !crate::core::validation::is_placeholder_entity(&EntityKind::Person, nm)
             && seen.insert(format!("pn:{}", nm.to_lowercase()))
         {
-            push(Entity::new(EntityKind::Person, nm, 0.62, sid), "breach");
+            push(
+                Entity::new(EntityKind::Person, nm, confidence::NOTABLE, sid),
+                "breach",
+            );
             stats.persons += 1;
         }
     }
@@ -308,7 +318,7 @@ fn emit_dossier_entry(
                 stats.credentials += 1;
             }
             push(
-                Entity::new(EntityKind::Credential, h, 0.60, sid),
+                Entity::new(EntityKind::Credential, h, confidence::MEDIUM_PLUS, sid),
                 "password-hash",
             );
         }
@@ -333,7 +343,10 @@ fn emit_dossier_entry(
             if seen.insert(format!("cr:{v}")) {
                 stats.credentials += 1;
             }
-            push(Entity::new(EntityKind::Credential, v, 0.55, sid), tag);
+            push(
+                Entity::new(EntityKind::Credential, v, confidence::MEDIUM_HIGH, sid),
+                tag,
+            );
         }
     }
     // A dossier entry's `ip` / `phone` / `domain` are first-class pivotable seeds,
@@ -347,13 +360,19 @@ fn emit_dossier_entry(
         && !crate::core::validation::is_bogus_ip(ip)
         && seen.insert(format!("ip:{ip}"))
     {
-        push(Entity::new(EntityKind::IpAddress, ip, 0.65, sid), "breach");
+        push(
+            Entity::new(EntityKind::IpAddress, ip, confidence::HIGH, sid),
+            "breach",
+        );
         stats.ips += 1;
     }
     if let Some(ph) = get("phone").and_then(crate::core::validation::to_e164_au)
         && seen.insert(format!("ph:{ph}"))
     {
-        push(Entity::new(EntityKind::Phone, &ph, 0.62, sid), "breach");
+        push(
+            Entity::new(EntityKind::Phone, &ph, confidence::NOTABLE, sid),
+            "breach",
+        );
         stats.phones += 1;
     }
     // A dossier's `address` is the strongest associate-pivot seed there is: the
@@ -368,7 +387,10 @@ fn emit_dossier_entry(
         && crate::core::validation::is_specific_residence(addr)
         && seen.insert(format!("ad:{}", addr.to_ascii_lowercase()))
     {
-        push(Entity::new(EntityKind::Address, addr, 0.58, sid), "breach");
+        push(
+            Entity::new(EntityKind::Address, addr, confidence::MEDIUM_SOLID, sid),
+            "breach",
+        );
         stats.addresses += 1;
     }
     // A dossier's `_domain` is usually the email's OWN host (gmail.com) —
@@ -383,7 +405,10 @@ fn emit_dossier_entry(
         && !is_fragment_value(&EntityKind::Domain, &dom)
         && seen.insert(format!("dom:{dom}"))
     {
-        push(Entity::new(EntityKind::Domain, &dom, 0.60, sid), "breach");
+        push(
+            Entity::new(EntityKind::Domain, &dom, confidence::MEDIUM_PLUS, sid),
+            "breach",
+        );
         stats.domains += 1;
     }
     entry.clear();
@@ -399,6 +424,7 @@ fn emit_dossier_list_item(
     stats: &mut ImportStats,
     seen: &mut std::collections::HashSet<String>,
 ) {
+    use crate::core::confidence;
     use crate::core::entity::{Entity, EntityKind, Evidence};
     use crate::core::validation::is_fragment_value;
     let mut push = |e: Entity, key: String| {
@@ -428,7 +454,7 @@ fn emit_dossier_list_item(
         DossierSection::Emails => {
             let em = val.to_ascii_lowercase();
             if em.contains('@') && !is_fragment_value(&EntityKind::Email, &em) {
-                let e = Entity::new(EntityKind::Email, &em, 0.55, sid);
+                let e = Entity::new(EntityKind::Email, &em, confidence::MEDIUM_HIGH, sid);
                 if push(e, format!("em:{em}")) {
                     stats.emails += 1;
                 }
@@ -439,13 +465,13 @@ fn emit_dossier_list_item(
             if val.contains('@') {
                 let em = val.to_ascii_lowercase();
                 if !is_fragment_value(&EntityKind::Email, &em) {
-                    let e = Entity::new(EntityKind::Email, &em, 0.50, sid);
+                    let e = Entity::new(EntityKind::Email, &em, confidence::MEDIUM, sid);
                     if push(e, format!("em:{em}")) {
                         stats.emails += 1;
                     }
                 }
             } else if val.len() >= 2 {
-                let e = Entity::new(EntityKind::Username, val, 0.50, sid);
+                let e = Entity::new(EntityKind::Username, val, confidence::MEDIUM, sid);
                 if push(e, format!("un:{}", val.to_lowercase())) {
                     stats.usernames += 1;
                 }
@@ -453,7 +479,7 @@ fn emit_dossier_list_item(
         }
         DossierSection::Passwords => {
             if val.len() >= 8 {
-                let e = Entity::new(EntityKind::Credential, val, 0.50, sid);
+                let e = Entity::new(EntityKind::Credential, val, confidence::MEDIUM, sid);
                 if push(e, format!("cr:{val}")) {
                     stats.credentials += 1;
                 }
@@ -474,14 +500,14 @@ fn emit_dossier_list_item(
                 || key.contains("organisation")
                 || key.contains("organization")
             {
-                let e = Entity::new(EntityKind::Organisation, name, 0.50, sid);
+                let e = Entity::new(EntityKind::Organisation, name, confidence::MEDIUM, sid);
                 if push(e, format!("org:{}", name.to_lowercase())) {
                     stats.organisations += 1;
                 }
             } else if name.split_whitespace().count() >= 2
                 && !crate::core::validation::is_placeholder_entity(&EntityKind::Person, name)
             {
-                let e = Entity::new(EntityKind::Person, name, 0.55, sid);
+                let e = Entity::new(EntityKind::Person, name, confidence::MEDIUM_HIGH, sid);
                 if push(e, format!("pn:{}", name.to_lowercase())) {
                     stats.persons += 1;
                 }
@@ -492,7 +518,7 @@ fn emit_dossier_list_item(
             // drops the bare foreign-national numbers (no recoverable country
             // code) while keeping every `+61`/`61…`/`0…` Australian number.
             if let Some(ph) = crate::core::validation::to_e164_au(val) {
-                let e = Entity::new(EntityKind::Phone, &ph, 0.55, sid);
+                let e = Entity::new(EntityKind::Phone, &ph, confidence::MEDIUM_HIGH, sid);
                 if push(e, format!("ph:{ph}")) {
                     stats.phones += 1;
                 }
@@ -509,7 +535,12 @@ fn emit_dossier_list_item(
                 None => val,
             };
             if !candidate.is_empty() && crate::core::validation::is_specific_residence(candidate) {
-                let e = Entity::new(EntityKind::Address, candidate, 0.52, sid);
+                let e = Entity::new(
+                    EntityKind::Address,
+                    candidate,
+                    confidence::MEDIUM_LIGHT,
+                    sid,
+                );
                 if push(e, format!("ad:{}", candidate.to_ascii_lowercase())) {
                     stats.addresses += 1;
                 }
@@ -518,7 +549,7 @@ fn emit_dossier_list_item(
         DossierSection::IpAddresses => {
             if val.parse::<std::net::IpAddr>().is_ok() && !crate::core::validation::is_bogus_ip(val)
             {
-                let e = Entity::new(EntityKind::IpAddress, val, 0.55, sid);
+                let e = Entity::new(EntityKind::IpAddress, val, confidence::MEDIUM_HIGH, sid);
                 if push(e, format!("ip:{val}")) {
                     stats.ips += 1;
                 }

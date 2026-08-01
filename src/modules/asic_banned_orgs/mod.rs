@@ -175,7 +175,7 @@ fn emit_banned_org(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleR
     if let Some(acn) =
         field(rec, "BD_ORG_ACN").filter(|a| a.chars().filter(char::is_ascii_digit).count() == 9)
     {
-        let mut e = Entity::new(EntityKind::AbnAcn, &acn, 0.62, scan_id);
+        let mut e = Entity::new(EntityKind::AbnAcn, &acn, confidence::NOTABLE, scan_id);
         e.tag("au");
         e.tag("asic");
         e.tag("asic-banned");

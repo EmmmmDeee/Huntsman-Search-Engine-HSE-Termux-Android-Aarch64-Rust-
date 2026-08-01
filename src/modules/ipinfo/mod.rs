@@ -83,7 +83,7 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
         if let (Some(lat_s), Some(lon_s)) = (parts.next(), parts.next())
             && let (Ok(lat), Ok(lon)) = (lat_s.trim().parse::<f64>(), lon_s.trim().parse::<f64>())
             // Confidence recalibrated 0.68 → 0.58 — see ip_geo.rs.
-            && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, 0.58, scan_id)
+            && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, confidence::MEDIUM_SOLID, scan_id)
         {
             ce.tag("ipinfo");
             crate::util::geo::tag_au_state(&mut ce, lat, lon);

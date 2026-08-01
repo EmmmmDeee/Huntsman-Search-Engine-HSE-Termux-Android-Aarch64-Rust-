@@ -29,6 +29,7 @@
 
 use super::*;
 
+use crate::core::confidence;
 use crate::core::entity::{Entity, EntityKind, Evidence};
 use crate::core::stealer_row::{StealerRow, StealerRowKind};
 
@@ -308,7 +309,7 @@ pub(super) fn parse_stealerlogs(
             && seen.insert(format!("lid:{id}"))
         {
             push(
-                Entity::new(EntityKind::DeviceId, id, 0.55, sid),
+                Entity::new(EntityKind::DeviceId, id, confidence::MEDIUM_HIGH, sid),
                 "log-id",
                 ev.clone(),
             );
@@ -341,7 +342,7 @@ pub(super) fn parse_stealerlogs(
                         && seen.insert(format!("em:{em}"))
                     {
                         push(
-                            Entity::new(EntityKind::Email, &em, 0.55, sid),
+                            Entity::new(EntityKind::Email, &em, confidence::MEDIUM_HIGH, sid),
                             "breach",
                             cred_ev.clone(),
                         );
@@ -349,7 +350,7 @@ pub(super) fn parse_stealerlogs(
                     }
                 } else if seen.insert(format!("un:{}", u.to_lowercase())) {
                     push(
-                        Entity::new(EntityKind::Username, u, 0.50, sid),
+                        Entity::new(EntityKind::Username, u, confidence::MEDIUM, sid),
                         "breach",
                         cred_ev.clone(),
                     );
@@ -368,7 +369,7 @@ pub(super) fn parse_stealerlogs(
                     stats.credentials += 1;
                 }
                 push(
-                    Entity::new(EntityKind::Credential, p, 0.55, sid),
+                    Entity::new(EntityKind::Credential, p, confidence::MEDIUM_HIGH, sid),
                     "plaintext-credential",
                     cred_ev.clone(),
                 );
@@ -404,7 +405,7 @@ pub(super) fn parse_stealerlogs(
                 let ip = ip.to_string();
                 if !crate::core::validation::is_bogus_ip(&ip) && seen.insert(format!("ip:{ip}")) {
                     push(
-                        Entity::new(EntityKind::IpAddress, &ip, 0.55, sid),
+                        Entity::new(EntityKind::IpAddress, &ip, confidence::MEDIUM_HIGH, sid),
                         "breach",
                         ev.clone(),
                     );
@@ -420,7 +421,7 @@ pub(super) fn parse_stealerlogs(
                     && seen.insert(format!("dom:{d}"))
                 {
                     push(
-                        Entity::new(EntityKind::Domain, &d, 0.50, sid),
+                        Entity::new(EntityKind::Domain, &d, confidence::MEDIUM, sid),
                         "breach",
                         ev.clone(),
                     );

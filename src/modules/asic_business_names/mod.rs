@@ -15,6 +15,7 @@ use serde_json::{Map, Value};
 
 use async_trait::async_trait;
 
+use crate::core::confidence;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
@@ -166,7 +167,12 @@ fn emit_business_name(
     }
 
     // The confirmed registered trading name.
-    let mut org = Entity::new(EntityKind::Organisation, &bn_name, 0.58, scan_id);
+    let mut org = Entity::new(
+        EntityKind::Organisation,
+        &bn_name,
+        confidence::MEDIUM_SOLID,
+        scan_id,
+    );
     org.tag("au");
     org.tag("asic");
     org.tag("business-name");
@@ -181,7 +187,7 @@ fn emit_business_name(
         field(rec, "BN_ABN").filter(|a| a.chars().filter(char::is_ascii_digit).count() == 11)
         && seen_abn.insert(abn.clone())
     {
-        let mut e = Entity::new(EntityKind::AbnAcn, &abn, 0.62, scan_id);
+        let mut e = Entity::new(EntityKind::AbnAcn, &abn, confidence::NOTABLE, scan_id);
         e.tag("au");
         e.tag("asic");
         e.tag("business-name");

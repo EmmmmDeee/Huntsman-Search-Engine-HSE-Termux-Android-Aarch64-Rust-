@@ -11,6 +11,7 @@
 
 use super::*;
 
+use crate::core::confidence;
 use crate::core::entity::{Entity, EntityKind, Evidence};
 
 /// Detect the Combined Search export — by its module banner or by its
@@ -222,7 +223,10 @@ fn emit_combined_records(
             && !crate::core::validation::is_fragment_value(&EntityKind::Email, em)
             && seen.insert(format!("em:{em}"))
         {
-            push(Entity::new(EntityKind::Email, em, 0.72, sid), "breach");
+            push(
+                Entity::new(EntityKind::Email, em, confidence::ATTRIBUTED, sid),
+                "breach",
+            );
             stats.emails += 1;
         }
         if let Some(un) = get("username")
@@ -230,7 +234,10 @@ fn emit_combined_records(
             && !un.contains('@')
             && seen.insert(format!("un:{}", un.to_lowercase()))
         {
-            push(Entity::new(EntityKind::Username, un, 0.60, sid), "breach");
+            push(
+                Entity::new(EntityKind::Username, un, confidence::MEDIUM_PLUS, sid),
+                "breach",
+            );
             stats.usernames += 1;
         }
         if let Some(nm) = get("name").or_else(|| get("full name"))
@@ -238,7 +245,10 @@ fn emit_combined_records(
             && !crate::core::validation::is_placeholder_entity(&EntityKind::Person, nm)
             && seen.insert(format!("pn:{}", nm.to_lowercase()))
         {
-            push(Entity::new(EntityKind::Person, nm, 0.62, sid), "breach");
+            push(
+                Entity::new(EntityKind::Person, nm, confidence::NOTABLE, sid),
+                "breach",
+            );
             stats.persons += 1;
         }
         if let Some(pw) = get("password")
@@ -248,7 +258,7 @@ fn emit_combined_records(
                 stats.credentials += 1;
             }
             push(
-                Entity::new(EntityKind::Credential, pw, 0.58, sid),
+                Entity::new(EntityKind::Credential, pw, confidence::MEDIUM_SOLID, sid),
                 "plaintext-credential",
             );
         }
@@ -260,7 +270,7 @@ fn emit_combined_records(
                     stats.credentials += 1;
                 }
                 push(
-                    Entity::new(EntityKind::Credential, h, 0.60, sid),
+                    Entity::new(EntityKind::Credential, h, confidence::MEDIUM_PLUS, sid),
                     "password-hash",
                 );
             }
@@ -271,21 +281,30 @@ fn emit_combined_records(
                 && !crate::core::validation::is_bogus_ip(ip)
                 && seen.insert(format!("ip:{ip}"))
             {
-                push(Entity::new(EntityKind::IpAddress, ip, 0.62, sid), "breach");
+                push(
+                    Entity::new(EntityKind::IpAddress, ip, confidence::NOTABLE, sid),
+                    "breach",
+                );
                 stats.ips += 1;
             }
         }
         if let Some(ph) = get("phone").and_then(crate::core::validation::to_e164_au)
             && seen.insert(format!("ph:{ph}"))
         {
-            push(Entity::new(EntityKind::Phone, &ph, 0.62, sid), "breach");
+            push(
+                Entity::new(EntityKind::Phone, &ph, confidence::NOTABLE, sid),
+                "breach",
+            );
             stats.phones += 1;
         }
         if let Some(u) = get("url")
             && u.starts_with("http")
             && seen.insert(format!("u:{u}"))
         {
-            push(Entity::new(EntityKind::Url, u, 0.55, sid), "breach");
+            push(
+                Entity::new(EntityKind::Url, u, confidence::MEDIUM_HIGH, sid),
+                "breach",
+            );
             stats.urls += 1;
         }
 

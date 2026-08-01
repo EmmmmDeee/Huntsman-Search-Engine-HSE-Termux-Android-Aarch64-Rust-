@@ -92,7 +92,12 @@ impl Module for EmailLocale {
             result.push(ae);
             if let Some((lat, lon)) = locale_centroid(locale_code) {
                 let coords = format!("{lat},{lon}");
-                let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.30, &ctx.scan_id);
+                let mut ce = Entity::new(
+                    EntityKind::Coordinates,
+                    &coords,
+                    confidence::SPECULATIVE,
+                    &ctx.scan_id,
+                );
                 ce.tag("geoint");
                 ce.tag(crate::core::tags::COARSE);
                 ce.tag("cctld-inferred");

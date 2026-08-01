@@ -41,6 +41,7 @@ const BROWSER_UA: &str = crate::util::curl::UA_MOBILE;
 const BROWSER_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;\
     q=0.9,image/avif,image/webp,*/*;q=0.8";
 
+use crate::core::confidence;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
@@ -328,7 +329,12 @@ fn build_entities(username: &str, scan_id: &str, hits: &[Hit], tally: &ProbeTall
         module_result.push(e);
     }
 
-    let mut summary = Entity::new(EntityKind::Username, username, 0.95, scan_id);
+    let mut summary = Entity::new(
+        EntityKind::Username,
+        username,
+        confidence::VERY_HIGH_PLUSPLUS,
+        scan_id,
+    );
     summary.tag("streaming-identity");
     cat_counts
         .keys()

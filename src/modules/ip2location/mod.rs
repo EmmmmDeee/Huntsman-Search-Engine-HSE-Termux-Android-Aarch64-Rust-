@@ -163,7 +163,8 @@ fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<E
     // stays slightly above ipinfo.
     if let (Some(lat), Some(lon)) = (data.latitude, data.longitude)
         && !skip_geo
-        && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, 0.62, scan_id)
+        && let Some(mut ce) =
+            crate::util::geo::coarse_provider_coords(lat, lon, confidence::NOTABLE, scan_id)
     {
         ce.tag("ip2location");
         if data.is_proxy == Some(true) {

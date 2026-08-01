@@ -3,6 +3,7 @@
 //! `use super::*`.
 
 use super::*;
+use crate::core::confidence;
 
 /// Parse an OathNet HTML export into entities (domains/subdomains, IPs, emails)
 /// by regex over the page text. Pure — the reusable core shared by the CLI
@@ -52,7 +53,7 @@ pub(super) fn parse_oathnet_html(body: &str, sid: &str) -> Vec<crate::core::enti
             && !ip.starts_with("127.")
             && !ip.starts_with("255.")
         {
-            let mut e = Entity::new(EntityKind::IpAddress, &ip, 0.55, sid);
+            let mut e = Entity::new(EntityKind::IpAddress, &ip, confidence::MEDIUM_HIGH, sid);
             e.tag("import");
             entities.push(e);
         }
@@ -61,7 +62,7 @@ pub(super) fn parse_oathnet_html(body: &str, sid: &str) -> Vec<crate::core::enti
     for cap in email_re.captures_iter(body) {
         let em = cap[0].to_lowercase();
         if em.len() >= 5 && seen.insert(format!("em:{em}")) {
-            let mut e = Entity::new(EntityKind::Email, &em, 0.50, sid);
+            let mut e = Entity::new(EntityKind::Email, &em, confidence::MEDIUM, sid);
             e.tag("import");
             entities.push(e);
         }

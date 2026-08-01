@@ -320,7 +320,12 @@ pub(super) fn extract_entities(
             {
                 push_breach_entity(
                     result,
-                    Entity::new(EntityKind::Username, format!("steam:{sid}"), 0.55, scan_id),
+                    Entity::new(
+                        EntityKind::Username,
+                        format!("steam:{sid}"),
+                        confidence::MEDIUM_HIGH,
+                        scan_id,
+                    ),
                     &ev,
                     &["steam", "discord-linked"],
                 );
@@ -336,7 +341,12 @@ pub(super) fn extract_entities(
                 let tags = [ty.as_str(), "discord-linked"];
                 push_breach_entity(
                     result,
-                    Entity::new(EntityKind::Username, format!("{ty}:{h}"), 0.55, scan_id),
+                    Entity::new(
+                        EntityKind::Username,
+                        format!("{ty}:{h}"),
+                        confidence::MEDIUM_HIGH,
+                        scan_id,
+                    ),
                     &ev,
                     &tags,
                 );
@@ -559,7 +569,7 @@ pub(super) fn extract_entities(
                 && crate::util::domains::is_or_subdomain_of(&s, target_value)
                 && seen.insert(format!("@subdomain:{s}"))
             {
-                let mut e = Entity::new(EntityKind::Domain, &s, 0.60, scan_id);
+                let mut e = Entity::new(EntityKind::Domain, &s, confidence::MEDIUM_PLUS, scan_id);
                 e.tag("see-know");
                 e.tag("subdomain");
                 e.tag("dns");

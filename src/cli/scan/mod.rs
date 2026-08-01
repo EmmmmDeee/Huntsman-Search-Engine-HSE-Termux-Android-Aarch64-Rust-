@@ -609,6 +609,7 @@ fn entity_source_labels(e: &crate::core::entity::Entity) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::entity::{Entity, EntityKind, Evidence};
     use std::cell::Cell;
 
@@ -679,9 +680,19 @@ alice@example.com
         // showed platform-infra entities regardless of the flag, unlike
         // `hse export` / the API which quarantine them by default. Pin the
         // actual filter behaviour the flag now drives.
-        let mut infra = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.6, "s");
+        let mut infra = Entity::new(
+            EntityKind::IpAddress,
+            "104.16.0.1",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         infra.tag(crate::core::tags::PLATFORM_INFRA);
-        let subject = Entity::new(EntityKind::Domain, "example-subject.test", 0.9, "s");
+        let subject = Entity::new(
+            EntityKind::Domain,
+            "example-subject.test",
+            confidence::VERY_HIGH_PLUS,
+            "s",
+        );
         let mut entities = vec![infra, subject];
 
         filter_infra_entities(&mut entities, false);
@@ -691,7 +702,12 @@ alice@example.com
 
     #[test]
     fn filter_infra_entities_restores_infra_when_flag_set() {
-        let mut infra = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.6, "s");
+        let mut infra = Entity::new(
+            EntityKind::IpAddress,
+            "104.16.0.1",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         infra.tag(crate::core::tags::PLATFORM_INFRA);
         let mut entities = vec![infra];
 
@@ -708,7 +724,12 @@ alice@example.com
         // A scan seeded with a datacenter/CDN IP that an IP module re-emits as
         // `hosting`, which then merges `platform-infra` onto the seed anchor —
         // the seed must still appear in its own report.
-        let mut seed = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.9, "s");
+        let mut seed = Entity::new(
+            EntityKind::IpAddress,
+            "104.16.0.1",
+            confidence::VERY_HIGH_PLUS,
+            "s",
+        );
         seed.tag(crate::core::tags::PLATFORM_INFRA);
         seed.tag("seed");
         let mut entities = vec![seed];
@@ -790,7 +811,7 @@ alice@example.com
 
     #[test]
     fn source_labels_prefer_source_attr_then_dedup_and_sort() {
-        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.5, "s");
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", confidence::MEDIUM, "s");
         // A "source" attr overrides the raw evidence source name.
         e.add_evidence(Evidence::new("modB", "m").with_attr("source", "haveibeenpwned"));
         // No "source" attr → falls back to ev.source ("modA")…
@@ -803,7 +824,7 @@ alice@example.com
 
     #[test]
     fn source_labels_em_dash_when_no_evidence() {
-        let e = Entity::new(EntityKind::Email, "x@y.com", 0.5, "s");
+        let e = Entity::new(EntityKind::Email, "x@y.com", confidence::MEDIUM, "s");
         assert_eq!(entity_source_labels(&e), "—");
     }
 

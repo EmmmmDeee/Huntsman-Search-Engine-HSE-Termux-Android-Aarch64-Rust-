@@ -145,7 +145,12 @@ impl Module for EmailHeaderGeo {
             );
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(region) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.30, &ctx.scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::SPECULATIVE,
+                    &ctx.scan_id,
+                );
                 c.tag("addr-derived");
                 c.tag("geoint");
                 c.tag("email-provider-inferred");

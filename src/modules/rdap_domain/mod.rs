@@ -157,7 +157,12 @@ fn build_registrar_entity(
     if name.len() < 3 {
         return None;
     }
-    let mut oe = Entity::new(EntityKind::Organisation, name, 0.72, scan_id);
+    let mut oe = Entity::new(
+        EntityKind::Organisation,
+        name,
+        confidence::ATTRIBUTED,
+        scan_id,
+    );
     oe.tag("rdap");
     oe.tag("registrar");
     let mut ev = Evidence::new(SRC, format!("Registrar of record for {domain}"));

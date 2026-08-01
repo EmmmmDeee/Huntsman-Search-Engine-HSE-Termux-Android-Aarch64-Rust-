@@ -259,7 +259,7 @@ fn build_announced_prefixes(ap: &AnnouncedPrefixes, scan_id: &str) -> Vec<Entity
     prefixes
         .into_iter()
         .map(|prefix| {
-            let mut e = Entity::new(EntityKind::Cidr, prefix, 0.70, scan_id);
+            let mut e = Entity::new(EntityKind::Cidr, prefix, confidence::HIGH_PLUS, scan_id);
             e.tag(SRC);
             e.tag("network-prefix");
             e.add_evidence(Evidence::new(

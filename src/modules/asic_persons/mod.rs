@@ -361,7 +361,12 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResu
     // The licensee the adviser operates under — an employer/affiliation pivot.
     let licensee = field(rec, "LICENCE_NAME");
     if let Some(licensee) = &licensee {
-        let mut org = Entity::new(EntityKind::Organisation, licensee, 0.62, scan_id);
+        let mut org = Entity::new(
+            EntityKind::Organisation,
+            licensee,
+            confidence::NOTABLE,
+            scan_id,
+        );
         org.tag("au");
         org.tag("asic");
         org.tag("afs-licensee");
@@ -448,7 +453,7 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResu
         if let Some(abn) =
             field(rec, key).filter(|a| a.chars().filter(char::is_ascii_digit).count() == 11)
         {
-            let mut e = Entity::new(EntityKind::AbnAcn, &abn, 0.62, scan_id);
+            let mut e = Entity::new(EntityKind::AbnAcn, &abn, confidence::NOTABLE, scan_id);
             e.tag("au");
             e.tag("asic");
             e.add_evidence(

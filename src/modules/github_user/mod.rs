@@ -336,8 +336,12 @@ impl Module for GithubUser {
 
                 if let Some((lat, lon)) = crate::util::city_coords::city_coords(location) {
                     let coord_val = format!("{lat:.4},{lon:.4}");
-                    let mut c =
-                        Entity::new(EntityKind::Coordinates, &coord_val, 0.52, &ctx.scan_id);
+                    let mut c = Entity::new(
+                        EntityKind::Coordinates,
+                        &coord_val,
+                        confidence::MEDIUM_LIGHT,
+                        &ctx.scan_id,
+                    );
                     c.tag("addr-derived");
                     c.tag("geoint");
                     c.tag("github");
@@ -387,7 +391,12 @@ impl Module for GithubUser {
                 {
                     let domain = host.to_lowercase();
                     if domain.contains('.') && domain != "github.com" && domain != "github.io" {
-                        let mut d = Entity::new(EntityKind::Domain, &domain, 0.72, &ctx.scan_id);
+                        let mut d = Entity::new(
+                            EntityKind::Domain,
+                            &domain,
+                            confidence::ATTRIBUTED,
+                            &ctx.scan_id,
+                        );
                         d.tag("derived");
                         d.tag("personal-site");
                         d.add_evidence(

@@ -184,7 +184,7 @@ fn build_entities(data: &AbuseData, ip: &str, scan_id: &str) -> Vec<Entity> {
                     && seen.insert(h.clone())
             })
             .map(|host| {
-                let mut d = Entity::new(EntityKind::Domain, &host, 0.72, scan_id);
+                let mut d = Entity::new(EntityKind::Domain, &host, confidence::ATTRIBUTED, scan_id);
                 d.tag("abuseipdb");
                 d.tag("resolved-domain");
                 d.add_evidence(

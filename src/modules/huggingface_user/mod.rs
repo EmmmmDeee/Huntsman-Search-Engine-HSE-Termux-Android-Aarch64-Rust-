@@ -96,14 +96,19 @@ pub(super) fn build_entities(user: HfUser, scan_id: &str) -> Vec<Entity> {
     out.push(e);
 
     // Profile URL.
-    let mut u = Entity::new(EntityKind::Url, &profile_url, 0.82, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Url,
+        &profile_url,
+        confidence::CORROBORATED,
+        scan_id,
+    );
     u.tag("huggingface");
     u.add_evidence(ev());
     out.push(u);
 
     // Full name → Person (require at least two tokens to avoid single-word handles).
     if let Some(name) = user.fullname.as_deref()
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.72, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::ATTRIBUTED, scan_id)
     {
         p.tag("huggingface");
         p.add_evidence(ev().with_attr("source_field", "fullname"));

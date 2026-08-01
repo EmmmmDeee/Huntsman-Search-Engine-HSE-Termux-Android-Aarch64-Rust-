@@ -290,7 +290,12 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
                                 | "npmjs.org"
                         );
                         if !skip && seen_domains.insert(host.clone()) {
-                            let mut de = Entity::new(EntityKind::Domain, &host, 0.58, scan_id);
+                            let mut de = Entity::new(
+                                EntityKind::Domain,
+                                &host,
+                                confidence::MEDIUM_SOLID,
+                                scan_id,
+                            );
                             de.tag("npm");
                             de.tag("derived");
                             de.add_evidence(

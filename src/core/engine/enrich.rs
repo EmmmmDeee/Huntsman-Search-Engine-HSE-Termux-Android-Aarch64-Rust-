@@ -4,6 +4,8 @@
 //! pure free functions over a single entity (no engine state), split out of the
 //! engine module so the round loop reads as orchestration, not enrichment detail.
 
+use crate::core::confidence;
+
 /// Attach deterministic geospatial enrichment to a Coordinates or Address entity:
 /// geohash (multiple precisions for proximity matching), timezone, hemisphere and
 /// reverse-geocoded country for Coordinates; a parsed street/city/state/postal/
@@ -206,7 +208,13 @@ pub(super) fn address_to_coords_pass(
             continue;
         }
         // Already have a Coordinates entity for this point?
-        let candidate_uid = Entity::new(EntityKind::Coordinates, &coord_val, 0.0, scan_id).uid;
+        let candidate_uid = Entity::new(
+            EntityKind::Coordinates,
+            &coord_val,
+            confidence::ZERO,
+            scan_id,
+        )
+        .uid;
         if entities.contains_key(&candidate_uid) {
             continue;
         }
@@ -399,7 +407,12 @@ mod tests {
     // ── tag_breach_sector (universal pool wiring) ─────────────────────────────
 
     fn breach_entity(source_key: &str, source_val: &str) -> Entity {
-        let mut e = Entity::new(EntityKind::Email, "x@example.com", 0.7, "s");
+        let mut e = Entity::new(
+            EntityKind::Email,
+            "x@example.com",
+            confidence::HIGH_PLUS,
+            "s",
+        );
         e.tag(crate::core::tags::BREACH);
         e.add_evidence(Evidence::new("pool", "breach row").with_attr(source_key, source_val));
         e
@@ -433,7 +446,12 @@ mod tests {
     fn wires_the_bare_name_pools_osintcat_and_xposed() {
         // osintcat records each breach under a dynamic `breach_<name>` key — the
         // real `Zynga`/`Neopets` brands from the live graph now resolve.
-        let mut oc = Entity::new(EntityKind::Email, "x@example.com", 0.7, "s");
+        let mut oc = Entity::new(
+            EntityKind::Email,
+            "x@example.com",
+            confidence::HIGH_PLUS,
+            "s",
+        );
         oc.tag(crate::core::tags::BREACH);
         oc.add_evidence(
             Evidence::new("osintcat", "breaches")
@@ -446,7 +464,12 @@ mod tests {
 
         // xposed_or_not joins all breach names into one `breaches` attr; a single
         // pass picks up EVERY distinct sector among them (multi-sector).
-        let mut xon = Entity::new(EntityKind::Email, "y@example.com", 0.7, "s");
+        let mut xon = Entity::new(
+            EntityKind::Email,
+            "y@example.com",
+            confidence::HIGH_PLUS,
+            "s",
+        );
         xon.tag(crate::core::tags::BREACH);
         xon.add_evidence(
             Evidence::new("xposed_or_not", "breaches")
@@ -466,7 +489,12 @@ mod tests {
     #[test]
     fn tag_breach_sector_is_a_no_op_off_the_breach_path() {
         // A non-breach entity is untouched even with a property-looking source.
-        let mut not_breach = Entity::new(EntityKind::Email, "x@example.com", 0.7, "s");
+        let mut not_breach = Entity::new(
+            EntityKind::Email,
+            "x@example.com",
+            confidence::HIGH_PLUS,
+            "s",
+        );
         not_breach
             .add_evidence(Evidence::new("search", "x").with_attr("source", "realestate.com.au"));
         tag_breach_sector(&mut not_breach);
@@ -500,21 +528,31 @@ mod tests {
     #[test]
     fn enrich_geospatial_tags_coordinates_with_geohash_and_hemisphere() {
         // Southern-hemisphere coordinate (Brisbane).
-        let mut e = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.6, "s");
+        let mut e = Entity::new(
+            EntityKind::Coordinates,
+            "-27.4705,153.0260",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         enrich_geospatial(&mut e);
         assert!(e.tags.iter().any(|t| t.starts_with("geohash:")));
         assert!(e.tags.iter().any(|t| t.starts_with("tz:")));
         assert_eq!(geo_attr(&e, "hemisphere").as_deref(), Some("southern"));
 
         // Northern-hemisphere coordinate (London).
-        let mut n = Entity::new(EntityKind::Coordinates, "51.5074,-0.1278", 0.6, "s");
+        let mut n = Entity::new(
+            EntityKind::Coordinates,
+            "51.5074,-0.1278",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         enrich_geospatial(&mut n);
         assert_eq!(geo_attr(&n, "hemisphere").as_deref(), Some("northern"));
     }
 
     #[test]
     fn enrich_geospatial_leaves_other_kinds_untouched() {
-        let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.6, "s");
+        let mut e = Entity::new(EntityKind::Email, "a@b.com", confidence::MEDIUM_PLUS, "s");
         enrich_geospatial(&mut e);
         assert!(
             e.evidence.iter().all(|ev| ev.source != "geo_normalize"),
@@ -553,7 +591,12 @@ mod tests {
     fn tag_platform_infra_marks_the_three_infrastructure_classes() {
         use crate::core::tags::PLATFORM_INFRA;
         // 1. cloud-storage bucket.
-        let mut bucket = Entity::new(EntityKind::Url, "https://x.s3.amazonaws.com/", 0.6, "s");
+        let mut bucket = Entity::new(
+            EntityKind::Url,
+            "https://x.s3.amazonaws.com/",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         bucket.tag("cloud-storage");
         tag_platform_infra(&mut bucket);
         assert!(
@@ -562,13 +605,23 @@ mod tests {
         );
 
         // 2. datacenter/CDN hosting endpoint.
-        let mut host = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.6, "s");
+        let mut host = Entity::new(
+            EntityKind::IpAddress,
+            "104.16.0.1",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         host.tag(crate::core::tags::HOSTING);
         tag_platform_infra(&mut host);
         assert!(host.has_tag(PLATFORM_INFRA), "hosting IP → platform-infra");
 
         // 3. third-party analytics / tag id.
-        let mut tid = Entity::new(EntityKind::TrackingId, "UA-12345-1", 0.6, "s");
+        let mut tid = Entity::new(
+            EntityKind::TrackingId,
+            "UA-12345-1",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         tag_platform_infra(&mut tid);
         assert!(tid.has_tag(PLATFORM_INFRA), "TrackingId → platform-infra");
     }
@@ -596,7 +649,12 @@ mod tests {
     #[test]
     fn tag_platform_infra_is_idempotent() {
         use crate::core::tags::PLATFORM_INFRA;
-        let mut e = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.6, "s");
+        let mut e = Entity::new(
+            EntityKind::IpAddress,
+            "104.16.0.1",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         e.tag(crate::core::tags::HOSTING);
         tag_platform_infra(&mut e);
         tag_platform_infra(&mut e);

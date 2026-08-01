@@ -278,7 +278,7 @@ fn crate_url_entities(resp: &CratesResp, scan_id: &str) -> Vec<Entity> {
 
     let mut out = Vec::new();
     for url in urls.into_iter().take(MAX_CRATE_URLS) {
-        let mut e = Entity::new(EntityKind::Url, url, 0.62, scan_id);
+        let mut e = Entity::new(EntityKind::Url, url, confidence::NOTABLE, scan_id);
         e.tag("crates-io");
         e.tag("code");
         e.add_evidence(Evidence::new(

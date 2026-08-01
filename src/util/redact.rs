@@ -154,6 +154,7 @@ fn redact_coordinates(e: &mut Entity) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::entity::{Entity, Evidence};
 
     #[test]
@@ -194,7 +195,12 @@ mod tests {
 
     #[test]
     fn password_value_and_evidence_are_masked() {
-        let mut e = Entity::new(EntityKind::Password, "hunter2", 0.25, "comb_search");
+        let mut e = Entity::new(
+            EntityKind::Password,
+            "hunter2",
+            confidence::VERY_LOW,
+            "comb_search",
+        );
         e.add_evidence(
             Evidence::new("comb_search", "password hunter2 seen in dump")
                 .with_attr("plaintext", "hunter2")
@@ -248,7 +254,7 @@ mod tests {
 
     #[test]
     fn non_sensitive_kinds_pass_through_unchanged() {
-        let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.6, "src");
+        let mut e = Entity::new(EntityKind::Email, "a@b.com", confidence::MEDIUM_PLUS, "src");
         e.tag("keep");
         let mut v = vec![e.clone()];
         redact_entities(&mut v);
@@ -258,7 +264,7 @@ mod tests {
 
     #[test]
     fn redaction_is_idempotent() {
-        let mut e = Entity::new(EntityKind::Password, "hunter2", 0.25, "src");
+        let mut e = Entity::new(EntityKind::Password, "hunter2", confidence::VERY_LOW, "src");
         e.add_evidence(Evidence::new("src", "hunter2").with_attr("plaintext", "hunter2"));
         let mut v = vec![e];
         redact_entities(&mut v);

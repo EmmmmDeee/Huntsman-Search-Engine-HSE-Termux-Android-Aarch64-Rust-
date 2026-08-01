@@ -188,7 +188,12 @@ fn build_entities(target: &Target, attrs: &VtAttributes, scan_id: &str) -> Vec<E
         match rtype.to_ascii_uppercase().as_str() {
             "A" | "AAAA" => {
                 if value.parse::<std::net::IpAddr>().is_ok() {
-                    let mut ip = Entity::new(EntityKind::IpAddress, value, 0.82, scan_id);
+                    let mut ip = Entity::new(
+                        EntityKind::IpAddress,
+                        value,
+                        confidence::CORROBORATED,
+                        scan_id,
+                    );
                     ip.tag(SRC);
                     ip.tag("resolved");
                     ip.add_evidence(

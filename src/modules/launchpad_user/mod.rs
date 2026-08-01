@@ -109,7 +109,7 @@ pub(super) fn build_entities(person: LpPerson, scan_id: &str) -> Vec<Entity> {
 
     // Display name → Person (multi-word only).
     if let Some(name) = person.display_name.as_deref()
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.72, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::ATTRIBUTED, scan_id)
     {
         p.tag("launchpad");
         p.add_evidence(ev().with_attr("source_field", "display_name"));

@@ -138,11 +138,12 @@ pub(in crate::core::correlator) fn rule_au_123_numeric_variant_handle_persona(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::entity::Evidence;
 
     /// A confirmed Username entity from a named source module.
     fn handle(value: &str, source: &str) -> Entity {
-        let mut e = Entity::new(EntityKind::Username, value, 0.7, "s");
+        let mut e = Entity::new(EntityKind::Username, value, confidence::HIGH_PLUS, "s");
         e.add_evidence(Evidence::new(source, "found"));
         e
     }
@@ -303,9 +304,19 @@ mod tests {
 
     #[test]
     fn au123_ignores_non_username_entities() {
-        let mut d1 = Entity::new(EntityKind::Domain, "jdiegmann.com", 0.8, "s");
+        let mut d1 = Entity::new(
+            EntityKind::Domain,
+            "jdiegmann.com",
+            confidence::HIGH_PLUSPLUS,
+            "s",
+        );
         d1.add_evidence(Evidence::new("whois", "found"));
-        let mut d2 = Entity::new(EntityKind::Domain, "jdiegmann92.com", 0.8, "s");
+        let mut d2 = Entity::new(
+            EntityKind::Domain,
+            "jdiegmann92.com",
+            confidence::HIGH_PLUSPLUS,
+            "s",
+        );
         d2.add_evidence(Evidence::new("dns_intel", "found"));
         assert!(
             rule_au_123_numeric_variant_handle_persona(&RuleContext::new(&[d1, d2]), "s", 0)

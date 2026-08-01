@@ -164,7 +164,7 @@ pub(super) fn build_entities(user: SfUser, scan_id: &str) -> Vec<Entity> {
         if account.is_empty() || !account.starts_with("http") {
             continue;
         }
-        let mut s = Entity::new(EntityKind::Url, account, 0.62, scan_id);
+        let mut s = Entity::new(EntityKind::Url, account, confidence::NOTABLE, scan_id);
         s.tag("sourceforge");
         s.tag("social-link");
         let network = social.socialnetwork.trim();

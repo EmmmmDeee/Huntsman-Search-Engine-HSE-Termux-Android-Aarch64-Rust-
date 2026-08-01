@@ -3,6 +3,7 @@
 //! parent items (DetectionConfidence, tags, …) via `use super::*`.
 
 use super::*;
+use crate::core::confidence;
 
 /// Emit a key whose provenance is the schema/shape baseline (the direct
 /// [`identify_api_key`] paths, which carry no corroborating context). Delegates
@@ -39,7 +40,12 @@ pub(super) fn emit_key_with(
     // machinery entirely: it can't authenticate anything.
     if let Some(chain) = service.strip_prefix("crypto_") {
         if seen.insert(format!("@crypto:{key_val}")) {
-            let mut e = Entity::new(EntityKind::CryptoAddress, key_val, 0.80, scan_id);
+            let mut e = Entity::new(
+                EntityKind::CryptoAddress,
+                key_val,
+                confidence::HIGH_PLUSPLUS,
+                scan_id,
+            );
             e.tag("crypto-address");
             e.tag(format!("chain:{chain}"));
             e.add_evidence(
@@ -73,7 +79,12 @@ pub(super) fn emit_key_with(
     } else {
         detection
     };
-    let mut entity = Entity::new(EntityKind::ApiKey, key_val, 0.80, scan_id);
+    let mut entity = Entity::new(
+        EntityKind::ApiKey,
+        key_val,
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
     entity.tag("api-key");
     entity.tag(format!("service:{service}"));
     // Hyphenated form, matching the caller's own entity-tagging convention

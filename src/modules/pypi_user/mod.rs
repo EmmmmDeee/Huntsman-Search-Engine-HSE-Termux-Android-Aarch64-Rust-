@@ -191,7 +191,8 @@ pub(super) fn build_entities(
         {
             for (name_opt, email) in parse_rfc5322_contact(raw) {
                 if seen_emails.insert(email.clone()) {
-                    let mut em = Entity::new(EntityKind::Email, &email, 0.72, scan_id);
+                    let mut em =
+                        Entity::new(EntityKind::Email, &email, confidence::ATTRIBUTED, scan_id);
                     em.tag("pypi");
                     em.tag("public-profile");
                     em.add_evidence(ev_base().with_attr("source_field", "author_email"));
@@ -199,7 +200,8 @@ pub(super) fn build_entities(
 
                     // Real name from the "Name" part.
                     if let Some(name) = name_opt
-                        && let Some(mut p) = profile_kit::person_from_name(&name, 0.62, scan_id)
+                        && let Some(mut p) =
+                            profile_kit::person_from_name(&name, confidence::NOTABLE, scan_id)
                     {
                         p.tag("pypi");
                         p.tag("derived");

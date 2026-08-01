@@ -197,7 +197,7 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
 
     // Real name → Person (non-placeholder, ≥ 2 tokens).
     if let Some(name) = user.name.as_deref()
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.72, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::ATTRIBUTED, scan_id)
     {
         p.tag("gitlab");
         p.tag("derived");
@@ -292,7 +292,12 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
     // Website URL + Domain. The Url and Domain carry distinct evidence, so the
     // kit's stable [Url, Domain] ordering is decorated per-kind.
     if let Some(site) = user.website_url.as_deref() {
-        for mut e in profile_kit::website_url_and_domain(site, 0.72, confidence::HIGH, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(
+            site,
+            confidence::ATTRIBUTED,
+            confidence::HIGH,
+            scan_id,
+        ) {
             match e.kind {
                 EntityKind::Domain => {
                     e.tag("gitlab");
@@ -356,7 +361,7 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
 
     // Bio: extract emails.
     if let Some(bio) = user.bio.as_deref() {
-        for mut e in profile_kit::bio_emails(bio, 0.72, scan_id) {
+        for mut e in profile_kit::bio_emails(bio, confidence::ATTRIBUTED, scan_id) {
             e.tag("gitlab");
             e.tag("public-profile");
             e.add_evidence(

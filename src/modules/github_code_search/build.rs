@@ -102,7 +102,7 @@ pub(super) fn build_commit_emails(
         }
         let email_lc = email.to_lowercase();
         if seen_emails.insert(email_lc.clone()) {
-            let mut e = Entity::new(EntityKind::Email, &email_lc, 0.35, scan_id);
+            let mut e = Entity::new(EntityKind::Email, &email_lc, confidence::TENTATIVE, scan_id);
             e.tag(SRC);
             e.tag("github");
             e.tag("commit-author");
@@ -126,7 +126,8 @@ pub(super) fn build_commit_emails(
         }) {
             let name_lc = name.to_lowercase();
             if seen_names.insert(name_lc) {
-                let mut pe = Entity::new(EntityKind::Person, name, 0.30, scan_id);
+                let mut pe =
+                    Entity::new(EntityKind::Person, name, confidence::SPECULATIVE, scan_id);
                 pe.tag(SRC);
                 pe.tag("github");
                 pe.tag("commit-author");

@@ -12,7 +12,7 @@
 //! - [`VERY_HIGH`] (0.75) sits *below* [`HIGH_PLUSPLUS`] (0.80) and
 //!   [`HIGH_PLUSPLUS_PLUS`] (0.85).
 //!
-//! These values are load-bearing: ~520 call sites across the crate already
+//! These values are load-bearing: ~800 call sites across the crate already
 //! encode them, and every persisted entity score derives from them, so the
 //! numbers are deliberately left as-is. Pick a constant by the **number you
 //! want**, confirmed against this list, never by which name sounds stronger.
@@ -24,6 +24,14 @@ pub const ZERO: f64 = 0.00;
 /// Very low confidence — stray signal or weak contextual match.
 pub const VERY_LOW: f64 = 0.25;
 
+/// Speculative — geo-inferred from email headers, crowd-triangulated, or
+/// otherwise derived from an indirect signal with no confirming source.
+pub const SPECULATIVE: f64 = 0.30;
+
+/// Tentative — code-search or loose enrichment result; plausible but not
+/// structurally confirmed by the emitting source.
+pub const TENTATIVE: f64 = 0.35;
+
 /// Low confidence — minimal context or distant source.
 pub const LOW: f64 = 0.40;
 
@@ -33,21 +41,38 @@ pub const LOW_MEDIUM: f64 = 0.45;
 /// Medium confidence — reasonable context or solid source.
 pub const MEDIUM: f64 = 0.50;
 
+/// Medium-light — secondary API source; above [`MEDIUM`] but not yet
+/// independently corroborated.
+pub const MEDIUM_LIGHT: f64 = 0.52;
+
 /// Medium-high confidence — good context and source.
 ///
 /// Note: ranks *below* [`MEDIUM_PLUS`] despite the name.
 pub const MEDIUM_HIGH: f64 = 0.55;
+
+/// Medium-solid — org names and URLs from third-party databases; credible
+/// single-source data without independent verification.
+pub const MEDIUM_SOLID: f64 = 0.58;
 
 /// Medium confidence + — solid context, slightly elevated reliability.
 ///
 /// Note: ranks *above* [`MEDIUM_HIGH`] despite the name.
 pub const MEDIUM_PLUS: f64 = 0.60;
 
+/// Notable — reliable single-source entity; structurally present in the
+/// source data and well-formed, but not yet cross-validated.
+pub const NOTABLE: f64 = 0.62;
+
 /// High confidence — strong context or reliable source.
 pub const HIGH: f64 = 0.65;
 
 /// High confidence + — between [`HIGH`] and [`VERY_HIGH`], elevated agreement.
 pub const HIGH_PLUS: f64 = 0.70;
+
+/// Attributed — attributed to a reliable authoritative source and
+/// structurally verified, but not yet independently cross-validated across
+/// a second source.
+pub const ATTRIBUTED: f64 = 0.72;
 
 /// Very high confidence — multi-source agreement or very strong context.
 ///
@@ -63,6 +88,11 @@ pub const STRONG: f64 = 0.78;
 /// High confidence ++ — strong corroboration; exceeds [`VERY_HIGH`].
 pub const HIGH_PLUSPLUS: f64 = 0.80;
 
+/// Corroborated — independently confirmed by a second source above the
+/// [`HIGH_PLUSPLUS`] floor; exceeds strong corroboration but stops short
+/// of near-authoritative.
+pub const CORROBORATED: f64 = 0.82;
+
 /// High confidence +++ — near-expert level, nearly authoritative.
 pub const HIGH_PLUSPLUS_PLUS: f64 = 0.85;
 
@@ -71,6 +101,11 @@ pub const EXPERT: f64 = 0.88;
 
 /// Very high confidence + — exceeds multi-source threshold.
 pub const VERY_HIGH_PLUS: f64 = 0.90;
+
+/// Authoritative — primary target record from an authoritative source
+/// (e.g. government registry, official directory); highest confidence
+/// short of a direct identity assertion.
+pub const AUTHORITATIVE: f64 = 0.92;
 
 /// Very high confidence ++ — near-certain agreement across sources.
 pub const VERY_HIGH_PLUSPLUS: f64 = 0.95;
@@ -87,19 +122,27 @@ mod tests {
     const LADDER: &[(&str, f64)] = &[
         ("ZERO", ZERO),
         ("VERY_LOW", VERY_LOW),
+        ("SPECULATIVE", SPECULATIVE),
+        ("TENTATIVE", TENTATIVE),
         ("LOW", LOW),
         ("LOW_MEDIUM", LOW_MEDIUM),
         ("MEDIUM", MEDIUM),
+        ("MEDIUM_LIGHT", MEDIUM_LIGHT),
         ("MEDIUM_HIGH", MEDIUM_HIGH),
+        ("MEDIUM_SOLID", MEDIUM_SOLID),
         ("MEDIUM_PLUS", MEDIUM_PLUS),
+        ("NOTABLE", NOTABLE),
         ("HIGH", HIGH),
         ("HIGH_PLUS", HIGH_PLUS),
+        ("ATTRIBUTED", ATTRIBUTED),
         ("VERY_HIGH", VERY_HIGH),
         ("STRONG", STRONG),
         ("HIGH_PLUSPLUS", HIGH_PLUSPLUS),
+        ("CORROBORATED", CORROBORATED),
         ("HIGH_PLUSPLUS_PLUS", HIGH_PLUSPLUS_PLUS),
         ("EXPERT", EXPERT),
         ("VERY_HIGH_PLUS", VERY_HIGH_PLUS),
+        ("AUTHORITATIVE", AUTHORITATIVE),
         ("VERY_HIGH_PLUSPLUS", VERY_HIGH_PLUSPLUS),
         ("CERTAIN", CERTAIN),
     ];

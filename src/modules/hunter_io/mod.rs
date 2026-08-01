@@ -406,7 +406,8 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
         if let Some(phone) = nonempty(&entry.phone_number) {
             let digits: String = phone.chars().filter(char::is_ascii_digit).collect();
             if digits.len() >= 7 && seen.insert(format!("phone:{digits}")) {
-                let mut phe = Entity::new(EntityKind::Phone, &phone, 0.60, scan_id);
+                let mut phe =
+                    Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM_PLUS, scan_id);
                 phe.tag("hunter-io");
                 phe.tag("email-attribution");
                 phe.add_evidence(
