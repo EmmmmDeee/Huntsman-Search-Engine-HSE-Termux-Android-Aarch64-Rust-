@@ -39,6 +39,25 @@ pub trait ModuleRuntime: Send + Sync {
     fn drain_found_keys(&self, _scan_id: &str) -> Vec<Entity> {
         Vec::new()
     }
+
+    /// Keep the validated egress proxy pool healthy for the scan about to run:
+    /// pull operator-configured published feeds and re-probe due proxies, so a
+    /// dead proxy is evicted before it can make a resource unreachable.
+    ///
+    /// A hook rather than a direct call, by this module's own criterion above:
+    /// the refresh is *effectful* (network probes, and it mutates a process-wide
+    /// pool), so unlike the pure `util::regional` ambient it cannot be an
+    /// allow-listed leaf. The implementation is expected to be detached and
+    /// internally throttled, and to cost nothing when no proxy or feed is
+    /// configured — this hook is called once per scan start.
+    ///
+    /// Routing it through the contract is also what makes
+    /// [`NoopModuleRuntime`]'s isolation guarantee true. The engine previously
+    /// called `util::egress` directly, gated only on global configuration, so an
+    /// engine built with the no-op runtime still spawned a detached task that
+    /// did network I/O and mutated the shared pool — exactly the process-wide
+    /// mutation the no-op exists to prevent.
+    fn refresh_egress_pool(&self) {}
 }
 
 /// Runtime used by tests and deliberately module-free engine instances.

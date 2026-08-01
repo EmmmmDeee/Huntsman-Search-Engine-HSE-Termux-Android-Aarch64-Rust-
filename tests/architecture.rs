@@ -25,24 +25,75 @@ fn scan_dir(dir: &Path, patterns: &[&str], violations: &mut Vec<String>) {
             continue;
         } else if path.extension().is_some_and(|e| e == "rs") {
             let content = fs::read_to_string(&path).unwrap();
-            let mut in_test = false;
-            for (i, line) in content.lines().enumerate() {
-                let trimmed = line.trim();
-                if trimmed == "#[cfg(test)]" {
-                    in_test = true;
-                    continue;
+            scan_file(&path, &content, patterns, violations);
+        }
+    }
+}
+
+/// Scan one file's **production** lines for `patterns`, skipping `#[cfg(test)]`
+/// items and `//` comments.
+///
+/// The `#[cfg(test)]` handling must RESUME after the gated item rather than
+/// giving up on the rest of the file. A sticky "we are now in test code" flag
+/// looks equivalent but is not: the common Rust idiom declares the test
+/// submodule near the TOP (`#[cfg(test)] mod tests;` right under the imports),
+/// so a sticky flag blinds the scanner to everything below it — which, when this
+/// was measured across `src/core` + `src/modules`, was **32,843 lines (23.5% of
+/// production code)**, including 2,612 of the 2,675 lines of
+/// `src/core/engine/mod.rs`. Every invariant guarded by this scanner was
+/// therefore unenforced over most of the crate's largest files. The invariants
+/// did all still hold when checked with a correct scanner — they were being
+/// preserved by discipline, with no net underneath.
+///
+/// Two shapes of gated item are recognised:
+/// * `#[cfg(test)] mod tests;` — a declaration; skip the single line.
+/// * `#[cfg(test)] mod tests { … }` / a gated `fn`/`impl` — brace-matched to its
+///   close, then scanning continues normally.
+///
+/// Brace counting is deliberately naive (it does not parse strings, chars, or
+/// comments containing braces). That is sound for the direction that matters: a
+/// miscount can only end the skipped region early, which makes the scanner
+/// report MORE lines, never fewer. This guard must not fail open.
+fn scan_file(path: &Path, content: &str, patterns: &[&str], violations: &mut Vec<String>) {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+
+        if trimmed == "#[cfg(test)]" {
+            i += 1;
+            while i < lines.len() && lines[i].trim().is_empty() {
+                i += 1;
+            }
+            if i >= lines.len() {
+                break;
+            }
+            // `#[cfg(test)] mod tests;` — a declaration, not a block.
+            if lines[i].trim_end().ends_with(';') && !lines[i].contains('{') {
+                i += 1;
+                continue;
+            }
+            // Braced item: consume through its matching close brace.
+            let mut depth: i32 = 0;
+            let mut opened = false;
+            while i < lines.len() {
+                depth += lines[i].matches('{').count() as i32;
+                depth -= lines[i].matches('}').count() as i32;
+                if lines[i].contains('{') {
+                    opened = true;
                 }
-                if in_test {
-                    continue;
-                }
-                if trimmed.starts_with("//") {
-                    continue;
-                }
-                if patterns.iter().any(|p| trimmed.contains(p)) {
-                    violations.push(format!("{}:{}: {}", path.display(), i + 1, trimmed));
+                i += 1;
+                if opened && depth <= 0 {
+                    break;
                 }
             }
+            continue;
         }
+
+        if !trimmed.starts_with("//") && patterns.iter().any(|p| trimmed.contains(p)) {
+            violations.push(format!("{}:{}: {}", path.display(), i + 1, trimmed));
+        }
+        i += 1;
     }
 }
 
@@ -182,6 +233,19 @@ fn core_does_not_import_util_directly() {
                 // `util::spf` ever grows a non-pure item.
                 && !line.contains("util::spf::Ipv4Cidr")
                 && !line.contains("util::spf::Ipv6Cidr")
+                // Pure, offline aggregation over an `Event` slice the CALLER
+                // already loaded (`store.recent_module_outcome_events`) — the
+                // engine's dead-scraper quarantine set. Verified leaf: the whole
+                // module imports only `std::collections::HashMap` and
+                // `core::event`, declares no `async fn`, and touches no network,
+                // store, or filesystem — same category as `util::geometry`, and
+                // it bridges INTO core rather than away from it.
+                //
+                // Newly visible rather than newly introduced: this call site
+                // (`core/engine/mod.rs:566`) sits below an inline `#[cfg(test)]`
+                // and was silently skipped until `scan_file` learned to resume
+                // after gated items.
+                && !line.contains("util::scraper_health")
                 // Pure, offline, dependency-free IEEE OUI classifier (a const
                 // vendor table + a U/L-bit test on the first octet; no I/O, no
                 // deps) — same leaf category as `util::spf`/`util::abn`. AU-122
@@ -2599,4 +2663,143 @@ fn core_extract_is_deterministic() {
             .any(|c| c.kind == huntsman_search_engine::core::entity::EntityKind::IpAddress),
         "expected an IP entity"
     );
+}
+
+// ─── Meta-tests: the scanner that enforces the layering invariants ───────────
+//
+// `scan_file` is the mechanism every layering test above depends on. A silent
+// regression in it does not fail any test — it just stops catching violations,
+// so the suite keeps passing while the invariants quietly rot. These tests
+// therefore assert the SCANNER's behaviour directly, on synthetic input, rather
+// than on the live tree (which legitimately contains zero violations today and
+// so cannot distinguish a working scanner from a blind one).
+
+/// The regression that motivated `scan_file`: production code appearing AFTER a
+/// `#[cfg(test)] mod tests;` declaration must still be scanned. The previous
+/// implementation set a sticky flag here and skipped the remainder of the file,
+/// which blinded it to 23.5% of `src/core` + `src/modules`.
+#[test]
+fn scanner_resumes_after_cfg_test_module_declaration() {
+    let src = "\
+use crate::core::entity::Entity;
+
+#[cfg(test)]
+mod tests;
+
+pub fn offender() {
+    let _ = crate::storage::Store::open();
+}
+";
+    let mut v = Vec::new();
+    scan_file(Path::new("synthetic.rs"), src, &["crate::storage"], &mut v);
+    assert_eq!(
+        v.len(),
+        1,
+        "production code after `#[cfg(test)] mod tests;` must still be scanned, got: {v:?}"
+    );
+    assert!(
+        v[0].contains(":7:"),
+        "expected the offending line 7, got: {v:?}"
+    );
+}
+
+/// An inline `#[cfg(test)] mod tests { … }` block must be skipped in full, and
+/// scanning must resume at the item that follows it.
+#[test]
+fn scanner_skips_inline_test_module_then_resumes() {
+    let src = "\
+pub fn clean() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn t() {
+        let _ = crate::storage::Store::open();
+    }
+}
+
+pub fn offender() {
+    let _ = crate::storage::Store::open();
+}
+";
+    let mut v = Vec::new();
+    scan_file(Path::new("synthetic.rs"), src, &["crate::storage"], &mut v);
+    assert_eq!(
+        v.len(),
+        1,
+        "the in-test use must be skipped and the post-block use caught, got: {v:?}"
+    );
+    assert!(
+        v[0].contains(":13:"),
+        "expected only the line-13 production hit, got: {v:?}"
+    );
+}
+
+/// A `#[cfg(test)]` gate on a bare `fn` (not a `mod`) is skipped the same way.
+#[test]
+fn scanner_skips_cfg_test_function() {
+    let src = "\
+#[cfg(test)]
+fn helper() {
+    let _ = crate::storage::Store::open();
+}
+
+pub fn offender() {
+    let _ = crate::storage::Store::open();
+}
+";
+    let mut v = Vec::new();
+    scan_file(Path::new("synthetic.rs"), src, &["crate::storage"], &mut v);
+    assert_eq!(
+        v.len(),
+        1,
+        "gated fn skipped, following fn caught, got: {v:?}"
+    );
+    assert!(v[0].contains(":7:"), "expected line 7, got: {v:?}");
+}
+
+/// Comments are not violations — including the doc-comment intra-doc links this
+/// codebase uses heavily (e.g. `core/tags.rs` links to `crate::api::scan_export`).
+#[test]
+fn scanner_ignores_comments_and_doc_links() {
+    let src = "\
+//! See [`crate::storage`] for the port.
+/// Bridges to [`crate::storage::Store`].
+// let _ = crate::storage::Store::open();
+pub fn clean() {}
+";
+    let mut v = Vec::new();
+    scan_file(Path::new("synthetic.rs"), src, &["crate::storage"], &mut v);
+    assert!(
+        v.is_empty(),
+        "comments must never count as violations, got: {v:?}"
+    );
+}
+
+/// Nested braces inside a gated module must not end the skip early.
+#[test]
+fn scanner_handles_nested_braces_in_test_module() {
+    let src = "\
+#[cfg(test)]
+mod tests {
+    fn a() {
+        if true {
+            let _ = crate::storage::Store::open();
+        }
+    }
+}
+
+pub fn offender() {
+    let _ = crate::storage::Store::open();
+}
+";
+    let mut v = Vec::new();
+    scan_file(Path::new("synthetic.rs"), src, &["crate::storage"], &mut v);
+    assert_eq!(
+        v.len(),
+        1,
+        "nested braces must not end the skip early, got: {v:?}"
+    );
+    assert!(v[0].contains(":11:"), "expected line 11, got: {v:?}");
 }

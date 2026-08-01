@@ -40,6 +40,67 @@ async fn injected_module_runtime_is_used_by_the_engine() {
     assert_eq!(resets.load(std::sync::atomic::Ordering::Relaxed), 1);
 }
 
+/// The egress pool refresh must reach the engine only through the injected
+/// runtime contract.
+///
+/// Regression guard for a real leak: the engine used to call `util::egress`
+/// directly, gated only on global configuration, so an engine built with
+/// `NoopModuleRuntime` still spawned a detached task that did network I/O and
+/// mutated the process-wide proxy pool — defeating the isolation guarantee
+/// documented on [`crate::core::module_runtime::NoopModuleRuntime`]. Asserting
+/// the hook fires is what keeps the call routed through the seam: a regression
+/// to a direct `util::egress` call leaves this counter at zero (and trips
+/// `tests/architecture.rs::core_does_not_import_util_directly`).
+#[tokio::test]
+async fn egress_pool_refresh_goes_through_the_runtime_contract() {
+    use crate::core::test_support::InMemoryStore;
+
+    struct EgressRuntime(Arc<std::sync::atomic::AtomicU64>);
+
+    impl ModuleRuntime for EgressRuntime {
+        fn refresh_egress_pool(&self) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    let refreshes = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let runtime: Arc<dyn ModuleRuntime> = Arc::new(EgressRuntime(Arc::clone(&refreshes)));
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(16);
+    let engine = ScanEngine::with_module_runtime(vec![], store, bus.clone(), runtime);
+    let target = Target::new(TargetKind::Username, "subject");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("username", "subject"),
+        target.clone(),
+    );
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: Default::default(),
+        cancel: Default::default(),
+    };
+
+    engine.run(scan, target, ctx).await.expect("should succeed");
+
+    assert_eq!(
+        refreshes.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "engine must request the egress refresh through ModuleRuntime, once per scan"
+    );
+}
+
+/// The other half of the same guarantee: the default contract implementation is
+/// inert, so an isolated engine performs no egress side effect at all.
+#[test]
+fn noop_runtime_does_not_refresh_the_egress_pool() {
+    let runtime: &dyn ModuleRuntime = &crate::core::module_runtime::NoopModuleRuntime;
+    // Must not spawn, probe, or panic — there is no tokio runtime here, so a
+    // regression that reintroduced a `tokio::spawn` in the default body would
+    // fail this test rather than silently leaking a task.
+    runtime.refresh_egress_pool();
+}
+
 #[test]
 fn consolidate_address_localities_folds_postcode_variants_codebase_wide() {
     use crate::core::entity::{Entity, EntityKind, Evidence};

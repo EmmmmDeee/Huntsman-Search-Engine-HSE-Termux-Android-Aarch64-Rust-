@@ -517,18 +517,14 @@ impl ScanEngine {
         // Keep the validated egress proxy pool healthy: pull operator-configured
         // published feeds and re-probe due proxies so a dead proxy is evicted
         // before it can make a resource unreachable. Detached (never blocks the
-        // scan) and internally throttled; not spawned at all when no proxy/feed
-        // is configured, so a proxy-less deployment pays nothing.
-        if crate::util::egress::pool_is_configured()
-            || std::env::var(crate::util::egress::PROXY_FEEDS_ENV).is_ok()
-        {
-            tokio::spawn(async {
-                let (fed, ok) = crate::util::egress::refresh_pool().await;
-                if fed > 0 || ok > 0 {
-                    tracing::debug!(fed, validated_ok = ok, "egress proxy pool refreshed");
-                }
-            });
-        }
+        // scan), internally throttled, and free when no proxy/feed is configured.
+        //
+        // Through the runtime contract, not `util::egress` directly: the refresh
+        // is effectful, so by `core::module_runtime`'s stated criterion it needs
+        // a hook rather than an allow-listed pure leaf. That also restores the
+        // isolation guarantee — an engine built with `NoopModuleRuntime` no
+        // longer mutates the process-wide pool.
+        self.module_runtime.refresh_egress_pool();
 
         // Apply per-scan SeekNow budget override if the operator asked
         // for one. Capped at 500 so a single scan cannot blow the

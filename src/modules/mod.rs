@@ -319,6 +319,24 @@ impl crate::core::module_runtime::ModuleRuntime for BuiltinModuleRuntime {
     fn drain_found_keys(&self, scan_id: &str) -> Vec<crate::core::entity::Entity> {
         drain_found_key_entities(scan_id)
     }
+
+    fn refresh_egress_pool(&self) {
+        // Not spawned at all when no proxy/feed is configured, so a proxy-less
+        // deployment pays nothing. Detached so it never blocks the scan;
+        // `refresh_pool` is internally throttled, so a burst of scans does not
+        // become a burst of probes.
+        if !crate::util::egress::pool_is_configured()
+            && std::env::var(crate::util::egress::PROXY_FEEDS_ENV).is_err()
+        {
+            return;
+        }
+        tokio::spawn(async {
+            let (fed, ok) = crate::util::egress::refresh_pool().await;
+            if fed > 0 || ok > 0 {
+                tracing::debug!(fed, validated_ok = ok, "egress proxy pool refreshed");
+            }
+        });
+    }
 }
 
 /// Runtime effects paired with the built-in module registry.
