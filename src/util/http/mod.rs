@@ -21,6 +21,7 @@ mod client;
 mod fetch;
 mod keys;
 mod redact;
+mod response;
 mod ssrf;
 #[cfg(test)]
 mod tests;
@@ -35,6 +36,7 @@ pub use fetch::{
 };
 pub use keys::{scan_for_api_keys, scan_for_api_keys_with_source};
 pub(crate) use redact::redact_credentials;
+pub use response::{build_api_url, handle_api_response};
 pub(crate) use ssrf::resolve_public_ips;
 pub(crate) use url::RequestBuilderExt;
 pub use url::{json_decode, json_scanned, urldecode, urlencode};

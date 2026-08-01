@@ -24,7 +24,6 @@ pub mod au_people;
 pub mod au_property;
 pub mod au_unclaimed;
 pub mod austlii;
-pub mod beacondb;
 pub mod bgpview;
 pub mod bitbucket_user;
 pub mod bluesky_user;
@@ -74,6 +73,10 @@ pub mod email_parse;
 pub mod emailrep;
 pub mod employer_pivot;
 pub mod epieos;
+// Shared entity-building toolkit for high-volume patterns — a helper,
+// not a registered `Module`, so it is `pub(crate)` (the registry guard only
+// inspects `pub mod` declarations).
+pub(crate) mod entity_builder;
 pub mod exa_search;
 pub mod exif_geo;
 pub mod fediverse;
@@ -118,7 +121,6 @@ pub mod leakix;
 pub mod lobsters;
 pub mod local_net;
 pub mod mastodon_user;
-pub mod mnemonic_pdns;
 pub mod mylnikov;
 pub mod name_intel;
 pub mod netblock;
@@ -129,7 +131,6 @@ pub mod npm_author;
 pub mod numverify;
 pub mod oathnet_pro;
 pub mod onyphe;
-pub mod open_meteo_geo;
 pub mod opencellid;
 pub mod opencorporates;
 pub mod opensanctions;
@@ -174,16 +175,8 @@ pub mod stackoverflow_user;
 pub mod steam_profile;
 pub mod streaming_probe;
 pub mod structured_id;
-pub mod subdomain_center;
 pub mod subdomain_takeover;
 pub mod sunrise_sunset;
-// Shared Termux sensor-tool output contract (blank vs unparseable) — a
-// `pub(crate)` HELPER (no `Module` impl), consumed by signal_radar,
-// device_sensors, wifi_intel and cell_intel so the rule distinguishing "the
-// tool answered with nothing" from "the tool is broken" lives once.
-// `pub(crate)` (like `breach_rich`) keeps it out of the
-// `every_declared_module_is_registered` guard.
-pub(crate) mod termux_sensor;
 pub mod threatfox;
 pub mod trove_au;
 pub mod typosquat;
@@ -389,12 +382,6 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(geo_intel::GeoIntel),
             Arc::new(geocode::Geocode),
             Arc::new(hackertarget::HackerTarget),
-            // Keyless historical passive DNS (domain↔IP over time) — the reverse
-            // and historical view the live resolvers above can't give.
-            Arc::new(mnemonic_pdns::MnemonicPdns),
-            // Keyless subdomain enumeration from an aggregated CT/passive corpus,
-            // distinct from crtsh/certspotter/anubis — more independent coverage.
-            Arc::new(subdomain_center::SubdomainCenter),
             Arc::new(threatfox::ThreatFox),
             Arc::new(rdap_domain::RdapDomain),
             Arc::new(ripestat::RipeStat),
@@ -470,15 +457,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(fullcontact::FullContact),
             Arc::new(numverify::NumVerify),
             Arc::new(photon::Photon),
-            // Third keyless forward geocoder alongside `geocode` (Nominatim) and
-            // `photon` (Komoot): resolves self-reported place-names to coordinates
-            // and adds timezone/population/place-class the others don't return.
-            Arc::new(open_meteo_geo::OpenMeteoGeo),
             Arc::new(mylnikov::Mylnikov),
-            // Keyless BSSID geolocation alongside `mylnikov`: two independent
-            // free corpora answering the same question, so an outage or a miss
-            // in one still leaves the radar a way to locate an observed AP.
-            Arc::new(beacondb::BeaconDb),
             Arc::new(exif_geo::ExifGeo),
             Arc::new(overpass::Overpass),
             Arc::new(wiki_geosearch::WikiGeoSearch),
