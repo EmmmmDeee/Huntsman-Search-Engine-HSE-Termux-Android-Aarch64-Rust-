@@ -1048,6 +1048,83 @@ impl Entity {
             self.tags.retain(|t| t != crate::core::tags::CANDIDATE);
         }
     }
+
+    /// Start a fluent [`EntityBuilder`] for the common emission shape.
+    ///
+    /// Collapses the `Entity::new(kind, value, conf, scan_id)` + `tag(..)` +
+    /// `add_evidence(..)` + `result.push(..)` scaffold that is copy-pasted at
+    /// ~1000 sites across the module fleet (three modules had already grown
+    /// their own private `build_entity` helpers). Purely additive: it wraps the
+    /// existing constructor with identical semantics — confidence is still
+    /// clamped by `Entity::new`, tags still de-dupe via `Entity::tag`, evidence
+    /// order is preserved — so a builder-produced entity is byte-identical to
+    /// the hand-rolled sequence, and hand-rolled sites keep compiling.
+    ///
+    /// ```ignore
+    /// Entity::builder(EntityKind::Domain, host, confidence::HIGH, &ctx.scan_id)
+    ///     .tag("archived")
+    ///     .evidence(Evidence::new(SRC, summary).with_attr("k", "v"))
+    ///     .push_to(&mut result);
+    /// ```
+    pub fn builder(
+        kind: EntityKind,
+        value: impl Into<String>,
+        confidence: f64,
+        scan_id: impl Into<String>,
+    ) -> EntityBuilder {
+        EntityBuilder {
+            entity: Entity::new(kind, value, confidence, scan_id),
+        }
+    }
+}
+
+/// Fluent builder for the common entity-emission shape. Construct via
+/// [`Entity::builder`]. Every method mirrors the equivalent `Entity` mutation
+/// exactly, so the result is indistinguishable from building the entity by
+/// hand — this is ergonomics, not new behaviour.
+#[must_use = "an EntityBuilder does nothing until `.build()` or `.push_to(..)`"]
+pub struct EntityBuilder {
+    entity: Entity,
+}
+
+impl EntityBuilder {
+    /// Add one tag (de-duped, exactly like [`Entity::tag`]).
+    pub fn tag(mut self, t: impl Into<String>) -> Self {
+        self.entity.tag(t);
+        self
+    }
+
+    /// Add several tags in order.
+    pub fn tags<I, S>(mut self, tags: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        for t in tags {
+            self.entity.tag(t);
+        }
+        self
+    }
+
+    /// Append one piece of evidence (order-preserving, like
+    /// [`Entity::add_evidence`]). Passwords must be stripped before calling,
+    /// same contract as the underlying method.
+    pub fn evidence(mut self, ev: Evidence) -> Self {
+        self.entity.add_evidence(ev);
+        self
+    }
+
+    /// Finish and return the built [`Entity`].
+    #[must_use]
+    pub fn build(self) -> Entity {
+        self.entity
+    }
+
+    /// Finish and push the entity into a [`ModuleResult`] — the terminal step
+    /// for the overwhelmingly common "build one entity and emit it" case.
+    pub fn push_to(self, result: &mut crate::core::module::ModuleResult) {
+        result.push(self.entity);
+    }
 }
 
 /// Index bucket that stores the common single fingerprint match inline and
