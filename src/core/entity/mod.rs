@@ -933,6 +933,30 @@ pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
     hex::encode(h.finalize())
 }
 
+/// Mint an entity UID from a **raw, un-normalised** value — the single entry
+/// point for the two-step `normalise` → [`derive_uid`] contract that identity
+/// callers previously copy-pasted (engine seed derivation, dispatch source
+/// counting, username history bridging). Folding the two steps here means a
+/// caller with a raw operator/target string can never accidentally hash a
+/// value that skipped [`normalise`] (which would land it in the graph under a
+/// UID no module's emitted entity shares).
+///
+/// The result is byte-identical to `derive_uid(kind, &normalise(kind, value))`,
+/// so this preserves the SHA-256-deterministic-UID invariant
+/// (`tests/architecture.rs`, `src/lib.rs`) exactly.
+///
+/// NOT used by:
+/// * [`Entity::new`], which needs the intermediate normalised form for its own
+///   `value` field and so computes `normalise` once and calls [`derive_uid`]
+///   directly — routing it through here would recompute `normalise` on every
+///   entity constructed (the hottest path in the engine).
+/// * Callers that already hold a **normalised** (`canon`) value; they call
+///   [`derive_uid`] directly, because re-normalising a canonical value is at
+///   best wasted work and at worst not provably idempotent for every kind.
+pub(crate) fn uid_for(kind: &EntityKind, value: &str) -> String {
+    derive_uid(kind, &normalise(kind, value))
+}
+
 /// Pure-tracking URL query-parameter keys that are safe to drop during
 /// normalisation so two discoveries of the same resource — one with a tracking
 /// suffix, one without — hash to the same UID and corroborate instead of
