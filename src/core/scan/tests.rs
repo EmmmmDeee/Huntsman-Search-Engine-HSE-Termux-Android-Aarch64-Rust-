@@ -579,7 +579,14 @@ fn mega_domain_list_catches_common_noise() {
 
 #[test]
 fn target_kind_round_trips_via_entity_kind() {
-    for tk in [
+    // EXHAUSTIVE — every TargetKind must survive the producer→consumer join
+    // (`to_entity_kind` then `from_entity_kind`). This is the exact drift the
+    // `person`/`full_name` join-bug (commit 3e88aae) was: a kind that serialises
+    // one way but routes another silently orphans its consumers. The arm-less
+    // `match` in the loop below is a COMPILE-TIME tripwire — adding a new
+    // TargetKind variant fails to build until it is handled there AND added to
+    // `all`, so a new kind can never ship without round-trip coverage.
+    let all = [
         TargetKind::Email,
         TargetKind::Username,
         TargetKind::Phone,
@@ -588,14 +595,48 @@ fn target_kind_round_trips_via_entity_kind() {
         TargetKind::Domain,
         TargetKind::Url,
         TargetKind::Asn,
+        TargetKind::Cidr,
         TargetKind::Coordinates,
         TargetKind::Address,
         TargetKind::Organisation,
         TargetKind::AbnAcn,
+        TargetKind::MacAddress,
         TargetKind::ApiKey,
-    ] {
+        TargetKind::CryptoAddress,
+        TargetKind::DeviceId,
+        TargetKind::Ssid,
+        TargetKind::TrackingId,
+    ];
+    for tk in all {
+        // No-wildcard exhaustiveness tripwire (see above). Harmless at runtime;
+        // its purpose is the compile error a new, unlisted variant triggers.
+        match tk {
+            TargetKind::Email
+            | TargetKind::Username
+            | TargetKind::Phone
+            | TargetKind::FullName
+            | TargetKind::IpAddress
+            | TargetKind::Domain
+            | TargetKind::Url
+            | TargetKind::Asn
+            | TargetKind::Cidr
+            | TargetKind::Coordinates
+            | TargetKind::Address
+            | TargetKind::Organisation
+            | TargetKind::AbnAcn
+            | TargetKind::MacAddress
+            | TargetKind::ApiKey
+            | TargetKind::CryptoAddress
+            | TargetKind::DeviceId
+            | TargetKind::Ssid
+            | TargetKind::TrackingId => {}
+        }
         let ek = tk.to_entity_kind();
-        assert_eq!(TargetKind::from_entity_kind(&ek), Some(tk));
+        assert_eq!(
+            TargetKind::from_entity_kind(&ek),
+            Some(tk),
+            "TargetKind::{tk:?} -> {ek:?} must round-trip back to the same TargetKind"
+        );
     }
 }
 
