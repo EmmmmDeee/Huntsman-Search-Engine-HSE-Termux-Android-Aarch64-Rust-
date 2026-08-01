@@ -110,6 +110,49 @@ pub fn extract_altitude(exif: &exif::Exif) -> Option<f64> {
     Some(if below_sea_level { -metres } else { metres })
 }
 
+/// Read `GPSHPositioningError` — the camera's own estimate of horizontal
+/// positioning error in **metres**. A REAL accuracy radius (modern phone
+/// cameras write it; dedicated/older cameras omit it), returned so the caller
+/// can stamp a real `accuracy:<n>m` precision tag that the location-fusion
+/// ladder consumes, instead of treating every photo fix as equally sharp.
+pub fn extract_positioning_error(exif: &exif::Exif) -> Option<f64> {
+    let field = exif.get_field(Tag::GPSHPositioningError, In::PRIMARY)?;
+    let Value::Rational(rs) = &field.value else {
+        return None;
+    };
+    let metres = rs.first()?.to_f64();
+    // Require > 0: a 0 m radius would become an `accuracy:0m` tag — a claim of
+    // perfect accuracy (0 km in the fusion ladder). Treat it as absent, the
+    // same rule the codebase's other accuracy fields apply.
+    (metres.is_finite() && metres > 0.0).then_some(metres)
+}
+
+/// Read `GPSImgDirection` — the compass heading (degrees in `0.0..=360.0`) the
+/// camera was POINTING when the shot was taken, paired with its reference
+/// (`'T'` true north or `'M'` magnetic; `'T'` assumed when the ref tag is
+/// absent, per the EXIF default). Real directional intelligence: with the GPS
+/// fix it constrains what the subject was looking at, not just where they stood.
+pub fn extract_img_direction(exif: &exif::Exif) -> Option<(f64, char)> {
+    let field = exif.get_field(Tag::GPSImgDirection, In::PRIMARY)?;
+    let Value::Rational(rs) = &field.value else {
+        return None;
+    };
+    let deg = rs.first()?.to_f64();
+    if !deg.is_finite() || !(0.0..=360.0).contains(&deg) {
+        return None;
+    }
+    // `'T'` (true north) only when the ref tag is ABSENT — the EXIF default. A
+    // ref that is present but neither T nor M is untrustworthy: reject the whole
+    // heading rather than silently relabel it true north.
+    let reference = match ascii_first_byte(exif, Tag::GPSImgDirectionRef) {
+        None => 'T',
+        Some(b'T' | b't') => 'T',
+        Some(b'M' | b'm') => 'M',
+        Some(_) => return None,
+    };
+    Some((deg, reference))
+}
+
 /// Read the EXIF container from a file on disk.
 ///
 /// Streams through a `BufReader` rather than slurping the file: EXIF lives in
@@ -175,5 +218,61 @@ mod tests {
         let above = 100.0_f64;
         let below = -above;
         assert!(above > 0.0 && below < 0.0);
+    }
+
+    #[test]
+    fn positioning_error_reads_real_accuracy_metres() {
+        let exif = exif_with(&[(Tag::GPSHPositioningError, Value::Rational(vec![rat(12, 1)]))]);
+        assert_eq!(extract_positioning_error(&exif), Some(12.0));
+        // Absent tag → None: never fabricate an accuracy the camera didn't report.
+        let empty = exif_with(&[(Tag::Make, Value::Ascii(vec![b"x".to_vec()]))]);
+        assert_eq!(extract_positioning_error(&empty), None);
+        // A 0 m radius is a fabricated perfect-accuracy claim → treat as absent.
+        let zero = exif_with(&[(Tag::GPSHPositioningError, Value::Rational(vec![rat(0, 1)]))]);
+        assert_eq!(extract_positioning_error(&zero), None);
+    }
+
+    #[test]
+    fn img_direction_reads_heading_and_ref() {
+        let t = exif_with(&[
+            (Tag::GPSImgDirection, Value::Rational(vec![rat(2700, 10)])), // 270.0°
+            (Tag::GPSImgDirectionRef, Value::Ascii(vec![b"T".to_vec()])),
+        ]);
+        assert_eq!(extract_img_direction(&t), Some((270.0, 'T')));
+        // Missing ref defaults to true north; out-of-range heading rejected.
+        let m = exif_with(&[(Tag::GPSImgDirection, Value::Rational(vec![rat(15, 1)]))]);
+        assert_eq!(extract_img_direction(&m), Some((15.0, 'T')));
+        let bad = exif_with(&[(Tag::GPSImgDirection, Value::Rational(vec![rat(400, 1)]))]);
+        assert_eq!(extract_img_direction(&bad), None);
+        // A present-but-unrecognised reference is untrustworthy → reject the
+        // heading, never silently relabel it true north.
+        let bad_ref = exif_with(&[
+            (Tag::GPSImgDirection, Value::Rational(vec![rat(90, 1)])),
+            (Tag::GPSImgDirectionRef, Value::Ascii(vec![b"X".to_vec()])),
+        ]);
+        assert_eq!(extract_img_direction(&bad_ref), None);
+    }
+
+    /// Build a minimal EXIF container carrying `fields`, then parse it back —
+    /// exercises real container reading, not a hand-built `Exif` the parser
+    /// never sees. Mirrors the helper in `util::document_parse::image_geolocation`.
+    fn exif_with(fields: &[(Tag, Value)]) -> exif::Exif {
+        let mut writer = exif::experimental::Writer::new();
+        let owned: Vec<exif::Field> = fields
+            .iter()
+            .map(|(tag, value)| exif::Field {
+                tag: *tag,
+                ifd_num: In::PRIMARY,
+                value: value.clone(),
+            })
+            .collect();
+        for field in &owned {
+            writer.push_field(field);
+        }
+        let mut buf = std::io::Cursor::new(Vec::new());
+        writer.write(&mut buf, false).expect("write EXIF container");
+        exif::Reader::new()
+            .read_raw(buf.into_inner())
+            .expect("parse EXIF container")
     }
 }
