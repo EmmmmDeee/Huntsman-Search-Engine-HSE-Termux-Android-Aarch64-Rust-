@@ -2128,6 +2128,89 @@ async fn recall_resolves_a_fullname_seed_despite_reformatting() {
     cleanup(&path);
 }
 
+/// Real-behaviour regression (execution-validated): recall re-injects STORED
+/// entities the database already counts, so re-persisting them across repeated
+/// warm re-scans must be IDEMPOTENT in corroboration — the corroboration-0 reset
+/// in [`ScanEngine::recall_prior_entities`] keeps the GREATEST-merge from
+/// compounding the DB's count every scan. A live `see-know.xyz` run once
+/// ballooned a recalled node to corroboration 396 this way, and a synthetic
+/// name_intel re-scan loop reproduced 2 → 8 → 42 → 296 before the reset landed.
+///
+/// This pins the END-TO-END property the single-call `recall_resets_generation_
+/// to_zero` test structurally cannot reach: the blow-up only emerges across
+/// multiple persist→recall→persist cycles through the real merge. Drive eight
+/// real recall/re-persist cycles against the SQLite store and assert the count
+/// stays bounded — deleting the `corroboration = 0` line turns this into a
+/// ≥ 2ⁿ explosion the bound catches immediately.
+#[tokio::test]
+async fn recall_re_persist_does_not_inflate_corroboration_across_rescans() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::storage::Store;
+
+    let path = format!(
+        "{}/.hse-recall-inflation-{}.db",
+        std::env::temp_dir().to_string_lossy(),
+        std::process::id()
+    );
+    let cleanup = |p: &str| {
+        let _ = std::fs::remove_file(p);
+        let _ = std::fs::remove_file(format!("{p}-wal"));
+        let _ = std::fs::remove_file(format!("{p}-shm"));
+    };
+    cleanup(&path);
+    let store: Arc<dyn StoragePort> = Arc::new(Store::open(&path).expect("should succeed"));
+
+    // Scan 1 persists the seed + one discovered lead (each at the default
+    // corroboration 1) — the state a warm-database re-scan starts from.
+    store
+        .upsert_scan(&Scan::new(
+            "scan-1",
+            Target::new(TargetKind::Username, "invtarget"),
+        ))
+        .expect("should succeed");
+    let mut seed = Entity::new(EntityKind::Username, "invtarget", 0.9, "scan-1");
+    seed.add_evidence(Evidence::new("anchor", "seed"));
+    let mut lead = Entity::new(EntityKind::Email, "invlead@gmail.com", 0.8, "scan-1");
+    lead.add_evidence(Evidence::new("hibp", "breach"));
+    let lead_uid = lead.uid.clone();
+    store.upsert_entity(&seed).expect("should succeed");
+    store.upsert_entity(&lead).expect("should succeed");
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let engine = ScanEngine::new(vec![], store.clone(), bus);
+    let target = Target::new(TargetKind::Username, "invtarget");
+
+    // Eight warm re-scans: each recalls the prior entities (as the engine's seed
+    // round does) and re-persists them (as checkpoint/finalise does).
+    let mut corrs = Vec::new();
+    for i in 2..=9 {
+        let scan = format!("scan-{i}");
+        let recalled = engine.recall_prior_entities(&target, &scan, true);
+        assert!(
+            recalled.iter().any(|e| e.uid == lead_uid),
+            "recall must surface the prior lead on re-scan {i}"
+        );
+        store
+            .upsert_entities_batch(&recalled)
+            .expect("should succeed");
+        let held = store
+            .get_entity(&lead_uid)
+            .expect("should succeed")
+            .expect("lead persists across re-scans");
+        corrs.push(held.corroboration);
+    }
+
+    // Idempotent: re-persisting recalled (count-0) data never compounds the
+    // store's true count, so it stays flat. Without the reset this is the
+    // 2 → 8 → 42 → 296 blow-up (≥ 2ⁿ), which this bound catches at cycle 3.
+    assert!(
+        corrs.iter().all(|&c| c <= 2),
+        "recall re-persist inflated corroboration across re-scans (must stay bounded): {corrs:?}"
+    );
+
+    cleanup(&path);
+}
+
 /// The seed-aware incidental-infrastructure admission gate
 /// ([`dispatch::is_incidental_infra_entity`]): on an identity-seeded scan, shared
 /// provider/CDN/registrar/DNS estate and role mailboxes are dropped as noise,
