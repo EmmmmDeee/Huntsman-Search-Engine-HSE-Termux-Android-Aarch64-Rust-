@@ -1330,6 +1330,34 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   increasingly. Verified both directions — mutating `ts >= cutoff` to
   `ts > cutoff` reddens the boundary test, and reverting the function to read
   `unix_now()` internally reddens it too.
+- **`[x]` T2.44 · `geocode` forward path swallows a non-JSON Nominatim body into
+  a silent "no location" (no-silent-failure violation; search reports a phantom
+  empty)** — surfaced while stress-testing the live search surface (a common-name
+  seed) and confirmed by direct read. `Geocode::forward`
+  (`modules/geocode/mod.rs`) parsed the `/search` response two ways, both
+  swallowing the error: the reqwest arm `json_scanned(r, SRC).await
+  .unwrap_or_default()` and the curl fallback `serde_json::from_str(&body)
+  .unwrap_or_default()`. Nominatim returns `[]` (valid JSON) for a genuine
+  no-match, so `json_scanned`/`from_str` only ever *error* on a non-JSON body — a
+  rate-limit / anti-bot challenge served as HTTP 200, or a gateway error page.
+  The swallow therefore turned every throttled or blocked request into an empty
+  `ModuleResult` with no error and no log, indistinguishable from "address not
+  found". Proof it is a defect, not a convention: the **reverse** path in the
+  *same module* (`:195`) handles the identical `json_scanned` result correctly
+  with `.map_err(|e| Error::module(SRC, e))?`. → **Solution:** SOL-GEOCODE-SURFACE
+  -ERR — the reqwest arm now mirrors the reverse path (`map_err(…)?`); the curl
+  fallback routes through a new pure `parse_forward_results(body) -> Result<…>`
+  that surfaces a non-JSON body as `Error::module` instead of an empty Vec. A
+  genuine `[]` no-match stays `Ok(empty)` — unchanged. Tests:
+  `parse_forward_results_surfaces_a_non_json_body_instead_of_swallowing_it` +
+  `_keeps_empty_and_populated_arrays_distinct_from_errors` (proven to fail against
+  a restored `Ok(from_str(body).unwrap_or_default())` swallow). **P2** (broken
+  no-silent-failure guarantee — an evidentiary search tool must not report a
+  false negative when the geocoder actually blocked the call). *Scope note:* this
+  exact `json_scanned(…).unwrap_or_default()` shape is unique to `geocode`
+  (surveyed); the broader `.ok()/.unwrap_or_default()`-near-parse class (~66
+  candidate sites across the module fleet) needs per-site review — queued as a
+  triage pass, not a blind sweep.
 
 ---
 
@@ -1847,6 +1875,7 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
 ## 8. Maintained log
 ## 8. Maintained log
 
+- **2026-08-01** — **Executed T2.44 (new, discovered while stress-testing the live search surface): surfaced `geocode`'s swallowed non-JSON body.** A common-name self-test scan showed many modules reporting `found:0` where the request was actually blocked/rate-limited — 'what worked' is unknowable while failures masquerade as empty results. Root-caused one clean instance: `Geocode::forward` parsed the Nominatim `/search` response with `json_scanned(…).unwrap_or_default()` (reqwest arm) and `serde_json::from_str(…).unwrap_or_default()` (curl fallback), both discarding the parse error. Since Nominatim returns `[]` for a genuine no-match, a deserialize failure only ever means a non-JSON body (rate-limit / anti-bot challenge as HTTP 200, or a gateway page), so the swallow made a throttled request indistinguishable from 'no location'. The module's own reverse path already surfaces the identical failure via `Error::module`; brought the forward path to parity (reqwest `map_err(…)?`; curl fallback through a new pure `parse_forward_results`). +2 tests, proven red-then-green (reverting to `Ok(from_str(body).unwrap_or_default())` fails the non-JSON test). Gate green: fmt/clippy `-D warnings`/rustdoc/doc clean, `cargo test --all --locked` 4602 lib + 256 integration, 0 failures (one pre-existing load-flaky timing test, `paid_phase_runs_modules_concurrently`, passes 3/3 in isolation — queued next). T2.44 `[ ]`→`[x]`. **Paired:** `SOLUTION_TREE` §5 SOL-GEOCODE-SURFACE-ERR — same commit.
 - **2026-08-01** — **Executed T2.43 (new, discovered gap): made
   `hudsonrock::compute_confidence` pure so the gate stops expiring.** Ran the
   verification gate on arrival and found it RED on an untouched tree — 2 failures

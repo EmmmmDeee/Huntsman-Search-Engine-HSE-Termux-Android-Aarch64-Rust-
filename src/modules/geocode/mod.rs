@@ -136,10 +136,10 @@ impl Geocode {
         let results: Vec<NominatimResult> = match resp {
             Ok(r) if r.status().is_success() => crate::util::http::json_scanned(r, SRC)
                 .await
-                .unwrap_or_default(),
+                .map_err(|e| Error::module(SRC, e))?,
             _ => {
                 if let Some(body) = crate::util::curl::fetch(&url, crate::MODULE_TIMEOUT_MS).await {
-                    serde_json::from_str(&body).unwrap_or_default()
+                    parse_forward_results(&body)?
                 } else {
                     return Ok(ModuleResult::new());
                 }
@@ -200,6 +200,25 @@ impl Geocode {
         result.push(build_reverse_entity(lat, lon, &data, &ctx.scan_id));
         Ok(result)
     }
+}
+
+/// Parse a Nominatim `/search` response body into result rows, **surfacing** a
+/// non-JSON body as an error instead of silently yielding an empty set.
+///
+/// Nominatim returns `[]` (valid JSON) for a genuine no-match, so a deserialize
+/// failure here means the body was not JSON at all — a rate-limit / anti-bot
+/// challenge served as HTTP 200, or a gateway error page. Swallowing that with
+/// `unwrap_or_default()` made a throttled request indistinguishable from "no
+/// location found" — a silent failure. The reverse path already surfaces the
+/// identical `json_scanned` failure via [`Error::module`]; this brings the
+/// forward path's curl fallback to parity so the operator sees the real reason.
+fn parse_forward_results(body: &str) -> Result<Vec<NominatimResult>> {
+    serde_json::from_str(body).map_err(|e| {
+        Error::module(
+            SRC,
+            format!("Nominatim /search returned a non-JSON body: {e}"),
+        )
+    })
 }
 
 /// Build the forward-geocode Coordinates entity, shaping confidence and tags by

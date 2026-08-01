@@ -62,6 +62,34 @@ fn module_metadata() {
     assert_eq!(m.max_timeout_ms(), 8_000);
 }
 
+// -- forward /search body parsing: surface failures, don't swallow ----
+
+#[test]
+fn parse_forward_results_surfaces_a_non_json_body_instead_of_swallowing_it() {
+    // A rate-limit / anti-bot challenge served as HTTP 200 arrives as a non-JSON
+    // body. It must surface as an error, NOT vanish into an empty result set —
+    // otherwise the analyst reads "no location" for an address that was actually
+    // throttled. The reverse path already surfaces this; the forward path must too.
+    assert!(parse_forward_results("<html>Too Many Requests</html>").is_err());
+    assert!(parse_forward_results("Rate limited. Try again later.").is_err());
+    assert!(parse_forward_results("").is_err());
+}
+
+#[test]
+fn parse_forward_results_keeps_empty_and_populated_arrays_distinct_from_errors() {
+    // Nominatim returns `[]` (valid JSON) for a genuine no-match — that stays an
+    // Ok(empty), never conflated with the non-JSON failure above. A real hit
+    // parses into rows with lat/lon preserved.
+    assert!(parse_forward_results("[]").unwrap().is_empty());
+    let rows = parse_forward_results(
+        r#"[{"lat":"-27.47","lon":"153.02","display_name":"Brisbane, QLD","type":"city"}]"#,
+    )
+    .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].lat.as_deref(), Some("-27.47"));
+    assert_eq!(rows[0].lon.as_deref(), Some("153.02"));
+}
+
 // -- AU-relevance shaping of reverse geocode --------------------------
 
 fn resp(json: serde_json::Value) -> NominatimResp {

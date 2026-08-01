@@ -200,6 +200,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   surveyed and deliberately left unchanged (no behaviour-neutral churn). ✅
   delivered.
 
+- **`[x]` SOL-GEOCODE-SURFACE-ERR · Surface a non-JSON geocoder body instead of swallowing it** — `geocode::forward` discarded a Nominatim `/search` parse error via `unwrap_or_default()` on both the reqwest and curl-fallback arms, turning a rate-limit / anti-bot challenge (served as HTTP 200) into a silent empty result. Since Nominatim returns `[]` for a genuine no-match, the only thing the swallow ever hid was a real failure. Reqwest arm now mirrors the module's own reverse path (`map_err(|e| Error::module(SRC, e))?`); the curl fallback routes through a pure, tested `parse_forward_results` that surfaces the error. *Closes:* **T2.44**. *Scope note:* the `json_scanned(…).unwrap_or_default()` shape is unique to this module (surveyed); the broader `.ok()/.unwrap_or_default()`-near-parse class is queued for a per-site triage pass, not a blind sweep. ✅ delivered.
+
 ### S.RESOURCE — Concurrency, throughput & resource safety
 
 - **`[x]` SOL-BLOCKING · Keep the 2-worker reactor unblocked** — `spawn_blocking`
@@ -1113,6 +1115,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ## 5. Maintained log (paired with `PROBLEM_TREE` §8)
 
+- **2026-08-01** — **SOL-GEOCODE-SURFACE-ERR `[ ]`→`[x]` (closes T2.44): make the geocoder honest about failures.** A live-surface self-test (common-name seed) exposed that searching can't be 'optimised to what works' while modules disguise blocks/rate-limits as `found:0`. `geocode::forward` swallowed a non-JSON Nominatim body with `unwrap_or_default()` on both arms; because Nominatim returns `[]` for a real no-match, the swallow only ever hid a genuine failure (a 200-served challenge / gateway page). Fixed to surface it — reqwest arm mirrors the module's already-correct reverse path, curl fallback goes through a pure `parse_forward_results`. **S→P:** this is the first slice of the broader 'searching lies about failures' theme the test run surfaced; the `.ok()/.unwrap_or_default()`-near-parse class (~66 sites) is queued for grounded per-site triage rather than a blind sweep. +2 tests, proven red-then-green. Gate green: 4602 lib + 256 integration, 0 failures. Paired: `PROBLEM_TREE` T2.44 §8 — same commit.
 - **2026-08-01** — **SOL-PURE-FRESHNESS `[ ]`→`[x]` (closes T2.43): inject the
   instant instead of sampling the clock inside a scored decision.** The gate was
   RED on arrival, on an untouched tree: `hudsonrock::compute_confidence` compared a

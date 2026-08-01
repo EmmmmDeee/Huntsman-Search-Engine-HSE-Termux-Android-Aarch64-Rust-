@@ -11,6 +11,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Fixed
+- **The `geocode` module no longer reports "no location" when Nominatim actually
+  rate-limited or blocked the request.** The forward (Address → Coordinates)
+  path parsed the `/search` response with `json_scanned(…).unwrap_or_default()`
+  and the curl fallback with `serde_json::from_str(…).unwrap_or_default()` — both
+  discarding a parse error into an empty result set. Because Nominatim returns
+  `[]` (valid JSON) for a genuine no-match, a deserialize failure only ever means
+  the body was *not JSON* (a rate-limit / anti-bot challenge served as HTTP 200,
+  or a gateway error page), so the swallow turned every throttled or blocked
+  request into a silent, indistinguishable "no location found" — violating the
+  engine's no-silent-failure guarantee. Both sites now surface the failure as a
+  module error (the reverse geocode path in the same module already did this),
+  so the operator sees the real reason instead of a phantom empty result. A
+  genuine no-match (`[]`) is unchanged. Behaviour on success is unchanged.
 - **The HudsonRock stealer-log freshness tests no longer rot as the calendar
   advances.** `compute_confidence` boosts a stealer record's confidence when the
   compromise date falls inside a *rolling* 90-day window, but it sampled the
