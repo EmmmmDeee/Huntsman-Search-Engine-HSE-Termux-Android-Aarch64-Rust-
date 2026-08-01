@@ -163,6 +163,12 @@ pub fn resolve_coreferences(entities: &[Entity], min_score: f64, limit: usize) -
         is_person: bool,
         sources: std::collections::HashSet<&'a str>,
     }
+    // Bound the O(N²) sweep. An imported breach/stealer dossier can seat 10^5+
+    // identity entities; scoring every pair of those would pin a blocking-pool
+    // thread for minutes. `entities` arrives confidence-ranked, so `.take` keeps
+    // the strongest identities — a deterministic prefix (mirrors the
+    // import-enrichment entity ceiling of 5_000).
+    const MAX_COREF_NODES: usize = 5_000;
     let nodes: Vec<Node> = entities
         .iter()
         .filter(|e| is_identity_kind(&e.kind))
@@ -172,8 +178,15 @@ pub fn resolve_coreferences(entities: &[Entity], min_score: f64, limit: usize) -
             is_person: e.kind == EntityKind::Person,
             sources: e.corroborating_sources(),
         })
+        .take(MAX_COREF_NODES)
         .collect();
 
+    // Bound peak memory to ~`limit`, not O(N²): in a single-source dump every
+    // pair shares that source (a >0 score), so an all-pairs `out` would allocate
+    // billions of CoReferences before the final truncate → OOM. Trim down to the
+    // top `limit` whenever the buffer fills; the survivors are exactly what the
+    // final sort would keep, so the result is unchanged.
+    let trim_at = limit.saturating_mul(4).max(4096);
     let mut out: Vec<CoReference> = Vec::new();
     for (i, a) in nodes.iter().enumerate() {
         for b in &nodes[i + 1..] {
@@ -218,19 +231,28 @@ pub fn resolve_coreferences(entities: &[Entity], min_score: f64, limit: usize) -
                 score,
                 signals,
             });
+            if out.len() >= trim_at {
+                out.sort_by(coref_order);
+                out.truncate(limit);
+            }
         }
     }
 
     // Strongest-first; deterministic UID-pair tie-break.
-    out.sort_by(|x, y| {
-        y.score
-            .partial_cmp(&x.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| x.uid_a.cmp(&y.uid_a))
-            .then_with(|| x.uid_b.cmp(&y.uid_b))
-    });
+    out.sort_by(coref_order);
     out.truncate(limit);
     out
+}
+
+/// Ordering for [`resolve_coreferences`] results: strongest score first, then a
+/// deterministic UID-pair tie-break. Shared by the in-loop trim and the final
+/// sort so the bounded buffer keeps exactly the pairs the final sort would.
+fn coref_order(x: &CoReference, y: &CoReference) -> std::cmp::Ordering {
+    y.score
+        .partial_cmp(&x.score)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| x.uid_a.cmp(&y.uid_a))
+        .then_with(|| x.uid_b.cmp(&y.uid_b))
 }
 
 #[cfg(test)]

@@ -381,10 +381,13 @@ fn format_output(
             let mut table = String::from("Kind\t\tValue\t\t\tConfidence\tPattern\n");
             table.push_str("----\t\t-----\t\t\t----------\t-------\n");
             for e in entities {
+                // Truncate by CHARACTERS, not bytes: `&s[..20]` panics when
+                // byte 20 lands inside a multibyte UTF-8 scalar (accented names,
+                // CJK, emoji all occur in real ingested values).
+                let value: String = e.value.chars().take(20).collect();
                 table.push_str(&format!(
-                    "{:<15}\t{:<20}\t{:.2}\t\t{}\n",
+                    "{:<15}\t{value:<20}\t{:.2}\t\t{}\n",
                     e.kind.to_str(),
-                    &e.value[..e.value.len().min(20)],
                     e.confidence,
                     e.source_pattern
                 ));
@@ -449,5 +452,25 @@ mod tests {
     #[test]
     fn format_rejects_unknown_output_format() {
         assert!(format_output(&sample(), "yaml", "notes.txt").is_err());
+    }
+
+    #[test]
+    fn format_table_truncates_multibyte_values_without_panicking() {
+        // Regression: the table renderer sliced `&value[..value.len().min(20)]`,
+        // which panics when byte 20 falls inside a multibyte UTF-8 scalar.
+        // Truncation must be char-based. Each 🎯 is 4 bytes, so byte 20 lands
+        // mid-scalar — the old code panicked here.
+        let mut ents = sample();
+        ents[0].value = "🎯".repeat(25); // 25 chars / 100 bytes
+        let output = format_output(&ents, "table", "notes.txt")
+            .expect("table format must not panic on a multibyte value");
+        assert!(
+            output.contains(&"🎯".repeat(20)),
+            "value should be truncated to its first 20 characters"
+        );
+        assert!(
+            !output.contains(&"🎯".repeat(21)),
+            "value must be cut at 20 characters, not more"
+        );
     }
 }
