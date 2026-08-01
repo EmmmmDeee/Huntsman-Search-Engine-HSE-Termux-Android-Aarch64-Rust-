@@ -39,14 +39,20 @@ export function renderInsights(host, id, sub){
       ${LENSES.map(l=>`<button type="button" class="insights-lens${l.key===start?' active':''}" data-lens="${esc(l.key)}">${esc(l.label)}</button>`).join('')}
     </div>
     <div id="insights-body" style="margin-top:14px"></div>`;
-  const body = $('#insights-body');
-  const show = key=>{
+  // Scope DOM queries to host so multiple concurrent views don't interfere.
+  const body = host.querySelector('#insights-body');
+  const lensButtons = host.querySelectorAll('.insights-lens');
+  const show = async key=>{
     const lens = LENSES.find(l=>l.key===key) || LENSES[0];
-    $$('.insights-lens').forEach(b=>b.classList.toggle('active', b.dataset.lens===lens.key));
+    lensButtons.forEach(b=>b.classList.toggle('active', b.dataset.lens===lens.key));
     body.innerHTML = '<div class="text-muted" style="padding:10px">Loading…</div>';
-    // Lazy: render (and fetch) only the selected lens.
-    try { lens.fn(body, id); } catch(e){ body.innerHTML = `<div class="empty-state"><h3>Could not render ${esc(lens.label)}</h3><p class="text-muted">${esc(e.message||String(e))}</p></div>`; }
+    // Lazy: render (and fetch) only the selected lens. Catch both sync and async errors.
+    try {
+      await lens.fn(body, id);
+    } catch(e){
+      body.innerHTML = `<div class="empty-state"><h3>Could not render ${esc(lens.label)}</h3><p class="text-muted">${esc(e.message||String(e))}</p></div>`;
+    }
   };
-  $$('.insights-lens').forEach(b=>b.addEventListener('click', ()=>show(b.dataset.lens)));
+  lensButtons.forEach(b=>b.addEventListener('click', ()=>show(b.dataset.lens)));
   show(start);
 }

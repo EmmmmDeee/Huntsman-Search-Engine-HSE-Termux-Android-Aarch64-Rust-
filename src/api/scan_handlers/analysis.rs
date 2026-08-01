@@ -20,15 +20,24 @@ pub async fn scan_entities(
     }
 
     // Parse pagination parameters: offset (default 0) and limit (default 1000, max 10000).
-    let offset: usize = params
-        .get("offset")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let limit: usize = params
-        .get("limit")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1000)
-        .min(10000);
+    // Reject invalid values so clients can detect mistakes.
+    let offset: usize = if let Some(s) = params.get("offset") {
+        match s.parse() {
+            Ok(n) => n,
+            Err(_) => return bad_request("invalid offset: must be a non-negative integer"),
+        }
+    } else {
+        0
+    };
+    let limit: usize = if let Some(s) = params.get("limit") {
+        match s.parse::<usize>() {
+            Ok(0) => return bad_request("invalid limit: must be > 0"),
+            Ok(n) => n.min(10000),
+            Err(_) => return bad_request("invalid limit: must be a positive integer"),
+        }
+    } else {
+        1000
+    };
 
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();

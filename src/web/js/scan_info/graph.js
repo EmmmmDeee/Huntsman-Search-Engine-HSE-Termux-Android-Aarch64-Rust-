@@ -106,11 +106,11 @@ export function buildD3Graph(){
   }
   const ranked = S.entities.slice().sort((a,b)=>
     ((relDegree.get(b.uid)||0)-(relDegree.get(a.uid)||0)) ||
-    ((b.corroboration||1)-(a.corroboration||1)));
+    ((b.corroboration??1)-(a.corroboration??1)));
   const shown = ranked.slice(0, GRAPH_MAX_NODES);
   const shownIds = new Set(shown.map(e=>e.uid));
   for (const e of shown){
-    nodes.push({id:e.uid, kind:e.kind, label:e.value, r: 5 + Math.min(8, Math.log(1+(e.corroboration||1))*3)});
+    nodes.push({id:e.uid, kind:e.kind, label:e.value, r: 5 + Math.min(8, Math.log(1+(e.corroboration??1))*3)});
   }
 
   // Links, in priority order so the global ceiling trims the least-important
@@ -132,10 +132,15 @@ export function buildD3Graph(){
     // one, so the visual hub reflects real centrality rather than misleading.
     const members = (c.entity_uids || c.evidence_uids || c.entities || []).filter(u=>shownIds.has(u));
     if (members.length < 2) continue;
-    let hub = members[0], hubScore = -1;
+    // Pick hub by relation degree, then corroboration tie-break (per comment at line 131).
+    let hub = members[0], hubScore = -1, hubCorr = -1;
     for (const u of members){
-      const s = (relDegree.get(u)||0);
-      if (s > hubScore){ hub = u; hubScore = s; }
+      const ent = S.entities.find(e => e.uid === u);
+      const relScore = (relDegree.get(u)||0);
+      const corrScore = ent?.corroboration ?? 1;
+      if (relScore > hubScore || (relScore === hubScore && corrScore > hubCorr)){
+        hub = u; hubScore = relScore; hubCorr = corrScore;
+      }
     }
     let spokes = 0;
     for (const u of members){
