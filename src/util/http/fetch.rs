@@ -876,9 +876,18 @@ where
 pub enum BodyVerdict {
     /// A real answer; return it.
     Accept,
-    /// An auth/quota failure reported in the body. `code` is the provider's own
-    /// status, used when reporting the key to the pool.
-    KeyFailure(u16),
+    /// An auth/quota failure reported in the body.
+    KeyFailure {
+        /// The provider's own status, used when reporting the key to the pool.
+        code: u16,
+        /// The provider's own explanation, surfaced VERBATIM in the terminal
+        /// error once no untried key remains. IPQS distinguishes quota
+        /// exhaustion from a bad key from a plan limit only in this text, and
+        /// summarising it away would leave the operator unable to tell which —
+        /// so it is carried through rather than collapsed into the status code.
+        /// `None` where the provider offers no detail beyond the status.
+        detail: Option<String>,
+    },
     /// A genuine miss for this query — not a key problem. Yields `Ok(None)`.
     Absent,
 }
@@ -910,26 +919,37 @@ where
     loop {
         // Record BEFORE attempting — see `keyed_cascade_with_key`.
         tried.insert(key.clone());
-        let rotate_err =
-            match attempt_with_key(ctx, module, &key, absent_statuses, &mut build).await {
-                Attempt::Absent | Attempt::Cancelled => return Ok(None),
-                Attempt::Failed(e) => return Err(e),
-                Attempt::Rotate(e) => e,
-                Attempt::Ok(resp) => {
-                    let decoded: T = super::json_decode(module, resp).await?;
-                    match verdict(&decoded) {
-                        BodyVerdict::Accept => return Ok(Some(decoded)),
-                        BodyVerdict::Absent => return Ok(None),
-                        BodyVerdict::KeyFailure(code) => {
-                            ctx.report_key_exhausted(module, &key, code);
-                            Error::module(
-                                module,
-                                format!("{module} reported an in-body key failure (status {code})"),
-                            )
-                        }
+        let rotate_err = match attempt_with_key(ctx, module, &key, absent_statuses, &mut build)
+            .await
+        {
+            Attempt::Absent | Attempt::Cancelled => return Ok(None),
+            Attempt::Failed(e) => return Err(e),
+            Attempt::Rotate(e) => e,
+            Attempt::Ok(resp) => {
+                let decoded: T = super::json_decode(module, resp).await?;
+                match verdict(&decoded) {
+                    BodyVerdict::Accept => return Ok(Some(decoded)),
+                    BodyVerdict::Absent => return Ok(None),
+                    BodyVerdict::KeyFailure { code, detail } => {
+                        ctx.report_key_exhausted(module, &key, code);
+                        // Carry the provider's own words through: they are
+                        // what distinguishes quota from auth from plan
+                        // limit, and the status code alone cannot.
+                        Error::module(
+                            module,
+                            match detail {
+                                Some(d) => format!(
+                                    "{module} reported an in-body key failure (status {code}): {d}"
+                                ),
+                                None => format!(
+                                    "{module} reported an in-body key failure (status {code})"
+                                ),
+                            },
+                        )
                     }
                 }
-            };
+            }
+        };
         match ctx.next_pooled_key(module, &tried) {
             Some(next) => key = next,
             None => return Err(rotate_err),

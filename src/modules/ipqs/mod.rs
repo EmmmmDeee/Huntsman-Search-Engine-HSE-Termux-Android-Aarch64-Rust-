@@ -293,7 +293,13 @@ impl Module for IpQs {
                 if parsed.success == Some(false) {
                     let msg = parsed.message.as_deref().unwrap_or_default();
                     if is_key_or_quota_failure(msg) {
-                        return crate::util::http::BodyVerdict::KeyFailure(401);
+                        // Carry IPQS's own message through: it is the only thing
+                        // that distinguishes quota exhaustion from a bad key
+                        // from a plan limit, and the operator needs that to act.
+                        return crate::util::http::BodyVerdict::KeyFailure {
+                            code: 401,
+                            detail: Some(msg.to_string()),
+                        };
                     }
                     return crate::util::http::BodyVerdict::Absent;
                 }

@@ -1017,7 +1017,7 @@ async fn keyed_cascade_json_reads_the_verdict_from_a_200_body() {
         addr
     }
 
-    #[derive(serde::Deserialize)]
+    #[derive(serde::Deserialize, Debug)]
     struct Body {
         status: Option<i64>,
     }
@@ -1035,7 +1035,10 @@ async fn keyed_cascade_json_reads_the_verdict_from_a_200_body() {
         |key| ctx.http.get(&url).header("X-Key", key),
         |b: &Body| match b.status {
             Some(200) => super::fetch::BodyVerdict::Accept,
-            Some(401) => super::fetch::BodyVerdict::KeyFailure(401),
+            Some(401) => super::fetch::BodyVerdict::KeyFailure {
+                code: 401,
+                detail: Some("quota exceeded for this plan".to_string()),
+            },
             _ => super::fetch::BodyVerdict::Absent,
         },
     )
@@ -1056,14 +1059,22 @@ async fn keyed_cascade_json_reads_the_verdict_from_a_200_body() {
         |key| ctx.http.get(&url).header("X-Key", key),
         |b: &Body| match b.status {
             Some(200) => super::fetch::BodyVerdict::Accept,
-            Some(401) => super::fetch::BodyVerdict::KeyFailure(401),
+            Some(401) => super::fetch::BodyVerdict::KeyFailure {
+                code: 401,
+                detail: Some("quota exceeded for this plan".to_string()),
+            },
             _ => super::fetch::BodyVerdict::Absent,
         },
     )
     .await;
+    let err = failed
+        .expect_err("an in-body key failure with no rotation target must be Err, not empty Ok");
+    // The provider's OWN words must survive to the terminal error: the status
+    // code alone cannot distinguish quota from auth from plan limit, so
+    // summarising the detail away would leave the operator unable to act.
     assert!(
-        failed.is_err(),
-        "an in-body key failure with no rotation target must be Err, not empty Ok"
+        err.to_string().contains("quota exceeded for this plan"),
+        "the provider's message must reach the error verbatim, got: {err}"
     );
 
     // Absent: a genuine per-query miss reported in-body is Ok(None), NOT an error.
@@ -1077,7 +1088,10 @@ async fn keyed_cascade_json_reads_the_verdict_from_a_200_body() {
         |key| ctx.http.get(&url).header("X-Key", key),
         |b: &Body| match b.status {
             Some(200) => super::fetch::BodyVerdict::Accept,
-            Some(401) => super::fetch::BodyVerdict::KeyFailure(401),
+            Some(401) => super::fetch::BodyVerdict::KeyFailure {
+                code: 401,
+                detail: Some("quota exceeded for this plan".to_string()),
+            },
             _ => super::fetch::BodyVerdict::Absent,
         },
     )

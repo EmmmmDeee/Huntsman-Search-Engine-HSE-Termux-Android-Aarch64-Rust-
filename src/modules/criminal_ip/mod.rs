@@ -357,7 +357,12 @@ impl Module for CriminalIp {
                 Some(200) => crate::util::http::BodyVerdict::Accept,
                 // A dead/exhausted key, reported in-body on a 200.
                 Some(code @ (401 | 402 | 429)) => {
-                    crate::util::http::BodyVerdict::KeyFailure(code as u16)
+                    // Criminal IP supplies no message beyond the in-body status,
+                    // so there is no detail to carry — the code IS the diagnosis.
+                    crate::util::http::BodyVerdict::KeyFailure {
+                        code: code as u16,
+                        detail: None,
+                    }
                 }
                 // Any other in-body status is a genuine empty result.
                 _ => crate::util::http::BodyVerdict::Absent,
