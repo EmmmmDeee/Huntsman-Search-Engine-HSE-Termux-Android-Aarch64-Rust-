@@ -7,6 +7,7 @@
 //! | GET    | `/api/v1/health`                         | `health`                       |
 //! | GET    | `/api/v1/version`                        | `version`                      |
 //! | GET    | `/api/v1/stats`                          | `stats`                        |
+//! | GET    | `/api/v1/telemetry`                      | `telemetry`                    |
 //! | GET    | `/api/v1/modules`                        | `modules_list`                 |
 //! | GET    | `/api/v1/modules/graph`                  | `modules_graph` (v1.1+)        |
 //! | GET    | `/api/v1/modules/health`                 | `modules_health`               |
@@ -397,6 +398,10 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // stray GET can trigger.
         .route("/capabilities/probe", post(handlers::capabilities_probe))
         .route("/stats", get(handlers::stats))
+        // Operational telemetry — process-lifetime counters (in-memory, no DB),
+        // the operational half of the observability split vs the historical
+        // `/stats` aggregate.
+        .route("/telemetry", get(handlers::telemetry))
         // ── diagnostics: self-test + downloadable verbose logs ──
         .route("/selftest", get(handlers::selftest_run))
         .route("/logs", get(handlers::logs_download))

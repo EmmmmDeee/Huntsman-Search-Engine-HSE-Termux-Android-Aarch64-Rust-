@@ -1316,6 +1316,31 @@ async fn stats_returns_counts() {
 }
 
 #[tokio::test]
+async fn telemetry_endpoint_returns_process_counters() {
+    // The operational half of the observability split: process-lifetime event
+    // counters, served from in-memory atomics (no DB). Counters are global and
+    // may be non-zero from other tests, so this asserts SHAPE (every field
+    // present and numeric), never absolute values.
+    let app = test_app("telemetry");
+    let resp = app.oneshot(get("/api/v1/telemetry")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let t = json.get("telemetry").expect("must have a telemetry block");
+    for field in [
+        "events_emitted",
+        "scans_started",
+        "scans_completed",
+        "entities_found",
+        "modules_completed",
+        "module_errors",
+        "correlations_found",
+    ] {
+        assert!(t.get(field).is_some(), "telemetry must include {field}");
+        assert!(t[field].is_u64(), "telemetry {field} must be a u64 counter");
+    }
+}
+
+#[tokio::test]
 async fn scraper_health_reports_an_honest_empty_state_for_a_fresh_database() {
     // The SPA counterpart of `hse doctor`'s "Scraper health" section
     // (T2.7 / SOL-HEALTH-SIGNAL): a brand-new test database has dispatched no

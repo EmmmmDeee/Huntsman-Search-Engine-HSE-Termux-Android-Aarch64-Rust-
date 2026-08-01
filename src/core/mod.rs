@@ -48,6 +48,7 @@ pub mod scan;
 pub mod snake_graph;
 pub mod stealer_row;
 pub mod tags;
+pub mod telemetry;
 #[cfg(test)]
 pub mod test_support;
 pub mod timeline;

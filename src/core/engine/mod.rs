@@ -278,6 +278,10 @@ impl EventEmitter {
 
     fn emit(&self, scan_id: &str, kind: EventKind) {
         let event = Event::new(scan_id, kind);
+        // Operational telemetry: one relaxed atomic increment per event. This is
+        // the single funnel every event passes through, so the process-lifetime
+        // counters see all of them (see `core::telemetry`).
+        crate::core::telemetry::global().record(&event.kind);
         // Non-blocking enqueue to the DB-writer actor; persisted asynchronously.
         self.writer.submit(event.clone());
         // Best-effort live fan-out to SSE subscribers. `broadcast::send` errors

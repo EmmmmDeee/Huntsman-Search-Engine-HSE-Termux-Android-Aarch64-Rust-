@@ -273,6 +273,15 @@ pub async fn version() -> Json<Value> {
     Json(json!({ "version": crate::VERSION }))
 }
 
+/// Operational telemetry — process-lifetime event counters for THIS running
+/// process, read straight from in-memory atomics (no store access). This is the
+/// operational half of the observability split: distinct from the DB-backed
+/// historical aggregate at `/stats` and from the per-scan quality synthesis in
+/// `core::metrics`. A client polling it can derive live rates from the deltas.
+pub async fn telemetry() -> Json<Value> {
+    Json(json!({ "telemetry": crate::core::telemetry::global().snapshot() }))
+}
+
 /// Search-engine liveness panel data. Serves the latest cached sweep (populated
 /// by the periodic + startup background task in `hse serve`); if no sweep has run
 /// yet, runs one lazily. Each engine reports up/blocked/down + latency + result
