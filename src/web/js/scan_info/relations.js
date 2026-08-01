@@ -6,12 +6,14 @@ export function renderRelations(host){
   const rels = S.relations||[];
   if (!rels.length){
     host.innerHTML = '<div class="empty-state"><h3>No relations yet</h3>'
-      + '<p>Typed edges appear here — both infrastructure '
-      + '(<code>subdomain_of</code>, <code>hosted_on</code>, <code>resolves_to</code>) '
-      + 'and identity (<code>identified_by</code>, <code>alias_of</code>, '
-      + '<code>located_at</code>, <code>associated_with</code>) — binding the subject to '
-      + 'their accounts, places and associates. Run a deeper scan (<code>--depth ≥ 1</code>) '
-      + 'to populate them.</p></div>';
+      + '<p>Typed edges appear here — infrastructure '
+      + '(<code>subdomain_of</code>, <code>hosted_on</code>, <code>resolves_to</code>), '
+      + 'identity (<code>identified_by</code>, <code>alias_of</code>, '
+      + '<code>located_at</code>, <code>associated_with</code>) and affiliation '
+      + '(<code>officer_of</code>, <code>employed_by</code>, <code>member_of</code>, '
+      + '<code>controlled_by</code>, <code>operated_by</code>) — binding the subject to '
+      + 'their accounts, places, associates and organisations. Run a deeper scan '
+      + '(<code>--depth ≥ 1</code>) to populate them.</p></div>';
     return;
   }
   const byUid = {};

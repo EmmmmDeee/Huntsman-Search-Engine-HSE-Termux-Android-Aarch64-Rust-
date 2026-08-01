@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::entity::EntityKind;
+use crate::core::entity::{EntityKind, Evidence};
 
 fn ent(kind: EntityKind, value: &str, conf: f64) -> Entity {
     Entity::new(kind, value, conf, "net-scan")
@@ -250,5 +250,75 @@ fn synthesize_tie_breaks_equal_value_connections_by_uid() {
         first_ids,
         ids(&synthesize(&entities, &relations)),
         "the per-group order is deterministic across runs"
+    );
+}
+
+/// The affiliation family lands in its own analyst group, and each edge is
+/// labelled by the CONCRETE role the source recorded — the reason a company
+/// appears next to the subject at all. A generic "officer of" would throw away
+/// the distinction (director vs secretary) the operator is reading the group for.
+#[test]
+fn synthesize_labels_affiliations_by_their_recorded_role() {
+    let mut subject = ent(EntityKind::Person, "Jane Citizen", 0.85);
+    subject.tag("subject");
+
+    // A register that published the officer's position.
+    let mut company = ent(EntityKind::Organisation, "Acme Pty Ltd", 0.9);
+    company.add_evidence(
+        Evidence::new("opencorporates", "officer record")
+            .with_attr("officer_name", "Jane Citizen")
+            .with_attr("officer_position", "Secretary"),
+    );
+    // A LinkedIn employer, whose role attribute is the job title.
+    let mut employer = ent(EntityKind::Organisation, "Widget Holdings", 0.7);
+    employer.add_evidence(
+        Evidence::new("proxycurl", "Employer: Widget Holdings").with_attr("title", "Head of Data"),
+    );
+    // A membership with no role recorded at all → the generic label stands.
+    let school = ent(EntityKind::Organisation, "University of Queensland", 0.55);
+
+    let relations = vec![
+        rel(&subject, &company, RelationKind::OfficerOf, 0.85),
+        rel(&subject, &employer, RelationKind::EmployedBy, 0.7),
+        rel(&subject, &school, RelationKind::MemberOf, 0.5),
+    ];
+    let entities = vec![
+        subject.clone(),
+        company.clone(),
+        employer.clone(),
+        school.clone(),
+    ];
+
+    let net = synthesize(&entities, &relations);
+    let group = net
+        .groups
+        .iter()
+        .find(|g| g.key == "affiliations")
+        .expect("affiliations group");
+    assert_eq!(
+        group.label,
+        "Affiliations — organisations, offices & control"
+    );
+    assert_eq!(group.total, 3, "all three affiliations land in one group");
+
+    let label_of = |value: &str| {
+        group
+            .items
+            .iter()
+            .find(|c| c.value == value)
+            .unwrap_or_else(|| panic!("{value} in the affiliations group"))
+    };
+    assert_eq!(label_of("Acme Pty Ltd").label, "secretary");
+    assert_eq!(label_of("Acme Pty Ltd").relation, "officer_of");
+    assert_eq!(label_of("Widget Holdings").label, "head of data");
+    assert_eq!(label_of("University of Queensland").label, "member of");
+
+    // Group ordering: people-first, infrastructure-last — affiliations sit with
+    // the identity groups, ahead of locations.
+    let keys: Vec<&str> = net.groups.iter().map(|g| g.key).collect();
+    assert_eq!(
+        keys,
+        vec!["affiliations"],
+        "only the populated group is emitted"
     );
 }

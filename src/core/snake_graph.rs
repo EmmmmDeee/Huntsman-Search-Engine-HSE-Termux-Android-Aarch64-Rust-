@@ -311,9 +311,16 @@ fn relation_strength(kind: RelationKind) -> f64 {
         RelationKind::SharesSecretWith => 0.85,
         RelationKind::SameOperator => 0.8,
         RelationKind::SubdomainOf | RelationKind::BelongsToDomain => 0.8,
+        // Affiliations, graded by how hard the source is. A registered office and
+        // a filed corporate-control record come from a regulator (0.85); a named
+        // operator is published by the asset's own service or site (0.75); an
+        // employment or membership is self-reported and rates with the softer
+        // person-to-person ties (0.6).
+        RelationKind::OfficerOf | RelationKind::ControlledBy => 0.85,
+        RelationKind::OperatedBy => 0.75,
         RelationKind::ResolvesTo | RelationKind::RegisteredBy => 0.75,
         RelationKind::CoLocatedWith | RelationKind::LocatedAt => 0.7,
-        RelationKind::AssociatedWith => 0.6,
+        RelationKind::AssociatedWith | RelationKind::EmployedBy | RelationKind::MemberOf => 0.6,
         RelationKind::DerivedFrom | RelationKind::HostedOn => 0.5,
     }
 }

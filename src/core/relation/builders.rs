@@ -1,4 +1,8 @@
 use crate::core::entity::{Entity, EntityKind};
+use crate::core::relation::affiliation::{
+    derive_asset_operator, derive_corporate_control, derive_employment, derive_membership,
+    derive_officership, derive_org_identity,
+};
 use crate::core::relation::social_extract::derive_profile_links;
 use crate::core::relation::types::{Relation, RelationKind, domain_key};
 
@@ -122,6 +126,36 @@ pub fn derive_colocation(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     relations
 }
 
+/// Strip the surrounding punctuation that summary tokenisation leaves attached
+/// (`"example.com,"`, `"(example.com)"`, a full stop after an IP).
+///
+/// `-` and `_` are KEPT because they are valid inside a domain label. Only the
+/// EDGES are trimmed, so interior punctuation survives and `1.2.3.4`,
+/// `192.0.2.0/24` and `AS13335` come through intact.
+///
+/// One cleaner, shared by every builder that mines free-text evidence for a named
+/// endpoint — [`derive_resolution`] (domains named in a DNS record) and
+/// [`derive_asset_operator`](super::derive_asset_operator) (the network an
+/// organisation is recorded as operating). Both rest on the same module
+/// convention of writing the far endpoint into the summary, so both must agree
+/// on exactly what a token is.
+pub(super) fn clean_token(token: &str) -> &str {
+    token.trim_matches(|c: char| c.is_ascii_punctuation() && c != '-' && c != '_')
+}
+
+/// Every candidate value in ONE evidence record that could name another entity:
+/// each attribute value, plus each whitespace-separated summary token, each
+/// passed through [`clean_token`].
+pub(super) fn evidence_candidates(
+    ev: &crate::core::entity::Evidence,
+) -> impl Iterator<Item = &str> {
+    ev.attributes
+        .values()
+        .map(String::as_str)
+        .chain(ev.summary.split_whitespace())
+        .map(clean_token)
+}
+
 /// Derive `ResolvesTo` edges (Domain → IpAddress) from DNS evidence.
 ///
 /// Robust by design: rather than coupling to a specific module's attribute
@@ -148,17 +182,7 @@ pub fn derive_resolution(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     let mut out = Vec::new();
     for ip in entities.iter().filter(|e| e.kind == EntityKind::IpAddress) {
         for ev in &ip.evidence {
-            let candidates = ev
-                .attributes
-                .values()
-                .map(String::as_str)
-                .chain(ev.summary.split_whitespace());
-            for token in candidates {
-                // Strip surrounding punctuation that summary tokenisation can
-                // leave attached (e.g. "example.com," or "(example.com)"), but
-                // keep '-' / '_' which are valid in domain labels.
-                let cleaned =
-                    token.trim_matches(|c: char| c.is_ascii_punctuation() && c != '-' && c != '_');
+            for cleaned in evidence_candidates(ev) {
                 let norm = crate::core::entity::normalise(&EntityKind::Domain, cleaned);
                 if let Some(dom) = domain_by_value.get(norm.as_str())
                     && seen.insert((dom.uid.clone(), ip.uid.clone()))
@@ -647,14 +671,22 @@ fn surname_key(value: &str) -> Option<String> {
     (key.len() >= 4).then_some(key)
 }
 
-/// Index present Person entities by their folded full name, resolving collisions
-/// deterministically (higher confidence, then smaller uid) so the chosen target
-/// never depends on the caller's entity order — the determinism invariant the
-/// whole module holds to.
-fn persons_by_name(entities: &[Entity]) -> std::collections::HashMap<String, &Entity> {
-    let mut persons = std::collections::HashMap::new();
-    for p in entities.iter().filter(|e| e.kind == EntityKind::Person) {
-        persons
+/// Index the present entities of one `kind` by their folded value, resolving
+/// collisions deterministically (higher confidence, then smaller uid) so the
+/// chosen target never depends on the caller's entity order — the determinism
+/// invariant the whole module holds to.
+///
+/// One index for both name-keyed layers: the identity builders look up Persons,
+/// the [affiliation](super::affiliation) builders look up Organisations. Sharing
+/// the resolver means the two can't drift on how a name is folded or how a
+/// collision is broken.
+pub(super) fn by_name<'a>(
+    entities: &'a [Entity],
+    kind: &EntityKind,
+) -> std::collections::HashMap<String, &'a Entity> {
+    let mut index = std::collections::HashMap::new();
+    for p in entities.iter().filter(|e| &e.kind == kind) {
+        index
             .entry(p.value.trim().to_lowercase())
             .and_modify(|cur: &mut &Entity| {
                 if p.confidence > cur.confidence
@@ -665,13 +697,19 @@ fn persons_by_name(entities: &[Entity]) -> std::collections::HashMap<String, &En
             })
             .or_insert(p);
     }
-    persons
+    index
+}
+
+/// Index present Person entities by their folded full name — [`by_name`] over
+/// [`EntityKind::Person`], the lookup the identity builders share.
+fn persons_by_name(entities: &[Entity]) -> std::collections::HashMap<String, &Entity> {
+    by_name(entities, &EntityKind::Person)
 }
 
 /// The subject Person(s): those carrying the engine's seed-anchor tag (`subject`
 /// or `seed`). The fingerprint/`exact-name-match` paths bind only to these, so an
 /// incidental Person never accretes the subject's handles or places.
-fn subject_persons(entities: &[Entity]) -> Vec<&Entity> {
+pub(super) fn subject_persons(entities: &[Entity]) -> Vec<&Entity> {
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::Person && (e.has_tag("subject") || e.has_tag("seed")))
@@ -680,7 +718,7 @@ fn subject_persons(entities: &[Entity]) -> Vec<&Entity> {
 
 /// Stable output order (by endpoints) so a builder whose internal grouping uses a
 /// `HashMap` still returns a deterministic `Vec` — matching the module contract.
-fn sort_edges(edges: &mut [Relation]) {
+pub(super) fn sort_edges(edges: &mut [Relation]) {
     edges.sort_by(|a, b| {
         (a.from_uid.as_str(), a.to_uid.as_str()).cmp(&(b.from_uid.as_str(), b.to_uid.as_str()))
     });
@@ -1575,6 +1613,25 @@ pub fn derive_all_within(
     budget_spent!(out, "identity_ownership");
     out.extend(derive_residency(entities, scan_id));
     budget_spent!(out, "residency");
+    // ── Affiliation: the person↔organisation layer ───────────────────────
+    // Before the person↔person inference passes below, because an organisation
+    // is a hard, register-published endpoint: an officership or a corporate
+    // parent is the kind of edge a budget cut must NOT drop in favour of a
+    // surname guess. Officership first (the strongest of the three person-side
+    // ties), then employment and membership; org identity/place and the corporate
+    // and asset-operator hierarchies close out the family.
+    out.extend(derive_officership(entities, scan_id));
+    budget_spent!(out, "officership");
+    out.extend(derive_employment(entities, scan_id));
+    budget_spent!(out, "employment");
+    out.extend(derive_membership(entities, scan_id));
+    budget_spent!(out, "membership");
+    out.extend(derive_org_identity(entities, scan_id));
+    budget_spent!(out, "org_identity");
+    out.extend(derive_corporate_control(entities, scan_id));
+    budget_spent!(out, "corporate_control");
+    out.extend(derive_asset_operator(entities, scan_id));
+    budget_spent!(out, "asset_operator");
     out.extend(derive_kinship(entities, scan_id));
     budget_spent!(out, "kinship");
     // Geo-gated kinship: recover the COMMON-surname families derive_kinship drops,

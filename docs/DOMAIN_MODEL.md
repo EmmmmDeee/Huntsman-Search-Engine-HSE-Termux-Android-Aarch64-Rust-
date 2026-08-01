@@ -80,6 +80,60 @@ An [`Evidence`](crate::core::entity::Evidence) record carries:
 Evidence is deduplicated by `(source, summary)` during merge. When two records
 share the same key but differ in value, the smaller value is kept deterministically.
 
+## Relation
+
+A [`Relation`](crate::core::relation::Relation) is a directed, typed edge between
+two entities (referenced by `uid`). Entities are *what was found*; relations are
+*how the findings attach to each other* — the layer path-finding, clustering, the
+subject-network synthesis and the dossier's CONNECTIONS section all read.
+
+- `id` is deterministic: `hex(SHA-256("from|kind|to|scan"))`, so storage upserts
+  idempotently and a re-scan never duplicates an edge. Note it **excludes**
+  confidence — see the collapse rule below.
+- `kind` is drawn from the closed
+  [`RelationKind`](crate::core::relation::RelationKind) taxonomy.
+- `confidence` carries the trust of the endpoints it connects (the weaker of the
+  two, clamped to `[0, 1]`), damped where the *binding* is inferred rather than
+  read off a source.
+
+### Edge families
+
+| Family | Kinds | What the edge asserts |
+|--------|-------|-----------------------|
+| Infrastructure | `subdomain_of`, `belongs_to_domain`, `hosted_on`, `resolves_to`, `registered_by`, `same_operator` | Estate structure: what an operator's assets are and how they hang together |
+| Identity | `identified_by`, `alias_of`, `same_as`, `same_identity`, `shares_secret_with` | Which identifiers belong to one holder, and which are one holder in two spellings |
+| Place | `located_at`, `co_located_with` | A person or organisation at an address / coordinate |
+| People | `associated_with` | A kinship, household, co-mention or declared-associate tie between two people |
+| Affiliation | `officer_of`, `employed_by`, `member_of`, `controlled_by`, `operated_by` | A person's or asset's tie to an organisation, and one organisation's tie to another |
+| Lineage | `derived_from` | Which entity's expansion surfaced this one |
+
+The affiliation kinds are deliberately **not** collapsed into a single
+"affiliated with": an investigation treats a filed directorship
+(`officer_of` — a regulator is the source, and the role carries legal control)
+differently from a self-reported job (`employed_by`), and `controlled_by` is
+oriented `child → controller` specifically so a chain of edges walks *up* an
+ownership tree. See [`core::relation::affiliation`](crate::core::relation::affiliation)
+for which source grounds each one.
+
+### Determinism
+
+Relation derivation holds the same bar as `Entity::merge`. A builder:
+
+- depends only on the entity slice passed in, never on iteration order (outputs
+  are sorted by endpoint pair, and `HashMap`s are used as membership indexes
+  only);
+- emits symmetric edges in one canonical direction (smaller `uid` → larger), so a
+  pair yields exactly one edge;
+- links only entities **present in the set** — a name matching nothing links
+  nothing, because inventing the missing endpoint would be fabrication.
+
+Because `id` excludes confidence, several builders can emit the same
+`(from, kind, to)` at different strengths (a surname guess, then an
+evidence-grounded household tie, then a declared relationship). `derive_all`
+therefore ends by collapsing duplicate ids to their **maximum** confidence, so
+the strongest grounding wins regardless of emit order or the persistence
+layer's conflict policy.
+
 ## Determinism Requirement
 
 Any operation that folds multiple module results must yield the same persisted

@@ -497,10 +497,16 @@ const MAX_RECALLED_RELATIONS_PER_ENTITY: usize = 8;
 
 /// True for the IDENTITY-bearing relation kinds worth recalling across scans — the
 /// edges that connect a person to their identifiers, aliases, addresses, declared
-/// associates, and registrations. Pure-infrastructure edges (subdomain / hosting /
-/// DNS resolution / co-location / lineage) are excluded: recalling that a domain
-/// once resolved to an IP is not the human-network bridge this pass exists to
-/// surface.
+/// associates, affiliations, and registrations. Pure-infrastructure edges
+/// (subdomain / hosting / DNS resolution / co-location / lineage) are excluded:
+/// recalling that a domain once resolved to an IP is not the human-network bridge
+/// this pass exists to surface.
+///
+/// The affiliation edges qualify for exactly that reason: "this person was a
+/// director of that company in an earlier investigation" is a human-network
+/// bridge of the same class as a declared association, and often to an
+/// organisation not present in the current scan at all — the case this pass is
+/// most valuable in.
 fn is_identity_relation(kind: RelationKind) -> bool {
     matches!(
         kind,
@@ -509,6 +515,10 @@ fn is_identity_relation(kind: RelationKind) -> bool {
             | RelationKind::LocatedAt
             | RelationKind::AssociatedWith
             | RelationKind::RegisteredBy
+            | RelationKind::OfficerOf
+            | RelationKind::EmployedBy
+            | RelationKind::MemberOf
+            | RelationKind::ControlledBy
     )
 }
 
