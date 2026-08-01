@@ -173,7 +173,7 @@ pub(super) fn build_entities(
         // Extract ALL emails and URLs from the bio (HN bios are HTML-escaped
         // free text; both often appear multiple times in developer profiles).
         for email in crate::util::extract::emails(about) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.78, scan_id);
+            let mut e = Entity::new(EntityKind::Email, &email, confidence::STRONG, scan_id);
             e.tag("hacker-news");
             e.tag("public-profile");
             e.add_evidence(

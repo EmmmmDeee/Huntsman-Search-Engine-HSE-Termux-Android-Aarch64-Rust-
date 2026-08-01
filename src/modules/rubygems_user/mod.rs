@@ -90,7 +90,7 @@ pub(super) fn build_entities(gems: Vec<RgGem>, handle: &str, scan_id: &str) -> V
     result.push(u);
 
     // Profile URL.
-    let mut pu = Entity::new(EntityKind::Url, &profile_url, 0.78, scan_id);
+    let mut pu = Entity::new(EntityKind::Url, &profile_url, confidence::STRONG, scan_id);
     pu.tag("rubygems");
     pu.add_evidence(ev_base());
     result.push(pu);

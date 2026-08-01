@@ -225,7 +225,7 @@ fn parse_assetlinks(body: &str, domain: &str, scan_id: &str, result: &mut Module
         result.push(e);
     }
     for fp in &fingerprints {
-        let mut e = Entity::new(EntityKind::Other("cert-sha256".into()), fp, 0.78, scan_id);
+        let mut e = Entity::new(EntityKind::Other("cert-sha256".into()), fp, confidence::STRONG, scan_id);
         e.tag("app-links");
         e.tag("signing-cert");
         e.add_evidence(
@@ -304,7 +304,7 @@ fn parse_aasa(body: &str, domain: &str, scan_id: &str, result: &mut ModuleResult
         let mut b = Entity::new(
             EntityKind::Other("ios-bundle-id".into()),
             bundle,
-            0.78,
+            confidence::STRONG,
             scan_id,
         );
         b.tag("app-links");

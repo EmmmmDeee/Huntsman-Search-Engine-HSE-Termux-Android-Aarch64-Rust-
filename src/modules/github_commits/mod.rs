@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -183,7 +184,7 @@ fn extract(items: &[CommitItem], email: &str, scan_id: &str) -> Vec<Entity> {
                 .filter(|l| !l.is_empty() && !l.to_ascii_lowercase().ends_with("[bot]"))
             && seen_login.insert(login.to_ascii_lowercase())
         {
-            let mut u = Entity::new(EntityKind::Username, login, 0.78, scan_id);
+            let mut u = Entity::new(EntityKind::Username, login, confidence::STRONG, scan_id);
             u.tag("github");
             u.tag("github-commit");
             u.add_evidence(
@@ -197,7 +198,7 @@ fn extract(items: &[CommitItem], email: &str, scan_id: &str) -> Vec<Entity> {
             out.push(u);
 
             if let Some(profile) = gh.html_url.as_deref().filter(|u| u.starts_with("http")) {
-                let mut url_e = Entity::new(EntityKind::Url, profile, 0.78, scan_id);
+                let mut url_e = Entity::new(EntityKind::Url, profile, confidence::STRONG, scan_id);
                 url_e.tag("github");
                 url_e.tag("github-commit");
                 url_e.add_evidence(

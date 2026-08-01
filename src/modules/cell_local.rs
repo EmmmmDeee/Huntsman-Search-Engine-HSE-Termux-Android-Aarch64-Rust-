@@ -10,6 +10,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -90,7 +91,7 @@ impl Module for CellLocal {
             let tower_id = format!("{}-{}-{}-{}", cell.mcc, cell.mnc, cell.lac, cell.cid);
 
             // ── DeviceId entity ──────────────────────────────────────────────
-            let mut device = Entity::new(EntityKind::DeviceId, &tower_id, 0.78, &ctx.scan_id);
+            let mut device = Entity::new(EntityKind::DeviceId, &tower_id, confidence::STRONG, &ctx.scan_id);
             device.tag(crate::core::tags::CELL_TOWER);
             device.tag("cell-local");
             device.tag(format!("radio:{}", cell.radio.to_lowercase()));
@@ -172,7 +173,6 @@ mod tests {
 
     #[test]
     fn accuracy_to_confidence_tiers() {
-        use crate::core::confidence;
         assert!((accuracy_to_confidence(50) - confidence::HIGH_PLUSPLUS_PLUS).abs() < 1e-6);
         assert!((accuracy_to_confidence(300) - confidence::VERY_HIGH).abs() < 1e-6);
         assert!((accuracy_to_confidence(1000) - confidence::HIGH).abs() < 1e-6);

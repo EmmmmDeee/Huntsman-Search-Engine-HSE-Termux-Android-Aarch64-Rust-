@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -286,7 +287,7 @@ fn emit_cell_entities(result: &mut ModuleResult, cell: &CellEntry, scan_id: &str
     let tower_id = format!("{mcc}-{mnc}-{lac}-{cid}");
 
     // DeviceId entity
-    let mut device = Entity::new(EntityKind::DeviceId, &tower_id, 0.78, scan_id);
+    let mut device = Entity::new(EntityKind::DeviceId, &tower_id, confidence::STRONG, scan_id);
     device.tag(crate::core::tags::CELL_TOWER);
     device.tag(format!("radio:{}", radio.to_lowercase()));
     let mut ev = Evidence::new(SRC, format!("OpenCelliD tower {tower_id} ({radio})"))

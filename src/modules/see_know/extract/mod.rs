@@ -424,7 +424,7 @@ pub(super) fn extract_entities(
                     {
                         push_breach_entity(
                             result,
-                            Entity::new(EntityKind::Password, pt, 0.78, scan_id),
+                            Entity::new(EntityKind::Password, pt, confidence::STRONG, scan_id),
                             &ev,
                             &["cracked", "weak-password", "from-hash"],
                         );

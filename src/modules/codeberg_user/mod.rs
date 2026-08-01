@@ -164,7 +164,7 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
     } else {
         format!("https://codeberg.org/{}", user.login)
     };
-    let mut url_e = Entity::new(EntityKind::Url, &purl, 0.78, scan_id);
+    let mut url_e = Entity::new(EntityKind::Url, &purl, confidence::STRONG, scan_id);
     url_e.tag("codeberg");
     url_e.add_evidence(Evidence::new(
         SRC,
@@ -195,7 +195,7 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
     if let Some(email) = user.email.as_deref() {
         let email = email.trim();
         if email.contains('@') && !crate::util::domains::is_noreply_email_domain(email) {
-            let mut em = Entity::new(EntityKind::Email, email, 0.78, scan_id);
+            let mut em = Entity::new(EntityKind::Email, email, confidence::STRONG, scan_id);
             em.tag("codeberg");
             em.tag("public-profile");
             em.add_evidence(

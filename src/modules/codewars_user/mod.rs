@@ -19,6 +19,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -63,7 +64,7 @@ pub(super) fn build_entities(user: CwUser, scan_id: &str) -> Vec<Entity> {
     out.push(e);
 
     // Profile URL.
-    let mut u = Entity::new(EntityKind::Url, &profile_url, 0.78, scan_id);
+    let mut u = Entity::new(EntityKind::Url, &profile_url, confidence::STRONG, scan_id);
     u.tag("codewars");
     u.add_evidence(ev());
     out.push(u);

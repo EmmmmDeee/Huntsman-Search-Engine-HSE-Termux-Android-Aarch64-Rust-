@@ -183,7 +183,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
     {
         let tw_clean = tw.trim_start_matches('@');
         if !tw_clean.is_empty() {
-            let mut t = Entity::new(EntityKind::Username, tw_clean, 0.78, scan_id);
+            let mut t = Entity::new(EntityKind::Username, tw_clean, confidence::STRONG, scan_id);
             t.tag("twitter");
             t.tag("devto-pivot");
             t.add_evidence(

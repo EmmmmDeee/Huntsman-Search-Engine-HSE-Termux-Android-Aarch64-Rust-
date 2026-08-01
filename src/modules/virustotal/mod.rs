@@ -189,7 +189,7 @@ fn build_entities(target: &Target, attrs: &VtAttributes, scan_id: &str) -> Vec<E
                     && host.parse::<std::net::IpAddr>().is_err()
                     && !host.contains(char::is_whitespace)
                 {
-                    let mut d = Entity::new(EntityKind::Domain, host, 0.78, scan_id);
+                    let mut d = Entity::new(EntityKind::Domain, host, confidence::STRONG, scan_id);
                     d.tag(SRC);
                     d.tag("passive-dns");
                     d.add_evidence(

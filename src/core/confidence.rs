@@ -55,6 +55,11 @@ pub const HIGH_PLUS: f64 = 0.70;
 /// despite the name.
 pub const VERY_HIGH: f64 = 0.75;
 
+/// Strong corroborated confidence — above the multi-source floor, below
+/// authoritative corroboration. Secondary-pivot default for reliable-source
+/// discoveries that are not yet independently cross-validated.
+pub const STRONG: f64 = 0.78;
+
 /// High confidence ++ — strong corroboration; exceeds [`VERY_HIGH`].
 pub const HIGH_PLUSPLUS: f64 = 0.80;
 
@@ -90,6 +95,7 @@ mod tests {
         ("HIGH", HIGH),
         ("HIGH_PLUS", HIGH_PLUS),
         ("VERY_HIGH", VERY_HIGH),
+        ("STRONG", STRONG),
         ("HIGH_PLUSPLUS", HIGH_PLUSPLUS),
         ("HIGH_PLUSPLUS_PLUS", HIGH_PLUSPLUS_PLUS),
         ("EXPERT", EXPERT),

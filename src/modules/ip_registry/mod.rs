@@ -288,7 +288,7 @@ fn build_abuse_email(contacts: &[RdapContact], ip: &str, scan_id: &str) -> Optio
     if !crate::util::extract::looks_like_email(email) {
         return None;
     }
-    let mut ee = Entity::new(EntityKind::Email, email, 0.78, scan_id);
+    let mut ee = Entity::new(EntityKind::Email, email, confidence::STRONG, scan_id);
     ee.tag("rdap-contact");
     ee.tag("role:abuse");
     ee.add_evidence(
@@ -458,7 +458,7 @@ fn contact_emails(
         .iter()
         .filter(|email| crate::util::extract::looks_like_email(email))
         .map(|email| {
-            let mut e = Entity::new(EntityKind::Email, email.as_str(), 0.78, scan_id);
+            let mut e = Entity::new(EntityKind::Email, email.as_str(), confidence::STRONG, scan_id);
             e.tag("asn-contact");
             e.tag(format!("role:{role}"));
             e.add_evidence(

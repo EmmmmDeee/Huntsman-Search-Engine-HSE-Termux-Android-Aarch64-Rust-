@@ -94,7 +94,7 @@ fn reverse_in_australia_by_country_code_is_a_strong_anchor() {
         "address": { "city": "Brisbane", "state": "Queensland", "country_code": "au" }
     }));
     let e = build_reverse_entity(-27.4766, 153.0166, &data, "scan");
-    assert!((e.confidence - 0.78).abs() < 1e-9);
+    assert!((e.confidence - confidence::STRONG).abs() < 1e-9);
     assert!(e.has_tag("au-relevant"));
     assert!(e.has_tag("country:AU"));
     assert!(e.has_tag("au-state:QLD"));
@@ -120,7 +120,7 @@ fn reverse_without_country_code_falls_back_to_the_bounding_box() {
     // the offline bounding box, while a foreign one stays Unknown (neutral).
     let bare = resp(serde_json::json!({ "display_name": "somewhere" }));
     let au = build_reverse_entity(-33.8688, 151.2093, &bare, "scan");
-    assert!((au.confidence - 0.78).abs() < 1e-9);
+    assert!((au.confidence - confidence::STRONG).abs() < 1e-9);
     assert!(au.has_tag("au-relevant"));
 
     let foreign = build_reverse_entity(48.8566, 2.3522, &bare, "scan");

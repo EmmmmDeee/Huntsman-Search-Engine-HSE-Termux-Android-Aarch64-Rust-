@@ -291,7 +291,7 @@ pub(super) fn build_reverse_entity(
     let relevance = au_relevance(lat, lon, data.address.as_ref());
 
     let confidence = match relevance {
-        AuRelevance::InAustralia => 0.78,
+        AuRelevance::InAustralia => confidence::STRONG,
         AuRelevance::Unknown => confidence::MEDIUM_HIGH,
         AuRelevance::OffRegion => confidence::LOW,
     };
