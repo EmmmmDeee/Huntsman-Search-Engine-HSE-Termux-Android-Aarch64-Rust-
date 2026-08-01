@@ -21,8 +21,6 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::RequestBuilderExt;
-use crate::util::http::handle_keyed_error;
 
 const KEY_ENV: &str = "HUNTSMAN_LEAKIX_KEY";
 const SRC: &str = "leakix";
@@ -187,51 +185,25 @@ impl Module for LeakIx {
             _ => return Ok(ModuleResult::new()),
         };
         let url = format!("https://leakix.net/{path}/{value}");
-        // Key cascade: start on the hot-injected key and, on a terminal
-        // 401/403/429, rotate to the next usable pooled LeakIX key and retry, so
-        // one process() call spends every credential the pool holds before it
-        // gives up. `tried` prevents re-handing a burned key.
-        let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut key = initial_key.to_string();
-        let body: HostResp = 'cascade: loop {
-            tried.insert(key.clone());
-            let mut retries = 2u8;
-            loop {
-                if ctx.cancel.is_cancelled() {
-                    return Ok(ModuleResult::new());
-                }
-                let resp = ctx
-                    .http
-                    .get(&url)
-                    .header("api-key", &key)
-                    .header("Accept", "application/json")
-                    .send_tagged(SRC)
-                    .await?;
-                let status = resp.status();
-                if status.as_u16() == 404 {
-                    return Ok(ModuleResult::new());
-                }
-                if !status.is_success() {
-                    let code = status.as_u16();
-                    if handle_keyed_error(code, resp.headers(), &mut retries, SRC, &key, ctx).await
-                    {
-                        continue;
-                    }
-                    if crate::util::http::is_keyed_error_status(code)
-                        && let Some(next) = ctx.next_pooled_key(SRC, &tried)
-                    {
-                        key = next;
-                        continue 'cascade;
-                    }
-                    return Err(crate::util::http::http_status_error(SRC, resp).await);
-                }
-                // json_scanned: leakix responses contain exposure/credential data —
-                // scan the raw body for embedded API keys.
-                break 'cascade crate::util::http::json_scanned(resp, SRC)
-                    .await
-                    .map_err(|e| crate::core::error::Error::module(SRC, e))?;
-            }
+        // Key cascade (shared `keyed_cascade`): start on the hot-injected key and,
+        // on a terminal 401/403/429, rotate to the next usable pooled LeakIX key
+        // and retry, so one process() call spends every credential the pool holds
+        // before it gives up. A clean 404 / cancel yields `None` → empty result.
+        let Some(resp) = crate::util::http::keyed_cascade(ctx, SRC, initial_key, |key| {
+            ctx.http
+                .get(&url)
+                .header("api-key", key)
+                .header("Accept", "application/json")
+        })
+        .await?
+        else {
+            return Ok(ModuleResult::new());
         };
+        // json_scanned: leakix responses contain exposure/credential data —
+        // scan the raw body for embedded API keys.
+        let body: HostResp = crate::util::http::json_scanned(resp, SRC)
+            .await
+            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
         if body.services.is_empty() && body.leaks.is_empty() {
             return Ok(ModuleResult::new());
         }

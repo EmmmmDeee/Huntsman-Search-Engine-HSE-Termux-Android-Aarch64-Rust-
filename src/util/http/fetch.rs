@@ -516,6 +516,65 @@ pub fn is_keyed_error_status(code: u16) -> bool {
     matches!(code, 401 | 403 | 429)
 }
 
+/// Run a keyed request with automatic per-key retry + pooled-key rotation — the
+/// cascade ~11 keyed modules previously hand-rolled identically (a correctness
+/// fix to one copy could never reach the other ten). `build` receives the key to
+/// use and returns the fully-formed request, so URL, headers, and key placement
+/// (header, bearer, or URL-embedded) stay each module's concern. This owns the
+/// invariant part: a cancel check each attempt, the bounded transient retry via
+/// [`handle_keyed_error`], burning + rotating to the next pooled key (deduped by
+/// `tried`) on a keyed-error status, and the terminal error once keys run out.
+///
+/// Returns `Ok(Some(resp))` — the first successful response, for the caller to
+/// decode (each module keeps its own `json_decode`/`json_scanned` choice);
+/// `Ok(None)` on a clean `404` miss or a mid-flight cancel (both "no data, not an
+/// error"); `Err` on a non-keyed error status or when every pooled key is spent.
+///
+/// Scope: this covers the status-code-driven cascade. A module that ALSO rotates
+/// on an in-body auth marker (an HTTP 200 whose JSON says the key is dead) keeps
+/// that extra check around this call for now.
+pub async fn keyed_cascade<F>(
+    ctx: &crate::core::module::ModuleContext,
+    module: &'static str,
+    initial_key: &str,
+    mut build: F,
+) -> Result<Option<reqwest::Response>>
+where
+    F: FnMut(&str) -> reqwest::RequestBuilder,
+{
+    use super::RequestBuilderExt;
+    let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut key = initial_key.to_string();
+    'cascade: loop {
+        tried.insert(key.clone());
+        let mut retries = 2u8;
+        loop {
+            if ctx.cancel.is_cancelled() {
+                return Ok(None);
+            }
+            let resp = build(&key).send_tagged(module).await?;
+            let status = resp.status();
+            if status.as_u16() == 404 {
+                return Ok(None);
+            }
+            if !status.is_success() {
+                let code = status.as_u16();
+                if handle_keyed_error(code, resp.headers(), &mut retries, module, &key, ctx).await {
+                    continue;
+                }
+                if is_keyed_error_status(code)
+                    && let Some(next) = ctx.next_pooled_key(module, &tried)
+                {
+                    key = next;
+                    continue 'cascade;
+                }
+                return Err(http_status_error(module, resp).await);
+            }
+            return Ok(Some(resp));
+        }
+    }
+}
+
 /// Case-insensitive substrings that mark a `400 Bad Request` body as an
 /// AUTHENTICATION / API-key failure rather than a bad *query*. Not every provider
 /// signals a dead key with 401: Netlas answers a missing key with
