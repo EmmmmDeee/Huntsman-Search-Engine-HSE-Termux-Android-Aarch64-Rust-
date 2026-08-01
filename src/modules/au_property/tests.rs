@@ -105,6 +105,84 @@ fn record_to_entities_stamps_owner_and_exact_name_match() {
 }
 
 #[test]
+fn untabulated_suburb_geocodes_via_postcode_not_state_capital() {
+    // A far-north-QLD property whose suburb is NOT in the offline city table.
+    // Old behaviour: fall straight to the Brisbane state-capital centroid, yet
+    // stamp it MEDIUM_PLUS + exact-name-match + derived_from:suburb_centroid — a
+    // Cairns-region owner pinned to Brisbane, indistinguishable from a real fix,
+    // with the parsed postcode ignored. The fix geocodes via the postcode.
+    assert!(
+        crate::util::city_coords::city_coords("babinda").is_none(),
+        "test premise: the suburb must not be in the offline city table",
+    );
+    let rec = PropertyRecord {
+        owner_name: "Jordan Avery".into(),
+        suburb: "Babinda".into(),
+        state: "QLD",
+        postcode: Some("4861".into()), // far-north QLD (postcode region "48")
+    };
+    let ents = record_to_entities(&rec, "s");
+    let coord = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+        .expect("must emit a Coordinates entity");
+    let derived = coord.evidence[0]
+        .attributes
+        .get("derived_from")
+        .map(String::as_str);
+    assert!(
+        matches!(derived, Some("postcode_centroid" | "postcode_region")),
+        "an untabulated suburb with a postcode must geocode via the postcode, got {derived:?}",
+    );
+    assert_ne!(
+        coord.value, "-27.469800,153.025100",
+        "must NOT be the Brisbane state-capital pin (canonical 6dp)",
+    );
+    assert!(
+        !coord.has_tag("exact-name-match"),
+        "a region-grain fix must not claim to be a name-matched suburb centroid",
+    );
+    assert!(coord.has_tag("coarse"));
+    assert!(
+        coord.confidence < crate::core::confidence::MEDIUM_PLUS,
+        "region grain must rank below a real suburb centroid",
+    );
+}
+
+#[test]
+fn capital_fallback_without_postcode_is_low_confidence_and_coarse() {
+    // Suburb miss AND no postcode -> the state capital is the only fallback, but
+    // it must be graded honestly (LOW, coarse, truthful derived_from), never
+    // passed off as a name-matched suburb centroid.
+    assert!(crate::util::city_coords::city_coords("babinda").is_none());
+    let rec = PropertyRecord {
+        owner_name: "Jordan Avery".into(),
+        suburb: "Babinda".into(),
+        state: "QLD",
+        postcode: None,
+    };
+    let ents = record_to_entities(&rec, "s");
+    let coord = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+        .expect("must emit a Coordinates entity");
+    assert_eq!(
+        coord.value, "-27.469800,153.025100",
+        "Brisbane capital, canonical 6dp",
+    );
+    assert!(!coord.has_tag("exact-name-match"));
+    assert!(coord.has_tag("coarse"));
+    assert_eq!(
+        coord.evidence[0]
+            .attributes
+            .get("derived_from")
+            .map(String::as_str),
+        Some("state_capital_fallback"),
+    );
+    assert!(coord.confidence <= crate::core::confidence::LOW);
+}
+
+#[test]
 fn extract_postcode_finds_valid_au_postcode() {
     assert_eq!(extract_postcode("Sydney NSW 2000"), Some("2000".into()));
     assert_eq!(extract_postcode("Melbourne VIC 3000"), Some("3000".into()));

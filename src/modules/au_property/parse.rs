@@ -190,23 +190,48 @@ pub(crate) fn record_to_entities(rec: &PropertyRecord, scan_id: &str) -> Vec<Ent
     addr.tag("exact-name-match");
     out.push(addr);
 
-    // Derive coordinates from the suburb centroid via the offline city table.
+    // Derive coordinates by an HONEST precision ladder — a coarse guess must
+    // never masquerade as a name-matched suburb centroid:
+    //   1. suburb centroid (precise, name-matched)        -> MEDIUM_PLUS
+    //   2. the parsed postcode's exact gazetteer centroid -> MEDIUM
+    //   3. the postcode's leading-two-digit region centroid -> LOW_MEDIUM
+    //   4. the state capital, last resort                 -> LOW, coarse
+    // Previously every suburb miss fell straight to the state capital yet was
+    // stamped MEDIUM_PLUS + exact-name-match + derived_from:suburb_centroid, so a
+    // rural owner was pinned to the capital indistinguishably from a real suburb
+    // fix, and the parsed postcode (a finer, honest signal, already in the
+    // Address) was never used to geocode.
     let suburb_lc = rec.suburb.to_lowercase();
-    if let Some((lat, lon)) = crate::util::city_coords::city_coords(&suburb_lc).or_else(|| {
-        // State-capital fallback when suburb not in the offline table.
-        state_capital_coords(rec.state)
-    }) {
+    let coord_fix: Option<((f64, f64), f64, &str, bool)> =
+        crate::util::city_coords::city_coords(&suburb_lc)
+            .map(|c| (c, confidence::MEDIUM_PLUS, "suburb_centroid", true))
+            .or_else(|| {
+                let pc = rec.postcode.as_deref()?;
+                crate::util::city_coords::postcode_coords(pc)
+                    .map(|c| (c, confidence::MEDIUM, "postcode_centroid", false))
+                    .or_else(|| {
+                        crate::util::city_coords::au_postcode_region(pc)
+                            .map(|c| (c, confidence::LOW_MEDIUM, "postcode_region", false))
+                    })
+            })
+            .or_else(|| {
+                state_capital_coords(rec.state)
+                    .map(|c| (c, confidence::LOW, "state_capital_fallback", false))
+            });
+    if let Some(((lat, lon), coord_conf, derived_from, name_matched)) = coord_fix {
         let coord_value = format!("{lat:.4},{lon:.4}");
-        let mut coord = Entity::new(
-            EntityKind::Coordinates,
-            &coord_value,
-            confidence::MEDIUM_PLUS,
-            scan_id,
-        );
-        coord.add_evidence(evid.with_attr("derived_from", "suburb_centroid"));
+        let mut coord = Entity::new(EntityKind::Coordinates, &coord_value, coord_conf, scan_id);
+        coord.add_evidence(evid.with_attr("derived_from", derived_from));
         coord.tag(format!("au-state:{}", rec.state));
         coord.tag("country:AU");
-        coord.tag("exact-name-match");
+        // `exact-name-match` (which lets the correlator anchor this as a precise
+        // residence) belongs only to a genuine suburb centroid; every fallback is
+        // region-grain and is tagged `coarse` instead.
+        if name_matched {
+            coord.tag("exact-name-match");
+        } else {
+            coord.tag("coarse");
+        }
         out.push(coord);
     }
 
