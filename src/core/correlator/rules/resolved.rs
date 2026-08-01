@@ -14,7 +14,7 @@
 //! cluster is a single pair, already AU-060's job) whose weakest binding link
 //! clears a confidence floor, so a resolved identity rests on trustworthy links.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use super::*;
 use crate::core::relation::resolve_identity_clusters;
@@ -36,7 +36,7 @@ pub(in crate::core::correlator) fn rule_au_067_resolved_identity_cluster(
     const MIN_MEMBERS: usize = 3;
     const MIN_CONF: f64 = 0.50;
 
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let by_uid = context.by_uid();
 
     let mut out = Vec::new();
     for cluster in resolve_identity_clusters(entities, relations, MAX_HOPS, MIN_CONF) {

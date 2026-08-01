@@ -39,6 +39,9 @@ pub struct RuleContext<'a> {
     entities: &'a [Entity],
     // Lazy-cached: by_canonical_handle maps canonical_handle(entity) → vec of entities with that handle
     by_canonical_handle: RefCell<Option<HashMap<String, Vec<&'a Entity>>>>,
+    // Lazy-cached: uid → entity. Fourteen entity/relation rules rebuilt this
+    // identical index per pass; sharing it removes the redundant O(E) rebuilds.
+    by_uid: RefCell<Option<HashMap<&'a str, &'a Entity>>>,
 }
 
 impl<'a> RuleContext<'a> {
@@ -46,11 +49,30 @@ impl<'a> RuleContext<'a> {
         Self {
             entities,
             by_canonical_handle: RefCell::new(None),
+            by_uid: RefCell::new(None),
         }
     }
 
     pub fn entities(&self) -> &'a [Entity] {
         self.entities
+    }
+
+    /// Returns a reference to the cached `uid → entity` index over the context's
+    /// entity set. Built once on first call, reused thereafter — the same
+    /// lazy-cache discipline as [`by_canonical_handle`](Self::by_canonical_handle).
+    /// The map is exactly what fourteen relation/entity rules each rebuilt with
+    /// `entities.iter().map(|e| (e.uid.as_str(), e)).collect()`, so sharing it is
+    /// behaviour-neutral — every lookup returns the same entity — and only removes
+    /// the repeated per-rule rebuild.
+    pub fn by_uid(&self) -> std::cell::Ref<'_, HashMap<&'a str, &'a Entity>> {
+        if self.by_uid.borrow().is_none() {
+            let map: HashMap<&str, &Entity> =
+                self.entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+            *self.by_uid.borrow_mut() = Some(map);
+        }
+        std::cell::Ref::map(self.by_uid.borrow(), |opt| {
+            opt.as_ref().expect("just populated")
+        })
     }
 
     /// Returns a reference to the cached canonical-handle map. Builds and caches

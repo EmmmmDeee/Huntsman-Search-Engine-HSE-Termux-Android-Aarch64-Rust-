@@ -13,7 +13,7 @@
 //! drift). Fires only for a broker of ≥3 identities — a 2-identity split is a single
 //! fragile pair, already AU-063's job.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use super::*;
 use crate::core::relation::{connection_brokers, identity_uids, sorted_confined_adjacency};
@@ -39,7 +39,7 @@ pub(in crate::core::correlator) fn rule_au_070_connection_broker(
     // node look like the linchpin of dozens of unrelated namesakes.
     const MIN_CONF: f64 = 0.50;
 
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let by_uid = context.by_uid();
     let ids = identity_uids(entities);
     // Build the traversal graph ONCE and reuse it across the articulation search.
     let adj = sorted_confined_adjacency(entities, relations);

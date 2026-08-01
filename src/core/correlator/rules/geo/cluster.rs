@@ -88,7 +88,6 @@ pub(in crate::core::correlator) fn rule_au_032_colocation_cluster(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let entities = context.entities();
     use std::collections::{HashMap, HashSet};
 
     // Undirected adjacency from CoLocatedWith edges only.
@@ -103,7 +102,7 @@ pub(in crate::core::correlator) fn rule_au_032_colocation_cluster(
         return Vec::new();
     }
 
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let by_uid = context.by_uid();
 
     // Connected components via DFS (stack). Iterate seed nodes in sorted order
     // so the emitted clusters are deterministic regardless of edge ordering.

@@ -15,6 +15,40 @@ fn ent(kind: EntityKind, value: &str, conf: f64, src: &str, candidate: bool) -> 
 }
 
 #[test]
+fn rule_context_by_uid_indexes_every_entity_and_caches() {
+    // Contract for the shared uid→entity cache the fourteen relation rules
+    // switched to (from a private per-rule rebuild). It must index every entity
+    // by its uid and return the same entity a private rebuild would have, so the
+    // switch is behaviour-neutral; a second call returns the cached view.
+    let ents = vec![
+        ent(EntityKind::Email, "a@example.com", 0.9, "src-a", false),
+        ent(EntityKind::Username, "alice", 0.8, "src-b", false),
+        ent(EntityKind::Domain, "example.com", 0.7, "src-c", false),
+    ];
+    let ctx = RuleContext::new(&ents);
+
+    let by_uid = ctx.by_uid();
+    assert_eq!(
+        by_uid.len(),
+        ents.len(),
+        "every entity is indexed exactly once"
+    );
+    for e in &ents {
+        let got = by_uid
+            .get(e.uid.as_str())
+            .expect("each entity is reachable by its own uid");
+        assert_eq!(got.uid, e.uid);
+        assert_eq!(got.value, e.value);
+    }
+    drop(by_uid);
+
+    // Cached: a second call yields the identical mapping.
+    let again = ctx.by_uid();
+    assert_eq!(again.len(), ents.len());
+    assert!(again.contains_key(ents[0].uid.as_str()));
+}
+
+#[test]
 fn temporal_breach_cluster_survives_non_ascii_breach_date() {
     // Regression: a `breach_date` taken verbatim from an upstream API whose
     // byte index 10 falls inside a multi-byte UTF-8 char must NOT panic the

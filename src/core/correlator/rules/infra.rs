@@ -364,9 +364,8 @@ pub(in crate::core::correlator) fn rule_au_031_malicious_adjacency(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let entities = context.entities();
     use crate::core::relation::RelationKind;
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::BTreeMap;
 
     /// A flagged node with more than this many distinct benign neighbours is
     /// shared hosting/CDN/ESP: emit one aggregate, not one row per neighbour.
@@ -374,7 +373,7 @@ pub(in crate::core::correlator) fn rule_au_031_malicious_adjacency(
     /// Benign uids to carry on an aggregate finding (the full count is in text).
     const AGG_SAMPLE: usize = 12;
 
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let by_uid = context.by_uid();
     let bad_reason = |e: &Entity| -> Option<&'static str> {
         // Ground-truth veto: a GreyNoise RIOT/benign node is not bad
         // infrastructure even if a scanner also tagged it, so it never anchors an

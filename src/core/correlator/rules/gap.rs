@@ -13,7 +13,7 @@
 //! [`crate::core::relation::disjoint_pathways`] primitive, so its notion of "one
 //! route" is exactly the multi-pathway rule's.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
 use crate::core::relation::{
@@ -150,8 +150,7 @@ pub(in crate::core) fn gap_fill_probes(
     context: &RuleContext,
     relations: &[Relation],
 ) -> Vec<GapProbe> {
-    let entities = context.entities();
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let by_uid = context.by_uid();
     let families_of = |uid: &str| -> BTreeSet<&'static str> {
         by_uid
             .get(uid)
@@ -207,8 +206,7 @@ pub(in crate::core::correlator) fn rule_au_063_corroboration_gap(
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
-    let entities = context.entities();
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let by_uid = context.by_uid();
 
     let families_of = |uid: &str| -> BTreeSet<&'static str> {
         by_uid
