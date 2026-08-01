@@ -172,8 +172,6 @@ pub(super) fn build_entity(
         ),
     };
 
-    let mut e = Entity::new(EntityKind::Email, email, conf, scan_id);
-    e.tag(tag);
     let mut ev = Evidence::new(SRC, summary);
     if let Some(host) = mx_host {
         ev = ev.with_attr("mx_host", host);
@@ -181,8 +179,10 @@ pub(super) fn build_entity(
     if let Some(c) = code {
         ev = ev.with_attr("smtp_code", c);
     }
-    e.add_evidence(ev);
-    e
+    Entity::builder(EntityKind::Email, email, conf, scan_id)
+        .tag(tag)
+        .evidence(ev)
+        .build()
 }
 
 async fn resolve_spf(domain: &str) -> Option<String> {
