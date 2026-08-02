@@ -324,322 +324,355 @@ impl Module for Whois {
         crate::util::http::scan_for_api_keys_with_source(&response, "whois");
 
         // 3) Parse the response into the fields we surface.
-        let WhoisFields {
-            registrar,
-            registrar_iana,
-            registrar_url,
-            updated,
-            created,
-            expires,
-            registrant_email,
-            registrant_org,
-            registrant_country,
-            registrant_state,
-            admin_email,
-            admin_name,
-            admin_org,
-            tech_email,
-            tech_name,
-            tech_org,
-            abuse_email,
-            nameservers,
-            statuses,
-            dnssec,
-            phones,
-        } = parse_whois(&response);
+        let fields = parse_whois(&response);
 
-        // No actionable data parsed — skip the entity to avoid noise.
-        if registrar.is_none() && created.is_none() && nameservers.is_empty() && statuses.is_empty()
-        {
-            return Ok(ModuleResult::new());
-        }
+        Ok(build_entities(target, &_ctx.scan_id, &response, &fields))
+    }
+}
 
-        let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS_PLUS, &_ctx.scan_id);
+/// Pure entity-building over the already-parsed WHOIS fields — separated from
+/// `process()` (which owns the network I/O, referral-following, and proxy
+/// fallback) so every branch is unit-testable against canned `WhoisFields`
+/// without a live TCP/43 query.
+fn build_entities(
+    target: &Target,
+    scan_id: &str,
+    response: &str,
+    fields: &WhoisFields,
+) -> ModuleResult {
+    // No actionable data parsed — skip the entity to avoid noise.
+    if fields.registrar.is_none()
+        && fields.created.is_none()
+        && fields.nameservers.is_empty()
+        && fields.statuses.is_empty()
+    {
+        return ModuleResult::new();
+    }
 
-        // Status flags become tags so the SPA can highlight them. These
-        // are the most operationally interesting: lock states, hold flags,
-        // pending transfers, etc.
-        for status in &statuses {
-            let lower = status.to_lowercase();
-            for flag in [
-                "clienttransferprohibited",
-                "clientdeleteprohibited",
-                "clientholdprohibited",
-                "clientupdateprohibited",
-                "servertransferprohibited",
-                "serverdeleteprohibited",
-                "serverholdprohibited",
-                "serverupdateprohibited",
-                "redemptionperiod",
-                "pendingdelete",
-                "pendingtransfer",
-                "addperiod",
-                "autorenewperiod",
-                "ok",
-            ] {
-                if lower.contains(flag) {
-                    entity.tag(format!("status:{flag}"));
-                }
+    let (entity, registrant_name) = build_domain_entity(target, scan_id, response, fields);
+    let mut result = ModuleResult::new();
+    result.push(entity);
+
+    result.extend(emit_contact_emails(target, scan_id, fields));
+    result.extend(emit_registrant_identity(
+        target,
+        scan_id,
+        fields,
+        registrant_name.as_deref(),
+    ));
+    result.extend(emit_admin_tech_contacts(target, scan_id, fields));
+    result.extend(emit_contact_phones(target, scan_id, fields));
+    result.extend(emit_nameservers(target, scan_id, fields));
+
+    result
+}
+
+/// The domain's own WHOIS entity: status/DNSSEC tags plus the full
+/// registrar/dates/registrant evidence trail. Also parses and returns the
+/// registrant NAME (not part of [`WhoisFields`] — read straight off the raw
+/// response here so it folds into this entity's evidence AND is available to
+/// [`emit_registrant_identity`]'s Person emission, without parsing it twice).
+fn build_domain_entity(
+    target: &Target,
+    scan_id: &str,
+    response: &str,
+    fields: &WhoisFields,
+) -> (Entity, Option<String>) {
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS_PLUS, scan_id);
+
+    // Status flags become tags so the SPA can highlight them. These
+    // are the most operationally interesting: lock states, hold flags,
+    // pending transfers, etc.
+    for status in &fields.statuses {
+        let lower = status.to_lowercase();
+        for flag in [
+            "clienttransferprohibited",
+            "clientdeleteprohibited",
+            "clientholdprohibited",
+            "clientupdateprohibited",
+            "servertransferprohibited",
+            "serverdeleteprohibited",
+            "serverholdprohibited",
+            "serverupdateprohibited",
+            "redemptionperiod",
+            "pendingdelete",
+            "pendingtransfer",
+            "addperiod",
+            "autorenewperiod",
+            "ok",
+        ] {
+            if lower.contains(flag) {
+                entity.tag(format!("status:{flag}"));
             }
         }
-        if let Some(d) = &dnssec
-            && d.to_lowercase().contains("unsigned")
-        {
-            entity.tag("dnssec:unsigned");
-        }
-        if let Some(d) = &dnssec
-            && d.to_lowercase().contains("signed")
-        {
-            entity.tag("dnssec:signed");
-        }
+    }
+    if let Some(d) = &fields.dnssec
+        && d.to_lowercase().contains("unsigned")
+    {
+        entity.tag("dnssec:unsigned");
+    }
+    if let Some(d) = &fields.dnssec
+        && d.to_lowercase().contains("signed")
+    {
+        entity.tag("dnssec:signed");
+    }
 
-        // Parsed here (not only at the Person-emission site below) so the
-        // registrant/admin/tech NAMES fold into the domain's own evidence attrs —
-        // those attrs are what `core::relation::derive_registration` matches a
-        // registrant Person against to build the Domain→Person `RegisteredBy`
-        // edge. A redacted name folds harmlessly: no Person entity is emitted for
-        // it, so it can never form an edge.
-        let registrant_name = field(
-            &response,
-            &["Registrant Name:", "Registrant Person:", "person:"],
+    // Parsed here (not only at the Person-emission site below) so the
+    // registrant/admin/tech NAMES fold into the domain's own evidence attrs —
+    // those attrs are what `core::relation::derive_registration` matches a
+    // registrant Person against to build the Domain→Person `RegisteredBy`
+    // edge. A redacted name folds harmlessly: no Person entity is emitted for
+    // it, so it can never form an edge.
+    let registrant_name = field(
+        response,
+        &["Registrant Name:", "Registrant Person:", "person:"],
+    );
+    let ev = [
+        ("registrar", fields.registrar.clone()),
+        ("registrar_iana_id", fields.registrar_iana.clone()),
+        ("registrar_url", fields.registrar_url.clone()),
+        ("created", fields.created.clone()),
+        ("updated", fields.updated.clone()),
+        ("expires", fields.expires.clone()),
+        (
+            "name_servers",
+            (!fields.nameservers.is_empty()).then(|| fields.nameservers.join(", ")),
+        ),
+        (
+            "statuses",
+            (!fields.statuses.is_empty()).then(|| fields.statuses.join(", ")),
+        ),
+        ("dnssec", fields.dnssec.clone()),
+        ("registrant_org", fields.registrant_org.clone()),
+        ("registrant_name", registrant_name.clone()),
+        ("admin_name", fields.admin_name.clone()),
+        ("tech_name", fields.tech_name.clone()),
+        ("registrant_country", fields.registrant_country.clone()),
+        ("registrant_state", fields.registrant_state.clone()),
+        ("registrant_email", fields.registrant_email.clone()),
+        ("admin_email", fields.admin_email.clone()),
+        ("tech_email", fields.tech_email.clone()),
+        ("abuse_email", fields.abuse_email.clone()),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| value.map(|v| (key, v)))
+    .fold(
+        Evidence::new(SRC, format!("WHOIS for {}", target.value)),
+        |ev, (key, v)| ev.with_attr(key, v),
+    );
+
+    entity.add_evidence(ev);
+    (entity, registrant_name)
+}
+
+/// Contact emails (registrant/admin/tech/abuse) as discrete Email entities so
+/// they fan out as scan targets in autonomous-expansion mode.
+///
+/// A WHOIS contact that is an infrastructure mailbox — a role address
+/// (`abuse@`, `dns@`, `hostmaster@`) or a mailbox on a CDN/registrar/cloud
+/// provider (`abuse@cloudflare.com`) — is the registrar/provider's desk,
+/// NEVER the subject. Emitting it as a confidence::STRONG Email entity made it a
+/// breach-checked, identity-clustered, expandable target (a real scan
+/// merged `dns@cloudflare.com` / `abuse@cloudflare.com` into the subject's
+/// identity). The address is still preserved in the parent domain's
+/// evidence attrs (`build_domain_entity`); it just must not become
+/// standalone PII.
+fn emit_contact_emails(target: &Target, scan_id: &str, fields: &WhoisFields) -> Vec<Entity> {
+    [
+        (&fields.registrant_email, "registrant"),
+        (&fields.admin_email, "admin"),
+        (&fields.tech_email, "tech"),
+        (&fields.abuse_email, "abuse"),
+    ]
+    .into_iter()
+    .filter_map(|(email, role)| {
+        let addr = email.as_deref()?;
+        if crate::util::domains::is_infrastructure_email(addr) {
+            return None;
+        }
+        let mut e = Entity::new(EntityKind::Email, addr, confidence::STRONG, scan_id);
+        e.tag(format!("whois-{role}"));
+        e.add_evidence(
+            Evidence::new(SRC, format!("WHOIS {role} contact for {}", target.value))
+                .with_attr("role", role)
+                .with_attr("parent_target", target.value.as_str()),
         );
-        let ev = [
-            ("registrar", registrar.clone()),
-            ("registrar_iana_id", registrar_iana.clone()),
-            ("registrar_url", registrar_url.clone()),
-            ("created", created.clone()),
-            ("updated", updated.clone()),
-            ("expires", expires.clone()),
-            (
-                "name_servers",
-                (!nameservers.is_empty()).then(|| nameservers.join(", ")),
-            ),
-            (
-                "statuses",
-                (!statuses.is_empty()).then(|| statuses.join(", ")),
-            ),
-            ("dnssec", dnssec.clone()),
-            ("registrant_org", registrant_org.clone()),
-            ("registrant_name", registrant_name.clone()),
-            ("admin_name", admin_name.clone()),
-            ("tech_name", tech_name.clone()),
-            ("registrant_country", registrant_country.clone()),
-            ("registrant_state", registrant_state.clone()),
-            ("registrant_email", registrant_email.clone()),
-            ("admin_email", admin_email.clone()),
-            ("tech_email", tech_email.clone()),
-            ("abuse_email", abuse_email.clone()),
-        ]
-        .into_iter()
-        .filter_map(|(key, value)| value.map(|v| (key, v)))
-        .fold(
-            Evidence::new(SRC, format!("WHOIS for {}", target.value)),
-            |ev, (key, v)| ev.with_attr(key, v),
-        );
+        Some(e)
+    })
+    .collect()
+}
 
-        entity.add_evidence(ev);
+/// Registrant organisation → Organisation entity, registrant name → Person
+/// entity (when not redacted), and registrant country/state → Address entity
+/// plus an inline geocoded Coordinates when resolvable.
+fn emit_registrant_identity(
+    target: &Target,
+    scan_id: &str,
+    fields: &WhoisFields,
+    registrant_name: Option<&str>,
+) -> Vec<Entity> {
+    let mut out = Vec::new();
 
-        let mut result = ModuleResult::new();
-        result.push(entity);
-
-        // Surface contact emails as discrete Email entities so they fan
-        // out as scan targets in autonomous-expansion mode.
-        // A WHOIS contact that is an infrastructure mailbox — a role address
-        // (`abuse@`, `dns@`, `hostmaster@`) or a mailbox on a CDN/registrar/cloud
-        // provider (`abuse@cloudflare.com`) — is the registrar/provider's desk,
-        // NEVER the subject. Emitting it as a confidence::STRONG Email entity made it a
-        // breach-checked, identity-clustered, expandable target (a real scan
-        // merged `dns@cloudflare.com` / `abuse@cloudflare.com` into the subject's
-        // identity). The address is still preserved in the parent domain's
-        // evidence attrs above; it just must not become standalone PII.
-        result.extend(
-            [
-                (&registrant_email, "registrant"),
-                (&admin_email, "admin"),
-                (&tech_email, "tech"),
-                (&abuse_email, "abuse"),
-            ]
-            .into_iter()
-            .filter_map(|(email, role)| {
-                let addr = email.as_deref()?;
-                if crate::util::domains::is_infrastructure_email(addr) {
-                    return None;
-                }
-                let mut e = Entity::new(EntityKind::Email, addr, confidence::STRONG, &_ctx.scan_id);
-                e.tag(format!("whois-{role}"));
-                e.add_evidence(
-                    Evidence::new(SRC, format!("WHOIS {role} contact for {}", target.value))
-                        .with_attr("role", role)
-                        .with_attr("parent_target", target.value.as_str()),
-                );
-                Some(e)
-            }),
-        );
-
-        // Registrant organisation → Organisation entity.
-        if let Some(org) = &registrant_org {
-            let org = org.trim();
-            if org.len() >= 3 && !crate::core::validation::is_whois_privacy_placeholder(org) {
-                let mut oe = Entity::new(
-                    EntityKind::Organisation,
-                    org,
-                    confidence::ATTRIBUTED,
-                    &_ctx.scan_id,
-                );
-                oe.tag("whois");
-                oe.tag(crate::core::tags::REGISTRANT);
-                oe.add_evidence(
-                    Evidence::new(SRC, format!("WHOIS registrant for {}", target.value))
-                        .with_attr("parent_target", target.value.as_str()),
-                );
-                result.push(oe);
-            }
+    // Registrant organisation → Organisation entity.
+    if let Some(org) = &fields.registrant_org {
+        let org = org.trim();
+        if org.len() >= 3 && !crate::core::validation::is_whois_privacy_placeholder(org) {
+            let mut oe = Entity::new(
+                EntityKind::Organisation,
+                org,
+                confidence::ATTRIBUTED,
+                scan_id,
+            );
+            oe.tag("whois");
+            oe.tag(crate::core::tags::REGISTRANT);
+            oe.add_evidence(
+                Evidence::new(SRC, format!("WHOIS registrant for {}", target.value))
+                    .with_attr("parent_target", target.value.as_str()),
+            );
+            out.push(oe);
         }
+    }
 
-        // Registrant name → Person entity (when not redacted). `registrant_name`
-        // is parsed above so it can also fold into the domain evidence.
-        if let Some(name) = &registrant_name {
-            let name = name.trim();
-            if name.len() >= 4
-                && name.contains(' ')
-                && !crate::core::validation::is_whois_privacy_placeholder(name)
-            {
-                let mut pe = Entity::new(
-                    EntityKind::Person,
-                    name,
-                    confidence::ATTRIBUTED,
-                    &_ctx.scan_id,
-                );
-                pe.tag("whois");
-                pe.tag(crate::core::tags::REGISTRANT);
-                pe.add_evidence(
-                    Evidence::new(SRC, format!("WHOIS registrant for {}", target.value))
-                        .with_attr("parent_target", target.value.as_str()),
-                );
-                result.push(pe);
-            }
+    // Registrant name → Person entity (when not redacted). `registrant_name`
+    // is parsed by `build_domain_entity` so it can also fold into the domain
+    // evidence.
+    if let Some(name) = registrant_name {
+        let name = name.trim();
+        if name.len() >= 4
+            && name.contains(' ')
+            && !crate::core::validation::is_whois_privacy_placeholder(name)
+        {
+            let mut pe = Entity::new(EntityKind::Person, name, confidence::ATTRIBUTED, scan_id);
+            pe.tag("whois");
+            pe.tag(crate::core::tags::REGISTRANT);
+            pe.add_evidence(
+                Evidence::new(SRC, format!("WHOIS registrant for {}", target.value))
+                    .with_attr("parent_target", target.value.as_str()),
+            );
+            out.push(pe);
         }
+    }
 
-        // Registrant address → Address entity (when available and not a
-        // privacy-proxy placeholder — via the SAME shared guard the registrant
-        // name/org paths above use, not a narrow redacted/privacy substring test).
-        if let Some(country) = &registrant_country {
-            let parts = registrant_location_parts(registrant_state.as_deref(), country);
-            if !parts.is_empty() && parts.iter().any(|p| p.len() >= 2) {
-                let addr = parts.join(", ");
-                let mut ae = Entity::new(
-                    EntityKind::Address,
-                    &addr,
-                    confidence::MEDIUM,
-                    &_ctx.scan_id,
+    // Registrant address → Address entity (when available and not a
+    // privacy-proxy placeholder — via the SAME shared guard the registrant
+    // name/org paths above use, not a narrow redacted/privacy substring test).
+    if let Some(country) = &fields.registrant_country {
+        let parts = registrant_location_parts(fields.registrant_state.as_deref(), country);
+        if !parts.is_empty() && parts.iter().any(|p| p.len() >= 2) {
+            let addr = parts.join(", ");
+            let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM, scan_id);
+            ae.tag("whois");
+            ae.tag(crate::core::tags::REGISTRANT);
+            ae.tag("geoint");
+            ae.add_evidence(
+                Evidence::new(SRC, format!("Registrant location for {}", target.value))
+                    .with_attr("parent_target", target.value.as_str()),
+            );
+            if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
+                let coord_val = format!("{lat:.4},{lon:.4}");
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::LOW,
+                    scan_id,
                 );
-                ae.tag("whois");
-                ae.tag(crate::core::tags::REGISTRANT);
-                ae.tag("geoint");
-                ae.add_evidence(
-                    Evidence::new(SRC, format!("Registrant location for {}", target.value))
-                        .with_attr("parent_target", target.value.as_str()),
+                c.tag("whois");
+                c.tag("addr-derived");
+                c.tag("geoint");
+                c.add_evidence(
+                    Evidence::new(
+                        SRC,
+                        format!("Geocode of registrant address for {}", target.value),
+                    )
+                    .with_attr("parent_target", target.value.as_str()),
                 );
-                if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
-                    let coord_val = format!("{lat:.4},{lon:.4}");
-                    let mut c = Entity::new(
-                        EntityKind::Coordinates,
-                        &coord_val,
-                        confidence::LOW,
-                        &_ctx.scan_id,
-                    );
-                    c.tag("whois");
-                    c.tag("addr-derived");
-                    c.tag("geoint");
-                    c.add_evidence(
-                        Evidence::new(
-                            SRC,
-                            format!("Geocode of registrant address for {}", target.value),
-                        )
-                        .with_attr("parent_target", target.value.as_str()),
-                    );
-                    result.push(c);
-                }
-                result.push(ae);
+                out.push(c);
             }
+            out.push(ae);
         }
+    }
 
-        // Admin and tech contact names / organisations — same redaction filter
-        // as the registrant block above (the shared, complete privacy-proxy guard).
-        let is_redacted = crate::core::validation::is_whois_privacy_placeholder;
-        for (name_opt, role) in [(&admin_name, "admin"), (&tech_name, "tech")] {
-            if let Some(name) = name_opt
-                .as_deref()
-                .map(str::trim)
-                .filter(|n| n.len() >= 4 && n.contains(' ') && !is_redacted(n))
-            {
-                let mut pe = Entity::new(EntityKind::Person, name, confidence::HIGH, &_ctx.scan_id);
-                pe.tag("whois");
-                pe.tag(role);
-                pe.add_evidence(
-                    Evidence::new(SRC, format!("WHOIS {} contact for {}", role, target.value))
-                        .with_attr("role", role)
-                        .with_attr("parent_target", target.value.as_str()),
-                );
-                result.push(pe);
-            }
-        }
-        for (org_opt, role) in [(&admin_org, "admin"), (&tech_org, "tech")] {
-            if let Some(org) = org_opt
-                .as_deref()
-                .map(str::trim)
-                .filter(|o| o.len() >= 3 && !is_redacted(o))
-            {
-                let mut oe = Entity::new(
-                    EntityKind::Organisation,
-                    org,
-                    confidence::NOTABLE,
-                    &_ctx.scan_id,
-                );
-                oe.tag("whois");
-                oe.tag(role);
-                oe.add_evidence(
-                    Evidence::new(SRC, format!("WHOIS {} org for {}", role, target.value))
-                        .with_attr("role", role)
-                        .with_attr("parent_target", target.value.as_str()),
-                );
-                result.push(oe);
-            }
-        }
+    out
+}
 
-        // Contact phone numbers — redacted values are already excluded in
-        // parse_whois; each surviving number is in E.164 `+<digits>` form.
-        for phone in &phones {
-            let mut pe = Entity::new(EntityKind::Phone, phone, 0.68, &_ctx.scan_id);
+/// Admin and tech contact names / organisations — same redaction filter as
+/// the registrant identity above (the shared, complete privacy-proxy guard).
+fn emit_admin_tech_contacts(target: &Target, scan_id: &str, fields: &WhoisFields) -> Vec<Entity> {
+    let mut out = Vec::new();
+    let is_redacted = crate::core::validation::is_whois_privacy_placeholder;
+    for (name_opt, role) in [(&fields.admin_name, "admin"), (&fields.tech_name, "tech")] {
+        if let Some(name) = name_opt
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| n.len() >= 4 && n.contains(' ') && !is_redacted(n))
+        {
+            let mut pe = Entity::new(EntityKind::Person, name, confidence::HIGH, scan_id);
+            pe.tag("whois");
+            pe.tag(role);
+            pe.add_evidence(
+                Evidence::new(SRC, format!("WHOIS {} contact for {}", role, target.value))
+                    .with_attr("role", role)
+                    .with_attr("parent_target", target.value.as_str()),
+            );
+            out.push(pe);
+        }
+    }
+    for (org_opt, role) in [(&fields.admin_org, "admin"), (&fields.tech_org, "tech")] {
+        if let Some(org) = org_opt
+            .as_deref()
+            .map(str::trim)
+            .filter(|o| o.len() >= 3 && !is_redacted(o))
+        {
+            let mut oe = Entity::new(EntityKind::Organisation, org, confidence::NOTABLE, scan_id);
+            oe.tag("whois");
+            oe.tag(role);
+            oe.add_evidence(
+                Evidence::new(SRC, format!("WHOIS {} org for {}", role, target.value))
+                    .with_attr("role", role)
+                    .with_attr("parent_target", target.value.as_str()),
+            );
+            out.push(oe);
+        }
+    }
+    out
+}
+
+/// Contact phone numbers — redacted values are already excluded in
+/// `parse_whois`; each surviving number is in E.164 `+<digits>` form.
+fn emit_contact_phones(target: &Target, scan_id: &str, fields: &WhoisFields) -> Vec<Entity> {
+    fields
+        .phones
+        .iter()
+        .map(|phone| {
+            let mut pe = Entity::new(EntityKind::Phone, phone, 0.68, scan_id);
             pe.tag("whois");
             pe.add_evidence(
                 Evidence::new(SRC, format!("WHOIS contact phone for {}", target.value))
                     .with_attr("parent_target", target.value.as_str()),
             );
-            result.push(pe);
-        }
+            pe
+        })
+        .collect()
+}
 
-        // Surface nameservers as Domain entities too so DNS chaining
-        // picks them up at depth>=1.
-        result.extend(nameservers.iter().filter_map(|ns| {
+/// Nameservers as Domain entities too so DNS chaining picks them up at
+/// depth>=1.
+fn emit_nameservers(target: &Target, scan_id: &str, fields: &WhoisFields) -> Vec<Entity> {
+    fields
+        .nameservers
+        .iter()
+        .filter_map(|ns| {
             let host = ns.trim_end_matches('.').to_lowercase();
             if host.is_empty() {
                 return None;
             }
-            let mut e = Entity::new(
-                EntityKind::Domain,
-                &host,
-                confidence::CORROBORATED,
-                &_ctx.scan_id,
-            );
+            let mut e = Entity::new(EntityKind::Domain, &host, confidence::CORROBORATED, scan_id);
             e.tag("whois-ns");
             e.add_evidence(
                 Evidence::new(SRC, format!("Nameserver for {}", target.value))
                     .with_attr("parent_target", target.value.as_str()),
             );
             Some(e)
-        }));
-
-        Ok(result)
-    }
+        })
+        .collect()
 }
