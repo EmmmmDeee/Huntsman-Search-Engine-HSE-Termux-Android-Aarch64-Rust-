@@ -62,6 +62,49 @@ pub fn strip_tags_plain(html: &str) -> String {
     out
 }
 
+/// Scrape an HTML `<table>`'s `<tr>`/`<td>` rows into their plain-text cells —
+/// a dependency-free walk (no scraper/html5ever crate, in keeping with the
+/// lean Termux build) shared by every module that hand-rolls this exact
+/// pattern against a government register's search-results table (`acma_rrl`,
+/// `ahpra`, …). Splits on `<tr` / `</tr>`, then within each row on `<td` /
+/// `</td>`, running each cell through [`strip_tags_plain`] and trimming it.
+/// Only rows with at least `min_cols` cells are kept; the caller applies its
+/// own header-row / empty-field filtering and field mapping on top, since
+/// those are genuinely per-source. Pure — unit-testable against a captured
+/// response without a network round-trip.
+#[must_use]
+pub fn parse_table_rows(html: &str, min_cols: usize) -> Vec<Vec<String>> {
+    let mut rows = Vec::new();
+    let mut remaining = html;
+    while let Some(row_start) = remaining.find("<tr") {
+        remaining = &remaining[row_start + 3..];
+        let Some(row_end) = remaining.find("</tr>") else {
+            break;
+        };
+        let row = &remaining[..row_end];
+        remaining = &remaining[row_end + 5..];
+
+        let mut cells = Vec::new();
+        let mut r = row;
+        while let Some(td_start) = r.find("<td") {
+            r = &r[td_start..];
+            let Some(td_content_start) = r.find('>') else {
+                break;
+            };
+            r = &r[td_content_start + 1..];
+            let Some(td_end) = r.find("</td>") else { break };
+            let cell = &r[..td_end];
+            cells.push(strip_tags_plain(cell).trim().to_string());
+            r = &r[td_end + 5..];
+        }
+
+        if cells.len() >= min_cols {
+            rows.push(cells);
+        }
+    }
+    rows
+}
+
 /// Decode HTML entities in a single left-to-right pass: the named entities real
 /// markup uses (`&amp; &lt; &gt; &quot; &apos; &nbsp;`, plus the common
 /// typography/symbol set — see [`decode_one_entity`]) and ANY numeric character

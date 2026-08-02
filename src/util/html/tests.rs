@@ -13,6 +13,40 @@ use super::*;
     }
 
     #[test]
+    fn parse_table_rows_extracts_cells_and_drops_short_rows() {
+        let html = "<table>\
+                     <tr><td>Name</td><td>Number</td><td>Type</td></tr>\
+                     <tr><td>Jane <b>Doe</b></td><td>123</td><td>Widget</td></tr>\
+                     <tr><td>Only two</td><td>cells</td></tr>\
+                     <tr><td>John Smith</td><td>456</td><td>Gadget</td></tr>\
+                     </table>";
+        let rows = parse_table_rows(html, 3);
+        assert_eq!(
+            rows,
+            vec![
+                vec!["Name".to_string(), "Number".to_string(), "Type".to_string()],
+                vec!["Jane Doe".to_string(), "123".to_string(), "Widget".to_string()],
+                vec!["John Smith".to_string(), "456".to_string(), "Gadget".to_string()],
+            ]
+        );
+        // `<th>` header cells are NOT `<td>`, so a genuine `<th>`-only header
+        // row yields zero cells and is dropped by the `min_cols` filter here —
+        // callers whose header row uses `<td>` (matching this table) instead
+        // rely on their own field-value filter (e.g. `name != "Licensee"`).
+        assert!(
+            parse_table_rows("<table><tr><th>Name</th><th>Number</th></tr></table>", 1).is_empty()
+        );
+    }
+
+    #[test]
+    fn parse_table_rows_empty_on_no_rows_or_unterminated_row() {
+        assert!(parse_table_rows("<table></table>", 1).is_empty());
+        assert!(parse_table_rows("plain text, no table at all", 1).is_empty());
+        // An unterminated `<tr>` (no closing `</tr>`) must not panic or loop.
+        assert!(parse_table_rows("<table><tr><td>a</td>", 1).is_empty());
+    }
+
+    #[test]
     fn decodes_common_entities() {
         let s = decode_entities("&amp; &lt;tag&gt; &quot;q&quot; &#39;a&#39; &nbsp;x");
         assert_eq!(s, "& <tag> \"q\" 'a'  x");

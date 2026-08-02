@@ -34,43 +34,16 @@ pub struct AcmaRrl;
 /// against a captured response without a network round-trip.
 pub(super) fn parse_acma_html(html: &str) -> Vec<(String, String, String)> {
     // Returns Vec<(licensee_name, licence_number, service)>
-    let mut results = Vec::new();
-    let mut remaining = html;
-    while let Some(row_start) = remaining.find("<tr") {
-        remaining = &remaining[row_start + 3..];
-        let Some(row_end) = remaining.find("</tr>") else {
-            break;
-        };
-        let row = &remaining[..row_end];
-        remaining = &remaining[row_end + 5..];
-
-        let cells: Vec<String> = {
-            let mut cells = Vec::new();
-            let mut r = row;
-            while let Some(td_start) = r.find("<td") {
-                r = &r[td_start..];
-                let Some(td_content_start) = r.find('>') else {
-                    break;
-                };
-                r = &r[td_content_start + 1..];
-                let Some(td_end) = r.find("</td>") else { break };
-                let cell = &r[..td_end];
-                cells.push(crate::util::html::strip_tags_plain(cell).trim().to_string());
-                r = &r[td_end + 5..];
-            }
-            cells
-        };
-
-        if cells.len() >= 3 {
+    crate::util::html::parse_table_rows(html, 3)
+        .into_iter()
+        .filter_map(|cells| {
             let name = cells[0].clone();
             let lic_no = cells[1].clone();
             let service = cells[2].clone();
-            if !name.is_empty() && name != "Licensee" && !lic_no.is_empty() {
-                results.push((name, lic_no, service));
-            }
-        }
-    }
-    results
+            (!name.is_empty() && name != "Licensee" && !lic_no.is_empty())
+                .then_some((name, lic_no, service))
+        })
+        .collect()
 }
 
 /// One `Organisation` entity per parsed licensee — EVERY row, no cap. The HTML
