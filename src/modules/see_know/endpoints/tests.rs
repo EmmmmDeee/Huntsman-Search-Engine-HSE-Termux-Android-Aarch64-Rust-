@@ -79,20 +79,22 @@ use super::*;
 
     #[test]
     fn endpoint_call_count_matches_the_documented_wired_total() {
-        // `util::see_know::integration_tests`'s endpoint ledger asserts 18
+        // `util::see_know::integration_tests`'s endpoint ledger asserts 19
         // of the 24 documented SeekNow endpoints are actually wired — 17
-        // `EndpointCall` variants plus the separate `/search` universal
-        // call (not an `EndpointCall` variant; dispatched directly by
-        // `modules::see_know::Module::process()`). This is the
-        // architecturally-correct place to pin that number (`util` cannot
-        // depend on `modules`, so the ledger itself can't check this
-        // directly) — if this assertion breaks, update BOTH this count and
-        // `util::see_know::integration_tests`'s ledger together.
+        // `EndpointCall` variants plus the separately-dispatched `/search`
+        // and `/search/deep` universal calls (neither an `EndpointCall`
+        // variant; both dispatched directly by
+        // `modules::see_know::Module::process()`, `/search/deep` as the
+        // fast-miss fallback). This is the architecturally-correct place to
+        // pin that number (`util` cannot depend on `modules`, so the ledger
+        // itself can't check this directly) — if this assertion breaks,
+        // update BOTH this count and `util::see_know::integration_tests`'s
+        // ledger together.
         assert_eq!(
             ALL_ENDPOINT_CALLS.len(),
             17,
-            "17 EndpointCall variants + /search (dispatched separately, not \
-             an EndpointCall) = 18 real wired endpoints"
+            "17 EndpointCall variants + /search + /search/deep (all dispatched \
+             separately, not EndpointCall variants) = 19 real wired endpoints"
         );
     }
 
