@@ -389,6 +389,13 @@ fn core_does_not_import_util_directly() {
                 // needs lives on `BatchQuery::target_kind` rather than being
                 // reached for as `util::oathnet::FIELD_*`.
                 && !line.contains("util::oathnet_batch")
+                // Pure, dependency-free BIP-173 bech32 checksum arithmetic (a
+                // GEN-table polynomial + prefix expansion; no state, no I/O, no
+                // deps), same leaf category as `util::abn`/`util::oui`.
+                // `core::crypto` uses it to verify a SegWit `bc1…`/`ltc1…`
+                // address's bech32(m) checksum as part of wallet-address
+                // classification.
+                && !line.contains("util::bech32")
         })
         .collect();
     assert!(
