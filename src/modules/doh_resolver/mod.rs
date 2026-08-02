@@ -31,6 +31,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+use crate::util::dns::soa_rname_to_email;
 
 const SRC: &str = "doh_resolver";
 
@@ -673,39 +674,6 @@ fn records_for_type(
         }
     }
     out
-}
-
-/// Convert an SOA RNAME field to an email address. Per RFC 1035 §3.3.13 the
-/// RNAME is a domain-name where the first unescaped `.` represents `@`.
-/// `hostmaster.example.com` → `hostmaster@example.com`.
-/// `john\.doe.example.com` → `john.doe@example.com` (escaped dot in local-part).
-/// Returns `None` when the result contains no `@` (single-label or malformed).
-fn soa_rname_to_email(rname: &str) -> Option<String> {
-    let mut local = String::new();
-    let mut bytes = rname.as_bytes().iter().copied().peekable();
-    loop {
-        match bytes.next()? {
-            b'\\' => {
-                // Escaped byte: include the literal next byte in the local-part.
-                if let Some(next) = bytes.next() {
-                    local.push(next as char);
-                } else {
-                    break;
-                }
-            }
-            b'.' => break, // First unescaped dot → the `@` boundary.
-            c => local.push(c as char),
-        }
-    }
-    if local.is_empty() {
-        return None;
-    }
-    let rest: String = bytes.map(|b| b as char).collect();
-    let domain = rest.trim_end_matches('.');
-    if domain.is_empty() || !domain.contains('.') {
-        return None;
-    }
-    Some(format!("{local}@{domain}"))
 }
 
 pub struct DohResolver;

@@ -4,12 +4,10 @@ use crate::core::scan::{Target, TargetKind};
 use super::{
     DnsIntel,
     constants::SUBDOMAINS,
-    helpers::{
-        VERIFICATION_VENDORS, reverse_ip, soa_rname_to_email, unescape_dns_label,
-        verification_vendor,
-    },
+    helpers::{VERIFICATION_VENDORS, reverse_ip, verification_vendor},
     resolve::{iodef_entities, tlsrpt_entities},
 };
+use crate::util::dns::soa_rname_to_email;
 
 // -- DnsIntel accepts --------------------------------------------------
 
@@ -36,15 +34,15 @@ fn rejects_email() {
 #[test]
 fn soa_rname_decodes() {
     assert_eq!(
-        soa_rname_to_email("hostmaster.example.com"),
-        "hostmaster@example.com"
+        soa_rname_to_email("hostmaster.example.com").as_deref(),
+        Some("hostmaster@example.com")
     );
     assert_eq!(
-        soa_rname_to_email("admin.sub.example.org"),
-        "admin@sub.example.org"
+        soa_rname_to_email("admin.sub.example.org").as_deref(),
+        Some("admin@sub.example.org")
     );
-    assert_eq!(soa_rname_to_email(""), "");
-    assert_eq!(soa_rname_to_email("notanemail"), "");
+    assert_eq!(soa_rname_to_email(""), None);
+    assert_eq!(soa_rname_to_email("notanemail"), None);
 }
 
 #[test]
@@ -56,16 +54,11 @@ fn soa_admin_role_mailbox_is_gated_as_infrastructure() {
     // SERP). Verify the SOA-derived address trips that gate for role/provider
     // contacts while a genuine personal admin on a non-infra domain is kept.
     use crate::util::domains::is_infrastructure_email;
-    assert!(is_infrastructure_email(&soa_rname_to_email(
-        "hostmaster.example.com"
-    )));
-    assert!(is_infrastructure_email(&soa_rname_to_email(
-        "dns.cloudflare.com"
-    )));
-    assert!(is_infrastructure_email(&soa_rname_to_email(
-        "root.subjectsite.com.au"
-    )));
-    assert!(!is_infrastructure_email(&soa_rname_to_email(
+    let decode = |rname: &str| soa_rname_to_email(rname).unwrap_or_default();
+    assert!(is_infrastructure_email(&decode("hostmaster.example.com")));
+    assert!(is_infrastructure_email(&decode("dns.cloudflare.com")));
+    assert!(is_infrastructure_email(&decode("root.subjectsite.com.au")));
+    assert!(!is_infrastructure_email(&decode(
         "alice.personaldomain.org"
     )));
 }
@@ -171,30 +164,6 @@ fn tlsrpt_ignores_non_tlsrpt_and_empty() {
     assert!(tlsrpt_entities(&["v=spf1 -all".to_string()], "x.com", "s").is_empty());
     assert!(tlsrpt_entities(&["v=TLSRPTv1;".to_string()], "x.com", "s").is_empty());
     assert!(tlsrpt_entities(&[], "x.com", "s").is_empty());
-}
-
-#[test]
-fn soa_rname_unescapes_dotted_local_part() {
-    // A literal dot in the mailbox local part is `\.`-escaped in the RNAME;
-    // the split must skip it AND the output must drop the backslash.
-    assert_eq!(
-        soa_rname_to_email(r"hostmaster\.ops.example.com"),
-        "hostmaster.ops@example.com"
-    );
-    // `\DDD` decimal escape (46 = '.') decodes the same way.
-    assert_eq!(
-        soa_rname_to_email(r"first\046last.example.org"),
-        "first.last@example.org"
-    );
-}
-
-#[test]
-fn unescape_dns_label_handles_literal_and_decimal_escapes() {
-    assert_eq!(unescape_dns_label(r"a\.b"), "a.b");
-    assert_eq!(unescape_dns_label(r"a\\b"), r"a\b");
-    assert_eq!(unescape_dns_label(r"x\046y"), "x.y"); // \046 = '.'
-    assert_eq!(unescape_dns_label("plain"), "plain");
-    assert_eq!(unescape_dns_label(r"trailing\"), "trailing"); // lone backslash dropped
 }
 
 #[test]

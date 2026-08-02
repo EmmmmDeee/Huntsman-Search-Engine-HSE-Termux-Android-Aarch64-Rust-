@@ -7,10 +7,10 @@ use crate::core::{
     module::ModuleContext,
     scan::Target,
 };
-use crate::util::dns::shared_resolver;
+use crate::util::dns::{shared_resolver, soa_rname_to_email};
 
 use super::SRC;
-use super::helpers::{soa_rname_to_email, verification_vendor};
+use super::helpers::verification_vendor;
 
 /// A / AAAA / MX / NS / SOA / TXT / DMARC — run concurrently via `tokio::join!`.
 ///
@@ -123,7 +123,7 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
         let mname = soa_data.mname.to_ascii();
         let mname = mname.trim_end_matches('.');
         let rname_raw = soa_data.rname.to_ascii();
-        let admin_email = soa_rname_to_email(rname_raw.trim_end_matches('.'));
+        let admin_email = soa_rname_to_email(rname_raw.trim_end_matches('.')).unwrap_or_default();
 
         let mut e = Entity::new(
             EntityKind::Domain,
