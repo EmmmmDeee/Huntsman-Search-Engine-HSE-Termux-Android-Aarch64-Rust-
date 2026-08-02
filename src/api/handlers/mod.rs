@@ -236,10 +236,9 @@ pub async fn stats(
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
 ) -> impl IntoResponse {
     let store = Arc::clone(&s.store);
-    let scans = match tokio::task::spawn_blocking(move || store.list_scans(10_000)).await {
-        Ok(Ok(scans)) => scans,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("stats query failed: {e}")),
+    let scans = match offload("stats query", move || store.list_scans(10_000)).await {
+        Ok(scans) => scans,
+        Err(resp) => return resp,
     };
     let ScanStatsAgg {
         by_status,
@@ -403,14 +402,13 @@ pub async fn scraper_health(State(s): State<Arc<AppState>>) -> impl IntoResponse
     use crate::util::scraper_health::{RECENT_EVENTS_WINDOW, aggregate_source_health};
 
     let store = Arc::clone(&s.store);
-    let events = match tokio::task::spawn_blocking(move || {
+    let events = match offload("scraper health query", move || {
         store.recent_module_outcome_events(RECENT_EVENTS_WINDOW)
     })
     .await
     {
-        Ok(Ok(events)) => events,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("scraper health query failed: {e}")),
+        Ok(events) => events,
+        Err(resp) => return resp,
     };
     let health = aggregate_source_health(&events);
     let drifted: Vec<Value> = health
@@ -593,7 +591,7 @@ pub async fn system_debug_bundle(
     let selftest = crate::selftest::run().await;
     // Store reads are blocking — off the reactor (matches `scan_debug_bundle`).
     let store = Arc::clone(&s.store);
-    let loaded = tokio::task::spawn_blocking(move || {
+    let loaded = offload("debug-bundle query", move || {
         let scans = store.list_scans(200)?;
         let events = store
             .recent_module_outcome_events(crate::util::scraper_health::RECENT_EVENTS_WINDOW)?;
@@ -612,9 +610,8 @@ pub async fn system_debug_bundle(
     })
     .await;
     let (scans, events, db_integrity, wal_bytes) = match loaded {
-        Ok(Ok(tuple)) => tuple,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("debug-bundle query task failed: {e}")),
+        Ok(tuple) => tuple,
+        Err(resp) => return resp,
     };
     let scraper_events_checked = events.len();
     let scraper_health = crate::util::scraper_health::aggregate_source_health(&events);
@@ -672,13 +669,13 @@ pub async fn system_debug_bundle(
     // Render off the reactor too: it reads the log ring + spawns `curl` (via the
     // environment fingerprint) — both blocking — and builds a potentially large
     // string, so on the ~2-worker reactor it would otherwise stall peers.
-    let rendered = tokio::task::spawn_blocking(move || {
-        crate::app::export::render_system_debug_bundle(&inputs)
+    let rendered = offload("debug-bundle render", move || {
+        Ok::<_, crate::core::error::Error>(crate::app::export::render_system_debug_bundle(&inputs))
     })
     .await;
     let body = match rendered {
         Ok(b) => b,
-        Err(e) => return internal_error(&format!("debug-bundle render task failed: {e}")),
+        Err(resp) => return resp,
     };
     let filename = format!("hse-system-debug-{}.txt", crate::core::entity::unix_now());
     crate::api::scan_export::attachment_response(body, "text/plain; charset=utf-8", &filename)
@@ -768,7 +765,7 @@ pub async fn entity_get(
     // unlike every sibling handler here — so the whole read group moves to a
     // blocking thread.
     let store = Arc::clone(&s.store);
-    let loaded = tokio::task::spawn_blocking(move || -> crate::core::error::Result<Option<_>> {
+    let loaded = offload("query", move || -> crate::core::error::Result<Option<_>> {
         let Some(entity) = store.get_entity(&uid)? else {
             return Ok(None);
         };
@@ -778,7 +775,7 @@ pub async fn entity_get(
     })
     .await;
     match loaded {
-        Ok(Ok(Some((entity, scan_ids, obs_count)))) => (
+        Ok(Some((entity, scan_ids, obs_count))) => (
             StatusCode::OK,
             Json(serde_json::json!({
                 "entity": entity,
@@ -787,9 +784,8 @@ pub async fn entity_get(
             })),
         )
             .into_response(),
-        Ok(Ok(None)) => not_found(),
-        Ok(Err(e)) => internal_error(&e),
-        Err(e) => internal_error(&format!("query task failed: {e}")),
+        Ok(None) => not_found(),
+        Err(resp) => resp,
     }
 }
 
@@ -815,10 +811,9 @@ pub async fn search_entities(
     // thread, matching the sibling handlers' discipline.
     let store = Arc::clone(&s.store);
     let query = query.to_string();
-    match tokio::task::spawn_blocking(move || store.search_entities(&query, limit)).await {
-        Ok(Ok(entities)) => ok_list("entities", entities),
-        Ok(Err(e)) => internal_error(&e),
-        Err(e) => internal_error(&format!("query task failed: {e}")),
+    match offload("query", move || store.search_entities(&query, limit)).await {
+        Ok(entities) => ok_list("entities", entities),
+        Err(resp) => resp,
     }
 }
 
