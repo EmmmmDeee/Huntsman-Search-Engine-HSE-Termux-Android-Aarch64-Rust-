@@ -38,6 +38,42 @@ use super::*;
     }
 
     #[test]
+    fn every_endpoint_sends_the_query_param_the_seeknow_contract_requires() {
+        // The SeekNow API keys each GET on a specific query-param NAME; a wrong
+        // name means the required argument never reaches the server (400 /
+        // empty). Regression: the public Discord endpoints were sending `id`,
+        // but the contract keys them on `discord_id` (only /enterprise/discord/*
+        // use `id`). This pins the param name for every dispatched endpoint so
+        // that class of drift can't recur. SteamProfile is excluded: gaming/steam
+        // is a deliberate, in-code speculative endpoint absent from the contract.
+        let expected: &[(EndpointCall, &str)] = &[
+            (EndpointCall::EmailCheck, "email"),
+            (EndpointCall::SocialAggregate, "username"),
+            (EndpointCall::GithubProfile, "username"),
+            (EndpointCall::TwitterProfile, "username"),
+            (EndpointCall::RedditProfile, "username"),
+            (EndpointCall::TiktokProfile, "username"),
+            (EndpointCall::UsernameHistory, "username"),
+            (EndpointCall::RobloxProfile, "username"),
+            (EndpointCall::XboxProfile, "gamertag"),
+            (EndpointCall::MinecraftProfile, "username"),
+            (EndpointCall::DiscordUser, "discord_id"),
+            (EndpointCall::DiscordToRoblox, "discord_id"),
+            (EndpointCall::PhoneInfo, "phone"),
+            (EndpointCall::IpInfo, "ip"),
+            (EndpointCall::DomainIntel, "domain"),
+            (EndpointCall::Whois, "domain"),
+        ];
+        for (call, param) in expected {
+            assert_eq!(
+                call.spec().2,
+                *param,
+                "{call:?} must send the documented `{param}` query param"
+            );
+        }
+    }
+
+    #[test]
     fn endpoint_call_count_matches_the_documented_wired_total() {
         // `util::see_know::integration_tests`'s endpoint ledger asserts 18
         // of the 24 documented SeekNow endpoints are actually wired — 17
