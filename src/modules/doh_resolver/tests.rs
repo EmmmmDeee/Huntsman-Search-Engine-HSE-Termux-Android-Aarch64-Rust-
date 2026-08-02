@@ -1,4 +1,17 @@
-use super::*;
+use std::collections::HashSet;
+
+use crate::core::entity::{Entity, EntityKind};
+use crate::core::module::Module;
+use crate::core::scan::{Target, TargetKind};
+use crate::util::dns::soa_rname_to_email;
+
+use super::{
+    DohRecord, DohResolver, DohResp,
+    caa::{caa_entities, parse_caa_rdata},
+    records_for_type, rtype_name,
+    svcb::parse_svcb_hints,
+    target_domain, tlsrpt_entities, unquote_txt,
+};
 
 #[test]
 fn accepts_domain_only() {

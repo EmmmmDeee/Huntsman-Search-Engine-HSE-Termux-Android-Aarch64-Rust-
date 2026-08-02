@@ -20,6 +20,10 @@
 //! is often the only path by which a domain's CA policy and published
 //! security/abuse contact are enumerated.
 
+mod caa;
+mod dmarc_soa;
+mod svcb;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -31,7 +35,10 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::dns::soa_rname_to_email;
+
+use caa::caa_entities;
+use dmarc_soa::{dmarc_entities, soa_entities};
+use svcb::parse_svcb_hints;
 
 const SRC: &str = "doh_resolver";
 
@@ -113,219 +120,6 @@ fn unquote_txt(data: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
-}
-
-/// Extract the `ipv4hint` / `ipv6hint` addresses from an HTTPS/SVCB record
-/// (RFC 9460) as returned in a DoH JSON `data` field. **Pure**, fully
-/// bounds-checked — malformed input yields whatever parsed cleanly, never a
-/// panic. Handles BOTH forms the two resolvers emit: dns.google's friendly
-/// presentation string (`1 . alpn=h3,h2 ipv4hint=A,B ipv6hint=C,D`), and
-/// cloudflare-dns's raw RFC 3597 generic form (`\# <len> <hex octets>`), which
-/// carries the SvcParams as binary and must be decoded on the wire.
-///
-/// The hint addresses are the origin/edge IPs a client is told to connect to —
-/// infrastructure that an A/AAAA lookup may not surface (e.g. an HTTP/3-only or
-/// ECH-fronted endpoint), so a new one is a real pivot.
-fn parse_svcb_hints(data: &str) -> Vec<String> {
-    let data = data.trim();
-    if let Some(hex_body) = data.strip_prefix(r"\#") {
-        return svcb_hints_from_wire(hex_body);
-    }
-    // Friendly presentation form: whitespace-separated params, comma-lists.
-    let mut out = Vec::new();
-    for tok in data.split_whitespace() {
-        if let Some(list) = tok
-            .strip_prefix("ipv4hint=")
-            .or_else(|| tok.strip_prefix("ipv6hint="))
-        {
-            out.extend(
-                list.split(',')
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string),
-            );
-        }
-    }
-    out
-}
-
-/// Parse the binary SVCB RDATA behind an RFC 3597 `\#`-prefixed generic record
-/// (the space-separated `<decimal length> <hex octets…>` body) and return the
-/// `ipv4hint` (SvcParamKey 4) and `ipv6hint` (key 6) addresses. Every read is
-/// length-checked, so a truncated or hostile record simply stops early. **Pure.**
-fn svcb_hints_from_wire(hex_body: &str) -> Vec<String> {
-    let mut toks = hex_body.split_whitespace();
-    // First token is the RFC 3597 decimal rdata length; we bound on the actual
-    // decoded bytes instead, so skip it. The rest are hex octets.
-    toks.next();
-    let mut bytes: Vec<u8> = Vec::new();
-    for t in toks {
-        match u8::from_str_radix(t, 16) {
-            Ok(b) => bytes.push(b),
-            Err(_) => return Vec::new(), // non-hex octet → malformed, bail
-        }
-    }
-
-    let mut out = Vec::new();
-    // SvcPriority (2 octets).
-    let mut i = 2usize;
-    if bytes.len() < i {
-        return out;
-    }
-    // TargetName: length-prefixed labels terminated by a zero-length octet.
-    while i < bytes.len() {
-        let label_len = bytes[i] as usize;
-        i += 1;
-        if label_len == 0 {
-            break; // root / end of name
-        }
-        i = i.saturating_add(label_len);
-        if i > bytes.len() {
-            return out;
-        }
-    }
-    // SvcParams: repeated (key:2, len:2, value:len).
-    while i + 4 <= bytes.len() {
-        let key = u16::from_be_bytes([bytes[i], bytes[i + 1]]);
-        let vlen = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
-        i += 4;
-        if i + vlen > bytes.len() {
-            break;
-        }
-        let value = &bytes[i..i + vlen];
-        match key {
-            4 => {
-                for c in value.chunks_exact(4) {
-                    out.push(std::net::Ipv4Addr::new(c[0], c[1], c[2], c[3]).to_string());
-                }
-            }
-            6 => {
-                for c in value.chunks_exact(16) {
-                    let mut o = [0u8; 16];
-                    o.copy_from_slice(c);
-                    out.push(std::net::Ipv6Addr::from(o).to_string());
-                }
-            }
-            _ => {}
-        }
-        i += vlen;
-    }
-    out
-}
-
-/// Parse one CAA record's DoH `data` field into a `(tag, value)` pair with the
-/// tag lowercased. Handles BOTH resolver forms — exactly like `parse_svcb_hints`
-/// — because the two DoH endpoints disagree: dns.google returns the presentation
-/// string `0 issue "letsencrypt.org"`, while cloudflare-dns returns the raw RFC
-/// 3597 generic form `\# <declen> <hex octets>` whose CAA RDATA (RFC 8659 §4.1)
-/// is `flags(1) taglen(1) tag(taglen) value(rest)`. Every read is length-checked,
-/// so a truncated or non-CAA record yields `None` rather than panicking. **Pure.**
-fn parse_caa_rdata(data: &str) -> Option<(String, String)> {
-    let data = data.trim();
-    if let Some(hex_body) = data.strip_prefix(r"\#") {
-        // First token is the RFC 3597 decimal rdata length; bound on the decoded
-        // bytes instead, so skip it. The rest are hex octets.
-        let mut toks = hex_body.split_whitespace();
-        toks.next();
-        let mut bytes: Vec<u8> = Vec::new();
-        for t in toks {
-            bytes.push(u8::from_str_radix(t, 16).ok()?);
-        }
-        // flags(1) taglen(1) tag(taglen) value(rest)
-        if bytes.len() < 2 {
-            return None;
-        }
-        let taglen = bytes[1] as usize;
-        let tag_end = 2usize.checked_add(taglen)?;
-        if tag_end > bytes.len() {
-            return None;
-        }
-        let tag = String::from_utf8_lossy(&bytes[2..tag_end]).to_ascii_lowercase();
-        let value = String::from_utf8_lossy(&bytes[tag_end..])
-            .trim()
-            .to_string();
-        if tag.is_empty() || value.is_empty() {
-            return None;
-        }
-        return Some((tag, value));
-    }
-    // Presentation form: `<flags> <tag> "<value>"`.
-    let mut parts = data.splitn(3, char::is_whitespace);
-    let _flags = parts.next()?;
-    let tag = parts.next()?.to_ascii_lowercase();
-    let value = parts.next()?.trim().trim_matches('"').trim().to_string();
-    if tag.is_empty() || value.is_empty() {
-        return None;
-    }
-    Some((tag, value))
-}
-
-/// Build CAA entities from a DoH CAA answer set — transport parity with the
-/// hickory `dns_intel` CAA path, which on Termux frequently never runs (its
-/// UDP/TCP port-53 lookups are commonly blocked, leaving DoH as the sole
-/// resolver). Aggregates the `issue`/`issuewild`/`iodef` values onto one
-/// `caa`-tagged Domain entity, then routes each `iodef` value through the shared
-/// `dns_intel::iodef_entities` extractor so a published cert-violation reporting
-/// contact — a `mailto:` **security-contact Email** or an `http(s)://` reporting
-/// **Domain** — surfaces as a pivotable entity instead of being dropped on
-/// Termux. **Pure** (no network/IO).
-fn caa_entities(records: &[DohRecord], domain: &str, scan_id: &str) -> Vec<Entity> {
-    let mut issuers: Vec<String> = Vec::new();
-    let mut wildcards: Vec<String> = Vec::new();
-    let mut iodefs: Vec<String> = Vec::new();
-
-    for rec in records {
-        // parse_caa_rdata self-validates: a stray CNAME/other answer in the set
-        // fails to parse and is skipped, so no record-type filter is needed.
-        let Some((tag, value)) = parse_caa_rdata(&rec.data) else {
-            continue;
-        };
-        match tag.as_str() {
-            "issue" => issuers.push(value),
-            "issuewild" => wildcards.push(value),
-            "iodef" => iodefs.push(value),
-            _ => {}
-        }
-    }
-
-    if issuers.is_empty() && wildcards.is_empty() && iodefs.is_empty() {
-        return Vec::new();
-    }
-
-    let mut entity = Entity::new(
-        EntityKind::Domain,
-        domain,
-        confidence::HIGH_PLUSPLUS_PLUS,
-        scan_id,
-    );
-    entity.tag("dns");
-    entity.tag("caa");
-    let mut ev = Evidence::new(
-        SRC,
-        format!(
-            "CAA policy published: {} issuer(s), {} wildcard issuer(s)",
-            issuers.len(),
-            wildcards.len()
-        ),
-    );
-    if !issuers.is_empty() {
-        ev = ev.with_attr("issue", issuers.join(","));
-    }
-    if !wildcards.is_empty() {
-        ev = ev.with_attr("issuewild", wildcards.join(","));
-    }
-    if !iodefs.is_empty() {
-        ev = ev.with_attr("iodef", iodefs.join(","));
-    }
-    entity.add_evidence(ev);
-
-    let mut out = vec![entity];
-    for value in &iodefs {
-        out.extend(crate::modules::dns_intel::iodef_entities(
-            value, domain, scan_id,
-        ));
-    }
-    out
 }
 
 /// Build entities from a `_smtp._tls.{domain}` TLSRPT answer set (RFC 8460).
@@ -567,49 +361,8 @@ fn records_for_type(
                             crate::util::spf::Member::A(_) | crate::util::spf::Member::Mx(_) => {}
                         }
                     }
-                } else if txt.to_ascii_lowercase().starts_with("v=dmarc1") {
-                    // DMARC record: extract rua/ruf reporting mailto: URIs.
-                    // These reveal the organization's DMARC monitoring addresses —
-                    // often a third-party service or internal security team inbox.
-                    for field in ["rua=", "ruf="] {
-                        if let Some(val_start) = txt.to_ascii_lowercase().find(field) {
-                            let after = &txt[val_start + field.len()..];
-                            // DMARC tag-value pairs are `;`-delimited (RFC 7489 §6.3):
-                            // clip the URI list before the next tag, then split on `,`.
-                            let value_part = after.split(';').next().unwrap_or(after).trim();
-                            for uri in value_part.split(',').map(str::trim) {
-                                // Strip trailing `;` or whitespace.
-                                let uri = uri.trim_end_matches(';').trim();
-                                if let Some(addr) = uri.strip_prefix("mailto:") {
-                                    let addr = addr.trim();
-                                    // May have `!size` suffix: `dmarc@example.com!10m`.
-                                    let addr = addr.split('!').next().unwrap_or(addr).trim();
-                                    if addr.contains('@') && seen.insert(format!("dmarc:{addr}")) {
-                                        let mut e = Entity::new(
-                                            EntityKind::Email,
-                                            addr,
-                                            confidence::MEDIUM_PLUS,
-                                            scan_id,
-                                        );
-                                        e.tag("dns");
-                                        e.tag("dmarc-reporting");
-                                        e.add_evidence(
-                                            Evidence::new(
-                                                SRC,
-                                                format!(
-                                                    "DMARC {} reporting address for {domain}",
-                                                    &field[..3]
-                                                ),
-                                            )
-                                            .with_attr("dmarc_field", &field[..3])
-                                            .with_attr("domain", domain),
-                                        );
-                                        out.push(e);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                } else {
+                    out.extend(dmarc_entities(&txt, domain, scan_id, seen));
                 }
             }
             "CNAME" => {
@@ -633,42 +386,7 @@ fn records_for_type(
                 // Per RFC 1035 §3.3.13 the first unescaped `.` in the local-part
                 // marks the boundary: `hostmaster.example.com.` → `hostmaster@example.com`.
                 // We extract the email and the primary nameserver (mname).
-                let parts: Vec<&str> = rec.data.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    // Primary nameserver.
-                    let mname = parts[0].trim_end_matches('.');
-                    if mname.contains('.') && seen.insert(format!("soa-ns:{mname}")) {
-                        let mut e =
-                            Entity::new(EntityKind::Domain, mname, confidence::ATTRIBUTED, scan_id);
-                        e.tag("dns");
-                        e.tag("soa");
-                        e.tag("nameserver");
-                        e.add_evidence(
-                            base(format!("SOA primary nameserver for {domain}"))
-                                .with_attr("record_type", "SOA")
-                                .with_attr("role", "mname"),
-                        );
-                        out.push(e);
-                    }
-                    // Zone admin email from RNAME.
-                    let rname = parts[1].trim_end_matches('.');
-                    if let Some(email) = soa_rname_to_email(rname)
-                        && email.contains('@')
-                        && seen.insert(format!("soa-email:{}", email.to_ascii_lowercase()))
-                    {
-                        let mut e =
-                            Entity::new(EntityKind::Email, &email, confidence::NOTABLE, scan_id);
-                        e.tag("dns");
-                        e.tag("soa");
-                        e.tag("zone-admin");
-                        e.add_evidence(
-                            base(format!("SOA zone admin email for {domain}"))
-                                .with_attr("record_type", "SOA")
-                                .with_attr("rname_raw", rname),
-                        );
-                        out.push(e);
-                    }
-                }
+                out.extend(soa_entities(&rec.data, &owner, domain, scan_id, seen));
             }
             _ => {}
         }
