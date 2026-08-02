@@ -138,277 +138,7 @@ impl Module for GithubUser {
             .map_err(|e| crate::core::error::Error::module(SRC, e))?;
 
         let mut result = ModuleResult::new();
-
-        // Username entity with GitHub profile metadata.
-        let mut u_entity = Entity::new(
-            EntityKind::Username,
-            &user.login,
-            confidence::VERY_HIGH_PLUSPLUS,
-            &ctx.scan_id,
-        );
-        u_entity.tag("github");
-        let profile_url = user.html_url.as_deref().map_or_else(
-            || format!("https://github.com/{}", user.login),
-            String::from,
-        );
-        let mut ev = [
-            ("name", user.name.as_deref().map(String::from)),
-            ("company", user.company.as_deref().map(String::from)),
-            (
-                "blog",
-                user.blog
-                    .as_deref()
-                    .filter(|b| !b.is_empty())
-                    .map(String::from),
-            ),
-            (
-                "bio",
-                user.bio
-                    .as_deref()
-                    .filter(|b| !b.is_empty())
-                    .map(String::from),
-            ),
-            ("created_at", user.created_at.as_deref().map(String::from)),
-            ("public_repos", user.public_repos.map(|n| n.to_string())),
-            ("public_gists", user.public_gists.map(|n| n.to_string())),
-            ("followers", user.followers.map(|n| n.to_string())),
-            ("following", user.following.map(|n| n.to_string())),
-        ]
-        .into_iter()
-        .filter_map(|(key, value)| value.map(|v| (key, v)))
-        .fold(
-            Evidence::new(SRC, format!("GitHub profile @{}", user.login))
-                .with_attr("github_id", user.id.to_string())
-                .with_attr("profile_url", profile_url),
-            |ev, (key, v)| ev.with_attr(key, v),
-        );
-        // Location and Twitter also drive entity tags, so they stay explicit.
-        if let Some(l) = user.location.as_deref() {
-            ev = ev.with_attr("location", l);
-            if !l.trim().is_empty() {
-                u_entity.tag("has-location");
-            }
-        }
-        if let Some(tw) = user.twitter_username.as_deref()
-            && !tw.is_empty()
-        {
-            ev = ev.with_attr("twitter", tw);
-            u_entity.tag("twitter-linked");
-            // Emit the Twitter handle as a first-class Username so it becomes a
-            // pivot target for username_search / social_probe in the next round.
-            // Confidence confidence::HIGH_PLUS: self-asserted on a confirmed GitHub profile.
-            let mut tw_entity = Entity::new(
-                EntityKind::Username,
-                tw,
-                confidence::HIGH_PLUS,
-                &ctx.scan_id,
-            );
-            tw_entity.tag("twitter");
-            tw_entity.tag("social-profile");
-            tw_entity.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Twitter handle from GitHub profile @{}", user.login),
-                )
-                .with_attr("twitter", tw)
-                .with_attr("github_login", &user.login)
-                .with_attr("source", "github_profile"),
-            );
-            result.push(tw_entity);
-        }
-        u_entity.add_evidence(ev);
-        result.push(u_entity);
-
-        // Twitter username → separate Username entity for cross-platform correlation.
-        if let Some(tw) = user
-            .twitter_username
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-        {
-            let handle = tw.trim_start_matches('@');
-            if !handle.is_empty() {
-                let mut tw_e = Entity::new(
-                    EntityKind::Username,
-                    handle,
-                    confidence::HIGH_PLUS,
-                    &ctx.scan_id,
-                );
-                tw_e.tag("twitter");
-                tw_e.tag("derived");
-                tw_e.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!("Twitter handle from GitHub profile @{}", user.login),
-                    )
-                    .with_attr("github_login", &user.login),
-                );
-                result.push(tw_e);
-            }
-        }
-
-        // Real name → Person entity, when present.
-        if let Some(name) = user.name.as_deref()
-            && !name.trim().is_empty()
-        {
-            let mut p = Entity::new(
-                EntityKind::Person,
-                name.trim(),
-                confidence::VERY_HIGH,
-                &ctx.scan_id,
-            );
-            p.tag("derived");
-            p.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Real name from GitHub profile @{}", user.login),
-                )
-                .with_attr("source", "github_profile")
-                .with_attr("github_login", &user.login),
-            );
-            result.push(p);
-        }
-
-        // Public email → Email entity, when explicitly published.
-        if let Some(email) = user.email.as_deref()
-            && crate::util::extract::looks_like_email(email)
-        {
-            let mut e = Entity::new(
-                EntityKind::Email,
-                email,
-                confidence::VERY_HIGH_PLUS,
-                &ctx.scan_id,
-            );
-            e.tag("public-profile");
-            e.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Email published on GitHub profile @{}", user.login),
-                )
-                .with_attr("github_login", &user.login)
-                .with_attr("profile_url", format!("https://github.com/{}", user.login)),
-            );
-            result.push(e);
-        }
-
-        // Company → Organisation entity, when present.
-        if let Some(company) = user.company.as_deref() {
-            let company = company.trim().trim_start_matches('@');
-            if company.len() >= 2 {
-                let mut o = Entity::new(
-                    EntityKind::Organisation,
-                    company,
-                    confidence::HIGH,
-                    &ctx.scan_id,
-                );
-                o.tag("github");
-                o.tag("derived");
-                o.add_evidence(
-                    Evidence::new(SRC, format!("Company from GitHub profile @{}", user.login))
-                        .with_attr("github_login", &user.login),
-                );
-                result.push(o);
-            }
-        }
-
-        // Location → Address + optional inline Coordinates.
-        if let Some(location) = user.location.as_deref() {
-            let location = location.trim();
-            if location.len() >= 3 {
-                let mut a = Entity::new(
-                    EntityKind::Address,
-                    location,
-                    confidence::MEDIUM_HIGH,
-                    &ctx.scan_id,
-                );
-                a.tag("github");
-                a.tag("geoint");
-                a.tag("self-reported");
-                if let Some(sc) = crate::util::address_au::single_state_code(location) {
-                    a.tag(format!("au-state:{sc}"));
-                    a.tag("country:AU");
-                }
-                a.add_evidence(
-                    Evidence::new(SRC, format!("Location from GitHub profile @{}", user.login))
-                        .with_attr("github_login", &user.login),
-                );
-                result.push(a);
-
-                if let Some((lat, lon)) = crate::util::city_coords::city_coords(location) {
-                    let coord_val = format!("{lat:.4},{lon:.4}");
-                    let mut c = Entity::new(
-                        EntityKind::Coordinates,
-                        &coord_val,
-                        confidence::MEDIUM_LIGHT,
-                        &ctx.scan_id,
-                    );
-                    c.tag("addr-derived");
-                    c.tag("geoint");
-                    c.tag("github");
-                    if let Some(sc) = crate::util::address_au::single_state_code(location) {
-                        c.tag(format!("au-state:{sc}"));
-                        c.tag("country:AU");
-                    }
-                    c.add_evidence(
-                        Evidence::new(
-                            SRC,
-                            format!(
-                                "Inline geocode of GitHub location '{}' → {coord_val}",
-                                user.login
-                            ),
-                        )
-                        .with_attr("github_login", &user.login),
-                    );
-                    result.push(c);
-                }
-            }
-        }
-
-        // Blog URL → Url entity, when present.
-        if let Some(blog) = user.blog.as_deref()
-            && !blog.trim().is_empty()
-        {
-            let blog = blog.trim();
-            if blog.starts_with("http://") || blog.starts_with("https://") {
-                let mut u = Entity::new(
-                    EntityKind::Url,
-                    blog,
-                    confidence::HIGH_PLUSPLUS,
-                    &ctx.scan_id,
-                );
-                u.tag("personal-site");
-                u.add_evidence(
-                    Evidence::new(
-                        "github_user",
-                        format!("Personal site linked from GitHub profile @{}", user.login),
-                    )
-                    .with_attr("github_login", &user.login),
-                );
-                result.push(u);
-
-                if let Ok(parsed) = url::Url::parse(blog)
-                    && let Some(host) = parsed.host_str()
-                {
-                    let domain = host.to_lowercase();
-                    if domain.contains('.') && domain != "github.com" && domain != "github.io" {
-                        let mut d = Entity::new(
-                            EntityKind::Domain,
-                            &domain,
-                            confidence::ATTRIBUTED,
-                            &ctx.scan_id,
-                        );
-                        d.tag("derived");
-                        d.tag("personal-site");
-                        d.add_evidence(
-                            Evidence::new(SRC, format!("Blog domain from @{}", user.login))
-                                .with_attr("blog_url", blog)
-                                .with_attr("github_login", &user.login),
-                        );
-                        result.push(d);
-                    }
-                }
-            }
-        }
+        result.entities = build_entities(&user, &ctx.scan_id);
 
         // SSH public keys → evidence on the username entity.
         fetch::fetch_ssh_keys(login, ctx, &mut result).await;
@@ -455,4 +185,290 @@ impl Module for GithubUser {
     fn max_timeout_ms(&self) -> u64 {
         5_000
     }
+}
+
+/// Pure account→entity mapping, mirroring `gitlab_user`/`gitea_user`'s own
+/// `build_entities`. Separated from `process()` so every branch is
+/// unit-testable without I/O; the profile fetch and the later
+/// SSH-keys/events/orgs/gists passes (which need live HTTP) stay in `process`.
+fn build_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
+    let mut result = Vec::new();
+    result.extend(username_and_bio_twitter_entities(user, scan_id));
+    result.extend(separate_twitter_handle_entity(user, scan_id));
+    result.extend(person_entity(user, scan_id));
+    result.extend(email_entity(user, scan_id));
+    result.extend(company_entity(user, scan_id));
+    result.extend(location_entities(user, scan_id));
+    result.extend(blog_entities(user, scan_id));
+    result
+}
+
+/// The confirmed-on-GitHub Username entity carrying the profile metadata
+/// (name/company/blog/bio/counts) as evidence, plus — when the profile links
+/// a Twitter/X handle — a first-class Username pivot for it. Twitter emission
+/// is entangled with the profile evidence here (it also sets a tag +
+/// attribute on the username entity itself), which is why it isn't its own
+/// helper alongside `separate_twitter_handle_entity` below.
+fn username_and_bio_twitter_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
+    let mut out = Vec::new();
+    let mut u_entity = Entity::new(
+        EntityKind::Username,
+        &user.login,
+        confidence::VERY_HIGH_PLUSPLUS,
+        scan_id,
+    );
+    u_entity.tag("github");
+    let profile_url = user.html_url.as_deref().map_or_else(
+        || format!("https://github.com/{}", user.login),
+        String::from,
+    );
+    let mut ev = [
+        ("name", user.name.as_deref().map(String::from)),
+        ("company", user.company.as_deref().map(String::from)),
+        (
+            "blog",
+            user.blog
+                .as_deref()
+                .filter(|b| !b.is_empty())
+                .map(String::from),
+        ),
+        (
+            "bio",
+            user.bio
+                .as_deref()
+                .filter(|b| !b.is_empty())
+                .map(String::from),
+        ),
+        ("created_at", user.created_at.as_deref().map(String::from)),
+        ("public_repos", user.public_repos.map(|n| n.to_string())),
+        ("public_gists", user.public_gists.map(|n| n.to_string())),
+        ("followers", user.followers.map(|n| n.to_string())),
+        ("following", user.following.map(|n| n.to_string())),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| value.map(|v| (key, v)))
+    .fold(
+        Evidence::new(SRC, format!("GitHub profile @{}", user.login))
+            .with_attr("github_id", user.id.to_string())
+            .with_attr("profile_url", profile_url),
+        |ev, (key, v)| ev.with_attr(key, v),
+    );
+    // Location and Twitter also drive entity tags, so they stay explicit.
+    if let Some(l) = user.location.as_deref() {
+        ev = ev.with_attr("location", l);
+        if !l.trim().is_empty() {
+            u_entity.tag("has-location");
+        }
+    }
+    if let Some(tw) = user.twitter_username.as_deref()
+        && !tw.is_empty()
+    {
+        ev = ev.with_attr("twitter", tw);
+        u_entity.tag("twitter-linked");
+        // Emit the Twitter handle as a first-class Username so it becomes a
+        // pivot target for username_search / social_probe in the next round.
+        // Confidence confidence::HIGH_PLUS: self-asserted on a confirmed GitHub profile.
+        let mut tw_entity = Entity::new(EntityKind::Username, tw, confidence::HIGH_PLUS, scan_id);
+        tw_entity.tag("twitter");
+        tw_entity.tag("social-profile");
+        tw_entity.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("Twitter handle from GitHub profile @{}", user.login),
+            )
+            .with_attr("twitter", tw)
+            .with_attr("github_login", &user.login)
+            .with_attr("source", "github_profile"),
+        );
+        out.push(tw_entity);
+    }
+    u_entity.add_evidence(ev);
+    out.push(u_entity);
+    out
+}
+
+/// Twitter username → separate Username entity for cross-platform correlation.
+fn separate_twitter_handle_entity(user: &GhUser, scan_id: &str) -> Option<Entity> {
+    let tw = user
+        .twitter_username
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())?;
+    let handle = tw.trim_start_matches('@');
+    if handle.is_empty() {
+        return None;
+    }
+    let mut tw_e = Entity::new(EntityKind::Username, handle, confidence::HIGH_PLUS, scan_id);
+    tw_e.tag("twitter");
+    tw_e.tag("derived");
+    tw_e.add_evidence(
+        Evidence::new(
+            SRC,
+            format!("Twitter handle from GitHub profile @{}", user.login),
+        )
+        .with_attr("github_login", &user.login),
+    );
+    Some(tw_e)
+}
+
+/// Real name → Person entity, when present.
+fn person_entity(user: &GhUser, scan_id: &str) -> Option<Entity> {
+    let name = user.name.as_deref().filter(|n| !n.trim().is_empty())?;
+    let mut p = Entity::new(
+        EntityKind::Person,
+        name.trim(),
+        confidence::VERY_HIGH,
+        scan_id,
+    );
+    p.tag("derived");
+    p.add_evidence(
+        Evidence::new(
+            SRC,
+            format!("Real name from GitHub profile @{}", user.login),
+        )
+        .with_attr("source", "github_profile")
+        .with_attr("github_login", &user.login),
+    );
+    Some(p)
+}
+
+/// Public email → Email entity, when explicitly published.
+fn email_entity(user: &GhUser, scan_id: &str) -> Option<Entity> {
+    let email = user.email.as_deref()?;
+    if !crate::util::extract::looks_like_email(email) {
+        return None;
+    }
+    let mut e = Entity::new(
+        EntityKind::Email,
+        email,
+        confidence::VERY_HIGH_PLUS,
+        scan_id,
+    );
+    e.tag("public-profile");
+    e.add_evidence(
+        Evidence::new(
+            SRC,
+            format!("Email published on GitHub profile @{}", user.login),
+        )
+        .with_attr("github_login", &user.login)
+        .with_attr("profile_url", format!("https://github.com/{}", user.login)),
+    );
+    Some(e)
+}
+
+/// Company → Organisation entity, when present.
+fn company_entity(user: &GhUser, scan_id: &str) -> Option<Entity> {
+    let company = user.company.as_deref()?;
+    let company = company.trim().trim_start_matches('@');
+    if company.len() < 2 {
+        return None;
+    }
+    let mut o = Entity::new(EntityKind::Organisation, company, confidence::HIGH, scan_id);
+    o.tag("github");
+    o.tag("derived");
+    o.add_evidence(
+        Evidence::new(SRC, format!("Company from GitHub profile @{}", user.login))
+            .with_attr("github_login", &user.login),
+    );
+    Some(o)
+}
+
+/// Location → Address + optional inline Coordinates.
+fn location_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
+    let mut out = Vec::new();
+    let Some(location) = user.location.as_deref() else {
+        return out;
+    };
+    let location = location.trim();
+    if location.len() < 3 {
+        return out;
+    }
+    let mut a = Entity::new(
+        EntityKind::Address,
+        location,
+        confidence::MEDIUM_HIGH,
+        scan_id,
+    );
+    a.tag("github");
+    a.tag("geoint");
+    a.tag("self-reported");
+    if let Some(sc) = crate::util::address_au::single_state_code(location) {
+        a.tag(format!("au-state:{sc}"));
+        a.tag("country:AU");
+    }
+    a.add_evidence(
+        Evidence::new(SRC, format!("Location from GitHub profile @{}", user.login))
+            .with_attr("github_login", &user.login),
+    );
+    out.push(a);
+
+    if let Some((lat, lon)) = crate::util::city_coords::city_coords(location) {
+        let coord_val = format!("{lat:.4},{lon:.4}");
+        let mut c = Entity::new(
+            EntityKind::Coordinates,
+            &coord_val,
+            confidence::MEDIUM_LIGHT,
+            scan_id,
+        );
+        c.tag("addr-derived");
+        c.tag("geoint");
+        c.tag("github");
+        if let Some(sc) = crate::util::address_au::single_state_code(location) {
+            c.tag(format!("au-state:{sc}"));
+            c.tag("country:AU");
+        }
+        c.add_evidence(
+            Evidence::new(
+                SRC,
+                format!(
+                    "Inline geocode of GitHub location '{}' → {coord_val}",
+                    user.login
+                ),
+            )
+            .with_attr("github_login", &user.login),
+        );
+        out.push(c);
+    }
+    out
+}
+
+/// Blog URL → Url entity, plus a derived Domain entity when it isn't
+/// GitHub's own `github.com`/`github.io`.
+fn blog_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
+    let mut out = Vec::new();
+    let Some(blog) = user.blog.as_deref().filter(|b| !b.trim().is_empty()) else {
+        return out;
+    };
+    let blog = blog.trim();
+    if !(blog.starts_with("http://") || blog.starts_with("https://")) {
+        return out;
+    }
+    let mut u = Entity::new(EntityKind::Url, blog, confidence::HIGH_PLUSPLUS, scan_id);
+    u.tag("personal-site");
+    u.add_evidence(
+        Evidence::new(
+            "github_user",
+            format!("Personal site linked from GitHub profile @{}", user.login),
+        )
+        .with_attr("github_login", &user.login),
+    );
+    out.push(u);
+
+    if let Ok(parsed) = url::Url::parse(blog)
+        && let Some(host) = parsed.host_str()
+    {
+        let domain = host.to_lowercase();
+        if domain.contains('.') && domain != "github.com" && domain != "github.io" {
+            let mut d = Entity::new(EntityKind::Domain, &domain, confidence::ATTRIBUTED, scan_id);
+            d.tag("derived");
+            d.tag("personal-site");
+            d.add_evidence(
+                Evidence::new(SRC, format!("Blog domain from @{}", user.login))
+                    .with_attr("blog_url", blog)
+                    .with_attr("github_login", &user.login),
+            );
+            out.push(d);
+        }
+    }
+    out
 }
