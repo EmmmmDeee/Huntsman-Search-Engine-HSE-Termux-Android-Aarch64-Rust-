@@ -106,14 +106,7 @@ pub(super) fn parse_dehashed_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportS
             }
         }
 
-        let mut push = |mut e: Entity, tag: &str| {
-            e.tag("import");
-            e.tag("dehashed");
-            e.tag("breach");
-            e.tag(tag);
-            e.add_evidence(ev.clone());
-            entities.push(e);
-        };
+        let mut push = breach_entity_pusher(&mut entities, &ev, &["dehashed", "breach"]);
 
         if let Some(em) = &email
             && em.contains('@')

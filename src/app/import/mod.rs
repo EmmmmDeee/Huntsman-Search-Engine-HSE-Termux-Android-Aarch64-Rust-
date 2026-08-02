@@ -488,6 +488,32 @@ pub(crate) fn stealer_rows_from_upload(body: &str) -> Vec<crate::core::stealer_r
     parse_stealerlogs(body, "").2
 }
 
+/// Build the per-record "tag + evidence + push" closure that every breach/
+/// dossier-record emitter (`combined`, `csv`'s DeHashed parser, `dossier`,
+/// `oathnet_report`) constructs once per record: stamps `import`, this
+/// format's own fixed provenance tags (e.g. `dehashed`, `breach`), and the
+/// field-specific tag passed at each call site, clones the record's shared
+/// `ev` onto every entity it emits, and appends to `entities`. This is the
+/// one piece of each format's per-record emission block that really is
+/// identical in shape — the confidence, dedup-key and validation choices
+/// per field stay at each call site, since those genuinely differ per
+/// source format.
+fn breach_entity_pusher<'a>(
+    entities: &'a mut Vec<crate::core::entity::Entity>,
+    ev: &'a crate::core::entity::Evidence,
+    fixed_tags: &'a [&'static str],
+) -> impl FnMut(crate::core::entity::Entity, &str) + 'a {
+    move |mut e, tag| {
+        e.tag("import");
+        for t in fixed_tags {
+            e.tag(*t);
+        }
+        e.tag(tag);
+        e.add_evidence(ev.clone());
+        entities.push(e);
+    }
+}
+
 fn detect_and_create_api_key_entity(
     pw: &str,
     sid: &str,
