@@ -24,6 +24,16 @@ use super::enterprise_config::ENTERPRISE;
 const RATE_LIMIT_BACKOFF: BackoffPolicy =
     BackoffPolicy::new(ENTERPRISE.max_retries, 2_000, 8_000, true);
 
+/// The delay a retry loop paced by [`RATE_LIMIT_BACKOFF`] should sleep before
+/// its next attempt, or `None` once the policy's attempt budget is spent (the
+/// caller should then return the terminal error). Shared by every retry loop
+/// in this module that paces a transient failure through that one policy.
+fn backoff_delay(attempt: u32) -> Option<std::time::Duration> {
+    RATE_LIMIT_BACKOFF
+        .should_retry(attempt)
+        .then(|| RATE_LIMIT_BACKOFF.delay(attempt))
+}
+
 /// Max records per the see-know.ru Universal Search spec (`limit`, default 100,
 /// **max 500**). Requested in full — the standing directive is to use
 /// see-know.ru maximally, and one richer response costs the same budget slot as
@@ -182,10 +192,9 @@ async fn search_impl(
                 );
             }
             Err(Error::RateLimited(msg)) => {
-                if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
+                let Some(delay) = backoff_delay(attempt) else {
                     return Err(Error::RateLimited(msg));
-                }
-                let delay = RATE_LIMIT_BACKOFF.delay(attempt);
+                };
                 tracing::debug!(
                     query_type,
                     deep,
@@ -297,10 +306,9 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
             // `ENTERPRISE.max_retries`), so the whole retry budget lives in one
             // place instead of the old split policy.
             Err(Error::RateLimited(msg)) => {
-                if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
+                let Some(delay) = backoff_delay(attempt) else {
                     return Err(Error::RateLimited(msg));
-                }
-                let delay = RATE_LIMIT_BACKOFF.delay(attempt);
+                };
                 tracing::debug!(
                     path,
                     attempt = attempt + 1,
@@ -314,10 +322,9 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
             // now ALSO backs off on that shared budget rather than the old
             // zero-delay double-shot — a genuine drop recovers on a paced retry.
             Err(e) => {
-                if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
+                let Some(delay) = backoff_delay(attempt) else {
                     return Err(e);
-                }
-                let delay = RATE_LIMIT_BACKOFF.delay(attempt);
+                };
                 tracing::debug!(
                     path,
                     attempt = attempt + 1,

@@ -207,6 +207,21 @@ pub(super) fn is_auth_error(body: &str) -> bool {
         || body.contains("plan_required")
 }
 
+/// Whether a TRANSPORT-level failure (a [`CurlClient`] `Err`, before any
+/// response body was parsed) is a terminal auth rejection rather than a
+/// transient connection/DNS/timeout problem. Distinct from [`is_auth_error`],
+/// which classifies a successfully-received response BODY — this instead
+/// pattern-matches the transport error's own message, since a rejected
+/// request can fail before a body is ever read. Terminal: no domain in
+/// [`all_base_urls`] will accept a bad key, so the multi-domain fallback
+/// loops fail fast here instead of burning every remaining domain.
+fn is_transport_auth_error(e: &Error) -> bool {
+    let s = e.to_string();
+    s.contains("401")
+        || s.contains("Unauthorized")
+        || (s.contains("invalid") && s.to_lowercase().contains("key"))
+}
+
 /// A terminal condition that should stop the scan from spending more budget on
 /// the held key — split so the caller latches the right global.
 enum Terminal {
@@ -369,12 +384,8 @@ pub(super) async fn post_json_with_fallback(
                 Err(e) => return Err(e),
             },
             Err(e) => {
-                let err_str = e.to_string();
                 // Auth errors are terminal — no point trying other domains.
-                if err_str.contains("401")
-                    || err_str.contains("Unauthorized")
-                    || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
-                {
+                if is_transport_auth_error(&e) {
                     return Err(e);
                 }
                 // For other errors (connection, DNS, timeout), try the next domain.
@@ -437,12 +448,8 @@ pub(super) async fn get_json_with_fallback(
                 Err(e) => return Err(e),
             },
             Err(e) => {
-                let err_str = e.to_string();
                 // Auth errors are terminal — no point trying other domains.
-                if err_str.contains("401")
-                    || err_str.contains("Unauthorized")
-                    || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
-                {
+                if is_transport_auth_error(&e) {
                     return Err(e);
                 }
                 // For other errors (connection, DNS, timeout), try the next domain.
@@ -482,12 +489,8 @@ pub(super) async fn get_raw_with_fallback(endpoint_path: &str, key: &str) -> Res
         match CLIENT_FAST.get(&url, key).await {
             Ok(body) => return Ok(body),
             Err(e) => {
-                let err_str = e.to_string();
                 // Auth errors are terminal — no point trying other domains.
-                if err_str.contains("401")
-                    || err_str.contains("Unauthorized")
-                    || err_str.contains("invalid") && err_str.to_lowercase().contains("key")
-                {
+                if is_transport_auth_error(&e) {
                     return Err(e);
                 }
                 // For other errors (connection, DNS, timeout), try the next domain.
