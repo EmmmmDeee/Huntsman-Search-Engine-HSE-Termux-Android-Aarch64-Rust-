@@ -1364,6 +1364,75 @@ impl ScanEngine {
         rank_recalled_and_cap(out, MAX_ENTITIES)
     }
 
+    /// Dispatch one probe target and link its new entities back to the endpoint
+    /// that motivated the probe — the shared inner step of `run_gap_fill` and
+    /// `run_breach_sweep`. Both walk a bounded probe list built by different
+    /// analyses (missing-family gap endpoints vs. a compiled breach-sweep plan)
+    /// and with different per-probe module allow-lists and break conditions —
+    /// that outer selection logic is genuinely different and stays in each
+    /// caller — but once a `(target, opts)` pair is chosen, what happens next is
+    /// identical: dispatch, stamp every newly-inserted entity with this pass's
+    /// generation (and, for the sweep, its provenance tag), record a
+    /// `DerivedFrom` relation back to `from_uid`, and mark the target visited.
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_probe_and_link(
+        &self,
+        scan_id: &str,
+        seed_kind: TargetKind,
+        target: &Target,
+        from_uid: &str,
+        probe_opts: &ScanOptions,
+        generation: u32,
+        tag: Option<&'static str>,
+        phase: &'static str,
+        ctx: &mut ModuleContext,
+        entity_map: &mut TrackedEntityMap,
+        stats: &mut ModuleStats,
+        dispatched: &mut DispatchLog,
+        relations: &mut Vec<Relation>,
+        visited: &mut HashSet<(TargetKind, String)>,
+        quarantined: &HashSet<String>,
+        newly_inserted: &mut Vec<String>,
+    ) {
+        newly_inserted.clear();
+        {
+            let cx = DispatchCx {
+                scan_id,
+                target,
+                opts: probe_opts,
+                is_expansion: true,
+                seed_kind,
+                quarantined,
+            };
+            let mut dstate = DispatchState {
+                entity_map: &mut *entity_map,
+                stats: &mut *stats,
+                dispatched: &mut *dispatched,
+                newly_inserted,
+            };
+            if let Err(e) = self.dispatch_target(&cx, ctx, &mut dstate).await {
+                warn!(scan_id, error = %e, phase, "probe dispatch failed (continuing)");
+            }
+        }
+        for uid in newly_inserted.drain(..) {
+            if let Some(child) = entity_map.get_mut(&uid) {
+                child.generation = generation;
+                if let Some(t) = tag {
+                    child.tag(t);
+                }
+                let child_conf = child.confidence;
+                relations.push(Relation::new(
+                    uid.as_str(),
+                    from_uid,
+                    RelationKind::DerivedFrom,
+                    child_conf,
+                    scan_id,
+                ));
+            }
+        }
+        visited.insert(visit_key(target));
+    }
+
     /// Active gap-fill — pursue the corroborating pathway AU-063 only names.
     ///
     /// After expansion, a single-route (fragile) identity link is a connection no
@@ -1467,44 +1536,29 @@ impl ScanEngine {
                 ..opts.clone()
             };
 
-            newly_inserted.clear();
-            {
-                let cx = DispatchCx {
-                    scan_id,
-                    target: &target,
-                    opts: &gap_opts,
-                    is_expansion: true,
-                    seed_kind: seed.kind,
-                    quarantined,
-                };
-                let mut dstate = DispatchState {
-                    entity_map: &mut *entity_map,
-                    stats: &mut *stats,
-                    dispatched: &mut *dispatched,
-                    newly_inserted: &mut newly_inserted,
-                };
-                if let Err(e) = self.dispatch_target(&cx, ctx, &mut dstate).await {
-                    warn!(scan_id, error = %e, "gap-fill dispatch failed (continuing)");
-                }
-            }
-            // New entities this probe surfaced are derived from the gap endpoint.
+            // New entities this probe surfaces are derived from the gap endpoint.
             // Gap-fill runs AFTER the planned expansion rounds, so its finds sit
             // one generation beyond the last round in the derivation trail.
             let gap_generation = opts.depth.saturating_add(1);
-            for uid in newly_inserted.drain(..) {
-                if let Some(child) = entity_map.get_mut(&uid) {
-                    child.generation = gap_generation;
-                    let child_conf = child.confidence;
-                    relations.push(Relation::new(
-                        uid.as_str(),
-                        probe.endpoint_uid.as_str(),
-                        RelationKind::DerivedFrom,
-                        child_conf,
-                        scan_id,
-                    ));
-                }
-            }
-            visited.insert(visit_key(&target));
+            self.dispatch_probe_and_link(
+                scan_id,
+                seed.kind,
+                &target,
+                probe.endpoint_uid.as_str(),
+                &gap_opts,
+                gap_generation,
+                None,
+                "gap-fill",
+                ctx,
+                entity_map,
+                stats,
+                dispatched,
+                relations,
+                visited,
+                quarantined,
+                &mut newly_inserted,
+            )
+            .await;
             probed += 1;
         }
 
@@ -1663,41 +1717,25 @@ impl ScanEngine {
             }
             let target = probe.target();
 
-            newly_inserted.clear();
-            {
-                let cx = DispatchCx {
-                    scan_id,
-                    target: &target,
-                    opts: &sweep_opts,
-                    is_expansion: true,
-                    seed_kind: seed.kind,
-                    quarantined,
-                };
-                let mut dstate = DispatchState {
-                    entity_map: &mut *entity_map,
-                    stats: &mut *stats,
-                    dispatched: &mut *dispatched,
-                    newly_inserted: &mut newly_inserted,
-                };
-                if let Err(e) = self.dispatch_target(&cx, ctx, &mut dstate).await {
-                    warn!(scan_id, error = %e, "breach-sweep dispatch failed (continuing)");
-                }
-            }
-            for uid in newly_inserted.drain(..) {
-                if let Some(child) = entity_map.get_mut(&uid) {
-                    child.generation = sweep_generation;
-                    child.tag(crate::core::breach_consensus::SWEEP_TAG);
-                    let child_conf = child.confidence;
-                    relations.push(Relation::new(
-                        uid.as_str(),
-                        probe.anchor_uid.as_str(),
-                        RelationKind::DerivedFrom,
-                        child_conf,
-                        scan_id,
-                    ));
-                }
-            }
-            visited.insert(visit_key(&target));
+            self.dispatch_probe_and_link(
+                scan_id,
+                seed.kind,
+                &target,
+                probe.anchor_uid.as_str(),
+                &sweep_opts,
+                sweep_generation,
+                Some(crate::core::breach_consensus::SWEEP_TAG),
+                "breach-sweep",
+                ctx,
+                entity_map,
+                stats,
+                dispatched,
+                relations,
+                visited,
+                quarantined,
+                &mut newly_inserted,
+            )
+            .await;
             probed += 1;
         }
 
