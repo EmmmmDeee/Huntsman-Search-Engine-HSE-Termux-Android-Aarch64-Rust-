@@ -104,28 +104,6 @@ fn base58check_valid(s: &str) -> bool {
     digest[..4] == *checksum
 }
 
-/// BIP-173 bech32 polynomial checksum over 5-bit groups.
-fn bech32_polymod(values: &[u8]) -> u32 {
-    const GEN: [u32; 5] = [
-        0x3b6a_57b2,
-        0x2650_8e6d,
-        0x1ea1_19fa,
-        0x3d42_33dd,
-        0x2a14_62b3,
-    ];
-    let mut chk: u32 = 1;
-    for &v in values {
-        let top = chk >> 25;
-        chk = ((chk & 0x1ff_ffff) << 5) ^ u32::from(v);
-        for (i, g) in GEN.iter().enumerate() {
-            if (top >> i) & 1 == 1 {
-                chk ^= g;
-            }
-        }
-    }
-    chk
-}
-
 /// True if `s` carries a valid bech32 (SegWit v0) or bech32m (v1+/Taproot)
 /// checksum: split on the final `1` separator, expand the human-readable prefix,
 /// map the data part through the bech32 charset, and confirm the polymod equals
@@ -143,17 +121,15 @@ fn bech32_checksum_valid(s: &str) -> bool {
         return false;
     }
     let (hrp, data) = (&bytes[..sep], &bytes[sep + 1..]);
-    let mut values: Vec<u8> = Vec::with_capacity(hrp.len() * 2 + 1 + data.len());
-    values.extend(hrp.iter().map(|&c| c >> 5));
-    values.push(0);
-    values.extend(hrp.iter().map(|&c| c & 31));
+    let mut values = crate::util::bech32::hrp_expand(hrp);
+    values.reserve(data.len());
     for &c in data {
         let Some(v) = CHARSET.iter().position(|&x| x == c) else {
             return false;
         };
         values.push(v as u8);
     }
-    let pm = bech32_polymod(&values);
+    let pm = crate::util::bech32::polymod(&values);
     pm == 1 || pm == 0x2bc8_30a3
 }
 

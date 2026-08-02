@@ -5,6 +5,7 @@ pub mod address_au;
 pub mod atomic_file;
 pub mod atproto;
 pub mod backoff;
+pub mod bech32;
 pub mod breach_sector;
 pub mod bsb;
 pub mod budget;
