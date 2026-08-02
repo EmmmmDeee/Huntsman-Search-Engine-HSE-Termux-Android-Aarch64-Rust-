@@ -1,4 +1,16 @@
-use super::*;
+use serde_json::{Map, Value};
+
+use crate::core::entity::{Entity, EntityKind};
+use crate::core::module::{Module, ModuleCategory, ModuleContext, ModuleResult};
+use crate::core::scan::{Target, TargetKind};
+
+use super::{
+    AsicPersons,
+    adviser::{emit_adviser, parse_controllers},
+    banned::emit_banned,
+    credit::emit_credit_rep,
+    shared::{humanise_name, name_tokens, record_name_matches},
+};
 
 /// Real Banned & Disqualified Persons record shape.
 const BANNED: &str = r##"{
