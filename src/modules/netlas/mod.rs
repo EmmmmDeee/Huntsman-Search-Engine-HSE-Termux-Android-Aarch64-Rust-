@@ -230,18 +230,76 @@ impl Module for Netlas {
 /// Coordinates/Address, the SAN Domains, and the SSL/HTTP-extracted Emails.
 /// `target_value` is the queried value used as the IP fallback; an empty item
 /// set yields an empty result.
+/// Everything accumulated from one Netlas response's `items` — the raw
+/// materials each `emit_*` stage below turns into entities. One field per
+/// signal the multi-item scan/certificate/whois/http payload can carry.
+struct NetlasAccum {
+    /// Emails keyed to their STRONGEST provenance (a `BTreeMap` so the emit
+    /// order is deterministic and a case-folded key dedups spellings).
+    /// Reliability tier: [`EMAIL_CERT`] = certificate-bound (cryptographically
+    /// tied to the host by a CA — the registrant/operator's declared
+    /// contact), [`EMAIL_WHOIS`] = WHOIS registrant record, [`EMAIL_HTTP`] =
+    /// scraped from the HTTP response body (weakly tied to the subject — it
+    /// may be a third-party vendor, a privacy-policy, or a CMS-template
+    /// address). On a multi-source email the strongest tier wins. This
+    /// replaces a previous flat 0.65 + blanket `ssl-extracted` tag, which
+    /// scored an http-scraped stranger identically to a cert-bound contact
+    /// and mislabelled its provenance.
+    emails_by_src: std::collections::BTreeMap<String, u8>,
+    all_cert_domains: Vec<String>,
+    cert_orgs: Vec<String>,
+    port_list: Vec<String>,
+    /// A host can expose several JARM fingerprints (one per TLS service), but
+    /// only ONE is emitted as `jarm_fingerprint`. `BTreeSet`, not `HashSet`:
+    /// `HashSet` iteration order is randomised per process, so
+    /// `.iter().next()` picked a different fingerprint between otherwise-
+    /// identical runs — breaking the byte-identical-output guarantee.
+    /// Ordered set → the lexicographically smallest fingerprint,
+    /// deterministically.
+    jarm_seen: std::collections::BTreeSet<String>,
+    /// A host's CVE set is load-bearing pivot/prioritisation intelligence, so
+    /// it is emitted in full (no cap) — deduped across response items and
+    /// sorted for byte-deterministic output (`BTreeSet`, not `Vec`). Mirrors
+    /// the full-fidelity vuln policy in the sibling `shodan` module.
+    cve_set: std::collections::BTreeSet<String>,
+    tech_list: Vec<String>,
+    isp_val: Option<String>,
+    geo_val: Option<(f64, f64, String, String)>,
+    ssl_cn: Option<String>,
+    ip_val: Option<String>,
+    ssl_issuer: Option<String>,
+    http_title: Option<String>,
+    http_status: Option<u16>,
+}
+
+const EMAIL_CERT: u8 = 2;
+const EMAIL_WHOIS: u8 = 1;
+const EMAIL_HTTP: u8 = 0;
+
 fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> ModuleResult {
     let mut result = ModuleResult::new();
+    if body.items.is_empty() {
+        return result;
+    }
+    let mut acc = accumulate(body);
+    let ip_str = acc
+        .ip_val
+        .clone()
+        .unwrap_or_else(|| target_value.to_string());
 
-    // Emails keyed to their STRONGEST provenance (a `BTreeMap` so the emit order
-    // is deterministic and a case-folded key dedups spellings). Reliability tier:
-    // 2 = certificate-bound (cryptographically tied to the host by a CA — the
-    // registrant/operator's declared contact), 1 = WHOIS registrant record,
-    // 0 = scraped from the HTTP response body (weakly tied to the subject — it may
-    // be a third-party vendor, a privacy-policy, or a CMS-template address). On a
-    // multi-source email the strongest tier wins. This replaces the previous flat
-    // 0.65 + blanket `ssl-extracted` tag, which scored an http-scraped stranger
-    // identically to a cert-bound contact and mislabelled its provenance.
+    emit_ip_entity(&mut result, &mut acc, &ip_str, body.count, scan_id);
+    emit_isp_org(&mut result, &acc, &ip_str, scan_id);
+    emit_ssl_subject_orgs(&mut result, &mut acc, &ip_str, scan_id);
+    emit_geo(&mut result, &acc, &ip_str, scan_id);
+    emit_san_domains(&mut result, &mut acc, &ip_str, scan_id);
+    emit_extracted_emails(&mut result, &acc, &ip_str, scan_id);
+    result
+}
+
+/// Walk every item in the response, folding its ip/ports/jarm/isp/geo/
+/// certificate/http/whois/cve/technology signals into one accumulator. Pure
+/// data-gathering — no entities are built here.
+fn accumulate(body: &NetlasResp) -> NetlasAccum {
     let mut emails_by_src: std::collections::BTreeMap<String, u8> =
         std::collections::BTreeMap::new();
     let mut record_email = |raw: &str, tier: u8| {
@@ -252,23 +310,10 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         let slot = emails_by_src.entry(key).or_insert(0);
         *slot = (*slot).max(tier);
     };
-    const EMAIL_CERT: u8 = 2;
-    const EMAIL_WHOIS: u8 = 1;
-    const EMAIL_HTTP: u8 = 0;
     let mut all_cert_domains: Vec<String> = Vec::new();
     let mut cert_orgs: Vec<String> = Vec::new();
     let mut port_list: Vec<String> = Vec::new();
-    // BTreeSet, not HashSet: a host can expose several JARM fingerprints (one per
-    // TLS service), but only ONE is emitted as `jarm_fingerprint`. `HashSet`
-    // iteration order is randomised per process, so `.iter().next()` picked a
-    // different fingerprint between otherwise-identical runs — breaking the
-    // byte-identical-output guarantee. Ordered set → the lexicographically
-    // smallest fingerprint, deterministically.
     let mut jarm_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    // BTreeSet, not Vec: a host's CVE set is load-bearing pivot/prioritisation
-    // intelligence, so it is emitted in full (no cap) — deduped across response
-    // items and sorted for byte-deterministic output. Mirrors the full-fidelity
-    // vuln policy in the sibling `shodan` module.
     let mut cve_set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut tech_list: Vec<String> = Vec::new();
     let mut isp_val: Option<String> = None;
@@ -385,12 +430,34 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         }
     }
 
-    if body.items.is_empty() {
-        return result;
+    NetlasAccum {
+        emails_by_src,
+        all_cert_domains,
+        cert_orgs,
+        port_list,
+        jarm_seen,
+        cve_set,
+        tech_list,
+        isp_val,
+        geo_val,
+        ssl_cn,
+        ip_val,
+        ssl_issuer,
+        http_title,
+        http_status,
     }
+}
 
-    // Emit IP entity.
-    let ip_str = ip_val.as_deref().unwrap_or(target_value);
+/// The host node itself, carrying open ports, JARM fingerprint, SSL CN/
+/// issuer, HTTP title/status, CVEs, detected technologies, ISP, and the total
+/// Netlas-indexed result count as evidence.
+fn emit_ip_entity(
+    result: &mut ModuleResult,
+    acc: &mut NetlasAccum,
+    ip_str: &str,
+    result_count: Option<u64>,
+    scan_id: &str,
+) {
     let mut ip_entity = Entity::new(
         EntityKind::IpAddress,
         ip_str,
@@ -398,14 +465,14 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         scan_id,
     );
     ip_entity.tag("netlas");
-    port_list.sort();
-    port_list.dedup();
+    acc.port_list.sort();
+    acc.port_list.dedup();
     let mut ev = Evidence::new(SRC, format!("Netlas intelligence for {ip_str}"))
-        .with_attr("port_count", port_list.len().to_string());
-    if !port_list.is_empty() {
+        .with_attr("port_count", acc.port_list.len().to_string());
+    if !acc.port_list.is_empty() {
         ev = ev.with_attr(
             "open_ports",
-            port_list
+            acc.port_list
                 .iter()
                 .take(20)
                 .cloned()
@@ -414,46 +481,46 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         );
     }
     // Deterministic: the smallest fingerprint of the ordered set (see `jarm_seen`).
-    if let Some(j) = jarm_seen.iter().next() {
+    if let Some(j) = acc.jarm_seen.iter().next() {
         ev = ev.with_attr("jarm_fingerprint", j);
     }
-    if let Some(cn) = ssl_cn.as_deref() {
+    if let Some(cn) = acc.ssl_cn.as_deref() {
         ev = ev.with_attr("ssl_cn", cn);
     }
-    if let Some(iss) = ssl_issuer.as_deref() {
+    if let Some(iss) = acc.ssl_issuer.as_deref() {
         ev = ev.with_attr("ssl_issuer", iss);
     }
-    if let Some(t) = http_title.as_deref() {
+    if let Some(t) = acc.http_title.as_deref() {
         ev = ev.with_attr("http_title", t);
     }
-    if let Some(code) = http_status {
+    if let Some(code) = acc.http_status {
         ev = ev.with_attr("http_status", code.to_string());
     }
-    if !cve_set.is_empty() {
+    if !acc.cve_set.is_empty() {
         // Emit the complete, deduplicated CVE set plus a disclosed count — a
         // host's vulnerabilities are the intelligence an analyst pivots on.
         ev = ev
             .with_attr(
                 "cves",
-                cve_set
+                acc.cve_set
                     .iter()
                     .map(String::as_str)
                     .collect::<Vec<_>>()
                     .join(","),
             )
-            .with_attr("cve_count", cve_set.len().to_string());
+            .with_attr("cve_count", acc.cve_set.len().to_string());
     }
-    if !tech_list.is_empty() {
-        tech_list.sort();
-        tech_list.dedup();
+    if !acc.tech_list.is_empty() {
+        acc.tech_list.sort();
+        acc.tech_list.dedup();
         // Disclose the full detected-technology count so a host running more than
         // the displayed sample does not silently lose stack-attribution pivots
         // (mirrors `port_count` alongside the capped `open_ports`).
         ev = ev
-            .with_attr("technology_count", tech_list.len().to_string())
+            .with_attr("technology_count", acc.tech_list.len().to_string())
             .with_attr(
                 "technologies",
-                tech_list
+                acc.tech_list
                     .iter()
                     .take(10)
                     .cloned()
@@ -461,7 +528,7 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
                     .join(","),
             );
     }
-    if let Some(isp) = &isp_val {
+    if let Some(isp) = &acc.isp_val {
         ev = ev.with_attr("isp", isp);
     }
     // Total number of indexed responses Netlas matched for this query — the
@@ -469,18 +536,16 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
     // `fields=*` request caps). Surfacing it tells an investigator how much of
     // the host's Netlas footprint the returned page represents, i.e. whether the
     // results were truncated. Decoded but previously dropped.
-    if let Some(total) = body.count {
+    if let Some(total) = result_count {
         ev = ev.with_attr("result_count", total.to_string());
     }
     ip_entity.add_evidence(ev);
     result.push(ip_entity);
+}
 
-    // ISP → Organisation entity.
-    let isp_lc = isp_val
-        .as_deref()
-        .map(|s| s.trim().to_ascii_lowercase())
-        .filter(|s| !s.is_empty());
-    if let Some(isp) = isp_val.as_deref().filter(|s| s.len() >= 3) {
+/// ISP → Organisation entity.
+fn emit_isp_org(result: &mut ModuleResult, acc: &NetlasAccum, ip_str: &str, scan_id: &str) {
+    if let Some(isp) = acc.isp_val.as_deref().filter(|s| s.len() >= 3) {
         let mut org = Entity::new(
             EntityKind::Organisation,
             isp,
@@ -494,16 +559,28 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         );
         result.push(org);
     }
+}
 
-    // SSL Subject O field → Organisation entity (OV/EV certs only).
-    // Deduplicate and skip values that match the ISP already emitted. Emit EVERY
-    // unique cert Subject O: each is a confirmed legal-entity attribution pivot,
-    // and a shared-hosting IP can present certs from several distinct
-    // organisations — a silent `.take(3)` dropped real ones, inconsistent with
-    // the uncapped SAN-domain / extracted-email loops below.
-    cert_orgs.sort();
-    cert_orgs.dedup();
-    for cert_org in &cert_orgs {
+/// SSL Subject O field → Organisation entity (OV/EV certs only). Deduplicate
+/// and skip values that match the ISP already emitted. Emit EVERY unique cert
+/// Subject O: each is a confirmed legal-entity attribution pivot, and a
+/// shared-hosting IP can present certs from several distinct organisations —
+/// a silent `.take(3)` dropped real ones, inconsistent with the uncapped
+/// SAN-domain / extracted-email loops.
+fn emit_ssl_subject_orgs(
+    result: &mut ModuleResult,
+    acc: &mut NetlasAccum,
+    ip_str: &str,
+    scan_id: &str,
+) {
+    let isp_lc = acc
+        .isp_val
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
+    acc.cert_orgs.sort();
+    acc.cert_orgs.dedup();
+    for cert_org in &acc.cert_orgs {
         let org_lc = cert_org.trim().to_ascii_lowercase();
         if org_lc.len() < 3 || isp_lc.as_deref() == Some(&org_lc) {
             continue;
@@ -526,60 +603,67 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         );
         result.push(oe);
     }
+}
 
-    // Geolocation → Coordinates + Address. Suppressed when the host IP is a
-    // CDN/anycast edge (the geo is the datacentre, not the subject) — parity
-    // with the 8 sibling IP-geo modules. ISP/ASN/cert Organisations above are
-    // unaffected.
-    if let Some((lat, lon, country, city)) = geo_val
-        && crate::core::validation::untrusted_ip_geo_reason(ip_str).is_none()
-    {
-        let coord_str = format!("{lat:.6},{lon:.6}");
-        let mut geo_e = Entity::new(
-            EntityKind::Coordinates,
-            &coord_str,
-            confidence::MEDIUM_PLUS,
+/// Geolocation → Coordinates + Address. Suppressed when the host IP is a
+/// CDN/anycast edge (the geo is the datacentre, not the subject) — parity
+/// with the 8 sibling IP-geo modules. ISP/ASN/cert Organisations are
+/// unaffected.
+fn emit_geo(result: &mut ModuleResult, acc: &NetlasAccum, ip_str: &str, scan_id: &str) {
+    let Some((lat, lon, country, city)) = acc.geo_val.clone() else {
+        return;
+    };
+    if crate::core::validation::untrusted_ip_geo_reason(ip_str).is_some() {
+        return;
+    }
+    let coord_str = format!("{lat:.6},{lon:.6}");
+    let mut geo_e = Entity::new(
+        EntityKind::Coordinates,
+        &coord_str,
+        confidence::MEDIUM_PLUS,
+        scan_id,
+    );
+    geo_e.tag("netlas");
+    geo_e.tag("geoint");
+    if !country.is_empty() {
+        geo_e.tag(format!(
+            "country:{}",
+            country.to_uppercase().replace(' ', "")
+        ));
+    }
+    geo_e.add_evidence(
+        Evidence::new(SRC, format!("Netlas geolocation for {ip_str}"))
+            .with_attr("latitude", lat.to_string())
+            .with_attr("longitude", lon.to_string())
+            .with_attr("country", &country)
+            .with_attr("city", &city),
+    );
+    result.push(geo_e);
+
+    if !city.is_empty() && !country.is_empty() {
+        let addr_str = format!("{city}, {country}");
+        let mut addr = Entity::new(
+            EntityKind::Address,
+            &addr_str,
+            confidence::MEDIUM_HIGH,
             scan_id,
         );
-        geo_e.tag("netlas");
-        geo_e.tag("geoint");
-        if !country.is_empty() {
-            geo_e.tag(format!(
-                "country:{}",
-                country.to_uppercase().replace(' ', "")
-            ));
-        }
-        geo_e.add_evidence(
-            Evidence::new(SRC, format!("Netlas geolocation for {ip_str}"))
-                .with_attr("latitude", lat.to_string())
-                .with_attr("longitude", lon.to_string())
-                .with_attr("country", &country)
-                .with_attr("city", &city),
-        );
-        result.push(geo_e);
-
-        if !city.is_empty() && !country.is_empty() {
-            let addr_str = format!("{city}, {country}");
-            let mut addr = Entity::new(
-                EntityKind::Address,
-                &addr_str,
-                confidence::MEDIUM_HIGH,
-                scan_id,
-            );
-            addr.tag("netlas");
-            addr.add_evidence(Evidence::new(SRC, format!("Netlas location for {ip_str}")));
-            result.push(addr);
-        }
+        addr.tag("netlas");
+        addr.add_evidence(Evidence::new(SRC, format!("Netlas location for {ip_str}")));
+        result.push(addr);
     }
+}
 
-    // SSL/TLS SAN domains → Domain entities for BFS. Emit EVERY unique SAN domain:
-    // a multi-SAN / wildcard / shared-hosting certificate lists 50-100+ domains, and
-    // the BFS frontier budget is owned by the engine/scan orchestrator (max depth /
-    // frontier cap), not this leaf module — so a silent `.take(20)` here would drop
-    // real expansion pivots the host's certificate genuinely exposes.
-    all_cert_domains.sort();
-    all_cert_domains.dedup();
-    for dom in &all_cert_domains {
+/// SSL/TLS SAN domains → Domain entities for BFS. Emit EVERY unique SAN
+/// domain: a multi-SAN / wildcard / shared-hosting certificate lists
+/// 50-100+ domains, and the BFS frontier budget is owned by the
+/// engine/scan orchestrator (max depth / frontier cap), not this leaf
+/// module — so a silent `.take(20)` here would drop real expansion pivots
+/// the host's certificate genuinely exposes.
+fn emit_san_domains(result: &mut ModuleResult, acc: &mut NetlasAccum, ip_str: &str, scan_id: &str) {
+    acc.all_cert_domains.sort();
+    acc.all_cert_domains.dedup();
+    for dom in &acc.all_cert_domains {
         let dom = dom.trim().trim_start_matches('*').trim_start_matches('.');
         if dom.len() >= 4 && dom.contains('.') && !dom.contains(char::is_whitespace) {
             let mut de = Entity::new(EntityKind::Domain, dom, confidence::HIGH_PLUS, scan_id);
@@ -592,17 +676,25 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
             result.push(de);
         }
     }
+}
 
-    // Extracted emails → Email entities for BFS. Emit EVERY unique email: per the
-    // module docstring these are its "key differentiator … direct BFS pivot to breach
-    // stack", so a silent `.take(10)` drops real breach-stack pivots a cert/WHOIS
-    // record exposes (registrant/admin/tech/abuse contacts on a busy host).
-    // Emit each unique email at the confidence + provenance tag its STRONGEST
-    // source warrants. A cert-bound address is CA-attested to the host; a WHOIS
-    // contact is a declared registrant address; an http-scraped address is only
-    // weakly tied to the subject and must NOT read as `ssl-extracted` or carry the
-    // same confidence. `BTreeMap` iteration is email-sorted → deterministic.
-    for (email, &tier) in &emails_by_src {
+/// Extracted emails → Email entities for BFS. Emit EVERY unique email: per
+/// the module docstring these are its "key differentiator … direct BFS pivot
+/// to breach stack", so a silent `.take(10)` drops real breach-stack pivots a
+/// cert/WHOIS record exposes (registrant/admin/tech/abuse contacts on a busy
+/// host). Emit each unique email at the confidence + provenance tag its
+/// STRONGEST source warrants. A cert-bound address is CA-attested to the
+/// host; a WHOIS contact is a declared registrant address; an http-scraped
+/// address is only weakly tied to the subject and must NOT read as
+/// `ssl-extracted` or carry the same confidence. `BTreeMap` iteration is
+/// email-sorted → deterministic.
+fn emit_extracted_emails(
+    result: &mut ModuleResult,
+    acc: &NetlasAccum,
+    ip_str: &str,
+    scan_id: &str,
+) {
+    for (email, &tier) in &acc.emails_by_src {
         if !crate::util::extract::looks_like_email(email) {
             continue;
         }
@@ -620,6 +712,4 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         );
         result.push(e);
     }
-
-    result
 }
