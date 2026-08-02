@@ -1,7 +1,7 @@
+use super::cascade::{is_keyed_error_status, keyed_cascade, keyed_cascade_json, keyed_ok_or_404};
 use super::client::{build_client, build_client_with_trace};
 use super::fetch::{
-    JSON_BODY_CAP, fetch_json, fetch_json_or_404, fetch_json_or_absent, fetch_json_probe,
-    is_keyed_error_status, key_tail, keyed_cascade, keyed_cascade_json, keyed_ok_or_404,
+    JSON_BODY_CAP, fetch_json, fetch_json_or_404, fetch_json_or_absent, fetch_json_probe, key_tail,
     parse_retry_after_secs, retry_after_secs,
 };
 use super::redact::{redact_credentials, redact_literal_secrets};
@@ -212,7 +212,7 @@ async fn fetch_keyed_json_retries_once_on_a_transient_timeout() {
         cancel: crate::core::cancel::CancelHandle::new(),
     };
 
-    let body: Option<serde_json::Value> = super::fetch::fetch_keyed_json(
+    let body: Option<serde_json::Value> = super::cascade::fetch_keyed_json(
         &ctx,
         "test_mod",
         &format!("http://{addr}/"),
@@ -1034,12 +1034,12 @@ async fn keyed_cascade_json_reads_the_verdict_from_a_200_body() {
         &[],
         |key| ctx.http.get(&url).header("X-Key", key),
         |b: &Body| match b.status {
-            Some(200) => super::fetch::BodyVerdict::Accept,
-            Some(401) => super::fetch::BodyVerdict::KeyFailure {
+            Some(200) => super::cascade::BodyVerdict::Accept,
+            Some(401) => super::cascade::BodyVerdict::KeyFailure {
                 code: 401,
                 detail: Some("quota exceeded for this plan".to_string()),
             },
-            _ => super::fetch::BodyVerdict::Absent,
+            _ => super::cascade::BodyVerdict::Absent,
         },
     )
     .await
@@ -1058,12 +1058,12 @@ async fn keyed_cascade_json_reads_the_verdict_from_a_200_body() {
         &[],
         |key| ctx.http.get(&url).header("X-Key", key),
         |b: &Body| match b.status {
-            Some(200) => super::fetch::BodyVerdict::Accept,
-            Some(401) => super::fetch::BodyVerdict::KeyFailure {
+            Some(200) => super::cascade::BodyVerdict::Accept,
+            Some(401) => super::cascade::BodyVerdict::KeyFailure {
                 code: 401,
                 detail: Some("quota exceeded for this plan".to_string()),
             },
-            _ => super::fetch::BodyVerdict::Absent,
+            _ => super::cascade::BodyVerdict::Absent,
         },
     )
     .await;
@@ -1087,12 +1087,12 @@ async fn keyed_cascade_json_reads_the_verdict_from_a_200_body() {
         &[],
         |key| ctx.http.get(&url).header("X-Key", key),
         |b: &Body| match b.status {
-            Some(200) => super::fetch::BodyVerdict::Accept,
-            Some(401) => super::fetch::BodyVerdict::KeyFailure {
+            Some(200) => super::cascade::BodyVerdict::Accept,
+            Some(401) => super::cascade::BodyVerdict::KeyFailure {
                 code: 401,
                 detail: Some("quota exceeded for this plan".to_string()),
             },
-            _ => super::fetch::BodyVerdict::Absent,
+            _ => super::cascade::BodyVerdict::Absent,
         },
     )
     .await
