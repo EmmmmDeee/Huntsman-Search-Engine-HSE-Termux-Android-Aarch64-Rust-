@@ -193,6 +193,7 @@ use super::*;
             external_links: 0,
             notable_pages: Vec::new(),
             image_urls: Vec::new(),
+            image_urls_seen: HashSet::new(),
         };
 
         build_entities(
@@ -277,14 +278,19 @@ use super::*;
             external_links: 0,
             notable_pages: Vec::new(),
             image_urls: Vec::new(),
+            image_urls_seen: HashSet::new(),
         }
     }
 
     #[test]
-    fn image_lead_count_is_recorded_on_the_crawl_evidence() {
-        // The cap must be visible in the crawl's own output, so a truncated list
-        // is never presented as a complete one.
+    fn crawl_evidence_reports_true_image_total_and_flags_the_cap() {
+        // The evidence must state how many images were actually found, not the
+        // saturated emitted count, so a truncated list is never presented as
+        // complete. Here twice the cap was discovered but only the cap emitted.
         let mut state = empty_state();
+        state.image_urls_seen = (0..IMAGE_LEADS_CAP * 2)
+            .map(|i| format!("https://example.com/img{i}.jpg"))
+            .collect();
         state.image_urls = (0..IMAGE_LEADS_CAP)
             .map(|i| format!("https://example.com/img{i}.jpg"))
             .collect();
@@ -297,18 +303,65 @@ use super::*;
             "https://example.com",
             &mut state,
         );
-        let crawled = state
+        let attrs = &state
             .result
             .entities
             .iter()
             .find(|e| e.kind == EntityKind::Domain && e.value == "example.com")
-            .expect("domain entity");
-        let attr = crawled
-            .evidence
+            .expect("domain entity")
+            .evidence[0]
+            .attributes;
+        // True discovered total, the (capped) emitted count, and an explicit
+        // flag that truncation occurred.
+        assert_eq!(
+            attrs.get("image_leads_found").map(String::as_str),
+            Some((IMAGE_LEADS_CAP * 2).to_string().as_str())
+        );
+        assert_eq!(
+            attrs.get("image_leads_emitted").map(String::as_str),
+            Some(IMAGE_LEADS_CAP.to_string().as_str())
+        );
+        assert_eq!(
+            attrs.get("image_leads_capped").map(String::as_str),
+            Some(IMAGE_LEADS_CAP.to_string().as_str())
+        );
+    }
+
+    #[test]
+    fn crawl_evidence_omits_the_cap_flag_when_nothing_was_truncated() {
+        // When every discovered image fit under the cap, there is no truncation
+        // to announce — the `image_leads_capped` flag must be absent.
+        let mut state = empty_state();
+        state.image_urls_seen = ["https://example.com/a.jpg", "https://example.com/b.jpg"]
+            .into_iter()
+            .map(ToString::to_string)
+            .collect();
+        state.image_urls = state.image_urls_seen.iter().cloned().collect();
+        build_entities(
+            "example.com",
+            "example.com",
+            "scan-1",
+            MAX_DEPTH,
+            false,
+            "https://example.com",
+            &mut state,
+        );
+        let attrs = &state
+            .result
+            .entities
             .iter()
-            .find_map(|ev| ev.attributes.get("image_leads"))
-            .expect("image_leads attribute recorded");
-        assert_eq!(attr, &IMAGE_LEADS_CAP.to_string());
+            .find(|e| e.kind == EntityKind::Domain && e.value == "example.com")
+            .expect("domain entity")
+            .evidence[0]
+            .attributes;
+        assert_eq!(
+            attrs.get("image_leads_found").map(String::as_str),
+            Some("2")
+        );
+        assert!(
+            !attrs.contains_key("image_leads_capped"),
+            "no truncation occurred, so the cap flag must be absent"
+        );
     }
 
     #[test]

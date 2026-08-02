@@ -352,11 +352,17 @@ pub(super) fn extract_links(
             // the crawl walked past took its coordinates with it, since only a
             // typed entity can become a scan target. Recorded here, emitted in
             // `build_entities`, and still never enqueued.
-            if crate::util::exif::looks_like_image_url(&clean)
-                && state.image_urls.len() < IMAGE_LEADS_CAP
-                && !state.image_urls.contains(&clean)
-            {
-                state.image_urls.push(clean);
+            if crate::util::exif::looks_like_image_url(&clean) {
+                // Count every DISTINCT image first, so the evidence reports the
+                // true discovered total even past the cap — `insert` returns
+                // false for a URL already seen, which also does the dedup. Only
+                // then, if this is a new image and we are under the cap, keep it
+                // as an emitted lead.
+                if state.image_urls_seen.insert(clean.clone())
+                    && state.image_urls.len() < IMAGE_LEADS_CAP
+                {
+                    state.image_urls.push(clean);
+                }
             }
             continue;
         }

@@ -23,6 +23,7 @@ use super::*;
             external_links: 0,
             notable_pages: Vec::new(),
             image_urls: Vec::new(),
+            image_urls_seen: HashSet::new(),
         }
     }
 
@@ -120,11 +121,16 @@ use super::*;
             "example.com",
             &mut state,
         );
+        // Emitted leads are capped and unique.
         assert_eq!(state.image_urls.len(), IMAGE_LEADS_CAP);
         let mut sorted = state.image_urls.clone();
         sorted.sort();
         sorted.dedup();
         assert_eq!(sorted.len(), state.image_urls.len(), "leads must be unique");
+        // But the TRUE discovered total is retained past the cap (25 more than
+        // the cap, minus the one duplicate `/img0.jpg`), so the evidence can
+        // report the real figure rather than the saturated one.
+        assert_eq!(state.image_urls_seen.len(), IMAGE_LEADS_CAP + 25);
     }
 
     #[test]

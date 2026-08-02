@@ -102,7 +102,22 @@ pub(super) struct CrawlState {
     /// is an EXIF lead: `modules::exif_geo` accepts an image `Url` target and
     /// reads the GPS IFD out of it. Held here and emitted as entities in
     /// [`build_entities`] so the expansion loop can dispatch them.
+    ///
+    /// Bounded by `IMAGE_LEADS_CAP`; the true discovered total lives in
+    /// [`CrawlState::image_urls_seen`], which is what the evidence reports.
     pub(super) image_urls: Vec<String>,
+    /// EVERY distinct image URL the crawl saw, including those past
+    /// `IMAGE_LEADS_CAP`.
+    ///
+    /// Kept separately because `image_urls` saturates at the cap, so its length
+    /// cannot distinguish "found exactly 40 images" from "found 400 and kept
+    /// 40". Reporting only the capped figure would present a truncated list as a
+    /// complete one — the crawl's own output must state how many images it
+    /// actually found. Unbounded in principle but small in practice: link
+    /// extraction only ever sees `MAX_PAGES` bodies, each capped at `BODY_CAP`
+    /// bytes, and the module already keeps comparable sets for emails, phones
+    /// and external domains.
+    pub(super) image_urls_seen: HashSet<String>,
 }
 
 #[async_trait]
@@ -209,6 +224,7 @@ impl Module for WebCrawler {
             external_links: 0,
             notable_pages: Vec::new(),
             image_urls: Vec::new(),
+            image_urls_seen: HashSet::new(),
         };
 
         fetch_robots(&ctx.http, &seed_url, &mut state.disallow_rules).await;
@@ -471,9 +487,15 @@ fn build_entities(
     ev = ev.with_attr("subdomains_found", state.subdomains.len().to_string());
     ev = ev.with_attr("emails_found", state.emails.len().to_string());
     ev = ev.with_attr("phones_found", state.phones.len().to_string());
-    // Recorded unconditionally so a crawl that hit `IMAGE_LEADS_CAP` shows the
-    // cap in its own output rather than presenting a truncated list as complete.
-    ev = ev.with_attr("image_leads", state.image_urls.len().to_string());
+    // Report the TRUE discovered total (not the capped, emitted count), so a
+    // crawl that hit `IMAGE_LEADS_CAP` shows how many images it actually found
+    // rather than presenting the truncated list as complete. When the total
+    // exceeds what was emitted, say so explicitly.
+    ev = ev.with_attr("image_leads_found", state.image_urls_seen.len().to_string());
+    ev = ev.with_attr("image_leads_emitted", state.image_urls.len().to_string());
+    if state.image_urls_seen.len() > state.image_urls.len() {
+        ev = ev.with_attr("image_leads_capped", IMAGE_LEADS_CAP.to_string());
+    }
 
     if !missing_headers.is_empty() {
         ev = ev.with_attr("missing_security_headers", missing_headers.join(", "));
@@ -513,9 +535,12 @@ fn build_entities(
             e.tag("image");
             e.tag("exif-lead");
             e.add_evidence(
-                Evidence::new(SRC, format!("Image linked from {domain}, queued for EXIF"))
-                    .with_attr("discovered_by", "web_crawler")
-                    .with_attr("source_domain", domain),
+                Evidence::new(
+                    SRC,
+                    format!("Image linked from {domain} — EXIF-geolocation lead"),
+                )
+                .with_attr("discovered_by", "web_crawler")
+                .with_attr("source_domain", domain),
             );
             e
         })
