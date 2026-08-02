@@ -43,33 +43,37 @@ use super::*;
         // name means the required argument never reaches the server (400 /
         // empty). Regression: the public Discord endpoints were sending `id`,
         // but the contract keys them on `discord_id` (only /enterprise/discord/*
-        // use `id`). This pins the param name for every dispatched endpoint so
-        // that class of drift can't recur. SteamProfile is excluded: gaming/steam
-        // is a deliberate, in-code speculative endpoint absent from the contract.
-        let expected: &[(EndpointCall, &str)] = &[
-            (EndpointCall::EmailCheck, "email"),
-            (EndpointCall::SocialAggregate, "username"),
-            (EndpointCall::GithubProfile, "username"),
-            (EndpointCall::TwitterProfile, "username"),
-            (EndpointCall::RedditProfile, "username"),
-            (EndpointCall::TiktokProfile, "username"),
-            (EndpointCall::UsernameHistory, "username"),
-            (EndpointCall::RobloxProfile, "username"),
-            (EndpointCall::XboxProfile, "gamertag"),
-            (EndpointCall::MinecraftProfile, "username"),
-            (EndpointCall::DiscordUser, "discord_id"),
-            (EndpointCall::DiscordToRoblox, "discord_id"),
-            (EndpointCall::PhoneInfo, "phone"),
-            (EndpointCall::IpInfo, "ip"),
-            (EndpointCall::DomainIntel, "domain"),
-            (EndpointCall::Whois, "domain"),
-        ];
-        for (call, param) in expected {
-            assert_eq!(
-                call.spec().2,
-                *param,
-                "{call:?} must send the documented `{param}` query param"
-            );
+        // use `id`). Iterates the shared `ALL_ENDPOINT_CALLS` and maps each via
+        // an EXHAUSTIVE match, so adding an `EndpointCall` variant is a compile
+        // error here until its contract param is pinned — coverage can't
+        // silently lapse. SteamProfile maps to `None`: gaming/steam is a
+        // deliberate, in-code speculative endpoint absent from the contract.
+        for call in ALL_ENDPOINT_CALLS {
+            let expected: Option<&str> = match call {
+                EndpointCall::EmailCheck => Some("email"),
+                EndpointCall::SocialAggregate => Some("username"),
+                EndpointCall::GithubProfile => Some("username"),
+                EndpointCall::TwitterProfile => Some("username"),
+                EndpointCall::RedditProfile => Some("username"),
+                EndpointCall::TiktokProfile => Some("username"),
+                EndpointCall::UsernameHistory => Some("username"),
+                EndpointCall::RobloxProfile => Some("username"),
+                EndpointCall::XboxProfile => Some("gamertag"),
+                EndpointCall::MinecraftProfile => Some("username"),
+                EndpointCall::DiscordUser | EndpointCall::DiscordToRoblox => Some("discord_id"),
+                EndpointCall::PhoneInfo => Some("phone"),
+                EndpointCall::IpInfo => Some("ip"),
+                EndpointCall::DomainIntel => Some("domain"),
+                EndpointCall::Whois => Some("domain"),
+                EndpointCall::SteamProfile => None,
+            };
+            if let Some(param) = expected {
+                assert_eq!(
+                    call.spec().2,
+                    param,
+                    "{call:?} must send the documented `{param}` query param"
+                );
+            }
         }
     }
 
