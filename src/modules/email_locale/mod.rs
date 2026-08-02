@@ -216,44 +216,11 @@ fn detect_locale_from_local_part(local: &str) -> Option<LocaleGeo> {
 /// that reliably indicate a country. Non-geographic TLDs used as generic
 /// branding (.io, .ai, .co, .tv, .app, .ly, .me, .to, .is) are absent —
 /// they carry no durable country signal. Returns `None` for unknown or
-/// non-geographic TLDs.
+/// non-geographic TLDs. Thin wrapper over the shared
+/// [`crate::util::cctld::country_for`] table, which `email_header_geo` also
+/// draws from.
 fn cctld_country(tld: &str) -> Option<(&'static str, &'static str)> {
-    Some(match tld {
-        "de" => ("Germany", "de"),
-        "fr" => ("France", "fr"),
-        "it" => ("Italy", "it"),
-        "es" => ("Spain", "es"),
-        "nl" => ("Netherlands", "nl"),
-        "pl" => ("Poland", "pl"),
-        "ru" => ("Russia", "ru"),
-        "ua" => ("Ukraine", "ua"),
-        "se" => ("Sweden", "se"),
-        "no" => ("Norway", "no"),
-        "dk" => ("Denmark", "dk"),
-        "fi" => ("Finland", "fi"),
-        "pt" => ("Portugal", "pt"),
-        "ro" => ("Romania", "ro"),
-        "cz" => ("Czech Republic", "cz"),
-        "sk" => ("Slovakia", "sk"),
-        "hu" => ("Hungary", "hu"),
-        "at" => ("Austria", "at"),
-        "be" => ("Belgium", "be"),
-        "ch" => ("Switzerland", "ch"),
-        "gr" => ("Greece", "el"),
-        "tr" => ("Turkey", "tr"),
-        "jp" => ("Japan", "ja"),
-        "cn" => ("China", "zh"),
-        "kr" => ("South Korea", "ko"),
-        "in" => ("India", "hi"),
-        "au" => ("Australia", "en-au"),
-        "nz" => ("New Zealand", "en-nz"),
-        "za" => ("South Africa", "af"),
-        "br" => ("Brazil", "pt-br"),
-        "mx" => ("Mexico", "es-mx"),
-        "ar" => ("Argentina", "es-ar"),
-        "uk" => ("United Kingdom", "en-gb"),
-        _ => return None,
-    })
+    crate::util::cctld::country_for(tld)
 }
 
 /// Map a locale code (as emitted by the pattern tables) to an approximate
@@ -309,6 +276,9 @@ fn locale_centroid(locale: &str) -> Option<(f64, f64)> {
         "en-nz" => (-36.848_5, 174.763_3),   // Auckland, New Zealand
         "af" => (-25.746_0, 28.188_1),       // Pretoria, South Africa
         "en-gb" => (51.507_4, -0.127_8),     // London, United Kingdom
+        "en-sg" => (1.352_1, 103.819_8),     // Singapore
+        "ms" => (3.139_0, 101.686_9),        // Kuala Lumpur, Malaysia
+        "en-ca" => (45.421_5, -75.697_2),    // Ottawa, Canada
         _ => return None,
     })
 }

@@ -25,9 +25,15 @@ pub(super) const CONSUMER_PROVIDERS: &[&str] = &[
     "fastmail.com",
 ];
 
-/// Country-code TLD → region mappings. AU second-level TLDs are checked first
-/// so they take priority over the bare `.au` entry.
-pub(super) const CCTLD_REGIONS: &[(&str, &str)] = &[
+/// Recognised second-level-domain conventions under a ccTLD (`.com.au`,
+/// `.co.uk`, …) — distinct from [`crate::util::cctld::CCTLD_COUNTRY`]'s
+/// bare-TLD-only facts, since these encode a country's own SLD registration
+/// convention, not just its TLD. Checked first by
+/// [`super::infer::infer_geo_from_email_domain`] so a convention match wins
+/// over the generic bare-TLD fallback (matters once a bare `.au`/`.uk`/…
+/// entry is reachable via that fallback, so the more specific match must be
+/// tried first).
+pub(super) const SLD_CONVENTIONS: &[(&str, &str)] = &[
     (".com.au", "Australia"),
     (".edu.au", "Australia"),
     (".gov.au", "Australia"),
@@ -43,22 +49,6 @@ pub(super) const CCTLD_REGIONS: &[(&str, &str)] = &[
     (".com.sg", "Singapore"),
     (".com.my", "Malaysia"),
     (".com.tr", "Turkey"),
-    (".de", "Germany"),
-    (".fr", "France"),
-    (".it", "Italy"),
-    (".es", "Spain"),
-    (".nl", "Netherlands"),
-    (".se", "Sweden"),
-    (".no", "Norway"),
-    (".dk", "Denmark"),
-    (".fi", "Finland"),
-    (".pl", "Poland"),
-    (".ru", "Russia"),
-    (".jp", "Japan"),
-    (".kr", "South Korea"),
-    (".cn", "China"),
-    (".in", "India"),
-    (".ca", "Canada"),
 ];
 
 /// `(brand_token, provider_name, region)` — matched at label boundary.
