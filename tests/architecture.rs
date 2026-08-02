@@ -1299,14 +1299,44 @@ fn env_template_keys_are_all_consumed() {
     );
 }
 
-/// Collects every `HUNTSMAN_*` literal bound to a `const ..._ENV: &str = "..."`
-/// declaration under `dir` — the project-wide convention every key-gated
-/// module uses to name the env var it reads (`const KEY_ENV: &str =
-/// "HUNTSMAN_SHODAN_KEY"`, `const OTX_KEY_ENV: &str =
-/// "HUNTSMAN_ALIENVAULT_KEY"`, etc). Deliberately narrower than
-/// `collect_env_literals` (which also matches prose/doc-comment mentions): this
-/// is the precise "a module genuinely reads this env var" signal used to catch
-/// keys that are consumed but undocumented in a template — the inverse of what
+/// Inserts the `HUNTSMAN_*` string literal whose opening `"` sits at
+/// `open_quote`, if that is what the literal actually holds. Shared by both
+/// detection forms in [`collect_key_env_consts`] so they extract identically.
+fn push_huntsman_literal(
+    line: &str,
+    open_quote: usize,
+    out: &mut std::collections::HashSet<String>,
+) {
+    let rest = &line[open_quote + 1..];
+    if !rest.starts_with("HUNTSMAN_") {
+        return;
+    }
+    if let Some(end) = rest.find('"') {
+        out.insert(rest[..end].to_string());
+    }
+}
+
+/// Collects every `HUNTSMAN_*` env var a module under `dir` genuinely READS, in
+/// both forms the codebase actually uses:
+///
+/// 1. the `const ..._ENV: &str = "HUNTSMAN_..."` naming convention (`const
+///    KEY_ENV: &str = "HUNTSMAN_SHODAN_KEY"`, `const OTX_KEY_ENV: &str =
+///    "HUNTSMAN_ALIENVAULT_KEY"`, …); and
+/// 2. an **inline** read that names the var at the call site —
+///    `ctx.key_opt("HUNTSMAN_GITHUB_TOKEN")` / `ctx.key("HUNTSMAN_…")`.
+///
+/// Form 2 was previously invisible here: the scan hard-required `const ` AND
+/// `ENV` on the line, so a module reading its key inline was silently exempt
+/// from the documentation guard below. That blind spot let a real, poolable,
+/// `service_defs`-registered credential (`HUNTSMAN_GITHUB_TOKEN`, read by
+/// `github_user`/`github_code_search`/`github_commits`) go missing from both
+/// `KNOWN_KEYS` and `env_template.txt` — invisible to the Settings grid, to
+/// `hse provision`, and to `hse doctor`'s acquisition ranking.
+///
+/// Still deliberately narrower than `collect_env_literals` (which also matches
+/// prose/doc-comment mentions): a literal only counts here when it is bound to
+/// an `_ENV` const or passed directly to a key read, which is the precise "a
+/// module genuinely reads this env var" signal — the inverse of what
 /// `env_template_keys_are_all_consumed` already guards.
 fn collect_key_env_consts(dir: &Path, out: &mut std::collections::HashSet<String>) {
     for entry in fs::read_dir(dir).unwrap() {
@@ -1316,13 +1346,25 @@ fn collect_key_env_consts(dir: &Path, out: &mut std::collections::HashSet<String
         } else if path.extension().is_some_and(|e| e == "rs") {
             let content = fs::read_to_string(&path).unwrap();
             for line in content.lines() {
-                if !line.contains("const ") || !line.contains("ENV") {
-                    continue;
+                // 1. `const ..._ENV: &str = "HUNTSMAN_..."`.
+                if line.contains("const ")
+                    && line.contains("ENV")
+                    && let Some(q) = line.find("\"HUNTSMAN_")
+                {
+                    push_huntsman_literal(line, q, out);
                 }
-                if let Some(start) = line.find("\"HUNTSMAN_") {
-                    let rest = &line[start + 1..];
-                    if let Some(end) = rest.find('"') {
-                        out.insert(rest[..end].to_string());
+                // 2. `…key_opt("HUNTSMAN_…")` / `…key("HUNTSMAN_…")`. `key(`
+                //    cannot alias `key_opt(` (the char after `key` is `_`), and
+                //    every index below lands on an ASCII pattern boundary, so
+                //    the slicing is char-boundary safe.
+                for pat in ["key_opt(", "key("] {
+                    let mut from = 0;
+                    while let Some(i) = line[from..].find(pat) {
+                        let after = from + i + pat.len();
+                        if line[after..].starts_with('"') {
+                            push_huntsman_literal(line, after, out);
+                        }
+                        from = after;
                     }
                 }
             }

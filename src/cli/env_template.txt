@@ -67,6 +67,10 @@ HUNTSMAN_OPENSANCTIONS_KEY="insert_opensanctions_key_here"
 HUNTSMAN_EMAILREP_KEY="insert_emailrep_key_here"
 HUNTSMAN_PROXYCURL_KEY="insert_proxycurl_key_here"
 HUNTSMAN_OPENCORP_KEY="insert_opencorporates_key_here"
+# GitHub PAT — optional for github_user / github_code_search / github_commits:
+# they all run key-free, but unauthenticated calls share GitHub's 60 req/hour
+# core limit, and a token raises it (no extra scopes needed for public data):
+HUNTSMAN_GITHUB_TOKEN="insert_github_personal_access_token_here"
 # Australian archives:
 HUNTSMAN_TROVE_KEY="insert_nla_trove_key_here"
 HUNTSMAN_BREACHDIR_KEY="insert_breachdirectory_key_here"
