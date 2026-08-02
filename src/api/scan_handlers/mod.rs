@@ -10,7 +10,7 @@
 //! - [`diagnostics`] — Diagnostic scorecards: audit, metrics, duplicates,
 //!   pivots, gaps, benchmark.
 
-use super::handlers::{internal_error, not_found, validated_target};
+use super::handlers::{not_found, offload, validated_target};
 use crate::api::AppState;
 use crate::core::entity::scan_id;
 use crate::core::scan::{Scan, ScanRequest, Target};
@@ -84,11 +84,10 @@ pub(super) fn build_scan_from_request(req: ScanRequest) -> Result<(Scan, Target)
 pub(crate) async fn scan_missing(s: &AppState, id: &str) -> Option<axum::response::Response> {
     let store = std::sync::Arc::clone(&s.store);
     let id = id.to_string();
-    match tokio::task::spawn_blocking(move || store.get_scan(&id)).await {
-        Ok(Ok(Some(_))) => None,
-        Ok(Ok(None)) => Some(not_found()),
-        Ok(Err(e)) => Some(internal_error(&e)),
-        Err(e) => Some(internal_error(&format!("query task failed: {e}"))),
+    match offload("query", move || store.get_scan(&id)).await {
+        Ok(Some(_)) => None,
+        Ok(None) => Some(not_found()),
+        Err(resp) => Some(resp),
     }
 }
 
