@@ -163,6 +163,33 @@ pub(crate) struct ModuleStats {
 /// only the dirty subset would silently miss cross-round correlations. Only
 /// the checkpoint's PERSISTENCE volume is narrowed here, never correlation's
 /// input, and never what any reader sees.
+/// A `JoinHandle` that aborts its task when dropped.
+///
+/// Dropping a bare `tokio::JoinHandle` **detaches** the task — it does not
+/// abort it. `Cargo.toml` sets `panic = "unwind"` (deliberately: a panicking
+/// module is caught at the dispatch boundary rather than killing the process),
+/// so any panic between spawning the wall-time watchdog and the explicit
+/// `abort()` at the end of the scan body unwound straight past that abort and
+/// left the watchdog running. It then slept out its full deadline and fired
+/// `cancel()` on the caller's context long after the scan was gone — poisoning
+/// a shared token under a long-lived `serve`/`radar`, so an unrelated later
+/// scan was cancelled for no operator-visible reason.
+///
+/// This is not hypothetical: the scan body already documents that exact hazard
+/// for the *error* path, and it is reachable — `run_gap_fill` calls
+/// `correlator::gap_fill_probes` unguarded, while the sibling
+/// `correlate_incremental` wraps the same rule engine in `catch_unwind`.
+///
+/// Aborting on drop makes the cleanup unconditional: normal return, `?`
+/// early-exit and unwind all reap the task.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 struct TrackedEntityMap {
     map: HashMap<String, Entity>,
     dirty: HashSet<String>,
@@ -620,12 +647,15 @@ impl ScanEngine {
         // `Aborted` with all collected entities persisted — so the scan stops
         // promptly AND still prints/streams what it found (the "always display
         // results" + "fallback bound that actually bounds" requirements).
+        // `AbortOnDrop`, not a bare `JoinHandle`: dropping a handle detaches the
+        // task rather than aborting it, so a panic anywhere below unwound past
+        // the explicit stop and leaked the watchdog onto a shared cancel token.
         let wall_watchdog = opts.max_wall_time_secs.map(|secs| {
             let cancel = ctx.cancel.clone();
-            tokio::spawn(async move {
+            AbortOnDrop(tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(secs)).await;
                 cancel.cancel();
-            })
+            }))
         });
 
         let mut entity_map: TrackedEntityMap =
@@ -815,9 +845,9 @@ impl ScanEngine {
         // Scan body done — stop the wall-time watchdog so it can't fire after
         // we've already finished (and is reaped promptly rather than sleeping
         // out its full deadline in the background on a long-lived `serve`).
-        if let Some(handle) = wall_watchdog {
-            handle.abort();
-        }
+        // Dropping the guard aborts it; the unwind and `?` paths get the same
+        // cleanup from `AbortOnDrop` without needing a line here.
+        drop(wall_watchdog);
 
         let outcome = self
             .finalise_scan(

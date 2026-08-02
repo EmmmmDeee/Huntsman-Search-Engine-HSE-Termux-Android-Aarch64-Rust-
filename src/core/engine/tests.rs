@@ -4087,3 +4087,46 @@ fn the_working_set_snapshot_is_deterministically_ordered() {
     expected.sort();
     assert_eq!(a, expected, "snapshot must be sorted by uid");
 }
+
+/// A watchdog task must be reaped when its owner unwinds, not detached.
+///
+/// The wall-time watchdog was held in a bare `tokio::JoinHandle`, aborted only
+/// on the straight-line path at the end of the scan body. Dropping a
+/// `JoinHandle` DETACHES the task — it does not abort it — and `Cargo.toml`
+/// sets `panic = "unwind"`, so any panic between the spawn and that abort
+/// unwound straight past it. The watchdog then slept out its full deadline and
+/// fired `cancel()` on the caller's context long after the scan was gone,
+/// poisoning a shared token under a long-lived `serve`/`radar` so an unrelated
+/// later scan was cancelled with no operator-visible reason.
+///
+/// Drives the real hazard: a panic while the guard is live.
+#[tokio::test]
+async fn a_watchdog_guard_aborts_its_task_when_its_owner_unwinds() {
+    use crate::core::cancel::CancelHandle;
+
+    let cancel = CancelHandle::new();
+    let cancel_task = cancel.clone();
+
+    // Spawn under the guard, then panic while it is still in scope — exactly
+    // what a panicking module below the watchdog spawn does to the scan body.
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = super::AbortOnDrop(tokio::spawn(async move {
+            // Far shorter than a real deadline so the test is fast; the point
+            // is that it must never get to run this at all.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            cancel_task.cancel();
+        }));
+        panic!("a module panicked below the watchdog spawn");
+    }));
+    assert!(panicked.is_err(), "the test must actually unwind");
+
+    // Well past the task's own deadline. If the guard had merely detached it,
+    // the task would have woken and cancelled the caller's token by now.
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+    assert!(
+        !cancel.is_cancelled(),
+        "an unwound scan must not leave a watchdog alive to cancel a token it \
+         no longer owns — a later, unrelated scan would die for no visible reason"
+    );
+}
