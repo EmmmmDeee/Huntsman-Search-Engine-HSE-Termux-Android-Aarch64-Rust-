@@ -78,9 +78,6 @@ pub(super) fn render_gexf(store: &Store, sid: &str, redact: bool) -> Result<Stri
 /// seen. This is the on-disk counterpart to the live dossier and the raw
 /// archive: the contract is total transparency for a professional interpreter.
 pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str) -> Result<String> {
-    use std::collections::BTreeSet;
-    use std::fmt::Write as _;
-
     let scan = store
         .get_scan(sid)?
         .ok_or_else(|| Error::Other(format!("scan {sid} not found")))?;
@@ -95,27 +92,27 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
             .then_with(|| a.value.cmp(&b.value))
     });
 
-    // Provenance roll-up across every evidence record.
-    let mut providers: BTreeSet<String> = BTreeSet::new();
-    let mut key_origins: BTreeSet<String> = BTreeSet::new();
-    let mut sources: BTreeSet<String> = BTreeSet::new();
-    for e in &entities {
-        for ev in &e.evidence {
-            if let Some(p) = ev.attributes.get("provider") {
-                providers.insert(p.clone());
-            }
-            if let Some(k) = ev.attributes.get("api_key_origin") {
-                key_origins.insert(k.clone());
-            }
-            for sk in ["source", "source_db", "dbname"] {
-                if let Some(v) = ev.attributes.get(sk).filter(|v| !v.is_empty()) {
-                    sources.insert(v.clone());
-                }
-            }
-        }
-    }
-
     let mut s = String::new();
+    write_dossier_header(&mut s, &scan, &entities, &relations);
+    write_exposure_index_section(&mut s, &entities, &correlations);
+    write_provenance_section(&mut s, &entities);
+    write_foreign_api_keys_section(&mut s, &entities);
+    write_entities_section(&mut s, &entities);
+    write_relations_section(&mut s, &entities, &relations);
+    write_raw_source_records_section(&mut s, &scan, &entities);
+
+    Ok(s)
+}
+
+/// The dossier's opening banner: scan identity, target, status, and the
+/// top-line entity/relation/module counts.
+fn write_dossier_header(
+    s: &mut String,
+    scan: &crate::core::scan::Scan,
+    entities: &[crate::core::entity::Entity],
+    relations: &[crate::core::relation::Relation],
+) {
+    use std::fmt::Write as _;
     let _ = writeln!(s, "═══════════════════════════════════════════════════════");
     let _ = writeln!(s, "HUNTSMAN FULL DOSSIER — complete, unredacted");
     let _ = writeln!(s, "═══════════════════════════════════════════════════════");
@@ -133,14 +130,21 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
     // header historically dropped. A timed-out module is a stronger
     // incompleteness signal than a dedup, so total transparency requires it.
     let _ = writeln!(s, "modules    : {}", scan.module_accounting_line());
+}
 
-    // Exposure Index — the calibrated 0–100 headline with its transparent
-    // per-signal breakdown, mirroring the live dossier (`print_dossier`) so the
-    // on-disk/debug artifact opens with the same operator-facing verdict. Note
-    // `assess` excludes candidate rows and sub-floor speculation internally, so
-    // this matches what the operator saw live even though the dossier below lists
-    // every (incl. candidate) entity unredacted.
-    let exposure = crate::core::exposure::assess(&entities, &correlations);
+/// The Exposure Index — the calibrated 0–100 headline with its transparent
+/// per-signal breakdown, mirroring the live dossier (`print_dossier`) so the
+/// on-disk/debug artifact opens with the same operator-facing verdict. Note
+/// `assess` excludes candidate rows and sub-floor speculation internally, so
+/// this matches what the operator saw live even though the dossier's ENTITIES
+/// section lists every (incl. candidate) entity unredacted.
+fn write_exposure_index_section(
+    s: &mut String,
+    entities: &[crate::core::entity::Entity],
+    correlations: &[crate::core::correlator::Correlation],
+) {
+    use std::fmt::Write as _;
+    let exposure = crate::core::exposure::assess(entities, correlations);
     let _ = writeln!(s, "\n── EXPOSURE INDEX ──");
     let _ = writeln!(s, "  {}", exposure.summary_line());
     for c in &exposure.components {
@@ -149,6 +153,32 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
             "    · {:<22} {:>2}/{:<2}  {}",
             c.name, c.score, c.max, c.detail
         );
+    }
+}
+
+/// Provenance roll-up across every evidence record: which providers, API key
+/// origins, and source sites/databases contributed to this scan.
+fn write_provenance_section(s: &mut String, entities: &[crate::core::entity::Entity]) {
+    use std::collections::BTreeSet;
+    use std::fmt::Write as _;
+
+    let mut providers: BTreeSet<String> = BTreeSet::new();
+    let mut key_origins: BTreeSet<String> = BTreeSet::new();
+    let mut sources: BTreeSet<String> = BTreeSet::new();
+    for e in entities {
+        for ev in &e.evidence {
+            if let Some(p) = ev.attributes.get("provider") {
+                providers.insert(p.clone());
+            }
+            if let Some(k) = ev.attributes.get("api_key_origin") {
+                key_origins.insert(k.clone());
+            }
+            for sk in ["source", "source_db", "dbname"] {
+                if let Some(v) = ev.attributes.get(sk).filter(|v| !v.is_empty()) {
+                    sources.insert(v.clone());
+                }
+            }
+        }
     }
 
     let _ = writeln!(s, "\n── PROVENANCE ──");
@@ -167,13 +197,17 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
         "sources/sites  : {}",
         super::dossier::join_or_dash(sources.iter())
     );
+}
 
-    // Foreign API keys retrieved from endpoint data — surfaced up front because
-    // a leaked third-party credential is the highest-signal finding in a scan.
-    // These are ApiKey entities tagged `foreign-key`: recognised VENDOR keys
-    // (Stripe, AWS, GitHub, PEM blocks, …) identified in any module's response,
-    // with our own auth keys excluded. Bare breach password hashes are NOT here
-    // (they appear as their own entities below). Full evidence is in ENTITIES.
+/// Foreign API keys retrieved from endpoint data — surfaced up front because
+/// a leaked third-party credential is the highest-signal finding in a scan.
+/// These are ApiKey entities tagged `foreign-key`: recognised VENDOR keys
+/// (Stripe, AWS, GitHub, PEM blocks, …) identified in any module's response,
+/// with our own auth keys excluded. Bare breach password hashes are NOT here
+/// (they appear as their own entities in the ENTITIES section). Full evidence
+/// is in ENTITIES.
+fn write_foreign_api_keys_section(s: &mut String, entities: &[crate::core::entity::Entity]) {
+    use std::fmt::Write as _;
     let foreign: Vec<&crate::core::entity::Entity> = entities
         .iter()
         .filter(|e| e.has_tag("foreign-key"))
@@ -199,7 +233,14 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
             attr("occurrences"),
         );
     }
+}
 
+/// Every entity, every field, fully unredacted — the "nothing omitted"
+/// guarantee the module doc describes: the SHA-256 uid, pre-normalisation
+/// raw_value, decay timestamp, generation, tags, MITRE ATT&CK provenance, and
+/// each evidence record's source/summary/timing/verification/attributes.
+fn write_entities_section(s: &mut String, entities: &[crate::core::entity::Entity]) {
+    use std::fmt::Write as _;
     let _ = writeln!(s, "\n── ENTITIES (every field, fully unredacted) ──");
     for (i, e) in entities.iter().enumerate() {
         let _ = writeln!(s, "\n[{}] {} = {}", i + 1, e.kind, e.value);
@@ -306,50 +347,65 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
             }
         }
     }
+}
 
-    if !relations.is_empty() {
-        // Resolve each endpoint UID to `value (kind)` so the relation graph is
-        // legible in the primary human dossier (mirrors print_dossier /
-        // scan_relations) instead of opaque hex→hex. render_full carries EVERY
-        // entity (candidates included), so endpoints resolve; the short-uid stub
-        // is a defensive fallback only. Lookup-only map (never iterated) — output
-        // stays byte-deterministic. UIDs are hex ASCII, so the slice is byte-safe.
-        let by_uid: std::collections::HashMap<&str, &crate::core::entity::Entity> =
-            entities.iter().map(|e| (e.uid.as_str(), e)).collect();
-        let label = |uid: &str| {
-            super::relation_endpoint_label(&by_uid, uid, |e| format!("{} ({})", e.value, e.kind))
-        };
-        let _ = writeln!(s, "\n── RELATIONS ──");
-        for r in &relations {
-            let _ = writeln!(
-                s,
-                "  {} ──{}──▶ {}  (conf={:.2})",
-                label(&r.from_uid),
-                r.kind,
-                label(&r.to_uid),
-                r.confidence
-            );
-        }
+/// The structural relation graph (`BelongsToDomain`/`RegisteredBy`/…) with
+/// each endpoint resolved to `value (kind)` so it is legible in the primary
+/// human dossier (mirrors `print_dossier`/`scan_relations`) instead of opaque
+/// hex→hex. `render_full` carries EVERY entity (candidates included), so
+/// endpoints resolve; the short-uid stub is a defensive fallback only.
+fn write_relations_section(
+    s: &mut String,
+    entities: &[crate::core::entity::Entity],
+    relations: &[crate::core::relation::Relation],
+) {
+    use std::fmt::Write as _;
+    if relations.is_empty() {
+        return;
     }
+    // Lookup-only map (never iterated) — output stays byte-deterministic.
+    // UIDs are hex ASCII, so the slice is byte-safe.
+    let by_uid: std::collections::HashMap<&str, &crate::core::entity::Entity> =
+        entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+    let label = |uid: &str| {
+        super::relation_endpoint_label(&by_uid, uid, |e| format!("{} ({})", e.value, e.kind))
+    };
+    let _ = writeln!(s, "\n── RELATIONS ──");
+    for r in relations {
+        let _ = writeln!(
+            s,
+            "  {} ──{}──▶ {}  (conf={:.2})",
+            label(&r.from_uid),
+            r.kind,
+            label(&r.to_uid),
+            r.confidence
+        );
+    }
+}
 
-    // ── RAW SOURCE RECORDS ──────────────────────────────────────────────────
-    // Embed every paid API response this scan fetched, verbatim, recovered from
-    // the on-disk archive. This guarantees the dossier leaves NOTHING out — even
-    // thin records that produced no entity (e.g. a breach hit with only a
-    // `source`, or a paste listing hundreds of unrelated addresses) appear here
-    // in full. The archive files remain saved separately; this is an embedded
-    // copy for a self-contained dossier.
-    //
-    // Responses are tied to THIS scan precisely: the time window [started_at,
-    // finished_at] excludes earlier runs of the same target, and the query-set
-    // (target value + every entity value) excludes a neighbouring back-to-back
-    // scan whose second-granular window touches this one. (A loose ±margin window
-    // bled adjacent scans together — unix timestamps are per-second.)
+/// Embed every paid API response this scan fetched, verbatim, recovered from
+/// the on-disk archive. This guarantees the dossier leaves NOTHING out — even
+/// thin records that produced no entity (e.g. a breach hit with only a
+/// `source`, or a paste listing hundreds of unrelated addresses) appear here
+/// in full. The archive files remain saved separately; this is an embedded
+/// copy for a self-contained dossier.
+///
+/// Responses are tied to THIS scan precisely: the time window [started_at,
+/// finished_at] excludes earlier runs of the same target, and the query-set
+/// (target value + every entity value) excludes a neighbouring back-to-back
+/// scan whose second-granular window touches this one. (A loose ±margin window
+/// bled adjacent scans together — unix timestamps are per-second.)
+fn write_raw_source_records_section(
+    s: &mut String,
+    scan: &crate::core::scan::Scan,
+    entities: &[crate::core::entity::Entity],
+) {
+    use std::fmt::Write as _;
     let start = scan.started_at;
     let end = scan.finished_at.unwrap_or(u64::MAX);
     let mut queries: std::collections::HashSet<String> = std::collections::HashSet::new();
     queries.insert(scan.target.value.to_lowercase());
-    for e in &entities {
+    for e in entities {
         queries.insert(e.value.to_lowercase());
     }
     let raws = crate::util::raw_archive::records_for_queries(&queries, start, end);
@@ -375,8 +431,6 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
             let _ = writeln!(s, "    {line}");
         }
     }
-
-    Ok(s)
 }
 
 /// Pretty-print one archived raw response for embedding in the dossier, with
@@ -472,10 +526,40 @@ pub(crate) fn render_debug_bundle(
     store: &dyn crate::core::port::StoragePort,
     sid: &str,
 ) -> Result<String> {
-    use std::collections::BTreeMap;
-    use std::fmt::Write as _;
-
     let mut s = String::new();
+    write_debug_bundle_banner(&mut s);
+
+    // ── 1. Full dossier (entities/evidence/provenance/raw records) ──
+    s.push_str(&render_full(store, sid)?);
+
+    // ── 2. Correlator hits ──
+    write_correlations_section(&mut s, store, sid)?;
+
+    // ── 3. Complete scan sequence (every event) ──
+    let events = store.events_for_scan(sid)?;
+    s.push('\n');
+    s.push_str(&render_event_log(&events));
+
+    // ── 4. Scored self-audit (every weakness + recommendation) ──
+    write_self_audit_section(&mut s, store, sid, &events)?;
+
+    // ── 5. Source-file manifest (every file the binary was built from) ──
+    write_source_manifest_section(&mut s);
+
+    Ok(s)
+}
+
+/// The bundle's opening banner and environment fingerprint (section 0).
+///
+/// DETERMINISM: the bundle body deliberately carries NO wall-clock generation
+/// timestamp. For an immutable (completed) scan, two exports must be
+/// byte-identical so the artifact can be `diff`ed across runs/tools/time —
+/// the reproducibility the bundle exists to serve. The scan's own immutable
+/// timestamps (event `ts`, entity `observed_at`) are already inside, and a
+/// caller that needs the generation time can take it out-of-band (HTTP
+/// `Date` header / shell). Guarded by `debug_bundle_is_deterministic`.
+fn write_debug_bundle_banner(s: &mut String) {
+    use std::fmt::Write as _;
     let _ = writeln!(
         s,
         "╔═══════════════════════════════════════════════════════╗"
@@ -492,23 +576,23 @@ pub(crate) fn render_debug_bundle(
         s,
         "╚═══════════════════════════════════════════════════════╝"
     );
-    // DETERMINISM: the bundle body deliberately carries NO wall-clock generation
-    // timestamp. For an immutable (completed) scan, two exports must be
-    // byte-identical so the artifact can be `diff`ed across runs/tools/time —
-    // the reproducibility the bundle exists to serve. The scan's own immutable
-    // timestamps (event `ts`, entity `observed_at`) are already inside, and a
-    // caller that needs the generation time can take it out-of-band (HTTP
-    // `Date` header / shell). Guarded by `debug_bundle_is_deterministic`.
 
     // ── 0. Environment fingerprint (reconstructable scan context) ──
     s.push_str(&super::environment::render_environment(
         super::environment::curl_present(),
     ));
+}
 
-    // ── 1. Full dossier (entities/evidence/provenance/raw records) ──
-    s.push_str(&render_full(store, sid)?);
+/// Correlator hits (section 2): the rule-frequency histogram, every fired
+/// correlation, and the best AU geolocation fix if one fired.
+fn write_correlations_section(
+    s: &mut String,
+    store: &dyn crate::core::port::StoragePort,
+    sid: &str,
+) -> Result<()> {
+    use std::collections::BTreeMap;
+    use std::fmt::Write as _;
 
-    // ── 2. Correlator hits ──
     let correlations = store.correlations_for_scan(sid)?;
     let _ = writeln!(s, "\n── CORRELATIONS ({}) ──", correlations.len());
     if correlations.is_empty() {
@@ -596,20 +680,29 @@ pub(crate) fn render_debug_bundle(
             );
         }
     }
+    Ok(())
+}
 
-    // ── 3. Complete scan sequence (every event) ──
-    let events = store.events_for_scan(sid)?;
-    s.push('\n');
-    s.push_str(&render_event_log(&events));
+/// The scored self-audit (section 4): score/grade, tier breakdown,
+/// quarantine/geo/exclusion summaries, and every finding with its examples
+/// and recommendation. `events` is the scan's already-fetched event stream
+/// (section 3 fetches it first and needs it too, so the caller passes it
+/// through rather than this section re-fetching).
+fn write_self_audit_section(
+    s: &mut String,
+    store: &dyn crate::core::port::StoragePort,
+    sid: &str,
+    events: &[crate::core::event::Event],
+) -> Result<()> {
+    use std::fmt::Write as _;
 
-    // ── 4. Scored self-audit (every weakness + recommendation) ──
     let entities = store.entities_for_scan(sid)?;
     let normalised: Vec<crate::audit::AuditEntity> = entities
         .iter()
         .map(crate::audit::AuditEntity::from_entity)
         .collect();
     let mut signals = crate::audit::LogSignals::default();
-    crate::audit::fold_events(&mut signals, &events);
+    crate::audit::fold_events(&mut signals, events);
     let report = crate::audit::audit(&normalised, signals);
 
     let _ = writeln!(s, "\n── SELF-AUDIT ──");
@@ -681,11 +774,15 @@ pub(crate) fn render_debug_bundle(
         }
         let _ = writeln!(s, "        → {}", f.recommendation);
     }
+    Ok(())
+}
 
-    // ── 5. Source-file manifest (every file the binary was built from) ──
-    // Incorporates ALL files, not just runtime modules: a build fingerprint that
-    // makes the codebase the binary carries fully accountable from the artifact.
-    // Deterministic (build.rs emits it sorted by path).
+/// The source-file manifest (section 5): every file the binary was built
+/// from. Incorporates ALL files, not just runtime modules: a build
+/// fingerprint that makes the codebase the binary carries fully accountable
+/// from the artifact. Deterministic (build.rs emits it sorted by path).
+fn write_source_manifest_section(s: &mut String) {
+    use std::fmt::Write as _;
     let _ = writeln!(
         s,
         "\n── SOURCE FILES ({} files, {} LOC) ──",
@@ -695,8 +792,6 @@ pub(crate) fn render_debug_bundle(
     for (path, lines) in crate::source_manifest::SOURCE_FILES {
         let _ = writeln!(s, "  {lines:>6}  {path}");
     }
-
-    Ok(s)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1136,6 +1231,67 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             .map(String::as_str),
         wal_oversized: inp.wal_bytes.is_some_and(|b| b > WAL_RUNAWAY_BYTES),
     });
+    write_detected_issues_section(&mut s, &issues);
+
+    // ── 1. Environment fingerprint (build / host / module set / key presence) ──
+    // Reuse the `curl_present` already computed for the verdict — one spawn, not two.
+    s.push_str(&super::environment::render_environment(curl_present));
+
+    // ── 1a. Update / build freshness — is this binary current? ──
+    write_update_status_section(&mut s, inp);
+
+    // ── 1b. Disabled capabilities (operator toggles) — the single most direct
+    //        answer to "why didn't module/feature X run?" that isn't a bug: an
+    //        operator turned it off in `~/.huntsman/settings.json`. ──
+    write_disabled_capabilities_section(&mut s);
+
+    // ── 2. Validation — the full self-test suite (`hse selftest`) ──
+    write_validation_section(&mut s, inp);
+
+    // ── 3. Live per-process module health (failure streaks) ──
+    write_module_health_section(&mut s, &module_health);
+
+    // ── 4a. Search-engine liveness (latest cached sweep) ──
+    write_search_engine_liveness_section(&mut s, &engines, &engines_down, &engines_blocked);
+
+    // ── 4b. Cross-scan scraper health (persisted drift) ──
+    write_scraper_health_section(&mut s, inp);
+
+    // ── 4b′. Key authentication — which keyed sources the upstream is actively
+    //        REJECTING (auth-shaped errors: 401/403, "invalid API key", "API key
+    //        not found", …), lifted out of the generic drift errors above so a
+    //        dead credential is called out explicitly with the exact upstream
+    //        message and the env var most likely holding it. Grounded in observed
+    //        responses — never mis-reports a working key like a synthetic probe. ──
+    write_key_authentication_section(&mut s, inp);
+
+    // ── 4c. Keyed-provider quota budgets (why a keyed module returns nothing) ──
+    write_provider_quotas_section(&mut s, &provider_budgets, &quota_exhausted);
+
+    // ── 4d. Key-pool health — value-free per-service status. A service with
+    //        keys but 0 ACTIVE is a silent top-source death (invisible to the
+    //        error-based health above). ──
+    write_key_pool_section(&mut s, inp);
+
+    // ── 4e. Storage health — the REAL on-disk DB (self-test only checks a
+    //        throwaway temp DB, so corruption is invisible everywhere else). ──
+    write_storage_health_section(&mut s, inp);
+
+    // ── 5. Recent scans (with each failed scan's error inline) ──
+    write_recent_scans_section(&mut s, inp);
+
+    // ── 6. Recent verbose logs (the in-memory TRACE ring) ──
+    write_recent_logs_section(&mut s, inp);
+
+    // ── 7. Source-file manifest (build fingerprint — every file the binary carries) ──
+    write_source_manifest_section(&mut s);
+
+    s
+}
+
+/// Section 0: the auto-computed DETECTED ISSUES verdict, read first.
+fn write_detected_issues_section(s: &mut String, issues: &[DetectedIssue]) {
+    use std::fmt::Write as _;
     let (crit, warn) = issues.iter().fold((0usize, 0usize), |(c, w), i| {
         if i.severity == SEV_CRITICAL {
             (c + 1, w)
@@ -1154,15 +1310,14 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
              no failed scans"
         );
     }
-    for i in &issues {
+    for i in issues {
         let _ = writeln!(s, "  [{}] {}: {}", i.severity, i.category, i.detail);
     }
+}
 
-    // ── 1. Environment fingerprint (build / host / module set / key presence) ──
-    // Reuse the `curl_present` already computed for the verdict — one spawn, not two.
-    s.push_str(&super::environment::render_environment(curl_present));
-
-    // ── 1a. Update / build freshness — is this binary current? ──
+/// Section 1a: update/build freshness — is this binary current?
+fn write_update_status_section(s: &mut String, inp: &SystemDebugInputs) {
+    use std::fmt::Write as _;
     let _ = writeln!(s, "\n── UPDATE STATUS ──");
     let behind = match inp.update_commits_behind {
         Some(0) => "up to date".to_string(),
@@ -1177,10 +1332,13 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
         crate::util::timefmt::compact_utc(inp.update_last_checked)
     };
     let _ = writeln!(s, "  last_checked  : {last}");
+}
 
-    // ── 1b. Disabled capabilities (operator toggles) — the single most direct
-    //        answer to "why didn't module/feature X run?" that isn't a bug: an
-    //        operator turned it off in `~/.huntsman/settings.json`. ──
+/// Section 1b: disabled capabilities (operator toggles in
+/// `~/.huntsman/settings.json`) — the single most direct answer to "why
+/// didn't module/feature X run?" that isn't a bug.
+fn write_disabled_capabilities_section(s: &mut String) {
+    use std::fmt::Write as _;
     let disabled_modules: Vec<&'static str> = {
         let reg = crate::modules::registry();
         let mut v: Vec<&'static str> = reg
@@ -1227,14 +1385,23 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
     if !disabled_features.is_empty() {
         let _ = writeln!(s, "  features OFF: {}", disabled_features.join(", "));
     }
+}
 
-    // ── 2. Validation — the full self-test suite (`hse selftest`) ──
+/// Section 2: the full self-test suite (`hse selftest`).
+fn write_validation_section(s: &mut String, inp: &SystemDebugInputs) {
+    use std::fmt::Write as _;
     let _ = writeln!(s, "\n── VALIDATION (SELF-TEST) ──");
     let _ = writeln!(s, "  {}", inp.selftest.summary());
     s.push_str(&inp.selftest.render());
     s.push('\n');
+}
 
-    // ── 3. Live per-process module health (failure streaks) ──
+/// Section 3: live per-process module health (dispatch-failure streaks).
+fn write_module_health_section(
+    s: &mut String,
+    module_health: &[crate::core::engine::ModuleHealth],
+) {
+    use std::fmt::Write as _;
     let _ = writeln!(
         s,
         "\n── MODULE HEALTH (live, this process — {} with a failure streak) ──",
@@ -1246,7 +1413,7 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             "  ✓ no module is currently showing a dispatch-failure streak"
         );
     }
-    for h in &module_health {
+    for h in module_health {
         let last = h
             .last_success_at
             .map_or_else(|| "never this process".to_string(), |t| t.to_string());
@@ -1256,8 +1423,16 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             h.name, h.consecutive_failures, last
         );
     }
+}
 
-    // ── 4a. Search-engine liveness (latest cached sweep) ──
+/// Section 4a: search-engine liveness from the latest cached sweep.
+fn write_search_engine_liveness_section(
+    s: &mut String,
+    engines: &crate::modules::search_engines::health::HealthSnapshot,
+    engines_down: &[&str],
+    engines_blocked: &[&str],
+) {
+    use std::fmt::Write as _;
     let _ = writeln!(
         s,
         "\n── SEARCH-ENGINE LIVENESS (checked_at={}, {} engines: {} down, {} blocked) ──",
@@ -1283,8 +1458,12 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             h.detail
         );
     }
+}
 
-    // ── 4b. Cross-scan scraper health (persisted drift) ──
+/// Section 4b: cross-scan scraper health (persisted hard-failure and
+/// silent-zero-yield drift).
+fn write_scraper_health_section(s: &mut String, inp: &SystemDebugInputs) {
+    use std::fmt::Write as _;
     let drifted: Vec<_> = inp
         .scraper_health
         .iter()
@@ -1324,13 +1503,16 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             h.module, h.consecutive_zero_yield
         );
     }
+}
 
-    // ── 4b′. Key authentication — which keyed sources the upstream is actively
-    //        REJECTING (auth-shaped errors: 401/403, "invalid API key", "API key
-    //        not found", …), lifted out of the generic drift errors above so a
-    //        dead credential is called out explicitly with the exact upstream
-    //        message and the env var most likely holding it. Grounded in observed
-    //        responses — never mis-reports a working key like a synthetic probe. ──
+/// Section 4b′: key authentication — which keyed sources the upstream is
+/// actively REJECTING (auth-shaped errors: 401/403, "invalid API key", "API
+/// key not found", …), lifted out of the generic drift errors above so a
+/// dead credential is called out explicitly with the exact upstream message
+/// and the env var most likely holding it. Grounded in observed responses —
+/// never mis-reports a working key like a synthetic probe.
+fn write_key_authentication_section(s: &mut String, inp: &SystemDebugInputs) {
+    use std::fmt::Write as _;
     let auth_rejected = crate::util::key_health::auth_failing_sources(&inp.scraper_health);
     let _ = writeln!(
         s,
@@ -1354,14 +1536,22 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             i.module, i.consecutive_failures
         );
     }
+}
 
-    // ── 4c. Keyed-provider quota budgets (why a keyed module returns nothing) ──
+/// Section 4c: keyed-provider quota budgets — why a keyed module currently
+/// returns nothing.
+fn write_provider_quotas_section(
+    s: &mut String,
+    provider_budgets: &[(&str, crate::util::budget::BudgetSnapshot)],
+    quota_exhausted: &[&str],
+) {
+    use std::fmt::Write as _;
     let _ = writeln!(
         s,
         "\n── PROVIDER QUOTAS ({} exhausted) ──",
         quota_exhausted.len()
     );
-    for (name, b) in &provider_budgets {
+    for (name, b) in provider_budgets {
         let flag = if b.quota_exhausted {
             " · EXHAUSTED"
         } else {
@@ -1373,10 +1563,13 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             name, b.scan_used, b.scan_cap, b.session_used, b.session_cap, flag
         );
     }
+}
 
-    // ── 4d. Key-pool health — value-free per-service status. A service with
-    //        keys but 0 ACTIVE is a silent top-source death (invisible to the
-    //        error-based health above). ──
+/// Section 4d: key-pool health — value-free per-service status. A service
+/// with keys but 0 ACTIVE is a silent top-source death (invisible to the
+/// error-based health above).
+fn write_key_pool_section(s: &mut String, inp: &SystemDebugInputs) {
+    use std::fmt::Write as _;
     let dead_pools = inp.key_pool.iter().filter(|k| k.is_dead()).count();
     let _ = writeln!(
         s,
@@ -1411,9 +1604,12 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             dead
         );
     }
+}
 
-    // ── 4e. Storage health — the REAL on-disk DB (self-test only checks a
-    //        throwaway temp DB, so corruption is invisible everywhere else). ──
+/// Section 4e: storage health — the REAL on-disk DB (self-test only checks a
+/// throwaway temp DB, so corruption is invisible everywhere else).
+fn write_storage_health_section(s: &mut String, inp: &SystemDebugInputs) {
+    use std::fmt::Write as _;
     let integrity_ok = inp.db_integrity.iter().all(|r| r == "ok");
     let _ = writeln!(s, "\n── STORAGE HEALTH (real on-disk DB) ──");
     if integrity_ok {
@@ -1444,8 +1640,12 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             let _ = writeln!(s, "  WAL size : (no -wal sidecar found)");
         }
     }
+}
 
-    // ── 5. Recent scans (with each failed scan's error inline) ──
+/// Section 5: recent scans, newest-first, with each failed scan's error
+/// inline.
+fn write_recent_scans_section(s: &mut String, inp: &SystemDebugInputs) {
+    use std::fmt::Write as _;
     let _ = writeln!(
         s,
         "\n── RECENT SCANS ({}, newest-first; pull /api/v1/scans/<id>/debug.txt for per-scan depth) ──",
@@ -1472,8 +1672,11 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             let _ = writeln!(s, "        error: {err}");
         }
     }
+}
 
-    // ── 6. Recent verbose logs (the in-memory TRACE ring) ──
+/// Section 6: recent verbose logs — the in-memory TRACE ring.
+fn write_recent_logs_section(s: &mut String, inp: &SystemDebugInputs) {
+    use std::fmt::Write as _;
     let _ = writeln!(
         s,
         "\n── RECENT LOGS ({} line(s) in the ring buffer) ──",
@@ -1490,19 +1693,6 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             s.push('\n');
         }
     }
-
-    // ── 7. Source-file manifest (build fingerprint — every file the binary carries) ──
-    let _ = writeln!(
-        s,
-        "\n── SOURCE FILES ({} files, {} LOC) ──",
-        crate::source_manifest::SOURCE_FILES.len(),
-        crate::source_manifest::SOURCE_TOTAL_LINES,
-    );
-    for (path, lines) in crate::source_manifest::SOURCE_FILES {
-        let _ = writeln!(s, "  {lines:>6}  {path}");
-    }
-
-    s
 }
 
 pub(super) fn render_report(store: &Store, sid: &str, include_infra: bool) -> Result<String> {
