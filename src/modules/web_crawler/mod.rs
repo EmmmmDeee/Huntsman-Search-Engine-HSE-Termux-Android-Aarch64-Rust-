@@ -3,8 +3,12 @@
 //!
 //! Capabilities (all executed in one `process()` call):
 //!   1. **Recursive BFS crawl** — async concurrent page fetching within the
-//!      target domain, bounded by depth (3) and page count (60). Respects
-//!      robots.txt `Disallow` rules and filters binary file extensions.
+//!      target domain, bounded by depth (default 3) and page count (default 60).
+//!      Both bounds are operator-raisable — `HUNTSMAN_CRAWL_MAX_DEPTH` (up to 8)
+//!      and `HUNTSMAN_CRAWL_MAX_PAGES` (up to 500) — for a deeper crawl, but never
+//!      unbounded: the ceilings keep the visited-set/queue within on-device memory
+//!      and keep a BFS into a densely-linked or link-cyclic site terminating.
+//!      Respects robots.txt `Disallow` rules and filters binary file extensions.
 //!   2. **Link discovery** — extracts internal links (same domain), external
 //!      links (other domains), and subdomain links. Each discovered subdomain
 //!      becomes a Domain entity for expansion.
@@ -51,6 +55,48 @@ const BODY_CAP: usize = 65_536;
 const INTER_REQUEST_MS: u64 = 200;
 const URL_TARGET_MAX_PAGES: usize = 5;
 const URL_TARGET_MAX_DEPTH: u32 = 1;
+
+/// Safe ceilings for the operator-configurable domain-crawl bounds. A deeper
+/// crawl is opt-in (`HUNTSMAN_CRAWL_MAX_PAGES` / `HUNTSMAN_CRAWL_MAX_DEPTH`) but
+/// never unbounded: the page ceiling keeps the visited-set, queue, and
+/// per-request work within on-device (Termux) memory, and — with the page cap
+/// that always dominates a BFS — the depth ceiling keeps a crawl into a
+/// densely-linked or link-cyclic site terminating rather than running forever.
+const MAX_PAGES_CEILING: usize = 500;
+const MAX_DEPTH_CEILING: u32 = 8;
+
+/// Resolve an operator override for a crawl bound from its raw env value,
+/// clamped to `[1, ceiling]`, defaulting when unset / empty / non-numeric / zero.
+///
+/// Pure (the env read is done by the callers) so the clamp-and-default policy is
+/// hermetically testable. The `min(ceiling)` is the safety property: however
+/// large a value the operator asks for — including an attempt at "unlimited" — a
+/// crawl can never exceed the on-device-safe ceiling.
+fn crawl_bound(raw: Option<&str>, default: usize, ceiling: usize) -> usize {
+    raw.and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .map_or(default, |v| v.min(ceiling))
+}
+
+/// Domain-crawl page budget: [`MAX_PAGES`] by default, raisable via
+/// `HUNTSMAN_CRAWL_MAX_PAGES` up to [`MAX_PAGES_CEILING`].
+fn domain_max_pages() -> usize {
+    crawl_bound(
+        std::env::var("HUNTSMAN_CRAWL_MAX_PAGES").ok().as_deref(),
+        MAX_PAGES,
+        MAX_PAGES_CEILING,
+    )
+}
+
+/// Domain-crawl depth: [`MAX_DEPTH`] by default, raisable via
+/// `HUNTSMAN_CRAWL_MAX_DEPTH` up to [`MAX_DEPTH_CEILING`].
+fn domain_max_depth() -> u32 {
+    crawl_bound(
+        std::env::var("HUNTSMAN_CRAWL_MAX_DEPTH").ok().as_deref(),
+        MAX_DEPTH as usize,
+        MAX_DEPTH_CEILING as usize,
+    ) as u32
+}
 
 pub(super) const BINARY_EXTENSIONS: &[&str] = &[
     "png", "gif", "jpg", "jpeg", "tiff", "tif", "webp", "svg", "ico", "pdf", "doc", "docx", "xls",
@@ -157,15 +203,18 @@ impl Module for WebCrawler {
             (s, d)
         };
 
+        // A single-URL target gets a tight fixed budget; a domain crawl uses the
+        // operator-configurable (clamped) page/depth bounds so a deeper sweep is
+        // opt-in without ever becoming unbounded.
         let max_pages = if is_url_target {
             URL_TARGET_MAX_PAGES
         } else {
-            MAX_PAGES
+            domain_max_pages()
         };
         let max_depth = if is_url_target {
             URL_TARGET_MAX_DEPTH
         } else {
-            MAX_DEPTH
+            domain_max_depth()
         };
 
         let seed_url =
@@ -173,8 +222,8 @@ impl Module for WebCrawler {
         let base_host = seed_url.host_str().unwrap_or(&domain).to_lowercase();
 
         let mut state = CrawlState {
-            visited: HashSet::with_capacity(MAX_PAGES),
-            queue: VecDeque::with_capacity(MAX_PAGES),
+            visited: HashSet::with_capacity(max_pages),
+            queue: VecDeque::with_capacity(max_pages),
             pages_fetched: 0,
             disallow_rules: Vec::new(),
             result: ModuleResult::new(),

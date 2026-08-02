@@ -1,6 +1,26 @@
 use super::*;
 
     #[test]
+    fn crawl_bound_defaults_honours_a_raise_and_clamps_to_the_ceiling() {
+        // Unset / empty / non-numeric / zero all fall back to the default.
+        assert_eq!(crawl_bound(None, 60, 500), 60);
+        assert_eq!(crawl_bound(Some(""), 60, 500), 60);
+        assert_eq!(crawl_bound(Some("   "), 60, 500), 60);
+        assert_eq!(crawl_bound(Some("lots"), 60, 500), 60);
+        assert_eq!(crawl_bound(Some("0"), 60, 500), 60);
+        // A valid operator raise (or lower) is honoured, whitespace-tolerant.
+        assert_eq!(crawl_bound(Some("250"), 60, 500), 250);
+        assert_eq!(crawl_bound(Some(" 120 "), 60, 500), 120);
+        assert_eq!(crawl_bound(Some("10"), 60, 500), 10);
+        // Safety invariant: however large the request — including an attempt at
+        // "unlimited" — the effective bound never exceeds the on-device ceiling.
+        assert_eq!(crawl_bound(Some("100000"), 60, 500), 500);
+        assert_eq!(crawl_bound(Some("18446744073709551615"), 60, 500), 500);
+        // Depth ceiling behaves identically.
+        assert_eq!(crawl_bound(Some("999"), 3, 8), 8);
+    }
+
+    #[test]
     fn accepts_domain_and_url() {
         let m = WebCrawler;
         assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com")));

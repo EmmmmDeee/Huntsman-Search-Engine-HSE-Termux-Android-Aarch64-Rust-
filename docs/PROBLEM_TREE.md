@@ -1931,6 +1931,24 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
 ## 8. Maintained log
 ## 8. Maintained log
 
+- **2026-08-02** — **Delivered configurable (bounded) web-crawl depth/pages (CAP;
+  operator directive 'maximise recursion into websites').** The domain-crawl caps
+  were hardcoded (`MAX_PAGES=60`, `MAX_DEPTH=3`) with no lever to go deeper. Rather
+  than remove the bounds (literal 'unlimited' recursion OOMs the device, never
+  terminates on a link-cyclic site, and hammers the target — strictly worse
+  results), added `HUNTSMAN_CRAWL_MAX_PAGES` (≤500) / `HUNTSMAN_CRAWL_MAX_DEPTH`
+  (≤8) via a pure, clamped `crawl_bound(raw, default, ceiling)`; the pre-alloc uses
+  the effective budget so it scales yet stays bounded. Defaults unchanged; all
+  safeguards (visited-set, robots.txt, SSRF guard, 64 KB body cap, per-host
+  scoping, cancellation) intact. Matches the `HUNTSMAN_*` env-tunable convention.
+  +1 test, proven red-then-green (dropping `.min(ceiling)` fails the `100000`/`u64::MAX`
+  → 500 safety assertion). Gate green: fmt/clippy `-D warnings`/rustdoc/doc clean,
+  `cargo test --all --locked` 4605 lib + 256 integration, 0 failures. **Paired:**
+  `SOLUTION_TREE` §5 SOL-CRAWL-CONFIGURABLE-BOUNDS — same commit. Also recorded the
+  recursion-audit finding (source-blind wrong-identity gate drops seed-anchored
+  names, `scan/classify.rs:163`) as a verified-pending unit — deferred because a
+  safe fix needs an authoritative-seed-resolution source design + regression tests
+  proving a scraped stranger stays gated (must not reopen namesake contamination).
 - **2026-08-01** — **Executed T2.46 (new, from the geo-route audit; user
   directive 'fix the geo routes first'): killed a P0 wrong-country geocode in
   `au_property`.** It derived a `Coordinates` from a bare suburb name via the

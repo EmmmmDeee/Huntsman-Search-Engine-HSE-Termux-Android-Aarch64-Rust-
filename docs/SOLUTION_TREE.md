@@ -226,6 +226,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ### S.RESOURCE — Concurrency, throughput & resource safety
 
+- **`[x]` SOL-CRAWL-CONFIGURABLE-BOUNDS · Deeper crawl, opt-in and clamped** —
+  web_crawler's domain page/depth caps (were hardcoded 60/3) are now raisable via
+  `HUNTSMAN_CRAWL_MAX_PAGES` (≤500) / `HUNTSMAN_CRAWL_MAX_DEPTH` (≤8) through a pure
+  `crawl_bound(raw, default, ceiling)` that parses, rejects junk/zero, and clamps.
+  The safe answer to 'unlimited recursion into websites': a real depth increase
+  without surrendering bounded-memory or termination (the ceiling is the invariant,
+  tested via `100000`/`u64::MAX` → 500). Defaults + all safeguards unchanged.
+  Serves **C2** (perf/scale) / **C4** (NETINT depth). ✅ delivered.
+
 - **`[x]` SOL-BLOCKING · Keep the 2-worker reactor unblocked** — `spawn_blocking`
   the heavy sync `Store`/render handlers; a dedicated **DB-writer actor**
   (`core/engine/writer::DbWriter`) owning the `insert_event` call path behind an
@@ -1137,6 +1146,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ## 5. Maintained log (paired with `PROBLEM_TREE` §8)
 
+- **2026-08-02** — **SOL-CRAWL-CONFIGURABLE-BOUNDS `[ ]`→`[x]`: deeper website
+  crawl, bounded.** Operator asked to 'maximise recursion into websites'; literal
+  unbounded crawl OOMs the device / never terminates, so instead exposed the
+  hardcoded crawl caps as clamped env tunables (`HUNTSMAN_CRAWL_MAX_PAGES` ≤500,
+  `HUNTSMAN_CRAWL_MAX_DEPTH` ≤8) via a pure tested `crawl_bound`. Defaults + robots/
+  SSRF/body-cap/cancellation safeguards unchanged. +1 test, proven red-then-green
+  (the ceiling clamp is the safety invariant). Paired: `PROBLEM_TREE` §8 — same
+  commit.
 - **2026-08-01** — **SOL-AU-PROPERTY-POSTCODE-COORD `[ ]`->`[x]` (closes T2.46):
   stop `au_property` geolocating AU suburbs to same-named foreign cities.** The bare
   suburb-name lookup in the substring-matched `city_coords` table returned Miami,

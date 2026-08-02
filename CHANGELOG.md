@@ -10,6 +10,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+- **The web crawler's depth and page budget are now operator-configurable for a
+  deeper crawl, bounded to stay safe on-device.** The domain-crawl bounds were
+  hardcoded at 60 pages / depth 3. Two env vars now raise them —
+  `HUNTSMAN_CRAWL_MAX_PAGES` (up to 500) and `HUNTSMAN_CRAWL_MAX_DEPTH` (up to 8)
+  — so a power user can crawl much further into a site. They are clamped to those
+  ceilings and never unbounded: the page ceiling keeps the visited-set/queue and
+  per-request work within Termux memory, and (with the page cap that always
+  dominates a BFS) the depth ceiling keeps a crawl into a densely-linked or
+  link-cyclic site terminating. An unset, empty, non-numeric, or zero value keeps
+  the default; all existing safeguards (robots.txt, SSRF egress guard, 64 KB body
+  cap, per-host scoping, cancellation) are unchanged.
+
 ### Fixed
 - **An Australian property record whose suburb shares its name with a foreign
   city is no longer geolocated to the wrong country.** `au_property` derived a
