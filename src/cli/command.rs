@@ -81,7 +81,7 @@ pub enum Command {
         /// omitted value.
         #[arg(short, long)]
         depth: Option<u32>,
-        /// Shorthand for deep recursive expansion: pins depth to MAX_DEPTH (3) and
+        /// Shorthand for deep recursive expansion: pins depth to `MAX_DEPTH` and
         /// clamps the expansion floor to ≤0.40. With the comprehensive default
         /// (full depth, floor 0.20) this now matches the default; kept for explicitness
         /// and for use alongside a raised `--min-expand-confidence`. Overridden by
@@ -90,7 +90,7 @@ pub enum Command {
         recursive: bool,
         /// COMPLETE scan — the no-compromise preset. Auto-detects the seed kind,
         /// runs EVERY module (overrides --free-only/--passive-only/--modules),
-        /// expands to MAX_DEPTH (3) at the Probable floor, and disables ROI
+        /// expands to `MAX_DEPTH` at the Probable floor, and disables ROI
         /// pruning so nothing is skipped. The single "get everything" option.
         #[arg(
             short = 'F',
