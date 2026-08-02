@@ -55,6 +55,21 @@ pub fn field_str(rec: &Map<String, Value>, key: &str) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
+/// Lower-cased alphanumeric name tokens (≥2 chars) of a free-text name — the
+/// tokenization [`asic_banned_orgs`](crate::modules::asic_banned_orgs) and
+/// [`asic_business_names`](crate::modules::asic_business_names) both split a
+/// CKAN record's org/business name field into for order-independent
+/// substring matching (`tokens.iter().all(|t| lower.contains(t))`). Digits
+/// are kept (unlike a person-name tokenizer) since an organisation/business
+/// name routinely carries one (`7-Eleven`, `ABC123 Pty Ltd`).
+#[must_use]
+pub fn name_tokens(name: &str) -> Vec<String> {
+    name.split(|c: char| !c.is_alphanumeric())
+        .filter(|t| t.len() >= 2)
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
 /// Build a CKAN `datastore_search` URL: a full-text query `q` against
 /// `resource_id` on a portal's `action_base` (e.g.
 /// `https://data.gov.au/data/api/3/action`), capped at `limit` rows.

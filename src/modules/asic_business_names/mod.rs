@@ -22,7 +22,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::ckan::field_str;
+use crate::util::ckan::{field_str, name_tokens};
 
 const SRC: &str = "asic_business_names";
 /// data.gov.au CKAN action base — `datastore_search` is appended by
@@ -113,14 +113,6 @@ async fn ckan_query(ctx: &ModuleContext, name: &str) -> Result<Vec<Map<String, V
             .await?
             .records,
     )
-}
-
-/// Lower-cased alphanumeric name tokens (≥2 chars).
-fn name_tokens(name: &str) -> Vec<String> {
-    name.split(|c: char| !c.is_alphanumeric())
-        .filter(|t| t.len() >= 2)
-        .map(str::to_ascii_lowercase)
-        .collect()
 }
 
 /// True if the record's `BN_NAME` contains every target token.

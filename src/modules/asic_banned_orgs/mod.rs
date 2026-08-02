@@ -22,7 +22,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::ckan::field_str;
+use crate::util::ckan::{field_str, name_tokens};
 
 const SRC: &str = "asic_banned_orgs";
 /// data.gov.au CKAN action base — `datastore_search` is appended by
@@ -108,13 +108,6 @@ async fn ckan_query(ctx: &ModuleContext, name: &str) -> Result<Vec<Map<String, V
             .await?
             .records,
     )
-}
-
-fn name_tokens(name: &str) -> Vec<String> {
-    name.split(|c: char| !c.is_alphanumeric())
-        .filter(|t| t.len() >= 2)
-        .map(str::to_ascii_lowercase)
-        .collect()
 }
 
 fn record_name_matches(rec: &Map<String, Value>, tokens: &[String]) -> bool {
