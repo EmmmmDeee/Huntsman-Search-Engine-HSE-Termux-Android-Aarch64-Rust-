@@ -183,3 +183,45 @@ use super::*;
             );
         }
     }
+
+#[test]
+fn is_multicast_reads_the_ig_bit_independently_of_the_ul_bit() {
+    // Group addresses — I/G set.
+    for mac in [
+        "01:00:5e:00:00:fb", // IPv4 multicast (mDNS): 0x01
+        "33:33:00:00:00:01", // IPv6 all-nodes multicast: 0x33
+        "ff:ff:ff:ff:ff:ff", // broadcast: 0xff
+    ] {
+        assert_eq!(is_multicast(mac), Some(true), "{mac} is a group address");
+    }
+
+    // The load-bearing case for testing BOTH bits: IPv4 multicast is
+    // universally administered (0x01 & 0x02 == 0), so the U/L test alone
+    // reports it as a perfectly good IEEE-assigned address and lets it through.
+    // Only the I/G bit rejects it.
+    assert_eq!(
+        is_locally_administered("01:00:5e:00:00:fb"),
+        Some(false),
+        "IPv4 multicast is universally administered — the U/L bit does NOT catch it,          which is exactly why the seeding gate must test I/G as well"
+    );
+    // The other two happen to set U/L too (0x33 and 0xff both have 0x02 set), so
+    // those two alone would have been caught anyway — recorded here so the
+    // distinction above isn't mistaken for a property of all group addresses.
+    assert_eq!(is_locally_administered("33:33:00:00:00:01"), Some(true));
+    assert_eq!(is_locally_administered("ff:ff:ff:ff:ff:ff"), Some(true));
+
+    // A real individual BSSID: both bits clear.
+    assert_eq!(is_multicast("3c:5a:b4:11:22:33"), Some(false));
+    assert_eq!(is_locally_administered("3c:5a:b4:11:22:33"), Some(false));
+
+    // The two bits are orthogonal: a randomised privacy address is individual
+    // (I/G clear) but locally administered (U/L set).
+    assert_eq!(is_multicast("aa:bb:cc:dd:ee:ff"), Some(false));
+    assert_eq!(is_locally_administered("aa:bb:cc:dd:ee:ff"), Some(true));
+
+    // Formatting-agnostic, and unparseable input is None on both.
+    assert_eq!(is_multicast("01005e0000fb"), Some(true));
+    assert_eq!(is_multicast("01-00-5e-00-00-fb"), Some(true));
+    assert_eq!(is_multicast("zz"), None);
+    assert_eq!(is_multicast(""), None);
+}

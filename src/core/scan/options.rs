@@ -369,11 +369,6 @@ const _: () = assert!(DEFAULT_SCAN_DEPTH <= MAX_DEPTH);
 // test would necessarily catch it — so pin it here, at the definition.
 const _: () = assert!(DEFAULT_SCAN_DEPTH == MAX_DEPTH);
 
-// Compile-time guard on the product promise above: a seed must have the FULL
-// recursion budget available to reach geolocation. If someone lowers the default
-// below the ceiling again, the longest geo chains silently stop closing and no
-// test would necessarily catch it — so pin it here, at the definition.
-
 /// Default hard cap on total entities for the `hse scan` product surface, applied
 /// at the CLI boundary when the operator gives no explicit `--max-entities`. Now
 /// that the default scan is comprehensive (depth [`MAX_DEPTH`], a 0.20 expansion

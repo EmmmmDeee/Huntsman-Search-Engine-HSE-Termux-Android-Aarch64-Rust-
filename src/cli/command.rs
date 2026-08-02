@@ -76,7 +76,8 @@ pub enum Command {
         timeout: Option<u64>,
         /// Recursive expansion depth. 0 = single round; 1+ auto-feeds discovered
         /// entities back as new scan targets, up to N rounds deep. Omit to use
-        /// the comprehensive product default (MAX_DEPTH = 3); `--auto` overrides an
+        /// the comprehensive product default (`DEFAULT_SCAN_DEPTH`, the full
+        /// `MAX_DEPTH`); `--auto` overrides an
         /// omitted value.
         #[arg(short, long)]
         depth: Option<u32>,

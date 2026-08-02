@@ -157,13 +157,20 @@ pub fn is_autonomous_seed_candidate(e: &Entity) -> bool {
     }
 
     match e.kind {
-        // A BSSID. `util::oui::is_locally_administered` reads the U/L bit:
-        // `Some(true)` is a randomised privacy address (rotates every ~15 min,
-        // resolves to nothing), `None` means the value isn't even MAC-shaped.
-        // Only a real IEEE-assigned unicast address names a fixed radio.
+        // A BSSID. Only a real IEEE-assigned, INDIVIDUAL address names a fixed
+        // radio, so both bits of the first octet must be clear — they are
+        // orthogonal and a BSSID needs both:
+        //   U/L (0x02, `is_locally_administered`) — `Some(true)` is a randomised
+        //     privacy address that rotates every ~15 min and resolves to nothing;
+        //     `None` means the value isn't even MAC-shaped.
+        //   I/G (0x01, `is_multicast`) — a group address (`01:00:5e:…` IPv4
+        //     multicast, `33:33:…` IPv6 multicast, `ff:ff:…` broadcast) names a
+        //     protocol group, never one device. These are universally
+        //     administered, so the U/L test alone lets them through.
         EntityKind::MacAddress => {
             e.confidence >= 0.50
                 && crate::util::oui::is_locally_administered(&e.value) == Some(false)
+                && crate::util::oui::is_multicast(&e.value) == Some(false)
                 && !e.value.chars().all(|c| matches!(c, '0' | ':' | '-' | '.'))
         }
         // An SSID is a NAME, not an assignment, so it needs the generic-name

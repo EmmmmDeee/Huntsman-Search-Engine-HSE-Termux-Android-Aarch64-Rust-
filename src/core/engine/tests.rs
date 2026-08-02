@@ -3933,6 +3933,12 @@ fn autonomous_sweep_seeds_specific_geo_pivots_and_refuses_generic_ones() {
     hosting_fix.tag(crate::core::tags::HOSTING);
     // A real BSSID heard only faintly: ambient, below the confidence floor.
     let faint_bssid = Entity::new(EntityKind::MacAddress, "3C:5A:B4:99:88:77", 0.45, "s");
+    // Group addresses. All are UNIVERSALLY administered — the U/L bit is clear —
+    // so the U/L test alone lets them through; only the I/G bit rejects them.
+    // Each names a protocol group, never one device at one premises.
+    let ipv4_multicast = Entity::new(EntityKind::MacAddress, "01:00:5E:00:00:FB", 0.90, "s");
+    let ipv6_multicast = Entity::new(EntityKind::MacAddress, "33:33:00:00:00:01", 0.90, "s");
+    let broadcast = Entity::new(EntityKind::MacAddress, "FF:FF:FF:FF:FF:FF", 0.90, "s");
 
     let admitted = [&email, &bssid, &ssid, &fix];
     let refused = [
@@ -3943,6 +3949,9 @@ fn autonomous_sweep_seeds_specific_geo_pivots_and_refuses_generic_ones() {
         &coarse_fix,
         &hosting_fix,
         &faint_bssid,
+        &ipv4_multicast,
+        &ipv6_multicast,
+        &broadcast,
     ];
 
     // 1) The predicate itself, named per entity so a regression is diagnosable.
