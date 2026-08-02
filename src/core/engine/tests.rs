@@ -4028,3 +4028,62 @@ fn autonomous_sweep_seeds_specific_geo_pivots_and_refuses_generic_ones() {
         "the geo kinds must not sit on the `_ => 0.12` catch-all floor"
     );
 }
+
+/// The working-set snapshot every correlation pass reads must be deterministic.
+///
+/// `TrackedEntityMap` wraps a `HashMap`, so the old
+/// `entity_map.values().cloned().collect()` handed the correlator whatever
+/// order the hasher produced. That order is not cosmetic:
+/// `correlator::confirmed_only` returns `Cow::Borrowed` in the common case, so
+/// caller order reaches the rules verbatim, and rules that build `entity_uids`
+/// in slice order bake it into a PERSISTED correlation row. `rank_and_sort`'s
+/// tie-break even documents the assumption that "the per-group entity_uids are
+/// already individually sorted" — false on the live path. The finalise pass
+/// could not repair it, because `Store::upsert_correlation` short-circuits when
+/// the new uid set is a subset of the old, so the live row survives.
+///
+/// Net effect: two runs over identical inputs could persist different
+/// `entity_uids` orderings for the same finding. This pins the fix at the one
+/// accessor all six snapshot sites now share.
+#[test]
+fn the_working_set_snapshot_is_deterministically_ordered() {
+    use crate::core::entity::{Entity, EntityKind};
+
+    // Insert in two different orders — what different hash seeds / different
+    // module completion orders produce across runs.
+    let values = [
+        ("a@example.com", EntityKind::Email),
+        ("b@example.com", EntityKind::Email),
+        ("+61400111222", EntityKind::Phone),
+        ("alice", EntityKind::Username),
+        ("example.com", EntityKind::Domain),
+    ];
+
+    let mut forward = super::TrackedEntityMap::new();
+    for (v, k) in &values {
+        let e = Entity::new(k.clone(), *v, 0.8, "s");
+        forward.insert(e.uid.clone(), e);
+    }
+
+    let mut backward = super::TrackedEntityMap::new();
+    for (v, k) in values.iter().rev() {
+        let e = Entity::new(k.clone(), *v, 0.8, "s");
+        backward.insert(e.uid.clone(), e);
+    }
+
+    let a: Vec<String> = forward.snapshot().into_iter().map(|e| e.uid).collect();
+    let b: Vec<String> = backward.snapshot().into_iter().map(|e| e.uid).collect();
+
+    assert_eq!(
+        a, b,
+        "two insertion orders of the same entities must snapshot identically — \
+         the correlator persists this order into entity_uids"
+    );
+    assert_eq!(a.len(), values.len(), "no entity lost by the snapshot");
+
+    // And the order is the documented one: sorted by uid, a total order since
+    // uid is a SHA-256 unique per entity.
+    let mut expected = a.clone();
+    expected.sort();
+    assert_eq!(a, expected, "snapshot must be sorted by uid");
+}

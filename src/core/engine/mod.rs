@@ -212,6 +212,33 @@ impl TrackedEntityMap {
             .collect()
     }
 
+    /// The full working set as a **deterministically ordered** `Vec`, sorted by
+    /// `uid`.
+    ///
+    /// The single accessor every correlation/reporting snapshot must use.
+    /// `self.map` is a `HashMap`, so `values().cloned().collect()` yields
+    /// whatever order the hasher happens to produce — and that order is not
+    /// cosmetic here. `correlator::confirmed_only` returns `Cow::Borrowed` in
+    /// the common case, so caller order reaches the rules verbatim; rules that
+    /// build `entity_uids` in slice order (AU-002's identity cluster, for one)
+    /// then bake it into a persisted correlation row. `rank_and_sort`'s
+    /// tie-break even documents the assumption that "the per-group entity_uids
+    /// are already individually sorted" — which was false on the live path.
+    ///
+    /// The finalise pass could not repair it either: `Store::upsert_correlation`
+    /// short-circuits on `if new_set.is_subset(&old_set)`, so the row written
+    /// during the live scan survives. Two runs over identical inputs could
+    /// therefore persist different `entity_uids` orderings for the same
+    /// finding — a reproducibility break in an evidentiary tool.
+    ///
+    /// `uid` is a SHA-256 and unique per entity, so this is a total order and
+    /// needs no secondary tie-break.
+    fn snapshot(&self) -> Vec<Entity> {
+        let mut out: Vec<Entity> = self.map.values().cloned().collect();
+        out.sort_by(|a, b| a.uid.cmp(&b.uid));
+        out
+    }
+
     /// Unwrap into the plain map for the one-time final flush
     /// (`finalise_scan` persists everything unconditionally, dirty or not,
     /// so it has no use for dirty-tracking).
@@ -718,7 +745,7 @@ impl ScanEngine {
         // just the dirty subset) — see [`TrackedEntityMap`]'s doc for why.
         let mut seed_dirty: Vec<Entity> = entity_map.take_dirty();
         self.checkpoint_entities(&scan.id, &mut seed_dirty);
-        let seed_snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+        let seed_snapshot: Vec<Entity> = entity_map.snapshot();
         self.correlate_incremental(&scan.id, &seed_snapshot, &mut emitted_corr);
 
         if opts.depth > 0 {
@@ -1314,7 +1341,7 @@ impl ScanEngine {
         // The gap analysis needs the full relation graph the finaliser will build:
         // the in-flight lineage edges plus the structural edges derivable from the
         // current entity set. Derive once, off a snapshot.
-        let ents: Vec<Entity> = entity_map.values().cloned().collect();
+        let ents: Vec<Entity> = entity_map.snapshot();
         let mut rels = relations.clone();
         rels.extend(crate::core::relation::derive_all(&ents, scan_id));
 
@@ -1505,7 +1532,7 @@ impl ScanEngine {
             return 0;
         }
 
-        let ents: Vec<Entity> = entity_map.values().cloned().collect();
+        let ents: Vec<Entity> = entity_map.snapshot();
         let plan = crate::core::breach_sweep::compile(
             &ents,
             crate::core::breach_sweep::SweepInputs {
@@ -1630,7 +1657,7 @@ impl ScanEngine {
     /// it only attaches its summary and its flags, so this is safe to run after
     /// every gate the scan has already applied.
     fn run_consensus_audit(&self, scan_id: &str, entity_map: &mut TrackedEntityMap) {
-        let mut ents: Vec<Entity> = entity_map.values().cloned().collect();
+        let mut ents: Vec<Entity> = entity_map.snapshot();
         let report = crate::core::breach_consensus::run_consensus_pass(&mut ents, scan_id);
         if report.entities_examined == 0 {
             return;
@@ -1763,7 +1790,7 @@ impl ScanEngine {
             // bounded by working-set size exactly like the live correlation pass,
             // so it can never itself stall a round.
             if entity_map.len() <= Self::INCREMENTAL_CORRELATE_MAX_ENTITIES {
-                let mut snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+                let mut snapshot: Vec<Entity> = entity_map.snapshot();
                 let promoted = promote_geo_corroborated_family(&mut snapshot)
                     + promote_multipath_corroborated(&mut snapshot, relations.as_slice())
                     + promote_breach_candidate_geo_corroborated(&mut snapshot);
@@ -2203,7 +2230,7 @@ impl ScanEngine {
                 // miss cross-round correlations.
                 let mut dirty: Vec<Entity> = entity_map.take_dirty();
                 self.checkpoint_entities(scan_id, &mut dirty);
-                let snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+                let snapshot: Vec<Entity> = entity_map.snapshot();
                 self.correlate_incremental(scan_id, &snapshot, emitted_corr);
             }
 
