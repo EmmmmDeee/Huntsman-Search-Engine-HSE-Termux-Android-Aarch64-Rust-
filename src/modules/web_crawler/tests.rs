@@ -192,6 +192,7 @@ use super::*;
             internal_links: 0,
             external_links: 0,
             notable_pages: Vec::new(),
+            image_urls: Vec::new(),
         };
 
         build_entities(
@@ -252,4 +253,94 @@ use super::*;
             .map(|e| e.value.as_str())
             .collect();
         assert_eq!(tracking_ids, vec!["UA-111", "UA-999"]);
+    }
+
+    /// A `CrawlState` with everything empty — for exercising one behaviour at a
+    /// time without restating every field.
+    fn empty_state() -> CrawlState {
+        CrawlState {
+            visited: HashSet::new(),
+            queue: VecDeque::new(),
+            pages_fetched: 0,
+            disallow_rules: Vec::new(),
+            result: ModuleResult::new(),
+            external_domains: HashSet::new(),
+            subdomains: HashSet::new(),
+            emails: HashSet::new(),
+            phones: HashSet::new(),
+            tracking_ids: HashSet::new(),
+            hydration_findings: Vec::new(),
+            frameworks: HashSet::new(),
+            page_types: HashSet::new(),
+            security_headers: Vec::new(),
+            internal_links: 0,
+            external_links: 0,
+            notable_pages: Vec::new(),
+            image_urls: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn image_lead_count_is_recorded_on_the_crawl_evidence() {
+        // The cap must be visible in the crawl's own output, so a truncated list
+        // is never presented as a complete one.
+        let mut state = empty_state();
+        state.image_urls = (0..IMAGE_LEADS_CAP)
+            .map(|i| format!("https://example.com/img{i}.jpg"))
+            .collect();
+        build_entities(
+            "example.com",
+            "example.com",
+            "scan-1",
+            MAX_DEPTH,
+            false,
+            "https://example.com",
+            &mut state,
+        );
+        let crawled = state
+            .result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Domain && e.value == "example.com")
+            .expect("domain entity");
+        let attr = crawled
+            .evidence
+            .iter()
+            .find_map(|ev| ev.attributes.get("image_leads"))
+            .expect("image_leads attribute recorded");
+        assert_eq!(attr, &IMAGE_LEADS_CAP.to_string());
+    }
+
+    #[test]
+    fn image_leads_become_low_confidence_url_entities_for_exif_geo() {
+        let mut state = empty_state();
+        state.image_urls = vec!["https://example.com/photos/family.jpg".to_string()];
+        build_entities(
+            "example.com",
+            "example.com",
+            "scan-1",
+            MAX_DEPTH,
+            false,
+            "https://example.com",
+            &mut state,
+        );
+
+        let lead = state
+            .result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Url && e.value.contains("family.jpg"))
+            .expect("image URL emitted as a Url entity");
+        assert!(lead.tags.iter().any(|t| t == "exif-lead"));
+        assert!(lead.tags.iter().any(|t| t == "image"));
+        // Presence on a page is not evidence the photo depicts the subject: the
+        // lead sits below MEDIUM so nothing downstream reads it as a link, but
+        // above the expansion floor so the EXIF fetch still runs.
+        assert!(
+            lead.confidence < confidence::MEDIUM,
+            "an image's mere presence must not read as an established link"
+        );
+        // The entity must be the shape `exif_geo` actually accepts, or the lead
+        // is a dead node.
+        assert!(crate::util::exif::looks_like_image_url(&lead.value));
     }

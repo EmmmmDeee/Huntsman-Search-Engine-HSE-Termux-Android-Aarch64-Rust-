@@ -61,6 +61,15 @@ pub(super) const BINARY_EXTENSIONS: &[&str] = &[
     "woff", "woff2", "ttf", "eot", "otf", "css", "map",
 ];
 
+/// Cap on image URLs surfaced as EXIF leads from one crawl.
+///
+/// Each lead becomes a `Url` entity the expansion loop may hand to
+/// `modules::exif_geo`, which fetches up to 8 MiB per image — so an unbounded
+/// gallery page would turn one crawl into hundreds of downloads. The count of
+/// images actually seen is recorded on the crawl evidence either way, so hitting
+/// this cap is visible in the output rather than silent.
+const IMAGE_LEADS_CAP: usize = 40;
+
 const NOTABLE_PAGES_CAP: usize = 20;
 const NOTABLE_PAGE_TYPES: &[&str] = &["login_form", "file_upload", "admin_panel", "api_reference"];
 
@@ -87,6 +96,13 @@ pub(super) struct CrawlState {
     internal_links: usize,
     external_links: usize,
     pub(super) notable_pages: Vec<String>,
+    /// Image URLs discovered on crawled pages, in discovery order.
+    ///
+    /// These are NEVER enqueued for crawling — a JPEG is not a page — but each
+    /// is an EXIF lead: `modules::exif_geo` accepts an image `Url` target and
+    /// reads the GPS IFD out of it. Held here and emitted as entities in
+    /// [`build_entities`] so the expansion loop can dispatch them.
+    pub(super) image_urls: Vec<String>,
 }
 
 #[async_trait]
@@ -192,6 +208,7 @@ impl Module for WebCrawler {
             internal_links: 0,
             external_links: 0,
             notable_pages: Vec::new(),
+            image_urls: Vec::new(),
         };
 
         fetch_robots(&ctx.http, &seed_url, &mut state.disallow_rules).await;
@@ -454,6 +471,9 @@ fn build_entities(
     ev = ev.with_attr("subdomains_found", state.subdomains.len().to_string());
     ev = ev.with_attr("emails_found", state.emails.len().to_string());
     ev = ev.with_attr("phones_found", state.phones.len().to_string());
+    // Recorded unconditionally so a crawl that hit `IMAGE_LEADS_CAP` shows the
+    // cap in its own output rather than presenting a truncated list as complete.
+    ev = ev.with_attr("image_leads", state.image_urls.len().to_string());
 
     if !missing_headers.is_empty() {
         ev = ev.with_attr("missing_security_headers", missing_headers.join(", "));
@@ -470,6 +490,37 @@ fn build_entities(
 
     entity.add_evidence(ev);
     state.result.push(entity);
+
+    // Image URLs — EXIF leads for `modules::exif_geo`, which accepts an image
+    // `Url` target and reads the GPS IFD out of it. Emitted as entities because
+    // only a typed entity becomes a scan target: until now the crawler found
+    // these links and discarded them, so any coordinates embedded in a site's
+    // own photographs were lost. Discovery order is already deterministic (the
+    // crawl walks pages in queue order and links in document order), so no sort
+    // is needed to keep output stable.
+    //
+    // Confidence is LOW: the image was merely present on a crawled page, which
+    // is no evidence that it depicts — or was taken by — the subject. It sits
+    // above the expansion floor so the EXIF fetch runs, and below MEDIUM so
+    // nothing downstream reads the mere presence of a photo as a link. Whatever
+    // `exif_geo` recovers carries its own, independently-earned confidence.
+    let image_leads: Vec<Entity> = state
+        .image_urls
+        .iter()
+        .map(|u| {
+            let mut e = Entity::new(EntityKind::Url, u, confidence::LOW, scan_id);
+            e.tag(tags::WEB);
+            e.tag("image");
+            e.tag("exif-lead");
+            e.add_evidence(
+                Evidence::new(SRC, format!("Image linked from {domain}, queued for EXIF"))
+                    .with_attr("discovered_by", "web_crawler")
+                    .with_attr("source_domain", domain),
+            );
+            e
+        })
+        .collect();
+    state.result.extend(image_leads);
 
     // Subdomain entities — feed back into expansion. Sorted before emission so
     // the HashSet's randomised iteration order never leaks into entity order
