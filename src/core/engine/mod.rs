@@ -235,12 +235,19 @@ impl std::ops::Deref for TrackedEntityMap {
 /// deferrability. The live pass evaluates all 34 correlation rules — genuinely
 /// expensive — and deferring it loses nothing, since the complete,
 /// budget-bounded pass still runs at finalise. Reconsideration is the opposite:
-/// three O(n) tag/geo scans with no rule evaluation and no I/O, and a
-/// reconsideration deferred past its round is a set-aside lead **never
+/// a reconsideration deferred past its round is a set-aside lead **never
 /// expanded** (finalise re-promotes it, but finalise is after the last
-/// expansion round). So it must keep running well past the point where the live
-/// preview sensibly defers; the bound exists only to cap the per-round
-/// working-set clone on a pathologically large set, not to trade away recall.
+/// expansion round), so it must keep running well past the point where the live
+/// preview sensibly defers.
+///
+/// Its per-round cost is lighter than the live pass but not free: two of the
+/// three promotion passes are O(n) tag/geo scans, while
+/// [`promote_multipath_corroborated`] runs the AU-062 multipath detector, whose
+/// identity-pair probing is bounded by
+/// [`crate::core::relation::graph::IDENTITY_PAIR_PROBE_CAP`] (so it is capped,
+/// not linear). This bound therefore exists to cap that probe and the per-round
+/// working-set clone on a pathologically large set — not to trade away recall,
+/// which is why it sits far above the live-pass bound.
 const RECONSIDER_MAX_ENTITIES: usize = 20_000;
 
 /// Free/offline reconsideration of the whole working set: re-promote, in place,
@@ -250,11 +257,11 @@ const RECONSIDER_MAX_ENTITIES: usize = 20_000;
 ///
 /// Runs the three cross-angle promotion passes — geo-corroborated family,
 /// multi-path corroboration, and geo-corroborated breach candidates — over a
-/// snapshot, then writes every entity back through [`TrackedEntityMap::insert`]
-/// so re-promotions are dirty-tracked and checkpointed. Idempotent: each pass is
-/// tag-guarded, so re-running across rounds never double-promotes. Bounded by
-/// [`RECONSIDER_MAX_ENTITIES`] so a pathologically large set cannot make the
-/// per-round clone stall a round.
+/// snapshot, then writes back only the entities a pass actually changed through
+/// [`TrackedEntityMap::insert`] so those re-promotions are dirty-tracked and
+/// checkpointed. Idempotent: each pass is tag-guarded, so re-running across
+/// rounds never double-promotes. Bounded by [`RECONSIDER_MAX_ENTITIES`] so a
+/// pathologically large set cannot make the per-round clone stall a round.
 fn reconsider_working_set(entity_map: &mut TrackedEntityMap, relations: &[Relation]) -> usize {
     if entity_map.len() > RECONSIDER_MAX_ENTITIES {
         return 0;
@@ -265,7 +272,21 @@ fn reconsider_working_set(entity_map: &mut TrackedEntityMap, relations: &[Relati
         + promote_breach_candidate_geo_corroborated(&mut snapshot);
     if promoted > 0 {
         for e in snapshot {
-            entity_map.insert(e.uid.clone(), e);
+            // Write back ONLY the entities a pass mutated. `insert` marks the
+            // uid dirty unconditionally, so re-inserting the whole snapshot
+            // would dirty every entity in the working set on a single
+            // promotion, forcing the round's checkpoint to persist all of them
+            // and defeating dirty-tracking. Each promotion pass ADDS a
+            // corroboration evidence record to every entity it lifts (and never
+            // removes one), so a changed entity is exactly one whose evidence
+            // count grew over the stored copy — the cheap, allocation-free
+            // signal used here in place of a full entity comparison.
+            let changed = entity_map
+                .get(&e.uid)
+                .is_none_or(|stored| stored.evidence.len() != e.evidence.len());
+            if changed {
+                entity_map.insert(e.uid.clone(), e);
+            }
         }
     }
     promoted

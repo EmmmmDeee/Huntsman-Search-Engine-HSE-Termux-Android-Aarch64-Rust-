@@ -264,6 +264,10 @@ fn reconsider_working_set_still_promotes_above_the_live_correlation_bound() {
     );
     assert!(map.len() <= RECONSIDER_MAX_ENTITIES);
 
+    // Clear the dirty set the setup inserts left behind, so the next
+    // `take_dirty()` reflects ONLY what reconsideration itself changed.
+    let _ = map.take_dirty();
+
     let promoted = reconsider_working_set(&mut map, &[]);
     assert_eq!(
         promoted, 1,
@@ -278,11 +282,18 @@ fn reconsider_working_set_still_promotes_above_the_live_correlation_bound() {
     );
     assert!(lifted.has_tag("breach-corroborated"));
     assert!(lifted.confidence >= 0.50, "lifted to Probable");
-    // ...and dirty-tracked, so the round's checkpoint persists it.
-    assert!(
-        map.take_dirty().iter().any(|e| e.uid == cand_uid),
-        "the promoted candidate must be marked dirty for checkpointing"
+    // ...and ONLY it is dirty-tracked. Writing the whole snapshot back would
+    // dirty every entity in the working set on this single promotion and force
+    // the round's checkpoint to persist all ~500 — the dirty set must contain
+    // exactly the one entity that actually changed.
+    let dirty = map.take_dirty();
+    assert_eq!(
+        dirty.len(),
+        1,
+        "exactly one entity changed, so exactly one must be dirty (got {})",
+        dirty.len()
     );
+    assert_eq!(dirty[0].uid, cand_uid);
 
     // A pathologically huge set is bounded out (the per-round clone guard), and
     // returns 0 rather than stalling.
