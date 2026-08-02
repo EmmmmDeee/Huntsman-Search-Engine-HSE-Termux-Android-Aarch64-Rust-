@@ -76,7 +76,10 @@ struct SeenSet {
 
 impl SeenSet {
     fn with_capacity(capacity: usize) -> Self {
-        debug_assert!(capacity >= 1, "a zero-capacity seen-set remembers nothing");
+        // Runtime assert, not `debug_assert!`: a zero capacity would let the
+        // `len() <= capacity` guarantee below break silently in a release build,
+        // so the precondition must hold in every build, not just debug.
+        assert!(capacity >= 1, "a zero-capacity seen-set remembers nothing");
         Self {
             set: HashSet::with_capacity(capacity),
             order: VecDeque::with_capacity(capacity),
@@ -89,12 +92,23 @@ impl SeenSet {
     /// return. When the set is at capacity, the oldest uid is evicted first so
     /// the size never exceeds `capacity`.
     fn insert(&mut self, uid: String) -> bool {
+        if self.set.len() < self.capacity {
+            // Warm-up (the overwhelmingly common path until the cap is reached):
+            // let `HashSet::insert` report novelty in a single hash of the key,
+            // rather than hashing twice via `contains` + `insert`.
+            let is_new = self.set.insert(uid.clone());
+            if is_new {
+                self.order.push_back(uid);
+            }
+            return is_new;
+        }
+        // At capacity: check membership before evicting so a re-sighting evicts
+        // nothing, and evict-before-insert so the size never momentarily exceeds
+        // `capacity`.
         if self.set.contains(&uid) {
             return false;
         }
-        if self.set.len() >= self.capacity
-            && let Some(oldest) = self.order.pop_front()
-        {
+        if let Some(oldest) = self.order.pop_front() {
             self.set.remove(&oldest);
         }
         self.order.push_back(uid.clone());
@@ -435,6 +449,15 @@ mod tests {
             seen.insert("a".to_string()),
             "a was evicted, so it is new again"
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "zero-capacity")]
+    fn zero_capacity_is_rejected_in_every_build() {
+        // The `len() <= capacity` guarantee is meaningless at capacity 0, so the
+        // constructor must reject it with a runtime assert (not a debug-only one
+        // that vanishes in release).
+        let _ = SeenSet::with_capacity(0);
     }
 
     #[test]
