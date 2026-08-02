@@ -362,59 +362,8 @@ impl Module for Wigle {
         // ── Address from WiGLE city/region/country (free geo!) ──────
         // Use the most common city/region/country across results for
         // consensus-based location.
-        let cities: Vec<&str> = body
-            .results
-            .iter()
-            .filter_map(|n| n.city.as_deref())
-            .filter(|c| !c.is_empty())
-            .collect();
-        let regions: Vec<&str> = body
-            .results
-            .iter()
-            .filter_map(|n| n.region.as_deref())
-            .filter(|r| !r.is_empty())
-            .collect();
-        let countries: Vec<&str> = body
-            .results
-            .iter()
-            .filter_map(|n| n.country.as_deref())
-            .filter(|c| !c.is_empty())
-            .collect();
-        let postcodes: Vec<&str> = body
-            .results
-            .iter()
-            .filter_map(|n| n.postalcode.as_deref())
-            .filter(|p| !p.is_empty())
-            .collect();
-
-        let top_city = mode(&cities);
-        let top_region = mode(&regions);
-        let top_country = mode_or(&countries, || {
-            body.results
-                .iter()
-                .find_map(|n| n.country.as_deref())
-                .unwrap_or("")
-        });
-        let top_postcode = mode(&postcodes);
-
-        let addr_parts: Vec<&str> = [top_city, top_region, top_country]
-            .iter()
-            .copied()
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        if addr_parts.len() >= 2 {
-            let mut addr_str = addr_parts.join(", ");
-            if !top_postcode.is_empty() {
-                addr_str = format!("{addr_str} {top_postcode}");
-            }
-            let mut addr = Entity::new(
-                EntityKind::Address,
-                &addr_str,
-                confidence::HIGH,
-                &ctx.scan_id,
-            );
-            addr.tag("wigle");
+        if let Some(ca) = emit::consensus_address(&body.results, confidence::HIGH, &ctx.scan_id) {
+            let mut addr = ca.entity;
             addr.tag("wifi-derived");
             addr.add_evidence(
                 Evidence::new(
@@ -422,13 +371,10 @@ impl Module for Wigle {
                     format!("Address from WiFi AP consensus near {}", target.value),
                 )
                 .with_attr("networks_sampled", total.to_string())
-                .with_attr("city", top_city)
-                .with_attr("region", top_region)
-                .with_attr("country", top_country),
+                .with_attr("city", ca.top_city)
+                .with_attr("region", ca.top_region)
+                .with_attr("country", ca.top_country),
             );
-            if !top_postcode.is_empty() {
-                addr.tag(format!("postcode:{top_postcode}"));
-            }
             result.push(addr);
         }
 
