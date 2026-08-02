@@ -13,6 +13,7 @@ pub mod circuit_breaker;
 pub mod city_coords;
 pub mod ckan;
 pub mod confusable;
+pub mod csv_row;
 pub mod curl;
 pub mod curl_client;
 pub mod diagnostics;

@@ -26,7 +26,7 @@ pub(crate) fn looks_like_dehashed_csv(body: &str) -> bool {
     let Some(first) = body.lines().next() else {
         return false;
     };
-    let cols: Vec<String> = parse_csv(first)
+    let cols: Vec<String> = crate::util::csv_row::parse_rows(first)
         .into_iter()
         .next()
         .unwrap_or_default()
@@ -52,7 +52,7 @@ pub(super) fn parse_dehashed_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportS
     let mut stats = ImportStats::default();
     let mut seen = std::collections::HashSet::new();
 
-    let rows = parse_csv(body);
+    let rows = crate::util::csv_row::parse_rows(body);
     let Some((header, data)) = rows.split_first() else {
         return (entities, stats);
     };
@@ -209,49 +209,6 @@ pub(super) fn parse_dehashed_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportS
     (entities, stats)
 }
 
-/// Minimal RFC-4180 CSV reader: splits `body` into rows of fields, honouring
-/// double-quoted fields (which may contain commas, newlines and `""`-escaped
-/// quotes). Dependency-free — HSE pulls in no `csv` crate.
-fn parse_csv(body: &str) -> Vec<Vec<String>> {
-    let mut rows = Vec::new();
-    let mut row: Vec<String> = Vec::new();
-    let mut field = String::new();
-    let mut in_quotes = false;
-    let mut chars = body.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if in_quotes {
-            if c == '"' {
-                if chars.peek() == Some(&'"') {
-                    field.push('"');
-                    chars.next();
-                } else {
-                    in_quotes = false;
-                }
-            } else {
-                field.push(c);
-            }
-        } else {
-            match c {
-                '"' => in_quotes = true,
-                ',' => row.push(std::mem::take(&mut field)),
-                '\r' => {}
-                '\n' => {
-                    row.push(std::mem::take(&mut field));
-                    rows.push(std::mem::take(&mut row));
-                }
-                _ => field.push(c),
-            }
-        }
-    }
-    // Trailing field/row when the body has no final newline.
-    if !field.is_empty() || !row.is_empty() {
-        row.push(field);
-        rows.push(row);
-    }
-    rows
-}
-
 /// CLI entry: parse a DeHashed CSV and persist it as a completed scan, mirroring
 /// the other import formats.
 pub(super) async fn cmd_import_csv(body: &str, output: &str) -> Result<()> {
@@ -336,7 +293,7 @@ pub(super) fn parse_hse_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportStats)
     let mut entities = Vec::new();
     let mut stats = ImportStats::default();
 
-    let rows = parse_csv(body);
+    let rows = crate::util::csv_row::parse_rows(body);
     let Some((header, data)) = rows.split_first() else {
         return (entities, stats);
     };

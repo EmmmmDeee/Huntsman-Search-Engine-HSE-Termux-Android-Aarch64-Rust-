@@ -98,11 +98,11 @@ fn csv_scan_id_conflict_note(csv_path: &str) -> String {
 /// the old (`…,sources,tags`) and new (`…,sources,evidence_urls,evidence,tags`)
 /// layouts alike. Unknown/missing columns degrade gracefully.
 fn parse_csv(text: &str) -> Result<Vec<AuditEntity>> {
-    let mut lines = text.lines();
-    let header = lines
+    let mut rows = crate::util::csv_row::parse_rows(text).into_iter();
+    let header = rows
         .next()
         .ok_or_else(|| Error::Other("empty CSV".into()))?;
-    let cols: Vec<String> = split_csv(header).iter().map(|s| s.to_lowercase()).collect();
+    let cols: Vec<String> = header.iter().map(|s| s.to_lowercase()).collect();
     let idx = |name: &str| cols.iter().position(|c| c == name);
     let (ci_kind, ci_val) = (
         idx("kind").ok_or_else(|| Error::Other("CSV missing 'kind' column".into()))?,
@@ -117,11 +117,10 @@ fn parse_csv(text: &str) -> Result<Vec<AuditEntity>> {
     );
 
     let mut out = Vec::new();
-    for line in lines {
-        if line.trim().is_empty() {
+    for f in rows {
+        if f.iter().all(|s| s.trim().is_empty()) {
             continue;
         }
-        let f = split_csv(line);
         let get = |i: Option<usize>| i.and_then(|i| f.get(i)).map_or("", String::as_str);
         let kind = f.get(ci_kind).cloned().unwrap_or_default();
         let value = f.get(ci_val).cloned().unwrap_or_default();
@@ -143,28 +142,6 @@ fn parse_csv(text: &str) -> Result<Vec<AuditEntity>> {
         });
     }
     Ok(out)
-}
-
-/// Minimal RFC-4180-ish field splitter: handles `"`-quoted fields containing
-/// commas and doubled `""` escapes. Sufficient for our own exports.
-fn split_csv(line: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut chars = line.chars().peekable();
-    let mut in_q = false;
-    while let Some(c) = chars.next() {
-        match c {
-            '"' if in_q && chars.peek() == Some(&'"') => {
-                cur.push('"');
-                chars.next();
-            }
-            '"' => in_q = !in_q,
-            ',' if !in_q => out.push(std::mem::take(&mut cur)),
-            _ => cur.push(c),
-        }
-    }
-    out.push(cur);
-    out
 }
 
 /// `sources` / `tags` columns are `|`-joined in our exports.
