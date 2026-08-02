@@ -224,6 +224,80 @@ fn promote_breach_candidate_geo_corroborated_lifts_same_place_same_name_records(
     assert_eq!(promote_breach_candidate_geo_corroborated(&mut lone), 0);
 }
 
+/// Reconsideration must keep running on a LARGE working set — the case where
+/// coming back to a set-aside lead matters most. Before this was split from the
+/// live-correlation bound, a working set over 400 entities skipped the whole
+/// free/offline re-promotion pass, so a breach candidate that a later round had
+/// geo-corroborated was never lifted above the expansion floor and so never
+/// expanded (finalise re-promotes it, but finalise is after the last expansion
+/// round). This builds a set well past the old bound and asserts the promotion
+/// still happens AND is written back dirty-tracked so it is checkpointed.
+#[test]
+fn reconsider_working_set_still_promotes_above_the_live_correlation_bound() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    let mut map = TrackedEntityMap::new();
+
+    // Subject's confirmed GPS in Brisbane, and a same-metro same-name breach
+    // candidate (South Brisbane 4101, ~2 km) that reconsideration should lift.
+    let mut gps = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
+    gps.tag("geoint");
+    map.insert(gps.uid.clone(), gps);
+    let mut cand = Entity::new(EntityKind::Email, "matt@example.com", 0.25, "s");
+    cand.tag(crate::core::tags::CANDIDATE);
+    cand.tag("breach");
+    cand.add_evidence(Evidence::new("oathnet_pro", "breach row").with_attr("postcode", "4101"));
+    let cand_uid = cand.uid.clone();
+    map.insert(cand_uid.clone(), cand);
+
+    // Pad with inert entities until the set is comfortably past the OLD bound
+    // (the live-correlation threshold), so the only thing that lets the
+    // promotion run is reconsideration's own, higher bound.
+    let pad_target = ScanEngine::INCREMENTAL_CORRELATE_MAX_ENTITIES + 100;
+    for i in 0..pad_target {
+        let e = Entity::new(EntityKind::Username, format!("filler{i}"), 0.8, "s");
+        map.insert(e.uid.clone(), e);
+    }
+    assert!(
+        map.len() > ScanEngine::INCREMENTAL_CORRELATE_MAX_ENTITIES,
+        "set must exceed the old gate for this test to be meaningful"
+    );
+    assert!(map.len() <= RECONSIDER_MAX_ENTITIES);
+
+    let promoted = reconsider_working_set(&mut map, &[]);
+    assert_eq!(
+        promoted, 1,
+        "the geo-corroborated breach candidate is promoted"
+    );
+
+    // The re-promotion is visible in the map (written back)...
+    let lifted = map.get(&cand_uid).expect("candidate still present");
+    assert!(
+        !lifted.has_tag(crate::core::tags::CANDIDATE),
+        "un-quarantined"
+    );
+    assert!(lifted.has_tag("breach-corroborated"));
+    assert!(lifted.confidence >= 0.50, "lifted to Probable");
+    // ...and dirty-tracked, so the round's checkpoint persists it.
+    assert!(
+        map.take_dirty().iter().any(|e| e.uid == cand_uid),
+        "the promoted candidate must be marked dirty for checkpointing"
+    );
+
+    // A pathologically huge set is bounded out (the per-round clone guard), and
+    // returns 0 rather than stalling.
+    let mut huge = TrackedEntityMap::new();
+    for i in 0..(RECONSIDER_MAX_ENTITIES + 1) {
+        let e = Entity::new(EntityKind::Username, format!("u{i}"), 0.5, "s");
+        huge.insert(e.uid.clone(), e);
+    }
+    assert_eq!(
+        reconsider_working_set(&mut huge, &[]),
+        0,
+        "over-bound is skipped"
+    );
+}
+
 /// Free, offline: an identity pair joined by two orthogonal pathways has BOTH
 /// its endpoints promoted (tagged + corroborated) so the confirmed connection
 /// strengthens the scan output — while the conduit intermediates are left alone

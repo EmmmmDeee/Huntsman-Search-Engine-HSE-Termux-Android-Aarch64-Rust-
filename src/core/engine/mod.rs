@@ -227,6 +227,50 @@ impl std::ops::Deref for TrackedEntityMap {
     }
 }
 
+/// Upper bound on the working set for the per-round reconsideration pass
+/// ([`reconsider_working_set`]).
+///
+/// Deliberately far larger than [`ScanEngine::INCREMENTAL_CORRELATE_MAX_ENTITIES`]
+/// (the live-correlation preview bound), because the two passes have opposite
+/// deferrability. The live pass evaluates all 34 correlation rules — genuinely
+/// expensive — and deferring it loses nothing, since the complete,
+/// budget-bounded pass still runs at finalise. Reconsideration is the opposite:
+/// three O(n) tag/geo scans with no rule evaluation and no I/O, and a
+/// reconsideration deferred past its round is a set-aside lead **never
+/// expanded** (finalise re-promotes it, but finalise is after the last
+/// expansion round). So it must keep running well past the point where the live
+/// preview sensibly defers; the bound exists only to cap the per-round
+/// working-set clone on a pathologically large set, not to trade away recall.
+const RECONSIDER_MAX_ENTITIES: usize = 20_000;
+
+/// Free/offline reconsideration of the whole working set: re-promote, in place,
+/// any set-aside lead that evidence gathered since now corroborates, so it
+/// clears the expansion floor and is selected as a candidate THIS round instead
+/// of only at finalise (too late to expand). Returns the number promoted.
+///
+/// Runs the three cross-angle promotion passes — geo-corroborated family,
+/// multi-path corroboration, and geo-corroborated breach candidates — over a
+/// snapshot, then writes every entity back through [`TrackedEntityMap::insert`]
+/// so re-promotions are dirty-tracked and checkpointed. Idempotent: each pass is
+/// tag-guarded, so re-running across rounds never double-promotes. Bounded by
+/// [`RECONSIDER_MAX_ENTITIES`] so a pathologically large set cannot make the
+/// per-round clone stall a round.
+fn reconsider_working_set(entity_map: &mut TrackedEntityMap, relations: &[Relation]) -> usize {
+    if entity_map.len() > RECONSIDER_MAX_ENTITIES {
+        return 0;
+    }
+    let mut snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+    let promoted = promote_geo_corroborated_family(&mut snapshot)
+        + promote_multipath_corroborated(&mut snapshot, relations)
+        + promote_breach_candidate_geo_corroborated(&mut snapshot);
+    if promoted > 0 {
+        for e in snapshot {
+            entity_map.insert(e.uid.clone(), e);
+        }
+    }
+    promoted
+}
+
 /// Mutable scan-wide accumulators threaded through the expansion loop: the
 /// working entity set, the visited-target set (the cycle guard), the run
 /// tallies, the paid-dedup ledger, the lineage (`DerivedFrom`) edges, and the
@@ -1750,33 +1794,18 @@ impl ScanEngine {
             // ── Reconsideration: "return to old data when downstream adds
             // credibility" ──────────────────────────────────────────────────
             // Before selecting this round's candidates, re-run the free/offline
-            // promotion passes over the WHOLE accumulated working set, so any
-            // prior entity that the evidence gathered since now corroborates is
-            // lifted in place (a corroboration tag + evidence → higher
-            // `c_effective`) ABOVE the expansion floor and is therefore picked up
-            // as a candidate THIS round — instead of that re-promotion only
-            // happening at finalise (too late to expand it). This is the
-            // autonomous mechanism that lets the scan come back to a lead it had
-            // set aside once later rounds make it credible. Idempotent
-            // (tag-guarded — a promotion never double-stamps across rounds) and
-            // bounded by working-set size exactly like the live correlation pass,
-            // so it can never itself stall a round.
-            if entity_map.len() <= Self::INCREMENTAL_CORRELATE_MAX_ENTITIES {
-                let mut snapshot: Vec<Entity> = entity_map.values().cloned().collect();
-                let promoted = promote_geo_corroborated_family(&mut snapshot)
-                    + promote_multipath_corroborated(&mut snapshot, relations.as_slice())
-                    + promote_breach_candidate_geo_corroborated(&mut snapshot);
-                if promoted > 0 {
-                    for e in snapshot {
-                        entity_map.insert(e.uid.clone(), e);
-                    }
-                    debug!(
-                        scan_id,
-                        promoted,
-                        round = depth,
-                        "reconsidered prior data — re-promoted candidates on new downstream corroboration"
-                    );
-                }
+            // promotion passes over the WHOLE accumulated working set so any
+            // prior lead that later evidence now corroborates is lifted in place
+            // and picked up as a candidate THIS round (see
+            // [`reconsider_working_set`]).
+            let promoted = reconsider_working_set(entity_map, relations.as_slice());
+            if promoted > 0 {
+                debug!(
+                    scan_id,
+                    promoted,
+                    round = depth,
+                    "reconsidered prior data — re-promoted candidates on new downstream corroboration"
+                );
             }
             // Snapshot the entity set at round start — entities discovered
             // during this round will be expansion candidates in the next round,
