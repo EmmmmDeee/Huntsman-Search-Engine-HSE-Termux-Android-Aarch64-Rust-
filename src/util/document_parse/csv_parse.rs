@@ -1,6 +1,6 @@
 //! CSV parsing and field extraction.
 
-use super::{DocumentMetadata, DocumentResult, RawDocumentText};
+use super::{DocumentResult, RawDocumentText};
 use crate::util::document_parse::DocumentFormat;
 use csv::Reader;
 use std::fs::File;
@@ -39,20 +39,14 @@ pub fn parse_csv<P: AsRef<Path>>(csv_path: P) -> DocumentResult<CsvData> {
         raw_text.push('\n');
     }
 
-    let character_count = raw_text.len();
-
     Ok(CsvData {
-        raw_text: RawDocumentText {
-            text: raw_text,
-            source_format: DocumentFormat::Csv,
-            confidence: 0.50, // CSV is structured human-entered data
-            metadata: DocumentMetadata {
-                source_file: Some(path_str),
-                character_count,
-                extraction_method: "csv_parse".to_string(),
-                ..Default::default()
-            },
-        },
+        raw_text: RawDocumentText::new(
+            raw_text,
+            DocumentFormat::Csv,
+            0.50, // CSV is structured human-entered data
+            path_str,
+            "csv_parse",
+        ),
         headers,
         records,
     })

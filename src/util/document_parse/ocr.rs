@@ -1,6 +1,6 @@
 //! OCR via system tesseract or pure-Rust fallback.
 
-use super::{DocumentMetadata, DocumentParseError, DocumentResult, RawDocumentText};
+use super::{DocumentParseError, DocumentResult, RawDocumentText};
 use crate::util::document_parse::DocumentFormat;
 use std::path::Path;
 use std::process::Command;
@@ -41,19 +41,14 @@ pub async fn ocr_image<P: AsRef<Path>>(
     }
 
     let text = String::from_utf8(output.stdout)?;
-    let character_count = text.len();
 
-    Ok(RawDocumentText {
+    Ok(RawDocumentText::new(
         text,
-        source_format: DocumentFormat::Image,
-        confidence: 0.25, // OCR confidence floor (character recognition errors)
-        metadata: DocumentMetadata {
-            source_file: Some(path_str),
-            extraction_method: "ocr_tesseract".to_string(),
-            character_count,
-            ..Default::default()
-        },
-    })
+        DocumentFormat::Image,
+        0.25, // OCR confidence floor (character recognition errors)
+        path_str,
+        "ocr_tesseract",
+    ))
 }
 
 /// Check if tesseract is available in PATH.

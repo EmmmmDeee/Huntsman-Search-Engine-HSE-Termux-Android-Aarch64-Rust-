@@ -1,6 +1,6 @@
 //! PDF text extraction via pure-Rust PDF parser.
 
-use super::{DocumentMetadata, DocumentParseError, DocumentResult, RawDocumentText};
+use super::{DocumentParseError, DocumentResult, RawDocumentText};
 use crate::util::document_parse::DocumentFormat;
 use std::fs;
 use std::path::Path;
@@ -35,23 +35,17 @@ pub fn parse_pdf<P: AsRef<Path>>(pdf_path: P) -> DocumentResult<RawDocumentText>
         "PDF document detected (page count unknown; full text extraction requires OCR or PDF text layer)".to_string()
     };
 
-    let character_count = message.len();
-
-    Ok(RawDocumentText {
-        text: message,
-        source_format: DocumentFormat::Pdf,
-        confidence: 0.40, // PDF validation (text extraction lower confidence without full parser)
-        metadata: DocumentMetadata {
-            source_file: Some(path_str),
-            page_count: if page_count > 0 {
-                Some(page_count)
-            } else {
-                None
-            },
-            character_count,
-            extraction_method: "pdf_signature_validation".to_string(),
-            ..Default::default()
-        },
+    let doc = RawDocumentText::new(
+        message,
+        DocumentFormat::Pdf,
+        0.40, // PDF validation (text extraction lower confidence without full parser)
+        path_str,
+        "pdf_signature_validation",
+    );
+    Ok(if page_count > 0 {
+        doc.with_page_count(page_count)
+    } else {
+        doc
     })
 }
 

@@ -101,6 +101,44 @@ pub struct RawDocumentText {
     pub metadata: DocumentMetadata,
 }
 
+impl RawDocumentText {
+    /// Build a `RawDocumentText` from its extracted text and provenance — the
+    /// shape every parser in this module was hand-assembling via a struct
+    /// literal + `DocumentMetadata { .. ..Default::default() }`.
+    /// `metadata.character_count` is always the extracted text's byte length
+    /// across every parser, so it's computed here rather than passed in.
+    /// `page_count` (only meaningful for [`DocumentFormat::Pdf`] today) and
+    /// `language` (never set by any parser yet) stay their `Default` — attach
+    /// a page count with [`Self::with_page_count`].
+    pub fn new(
+        text: String,
+        source_format: DocumentFormat,
+        confidence: f64,
+        source_file: impl Into<String>,
+        extraction_method: impl Into<String>,
+    ) -> Self {
+        let character_count = text.len();
+        Self {
+            text,
+            source_format,
+            confidence,
+            metadata: DocumentMetadata {
+                source_file: Some(source_file.into()),
+                character_count,
+                extraction_method: extraction_method.into(),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// Attach a page count (PDF-only today).
+    #[must_use]
+    pub fn with_page_count(mut self, page_count: usize) -> Self {
+        self.metadata.page_count = Some(page_count);
+        self
+    }
+}
+
 /// Document metadata (source, timestamps, etc.).
 #[derive(Debug, Clone, Default)]
 pub struct DocumentMetadata {

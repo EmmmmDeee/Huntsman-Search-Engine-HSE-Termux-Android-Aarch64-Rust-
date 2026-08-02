@@ -1,6 +1,6 @@
 //! JSON and JSONL parsing.
 
-use super::{DocumentMetadata, DocumentResult, RawDocumentText};
+use super::{DocumentResult, RawDocumentText};
 use crate::util::document_parse::DocumentFormat;
 use serde_json::Value;
 use std::fs::File;
@@ -18,19 +18,14 @@ pub fn parse_json<P: AsRef<Path>>(json_path: P) -> DocumentResult<RawDocumentTex
     let value: Value = serde_json::from_reader(file)?;
 
     let text = flatten_json_to_text(&value);
-    let character_count = text.len();
 
-    Ok(RawDocumentText {
+    Ok(RawDocumentText::new(
         text,
-        source_format: DocumentFormat::Json,
-        confidence: 0.50, // Structured, machine-readable JSON
-        metadata: DocumentMetadata {
-            source_file: Some(path_str),
-            character_count,
-            extraction_method: "json_parse".to_string(),
-            ..Default::default()
-        },
-    })
+        DocumentFormat::Json,
+        0.50, // Structured, machine-readable JSON
+        path_str,
+        "json_parse",
+    ))
 }
 
 /// Parse JSONL (one JSON object per line) file.
@@ -57,19 +52,13 @@ pub fn parse_jsonl<P: AsRef<Path>>(jsonl_path: P) -> DocumentResult<RawDocumentT
         }
     }
 
-    let character_count = text.len();
-
-    Ok(RawDocumentText {
+    Ok(RawDocumentText::new(
         text,
-        source_format: DocumentFormat::Jsonl,
-        confidence: 0.50, // Structured JSONL
-        metadata: DocumentMetadata {
-            source_file: Some(path_str),
-            character_count,
-            extraction_method: format!("jsonl_parse ({line_count} lines)"),
-            ..Default::default()
-        },
-    })
+        DocumentFormat::Jsonl,
+        0.50, // Structured JSONL
+        path_str,
+        format!("jsonl_parse ({line_count} lines)"),
+    ))
 }
 
 /// Flatten JSON to key: value text format (breadth-first traversal).
