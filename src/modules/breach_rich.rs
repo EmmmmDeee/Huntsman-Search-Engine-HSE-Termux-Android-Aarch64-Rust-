@@ -302,17 +302,14 @@ fn push_breach_entity(
     extra_tags: &[&str],
 ) {
     e.tag(tags::BREACH);
-    e.tag(source);
-    for t in extra_tags {
-        e.tag(*t);
-    }
-    e.add_evidence(ev.clone());
-    result.push(e);
+    push_context_entity(result, e, ev, source, extra_tags);
 }
 
 /// Push a stealer/infrastructure-CONTEXT entity: tags the provider `source` plus
 /// any `extra_tags`, but deliberately NOT `breach`. Device fingerprints (MAC,
-/// HWID, hostname, …) are infrastructure/context, not leaked PII.
+/// HWID, hostname, …) are infrastructure/context, not leaked PII. Also the
+/// shared tail [`push_breach_entity`] delegates to after applying its one
+/// extra `breach` tag — the two differ in nothing else.
 fn push_context_entity(
     result: &mut ModuleResult,
     mut e: Entity,
