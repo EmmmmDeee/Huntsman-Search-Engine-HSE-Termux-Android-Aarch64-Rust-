@@ -140,7 +140,7 @@ fn warn_challenge_once() {
             "OathNet (oathnet.org) returned an anti-bot challenge (Cloudflare interstitial / 403), \
              not API data — its lookups will yield nothing this session. This is IP-reputation \
              based: datacentre/VPN/proxy ranges are challenged. A residential connection, or a \
-             mirror set via HUNTSMAN_OATHNET_BASE, restores it. SeekNow (see-know.icu) is \
+             mirror set via HUNTSMAN_OATHNET_BASE, restores it. SeekNow (see-know.ru) is \
              unaffected and remains the primary breach/stealer source."
         );
     }

@@ -39,7 +39,7 @@ const DEFAULT_UA: &str = crate::util::curl::UA_MOBILE;
 pub enum AuthScheme {
     /// `Authorization: Bearer <key>`.
     Bearer,
-    /// `x-api-key: <key>` — used by OathNet and SeekNow (see-know.icu).
+    /// `x-api-key: <key>` — used by OathNet and SeekNow (see-know.ru).
     XApiKey,
     /// No auth header. Useful for endpoints that don't require a key
     /// (rare for paid APIs but present for some public sub-paths).

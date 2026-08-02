@@ -1,6 +1,6 @@
 use super::{OverrideDecision, classify};
 
-const DEFAULT: &str = "https://see-know.icu/api/v1";
+const DEFAULT: &str = "https://see-know.ru/api/v1";
 
 #[test]
 fn unset_or_blank_uses_default() {
@@ -14,18 +14,18 @@ fn same_host_override_accepted_silently() {
     // A path/port change on the provider's own host (a pinned API version, a
     // local reverse proxy on the same host) is legitimate and needs no warning.
     assert_eq!(
-        classify(Some("https://see-know.icu/api/v2"), DEFAULT),
+        classify(Some("https://see-know.ru/api/v2"), DEFAULT),
         OverrideDecision::AcceptSameHost
     );
     assert_eq!(
-        classify(Some("  https://see-know.icu/api/v1  "), DEFAULT),
+        classify(Some("  https://see-know.ru/api/v1  "), DEFAULT),
         OverrideDecision::AcceptSameHost
     );
 }
 
 #[test]
 fn divergent_host_is_flagged_not_silent() {
-    // Pointing at a DIFFERENT host than the canonical see-know.icu default (the
+    // Pointing at a DIFFERENT host than the canonical see-know.ru default (the
     // legacy see-know.eu instance, a self-hosted mirror, or a look-alike) is
     // accepted — self-hosting an alternate instance is legitimate — but reported
     // as divergent so `resolve` WARNs and the redirect can never be silent.

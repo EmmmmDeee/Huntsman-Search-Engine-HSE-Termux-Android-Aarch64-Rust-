@@ -147,7 +147,7 @@ pub struct ScanOptions {
     pub expansion_strategy: ExpansionStrategy,
 
     // ── SeekNow per-scan budget override (v1.1+) ───────────────────────────
-    /// Per-scan budget cap for SeekNow (`see-know.icu`) API queries.
+    /// Per-scan budget cap for SeekNow (`see-know.ru`) API queries.
     /// `None` falls back to the env-tunable
     /// `HUNTSMAN_SEEKNOW_SCAN_CAP` (default 300 — the `BUDGET` static in
     /// `util::see_know::budget`). Setting this on a

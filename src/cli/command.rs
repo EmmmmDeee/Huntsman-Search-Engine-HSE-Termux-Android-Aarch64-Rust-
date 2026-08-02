@@ -155,7 +155,7 @@ pub enum Command {
         /// the engine prioritises expansion candidates each round.
         #[arg(long, default_value = "geo_converge")]
         expansion_strategy: String,
-        /// Per-scan SeekNow (see-know.icu) budget override. Caps the
+        /// Per-scan SeekNow (see-know.ru) budget override. Caps the
         /// number of SeekNow API queries this scan may dispatch.
         /// Default (None) falls back to HUNTSMAN_SEEKNOW_SCAN_CAP env
         /// (160). Hard-clamped at 200 to preserve the daily session
