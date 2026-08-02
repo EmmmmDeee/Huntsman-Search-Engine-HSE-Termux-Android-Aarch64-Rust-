@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::AppState;
-use super::handlers::bad_request;
+use super::handlers::{bad_request, offload};
 use crate::util::keys;
 
 /// Expose the API-key detector's prefix-match coverage. Returns the
@@ -140,16 +140,13 @@ pub async fn keys_health(
     }
     // Off-reactor: the recent-outcome scan is a blocking SQLite read.
     let store = Arc::clone(&s.store);
-    let events = match tokio::task::spawn_blocking(move || {
+    let events = match offload("keys-health query", move || {
         store.recent_module_outcome_events(crate::util::scraper_health::RECENT_EVENTS_WINDOW)
     })
     .await
     {
-        Ok(Ok(ev)) => ev,
-        Ok(Err(e)) => return super::handlers::internal_error(&e),
-        Err(e) => {
-            return super::handlers::internal_error(&format!("keys-health query task failed: {e}"));
-        }
+        Ok(ev) => ev,
+        Err(resp) => return resp,
     };
     let health = crate::util::scraper_health::aggregate_source_health(&events);
     let loaded = keys::load();
