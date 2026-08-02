@@ -134,18 +134,38 @@ pub(super) type LeakHit = (String, usize, Vec<(&'static str, String)>);
 /// seed URL's path component — `/.env` is always at the host apex.
 ///
 /// Bounded concurrency (16 simultaneous requests) prevents overwhelming
-/// the target or our own connection pool. Each request has a 3s budget.
+/// the target or our own connection pool. Each request has a 3s budget that
+/// covers the WHOLE probe — request and body read — not just the send.
+///
+/// Takes `cancel` because this runs BEFORE the crawl loop that polls it, and
+/// 103 paths at 16 permits is ~7 waves: without a cancel check, an operator who
+/// pressed Ctrl-C kept generating outbound requests against a third-party host
+/// for the remainder of the sweep.
 pub(super) async fn probe_config_leaks(
     http: &reqwest::Client,
     seed_url: &str,
     domain: &str,
+    cancel: &crate::core::cancel::CancelHandle,
 ) -> Vec<LeakHit> {
     use tokio::sync::Semaphore;
     use tokio::task::JoinSet;
 
-    // Always probe at the host root — extract scheme://host/ from seed.
+    // Always probe at the host root — extract scheme://host[:port] from seed.
+    //
+    // The PORT is load-bearing and was previously dropped: `host_str()` returns
+    // the host without it, so a seed of `http://example.com:8080/` probed
+    // `http://example.com/.env` — a different service on a different port, or
+    // nothing at all. Every one of the 103 probes went to the wrong endpoint
+    // whenever the seed carried a non-default port, so the whole config-leak
+    // sweep silently did nothing useful for those targets.
     let host_root = match url::Url::parse(seed_url) {
-        Ok(u) => format!("{}://{}", u.scheme(), u.host_str().unwrap_or(domain)),
+        Ok(u) => {
+            let host = u.host_str().unwrap_or(domain);
+            match u.port() {
+                Some(p) => format!("{}://{host}:{p}", u.scheme()),
+                None => format!("{}://{host}", u.scheme()),
+            }
+        }
         Err(_) => seed_url.trim_end_matches('/').to_string(),
     };
 
@@ -159,60 +179,73 @@ pub(super) async fn probe_config_leaks(
         let sem = std::sync::Arc::clone(&sem);
         let path_static = *path;
         let domain_owned = domain.to_string();
+        let cancel = cancel.clone();
         set.spawn(async move {
             let _permit = sem.acquire_owned().await.ok()?;
-            let resp = tokio::time::timeout(timeout, http.get(&url).send())
-                .await
-                .ok()?
-                .ok()?;
-            if resp.status().as_u16() != 200 {
+            if cancel.is_cancelled() {
                 return None;
             }
-            let ct = resp
-                .headers()
-                .get("content-type")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_string();
-            if ct.contains("text/html") && !path_static.ends_with(".html") {
-                return None;
-            }
-            // Cap the (untrusted) body at 1 MB while reading — `read_body_capped`
-            // streams and stops, so an oversize page is bounded in memory instead
-            // of fully buffered by `resp.text()` and then rejected. A body that
-            // hits the cap (len == 1 MB) is treated as "too big", as before.
-            const STATIC_BODY_CAP: usize = 1_000_000;
-            let body = crate::util::http::read_body_capped(resp, STATIC_BODY_CAP).await?;
-            if body.len() < 10 || body.len() >= STATIC_BODY_CAP {
-                return None;
-            }
-            if body.contains("<html") || body.contains("<!DOCTYPE") {
-                return None;
-            }
-            tracing::info!(
-                domain = %domain_owned, path = path_static, bytes = body.len(),
-                "config_leak: exposed file discovered"
-            );
-            // Scan body for keys AND emit any matches as (service, masked_key)
-            // tuples for the caller to convert into ApiKey entities.
-            // Shared token rules (delimiters + length window) with the every-body
-            // scanner, so the two can't drift. A leaked config file is a
-            // high-signal context, so unlike `found_keys` this classifier is the
-            // generic-inclusive `identify_api_key` (a bare 32/64-hex token in a
-            // committed `.env` is very likely a real key, not a password hash).
-            let mut found = Vec::new();
-            for t in crate::util::found_keys::key_tokens(&body, crate::util::found_keys::MAX_TOKEN)
-            {
-                if let Some((service, key_val)) = crate::util::key_harvest::identify_api_key(t) {
-                    found.push((service, key_val.to_string()));
+            // Checked AFTER the permit: a task queued behind ~7 waves of
+            // permits must not fire its request once the scan is cancelled.
+            // One timeout over the whole probe. It previously wrapped only
+            // `send()`, so the `read_body_capped` below ran unbounded while
+            // still holding `_permit` — a host that answered headers and then
+            // trickled 1 MB blocked a concurrency slot far past the documented
+            // 3s budget.
+            let probe = async {
+                let resp = http.get(&url).send().await.ok()?;
+                if resp.status().as_u16() != 200 {
+                    return None;
                 }
-            }
-            // Also feed the global pool (existing behaviour).
-            crate::util::http::scan_for_api_keys_with_source(
-                &body,
-                &format!("config_leak:{domain_owned}{path_static}"),
-            );
-            Some((path_static.to_string(), body.len(), found))
+                let ct = resp
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                if ct.contains("text/html") && !path_static.ends_with(".html") {
+                    return None;
+                }
+                // Cap the (untrusted) body at 1 MB while reading — `read_body_capped`
+                // streams and stops, so an oversize page is bounded in memory instead
+                // of fully buffered by `resp.text()` and then rejected. A body that
+                // hits the cap (len == 1 MB) is treated as "too big", as before.
+                const STATIC_BODY_CAP: usize = 1_000_000;
+                let body = crate::util::http::read_body_capped(resp, STATIC_BODY_CAP).await?;
+                if body.len() < 10 || body.len() >= STATIC_BODY_CAP {
+                    return None;
+                }
+                if body.contains("<html") || body.contains("<!DOCTYPE") {
+                    return None;
+                }
+                tracing::info!(
+                    domain = %domain_owned, path = path_static, bytes = body.len(),
+                    "config_leak: exposed file discovered"
+                );
+                // Scan body for keys AND emit any matches as (service, masked_key)
+                // tuples for the caller to convert into ApiKey entities.
+                // Shared token rules (delimiters + length window) with the every-body
+                // scanner, so the two can't drift. A leaked config file is a
+                // high-signal context, so unlike `found_keys` this classifier is the
+                // generic-inclusive `identify_api_key` (a bare 32/64-hex token in a
+                // committed `.env` is very likely a real key, not a password hash).
+                let mut found = Vec::new();
+                for t in
+                    crate::util::found_keys::key_tokens(&body, crate::util::found_keys::MAX_TOKEN)
+                {
+                    if let Some((service, key_val)) = crate::util::key_harvest::identify_api_key(t)
+                    {
+                        found.push((service, key_val.to_string()));
+                    }
+                }
+                // Also feed the global pool (existing behaviour).
+                crate::util::http::scan_for_api_keys_with_source(
+                    &body,
+                    &format!("config_leak:{domain_owned}{path_static}"),
+                );
+                Some((path_static.to_string(), body.len(), found))
+            };
+            tokio::time::timeout(timeout, probe).await.ok()?
         });
     }
 

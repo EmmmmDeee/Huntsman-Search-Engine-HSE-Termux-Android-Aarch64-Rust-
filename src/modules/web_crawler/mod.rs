@@ -195,7 +195,7 @@ impl Module for WebCrawler {
         };
 
         fetch_robots(&ctx.http, &seed_url, &mut state.disallow_rules).await;
-        let leaks = probe_config_leaks(&ctx.http, seed_url.as_str(), &domain).await;
+        let leaks = probe_config_leaks(&ctx.http, seed_url.as_str(), &domain, &ctx.cancel).await;
 
         // Convert each discovered key into an ApiKey entity so it shows up
         // in the operator's scan results and triggers AU-021 correlation.

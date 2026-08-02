@@ -475,3 +475,121 @@ use super::*;
             "a >200-char poolable key must survive the tokenizer's length gate"
         );
     }
+
+/// A cancelled scan must stop generating outbound requests against a
+/// third-party host.
+///
+/// `probe_config_leaks` runs BEFORE the crawl loop that polls `ctx.cancel`, and
+/// it fans 103 paths out over a 16-permit semaphore — about seven waves. With
+/// no cancel check, an operator who pressed Ctrl-C kept the remaining waves
+/// firing at someone else's server until they all completed.
+///
+/// Hermetic: a loopback listener counts connections; a plain
+/// `reqwest::Client::new()` (not `build_client()`, whose SSRF resolver filters
+/// loopback); no `ModuleContext`.
+#[tokio::test]
+async fn a_cancelled_scan_stops_probing_for_config_leaks() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    let hits = Arc::new(AtomicU32::new(0));
+    let hits_srv = Arc::clone(&hits);
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            hits_srv.fetch_add(1, Ordering::SeqCst);
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                .await;
+        }
+    });
+
+    // Cancelled BEFORE the call — every task must bail at its cancel check.
+    let cancel = crate::core::cancel::CancelHandle::new();
+    cancel.cancel();
+
+    let seed = format!("http://{addr}/");
+    let leaks = super::probe_config_leaks(
+        &reqwest::Client::new(),
+        &seed,
+        "127.0.0.1",
+        &cancel,
+    )
+    .await;
+
+    assert!(
+        leaks.is_empty(),
+        "a cancelled sweep must yield nothing, got {leaks:?}"
+    );
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "a cancelled sweep must not send a single request to the target host"
+    );
+}
+
+/// The config-leak sweep must probe the seed's PORT, not just its host.
+///
+/// `host_root` was built with `url::Url::host_str()`, which returns the host
+/// WITHOUT the port. A seed of `http://example.com:8080/` therefore probed
+/// `http://example.com/.env` — a different service on a different port, or
+/// nothing at all. Every one of the 103 probes went to the wrong endpoint
+/// whenever the seed carried a non-default port, so the sweep silently found
+/// nothing for those targets while looking like it had run.
+#[tokio::test]
+async fn config_leak_probes_target_the_seed_port_not_just_the_host() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    let hits = Arc::new(AtomicU32::new(0));
+    let hits_srv = Arc::clone(&hits);
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            hits_srv.fetch_add(1, Ordering::SeqCst);
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                .await;
+        }
+    });
+
+    // The listener is on an EPHEMERAL port, so it is only reachable if the port
+    // survives into `host_root`. Pre-fix these requests went to port 80.
+    let seed = format!("http://{addr}/some/deep/path");
+    let leaks = super::probe_config_leaks(
+        &reqwest::Client::new(),
+        &seed,
+        "127.0.0.1",
+        &crate::core::cancel::CancelHandle::new(),
+    )
+    .await;
+
+    assert_eq!(
+        hits.load(Ordering::SeqCst) as usize,
+        super::CONFIG_LEAK_PATHS.len(),
+        "every probe must reach the seed's port — none may be sent to the \
+         default port for the scheme"
+    );
+    // 404 everywhere, so nothing is reported: the port fix must not invent hits.
+    assert!(leaks.is_empty(), "404s yield no leaks, got {leaks:?}");
+}
