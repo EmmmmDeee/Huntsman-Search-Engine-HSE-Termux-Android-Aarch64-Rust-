@@ -377,7 +377,7 @@ pub fn extract_rich_detail(
     // the consumer already prevents.
     for k in ["ssid", "wifi_ssid", "wifi_name", "network_name"] {
         let Some(s) = val_str(item, k) else { continue };
-        if s.is_empty() || is_absent_marker(&s) {
+        if is_absent_marker(&s) {
             continue;
         }
         // Case-SENSITIVE dedup key. IEEE 802.11 SSIDs are case-sensitive, and
