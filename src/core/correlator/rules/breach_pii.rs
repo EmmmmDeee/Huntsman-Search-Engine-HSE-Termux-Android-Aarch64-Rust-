@@ -186,13 +186,9 @@ pub(in crate::core::correlator) fn age_from_dob(dob: &str, now_unix: u64) -> Opt
     if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
         return None;
     }
-    // days_from_civil (Hinnant): days since the Unix epoch (1970-01-01).
-    let yy = y - i64::from(m <= 2);
-    let era = (if yy >= 0 { yy } else { yy - 399 }) / 400;
-    let yoe = yy - era * 400;
-    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
+    // Days since the Unix epoch via the one canonical Hinnant forward algorithm
+    // (core→core; the same helper `hudsonrock`'s freshness check reuses).
+    let days = crate::core::timeline::days_from_civil(y, m, d);
     let dob_unix = days * 86_400;
     let now = i64::try_from(now_unix).ok()?;
     if now < dob_unix {
