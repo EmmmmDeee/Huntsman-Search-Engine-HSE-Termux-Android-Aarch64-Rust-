@@ -309,6 +309,51 @@ pub(super) fn link_cross_scan_kind_aliases(
     linked
 }
 
+/// Bounded, deterministic prior-scan-id list for `e`: the current scan
+/// excluded, sorted, deduped, and capped at [`MAX_PRIOR_SCANS_PER_ENTITY`].
+/// Consumes one probe from `probes` against `max_probes`; returns `None` when
+/// the budget is already exhausted, the store errors, or `e` has no
+/// qualifying prior scan. The shared "does this candidate have history worth
+/// fanning out to?" gate for [`link_cross_scan_cooccurrence`] and
+/// [`link_cross_scan_relations`] — each then fans out to the returned ids
+/// with its own differently-shaped per-scan read (entities vs. relations).
+fn prior_scan_ids(
+    store: &dyn StoragePort,
+    e: &Entity,
+    scan_id: &str,
+    probes: &mut usize,
+    max_probes: usize,
+) -> Option<Vec<String>> {
+    if *probes >= max_probes {
+        return None;
+    }
+    *probes += 1;
+    let mut ids = store.scan_ids_for_entity(&e.uid).ok()?;
+    ids.retain(|id| id.as_str() != scan_id);
+    ids.sort();
+    ids.dedup();
+    ids.truncate(MAX_PRIOR_SCANS_PER_ENTITY);
+    (!ids.is_empty()).then_some(ids)
+}
+
+/// Record one occurrence of `key` in the running per-entity multiset, but at
+/// most once per prior scan: `seen_here` tracks the keys already counted for
+/// THIS prior scan, so a store that returns the same partner/relation twice
+/// within one scan's result set can't inflate its shared-scan count. Shared
+/// by the co-occurrence and relation-recall read phases, which differ only in
+/// what `K` is and how it's derived from a prior scan's raw records.
+fn count_once_per_prior_scan<K: Clone + Eq + std::hash::Hash>(
+    multiset: &mut HashMap<K, usize>,
+    seen_here: &mut Vec<K>,
+    key: K,
+) {
+    if seen_here.contains(&key) {
+        return;
+    }
+    seen_here.push(key.clone());
+    *multiset.entry(key).or_insert(0) += 1;
+}
+
 /// Build the co-occurrence message naming `partner` and the `shared` prior-scan
 /// count. Centralised so the summary written in the mutation phase and the
 /// idempotency probe in [`endpoint_has_cooccurrence`] can't drift; the
@@ -391,19 +436,11 @@ pub(super) fn link_cross_scan_cooccurrence(
         if !is_cross_scan_candidate(e) {
             continue;
         }
-        probes += 1;
-        let Ok(mut prior_ids) = store.scan_ids_for_entity(&e.uid) else {
+        let Some(prior_ids) =
+            prior_scan_ids(store, e, scan_id, &mut probes, MAX_COOCCURRENCE_PROBES)
+        else {
             continue;
         };
-        // Keep only genuinely-prior scans, deduped and sorted so the per-entity cap
-        // is applied deterministically (smallest ids win).
-        prior_ids.retain(|id| id.as_str() != scan_id);
-        prior_ids.sort();
-        prior_ids.dedup();
-        prior_ids.truncate(MAX_PRIOR_SCANS_PER_ENTITY);
-        if prior_ids.is_empty() {
-            continue;
-        }
 
         // partner current-index -> distinct prior scans the pair co-occurred in.
         // Keyed by the live-entity INDEX (a `Copy` usize), NOT a `&str` borrowed
@@ -432,11 +469,10 @@ pub(super) fn link_cross_scan_cooccurrence(
                 let Some(&pidx) = current.get(puid) else {
                     continue;
                 };
-                if !is_cross_scan_candidate(&entities[pidx]) || seen_here.contains(&pidx) {
+                if !is_cross_scan_candidate(&entities[pidx]) {
                     continue;
                 }
-                seen_here.push(pidx);
-                *partners.entry(pidx).or_insert(0) += 1;
+                count_once_per_prior_scan(&mut partners, &mut seen_here, pidx);
             }
         }
 
@@ -590,17 +626,10 @@ pub(super) fn link_cross_scan_relations(
         if !is_cross_scan_candidate(e) {
             continue;
         }
-        probes += 1;
-        let Ok(mut prior_ids) = store.scan_ids_for_entity(&e.uid) else {
+        let Some(prior_ids) = prior_scan_ids(store, e, scan_id, &mut probes, MAX_RELATION_PROBES)
+        else {
             continue;
         };
-        prior_ids.retain(|id| id.as_str() != scan_id);
-        prior_ids.sort();
-        prior_ids.dedup();
-        prior_ids.truncate(MAX_PRIOR_SCANS_PER_ENTITY);
-        if prior_ids.is_empty() {
-            continue;
-        }
 
         // (kind_str, partner_value) -> distinct prior scans the link recurred in.
         let mut recalled: HashMap<(&'static str, String), usize> = HashMap::new();
@@ -631,11 +660,7 @@ pub(super) fn link_cross_scan_relations(
                     continue;
                 };
                 let key = (r.kind.as_str(), partner.value);
-                if seen_here.contains(&key) {
-                    continue;
-                }
-                seen_here.push(key.clone());
-                *recalled.entry(key).or_insert(0) += 1;
+                count_once_per_prior_scan(&mut recalled, &mut seen_here, key);
             }
         }
 
