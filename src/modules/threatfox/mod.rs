@@ -133,61 +133,30 @@ pub(super) fn build_ioc_entity(
     if !families.is_empty() {
         ev = ev.with_attr(
             "malware_families",
-            families.into_iter().take(MAX_FAMILIES).enumerate().fold(
-                String::new(),
-                |mut acc, (i, s)| {
-                    if i > 0 {
-                        acc.push(',');
-                    }
-                    acc.push_str(&s);
-                    acc
-                },
-            ),
+            families
+                .into_iter()
+                .take(MAX_FAMILIES)
+                .collect::<Vec<_>>()
+                .join(","),
         );
     }
     if !types.is_empty() {
-        ev = ev.with_attr(
-            "ioc_types",
-            types
-                .into_iter()
-                .enumerate()
-                .fold(String::new(), |mut acc, (i, s)| {
-                    if i > 0 {
-                        acc.push(',');
-                    }
-                    acc.push_str(&s);
-                    acc
-                }),
-        );
+        ev = ev.with_attr("ioc_types", types.into_iter().collect::<Vec<_>>().join(","));
     }
     if !threat_types.is_empty() {
         ev = ev.with_attr(
             "threat_types",
-            threat_types
-                .into_iter()
-                .enumerate()
-                .fold(String::new(), |mut acc, (i, s)| {
-                    if i > 0 {
-                        acc.push(',');
-                    }
-                    acc.push_str(&s);
-                    acc
-                }),
+            threat_types.into_iter().collect::<Vec<_>>().join(","),
         );
     }
     if !ioc_tags.is_empty() {
         ev = ev.with_attr(
             "ioc_tags",
-            ioc_tags.into_iter().take(MAX_IOC_TAGS).enumerate().fold(
-                String::new(),
-                |mut acc, (i, s)| {
-                    if i > 0 {
-                        acc.push(',');
-                    }
-                    acc.push_str(&s);
-                    acc
-                },
-            ),
+            ioc_tags
+                .into_iter()
+                .take(MAX_IOC_TAGS)
+                .collect::<Vec<_>>()
+                .join(","),
         );
     }
     if max_confidence > 0 {

@@ -127,17 +127,7 @@ pub(super) fn render_environment(curl: bool) -> String {
         } else {
             format!(
                 ": {}",
-                absent
-                    .iter()
-                    .map(|k| **k)
-                    .enumerate()
-                    .fold(String::new(), |mut acc, (i, s)| {
-                        if i > 0 {
-                            acc.push_str(", ");
-                        }
-                        acc.push_str(s);
-                        acc
-                    })
+                absent.iter().map(|k| **k).collect::<Vec<_>>().join(", ")
             )
         }
     );
