@@ -141,8 +141,16 @@ pub const MULTIPATH_CORROBORATION_SOURCE: &str = "multipath_corroboration";
 /// Evidence source name emitted by the cross-scan-corroboration promotion pass
 /// (`promote_cross_scan_corroborated` in `crate::core::engine::passes`).
 ///
-/// Same semantics as [`MULTIPATH_CORROBORATION_SOURCE`]: engine-derived signal,
-/// not an independent observation.
+/// Unlike [`MULTIPATH_CORROBORATION_SOURCE`] (a deterministic function of THIS
+/// scan's own entity/relation graph — identical on every re-run against the
+/// same data), this signal can only fire once the local store already holds
+/// **prior scans** of the same subject (the engine gates the underlying AU-066
+/// boost on a route proven in ≥2 prior scans). Treating it as a promotion
+/// source would therefore let a re-scan of the same subject earn strictly
+/// higher confidence than the identical fresh scan ever could — the local
+/// data must not be incorporated unless purposely added — so it stays a
+/// [`is_non_corroborating_source`] provenance-only signal like
+/// [`CROSS_SCAN_SOURCE`], never counted toward `source_count`/`c_effective`.
 pub const CROSS_SCAN_CORROBORATION_SOURCE: &str = "cross_scan_corroboration";
 
 /// True if `source` is an engine **promotion pass** rather than an independent
@@ -152,16 +160,19 @@ pub const CROSS_SCAN_CORROBORATION_SOURCE: &str = "cross_scan_corroboration";
 /// This is distinct from [`is_non_corroborating_source`]: non-corroborating
 /// sources are NEVER counted; promotion sources ARE counted, but only when the
 /// entity already has at least one real corroborating source (the grounding gate
-/// in [`Entity::source_count`]).
+/// in [`Entity::source_count`]). Deliberately excludes
+/// [`CROSS_SCAN_CORROBORATION_SOURCE`] — see its own doc comment for why that
+/// one stays non-corroborating instead.
 #[inline]
 pub fn is_promotion_source(source: &str) -> bool {
-    source == MULTIPATH_CORROBORATION_SOURCE || source == CROSS_SCAN_CORROBORATION_SOURCE
+    source == MULTIPATH_CORROBORATION_SOURCE
 }
 
 /// True if `source` must NOT count toward cross-source corroboration — a
 /// deterministic self-enrichment pass ([`ENRICHMENT_ONLY_SOURCES`]), the recall
 /// replay ([`RECALL_SOURCE`]), the cross-scan history link ([`CROSS_SCAN_SOURCE`]),
-/// or the breach-consensus summary ([`CONSENSUS_SOURCE`]). All attach genuine,
+/// the cross-scan-corroboration boost ([`CROSS_SCAN_CORROBORATION_SOURCE`]), or
+/// the breach-consensus summary ([`CONSENSUS_SOURCE`]). All attach genuine,
 /// useful evidence, but none is an independent observation, so none may inflate
 /// the corroboration count.
 #[inline]
@@ -169,6 +180,7 @@ pub fn is_non_corroborating_source(source: &str) -> bool {
     is_enrichment_source(source)
         || source == RECALL_SOURCE
         || source == CROSS_SCAN_SOURCE
+        || source == CROSS_SCAN_CORROBORATION_SOURCE
         || source == CONSENSUS_SOURCE
 }
 
@@ -582,14 +594,16 @@ impl Entity {
         // source. Entity evidence chains are short (a handful of sources), so
         // this O(k²) scan over tiny `k` beats hashing + heap allocation.
         //
-        // GROUNDING GATE: promotion-pass sources (`multipath_corroboration`,
-        // `cross_scan_corroboration`) are tracked separately and only COUNT
-        // when the entity is already independently grounded. They re-fire every
-        // scan, so a value the engine merely DERIVED (a name→email permutation,
-        // an inferred handle — the `derived` tag) whose lone real source is its
-        // own generator must NOT be lifted into apparent cross-source agreement.
-        // Gate: for observed entities (no `derived` tag) 1 real source suffices;
-        // for derived entities we require ≥2 real (corroborating, non-promotion)
+        // GROUNDING GATE: the promotion-pass source (`multipath_corroboration`
+        // — see [`is_promotion_source`]; `cross_scan_corroboration` is instead
+        // always non-corroborating, per its own doc comment) is tracked
+        // separately and only COUNTS when the entity is already independently
+        // grounded. It re-fires every scan, so a value the engine merely
+        // DERIVED (a name→email permutation, an inferred handle — the
+        // `derived` tag) whose lone real source is its own generator must NOT
+        // be lifted into apparent cross-source agreement. Gate: for observed
+        // entities (no `derived` tag) 1 real source suffices; for derived
+        // entities we require ≥2 real (corroborating, non-promotion)
         // sources before promotion counts. If the generator is itself
         // non-corroborating (e.g. `name_intel`), it does not contribute to
         // `real`, so external confirmation is needed regardless.

@@ -59,14 +59,6 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_EPIEOS_KEY",
     "HUNTSMAN_PROXYCURL_KEY",
     "HUNTSMAN_OPENCORP_KEY",
-    // Aggregator / enrichment consumer keys — modules read these but they were
-    // previously invisible to the Settings grid and `hse doctor`. `osintcat` is
-    // also registered in `service_defs` (poolable/validatable); `niamonx` and
-    // `fullcontact` are POST-only, so they are known-and-configurable here but
-    // deliberately not pooled/validated (see the note in `service_defs`).
-    "HUNTSMAN_OSINTCAT_KEY",
-    "HUNTSMAN_NIAMONX_KEY",
-    "HUNTSMAN_FULLCONTACT_KEY",
     // Developer platforms. The GitHub token is optional (it only raises the
     // per-IP rate limit for github_user/_commits/_code_search), but registering
     // it makes multi-token rotation, validation, and Settings visibility work —

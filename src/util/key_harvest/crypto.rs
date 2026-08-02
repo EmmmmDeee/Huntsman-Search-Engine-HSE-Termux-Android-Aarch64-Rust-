@@ -201,3 +201,112 @@ pub(super) fn shannon_entropy(value: &str) -> f64 {
     }
     h
 }
+
+/// Multi-factor behavioural credential score in `0.0..=1.0`, combining
+/// [`shannon_entropy`] (30%), length profile (15%), character composition
+/// (25%), consecutive-character repetition (10%), and a common-word penalty
+/// (5%) — the entropy-based fallback [`super::try_entropy_detect`]
+/// reaches for when pattern matching finds nothing. `0.0` for anything under
+/// 8 chars (too short to carry a meaningful entropy signal).
+#[must_use]
+pub(super) fn credential_likelihood(text: &str) -> f64 {
+    if text.is_empty() || text.len() < 8 {
+        return 0.0;
+    }
+
+    let mut score: f64 = 0.0;
+
+    // 1. ENTROPY: 30% weight
+    let entropy = shannon_entropy(text);
+    let entropy_score = if entropy >= 5.0 {
+        1.0 // High entropy (>5 bits/char)
+    } else if entropy >= 4.5 {
+        0.7 // Moderate-high entropy
+    } else if entropy >= 4.0 {
+        0.3 // Natural language level
+    } else {
+        0.0 // Low entropy (repetitive)
+    };
+    score += entropy_score * 0.30;
+
+    // 2. LENGTH: 15% weight (credentials have characteristic lengths)
+    let length_score = match text.len() {
+        16..=20 => 1.0,   // AWS key length
+        32..=64 => 0.9,   // Common API key
+        8..=15 => 0.6,    // Short token
+        65..=128 => 0.8,  // Long token
+        129..=512 => 0.5, // Bearer token
+        _ => 0.0,         // Unusual length
+    };
+    score += length_score * 0.15;
+
+    // 3. CHARACTER COMPOSITION: 25% weight
+    let alphanumeric_ratio =
+        text.chars().filter(char::is_ascii_alphanumeric).count() as f64 / text.len() as f64;
+
+    let special_chars = text
+        .chars()
+        .filter(|c| matches!(c, '-' | '_' | '.' | ':' | '/'))
+        .count() as f64
+        / text.len() as f64;
+
+    let space_ratio = text.chars().filter(|c| c.is_whitespace()).count() as f64 / text.len() as f64;
+
+    // Credentials: high alphanumeric, some special chars, no spaces
+    let composition_score = match (alphanumeric_ratio, special_chars, space_ratio) {
+        (_, _, s) if s > 0.1 => 0.0,  // Contains spaces (unlikely credential)
+        (a, _, _) if a < 0.7 => 0.0,  // Too many unusual chars
+        (a, _, _) if a >= 0.9 => 0.9, // Pure alphanumeric (good credential)
+        (a, sp, _) if a >= 0.8 && sp > 0.05 => 0.8, // Good mix with separators
+        (a, _, _) if a >= 0.8 => 0.7, // Good alphanumeric ratio
+        _ => 0.3,
+    };
+    score += composition_score * 0.25;
+
+    // 4. REPETITION: 10% weight (credentials avoid character repetition)
+    let max_consecutive = text
+        .chars()
+        .fold((0, 0, ' '), |(max, current, last), c| {
+            if c == last {
+                (max.max(current + 1), current + 1, c)
+            } else {
+                (max, 1, c)
+            }
+        })
+        .0;
+
+    let repetition_score = match max_consecutive {
+        0..=1 => 1.0, // No repetition (good)
+        2 => 0.8,     // Single double char
+        3 => 0.5,     // Triple char (suspicious)
+        _ => 0.0,     // Heavy repetition (not a credential)
+    };
+    score += repetition_score * 0.10;
+
+    // 5. DICTIONARY WORD CHECK: 5% weight (credentials shouldn't be dict words)
+    let dict_score = if is_common_word(text) { 0.0 } else { 1.0 };
+    score += dict_score * 0.05;
+
+    score.min(1.0)
+}
+
+/// True if `text` is a common English word associated with credential
+/// fields — a field NAME/LABEL leaking into the value position rather than
+/// a real secret (e.g. a form echoing back `"password"` itself).
+fn is_common_word(text: &str) -> bool {
+    matches!(
+        text.to_ascii_lowercase().as_str(),
+        "password"
+            | "secret"
+            | "token"
+            | "key"
+            | "credential"
+            | "api"
+            | "private"
+            | "public"
+            | "username"
+            | "admin"
+            | "default"
+            | "example"
+    )
+}

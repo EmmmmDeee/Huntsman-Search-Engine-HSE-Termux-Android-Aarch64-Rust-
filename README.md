@@ -214,7 +214,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ---
 
-## Module Overview (176 modules — 132 free, 44 key-gated/paid)
+## Module Overview (176 modules — 138 free, 38 key-gated/paid)
 
 > A curated highlight of the modules below (not the full list). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run

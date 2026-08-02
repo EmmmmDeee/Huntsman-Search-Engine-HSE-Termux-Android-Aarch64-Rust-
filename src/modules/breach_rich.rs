@@ -599,7 +599,7 @@ pub fn extract_rich_detail(
         {
             push_context_entity(
                 result,
-                Entity::new(EntityKind::Ssid, &s, 0.55, scan_id),
+                Entity::new(EntityKind::Ssid, &s, confidence::MEDIUM_HIGH, scan_id),
                 ev,
                 source,
                 &["wifi-network", "stealer"],
@@ -630,7 +630,7 @@ pub fn extract_rich_detail(
         {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Phone, &ph, 0.55, scan_id),
+                Entity::new(EntityKind::Phone, &ph, confidence::MEDIUM_HIGH, scan_id),
                 ev,
                 source,
                 &[],
@@ -692,7 +692,7 @@ pub fn extract_rich_detail(
         {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Url, trimmed, 0.50, scan_id),
+                Entity::new(EntityKind::Url, trimmed, confidence::MEDIUM, scan_id),
                 ev,
                 source,
                 &["raw-field"],
@@ -707,7 +707,7 @@ pub fn extract_rich_detail(
         {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Email, trimmed, 0.55, scan_id),
+                Entity::new(EntityKind::Email, trimmed, confidence::MEDIUM_HIGH, scan_id),
                 ev,
                 source,
                 &["raw-field"],
@@ -718,15 +718,21 @@ pub fn extract_rich_detail(
         // Value-typing 3 — a PUBLIC IP in any field (`lastip`/`last_ip`/
         // `registration_ip`/… or a key a future endpoint adds). A public IP is a
         // geolocation lead; private/reserved IPs are not, so they fall through to
-        // `Other()`. Confidence 0.55 stays below the provider primary-IP path's
-        // 0.60 so the primary node wins on collision (both key by the bare value).
-        // The `continue` is unconditional: it dedups against that primary key AND
-        // suppresses the duplicate `Other(field)` this loop would otherwise mint.
+        // `Other()`. Confidence MEDIUM_HIGH (0.55) stays below the provider
+        // primary-IP path's MEDIUM_PLUS (0.60) so the primary node wins on
+        // collision (both key by the bare value). The `continue` is
+        // unconditional: it dedups against that primary key AND suppresses
+        // the duplicate `Other(field)` this loop would otherwise mint.
         if crate::util::preflight::is_public_ip(trimmed) {
             if seen.insert(trimmed.to_string()) {
                 push_breach_entity(
                     result,
-                    Entity::new(EntityKind::IpAddress, trimmed, 0.55, scan_id),
+                    Entity::new(
+                        EntityKind::IpAddress,
+                        trimmed,
+                        confidence::MEDIUM_HIGH,
+                        scan_id,
+                    ),
                     ev,
                     source,
                     &["geolocation-lead", "raw-field"],

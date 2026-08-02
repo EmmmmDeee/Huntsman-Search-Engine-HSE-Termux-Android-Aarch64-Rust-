@@ -44,7 +44,7 @@ use patterns::KEY_PATTERNS;
 use service_domains::identify_service_from_url;
 
 /// Entropy-based credential detection — finds credentials that don't match known patterns.
-/// Uses the credential_likelihood scoring from the entropy analyzer.
+/// Uses [`crypto::credential_likelihood`]'s multi-factor behavioural scoring.
 /// Returns confidence_score if entropy analysis found a credential.
 fn try_entropy_detect(field: &str, value: &str) -> Option<f64> {
     // Skip field names that are unlikely to contain credentials
@@ -66,7 +66,7 @@ fn try_entropy_detect(field: &str, value: &str) -> Option<f64> {
     }
 
     // Score the value using entropy analysis
-    let score = crate::modules::credential_entropy_analyzer::credential_likelihood(value);
+    let score = credential_likelihood(value);
 
     // High confidence: entropy analysis flagged this as a credential
     // Threshold is conservative (75%+) to avoid false positives

@@ -206,7 +206,11 @@ fn cross_scan_corroboration_is_provenance_only_not_a_corroborating_source() {
     // The AU-066 cross-scan-corroboration boost attaches evidence that SURFACES a
     // link to prior scans, but recurrence in the local store is not an independent
     // observation — it must not lift confidence a whole tier (which broke
-    // fresh-scan == re-scan reproducibility).
+    // fresh-scan == re-scan reproducibility). Unlike `multipath_corroboration`
+    // (a deterministic function of THIS scan's own graph), this signal can only
+    // fire once the store already holds prior scans of the subject, so — unlike
+    // multipath — it is NOT a promotion source: a re-scan must never earn higher
+    // confidence than the identical fresh scan ever could.
     let mut e = Entity::new(EntityKind::Person, "Jordan Meyers", 0.25, "s");
     e.add_evidence(Evidence::new("oathnet_pro", "Breach record"));
     e.add_evidence(Evidence::new(
@@ -230,6 +234,9 @@ fn cross_scan_corroboration_is_provenance_only_not_a_corroborating_source() {
         "stays CANDIDATE — not silently promoted a tier by local prior-scan history"
     );
     assert!(super::is_non_corroborating_source(
+        super::CROSS_SCAN_CORROBORATION_SOURCE
+    ));
+    assert!(!super::is_promotion_source(
         super::CROSS_SCAN_CORROBORATION_SOURCE
     ));
 }
@@ -448,19 +455,22 @@ fn promotion_source_amplifies_grounded_entity() {
 }
 
 #[test]
-fn cross_scan_corroboration_gated_same_as_multipath() {
-    // CROSS_SCAN_CORROBORATION_SOURCE is the same tier as multipath — it is a
-    // promotion source and must be gated identically.
+fn cross_scan_corroboration_never_counts_unlike_grounded_multipath() {
+    // Unlike MULTIPATH_CORROBORATION_SOURCE (a deterministic function of THIS
+    // scan's own graph, so re-running an identical scan reproduces an identical
+    // result), CROSS_SCAN_CORROBORATION_SOURCE can only fire once the store
+    // already holds prior scans of the subject — so gating it the same way
+    // multipath is gated would let a re-scan earn strictly higher confidence
+    // than the identical fresh scan ever could. It must therefore never count,
+    // solo OR already-grounded, unlike multipath (see
+    // `promotion_source_alone_does_not_ground_entity` /
+    // `promotion_source_amplifies_grounded_entity`).
     let mut solo = Entity::new(EntityKind::Email, "y@example.com", 0.55, "s");
     solo.add_evidence(Evidence::new(
         CROSS_SCAN_CORROBORATION_SOURCE,
         "Matched across scan boundary",
     ));
-    assert_eq!(
-        solo.source_count(),
-        1,
-        "no real source → gate blocks cross_scan"
-    );
+    assert_eq!(solo.source_count(), 1, "no real source → still just 1");
 
     let mut grounded = Entity::new(EntityKind::Email, "y@example.com", 0.55, "s");
     grounded.add_evidence(Evidence::new("snusbase", "Found in leak"));
@@ -470,8 +480,8 @@ fn cross_scan_corroboration_gated_same_as_multipath() {
     ));
     assert_eq!(
         grounded.source_count(),
-        2,
-        "grounded entity → cross_scan counts"
+        1,
+        "even a grounded entity's cross-scan evidence never counts as a second source"
     );
 }
 

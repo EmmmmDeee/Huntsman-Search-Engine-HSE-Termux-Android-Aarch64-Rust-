@@ -123,14 +123,15 @@ pub struct CoReference {
 }
 
 /// One side of a co-reference comparison — the canonical inputs
-/// [`string_signal`] reads for a single entity. `is_person` enables the name-token
-/// tier; `is_email` gates the domain-aware handle-equivalence tightening; `norm`
-/// is the pre-computed [`identity_norm`] form of `raw`.
+/// [`string_signal`] reads for a single entity. `is_person` enables the
+/// name-token tier; the domain-aware handle-equivalence tightening is instead
+/// driven straight off `raw`'s own shape (via [`email_domain`]), so this
+/// carries no separate email flag. `norm` is the pre-computed
+/// [`identity_norm`] form of `raw`.
 struct HandleSide<'a> {
     raw: &'a str,
     norm: &'a str,
     is_person: bool,
-    is_email: bool,
 }
 
 /// The lower-cased domain of `value` if it is shaped like an email address.
@@ -180,30 +181,33 @@ fn string_signal(a: HandleSide<'_>, b: HandleSide<'_>) -> Option<(f64, &'static 
     // Cross-KIND matches (`jsmith` ↔ `jsmith@gmail.com`) are what
     // `W_HANDLE_EQUIV` was designed for and are left alone, though a common
     // handle weakens those too — see the module docs.
-    if let (Some(dom_a), Some(dom_b)) = (email_domain(a.raw), email_domain(b.raw))
-        && !dom_a.eq_ignore_ascii_case(dom_b)
-    {
-        return None;
+    //
+    // Compared as CANONICAL domains (via `canonical_email`'s own gmail.com/
+    // googlemail.com folding), not raw domains: `j.o.h.n@gmail.com` and
+    // `john@googlemail.com` are the same real mailbox on different raw
+    // domain spellings, and a raw-domain comparison would wrongly gate them
+    // apart before ever reaching the handle-equivalence check below.
+    if let (Some(dom_a), Some(dom_b)) = (email_domain(a.raw), email_domain(b.raw)) {
+        let canon_domain = |raw: &str, domain: &str| -> String {
+            canonical_email(raw)
+                .and_then(|c| c.rsplit_once('@').map(|(_, d)| d.to_string()))
+                .unwrap_or_else(|| domain.to_ascii_lowercase())
+        };
+        if canon_domain(a.raw, dom_a) != canon_domain(b.raw, dom_b) {
+            return None;
+        }
     }
     if a.norm == b.norm {
-        // Same domain (or not both emails) confirmed above. For an Email×Email
-        // pair, still require the FULL canonical mailbox to match — not just the
-        // shared local part — so `canonical_email`'s gmail dot/`+tag`/googlemail
-        // folding is what decides genuine same-mailbox spellings, rather than a
-        // bare local-part collision alone. Cross-kind ties (email local ↔
-        // username / person) keep the local-part bridge — that is the intended
-        // alias signal, not a domain-scoped identifier.
-        let handle_equiv = if a.is_email && b.is_email {
-            matches!(
-                (canonical_email(a.raw), canonical_email(b.raw)),
-                (Some(ca), Some(cb)) if ca == cb
-            )
-        } else {
-            true
-        };
-        if handle_equiv {
-            return Some((W_HANDLE_EQUIV, "handle-equivalence"));
-        }
+        // The cross-domain suppression above already confirmed same canonical
+        // domain (or that this isn't an email↔email pair at all), so a shared
+        // [`identity_norm`]-folded local part at this point is genuine
+        // handle-equivalence — including same-domain punctuation variants
+        // (`j.smith@acme.com` ↔ `jsmith@acme.com`) that `canonical_email`'s
+        // OWN stricter dots-matter-outside-Gmail policy would (correctly, for
+        // its own hard-identity purpose) keep apart. Cross-kind ties (email
+        // local ↔ username / person) keep the same local-part bridge — that
+        // is the intended alias signal, not a domain-scoped identifier.
+        return Some((W_HANDLE_EQUIV, "handle-equivalence"));
     }
     // Name-token match: a Person's every token (≥2 chars), of which there are ≥2,
     // is a substring of the OTHER side's canonical handle.
@@ -256,7 +260,6 @@ pub fn resolve_coreferences(entities: &[Entity], min_score: f64, limit: usize) -
         e: &'a Entity,
         norm: String,
         is_person: bool,
-        is_email: bool,
         sources: std::collections::HashSet<&'a str>,
     }
     // Bound the O(N²) sweep. An imported breach/stealer dossier can seat 10^5+
@@ -272,7 +275,6 @@ pub fn resolve_coreferences(entities: &[Entity], min_score: f64, limit: usize) -
             e,
             norm: identity_norm(&e.value),
             is_person: e.kind == EntityKind::Person,
-            is_email: e.kind == EntityKind::Email,
             sources: e.corroborating_sources(),
         })
         .take(MAX_COREF_NODES)
@@ -298,13 +300,11 @@ pub fn resolve_coreferences(entities: &[Entity], min_score: f64, limit: usize) -
                     raw: &lo.e.value,
                     norm: &lo.norm,
                     is_person: lo.is_person,
-                    is_email: lo.is_email,
                 },
                 HandleSide {
                     raw: &hi.e.value,
                     norm: &hi.norm,
                     is_person: hi.is_person,
-                    is_email: hi.is_email,
                 },
             ) {
                 signals.push(label);

@@ -800,19 +800,6 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         rate_limit_reset_secs: 60,
         probe_parser: None,
     },
-    // GitHub personal-access token — optional for github_user/_commits/
-    // _code_search (raises the rate limit). `Authorization: Bearer <token>`;
-    // GET /user is the canonical token check (200 valid / 401 invalid; curl's
-    // default User-Agent satisfies GitHub's UA requirement).
-    ServiceDef {
-        name: "github",
-        env_var: "HUNTSMAN_GITHUB_TOKEN",
-        category: "code",
-        test_url: "https://api.github.com/user",
-        key_header: KeyPlacement::BearerAuth,
-        rate_limit_reset_secs: 60,
-        probe_parser: None,
-    },
     ServiceDef {
         name: "abusech",
         env_var: "HUNTSMAN_ABUSECH_KEY",

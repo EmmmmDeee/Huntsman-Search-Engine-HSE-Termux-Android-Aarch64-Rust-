@@ -345,7 +345,7 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
             if !crate::core::validation::is_whois_privacy_placeholder(&email)
                 && seen.insert(format!("mail:{low}"))
             {
-                let mut e = Entity::new(EntityKind::Email, &email, 0.70, scan_id);
+                let mut e = Entity::new(EntityKind::Email, &email, confidence::HIGH_PLUS, scan_id);
                 e.tag("whoisxml");
                 e.tag(format!("whois-{role}-email"));
                 e.add_evidence(base_ev.clone().with_attr("contact_role", role));

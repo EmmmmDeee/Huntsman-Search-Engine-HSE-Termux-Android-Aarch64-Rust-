@@ -271,13 +271,11 @@ fn no_string_tier_survives_for_cross_domain_mailboxes() {
                 raw: "jstewart@blueorigin.com",
                 norm: "jstewart",
                 is_person: false,
-                is_email: true,
             },
             HandleSide {
                 raw: "jstewart@navy.mil",
                 norm: "jstewart",
                 is_person: false,
-                is_email: true,
             },
         )
         .is_none(),

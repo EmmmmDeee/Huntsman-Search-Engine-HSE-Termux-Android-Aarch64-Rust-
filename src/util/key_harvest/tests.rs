@@ -103,6 +103,33 @@ fn shannon_entropy_high_for_random_alphanumeric() {
 }
 
 #[test]
+fn credential_likelihood_scores_api_keys() {
+    let aws_key = "AKIAIOSFODNN7EXAMPLE";
+    let score = credential_likelihood(aws_key);
+    assert!(
+        score > 0.5,
+        "AWS key should score as likely credential: {score}"
+    );
+}
+
+#[test]
+fn credential_likelihood_penalizes_spaces() {
+    let text_with_spaces = "this is a sentence with many words";
+    let score = credential_likelihood(text_with_spaces);
+    assert!(
+        score < 0.3,
+        "Text with spaces shouldn't score as credential"
+    );
+}
+
+#[test]
+fn credential_likelihood_handles_short_strings() {
+    let short = "abc";
+    let score = credential_likelihood(short);
+    assert_eq!(score, 0.0, "Very short strings should score zero");
+}
+
+#[test]
 fn is_uuid_accepts_canonical_form() {
     assert!(is_uuid("550e8400-e29b-41d4-a716-446655440000"));
     assert!(is_uuid("00000000-0000-0000-0000-000000000000"));
