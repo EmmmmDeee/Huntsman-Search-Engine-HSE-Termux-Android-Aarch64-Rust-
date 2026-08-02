@@ -690,7 +690,7 @@ fn push_urls_and_usernames(ctx: &mut BuildCtx, row: &ResultRow) {
 
 /// Snippet-embedded social-profile links: the result URL is one page, but
 /// its snippet often names the subject's OTHER profiles ("also at
-/// https://github.com/alice"). Mine social-host URLs from the snippet body
+/// <https://github.com/alice>"). Mine social-host URLs from the snippet body
 /// and run them through the SAME username gate the result URL uses, so the
 /// precision is identical (score_username term-overlap; weak scores stay
 /// candidate-quarantined) — only the source URL differs. Zero extra HTTP:
