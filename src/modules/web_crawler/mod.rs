@@ -419,35 +419,52 @@ fn build_entities(
     seed_url: &str,
     state: &mut CrawlState,
 ) {
-    // For URL targets, emit the URL entity itself with crawl results
     if is_url_target {
-        let mut url_entity = Entity::new(
-            EntityKind::Url,
-            seed_url,
-            confidence::VERY_HIGH_PLUS,
-            scan_id,
-        );
-        url_entity.tag(tags::WEB);
-        url_entity.tag(tags::CRAWLED);
-        for fw in &state.frameworks {
-            url_entity.tag(format!("tech:{}", fw.to_lowercase().replace(' ', "-")));
-        }
-        url_entity.add_evidence(
-            Evidence::new(
-                SRC,
-                format!(
-                    "Single-page harvest of {seed_url}: {} pages",
-                    state.pages_fetched
-                ),
-            )
-            .with_attr("pages_crawled", state.pages_fetched.to_string())
-            .with_attr("emails_found", state.emails.len().to_string())
-            .with_attr("phones_found", state.phones.len().to_string()),
-        );
-        state.result.push(url_entity);
+        emit_url_target_entity(seed_url, scan_id, state);
     }
+    emit_domain_entity(domain, scan_id, max_depth, state);
+    emit_subdomain_entities(domain, scan_id, state);
+    emit_external_domain_entities(domain, scan_id, state);
+    emit_email_entities(domain, scan_id, state);
+    emit_tracking_id_entities(domain, scan_id, state);
+    emit_phone_entities(domain, scan_id, state);
+    emit_hydration_entities(domain, scan_id, state);
+}
 
-    // Main domain entity with crawl summary
+/// For URL targets (as opposed to bare-domain targets), the seed URL itself
+/// gets its own entity carrying the crawl summary — a bare-domain crawl has
+/// no single page to anchor this to, so only URL targets get it.
+fn emit_url_target_entity(seed_url: &str, scan_id: &str, state: &mut CrawlState) {
+    let mut url_entity = Entity::new(
+        EntityKind::Url,
+        seed_url,
+        confidence::VERY_HIGH_PLUS,
+        scan_id,
+    );
+    url_entity.tag(tags::WEB);
+    url_entity.tag(tags::CRAWLED);
+    for fw in &state.frameworks {
+        url_entity.tag(format!("tech:{}", fw.to_lowercase().replace(' ', "-")));
+    }
+    url_entity.add_evidence(
+        Evidence::new(
+            SRC,
+            format!(
+                "Single-page harvest of {seed_url}: {} pages",
+                state.pages_fetched
+            ),
+        )
+        .with_attr("pages_crawled", state.pages_fetched.to_string())
+        .with_attr("emails_found", state.emails.len().to_string())
+        .with_attr("phones_found", state.phones.len().to_string()),
+    );
+    state.result.push(url_entity);
+}
+
+/// The main domain entity carrying the whole crawl's summary: tech-stack
+/// tags, page-type tags, security-header findings, and link/discovery counts
+/// as evidence attrs.
+fn emit_domain_entity(domain: &str, scan_id: &str, max_depth: u32, state: &mut CrawlState) {
     let mut entity = Entity::new(
         EntityKind::Domain,
         domain,
@@ -519,10 +536,12 @@ fn build_entities(
 
     entity.add_evidence(ev);
     state.result.push(entity);
+}
 
-    // Subdomain entities — feed back into expansion. Sorted before emission so
-    // the HashSet's randomised iteration order never leaks into entity order
-    // (the same determinism-leak class fixed for `reddit_user`/`hacker_news`).
+/// Subdomain entities — feed back into expansion. Sorted before emission so
+/// the HashSet's randomised iteration order never leaks into entity order
+/// (the same determinism-leak class fixed for `reddit_user`/`hacker_news`).
+fn emit_subdomain_entities(domain: &str, scan_id: &str, state: &mut CrawlState) {
     let mut subs: Vec<&str> = state.subdomains.iter().map(String::as_str).collect();
     subs.sort_unstable();
     state.result.extend(subs.into_iter().map(|sub| {
@@ -535,8 +554,10 @@ fn build_entities(
         );
         e
     }));
+}
 
-    // External domain entities — sorted for the same reason.
+/// External domain entities — sorted for the same reason as subdomains above.
+fn emit_external_domain_entities(domain: &str, scan_id: &str, state: &mut CrawlState) {
     let mut exts: Vec<&str> = state.external_domains.iter().map(String::as_str).collect();
     exts.sort_unstable();
     state.result.extend(exts.into_iter().map(|ext| {
@@ -548,13 +569,15 @@ fn build_entities(
         );
         e
     }));
+}
 
-    // Email entities. A crawl that scrapes an implausible number of distinct
-    // addresses has hit a directory / forum / comment-thread dump, not the
-    // subject's contacts — emitting them floods the graph with strangers (a real
-    // scan pulled ~100 unrelated emails off one comment page). Above the dump
-    // threshold the whole batch is co-occurrence noise, so suppress it; a normal
-    // contact/about page (a handful of addresses) passes through.
+/// Email entities. A crawl that scrapes an implausible number of distinct
+/// addresses has hit a directory / forum / comment-thread dump, not the
+/// subject's contacts — emitting them floods the graph with strangers (a real
+/// scan pulled ~100 unrelated emails off one comment page). Above the dump
+/// threshold the whole batch is co-occurrence noise, so suppress it; a normal
+/// contact/about page (a handful of addresses) passes through.
+fn emit_email_entities(domain: &str, scan_id: &str, state: &mut CrawlState) {
     const CONTACT_DUMP_LIMIT: usize = 20;
     if state.emails.len() <= CONTACT_DUMP_LIMIT {
         let mut emails: Vec<&str> = state.emails.iter().map(String::as_str).collect();
@@ -569,12 +592,14 @@ fn build_entities(
             e
         }));
     }
+}
 
-    // Tracking-ID entities (web-analytics affiliate pivot). The id is a hard
-    // identifier, so confidence is high (confidence::HIGH_PLUSPLUS); the `source_domain` attr lets the
-    // correlator count how many distinct sites carry the same id (shared id ⇒
-    // common ownership). When two crawled domains share an id, both emit the same
-    // TrackingId value → it merges to one entity, raising corroboration.
+/// Tracking-ID entities (web-analytics affiliate pivot). The id is a hard
+/// identifier, so confidence is high (confidence::HIGH_PLUSPLUS); the `source_domain` attr lets the
+/// correlator count how many distinct sites carry the same id (shared id ⇒
+/// common ownership). When two crawled domains share an id, both emit the same
+/// TrackingId value → it merges to one entity, raising corroboration.
+fn emit_tracking_id_entities(domain: &str, scan_id: &str, state: &mut CrawlState) {
     let mut tracking_ids: Vec<&(String, String)> = state.tracking_ids.iter().collect();
     tracking_ids.sort_unstable();
     state
@@ -595,9 +620,12 @@ fn build_entities(
             );
             e
         }));
+}
 
-    // Phone entities — same dump guard (a page with dozens of numbers is a
-    // directory, not the subject's).
+/// Phone entities — same dump guard as emails (a page with dozens of numbers
+/// is a directory, not the subject's).
+fn emit_phone_entities(domain: &str, scan_id: &str, state: &mut CrawlState) {
+    const CONTACT_DUMP_LIMIT: usize = 20;
     if state.phones.len() <= CONTACT_DUMP_LIMIT {
         let mut phones: Vec<&str> = state.phones.iter().map(String::as_str).collect();
         phones.sort_unstable();
@@ -611,14 +639,16 @@ fn build_entities(
             e
         }));
     }
+}
 
-    // Hydration-JSON-derived entities (Next.js/Nuxt embedded SPA data; see
-    // hydration.rs). Deduplicated across the whole crawl on the same
-    // (kind, ascii-lowercased value) key `classifier::extract` uses internally
-    // per call — a batch is collected per page, so the same nav/footer value
-    // repeated across pages would otherwise duplicate. Same dump guard as
-    // emails/phones: a heavily-labelled page (e.g. a product catalogue) could
-    // otherwise flood the graph with unrelated structured values.
+/// Hydration-JSON-derived entities (Next.js/Nuxt embedded SPA data; see
+/// hydration.rs). Deduplicated across the whole crawl on the same
+/// (kind, ascii-lowercased value) key `classifier::extract` uses internally
+/// per call — a batch is collected per page, so the same nav/footer value
+/// repeated across pages would otherwise duplicate. Same dump guard as
+/// emails/phones: a heavily-labelled page (e.g. a product catalogue) could
+/// otherwise flood the graph with unrelated structured values.
+fn emit_hydration_entities(domain: &str, scan_id: &str, state: &mut CrawlState) {
     const HYDRATION_DUMP_LIMIT: usize = 20;
     let mut seen_hydration: HashSet<String> = HashSet::new();
     let mut hydration: Vec<&Classified> = Vec::new();
