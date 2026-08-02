@@ -436,6 +436,15 @@ mod tests {
 
     #[tokio::test]
     async fn cells_clear_succeeds_with_confirm_true() {
+        // clear_cells_db() uses the real cell database file path (not the test's
+        // in-memory store). Pre-populate it so the endpoint can clear it.
+        let db_path = crate::util::paths::data_file("cell_towers.db");
+        if let Some(parent) = db_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        // Create an empty cell database (init_schema will add tables on open).
+        let _db = crate::util::cell_db::open_rw().expect("should create cell DB");
+
         let app = cells_router();
         let loopback: SocketAddr = "127.0.0.1:9999".parse().expect("should succeed");
         let req = req_with_peer(

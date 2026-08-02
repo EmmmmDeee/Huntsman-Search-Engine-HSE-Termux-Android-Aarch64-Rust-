@@ -63,8 +63,14 @@ pub fn huntsman_dir() -> PathBuf {
 /// `$HOME/.huntsman/<name>` — a file directly under the base data directory,
 /// created (0700) on demand. The one-liner every per-file path accessor is built
 /// from (`data_file("key_pool.json")`, `data_file("settings.json")`, …).
+///
+/// Tests can override the base directory via the `HUNTSMAN_DATA_DIR` env var
+/// to use a temporary directory.
 #[must_use]
 pub fn data_file(name: &str) -> PathBuf {
+    if let Ok(override_dir) = std::env::var("HUNTSMAN_DATA_DIR") {
+        return PathBuf::from(&override_dir).join(name);
+    }
     huntsman_dir().join(name)
 }
 
