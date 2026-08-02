@@ -20,6 +20,7 @@ mod tests;
 
 use async_trait::async_trait;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 
 use crate::core::{
     confidence,
@@ -185,36 +186,10 @@ async fn process_area(target: &Target, ctx: &ModuleContext, api_key: &str) -> Re
         urlencode(&bbox),
     );
 
-    let resp = ctx
-        .http
-        .get(&url)
-        .header("Accept", "application/json")
-        .send()
-        .await;
-
-    let Ok(resp) = resp else {
+    let Some(data) = fetch_and_check::<AreaResp>(&url, ctx, api_key, |d| d.error.is_some()).await?
+    else {
         return Ok(ModuleResult::new());
     };
-    let status = resp.status();
-    if !status.is_success() {
-        // A present key that gets rejected/throttled must be reported to the
-        // pool, or a dead/throttled key silently degrades every future scan
-        // with no operator-visible signal and no chance to rotate.
-        crate::util::http::note_keyed_error(status.as_u16(), SRC, api_key, ctx);
-        return Ok(ModuleResult::new());
-    }
-
-    let data: AreaResp = match crate::util::http::json_scanned(resp, SRC).await {
-        Ok(d) => d,
-        Err(_) => return Ok(ModuleResult::new()),
-    };
-    if data.error.is_some() {
-        // See `CellEntry::error`'s doc comment — a body-level key failure
-        // OpenCelliD signals as a plain 200, so this can't be caught by the
-        // status check above.
-        crate::util::http::note_keyed_error(401, SRC, api_key, ctx);
-        return Ok(ModuleResult::new());
-    }
 
     let mut result = ModuleResult::new();
     for cell in &data.cells {
@@ -243,36 +218,63 @@ async fn process_tower(
         cid,
     );
 
+    let Some(cell) =
+        fetch_and_check::<CellEntry>(&url, ctx, api_key, |d| d.error.is_some()).await?
+    else {
+        return Ok(ModuleResult::new());
+    };
+
+    let mut result = ModuleResult::new();
+    emit_cell_entities(&mut result, &cell, &ctx.scan_id);
+    Ok(result)
+}
+
+/// GET `url` and decode the body as `T`, treating a non-success HTTP status
+/// OR a decoded body-level key failure (`has_error(&data)`) as a reportable
+/// key problem via `note_keyed_error` — shared by [`process_area`] and
+/// [`process_tower`], which differ only in URL and response type.
+/// OpenCelliD signals a bad/unknown key as a plain HTTP `200` whose body
+/// carries an `error` field (see [`CellEntry::error`]'s doc comment), which
+/// the status check alone can't catch — hence the caller-supplied
+/// `has_error` predicate rather than relying on HTTP status alone. Returns
+/// `Ok(None)` on any transport failure, non-success status, decode failure,
+/// or body-level key failure; the caller reads all four uniformly as
+/// "nothing to report".
+async fn fetch_and_check<T: DeserializeOwned>(
+    url: &str,
+    ctx: &ModuleContext,
+    api_key: &str,
+    has_error: impl Fn(&T) -> bool,
+) -> Result<Option<T>> {
     let resp = ctx
         .http
-        .get(&url)
+        .get(url)
         .header("Accept", "application/json")
         .send()
         .await;
 
     let Ok(resp) = resp else {
-        return Ok(ModuleResult::new());
+        return Ok(None);
     };
     let status = resp.status();
     if !status.is_success() {
-        // Same reporting rationale as `process_area` above.
+        // A present key that gets rejected/throttled must be reported to the
+        // pool, or a dead/throttled key silently degrades every future scan
+        // with no operator-visible signal and no chance to rotate.
         crate::util::http::note_keyed_error(status.as_u16(), SRC, api_key, ctx);
-        return Ok(ModuleResult::new());
+        return Ok(None);
     }
 
-    let cell: CellEntry = match crate::util::http::json_scanned(resp, SRC).await {
+    let data: T = match crate::util::http::json_scanned(resp, SRC).await {
         Ok(d) => d,
-        Err(_) => return Ok(ModuleResult::new()),
+        Err(_) => return Ok(None),
     };
-    if cell.error.is_some() {
-        // See `CellEntry::error`'s doc comment.
+    if has_error(&data) {
         crate::util::http::note_keyed_error(401, SRC, api_key, ctx);
-        return Ok(ModuleResult::new());
+        return Ok(None);
     }
 
-    let mut result = ModuleResult::new();
-    emit_cell_entities(&mut result, &cell, &ctx.scan_id);
-    Ok(result)
+    Ok(Some(data))
 }
 
 /// Emit `DeviceId` + `Coordinates` entities for one `CellEntry`.
