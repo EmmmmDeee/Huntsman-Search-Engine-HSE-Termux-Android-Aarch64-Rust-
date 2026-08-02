@@ -1,4 +1,4 @@
-//! SeekNow (see-know.icu) — parallel breach + stealer + OSINT pool.
+//! SeekNow (see-know.ru) — parallel breach + stealer + OSINT pool.
 //!
 //! Direct OathNet competitor with its own 5,000-lookup daily quota.
 //! Runs alongside oathnet_pro so each scan effectively gets 2 parallel
@@ -27,7 +27,7 @@
 //! (`effective_plan` returns the plan unfiltered; only the per-scan budget cap
 //! bounds spend). SeekNow's breach/stealer corpus returns richer per-profile
 //! data than the free `username_search` presence checks, so the standing
-//! maximise-see-know.icu directive dispatches them rather than deferring to the
+//! maximise-see-know.ru directive dispatches them rather than deferring to the
 //! free stack. The retained `FREE_COVERED_SINGLE_ORIGIN` scaffolding in the
 //! `endpoints` submodule keeps a one-flip conservative mode available but is not
 //! active. See that submodule for the authoritative plan.
@@ -88,7 +88,7 @@ impl Module for SeekNow {
     }
 
     fn description(&self) -> &'static str {
-        "SeekNow (see-know.icu) — full 18-endpoint OSINT/breach pool with discord/gaming pivots"
+        "SeekNow (see-know.ru) — full 18-endpoint OSINT/breach pool with discord/gaming pivots"
     }
 
     fn priority(&self) -> u8 {
@@ -316,7 +316,7 @@ impl Module for SeekNow {
             let mut ev = Evidence::new(SRC, format!("SeekNow: {total} record(s) via /search/deep"))
                 .with_attr("hits", total.to_string())
                 .with_attr("endpoint", "/api/v1/search/deep")
-                .with_attr("provider", "see-know.icu")
+                .with_attr("provider", "see-know.ru")
                 .with_attr("api_key_origin", &key_fp);
             if let Some(bc) = outcome.breach_count {
                 ev = ev.with_attr("breach_count", bc.to_string());

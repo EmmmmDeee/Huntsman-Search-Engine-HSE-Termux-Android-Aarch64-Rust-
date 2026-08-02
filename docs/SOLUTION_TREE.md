@@ -1146,6 +1146,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ## 5. Maintained log (paired with `PROBLEM_TREE` §8)
 
+- **2026-08-02** — **SOL-SEEKNOW-RU-ENDPOINT `[ ]`→`[~]` (T2.47): live-verified
+  `.icu`→`.ru` SeekNow endpoint migration (slice 1).** Default base was a dead host;
+  moved it to the verified-live `see-know.ru` (extracted to `DEFAULT_BASE` const +
+  regression test), migrated validation URL / key-harvest legacy table / fingerprint
+  / diagnostics / signup hint. `HUNTSMAN_SEEKNOW_BASE` override unchanged. Could not
+  end-to-end-verify (embedded key invalid against `.ru`). Slice 2 = doc/comment prose.
+  Paired: `PROBLEM_TREE` T2.47 §8 — same commit.
 - **2026-08-02** — **SOL-CRAWL-CONFIGURABLE-BOUNDS `[ ]`→`[x]`: deeper website
   crawl, bounded.** Operator asked to 'maximise recursion into websites'; literal
   unbounded crawl OOMs the device / never terminates, so instead exposed the

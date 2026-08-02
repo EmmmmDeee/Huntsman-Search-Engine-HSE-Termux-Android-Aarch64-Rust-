@@ -1931,6 +1931,25 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
 ## 8. Maintained log
 ## 8. Maintained log
 
+- **2026-08-02** — **Executed T2.47 (operator report, verified live): migrated the
+  SeekNow default endpoint `see-know.icu` → `see-know.ru`.** The hardcoded default
+  `https://see-know.icu/api/v1` is DEAD (HTTP 502 policy-denial — confirmed via the
+  module error, a direct curl, and the agent-proxy status endpoint), while
+  `https://see-know.ru/api/v1` is LIVE and serves the genuine SeekNow contract
+  (`X-API-Key: seek-…` auth, structured `invalid_api_key` JSON). Migrated the
+  functional + emitted references across 15 files: `client::DEFAULT_BASE` (now a
+  named const, regression-pinned), the `service_defs` validation URL, the
+  key-harvest domain table (added `.ru`, KEPT `.icu`/`.eu` as recognised legacy),
+  the provenance fingerprint (`see-know.ru:`), failure diagnostics, signup hint,
+  and module description/provenance. +1 hermetic regression test proven
+  red-then-green (const mutated back to `.icu` fails it). Gate green: fmt/clippy
+  `-D warnings`/rustdoc/doc clean, `cargo test --all --locked` 4606 lib + 256
+  integration, 0 failures. HONEST LIMIT: could not end-to-end-verify a data pull —
+  the embedded key is rejected as `Invalid API key` by the live `.ru` endpoint
+  (operator needs a valid key). Slice 2 (docs prose, peripheral comments,
+  constants key-notes, test fixtures) recorded in gap_register. T2.47 `[ ]`→`[~]`
+  (slice 1 shipped; slice 2 = doc/comment reconciliation). **Paired:**
+  `SOLUTION_TREE` §5 SOL-SEEKNOW-RU-ENDPOINT — same commit.
 - **2026-08-02** — **Delivered configurable (bounded) web-crawl depth/pages (CAP;
   operator directive 'maximise recursion into websites').** The domain-crawl caps
   were hardcoded (`MAX_PAGES=60`, `MAX_DEPTH=3`) with no lever to go deeper. Rather

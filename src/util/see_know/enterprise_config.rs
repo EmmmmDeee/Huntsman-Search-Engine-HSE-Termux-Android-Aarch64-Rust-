@@ -383,7 +383,7 @@ pub const SLA: ServiceLevelAgreement = ServiceLevelAgreement {
     uptime_percent: 99.97,
     response_time_p95_ms: 5_000,
     response_time_p99_ms: 15_000,
-    rate_limit_per_minute: 60, // see-know.icu unlimited on enterprise plan
+    rate_limit_per_minute: 60, // see-know.ru unlimited on enterprise plan
 };
 
 /// Autocomplete recommendation based on scan type (hardcoded).

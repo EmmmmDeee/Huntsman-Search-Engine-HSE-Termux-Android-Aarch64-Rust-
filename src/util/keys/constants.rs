@@ -129,7 +129,7 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
         "HUNTSMAN_PROXYCURL_KEY" => "Proxycurl — paid, https://nubela.co/proxycurl",
         "HUNTSMAN_SEON_KEY" => "SEON — free trial at https://seon.io",
         "HUNTSMAN_EPIEOS_KEY" => "Epieos — https://epieos.com",
-        "HUNTSMAN_SEEKNOW_KEY" => "SeekNow (see-know.icu) — https://see-know.icu",
+        "HUNTSMAN_SEEKNOW_KEY" => "SeekNow (see-know.ru) — https://see-know.ru",
         "HUNTSMAN_OATHNET_KEY" => "OathNet — https://oathnet.org",
         "HUNTSMAN_OSINTCAT_KEY" => "OSINTCat — https://www.osintcat.net",
         "HUNTSMAN_NIAMONX_KEY" => "Niamonx — https://niamonx.io",

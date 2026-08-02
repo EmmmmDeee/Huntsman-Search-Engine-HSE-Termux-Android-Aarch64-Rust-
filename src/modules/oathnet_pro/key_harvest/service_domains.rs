@@ -12,9 +12,13 @@ pub(super) const API_SERVICE_DOMAINS: &[(&str, &str)] = &[
     ("dashboard.oathnet.org", "oathnet"),
     ("docs.oathnet.org", "oathnet"),
     // ── OathNet competitors (same data, parallel quota pools) ───────────
-    // SeekNow's canonical domain is see-know.icu (see_know/client.rs); the legacy
-    // see-know.eu is retained too so a key leaked under the old domain is still
-    // recognised as a SeekNow key.
+    // SeekNow's canonical domain is see-know.ru (see_know/client.rs); the legacy
+    // see-know.icu and see-know.eu hosts are retained too so a key leaked under an
+    // old domain is still recognised as a SeekNow key.
+    ("see-know.ru", "see_know"),
+    ("api.see-know.ru", "see_know"),
+    ("app.see-know.ru", "see_know"),
+    ("dashboard.see-know.ru", "see_know"),
     ("see-know.icu", "see_know"),
     ("api.see-know.icu", "see_know"),
     ("app.see-know.icu", "see_know"),

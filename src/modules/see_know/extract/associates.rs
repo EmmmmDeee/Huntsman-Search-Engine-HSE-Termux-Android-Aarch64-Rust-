@@ -101,7 +101,7 @@ pub(super) fn extract_associates(
             });
             let mut ev = Evidence::new(SRC, format!("SeekNow {label} of {subject}"))
                 .with_attr("relationship", *label)
-                .with_attr("provider", "see-know.icu")
+                .with_attr("provider", "see-know.ru")
                 .with_attr("api_key_origin", key_fp);
             if !subject.is_empty() {
                 ev = ev.with_attr("related_to", subject);

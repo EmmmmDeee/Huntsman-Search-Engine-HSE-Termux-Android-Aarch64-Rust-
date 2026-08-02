@@ -1,5 +1,5 @@
 //! HTTP client, response cache, API key helpers, and low-level JSON I/O for
-//! the SeekNow (see-know.icu) API.
+//! the SeekNow (see-know.ru) API.
 
 use serde_json::Value;
 
@@ -19,7 +19,7 @@ const HARDCODED_KEY: &str = crate::util::keys::SEEKNOW_DEFAULT_KEY;
 /// every distinct endpoint × query a single scan generates).
 pub(super) static RESPONSE_CACHE: ResponseCache<Vec<Value>> = ResponseCache::new(1024);
 
-/// Shared curl-subprocess client. `X-API-Key` auth (per the see-know.icu spec —
+/// Shared curl-subprocess client. `X-API-Key` auth (per the see-know.ru spec —
 /// the server rejects `Authorization: Bearer` with "Missing API key. Use
 /// X-API-Key"), 75s curl timeout, 78s outer tokio timeout.
 // The name/auto `/search` path has a server-side cap of ~55s and routinely
@@ -62,12 +62,18 @@ pub(super) fn cache_put(key: String, items: Vec<Value>) {
     RESPONSE_CACHE.put(key, items);
 }
 
+/// The official SeekNow API base as of 2026-08. The prior `.icu` host is dead —
+/// verified returning HTTP 502 — while `https://see-know.ru/api/v1` answers with
+/// the SeekNow API contract (`X-API-Key: seek-…` auth, structured
+/// `invalid_api_key` JSON), continuing the `.eu → .icu → .ru` migration.
+/// Operator-overridable via `HUNTSMAN_SEEKNOW_BASE`.
+pub(super) const DEFAULT_BASE: &str = "https://see-know.ru/api/v1";
+
 pub(super) fn base_url() -> String {
-    // Hardcoded to official .icu endpoint (official domain as of 2026).
     // Vet the operator's override: refuse non-https / private-host redirects and
     // WARN on a divergent host, so a key-bearing request can't be silently
     // redirected to a look-alike or an internal address.
-    crate::util::endpoint_override::resolve("HUNTSMAN_SEEKNOW_BASE", "https://see-know.icu/api/v1")
+    crate::util::endpoint_override::resolve("HUNTSMAN_SEEKNOW_BASE", DEFAULT_BASE)
 }
 
 /// The SeekNow API key to use for a request: the per-scan context key `ctx_key`
@@ -88,10 +94,10 @@ pub fn resolve_key(ctx_key: Option<&str>) -> &str {
 pub fn key_fingerprint(key: &str) -> String {
     let k = key.trim();
     if k.is_empty() {
-        return "see-know.icu:(no key)".to_string();
+        return "see-know.ru:(no key)".to_string();
     }
     if k.len() <= 18 {
-        return format!("see-know.icu:{k}");
+        return format!("see-know.ru:{k}");
     }
     let head: String = k.chars().take(13).collect();
     let tail: String = {
@@ -99,7 +105,7 @@ pub fn key_fingerprint(key: &str) -> String {
         t.reverse();
         t.into_iter().collect()
     };
-    format!("see-know.icu:{head}\u{2026}{tail}")
+    format!("see-know.ru:{head}\u{2026}{tail}")
 }
 
 /// Body signature of a key that cannot retrieve data — so the whole scan should
@@ -108,7 +114,7 @@ pub fn key_fingerprint(key: &str) -> String {
 ///   * an outright auth rejection — `{"error":"invalid_api_key",…}` (wrong key)
 ///     or "…Missing API key. Use X-API-Key…" (header absent);
 ///   * a recognised key whose account lacks a paid plan —
-///     `{"error":"plan_required",…}` (the live see-know.icu response for a
+///     `{"error":"plan_required",…}` (the live see-know.ru response for a
 ///     free-tier key). The fix to the auth header alone can't unblock this — the
 ///     account needs a plan — so we treat it the same: skip and warn once.
 ///

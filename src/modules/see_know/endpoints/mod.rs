@@ -28,7 +28,7 @@ use super::pivots::{looks_like_discord_id, looks_like_steam_id};
 /// accounts) and breach/stealer context tied to THAT platform account.
 ///
 /// These are NOT filtered out. The operator's standing directive is to use
-/// see-know.icu MAXIMALLY — SeekNow's 5,000-daily quota vastly exceeds what
+/// see-know.ru MAXIMALLY — SeekNow's 5,000-daily quota vastly exceeds what
 /// HSE can realistically spend, so every endpoint that returns richer data
 /// than the free stack should fire. The budget cap (300/scan, 4,500/session)
 /// is the only rate limiter. Kept as a named constant for documentation and

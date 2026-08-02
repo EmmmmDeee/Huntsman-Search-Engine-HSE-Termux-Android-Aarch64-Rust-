@@ -1,4 +1,4 @@
-//! Public API endpoint functions for the SeekNow (see-know.icu) service.
+//! Public API endpoint functions for the SeekNow (see-know.ru) service.
 
 use serde_json::Value;
 
@@ -7,13 +7,13 @@ use crate::core::error::Result;
 use super::budget::{budget_try_increment, is_key_invalid};
 use super::client::{base_url, cache_get, cache_put, get_json, post_json, typed_cache_key};
 
-/// Max records per the see-know.icu Universal Search spec (`limit`, default 100,
+/// Max records per the see-know.ru Universal Search spec (`limit`, default 100,
 /// **max 500**). Requested in full — the standing directive is to use
-/// see-know.icu maximally, and one richer response costs the same budget slot as
+/// see-know.ru maximally, and one richer response costs the same budget slot as
 /// a thin one.
 pub(super) const SEARCH_LIMIT: u32 = 500;
 
-/// Build the `POST /api/v1/search` request body per the see-know.icu spec:
+/// Build the `POST /api/v1/search` request body per the see-know.ru spec:
 /// `{"query": <q>, "type": <t>?, "limit": <n>}`. An empty `query_type` omits
 /// `type` so the server auto-detects. Pure (JSON-escapes `query`) so it is
 /// unit-tested.
@@ -347,7 +347,7 @@ fn flatten_victims(victims: &[Value]) -> Vec<Value> {
 /// {"credits": {"remaining": 4200, "daily": 5000}}
 /// ```
 ///
-/// The live see-know.icu enterprise response is the FIRST shape:
+/// The live see-know.ru enterprise response is the FIRST shape:
 /// `credits_daily_limit` (not `daily_limit`). Reading only `daily_limit`/`total`/
 /// `daily` returned `None` for the daily cap, so
 /// [`super::budget::scale_scan_cap_from_daily`] never saw the real 15k/day

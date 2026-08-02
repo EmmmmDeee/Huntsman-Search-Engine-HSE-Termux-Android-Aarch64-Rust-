@@ -77,14 +77,25 @@ fn key_fingerprint_identifies_origin_without_full_secret() {
     // tripped by a literal living outside util::keys.rs.
     let fp = key_fingerprint("seek-1234567890aaaabbbbccccddddeeeeffff0000111122223333");
     // Provider-prefixed, head + tail present, middle elided.
-    assert!(fp.starts_with("see-know.icu:seek-12345"), "got {fp}");
+    assert!(fp.starts_with("see-know.ru:seek-12345"), "got {fp}");
     assert!(fp.ends_with("223333"), "got {fp}");
     assert!(fp.contains('\u{2026}'));
     // The full secret never appears verbatim — the elided middle is dropped.
     assert!(!fp.contains("aaaabbbbccccddddeeeeffff"));
     // Short/empty keys degrade gracefully.
-    assert_eq!(key_fingerprint(""), "see-know.icu:(no key)");
-    assert_eq!(key_fingerprint("short"), "see-know.icu:short");
+    assert_eq!(key_fingerprint(""), "see-know.ru:(no key)");
+    assert_eq!(key_fingerprint("short"), "see-know.ru:short");
+}
+
+#[test]
+fn default_base_is_the_live_ru_endpoint_not_the_dead_icu_host() {
+    // Regression pin for the .icu → .ru migration: the .icu host is dead (verified
+    // returning HTTP 502), the live SeekNow API is see-know.ru. A regression back
+    // to a dead host must fail at build/test time, not silently zero out the
+    // primary breach source on every scan. Hermetic — no env, no network.
+    assert_eq!(super::client::DEFAULT_BASE, "https://see-know.ru/api/v1");
+    assert!(super::client::DEFAULT_BASE.starts_with("https://see-know.ru/"));
+    assert!(!super::client::DEFAULT_BASE.contains("see-know.icu"));
 }
 
 #[test]

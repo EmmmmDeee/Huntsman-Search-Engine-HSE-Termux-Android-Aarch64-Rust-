@@ -10,6 +10,9 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed
+- **SeekNow now defaults to the live `see-know.ru` endpoint; the previous `see-know.icu` default was dead.** The hardcoded default base URL pointed at `https://see-know.icu/api/v1`, which is offline (verified returning HTTP 502) — so every SeekNow query, the engine's primary breach/stealer source, failed by default unless the operator set `HUNTSMAN_SEEKNOW_BASE`. The default is now `https://see-know.ru/api/v1`, verified live: it serves the SeekNow API contract (`X-API-Key: seek-…` auth, structured `invalid_api_key` JSON). The `see-know.icu` (and older `see-know.eu`) hosts are retained in the key-harvest table as recognised legacy domains, the key-validation probe (`hse keys validate`) now targets the live host, and the per-key provenance fingerprint records `see-know.ru`. Continues the `.eu → .icu → .ru` migration; the base remains operator-overridable via `HUNTSMAN_SEEKNOW_BASE`.
+
 ### Added
 - **The web crawler's depth and page budget are now operator-configurable for a
   deeper crawl, bounded to stay safe on-device.** The domain-crawl bounds were
