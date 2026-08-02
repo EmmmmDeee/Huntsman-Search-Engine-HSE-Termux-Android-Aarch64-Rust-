@@ -313,6 +313,78 @@ fn commit_email_filter_keeps_real_drops_github_placeholders() {
 }
 
 #[test]
+fn build_entities_applies_the_profile_kit_gates_it_was_migrated_onto() {
+    // person_entity, location_entities, and blog_entities now delegate to
+    // profile_kit's shared helpers (task: migrate github_user onto
+    // profile_kit) — this locks in the three resulting behaviour changes
+    // rather than leaving them uncovered.
+
+    // 1) A single-word display name is a handle, not a real name — the
+    // profile_kit multi-word gate now suppresses it (previously any
+    // non-empty name became a Person).
+    let single_word: GhUser =
+        serde_json::from_str(r#"{"login":"bob","id":1,"name":"Bob"}"#).expect("should succeed");
+    let out = super::build_entities(&single_word, "scan-1");
+    assert!(
+        !out.iter().any(|e| e.kind == EntityKind::Person),
+        "a single-token name must not become a Person"
+    );
+
+    // 2) A >100 char "location" is a bio mis-mapped to the location field,
+    // not a place — profile_kit rejects it (previously unbounded: any
+    // location >=3 chars became an Address).
+    let overlong_location = "x".repeat(101);
+    let long_loc: GhUser = serde_json::from_str(&format!(
+        r#"{{"login":"carol","id":3,"location":"{overlong_location}"}}"#
+    ))
+    .expect("should succeed");
+    let out = super::build_entities(&long_loc, "scan-1");
+    assert!(
+        !out.iter().any(|e| e.kind == EntityKind::Address),
+        "a location over 100 chars must not become an Address"
+    );
+    assert!(
+        !out.iter().any(|e| e.kind == EntityKind::Coordinates),
+        "no Address means no derived Coordinates either"
+    );
+
+    // 3) A blog on another PLATFORM_HOSTS entry (gitlab.com) is platform
+    // infrastructure, not the subject's personal site — profile_kit's
+    // shared exclusion list now catches it (previously github_user only
+    // excluded its own github.com/github.io).
+    let platform_blog: GhUser =
+        serde_json::from_str(r#"{"login":"dave","id":4,"blog":"https://gitlab.com/dave"}"#)
+            .expect("should succeed");
+    let out = super::build_entities(&platform_blog, "scan-1");
+    assert!(
+        out.iter()
+            .any(|e| e.kind == EntityKind::Url && e.value == "https://gitlab.com/dave"),
+        "the blog URL itself is still emitted"
+    );
+    assert!(
+        !out.iter().any(|e| e.kind == EntityKind::Domain),
+        "a known platform host must not become a standalone Domain"
+    );
+
+    // Sanity: the still-valid cases keep working — a real multi-word name,
+    // a normal-length location, and a genuine third-party blog domain.
+    let normal: GhUser = serde_json::from_str(
+        r#"{"login":"erin","id":5,"name":"Erin Example","location":"Brisbane, Australia","blog":"https://erin.dev"}"#,
+    )
+    .expect("should succeed");
+    let out = super::build_entities(&normal, "scan-1");
+    assert!(
+        out.iter()
+            .any(|e| e.kind == EntityKind::Person && e.value == "Erin Example")
+    );
+    assert!(out.iter().any(|e| e.kind == EntityKind::Address));
+    assert!(
+        out.iter()
+            .any(|e| e.kind == EntityKind::Domain && e.value == "erin.dev")
+    );
+}
+
+#[test]
 fn module_metadata() {
     let m = GithubUser;
     assert_eq!(m.name(), "github_user");

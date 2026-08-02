@@ -23,6 +23,7 @@ mod tests;
 
 use async_trait::async_trait;
 
+use super::profile_kit;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
@@ -311,15 +312,14 @@ fn separate_twitter_handle_entity(user: &GhUser, scan_id: &str) -> Option<Entity
     Some(tw_e)
 }
 
-/// Real name → Person entity, when present.
+/// Real name → Person entity, when present. Delegates the multi-word-name
+/// gate and placeholder check to [`profile_kit::person_from_name`] (a
+/// single-token "name" like a handle, or a placeholder like `"N/A"`, is
+/// never emitted as a Person — the shared toolkit's rationale applies here
+/// exactly as it does to the other profile modules that already use it).
 fn person_entity(user: &GhUser, scan_id: &str) -> Option<Entity> {
-    let name = user.name.as_deref().filter(|n| !n.trim().is_empty())?;
-    let mut p = Entity::new(
-        EntityKind::Person,
-        name.trim(),
-        confidence::VERY_HIGH,
-        scan_id,
-    );
+    let name = user.name.as_deref()?;
+    let mut p = profile_kit::person_from_name(name, confidence::VERY_HIGH, scan_id)?;
     p.tag("derived");
     p.add_evidence(
         Evidence::new(
@@ -373,22 +373,22 @@ fn company_entity(user: &GhUser, scan_id: &str) -> Option<Entity> {
     Some(o)
 }
 
-/// Location → Address + optional inline Coordinates.
+/// Location → Address + optional inline Coordinates. Delegates the entity
+/// construction to [`profile_kit::location_address`] /
+/// [`profile_kit::location_coordinates`] (which additionally reject a >100
+/// char value as a bio mis-mapped to the location field — a gap this module
+/// didn't previously guard against); the GitHub-specific AU-state tagging
+/// stays layered on top.
 fn location_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
     let mut out = Vec::new();
     let Some(location) = user.location.as_deref() else {
         return out;
     };
     let location = location.trim();
-    if location.len() < 3 {
+    let Some(mut a) = profile_kit::location_address(location, confidence::MEDIUM_HIGH, scan_id)
+    else {
         return out;
-    }
-    let mut a = Entity::new(
-        EntityKind::Address,
-        location,
-        confidence::MEDIUM_HIGH,
-        scan_id,
-    );
+    };
     a.tag("github");
     a.tag("geoint");
     a.tag("self-reported");
@@ -402,21 +402,15 @@ fn location_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
     );
     out.push(a);
 
-    if let Some((lat, lon)) = crate::util::city_coords::city_coords(location) {
-        let coord_val = format!("{lat:.4},{lon:.4}");
-        let mut c = Entity::new(
-            EntityKind::Coordinates,
-            &coord_val,
-            confidence::MEDIUM_LIGHT,
-            scan_id,
-        );
-        c.tag("addr-derived");
-        c.tag("geoint");
+    if let Some(mut c) =
+        profile_kit::location_coordinates(location, confidence::MEDIUM_LIGHT, scan_id)
+    {
         c.tag("github");
         if let Some(sc) = crate::util::address_au::single_state_code(location) {
             c.tag(format!("au-state:{sc}"));
             c.tag("country:AU");
         }
+        let coord_val = c.value.clone();
         c.add_evidence(
             Evidence::new(
                 SRC,
@@ -432,43 +426,47 @@ fn location_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
     out
 }
 
-/// Blog URL → Url entity, plus a derived Domain entity when it isn't
-/// GitHub's own `github.com`/`github.io`.
+/// Blog URL → Url entity, plus a derived Domain entity when the host isn't a
+/// known platform host. Delegates to
+/// [`profile_kit::website_url_and_domain`], whose [`profile_kit::PLATFORM_HOSTS`]
+/// exclusion list is the shared, complete set every profile module now
+/// checks — wider than this module's own previous `github.com`/`github.io`
+/// pair (which in practice rarely matched anyway: a real GitHub Pages blog
+/// carries a username subdomain like `alice.github.io`, not the bare host).
 fn blog_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
     let mut out = Vec::new();
     let Some(blog) = user.blog.as_deref().filter(|b| !b.trim().is_empty()) else {
         return out;
     };
     let blog = blog.trim();
-    if !(blog.starts_with("http://") || blog.starts_with("https://")) {
-        return out;
-    }
-    let mut u = Entity::new(EntityKind::Url, blog, confidence::HIGH_PLUSPLUS, scan_id);
-    u.tag("personal-site");
-    u.add_evidence(
-        Evidence::new(
-            "github_user",
-            format!("Personal site linked from GitHub profile @{}", user.login),
-        )
-        .with_attr("github_login", &user.login),
-    );
-    out.push(u);
-
-    if let Ok(parsed) = url::Url::parse(blog)
-        && let Some(host) = parsed.host_str()
-    {
-        let domain = host.to_lowercase();
-        if domain.contains('.') && domain != "github.com" && domain != "github.io" {
-            let mut d = Entity::new(EntityKind::Domain, &domain, confidence::ATTRIBUTED, scan_id);
-            d.tag("derived");
-            d.tag("personal-site");
-            d.add_evidence(
-                Evidence::new(SRC, format!("Blog domain from @{}", user.login))
-                    .with_attr("blog_url", blog)
+    for mut e in profile_kit::website_url_and_domain(
+        blog,
+        confidence::HIGH_PLUSPLUS,
+        confidence::ATTRIBUTED,
+        scan_id,
+    ) {
+        match e.kind {
+            EntityKind::Domain => {
+                e.tag("derived");
+                e.tag("personal-site");
+                e.add_evidence(
+                    Evidence::new(SRC, format!("Blog domain from @{}", user.login))
+                        .with_attr("blog_url", blog)
+                        .with_attr("github_login", &user.login),
+                );
+            }
+            _ => {
+                e.tag("personal-site");
+                e.add_evidence(
+                    Evidence::new(
+                        "github_user",
+                        format!("Personal site linked from GitHub profile @{}", user.login),
+                    )
                     .with_attr("github_login", &user.login),
-            );
-            out.push(d);
+                );
+            }
         }
+        out.push(e);
     }
     out
 }
