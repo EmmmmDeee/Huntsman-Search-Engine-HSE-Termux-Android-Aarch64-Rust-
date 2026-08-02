@@ -550,11 +550,7 @@ pub async fn logs_download(
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
 ) -> impl IntoResponse {
     if !peer.ip().is_loopback() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "debug logs are loopback-only" })),
-        )
-            .into_response();
+        return forbidden("debug logs are loopback-only");
     }
     let body = crate::util::log_capture::dump();
     let filename = format!("hse-debug-{}.log", crate::core::entity::unix_now());
@@ -581,11 +577,7 @@ pub async fn system_debug_bundle(
     State(s): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     if !peer.ip().is_loopback() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "the system debug bundle is loopback-only" })),
-        )
-            .into_response();
+        return forbidden("the system debug bundle is loopback-only");
     }
     // Validation runs against a throwaway temp DB (offline, side-effect-free).
     let selftest = crate::selftest::run().await;

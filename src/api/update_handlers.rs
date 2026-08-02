@@ -15,8 +15,8 @@ use axum::{
     response::IntoResponse,
 };
 use serde::Serialize;
-use serde_json::json;
 
+use crate::api::handlers::forbidden;
 use crate::api::{AppState, UpdateInfo, UpdatePhase};
 
 /// Response body for `GET /api/v1/update/status`.
@@ -63,14 +63,11 @@ pub(crate) async fn get_status(State(state): State<Arc<AppState>>) -> impl IntoR
 /// proxy every forwarded client appears as loopback — the same limitation the
 /// settings-write handlers carry — so it is a localhost-architecture guard, not
 /// an authenticated-caller check.
-fn reject_non_loopback(peer: &SocketAddr) -> Option<(StatusCode, Json<serde_json::Value>)> {
+fn reject_non_loopback(peer: &SocketAddr) -> Option<axum::response::Response> {
     if peer.ip().is_loopback() {
         None
     } else {
-        Some((
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "update trigger is loopback-only" })),
-        ))
+        Some(forbidden("update trigger is loopback-only"))
     }
 }
 
@@ -119,7 +116,7 @@ pub(crate) async fn post_trigger(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
 ) -> impl IntoResponse {
     if let Some(rejection) = reject_non_loopback(&peer) {
-        return rejection.into_response();
+        return rejection;
     }
     // Atomic check-and-claim: only one concurrent caller can win this.
     if !try_start_update(&state.update_info) {
@@ -258,7 +255,10 @@ mod tests {
             let peer = SocketAddr::new(ip, 8080);
             let rejection = reject_non_loopback(&peer);
             assert!(rejection.is_some(), "{ip} must be rejected");
-            assert_eq!(rejection.expect("should succeed").0, StatusCode::FORBIDDEN);
+            assert_eq!(
+                rejection.expect("should succeed").status(),
+                StatusCode::FORBIDDEN
+            );
         }
     }
 

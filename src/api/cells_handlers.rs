@@ -31,7 +31,7 @@ use crate::app::cells::{
 };
 use crate::util::cell_db;
 
-use super::handlers::bad_request;
+use super::handlers::{bad_request, forbidden};
 
 /// Builds the `last_import` JSON block, including the same `is_stale`
 /// freshness signal `hse doctor` already prints (`cell_db::is_stale`) — until
@@ -134,13 +134,7 @@ fn reject_non_loopback(peer: &SocketAddr) -> Option<axum::response::Response> {
     if peer.ip().is_loopback() {
         None
     } else {
-        Some(
-            (
-                StatusCode::FORBIDDEN,
-                Json(json!({ "error": "cell DB import is loopback-only" })),
-            )
-                .into_response(),
-        )
+        Some(forbidden("cell DB import is loopback-only"))
     }
 }
 

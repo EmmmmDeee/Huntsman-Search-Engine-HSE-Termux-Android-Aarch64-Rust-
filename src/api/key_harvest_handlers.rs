@@ -25,6 +25,7 @@ use axum::{
 };
 use serde_json::{Value, json};
 
+use super::handlers::forbidden;
 use crate::util::{key_roi, key_vault, keys, str_util};
 
 /// Cap on how many individual vault entries the feed returns — the census
@@ -40,11 +41,7 @@ const RECENT_ENTRIES_LIMIT: usize = 100;
 /// non-loopback bind.
 pub async fn keys_harvest(ConnectInfo(peer): ConnectInfo<SocketAddr>) -> impl IntoResponse {
     if !peer.ip().is_loopback() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "key harvest is loopback-only" })),
-        )
-            .into_response();
+        return forbidden("key harvest is loopback-only");
     }
 
     let vault = vault_block();
