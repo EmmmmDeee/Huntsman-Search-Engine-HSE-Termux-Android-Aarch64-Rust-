@@ -28,6 +28,13 @@ use crate::core::{
 use crate::util::extract::is_placeholder_secret;
 use crate::util::json::{is_null_sentinel, val_str};
 
+/// Maximum length of an IEEE 802.11 SSID, in octets. A value in an `ssid` field
+/// longer than this is not a network name (a truncated blob, a joined list), so
+/// it must not be typed as one — see the saved-Wi-Fi pass in
+/// [`extract_rich_detail`], which still surfaces such a value rather than
+/// dropping it.
+const MAX_SSID_OCTETS: usize = 32;
+
 /// A value that is an *absence/redaction marker*, not real data: a SQL NULL
 /// sentinel (`\N`, written for an empty column in dumped exports) or a provider
 /// redaction placeholder (`UPGRADE_TO_SEE_FULL`, `REDACTED`, bracketed
@@ -111,10 +118,14 @@ const RICH_DETAIL_SKIP: &[&str] = &[
     "contact_number",
     "phone2",
     "alt_phone",
-    // WiFi SSID fields — typed as Ssid by the shared alias loop above.
+    // WiFi SSID fields — typed as `Ssid` (or, when over the 802.11 length
+    // limit, surfaced as `Other` by that same pass) by the shared alias loop
+    // above, so the catch-all must not also mint a duplicate node from the
+    // `@other:` namespace.
     "ssid",
     "wifi_ssid",
     "wifi",
+    "wifi_name",
     "network_name",
     "wlan",
     "full_name",
@@ -659,28 +670,63 @@ fn extract_physical_location(ctx: &mut RichCtx) {
 }
 
 /// WiFi SSID — a unique home/work network name is often a MORE precise
-/// geolocator than the login IP (WiGLE resolves an SSID to GPS points).
-/// Field-aliased (a bare string can't be value-detected); generic names
-/// ("linksys", "xfinitywifi", …) and out-of-range lengths are rejected. The
-/// offline WiGLE CSV path already mints `Ssid`, so the live breach/stealer
-/// paths were the only ones dropping it — and this shared extractor fixes
-/// BOTH paid pools.
+/// geolocator than the login IP: `TargetKind::Ssid` is accepted by
+/// [`crate::modules::wigle`], whose `ssid_search` resolves a sufficiently
+/// unique name to every GPS point WiGLE has ever observed it at. Field-
+/// aliased (a bare string can't be value-detected). Generic/default names
+/// ("linksys", "xfinitywifi", …) are rejected here via the same
+/// `is_generic_ssid` gate `wigle::ssid_search` itself applies before a
+/// lookup, so a generic value never reaches the pivot queue as a doomed
+/// query. The offline WiGLE CSV path already mints `Ssid`, so the live
+/// breach/stealer paths were the only ones dropping it — and this shared
+/// extractor fixes BOTH paid pools.
+///
+/// A value longer than the 802.11 limit ([`MAX_SSID_OCTETS`]) is not an
+/// SSID, so it must not be typed as one — but it is still real recorded
+/// data, so it is surfaced as an `Other(k)` node rather than dropped. Every
+/// key here sits in [`RICH_DETAIL_SKIP`], so the catch-all never
+/// separately re-emits it.
+///
+/// Dedup key is case-SENSITIVE: IEEE 802.11 SSIDs are case-sensitive, and
+/// `core::entity` deliberately excludes `Ssid` from identity folding for
+/// exactly that reason; lowercasing here would collapse two genuinely
+/// different networks into one node.
 fn extract_wifi_ssid(ctx: &mut RichCtx) {
-    for k in ["ssid", "wifi_ssid", "wifi", "network_name", "wlan"] {
-        if let Some(s) = val_str(ctx.item, k)
-            && (4..=32).contains(&s.chars().count()) // TargetKind::Ssid rejects >32
-            && !is_absent_marker(&s)
-            && !crate::modules::wigle::is_generic_ssid(&s)
-            && ctx.seen.insert(format!("@ssid:{}", s.to_lowercase()))
-        {
-            push_context_entity(
-                ctx.result,
-                Entity::new(EntityKind::Ssid, &s, confidence::MEDIUM_HIGH, ctx.scan_id),
-                ctx.ev,
-                ctx.source,
-                &["wifi-network", "stealer"],
-            );
+    for k in [
+        "ssid",
+        "wifi_ssid",
+        "wifi",
+        "wifi_name",
+        "network_name",
+        "wlan",
+    ] {
+        let Some(s) = val_str(ctx.item, k) else {
+            continue;
+        };
+        if is_absent_marker(&s) || !ctx.seen.insert(format!("@ssid:{s}")) {
+            continue;
         }
+        let entity = if (4..=MAX_SSID_OCTETS).contains(&s.len())
+            && !crate::modules::wigle::is_generic_ssid(&s)
+        {
+            Entity::new(EntityKind::Ssid, &s, confidence::MEDIUM_HIGH, ctx.scan_id)
+        } else if s.len() > MAX_SSID_OCTETS {
+            Entity::new(
+                EntityKind::Other(k.to_string()),
+                &s,
+                confidence::LOW,
+                ctx.scan_id,
+            )
+        } else {
+            continue;
+        };
+        push_context_entity(
+            ctx.result,
+            entity,
+            ctx.ev,
+            ctx.source,
+            &["wifi-network", "stealer"],
+        );
     }
 }
 

@@ -471,3 +471,76 @@ fn cross_platform_handle_aliases_become_platform_prefixed_usernames() {
         "an aliased handle must not also mint Other(twitter_username)"
     );
 }
+
+#[test]
+fn saved_wifi_names_type_as_ssid_so_the_geo_pivot_can_run() {
+    // A stealer log's saved network name is a locatable identifier: `wigle`
+    // accepts `TargetKind::Ssid` and resolves a unique name to GPS points. Left
+    // as an `Other("ssid")` node it is a dead end, because only a typed kind
+    // maps to a `TargetKind`.
+    for key in ["ssid", "wifi_ssid", "wifi_name", "network_name"] {
+        let r = run(&json!({ key: "Stewart-Family-5G" }), "oathnet-pro");
+        assert!(
+            has(&r, EntityKind::Ssid, "Stewart-Family-5G"),
+            "{key} must type as Ssid so the WiGLE pivot can dispatch"
+        );
+        // Infrastructure/context, not leaked PII — same class as the BSSID it
+        // pairs with, so `breach` must NOT be applied.
+        let e = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Ssid)
+            .expect("ssid entity");
+        assert!(e.tags.iter().any(|t| t == "wifi-network"), "{key}");
+        assert!(e.tags.iter().any(|t| t == "oathnet-pro"), "{key}");
+        assert!(!e.tags.iter().any(|t| t == "breach"), "{key}");
+        // Typed, so the catch-all must not ALSO mint a duplicate raw-field node.
+        assert!(
+            !r.entities
+                .iter()
+                .any(|e| matches!(&e.kind, EntityKind::Other(k) if k == key)),
+            "{key} must not be duplicated as an Other() node"
+        );
+    }
+}
+
+#[test]
+fn ssid_case_is_preserved_because_802_11_names_are_case_sensitive() {
+    // Two networks differing only in case are genuinely different networks, so
+    // the dedup key must not fold case (`core::entity` excludes `Ssid` from
+    // identity folding for the same reason).
+    let r = run(&json!({ "ssid": "HomeNet", "wifi_ssid": "homenet" }), "see-know");
+    assert!(has(&r, EntityKind::Ssid, "HomeNet"));
+    assert!(has(&r, EntityKind::Ssid, "homenet"));
+}
+
+#[test]
+fn over_length_and_absent_ssid_values_are_never_silently_dropped() {
+    // Longer than the 802.11 32-octet limit: not an SSID, so it must not be
+    // typed as one — but it is real recorded data, so it must still surface.
+    let long = "X".repeat(64);
+    let r = run(&json!({ "ssid": long.clone() }), "oathnet-pro");
+    assert!(
+        !r.entities.iter().any(|e| e.kind == EntityKind::Ssid),
+        "an over-length value must not be typed as an SSID"
+    );
+    assert!(
+        r.entities
+            .iter()
+            .any(|e| matches!(&e.kind, EntityKind::Other(k) if k == "ssid") && e.value == long),
+        "an over-length value must still be surfaced, never dropped"
+    );
+    // Exactly at the limit is a legal SSID.
+    let at_limit = "Y".repeat(MAX_SSID_OCTETS);
+    let r = run(&json!({ "ssid": at_limit.clone() }), "oathnet-pro");
+    assert!(has(&r, EntityKind::Ssid, &at_limit));
+    // An absence/redaction marker must never mint a node of either kind.
+    let r = run(&json!({ "ssid": "\\N", "wifi_name": "REDACTED" }), "see-know");
+    assert!(
+        !r.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Ssid
+                || matches!(&e.kind, EntityKind::Other(k) if k == "ssid" || k == "wifi_name")),
+        "absence markers must not mint Ssid or Other nodes"
+    );
+}
