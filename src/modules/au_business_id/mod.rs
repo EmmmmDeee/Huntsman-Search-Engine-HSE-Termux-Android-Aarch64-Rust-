@@ -39,6 +39,7 @@ mod tests;
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -67,7 +68,7 @@ impl Module for AuBusinessId {
     }
 
     fn description(&self) -> &'static str {
-        "Offline ABN/ACN decode — classify company vs non-company, derive the embedded ACN pivot"
+        "Offline ABN/ACN decode — classifies company vs non-company and derives the embedded ACN pivot"
     }
 
     fn priority(&self) -> u8 {
@@ -101,7 +102,7 @@ impl Module for AuBusinessId {
 
         if is_valid_abn(value) {
             // A checksum-valid ABN. Classify it by whether it embeds an ACN.
-            let mut e = target.to_entity(0.55, &ctx.scan_id);
+            let mut e = target.to_entity(confidence::MEDIUM_HIGH, &ctx.scan_id);
             e.tag(SRC);
             e.tag("abn-valid");
             if let Some(acn) = derive_acn(value) {
@@ -121,7 +122,12 @@ impl Module for AuBusinessId {
                 );
                 result.push(e);
 
-                let mut acn_e = Entity::new(EntityKind::AbnAcn, &acn, 0.80, &ctx.scan_id);
+                let mut acn_e = Entity::new(
+                    EntityKind::AbnAcn,
+                    &acn,
+                    confidence::HIGH_PLUSPLUS,
+                    &ctx.scan_id,
+                );
                 acn_e.tag(SRC);
                 acn_e.tag("acn-valid");
                 acn_e.tag("au-company");
@@ -157,7 +163,7 @@ impl Module for AuBusinessId {
         } else if is_valid_acn(value) {
             // A bare, checksum-valid ACN. Classify as a company identifier. The
             // ABN is not derivable from the ACN, so no ABN is emitted.
-            let mut e = target.to_entity(0.55, &ctx.scan_id);
+            let mut e = target.to_entity(confidence::MEDIUM_HIGH, &ctx.scan_id);
             e.tag(SRC);
             e.tag("acn-valid");
             e.tag("au-company");

@@ -26,21 +26,24 @@
 //! `au_property`, `geocode`). No mock: the JSON is fetched live from ASIC's own
 //! open dataset.
 
-use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{RequestBuilderExt, UA_BROWSER, read_text, urlencode};
+use crate::util::ckan::{Response as CkanResp, datastore_search_url, field_str};
+use crate::util::http::fetch_json;
 
 const SRC: &str = "asic_persons";
-const CKAN: &str = "https://data.gov.au/data/api/3/action/datastore_search";
+/// data.gov.au CKAN action base — `datastore_search` is appended by
+/// [`datastore_search_url`].
+const CKAN_BASE: &str = "https://data.gov.au/data/api/3/action";
 /// ASIC – Banned and Disqualified Persons dataset (data.gov.au resource).
 const BANNED_RES: &str = "741da9e3-7e0c-458e-830c-c518698e1788";
 /// ASIC – Financial Advisers dataset (data.gov.au resource).
@@ -54,18 +57,6 @@ const MAX_HITS: usize = 100;
 
 pub struct AsicPersons;
 
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct CkanResp {
-    result: CkanResult,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct CkanResult {
-    records: Vec<Map<String, Value>>,
-}
-
 #[async_trait]
 impl Module for AsicPersons {
     fn name(&self) -> &'static str {
@@ -73,7 +64,7 @@ impl Module for AsicPersons {
     }
 
     fn description(&self) -> &'static str {
-        "ASIC people registers (banned & disqualified, financial advisers, credit/finance-broker representatives) — name → regulatory status, licensee, disciplinary action, address (keyless)"
+        "ASIC people-registers recon (keyless) — pivots a name across banned & disqualified, financial advisers, and credit/finance-broker representatives to regulatory status, licensee, disciplinary action, and address"
     }
 
     fn priority(&self) -> u8 {
@@ -126,57 +117,84 @@ impl Module for AsicPersons {
             ckan_query(ctx, CREDIT_RES, &target.value),
         );
 
-        for rec in banned
-            .iter()
-            .filter(|r| record_name_matches(r, "BD_PER_NAME", &tokens))
-            .take(MAX_HITS)
-        {
-            emit_banned(rec, &ctx.scan_id, &mut result);
+        // The three registers are independent concurrent CKAN queries (T2.118),
+        // so this mirrors `niamonx`'s multi-endpoint fold (T2.114): the last
+        // hard failure across them is remembered, real evidence from any register
+        // that DID answer is always kept, and only a genuine zero-evidence
+        // outcome with at least one real failure surfaces as an error via
+        // `ModuleResult::or_hard_failure` — a total data.gov.au outage no longer
+        // reads as "this person is in none of ASIC's people registers".
+        let mut hard_failure: Option<Error> = None;
+        match banned {
+            Ok(records) => {
+                for rec in records
+                    .iter()
+                    .filter(|r| record_name_matches(r, "BD_PER_NAME", &tokens))
+                    .take(MAX_HITS)
+                {
+                    emit_banned(rec, &ctx.scan_id, &mut result);
+                }
+            }
+            Err(e) => {
+                hard_failure.get_or_insert(e);
+            }
         }
-        for rec in advisers
-            .iter()
-            .filter(|r| record_name_matches(r, "ADV_NAME", &tokens))
-            .take(MAX_HITS)
-        {
-            emit_adviser(rec, &ctx.scan_id, &mut result);
+        match advisers {
+            Ok(records) => {
+                for rec in records
+                    .iter()
+                    .filter(|r| record_name_matches(r, "ADV_NAME", &tokens))
+                    .take(MAX_HITS)
+                {
+                    emit_adviser(rec, &ctx.scan_id, &mut result);
+                }
+            }
+            Err(e) => {
+                hard_failure.get_or_insert(e);
+            }
         }
-        for rec in credit
-            .iter()
-            .filter(|r| record_name_matches(r, "CRED_REP_NAME", &tokens))
-            .take(MAX_HITS)
-        {
-            emit_credit_rep(rec, &ctx.scan_id, &mut result);
+        match credit {
+            Ok(records) => {
+                for rec in records
+                    .iter()
+                    .filter(|r| record_name_matches(r, "CRED_REP_NAME", &tokens))
+                    .take(MAX_HITS)
+                {
+                    emit_credit_rep(rec, &ctx.scan_id, &mut result);
+                }
+            }
+            Err(e) => {
+                hard_failure.get_or_insert(e);
+            }
         }
 
-        Ok(result)
+        result.or_hard_failure(hard_failure)
     }
 }
 
-/// Query a CKAN datastore resource by free-text name. Best-effort: any
-/// transport/parse failure yields no records, never a scan error.
-async fn ckan_query(ctx: &ModuleContext, resource_id: &str, name: &str) -> Vec<Map<String, Value>> {
-    let url = format!(
-        "{CKAN}?resource_id={resource_id}&limit=100&q={}",
-        urlencode(name)
-    );
-    let Ok(resp) = ctx
-        .http
-        .get(&url)
-        .header("User-Agent", UA_BROWSER)
-        .send_tagged(SRC)
-        .await
-    else {
-        return Vec::new();
-    };
-    if !resp.status().is_success() {
-        return Vec::new();
+/// Query one CKAN datastore resource by free-text name, via the shared CKAN
+/// envelope (T2.118). Returns the matched records, or a real `Error` when the
+/// register genuinely failed to answer — a transport error, non-2xx status, or
+/// unparseable body (propagated by `fetch_json` via `?`), or a CKAN application
+/// error (`success: false`, which CKAN returns with HTTP 200 on a bad resource
+/// id / offline datastore / rate-limit). Previously every one of these
+/// collapsed into an empty `Vec` indistinguishable from a genuine "not in this
+/// register"; `process()` now folds the three registers' results so a real
+/// outage surfaces instead (see its `or_hard_failure` fold).
+async fn ckan_query(
+    ctx: &ModuleContext,
+    resource_id: &str,
+    name: &str,
+) -> Result<Vec<Map<String, Value>>> {
+    let url = datastore_search_url(CKAN_BASE, resource_id, name, MAX_HITS);
+    let resp: CkanResp = fetch_json(&ctx.http, SRC, &url).await?;
+    if resp.success == Some(false) {
+        return Err(Error::module(
+            SRC,
+            "CKAN datastore_search returned success=false (bad resource id or portal error)",
+        ));
     }
-    let Ok(body) = read_text(SRC, resp).await else {
-        return Vec::new();
-    };
-    serde_json::from_str::<CkanResp>(&body)
-        .map(|r| r.result.records)
-        .unwrap_or_default()
+    Ok(resp.result.map(|r| r.records).unwrap_or_default())
 }
 
 /// Lower-cased alphabetic name tokens (≥2 chars) of a full name.
@@ -195,6 +213,55 @@ fn record_name_matches(rec: &Map<String, Value>, name_field: &str, tokens: &[Str
     };
     let lower = name.to_ascii_lowercase();
     tokens.iter().all(|t| lower.contains(t.as_str()))
+}
+
+/// Normalise a name/organisation string for order-preserving equality: trim,
+/// collapse internal whitespace, upper-case. Used to tell a genuinely-distinct
+/// appointing firm apart from a self-appointment or the licensee itself.
+fn norm_name(s: &str) -> String {
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_uppercase()
+}
+
+/// Classify a linked register name (a licensee controller) by shape: a corporate
+/// legal-form suffix (`looks_like_company`) → an `Organisation` kept
+/// as-registered; otherwise the controller is a natural person — a small firm's
+/// controlling principal — surfaced as a humanised `Person`. Both are public
+/// regulatory-ownership relationships, not contact PII. **Pure.**
+fn classify_linked(name: &str) -> (EntityKind, String) {
+    if crate::util::abn::looks_like_company(name) {
+        (EntityKind::Organisation, name.trim().to_string())
+    } else {
+        (EntityKind::Person, humanise_name(name))
+    }
+}
+
+/// Parse ASIC's `LICENCE_CONTROLLED_BY` field into `(controller, ceased_date)`
+/// pairs. The field lists one or more controlling entities separated by `~`,
+/// each optionally suffixed with a bracketed status marker, e.g.
+/// `"NATIONAL AUSTRALIA BANK LIMITED [Date Ceased: 21/08/2023] ~ MLC WEALTH LIMITED [Date Ceased: 20/05/2021]"`.
+/// The controller name is everything before the first `[`; a `Date Ceased:`
+/// value inside the marker (a historical controller) is returned alongside.
+/// **Pure.** Entries whose cleaned name is under 3 chars are dropped.
+fn parse_controllers(raw: &str) -> Vec<(String, Option<String>)> {
+    raw.split('~')
+        .filter_map(|part| {
+            let part = part.trim();
+            let name = part.split('[').next().unwrap_or(part).trim();
+            if name.len() < 3 {
+                return None;
+            }
+            let ceased = part
+                .split_once("Date Ceased:")
+                .and_then(|(_, rest)| rest.split(']').next())
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+                .map(str::to_string);
+            Some((name.to_string(), ceased))
+        })
+        .collect()
 }
 
 /// Emit the banned/disqualified finding: an adverse-flagged Person plus the
@@ -220,7 +287,12 @@ fn emit_banned(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResul
         }
     }
 
-    let mut p = Entity::new(EntityKind::Person, &person_name, 0.60, scan_id);
+    let mut p = Entity::new(
+        EntityKind::Person,
+        &person_name,
+        confidence::MEDIUM_PLUS,
+        scan_id,
+    );
     p.tag("au");
     p.tag("asic");
     p.tag("asic-banned");
@@ -259,6 +331,9 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResu
         ("ADV_FIRST_PROVIDED_ADVICE", "first_advice"),
         ("LICENCE_NAME", "licensee"),
         ("LICENCE_NUMBER", "afs_licence_no"),
+        ("LICENCE_CONTROLLED_BY", "licensee_controlled_by"),
+        ("REP_APPOINTED_BY", "appointed_by"),
+        ("REP_APPOINTED_NUM", "authorised_rep_no"),
         ("ADV_DA_TYPE", "disciplinary_action"),
         ("ADV_DA_DESCRIPTION", "disciplinary_detail"),
     ] {
@@ -267,7 +342,12 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResu
         }
     }
 
-    let mut p = Entity::new(EntityKind::Person, &person_name, 0.60, scan_id);
+    let mut p = Entity::new(
+        EntityKind::Person,
+        &person_name,
+        confidence::MEDIUM_PLUS,
+        scan_id,
+    );
     p.tag("au");
     p.tag("asic");
     p.tag("asic-financial-adviser");
@@ -279,13 +359,19 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResu
     result.push(p);
 
     // The licensee the adviser operates under — an employer/affiliation pivot.
-    if let Some(licensee) = field(rec, "LICENCE_NAME") {
-        let mut org = Entity::new(EntityKind::Organisation, &licensee, 0.62, scan_id);
+    let licensee = field(rec, "LICENCE_NAME");
+    if let Some(licensee) = &licensee {
+        let mut org = Entity::new(
+            EntityKind::Organisation,
+            licensee,
+            confidence::NOTABLE,
+            scan_id,
+        );
         org.tag("au");
         org.tag("asic");
         org.tag("afs-licensee");
         let mut oev = Evidence::new(SRC, format!("AFS licensee of adviser {person_name}"))
-            .with_attr("licensee", &licensee);
+            .with_attr("licensee", licensee);
         if let Some(no) = field(rec, "LICENCE_NUMBER") {
             oev = oev.with_attr("afs_licence_no", no);
         }
@@ -293,12 +379,81 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleResu
         result.push(org);
     }
 
-    // ABNs: the adviser's own and the licensee's — pivots into the ABR/ASIC.
-    for (key, label) in [("ADV_ABN", "adviser"), ("LICENCE_ABN", "licensee")] {
+    // Corporate controller(s) of the AFS licensee — the ultimate parent behind
+    // the licence, a marquee ownership pivot: a small-looking advice firm is
+    // frequently `LICENCE_CONTROLLED_BY` a major bank / wealth group. The field
+    // is a `~`-separated list, each entry optionally carrying a
+    // `[Date Ceased: DD/MM/YYYY]` marker for a historical controller.
+    if let Some(raw) = field(rec, "LICENCE_CONTROLLED_BY") {
+        for (name, ceased) in parse_controllers(&raw) {
+            let (kind, value) = classify_linked(&name);
+            let mut ent = Entity::new(kind, &value, confidence::MEDIUM_SOLID, scan_id);
+            ent.tag("au");
+            ent.tag("asic");
+            ent.tag("afs-licensee-controller");
+            let mut cev = Evidence::new(
+                SRC,
+                format!(
+                    "Controls AFS licensee {} (adviser {person_name})",
+                    licensee.as_deref().unwrap_or("(unknown)")
+                ),
+            )
+            .with_attr("relationship", "licence_controlled_by");
+            if let Some(l) = &licensee {
+                cev = cev.with_attr("controls_licensee", l);
+            }
+            if let Some(d) = ceased {
+                ent.tag("ceased");
+                cev = cev.with_attr("date_ceased", d);
+            }
+            ent.add_evidence(cev);
+            result.push(ent);
+        }
+    }
+
+    // The corporate authorised representative that appointed the adviser. Often
+    // a distinct practice/firm sitting BETWEEN the adviser and the licensee
+    // (e.g. the adviser's own named practice), so it is a stronger personal
+    // attribution pivot than the big licensee. Emitted only when it differs from
+    // both the adviser's own name (a self-appointment) and the licensee (already
+    // captured above) AND is company-shaped — the corporate-AR relationship is
+    // inherently corporate, so a person-shaped distinct appointer is treated as
+    // ambiguous noise and skipped for precision.
+    if let Some(appby) = field(rec, "REP_APPOINTED_BY") {
+        let n = norm_name(&appby);
+        let is_self = n == norm_name(&raw_name);
+        let is_licensee = licensee.as_deref().is_some_and(|l| n == norm_name(l));
+        if !is_self && !is_licensee && crate::util::abn::looks_like_company(&appby) {
+            let mut org = Entity::new(
+                EntityKind::Organisation,
+                &appby,
+                confidence::MEDIUM_PLUS,
+                scan_id,
+            );
+            org.tag("au");
+            org.tag("asic");
+            org.tag("authorised-rep-firm");
+            let mut aev = Evidence::new(SRC, format!("Appointed {person_name} as authorised rep"))
+                .with_attr("relationship", "rep_appointed_by");
+            if let Some(num) = field(rec, "REP_APPOINTED_NUM") {
+                aev = aev.with_attr("authorised_rep_no", num);
+            }
+            org.add_evidence(aev);
+            result.push(org);
+        }
+    }
+
+    // ABNs: the adviser's own, the licensee's, and the appointing rep firm's —
+    // each a pivot into the ABR/ASIC. Dedup merges any that coincide.
+    for (key, label) in [
+        ("ADV_ABN", "adviser"),
+        ("LICENCE_ABN", "licensee"),
+        ("REP_APPOINTED_ABN", "rep_appointer"),
+    ] {
         if let Some(abn) =
             field(rec, key).filter(|a| a.chars().filter(char::is_ascii_digit).count() == 11)
         {
-            let mut e = Entity::new(EntityKind::AbnAcn, &abn, 0.62, scan_id);
+            let mut e = Entity::new(EntityKind::AbnAcn, &abn, confidence::NOTABLE, scan_id);
             e.tag("au");
             e.tag("asic");
             e.add_evidence(
@@ -349,7 +504,12 @@ fn emit_credit_rep(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleR
         }
     }
 
-    let mut p = Entity::new(EntityKind::Person, &person_name, 0.60, scan_id);
+    let mut p = Entity::new(
+        EntityKind::Person,
+        &person_name,
+        confidence::MEDIUM_PLUS,
+        scan_id,
+    );
     p.tag("au");
     p.tag("asic");
     p.tag("asic-credit-rep");
@@ -361,7 +521,7 @@ fn emit_credit_rep(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleR
         let n = a.chars().filter(char::is_ascii_digit).count();
         n == 11 || n == 9
     }) {
-        let mut e = Entity::new(EntityKind::AbnAcn, &id, 0.60, scan_id);
+        let mut e = Entity::new(EntityKind::AbnAcn, &id, confidence::MEDIUM_PLUS, scan_id);
         e.tag("au");
         e.tag("asic");
         e.tag("asic-credit-rep");
@@ -411,7 +571,7 @@ fn push_address(
     // Address and Coordinates tags so this register participates in the AU
     // geo/jurisdiction correlators like every other AU module.
     let sc = crate::util::address_au::state_code(&addr);
-    let mut a = Entity::new(EntityKind::Address, &addr, 0.55, scan_id);
+    let mut a = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM_HIGH, scan_id);
     a.tag("au");
     a.tag("asic");
     a.tag(tag);
@@ -432,7 +592,12 @@ fn push_address(
     // exactly as the sibling AU register modules do.
     if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
         let coord_val = format!("{lat:.4},{lon:.4}");
-        let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+        let mut c = Entity::new(
+            EntityKind::Coordinates,
+            &coord_val,
+            confidence::LOW_MEDIUM,
+            scan_id,
+        );
         c.tag("au");
         c.tag("asic");
         c.tag("addr-derived");
@@ -450,15 +615,12 @@ fn push_address(
 }
 
 /// A non-empty, non-`"null"` trimmed string field (JSON string or number).
+/// A usable ASIC field value: the shared CKAN [`field_str`] stringification
+/// (CONVENTIONS §4 — one stringifier, not a per-module copy) with this
+/// register's `"null"` sentinel filter on top (`field_str` only drops JSON
+/// null / empty, so the literal string `"null"` would otherwise pass through).
 fn field(rec: &Map<String, Value>, key: &str) -> Option<String> {
-    match rec.get(key)? {
-        Value::String(s) => {
-            let t = s.trim();
-            (!t.is_empty() && !t.eq_ignore_ascii_case("null")).then(|| t.to_string())
-        }
-        Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    }
+    field_str(rec, key).filter(|s| !s.eq_ignore_ascii_case("null"))
 }
 
 /// `"SURNAME, FIRSTNAME"` → `"Firstname Surname"` (title-cased); other forms are

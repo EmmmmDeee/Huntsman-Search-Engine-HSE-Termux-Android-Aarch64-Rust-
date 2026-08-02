@@ -10,13 +10,13 @@ use super::*;
         assert_eq!(line_count(), 0);
 
         let mut w = RingWriter;
-        w.write_all(b"line one\nline two\n").unwrap();
+        w.write_all(b"line one\nline two\n").expect("should succeed");
         assert_eq!(line_count(), 2);
 
         // Partial line held until its newline arrives.
-        w.write_all(b"partial").unwrap();
+        w.write_all(b"partial").expect("should succeed");
         assert_eq!(line_count(), 2, "no newline yet → not committed");
-        w.write_all(b" rest\n").unwrap();
+        w.write_all(b" rest\n").expect("should succeed");
         assert_eq!(line_count(), 3);
 
         let d = dump();

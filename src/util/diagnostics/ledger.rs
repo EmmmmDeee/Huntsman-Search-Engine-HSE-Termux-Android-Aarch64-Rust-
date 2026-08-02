@@ -16,10 +16,7 @@ use super::types::ModulePerformance;
 static LEDGER_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn ledger_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home)
-        .join(".huntsman")
-        .join("module_stats.json")
+    crate::util::paths::data_file("module_stats.json")
 }
 
 pub(super) fn persist_ledger(modules: &[ModulePerformance], kinds: &HashMap<String, usize>) {

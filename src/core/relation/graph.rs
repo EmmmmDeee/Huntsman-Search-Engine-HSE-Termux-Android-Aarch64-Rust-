@@ -57,6 +57,45 @@ pub struct IdentityPath {
     pub min_confidence: f64,
 }
 
+/// The **derivation trail** of an entity: the chain of `DerivedFrom` pivots
+/// that led from the seed to it — `[entity, its expansion parent, …, root]`,
+/// each element being the entity whose expansion surfaced the next. Follows the
+/// `DerivedFrom` edge direction (`from_uid` = child → `to_uid` = parent) up
+/// toward the seed, stopping at a root (an entity with no parent edge — the seed
+/// or a seed-round find) or if a cycle is ever detected. Deterministic: the
+/// FIRST `DerivedFrom` parent per child is used (relations are built in a
+/// deterministic order), so an entity carrying several derivation edges still
+/// yields a stable chain. Pure — the returned UIDs borrow from `relations`.
+///
+/// A returned chain of length 1 means the entity is a root (seed-round /
+/// generation 0): nothing derived it. Reverse the result for a seed→entity
+/// reading.
+#[must_use]
+pub fn provenance_chain<'a>(uid: &'a str, relations: &'a [Relation]) -> Vec<&'a str> {
+    // child → parent, keeping the FIRST DerivedFrom edge per child so the walk
+    // is stable when an entity has more than one derivation ancestor.
+    let mut parent: HashMap<&str, &str> = HashMap::new();
+    for r in relations
+        .iter()
+        .filter(|r| r.kind == RelationKind::DerivedFrom)
+    {
+        parent
+            .entry(r.from_uid.as_str())
+            .or_insert(r.to_uid.as_str());
+    }
+    let mut chain = vec![uid];
+    let mut seen: HashSet<&str> = HashSet::from([uid]);
+    let mut cur = uid;
+    while let Some(&p) = parent.get(cur) {
+        if !seen.insert(p) {
+            break; // cycle guard — DerivedFrom is acyclic, but never loop
+        }
+        chain.push(p);
+        cur = p;
+    }
+    chain
+}
+
 /// Identity-bearing entity kinds — the nodes a connection path links end to end.
 /// Intermediate nodes may be any kind (a domain, an IP, an address); only the
 /// two endpoints must be identities. Mirrors the AU-034/AU-060 identity notion.
@@ -212,11 +251,21 @@ pub fn identity_paths(
     // Identity endpoints in sorted UID order — each pair is computed once from
     // the smaller UID, fixing both orientation and shortest-path tie-breaks.
     let identity_uids = identity_uids(entities);
-    let identity_set: HashSet<&str> = identity_uids.iter().copied().collect();
 
     let mut out: Vec<IdentityPath> = Vec::new();
 
-    for &start in &identity_uids {
+    // Bound the O(identities²) sweep to a deterministic pair-count prefix, exactly
+    // as the AU-062/AU-063 sibling sweeps do (see [`IDENTITY_PAIR_PROBE_CAP`]). A
+    // permutation-heavy `full_name` scan derives hundreds of name-permutation
+    // identity entities; uncapped this both burns CPU and — via AU-060 (transitive
+    // correlation, which persists one correlation per emitted path) — floods the
+    // result with links. `identity_uids` is sorted, so stopping at the cap yields
+    // a byte-identical deterministic prefix.
+    let mut probes = 0usize;
+    'outer: for (i, &start) in identity_uids.iter().enumerate() {
+        if probes >= IDENTITY_PAIR_PROBE_CAP {
+            break;
+        }
         // BFS from `start`, recording each node's shortest-path predecessor edge.
         let mut dist: HashMap<&str, usize> = HashMap::new();
         let mut prev: HashMap<&str, (&str, RelationKind, f64)> = HashMap::new();
@@ -239,11 +288,14 @@ pub fn identity_paths(
         }
 
         // Emit a path to every identity destination with a *larger* UID (the
-        // canonical pair direction), reachable within the hop budget.
-        for &dest in &identity_uids {
-            if dest <= start || !identity_set.contains(dest) {
-                continue;
+        // canonical pair direction), reachable within the hop budget. The sorted
+        // suffix `[i + 1..]` is exactly the larger-UID identities; counting each
+        // as one probe bounds the inner sweep to the same deterministic cap.
+        for &dest in &identity_uids[i + 1..] {
+            if probes >= IDENTITY_PAIR_PROBE_CAP {
+                break 'outer;
             }
+            probes += 1;
             let Some(&hops) = dist.get(dest) else {
                 continue;
             };
@@ -699,28 +751,18 @@ pub fn resolve_identity_clusters(
         }
     }
 
-    // Union-find with iterative path-halving — merge the endpoints of every link.
-    fn find(parent: &mut [usize], mut x: usize) -> usize {
-        while parent[x] != x {
-            parent[x] = parent[parent[x]];
-            x = parent[x];
-        }
-        x
-    }
-    let mut parent: Vec<usize> = (0..uids.len()).collect();
+    // Union-find over the interned uids — the canonical disjoint-set primitive.
+    // Merge the endpoints of every surviving link.
+    let mut uf = crate::util::union_find::UnionFind::new(uids.len());
     for p in &paths {
-        let a = find(&mut parent, index[p.from_uid.as_str()]);
-        let b = find(&mut parent, index[p.to_uid.as_str()]);
-        if a != b {
-            parent[a] = b;
-        }
+        uf.union(index[p.from_uid.as_str()], index[p.to_uid.as_str()]);
     }
 
     // Weakest-link confidence per component: the minimum link min_confidence
     // among every link whose endpoints landed in that component.
     let mut comp_conf: HashMap<usize, f64> = HashMap::new();
     for p in &paths {
-        let r = find(&mut parent, index[p.from_uid.as_str()]);
+        let r = uf.find(index[p.from_uid.as_str()]);
         let e = comp_conf.entry(r).or_insert(f64::INFINITY);
         *e = e.min(p.min_confidence);
     }
@@ -728,7 +770,7 @@ pub fn resolve_identity_clusters(
     // Group members by component root.
     let mut groups: HashMap<usize, Vec<&str>> = HashMap::new();
     for (i, &u) in uids.iter().enumerate() {
-        let r = find(&mut parent, i);
+        let r = uf.find(i);
         groups.entry(r).or_default().push(u);
     }
 
@@ -893,6 +935,7 @@ pub fn connection_brokers<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::relation::Relation;
 
     #[test]
@@ -929,8 +972,8 @@ mod tests {
 
     #[test]
     fn resolve_identity_clusters_empty_without_links() {
-        let a = Entity::new(EntityKind::Email, "a@x.com", 0.8, "s");
-        let b = Entity::new(EntityKind::Username, "bob", 0.8, "s");
+        let a = Entity::new(EntityKind::Email, "a@x.com", confidence::HIGH_PLUSPLUS, "s");
+        let b = Entity::new(EntityKind::Username, "bob", confidence::HIGH_PLUSPLUS, "s");
         assert!(resolve_identity_clusters(&[a, b], &[], 4, 0.0).is_empty());
     }
 
@@ -1145,8 +1188,8 @@ mod tests {
 
     #[test]
     fn strongest_path_none_when_unreachable() {
-        let a = Entity::new(EntityKind::Email, "a@x.com", 0.8, "s");
-        let b = Entity::new(EntityKind::Username, "bob", 0.8, "s");
+        let a = Entity::new(EntityKind::Email, "a@x.com", confidence::HIGH_PLUSPLUS, "s");
+        let b = Entity::new(EntityKind::Username, "bob", confidence::HIGH_PLUSPLUS, "s");
         assert!(strongest_path(&[a.clone(), b.clone()], &[], &a.uid, &b.uid, 4).is_none());
     }
 
@@ -1399,7 +1442,7 @@ mod tests {
         assert_eq!(paths.len(), 2, "two independent routes");
         for p in &paths {
             assert_eq!(p.len(), 2);
-            assert_eq!(p.last().unwrap().to_uid, b.uid);
+            assert_eq!(p.last().expect("should succeed").to_uid, b.uid);
         }
         let mids: HashSet<&str> = paths.iter().map(|p| p[0].to_uid.as_str()).collect();
         assert_eq!(mids.len(), 2, "the routes go through different nodes");
@@ -1553,7 +1596,7 @@ mod tests {
                     prop_assert_eq!(p.steps.len(), p.hops);
                     prop_assert!(p.hops >= 1 && p.hops <= 4);
                     prop_assert!(p.from_uid < p.to_uid);
-                    prop_assert_eq!(&p.steps.last().unwrap().to_uid, &p.to_uid);
+                    prop_assert_eq!(&p.steps.last().expect("should succeed").to_uid, &p.to_uid);
                 }
             }
 
@@ -1576,12 +1619,12 @@ mod tests {
                 if let Some(sp) = shortest {
                     let widest = strongest_path(&ents, &rels, a, b, 4);
                     prop_assert!(widest.is_some(), "reachable shortest ⇒ reachable widest");
-                    let w = widest.unwrap();
+                    let w = widest.expect("should succeed");
                     prop_assert!(w.min_confidence >= sp.min_confidence - 1e-9);
                     // …and it is itself a well-formed, hop-bounded chain.
                     prop_assert_eq!(w.steps.len(), w.hops);
                     prop_assert!(w.hops >= 1 && w.hops <= 4);
-                    prop_assert_eq!(&w.steps.last().unwrap().to_uid, b);
+                    prop_assert_eq!(&w.steps.last().expect("should succeed").to_uid, b);
                 }
             }
 

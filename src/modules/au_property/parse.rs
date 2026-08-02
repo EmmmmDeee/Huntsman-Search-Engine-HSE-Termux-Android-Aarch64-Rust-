@@ -1,6 +1,9 @@
 //! Parsing helpers: HTML stripping, name matching, record extraction, entity building.
 
-use crate::core::entity::{Entity, EntityKind, Evidence};
+use crate::core::{
+    confidence,
+    entity::{Entity, EntityKind, Evidence},
+};
 
 pub(super) const SRC: &str = "au_property";
 
@@ -35,16 +38,30 @@ pub(crate) struct PropertyRecord {
     pub postcode: Option<String>,
 }
 
-/// Try to match a name token against the subject's full name. Returns true
-/// when the surname and at least one given-name token appear in the text
+/// Try to match the subject's full name against a text window. Returns true when
+/// every token of the full name appears as a WHOLE WORD in the text
 /// (case-insensitive). Pure.
+///
+/// Whole-word, not substring: a substring gate wrongly admits a coincidental
+/// line for AU-common short surnames (Le, Ng, Ha, Vo, Do) — and since a matched
+/// record now stamps an `owner` attribute and an `exact-name-match` tag that the
+/// relation layer turns into a Person→property `LocatedAt` edge, a loose match
+/// would FABRICATE a subject↔property link.
+///
+/// Deliberately NOT the shared [`crate::util::str_util::whole_word_token_match`]
+/// (which folds ASCII-only): AU property registers carry accented owner names
+/// (e.g. `NGUYỄN`, `LÊ`), and an ASCII fold would miss an accented letter in
+/// mismatched case (seed `José` vs register `JOSÉ`). This matcher stays
+/// full-Unicode (`to_lowercase`) on purpose — do not collapse it into the ASCII
+/// helper.
 pub(crate) fn name_matches(text: &str, full_name: &str) -> bool {
     let text_lc = text.to_lowercase();
     let full_lc = full_name.to_lowercase();
-    // Every token of the full name must appear somewhere in the text.
-    full_lc
-        .split_whitespace()
-        .all(|token| text_lc.contains(token))
+    full_lc.split_whitespace().all(|token| {
+        text_lc
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|word| word == token)
+    })
 }
 
 /// Extract AU state abbreviation from a text window. Returns the canonical
@@ -156,6 +173,10 @@ pub(crate) fn record_to_entities(rec: &PropertyRecord, scan_id: &str) -> Vec<Ent
         SRC,
         format!("Property title owner match: {}", rec.owner_name),
     )
+    // `owner` is a PERSON_NAME_ATTRS key, so `core::relation::derive_residency`
+    // binds this place to the matching subject Person as a LocatedAt edge — the
+    // record is whole-word name-matched by construction (see `name_matches`).
+    .with_attr("owner", &rec.owner_name)
     .with_attr("suburb", &rec.suburb)
     .with_attr("state", rec.state);
 
@@ -164,21 +185,29 @@ pub(crate) fn record_to_entities(rec: &PropertyRecord, scan_id: &str) -> Vec<Ent
     addr.tag(format!("au-state:{}", rec.state));
     addr.tag("country:AU");
     addr.tag("source:property");
+    // Name-matched register hit → geo_family can anchor the precise suburb
+    // Address on the subject (mirrors qld_unclaimed's exact register hits).
+    addr.tag("exact-name-match");
     out.push(addr);
 
-    // Derive coordinates, preferring the postcode (an unambiguously Australian
-    // token) over the bare suburb name. The offline city table mixes AU and
-    // foreign cities and matches by substring, so a suburb sharing its name with
-    // an overseas city ("Miami" QLD vs Miami, Florida) would otherwise resolve to
-    // the foreign coordinate and be tagged `country:AU`. `record_coords` rejects
-    // any candidate outside Australia in favour of the state-capital fallback.
+    // Derive coordinates by an HONEST precision ladder — see `resolve_coord_fix`.
     let suburb_lc = rec.suburb.to_lowercase();
-    if let Some((lat, lon)) = record_coords(&suburb_lc, rec.state, rec.postcode.as_deref()) {
+    if let Some(((lat, lon), coord_conf, derived_from, name_matched)) =
+        resolve_coord_fix(&suburb_lc, rec.state, rec.postcode.as_deref())
+    {
         let coord_value = format!("{lat:.4},{lon:.4}");
-        let mut coord = Entity::new(EntityKind::Coordinates, &coord_value, 0.60, scan_id);
-        coord.add_evidence(evid.with_attr("derived_from", "suburb_centroid"));
+        let mut coord = Entity::new(EntityKind::Coordinates, &coord_value, coord_conf, scan_id);
+        coord.add_evidence(evid.with_attr("derived_from", derived_from));
         coord.tag(format!("au-state:{}", rec.state));
         coord.tag("country:AU");
+        // `exact-name-match` (which lets the correlator anchor this as a precise
+        // residence) belongs only to a genuine suburb centroid; every fallback is
+        // region-grain and is tagged `coarse` instead.
+        if name_matched {
+            coord.tag("exact-name-match");
+        } else {
+            coord.tag("coarse");
+        }
         out.push(coord);
     }
 
@@ -200,25 +229,51 @@ pub(super) fn state_capital_coords(state: &str) -> Option<(f64, f64)> {
     }
 }
 
-/// Resolve an AU property record to a coordinate, preferring the (unambiguously
-/// Australian) postcode over a bare suburb name.
+/// Resolve an AU property record's coordinate by an HONEST precision ladder — a
+/// coarse guess must never masquerade as a name-matched suburb centroid:
+///   1. suburb centroid (precise, name-matched)          -> MEDIUM_PLUS
+///   2. the parsed postcode's exact gazetteer centroid   -> MEDIUM
+///   3. the postcode's leading-two-digit region centroid -> LOW_MEDIUM
+///   4. the state capital, last resort                   -> LOW, coarse
 ///
-/// The offline [`city_coords`](crate::util::city_coords::city_coords) table mixes
-/// Australian and foreign cities and matches by substring, so a bare AU suburb
-/// sharing its name with an overseas city — "Miami" (QLD 4220) vs Miami, Florida
-/// — would resolve to the foreign coordinate, which this module then tags
-/// `country:AU`, fabricating a wrong-country location. Resolving the postcode
-/// first (a 4-digit AU token the table maps to an AU centroid/region) and
-/// rejecting any candidate that is not physically inside Australia (falling back
-/// to the state capital) makes that impossible, while still keeping the exact
-/// suburb centroid whenever the postcode or a genuinely-Australian suburb name
-/// resolves it. The returned coordinate is therefore always inside Australia.
-fn record_coords(suburb_lc: &str, state: &str, postcode: Option<&str>) -> Option<(f64, f64)> {
-    let in_au =
-        |c: Option<(f64, f64)>| c.filter(|&(lat, lon)| crate::util::geo::is_in_australia(lat, lon));
-    in_au(postcode.and_then(crate::util::city_coords::city_coords))
-        .or_else(|| in_au(crate::util::city_coords::city_coords(suburb_lc)))
-        .or_else(|| state_capital_coords(state))
+/// Previously every suburb miss fell straight to the state capital yet was
+/// stamped MEDIUM_PLUS + exact-name-match + derived_from:suburb_centroid, so a
+/// rural owner was pinned to the capital indistinguishably from a real suburb
+/// fix, and the parsed postcode (a finer, honest signal, already in the
+/// Address) was never used to geocode.
+///
+/// Step 1 is GATED through [`crate::util::geo::is_in_australia`]: the offline
+/// [`city_coords`](crate::util::city_coords::city_coords) table mixes Australian
+/// and foreign cities and matches by substring, so a suburb sharing its name
+/// with an overseas city — "Miami" (QLD 4220) vs Miami, Florida — would
+/// otherwise resolve to the foreign coordinate and still be tagged `country:AU`,
+/// fabricating a wrong-country location. Steps 2-4 are inherently
+/// Australia-scoped (keyed by AU postcode structure / a fixed state-capital
+/// table, never by ambiguous name), so they need no such gate.
+///
+/// Returns `((lat, lon), confidence, derived_from, name_matched)` — `pub(super)`
+/// so it is directly unit-testable without going through a full [`PropertyRecord`].
+pub(super) fn resolve_coord_fix(
+    suburb_lc: &str,
+    state: &str,
+    postcode: Option<&str>,
+) -> Option<((f64, f64), f64, &'static str, bool)> {
+    crate::util::city_coords::city_coords(suburb_lc)
+        .filter(|&(lat, lon)| crate::util::geo::is_in_australia(lat, lon))
+        .map(|c| (c, confidence::MEDIUM_PLUS, "suburb_centroid", true))
+        .or_else(|| {
+            let pc = postcode?;
+            crate::util::city_coords::postcode_coords(pc)
+                .map(|c| (c, confidence::MEDIUM, "postcode_centroid", false))
+                .or_else(|| {
+                    crate::util::city_coords::au_postcode_region(pc)
+                        .map(|c| (c, confidence::LOW_MEDIUM, "postcode_region", false))
+                })
+        })
+        .or_else(|| {
+            state_capital_coords(state)
+                .map(|c| (c, confidence::LOW, "state_capital_fallback", false))
+        })
 }
 
 // ─── Dedup ────────────────────────────────────────────────────────────────
@@ -241,7 +296,7 @@ pub(super) fn dedup_entities(entities: &mut Vec<Entity>) {
 
 #[cfg(test)]
 mod coord_tests {
-    use super::record_coords;
+    use super::resolve_coord_fix;
     use crate::util::geo::is_in_australia;
 
     #[test]
@@ -251,7 +306,8 @@ mod coord_tests {
         // Florida (25.76, -80.19) and au_property tagged it au-state:QLD /
         // country:AU — a wrong-country coordinate. The postcode must win, and no
         // path may ever return a point outside Australia.
-        let (lat, lon) = record_coords("miami", "QLD", Some("4220")).unwrap();
+        let ((lat, lon), _, derived_from, _) =
+            resolve_coord_fix("miami", "QLD", Some("4220")).unwrap();
         assert!(
             is_in_australia(lat, lon),
             "postcode-resolved coord must be inside Australia, got {lat},{lon}"
@@ -260,24 +316,44 @@ mod coord_tests {
             lat < 0.0,
             "an AU coordinate has negative latitude, got {lat}"
         );
+        assert_ne!(
+            derived_from, "suburb_centroid",
+            "the foreign-city name match must be rejected, not surfaced"
+        );
 
         // Even with NO postcode, the bare suburb name must not leak Florida: the
         // out-of-AU candidate is rejected in favour of the QLD state capital.
-        let (lat, lon) = record_coords("miami", "QLD", None).unwrap();
+        let ((lat, lon), _, derived_from, _) = resolve_coord_fix("miami", "QLD", None).unwrap();
         assert!(
             is_in_australia(lat, lon),
             "suburb-only fallback must stay inside Australia, got {lat},{lon}"
         );
+        assert_eq!(derived_from, "state_capital_fallback");
     }
 
     #[test]
     fn falls_back_to_the_state_capital_and_stays_in_australia() {
         // An untabulated suburb with no postcode resolves to the state capital.
-        let (lat, lon) = record_coords("nowhere-suburb-xyz", "WA", None).unwrap();
+        let ((lat, lon), _, derived_from, name_matched) =
+            resolve_coord_fix("nowhere-suburb-xyz", "WA", None).unwrap();
         assert!(is_in_australia(lat, lon));
+        assert_eq!(derived_from, "state_capital_fallback");
+        assert!(!name_matched);
         // An unknown state with no resolvable place yields no coordinate (rather
         // than a fabricated one).
-        assert!(record_coords("nowhere-suburb-xyz", "ZZ", None).is_none());
+        assert!(resolve_coord_fix("nowhere-suburb-xyz", "ZZ", None).is_none());
+    }
+
+    #[test]
+    fn tabulated_au_suburb_resolves_precisely_and_is_name_matched() {
+        // A genuinely-Australian, unambiguous suburb should hit the precise
+        // suburb-centroid tier, not fall through to a coarser fallback.
+        let ((lat, lon), conf, derived_from, name_matched) =
+            resolve_coord_fix("sydney", "NSW", None).unwrap();
+        assert!(is_in_australia(lat, lon));
+        assert_eq!(derived_from, "suburb_centroid");
+        assert!(name_matched);
+        assert_eq!(conf, crate::core::confidence::MEDIUM_PLUS);
     }
 }
 

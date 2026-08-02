@@ -31,13 +31,14 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::extract::looks_like_email;
-use crate::util::http::{fetch_json_or_404, urlencode};
+use crate::util::http::{fetch_json_probe, urlencode};
 
 const SRC: &str = "nostr";
 /// bech32 data charset (BIP-173).
@@ -61,7 +62,7 @@ impl Module for Nostr {
     }
 
     fn description(&self) -> &'static str {
-        "Nostr identity resolution (npub → pubkey offline decode; NIP-05 name@domain → pubkey + relays)"
+        "Nostr identity resolution — offline-decodes an npub to its pubkey and resolves NIP-05 name@domain to pubkey plus relays"
     }
 
     fn priority(&self) -> u8 {
@@ -127,8 +128,11 @@ impl Module for Nostr {
                     );
                     // 404 (every ordinary mail domain) → not a Nostr identity, a
                     // clean miss. Freemail domains are skipped entirely above (a
-                    // certain 404 — they serve no NIP-05 document).
-                    if let Some(doc) = fetch_json_or_404::<Nip05>(&ctx.http, SRC, &url).await?
+                    // certain 404 — they serve no NIP-05 document). A domain that
+                    // is simply unreachable (no server, DNS/TLS/connection failure)
+                    // is the SAME "not a Nostr identity" miss, not a module error —
+                    // `fetch_json_probe` folds both into `None`.
+                    if let Some(doc) = fetch_json_probe::<Nip05>(&ctx.http, SRC, &url).await
                         && let Some(hex) = lookup_pubkey(&doc, name).filter(|h| is_hex64(h))
                     {
                         let hex = hex.to_ascii_lowercase();
@@ -215,11 +219,24 @@ fn emit_nip05(
     // converges with an npub-seeded scan. NIP-05 is domain-bound and live, so it
     // is the higher-confidence path.
     if let Some(ref npub) = npub {
-        emit_identity(npub, hex, 0.85, 0.85, &ev, scan_id, result);
+        emit_identity(
+            npub,
+            hex,
+            confidence::HIGH_PLUSPLUS_PLUS,
+            confidence::HIGH_PLUSPLUS_PLUS,
+            &ev,
+            scan_id,
+            result,
+        );
     } else {
         // Encoding cannot fail for a 64-hex key, but never drop the pubkey if it
         // somehow does.
-        let mut pk = Entity::new(EntityKind::Other("nostr-pubkey".into()), hex, 0.85, scan_id);
+        let mut pk = Entity::new(
+            EntityKind::Other("nostr-pubkey".into()),
+            hex,
+            confidence::HIGH_PLUSPLUS_PLUS,
+            scan_id,
+        );
         pk.tag("nostr");
         pk.tag("nostr-pubkey");
         pk.add_evidence(ev.clone());
@@ -228,7 +245,7 @@ fn emit_nip05(
 
     // The seed email is a confirmed Nostr identity (GREATEST-merge only ever
     // adds the tag/evidence, never lowers existing confidence).
-    let mut seed = Entity::new(EntityKind::Email, email, 0.80, scan_id);
+    let mut seed = Entity::new(EntityKind::Email, email, confidence::HIGH_PLUSPLUS, scan_id);
     seed.tag("nostr");
     seed.tag("nip05");
     seed.add_evidence(ev.clone());
@@ -262,7 +279,7 @@ fn emit_nip05(
             let mut r = Entity::new(
                 EntityKind::Other("nostr-relay".into()),
                 relay,
-                0.55,
+                confidence::MEDIUM_HIGH,
                 scan_id,
             );
             r.tag("nostr");

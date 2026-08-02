@@ -1,5 +1,6 @@
 use super::{BINARY_EXTENSIONS, CrawlState, MAX_DEPTH, MAX_PAGES};
 use crate::core::error::{Error, Result};
+use crate::util::http::RequestBuilderExt;
 use std::collections::HashSet;
 use std::time::Duration;
 use url::Url;
@@ -202,9 +203,7 @@ pub(super) async fn probe_config_leaks(
             let mut found = Vec::new();
             for t in crate::util::found_keys::key_tokens(&body, crate::util::found_keys::MAX_TOKEN)
             {
-                if let Some((service, key_val)) =
-                    crate::modules::oathnet_pro::key_harvest::identify_api_key(t)
-                {
+                if let Some((service, key_val)) = crate::util::key_harvest::identify_api_key(t) {
                     found.push((service, key_val.to_string()));
                 }
             }
@@ -229,7 +228,7 @@ pub(super) async fn probe_config_leaks(
 pub(super) async fn resolve_seed(http: &reqwest::Client, domain: &str) -> Result<String> {
     for scheme in ["https", "http"] {
         let url = format!("{scheme}://{domain}/");
-        match http.head(&url).send().await {
+        match http.head(&url).send_tagged("web_crawler").await {
             Ok(r) if r.status().is_success() || r.status().is_redirection() => {
                 return Ok(r.url().as_str().to_string());
             }
@@ -248,7 +247,7 @@ pub(super) async fn fetch_robots(http: &reqwest::Client, seed: &Url, rules: &mut
         seed.scheme(),
         seed.host_str().unwrap_or("")
     );
-    let Ok(resp) = http.get(&robots_url).send().await else {
+    let Ok(resp) = http.get(&robots_url).send_tagged("web_crawler").await else {
         return;
     };
     if !resp.status().is_success() {
@@ -546,14 +545,11 @@ pub(super) fn extract_phones(body: &str, phones: &mut HashSet<String>) {
 }
 
 pub(super) fn extract_api_keys_from_body(body: &str, domain: &str) {
-    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+    use crate::util::found_keys::{MAX_TOKEN, key_tokens};
+    use crate::util::key_harvest::identify_api_key;
 
     let pool = crate::util::key_pool::global_pool();
-    for word in body.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '`') {
-        let trimmed = word.trim();
-        if trimmed.len() < 16 || trimmed.len() > 200 {
-            continue;
-        }
+    for trimmed in key_tokens(body, MAX_TOKEN) {
         if let Some((service, key_val)) = identify_api_key(trimmed) {
             let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
             entry.notes = Some(format!("Web-scraped from {domain}"));

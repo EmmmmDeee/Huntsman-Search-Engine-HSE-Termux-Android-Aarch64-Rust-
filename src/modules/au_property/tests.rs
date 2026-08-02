@@ -1,9 +1,9 @@
-use super::AuProperty;
 use super::parse::{
     PropertyRecord, dedup_entities, extract_postcode, extract_state, name_matches,
     parse_nsw_response, parse_qld_response, parse_vic_response, record_to_entities,
     state_capital_coords, strip_html,
 };
+use super::{AuProperty, all_legs_unreachable};
 use crate::core::entity::{Entity, EntityKind};
 use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
@@ -62,6 +62,124 @@ fn name_matches_detects_token_presence() {
             "name_matches({text:?}, {name:?}) should be {expected}"
         );
     }
+}
+
+#[test]
+fn name_matches_requires_whole_word_not_substring() {
+    // "le" is a SUBSTRING of "alexander" but not a whole word. The old substring
+    // gate returned true here, which — now that a match stamps `owner` +
+    // `exact-name-match` — would fabricate a subject↔property link for an
+    // AU-common short surname. Whole-word matching must reject it.
+    assert!(
+        !name_matches("Alexander Smith 5 Oak St NSW 2000", "Le Smith"),
+        "a short surname appearing only as a substring must NOT match"
+    );
+    assert!(name_matches("Le Smith 5 Oak St NSW 2000", "Le Smith"));
+}
+
+#[test]
+fn record_to_entities_stamps_owner_and_exact_name_match() {
+    // The name-matched owner must be stamped as an `owner` attr and both entities
+    // tagged `exact-name-match`, so the relation layer links the subject Person
+    // to their registered property instead of leaving it a graph orphan.
+    let rec = PropertyRecord {
+        owner_name: "Jordan Avery".into(),
+        suburb: "Sydney".into(),
+        state: "NSW",
+        postcode: Some("2000".into()),
+    };
+    let ents = record_to_entities(&rec, "s");
+    let addr = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("must emit Address");
+    assert_eq!(
+        addr.evidence[0].attributes.get("owner").map(String::as_str),
+        Some("Jordan Avery"),
+        "owner attr must carry the matched name so derive_residency can bind it"
+    );
+    assert!(
+        ents.iter().all(|e| e.has_tag("exact-name-match")),
+        "both the Address and Coordinates must be tagged exact-name-match"
+    );
+}
+
+#[test]
+fn untabulated_suburb_geocodes_via_postcode_not_state_capital() {
+    // A far-north-QLD property whose suburb is NOT in the offline city table.
+    // Old behaviour: fall straight to the Brisbane state-capital centroid, yet
+    // stamp it MEDIUM_PLUS + exact-name-match + derived_from:suburb_centroid — a
+    // Cairns-region owner pinned to Brisbane, indistinguishable from a real fix,
+    // with the parsed postcode ignored. The fix geocodes via the postcode.
+    assert!(
+        crate::util::city_coords::city_coords("babinda").is_none(),
+        "test premise: the suburb must not be in the offline city table",
+    );
+    let rec = PropertyRecord {
+        owner_name: "Jordan Avery".into(),
+        suburb: "Babinda".into(),
+        state: "QLD",
+        postcode: Some("4861".into()), // far-north QLD (postcode region "48")
+    };
+    let ents = record_to_entities(&rec, "s");
+    let coord = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+        .expect("must emit a Coordinates entity");
+    let derived = coord.evidence[0]
+        .attributes
+        .get("derived_from")
+        .map(String::as_str);
+    assert!(
+        matches!(derived, Some("postcode_centroid" | "postcode_region")),
+        "an untabulated suburb with a postcode must geocode via the postcode, got {derived:?}",
+    );
+    assert_ne!(
+        coord.value, "-27.469800,153.025100",
+        "must NOT be the Brisbane state-capital pin (canonical 6dp)",
+    );
+    assert!(
+        !coord.has_tag("exact-name-match"),
+        "a region-grain fix must not claim to be a name-matched suburb centroid",
+    );
+    assert!(coord.has_tag("coarse"));
+    assert!(
+        coord.confidence < crate::core::confidence::MEDIUM_PLUS,
+        "region grain must rank below a real suburb centroid",
+    );
+}
+
+#[test]
+fn capital_fallback_without_postcode_is_low_confidence_and_coarse() {
+    // Suburb miss AND no postcode -> the state capital is the only fallback, but
+    // it must be graded honestly (LOW, coarse, truthful derived_from), never
+    // passed off as a name-matched suburb centroid.
+    assert!(crate::util::city_coords::city_coords("babinda").is_none());
+    let rec = PropertyRecord {
+        owner_name: "Jordan Avery".into(),
+        suburb: "Babinda".into(),
+        state: "QLD",
+        postcode: None,
+    };
+    let ents = record_to_entities(&rec, "s");
+    let coord = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+        .expect("must emit a Coordinates entity");
+    assert_eq!(
+        coord.value, "-27.469800,153.025100",
+        "Brisbane capital, canonical 6dp",
+    );
+    assert!(!coord.has_tag("exact-name-match"));
+    assert!(coord.has_tag("coarse"));
+    assert_eq!(
+        coord.evidence[0]
+            .attributes
+            .get("derived_from")
+            .map(String::as_str),
+        Some("state_capital_fallback"),
+    );
+    assert!(coord.confidence <= crate::core::confidence::LOW);
 }
 
 #[test]
@@ -158,7 +276,7 @@ fn state_capital_coords_covers_eight_states_and_rejects_others() {
         ("ACT", -35.2809, 149.1300),
         ("NT", -12.4634, 130.8456),
     ] {
-        let (got_lat, got_lon) = state_capital_coords(code).unwrap();
+        let (got_lat, got_lon) = state_capital_coords(code).expect("should succeed");
         assert!((got_lat - lat).abs() < 1e-9, "{code} lat");
         assert!((got_lon - lon).abs() < 1e-9, "{code} lon");
     }
@@ -194,7 +312,10 @@ fn record_to_entities_address_includes_postcode_when_present() {
         postcode: Some("3065".into()),
     };
     let ents = record_to_entities(&rec, "s");
-    let addr = ents.iter().find(|e| e.kind == EntityKind::Address).unwrap();
+    let addr = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("should succeed");
     assert!(
         addr.value.contains("3065"),
         "address must include postcode: {}",
@@ -227,4 +348,61 @@ fn module_metadata_is_valid() {
     assert!(m.attack_techniques().contains(&"T1591.002"));
     assert!(m.attack_techniques().contains(&"T1589.003"));
     assert!(m.max_timeout_ms() > crate::MODULE_TIMEOUT_MS);
+}
+
+/// Adversarial-input coverage (PROBLEM_TREE T2.7): `au_property` was one of
+/// the two modules (alongside `au_electoral`) still missing the never-panics
+/// proptest already applied to `au_people`'s HTML parsers. `text` is the
+/// untrusted, scraped portal response; `full_name` is held to the project's
+/// synthetic placeholder since it originates from the operator's own typed
+/// scan target, not third-party bytes.
+mod prop {
+    use proptest::prelude::*;
+
+    use super::{parse_nsw_response, parse_qld_response, parse_vic_response};
+
+    proptest! {
+        #[test]
+        fn parse_nsw_response_never_panics(s in ".{0,256}") {
+            let _ = parse_nsw_response(&s, "Jordan Avery");
+        }
+
+        #[test]
+        fn parse_vic_response_never_panics(s in ".{0,256}") {
+            let _ = parse_vic_response(&s, "Jordan Avery");
+        }
+
+        #[test]
+        fn parse_qld_response_never_panics(s in ".{0,256}") {
+            let _ = parse_qld_response(&s, "Jordan Avery");
+        }
+    }
+}
+
+// ── `all_legs_unreachable` — the "every portal is down" vs "genuinely no
+// records" distinction (2026-07-14 live finding: NSW/VIC/QLD all now 404). ──
+
+#[test]
+fn all_legs_unreachable_true_when_every_leg_failed_and_nothing_found() {
+    // Regression: this is the REAL state confirmed live for NSW ELVIS, VIC
+    // MapShare WFS, and QLD titles search on 2026-07-14 — all three return
+    // 404 from live, reachable government servers. Before this fix,
+    // `process()` swallowed this into a silent `Ok(empty)`, indistinguishable
+    // from "this person genuinely has no property record."
+    assert!(all_legs_unreachable(false, false));
+}
+
+#[test]
+fn all_legs_unreachable_false_when_a_leg_responded_even_with_no_match() {
+    // A portal answered (any_leg_http_ok) but this particular name had no
+    // record there — a genuinely empty, honest result, not a failure.
+    assert!(!all_legs_unreachable(true, false));
+}
+
+#[test]
+fn all_legs_unreachable_false_when_entities_were_found() {
+    // Found something, regardless of the HTTP-status bookkeeping — never
+    // report a hard failure over a real result.
+    assert!(!all_legs_unreachable(false, true));
+    assert!(!all_legs_unreachable(true, true));
 }

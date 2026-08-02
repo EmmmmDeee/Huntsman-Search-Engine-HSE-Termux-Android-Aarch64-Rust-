@@ -27,20 +27,20 @@ use super::*;
             iterations: Some(3),
             radar: true,
         };
-        let s = serde_json::to_string(&o).unwrap();
-        let back: LiveOptions = serde_json::from_str(&s).unwrap();
+        let s = serde_json::to_string(&o).expect("should succeed");
+        let back: LiveOptions = serde_json::from_str(&s).expect("should succeed");
         assert_eq!(back.interval_secs, 60);
         assert_eq!(back.iterations, Some(3));
         assert!(back.radar, "radar flag must round-trip");
         // Omitted `radar` defaults to false (classic live re-scan).
-        let d: LiveOptions = serde_json::from_str(r#"{"interval_secs":10}"#).unwrap();
+        let d: LiveOptions = serde_json::from_str(r#"{"interval_secs":10}"#).expect("should succeed");
         assert!(!d.radar);
     }
 
     #[test]
     fn live_request_default_options_inert() {
         let json = r#"{"kind":"domain","value":"x.com"}"#;
-        let req: LiveRequest = serde_json::from_str(json).unwrap();
+        let req: LiveRequest = serde_json::from_str(json).expect("should succeed");
         assert_eq!(req.kind, Some(TargetKind::Domain));
         assert_eq!(req.resolved_kind(), TargetKind::Domain);
         assert_eq!(req.live.interval_secs, crate::LIVE_DEFAULT_INTERVAL_SECS);
@@ -54,8 +54,8 @@ use super::*;
         // (ScanOptions::default()) while "options": {} got the field-level
         // product defaults (depth 2), so the same intent ran zero-expansion or
         // two-hop iterations depending on serialisation style.
-        let omitted: LiveRequest = serde_json::from_str(r#"{"value":"x.com"}"#).unwrap();
-        let empty: LiveRequest = serde_json::from_str(r#"{"value":"x.com","options":{}}"#).unwrap();
+        let omitted: LiveRequest = serde_json::from_str(r#"{"value":"x.com"}"#).expect("should succeed");
+        let empty: LiveRequest = serde_json::from_str(r#"{"value":"x.com","options":{}}"#).expect("should succeed");
         assert_eq!(omitted.options.depth, empty.options.depth);
         assert_eq!(omitted.options.max_concurrent, empty.options.max_concurrent);
         // And live matches scan: the shared product default (depth 2).
@@ -65,13 +65,13 @@ use super::*;
     #[test]
     fn live_request_omitted_kind_auto_detects() {
         // Unified live scan: no kind → detected from the value.
-        let req: LiveRequest = serde_json::from_str(r#"{"value":"x@y.com"}"#).unwrap();
+        let req: LiveRequest = serde_json::from_str(r#"{"value":"x@y.com"}"#).expect("should succeed");
         assert_eq!(req.kind, None);
         assert_eq!(req.resolved_kind(), TargetKind::Email);
         // PR #102 review: resolved_kind sanitises paste artifacts before
         // detecting, so a quoted URL classes as Url (not Username).
         let dirty: LiveRequest =
-            serde_json::from_str(r#"{"value":"\"https://cloudflare.com\","}"#).unwrap();
+            serde_json::from_str(r#"{"value":"\"https://cloudflare.com\","}"#).expect("should succeed");
         assert_eq!(dirty.resolved_kind(), TargetKind::Url);
     }
 
@@ -82,9 +82,9 @@ use super::*;
             (LiveStatus::Completed, "\"completed\""),
             (LiveStatus::Stopped, "\"stopped\""),
         ] {
-            let json = serde_json::to_string(&variant).unwrap();
+            let json = serde_json::to_string(&variant).expect("should succeed");
             assert_eq!(json, expected);
-            let back: LiveStatus = serde_json::from_str(&json).unwrap();
+            let back: LiveStatus = serde_json::from_str(&json).expect("should succeed");
             assert_eq!(back, variant);
         }
     }
@@ -103,13 +103,13 @@ use super::*;
             scan_ids: std::collections::HashSet::new(),
             scan_id_order: VecDeque::new(),
         };
-        let json = serde_json::to_string(&session).unwrap();
+        let json = serde_json::to_string(&session).expect("should succeed");
         // The internal insertion-order field must not change the wire format.
         assert!(
             !json.contains("scan_id_order"),
             "scan_id_order must not be serialized: {json}"
         );
-        let back: LiveSession = serde_json::from_str(&json).unwrap();
+        let back: LiveSession = serde_json::from_str(&json).expect("should succeed");
         assert_eq!(back.id, "live-abc123");
         assert_eq!(back.status, LiveStatus::Running);
     }
@@ -149,6 +149,33 @@ use super::*;
         let before = s.scan_ids.len();
         s.record_scan(format!("scan-{}", SCAN_ID_CAP - 1));
         assert_eq!(s.scan_ids.len(), before);
+    }
+
+    #[test]
+    fn scan_ids_serialize_in_sorted_order_for_reproducible_api_output() {
+        // `scan_ids` is a `HashSet`, whose native iteration order is
+        // per-process-random (SipHash seed). It serializes directly into the
+        // `GET /api/v1/live` responses, so without a stable order the SAME
+        // live-session state would emit a differently-ordered `scan_ids` array
+        // across separate server runs. 40 distinct ids make a coincidental
+        // sorted hash order astronomically unlikely (1/N!).
+        let mut s = mk_session("live-order", LiveStatus::Running, 1_700_000_000);
+        for i in (0..40).rev() {
+            s.record_scan(format!("scan-{i:02}"));
+        }
+        let json = serde_json::to_value(&s).expect("should succeed");
+        let got: Vec<&str> = json["scan_ids"]
+            .as_array()
+            .expect("scan_ids serializes as a JSON array")
+            .iter()
+            .map(|v| v.as_str().expect("each scan id is a string"))
+            .collect();
+        let mut want = got.clone();
+        want.sort_unstable();
+        assert_eq!(
+            got, want,
+            "scan_ids must serialize in sorted order for byte-reproducible API output"
+        );
     }
 
     fn mk_session(id: &str, status: LiveStatus, started_at: u64) -> LiveSession {

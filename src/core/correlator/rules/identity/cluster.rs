@@ -4,24 +4,12 @@
 
 use super::*;
 
-/// True when a Username value is a usable identity anchor: long enough and not a
-/// generic / role / extraction-noise token. Mirrors the AU-034 handle gate
-/// (`account.rs`) so the whole identity-cluster family treats junk handles
-/// (`from`, `dns`, role mailboxes) consistently — they must never seed a
-/// "confirmed identity" correlation. A live person-scan fired AU-045 on `from`
-/// and `dns` (mis-extracted as usernames, "confirmed" across two source
-/// families); those are parser artifacts, not aliases.
-fn is_anchorable_handle(value: &str) -> bool {
-    const MIN_HANDLE_LEN: usize = 4;
-    let handle = canonical_handle(value);
-    handle.len() >= MIN_HANDLE_LEN && !is_generic_handle(&handle)
-}
-
 pub(in crate::core::correlator) fn rule_au_002_identity_cluster(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // A confidence floor on top of the upstream candidate-exclusion: a genuine
     // identity cluster is built from corroborated entities, not weak guesses.
     const MIN_CONF: f64 = 0.50;
@@ -71,6 +59,41 @@ pub(in crate::core::correlator) fn rule_au_002_identity_cluster(
     }]
 }
 
+/// Distinct provider families across an entity's corroborating evidence,
+/// EXCLUDING any source whose only contribution is a `weak-detection`
+/// (status-only) hit — the bare HTTP-status guess `username_search`/
+/// `social_probe`/`streaming_probe` self-report via a `detection: status-only`
+/// evidence attribute when there's no body-marker to confirm the match. A
+/// live scan against a guessed handle showed exactly this: `username_search`
+/// (family "presence") and `social_probe` (family "social") both hit the same
+/// unverified handle via a bare status-code check, and — being classified
+/// into two DIFFERENT families purely by platform category, not by detection
+/// rigour — satisfied AU-045's "two distinct service families" bar despite
+/// neither one being an actual confirmation. A source counts toward family
+/// diversity only if at least one of its evidence records for this entity is
+/// NOT status-only.
+fn strong_corroborating_families(e: &Entity) -> std::collections::BTreeSet<&'static str> {
+    use std::collections::BTreeMap;
+    let mut strong_by_source: BTreeMap<&str, bool> = BTreeMap::new();
+    for ev in &e.evidence {
+        let src = ev.source.as_str();
+        if crate::core::entity::is_non_corroborating_source(src) {
+            continue;
+        }
+        let status_only = ev.attributes.get("detection").map(String::as_str) == Some("status-only");
+        let entry = strong_by_source.entry(src).or_insert(false);
+        if !status_only {
+            *entry = true;
+        }
+    }
+    strong_by_source
+        .into_iter()
+        .filter(|(_, strong)| *strong)
+        .map(|(src, _)| source_family(src))
+        .filter(|f| *f != "other")
+        .collect()
+}
+
 /// AU-045 — Multi-service identity confirmation.
 ///
 /// An identity value (email / username / person) whose corroborating sources
@@ -86,11 +109,11 @@ pub(in crate::core::correlator) fn rule_au_002_identity_cluster(
 /// single-source fragility a result-matrix analysis surfaced: it rewards genuine
 /// cross-provider agreement and makes it a first-class, ranked finding.
 pub(in crate::core::correlator) fn rule_au_045_multi_service_identity(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    use std::collections::BTreeSet;
+    let entities = context.entities();
     const MIN_FAMILIES: usize = 2;
     entities
         .iter()
@@ -105,15 +128,9 @@ pub(in crate::core::correlator) fn rule_au_045_multi_service_identity(
             _ => false,
         })
         .filter_map(|e| {
-            // Distinct provider families across this entity's corroborating
-            // sources, ignoring the unclassified `other` bucket so a stray
-            // unknown source can't fabricate diversity.
-            let families: BTreeSet<&'static str> = e
-                .corroborating_sources()
-                .iter()
-                .map(|s| source_family(s))
-                .filter(|f| *f != "other")
-                .collect();
+            // Distinct STRONG provider families — see `strong_corroborating_families`
+            // for why a status-only hit can't contribute one.
+            let families = strong_corroborating_families(e);
             if families.len() < MIN_FAMILIES {
                 return None;
             }
@@ -159,10 +176,11 @@ pub(in crate::core::correlator) fn rule_au_045_multi_service_identity(
 /// alias's identifiers, or an unrelated breach-dump stranger can't be fused in;
 /// role mailboxes are excluded as well.
 pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolution(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::{BTreeSet, HashSet};
     // Platform-account provider families — the ones where a confirmed handle is
     // an account a person controls (not infra/breach corpora).
@@ -262,10 +280,11 @@ pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolutio
 }
 
 pub(in crate::core::correlator) fn rule_au_003_high_corroboration(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Thresholds are on DISTINCT corroborating sources (source_count), not the
     // summed observation-magnitude field. Calibrated for real distinct-source
     // counts: infra entities (domain/url/ip) reach high agreement easily across
@@ -282,6 +301,22 @@ pub(in crate::core::correlator) fn rule_au_003_high_corroboration(
     entities
         .iter()
         .filter_map(|e| {
+            // A `weak-detection`-only entity (a bare status-code guess from
+            // `username_search`/`streaming_probe` — no accompanying
+            // `verified-detection` from a body-marker check or another
+            // strong source) is not "high cross-source corroboration" no
+            // matter how many modules independently ran the same shallow
+            // check: a real scan against a guessed handle showed several
+            // status-only probes (plus `webserver_banner`, which — before
+            // its own fix — mis-attributed a domain-root HTTP-header check
+            // to the specific guessed path) reaching `source_count() >= 3`
+            // and a reported `C_eff=1.000` (VERIFIED-tier certainty) for a
+            // handle that was never actually confirmed. If the entity also
+            // carries `verified-detection` from some other source, that IS
+            // real corroboration and still counts.
+            if e.has_tag("weak-detection") && !e.has_tag("verified-detection") {
+                return None;
+            }
             // Compute the distinct-source count ONCE and reuse it for the gate,
             // the message, AND the C_eff. `source_count()` re-scans the whole
             // evidence chain (O(k²)) on every call; the prior form paid for it
@@ -314,10 +349,11 @@ pub(in crate::core::correlator) fn rule_au_003_high_corroboration(
 }
 
 pub(in crate::core::correlator) fn rule_au_020_person_entity_cluster(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let persons: Vec<&Entity> = entities_of_kind(entities, EntityKind::Person)
         .into_iter()
         .filter(|e| e.confidence >= 0.50)
@@ -341,10 +377,11 @@ pub(in crate::core::correlator) fn rule_au_020_person_entity_cluster(
 }
 
 pub(in crate::core::correlator) fn rule_au_023_cross_platform_identity(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const IDENTITY_SOURCES: &[&str] = &[
         "keybase",
         "github_user",

@@ -20,6 +20,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -30,9 +31,9 @@ const SRC: &str = "email_canonical";
 
 /// Confidence of the canonical address. High — the normalisation is a
 /// documented routing equivalence (Gmail dot-blindness / `+tag`
-/// subaddressing), not a heuristic guess — and deliberately above the 0.50
+/// subaddressing), not a heuristic guess — and deliberately above the confidence::MEDIUM
 /// expansion floor so the canonical mailbox is pivoted on at depth.
-const CANON_CONF: f64 = 0.80;
+const CANON_CONF: f64 = confidence::HIGH_PLUSPLUS;
 
 pub struct EmailCanonical;
 
@@ -70,7 +71,7 @@ impl Module for EmailCanonical {
     }
 
     fn description(&self) -> &'static str {
-        "Normalise an email to its canonical mailbox (Gmail dots, +tag subaddressing) so identity fragments merge"
+        "Email canonicalisation — normalises to the canonical mailbox (Gmail dots, +tag subaddressing) so fragmented identities merge"
     }
 
     fn priority(&self) -> u8 {

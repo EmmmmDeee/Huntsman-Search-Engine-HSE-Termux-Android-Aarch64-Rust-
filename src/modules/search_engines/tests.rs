@@ -5,12 +5,13 @@
 
 use super::queries::{Region, build_queries_fullname, regional_dorks};
 use super::*;
+use crate::core::confidence;
 
 #[test]
 fn primary_engine_order_floats_reliable_and_proven_engines_first() {
     use std::collections::BTreeSet;
-    // The reliable core (dogpile/swisscows/metager) is declared LATE in ENGINES,
-    // so in raw order it never makes the first ENGINE_CONCURRENCY batch and is the
+    // The reliable core (dogpile/swisscows) is declared LATE in ENGINES, so in
+    // raw order it never makes the first ENGINE_CONCURRENCY batch and is the
     // first cut under a deadline. order_engines_for_primary must float it — plus
     // any engine proven productive this run — to the front.
     let live: Vec<&'static EngineSpec> = ENGINES.iter().collect();
@@ -37,15 +38,19 @@ fn primary_engine_order_floats_reliable_and_proven_engines_first() {
             seen_back = true;
         }
     }
-    let pos = |name: &str| ordered.iter().position(|e| e.name == name).unwrap();
-    // The key win: a reliable engine declared late (metager) now precedes an
+    let pos = |name: &str| {
+        ordered
+            .iter()
+            .position(|e| e.name == name)
+            .expect("should succeed")
+    };
+    // The key win: a reliable engine declared late (swisscows) now precedes an
     // unproven engine declared early (bing).
-    assert!(pos("metager") < pos("bing"));
+    assert!(pos("swisscows") < pos("bing"));
     // Declaration order is preserved WITHIN the front group (stable sort):
-    // yahoo(30) < dogpile(241) < swisscows(255) < metager(306).
+    // yahoo(30) < dogpile(241) < swisscows(255).
     assert!(pos("yahoo") < pos("dogpile"));
     assert!(pos("dogpile") < pos("swisscows"));
-    assert!(pos("swisscows") < pos("metager"));
 
     // With nothing proven and an empty reliable set, order is unchanged
     // (declaration order) — qi==0 first-target behaviour degrades gracefully.
@@ -122,11 +127,30 @@ fn build_queries_fullname_handles_multibyte_initial() {
 
 #[test]
 fn build_queries_fullname_pure_fn_matches_dispatch() {
-    // The extracted pure helper must produce exactly what the FullName
-    // dispatch arm produces (verbatim extraction, no behaviour change).
+    // The extracted pure helper must produce exactly what the FullName arm of
+    // `build_queries_base` produces (verbatim extraction, no behaviour
+    // change). `build_queries` itself is a **superset**: it additionally
+    // appends the exposure-dork pass (`queries::exposure`), which now covers
+    // FullName too — asserted separately below, not folded into this
+    // verbatim-extraction check.
     let direct = build_queries_fullname("Jordan Lee Meyer");
+    let base =
+        super::queries::build_queries_base(&Target::new(TargetKind::FullName, "Jordan Lee Meyer"));
+    assert_eq!(direct, base);
+
+    // `build_queries` = base + the exposure dorks (FullName is now covered by
+    // `fullname_exposure`, no longer silently empty).
     let viadispatch = build_queries(&Target::new(TargetKind::FullName, "Jordan Lee Meyer"));
-    assert_eq!(direct, viadispatch);
+    assert!(
+        viadispatch.len() > base.len(),
+        "the full dispatch must add the FullName exposure dorks on top of the base set"
+    );
+    assert!(
+        viadispatch
+            .iter()
+            .any(|s| s.contains("truepeoplesearch.com")),
+        "exposure dorks must be present in the full dispatch: {viadispatch:?}"
+    );
 
     // Single-token name → only the two base dorks, no first/last expansion.
     let single = build_queries_fullname("Jordan");
@@ -216,6 +240,44 @@ fn regional_dorks_are_minimal_and_region_scoped() {
     assert!(dd.len() <= 2, "AU-default augmentation must stay minimal");
     // An empty value never produces dorks.
     assert!(regional_dorks(&Target::new(TargetKind::Username, "")).is_empty());
+}
+
+#[tokio::test]
+async fn build_queries_reads_the_per_scan_regional_ambient() {
+    // PROBLEM_TREE T2.11: `regional_enabled()` used to read a process-global
+    // `AtomicBool` shared unkeyed across `hse serve`'s concurrent scans — a
+    // concurrently-started scan could silently flip another in-flight scan's
+    // query building. It now reads `util::regional`'s per-scan task-local
+    // ambient, so this proves the WIRING end-to-end: `build_queries` (the
+    // actual toggle consumer, via `search_engines::regional_enabled()`)
+    // produces MORE queries when scoped `true` than when scoped `false` (or
+    // unscoped, which degrades to `false`), for the same AU-region-signalled
+    // target — and, critically, that two overlapping scopes never leak into
+    // each other, mirroring `found_keys`'s own concurrent-isolation proof.
+    let t = Target::new(TargetKind::Phone, "+61 2 9374 4000");
+
+    let neutral = build_queries(&t);
+    let regional = crate::util::regional::with_regional(true, async { build_queries(&t) }).await;
+    assert!(
+        regional.len() > neutral.len(),
+        "regional=true must add AU dorks on top of the geo-neutral base: \
+         neutral={neutral:?} regional={regional:?}"
+    );
+
+    // Nested/overlapping scopes (standing in for two concurrent `hse serve`
+    // scans) never contaminate each other.
+    crate::util::regional::with_regional(true, async {
+        assert_eq!(build_queries(&t).len(), regional.len(), "outer scope=true");
+        let inner_off =
+            crate::util::regional::with_regional(false, async { build_queries(&t) }).await;
+        assert_eq!(inner_off.len(), neutral.len(), "inner scope=false");
+        assert_eq!(
+            build_queries(&t).len(),
+            regional.len(),
+            "outer scope=true must be unaffected after the inner scope exited"
+        );
+    })
+    .await;
 }
 
 #[test]
@@ -621,6 +683,28 @@ fn phone_extraction_international() {
 }
 
 #[test]
+fn phone_extraction_recovers_au_domestic_formats_from_a_snippet() {
+    // Regression: a SERP snippet carrying an AU DOMESTIC number (no +NN prefix)
+    // used to be dropped entirely, because canonical E.164 mining rejects a bare
+    // `04xx`/`0x`/`1300`. The address_au union recovers them so an AU subject's
+    // phone in a result snippet becomes a Phone entity.
+    let mobile = extract_phones_from_text("Contact Jordan on 0410 959 140 anytime");
+    assert!(
+        mobile.iter().any(|p| p.ends_with("410959140")),
+        "AU mobile 0410 959 140 must be recovered, got {mobile:?}"
+    );
+    let service = extract_phones_from_text("Support line 1300 975 707 (business hours)");
+    assert!(
+        !service.is_empty(),
+        "AU 1300 service number must be recovered, got {service:?}"
+    );
+    // A foreign +NN number in the same text is still extracted (E.164 first).
+    let mixed = extract_phones_from_text("AU 0410 959 140 or UK +44 20 7946 0958");
+    assert!(mixed.iter().any(|p| p.starts_with("+44")));
+    assert!(mixed.iter().any(|p| p.ends_with("410959140")));
+}
+
+#[test]
 fn tracking_url_detection() {
     assert!(is_tracking_url("https://r.search.yahoo.com/cbcl/something"));
     assert!(is_tracking_url("https://r.bing.com/rb/something"));
@@ -699,9 +783,12 @@ fn new_engines_present() {
 
 #[test]
 fn startpage_uses_post() {
-    let sp = ENGINES.iter().find(|e| e.name == "startpage").unwrap();
+    let sp = ENGINES
+        .iter()
+        .find(|e| e.name == "startpage")
+        .expect("should succeed");
     assert!(sp.build_post.is_some());
-    let body = (sp.build_post.unwrap())("test query");
+    let body = (sp.build_post.expect("should succeed"))("test query");
     assert!(body.contains("query=test+query"));
     assert!(body.contains("cat=web"));
 }
@@ -718,6 +805,28 @@ fn extract_anchor_text_missing_href() {
     let html = r#"<a href="https://other.com">Other</a>"#;
     let title = extract_anchor_text(html, "https://example.com", 200);
     assert!(title.is_empty());
+}
+
+/// A real Startpage capture repeats a result's own URL across 4 `<a href="…">`
+/// occurrences per card: a textless icon wrapper, a short site-name anchor, a
+/// display-URL anchor, then the actual titled link last. The former
+/// first-occurrence-only scan hit the textless icon wrapper and returned
+/// empty, forcing the caller to fall back to a fixed-width surrounding-text
+/// window that (for this exact markup shape) bled in the PRECEDING result's
+/// own "Visit in Anonymous View" label instead of this result's real title.
+/// Regression: the real title, the last non-empty occurrence, must be
+/// returned directly.
+#[test]
+fn extract_anchor_text_skips_textless_occurrences_to_find_the_real_title() {
+    let html = concat!(
+        r#"<a href="https://example.com/x" class="favicon-link"></a>"#,
+        r#"<a href="https://example.com/x" class="wgl-site-title">Example</a>"#,
+        r#"<a href="https://example.com/x" class="wgl-display-url">https://example.com/x</a>"#,
+        r#"<a class="result-title" href="https://example.com/x">"#,
+        r#"<h2>The Real Result Title</h2></a>"#,
+    );
+    let title = extract_anchor_text(html, "https://example.com/x", 200);
+    assert_eq!(title, "The Real Result Title");
 }
 
 #[test]
@@ -939,6 +1048,89 @@ fn people_search_name_extraction_requires_on_target_relation() {
 }
 
 #[test]
+fn address_corroboration_cannot_reach_verified_on_a_surname_placename_collision() {
+    // Live-reproduced from a real "Brett Lawnton" scan's debug bundle
+    // (2026-07-15): "Lawnton" is both the subject's surname AND a real
+    // Brisbane, QLD suburb (postcode 4501). Every real-estate/reverse-lookup
+    // page ABOUT the suburb satisfies `result_names_the_subject` (the surname
+    // string appears, because it IS the suburb name) even though none of these
+    // pages are actually about the subject. ~99 such hits pushed the resulting
+    // "Lawnton, QLD" address entity to corroboration=99, class=VERIFIED in the
+    // real scan. All evidence on this path shares one literal source string
+    // ("search_engines"), so `source_count()` is always 1 and `c_effective()`
+    // equals the raw (capped) `confidence` — repetition alone must never be
+    // able to cross `Classification::VERIFIED_MIN` (confidence::VERY_HIGH).
+    let target = Target::new(TargetKind::FullName, "Brett Lawnton");
+    let mk = |n: usize| SearchResult {
+        url: format!("https://view.com.au/property/qld/lawnton-4501/listing-{n}/"),
+        title: "Property for sale".to_string(),
+        snippet: "Located in Lawnton, QLD 4501".to_string(),
+        engine: "brave",
+        query: "Brett Lawnton".to_string(),
+    };
+    let results: Vec<SearchResult> = (0..99).map(mk).collect();
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    let addr = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Address && e.value.to_lowercase().contains("lawnton"))
+        .expect("the suburb-collision address must still be extracted (it's real AU place data)");
+    assert!(
+        addr.corroboration >= 50,
+        "sanity: this test must actually exercise heavy repetition, got corroboration={}",
+        addr.corroboration
+    );
+    assert!(
+        addr.c_effective() < crate::core::entity::Classification::VERIFIED_MIN,
+        "99 same-source-type hits, all about the SUBURB not the subject, must not reach \
+         Verified via pure repetition: c_effective={} corroboration={}",
+        addr.c_effective(),
+        addr.corroboration
+    );
+}
+
+#[test]
+fn address_corroboration_counts_each_result_once_despite_two_extracted_variants() {
+    // Found in review of the fix above: `extract_addresses_from_text` deliberately
+    // emits BOTH a bare "City, STATE" and a more specific postcode-qualified
+    // "City, STATE 1234" for the SAME underlying locality when a snippet's text
+    // contains both (its own pass 3: the postcode form is "a more-specific
+    // variant of a matched City, STATE"), and `normalise_address_key`
+    // deliberately collapses both to the same dedup key. Without a per-result
+    // dedup, ONE search result yielding both variants would be counted as TWO
+    // independent corroborations (create + immediate self-merge) — silently
+    // doubling `corroboration` and the confidence-bump count for a single real
+    // hit. Two results, each with a snippet that yields both variants, must
+    // produce EXACTLY corroboration=2 (one per real result), not 4.
+    let target = Target::new(TargetKind::FullName, "Brett Lawnton");
+    let mk = |n: usize| SearchResult {
+        url: format!("https://view.com.au/property/qld/lawnton-4501/listing-{n}/"),
+        title: "Property for sale".to_string(),
+        snippet: "Located in Lawnton, QLD 4501".to_string(),
+        engine: "brave",
+        query: "Brett Lawnton".to_string(),
+    };
+    let results: Vec<SearchResult> = (0..2).map(mk).collect();
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    let addr = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Address && e.value.to_lowercase().contains("lawnton"))
+        .expect("the address must still be extracted");
+    assert_eq!(
+        addr.corroboration, 2,
+        "2 real search results, each yielding a bare + postcode-qualified variant of the \
+         SAME address, must count as 2 corroborations, not 4 (one per variant per result): {addr:?}"
+    );
+    // The postcode-qualified (more informative) variant must be the one kept.
+    assert!(
+        addr.value.to_lowercase().contains("4501")
+            || addr.raw_value.to_lowercase().contains("4501"),
+        "the postcode-qualified variant should be preferred when both are present: {addr:?}"
+    );
+}
+
+#[test]
 fn captcha_page_detection() {
     assert!(is_captcha_page(
         "<html><body>captcha-delivery.com script</body></html>"
@@ -1070,7 +1262,7 @@ fn username_scoring_term_overlap() {
     };
     let (score, conf) = score_username("jerome-despal", "soundcloud.com", &terms, &r);
     assert!(score >= 3);
-    assert!((conf - 0.55).abs() < 0.01);
+    assert!((conf - confidence::MEDIUM_HIGH).abs() < 0.01);
 }
 
 #[test]
@@ -1384,8 +1576,8 @@ fn score_username_promotes_seed_variant_over_cooccurrence() {
     let (s_variant, c_variant) = score_username("kylocool630", "x.com", &terms, &res);
     let (s_noise, c_noise) = score_username("khloekardashian", "x.com", &terms, &res);
     assert!(
-        s_variant >= 3 && (c_variant - 0.55).abs() < 1e-9,
-        "seed-variant handle should reach PROBABLE (0.55), got score={s_variant} conf={c_variant}"
+        s_variant >= 3 && (c_variant - confidence::MEDIUM_HIGH).abs() < 1e-9,
+        "seed-variant handle should reach PROBABLE (confidence::MEDIUM_HIGH), got score={s_variant} conf={c_variant}"
     );
     assert!(
         s_noise < 3 && (c_noise - 0.30).abs() < 1e-9,
@@ -1436,7 +1628,7 @@ fn confirmed_profile_corroborated_by_engines_reaches_verified() {
         "all 3 engines must be credited even though dedup kept one result"
     );
     assert!(
-        prof.c_effective() >= 0.75,
+        prof.c_effective() >= confidence::VERY_HIGH,
         "3-engine confirmed profile must be Verified, got c_eff={}",
         prof.c_effective()
     );
@@ -1619,8 +1811,8 @@ fn email_seed_emits_no_bare_external_domains() {
 #[test]
 fn build_entities_classifies_subdomain_vs_external_with_engine_corroboration() {
     // The domain branch of `build_entities` has three couplings worth pinning:
-    // a host under the target domain is a SUBDOMAIN (conf 0.70); any other
-    // registrable domain is EXTERNAL (conf 0.45); and each carries the count
+    // a host under the target domain is a SUBDOMAIN (conf confidence::HIGH_PLUS); any other
+    // registrable domain is EXTERNAL (conf confidence::LOW_MEDIUM); and each carries the count
     // of *distinct engines* that returned its URL (cross-engine corroboration,
     // the same signal the profile-URL path uses). Uses a `.com.au` target so
     // the multi-label-suffix registrable logic is exercised too.
@@ -1656,8 +1848,8 @@ fn build_entities_classifies_subdomain_vs_external_with_engine_corroboration() {
         "host under target → SUBDOMAIN tag"
     );
     assert!(
-        (sub.confidence - 0.70).abs() < 1e-9,
-        "subdomain base conf 0.70"
+        (sub.confidence - confidence::HIGH_PLUS).abs() < 1e-9,
+        "subdomain base conf confidence::HIGH_PLUS"
     );
     assert_eq!(
         sub.corroboration, 2,
@@ -1674,8 +1866,8 @@ fn build_entities_classifies_subdomain_vs_external_with_engine_corroboration() {
         "unrelated registrable → EXTERNAL tag"
     );
     assert!(
-        (ext.confidence - 0.45).abs() < 1e-9,
-        "external base conf 0.45"
+        (ext.confidence - confidence::LOW_MEDIUM).abs() < 1e-9,
+        "external base conf confidence::LOW_MEDIUM"
     );
     assert_eq!(ext.corroboration, 1, "one engine returned the external URL");
 
@@ -1722,9 +1914,9 @@ fn offtarget_repo_url_detects_project_named_after_a_term() {
 fn url_from_a_location_seed_is_quarantined_as_generic_location() {
     // Regression from a live "Haigen Bamford" scan: recursion fed the suburb
     // "Regents Park, QLD" back as an Address seed, so every suburb / real-estate
-    // page matched the place term and flooded the results at 0.50. A URL found
+    // page matched the place term and flooded the results at confidence::MEDIUM. A URL found
     // while the seed is itself a location is generic location content, not the
-    // subject's PII — it must be a quarantined candidate (0.30), below the 0.50
+    // subject's PII — it must be a quarantined candidate (0.30), below the confidence::MEDIUM
     // expansion floor, so it neither inflates results nor recurses further.
     let mk = |url: &str| SearchResult {
         url: url.to_string(),
@@ -1756,15 +1948,183 @@ fn url_from_a_location_seed_is_quarantined_as_generic_location() {
     assert!(u.has_tag("generic-location"));
     assert!(u.has_tag("candidate"));
 
-    // The SAME URL from a person seed keeps the normal 0.50 (terms would have to
+    // The SAME URL from a person seed keeps the normal confidence::MEDIUM (terms would have to
     // match; here the path contains no person term, so it simply isn't emitted —
-    // assert it is never a 0.50 PROBABLE from the location seed).
+    // assert it is never a confidence::MEDIUM PROBABLE from the location seed).
     assert!(
         !loc.entities
             .iter()
-            .any(|e| e.kind == EntityKind::Url && (e.confidence - 0.50).abs() < 1e-9),
-        "a location-seed URL must never reach the 0.50 person-PII tier"
+            .any(|e| e.kind == EntityKind::Url && (e.confidence - confidence::MEDIUM).abs() < 1e-9),
+        "a location-seed URL must never reach the confidence::MEDIUM person-PII tier"
     );
+}
+
+#[test]
+fn email_and_phone_extraction_requires_the_surname_in_the_result() {
+    // Regression from a live "Riley Morley" scan: Bing returned
+    // instagram.com/rileyj/ (an unrelated account — first name "Riley" only, no
+    // "Morley" anywhere in the bio) whose snippet happened to contain
+    // "pr@rileyjorja.com", and the unfixed code minted that as a PROBABLE
+    // (confidence::MEDIUM_PLUS+) email attributed to the subject with zero check that the result
+    // actually names them — the same first-name-collision shape the address
+    // extractor was already gated against (`result_names_the_subject`, née
+    // `location_on_subject`), just never extended to email/phone.
+    let target = Target::new(TargetKind::FullName, "Riley Morley");
+    let off_target = SearchResult {
+        url: "https://www.instagram.com/rileyj/".to_string(),
+        title: "instagram.com".to_string(),
+        snippet: "Riley (@rileyj) • Instagram photos and videos \"AU/ @remmiebyriley \
+                  pr@rileyjorja.com\" call +61 400 111 222"
+            .to_string(),
+        engine: "bing",
+        query: "\"Riley Morley\"".to_string(),
+    };
+    let results = vec![off_target];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::Email),
+        "an off-target result (no surname match) must not mint an email: {:?}",
+        res.entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email)
+            .map(|e| &e.value)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::Phone),
+        "an off-target result (no surname match) must not mint a phone either"
+    );
+
+    // The genuine case must still work: the surname present in the snippet.
+    let on_target = SearchResult {
+        url: "https://www.uml.edu/research/osp/staff/morley-riley.aspx".to_string(),
+        title: "Riley Morley | Office of Sponsored Programs | UMass Lowell".to_string(),
+        snippet: "Contact Riley Morley at riley.morley@uml.edu or +61 400 111 222".to_string(),
+        engine: "brave",
+        query: "\"Riley Morley\"".to_string(),
+    };
+    let results2 = vec![on_target];
+    let res2 = build_entities(&target, "s", &results2, &url_engine_counts(&results2));
+    assert!(
+        res2.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "riley.morley@uml.edu"),
+        "a genuine on-target result (surname present) must still mint the email: {:?}",
+        res2.entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email)
+            .map(|e| &e.value)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        res2.entities.iter().any(|e| e.kind == EntityKind::Phone),
+        "a genuine on-target result must still mint the phone"
+    );
+}
+
+#[test]
+fn email_extraction_unaffected_for_single_token_targets() {
+    // Single-token targets (email/username) are not prone to first-name
+    // collision, so the gate must stay a no-op for them — mirrors the existing
+    // guarantee already proven for address extraction.
+    let target = Target::new(TargetKind::Username, "kylo4kylo");
+    let results = vec![SearchResult {
+        url: "https://example.com/unrelated".to_string(),
+        title: "totally unrelated page".to_string(),
+        snippet: "contact someone at other@example.com".to_string(),
+        engine: "duckduckgo",
+        query: "kylo4kylo".to_string(),
+    }];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        res.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "other@example.com"),
+        "single-token targets must still extract emails regardless of surname presence"
+    );
+}
+
+#[test]
+fn location_seed_pivot_does_not_reaffirm_the_seed_at_0_82() {
+    // T2.36 regression: the engine re-queues every discovered entity as a pivot,
+    // so a breach-derived street address comes back as an Address seed. Real-estate
+    // / aggregator sites index virtually every US address, so the re-query always
+    // returned SOME result and the unconditional parent stamp flat-marked the seed
+    // at 0.82 "search-enriched" — read downstream as independent corroboration and
+    // pushing the address to VERIFIED regardless of subject relevance. A live scan
+    // showed ~19 mutually-exclusive addresses (many different US states) all at an
+    // identical 0.82 from this. A location seed must earn no self re-affirmation.
+    let target = Target::new(TargetKind::Address, "1218 E Grumling Rd, Hodges, SC 29653");
+    let mk = |url: &str| SearchResult {
+        url: url.to_string(),
+        title: "1218 E Grumling Rd, Hodges, SC 29653 | Zillow".to_string(),
+        snippet: "1218 E Grumling Rd, Hodges, SC 29653 is a house listed for sale.".to_string(),
+        engine: "duckduckgo",
+        query: "\"1218 E Grumling Rd, Hodges, SC 29653\"".to_string(),
+    };
+    let results = vec![
+        mk("https://www.zillow.com/homedetails/1218-E-Grumling-Rd-Hodges-SC-29653/"),
+        mk("https://www.realtor.com/realestateandhomes-detail/1218-E-Grumling-Rd-Hodges-SC-29653"),
+    ];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+
+    // No self-referencing parent re-affirmation was stamped.
+    assert!(
+        !res.entities.iter().any(|e| e.has_tag("search-enriched")),
+        "a location seed must not mint a search-enriched parent"
+    );
+    // Nothing is left at the flat 0.82 identity-confirmed tier.
+    assert!(
+        !res.entities
+            .iter()
+            .any(|e| (e.confidence - 0.82).abs() < 1e-9),
+        "no entity from a location-seed pivot reaches 0.82, got {:?}",
+        res.entities
+            .iter()
+            .map(|e| (e.kind.clone(), e.confidence))
+            .collect::<Vec<_>>()
+    );
+    // The seed address is not re-extracted from the aggregator snippets either
+    // (mechanism 2): a page about the address mentioning the address is not
+    // subject corroboration, so no inflated Address self-entity survives.
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::Address),
+        "the seed address must not be re-affirmed via snippet extraction"
+    );
+}
+
+#[test]
+fn identity_seed_still_gets_flat_parent_reaffirmation() {
+    // The fix must not regress the legitimate case: for a genuine identity seed
+    // (email / username / domain) "this identifier has real web presence" IS
+    // corroboration, so the parent still re-affirms it at the flat 0.82
+    // search-enriched tier — the demotion is location-seed-specific.
+    for kind in [TargetKind::Email, TargetKind::Username, TargetKind::Domain] {
+        let value = match kind {
+            TargetKind::Email => "jerome.despal@example.com",
+            TargetKind::Username => "kylo4kylo",
+            _ => "acme.com",
+        };
+        let target = Target::new(kind, value);
+        let results = vec![SearchResult {
+            url: "https://example.org/about".to_string(),
+            title: "profile".to_string(),
+            snippet: "some page".to_string(),
+            engine: "duckduckgo",
+            query: "q".to_string(),
+        }];
+        let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+        let parent = res
+            .entities
+            .iter()
+            .find(|e| e.has_tag("search-enriched"))
+            .unwrap_or_else(|| panic!("identity seed {kind:?} keeps its search-enriched parent"));
+        assert!(
+            (parent.confidence - 0.82).abs() < 1e-9,
+            "{kind:?} parent stays at 0.82, got {}",
+            parent.confidence
+        );
+    }
 }
 
 #[test]
@@ -1850,7 +2210,7 @@ fn address_normalise_strips_punctuation() {
 fn known_city_coords_gatton() {
     let coords = known_city_coords("Gatton, QLD");
     assert!(coords.is_some(), "Gatton should have known coordinates");
-    let (lat, lon) = coords.unwrap();
+    let (lat, lon) = coords.expect("should succeed");
     assert!((lat - (-27.5567)).abs() < 0.01);
     assert!((lon - 152.2767).abs() < 0.01);
 }
@@ -1928,13 +2288,16 @@ fn canonicalize_url_strips_trailing_slash() {
 fn reliable_engines_resolve_by_name() {
     // The secondary pivot + recycler passes select these engines by NAME,
     // not by `ENGINES[..]` index, so reordering/inserting into `ENGINES`
-    // can't silently repoint them. Assert all three resolve, in order —
-    // a rename/removal fails CI instead of degrading silently at runtime.
+    // can't silently repoint them. Assert both resolve, in order — a
+    // rename/removal fails CI instead of degrading silently at runtime.
     let names: Vec<&str> = reliable_engines().iter().map(|e| e.name).collect();
-    // Live scan data: metager/swisscows/dogpile are 97-100% hit / 0% blocked
-    // from DC IPs; yahoo/bing/brave get killed by SESSION_DEAD within ~400
-    // dispatches. Reliable pass now uses the DC-stable engines.
-    assert_eq!(names, vec!["metager", "swisscows", "dogpile"]);
+    // Live scan data: swisscows/dogpile are 97-100% hit / 0% blocked from DC
+    // IPs; yahoo/bing/brave get killed by SESSION_DEAD within ~400 dispatches.
+    // `metager` was demoted (T2.7 golden-fixture corpus, fourth slice): its
+    // legacy search endpoint is confirmed permanently dead (redirects to its
+    // own marketing homepage regardless of query/cookies/method), so it no
+    // longer earns a place in the guaranteed-floor set.
+    assert_eq!(names, vec!["swisscows", "dogpile"]);
 }
 
 #[test]
@@ -2090,6 +2453,45 @@ fn proven_engine_tolerates_long_block_streaks() {
 }
 
 #[test]
+fn reset_session_liveness_clears_silenced_and_proven_state_across_scans() {
+    // Regression: SESSION_EMPTY_COUNTS is process-global (shared across every
+    // scan in one `hse serve`/`hse live` process), so a fresh scan against a
+    // DIFFERENT target must not inherit a prior scan's block-streak silencing
+    // or "proven live" exemptions. Before `reset_session_liveness` was wired
+    // into the built-in module runtime's `reset_per_scan`, an engine
+    // silenced (or proven) in scan A stayed that way for every later scan in
+    // the same process, even though a fresh scan has no basis to assume the
+    // same engine will behave the same way against a new target.
+    const FAKE: &str = "__test_reset_session_liveness__";
+    SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(FAKE);
+
+    // Silence it via the unproven threshold (as scan A's block streak would).
+    for _ in 0..SESSION_DEAD_THRESHOLD {
+        record_empty(FAKE);
+    }
+    assert!(is_session_dead(FAKE), "setup: engine must be silenced");
+
+    reset_session_liveness();
+
+    assert!(
+        !is_session_dead(FAKE),
+        "a per-scan reset must clear a prior scan's silencing"
+    );
+    assert!(
+        SESSION_EMPTY_COUNTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty(),
+        "reset must clear the ENTIRE map, not just the one test engine \
+         (a real scan boundary has no way to enumerate every engine name \
+         some earlier scan may have touched)"
+    );
+}
+
+#[test]
 fn pivot_engine_set_unions_reliable_core_with_proven_and_is_deterministic() {
     use std::collections::BTreeSet;
 
@@ -2108,7 +2510,7 @@ fn pivot_engine_set_unions_reliable_core_with_proven_and_is_deterministic() {
     // Proven engines union in alongside the reliable core.
     let proven: BTreeSet<&'static str> = ["yahoo", "bing", "ecosia"].into_iter().collect();
     let names: Vec<&str> = pivot_engine_set(&proven).iter().map(|e| e.name).collect();
-    for r in ["metager", "swisscows", "dogpile"] {
+    for r in ["swisscows", "dogpile"] {
         assert!(names.contains(&r), "reliable core engine {r} must remain");
     }
     for p in ["yahoo", "bing", "ecosia"] {

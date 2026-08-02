@@ -1,13 +1,21 @@
 //! Bluetooth scanner for signal_radar — parses `termux-bluetooth-scaninfo`
-//! output with `hcitool scan` as a fallback.
+//! output.
+//!
+//! No `hcitool scan` fallback: this project's exclusive target is a no-root
+//! Termux/Android install, where classic-BT `hcitool` is neither packaged
+//! (no `bluez` in Termux's repo) nor usable even if sideloaded (an HCI
+//! inquiry needs a raw Bluetooth socket/ioctl stock Android gates behind
+//! privileges Termux cannot grant without root) — the fallback could never
+//! actually fire on the real target device, only ever silently no-op.
 
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
+    error::Result,
     module::ModuleResult,
 };
-use crate::util::termux::termux_cmd;
 
 use super::SRC;
 
@@ -22,11 +30,12 @@ pub(super) struct BtDevice {
 }
 
 /// Parse the JSON array from `termux-bluetooth-scaninfo`.
-pub(super) fn parse_bt_json(stdout: &[u8], scan_id: &str) -> ModuleResult {
-    let devices: Vec<BtDevice> = match serde_json::from_slice(stdout) {
-        Ok(v) => v,
-        Err(_) => return ModuleResult::new(),
-    };
+pub(super) fn parse_bt_json(stdout: &[u8], scan_id: &str) -> Result<ModuleResult> {
+    if super::is_blank(stdout) {
+        return Ok(ModuleResult::new());
+    }
+    let devices: Vec<BtDevice> = serde_json::from_slice(stdout)
+        .map_err(|e| super::unparseable(super::Sensor::BluetoothScan, &e))?;
 
     let mut result = ModuleResult::with_capacity(devices.len());
 
@@ -39,82 +48,52 @@ pub(super) fn parse_bt_json(stdout: &[u8], scan_id: &str) -> ModuleResult {
         let bt_type = dev.bt_type.as_deref().unwrap_or("unknown");
         let bond_state = dev.bond_state.as_deref().unwrap_or("unknown");
 
-        let mut e = Entity::new(EntityKind::MacAddress, &dev.address, 0.80, scan_id);
+        let mut e = Entity::new(
+            EntityKind::MacAddress,
+            &dev.address,
+            confidence::HIGH_PLUSPLUS,
+            scan_id,
+        );
         e.tag("bluetooth");
         e.tag(format!("bt-{}", bt_type.to_lowercase()));
         e.tag(format!("bond:{}", bond_state.to_lowercase()));
 
-        e.add_evidence(
-            Evidence::new(SRC, format!("Bluetooth device: {name}"))
-                .with_attr("name", name)
-                .with_attr("address", &dev.address)
-                .with_attr("type", bt_type)
-                .with_attr("bond_state", bond_state),
-        );
+        let mut ev = Evidence::new(SRC, format!("Bluetooth device: {name}"))
+            .with_attr("name", name)
+            .with_attr("address", &dev.address)
+            .with_attr("type", bt_type)
+            .with_attr("bond_state", bond_state);
+
+        // OUI classification — the same primitive the WiGLE path applies, so a
+        // radar pin carries the vendor + device class where the address is real
+        // hardware, and is flagged `randomized` (not attributed to any vendor)
+        // where it is a locally-administered privacy address. This is the signal
+        // AU-122 partitions on: a randomized MAC is a rotating throwaway, not a
+        // followable device, and must never be plotted as one.
+        if let Some(oui) = crate::util::oui::classify_mac(&dev.address) {
+            e.tag(format!("vendor:{}", oui.vendor));
+            e.tag(format!("device:{}", oui.class.as_str()));
+            let trackable = crate::util::oui::is_locally_administered(&dev.address) == Some(false);
+            e.tag(if trackable { "trackable" } else { "randomized" });
+            ev = ev
+                .with_attr("vendor", oui.vendor)
+                .with_attr("device_class", oui.class.as_str())
+                .with_attr("trackable", trackable.to_string());
+        }
+
+        e.add_evidence(ev);
 
         result.push(e);
     }
 
-    result
+    Ok(result)
 }
 
-/// Parse plain-text `hcitool scan` output (fallback).
-///
-/// Each data line is: `\t<MAC>\t<name>`
-pub(super) fn parse_hcitool(stdout: &[u8], scan_id: &str) -> ModuleResult {
-    let text = match std::str::from_utf8(stdout) {
-        Ok(s) => s,
-        Err(_) => return ModuleResult::new(),
-    };
-
-    let mut result = ModuleResult::new();
-
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("Scanning") {
-            continue;
-        }
-        let mut parts = trimmed.splitn(2, '\t');
-        let Some(addr) = parts.next() else { continue };
-        let name = parts.next().unwrap_or("<unknown>").trim();
-        let addr = addr.trim();
-
-        if addr.is_empty() || addr == "00:00:00:00:00:00" {
-            continue;
-        }
-
-        let mut e = Entity::new(EntityKind::MacAddress, addr, 0.80, scan_id);
-        e.tag("bluetooth");
-        e.tag("bt-classic");
-        e.tag("bond:none");
-
-        e.add_evidence(
-            Evidence::new(SRC, format!("Bluetooth device (hcitool): {name}"))
-                .with_attr("name", name)
-                .with_attr("address", addr)
-                .with_attr("source", "hcitool"),
-        );
-
-        result.push(e);
-    }
-
-    result
-}
-
-/// Run bluetooth scan: try termux-bluetooth-scaninfo first; fall back to
-/// `hcitool scan` if no results.
-pub(super) async fn scan_bluetooth(scan_id: &str) -> ModuleResult {
-    if let Some(stdout) = termux_cmd("termux-bluetooth-scaninfo", &[], 10_000).await {
-        let result = parse_bt_json(&stdout, scan_id);
-        if !result.is_empty() {
-            return result;
-        }
-    }
-
-    // Fallback: hcitool scan (classic BT only, requires hcitools installed)
-    if let Some(stdout) = termux_cmd("hcitool", &["scan", "--flush"], 10_000).await {
-        return parse_hcitool(&stdout, scan_id);
-    }
-
-    ModuleResult::new()
+/// Run bluetooth scan via `termux-bluetooth-scaninfo` (the Termux:API BLE/BT
+/// scan shim — no root, no raw socket).
+pub(super) async fn scan_bluetooth(scan_id: &str) -> Result<ModuleResult> {
+    crate::modules::termux_sensor::read_and_parse(super::Sensor::BluetoothScan, |stdout| {
+        parse_bt_json(stdout, scan_id)
+    })
+    .await
 }

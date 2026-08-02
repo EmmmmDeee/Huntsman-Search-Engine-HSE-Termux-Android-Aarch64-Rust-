@@ -20,10 +20,12 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence, unix_now},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
+    timeline::utc_date,
 };
 
 const SRC: &str = "discord_snowflake";
@@ -37,10 +39,10 @@ const DAY_SECS: i64 = 86_400;
 
 /// Confidence for a creation date derived from a value already identified as a
 /// Discord ID upstream (a `discord:`-prefixed handle from the extractor).
-const PREFIXED_CONF: f64 = 0.80;
+const PREFIXED_CONF: f64 = confidence::HIGH_PLUSPLUS;
 /// Confidence for a bare numeric handle that is a valid, plausible, non-Steam
 /// snowflake — likely Discord, but it carried no explicit Discord context.
-const BARE_CONF: f64 = 0.60;
+const BARE_CONF: f64 = confidence::MEDIUM_PLUS;
 
 pub struct DiscordSnowflake;
 
@@ -51,7 +53,7 @@ impl Module for DiscordSnowflake {
     }
 
     fn description(&self) -> &'static str {
-        "Offline Discord account-creation date decoded from a snowflake ID (no API/key)"
+        "Discord snowflake decode — offline recovery of an account-creation date from a snowflake ID (no API/key)"
     }
 
     fn priority(&self) -> u8 {
@@ -150,22 +152,6 @@ fn snowflake_candidate(v: &str) -> Option<(u64, bool)> {
         return None;
     }
     digits.parse::<u64>().ok().map(|id| (id, prefixed))
-}
-
-/// UTC `YYYY-MM-DD` from Unix seconds — Hinnant's `civil_from_days`. Pure,
-/// dependency-free, deterministic (mirrors `core::timeline`'s proven inverse).
-fn utc_date(ts: i64) -> String {
-    let z = ts.div_euclid(DAY_SECS) + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02}")
 }
 
 #[cfg(test)]

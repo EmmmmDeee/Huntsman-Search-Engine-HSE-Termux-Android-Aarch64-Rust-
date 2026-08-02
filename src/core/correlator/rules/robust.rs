@@ -29,11 +29,12 @@ use crate::core::relation::{
 /// identities mutually reachable. Always High severity: a redundantly-bound
 /// cluster is the strongest single-identity finding the graph can produce.
 pub(in crate::core::correlator) fn rule_au_071_robust_identity_cluster(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const MAX_HOPS: usize = 4;
     const MIN_MEMBERS: usize = 3;
     // The same Probable floor AU-067/AU-070 resolve under, so the cluster set and
@@ -142,7 +143,7 @@ mod tests {
         ];
         let ents = [email.clone(), uname.clone(), person.clone(), d1, d2];
 
-        let out = rule_au_071_robust_identity_cluster(&ents, &rels, "s", 0);
+        let out = rule_au_071_robust_identity_cluster(&RuleContext::new(&ents), &rels, "s", 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rule_id, "AU-071");
         assert_eq!(out[0].severity, Severity::High);
@@ -161,8 +162,13 @@ mod tests {
         let hub = mk(EntityKind::Domain, "x.com");
         let rels = [rel(&email, &hub), rel(&uname, &hub), rel(&person, &hub)];
         assert!(
-            rule_au_071_robust_identity_cluster(&[email, uname, person, hub], &rels, "s", 0)
-                .is_empty(),
+            rule_au_071_robust_identity_cluster(
+                &RuleContext::new(&[email, uname, person, hub]),
+                &rels,
+                "s",
+                0
+            )
+            .is_empty(),
             "a star cluster hangs on one broker — not robust"
         );
     }

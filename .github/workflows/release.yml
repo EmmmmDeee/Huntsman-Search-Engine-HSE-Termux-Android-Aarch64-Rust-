@@ -29,18 +29,29 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to create/attach the binary to (e.g. v1.4.0)"
+        # No default on purpose: a hardcoded example here (previously
+        # "v1.4.0") silently goes stale every time Cargo.toml's version bumps
+        # — GitHub pre-fills the dispatch form with it, so an operator who
+        # doesn't notice/clear it republishes to the WRONG tag. Forcing an
+        # explicit value every run can't rot.
+        description: "Release tag to create/attach the binary to (e.g. v1.13.0)"
         required: true
-        default: "v1.4.0"
 
 permissions:
   contents: write # create the tag + create/upload to the GitHub Release
 
-# Serialise per ref so two quick pushes (or a push landing mid-build) can't race
-# to create the same tag/release. Don't cancel an in-flight publish — let it
-# finish; a queued follow-up no-ops once the version's tag exists.
+# Serialise ALL release runs (one group for the whole workflow, NOT per-ref) so
+# they can't race to build + create + upload the same release. A version-bump
+# push fires two runs with DIFFERENT refs for the SAME version — the branch push
+# (refs/heads/main) and, with --follow-tags, the tag push (refs/tags/v<ver>). A
+# per-ref group put those in separate lanes, so both cross-built and raced the
+# asset upload to one release. A single group makes the second queue behind the
+# first; don't cancel an in-flight publish — let it finish, and the queued
+# follow-up no-ops once the version's tag exists (exactly as intended). Distinct
+# versions serialise too, but releases are infrequent and the build cost is the
+# same, so correctness wins over the lost parallelism.
 concurrency:
-  group: release-${{ github.workflow }}-${{ github.ref }}
+  group: release-${{ github.workflow }}
   cancel-in-progress: false
 
 jobs:
@@ -117,25 +128,30 @@ jobs:
           # not-yet-existent tag would fail the run.)
           ref: ${{ (github.event_name == 'push' && github.ref_type == 'tag') && github.ref_name || github.sha }}
 
+      # Pinned to the same literal version as rust-toolchain.toml / ci.yml —
+      # `@stable` here would still transparently end up building with the
+      # rust-toolchain.toml-pinned version anyway (rustup auto-activates an
+      # ambient rust-toolchain.toml above `rustup default` the moment cargo
+      # runs in this checkout), but it wastefully downloads an unused
+      # `stable` toolchain first and leaves this job's declared version
+      # implicit rather than matching ci.yml's explicit pin.
       - name: Install Rust + aarch64 Android target
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
         with:
           targets: aarch64-linux-android
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Setup Android NDK aarch64 cross-compile env
+        uses: ./.github/actions/setup-ndk-aarch64
+
       - name: Build release binary (aarch64-linux-android)
-        env:
-          ANDROID_API: "24"
+        run: cargo build --release --locked --bin hse --target aarch64-linux-android
+
+      - name: Strip release binary
         run: |
           TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          test -x "$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang" \
-            || { echo "NDK aarch64 clang not found under $TOOLCHAIN"; ls "$TOOLCHAIN" | head; exit 1; }
-          export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang"
-          export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
-          cargo build --release --locked --bin hse --target aarch64-linux-android
           # The release profile already strips (Cargo.toml: strip = true), but
           # run llvm-strip too in case a future profile change drops it.
           "$TOOLCHAIN/llvm-strip" target/aarch64-linux-android/release/hse || true
@@ -152,6 +168,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.resolve.outputs.tag }}
+          # Without this, action-gh-release creates a not-yet-existing tag
+          # against the repo's DEFAULT BRANCH tip (its own documented
+          # behaviour), not the commit this job actually built — contradicting
+          # the checkout step's comment above ("the publish step creates it
+          # from this same commit"). Pins the tag (and its auto-generated
+          # source zip/tarball) to the exact commit that was cross-compiled,
+          # closing that gap for both workflow_dispatch against a non-default
+          # branch/older tag and the rarer main-push race against a later commit.
+          target_commitish: ${{ github.sha }}
           files: |
             dist/hse-aarch64-linux-android
             dist/hse-aarch64-linux-android.sha256

@@ -1,10 +1,12 @@
 //! URLScan.io domain intelligence — recent scans, resolved IPs, and verdicts.
 //!
-//! Endpoint: `GET https://urlscan.io/api/v1/search/?q=domain:{domain}&size=10`
-//!           `GET https://urlscan.io/api/v1/search/?q=page.url:{url}&size=5`
+//! Endpoint: `GET https://urlscan.io/api/v1/search/?q=domain:{domain}&size=100`
+//!           `GET https://urlscan.io/api/v1/search/?q=page.url:{url}&size=100`
 //!
 //! No API key required for the search endpoint. Anonymous queries are
-//! rate-limited to ~100/min by URLScan.io. The response carries per-scan
+//! rate-limited to ~100/min by URLScan.io; an optional pooled `HUNTSMAN_URLSCAN_KEY`
+//! (sent as the `API-Key` header) raises that limit for large fan-outs. The
+//! page size is the keyless per-page maximum (100). The response carries per-scan
 //! metadata (page URL, domain, resolved IP, country, server header) and
 //! community/engine verdicts. We surface aggregate intel (scan count,
 //! unique IPs, countries, server types) and tag the target as
@@ -16,14 +18,57 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{fetch_json, urlencode};
+use crate::util::http::{fetch_json, fetch_keyed_json, urlencode};
 
 const SRC: &str = "urlscan";
+/// Optional URLScan.io API key. The search endpoint works keyless (~100/min),
+/// but a pooled key raises the rate limit and result quota — worthwhile once a
+/// scan fans out across many domains/IPs. Sent as URLScan's `API-Key` header.
+const KEY_ENV: &str = "HUNTSMAN_URLSCAN_KEY";
+const KEY_HEADER: &str = "API-Key";
+
+/// URLScan.io search page size. Requested at the API's keyless per-page maximum
+/// (100, verified live — larger values are silently capped to 100): the search
+/// is ONE request regardless, so asking for 100 instead of 10 surfaces up to
+/// 10× more resolved IPs / hosting domains / scanned URLs at no extra
+/// request or rate-limit cost. The whole-corpus `total` is still reported
+/// separately, so a target scanned more than 100 times is not understated.
+const PAGE_SIZE: u32 = 100;
+
+/// Build the URLScan.io search URL for a target. **Pure** so the query shape
+/// (field selector + page size) is unit-tested without a live endpoint. Returns
+/// `None` for a kind URLScan cannot be keyed on.
+fn build_query(kind: TargetKind, value: &str) -> Option<String> {
+    let field = match kind {
+        TargetKind::Domain => "domain",
+        TargetKind::Url => "page.url",
+        TargetKind::IpAddress => "page.ip",
+        _ => return None,
+    };
+    Some(format!(
+        "https://urlscan.io/api/v1/search/?q={field}:\"{}\"&size={PAGE_SIZE}",
+        urlencode(value)
+    ))
+}
+
+/// URLScan search fetch with URLScan's *optional-key* auth. With a pooled
+/// [`KEY_ENV`] key the request carries the `API-Key` header via the shared
+/// keyed-fetch helper (401/403/429 burn the key); without one it falls back to
+/// the exact keyless `fetch_json` path, so the free tier is unchanged. A keyless
+/// search always returns a body (`Some`), never `None`.
+async fn urlscan_fetch(ctx: &ModuleContext, url: &str) -> Result<Option<SearchResp>> {
+    if ctx.key_opt(KEY_ENV).is_some() {
+        fetch_keyed_json(ctx, SRC, url, KEY_ENV, KEY_HEADER).await
+    } else {
+        fetch_json(&ctx.http, SRC, url).await.map(Some)
+    }
+}
 
 pub struct UrlScan;
 
@@ -33,6 +78,16 @@ pub struct UrlScan;
 struct SearchResp {
     #[serde(default)]
     results: Vec<ScanResult>,
+    /// URLScan.io's true match count. The query caps `results` to one page
+    /// (`size=5`/`10`), so a heavily-scanned target's real footprint exceeds
+    /// what's returned — this is the field that lets the module report the
+    /// true total instead of fabricating one from the truncated page (the
+    /// same bug class already fixed in `netlas`/`psbdmp`/`pypi_user`/
+    /// `rubygems_user`). Absent on some older API responses, so it's
+    /// optional and falls back to the page length — mirrors `dehashed`'s
+    /// identical `total`-with-fallback pattern.
+    #[serde(default)]
+    total: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -55,6 +110,14 @@ struct PageInfo {
     country: Option<String>,
     #[serde(default)]
     server: Option<String>,
+    /// The announcing ASN of the scanned page's IP (`"AS13335"`) — the hosting
+    /// network operator, a pivot the module used to discard.
+    #[serde(default)]
+    asn: Option<String>,
+    /// The reverse-DNS (PTR) hostname of the page IP — a domain edge distinct
+    /// from `domain` (which is the requested host, not the resolved PTR).
+    #[serde(default)]
+    ptr: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -72,7 +135,7 @@ impl Module for UrlScan {
     }
 
     fn description(&self) -> &'static str {
-        "URLScan.io domain intelligence: recent scans, IPs, and verdicts"
+        "URLScan.io domain recon — surfaces recent scans, resolved IPs, and verdicts"
     }
 
     fn priority(&self) -> u8 {
@@ -111,72 +174,86 @@ impl Module for UrlScan {
             // attack-surface pivots the module used to discard.
             EntityKind::Domain,
             EntityKind::Url,
+            // Announcing ASN of the scanned pages' IPs.
+            EntityKind::Asn,
         ];
         KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let query = match target.kind {
-            TargetKind::Domain => format!(
-                "https://urlscan.io/api/v1/search/?q=domain:\"{}\"&size=10",
-                urlencode(&target.value)
-            ),
-            TargetKind::Url => format!(
-                "https://urlscan.io/api/v1/search/?q=page.url:\"{}\"&size=5",
-                urlencode(&target.value)
-            ),
-            TargetKind::IpAddress => format!(
-                "https://urlscan.io/api/v1/search/?q=page.ip:\"{}\"&size=10",
-                urlencode(&target.value)
-            ),
-            _ => return Ok(ModuleResult::new()),
+        let Some(query) = build_query(target.kind, &target.value) else {
+            return Ok(ModuleResult::new());
         };
 
-        let data: SearchResp = fetch_json(&ctx.http, SRC, &query).await?;
+        let Some(data) = urlscan_fetch(ctx, &query).await? else {
+            return Ok(ModuleResult::new());
+        };
 
         if data.results.is_empty() {
             return Ok(ModuleResult::new());
         }
 
+        // True total, not the page-capped count: `data.total` (when present)
+        // reflects URLScan.io's whole match count, so it doesn't understate
+        // a heavily-scanned target's real footprint the way `results.len()`
+        // (the current page) would.
+        let total_matches = data.total.unwrap_or(data.results.len() as u64);
         let intel = summarize(&data.results);
 
-        // ── Build target entity + aggregate evidence ────────────────────────
-        let confidence = if intel.any_malicious { 0.88 } else { 0.70 };
-        let mut entity = target.to_entity(confidence, &ctx.scan_id);
-        entity.tag("urlscan");
-        if intel.any_malicious {
-            entity.tag("urlscan-malicious");
-        }
-
-        let mut ev = Evidence::new(
-            SRC,
-            format!(
-                "URLScan.io: {} recent scan(s), {} unique IP(s)",
-                intel.scan_count,
-                intel.unique_ips.len()
-            ),
-        )
-        .with_attr("scan_count", intel.scan_count.to_string())
-        .with_attr("unique_ips", intel.unique_ips.len().to_string());
-        if !intel.countries.is_empty() {
-            let list: Vec<&str> = intel.countries.iter().map(String::as_str).collect();
-            ev = ev.with_attr("countries", list.join(", "));
-        }
-        if !intel.servers.is_empty() {
-            // Full-fidelity policy: every distinct server string observed.
-            let list: Vec<&str> = intel.servers.iter().map(String::as_str).collect();
-            ev = ev.with_attr("servers", list.join(", "));
-        }
-        if intel.any_malicious {
-            ev = ev.with_attr("malicious_verdict", "true");
-        }
-        entity.add_evidence(ev);
-
+        let entity = build_target_entity(target, &intel, total_matches, &ctx.scan_id);
         let mut result = ModuleResult::new();
         result.push(entity);
         result.extend(child_entities(&intel, &target.value, &ctx.scan_id));
         Ok(result)
     }
+}
+
+/// Build the target entity + aggregate evidence. **Pure** (no IO), so the
+/// true-total-vs-shown distinction is unit-tested directly without a live
+/// URLScan.io response.
+fn build_target_entity(
+    target: &Target,
+    intel: &UrlScanIntel,
+    total_matches: u64,
+    scan_id: &str,
+) -> Entity {
+    let confidence = if intel.any_malicious {
+        confidence::EXPERT
+    } else {
+        confidence::HIGH_PLUS
+    };
+    let mut entity = target.to_entity(confidence, scan_id);
+    entity.tag("urlscan");
+    if intel.any_malicious {
+        entity.tag("urlscan-malicious");
+    }
+
+    let mut ev = Evidence::new(
+        SRC,
+        format!(
+            "URLScan.io: {} scan(s) total ({} shown), {} unique IP(s)",
+            total_matches,
+            intel.scan_count,
+            intel.unique_ips.len()
+        ),
+    )
+    .with_attr("scan_count", total_matches.to_string())
+    .with_attr("scans_shown", intel.scan_count.to_string())
+    .with_attr("unique_ips", intel.unique_ips.len().to_string());
+    if !intel.countries.is_empty() {
+        let list: Vec<&str> = intel.countries.iter().map(String::as_str).collect();
+        ev = ev.with_attr("countries", list.join(", "));
+    }
+    if !intel.servers.is_empty() {
+        // Full-fidelity policy: every distinct server string observed.
+        let list: Vec<&str> = intel.servers.iter().map(String::as_str).collect();
+        ev = ev.with_attr("servers", list.join(", "));
+    }
+    if intel.any_malicious {
+        ev = ev.with_attr("malicious_verdict", "true");
+    }
+    entity.add_evidence(ev);
+    entity
 }
 
 /// Aggregated, deduplicated intel across a URLScan.io search response. **Pure.**
@@ -188,6 +265,10 @@ struct UrlScanIntel {
     domains: BTreeSet<String>,
     /// Distinct scanned page URLs.
     urls: BTreeSet<String>,
+    /// Announcing ASNs (`"AS13335"`) of the scanned pages' IPs.
+    asns: BTreeSet<String>,
+    /// Reverse-DNS (PTR) hostnames of the scanned pages' IPs.
+    ptrs: BTreeSet<String>,
     scan_count: usize,
     any_malicious: bool,
 }
@@ -210,6 +291,8 @@ fn summarize(results: &[ScanResult]) -> UrlScanIntel {
         servers: field(|p| p.server.as_deref()),
         domains: field(|p| p.domain.as_deref()),
         urls: field(|p| p.url.as_deref()),
+        asns: field(|p| p.asn.as_deref()),
+        ptrs: field(|p| p.ptr.as_deref()),
         scan_count: results.len(),
         any_malicious: results
             .iter()
@@ -219,8 +302,9 @@ fn summarize(results: &[ScanResult]) -> UrlScanIntel {
 }
 
 /// Child entities for a URLScan.io result: the resolved IPs, hosting countries,
-/// associated domains/subdomains, and scanned URLs. **Pure** (no IO) so the
-/// dedup, validity gates and target-echo suppression are unit-tested directly.
+/// associated domains/subdomains, scanned URLs, announcing ASNs, and reverse-DNS
+/// (PTR) hosts. **Pure** (no IO) so the dedup, validity gates and target-echo
+/// suppression are unit-tested directly.
 fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Vec<Entity> {
     let mut out: Vec<Entity> = Vec::new();
     let target_lc = target_value.trim().to_ascii_lowercase();
@@ -232,7 +316,7 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
             .iter()
             .filter(|ip| ip.parse::<std::net::IpAddr>().is_ok())
             .map(|ip| {
-                let mut e = Entity::new(EntityKind::IpAddress, ip, 0.65, scan_id);
+                let mut e = Entity::new(EntityKind::IpAddress, ip, confidence::HIGH, scan_id);
                 e.tag("urlscan");
                 e.add_evidence(Evidence::new(
                     SRC,
@@ -244,7 +328,7 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
 
     // Hosting countries → geo-hint Address + optional Coordinates.
     out.extend(intel.countries.iter().flat_map(|country| {
-        let mut e = Entity::new(EntityKind::Address, country, 0.50, scan_id);
+        let mut e = Entity::new(EntityKind::Address, country, confidence::MEDIUM, scan_id);
         e.tag("urlscan");
         e.tag("geoint");
         e.add_evidence(Evidence::new(
@@ -253,7 +337,12 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
         ));
         let coord = crate::util::city_coords::city_coords(country).map(|(lat, lon)| {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.40, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::LOW,
+                scan_id,
+            );
             c.tag("urlscan");
             c.tag("addr-derived");
             c.tag("geoint");
@@ -275,7 +364,7 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
             .iter()
             .filter(|d| d.contains('.') && d.to_ascii_lowercase() != target_lc)
             .map(|d| {
-                let mut e = Entity::new(EntityKind::Domain, d, 0.55, scan_id);
+                let mut e = Entity::new(EntityKind::Domain, d, confidence::MEDIUM_HIGH, scan_id);
                 e.tag("urlscan");
                 e.tag("resolved-domain");
                 e.add_evidence(Evidence::new(
@@ -290,7 +379,7 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
     // urlscan observed for the target page becomes a pivot, never a capped subset
     // (the set is bounded by urlscan's own per-scan response).
     out.extend(intel.urls.iter().filter(|u| u.len() >= 4).map(|u| {
-        let mut e = Entity::new(EntityKind::Url, u, 0.50, scan_id);
+        let mut e = Entity::new(EntityKind::Url, u, confidence::MEDIUM, scan_id);
         e.tag("urlscan");
         e.add_evidence(Evidence::new(
             SRC,
@@ -298,6 +387,54 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
         ));
         e
     }));
+
+    // Announcing ASNs of the scanned pages' IPs (`"AS13335"`). Validate the
+    // `AS<digits>` shape so a malformed/empty field never becomes a junk pivot,
+    // and re-emit canonically (`AS` + digits) regardless of source casing.
+    out.extend(
+        intel
+            .asns
+            .iter()
+            .filter_map(|a| {
+                a.strip_prefix("AS")
+                    .or_else(|| a.strip_prefix("as"))
+                    .filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+            })
+            .map(|digits| {
+                let asn = format!("AS{digits}");
+                let mut e = Entity::new(EntityKind::Asn, &asn, confidence::MEDIUM_HIGH, scan_id);
+                e.tag("urlscan");
+                e.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Announcing ASN seen in URLScan.io scans of {target_value}"),
+                ));
+                e
+            }),
+    );
+
+    // Reverse-DNS (PTR) hostnames → Domain pivots, held to the same validity gate
+    // as resolved domains (dotted, non-IP, not the seed echo).
+    out.extend(
+        intel
+            .ptrs
+            .iter()
+            .map(|p| p.trim().trim_end_matches('.'))
+            .filter(|p| {
+                p.contains('.')
+                    && p.parse::<std::net::IpAddr>().is_err()
+                    && p.to_ascii_lowercase() != target_lc
+            })
+            .map(|p| {
+                let mut e = Entity::new(EntityKind::Domain, p, confidence::MEDIUM_HIGH, scan_id);
+                e.tag("urlscan");
+                e.tag("ptr");
+                e.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Reverse-DNS host seen in URLScan.io scans of {target_value}"),
+                ));
+                e
+            }),
+    );
 
     out
 }

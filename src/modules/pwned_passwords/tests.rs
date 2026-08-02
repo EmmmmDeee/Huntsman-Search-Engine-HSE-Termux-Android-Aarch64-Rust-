@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::entity::EntityKind;
+use crate::core::{confidence, entity::EntityKind};
 
     #[test]
     fn accepts_email_and_username() {
@@ -64,12 +64,12 @@ use crate::core::entity::EntityKind;
 
     #[test]
     fn confidence_bands_step_with_count() {
-        assert!((confidence_for(1) - 0.70).abs() < 1e-9);
-        assert!((confidence_for(9) - 0.70).abs() < 1e-9);
-        assert!((confidence_for(10) - 0.80).abs() < 1e-9);
-        assert!((confidence_for(99) - 0.80).abs() < 1e-9);
-        assert!((confidence_for(100) - 0.90).abs() < 1e-9);
-        assert!((confidence_for(50_000) - 0.90).abs() < 1e-9);
+        assert!((confidence_for(1) - confidence::HIGH_PLUS).abs() < 1e-9);
+        assert!((confidence_for(9) - confidence::HIGH_PLUS).abs() < 1e-9);
+        assert!((confidence_for(10) - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
+        assert!((confidence_for(99) - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
+        assert!((confidence_for(100) - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
+        assert!((confidence_for(50_000) - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
     }
 
     // ── build_entities (pure) ───────────────────────────────────────────
@@ -84,7 +84,7 @@ use crate::core::entity::EntityKind;
         // construction, so both value and raw_value are the canonical form here.
         assert_eq!(e.kind, EntityKind::Email);
         assert_eq!(e.raw_value, "test@example.com");
-        assert!((e.confidence - 0.90).abs() < 1e-9, "5727 ≥ 100 ⇒ 0.90");
+        assert!((e.confidence - confidence::VERY_HIGH_PLUS).abs() < 1e-9, "5727 ≥ 100 ⇒ confidence::VERY_HIGH_PLUS");
         assert!(e.has_tag("pwned-password") && e.has_tag("breach"));
 
         let ev = &e.evidence[0];
@@ -99,7 +99,7 @@ use crate::core::entity::EntityKind;
         let target = Target::new(TargetKind::Username, "alice");
         let e = build_entities(&target, 3, "ABCDE", "scan").remove(0);
         assert_eq!(e.kind, EntityKind::Username);
-        assert!((e.confidence - 0.70).abs() < 1e-9, "3 < 10 ⇒ 0.70");
+        assert!((e.confidence - confidence::HIGH_PLUS).abs() < 1e-9, "3 < 10 ⇒ confidence::HIGH_PLUS");
     }
 
     #[test]
@@ -108,4 +108,65 @@ use crate::core::entity::EntityKind;
         // entity (the gate lives in the builder, so it is tested here).
         let target = Target::new(TargetKind::Email, "x@y.com");
         assert!(build_entities(&target, 0, "5BAA6", "scan").is_empty());
+    }
+
+    // ── fetch_range (T2.116): a non-2xx must not read as "not pwned" ────
+
+    /// A one-shot local HTTP server that always answers with `status` and
+    /// `body` — used to give `fetch_range` a real (not mocked) transport to
+    /// hit so its failure classification is exercised end to end (the same
+    /// pattern `ip_reputation::tests::serve_once` uses).
+    async fn serve_once(status: u16, body: &'static [u8]) -> std::net::SocketAddr {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("should succeed");
+        let addr = listener.local_addr().expect("should succeed");
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let reason = if status == 200 { "OK" } else { "Error" };
+            let head = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(body).await;
+            let _ = sock.flush().await;
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn fetch_range_errors_on_a_rate_limit_status() {
+        // T2.116 regression: previously any non-2xx status silently became
+        // Ok(empty) — indistinguishable from "this credential was never
+        // seen in a breach."
+        let addr = serve_once(429, b"rate limited").await;
+        let client = reqwest::Client::new();
+        let res = fetch_range(&client, &format!("http://{addr}/")).await;
+        assert!(
+            res.is_err(),
+            "a 429 from the k-Anonymity range endpoint must propagate as an error"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_range_errors_on_a_server_outage_status() {
+        let addr = serve_once(503, b"upstream down").await;
+        let client = reqwest::Client::new();
+        let res = fetch_range(&client, &format!("http://{addr}/")).await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_range_returns_the_body_on_success() {
+        let body = b"011053FD0102E94D6AE2F8B83D76FAF94F6:5727\r\n";
+        let addr = serve_once(200, body).await;
+        let client = reqwest::Client::new();
+        let got = fetch_range(&client, &format!("http://{addr}/"))
+            .await
+            .expect("a 200 response must succeed");
+        assert!(got.contains("5727"));
     }

@@ -9,7 +9,7 @@ use crate::core::{
 
 #[test]
 fn au_cctld_detected() {
-    let geo = infer_geo_from_email_domain("company.com.au").unwrap();
+    let geo = infer_geo_from_email_domain("company.com.au").expect("should succeed");
     assert_eq!(geo.region, "Australia");
 }
 
@@ -20,14 +20,14 @@ fn generic_domain_returns_none() {
 
 #[test]
 fn bigpond_is_australian() {
-    let (provider, region) = detect_corporate_provider("bigpond.com").unwrap();
+    let (provider, region) = detect_corporate_provider("bigpond.com").expect("should succeed");
     assert_eq!(region, "Australia");
     assert!(provider.contains("BigPond"));
 }
 
 #[test]
 fn bt_is_uk() {
-    let (_, region) = detect_corporate_provider("btinternet.com").unwrap();
+    let (_, region) = detect_corporate_provider("btinternet.com").expect("should succeed");
     assert_eq!(region, "United Kingdom");
 }
 
@@ -36,7 +36,7 @@ fn y7mail_is_australian() {
     // Yahoo7 (y7mail.com) is a `.com` AU webmail brand, so — like bigpond.com —
     // it needs an explicit REGIONAL_PROVIDERS entry to carry an Australian geo
     // signal, since the `.com.au` TLD rule can't reach it.
-    let (provider, region) = detect_corporate_provider("y7mail.com").unwrap();
+    let (provider, region) = detect_corporate_provider("y7mail.com").expect("should succeed");
     assert_eq!(region, "Australia");
     assert!(provider.contains("Yahoo7"));
 }
@@ -108,9 +108,8 @@ async fn skips_consumer_providers() {
         http: reqwest::Client::new(),
         keys: Default::default(),
         cancel: Default::default(),
-        proxy_pool: Default::default(),
     };
-    let r = m.process(&target, &ctx).await.unwrap();
+    let r = m.process(&target, &ctx).await.expect("should succeed");
     assert!(
         r.is_empty(),
         "consumer emails should produce no geo entities"
@@ -128,9 +127,8 @@ async fn au_email_produces_address() {
         http: reqwest::Client::new(),
         keys: Default::default(),
         cancel: Default::default(),
-        proxy_pool: Default::default(),
     };
-    let r = m.process(&target, &ctx).await.unwrap();
+    let r = m.process(&target, &ctx).await.expect("should succeed");
     assert_eq!(r.len(), 1);
     assert_eq!(r.entities[0].kind, EntityKind::Address);
     assert_eq!(r.entities[0].value, "Australia");
@@ -147,9 +145,8 @@ async fn bigpond_email_produces_two_entities() {
         http: reqwest::Client::new(),
         keys: Default::default(),
         cancel: Default::default(),
-        proxy_pool: Default::default(),
     };
-    let r = m.process(&target, &ctx).await.unwrap();
+    let r = m.process(&target, &ctx).await.expect("should succeed");
     assert!(!r.is_empty(), "bigpond.com (AU ISP) must geolocate");
     // Every emission is an Address per `produces()` — never some other kind.
     assert!(
@@ -190,8 +187,7 @@ async fn mixed_case_domain_is_detected() {
         http: reqwest::Client::new(),
         keys: Default::default(),
         cancel: Default::default(),
-        proxy_pool: Default::default(),
     };
-    let r = m.process(&target, &ctx).await.unwrap();
+    let r = m.process(&target, &ctx).await.expect("should succeed");
     assert!(r.entities.iter().any(|e| e.value == "Australia"));
 }

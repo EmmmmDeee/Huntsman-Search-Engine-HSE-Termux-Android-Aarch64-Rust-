@@ -22,9 +22,7 @@ use crate::util::oathnet::{self, paths, val_str, val_str_coerce, val_str_or, val
 // `Entity::demote_to_candidate` (core) — matching stays orthogonal to tiering.
 use crate::util::target_match::TargetMatch;
 
-pub mod key_harvest;
 mod validate;
-pub use key_harvest::store_api_credential_from_item;
 use validate::*;
 mod stealer;
 use stealer::*;
@@ -36,7 +34,7 @@ use breach::*;
 pub fn reset_budget() {
     crate::util::oathnet::reset_budget();
 }
-use key_harvest::{extract_api_keys_from_item, store_api_credential};
+use crate::util::key_harvest::{extract_api_keys_from_item, store_api_credential};
 
 const SRC: &str = "oathnet_pro";
 
@@ -61,7 +59,7 @@ impl Module for OathnetPro {
     }
 
     fn description(&self) -> &'static str {
-        "Full-spectrum breach, stealer & OSINT intelligence via OathNet API"
+        "OathNet API recon — full-spectrum breach, stealer, and OSINT intelligence sweep"
     }
 
     fn priority(&self) -> u8 {
@@ -70,6 +68,18 @@ impl Module for OathnetPro {
 
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid
+    }
+
+    fn cache_ttl_secs(&self) -> u64 {
+        // OathNet has HSE's SCARCEST paid quota (a handful of lookups per scan)
+        // and its cursor-paginated breach search bills one lookup per page, so a
+        // single repeat resolve of a high-hit email can waste several lookups.
+        // Breach corpora are stable within a day, so persisting the derived
+        // entities lets a repeat scan of the same corroborated pivot replay them
+        // for FREE — the same 24h C9 bracket the other paid modules use. No live
+        // call on replay ⇒ no lookup spend (incl. the per-page pagination
+        // charges), which is the largest per-query saving for the scarcest quota.
+        86_400
     }
 
     fn accepts(&self, t: &Target) -> bool {
@@ -95,18 +105,24 @@ impl Module for OathnetPro {
     fn attack_techniques(&self) -> &'static [&'static str] {
         // oathnet_pro sits in the People category for dispatch, but functionally
         // it is a breach / stealer pool: its extractors mint leaked credentials,
-        // emails, employee names, network IPs, and physical addresses. The People
-        // default (T1589.003 + T1591.004 "Identify Roles") both over-claims a
-        // role mapping the module never performs and under-claims the
-        // credential/email/IP/location collection it actually does — so declare
-        // the precise set instead (mirroring au_people, which likewise drops
-        // T1591.004 where no role is identified).
+        // emails, employee names, network IPs, physical addresses, and — via its
+        // own `employer`/`company`/`organization`/`organisation`/`workplace`
+        // field extraction (`breach.rs`) plus the shared `breach_rich` catch-all
+        // both providers run — Organisation entities. The People default
+        // (T1589.003 + T1591.004 "Identify Roles") both over-claims a role
+        // mapping the module never performs and under-claims the credential/
+        // email/IP/location/org collection it actually does — so declare the
+        // precise set instead (mirroring au_people, which likewise drops
+        // T1591.004 where no role is identified, and see_know, which correctly
+        // claims T1591.002 for the identical Organisation-minting field set).
         &[
             "T1589.001", // Credentials — leaked passwords / hashes
             "T1589.002", // Email Addresses
             "T1589.003", // Employee Names — Person from name fields
             "T1590.005", // IP Addresses
             "T1591.001", // Determine Physical Locations — street / city / state address
+            "T1591.002", // Business Relationships — company / employer / org
+            "T1597.002", // Purchase Technical Data — a paid, closed breach/stealer pool
         ]
     }
 
@@ -159,22 +175,39 @@ impl Module for OathnetPro {
         // Initialise a search session so breach + stealer queries on the
         // same target consume only ONE OathNet lookup instead of two.
         // Non-fatal: if init fails, queries still work at higher quota cost.
-        let _ = oathnet::init_session(key, &target.value).await;
+        // The id is held locally and passed explicitly to each `search` call
+        // below — never through shared process state a concurrent `hse serve`
+        // scan could clobber.
+        let session_id = oathnet::init_session(key, &target.value).await;
 
         // ── Query 1: Breach search ──────────────────────────────────────
         // Highest value endpoint: single query returns emails, usernames,
         // phones, names, IPs, addresses, passwords, geo, DOB, social
         // handles. The API charges per QUERY not per record — larger
-        // page_size is free ROI. Docs default is 100, max is 1000.
-        // Use 100 for identity targets, 50 for noisy infra targets
-        // (non-matching rows still produce candidate entities).
-        let page_size: u32 = match target.kind {
-            TargetKind::Email | TargetKind::Username => 100,
-            TargetKind::Phone | TargetKind::FullName => 100,
-            TargetKind::IpAddress | TargetKind::Domain => 50,
-            _ => 50,
-        };
-        let items = oathnet::search(key, paths::BREACH, field, &target.value, page_size).await?;
+        // page_size is free ROI, and `oathnet::search` now pages through
+        // `has_more`/`next_cursor` on top of this anyway, so the actual
+        // ceiling is the documented per-request maximum, not a smaller
+        // hand-picked value (`docs/OATHNET_API_GUIDE.txt` §11: Breach
+        // Search max 1000). The prior 100/50 split under-fetched by 10-20x
+        // for a cost the API's own docs describe as free. `extract_breach_page`'s
+        // existing candidate-flood cap already bounds how much of a larger
+        // page becomes low-value `candidate` noise for non-matching rows,
+        // so raising this doesn't reintroduce the flood problem the 50
+        // value was chosen to avoid — it only means more of the real
+        // result set (especially matching rows, kept in full) is seen at
+        // all. Uniform across target kinds now that the ceiling is the
+        // API's own documented maximum rather than a per-kind guess.
+        const BREACH_PAGE_SIZE: u32 = 1000;
+        let page_size: u32 = BREACH_PAGE_SIZE;
+        let items = oathnet::search(
+            key,
+            paths::BREACH,
+            field,
+            &target.value,
+            page_size,
+            session_id.as_deref(),
+        )
+        .await?;
         if items.is_empty() {
             return Ok(result);
         }
@@ -189,7 +222,7 @@ impl Module for OathnetPro {
         // Parent dossier entity — emitted ONLY when the subject actually appears
         // in the records. The engine pre-seeds a subject anchor, so a broad
         // `full_name` search that returns a page of strangers used to merge a
-        // false 0.85 `breach` hit — plus an aggregate dump of 100 strangers'
+        // false confidence::HIGH_PLUSPLUS_PLUS `breach` hit — plus an aggregate dump of 100 strangers'
         // names/countries — straight onto that anchor. `breach_parent_entity`
         // returns `None` on a zero-match page and aggregates the subject's
         // attributes over the MATCHING rows only.
@@ -223,16 +256,28 @@ impl Module for OathnetPro {
         // password + URL). Only Email and Username targets have a direct
         // index match. Phone/FullName use free-text "q" which is noisy and
         // rarely productive. IP/Domain are already breach-only above.
+        // 100 is already the documented per-request ceiling for this
+        // endpoint (`docs/OATHNET_API_GUIDE.txt` §11: V2 Stealer max 100,
+        // unlike Breach Search's 1000) — `oathnet::search`'s own cursor
+        // pagination now carries past that ceiling if the server reports
+        // more results than one page holds.
         if oathnet::stealer_indexable(field)
             && !ctx.cancel.is_cancelled()
-            && let Ok(stealer_items) =
-                oathnet::search(key, paths::STEALER, field, &target.value, 100).await
+            && let Ok(stealer_items) = oathnet::search(
+                key,
+                paths::STEALER,
+                field,
+                &target.value,
+                100,
+                session_id.as_deref(),
+            )
+            .await
         {
             result.entities.reserve(stealer_items.len());
             for item in &stealer_items {
                 extract_stealer_entities(item, &ctx.scan_id, &key_fp, &mut seen, &mut result);
-                store_api_credential(item);
-                extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
+                store_api_credential(item, SRC);
+                extract_api_keys_from_item(item, &ctx.scan_id, SRC, &mut seen, &mut result);
             }
         }
 
@@ -253,6 +298,10 @@ impl Module for OathnetPro {
 // oathnet_pro and see_know share the policy so a target rejected
 // by one provider is rejected by the other.
 use crate::util::preflight::{is_local_domain, is_placeholder_username, is_private_ip};
+// Rejects a breach `full_name` that is actually the username doubled or
+// slugged (see `breach.rs`'s Person-creation guard) — both oathnet_pro and
+// see_know extract from the same breach-schema fields, so they share this too.
+use crate::core::validation::is_username_derived_name;
 
 /// True for inputs that empirically waste an OathNet lookup for `kind` — junk
 /// the breach/stealer corpora never match: test/example-TLD emails, placeholder

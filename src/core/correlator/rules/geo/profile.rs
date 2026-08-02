@@ -1,10 +1,11 @@
 use super::*;
 
 pub(in crate::core::correlator) fn rule_au_018_email_address_colocation(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Single pass partitions the two member classes instead of filtering the
     // entity list twice (once for emails, once for addresses/coordinates).
     let mut emails: Vec<&Entity> = Vec::new();
@@ -44,21 +45,19 @@ pub(in crate::core::correlator) fn rule_au_018_email_address_colocation(
     // ("co-located with 6" and "with 9") for one scan.
     let mut uids: Vec<String> = emails.iter().map(|e| e.uid.clone()).collect();
     uids.extend(addresses.iter().map(|e| e.uid.clone()));
-    vec![Correlation {
-        rule_id: "AU-018".into(),
-        rule_name: "Email + physical location co-located".into(),
-        severity: Severity::High,
-        description: format!(
+    vec![Correlation::new(
+        "AU-018",
+        "Email + physical location co-located",
+        Severity::High,
+        format!(
             "{} email(s) co-located with {} address/coordinate(s) — identity-location linkage",
             emails.len(),
             addresses.len()
         ),
-        entity_uids: uids,
-        scan_id: scan_id.into(),
+        uids,
+        scan_id,
         ts,
-        rank: 0.0,
-        techniques: Vec::new(),
-    }]
+    )]
 }
 
 /// AU-058 — Professional profile geographic signal (T1591.002).
@@ -69,10 +68,11 @@ pub(in crate::core::correlator) fn rule_au_018_email_address_colocation(
 /// surfaced as a geographic signal aligned with MITRE T1591.002 (Business
 /// Relationships — physical location inferred from professional context).
 pub(in crate::core::correlator) fn rule_au_058_professional_profile_geo(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const PROF_HOSTS: &[&str] = &["ratemyagent.com.au", "homely.com.au", "soho.com.au"];
 
     let mut out = Vec::new();
@@ -153,10 +153,11 @@ pub(super) fn extract_ratemyagent_suburb(url: &str) -> Option<String> {
 /// turning a lone candidate into a reliable relative. Nothing fires without both
 /// a confirmed subject coordinate and ≥1 in-area family-candidate.
 pub(in crate::core::correlator) fn rule_au_061_family_geo_corroboration(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use crate::core::geo_family::{FAMILY_GEO_KM, distance_to_subject, subject_fixes};
 
     // The subject's confirmed location(s) — the one shared anchor (a GPS fix OR
@@ -348,10 +349,11 @@ fn cell_country_note(fix_in_au: bool, cells: &[&Entity]) -> String {
 /// on-device sensor tags, so it concerns only the operator's own device and
 /// never a remote subject. Pure over the confirmed set.
 pub(in crate::core::correlator) fn rule_au_103_device_self_location(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Best passive on-device location fix.
     let mut best: Option<SelfFix> = None;
     let mut fix_uids: Vec<String> = Vec::new();

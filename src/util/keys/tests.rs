@@ -8,7 +8,7 @@ fn resolve_or_default_policy() {
     assert_eq!(resolve_or_default(Some("real-key"), "default"), "real-key");
     assert_eq!(resolve_or_default(None, "default"), "default");
     // A present-but-empty value falls back to the default rather than being
-    // used verbatim — the bug the wigle/wifi_intel/mls modules had before
+    // used verbatim — the bug the wigle/wifi_intel modules had before
     // they were routed through this function.
     assert_eq!(resolve_or_default(Some(""), "default"), "default");
 }
@@ -47,9 +47,9 @@ fn own_api_keys_includes_embedded_and_splits_csv_rotation_lists() {
 
 #[test]
 fn signup_hint_covers_common_free_providers() {
-    let vt = signup_hint("HUNTSMAN_VIRUSTOTAL_KEY").unwrap();
+    let vt = signup_hint("HUNTSMAN_VIRUSTOTAL_KEY").expect("should succeed");
     assert!(vt.contains("virustotal.com"), "{vt}");
-    let abusech = signup_hint("HUNTSMAN_ABUSECH_KEY").unwrap();
+    let abusech = signup_hint("HUNTSMAN_ABUSECH_KEY").expect("should succeed");
     assert!(abusech.contains("auth.abuse.ch"));
     assert_eq!(
         signup_hint("HUNTSMAN_THREATFOX_KEY"),
@@ -72,13 +72,14 @@ fn map_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
 
 #[test]
 fn write_preserves_comments_and_appends_new_keys() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
-    std::fs::write(&path, "# template\n#HUNTSMAN_HIBP_KEY=\n").unwrap();
+    std::fs::write(&path, "# template\n#HUNTSMAN_HIBP_KEY=\n").expect("should succeed");
 
-    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "abc123")]), &[]).unwrap();
+    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "abc123")]), &[])
+        .expect("should succeed");
 
-    let got = std::fs::read_to_string(&path).unwrap();
+    let got = std::fs::read_to_string(&path).expect("should succeed");
     assert!(got.contains("# template"), "comment preserved");
     assert!(
         got.contains("#HUNTSMAN_HIBP_KEY="),
@@ -92,13 +93,14 @@ fn write_preserves_comments_and_appends_new_keys() {
 
 #[test]
 fn write_replaces_existing_key_in_place() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
-    std::fs::write(&path, "HUNTSMAN_OATHNET_KEY=old\nHUNTSMAN_HIBP_KEY=stay\n").unwrap();
+    std::fs::write(&path, "HUNTSMAN_OATHNET_KEY=old\nHUNTSMAN_HIBP_KEY=stay\n")
+        .expect("should succeed");
 
-    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "new")]), &[]).unwrap();
+    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "new")]), &[]).expect("should succeed");
 
-    let got = std::fs::read_to_string(&path).unwrap();
+    let got = std::fs::read_to_string(&path).expect("should succeed");
     assert!(got.contains("HUNTSMAN_OATHNET_KEY=\"new\""));
     assert!(!got.contains("HUNTSMAN_OATHNET_KEY=old"));
     assert!(
@@ -109,7 +111,7 @@ fn write_replaces_existing_key_in_place() {
 
 #[test]
 fn written_values_round_trip_through_dotenvy() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
     let cases = [
         ("HUNTSMAN_PLAIN", "abc123XYZ"),
@@ -117,11 +119,11 @@ fn written_values_round_trip_through_dotenvy() {
         ("HUNTSMAN_WITH_SPACE", "two words"),
         ("HUNTSMAN_EQUALS", "a=b=c"),
     ];
-    write_keys_at(&path, &map_of(&cases), &[]).unwrap();
+    write_keys_at(&path, &map_of(&cases), &[]).expect("should succeed");
 
     let mut got = BTreeMap::new();
-    for item in dotenvy::from_path_iter(&path).unwrap() {
-        let (k, v) = item.unwrap();
+    for item in dotenvy::from_path_iter(&path).expect("should succeed") {
+        let (k, v) = item.expect("should succeed");
         got.insert(k, v);
     }
     for (k, v) in cases {
@@ -135,46 +137,48 @@ fn written_values_round_trip_through_dotenvy() {
 
 #[test]
 fn delete_removes_key_entirely() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
     std::fs::write(
         &path,
         "HUNTSMAN_OATHNET_KEY=goaway\nHUNTSMAN_HIBP_KEY=stay\n",
     )
-    .unwrap();
+    .expect("should succeed");
 
     write_keys_at(
         &path,
         &BTreeMap::new(),
         &["HUNTSMAN_OATHNET_KEY".to_string()],
     )
-    .unwrap();
+    .expect("should succeed");
 
-    let got = std::fs::read_to_string(&path).unwrap();
+    let got = std::fs::read_to_string(&path).expect("should succeed");
     assert!(!got.contains("HUNTSMAN_OATHNET_KEY"));
     assert!(got.contains("HUNTSMAN_HIBP_KEY=stay"));
 }
 
 #[test]
 fn missing_file_is_created_with_appended_keys() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
-    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "seed")]), &[]).unwrap();
-    let got = std::fs::read_to_string(&path).unwrap();
+    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "seed")]), &[])
+        .expect("should succeed");
+    let got = std::fs::read_to_string(&path).expect("should succeed");
     assert!(got.contains("HUNTSMAN_OATHNET_KEY=\"seed\""));
 }
 
 #[test]
 fn rejects_non_huntsman_keys() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
-    let err = write_keys_at(&path, &map_of(&[("PATH", "/etc")]), &[]).unwrap_err();
+    let err =
+        write_keys_at(&path, &map_of(&[("PATH", "/etc")]), &[]).expect_err("should be an error");
     assert!(err.to_string().contains("HUNTSMAN_"));
 }
 
 #[test]
 fn rejects_values_with_control_characters() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
     assert!(
         write_keys_at(
@@ -188,21 +192,21 @@ fn rejects_values_with_control_characters() {
 
 #[test]
 fn rejects_values_with_double_quotes() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
     assert!(write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "ab\"cd")]), &[]).is_err());
 }
 
 #[test]
 fn rejects_values_with_backslash() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
     assert!(write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "ab\\nc")]), &[]).is_err());
 }
 
 #[test]
 fn load_from_file_ignores_comments_and_non_huntsman() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
     std::fs::write(
         &path,
@@ -212,7 +216,7 @@ fn load_from_file_ignores_comments_and_non_huntsman() {
          OTHER=ignored\n\
          HUNTSMAN_HIBP_KEY=def\n",
     )
-    .unwrap();
+    .expect("should succeed");
     let m = load_from_file_only(&path);
     assert_eq!(
         m.get("HUNTSMAN_OATHNET_KEY").map(String::as_str),
@@ -225,7 +229,7 @@ fn load_from_file_ignores_comments_and_non_huntsman() {
 
 #[test]
 fn load_from_file_handles_missing_file() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
     let m = load_from_file_only(&path);
     assert!(m.is_empty());
@@ -235,9 +239,10 @@ fn load_from_file_handles_missing_file() {
 fn load_from_file_strips_double_quotes_from_written_values() {
     // write_keys_at stores values as KEY="value"; load_from_file_only must
     // return the bare value so SUPERSEDED rotation comparisons work correctly.
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
-    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "mykey123")]), &[]).unwrap();
+    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "mykey123")]), &[])
+        .expect("should succeed");
     let m = load_from_file_only(&path);
     assert_eq!(
         m.get("HUNTSMAN_OATHNET_KEY").map(String::as_str),
@@ -248,10 +253,10 @@ fn load_from_file_strips_double_quotes_from_written_values() {
 
 #[test]
 fn put_then_get_round_trips_through_file() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
 
-    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "v1")]), &[]).unwrap();
+    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "v1")]), &[]).expect("should succeed");
     assert!(load_from_file_only(&path).contains_key("HUNTSMAN_OATHNET_KEY"));
 
     write_keys_at(
@@ -259,13 +264,13 @@ fn put_then_get_round_trips_through_file() {
         &BTreeMap::new(),
         &["HUNTSMAN_OATHNET_KEY".to_string()],
     )
-    .unwrap();
+    .expect("should succeed");
     assert!(!load_from_file_only(&path).contains_key("HUNTSMAN_OATHNET_KEY"));
 }
 
 #[test]
 fn update_matches_key_with_whitespace_around_equals() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
     std::fs::write(
         &path,
@@ -273,7 +278,7 @@ fn update_matches_key_with_whitespace_around_equals() {
          HUNTSMAN_HIBP_KEY= old2\n\
          HUNTSMAN_HUNTER_KEY = old3\n",
     )
-    .unwrap();
+    .expect("should succeed");
 
     write_keys_at(
         &path,
@@ -284,9 +289,9 @@ fn update_matches_key_with_whitespace_around_equals() {
         ]),
         &[],
     )
-    .unwrap();
+    .expect("should succeed");
 
-    let got = std::fs::read_to_string(&path).unwrap();
+    let got = std::fs::read_to_string(&path).expect("should succeed");
     assert!(
         got.contains("HUNTSMAN_OATHNET_KEY=\"new1\""),
         "should update spaced key: {got}"
@@ -306,9 +311,9 @@ fn update_matches_key_with_whitespace_around_equals() {
 
 #[test]
 fn read_error_other_than_not_found_surfaces() {
-    let dir = tempdir().unwrap();
-    let err =
-        write_keys_at(dir.path(), &map_of(&[("HUNTSMAN_OATHNET_KEY", "v")]), &[]).unwrap_err();
+    let dir = tempdir().expect("should succeed");
+    let err = write_keys_at(dir.path(), &map_of(&[("HUNTSMAN_OATHNET_KEY", "v")]), &[])
+        .expect_err("should be an error");
     let msg = err.to_string();
     assert!(
         msg.contains("read ") || msg.contains("open ") || msg.contains("write "),
@@ -366,10 +371,11 @@ fn pool_keys_fill_empty_env_slots() {
 // process-global singleton), so these are deterministic and free of cross-test
 // pool/env contamination.
 
+use super::io::resolve_through_pool;
+use crate::util::key_pool::{KeyPool, KeyStatus};
+
 #[test]
 fn resolve_through_pool_seeds_a_lone_key_and_keeps_it_verbatim() {
-    use super::io::resolve_through_pool;
-    use crate::util::key_pool::{KeyPool, KeyStatus};
     use std::collections::HashMap;
 
     let pool = KeyPool::new();
@@ -398,8 +404,7 @@ fn resolve_through_pool_seeds_a_lone_key_and_keeps_it_verbatim() {
 
 #[test]
 fn resolve_through_pool_fails_over_from_a_dead_sole_key() {
-    use super::io::resolve_through_pool;
-    use crate::util::key_pool::{KeyEntry, KeyPool, KeyStatus};
+    use crate::util::key_pool::KeyEntry;
     use std::collections::HashMap;
 
     let pool = KeyPool::new();
@@ -427,8 +432,6 @@ fn resolve_through_pool_fails_over_from_a_dead_sole_key() {
 
 #[test]
 fn resolve_through_pool_seeds_every_csv_key_for_rotation() {
-    use super::io::resolve_through_pool;
-    use crate::util::key_pool::{KeyPool, KeyStatus};
     use std::collections::HashMap;
 
     let pool = KeyPool::new();
@@ -448,6 +451,96 @@ fn resolve_through_pool_seeds_every_csv_key_for_rotation() {
     assert!(
         ["k1", "k2", "k3"].contains(&active),
         "active value must be a pooled key: {active}"
+    );
+}
+
+// ---- scenarios ported from the T2.153-root-cause fix's own test suite
+// (main's `register_configured_keys`, superseded by `resolve_through_pool`
+// above — same pool.add/service_defs semantics, plus health-select/failover)
+// so this specific coverage survives the merge. ----
+
+#[test]
+fn resolve_through_pool_never_overwrites_an_already_tracked_key() {
+    // A key the pool already correctly knows is Invalid (from an earlier
+    // real 401/403) must NOT be silently reset back to Active just because
+    // the operator's env var still holds the same (still-dead) value —
+    // `pool.add`'s own exact-value dedup is what protects this.
+    let pool = KeyPool::new();
+    pool.add(
+        "shodan",
+        crate::util::key_pool::KeyEntry::new("dead-key-999"),
+    );
+    pool.mark_status("shodan", "dead-key-999", KeyStatus::Invalid);
+    assert_eq!(
+        pool.entry_status("shodan", "dead-key-999"),
+        Some(KeyStatus::Invalid)
+    );
+
+    let mut map: std::collections::HashMap<String, String> = [(
+        "HUNTSMAN_SHODAN_KEY".to_string(),
+        "dead-key-999".to_string(),
+    )]
+    .into();
+    resolve_through_pool(&mut map, &pool);
+
+    assert_eq!(
+        pool.entry_status("shodan", "dead-key-999"),
+        Some(KeyStatus::Invalid),
+        "a previously-marked-Invalid key must stay Invalid, not reset to Active"
+    );
+    assert_eq!(pool.total_keys(), 1, "must not duplicate the entry either");
+}
+
+#[test]
+fn resolve_through_pool_ignores_unregistered_and_empty_values() {
+    let pool = KeyPool::new();
+    let mut map: std::collections::HashMap<String, String> = [
+        // Not a registered service_defs env_var at all.
+        (
+            "HUNTSMAN_TOTALLY_MADE_UP_KEY".to_string(),
+            "value".to_string(),
+        ),
+        // A registered env_var, but blank — nothing to register.
+        ("HUNTSMAN_SHODAN_KEY".to_string(), String::new()),
+    ]
+    .into();
+
+    resolve_through_pool(&mut map, &pool);
+
+    assert_eq!(pool.total_keys(), 0);
+}
+
+#[test]
+fn resolve_through_pool_reports_the_now_live_confirmed_abr_and_opencellid_gap() {
+    // The exact real-world scenario this fix was diagnosed from: an operator
+    // sets ONE `HUNTSMAN_ABR_GUID` and ONE `HUNTSMAN_OPENCELLID_KEY` (the
+    // ordinary way to configure either service — neither has ever been
+    // configured with more than one key in practice), and both must now
+    // reach the pool so `abn_lookup`/`opencellid`/`cell_intel`'s
+    // `report_key_exhausted`/`note_keyed_error` calls have something real to
+    // update instead of silently no-op'ing.
+    let pool = KeyPool::new();
+    let mut map: std::collections::HashMap<String, String> = [
+        (
+            "HUNTSMAN_ABR_GUID".to_string(),
+            "00000000-0000-0000-0000-000000000000".to_string(),
+        ),
+        (
+            "HUNTSMAN_OPENCELLID_KEY".to_string(),
+            "garbage00000invalid".to_string(),
+        ),
+    ]
+    .into();
+
+    resolve_through_pool(&mut map, &pool);
+
+    assert_eq!(
+        pool.entry_status("abr", "00000000-0000-0000-0000-000000000000"),
+        Some(KeyStatus::Active)
+    );
+    assert_eq!(
+        pool.entry_status("opencellid", "garbage00000invalid"),
+        Some(KeyStatus::Active)
     );
 }
 
@@ -498,9 +591,10 @@ fn concurrent_vault_writes_never_corrupt_or_strand() {
     // makes every write self-contained. Eight writers hammering one vault must
     // always leave a readable file that still holds the key, and no temp
     // straggler. (Mirrors `atomic_file`'s own concurrency property test.)
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("should succeed");
     let path = dir.path().join(".huntsman.env");
-    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "seed")]), &[]).unwrap();
+    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "seed")]), &[])
+        .expect("should succeed");
 
     let handles: Vec<_> = (0..8)
         .map(|i| {
@@ -515,7 +609,7 @@ fn concurrent_vault_writes_never_corrupt_or_strand() {
         })
         .collect();
     for h in handles {
-        h.join().unwrap();
+        h.join().expect("should succeed");
     }
 
     let content = std::fs::read_to_string(&path).expect("vault still readable");
@@ -524,7 +618,7 @@ fn concurrent_vault_writes_never_corrupt_or_strand() {
         "concurrent writes must never corrupt/empty the vault: {content:?}"
     );
     let strays = std::fs::read_dir(dir.path())
-        .unwrap()
+        .expect("should succeed")
         .filter_map(Result::ok)
         .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
         .count();

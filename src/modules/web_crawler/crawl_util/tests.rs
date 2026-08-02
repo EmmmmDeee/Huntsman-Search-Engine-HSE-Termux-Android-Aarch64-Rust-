@@ -319,9 +319,9 @@ use super::*;
         let mut h = HeaderMap::new();
         h.insert(
             "content-security-policy",
-            "default-src 'self'".parse().unwrap(),
+            "default-src 'self'".parse().expect("should succeed"),
         );
-        h.insert("x-frame-options", "DENY".parse().unwrap());
+        h.insert("x-frame-options", "DENY".parse().expect("should succeed"));
         let mut results = Vec::new();
         audit_security_headers(&h, &mut results);
         assert_eq!(results.len(), 6);
@@ -410,7 +410,8 @@ use super::*;
         };
         assert_eq!(scraped(), 0, "precondition: a clean pool for this domain");
 
-        // (1) Length gate: <16 or >200 chars are never classified.
+        // (1) Length gate: shorter than `found_keys::MIN_TOKEN` (16) is never
+        //     classified.
         extract_api_keys_from_body("short ghp_x", domain);
         // (2) A VALID github token is classified by identify_api_key but github is
         //     not a poolable provider, so pool.add rejects it.
@@ -436,4 +437,41 @@ use super::*;
                 }
             }
         }
+    }
+
+    #[test]
+    fn extract_api_keys_from_body_does_not_truncate_at_the_old_200_char_cap() {
+        // Regression test for the merge onto `found_keys::key_tokens`: this
+        // harvester used to hand-roll a `16..=200` char window, silently
+        // dropping any longer real-world key/PAT/JWT. The shared tokenizer's
+        // cap is `found_keys::MAX_TOKEN` (4096), so a 234-char BinaryEdge-shaped
+        // token (poolable — proving it went all the way through classification
+        // AND `pool.add`) must now be picked up.
+        let pool = crate::util::key_pool::global_pool();
+        let domain = "crawlutil-longkey-test.example";
+        let long_key = format!(
+            "bp0_{}",
+            "oHBvRPOIvGrv5iFlbCBFNOgmBjMtpsiaOclRz3AwzKsbVRJN9wVGFYGW2WmQzCudiH7YFjS1on43XkMtECqOxSF2O3GYRdo1XKXWNqRs7rpEmoKiuPKdYR7osjOrU1xxDO0CzUZREN68k4tUNpfZ46pdJQIPvjiQvlb5lZXOIgfFwD3HJoKyrbmEYYmdhQj38AruHr4iwRxpVHSbKdA9u4uQgwLg6G3oT1ogmM"
+        );
+        assert!(
+            long_key.len() > 200 && long_key.len() <= crate::util::found_keys::MAX_TOKEN,
+            "fixture must exceed the old 200-char cap and fit under the real one"
+        );
+
+        extract_api_keys_from_body(&format!("prefix {long_key} suffix"), domain);
+
+        let found = pool
+            .snapshot()
+            .services
+            .get("binaryedge")
+            .into_iter()
+            .flatten()
+            .any(|e| e.value == long_key);
+        if found {
+            pool.remove("binaryedge", &long_key);
+        }
+        assert!(
+            found,
+            "a >200-char poolable key must survive the tokenizer's length gate"
+        );
     }

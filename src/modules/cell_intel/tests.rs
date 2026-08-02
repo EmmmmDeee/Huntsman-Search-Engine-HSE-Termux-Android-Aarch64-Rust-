@@ -2,9 +2,9 @@ use super::CellIntel;
 use super::helpers::{
     accuracy_to_confidence, build_tower_device, json_to_str, mcc_to_centroid, parse_cells_survey,
 };
-use crate::core::entity::EntityKind;
 use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
+use crate::core::{confidence, entity::EntityKind};
 
 // ---- Module trait tests ----
 
@@ -32,7 +32,7 @@ fn module_name_and_priority() {
 fn module_description() {
     assert_eq!(
         CellIntel.description(),
-        "Cell tower survey and geolocation via Termux + OpenCelliD"
+        "Cell-tower survey & geolocation — sweeps nearby towers via Termux and geolocates them against OpenCelliD"
     );
 }
 
@@ -81,7 +81,7 @@ fn entity_tags_include_cell_tower_and_radio_type() {
     let e = &r.entities[0];
     assert_eq!(e.kind, EntityKind::DeviceId);
     assert_eq!(e.value, "310-260-1234-5678");
-    assert!((e.confidence - 0.80).abs() < 1e-6);
+    assert!((e.confidence - confidence::HIGH_PLUSPLUS).abs() < 1e-6);
     assert!(e.has_tag(crate::core::tags::CELL_TOWER));
     assert!(e.has_tag("radio:lte"));
     assert_eq!(e.scan_id, "scan-x");
@@ -96,15 +96,18 @@ fn evidence_attributes_populated() {
     let r = parse_cells_survey(json, "test");
     let ev = &r.entities[0].evidence[0];
     assert_eq!(ev.source, "cell_intel");
-    assert_eq!(ev.attributes.get("type").unwrap(), "gsm");
-    assert_eq!(ev.attributes.get("mcc").unwrap(), "505");
-    assert_eq!(ev.attributes.get("mnc").unwrap(), "01");
-    assert_eq!(ev.attributes.get("lac_tac").unwrap(), "200");
-    assert_eq!(ev.attributes.get("cid").unwrap(), "100");
-    assert_eq!(ev.attributes.get("dbm").unwrap(), "-95");
-    assert_eq!(ev.attributes.get("asu").unwrap(), "8");
-    assert_eq!(ev.attributes.get("level").unwrap(), "1");
-    assert_eq!(ev.attributes.get("registered").unwrap(), "false");
+    assert_eq!(ev.attributes.get("type").expect("should succeed"), "gsm");
+    assert_eq!(ev.attributes.get("mcc").expect("should succeed"), "505");
+    assert_eq!(ev.attributes.get("mnc").expect("should succeed"), "01");
+    assert_eq!(ev.attributes.get("lac_tac").expect("should succeed"), "200");
+    assert_eq!(ev.attributes.get("cid").expect("should succeed"), "100");
+    assert_eq!(ev.attributes.get("dbm").expect("should succeed"), "-95");
+    assert_eq!(ev.attributes.get("asu").expect("should succeed"), "8");
+    assert_eq!(ev.attributes.get("level").expect("should succeed"), "1");
+    assert_eq!(
+        ev.attributes.get("registered").expect("should succeed"),
+        "false"
+    );
 }
 
 #[test]
@@ -169,16 +172,16 @@ fn json_to_str_handles_all_variants() {
 
 #[test]
 fn accuracy_to_confidence_tiers() {
-    assert!((accuracy_to_confidence(50) - 0.85).abs() < 1e-6);
-    assert!((accuracy_to_confidence(300) - 0.75).abs() < 1e-6);
-    assert!((accuracy_to_confidence(1000) - 0.65).abs() < 1e-6);
-    assert!((accuracy_to_confidence(5000) - 0.50).abs() < 1e-6);
+    assert!((accuracy_to_confidence(50) - confidence::HIGH_PLUSPLUS_PLUS).abs() < 1e-6);
+    assert!((accuracy_to_confidence(300) - confidence::VERY_HIGH).abs() < 1e-6);
+    assert!((accuracy_to_confidence(1000) - confidence::HIGH).abs() < 1e-6);
+    assert!((accuracy_to_confidence(5000) - confidence::MEDIUM).abs() < 1e-6);
     assert!((accuracy_to_confidence(50000) - 0.35).abs() < 1e-6);
 }
 
 #[test]
 fn mcc_us_maps_to_us_centroid() {
-    let (lat, lon, cc) = mcc_to_centroid("310").unwrap();
+    let (lat, lon, cc) = mcc_to_centroid("310").expect("should succeed");
     assert!((lat - 39.8283).abs() < 0.01);
     assert!((lon - (-98.5795)).abs() < 0.01);
     assert_eq!(cc, "US");
@@ -186,7 +189,7 @@ fn mcc_us_maps_to_us_centroid() {
 
 #[test]
 fn mcc_au_maps_to_au_centroid() {
-    let (lat, lon, cc) = mcc_to_centroid("505").unwrap();
+    let (lat, lon, cc) = mcc_to_centroid("505").expect("should succeed");
     assert!((lat - (-25.2744)).abs() < 0.01);
     assert_eq!(cc, "AU");
     assert!(lon > 100.0);
@@ -202,7 +205,7 @@ fn unknown_mcc_returns_none() {
 use super::types::{Cell, TowerKey};
 
 fn cell_from_json(json: &str) -> Cell {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 #[test]
@@ -222,7 +225,7 @@ fn from_cell_returns_none_for_zero_or_missing_cid() {
 #[test]
 fn from_cell_lac_falls_back_to_tac() {
     let cell = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","cid":12345,"tac":54321}"#);
-    let key = TowerKey::from_cell(&cell).unwrap();
+    let key = TowerKey::from_cell(&cell).expect("should succeed");
     assert_eq!(key.lac, 54321);
     assert_eq!(key.tower_id, "505-01-54321-12345");
 }
@@ -230,7 +233,7 @@ fn from_cell_lac_falls_back_to_tac() {
 #[test]
 fn from_cell_prefers_lac_over_tac_and_defaults_missing_type() {
     let cell = cell_from_json(r#"{"mcc":"505","mnc":"01","cid":99,"lac":42,"tac":54321}"#);
-    let key = TowerKey::from_cell(&cell).unwrap();
+    let key = TowerKey::from_cell(&cell).expect("should succeed");
     assert_eq!(key.lac, 42, "lac wins over tac");
     assert_eq!(key.ctype, "unknown", "missing type defaults to unknown");
 }
@@ -238,11 +241,23 @@ fn from_cell_prefers_lac_over_tac_and_defaults_missing_type() {
 #[test]
 fn is_geolocatable_requires_mnc_and_nonzero_lac() {
     let ok = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","cid":1,"lac":42}"#);
-    assert!(TowerKey::from_cell(&ok).unwrap().is_geolocatable());
+    assert!(
+        TowerKey::from_cell(&ok)
+            .expect("should succeed")
+            .is_geolocatable()
+    );
     let no_mnc = cell_from_json(r#"{"type":"lte","mcc":"505","cid":1,"lac":42}"#);
-    assert!(!TowerKey::from_cell(&no_mnc).unwrap().is_geolocatable());
+    assert!(
+        !TowerKey::from_cell(&no_mnc)
+            .expect("should succeed")
+            .is_geolocatable()
+    );
     let no_lac = cell_from_json(r#"{"type":"lte","mcc":"505","mnc":"01","cid":1}"#);
-    assert!(!TowerKey::from_cell(&no_lac).unwrap().is_geolocatable());
+    assert!(
+        !TowerKey::from_cell(&no_lac)
+            .expect("should succeed")
+            .is_geolocatable()
+    );
 }
 
 #[test]
@@ -261,7 +276,7 @@ fn radio_code_maps_air_interfaces_with_gsm_default() {
     for (ctype, expected) in cases {
         let json = format!(r#"{{"type":"{ctype}","mcc":"505","mnc":"01","cid":1,"lac":42}}"#);
         let cell = cell_from_json(&json);
-        let key = TowerKey::from_cell(&cell).unwrap();
+        let key = TowerKey::from_cell(&cell).expect("should succeed");
         assert_eq!(key.radio_code(), expected, "radio_code for {ctype}");
     }
 }
@@ -272,7 +287,7 @@ fn build_tower_device_carries_radio_tags_and_evidence_attrs() {
         r#"{"type":"lte","registered":true,"cid":12345,"tac":54321,
             "mcc":"505","mnc":"01","dbm":-75,"asu":30,"level":4,"pci":100}"#,
     );
-    let key = TowerKey::from_cell(&cell).unwrap();
+    let key = TowerKey::from_cell(&cell).expect("should succeed");
     let e = build_tower_device(&cell, &key, "scan-1");
     assert_eq!(e.kind, EntityKind::DeviceId);
     assert_eq!(e.value, "505-01-54321-12345");
@@ -292,7 +307,7 @@ fn build_tower_device_carries_radio_tags_and_evidence_attrs() {
 #[test]
 fn build_tower_device_defaults_absent_signal_fields_to_zero() {
     let cell = cell_from_json(r#"{"type":"gsm","mcc":"505","mnc":"1","cid":99,"lac":42}"#);
-    let key = TowerKey::from_cell(&cell).unwrap();
+    let key = TowerKey::from_cell(&cell).expect("should succeed");
     let e = build_tower_device(&cell, &key, "s");
     let attrs = &e.evidence[0].attributes;
     assert_eq!(attrs.get("pci").map(String::as_str), Some("0"));
@@ -300,4 +315,40 @@ fn build_tower_device_defaults_absent_signal_fields_to_zero() {
     assert_eq!(attrs.get("asu").map(String::as_str), Some("0"));
     assert_eq!(attrs.get("level").map(String::as_str), Some("0"));
     assert_eq!(attrs.get("registered").map(String::as_str), Some("false"));
+}
+
+// ---- OpenCellidResp bad-key error shape ----
+
+use super::types::OpenCellidResp;
+
+#[test]
+fn opencellid_resp_captures_the_real_live_confirmed_bad_key_error_shape() {
+    // Live-confirmed 2026-07-15: a garbage key against the real
+    // `cell/get` endpoint (the same one `query_opencellid` calls) returns
+    // HTTP 200 with exactly this body — no HTTP-level 401/403/429 at all.
+    // `query_opencellid`'s `data.error.is_some()` check is what tells this
+    // apart from a genuine "couldn't geolocate this tower" negative.
+    let raw = r#"{"error":"API Key not known: garbage00000invalid","code":2}"#;
+    let resp: OpenCellidResp = serde_json::from_str(raw).expect("should succeed");
+    assert_eq!(
+        resp.error.as_deref(),
+        Some("API Key not known: garbage00000invalid")
+    );
+    assert_eq!(resp.lat, None, "the error shape carries no geo fields");
+    assert_eq!(
+        resp.status, None,
+        "distinct from the status:\"error\" shape"
+    );
+}
+
+#[test]
+fn opencellid_resp_status_error_is_distinct_from_the_body_error_field() {
+    // The pre-existing "no fix available" negative (a real key, genuinely no
+    // data) uses `status`, never `error` — the two fields must not be
+    // conflated, or a real key would wrongly report itself exhausted on
+    // every ordinary miss.
+    let raw = r#"{"status":"error"}"#;
+    let resp: OpenCellidResp = serde_json::from_str(raw).expect("should succeed");
+    assert_eq!(resp.status.as_deref(), Some("error"));
+    assert_eq!(resp.error, None);
 }

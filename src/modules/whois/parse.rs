@@ -77,13 +77,7 @@ fn is_real_phone(s: &str) -> bool {
     if !s.contains('+') {
         return false;
     }
-    let lower = s.to_lowercase();
-    if lower.contains("redacted")
-        || lower.contains("privacy")
-        || lower.contains("not disclosed")
-        || lower.contains("data protected")
-        || lower.contains("unavailable")
-    {
+    if crate::core::validation::is_whois_privacy_placeholder(s) {
         return false;
     }
     let digits: usize = s.bytes().filter(u8::is_ascii_digit).count();

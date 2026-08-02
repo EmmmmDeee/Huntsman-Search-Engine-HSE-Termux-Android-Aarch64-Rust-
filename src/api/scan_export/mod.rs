@@ -2,7 +2,7 @@
 //! bundle — plus the pure rendering functions shared with the CLI.
 //!
 //! The rendering functions (`entities_to_csv`, `build_scan_report`,
-//! `extract_au_location_fix`) are `pub(crate)` so `cli::export` can reuse them
+//! `extract_au_location_fix`) are `pub(crate)` so `app::export` can reuse them
 //! and produce byte-identical output to the HTTP endpoints.
 
 use axum::{
@@ -17,12 +17,16 @@ use super::handlers::{internal_error, not_found};
 use super::scan_handlers::{scan_missing, wants_candidates, wants_infra};
 use crate::api::AppState;
 
+/// Genericise proprietary breach/intel source names in the shareable downloads
+/// so a scan result handed to a customer never reveals the operator's providers.
+mod redact;
+
 pub async fn scan_entities_csv(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    if let Some(resp) = scan_missing(&s, &id) {
+    if let Some(resp) = scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
@@ -41,10 +45,13 @@ pub async fn scan_entities_csv(
     if !crate::api::scan_handlers::wants_candidates(&params) {
         entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
     }
+    // Redaction of the proprietary source names in the `sources` /
+    // `corroborating_sources` columns is enforced by `download_response`.
     download_response(
         entities_to_csv(&entities),
         "text/csv; charset=utf-8",
         &id,
+        "csv",
         "csv",
     )
 }
@@ -59,14 +66,34 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
     let mut body = String::with_capacity(192 + entities.len() * 192);
     // `evidence_urls` + `evidence` make every row self-verifiable: the operator
     // can follow the source links and read each module's finding without
-    // reconstructing anything from the value alone.
-    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,evidence_urls,evidence,tags\n");
+    // reconstructing anything from the value alone. `source_count` +
+    // `corroborating_sources` sit next to `corroboration` + `sources` for the
+    // same reason: `corroboration` is a raw per-module observation magnitude
+    // (summed on merge, never deduplicated) that does NOT drive `c_effective`
+    // — `source_count` (distinct corroborating sources) does. Without both
+    // numbers side by side, a reader has no way to tell from the CSV alone
+    // whether a high `corroboration` reflects genuine independent agreement.
+    // `uid` and `generation` are APPENDED (never inserted) so the header still
+    // begins with the exact prefix `looks_like_hse_csv` sniffs for and every
+    // by-name column lookup — the import and audit parsers both resolve columns
+    // by header name — keeps working on older and newer files alike.
+    // `uid` is the join key: it is what the JSON export, the debug bundle, the
+    // Browse pane and the /entities/{uid} pivot endpoint all identify a finding
+    // by, so without it a CSV row could only be matched back to the other
+    // artifacts by string-matching kind+value. `generation` (hops from the seed)
+    // travels with it for the same reason it was added to the bundle — it
+    // separates a seed-adjacent finding from one three pivots out.
+    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags,uid,generation\n");
     for e in entities {
         let eff = e.c_effective();
+        let source_count = e.source_count();
         let tier = e.classify().to_string();
         let mut sources: Vec<&str> = e.evidence_sources().into_iter().collect();
         sources.sort_unstable();
         let sources = sources.join("|");
+        let mut corroborating: Vec<&str> = e.corroborating_sources().into_iter().collect();
+        corroborating.sort_unstable();
+        let corroborating_sources = corroborating.join("|");
         let tags = e.tags.join("|");
 
         // Distinct full URLs across all evidence (the verifiable links), and a
@@ -111,19 +138,23 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
 
         let _ = writeln!(
             body,
-            "{},{},{},{:.3},{:.3},{},{},{},{},{},{},{}",
+            "{},{},{},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{},{}",
             csv_escape(&e.kind.to_string()),
             csv_escape(&e.value),
             csv_escape(&e.raw_value),
             e.confidence,
             eff,
             e.corroboration,
+            source_count,
             tier,
             e.observed_at,
             csv_escape(&sources),
+            csv_escape(&corroborating_sources),
             csv_escape(&evidence_urls),
             csv_escape(&evidence),
             csv_escape(&tags),
+            csv_escape(&e.uid),
+            e.generation,
         );
     }
     body
@@ -153,7 +184,7 @@ pub async fn scan_report_json(
     .await;
     match built {
         Ok(Ok(Some(body))) => {
-            download_response(body, "application/json; charset=utf-8", &id, "json")
+            download_response(body, "application/json; charset=utf-8", &id, "json", "json")
         }
         Ok(Ok(None)) => not_found(),
         Ok(Err(e)) => internal_error(&e),
@@ -204,12 +235,23 @@ pub(crate) fn build_scan_report(
     }
     let correlations = store.correlations_for_scan(scan_id)?;
     let best_location = extract_au_location_fix(&correlations, &entities);
+    // The calibrated 0–100 Exposure Index — the SAME headline verdict the CLI
+    // `print_dossier` and the debug bundle both open with. This envelope is the
+    // canonical over-the-wire/on-device dossier (shared by GET report.json and
+    // `hse export --format report`), yet it was the one dossier rendering that
+    // omitted the summary score, so a consumer reading report.json alone could
+    // not tell a MINIMAL scan from a HIGH one without recomputing it. `assess`
+    // is pure and excludes candidate/sub-floor rows internally, so the score is
+    // identical whether or not this envelope filtered candidates above, and the
+    // determinism audit still holds (nothing here varies but `exported_at`).
+    let exposure = crate::core::exposure::assess(&entities, &correlations);
     Ok(Some(json!({
         "scan": scan,
         "entities": entities,
         "entity_count": entities.len(),
         "correlations": correlations,
         "correlation_count": correlations.len(),
+        "exposure": exposure,
         // Best AU geolocation fix synthesised by AU-059 cross-seed geo synergy.
         // `null` when no AU-059 fired; present with full structured fields when
         // ≥2 orthogonal AU source classes converged on a location.
@@ -326,7 +368,7 @@ pub async fn scan_export_gexf(
     Path(id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    if let Some(resp) = scan_missing(&s, &id) {
+    if let Some(resp) = scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
@@ -352,7 +394,8 @@ pub async fn scan_export_gexf(
         entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
     }
     let body = crate::core::gexf::entities_to_gexf(&entities, &relations, &id);
-    download_response(body, "application/xml; charset=utf-8", &id, "gexf")
+    // Redaction of proprietary source names is enforced by `download_response`.
+    download_response(body, "application/xml; charset=utf-8", &id, "gexf", "gexf")
 }
 
 /// `GET /api/v1/scans/{id}/debug.txt` — the one-click debug bundle: the entire
@@ -364,7 +407,7 @@ pub async fn scan_debug_bundle(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = scan_missing(&s, &id) {
+    if let Some(resp) = scan_missing(&s, &id).await {
         return resp;
     }
     // Render off the async runtime: the debug bundle runs many queries, reads
@@ -374,29 +417,119 @@ pub async fn scan_debug_bundle(
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
     match tokio::task::spawn_blocking(move || {
-        crate::cli::export::render_debug_bundle(store.as_ref(), &id2)
+        crate::app::export::render_debug_bundle(store.as_ref(), &id2)
     })
     .await
     {
-        Ok(Ok(body)) => download_response(body, "text/plain; charset=utf-8", &id, "debug.txt"),
+        // Operator artifact (labelled "operator only" in the UI): the debug bundle
+        // deliberately KEEPS the real provider names, so it opts out of the
+        // default-safe redaction via `download_response_operator`.
+        Ok(Ok(body)) => {
+            download_response_operator(body, "text/plain; charset=utf-8", &id, "debug", "txt")
+        }
         Ok(Err(e)) => internal_error(&e),
         Err(e) => internal_error(&format!("debug-bundle render task failed: {e}")),
     }
 }
 
+/// `GET /api/v1/scans/{id}/events.log` — the complete, loss-less scan event
+/// sequence alone (module start/done/error, entities found, expansion
+/// ticks/stops, every admission/exclusion) as a per-type breakdown plus a
+/// readable, aligned per-event timeline (`HH:MM:SS  category  glyph summary`,
+/// matching the web "Scan Log" view) — everything the web "Scan Log" tab shows, as one downloadable
+/// file, without the rest of the [`scan_debug_bundle`] dossier. `hse export
+/// {id} --format events` produces the byte-identical body via
+/// [`crate::app::export::render_event_log`].
+pub async fn scan_events_log(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = scan_missing(&s, &id).await {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    match tokio::task::spawn_blocking(move || store.events_for_scan(&id2)).await {
+        // The event JSONL names the producing provider in module_start/done/error;
+        // `download_response` redacts those proprietary source names for the
+        // customer copy.
+        Ok(Ok(events)) => download_response(
+            crate::app::export::render_event_log(&events),
+            "text/plain; charset=utf-8",
+            &id,
+            "events",
+            "log",
+        ),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("events-log query task failed: {e}")),
+    }
+}
+
 /// Wrap an export `body` as a browser download: a `200` with the given
 /// `content_type` and a `Content-Disposition: attachment` whose filename is
-/// `hse-<ext>-<short-scan-id>.<ext>` (id truncated to 12 chars). Shared by the
+/// `hse-<stem>-<short-scan-id>.<ext>` (id truncated to 12 chars). Shared by the
 /// CSV / JSON / GEXF / debug-bundle endpoints so every download names itself the
 /// same way.
+///
+/// `stem` and `ext` are separate so the file *label* and its *extension* can
+/// differ — e.g. the debug bundle wants `hse-debug-<id>.txt`, not the
+/// double-suffixed `hse-debug.txt-<id>.debug.txt` an `ext`-only builder produced
+/// when a caller passed `"debug.txt"` for both roles. For the CSV/JSON/GEXF
+/// endpoints stem == ext, so their filenames are unchanged.
 pub(crate) fn download_response(
     body: String,
     content_type: &'static str,
     scan_id: &str,
+    stem: &str,
+    ext: &str,
+) -> axum::response::Response {
+    // SHAREABLE scan download → genericise proprietary breach/intel source names
+    // so the customer copy never reveals which providers the operator uses.
+    // Enforced HERE, at the single scan-download choke point, rather than wrapped
+    // around each format's body: every current serializer (CSV / report.json /
+    // GEXF / events.log AND the MITRE navigator layer) and any format added later
+    // is redacted by default. A download that must KEEP the real names (the
+    // operator debug bundle) opts out via [`download_response_operator`], so
+    // forgetting to redact defaults to the safe, customer-shareable behaviour.
+    download_response_operator(
+        redact::redact_sensitive_sources(&body),
+        content_type,
+        scan_id,
+        stem,
+        ext,
+    )
+}
+
+/// Operator-only counterpart to [`download_response`] that KEEPS the real
+/// provider names — the scan debug bundle, an explicit operator artifact labelled
+/// "operator only" in the UI. Same `hse-<stem>-<short_id>.<ext>` naming; the only
+/// difference is that it does NOT redact. Choosing this is a conscious opt-out of
+/// the default-safe redaction, which is why it is a named function rather than a
+/// bool flag.
+pub(crate) fn download_response_operator(
+    body: String,
+    content_type: &'static str,
+    scan_id: &str,
+    stem: &str,
     ext: &str,
 ) -> axum::response::Response {
     let short_id: String = scan_id.chars().take(12).collect();
-    let filename = format!("hse-{ext}-{short_id}.{ext}");
+    attachment_response(body, content_type, &format!("hse-{stem}-{short_id}.{ext}"))
+}
+
+/// The single place a downloadable HTTP response is built: sets the content type
+/// and a `Content-Disposition: attachment; filename="…"` so the browser saves a
+/// file instead of rendering it inline. Every download surface routes through
+/// here — the scan-scoped exports via [`download_response`] (which layers the
+/// `hse-<stem>-<short_id>.<ext>` naming on top) AND the system-scoped logs /
+/// debug bundle, which pass a timestamped `hse-…-<unix_ts>.<ext>` name directly.
+/// Keeping one builder means the attachment header can never drift between the
+/// two families again (they previously hand-rolled it independently).
+pub(crate) fn attachment_response(
+    body: String,
+    content_type: &'static str,
+    filename: &str,
+) -> axum::response::Response {
     let disposition = format!("attachment; filename=\"{filename}\"");
     let mut resp = (StatusCode::OK, body).into_response();
     let headers = resp.headers_mut();

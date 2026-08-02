@@ -20,7 +20,7 @@
 //! ([`MAX_BETWEENNESS_NODES`]) so the O(V·E) betweenness can't run away on a low-RAM
 //! Termux device — above the bound it ranks on degree alone.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use serde::Serialize;
 
@@ -145,6 +145,43 @@ pub fn detect(entities: &[Entity], relations: &[Relation]) -> Vec<PivotNode> {
     });
     pivots.truncate(PIVOT_CAP);
     pivots
+}
+
+/// Per-node structural signal — `(betweenness, is_cut_vertex)` — for EVERY node of
+/// the relationship graph, keyed by UID.
+///
+/// This is the un-truncated companion to [`detect`]: `detect` ranks pivots and keeps
+/// only the top [`PIVOT_CAP`] for a focused shortlist, so a consumer that looks a
+/// specific node up in `detect`'s output silently gets *nothing* for a genuine
+/// bridge that happened to rank 26th on a large graph. [`crate::core::leads`] needs
+/// exactly this — the centrality of an arbitrary lead node, cap-free — to lift a
+/// bridging lead in its ranking. Same one shared [`Graph`] build and the same
+/// [`MAX_BETWEENNESS_NODES`] bound as `detect` (above it, betweenness is `0.0` and
+/// only the cut-vertex flag carries), so it adds no new cost model. Deterministic and
+/// read-only.
+#[must_use]
+pub fn structural_index(
+    entities: &[Entity],
+    relations: &[Relation],
+) -> HashMap<String, (f64, bool)> {
+    let g = Graph::build(entities, relations);
+    let n = g.node_count();
+    if n == 0 {
+        return HashMap::new();
+    }
+    let betweenness = if n <= MAX_BETWEENNESS_NODES {
+        brandes_betweenness(&g)
+    } else {
+        vec![0.0; n]
+    };
+    let (cut_vertices, _bridges) = g.cut_vertices_and_bridges();
+    let mut is_cut = vec![false; n];
+    for c in cut_vertices {
+        is_cut[c] = true;
+    }
+    (0..n)
+        .map(|i| (g.uid(i).to_string(), (betweenness[i], is_cut[i])))
+        .collect()
 }
 
 /// The relationship graph's **bridges** (cut edges): the links that are single points of

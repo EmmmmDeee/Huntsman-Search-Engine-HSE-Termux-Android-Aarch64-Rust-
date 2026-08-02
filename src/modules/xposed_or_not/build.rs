@@ -1,6 +1,6 @@
 //! Pure result-building helpers for XposedOrNot breach data.
 
-use crate::core::{entity::Evidence, module::ModuleResult, scan::Target, tags};
+use crate::core::{confidence, entity::Evidence, module::ModuleResult, scan::Target, tags};
 
 use super::types::{AnalyticsResp, BreachDetail};
 
@@ -32,16 +32,16 @@ pub(super) const NOTABLE_BREACHES: &[&str] = &[
 /// Map a breach hit-count to the exposure entity's confidence.
 ///
 /// One or two appearances already confirm the email is real and leaked
-/// (0.80); each further breach raises corroboration toward a 0.95 ceiling. A
+/// (confidence::HIGH_PLUSPLUS); each further breach raises corroboration toward a confidence::VERY_HIGH_PLUSPLUS ceiling. A
 /// zero count is 0.0 — the caller treats that as "no finding" and emits
 /// nothing.
 pub(super) fn confidence_for_count(count: usize) -> f64 {
     match count {
         0 => 0.0,
-        1..=2 => 0.80,
-        3..=5 => 0.85,
+        1..=2 => confidence::HIGH_PLUSPLUS,
+        3..=5 => confidence::HIGH_PLUSPLUS_PLUS,
         6..=9 => 0.92,
-        _ => 0.95,
+        _ => confidence::VERY_HIGH_PLUSPLUS,
     }
 }
 
@@ -181,7 +181,31 @@ fn attach_breach_detail_attrs(mut ev: Evidence, details: &[BreachDetail]) -> Evi
     if !descriptions.is_empty() {
         ev = ev.with_attr("breach_descriptions", descriptions.join(" | "));
     }
+    // The earliest confirmed exposure date across all breaches — the subject's
+    // first-known compromise, a temporal anchor previously computed nowhere.
+    // Full ISO dates sort lexicographically, so `min` is the earliest.
+    if let Some(earliest) = details
+        .iter()
+        .filter_map(|d| d.xposed_date.as_deref())
+        .map(str::trim)
+        .filter(|s| is_full_iso_date(s))
+        .min()
+    {
+        ev = ev.with_attr("earliest_breach_date", earliest);
+    }
     ev
+}
+
+/// True for a full `YYYY-MM-DD` calendar date (the only shape that sorts
+/// correctly as a string); a bare year or empty value is rejected.
+fn is_full_iso_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    s.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[..4].iter().all(u8::is_ascii_digit)
+        && b[5..7].iter().all(u8::is_ascii_digit)
+        && b[8..].iter().all(u8::is_ascii_digit)
 }
 
 /// Fetch breach analytics from the XposedOrNot analytics endpoint. Best-effort.

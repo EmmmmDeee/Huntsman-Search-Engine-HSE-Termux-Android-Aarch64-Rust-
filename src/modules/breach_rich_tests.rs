@@ -57,8 +57,56 @@ fn composes_person_and_org_and_social_handles() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Person)
-        .unwrap();
+        .expect("should succeed");
     assert!(p.tags.iter().any(|t| t == "see-know"));
+}
+
+#[test]
+fn mines_github_tiktok_reddit_handles_as_username_pivots() {
+    let item = json!({
+        "github": "octocat",
+        "tiktok": "charlidamelio",
+        "reddit": "spez",
+    });
+    let r = run(&item, "see-know");
+    // First-class platform-prefixed Username pivots (resolvable by the
+    // github_user/reddit_user/… modules), not opaque catch-all nodes.
+    assert!(has(&r, EntityKind::Username, "github:octocat"));
+    assert!(has(&r, EntityKind::Username, "tiktok:charlidamelio"));
+    assert!(has(&r, EntityKind::Username, "reddit:spez"));
+    // And NOT duplicated as an unclassified Other("github") junk node.
+    assert!(
+        !r.entities
+            .iter()
+            .any(|e| matches!(&e.kind, EntityKind::Other(k) if k == "github")),
+        "github must be a Username pivot, not a catch-all Other node"
+    );
+}
+
+#[test]
+fn mines_bio_for_alternate_contacts() {
+    let item = json!({
+        "username": "u",
+        "bio": "book me at alt.contact@example.com or call +1 415 555 0132",
+    });
+    let r = run(&item, "see-know");
+    let email = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Email && e.value == "alt.contact@example.com")
+        .expect("an email embedded in the bio must be mined as an Email lead");
+    assert!(email.tags.iter().any(|t| t == "bio-mined"));
+    assert!(
+        r.entities.iter().any(|e| e.kind == EntityKind::Phone),
+        "a phone embedded in the bio must be mined as a Phone lead"
+    );
+    // The raw bio must NOT also appear as an unclassified Other("bio") node.
+    assert!(
+        !r.entities
+            .iter()
+            .any(|e| matches!(&e.kind, EntityKind::Other(k) if k == "bio")),
+        "bio is mined, not emitted verbatim as a catch-all node"
+    );
 }
 
 #[test]
@@ -113,6 +161,30 @@ fn sql_null_sentinel_names_are_not_composed_into_a_person() {
 }
 
 #[test]
+fn username_derived_names_are_not_composed_into_a_person() {
+    // Breach dumps store `full_name = "{username} {username}"` when only a handle
+    // is known; the shared first+last composer must not mint a Person from a
+    // doubled username or a hyphen+digit slug (observed live: a
+    // Person("rhino-ryno23 rhino-ryno23") expanded into a large child scan).
+    let doubled = run(
+        &json!({"first_name": "rhino-ryno23", "last_name": "rhino-ryno23"}),
+        "see-know",
+    );
+    assert!(!doubled.entities.iter().any(|e| e.kind == EntityKind::Person));
+    let half_slug = run(
+        &json!({"first_name": "rhino-ryno23", "last_name": "Smith"}),
+        "see-know",
+    );
+    assert!(!half_slug.entities.iter().any(|e| e.kind == EntityKind::Person));
+    // Positive control: a genuine hyphenated surname (no digit) still composes.
+    assert!(has(
+        &run(&json!({"first_name": "Mary", "last_name": "Smith-Jones"}), "see-know"),
+        EntityKind::Person,
+        "Mary Smith-Jones"
+    ));
+}
+
+#[test]
 fn hardware_serials_become_deviceid_without_duplicate_other_nodes() {
     // A globally-unique IMEI / hardware serial is a strong single-device anchor;
     // it must be typed as DeviceId (so AU-106 can link on it), and — because it
@@ -139,7 +211,7 @@ fn hardware_serials_become_deviceid_without_duplicate_other_nodes() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::DeviceId && e.value == "359881234567890")
-        .unwrap();
+        .expect("should succeed");
     assert!(dev.tags.iter().any(|t| t == "device"));
 }
 

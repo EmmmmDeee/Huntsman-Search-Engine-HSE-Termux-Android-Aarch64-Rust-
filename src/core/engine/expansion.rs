@@ -6,10 +6,27 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use crate::core::entity::normalise;
+use crate::core::entity::{Entity, normalise};
 use crate::core::scan::{ScanOptions, Target, TargetKind};
 
 use super::StopReason;
+
+/// The effective confidence used for EXPANSION decisions (the floor gate, the
+/// ranking weight, and the wrong-identity/convex premiums): plain
+/// [`Entity::c_effective`], or — under the opt-in `feature.depth_decay` policy —
+/// that value discounted by the entity's generation (distance in pivots from
+/// the seed). Pure. `decay_base` is `None` when the policy is off (the
+/// default), giving behaviour byte-identical to a bare `entity.c_effective()`;
+/// `Some(base)` discounts deeper leads so the recursion favours seed-adjacent
+/// ones. Centralised here so the loop applies the SAME value to every downstream
+/// expansion decision, and so the branch is unit-testable without touching the
+/// global settings the engine reads the toggle from.
+pub(super) fn expansion_confidence(entity: &Entity, decay_base: Option<f64>) -> f64 {
+    match decay_base {
+        Some(base) => entity.c_effective_depth_decayed(base),
+        None => entity.c_effective(),
+    }
+}
 
 /// Stable dedup key for a correlation: rule id + its entity uids (sorted), joined
 /// with control characters that can't appear in either, so two correlations are
@@ -130,5 +147,27 @@ mod tests {
         assert_ne!(base, correlation_key(&corr("AU-002", &["u1", "u2"])));
         // Different uid set → different finding.
         assert_ne!(base, correlation_key(&corr("AU-001", &["u1", "u3"])));
+    }
+
+    #[test]
+    fn expansion_confidence_decays_only_when_the_policy_is_on() {
+        use crate::core::confidence;
+        use crate::core::entity::{Entity, EntityKind};
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", confidence::HIGH_PLUSPLUS, "s");
+        e.generation = 2;
+
+        // Policy OFF (None) ⇒ plain c_effective, byte-identical to today.
+        assert_eq!(expansion_confidence(&e, None), e.c_effective());
+
+        // Policy ON ⇒ the value the engine's floor/rank/gate see is the
+        // generation-discounted one, strictly below the raw confidence.
+        let decayed = expansion_confidence(&e, Some(0.75));
+        assert!(decayed < e.c_effective());
+        assert!((decayed - e.c_effective_depth_decayed(0.75)).abs() < 1e-12);
+
+        // A gen-0 (seed-round) entity is never discounted even with the policy on.
+        let mut seed = Entity::new(EntityKind::Email, "z@y.com", confidence::HIGH_PLUSPLUS, "s");
+        seed.generation = 0;
+        assert!((expansion_confidence(&seed, Some(0.75)) - seed.c_effective()).abs() < 1e-12);
     }
 }

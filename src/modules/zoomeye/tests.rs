@@ -46,20 +46,21 @@ fn attack_techniques_are_all_catalogued_and_precise() {
 #[test]
 fn deserialises_matches() {
     let json = r#"{"total": 1, "matches": [{"ip":"8.8.8.8","portinfo":{"port":53}}]}"#;
-    let resp: ZoomResp = serde_json::from_str(json).unwrap();
+    let resp: ZoomResp = serde_json::from_str(json).expect("should succeed");
     assert_eq!(resp.matches.len(), 1);
     assert_eq!(vstr(&resp.matches[0], "ip").as_deref(), Some("8.8.8.8"));
 }
 
 #[test]
 fn error_body_deserialises_to_empty_matches() {
-    let resp: ZoomResp = serde_json::from_str(r#"{"error":"invalid key","status":401}"#).unwrap();
+    let resp: ZoomResp =
+        serde_json::from_str(r#"{"error":"invalid key","status":401}"#).expect("should succeed");
     assert!(resp.matches.is_empty());
 }
 
 #[test]
 fn coords_read_nested_geoinfo_location_strings_or_numbers() {
-    let (lat, lon) = coords(&sample_match()).unwrap();
+    let (lat, lon) = coords(&sample_match()).expect("should succeed");
     assert!((lat - 39.0438).abs() < 1e-6 && (lon + 77.4874).abs() < 1e-6);
     // Numeric (not string) lat/lon also parse.
     let numeric = serde_json::json!({"geoinfo":{"location":{"lat":10.0,"lon":20.0}}});
@@ -113,6 +114,41 @@ fn port_label_combines_port_and_service() {
     let str_port = serde_json::json!({"portinfo":{"port":"8080","service":"http-proxy"}});
     assert_eq!(port_label(&str_port).as_deref(), Some("8080/http-proxy"));
     assert_eq!(port_label(&serde_json::json!({"portinfo":{}})), None);
+}
+
+#[test]
+fn port_app_and_banner_read_nested_portinfo_fields() {
+    assert_eq!(port_app(&sample_match()).as_deref(), Some("nginx"));
+    assert_eq!(port_banner(&sample_match()).as_deref(), Some("..."));
+    // Absent → None (no fabricated app/banner).
+    let bare = serde_json::json!({"portinfo": {"port": 22}});
+    assert_eq!(port_app(&bare), None);
+    assert_eq!(port_banner(&bare), None);
+}
+
+#[test]
+fn port_detail_annotates_label_with_app_and_banner_when_present() {
+    assert_eq!(
+        port_detail(&sample_match(), "443/https").as_deref(),
+        Some("443/https (nginx) — banner: ...")
+    );
+    // App only.
+    let app_only = serde_json::json!({"portinfo": {"app": "OpenSSH"}});
+    assert_eq!(
+        port_detail(&app_only, "22").as_deref(),
+        Some("22 (OpenSSH)")
+    );
+    // Banner only.
+    let banner_only = serde_json::json!({"portinfo": {"banner": "SSH-2.0-OpenSSH_7.4"}});
+    assert_eq!(
+        port_detail(&banner_only, "22").as_deref(),
+        Some("22 — banner: SSH-2.0-OpenSSH_7.4")
+    );
+    // Neither → None, not a bare duplicate of the label.
+    assert_eq!(
+        port_detail(&serde_json::json!({"portinfo": {}}), "80"),
+        None
+    );
 }
 
 #[test]

@@ -26,7 +26,9 @@
 //!
 //! * **handle-equivalence** (`0.80`) — the two canonical handles
 //!   ([`crate::core::scan::identity_norm`]) are *equal* (`jsmith` ↔
-//!   `jsmith@gmail.com`): the strongest single cross-kind tie.
+//!   `jsmith@gmail.com`): the strongest single cross-kind tie. **Not applied
+//!   between two mailboxes at different domains** — see "Different mailboxes"
+//!   below.
 //! * **name-token-match** (`0.62`) — one side is a `Person` whose every name
 //!   token (≥2 chars) appears in the other's canonical handle (`John Smith` ↔
 //!   `johnsmith_au`), with ≥2 tokens so a bare shared first name can't fire it.
@@ -40,6 +42,36 @@
 //!
 //! The three string signals are mutually exclusive (only the strongest tier
 //! fires); **shared-source** is orthogonal and stacks on top.
+//!
+//! # Different mailboxes are different accounts
+//!
+//! No string signal fires between two email addresses at different domains.
+//! [`identity_norm`] keeps only the local part, so every `jstewart@*` in a scan
+//! normalises to `jstewart` and compares equal to every other — and a real
+//! report showed the result: ~200 pairs asserting that one named individual held
+//! mailboxes at an aerospace firm, a national navy, a university and dozens of
+//! unrelated employers, each at `0.86` (handle-equivalence `0.80` fused with a
+//! single shared source `0.30`), on a page that simultaneously reported 0%
+//! corroboration.
+//!
+//! Two mailboxes at different domains are by construction different accounts.
+//! They may still belong to one person, but a shared local part is not the
+//! evidence that shows it — for a common name it is barely evidence at all. Such
+//! a pair can still surface here, since **shared-source** alone reaches `0.657`
+//! at three independent sources; it must simply be earned by corroboration
+//! rather than granted by a coincidence of spelling.
+//!
+//! The suppression covers the whole string ladder rather than just the top tier,
+//! because two identical handles also satisfy `substring-overlap` — demoting
+//! instead of suppressing would still clear [`DEFAULT_MIN_SCORE`] once fused
+//! with one shared source, and would have changed nothing.
+//!
+//! A known adjacent weakness, stated because it is not addressed here: a common
+//! handle weakens *cross-kind* matches by the same logic (`jstewart` the
+//! username against `jstewart@navy.mil`), but cross-kind linking is what
+//! handle-equivalence exists for, and the evidence in hand covers the
+//! email↔email case only. Narrowing further would need a frequency signal —
+//! how many distinct domains carry a handle within the scan — not a wider ban.
 //!
 //! # Read-only, pure, deterministic
 //! [`resolve_coreferences`] borrows the entity slice immutably, allocates its
@@ -101,6 +133,21 @@ struct HandleSide<'a> {
     is_email: bool,
 }
 
+/// The lower-cased domain of `value` if it is shaped like an email address.
+///
+/// Deliberately strict: exactly one `@`, with a non-empty local part and a
+/// domain containing a dot. A username that merely contains `@`, or a bare
+/// handle, yields `None` and is left to the ordinary string ladder — the
+/// cross-domain suppression must only fire when both sides really are mailboxes,
+/// because suppressing a genuine cross-kind match would lose real links.
+fn email_domain(value: &str) -> Option<&str> {
+    let (local, domain) = value.trim().split_once('@')?;
+    if local.is_empty() || domain.contains('@') || !domain.contains('.') {
+        return None;
+    }
+    Some(domain)
+}
+
 /// The strongest string-similarity signal between two canonical handles, as
 /// `(weight, label)`, or `None` when the handles are unrelated. Tiers are
 /// mutually exclusive: an exact match never also counts as an overlap.
@@ -108,18 +155,44 @@ fn string_signal(a: HandleSide<'_>, b: HandleSide<'_>) -> Option<(f64, &'static 
     if a.norm.is_empty() || b.norm.is_empty() {
         return None;
     }
+    // Two mailboxes at DIFFERENT domains are, by construction, different
+    // accounts. A shared local part between them is not evidence of one person;
+    // for a common name it is barely evidence of anything.
+    //
+    // [`identity_norm`] keeps only the local part, so every `jstewart@*` in a
+    // scan normalises to `jstewart` and compares equal. A real report showed
+    // what that costs: ~200 pairs asserting one named individual held mailboxes
+    // at an aerospace firm, a national navy, a university and dozens of
+    // unrelated employers, each scored 0.86 — `W_HANDLE_EQUIV` (0.80) fused with
+    // a single shared source (0.30) — on a page simultaneously reporting 0%
+    // corroboration. Those are defamatory-grade claims about a real person, and
+    // they drown the genuine links in the dossier.
+    //
+    // The suppression covers the whole string ladder, not just the top tier:
+    // `jstewart` and `jstewart` also satisfy [`identity_overlaps`], so demoting
+    // to `W_SUBSTRING` (0.45) would still clear `DEFAULT_MIN_SCORE` once fused
+    // with one shared source (0.615) and change nothing. Such a pair can still
+    // surface — `shared-source` alone reaches 0.657 at three independent
+    // sources — but it must now be earned by corroboration rather than granted
+    // by a coincidence of spelling.
+    //
+    // Deliberately narrow: this is the email↔email case the evidence covers.
+    // Cross-KIND matches (`jsmith` ↔ `jsmith@gmail.com`) are what
+    // `W_HANDLE_EQUIV` was designed for and are left alone, though a common
+    // handle weakens those too — see the module docs.
+    if let (Some(dom_a), Some(dom_b)) = (email_domain(a.raw), email_domain(b.raw))
+        && !dom_a.eq_ignore_ascii_case(dom_b)
+    {
+        return None;
+    }
     if a.norm == b.norm {
-        // [`identity_norm`] keeps only the email LOCAL-PART, but a local-part is
-        // unique only WITHIN a domain: `john@gmail.com` and `john@acme-corp.com`
-        // are different mailboxes owned by (almost always) different people. A
-        // handle-equivalence firing is promoted straight into an `AliasOf` graph
-        // edge — `COREF_PROMOTE_MIN_SCORE == W_HANDLE_EQUIV` — so a bare local-part
-        // collision would forge a hard, cluster-feeding identity link. For an
-        // Email×Email pair require the FULL canonical mailbox to match instead
-        // (`canonical_email` still folds gmail dots/`+tags` and googlemail→gmail,
-        // so genuine same-mailbox spellings keep merging). Cross-kind ties
-        // (email local ↔ username / person) keep the local-part bridge — that is
-        // the intended alias signal, not a domain-scoped identifier.
+        // Same domain (or not both emails) confirmed above. For an Email×Email
+        // pair, still require the FULL canonical mailbox to match — not just the
+        // shared local part — so `canonical_email`'s gmail dot/`+tag`/googlemail
+        // folding is what decides genuine same-mailbox spellings, rather than a
+        // bare local-part collision alone. Cross-kind ties (email local ↔
+        // username / person) keep the local-part bridge — that is the intended
+        // alias signal, not a domain-scoped identifier.
         let handle_equiv = if a.is_email && b.is_email {
             matches!(
                 (canonical_email(a.raw), canonical_email(b.raw)),
@@ -186,6 +259,12 @@ pub fn resolve_coreferences(entities: &[Entity], min_score: f64, limit: usize) -
         is_email: bool,
         sources: std::collections::HashSet<&'a str>,
     }
+    // Bound the O(N²) sweep. An imported breach/stealer dossier can seat 10^5+
+    // identity entities; scoring every pair of those would pin a blocking-pool
+    // thread for minutes. `entities` arrives confidence-ranked, so `.take` keeps
+    // the strongest identities — a deterministic prefix (mirrors the
+    // import-enrichment entity ceiling of 5_000).
+    const MAX_COREF_NODES: usize = 5_000;
     let nodes: Vec<Node> = entities
         .iter()
         .filter(|e| is_identity_kind(&e.kind))
@@ -196,8 +275,15 @@ pub fn resolve_coreferences(entities: &[Entity], min_score: f64, limit: usize) -
             is_email: e.kind == EntityKind::Email,
             sources: e.corroborating_sources(),
         })
+        .take(MAX_COREF_NODES)
         .collect();
 
+    // Bound peak memory to ~`limit`, not O(N²): in a single-source dump every
+    // pair shares that source (a >0 score), so an all-pairs `out` would allocate
+    // billions of CoReferences before the final truncate → OOM. Trim down to the
+    // top `limit` whenever the buffer fills; the survivors are exactly what the
+    // final sort would keep, so the result is unchanged.
+    let trim_at = limit.saturating_mul(4).max(4096);
     let mut out: Vec<CoReference> = Vec::new();
     for (i, a) in nodes.iter().enumerate() {
         for b in &nodes[i + 1..] {
@@ -248,19 +334,28 @@ pub fn resolve_coreferences(entities: &[Entity], min_score: f64, limit: usize) -
                 score,
                 signals,
             });
+            if out.len() >= trim_at {
+                out.sort_by(coref_order);
+                out.truncate(limit);
+            }
         }
     }
 
     // Strongest-first; deterministic UID-pair tie-break.
-    out.sort_by(|x, y| {
-        y.score
-            .partial_cmp(&x.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| x.uid_a.cmp(&y.uid_a))
-            .then_with(|| x.uid_b.cmp(&y.uid_b))
-    });
+    out.sort_by(coref_order);
     out.truncate(limit);
     out
+}
+
+/// Ordering for [`resolve_coreferences`] results: strongest score first, then a
+/// deterministic UID-pair tie-break. Shared by the in-loop trim and the final
+/// sort so the bounded buffer keeps exactly the pairs the final sort would.
+fn coref_order(x: &CoReference, y: &CoReference) -> std::cmp::Ordering {
+    y.score
+        .partial_cmp(&x.score)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| x.uid_a.cmp(&y.uid_a))
+        .then_with(|| x.uid_b.cmp(&y.uid_b))
 }
 
 #[cfg(test)]

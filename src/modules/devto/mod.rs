@@ -24,6 +24,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -61,7 +62,7 @@ impl Module for DevTo {
     }
 
     fn description(&self) -> &'static str {
-        "Dev.to account lookup (name, bio, GitHub/Twitter pivots, location) via public API"
+        "Dev.to account recon — enumerates name, bio, location, and GitHub/Twitter pivots via the public API"
     }
 
     fn priority(&self) -> u8 {
@@ -127,7 +128,12 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
     // Confirmed-on-dev.to username.
-    let mut u = Entity::new(EntityKind::Username, &user.username, 0.88, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        &user.username,
+        confidence::EXPERT,
+        scan_id,
+    );
     u.tag("devto");
     let mut ev = Evidence::new(SRC, format!("Dev.to account '{}'", user.username))
         .with_attr("profile_url", format!("https://dev.to/{}", user.username));
@@ -158,7 +164,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
     if let Some(ref gh) = user.github_username
         && !gh.is_empty()
     {
-        let mut g = Entity::new(EntityKind::Username, gh, 0.82, scan_id);
+        let mut g = Entity::new(EntityKind::Username, gh, confidence::CORROBORATED, scan_id);
         g.tag("github");
         g.tag("devto-pivot");
         g.add_evidence(
@@ -177,7 +183,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
     {
         let tw_clean = tw.trim_start_matches('@');
         if !tw_clean.is_empty() {
-            let mut t = Entity::new(EntityKind::Username, tw_clean, 0.78, scan_id);
+            let mut t = Entity::new(EntityKind::Username, tw_clean, confidence::STRONG, scan_id);
             t.tag("twitter");
             t.tag("devto-pivot");
             t.add_evidence(
@@ -197,7 +203,12 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
 
     // Personal website URL + Domain extraction.
     if let Some(ref site) = user.website_url {
-        for mut e in profile_kit::website_url_and_domain(site, 0.72, 0.65, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(
+            site,
+            confidence::ATTRIBUTED,
+            confidence::HIGH,
+            scan_id,
+        ) {
             e.tag("devto");
             match e.kind {
                 EntityKind::Domain => {
@@ -228,7 +239,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
 
     // Location → coarse Address (geo-hint, not a precise address).
     if let Some(ref loc) = user.location
-        && let Some(mut a) = profile_kit::location_address(loc, 0.35, scan_id)
+        && let Some(mut a) = profile_kit::location_address(loc, confidence::TENTATIVE, scan_id)
     {
         a.tag("devto");
         a.tag("self-asserted");
@@ -245,7 +256,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
             .with_attr("devto_user", &user.username),
         );
         result.push(a);
-        if let Some(mut c) = profile_kit::location_coordinates(loc, 0.25, scan_id) {
+        if let Some(mut c) = profile_kit::location_coordinates(loc, confidence::VERY_LOW, scan_id) {
             c.tag("devto");
             c.add_evidence(
                 Evidence::new(
@@ -261,7 +272,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
     // Bio/summary: extract emails and URLs.
     if let Some(bio) = user.summary.as_deref() {
         for email in crate::util::extract::emails(bio) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.72, scan_id);
+            let mut e = Entity::new(EntityKind::Email, &email, confidence::ATTRIBUTED, scan_id);
             e.tag("devto");
             e.tag("public-profile");
             e.add_evidence(
@@ -272,7 +283,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
         }
         for link in crate::util::extract::urls(bio) {
             let link = link.as_str();
-            let mut url_e = Entity::new(EntityKind::Url, link, 0.60, scan_id);
+            let mut url_e = Entity::new(EntityKind::Url, link, confidence::MEDIUM_PLUS, scan_id);
             url_e.tag("devto");
             url_e.add_evidence(
                 Evidence::new(SRC, format!("Link in Dev.to bio of '{}'", user.username))
@@ -317,8 +328,8 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "devuser");
         assert!(u.is_some(), "must emit Username entity");
-        assert!((u.unwrap().confidence - 0.88).abs() < 0.01);
-        assert!(u.unwrap().has_tag("devto"));
+        assert!((u.expect("should succeed").confidence - confidence::EXPERT).abs() < 0.01);
+        assert!(u.expect("should succeed").has_tag("devto"));
     }
 
     #[test]
@@ -327,7 +338,7 @@ mod tests {
         let ents = build_entities(user, "scan-dt-002");
         let p = ents.iter().find(|e| e.kind == EntityKind::Person);
         assert!(p.is_some(), "must emit Person from multi-word name");
-        assert_eq!(p.unwrap().value, "Alice Developer");
+        assert_eq!(p.expect("should succeed").value, "Alice Developer");
     }
 
     #[test]
@@ -355,14 +366,14 @@ mod tests {
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "devuser-gh");
         assert!(
-            gh.is_some() && gh.unwrap().has_tag("github"),
+            gh.is_some() && gh.expect("should succeed").has_tag("github"),
             "must emit GitHub pivot"
         );
         let tw = ents
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "devtw");
         assert!(
-            tw.is_some() && tw.unwrap().has_tag("twitter"),
+            tw.is_some() && tw.expect("should succeed").has_tag("twitter"),
             "must emit Twitter pivot"
         );
     }
@@ -395,7 +406,7 @@ mod tests {
         let ents = build_entities(user, "scan-dt-006");
         let a = ents.iter().find(|e| e.kind == EntityKind::Address);
         assert!(a.is_some(), "must emit Address from location field");
-        assert!(a.unwrap().has_tag("self-asserted"));
+        assert!(a.expect("should succeed").has_tag("self-asserted"));
     }
 
     #[test]

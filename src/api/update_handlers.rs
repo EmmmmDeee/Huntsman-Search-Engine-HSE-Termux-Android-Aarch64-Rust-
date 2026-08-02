@@ -132,7 +132,7 @@ pub(crate) async fn post_trigger(
     let update_info = Arc::clone(&state.update_info);
     let state_for_restart = Arc::clone(&state);
     tokio::spawn(async move {
-        match crate::cli::update::apply_update(None).await {
+        match crate::app::update::apply_update(None).await {
             Ok(()) => {
                 set_phase(&update_info, UpdatePhase::Restarting);
                 // Brief pause so the SPA can fetch the Restarting status before
@@ -149,7 +149,7 @@ pub(crate) async fn post_trigger(
                     crate::api::SHUTDOWN_DRAIN_GRACE,
                 )
                 .await;
-                crate::cli::update::self_restart();
+                crate::app::update::self_restart();
             }
             Err(e) => {
                 set_phase(&update_info, UpdatePhase::Error(e.to_string()));
@@ -180,7 +180,7 @@ mod tests {
             ..UpdateInfo::default()
         });
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = info.lock().unwrap();
+            let _guard = info.lock().expect("should succeed");
             panic!("simulated panic while holding the update_info lock");
         }));
         assert!(
@@ -218,7 +218,7 @@ mod tests {
              because the claim happens in a separate lock acquisition"
         );
         assert_eq!(
-            info.lock().unwrap().phase,
+            info.lock().expect("should succeed").phase,
             UpdatePhase::Applying,
             "phase must already be Applying by the time try_start_update returns true, \
              not deferred to a later task"
@@ -258,7 +258,7 @@ mod tests {
             let peer = SocketAddr::new(ip, 8080);
             let rejection = reject_non_loopback(&peer);
             assert!(rejection.is_some(), "{ip} must be rejected");
-            assert_eq!(rejection.unwrap().0, StatusCode::FORBIDDEN);
+            assert_eq!(rejection.expect("should succeed").0, StatusCode::FORBIDDEN);
         }
     }
 

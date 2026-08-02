@@ -225,21 +225,6 @@ impl KeyPool {
         true
     }
 
-    /// Assign a key to an `environment` (e.g. "prod"/"dev"). Returns true if
-    /// found.
-    pub fn set_environment(&self, service: &str, value: &str, env: &str) -> bool {
-        let mut data = self.data.lock();
-        if let Some(entries) = data.services.get_mut(&service.to_lowercase()) {
-            for e in entries.iter_mut() {
-                if e.value == value {
-                    e.environment = Some(env.to_string());
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
     /// Select a key for a service with telemetry-driven, load-spreading rotation.
     ///
     /// Among the USABLE keys (cooled-down / invalid / revoked already filtered by
@@ -251,6 +236,22 @@ impl KeyPool {
     /// (`use_count`/`last_used`), so the *next* call sees the load it just placed
     /// and naturally moves on to the next-idlest key.
     pub fn next_key(&self, service: &str) -> Option<String> {
+        self.next_key_excluding(service, &std::collections::HashSet::new())
+    }
+
+    /// Select a key exactly as [`Self::next_key`] does, but skip any key whose
+    /// plaintext value is in `exclude`. This is the in-scan **key cascade**: when
+    /// a module's current key hits a terminal 401/403/429, it records that value
+    /// in a tried-set and asks the pool for the next USABLE key it hasn't burned,
+    /// so a single `process()` call spends every credential the pool holds for the
+    /// service before it gives up — instead of dying on the first key's quota
+    /// while sibling keys sit idle. `exclude` is empty for the plain `next_key`
+    /// path, so that hot path allocates nothing.
+    pub fn next_key_excluding(
+        &self,
+        service: &str,
+        exclude: &std::collections::HashSet<String>,
+    ) -> Option<String> {
         let lower = service.to_lowercase();
         let now = crate::core::entity::unix_now();
         let mut data = self.data.lock();
@@ -271,7 +272,7 @@ impl KeyPool {
         for offset in 0..len {
             let i = (*idx + offset) % len;
             let entry = &entries[i];
-            if !entry.is_usable() {
+            if !entry.is_usable() || exclude.contains(&entry.value) {
                 continue;
             }
             let rank = entry.selection_rank(now);

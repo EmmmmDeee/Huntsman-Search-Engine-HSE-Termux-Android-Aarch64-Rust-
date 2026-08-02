@@ -1,0 +1,623 @@
+//! Local See-Know data-log store — Termux Android aarch64 (no root).
+//!
+//! Every positive See-Know search result the engine obtains (hooked at the
+//! `endpoints` module's cache-put sites, covering POST `/search`, POST
+//! `/search/deep`, and every GET endpoint via `get_path`) is appended here as
+//! one JSON line, so all "seek" data from the module's existing search flows is
+//! retained locally on-device. The store is:
+//!
+//!   * **Autonomous** — writes happen inline on the existing search path; no
+//!     extra call sites, flags, or user action required.
+//!   * **Transparent** — newline-delimited JSON (`.jsonl`) the operator can
+//!     `cat`/`jq` directly; each record carries endpoint, query, type, an epoch
+//!     timestamp, item count, and the raw items verbatim.
+//!   * **No-root / Termux-first** — lives under [`super::config::get_results_dir`]
+//!     (`~/storage/downloads/.hse/see_know_results/logs`, with `$HOME` and CWD
+//!     fallbacks), all reachable without root.
+//!   * **Best-effort** — logging never fails a scan: any IO error is swallowed
+//!     so a read-only or full filesystem degrades logging, not searching.
+
+use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// Serializes concurrent appends. Multiple scan tasks (up to
+/// `config::MAX_CONCURRENT_QUERIES`) may log at once; a single line-append under
+/// this lock keeps records intact and non-interleaved.
+static WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Basename of the active append-only data-log file inside the logs directory.
+const LOG_FILE: &str = "seek_searches.jsonl";
+
+/// Basename of the single retained rotated generation. When the active file
+/// reaches [`MAX_LOG_BYTES`] it is renamed to this, so total on-disk use is
+/// bounded at ~2× the cap (active + one prior generation) rather than growing
+/// without limit on a perpetually-running Termux deployment.
+const ROTATED_FILE: &str = "seek_searches.jsonl.1";
+
+/// Size cap for the active log file before rotation. Bounds BOTH disk use and
+/// the cost of the readers: `yield_counts` is memoized per scan (see
+/// [`YIELD_CACHE`]) but still pays one full read+parse per scan, so an
+/// unbounded file would make every scan's first plan-ordering call re-parse an
+/// ever-growing log. 8 MiB holds tens of thousands of records — an ample,
+/// recent-enough yield-feedback window — while keeping that read O(cap).
+const MAX_LOG_BYTES: u64 = 8 * 1024 * 1024;
+
+/// One persisted See-Know search result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchLogRecord {
+    /// Epoch milliseconds when the record was written.
+    pub timestamp_ms: u128,
+    /// API path queried, e.g. `/search` or `/network/email-check`.
+    pub endpoint: String,
+    /// The query value (as sent to the API).
+    pub query: String,
+    /// Query type discriminator (`""` = auto-detect), e.g. `email`.
+    pub query_type: String,
+    /// Number of result items captured.
+    pub item_count: usize,
+    /// Raw result items exactly as returned by the API.
+    pub items: Vec<Value>,
+}
+
+/// Per-scan memoization for [`yield_counts`]: `(scan_id, counts)` pairs for
+/// the most recently seen scans. `order_by_roi` runs once per seed and a scan
+/// can process hundreds of them, so caching the map per `scan_id` turns a
+/// per-seed full-log read+parse into one per scan. A small bounded slot list
+/// (not one global slot) so `hse serve` running a handful of scans at once
+/// doesn't thrash — each scan gets its OWN cached entry instead of evicting
+/// the others on every call — while staying cheap to scan linearly at this
+/// size. FIFO eviction (oldest inserted first) once full; a lookup miss
+/// (including one caused by eviction) always just falls back to a fresh read,
+/// so a wrong/absent id can never return another scan's counts.
+type YieldCache = Mutex<Vec<(String, std::collections::HashMap<String, usize>)>>;
+
+/// Bound on concurrently-memoized scans. Comfortably above realistic
+/// concurrent-scan counts for this single-operator tool, with headroom to
+/// spare.
+const MAX_CACHED_SCANS: usize = 8;
+
+static YIELD_CACHE: YieldCache = Mutex::new(Vec::new());
+
+/// Aggregate statistics over the on-device log.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LogStats {
+    pub records: usize,
+    pub total_items: usize,
+    pub endpoints: usize,
+}
+
+/// Directory holding the See-Know data logs (created on demand).
+#[must_use]
+pub fn log_dir() -> PathBuf {
+    let dir = super::config::get_results_dir().join("logs");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// Absolute path of the append-only log file.
+#[must_use]
+pub fn log_path() -> PathBuf {
+    log_dir().join(LOG_FILE)
+}
+
+fn now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis())
+}
+
+fn build_record(endpoint: &str, query: &str, query_type: &str, items: &[Value]) -> SearchLogRecord {
+    SearchLogRecord {
+        timestamp_ms: now_ms(),
+        endpoint: endpoint.to_string(),
+        query: query.to_string(),
+        query_type: query_type.to_string(),
+        item_count: items.len(),
+        items: items.to_vec(),
+    }
+}
+
+/// Append one record to the active log file inside `dir`, rotating first if it
+/// has reached [`MAX_LOG_BYTES`]. Best-effort: returns `false` on any
+/// serialization/IO error, never panicking.
+fn append_record(dir: &Path, record: &SearchLogRecord) -> bool {
+    append_record_capped(dir, record, MAX_LOG_BYTES)
+}
+
+/// [`append_record`] with an explicit rotation threshold, so the rotation
+/// boundary is unit-testable without writing megabytes.
+fn append_record_capped(dir: &Path, record: &SearchLogRecord, max_bytes: u64) -> bool {
+    let Ok(mut line) = serde_json::to_string(record) else {
+        return false;
+    };
+    line.push('\n');
+
+    let _guard = WRITE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let current = dir.join(LOG_FILE);
+    let current_len = std::fs::metadata(&current).map_or(0, |m| m.len());
+    // Rotate BEFORE appending when adding THIS record would push the active file
+    // past the cap (projected size = current_len + this line): rename the active
+    // file to the single retained generation (replacing any prior one). Checking
+    // the projected size — not just the pre-append size — is what makes the cap
+    // actually hold: a large record can't overshoot for a whole extra generation.
+    // Each generation therefore stays <= max_bytes and disk is bounded at ~2×.
+    // An empty active file is never rotated (nothing to preserve); a single
+    // record larger than the cap is unavoidably written whole, isolated in its
+    // own generation. Best-effort: a failed rename degrades to a continued append
+    // (bounded growth lost, but never a lost record).
+    if current_len > 0 && current_len + line.len() as u64 > max_bytes {
+        let _ = std::fs::rename(&current, dir.join(ROTATED_FILE));
+    }
+    match OpenOptions::new().create(true).append(true).open(&current) {
+        Ok(mut f) => f.write_all(line.as_bytes()).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// Minimal projection for the hot yield-count path: deserialize ONLY the
+/// endpoint, so counting never materializes each record's potentially large
+/// `items` payload. serde ignores the other fields (no `deny_unknown_fields`).
+#[derive(Deserialize)]
+struct EndpointOnly {
+    endpoint: String,
+}
+
+/// Stream every non-empty record line inside `dir`, oldest first: the rotated
+/// generation (if present) followed by the active file. The single source of
+/// truth for WHICH generations are read and HOW lines are filtered, so every
+/// reader shares it and cannot drift; callers choose what to deserialize per
+/// line (full record vs a minimal projection). Both files are size-bounded (see
+/// [`MAX_LOG_BYTES`]), so this stays O(cap) on a long-lived deployment.
+fn for_each_record_line(dir: &Path, mut on_line: impl FnMut(&str)) {
+    for name in [ROTATED_FILE, LOG_FILE] {
+        let Ok(file) = std::fs::File::open(dir.join(name)) else {
+            continue;
+        };
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                on_line(trimmed);
+            }
+        }
+    }
+}
+
+/// Read all retained records inside `dir` (oldest first), skipping malformed
+/// lines. Materializes full records — for retrieval callers, not the hot path.
+fn read_files(dir: &Path) -> Vec<SearchLogRecord> {
+    let mut out = Vec::new();
+    for_each_record_line(dir, |line| {
+        if let Ok(rec) = serde_json::from_str::<SearchLogRecord>(line) {
+            out.push(rec);
+        }
+    });
+    out
+}
+
+/// Read every retained record inside `dir` (oldest first).
+fn read_all_from(dir: &Path) -> Vec<SearchLogRecord> {
+    read_files(dir)
+}
+
+/// Summary statistics over the retained records inside `dir`.
+fn stats_from(dir: &Path) -> LogStats {
+    let mut endpoints = std::collections::HashSet::new();
+    let mut out = LogStats::default();
+    for rec in read_files(dir) {
+        out.records += 1;
+        out.total_items += rec.item_count;
+        endpoints.insert(rec.endpoint);
+    }
+    out.endpoints = endpoints.len();
+    out
+}
+
+/// Persist one search result to the on-device log. Best-effort: returns `false`
+/// (never panics) if the record could not be written. Empty result sets are
+/// skipped — only data-bearing searches are logged, mirroring the client's
+/// positive-only cache.
+pub fn log_search(endpoint: &str, query: &str, query_type: &str, items: &[Value]) -> bool {
+    if items.is_empty() {
+        return false;
+    }
+    append_record(
+        &log_dir(),
+        &build_record(endpoint, query, query_type, items),
+    )
+}
+
+/// Read every persisted record (oldest first). Empty vec if no log exists yet.
+#[must_use]
+pub fn read_all() -> Vec<SearchLogRecord> {
+    read_all_from(&log_dir())
+}
+
+/// Summary statistics over the on-device log (records, total items, distinct
+/// endpoints).
+#[must_use]
+pub fn stats() -> LogStats {
+    stats_from(&log_dir())
+}
+
+/// Per-endpoint count of past positive (data-bearing) records. Because only
+/// data-bearing searches are logged, this is a direct historical-yield signal:
+/// the live plan orderer boosts endpoints that have produced data for THIS
+/// operator before, closing the loop from stored results back into scoring.
+/// Empty map if no log exists yet.
+///
+/// Memoized per `scan_id` (see [`YIELD_CACHE`]): the first call for a given
+/// scan pays a full log read+parse, every subsequent call for the SAME scan
+/// returns the cached map. A new `scan_id` always forces a fresh read, so a
+/// long-lived `hse serve` process never serves a later scan stale counts from
+/// an earlier one.
+#[must_use]
+pub fn yield_counts(scan_id: &str) -> std::collections::HashMap<String, usize> {
+    yield_counts_cached(&YIELD_CACHE, scan_id, &log_dir())
+}
+
+/// [`yield_counts`] split on the cache instance and the log directory, so the
+/// memoization contract is unit-testable against a throwaway directory AND a
+/// throwaway cache — never the real on-device log path or the process-global
+/// [`YIELD_CACHE`], which every concurrently-running test would otherwise
+/// share (`cargo test` runs `#[test]` functions in parallel by default; a
+/// shared global slot let one test's scan_id silently evict another's).
+fn yield_counts_cached(
+    cache: &YieldCache,
+    scan_id: &str,
+    dir: &Path,
+) -> std::collections::HashMap<String, usize> {
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, counts)) = guard.iter().find(|(id, _)| id == scan_id) {
+        return counts.clone();
+    }
+    let counts = yield_counts_from(dir);
+    if guard.len() >= MAX_CACHED_SCANS {
+        guard.remove(0);
+    }
+    guard.push((scan_id.to_string(), counts.clone()));
+    counts
+}
+
+fn yield_counts_from(dir: &Path) -> std::collections::HashMap<String, usize> {
+    // Hot path (runs on every effective_plan): stream lines and pull ONLY the
+    // endpoint, never allocating the full records / `items` payloads.
+    let mut out = std::collections::HashMap::new();
+    for_each_record_line(dir, |line| {
+        if let Ok(e) = serde_json::from_str::<EndpointOnly>(line) {
+            *out.entry(e.endpoint).or_insert(0) += 1;
+        }
+    });
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // Unique throwaway dir per test — no env mutation (the crate denies unsafe,
+    // and std::env::set_var is unsafe), no clock/rand (unavailable in some
+    // sandboxes): derive from an atomic counter plus the process id.
+    fn temp_dir() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let d = std::env::temp_dir().join(format!("hse_seek_log_{}_{}", std::process::id(), n));
+        std::fs::create_dir_all(&d).expect("should succeed");
+        d
+    }
+
+    #[test]
+    fn test_log_and_read_roundtrip() {
+        let dir = temp_dir();
+        let rec = build_record("/search", "user@example.com", "email", &[json!({"hit": 1})]);
+        assert!(append_record(&dir, &rec));
+        let all = read_all_from(&dir);
+        assert!(
+            all.iter()
+                .any(|r| r.query == "user@example.com" && r.endpoint == "/search")
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_empty_items_not_logged() {
+        // Public API skips empty item sets entirely.
+        assert!(!log_search("/search", "nobody", "email", &[]));
+    }
+
+    #[test]
+    fn test_rotation_bounds_active_file_and_preserves_records() {
+        let dir = temp_dir();
+        // A tiny cap forces rotation after the first record so the boundary is
+        // exercised without writing megabytes.
+        let cap = 1u64;
+        for i in 0..3 {
+            let rec = build_record("/search", &format!("q{i}"), "", &[json!({"n": i})]);
+            assert!(append_record_capped(&dir, &rec, cap));
+        }
+        // Exactly one rotated generation is retained (disk bounded at ~2× cap).
+        assert!(
+            dir.join(ROTATED_FILE).exists(),
+            "a rotated generation must exist"
+        );
+        assert!(dir.join(LOG_FILE).exists(), "the active file must exist");
+        // The active file holds only the newest record (rotation happened before
+        // each append once the previous file reached the cap).
+        let active = std::fs::read_to_string(dir.join(LOG_FILE)).expect("should succeed");
+        assert_eq!(
+            active.lines().count(),
+            1,
+            "active file is bounded to the tail"
+        );
+        // Bounded retention: only the most recent generation-and-a-half survives
+        // (rotated `q1` + active `q2`); the oldest `q0` was intentionally dropped
+        // when the second rotation overwrote the single retained generation. This
+        // IS the disk bound — old data ages out, recent yield history is kept.
+        let all = read_all_from(&dir);
+        assert_eq!(all.len(), 2, "retention is bounded to ~2 generations");
+        assert_eq!(
+            all.first().expect("should succeed").query,
+            "q1",
+            "oldest kept (rotated) first"
+        );
+        assert_eq!(
+            all.last().expect("should succeed").query,
+            "q2",
+            "newest (active) last"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_no_rotation_below_cap() {
+        let dir = temp_dir();
+        // A large cap: all records stay in the active file, no rotated generation.
+        for i in 0..5 {
+            append_record_capped(
+                &dir,
+                &build_record("/search", &format!("q{i}"), "", &[json!({"n": i})]),
+                1 << 20,
+            );
+        }
+        assert!(
+            !dir.join(ROTATED_FILE).exists(),
+            "no rotation below the cap"
+        );
+        assert_eq!(read_all_from(&dir).len(), 5);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_projected_size_keeps_active_file_within_cap() {
+        // Regression guard for the projected-size rotation fix: with a cap that
+        // fits one record but not two, the old PRE-append check let the active
+        // file reach ~2 records before rotating (overshooting the cap). The
+        // projected-size check must keep the active file within the cap after
+        // every append. The cap is DERIVED from a real serialized record (not a
+        // hard-coded byte count) so it reliably holds exactly one line but not two.
+        let dir = temp_dir();
+        let one_line = serde_json::to_string(&build_record("/search", "q0", "", &[json!({"n": 0})]))
+            .expect("should succeed")
+            .len() as u64
+            + 1; // trailing newline
+        let cap = one_line * 2 - 1; // one record fits; two would exceed
+        for i in 0..6 {
+            append_record_capped(
+                &dir,
+                &build_record("/search", &format!("q{i}"), "", &[json!({"n": i})]),
+                cap,
+            );
+            let active_len = std::fs::metadata(dir.join(LOG_FILE)).map_or(0, |m| m.len());
+            assert!(
+                active_len <= cap,
+                "active file {active_len}B must stay within the {cap}B cap after append {i}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_yield_counts_span_rotated_and_active_generations() {
+        // The hot-path yield counter (endpoint-only streaming) must still count
+        // across both the rotated generation and the active file.
+        let dir = temp_dir();
+        let cap = 1u64; // rotate on every append
+        append_record_capped(
+            &dir,
+            &build_record("/search", "a", "", &[json!({"x": 1})]),
+            cap,
+        );
+        append_record_capped(
+            &dir,
+            &build_record("/search", "b", "", &[json!({"x": 2})]),
+            cap,
+        );
+        let counts = yield_counts_from(&dir);
+        // `a` rotated, `b` active → both counted (2 total for /search).
+        assert_eq!(counts.get("/search"), Some(&2));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_stats_counts() {
+        let dir = temp_dir();
+        append_record(
+            &dir,
+            &build_record("/search", "a", "", &[json!({"x": 1}), json!({"x": 2})]),
+        );
+        append_record(
+            &dir,
+            &build_record(
+                "/network/email-check",
+                "b@c.com",
+                "email",
+                &[json!({"svc": "gh"})],
+            ),
+        );
+        let s = stats_from(&dir);
+        assert_eq!(s.records, 2);
+        assert_eq!(s.total_items, 3);
+        assert_eq!(s.endpoints, 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_yield_counts() {
+        let dir = temp_dir();
+        append_record(&dir, &build_record("/search", "a", "", &[json!({"x": 1})]));
+        append_record(&dir, &build_record("/search", "b", "", &[json!({"x": 2})]));
+        append_record(
+            &dir,
+            &build_record("/discord/user", "123", "", &[json!({"d": 1})]),
+        );
+        let counts = yield_counts_from(&dir);
+        assert_eq!(counts.get("/search"), Some(&2));
+        assert_eq!(counts.get("/discord/user"), Some(&1));
+        assert_eq!(counts.get("/network/ip"), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_yield_counts_cached_reuses_result_for_the_same_scan_id() {
+        // An isolated LOCAL cache, never the process-global YIELD_CACHE:
+        // `cargo test` runs `#[test]` functions concurrently by default, and a
+        // shared global slot would let another test's unrelated scan_id call
+        // race with (and corrupt) this test's own cache entries.
+        let cache: YieldCache = Mutex::new(Vec::new());
+        let dir = temp_dir();
+        append_record(&dir, &build_record("/search", "a", "", &[json!({"x": 1})]));
+        let scan_id = "scan-cache-hit";
+        assert_eq!(
+            yield_counts_cached(&cache, scan_id, &dir).get("/search"),
+            Some(&1)
+        );
+
+        // A second record lands (as a real scan's own searches would append
+        // mid-scan), but a call with the SAME scan_id must still return the
+        // memoized snapshot from the first call, not re-read the file.
+        append_record(&dir, &build_record("/search", "b", "", &[json!({"x": 2})]));
+        assert_eq!(
+            yield_counts_cached(&cache, scan_id, &dir).get("/search"),
+            Some(&1),
+            "same scan_id must reuse the cached (now stale) count, not re-read"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_yield_counts_cached_refreshes_on_a_new_scan_id() {
+        let cache: YieldCache = Mutex::new(Vec::new());
+        let dir = temp_dir();
+        append_record(&dir, &build_record("/search", "a", "", &[json!({"x": 1})]));
+        assert_eq!(
+            yield_counts_cached(&cache, "scan-refresh-1", &dir).get("/search"),
+            Some(&1)
+        );
+
+        append_record(&dir, &build_record("/search", "b", "", &[json!({"x": 2})]));
+        // A DIFFERENT scan_id must force a fresh read and see the new total.
+        assert_eq!(
+            yield_counts_cached(&cache, "scan-refresh-2", &dir).get("/search"),
+            Some(&2),
+            "a new scan_id must bypass the cache and see the current file state"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_yield_counts_cached_holds_several_scans_without_evicting_each_other() {
+        // The whole point of a bounded MULTI-slot cache over a single slot:
+        // two DIFFERENT scans interleaving their calls (exactly what happens
+        // if `hse serve` ever runs concurrent scans, and what a parallel test
+        // run does to any test relying on the global YIELD_CACHE) must not
+        // evict one another as long as both fit under MAX_CACHED_SCANS.
+        let cache: YieldCache = Mutex::new(Vec::new());
+        let dir_a = temp_dir();
+        let dir_b = temp_dir();
+        append_record(
+            &dir_a,
+            &build_record("/search", "a", "", &[json!({"x": 1})]),
+        );
+        append_record(
+            &dir_b,
+            &build_record("/discord/user", "b", "", &[json!({"x": 1})]),
+        );
+
+        assert_eq!(
+            yield_counts_cached(&cache, "scan-a", &dir_a).get("/search"),
+            Some(&1)
+        );
+        assert_eq!(
+            yield_counts_cached(&cache, "scan-b", &dir_b).get("/discord/user"),
+            Some(&1)
+        );
+        // Both entries must still be independently cached — a lookup for
+        // "scan-a" must NOT have been evicted or clobbered by "scan-b"'s
+        // insertion moments later.
+        append_record(
+            &dir_a,
+            &build_record("/search", "c", "", &[json!({"x": 2})]),
+        );
+        assert_eq!(
+            yield_counts_cached(&cache, "scan-a", &dir_a).get("/search"),
+            Some(&1),
+            "scan-a's cached entry must survive scan-b's unrelated insertion"
+        );
+
+        std::fs::remove_dir_all(&dir_a).ok();
+        std::fs::remove_dir_all(&dir_b).ok();
+    }
+
+    #[test]
+    fn test_yield_counts_cached_evicts_oldest_once_full() {
+        let cache: YieldCache = Mutex::new(Vec::new());
+        let dir = temp_dir();
+        append_record(&dir, &build_record("/search", "a", "", &[json!({"x": 1})]));
+
+        // Fill the cache to exactly its bound (MAX_CACHED_SCANS entries), then
+        // insert ONE more distinct id — eviction only fires on an insert that
+        // finds the cache ALREADY at the bound, so exactly MAX_CACHED_SCANS
+        // fills would leave every entry (including the first) still present.
+        for i in 0..=MAX_CACHED_SCANS {
+            yield_counts_cached(&cache, &format!("scan-fill-{i}"), &dir);
+        }
+        // The very first inserted id ("scan-fill-0") must now be evicted
+        // (FIFO) — a fresh call for it must see the CURRENT file state, not
+        // return a stale cached value from before the bound was exceeded.
+        append_record(&dir, &build_record("/search", "b", "", &[json!({"x": 2})]));
+        assert_eq!(
+            yield_counts_cached(&cache, "scan-fill-0", &dir).get("/search"),
+            Some(&2),
+            "the oldest entry must have been evicted once the cache filled up"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_malformed_lines_skipped() {
+        let dir = temp_dir();
+        std::fs::write(dir.join(LOG_FILE), "not json\n{\"broken\":\n").expect("should succeed");
+        assert_eq!(read_all_from(&dir).len(), 0);
+        // A valid record still reads back after the garbage.
+        append_record(&dir, &build_record("/search", "ok", "", &[json!({"y": 1})]));
+        assert_eq!(read_all_from(&dir).len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

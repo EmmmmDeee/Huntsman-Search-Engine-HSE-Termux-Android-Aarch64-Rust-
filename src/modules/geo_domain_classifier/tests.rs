@@ -1,24 +1,25 @@
+use crate::core::confidence;
 use super::*;
 
 #[test]
 fn classifies_known_australian_service() {
-        let geo = classify_domain("commbank.com.au").unwrap();
+        let geo = classify_domain("commbank.com.au").expect("should succeed");
         assert_eq!(geo.country_code, "AU");
         assert_eq!(geo.method, "known_service");
-        assert!((geo.confidence - 0.60).abs() < 1e-9);
+        assert!((geo.confidence - confidence::MEDIUM_PLUS).abs() < 1e-9);
     }
 
     #[test]
     fn classifies_cctld_fallback() {
-        let geo = classify_domain("example.com.au").unwrap();
+        let geo = classify_domain("example.com.au").expect("should succeed");
         assert_eq!(geo.country_code, "AU");
         assert_eq!(geo.method, "cctld");
-        assert!((geo.confidence - 0.45).abs() < 1e-9);
+        assert!((geo.confidence - confidence::LOW_MEDIUM).abs() < 1e-9);
     }
 
     #[test]
     fn strips_www() {
-        let geo = classify_by_known_service("www.chase.com").unwrap();
+        let geo = classify_by_known_service("www.chase.com").expect("should succeed");
         assert_eq!(geo.country_code, "US");
     }
 
@@ -29,14 +30,14 @@ fn classifies_known_australian_service() {
 
     #[test]
     fn german_tld() {
-        let geo = classify_domain("sparkasse.de").unwrap();
+        let geo = classify_domain("sparkasse.de").expect("should succeed");
         assert_eq!(geo.country_code, "DE");
         assert_eq!(geo.method, "known_service");
     }
 
     #[test]
     fn simple_cctld() {
-        let geo = classify_domain("random-site.fr").unwrap();
+        let geo = classify_domain("random-site.fr").expect("should succeed");
         assert_eq!(geo.country_code, "FR");
         assert_eq!(geo.method, "cctld");
     }
@@ -62,9 +63,8 @@ fn classifies_known_australian_service() {
             http: reqwest::Client::new(),
             keys: Default::default(),
             cancel: Default::default(),
-            proxy_pool: Default::default(),
         };
-        let r = m.process(&target, &ctx).await.unwrap();
+        let r = m.process(&target, &ctx).await.expect("should succeed");
         assert_eq!(r.len(), 1);
         assert_eq!(r.entities[0].kind, EntityKind::Address);
         assert_eq!(r.entities[0].value, "Australia");
@@ -80,7 +80,6 @@ fn classifies_known_australian_service() {
             http: reqwest::Client::new(),
             keys: Default::default(),
             cancel: Default::default(),
-            proxy_pool: Default::default(),
         }
     }
 
@@ -92,7 +91,7 @@ fn classifies_known_australian_service() {
         let r = m
             .process(&Target::new(TargetKind::Email, "j.citizen@uq.edu.au"), &test_ctx())
             .await
-            .unwrap();
+            .expect("should succeed");
         let addr = r
             .entities
             .iter()
@@ -113,7 +112,7 @@ fn classifies_known_australian_service() {
                 &test_ctx(),
             )
             .await
-            .unwrap();
+            .expect("should succeed");
         let addr = r
             .entities
             .iter()
@@ -139,7 +138,7 @@ fn classifies_known_australian_service() {
             let r = m
                 .process(&Target::new(TargetKind::Email, addr), &test_ctx())
                 .await
-                .unwrap();
+                .expect("should succeed");
             assert!(
                 r.entities.is_empty(),
                 "{addr} must not produce a location"
@@ -206,14 +205,14 @@ fn classifies_known_australian_service() {
     #[test]
     fn classifies_au_state_government_domain_to_jurisdiction() {
         // A `*.{state}.gov.au` domain resolves to state grain (not just country).
-        let geo = classify_domain("health.nsw.gov.au").unwrap();
+        let geo = classify_domain("health.nsw.gov.au").expect("should succeed");
         assert_eq!(geo.method, "au_gov_domain");
         assert_eq!(geo.country_code, "AU");
         assert_eq!(geo.location, "New South Wales, Australia");
         assert_eq!(geo.au_state, Some("NSW"));
 
         // Case-insensitive, deeper subdomain.
-        let vic = classify_domain("schools.education.VIC.gov.au").unwrap();
+        let vic = classify_domain("schools.education.VIC.gov.au").expect("should succeed");
         assert_eq!(vic.au_state, Some("VIC"));
     }
 
@@ -221,7 +220,7 @@ fn classifies_known_australian_service() {
     fn federal_gov_domain_falls_back_to_country_grain() {
         // `ato.gov.au` has no state label → not jurisdiction-precise; it still
         // classifies as Australia via the ccTLD, with no au_state.
-        let geo = classify_domain("ato.gov.au").unwrap();
+        let geo = classify_domain("ato.gov.au").expect("should succeed");
         assert_eq!(geo.au_state, None);
         assert_eq!(geo.country_code, "AU");
     }
@@ -237,9 +236,8 @@ fn classifies_known_australian_service() {
             http: reqwest::Client::new(),
             keys: Default::default(),
             cancel: Default::default(),
-            proxy_pool: Default::default(),
         };
-        let r = m.process(&target, &ctx).await.unwrap();
+        let r = m.process(&target, &ctx).await.expect("should succeed");
         // Exactly one Address (state grain), tagged with the jurisdiction; NO
         // Coordinates (a whole state must not pin a point).
         assert!(r.entities.iter().all(|e| e.kind == EntityKind::Address));
@@ -254,34 +252,34 @@ fn classifies_known_australian_service() {
     fn classifies_au_university_to_its_city() {
         // A university domain resolves to its home CITY (finer than the .edu.au
         // country fallback), via the known-service table — matched as a subdomain.
-        let uq = classify_domain("student.uq.edu.au").unwrap();
+        let uq = classify_domain("student.uq.edu.au").expect("should succeed");
         assert_eq!(uq.country_code, "AU");
         assert_eq!(uq.location, "Brisbane, Australia");
         assert_eq!(uq.au_state, None); // city grain, not a whole-state jurisdiction
 
-        assert_eq!(classify_domain("unimelb.edu.au").unwrap().location, "Melbourne, Australia");
-        assert_eq!(classify_domain("anu.edu.au").unwrap().location, "Canberra, Australia");
-        assert_eq!(classify_domain("monash.edu").unwrap().location, "Melbourne, Australia");
+        assert_eq!(classify_domain("unimelb.edu.au").expect("should succeed").location, "Melbourne, Australia");
+        assert_eq!(classify_domain("anu.edu.au").expect("should succeed").location, "Canberra, Australia");
+        assert_eq!(classify_domain("monash.edu").expect("should succeed").location, "Melbourne, Australia");
     }
 
     #[test]
     fn classifies_au_state_education_domain_to_jurisdiction() {
         // A state school-system domain resolves to state grain (au_state set).
-        let nsw = classify_domain("schools.nsw.edu.au").unwrap();
+        let nsw = classify_domain("schools.nsw.edu.au").expect("should succeed");
         assert_eq!(nsw.method, "au_gov_domain");
         assert_eq!(nsw.au_state, Some("NSW"));
         assert_eq!(nsw.location, "New South Wales, Australia");
         // Education Queensland.
-        assert_eq!(classify_domain("eq.edu.au").unwrap().au_state, Some("QLD"));
+        assert_eq!(classify_domain("eq.edu.au").expect("should succeed").au_state, Some("QLD"));
     }
 
     #[test]
     fn id_au_and_asn_au_now_classify_as_australia() {
         // Previously these AU 2LDs fell through to no classification.
-        let id = classify_domain("haigen.id.au").unwrap();
+        let id = classify_domain("haigen.id.au").expect("should succeed");
         assert_eq!(id.country_code, "AU");
         assert_eq!(id.location, "Australia");
-        let asn = classify_domain("surfclub.asn.au").unwrap();
+        let asn = classify_domain("surfclub.asn.au").expect("should succeed");
         assert_eq!(asn.country_code, "AU");
     }
 
@@ -293,7 +291,7 @@ fn classifies_known_australian_service() {
         let r = m
             .process(&Target::new(TargetKind::Domain, "haigen.id.au"), &test_ctx())
             .await
-            .unwrap();
+            .expect("should succeed");
         let addr = r
             .entities
             .iter()
@@ -314,7 +312,7 @@ fn classifies_known_australian_service() {
         let r = m
             .process(&Target::new(TargetKind::Domain, "acme-widgets.com.au"), &test_ctx())
             .await
-            .unwrap();
+            .expect("should succeed");
         let addr = r
             .entities
             .iter()

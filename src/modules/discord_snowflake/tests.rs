@@ -62,7 +62,6 @@ async fn process_enriches_discord_id_with_creation_date() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let target = Target::new(TargetKind::Username, &id);
     let r = DiscordSnowflake

@@ -13,7 +13,7 @@ fn cost_is_key_gated() {
 }
 
 fn parse(json: &str) -> Common {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 fn attr<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {
@@ -103,4 +103,30 @@ fn missing_fraud_score_defaults_to_clean_and_omits_optionals() {
     // IP-only fields absent on a phone response → omitted.
     assert_eq!(attr(&e, "isp"), None);
     assert_eq!(attr(&e, "first_seen"), None);
+}
+
+#[test]
+fn key_or_quota_failure_messages_are_classified_but_bad_targets_are_not() {
+    // A success:false message naming a key/quota problem must surface (→ report
+    // + Err), not be swallowed as an empty result.
+    for m in [
+        "You have insufficient credits to make this query",
+        "Invalid API Key.",
+        "You have exceeded your request quota",
+        "You do not have permission to access this endpoint",
+        "Unauthorized",
+    ] {
+        assert!(is_key_or_quota_failure(m), "must classify key/quota: {m:?}");
+    }
+    // A merely-invalid target stays a clean empty result (NOT a key failure).
+    for m in [
+        "Please enter a valid IP address.",
+        "Please enter a valid email address.",
+        "",
+    ] {
+        assert!(
+            !is_key_or_quota_failure(m),
+            "an invalid-target message must not be treated as a key failure: {m:?}"
+        );
+    }
 }

@@ -9,16 +9,42 @@ use super::*;
         let es = build_asns(&ni, "scan");
         // One ASN entity + one Cidr entity from the covering prefix.
         assert_eq!(es.len(), 2, "valid numeric ASN + covering Cidr");
-        let asn_e = es.iter().find(|e| e.kind == EntityKind::Asn).unwrap();
+        let asn_e = es.iter().find(|e| e.kind == EntityKind::Asn).expect("should succeed");
         assert_eq!(asn_e.value, "AS15169");
         assert!(asn_e.has_tag("ripestat"));
         assert_eq!(
-            asn_e.evidence[0].attributes.get("prefix").unwrap(),
+            asn_e.evidence[0].attributes.get("prefix").expect("should succeed"),
             "8.8.8.0/24"
         );
-        let cidr_e = es.iter().find(|e| e.kind == EntityKind::Cidr).unwrap();
+        let cidr_e = es.iter().find(|e| e.kind == EntityKind::Cidr).expect("should succeed");
         assert_eq!(cidr_e.value, "8.8.8.0/24");
         assert!(cidr_e.has_tag("network-prefix"));
+        // Single announcing ASN ⇒ the covering Cidr carries the origin `asn`
+        // as evidence, naming this prefix's origin network (AS15169).
+        assert_eq!(
+            cidr_e.evidence[0].attributes.get("asn").map(String::as_str),
+            Some("15169")
+        );
+    }
+
+    #[test]
+    fn build_asns_leaves_a_multi_origin_prefix_unattributed() {
+        // A MOAS (multiple-origin AS) prefix has no single owner to assert, so the
+        // covering Cidr must NOT carry an `asn` — the origin is left unattributed
+        // rather than naming an arbitrary one of the origins.
+        let ni = NetworkInfo {
+            asns: vec!["64512".into(), "64513".into()],
+            prefix: Some("203.0.113.0/24".into()),
+        };
+        let es = build_asns(&ni, "scan");
+        let cidr_e = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Cidr)
+            .expect("covering Cidr");
+        assert!(
+            !cidr_e.evidence[0].attributes.contains_key("asn"),
+            "a multi-origin prefix must not assert a single owner ASN"
+        );
     }
 
     #[test]
@@ -26,7 +52,7 @@ use super::*;
         let ao = AsOverview {
             holder: Some("GOOGLE - Google LLC".into()),
         };
-        let e = build_org(&ao, "scan").unwrap();
+        let e = build_org(&ao, "scan").expect("should succeed");
         assert_eq!(e.kind, EntityKind::Organisation);
         assert_eq!(e.value, "GOOGLE - Google LLC");
         assert!(e.has_tag("network-holder"));
@@ -58,6 +84,39 @@ use super::*;
         assert!(!vals.iter().any(|v| v.contains("cloudflare.com")));
         // Trimmed + normalised.
         assert!(vals.iter().any(|v| v.contains("ops@example.org")));
+    }
+
+    #[test]
+    fn build_announced_prefixes_emits_deduped_sorted_cidrs() {
+        let ap = AnnouncedPrefixes {
+            prefixes: vec![
+                AnnouncedPrefix {
+                    prefix: Some("8.8.8.0/24".into()),
+                },
+                AnnouncedPrefix {
+                    prefix: Some("  8.8.4.0/24 ".into()),
+                },
+                // Duplicate of the first (post-trim) — must collapse.
+                AnnouncedPrefix {
+                    prefix: Some("8.8.8.0/24".into()),
+                },
+                // Malformed / no mask — dropped, never a junk CIDR.
+                AnnouncedPrefix {
+                    prefix: Some("not-a-prefix".into()),
+                },
+                AnnouncedPrefix { prefix: None },
+            ],
+        };
+        let es = build_announced_prefixes(&ap, "scan");
+        let vals: Vec<&str> = es.iter().map(|e| e.value.as_str()).collect();
+        // Deduped to two, in sorted (deterministic) order — not API order.
+        assert_eq!(vals, ["8.8.4.0/24", "8.8.8.0/24"]);
+        assert!(
+            es.iter()
+                .all(|e| e.kind == EntityKind::Cidr
+                    && e.has_tag("ripestat")
+                    && e.has_tag("network-prefix"))
+        );
     }
 
     #[test]

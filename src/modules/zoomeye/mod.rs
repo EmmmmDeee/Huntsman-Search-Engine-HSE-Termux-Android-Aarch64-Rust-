@@ -7,10 +7,11 @@
 //!
 //! Given an IP it dorks `ip:{ip}`; given a domain, `hostname:{domain}` (the hosts
 //! ZoomEye has indexed serving that name). Each match carries `portinfo` (the open
-//! port / service / banner) and `geoinfo` (country / city / coordinates / operator
-//! org / ISP / ASN). The parser is deliberately schema-tolerant — ZoomEye varies
-//! field shapes across plans, and a passive enrichment must degrade to "fewer
-//! entities" rather than fail on an unexpected shape (the lesson onyphe codifies).
+//! port / service / detected app / banner) and `geoinfo` (country / city /
+//! coordinates / operator org / ISP / ASN). The parser is deliberately
+//! schema-tolerant — ZoomEye varies field shapes across plans, and a passive
+//! enrichment must degrade to "fewer entities" rather than fail on an
+//! unexpected shape (the lesson onyphe codifies).
 //!
 //! From the result set it surfaces: the host's coordinates (suppressed for a
 //! CDN/anycast edge IP, as `ip_geo` does), a city/country `Address`, the AS
@@ -28,13 +29,13 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::RequestBuilderExt;
-use crate::util::http::{handle_keyed_error, json_decode, urlencode};
+use crate::util::http::{json_decode, urlencode};
 
 const KEY_ENV: &str = "HUNTSMAN_ZOOMEYE_KEY";
 const SRC: &str = "zoomeye";
@@ -62,7 +63,7 @@ impl Module for ZoomEye {
     }
 
     fn description(&self) -> &'static str {
-        "ZoomEye host/service search: exposed ports, banners, geoloc, ASN/operator for an IP or domain (key-gated)"
+        "ZoomEye host/service recon — enumerates exposed ports, banners, geoloc, and ASN/operator for an IP or domain (key-gated)"
     }
 
     fn priority(&self) -> u8 {
@@ -106,7 +107,7 @@ impl Module for ZoomEye {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) {
+        let initial_key = match ctx.key_opt(KEY_ENV) {
             Some(v) => v,
             None => return Ok(ModuleResult::new()),
         };
@@ -127,33 +128,22 @@ impl Module for ZoomEye {
             urlencode(&dork)
         );
 
-        let mut retries = 2u8;
-        let body: ZoomResp = loop {
-            if ctx.cancel.is_cancelled() {
-                return Ok(ModuleResult::new());
-            }
-            let resp = ctx
-                .http
+        // Key cascade via the shared primitive: on a terminal key quota/auth
+        // failure, rotate to the next untried usable pooled key so one call
+        // spends every credential the pool holds. `absent_statuses: &[404]` —
+        // 404 means nothing indexed for this selector, a clean miss rather than
+        // an error, exactly as this module treated it before.
+        let Some(resp) = crate::util::http::keyed_cascade(ctx, SRC, initial_key, &[404], |key| {
+            ctx.http
                 .get(&url)
                 .header("API-KEY", key)
                 .header("Accept", "application/json")
-                .send_tagged(SRC)
-                .await?;
-
-            let status = resp.status();
-            // 404 = nothing indexed for this selector — a clean miss, not an error.
-            if status.as_u16() == 404 {
-                return Ok(ModuleResult::new());
-            }
-            if !status.is_success() {
-                let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
-                    continue;
-                }
-                return Err(crate::util::http::http_status_error(SRC, resp).await);
-            }
-            break json_decode(SRC, resp).await?;
+        })
+        .await?
+        else {
+            return Ok(ModuleResult::new());
         };
+        let body: ZoomResp = json_decode(SRC, resp).await?;
 
         if body.matches.is_empty() {
             return Ok(ModuleResult::new());
@@ -168,6 +158,10 @@ impl Module for ZoomEye {
         // Distinct exposed ports/services, collected across matches to tag the
         // seed IP once with its full service surface.
         let mut ports: Vec<String> = Vec::new();
+        // Per-port app/banner detail (only for ports that have one), reported
+        // as a separate evidence attribute so the raw banner text never
+        // pollutes the short `port:<label>` tag.
+        let mut port_details: Vec<String> = Vec::new();
         let mut ips_emitted = 0usize;
 
         for m in body.matches.iter().take(MAX_MATCHES) {
@@ -177,8 +171,12 @@ impl Module for ZoomEye {
             if !skip_coords
                 && let Some((lat, lon)) = coords(m)
                 && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
-                && let Some(mut ce) =
-                    crate::util::geo::coarse_provider_coords(lat, lon, 0.55, &ctx.scan_id)
+                && let Some(mut ce) = crate::util::geo::coarse_provider_coords(
+                    lat,
+                    lon,
+                    confidence::MEDIUM_HIGH,
+                    &ctx.scan_id,
+                )
             {
                 if let Some(cc) = geo_country_code(m) {
                     ce.tag(format!("country:{}", cc.to_uppercase()));
@@ -191,7 +189,12 @@ impl Module for ZoomEye {
             if let Some(addr) = geo_address(m)
                 && seen.insert(format!("@addr:{}", addr.to_lowercase()))
             {
-                let mut ae = Entity::new(EntityKind::Address, &addr, 0.55, &ctx.scan_id);
+                let mut ae = Entity::new(
+                    EntityKind::Address,
+                    &addr,
+                    confidence::MEDIUM_HIGH,
+                    &ctx.scan_id,
+                );
                 ae.tag(crate::core::tags::GEOINT);
                 ae.add_evidence(ev());
                 result.push(ae);
@@ -201,14 +204,20 @@ impl Module for ZoomEye {
             if let Some(asn) = geo_asn(m)
                 && seen.insert(asn.to_lowercase())
             {
-                let mut ae = Entity::new(EntityKind::Asn, &asn, 0.75, &ctx.scan_id);
+                let mut ae =
+                    Entity::new(EntityKind::Asn, &asn, confidence::VERY_HIGH, &ctx.scan_id);
                 ae.add_evidence(ev());
                 result.push(ae);
             }
             if let Some(org) = geo_org(m).filter(|o| o.len() >= 3)
                 && seen.insert(format!("@org:{}", org.to_lowercase()))
             {
-                let mut oe = Entity::new(EntityKind::Organisation, &org, 0.55, &ctx.scan_id);
+                let mut oe = Entity::new(
+                    EntityKind::Organisation,
+                    &org,
+                    confidence::MEDIUM_HIGH,
+                    &ctx.scan_id,
+                );
                 oe.add_evidence(ev());
                 result.push(oe);
             }
@@ -218,6 +227,9 @@ impl Module for ZoomEye {
                 && let Some(label) = port_label(m)
                 && seen.insert(format!("@port:{label}"))
             {
+                if let Some(detail) = port_detail(m, &label) {
+                    port_details.push(detail);
+                }
                 ports.push(label);
             }
 
@@ -228,7 +240,12 @@ impl Module for ZoomEye {
                 && ip != value
                 && seen.insert(format!("@ip:{ip}"))
             {
-                let mut ie = Entity::new(EntityKind::IpAddress, &ip, 0.70, &ctx.scan_id);
+                let mut ie = Entity::new(
+                    EntityKind::IpAddress,
+                    &ip,
+                    confidence::HIGH_PLUS,
+                    &ctx.scan_id,
+                );
                 ie.tag(SRC);
                 ie.add_evidence(ev());
                 result.push(ie);
@@ -238,15 +255,20 @@ impl Module for ZoomEye {
 
         // For an IP target, fold the exposed service surface onto the seed entity.
         if matches!(target.kind, TargetKind::IpAddress) && !ports.is_empty() {
-            let mut e = target.to_entity(0.60, &ctx.scan_id);
+            let mut e = target.to_entity(confidence::MEDIUM_PLUS, &ctx.scan_id);
             e.tag(SRC);
             for label in &ports {
                 e.tag(format!("port:{label}"));
             }
-            e.add_evidence(
-                Evidence::new(SRC, format!("ZoomEye: {} exposed service(s)", ports.len()))
-                    .with_attr("ports", ports.join(", ")),
-            );
+            let mut ev = Evidence::new(SRC, format!("ZoomEye: {} exposed service(s)", ports.len()))
+                .with_attr("ports", ports.join(", "));
+            if !port_details.is_empty() {
+                // Full-fidelity policy (mirrors `webserver_banner`): a
+                // detected app/banner reaches the operator verbatim, paired
+                // with its port label so it stays traceable to one service.
+                ev = ev.with_attr("service_details", port_details.join("; "));
+            }
+            e.add_evidence(ev);
             result.push(e);
         }
 
@@ -324,4 +346,37 @@ fn port_label(m: &Value) -> Option<String> {
         Some(svc) => Some(format!("{port}/{svc}")),
         None => Some(port),
     }
+}
+
+/// `portinfo.app` — the detected application/product name for a service
+/// (e.g. `"nginx"`, `"OpenSSH"`), when ZoomEye's plan includes it.
+fn port_app(m: &Value) -> Option<String> {
+    pstr(m, "/portinfo/app")
+}
+
+/// `portinfo.banner` — the raw service banner ZoomEye captured for this
+/// match, preserved verbatim (full-fidelity policy — mirrors
+/// `webserver_banner`: an authentic captured banner must reach the operator
+/// unclipped, not summarised or truncated).
+fn port_banner(m: &Value) -> Option<String> {
+    pstr(m, "/portinfo/banner")
+}
+
+/// `label` annotated with its detected app/banner, when either is present on
+/// this match — `None` when neither is, so callers can skip a no-op detail
+/// rather than emit a bare duplicate of `label`.
+fn port_detail(m: &Value, label: &str) -> Option<String> {
+    let app = port_app(m);
+    let banner = port_banner(m);
+    if app.is_none() && banner.is_none() {
+        return None;
+    }
+    let mut s = label.to_string();
+    if let Some(a) = &app {
+        s.push_str(&format!(" ({a})"));
+    }
+    if let Some(b) = &banner {
+        s.push_str(&format!(" — banner: {b}"));
+    }
+    Some(s)
 }

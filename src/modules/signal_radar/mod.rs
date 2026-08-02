@@ -2,8 +2,13 @@
 //! cell tower survey, GPS fix, and LAN ARP discovery in a single parallel pass.
 //!
 //! All sensors run concurrently via `tokio::join!`.  Off-device (no Termux
-//! binaries) every termux-backed sub-sensor no-ops cleanly.  `/proc/net/arp`
-//! and the TCP port sweep work anywhere on Linux.
+//! binaries) every termux-backed sub-sensor no-ops cleanly.  The LAN ARP
+//! sensor reads `/proc/net/arp`, which an unprivileged app cannot read on the
+//! primary target: on non-root Termux (Android 14 / SDK 34) the read returns
+//! EACCES, so LAN ARP discovery and the port sweep that depends on it are
+//! inert on-device and active only where that file is readable (desktop
+//! Linux, or a rooted device).  The denial degrades to a clean empty result,
+//! never an error — see `lan::scan_lan`.
 //!
 //! MITRE ATT&CK Reconnaissance (TA0043):
 //!   T1590.005 — IP Addresses (LAN ARP)
@@ -27,12 +32,24 @@ use async_trait::async_trait;
 
 use crate::core::{
     entity::EntityKind,
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
 
 pub(super) const SRC: &str = "signal_radar";
+
+// The blank-vs-unparseable contract is single-sourced in
+// `crate::modules::termux_sensor`; re-exported here so this module's sensor
+// submodules keep calling `super::is_blank` / `super::unparseable`.
+pub(super) use crate::modules::termux_sensor::{Sensor, is_blank};
+
+/// [`crate::modules::termux_sensor::unparseable_for`] bound to this module's
+/// `SRC`. Takes the [`Sensor`] rather than a label string, so an error can only
+/// name a tool this module actually reads.
+pub(super) fn unparseable(sensor: Sensor, e: &serde_json::Error) -> Error {
+    crate::modules::termux_sensor::unparseable_for(SRC, sensor, e)
+}
 
 pub struct SignalRadar;
 
@@ -43,7 +60,7 @@ impl Module for SignalRadar {
     }
 
     fn description(&self) -> &'static str {
-        "Real-time multi-sensor signal radar: WiFi AP scan, Bluetooth, cell towers, GPS, and LAN ARP discovery"
+        "Real-time multi-sensor signal radar — sweeps WiFi AP, Bluetooth, cell towers, GPS, and LAN ARP discovery"
     }
 
     fn priority(&self) -> u8 {
@@ -85,6 +102,7 @@ impl Module for SignalRadar {
             EntityKind::IpAddress,
             EntityKind::Coordinates,
             EntityKind::DeviceId,
+            EntityKind::Ssid,
         ];
         KINDS
     }
@@ -100,41 +118,57 @@ impl Module for SignalRadar {
             lan::scan_lan(scan_id),
         );
 
-        // Cell info is fetched inside scan_cell alongside signal-strength.
         let cell_out = scan_cell(scan_id).await;
 
-        let mut result = ModuleResult::new();
-        result.extend(wifi_out.entities);
-        result.extend(bt_out.entities);
-        result.extend(gps_out.entities);
-        result.extend(lan_out.entities);
-        result.extend(cell_out.entities);
-
-        Ok(result)
+        combine_sensors([wifi_out, bt_out, gps_out, Ok(lan_out), cell_out])
     }
+}
+
+/// Fold the five independent sensors into `process()`'s return value.
+///
+/// Sensors are independent observations of different things, so a failure in
+/// one must never discard another's evidence: everything collected is kept,
+/// and a failure is surfaced only when *nothing at all* was observed. That is
+/// exactly [`ModuleResult::or_hard_failure`]'s contract, shared with
+/// `ip_reputation` (T2.111) and `niamonx` (T2.114).
+///
+/// The distinction this preserves: before, a malfunctioning sensor returned an
+/// empty result, so "termux-api is broken" and "no devices in range" were the
+/// same answer. Now a total sensor failure reaches the engine as a real
+/// `ModuleError` — visible to the operator, counted in `modules_errored`, and
+/// fed to the circuit breaker and health streak.
+fn combine_sensors(outcomes: [Result<ModuleResult>; 5]) -> Result<ModuleResult> {
+    let mut combined = ModuleResult::new();
+    let mut first_failure = None;
+    for outcome in outcomes {
+        match outcome {
+            Ok(r) => combined.extend(r.entities),
+            Err(e) => {
+                tracing::warn!(module = SRC, error = %e, "signal_radar: sensor failed");
+                first_failure.get_or_insert(e);
+            }
+        }
+    }
+    combined.or_hard_failure(first_failure)
 }
 
 /// Fetch and parse `termux-wifi-scaninfo`.
-async fn scan_wifi(scan_id: &str) -> ModuleResult {
-    use crate::util::termux::termux_cmd;
-    match termux_cmd("termux-wifi-scaninfo", &[], 8000).await {
-        Some(stdout) => wifi::parse_scan(&stdout, scan_id),
-        None => ModuleResult::new(),
-    }
+async fn scan_wifi(scan_id: &str) -> Result<ModuleResult> {
+    crate::modules::termux_sensor::read_and_parse(Sensor::WifiScan, |stdout| {
+        wifi::parse_scan(stdout, scan_id)
+    })
+    .await
 }
 
-/// Fetch `termux-telephony-cellinfo` and `termux-telephony-signalstrength` in
-/// parallel, then parse cell towers.
-async fn scan_cell(scan_id: &str) -> ModuleResult {
-    use crate::util::termux::termux_cmd;
-
-    let (cellinfo, _sigstrength) = tokio::join!(
-        termux_cmd("termux-telephony-cellinfo", &[], 5000),
-        termux_cmd("termux-telephony-signalstrength", &[], 3000),
-    );
-
-    match cellinfo {
-        Some(stdout) => cell::parse_cells(&stdout, scan_id),
-        None => ModuleResult::new(),
-    }
+/// Fetch and parse `termux-telephony-cellinfo`. Per-cell `dbm`/signal data
+/// already rides in this one response (see `cell::Cell::dbm`), so a second
+/// `termux-telephony-signalstrength` call would only duplicate it — a prior
+/// revision issued that second call and unconditionally discarded its
+/// result, wasting a real ~3s on-device subprocess round-trip every scan for
+/// nothing (`PROBLEM_TREE` T2.109).
+async fn scan_cell(scan_id: &str) -> Result<ModuleResult> {
+    crate::modules::termux_sensor::read_and_parse(Sensor::CellInfo, |stdout| {
+        cell::parse_cells(stdout, scan_id)
+    })
+    .await
 }

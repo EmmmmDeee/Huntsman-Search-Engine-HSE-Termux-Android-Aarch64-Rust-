@@ -1,0 +1,32 @@
+[package]
+name = "huntsman-search-engine-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+# Deliberately NOT a `[workspace]` member of the parent crate's `Cargo.toml`
+# (the parent has no `[workspace]` table at all — see `../Cargo.toml`). This
+# is the standard `cargo-fuzz` layout: `libfuzzer-sys` needs nightly-only
+# sanitizer instrumentation (`-Z sanitizer=address` under the hood), which
+# would fail to build on the stable toolchain the four-command verification
+# gate (`cargo fmt`/`clippy`/`doc`/`test`) runs on every cycle. Being outside
+# the workspace means those commands never see this crate at all — the gate
+# stays green on stable, and `cargo fuzz` (nightly-only, its own separate
+# workflow — see `../.github/workflows/fuzz.yml`, not a job inside ci.yml)
+# is the only thing that ever builds it.
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.huntsman-search-engine]
+path = ".."
+
+[[bin]]
+name = "cert_der"
+path = "fuzz_targets/cert_der.rs"
+test = false
+doc = false
+bench = false

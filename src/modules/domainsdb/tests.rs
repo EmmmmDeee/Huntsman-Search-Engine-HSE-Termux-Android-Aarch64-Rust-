@@ -1,7 +1,8 @@
+use crate::core::confidence;
 use super::*;
 
     fn entry(json: &str) -> DomainEntry {
-        serde_json::from_str(json).unwrap()
+        serde_json::from_str(json).expect("should succeed")
     }
 
     #[test]
@@ -14,17 +15,46 @@ use super::*;
     }
 
     #[test]
-    fn cost_is_free() {
+    fn cost_is_keygated() {
+        // Key-gated since the provider disabled anonymous access (2026). A
+        // `Free` classification here silently swallowed every 401 and returned
+        // nothing; KeyGated makes the "needs key" state honest and lets
+        // `--free-only` skip it cleanly.
         assert!(matches!(
             DomainsDb.cost(),
-            crate::core::module::ModuleCost::Free
+            crate::core::module::ModuleCost::KeyGated
         ));
+    }
+
+    #[tokio::test]
+    async fn missing_key_yields_a_clean_needs_key_skip_not_a_silent_empty() {
+        // Regression: with anonymous access disabled upstream, an unconfigured
+        // domainsdb must surface `Error::MissingKey` (→ dispatch renders a
+        // "needs API key" skip with the signup hint), NOT `Ok(empty)` — which
+        // is what the pre-fix Free module produced on every scan once its 401s
+        // began, hiding the dead source from the operator entirely.
+        let (bus, _rx) = tokio::sync::broadcast::channel(8);
+        let ctx = ModuleContext {
+            scan_id: "t".into(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+        };
+        let err = DomainsDb
+            .process(&Target::new(TargetKind::Domain, "example.com"), &ctx)
+            .await
+            .expect_err("an unconfigured key must be a MissingKey skip, not a silent empty result");
+        assert!(
+            matches!(err, crate::core::error::Error::MissingKey(ref k) if k == KEY_ENV),
+            "must name the domainsdb key env so the operator sees the signup hint: {err:?}"
+        );
     }
 
     #[test]
     fn deser() {
         let j = r#"{"domains":[{"domain":"example.com","create_date":"2020-01-01","isDead":"False"}],"total":1}"#;
-        let r: DbResp = serde_json::from_str(j).unwrap();
+        let r: DbResp = serde_json::from_str(j).expect("should succeed");
         assert_eq!(r.domains.len(), 1);
         assert_eq!(r.total, Some(1));
     }
@@ -39,10 +69,10 @@ use super::*;
             false,
             "s",
         )
-        .unwrap();
+        .expect("should succeed");
         assert_eq!(e.kind, EntityKind::Domain);
         assert!(e.has_tag("domainsdb") && !e.has_tag("dead-domain") && !e.has_tag("broad-match"));
-        assert!((e.confidence - 0.55).abs() < 1e-9);
+        assert!((e.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
         let ev = &e.evidence[0];
         assert_eq!(
             ev.attributes.get("created").map(String::as_str),
@@ -63,7 +93,7 @@ use super::*;
             false,
             "s",
         )
-        .unwrap();
+        .expect("should succeed");
         assert!(e.has_tag("dead-domain"));
         assert!((e.confidence - 0.35).abs() < 1e-9);
     }
@@ -71,12 +101,12 @@ use super::*;
     #[test]
     fn broad_match_dampens_and_tags() {
         // A generic keyword (high `total`) → broad-match: tagged + 0.7× damped.
-        let e = build_domain_entity(&entry(r#"{"domain":"john-smith.com"}"#), true, "s").unwrap();
+        let e = build_domain_entity(&entry(r#"{"domain":"john-smith.com"}"#), true, "s").expect("should succeed");
         assert!(e.has_tag("broad-match"));
-        assert!((e.confidence - 0.55 * 0.7).abs() < 1e-9);
+        assert!((e.confidence - confidence::MEDIUM_HIGH * 0.7).abs() < 1e-9);
         // Dead + broad stacks both penalties.
         let dead = build_domain_entity(&entry(r#"{"domain":"x.com","isDead":"True"}"#), true, "s")
-            .unwrap();
+            .expect("should succeed");
         assert!((dead.confidence - 0.35 * 0.7).abs() < 1e-9);
     }
 

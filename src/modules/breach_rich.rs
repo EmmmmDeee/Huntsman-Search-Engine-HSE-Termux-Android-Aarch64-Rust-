@@ -20,6 +20,7 @@ use std::collections::HashSet;
 use serde_json::Value;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
     tags,
@@ -177,6 +178,10 @@ const RICH_DETAIL_SKIP: &[&str] = &[
     "telegram_username",
     "youtube",
     "tiktok",
+    "github",
+    "reddit",
+    // Mined for alternate emails/phones in the rich pass, not emitted verbatim.
+    "bio",
     "city",
     "state",
     "region",
@@ -206,6 +211,11 @@ const RICH_DETAIL_SKIP: &[&str] = &[
     "log_id",
     "log",
     "salt",
+    // Validated + typed by each provider's own IBAN branch (OathNet's breach
+    // path, SeekNow's extract path) — the mod-97 check-digit gate there refuses a
+    // bad/redacted value. Skipped here so the UNVALIDATED catch-all can't also
+    // mint an `Other("iban")` financial artifact for any string.
+    "iban",
     "response_time_ms",
     "type",
     "success",
@@ -339,11 +349,14 @@ pub fn extract_rich_detail(
         if full.len() >= 3
             && !is_absent_marker(f)
             && !is_absent_marker(l)
+            // Breach dumps store `full_name = "{username} {username}"` when only a
+            // handle is known; a doubled/slug username is not a real person.
+            && !crate::core::validation::is_username_derived_name(&full)
             && seen.insert(format!("@person:{}", full.to_lowercase()))
         {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Person, &full, 0.60, scan_id),
+                Entity::new(EntityKind::Person, &full, confidence::MEDIUM_PLUS, scan_id),
                 ev,
                 source,
                 &[],
@@ -360,7 +373,7 @@ pub fn extract_rich_detail(
         {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Organisation, &o, 0.50, scan_id),
+                Entity::new(EntityKind::Organisation, &o, confidence::MEDIUM, scan_id),
                 ev,
                 source,
                 &[],
@@ -378,7 +391,7 @@ pub fn extract_rich_detail(
         {
             push_context_entity(
                 result,
-                Entity::new(EntityKind::MacAddress, &m, 0.60, scan_id),
+                Entity::new(EntityKind::MacAddress, &m, confidence::MEDIUM_PLUS, scan_id),
                 ev,
                 source,
                 &["device"],
@@ -412,7 +425,7 @@ pub fn extract_rich_detail(
         {
             push_context_entity(
                 result,
-                Entity::new(EntityKind::DeviceId, &d, 0.55, scan_id),
+                Entity::new(EntityKind::DeviceId, &d, confidence::MEDIUM_HIGH, scan_id),
                 ev,
                 source,
                 &["device", "stealer"],
@@ -439,6 +452,13 @@ pub fn extract_rich_detail(
         ("telegram_username", "telegram"),
         ("youtube", "youtube"),
         ("tiktok", "tiktok"),
+        // github/reddit are real handle columns in both providers' breach
+        // records; without these they fell to the catch-all as opaque
+        // `Other("github")` junk nodes instead of first-class Username pivots the
+        // github_user/reddit_user/etc. modules can resolve. Runs for SeekNow
+        // (every record) and OathNet's stealer path at zero extra API cost.
+        ("github", "github"),
+        ("reddit", "reddit"),
     ] {
         if let Some(h) = val_str(item, k)
             && h.len() >= 2
@@ -447,11 +467,49 @@ pub fn extract_rich_detail(
         {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Username, format!("{plat}:{h}"), 0.55, scan_id),
+                Entity::new(
+                    EntityKind::Username,
+                    format!("{plat}:{h}"),
+                    confidence::MEDIUM_HIGH,
+                    scan_id,
+                ),
                 ev,
                 source,
                 &[plat],
             );
+        }
+    }
+
+    // ── Free-text `bio` mining → alternate contact leads. ──
+    // A profile bio routinely carries an alternate email or phone the structured
+    // columns miss — a genuine new pivot (unlocks HIBP/emailrep/phone modules).
+    // Reuse the canonical scanner-grade extractors so "what an email/phone looks
+    // like in free text" has one definition engine-wide. Lower confidence than a
+    // structured field (inferred from prose). Shared here so BOTH breach providers
+    // gain it on every record routed through the rich pass; OathNet's own breach
+    // path mines bio separately, and the shared `seen` set dedups any overlap.
+    if let Some(bio) = val_str(item, "bio") {
+        for email in crate::util::extract::emails(&bio) {
+            if seen.insert(email.clone()) {
+                push_breach_entity(
+                    result,
+                    Entity::new(EntityKind::Email, &email, confidence::MEDIUM, scan_id),
+                    ev,
+                    source,
+                    &["bio-mined"],
+                );
+            }
+        }
+        for phone in crate::util::extract::phones(&bio) {
+            if seen.insert(format!("@bio-phone:{phone}")) {
+                push_breach_entity(
+                    result,
+                    Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM, scan_id),
+                    ev,
+                    source,
+                    &["bio-mined"],
+                );
+            }
         }
     }
 
@@ -479,7 +537,7 @@ pub fn extract_rich_detail(
             if seen.insert(format!("@addr-part:{k}:{}", p.to_lowercase())) {
                 push_breach_entity(
                     result,
-                    Entity::new(EntityKind::Address, &p, 0.45, scan_id),
+                    Entity::new(EntityKind::Address, &p, confidence::LOW_MEDIUM, scan_id),
                     ev,
                     source,
                     &["geo-hint"],
@@ -498,7 +556,12 @@ pub fn extract_rich_detail(
         if seen.insert(format!("@addr:{}", composed.to_lowercase())) {
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(&composed) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::LOW_MEDIUM,
+                    scan_id,
+                );
                 c.tag("addr-derived");
                 c.tag("geoint");
                 c.tag(tags::BREACH);
@@ -508,7 +571,12 @@ pub fn extract_rich_detail(
             }
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Address, &composed, 0.55, scan_id),
+                Entity::new(
+                    EntityKind::Address,
+                    &composed,
+                    confidence::MEDIUM_HIGH,
+                    scan_id,
+                ),
                 ev,
                 source,
                 &["geo-hint", "composed-address"],
@@ -670,7 +738,7 @@ pub fn extract_rich_detail(
         if seen.insert(format!("@other:{k}:{}", val.to_lowercase())) {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Other(k.clone()), &val, 0.40, scan_id),
+                Entity::new(EntityKind::Other(k.clone()), &val, confidence::LOW, scan_id),
                 ev,
                 source,
                 &["raw-field"],

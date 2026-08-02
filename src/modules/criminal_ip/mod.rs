@@ -12,13 +12,12 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::RequestBuilderExt;
-use crate::util::http::handle_keyed_error;
 
 const KEY_ENV: &str = "HUNTSMAN_CRIMINALIP_KEY";
 
@@ -104,6 +103,14 @@ struct WhoisRow {
     org_name: Option<String>,
     #[serde(default)]
     org_country_code: Option<String>,
+    #[serde(default)]
+    city: Option<String>,
+    #[serde(default)]
+    region: Option<String>,
+    #[serde(default)]
+    latitude: Option<f64>,
+    #[serde(default)]
+    longitude: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -144,15 +151,19 @@ fn nonblank(v: Option<&str>) -> Option<&str> {
 /// | `score.*`, `whois[0].*`, `port`, `vuln` | evidence attributes                   |
 /// | `whois[0].org_name` (non-blank)         | `Organisation` pivot                   |
 /// | `whois[0].as_no`                        | `Asn` pivot (`AS<n>`)                  |
+/// | `whois[0].latitude`/`longitude` (valid) | `Coordinates` pivot (`geoint`)        |
+/// | `whois[0].city`/`region`/country        | `Address` pivot (`geoint`)            |
 ///
 /// The subject is always emitted (the caller has already gated on a
-/// `status == 200` report); the Organisation/Asn pivots only when the whois
-/// block carries them.
+/// `status == 200` report); the Organisation/Asn/geo pivots only when the whois
+/// block carries them. A whois latitude/longitude is trusted only through
+/// [`crate::util::geo::is_valid_coords`], so the API's null-island `(0,0)`
+/// placeholder never becomes a spurious equatorial fix.
 fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
     let ip = target.value.trim();
     let mut out = Vec::new();
 
-    let mut entity = target.to_entity(0.88, scan_id);
+    let mut entity = target.to_entity(confidence::EXPERT, scan_id);
     entity.tag("criminal_ip");
     if let Some(s) = &body.score {
         if s.inbound.as_deref().is_some_and(risk_is_high) {
@@ -215,16 +226,54 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
 
     if let Some(w) = body.whois.as_ref().and_then(|w| w.data.first()) {
         if let Some(org) = nonblank(w.org_name.as_deref()) {
-            let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, scan_id);
+            let mut oe = Entity::new(EntityKind::Organisation, org, confidence::HIGH, scan_id);
             oe.tag("criminal_ip");
             oe.add_evidence(Evidence::new(SRC, format!("IP org for {ip}")));
             out.push(oe);
         }
         if let Some(asn) = w.as_no {
             let asn_str = format!("AS{asn}");
-            let mut ae = Entity::new(EntityKind::Asn, &asn_str, 0.80, scan_id);
+            let mut ae = Entity::new(
+                EntityKind::Asn,
+                &asn_str,
+                confidence::HIGH_PLUSPLUS,
+                scan_id,
+            );
             ae.tag("criminal_ip");
             ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
+            out.push(ae);
+        }
+        // Whois geolocation → a real `Coordinates` fix (guarded so the API's
+        // `(0,0)` null-island placeholder is never trusted) plus a
+        // `City, Region, Country` `Address`. Both are IP-infrastructure geo, so
+        // they carry `geoint` and stay at modest confidence — the ASN operator's
+        // registered location, not proof of the subject's whereabouts.
+        if let (Some(lat), Some(lon)) = (w.latitude, w.longitude)
+            && crate::util::geo::is_valid_coords(lat, lon)
+        {
+            let coord_val = format!("{lat:.4},{lon:.4}");
+            let mut ce = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::LOW_MEDIUM,
+                scan_id,
+            );
+            ce.tag("criminal_ip");
+            ce.tag("geoint");
+            ce.add_evidence(Evidence::new(SRC, format!("Whois geolocation for {ip}")));
+            out.push(ce);
+        }
+        let city = nonblank(w.city.as_deref()).unwrap_or("");
+        if !city.is_empty() {
+            let region = nonblank(w.region.as_deref()).unwrap_or("");
+            let country = nonblank(w.org_country_code.as_deref())
+                .map(str::to_uppercase)
+                .unwrap_or_default();
+            let addr = crate::util::geo::compose_address(city, region, &country);
+            let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM, scan_id);
+            ae.tag("criminal_ip");
+            ae.tag("geoint");
+            ae.add_evidence(Evidence::new(SRC, format!("Whois location for {ip}")));
             out.push(ae);
         }
     }
@@ -240,7 +289,7 @@ impl Module for CriminalIp {
         "criminal_ip"
     }
     fn description(&self) -> &'static str {
-        "IP risk scoring and threat classification"
+        "Criminal IP recon — scores IP risk and surfaces threat classification"
     }
     fn priority(&self) -> u8 {
         103
@@ -264,9 +313,17 @@ impl Module for CriminalIp {
         // Criminal IP is a paid threat-intel vendor (risk scoring + VPN/proxy/
         // tor/scanner classification), so beyond the Infrastructure default
         // (T1590.005 IP Addresses + T1596.005 Scan Databases) it is Search
-        // Closed Sources: Threat Intel Vendors (T1597.001). Also surfaces the
-        // ASN operator as an Organisation entity → T1591.002 Business Relationships.
-        &["T1590.005", "T1591.002", "T1596.005", "T1597.001"]
+        // Closed Sources: Threat Intel Vendors (T1597.001). Surfaces the ASN
+        // operator as an Organisation entity → T1591.002 Business Relationships,
+        // and the whois city/region/lat-lon as Address/Coordinates →
+        // T1591.001 Physical Locations.
+        &[
+            "T1590.005",
+            "T1591.001",
+            "T1591.002",
+            "T1596.005",
+            "T1597.001",
+        ]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
@@ -274,12 +331,14 @@ impl Module for CriminalIp {
             EntityKind::IpAddress,
             EntityKind::Organisation,
             EntityKind::Asn,
+            EntityKind::Coordinates,
+            EntityKind::Address,
         ];
         KINDS
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) {
+        let initial_key = match ctx.key_opt(KEY_ENV) {
             Some(k) => k,
             None => return Ok(ModuleResult::new()),
         };
@@ -288,30 +347,36 @@ impl Module for CriminalIp {
             return Ok(ModuleResult::new());
         }
         let url = format!("https://api.criminalip.io/v1/asset/ip/report?ip={ip}");
-        let mut retries = 2u8;
-        let body: Resp = loop {
-            if ctx.cancel.is_cancelled() {
-                return Ok(ModuleResult::new());
-            }
-            let resp = ctx
-                .http
-                .get(&url)
-                .header("x-api-key", key)
-                .send_tagged(SRC)
-                .await?;
-            let status = resp.status();
-            if !status.is_success() {
-                let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
-                    continue;
+        // Key cascade via the shared primitive. Criminal IP reports auth/quota
+        // failures as an IN-BODY status on an HTTP 200, so a dead or exhausted
+        // key is invisible to a status-only cascade and would read as a clean
+        // empty result. `keyed_cascade_json` inspects the decoded body and
+        // rotates on that verdict exactly as it would on an HTTP 401/403/429.
+        let Some(body): Option<Resp> = crate::util::http::keyed_cascade_json(
+            ctx,
+            SRC,
+            initial_key,
+            &[],
+            |key| ctx.http.get(&url).header("x-api-key", key),
+            |parsed: &Resp| match parsed.status {
+                Some(200) => crate::util::http::BodyVerdict::Accept,
+                // A dead/exhausted key, reported in-body on a 200.
+                Some(code @ (401 | 402 | 429)) => {
+                    // Criminal IP supplies no message beyond the in-body status,
+                    // so there is no detail to carry — the code IS the diagnosis.
+                    crate::util::http::BodyVerdict::KeyFailure {
+                        code: code as u16,
+                        detail: None,
+                    }
                 }
-                return Err(crate::util::http::http_status_error(SRC, resp).await);
-            }
-            break crate::util::http::json_decode(SRC, resp).await?;
-        };
-        if body.status != Some(200) {
+                // Any other in-body status is a genuine empty result.
+                _ => crate::util::http::BodyVerdict::Absent,
+            },
+        )
+        .await?
+        else {
             return Ok(ModuleResult::new());
-        }
+        };
 
         let mut result = ModuleResult::new();
         result.entities = build_entities(&body, target, &ctx.scan_id);

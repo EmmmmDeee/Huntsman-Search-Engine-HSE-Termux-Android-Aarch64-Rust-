@@ -1,14 +1,16 @@
 use super::*;
     use crate::core::entity::EntityKind;
 
+    fn build_all(target: &Target, json: &str) -> Vec<Entity> {
+        let r: VtResponse = serde_json::from_str(json).expect("should succeed");
+        let attrs = r.data.expect("should succeed").attributes.expect("should succeed");
+        build_entities(target, &attrs, "s")
+    }
+
+    /// The scanned entity is always element 0.
     fn build(json: &str) -> Entity {
-        let r: VtResponse = serde_json::from_str(json).unwrap();
-        let attrs = r.data.unwrap().attributes.unwrap();
-        build_entity(
-            &Target::new(TargetKind::Domain, "evil.example"),
-            &attrs,
-            "s",
-        )
+        let target = Target::new(TargetKind::Domain, "evil.example");
+        build_all(&target, json).into_iter().next().expect("should succeed")
     }
 
     #[test]
@@ -17,8 +19,40 @@ use super::*;
         assert_eq!(m.name(), "virustotal");
         assert!(m.accepts(&Target::new(TargetKind::Domain, "x.com")));
         assert!(m.accepts(&Target::new(TargetKind::IpAddress, "8.8.8.8")));
+        assert!(m.accepts(&Target::new(TargetKind::Url, "https://evil.example/x")));
         assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
         assert!(matches!(m.cost(), ModuleCost::KeyGated));
+    }
+
+    #[test]
+    fn vt_url_id_is_the_unpadded_base64url_of_the_url() {
+        // VT's documented identifier scheme: unpadded base64url of the exact URL.
+        // http://www.virustotal.com/gui/url -> known VT id (from VT's own docs).
+        assert_eq!(
+            vt_url_id("http://www.virustotal.com/gui/url"),
+            "aHR0cDovL3d3dy52aXJ1c3RvdGFsLmNvbS9ndWkvdXJs"
+        );
+        // No `=` padding is ever emitted (URL_SAFE_NO_PAD).
+        assert!(!vt_url_id("https://example.com/a").contains('='));
+    }
+
+    #[test]
+    fn url_object_stats_flag_the_url_entity() {
+        // The URL object's last_analysis_stats/reputation decode through the
+        // same build_entities; the scanned entity is a Url.
+        let target = Target::new(TargetKind::Url, "https://evil.example/login");
+        let e = build_all(
+            &target,
+            r#"{"data":{"attributes":{"last_analysis_stats":
+                {"malicious":6,"suspicious":2,"undetected":50,"harmless":4},"reputation":-20}}}"#,
+        )
+        .into_iter()
+        .next()
+        .expect("should succeed");
+        assert_eq!(e.kind, EntityKind::Url);
+        assert!(e.has_tag(crate::core::tags::MALICIOUS));
+        assert!(e.has_tag("suspicious"));
+        assert!(e.has_tag("low-reputation"));
     }
 
     #[test]
@@ -34,7 +68,7 @@ use super::*;
                 && e.has_tag("virustotal")
         );
         assert!(e.has_tag("suspicious")); // surfaced even alongside malicious
-        // confidence = 0.50 + (9/100)*0.45 = 0.5405
+        // confidence = confidence::MEDIUM + (9/100)*confidence::LOW_MEDIUM = 0.5405
         assert!((e.confidence - 0.5405).abs() < 1e-6);
         let ev = &e.evidence[0];
         assert_eq!(
@@ -76,7 +110,7 @@ use super::*;
             !e.has_tag(crate::core::tags::MALICIOUS)
                 && !e.has_tag(crate::core::tags::THREAT_INTEL)
         );
-        assert!((e.confidence - 0.50).abs() < 1e-6); // no malicious → baseline
+        assert!((e.confidence - confidence::MEDIUM).abs() < 1e-6); // no malicious → baseline
     }
 
     #[test]
@@ -106,8 +140,12 @@ use super::*;
 
     #[test]
     fn empty_attributes_stay_at_baseline_without_phantom_reputation() {
-        let e = build(r#"{"data":{"attributes":{}}}"#);
-        assert!((e.confidence - 0.50).abs() < 1e-6);
+        let target = Target::new(TargetKind::Domain, "evil.example");
+        let entities = build_all(&target, r#"{"data":{"attributes":{}}}"#);
+        // No DNS records -> only the scanned entity, no phantom pivots.
+        assert_eq!(entities.len(), 1);
+        let e = &entities[0];
+        assert!((e.confidence - confidence::MEDIUM).abs() < 1e-6);
         let ev = &e.evidence[0];
         assert_eq!(
             ev.attributes.get("total_engines").map(String::as_str),
@@ -116,4 +154,113 @@ use super::*;
         // No stats → no breakdown attrs; absent reputation → no phantom "0".
         assert!(!ev.attributes.contains_key("undetected"));
         assert!(!ev.attributes.contains_key("reputation"));
+    }
+
+    #[test]
+    fn passive_dns_records_become_ip_and_domain_pivots() {
+        let target = Target::new(TargetKind::Domain, "evil.example");
+        let entities = build_all(
+            &target,
+            r#"{"data":{"attributes":{"last_dns_records":[
+                {"type":"A","value":"203.0.113.5"},
+                {"type":"AAAA","value":"2001:db8::1"},
+                {"type":"MX","value":"10 mail.evil.example."},
+                {"type":"NS","value":"ns1.evil.example"},
+                {"type":"CNAME","value":"cdn.example.net"},
+                {"type":"TXT","value":"v=spf1 -all"},
+                {"type":"A","value":"not-an-ip"}
+            ]}}}"#,
+        );
+        let ips: Vec<&str> = entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::IpAddress)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert!(ips.contains(&"203.0.113.5") && ips.contains(&"2001:db8::1"));
+        assert!(!ips.contains(&"not-an-ip")); // non-parseable A rejected
+        assert!(
+            !ips.iter().any(|v| v.contains("spf1")),
+            "TXT records are not a passive-DNS pivot kind"
+        );
+
+        let domains: Vec<&str> = entities[1..] // skip element 0, the scanned Domain
+            .iter()
+            .filter(|e| e.kind == EntityKind::Domain)
+            .map(|e| e.value.as_str())
+            .collect();
+        // MX hostname extracted from "10 mail.evil.example.".
+        assert!(domains.contains(&"mail.evil.example"));
+        assert!(domains.contains(&"ns1.evil.example"));
+        assert!(domains.contains(&"cdn.example.net"));
+
+        for e in entities[1..].iter().filter(|e| e.kind == EntityKind::Domain) {
+            assert!(e.has_tag("passive-dns"));
+        }
+        for e in entities.iter().filter(|e| e.kind == EntityKind::IpAddress) {
+            assert!(e.has_tag("resolved"));
+        }
+    }
+
+    #[test]
+    fn passive_dns_records_are_capped() {
+        let records: Vec<String> = (0..(MAX_DNS_RECORDS + 10))
+            .map(|i| format!(r#"{{"type":"A","value":"203.0.113.{}"}}"#, i % 250))
+            .collect();
+        let json = format!(
+            r#"{{"data":{{"attributes":{{"last_dns_records":[{}]}}}}}}"#,
+            records.join(",")
+        );
+        let target = Target::new(TargetKind::Domain, "evil.example");
+        let entities = build_all(&target, &json);
+        let ip_count = entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::IpAddress)
+            .count();
+        assert!(
+            ip_count <= MAX_DNS_RECORDS,
+            "expected at most {MAX_DNS_RECORDS} IP pivots, got {ip_count}"
+        );
+    }
+
+    /// A bounded emission must stay bounded — the cap exists to keep graph
+    /// expansion finite on a long-lived domain.
+    #[test]
+    fn passive_dns_expansion_stays_within_its_cap() {
+        let recs: Vec<String> = (0..MAX_DNS_RECORDS + 25)
+            .map(|i| format!(r#"{{"type":"A","value":"10.0.{}.{}"}}"#, i / 256, i % 256))
+            .collect();
+        let json = format!(
+            r#"{{"data":{{"attributes":{{"last_dns_records":[{}]}}}}}}"#,
+            recs.join(",")
+        );
+        let target = Target::new(TargetKind::Domain, "evil.example");
+        let out = build_all(&target, &json);
+        let ips = out
+            .iter()
+            .filter(|e| e.kind == EntityKind::IpAddress)
+            .count();
+        assert_eq!(
+            ips, MAX_DNS_RECORDS,
+            "passive-DNS pivots must be capped at MAX_DNS_RECORDS"
+        );
+    }
+
+    /// The cap must not be reached by dropping records that parse — a record
+    /// under the cap is emitted, so the count above is a real bound and not an
+    /// artefact of parse failures masking the truncation.
+    #[test]
+    fn every_record_under_the_cap_is_emitted() {
+        let recs: Vec<String> = (0..3)
+            .map(|i| format!(r#"{{"type":"A","value":"10.0.0.{i}"}}"#))
+            .collect();
+        let json = format!(
+            r#"{{"data":{{"attributes":{{"last_dns_records":[{}]}}}}}}"#,
+            recs.join(",")
+        );
+        let target = Target::new(TargetKind::Domain, "evil.example");
+        let ips = build_all(&target, &json)
+            .into_iter()
+            .filter(|e| e.kind == EntityKind::IpAddress)
+            .count();
+        assert_eq!(ips, 3, "an under-cap set must be emitted in full");
     }

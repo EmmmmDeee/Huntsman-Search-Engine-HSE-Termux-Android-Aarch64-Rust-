@@ -29,15 +29,8 @@
 /// ```
 #[must_use]
 pub fn normalise_bsb(raw: &str) -> Option<String> {
-    let digits: String = raw.chars().filter(char::is_ascii_digit).collect();
+    let digits = crate::util::str_util::ascii_digits(raw);
     (digits.len() == 6).then_some(digits)
-}
-
-/// True if `raw` is a well-formed 6-digit BSB. A convenience predicate over
-/// [`normalise_bsb`] for callers that only need to recognise the shape.
-#[must_use]
-pub fn is_bsb_shaped(raw: &str) -> bool {
-    normalise_bsb(raw).is_some()
 }
 
 /// Institution prefixes, matched **longest-first** so a 3-digit entry overrides
@@ -103,8 +96,6 @@ mod tests {
         assert_eq!(normalise_bsb("0620000"), None); // 7 digits
         assert_eq!(normalise_bsb(""), None);
         assert_eq!(normalise_bsb("not a bsb"), None);
-        assert!(is_bsb_shaped("033-088"));
-        assert!(!is_bsb_shaped("33-088"));
     }
 
     #[test]

@@ -18,6 +18,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -73,21 +74,26 @@ pub(super) fn build_entities(user: GtUser, scan_id: &str) -> Vec<Entity> {
     let ev = || ev_base.clone();
 
     // Confirmed username on Gitea.com.
-    let mut e = Entity::new(EntityKind::Username, handle, 0.85, scan_id);
+    let mut e = Entity::new(
+        EntityKind::Username,
+        handle,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     e.tag("gitea");
     e.tag("public-profile");
     e.add_evidence(ev());
     out.push(e);
 
     // Profile URL.
-    let mut u = Entity::new(EntityKind::Url, &profile_url, 0.78, scan_id);
+    let mut u = Entity::new(EntityKind::Url, &profile_url, confidence::STRONG, scan_id);
     u.tag("gitea");
     u.add_evidence(ev());
     out.push(u);
 
     // Real name → Person (multi-word, ≥2 tokens).
     if let Some(name) = user.full_name.as_deref()
-        && let Some(mut p) = profile_kit::person_from_name(name, 0.70, scan_id)
+        && let Some(mut p) = profile_kit::person_from_name(name, confidence::HIGH_PLUS, scan_id)
     {
         p.tag("gitea");
         p.tag("derived");
@@ -98,11 +104,20 @@ pub(super) fn build_entities(user: GtUser, scan_id: &str) -> Vec<Entity> {
         out.push(p);
     }
 
-    // Public email.
+    // Public email. Skip forge no-reply masking addresses
+    // (`user@noreply.gitea.io` / `…@users.noreply.…`) — privacy placeholders,
+    // not a real contact pivot — so this agrees with the sibling codeberg_user
+    // on the identical Forgejo API.
     if let Some(ref email) = user.email
         && email.contains('@')
+        && !crate::util::domains::is_noreply_email_domain(email)
     {
-        let mut em = Entity::new(EntityKind::Email, email.trim(), 0.75, scan_id);
+        let mut em = Entity::new(
+            EntityKind::Email,
+            email.trim(),
+            confidence::VERY_HIGH,
+            scan_id,
+        );
         em.tag("gitea");
         em.add_evidence(
             Evidence::new(
@@ -116,7 +131,12 @@ pub(super) fn build_entities(user: GtUser, scan_id: &str) -> Vec<Entity> {
 
     // Personal website URL + Domain.
     if let Some(site) = user.website.as_deref() {
-        for mut e in profile_kit::website_url_and_domain(site, 0.70, 0.62, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(
+            site,
+            confidence::HIGH_PLUS,
+            confidence::NOTABLE,
+            scan_id,
+        ) {
             e.tag("gitea");
             if e.kind == EntityKind::Domain {
                 e.tag("derived");
@@ -165,7 +185,7 @@ impl Module for GiteaUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Gitea.com profile: name, email, website, location via Gitea API v1 (free)"
+        "Gitea.com profile recon (free) — harvests name, email, website, and location via Gitea API v1"
     }
     fn priority(&self) -> u8 {
         98
@@ -202,9 +222,11 @@ impl Module for GiteaUser {
             return Ok(ModuleResult::new());
         }
         let url = format!("https://gitea.com/api/v1/users/{}", urlencode(handle));
-        let user: GtUser = match fetch_json_or_404(&ctx.http, SRC, &url).await {
-            Ok(Some(u)) => u,
-            Ok(None) | Err(_) => return Ok(ModuleResult::new()),
+        // 404 (`Ok(None)`) = genuine "no such user" clean miss; every other
+        // failure (429/5xx/transport) propagates via `?` instead of a fake 404
+        // (T2.117 — `fetch_json_or_404`'s split is pinned in `util::http::tests`).
+        let Some(user) = fetch_json_or_404::<GtUser>(&ctx.http, SRC, &url).await? else {
+            return Ok(ModuleResult::new());
         };
         if !user.login.eq_ignore_ascii_case(handle) {
             return Ok(ModuleResult::new());

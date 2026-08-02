@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -37,6 +38,11 @@ pub(super) struct NominatimResult {
     pub(super) display_name: Option<String>,
     #[serde(default, rename = "type")]
     pub(super) place_type: Option<String>,
+    /// Only populated when the request carries `addressdetails=1` (the forward
+    /// `/search` call always sets it) — same shared shape as the reverse
+    /// `/reverse` response, folded via [`fold_address_attrs`].
+    #[serde(default)]
+    pub(super) address: Option<NominatimAddr>,
 }
 
 // ── Nominatim response types (reverse) ──────────────────────────────
@@ -76,7 +82,7 @@ impl Module for Geocode {
     }
 
     fn description(&self) -> &'static str {
-        "Bidirectional geocoding via OpenStreetMap Nominatim (Address \u{2194} Coordinates)"
+        "Bidirectional geocoding via OpenStreetMap Nominatim — resolves Address ↔ Coordinates both ways"
     }
 
     fn priority(&self) -> u8 {
@@ -115,6 +121,15 @@ impl Geocode {
     async fn forward(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let addr = target.value.trim();
         if addr.is_empty() || addr.len() <= 2 {
+            return Ok(ModuleResult::new());
+        }
+        // A bare country name geocodes to the country CENTROID — the middle of
+        // the whole nation, not the subject's location — yet it arrives as a
+        // precise-looking fix and cascades into the geo-convergence rules (a
+        // coarse carrier-country signal inventing a street-level location, as a
+        // live +61 phone scan reproduced). Refuse to mint a coordinate from it;
+        // a finer address (street / suburb / comma-qualified) still geocodes.
+        if crate::util::place_grain::is_bare_country(addr) {
             return Ok(ModuleResult::new());
         }
 
@@ -164,6 +179,9 @@ impl Geocode {
             }
             if let Some(pt) = &first.place_type {
                 ev = ev.with_attr("place_type", pt);
+            }
+            if let Some(addr) = &first.address {
+                ev = fold_address_attrs(ev, addr);
             }
             e.add_evidence(ev);
             result.push(e);
@@ -223,14 +241,19 @@ fn parse_forward_results(body: &str) -> Result<Vec<NominatimResult>> {
 
 /// Build the forward-geocode Coordinates entity, shaping confidence and tags by
 /// AU relevance of the resolved point (offline [`crate::util::geo::is_in_australia`]):
-/// a fix that lands in Australia is a strong on-region anchor (0.70,
-/// `au-relevant`); one abroad is demoted to a candidate (0.40, `off-region` +
-/// `candidate`) so it sits below the 0.50 expansion floor and is quarantined
+/// a fix that lands in Australia is a strong on-region anchor (confidence::HIGH_PLUS,
+/// `au-relevant`); one abroad is demoted to a candidate (confidence::LOW, `off-region` +
+/// `candidate`) so it sits below the confidence::MEDIUM expansion floor and is quarantined
 /// from confirmed correlations — an ambiguous address string can't drag an
 /// AU-focused scan off-region. Pure (no I/O); the caller attaches evidence.
+#[must_use]
 pub(super) fn build_forward_entity(lat: f64, lon: f64, coords: &str, scan_id: &str) -> Entity {
     let in_au = crate::util::geo::is_in_australia(lat, lon);
-    let confidence = if in_au { 0.70 } else { 0.40 };
+    let confidence = if in_au {
+        confidence::HIGH_PLUS
+    } else {
+        confidence::LOW
+    };
     let mut e = Entity::new(EntityKind::Coordinates, coords, confidence, scan_id);
     e.tag("geocoded");
     if in_au {
@@ -253,7 +276,7 @@ pub(super) enum AuRelevance {
     /// the code is absent) — a strong, on-region anchor.
     InAustralia,
     /// Resolved to a known country that is not Australia — a candidate-grade
-    /// lead that AU-focused correlation rules (confidence ≥ 0.50) must not
+    /// lead that AU-focused correlation rules (confidence ≥ confidence::MEDIUM) must not
     /// anchor on, so it can't pull an investigation off-region.
     OffRegion,
     /// Region could not be determined (no country code, not in the AU box) —
@@ -276,6 +299,7 @@ pub(super) fn au_relevance(lat: f64, lon: f64, addr: Option<&NominatimAddr>) -> 
 
 /// Build the reverse-geocode Address entity, shaping confidence and tags by
 /// [`au_relevance`]. Pure (no I/O) so the AU-gating is unit-tested directly.
+#[must_use]
 pub(super) fn build_reverse_entity(
     lat: f64,
     lon: f64,
@@ -286,9 +310,9 @@ pub(super) fn build_reverse_entity(
     let relevance = au_relevance(lat, lon, data.address.as_ref());
 
     let confidence = match relevance {
-        AuRelevance::InAustralia => 0.78,
-        AuRelevance::Unknown => 0.55,
-        AuRelevance::OffRegion => 0.40,
+        AuRelevance::InAustralia => confidence::STRONG,
+        AuRelevance::Unknown => confidence::MEDIUM_HIGH,
+        AuRelevance::OffRegion => confidence::LOW,
     };
 
     let mut entity = Entity::new(EntityKind::Address, display, confidence, scan_id);
@@ -312,48 +336,61 @@ pub(super) fn build_reverse_entity(
         .with_attr("source", "OpenStreetMap Nominatim");
 
     if let Some(addr) = &data.address {
-        let city = addr
-            .city
-            .as_deref()
-            .or(addr.town.as_deref())
-            .or(addr.village.as_deref())
-            .or(addr.municipality.as_deref());
-
-        if let Some(c) = city {
-            ev = ev.with_attr("city", c);
-        }
-        if let Some(s) = addr.state.as_deref() {
-            ev = ev.with_attr("state", s);
-        }
-        if let Some(c) = addr.country.as_deref() {
-            ev = ev.with_attr("country", c);
-        }
-        if let Some(cc) = addr.country_code.as_deref() {
-            ev = ev.with_attr("country_code", cc.to_uppercase());
-            // The on-region `country:AU` tag is set above; for off-region fixes
-            // record the resolved country so the lead stays explainable.
-            if !cc.eq_ignore_ascii_case("au") {
-                entity.tag(format!("country:{}", cc.to_uppercase()));
-            }
-        }
-        if let Some(p) = addr.postcode.as_deref() {
-            ev = ev.with_attr("postcode", p);
-        }
-        if let Some(r) = addr.road.as_deref() {
-            let street = match addr.house_number.as_deref() {
-                Some(n) => format!("{n} {r}"),
-                None => r.to_string(),
-            };
-            ev = ev.with_attr("street", street);
-        }
-        if let Some(sub) = addr.suburb.as_deref() {
-            ev = ev.with_attr("suburb", sub);
-        }
-        if let Some(county) = addr.county.as_deref() {
-            ev = ev.with_attr("county", county);
+        ev = fold_address_attrs(ev, addr);
+        // The on-region `country:AU` tag is set above; for off-region fixes
+        // record the resolved country so the lead stays explainable.
+        if let Some(cc) = addr.country_code.as_deref()
+            && !cc.eq_ignore_ascii_case("au")
+        {
+            entity.tag(format!("country:{}", cc.to_uppercase()));
         }
     }
 
     entity.add_evidence(ev);
     entity
+}
+
+/// Fold a Nominatim `address` breakdown (city/state/country/postcode/street/
+/// suburb/county) into evidence attributes. Shared by both the forward
+/// (`/search?addressdetails=1`) and reverse (`/reverse?addressdetails=1`)
+/// geocode paths so a structured address hit is reported identically
+/// regardless of which direction produced it — single-sourced, not
+/// hand-duplicated per call site. Pure (no I/O), directly unit-tested.
+pub(super) fn fold_address_attrs(mut ev: Evidence, addr: &NominatimAddr) -> Evidence {
+    let city = addr
+        .city
+        .as_deref()
+        .or(addr.town.as_deref())
+        .or(addr.village.as_deref())
+        .or(addr.municipality.as_deref());
+
+    if let Some(c) = city {
+        ev = ev.with_attr("city", c);
+    }
+    if let Some(s) = addr.state.as_deref() {
+        ev = ev.with_attr("state", s);
+    }
+    if let Some(c) = addr.country.as_deref() {
+        ev = ev.with_attr("country", c);
+    }
+    if let Some(cc) = addr.country_code.as_deref() {
+        ev = ev.with_attr("country_code", cc.to_uppercase());
+    }
+    if let Some(p) = addr.postcode.as_deref() {
+        ev = ev.with_attr("postcode", p);
+    }
+    if let Some(r) = addr.road.as_deref() {
+        let street = match addr.house_number.as_deref() {
+            Some(n) => format!("{n} {r}"),
+            None => r.to_string(),
+        };
+        ev = ev.with_attr("street", street);
+    }
+    if let Some(sub) = addr.suburb.as_deref() {
+        ev = ev.with_attr("suburb", sub);
+    }
+    if let Some(county) = addr.county.as_deref() {
+        ev = ev.with_attr("county", county);
+    }
+    ev
 }

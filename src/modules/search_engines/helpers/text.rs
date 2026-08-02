@@ -19,22 +19,165 @@ pub(in crate::modules::search_engines) fn extract_anchor_text(
 ) -> String {
     let search_dq = format!("href=\"{href}\"");
     let search_sq = format!("href='{href}'");
-    let pos = match html.find(&search_dq).or_else(|| html.find(&search_sq)) {
-        Some(p) => p,
-        None => return String::new(),
-    };
-    let after_href = &html[pos..];
-    let gt = match after_href.find('>') {
-        Some(g) => pos + g + 1,
-        None => return String::new(),
-    };
-    let rest = &html[gt..];
-    let end_tag = rest.find("</a>").or_else(|| rest.find("</A>"));
-    let end = match end_tag {
-        Some(e) => gt + e,
-        None => return String::new(),
-    };
-    strip_tags(&html[gt..end], max_len)
+    // A result's own URL commonly appears in MULTIPLE `<a href="…">` occurrences
+    // within the same result card — an icon-only "favicon-link" wrapper first
+    // (no visible text at all), then a short site-name/display-URL anchor, then
+    // the actual titled link last (a real Startpage capture,
+    // `fetch/testdata/startpage_kylo4kylo.html`, has exactly this 4-deep shape
+    // for every result). Stopping at the FIRST occurrence — as this function
+    // used to — hits the textless icon wrapper and returns empty, forcing the
+    // caller to fall back to `extract_surrounding_text`'s fixed-width window,
+    // which grabs whatever visible text happens to sit nearby instead: on the
+    // real capture that was either nothing (an empty title) or, for 3 of the
+    // 4 results, the PRECEDING card's own "Visit in Anonymous View" proxy-link
+    // label — silently corrupting the title with unrelated chrome text either
+    // way. Walking every occurrence and keeping the LAST one with actual
+    // visible text recovers the real title: the observed document order
+    // across engines is chrome-first, full-title-last, so a later non-empty
+    // occurrence is always at least as trustworthy as an earlier one, and the
+    // overwhelmingly common single-occurrence case (href appears exactly
+    // once) is unaffected — the loop still finds and returns that one match.
+    // Two accumulators. `best` is the last-non-empty whole-anchor text (the
+    // engine-agnostic fallback that already served Bing/Startpage correctly).
+    // `titled` is the FIRST occurrence that is unambiguously the *title* rather
+    // than the snippet/chrome — set from a title node inside the anchor (Brave)
+    // or a title-class anchor tag (DDG). When present it wins, because the
+    // last-non-empty heuristic backfires on two real captures:
+    //   * DuckDuckGo cards emit result__a (title) / result__url / result__snippet
+    //     for one href, so "last" grabbed the SNIPPET as the title.
+    //   * Brave wraps the whole card header (site-name + display-URL + breadcrumb
+    //     + the title node) in one anchor, so the whole-anchor strip concatenated
+    //     "YouTube youtube.com › @kylo4k Kylo - YouTube" instead of "Kylo -
+    //     YouTube".
+    // A title-less engine leaves `titled` None and keeps the `best` fallback,
+    // so nothing regresses.
+    let mut best = String::new();
+    let mut titled: Option<String> = None;
+    let mut search_from = 0usize;
+    while search_from < html.len() {
+        let pos_dq = html[search_from..]
+            .find(&search_dq)
+            .map(|p| p + search_from);
+        let pos_sq = html[search_from..]
+            .find(&search_sq)
+            .map(|p| p + search_from);
+        let Some(pos) = (match (pos_dq, pos_sq) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            (None, None) => None,
+        }) else {
+            break;
+        };
+        let after_href = &html[pos..];
+        let Some(g) = after_href.find('>') else {
+            break;
+        };
+        let gt = pos + g + 1;
+        let rest = &html[gt..];
+        let Some(e) = rest.find("</a>").or_else(|| rest.find("</A>")) else {
+            break;
+        };
+        let end = gt + e;
+        let inner = &html[gt..end];
+        let text = strip_tags(inner, max_len);
+        let has_text = !text.trim().is_empty();
+
+        if titled.is_none() {
+            // Brave-style: a dedicated title node inside the anchor — extract
+            // ONLY it, dropping the surrounding chrome the anchor also wraps.
+            if let Some(t) = title_node_text(inner, max_len) {
+                titled = Some(t);
+            } else if has_text {
+                // DDG-style: the anchor tag itself is the title link (result__a),
+                // so its whole visible text is the clean title.
+                let tag_start = html[..pos].rfind('<').unwrap_or(pos);
+                if is_title_anchor(&html[tag_start..gt]) {
+                    titled = Some(text.clone());
+                }
+            }
+        }
+        if has_text {
+            best = text;
+        }
+        // `gt > pos` always (`find('>')` returns `g >= 0`), so this guarantees
+        // forward progress and the loop terminates.
+        search_from = gt;
+    }
+    titled.unwrap_or(best)
+}
+
+/// The quoted value of an opening tag's `class` attribute (`class="a b c"` →
+/// `a b c`), or `None`. Matches the `class=` attribute specifically so a
+/// separate `title="…"` HTML attribute (Brave puts one on its title `<div>`)
+/// can't be mistaken for a title *class*. Pure.
+fn class_value(open_tag: &str) -> Option<&str> {
+    for q in ['"', '\''] {
+        let needle = format!("class={q}");
+        if let Some(p) = open_tag.find(&needle) {
+            let rest = &open_tag[p + needle.len()..];
+            if let Some(end) = rest.find(q) {
+                return Some(&rest[..end]);
+            }
+        }
+    }
+    None
+}
+
+/// True if `open_tag` (a full `<a …>` opening tag) is a search engine's title
+/// *link* — its class contains `result__a` (DuckDuckGo) or `result-title`
+/// (Startpage). Such an anchor's whole visible text IS the title.
+fn is_title_anchor(open_tag: &str) -> bool {
+    class_value(open_tag).is_some_and(|c| {
+        find_ascii_ci(c, "result__a").is_some() || find_ascii_ci(c, "result-title").is_some()
+    })
+}
+
+/// If `inner` (an anchor's inner HTML) contains a dedicated title node — a
+/// leaf tag whose `class` contains `title` (Brave `title search-snippet-title`,
+/// Startpage `wgl-title`) or a heading `<h1..h4>` — return just that node's
+/// stripped text. Isolates the real title from surrounding breadcrumb/site-name
+/// chrome the whole anchor may also wrap. `None` when no such node exists, so
+/// the caller keeps its whole-anchor fallback. Bing is unaffected: its title
+/// `<h2>` wraps the anchor (it is not *inside* the anchor), so nothing here
+/// matches and the fallback still yields Bing's correct title. Pure.
+fn title_node_text(inner: &str, max_len: usize) -> Option<String> {
+    let mut i = 0usize;
+    while let Some(rel) = inner[i..].find('<') {
+        let lt = i + rel;
+        let after = &inner[lt..];
+        if after.starts_with("</") {
+            i = lt + 2;
+            continue;
+        }
+        let Some(gt_rel) = after.find('>') else {
+            break;
+        };
+        let open_tag = &after[..gt_rel]; // "<div class=…" (no '>')
+        let content_start = lt + gt_rel + 1;
+        // Tag name: between '<' and the first whitespace / '/'.
+        let name_end = open_tag[1..]
+            .find(|c: char| c.is_whitespace() || c == '/')
+            .map_or(open_tag.len(), |p| 1 + p);
+        let name = &open_tag[1..name_end];
+        let is_heading = matches!(
+            name.to_ascii_lowercase().as_str(),
+            "h1" | "h2" | "h3" | "h4"
+        );
+        let is_title_class =
+            class_value(open_tag).is_some_and(|c| find_ascii_ci(c, "title").is_some());
+        if is_heading || is_title_class {
+            // Leaf node: text up to the next '<' (Brave/Startpage title nodes
+            // are leaves). `strip_tags` also defangs any stray inline markup.
+            let content = &inner[content_start..];
+            let text_end = content.find('<').map_or(inner.len(), |p| content_start + p);
+            let text = strip_tags(&inner[content_start..text_end], max_len);
+            if !text.trim().is_empty() {
+                return Some(text);
+            }
+        }
+        i = content_start;
+    }
+    None
 }
 
 pub(in crate::modules::search_engines) fn extract_surrounding_text(
@@ -46,9 +189,76 @@ pub(in crate::modules::search_engines) fn extract_surrounding_text(
         Some(p) => p,
         None => return String::new(),
     };
-    let start = floor_char_boundary(html, pos.saturating_sub(300));
     let end = ceil_char_boundary(html, (pos + anchor.len() + 300).min(html.len()));
+    let start = floor_char_boundary(html, pos.saturating_sub(300));
+    let start = floor_char_boundary(html, skip_straddling_inline_block(html, start).min(end));
     strip_tags(&html[start..end], max_len)
+}
+
+/// Bounded backward lookback (bytes) when checking whether a text-extraction
+/// window's start falls inside an inline `<svg>`/`<style>`/`<script>` block
+/// opened earlier in the page — generous for any realistic single icon/style/
+/// script block, without scanning the whole document backward.
+const STRADDLE_LOOKBACK: usize = 4096;
+
+/// If `pos` sits inside an inline `<svg>`/`<style>`/`<script>` block that opens
+/// within [`STRADDLE_LOOKBACK`] bytes before `pos` and has no matching close tag
+/// before `pos`, returns the byte offset just past that block's close tag (or
+/// `html.len()` if it is never closed) — the safe boundary a text-extraction
+/// window must start at instead. Returns `pos` unchanged when nothing straddles
+/// it.
+///
+/// [`strip_inline_blocks`] only recognises a complete `<tag>…</tag>` pair fully
+/// contained in the slice it is given. A fixed-size ±300-char window (like
+/// [`extract_surrounding_text`]'s) whose start lands strictly inside such a
+/// block — the block's own opening tag sits behind the window's left edge, so
+/// the local scan never sees it — lets the block's raw attribute/path data
+/// (`d="M20.376 0H3.624…"`, `clip-rule="evenodd"`) leak straight through
+/// `strip_tags` as if it were visible text. A real Swisscows SERP capture
+/// (`fetch/testdata/swisscows_kylo4kylo.html`) demonstrated exactly this: an
+/// icon-only social link's title fell back to this window, which began mid-way
+/// through the PRECEDING icon's `<svg><path d="…">` block, and that block's raw
+/// path coordinates leaked into the extracted text as if they were a title.
+///
+/// Walks `[lookback, pos)` once, left to right, alternating between "outside a
+/// block" (looking for the next `<svg`/`<style`/`<script`, whichever comes
+/// first) and "inside a block" (looking for that specific tag's own close) —
+/// a single linear pass threads correctly through any sequence of complete,
+/// back-to-back blocks before `pos` (exactly what the real capture has: one
+/// icon's closed `</svg>` immediately followed by the next icon's `<svg>`),
+/// rather than a per-tag-type scan that could mis-pick a closed block over an
+/// still-open earlier one.
+fn skip_straddling_inline_block(html: &str, pos: usize) -> usize {
+    let lookback = floor_char_boundary(html, pos.saturating_sub(STRADDLE_LOOKBACK));
+    let mut cursor = lookback;
+    loop {
+        let mut next_open: Option<(usize, &'static str)> = None;
+        for (open, close) in [
+            ("<svg", "</svg>"),
+            ("<style", "</style>"),
+            ("<script", "</script>"),
+        ] {
+            if let Some(rel) = find_ascii_ci(&html[cursor..pos], open) {
+                let abs = cursor + rel;
+                if next_open.is_none_or(|(p, _)| abs < p) {
+                    next_open = Some((abs, close));
+                }
+            }
+        }
+        let Some((open_pos, close_tag)) = next_open else {
+            return pos; // no more open tags before `pos` — not inside a block
+        };
+        match find_ascii_ci(&html[open_pos..pos], close_tag) {
+            Some(rel) => cursor = open_pos + rel + close_tag.len(), // closed before pos, keep scanning
+            None => {
+                // Unclosed before `pos` — `pos` is inside THIS block.
+                return match find_ascii_ci(&html[open_pos..], close_tag) {
+                    Some(rel2) => open_pos + rel2 + close_tag.len(),
+                    None => html.len(),
+                };
+            }
+        }
+    }
 }
 
 pub(in crate::modules::search_engines) fn extract_snippet_near(
@@ -133,9 +343,30 @@ pub(in crate::modules::search_engines) fn strip_tags(html: &str, max_len: usize)
     let cleaned = strip_inline_blocks(html);
     let mut out = String::with_capacity(max_len);
     let mut in_tag = false;
+    // Track the quote char of an attribute value while inside a tag, so a '>'
+    // that appears INSIDE a quoted attribute — a JS `onerror="a=>b"`, a data URI,
+    // a URL query, a `srcset` — does not prematurely close the tag and leak the
+    // rest of it as visible text. This was dumping Brave's favicon `<img
+    // src="…base64…" loading="lazy" onerror="…"/>` base64 `src` straight into the
+    // result `page_title`. The same class of stray-'>' desync that
+    // `strip_inline_blocks` already defends svg/style/script (and now comments)
+    // against, handled here for every other tag.
+    let mut attr_quote: Option<char> = None;
     for c in cleaned.chars() {
         if out.len() >= max_len {
             break;
+        }
+        if in_tag {
+            match attr_quote {
+                Some(q) if c == q => attr_quote = None,
+                Some(_) => {}
+                None => match c {
+                    '"' | '\'' => attr_quote = Some(c),
+                    '>' => in_tag = false,
+                    _ => {}
+                },
+            }
+            continue;
         }
         match c {
             '<' => {
@@ -143,22 +374,20 @@ pub(in crate::modules::search_engines) fn strip_tags(html: &str, max_len: usize)
                 // (`</h3><span>`) do not fuse into "Facebookhttps…". The same
                 // `!ends_with(' ') && !is_empty()` guards used for whitespace
                 // prevent a leading or doubled space.
-                if !in_tag && !out.is_empty() && !out.ends_with(' ') {
+                if !out.is_empty() && !out.ends_with(' ') {
                     out.push(' ');
                 }
                 in_tag = true;
             }
-            '>' => in_tag = false,
-            _ if !in_tag => {
-                if c.is_whitespace() {
-                    if !out.ends_with(' ') && !out.is_empty() {
-                        out.push(' ');
-                    }
-                } else {
-                    out.push(c);
+            // A '>' outside any tag is stray markup, never visible text — drop it
+            // (the previous scanner never emitted a bare '>' either).
+            '>' => {}
+            _ if c.is_whitespace() => {
+                if !out.ends_with(' ') && !out.is_empty() {
+                    out.push(' ');
                 }
             }
-            _ => {}
+            _ => out.push(c),
         }
     }
     decode_html_entities(out.trim())
@@ -178,13 +407,41 @@ fn strip_inline_blocks(html: &str) -> Cow<'_, str> {
     // `to_ascii_lowercase().contains(ascii_needle)` is exactly ASCII-CI matching,
     // so this is byte-for-byte equivalent while turning two per-call full-buffer
     // allocations into zero on the overwhelmingly common no-block path.
-    if find_ascii_ci(html, "<svg").is_none()
+    if !html.contains("<!--")
+        && find_ascii_ci(html, "<svg").is_none()
         && find_ascii_ci(html, "<style").is_none()
         && find_ascii_ci(html, "<script").is_none()
     {
         return Cow::Borrowed(html);
     }
     let mut s = html.to_string();
+
+    // HTML comments first. Svelte-rendered SERPs (Brave) are dense with hydration
+    // markers (`<!--[-->`, `<!--]-->`), and a comment carrying a stray '>' would
+    // desync the tag scanner and leak the following markup — the same failure the
+    // svg/style/script strip below prevents. Comments delimit with `<!-- … -->`
+    // (not `</tag>`), so they get their own pass; an unclosed comment drops to
+    // end-of-string. Literal markers (comments are not case-folded).
+    if s.contains("<!--") {
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        let mut from = 0;
+        while let Some(rel) = s[from..].find("<!--") {
+            let start = from + rel;
+            let end = match s[start + 4..].find("-->") {
+                Some(r) => start + 4 + r + 3,
+                None => s.len(),
+            };
+            ranges.push((start, end));
+            if end >= s.len() {
+                break;
+            }
+            from = end;
+        }
+        for (start, end) in ranges.into_iter().rev() {
+            s.replace_range(start..end, " ");
+        }
+    }
+
     for tag in ["svg", "style", "script"] {
         let open = format!("<{tag}");
         let close = format!("</{tag}>");

@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
     use std::collections::HashMap;
 
@@ -9,7 +10,6 @@ use super::*;
             http: crate::util::http::build_client(),
             keys: HashMap::default(),
             cancel: crate::core::cancel::CancelHandle::new(),
-            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
         }
     }
 
@@ -71,12 +71,12 @@ use super::*;
     #[tokio::test]
     async fn process_emits_candidate_usernames() {
         let t = Target::new(TargetKind::Username, "john.doe");
-        let r = UsernameVariants.process(&t, &ctx()).await.unwrap();
+        let r = UsernameVariants.process(&t, &ctx()).await.expect("should succeed");
         assert!(!r.entities.is_empty());
         for e in &r.entities {
             assert_eq!(e.kind, EntityKind::Username);
             assert!((e.confidence - VARIANT_CONF).abs() < 1e-9);
-            assert!(e.confidence < 0.50, "must stay below the expansion floor");
+            assert!(e.confidence < confidence::MEDIUM, "must stay below the expansion floor");
             assert!(e.has_tag("variant"));
             assert!(e.has_tag("candidate"));
             assert_eq!(e.evidence[0].source, SRC);
@@ -86,7 +86,7 @@ use super::*;
     #[tokio::test]
     async fn process_emits_nothing_for_plain_handle() {
         let t = Target::new(TargetKind::Username, "jdoe");
-        let r = UsernameVariants.process(&t, &ctx()).await.unwrap();
+        let r = UsernameVariants.process(&t, &ctx()).await.expect("should succeed");
         assert!(r.entities.is_empty());
     }
 

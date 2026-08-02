@@ -13,6 +13,26 @@ use crate::api::AppState;
 use crate::core::entity::scan_id;
 use crate::core::scan::{Scan, ScanRequest, Target, TargetKind};
 
+/// Run a blocking `Store` operation off the async reactor and normalise the
+/// outcome for a handler. Every `Store` method takes the global SQLite
+/// connection mutex, so calling one inline on an async handler pins the worker
+/// thread for the whole query — a cascade `delete_scan` or a batch of writes
+/// then stalls every unrelated request sharing that thread. This is the
+/// write-path analogue of the `spawn_blocking` every *read* handler in this
+/// module already uses: on success it yields the value; on a store error or a
+/// task-join failure it yields a ready `500` for the caller to `return`.
+async fn offload_store<T, F>(f: F) -> std::result::Result<T, axum::response::Response>
+where
+    F: FnOnce() -> crate::core::error::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(internal_error(&e)),
+        Err(e) => Err(internal_error(&format!("db task failed: {e}"))),
+    }
+}
+
 pub async fn scan_create(
     State(s): State<Arc<AppState>>,
     Json(req): Json<ScanRequest>,
@@ -22,8 +42,10 @@ pub async fn scan_create(
         Err(msg) => return bad_request(msg),
     };
 
-    if let Err(e) = s.store.upsert_scan(&scan) {
-        return internal_error(&e);
+    let store = Arc::clone(&s.store);
+    let scan_db = scan.clone();
+    if let Err(resp) = offload_store(move || store.upsert_scan(&scan_db)).await {
+        return resp;
     }
 
     spawn_scan(&s, scan.clone(), target);
@@ -36,6 +58,24 @@ pub async fn scan_create(
         .into_response()
 }
 
+/// `GET /api/v1/scan/profiles` — the named scan-profile catalogue
+/// ([`crate::core::profiles::list_profiles`]) as JSON, so the web SPA's New
+/// Scan wizard can render a profile picker without hardcoding the name/
+/// description list — the single source `resolve_profile`/`--profile`'s own
+/// unknown-name error already use, now also reachable from the browser.
+/// Previously `profile` was already accepted in `ScanRequest.options` (the
+/// CLI's `--profile` and a raw `"profile":"…"` POST both worked), but there
+/// was no way for a browser-only operator to discover which names exist —
+/// this closes that gap, including for `skiptrace` (the debtor-location
+/// profile), which had no web UI path at all before this.
+pub async fn scan_profiles() -> impl IntoResponse {
+    let profiles: Vec<_> = crate::core::profiles::list_profiles()
+        .into_iter()
+        .map(|(name, description)| json!({ "name": name, "description": description }))
+        .collect();
+    Json(json!({ "profiles": profiles }))
+}
+
 /// The scan-history bound for [`scan_auto`]/[`scan_auto_plan`]/[`scan_auto_sweep`]'s
 /// candidate pool. Each handler's own doc promises it ranks "everything the
 /// platform has discovered" — a hardcoded `list_scans(50)` silently broke that
@@ -45,6 +85,15 @@ pub async fn scan_create(
 /// device safety" convention [`crate::api::handlers::stats`] already uses for
 /// its own full-history aggregation, so the two full-history reads agree.
 const AUTONOMOUS_POOL_MAX_SCANS: usize = 10_000;
+
+/// Total-entity ceiling on the in-memory autonomous target pool. `MAX_SCANS`
+/// alone bounds the number of scans read, but 10_000 scans × hundreds of
+/// entities each is millions of `Entity` structs in one `Vec` — multi-hundred-MB
+/// on a 2–4 GB Termux phone, before `plan_autonomous_sweep` even runs. The pool
+/// is a target-selection heuristic, so a deterministic prefix of the (recent-
+/// first) scan history is more than enough to pick the top `limit` (≤200)
+/// targets. Loading stops once the pool reaches this size.
+const AUTONOMOUS_POOL_MAX_ENTITIES: usize = 50_000;
 
 /// The operator-local default seed (`HUNTSMAN_DEFAULT_SEED`), with its kind
 /// auto-detected from the value — the autonomous scan's fallback when the local
@@ -86,6 +135,9 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
             let mut seen: HashSet<String> = HashSet::new();
             let mut rel_seen: HashSet<String> = HashSet::new();
             for sc in &scans {
+                if pool.len() >= AUTONOMOUS_POOL_MAX_ENTITIES {
+                    break;
+                }
                 for e in store.entities_for_scan(&sc.id)? {
                     if seen.insert(e.uid.clone()) {
                         pool.push(e);
@@ -151,8 +203,10 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let sid = scan_id(kind.canonical_str(), &value);
     let scan = Scan::new(sid.clone(), target.clone())
         .with_options(crate::core::scan::default_scan_options());
-    if let Err(e) = s.store.upsert_scan(&scan) {
-        return internal_error(&e);
+    let store = Arc::clone(&s.store);
+    let scan_db = scan.clone();
+    if let Err(resp) = offload_store(move || store.upsert_scan(&scan_db)).await {
+        return resp;
     }
     spawn_scan(&s, scan, target);
     info!(scan_id = %sid, kind = ?kind, "autonomous scan queued — seed auto-selected");
@@ -211,6 +265,9 @@ pub async fn scan_auto_plan(
             let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
             let mut seen: HashSet<String> = HashSet::new();
             for sc in &scans {
+                if pool.len() >= AUTONOMOUS_POOL_MAX_ENTITIES {
+                    break;
+                }
                 for e in store.entities_for_scan(&sc.id)? {
                     if seen.insert(e.uid.clone()) {
                         pool.push(e);
@@ -286,6 +343,9 @@ pub async fn scan_auto_sweep(
             let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
             let mut seen: HashSet<String> = HashSet::new();
             for sc in &scans {
+                if pool.len() >= AUTONOMOUS_POOL_MAX_ENTITIES {
+                    break;
+                }
                 for e in store.entities_for_scan(&sc.id)? {
                     if seen.insert(e.uid.clone()) {
                         pool.push(e);
@@ -340,9 +400,19 @@ pub async fn scan_auto_sweep(
         let sid = scan_id(t.kind.canonical_str(), &t.value);
         let scan = Scan::new(sid.clone(), target.clone())
             .with_options(crate::core::scan::default_scan_options());
-        if let Err(e) = s.store.upsert_scan(&scan) {
-            dispatched.push(json!({ "error": e.to_string(), "value": t.value }));
-            continue;
+        let store = Arc::clone(&s.store);
+        let scan_db = scan.clone();
+        match tokio::task::spawn_blocking(move || store.upsert_scan(&scan_db)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                dispatched.push(json!({ "error": e.to_string(), "value": t.value }));
+                continue;
+            }
+            Err(e) => {
+                dispatched
+                    .push(json!({ "error": format!("db task failed: {e}"), "value": t.value }));
+                continue;
+            }
         }
         spawn_scan(&s, scan, target);
         dispatched.push(json!({
@@ -397,15 +467,22 @@ pub async fn scan_cancel(
 }
 
 pub async fn scan_list(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-    match s.store.list_scans(200) {
-        Ok(scans) => ok_list("scans", scans),
-        Err(e) => internal_error(&e),
+    // Off-reactor: list_scans(200) deserializes up to 200 rows under the global
+    // connection mutex — two concurrent inline calls could block both ~2 workers
+    // and starve SSE keep-alives / `/health`. Matches the sibling handlers.
+    let store = std::sync::Arc::clone(&s.store);
+    match tokio::task::spawn_blocking(move || store.list_scans(200)).await {
+        Ok(Ok(scans)) => ok_list("scans", scans),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
     }
 }
 
 pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> impl IntoResponse {
-    match s.store.get_scan(&id) {
-        Ok(Some(scan)) => (
+    // Off-reactor: synchronous SQLite read under the global connection mutex.
+    let store = std::sync::Arc::clone(&s.store);
+    match tokio::task::spawn_blocking(move || store.get_scan(&id)).await {
+        Ok(Ok(Some(scan))) => (
             StatusCode::OK,
             Json(serde_json::to_value(&scan).unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "failed to serialize scan to JSON value");
@@ -413,8 +490,9 @@ pub async fn scan_get(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
             })),
         )
             .into_response(),
-        Ok(None) => not_found(),
-        Err(e) => internal_error(&e),
+        Ok(Ok(None)) => not_found(),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
     }
 }
 
@@ -422,13 +500,42 @@ pub async fn scan_delete(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match s.store.delete_scan(&id) {
+    // Refuse to delete a scan that's still in-flight: `s.cancellations` holds
+    // an entry for exactly as long as the scan's spawned task is alive
+    // (installed at `spawn_scan`, removed by `CancelRegistryGuard`'s Drop when
+    // the task returns — success, error, or panic). Without this check,
+    // deleting a running scan raced the engine's own mid-scan checkpoint
+    // writes and finalisation: `delete_scan`'s cascade would remove all rows
+    // for the id, but the still-running engine task (nothing here stops it)
+    // keeps calling `upsert_entities_batch`/`upsert_scan`/`upsert_correlation`
+    // under the SAME scan_id, silently resurrecting a "deleted" scan in a
+    // partially/fully rebuilt, potentially internally-inconsistent state —
+    // with the client having already been told 200 "deleted". Rejecting up
+    // front closes the multi-second window the live engine run occupies;
+    // the client's documented recovery is to cancel first, then retry delete.
+    if s.cancellations.lock().contains_key(&id) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "scan is still running — cancel it first (POST /api/v1/scans/{id}/cancel), then retry delete",
+                "scan_id": id,
+            })),
+        )
+            .into_response();
+    }
+    // `delete_scan` is a multi-table cascade transaction (scans, correlations,
+    // observations, events, relations, stealer_rows, entities + FTS sync) under
+    // the global connection mutex — the heaviest write in the API. Run it off the
+    // reactor so a large-scan delete can't stall unrelated requests.
+    let store = Arc::clone(&s.store);
+    let id_db = id.clone();
+    match offload_store(move || store.delete_scan(&id_db)).await {
         Ok(true) => {
             info!(scan_id = %id, "scan deleted");
             (StatusCode::OK, Json(json!({ "deleted": id }))).into_response()
         }
         Ok(false) => not_found(),
-        Err(e) => internal_error(&e),
+        Err(resp) => resp,
     }
 }
 
@@ -436,17 +543,21 @@ pub async fn scan_rerun(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let original = match s.store.get_scan(&id) {
+    let store = Arc::clone(&s.store);
+    let id_db = id.clone();
+    let original = match offload_store(move || store.get_scan(&id_db)).await {
         Ok(Some(scan)) => scan,
         Ok(None) => return not_found(),
-        Err(e) => return internal_error(&e),
+        Err(resp) => return resp,
     };
 
     let sid = scan_id(original.target.kind.canonical_str(), &original.target.value);
     let new_scan = Scan::new(sid, original.target.clone()).with_options(original.options.clone());
 
-    if let Err(e) = s.store.upsert_scan(&new_scan) {
-        return internal_error(&e);
+    let store = Arc::clone(&s.store);
+    let scan_db = new_scan.clone();
+    if let Err(resp) = offload_store(move || store.upsert_scan(&scan_db)).await {
+        return resp;
     }
 
     spawn_scan(&s, new_scan.clone(), original.target);
@@ -507,15 +618,20 @@ pub async fn scan_import(
     // `scan_id` is collision-free per call, so the value just needs to be
     // descriptive — the upload size, not a redundant timestamp.
     let sid = scan_id("import-upload", &body.len().to_string());
-    // Detect the format from content and parse via the SAME `cli::import` path
+    // Detect the format from content and parse via the SAME `app::import` path
     // the CLI uses — OathNet JSON/HTML/stealer-TXT and breach/dossier all work.
-    let (entities, format) = match crate::cli::import::entities_from_upload(&body, &sid).await {
+    let (entities, format) = match crate::app::import::entities_from_upload(&body, &sid).await {
         Ok(pair) => pair,
         Err(e) => return bad_request(format!("could not parse upload: {e}")),
     };
     if entities.is_empty() {
         return bad_request("no verifiable entities were parsed from the upload");
     }
+    // Paired stealer-log credential rows (login+password+machine, kept
+    // together) for the Stealer Logs Viewer — empty for every non-stealer
+    // upload format. See `stealer_rows_from_upload`'s own doc for why this
+    // is a second, separate parse rather than a widened `entities_from_upload`.
+    let stealer_rows = crate::app::import::stealer_rows_from_upload(&body);
 
     // A readable scan label: the strongest identity in the file, else a generic.
     let label = entities
@@ -552,13 +668,22 @@ pub async fn scan_import(
         match tokio::task::spawn_blocking(move || -> crate::core::error::Result<_> {
             store.upsert_scan(&scan)?;
             store.upsert_entities_batch(&entities)?;
+            // Best-effort: a stealer-row persistence hiccup must not fail an
+            // otherwise-successful import — the entity graph above already
+            // carries the same credentials, just unpaired.
+            let _ = store.insert_stealer_rows_batch(&sid2, &stealer_rows);
             // Device-safety bound: skip the O(n²) enrichment on a pathologically
             // large import (entities are already persisted above; nothing lost).
             if entities.len() > IMPORT_ENRICH_MAX_ENTITIES {
                 return Ok((0usize, 0usize, false));
             }
             let mut relations = 0usize;
-            for r in &crate::core::relation::derive_all(&entities, &sid2) {
+            // Wall-clock bound on the super-linear derivation chain, matching a
+            // live scan (the entity-count guard above already skips the
+            // pathological case; this bounds the rest).
+            let derive_deadline =
+                Some(std::time::Instant::now() + crate::core::relation::DERIVE_BUDGET);
+            for r in &crate::core::relation::derive_all_within(&entities, &sid2, derive_deadline) {
                 if store.upsert_relation(r).is_ok() {
                     relations += 1;
                 }
@@ -625,9 +750,18 @@ pub async fn scan_batch(
                 continue;
             }
         };
-        if let Err(e) = s.store.upsert_scan(&scan) {
-            scan_ids.push(json!({ "error": e.to_string() }));
-            continue;
+        let store = Arc::clone(&s.store);
+        let scan_db = scan.clone();
+        match tokio::task::spawn_blocking(move || store.upsert_scan(&scan_db)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                scan_ids.push(json!({ "error": e.to_string() }));
+                continue;
+            }
+            Err(e) => {
+                scan_ids.push(json!({ "error": format!("db task failed: {e}") }));
+                continue;
+            }
         }
         let sid = scan.id.clone();
         spawn_scan(&s, scan, target);
@@ -649,12 +783,17 @@ pub async fn scan_batch(
 /// anchors the sweep on the local network (a sentinel MAC); anything else (incl.
 /// `None`) is the default GPS/RF ambient survey (a sentinel coordinate). The
 /// sensors ignore the seed value, so it is always a sentinel, never a target.
-pub(crate) fn radar_scan_spec(seed: Option<&str>) -> (Target, crate::core::scan::ScanOptions) {
+pub(crate) fn radar_scan_spec() -> (Target, crate::core::scan::ScanOptions) {
     use crate::core::scan::TargetKind;
-    let (kind, value) = match seed {
-        Some("mac" | "mac_address" | "bssid") => (TargetKind::MacAddress, "00:00:00:00:00:00"),
-        _ => (TargetKind::Coordinates, "0,0"),
-    };
+    // A fixed sentinel. All five sensors gate on `Coordinates | MacAddress` and
+    // ignore the value entirely, so the old `?seed=` knob — which chose only
+    // WHICH sentinel kind to use — could not change what any of them collected.
+    // The radar has two states, running and stopped; a parameter that alters
+    // nothing is a way to think you configured something.
+    let (kind, value) = (
+        TargetKind::Coordinates,
+        crate::core::scan::RADAR_SENTINEL_COORD_RAW,
+    );
     let opts = crate::core::scan::ScanOptions {
         modules: Some(
             crate::core::engine::LOCAL_PASSIVE_MODULES
@@ -678,18 +817,12 @@ pub(crate) fn radar_scan_spec(seed: Option<&str>) -> (Target, crate::core::scan:
 /// environment (Wi-Fi APs, Bluetooth, cell towers, GPS fix, LAN ARP) — and is
 /// entirely separate from target seed scanning: an ordinary scan never runs these
 /// modules (the `allow_live_sensors` gate keeps them off); only this endpoint sets
-/// it. The sweep is seeded with a sentinel value purely so the sensors (which gate
-/// on `Coordinates`/`MacAddress` and ignore the value) dispatch.
+/// it. The sweep is seeded with a sentinel value purely so the sensors (which
+/// gate on `Coordinates`/`MacAddress` and ignore the value) dispatch.
 ///
-/// The *only* input is an optional seed **type** via `?seed=` — `coordinates`
-/// (default; GPS/RF ambient survey) or `mac`/`mac_address`/`bssid` (a
-/// BSSID-anchored local-network survey). Every sensor accepts both kinds and
-/// ignores the value, so this just labels the sweep's anchor; it never carries a
-/// real target.
-pub async fn radar_sweep(
-    State(s): State<Arc<AppState>>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
-) -> impl IntoResponse {
+/// It takes **no parameters at all** — running or stopped is the whole
+/// interface.
+pub async fn radar_sweep(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     // Armed by default: hitting this endpoint IS the deliberate activation. The
     // `feature.live_radar` toggle is a kill-switch — it only refuses here if the
     // operator has explicitly switched the radar OFF. (Seed scans can never run the
@@ -705,11 +838,13 @@ pub async fn radar_sweep(
         )
             .into_response();
     }
-    let (target, opts) = radar_scan_spec(params.get("seed").map(String::as_str));
+    let (target, opts) = radar_scan_spec();
     let sid = scan_id("radar", target.kind.canonical_str());
     let scan = Scan::new(sid.clone(), target.clone()).with_options(opts);
-    if let Err(e) = s.store.upsert_scan(&scan) {
-        return internal_error(&e);
+    let store = Arc::clone(&s.store);
+    let scan_db = scan.clone();
+    if let Err(resp) = offload_store(move || store.upsert_scan(&scan_db)).await {
+        return resp;
     }
     spawn_scan(&s, scan, target);
     info!(scan_id = %sid, "radar sweep queued — live device sensors (button activation)");
@@ -749,7 +884,7 @@ pub async fn radar_live(State(s): State<Arc<AppState>>) -> impl IntoResponse {
             .into_response();
     }
     // No seed: the autonomous ambient survey. The sensors ignore the sentinel.
-    let (target, opts) = radar_scan_spec(None);
+    let (target, opts) = radar_scan_spec();
     // Continuous, uncapped, radar-mode (one shared ledger across sweeps). The
     // interval is the product default — no operator input.
     let live = crate::core::live::LiveOptions {
@@ -763,6 +898,113 @@ pub async fn radar_live(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         Json(json!({ "live_id": live_id, "status": "running", "mode": "radar" })),
     )
         .into_response()
+}
+
+/// `GET /api/v1/radar/history?limit=<n>` — chronological (newest-first) list
+/// of past radar sweeps for historical review.
+///
+/// Unlike `GET /api/v1/live` (which only shows sessions still held in the
+/// server's in-memory `LiveSession` map — cleared on every restart), this
+/// reads directly from the persisted `scans` table: every sweep a `radar`/
+/// `radar/live` call ever queued survives a restart here, so an operator
+/// reconstructing "what was around me" after the fact doesn't need to
+/// remember a session id — only that a radar sweep ran at some point. This
+/// is the sole purpose-built historical-review surface for the live radar
+/// feature (`docs/PROBLEM_TREE.md`/`docs/SOLUTION_TREE.md`: personal-safety
+/// / situational-awareness review under limited information).
+pub async fn radar_history(
+    State(s): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let limit: usize = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .clamp(1, 1000);
+    let store = Arc::clone(&s.store);
+    match offload_store(move || store.radar_history(limit)).await {
+        Ok(scans) => ok_list("sweeps", scans),
+        Err(resp) => resp,
+    }
+}
+
+/// `GET /api/v1/radar/recurring?min=2&limit=100` — cross-sweep persistent-device
+/// review. Walks the radar sweep history (`radar_history`) and reports the
+/// devices that recur across ≥`min` distinct sweeps, counting ONLY
+/// universally-administered (real hardware) MACs the operator's phone is NOT
+/// bonded to — a randomized privacy address rotates and can't recur, and the
+/// operator's own paired kit (AU-117) is not a foreign tail. What survives is an
+/// UNKNOWN persistent device seen across multiple sweeps: a fixed installation
+/// the operator keeps passing, or a device that tracks their movement. This is
+/// the counter-surveillance view a single per-scan correlation can never give —
+/// it needs the whole sweep history. All analysis is the pure, offline
+/// [`crate::core::radar_track`] primitive.
+pub async fn radar_recurring(
+    State(s): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    use crate::core::entity::EntityKind;
+    use crate::core::radar_track::{Sweep, SweepObservation, recurring_devices};
+
+    let limit: usize = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .clamp(1, 1000);
+    let min_sweeps: usize = params.get("min").and_then(|v| v.parse().ok()).unwrap_or(2);
+
+    // Off-reactor: one `radar_history` plus up to `limit` (≤1000) sequential
+    // `entities_for_scan` reads under the global SQLite mutex, then the pure
+    // offline analysis — all on a blocking thread. Walking a deep sweep history
+    // inline would stall the 2-worker async reactor and starve SSE keep-alives /
+    // `/health`, so this follows the off-reactor discipline every sibling here
+    // already uses.
+    let store = Arc::clone(&s.store);
+    match tokio::task::spawn_blocking(move || -> crate::core::error::Result<_> {
+        let scans = store.radar_history(limit)?;
+        let mut sweeps: Vec<Sweep> = Vec::with_capacity(scans.len());
+        for scan in &scans {
+            // A single unreadable sweep must not abort the whole review.
+            let Ok(entities) = store.entities_for_scan(&scan.id) else {
+                continue;
+            };
+            let devices: Vec<SweepObservation> = entities
+                .iter()
+                .filter(|e| {
+                    e.kind == EntityKind::MacAddress
+                        && (e.has_tag("bluetooth") || e.has_tag(crate::core::tags::WIFI_AP))
+                })
+                .map(|e| {
+                    let name = e
+                        .evidence
+                        .iter()
+                        .find_map(|ev| {
+                            ev.attributes
+                                .get("name")
+                                .or_else(|| ev.attributes.get("ssid"))
+                        })
+                        .map(String::to_string);
+                    SweepObservation {
+                        mac: e.value.clone(),
+                        name,
+                        bonded: e.has_tag("bond:bonded"),
+                    }
+                })
+                .collect();
+            sweeps.push(Sweep {
+                scan_id: scan.id.clone(),
+                ts: scan.started_at,
+                devices,
+            });
+        }
+        Ok(recurring_devices(&sweeps, min_sweeps))
+    })
+    .await
+    {
+        Ok(Ok(devices)) => ok_list("devices", devices),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
+    }
 }
 
 /// `GET /api/v1/plan?value=<seed>` — forward-only scan-plan PREVIEW.
@@ -781,9 +1023,25 @@ pub async fn plan_preview(
         .into_iter()
         .filter(|m| m.accepts(&target))
         .collect();
+
+    // Convex query value per module: the return-per-unit-budget of firing it as
+    // one query (cheap keyless identity-/key-unlocking modules high, expensive
+    // terminal providers low). This is the order a default scan actually
+    // dispatches in (`convex_budget` is on by default), so the preview reflects
+    // where the phone's budget is spent FIRST — highest query value leading, ties
+    // broken by static priority then name, exactly as the engine's convex
+    // dispatch index orders them.
+    let qv = |m: &std::sync::Arc<dyn Module>| -> f64 {
+        crate::core::convex::query_value(
+            m.cost(),
+            m.is_passive(),
+            crate::core::convex::module_cascade(m.produces(), m.category()),
+        )
+    };
     accepting.sort_by(|a, b| {
-        b.priority()
-            .cmp(&a.priority())
+        qv(b)
+            .total_cmp(&qv(a))
+            .then_with(|| b.priority().cmp(&a.priority()))
             .then_with(|| a.name().cmp(b.name()))
     });
 
@@ -793,13 +1051,30 @@ pub async fn plan_preview(
         *by_category.entry(m.category().as_str()).or_insert(0) += 1;
     }
 
+    // Coarse optionality label from the module's cascade, for the UI badge.
+    let optionality = |cascade: f64| -> &'static str {
+        if cascade >= 0.70 {
+            "high"
+        } else if cascade >= 0.40 {
+            "moderate"
+        } else {
+            "terminal"
+        }
+    };
+
     let modules: Vec<serde_json::Value> = accepting
         .iter()
         .map(|m| {
+            let cascade = crate::core::convex::module_cascade(m.produces(), m.category());
             json!({
                 "name": m.name(),
                 "category": m.category().as_str(),
                 "priority": m.priority(),
+                "cost": m.cost().as_str(),
+                "passive": m.is_passive(),
+                // Round to 3 dp so the wire value is stable and compact.
+                "query_value": (qv(m) * 1000.0).round() / 1000.0,
+                "optionality": optionality(cascade),
                 "description": m.description(),
             })
         })
@@ -815,6 +1090,10 @@ pub async fn plan_preview(
             "value": value,
             "kind": target.kind.canonical_str(),
             "module_count": modules.len(),
+            // The preview is ordered by convex query value — the order a default
+            // (convex_budget-on) scan dispatches in, so a budget-truncated run
+            // keeps the highest-return queries.
+            "order": "convex_query_value",
             "categories": categories,
             "modules": modules,
         })),
@@ -826,7 +1105,7 @@ pub async fn scan_events_history(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
     // Off-reactor: the per-scan event log can be large and the read is synchronous

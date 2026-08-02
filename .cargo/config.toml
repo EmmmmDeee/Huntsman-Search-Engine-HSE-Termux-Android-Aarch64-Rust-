@@ -1,21 +1,34 @@
 # Cargo configuration for Huntsman Search Engine
 # Primary target: Termux Android aarch64 (no root)
 
-# ── aarch64 (Termux on-device builds) ──────────────────────────────────────
-# `target-cpu=native` enables the full Armv8-A ISA feature set detected at
-# compile time: NEON SIMD, AES/SHA crypto extensions, CRC32, LSE atomics.
-# This is safe here because HSE is compiled and run on the same device (the
-# CI cross-compiles to aarch64-unknown-linux-gnu, which also benefits from the
-# crypto/SIMD flags that are universally available on Android 8+ aarch64 SoCs).
+# ── aarch64 (the ACTUAL triple every shipped build uses) ───────────────────
+# Both CI (`.github/workflows/ci.yml` / `release.yml`, via the NDK's aarch64
+# clang) and a Termux on-device build compile for `aarch64-linux-android` —
+# Termux runs on Android/bionic, not glibc, so its `rust` package's host
+# triple is `aarch64-linux-android` too. This target key previously read
+# `aarch64-unknown-linux-gnu`, a triple NONE of those builds ever use, so the
+# whole block below was silently dead: it never reached the shipped binary.
+#
+# `target-cpu=native` is deliberately NOT here, even though it's genuinely
+# safe for an on-device Termux build (same machine compiles and runs it) — CI
+# cross-compiles this exact triple from an x86_64 GitHub runner via the NDK,
+# and `-C target-cpu=native` queries the COMPILING host's CPU regardless of
+# the target architecture; asking for "native" while emitting aarch64 code
+# from an x86_64 host is invalid and would break that cross-compile. A rustflag
+# keyed on the target triple can't distinguish "native" from "cross" — both
+# share this triple — so the native-only flag lives instead in `install.sh`'s
+# on-device build invocation (always host==target there, unconditionally
+# safe), and only the flags safe under EITHER path stay here.
 #
 # `target-feature=+crt-static` is intentionally NOT set: Termux uses a
 # shared libc (bionic via NDK), and static-linking libc causes ABI mismatches
 # with dlopen()/threads on Android. The default dynamic link is correct.
-[target.aarch64-unknown-linux-gnu]
+[target.aarch64-linux-android]
 rustflags = [
-    "-C", "target-cpu=native",
     # Link-time optimisation hint: prefer smaller code on a phone's limited
     # flash. Works in tandem with `opt-level = "s"` in [profile.release].
+    # Architecture/host-independent (a linker behaviour, not CPU detection),
+    # so this is safe for both the on-device build and CI's cross-compile.
     "-C", "link-arg=-Wl,--as-needed",
 ]
 

@@ -5,9 +5,21 @@
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
 
-Pure-Rust OSINT / GEOINT platform with **167 modules** that runs entirely
+**All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
+SpiderFoot-inspired breadth without the daemon or the footprint.**
+
+Pure-Rust OSINT / GEOINT platform with **176 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
-SpiderFoot-style Web UI, zero native dependencies.
+dark-console Web UI, zero native dependencies, keyless-first.
+
+### Application architecture
+
+`src/app` is the public application/composition layer shared by the CLI and
+HTTP adapters. It exclusively owns concrete SQLite and engine construction,
+including shared runtime assembly and store-backed audit, benchmark, diff,
+doctor, and gap workflows; `app::update` owns the update lifecycle. CLI and API
+code provide transport and presentation only, and architecture tests prevent
+presentation code from importing CLI internals or concrete storage.
 
 ---
 
@@ -61,7 +73,7 @@ hse serve   # binds 127.0.0.1:8080 (loopback only)
 ```
 
 Open **Chrome** (or Firefox) on the phone and go to `http://127.0.0.1:8080`.
-You'll get a SpiderFoot-style dark-navbar UI — **Dashboard · New Scan · Scans ·
+You'll get a dark-console UI — **Dashboard · New Scan · Scans ·
 Live · Engines · Settings** — where **New Scan** drives the engine and each
 scan's results page tabs through a sortable entity browser, a D3 force graph,
 severity-tagged correlations, and a real-time (SSE) event log. The **Settings
@@ -76,6 +88,49 @@ so keys never leave the device).
 > omitted, uses the same comprehensive defaults as `hse scan` — depth 3,
 > expansion floor 0.20, entity cap 2500 — so you get the full seed → identifiers
 > → pivots → infrastructure sweep without tuning anything.
+
+> **Value-per-query is maximised by default (v1.14+).** Every scan — CLI, API,
+> and Web wizard — now runs with **convex (optionality / barbell) budget
+> allocation** on: under the device's bounded budget it spends on cheap,
+> high-upside identity leads (an email, a username) before expensive, already-
+> saturated infrastructure fan-out, so a phone scan returns more of what matters
+> per unit of work. The confident identity core keeps its order — only the
+> uncertain tail and the pricey infrastructure are re-sorted. Opt out with
+> `hse scan --no-convex-budget` or `"convex_budget": false` in the API `options`.
+>
+> **Convex ordering now reaches the queries themselves (v1.19+).** The same
+> barbell logic that ranks *which lead to pivot on* now also orders *which
+> modules fire first for a target* — because a module dispatch **is** a query
+> (bounded HTTP, wall-time, battery, and for paid providers real quota). Under
+> the convex flag the engine dispatches by **query value = optionality ÷ cost**:
+> cheap, keyless, identity-/key-unlocking modules run before expensive, terminal
+> ones, so a scan cut short by the phone's budget (an entity cap, a wall-clock
+> limit, a cancel, a dying battery) has already spent it on the queries that
+> compound. Membership is unchanged — every accepting module still runs when the
+> budget allows — only the order differs, and it is precomputed once so the hot
+> path pays nothing. Preview it per seed at **New Scan → Preview plan** (chips
+> ordered by query value, badged high/moderate/terminal) or
+> `GET /api/v1/plan?value=…`.
+
+> **Capability-aware dispatch (v1.18+) — no budget wasted on dead sources.**
+> The same scans also skip any module whose parser has **provably gone dead**
+> across recent runs — persistent failures or silent zero-yield drift, from the
+> cross-scan health signal — so its dispatch slot goes to a source that still
+> works. It only culls the automatic comprehensive fan-out: an explicit
+> `--modules` set or `hse scan --full` still runs everything, and a quarantined
+> module recovers automatically the moment it returns one healthy result. Opt
+> out with `--no-skip-dead-modules` / `"skip_dead_modules": false`. Together with
+> the live capability probe below, HSE now both *sees* a dead capability and
+> *routes around it* — the durability loop, closed.
+
+> **Live capability probe (v1.14+) — know a source works before you rely on it.**
+> A third-party provider can silently change its response shape and a module's
+> parser goes quiet while its unit tests stay green. **Engines → Run live
+> capability probe** (in the Web UI), `hse doctor --live` (CLI), or
+> `GET /api/v1/capabilities/probe` fires one bounded request per keyless module
+> at its real endpoint and reports **alive / empty / unreachable / drift** per
+> module — the proactive complement to the cross-scan *Scraper health* panel.
+> Loopback-only and bounded, so it is Termux-safe.
 
 > **Termux battery & background (required for long scans):** Android → Settings → Apps → Termux → Battery → set to **Unrestricted** and enable "Allow background data". Without this Android kills Termux mid-scan.
 
@@ -111,7 +166,7 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 167 modules
+hse modules                                                 # list all 176 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
@@ -159,30 +214,26 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ---
 
-## Module Overview (167 modules — 132 free, 35 key-gated/paid)
+## Module Overview (176 modules — 132 free, 44 key-gated/paid)
 
-> Grouped highlights below (all 159). The **complete** catalogue with target
-> kinds and output entities — kept exhaustive by the
-> `modules_md_lists_every_registered_module` CI guard — lives in
-> [`docs/MODULES.md`](docs/MODULES.md). The headline count is swept against
-> `registry()` in CI; run `hse modules` for the live list.
->
-> **How HSE compares** to SpiderFoot, Maltego, Recon-ng, Shodan, and SEON:
-> see [`docs/COMPARISON.md`](docs/COMPARISON.md).
+> A curated highlight of the modules below (not the full list). The complete, always-current catalogue
+> with target kinds and output entities lives in the running software — run
+> `hse modules` or open the web UI's module wizard — never a static doc that
+> can drift from the registry.
 
 **API-Free (no keys required) — 92:**
 - **Breach/identity**: `psbdmp`, `pwned_passwords`, `xposed_or_not`
 - **Social**: `crates_io`, `github_code_search`, `github_user`, `hacker_news`, `keybase`, `npm_author`, `reddit_user`, `social_probe`, `streaming_probe`, `username_search`, `username_variants`
 - **People**: `ahpra`, `au_electoral`, `au_people`, `au_property`, `contact_enrich`, `employer_pivot`, `gravatar`, `name_intel`, `payid`, `pgp`, `wikidata`
-- **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `domainsdb`, `hackertarget`, `rdap_domain`, `subdomain_takeover`, `typosquat`, `whois`
+- **DNS/domain**: `cert_intel`, `crtsh`, `dns_axfr`, `dns_intel`, `doh_resolver`, `domainsdb`, `hackertarget`, `mnemonic_pdns`, `rdap_domain`, `subdomain_center`, `subdomain_takeover`, `typosquat`, `whois`
 - **IP/infrastructure**: `bgpview`, `greynoise`, `hudsonrock`, `ip2location`, `ip_registry`, `ip_reputation`, `ip_whois_geo`, `ipinfo`, `ipquery`, `netblock`, `portscan`, `ripestat`, `shodan`, `urlscan`
-- **Geolocation**: `breach_timezone`, `cell_local`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mls`, `mylnikov`, `overpass`, `phone_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
+- **Geolocation**: `beacondb`, `breach_timezone`, `cell_local`, `email_header_geo`, `email_locale`, `exif_geo`, `geo_domain_classifier`, `geo_intel`, `geocode`, `ip_geo`, `mls`, `mylnikov`, `open_meteo_geo`, `overpass`, `phone_geo`, `photon`, `qld_cadastre`, `social_location`, `sunrise_sunset`
 - **Threat intel**: `urlhaus`
 - **Email**: `disposable_check`, `email_canonical`, `email_parse`, `smtp_vrfy`
 - **Phone**: `phone_au`, `phone_intl`
 - **Corporate**: `acma_rrl`, `acnc_charities`, `asic_director`, `au_unclaimed`, `austlii`, `gleif_lei`, `opencorporates`
 - **Search**: `search_engines`
-- **Web analysis**: `cloud_storage`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
+- **Web analysis**: `cloud_storage`, `sitemap`, `waf_detect`, `wayback`, `web_crawler`, `webserver_banner`
 - **Termux sensors**: `cell_intel`, `device_sensors`, `local_net`, `signal_radar`
 - **Other**: `api_key_probe`, `chain_intel`
 
@@ -195,23 +246,40 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ### MITRE ATT&CK alignment (in the data, not a side report)
 
-Every module is mapped to the MITRE ATT&CK **Reconnaissance** tactic (TA0043)
-technique(s) it implements. That mapping is **woven into every scan**: as each
-finding is admitted, the engine stamps it inline with its producing module's
-technique(s) as `attack:<TECHNIQUE_ID>` tags (e.g. `attack:T1589.002` "Email
-Addresses"). So the technique that collected a datum travels with the datum —
-visible in the entity's `tags` in JSON output, on each entity in the full
-dossier (`hse export <id> --format full`) and `hse scan --output dossier`, and
-in the database — with no separate coverage report to reconcile. A finding
-corroborated by several modules carries all of their techniques (merges union
-the tags).
+The tool carries the **complete** MITRE ATT&CK Enterprise matrix as reference
+vocabulary — all 14 tactics and every current technique/sub-technique (v17.1),
+as pure static data (`src/core/attack/`), so any `Tnnnn[.nnn]` id the tool emits
+resolves to its canonical name and owning tactic. But HSE only *claims coverage*
+of the one tactic it actually performs: **Reconnaissance** (TA0043). Holding the
+whole framework while claiming one tactic is the invariant, not a contradiction —
+reference vocabulary is never a coverage assertion, so the per-scan coverage /
+gap report is computed against Reconnaissance alone and a technique HSE performs
+no collection for (e.g. `T1598` Phishing for Information) surfaces as a real,
+named gap.
+
+Every module is mapped to the Reconnaissance technique(s) it implements, and that
+mapping is **woven into every scan**: as each finding is admitted, the engine
+stamps it inline with its producing module's technique(s) as
+`attack:<TECHNIQUE_ID>` tags (e.g. `attack:T1589.002` "Email Addresses"). So the
+technique that collected a datum travels with the datum — visible in the entity's
+`tags` in JSON output, on each entity in the full dossier
+(`hse export <id> --format full`) and `hse scan --output dossier`, and in the
+database — with no separate coverage report to reconcile. A finding corroborated
+by several modules carries all of their techniques (merges union the tags).
 
 
-## Web UI (SpiderFoot-style)
+## Web UI (dark-console, zero vendored UI framework)
 
-`hse serve` launches a localhost-only HTTP server with an embedded
-single-file SPA using SpiderFoot's exact vendor stack (Bootstrap 3,
-jQuery, D3 v3, tablesorter, alertify):
+`hse serve` launches a localhost-only HTTP server with an embedded SPA split
+into native ES modules (`src/web/js/`) on a from-scratch dark-console design
+system (`src/web/css/app.css`). D3 v3 is the one remaining vendored library
+(the force-directed graph rendering engine); Bootstrap, jQuery, tablesorter,
+and alertify — SpiderFoot's original UI-framework stack — have been dropped
+in favour of our own CSS and a small vanilla-JS compatibility layer
+(`src/web/js/ui.js`) for navbar collapse, the About modal, sortable tables,
+and toast/confirm/prompt dialogs. The navigation structure and scan workflow
+still follow SpiderFoot's mental model for operator familiarity; the visual
+design and every dependency underneath it are HSE's own:
 
 - **Dashboard** — stats cards, scan status breakdown, quick actions
 - **New Scan** — target input + module grid with tooltips + depth/throttle
@@ -221,7 +289,7 @@ jQuery, D3 v3, tablesorter, alertify):
   typed relation edges — subdomain/lineage/co-location — dashed, kind on hover),
   Correlations (severity-tagged), Event Log (real-time SSE), Info
 - **Settings** — API key management with validation
-- **Dark mode** toggle
+- **Dark mode** by default, light mode opt-out toggle
 
 Binds to `127.0.0.1:8080` by default — no LAN exposure. This is the
 operator-followed default, not an enforced restriction: `--bind`/`HSE_BIND`
@@ -331,13 +399,19 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 ## Architecture
 
 - `#![forbid(unsafe_code)]` — entire codebase
-- **Runtime AI-independence** — zero AI/ML/LLM/inference/vector/embedding deps; every result is deterministic Rust, identical on Termux aarch64 (no root), Linux and CI with no AI available (CI-enforced; charter: [`docs/RUNTIME_INDEPENDENCE.md`](docs/RUNTIME_INDEPENDENCE.md))
+- **Runtime AI-independence** — zero AI/ML/LLM/inference/vector/embedding deps; every result is deterministic Rust, identical on Termux aarch64 (no root), Linux and CI with no AI available (CI-enforced by `runtime_carries_no_ai_ml_inference_dependency` in `tests/architecture.rs`)
 - rustls + bundled-sqlite only — no OpenSSL, no native TLS, no C deps
 - `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
-- 3,100+ tests (unit + API integration + architecture boundary enforcement)
-- 74 correlator rules (AU-001 through AU-086, with some IDs reserved for engine-emitted cross-scan findings such as AU-065/AU-066), incl. graph-aware edge, transitive, multi-pathway corroboration, gap-analysis, jurisdiction cross-check (coordinate / address / phone-region), prediction-confirmed identity bridges (name-derived username AU-077 / email AU-086), pathway-template, resolved-identity-cluster, anonymous-SIM, high-integrity-connection (max-bottleneck route), connection-broker (identity articulation-point), and robustly-corroborated-identity-cluster (no-single-point-of-failure k-redundant cluster) rules
+- 4,300+ tests (unit + API integration + architecture boundary enforcement)
+- Deterministic correlator: 121 rules (107 entity + 14 graph-aware relation), no LLM/fuzzy matching
+- 121 correlator rules (AU-001 through AU-123, with some IDs reserved for engine-emitted cross-scan findings such as AU-065/AU-066), incl. graph-aware edge, transitive, multi-pathway corroboration, gap-analysis, jurisdiction cross-check (coordinate / address / phone-region), prediction-confirmed identity bridges (name-derived username AU-077 / email AU-086), sanctions/debarment/PEP screening (AU-114), personal-WiFi geolocation (AU-115), pathway-template, resolved-identity-cluster, anonymous-SIM, high-integrity-connection (max-bottleneck route), connection-broker (identity articulation-point), robustly-corroborated-identity-cluster (no-single-point-of-failure k-redundant cluster), transitive-infrastructure-closure (AU-116 — a multi-server hosting footprint chained across IPs no single-hop rule sees), paired-hardware-constellation (AU-117 — the operator's own bonded Bluetooth kit as a self-carried tracking fingerprint), look-alike-domain-impersonation (AU-118 — homoglyph/typo phishing domains flagged across every discovered domain, dnstwist at the correlation layer), dating-platform-exposure (AU-119 — a subject's confirmed dating-app profiles surfaced as a location-bearing personal-exposure surface), monetized-creator-exposure (AU-120 — confirmed subscription-creator/webcam/adult profiles as an identity-linked payment/KYC surface), transitive credential-reuse blast-radius (AU-121 — the reuse-chain closure no single secret spans), trackable-RF-device (AU-122 — persistent hardware MACs separated from randomized privacy addresses in a radar/WiGLE sweep), and numeric-variant-handle-persona (AU-123 — links base-handle-plus-number username variants like `jdiegmann`/`jdiegmann92` across ≥2 sources into one persona, the digit-suffix reuse the exact-match handle rules never join) rules — deterministic, no LLM/fuzzy matching
 - 2 tokio worker threads (tuned for Termux low-power devices)
 - Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)
+
+Run `hse selftest` or `hse diagnostics` for a live, self-checked account of
+the module registry, dispatch graph, and core invariants — or pull the
+one-click system debug bundle (Settings → Diagnostics → "Download full
+diagnostic bundle") for the complete engine state in one file.
 
 ---
 
@@ -346,13 +420,17 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 | Document | Content |
 |----------|---------|
 | [`docs/INSTALL.md`](docs/INSTALL.md) | All install paths + Termux quirks |
-| [`docs/USAGE.md`](docs/USAGE.md) | Full CLI reference + HTTP API |
-| [`docs/MODULES.md`](docs/MODULES.md) | Module catalogue + synergy map |
-| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Common errors + fixes |
-| [`docs/FAULT_TREE_ANALYSIS.md`](docs/FAULT_TREE_ANALYSIS.md) | System-wide FTA: failure modes, controls + open risks |
-| [`docs/RUNTIME_INDEPENDENCE.md`](docs/RUNTIME_INDEPENDENCE.md) | Runtime AI-independence, parity & reproducibility charter |
-| [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) | Source-tree conventions: layering, one-module-per-file, single-source vocabularies, determinism, drift-guards |
-| [`CHANGELOG.md`](CHANGELOG.md) | Version history |
+| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Common install/runtime errors + fixes |
+| [`docs/OSINT_API_REFERENCE.md`](docs/OSINT_API_REFERENCE.md) | External OSINT-provider API reference (free tiers, key shapes, integration status) |
+| [`docs/SEEKNOW_SETUP.md`](docs/SEEKNOW_SETUP.md) | SeekNow (see-know.ru) API setup + full endpoint reference |
+| [`docs/OATHNET_API_GUIDE.txt`](docs/OATHNET_API_GUIDE.txt) | OathNet API contract reference |
+| [`docs/OPERATIONAL_CONSTITUTION.md`](docs/OPERATIONAL_CONSTITUTION.md) | Reasoning, evidence, and analysis standards governing HSE work |
+| [`docs/PERSISTENT_INTELLIGENCE.md`](docs/PERSISTENT_INTELLIGENCE.md) | How understanding accumulates across reasoning cycles (constitution companion) |
+
+For everything else — module catalogue, CLI reference, architecture — the
+running software is the source of truth: `hse --help`, `hse modules`, the web
+UI, and `hse selftest`/`hse diagnostics` never drift from the code the way a
+static doc can.
 
 ---
 

@@ -12,7 +12,7 @@ fn ent(kind: EntityKind, value: &str) -> Entity {
 fn only_group(entities: &[Entity]) -> ResolutionGroup {
     let mut groups = suggest_merges(entities);
     assert_eq!(groups.len(), 1, "expected exactly one group, got {groups:?}");
-    groups.pop().unwrap()
+    groups.pop().expect("should succeed")
 }
 
 /// Sorted UIDs of a set of entities — the expected `members` shape.

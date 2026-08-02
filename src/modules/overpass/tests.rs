@@ -12,7 +12,25 @@ fn accepts_coordinates_only() {
     fn module_metadata() {
         assert_eq!(Overpass.name(), "overpass");
         assert_eq!(Overpass.priority(), 15);
-        assert_eq!(Overpass.max_timeout_ms(), 30_000);
+        assert_eq!(Overpass.max_timeout_ms(), 58_000);
+    }
+
+    #[test]
+    fn max_timeout_covers_two_worst_case_query_executions() {
+        // Regression guard: a 429 used to degrade straight to a silent
+        // Ok(empty) with no retry at all. `process` now sleeps a real
+        // Retry-After (clamped to 4s max) and retries the full [timeout:25]
+        // query once — the budget must cover two worst-case executions plus
+        // that sleep, not just the original single query.
+        let server_side_query_timeout_secs = 25;
+        let max_retry_after_sleep_secs = 4;
+        let worst_case_ms =
+            (server_side_query_timeout_secs * 2 + max_retry_after_sleep_secs) * 1000;
+        assert!(
+            Overpass.max_timeout_ms() >= worst_case_ms,
+            "budget {} < worst-case retry path {worst_case_ms}ms",
+            Overpass.max_timeout_ms()
+        );
     }
 
     #[test]
@@ -33,11 +51,11 @@ fn accepts_coordinates_only() {
                 }
             ]
         }"#;
-        let r: OverpassResp = serde_json::from_str(raw).unwrap();
+        let r: OverpassResp = serde_json::from_str(raw).expect("should succeed");
         assert_eq!(r.elements.len(), 1);
         let e = &r.elements[0];
         assert_eq!(e.id, Some(12345));
-        assert_eq!(e.tags.as_ref().unwrap().get("operator").unwrap(), "Telstra");
+        assert_eq!(e.tags.as_ref().expect("should succeed").get("operator").expect("should succeed"), "Telstra");
     }
 
     fn tags(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
@@ -78,7 +96,7 @@ fn accepts_coordinates_only() {
     }
 
     fn elements(json: &str) -> Vec<OsmElement> {
-        serde_json::from_str(json).unwrap()
+        serde_json::from_str(json).expect("should succeed")
     }
 
     #[test]

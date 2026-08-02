@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
     #[test]
     fn accepts_ip_only() {
@@ -14,7 +15,7 @@ use super::*;
     #[test]
     fn deser() {
         let j = r#"{"ip":"8.8.8.8","hostname":"dns.google","city":"Mountain View","region":"California","country":"US","loc":"37.4056,-122.0775","org":"AS15169 Google LLC","postal":"94043","timezone":"America/Los_Angeles"}"#;
-        let r: IpInfoResp = serde_json::from_str(j).unwrap();
+        let r: IpInfoResp = serde_json::from_str(j).expect("should succeed");
         assert_eq!(r.city.as_deref(), Some("Mountain View"));
         assert_eq!(r.org.as_deref(), Some("AS15169 Google LLC"));
         assert_eq!(r.postal.as_deref(), Some("94043"));
@@ -22,7 +23,7 @@ use super::*;
     }
 
     fn data(json: &str) -> IpInfoResp {
-        serde_json::from_str(json).unwrap()
+        serde_json::from_str(json).expect("should succeed")
     }
 
     fn one(ents: &[Entity], kind: EntityKind) -> Option<&Entity> {
@@ -40,7 +41,7 @@ use super::*;
         let ents = build_entities("8.8.8.8", &d, "s");
         assert_eq!(ents.len(), 5);
 
-        let coords = one(&ents, EntityKind::Coordinates).unwrap();
+        let coords = one(&ents, EntityKind::Coordinates).expect("should succeed");
         // Entity::new normalises Coordinates to 6-decimal lat,lon.
         assert_eq!(coords.value, "37.405600,-122.077500");
         assert!(coords.has_tag(tags::GEOINT) && coords.has_tag("ipinfo"));
@@ -59,7 +60,7 @@ use super::*;
             Some("America/Los_Angeles")
         );
 
-        let address = one(&ents, EntityKind::Address).unwrap();
+        let address = one(&ents, EntityKind::Address).expect("should succeed");
         assert_eq!(address.value, "Mountain View, California, US");
         assert_eq!(
             address.evidence[0]
@@ -69,15 +70,37 @@ use super::*;
             Some("94043")
         );
         assert_eq!(
-            one(&ents, EntityKind::Organisation).unwrap().value,
+            one(&ents, EntityKind::Organisation).expect("should succeed").value,
             "AS15169 Google LLC"
         );
-        let asn = one(&ents, EntityKind::Asn).unwrap();
+        let asn = one(&ents, EntityKind::Asn).expect("should succeed");
         assert_eq!(asn.value, "AS15169");
-        assert!((asn.confidence - 0.80).abs() < 1e-9);
-        let dom = one(&ents, EntityKind::Domain).unwrap();
+        assert!((asn.confidence - confidence::HIGH_PLUSPLUS).abs() < 1e-9);
+        let dom = one(&ents, EntityKind::Domain).expect("should succeed");
         assert_eq!(dom.value, "dns.google");
         assert!(dom.has_tag(tags::PTR));
+    }
+
+    #[test]
+    fn coordinates_carry_the_originating_ip_for_login_ip_recognition() {
+        // Like `ip_geo`, this module's Coordinates fix passes the shared
+        // "is this actually the subject" trust gate (CDN/anycast edges are
+        // dropped entirely, see `cdn_edge_ip_yields_no_entities`) and uses the
+        // same recalibrated-confidence `coarse_provider_coords` helper — a
+        // sibling in the same IP-geolocation family. The correlator's shared
+        // `person_login_ip_coords` (used by `best_au_location_estimate` and
+        // `au_location_corroboration`) only recognises a Coordinates fix as
+        // tied to a subject's breach/stealer login IP when its evidence
+        // carries an `ip` attribute equal to that IP.
+        let d = data(r#"{"loc":"37.4056,-122.0775","city":"Mountain View"}"#);
+        let ents = build_entities("8.8.8.8", &d, "s");
+        let coords = one(&ents, EntityKind::Coordinates).expect("should succeed");
+        assert_eq!(
+            coords.evidence[0].attributes.get("ip").map(String::as_str),
+            Some("8.8.8.8"),
+            "Coordinates evidence must carry the originating IP so \
+             person_login_ip_coords can recognise this as a login-IP fix"
+        );
     }
 
     #[test]
@@ -114,6 +137,45 @@ use super::*;
     }
 
     #[test]
+    fn anycast_flag_suppresses_geo_but_keeps_network_entities() {
+        // A public resolver on an anycast IP (8.8.8.8 is not in the static CDN
+        // gate, so the response `anycast: true` is what must catch it): the
+        // loc/city is a multi-site centroid, not a real place — drop Coordinates
+        // and Address, but keep the ASN/Organisation and PTR hostname.
+        let d = data(
+            r#"{"ip":"8.8.8.8","hostname":"dns.google","city":"Mountain View",
+                "region":"California","country":"US","loc":"37.4056,-122.0775",
+                "org":"AS15169 Google LLC","anycast":true}"#,
+        );
+        let ents = build_entities("8.8.8.8", &d, "s");
+        assert!(
+            one(&ents, EntityKind::Coordinates).is_none(),
+            "anycast geolocation is a centroid, not a subject location"
+        );
+        assert!(
+            one(&ents, EntityKind::Address).is_none(),
+            "anycast address is infrastructure, not the subject's"
+        );
+        // Network-describing entities survive the geo suppression.
+        assert_eq!(
+            one(&ents, EntityKind::Organisation).expect("should succeed").value,
+            "AS15169 Google LLC"
+        );
+        assert_eq!(one(&ents, EntityKind::Asn).expect("should succeed").value, "AS15169");
+        assert_eq!(one(&ents, EntityKind::Domain).expect("should succeed").value, "dns.google");
+
+        // Counter-case: the identical record with anycast absent/false DOES
+        // yield the geo entities, proving the flag is what suppressed them.
+        let not_anycast = data(
+            r#"{"ip":"8.8.8.8","city":"Mountain View","region":"California",
+                "country":"US","loc":"37.4056,-122.0775","anycast":false}"#,
+        );
+        let ok = build_entities("8.8.8.8", &not_anycast, "s");
+        assert!(ok.iter().any(|e| e.kind == EntityKind::Coordinates));
+        assert!(ok.iter().any(|e| e.kind == EntityKind::Address));
+    }
+
+    #[test]
     fn null_island_loc_is_dropped() {
         // 0,0 (and sub-threshold magnitudes) is a placeholder, not a location.
         let ents = build_entities("1.2.3.4", &data(r#"{"loc":"0,0"}"#), "s");
@@ -125,7 +187,7 @@ use super::*;
     #[test]
     fn address_omits_region_when_absent() {
         let ents = build_entities("1.2.3.4", &data(r#"{"city":"Sydney","country":"AU"}"#), "s");
-        assert_eq!(one(&ents, EntityKind::Address).unwrap().value, "Sydney, AU");
+        assert_eq!(one(&ents, EntityKind::Address).expect("should succeed").value, "Sydney, AU");
     }
 
     #[test]

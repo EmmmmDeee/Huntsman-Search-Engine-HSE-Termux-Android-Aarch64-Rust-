@@ -6,6 +6,7 @@
 //! 500 ms timeout per host/port — no root, no raw sockets.
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
 };
@@ -48,7 +49,12 @@ pub(super) fn parse_arp(content: &str, scan_id: &str) -> ModuleResult {
         }
 
         // IP entity
-        let mut ip_e = Entity::new(EntityKind::IpAddress, ip, 0.85, scan_id);
+        let mut ip_e = Entity::new(
+            EntityKind::IpAddress,
+            ip,
+            confidence::HIGH_PLUSPLUS_PLUS,
+            scan_id,
+        );
         ip_e.tag("lan-host");
         ip_e.add_evidence(
             Evidence::new(SRC, format!("ARP neighbour on {dev}"))
@@ -59,7 +65,12 @@ pub(super) fn parse_arp(content: &str, scan_id: &str) -> ModuleResult {
         result.push(ip_e);
 
         // MAC entity
-        let mut mac_e = Entity::new(EntityKind::MacAddress, mac, 0.85, scan_id);
+        let mut mac_e = Entity::new(
+            EntityKind::MacAddress,
+            mac,
+            confidence::HIGH_PLUSPLUS_PLUS,
+            scan_id,
+        );
         mac_e.tag("arp-neighbor");
         mac_e.tag("lan");
         mac_e.add_evidence(
@@ -105,9 +116,27 @@ pub(super) async fn port_sweep(ips: &[String]) -> Vec<String> {
 /// `open_ports` evidence is added as tags to the already-emitted IP
 /// entities where a port was found open.
 pub(super) async fn scan_lan(scan_id: &str) -> ModuleResult {
+    // `/proc/net/arp` is unreadable to an unprivileged app on the primary
+    // target platform: on non-root Termux (Android 14 / SDK 34, SELinux
+    // domain `untrusted_app`) the read returns EACCES — the file exists but
+    // access is denied (reconfirmed live on-device 2026-07-31). That is the
+    // normal, permanent condition here, not a fault, so it must stay a clean
+    // empty result: promoting the denial to a `ModuleError` would fire on
+    // every sweep and trip signal_radar's circuit breaker. The errno kind is
+    // surfaced at debug level only, so a verbose diagnostics run can still
+    // tell "denied" (EACCES, on-device) and "no such file" (ENOENT, off-Linux)
+    // apart from a genuinely empty ARP table — without that distinction ever
+    // reaching the operator as a finding or the breaker as a failure.
     let content = match tokio::fs::read_to_string("/proc/net/arp").await {
         Ok(s) => s,
-        Err(_) => return ModuleResult::new(),
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                kind = ?e.kind(),
+                "signal_radar: /proc/net/arp unreadable — treating as empty",
+            );
+            return ModuleResult::new();
+        }
     };
 
     let mut result = parse_arp(&content, scan_id);

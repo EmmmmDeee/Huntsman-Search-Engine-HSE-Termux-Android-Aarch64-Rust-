@@ -221,3 +221,267 @@ use super::*;
         assert!(kinds.contains(&TargetKind::Domain));
         assert!(kinds.contains(&TargetKind::Url));
     }
+
+    // ── Convex query-value dispatch order ────────────────────────────────────
+
+    use crate::core::module::{ModuleCategory, ModuleCost};
+
+    /// Produces a `Person` — the kind whose EntityKind spelling (`person`) and
+    /// TargetKind spelling (`full_name`) differ, which is what broke the graph's
+    /// producer→consumer join.
+    struct PersonProducerModule;
+    #[async_trait]
+    impl Module for PersonProducerModule {
+        fn name(&self) -> &'static str {
+            "person_producer"
+        }
+        fn priority(&self) -> u8 {
+            50
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Domain)
+        }
+        async fn process(
+            &self,
+            _t: &Target,
+            _ctx: &ModuleContext,
+        ) -> crate::core::error::Result<ModuleResult> {
+            Ok(ModuleResult::new())
+        }
+        fn produces(&self) -> &'static [EntityKind] {
+            const KINDS: &[EntityKind] = &[EntityKind::Person];
+            KINDS
+        }
+    }
+
+    /// Produces only kinds that have NO `TargetKind` — terminal by design, and
+    /// therefore indistinguishable from a broken join without `terminal_kinds`.
+    struct CredentialModule;
+    #[async_trait]
+    impl Module for CredentialModule {
+        fn name(&self) -> &'static str {
+            "credential_producer"
+        }
+        fn priority(&self) -> u8 {
+            50
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Domain)
+        }
+        async fn process(
+            &self,
+            _t: &Target,
+            _ctx: &ModuleContext,
+        ) -> crate::core::error::Result<ModuleResult> {
+            Ok(ModuleResult::new())
+        }
+        fn produces(&self) -> &'static [EntityKind] {
+            const KINDS: &[EntityKind] = &[EntityKind::Credential];
+            KINDS
+        }
+    }
+
+    /// Cheap, keyless, identity-producing query — HIGH convex query value but a
+    /// deliberately LOW static priority, so it trails under the plain order and
+    /// must LEAD under the convex order.
+    struct CheapIdentityModule;
+    #[async_trait]
+    impl Module for CheapIdentityModule {
+        fn name(&self) -> &'static str {
+            "cheap_identity"
+        }
+        fn priority(&self) -> u8 {
+            10
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Domain)
+        }
+        async fn process(
+            &self,
+            _t: &Target,
+            _ctx: &ModuleContext,
+        ) -> crate::core::error::Result<ModuleResult> {
+            Ok(ModuleResult::new())
+        }
+        fn category(&self) -> ModuleCategory {
+            ModuleCategory::Breach
+        }
+        fn produces(&self) -> &'static [EntityKind] {
+            const KINDS: &[EntityKind] = &[EntityKind::Email];
+            KINDS
+        }
+    }
+
+    /// Expensive, terminal (paid scoring) query — LOW convex query value but a
+    /// deliberately HIGH static priority, so it leads under the plain order and
+    /// must TRAIL under the convex order.
+    struct PaidTerminalModule;
+    #[async_trait]
+    impl Module for PaidTerminalModule {
+        fn name(&self) -> &'static str {
+            "paid_terminal"
+        }
+        fn priority(&self) -> u8 {
+            90
+        }
+        fn accepts(&self, t: &Target) -> bool {
+            matches!(t.kind, TargetKind::Domain)
+        }
+        async fn process(
+            &self,
+            _t: &Target,
+            _ctx: &ModuleContext,
+        ) -> crate::core::error::Result<ModuleResult> {
+            Ok(ModuleResult::new())
+        }
+        fn cost(&self) -> ModuleCost {
+            ModuleCost::Paid
+        }
+        fn category(&self) -> ModuleCategory {
+            ModuleCategory::Threat
+        }
+        fn produces(&self) -> &'static [EntityKind] {
+            const KINDS: &[EntityKind] = &[EntityKind::Coordinates];
+            KINDS
+        }
+    }
+
+    #[test]
+    fn convex_order_has_same_membership_as_priority_order() {
+        let modules: Vec<Arc<dyn Module>> =
+            vec![Arc::new(PaidTerminalModule), Arc::new(CheapIdentityModule)];
+        let g = ModuleGraph::build(&modules);
+        let mut plain = g.modules_for(TargetKind::Domain).to_vec();
+        let mut convex = g.convex_modules_for(TargetKind::Domain).to_vec();
+        plain.sort_unstable();
+        convex.sort_unstable();
+        assert_eq!(
+            plain, convex,
+            "convex order must dispatch the SAME modules, only reordered"
+        );
+    }
+
+    #[test]
+    fn convex_order_fires_cheap_cascading_query_before_paid_terminal() {
+        // Registered paid-first so the plain (priority) order leads with it.
+        let modules: Vec<Arc<dyn Module>> =
+            vec![Arc::new(PaidTerminalModule), Arc::new(CheapIdentityModule)];
+        let g = ModuleGraph::build(&modules);
+        let name = |&idx: &usize| modules[idx].name();
+
+        // Plain order: priority 90 (paid_terminal) before priority 10 (cheap).
+        let plain: Vec<&str> = g.modules_for(TargetKind::Domain).iter().map(name).collect();
+        assert_eq!(plain, vec!["paid_terminal", "cheap_identity"]);
+
+        // Convex order INVERTS it: the cheap, keyless, identity-unlocking query
+        // leads despite its lower static priority — max return per unit of budget.
+        let convex: Vec<&str> = g
+            .convex_modules_for(TargetKind::Domain)
+            .iter()
+            .map(name)
+            .collect();
+        assert_eq!(convex, vec!["cheap_identity", "paid_terminal"]);
+
+        // The flag-driven selector returns the matching order for each setting.
+        assert_eq!(g.dispatch_order_for(TargetKind::Domain, false), g.modules_for(TargetKind::Domain));
+        assert_eq!(
+            g.dispatch_order_for(TargetKind::Domain, true),
+            g.convex_modules_for(TargetKind::Domain)
+        );
+    }
+
+    /// The graph's whole purpose is that a consumer can join a producer to a
+    /// consumer. `consumes` speaks [`TargetKind`] and `produces` speaks
+    /// [`EntityKind`]; the two agree on nearly every spelling, so a naive string
+    /// join looks correct and silently drops the one term where they diverge.
+    ///
+    /// `EntityKind::Person` is spelled `person`, but dispatch routes it to
+    /// `full_name`. 55 of 168 real modules produce `person`, so this single
+    /// mismatch made the most connected pivot in the system render as a dead
+    /// end. `pivots_to` exists to be joined on; this pins the exact translation.
+    #[test]
+    fn person_pivots_to_full_name_so_producers_are_not_orphans() {
+        let modules: Vec<Arc<dyn Module>> = vec![Arc::new(PersonProducerModule)];
+        let summary = ModuleGraph::build(&modules).to_summary(&modules);
+        let edge = &summary.edges[0];
+
+        // The precondition that makes the naive join wrong.
+        assert!(
+            edge.produces.iter().any(|p| p == "person"),
+            "fixture must produce a Person entity: {:?}",
+            edge.produces
+        );
+        assert!(
+            !edge.produces.iter().any(|p| p == "full_name"),
+            "the emission vocabulary must NOT already say full_name — if it \
+             did, this whole translation would be unnecessary"
+        );
+
+        // The joinable field carries the translation dispatch actually performs.
+        assert!(
+            edge.pivots_to.contains(&"full_name"),
+            "person must pivot to full_name: {:?}",
+            edge.pivots_to
+        );
+        assert!(
+            !edge.pivots_to.contains(&"person"),
+            "pivots_to must speak TargetKind only: {:?}",
+            edge.pivots_to
+        );
+    }
+
+    /// `pivots_to` must agree with dispatch by construction, for every kind a
+    /// module can emit — not just the `person` case that motivated it. If these
+    /// two ever disagree, the rendered graph is describing a system that isn't
+    /// the one running.
+    #[test]
+    fn pivots_to_matches_the_dispatch_mapping_for_every_produced_kind() {
+        let modules: Vec<Arc<dyn Module>> = vec![
+            Arc::new(PersonProducerModule),
+            Arc::new(CheapIdentityModule),
+            Arc::new(PaidTerminalModule),
+            Arc::new(CredentialModule),
+        ];
+        let summary = ModuleGraph::build(&modules).to_summary(&modules);
+
+        for (edge, m) in summary.edges.iter().zip(modules.iter()) {
+            let expected: std::collections::BTreeSet<&str> = m
+                .produces()
+                .iter()
+                .filter_map(TargetKind::from_entity_kind)
+                .map(|t| t.canonical_str())
+                .collect();
+            let actual: std::collections::BTreeSet<&str> =
+                edge.pivots_to.iter().copied().collect();
+            assert_eq!(
+                actual, expected,
+                "{}: pivots_to must equal produces mapped through dispatch",
+                edge.module
+            );
+        }
+    }
+
+    /// A kind produced by many and consumed by none is ambiguous: a deliberate
+    /// terminal (a `password` is evidence, never a seed) or a real coverage gap.
+    /// `terminal_kinds` names the former so an auditor can tell them apart —
+    /// and is derived from the modules, so a newly-emitted terminal kind is
+    /// reported without anyone maintaining a list.
+    #[test]
+    fn terminal_kinds_are_named_and_never_appear_as_pivots() {
+        let modules: Vec<Arc<dyn Module>> = vec![Arc::new(CredentialModule)];
+        let summary = ModuleGraph::build(&modules).to_summary(&modules);
+
+        assert!(
+            summary.terminal_kinds.iter().any(|k| k == "credential"),
+            "a produced kind with no TargetKind must be reported terminal: {:?}",
+            summary.terminal_kinds
+        );
+        assert!(
+            summary.edges[0].pivots_to.is_empty(),
+            "a terminal-only producer has no outbound edges: {:?}",
+            summary.edges[0].pivots_to
+        );
+        // It is still truthfully reported as produced — terminal is about
+        // reachability, not about whether the module emits it.
+        assert!(summary.edges[0].produces.iter().any(|p| p == "credential"));
+    }

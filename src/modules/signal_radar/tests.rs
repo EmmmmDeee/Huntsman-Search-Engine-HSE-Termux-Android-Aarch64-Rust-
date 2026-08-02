@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::core::entity::EntityKind;
+use crate::core::{confidence, entity::EntityKind};
 
 // ── wifi parser ────────────────────────────────────────────────────────────
 
@@ -10,28 +10,46 @@ fn wifi_parse_valid_aps() {
         {"bssid":"AA:BB:CC:DD:EE:FF","ssid":"TestNet","rssi":-45,"frequency":2437,"channel_width":"20","timestamp":1000},
         {"bssid":"11:22:33:44:55:66","ssid":"WeakAP","rssi":-80,"frequency":5180,"channel_width":"40","timestamp":2000}
     ]"#;
-    let result = wifi::parse_scan(json, "test-scan");
-    assert_eq!(result.len(), 2);
+    let result = wifi::parse_scan(json, "test-scan").expect("valid AP JSON parses");
+    // 2 APs, each with a non-empty SSID → 2 MacAddress entities + 2 Ssid
+    // entities (one Ssid pushed right after its AP's MacAddress entity).
+    assert_eq!(result.len(), 4);
 
     let ap1 = &result.entities[0];
     assert_eq!(ap1.kind, EntityKind::MacAddress);
     assert_eq!(ap1.value, "aa:bb:cc:dd:ee:ff");
-    // rssi -45 >= -50 → confidence 0.90
+    // rssi -45 >= -50 → confidence confidence::VERY_HIGH_PLUS
     assert!(
-        (ap1.confidence - 0.90).abs() < 0.01,
+        (ap1.confidence - confidence::VERY_HIGH_PLUS).abs() < 0.01,
         "confidence={}",
         ap1.confidence
     );
     assert!(ap1.has_tag("band:2.4GHz"), "expected 2.4GHz band tag");
 
-    let ap2 = &result.entities[1];
-    // rssi -80 → confidence 0.60
+    let ssid1 = &result.entities[1];
+    assert_eq!(ssid1.kind, EntityKind::Ssid);
+    assert_eq!(ssid1.value, "TestNet");
     assert!(
-        (ap2.confidence - 0.60).abs() < 0.01,
+        (ssid1.confidence - confidence::MEDIUM_HIGH).abs() < 0.01,
+        "confidence={}",
+        ssid1.confidence
+    );
+    assert!(ssid1.has_tag(crate::core::tags::WIFI_AP));
+    assert!(ssid1.has_tag("device-sensor"));
+
+    let ap2 = &result.entities[2];
+    assert_eq!(ap2.kind, EntityKind::MacAddress);
+    // rssi -80 → confidence confidence::MEDIUM_PLUS
+    assert!(
+        (ap2.confidence - confidence::MEDIUM_PLUS).abs() < 0.01,
         "confidence={}",
         ap2.confidence
     );
     assert!(ap2.has_tag("band:5GHz"), "expected 5GHz band tag");
+
+    let ssid2 = &result.entities[3];
+    assert_eq!(ssid2.kind, EntityKind::Ssid);
+    assert_eq!(ssid2.value, "WeakAP");
 }
 
 #[test]
@@ -42,20 +60,41 @@ fn wifi_skip_placeholder_bssids() {
         {"bssid":"","ssid":"Bad3","rssi":-40,"frequency":2437},
         {"bssid":"AA:BB:CC:DD:EE:FF","ssid":"Good","rssi":-40,"frequency":2437}
     ]"#;
-    let result = wifi::parse_scan(json, "test-scan");
-    assert_eq!(result.len(), 1);
+    let result = wifi::parse_scan(json, "test-scan").expect("valid AP JSON parses");
+    // Only the last AP survives the placeholder/empty-BSSID filter, and its
+    // non-empty SSID ("Good") mints a second, Ssid entity alongside its
+    // MacAddress entity.
+    assert_eq!(result.len(), 2);
+    assert_eq!(result.entities[0].kind, EntityKind::MacAddress);
+    assert_eq!(result.entities[1].kind, EntityKind::Ssid);
+    assert_eq!(result.entities[1].value, "Good");
 }
 
 #[test]
 fn wifi_parse_empty_array() {
-    let result = wifi::parse_scan(b"[]", "test-scan");
+    let result = wifi::parse_scan(b"[]", "test-scan").expect("an empty array parses");
     assert!(result.is_empty());
 }
 
+/// Unparseable tool output is a malfunction, not an empty answer: reporting it
+/// as zero access points would make a broken termux-api indistinguishable from
+/// "no Wi-Fi in range".
 #[test]
-fn wifi_parse_invalid_json() {
-    let result = wifi::parse_scan(b"not json", "test-scan");
-    assert!(result.is_empty());
+fn wifi_parse_invalid_json_is_an_error() {
+    assert!(wifi::parse_scan(b"not json", "test-scan").is_err());
+}
+
+/// Blank output is the complement: a tool that exits 0 and prints nothing has
+/// answered "nothing to report", which stays a clean empty Ok.
+#[test]
+fn wifi_parse_blank_output_is_an_empty_ok() {
+    for blank in [&b""[..], b"  \n"] {
+        assert!(
+            wifi::parse_scan(blank, "test-scan")
+                .expect("blank output is an empty answer, not an error")
+                .is_empty()
+        );
+    }
 }
 
 // ── wifi_band helper ──────────────────────────────────────────────────────
@@ -73,11 +112,11 @@ fn wifi_band_classification() {
 
 #[test]
 fn rssi_confidence_tiers() {
-    assert!((wifi::rssi_confidence(Some(-40)) - 0.90).abs() < 0.01);
-    assert!((wifi::rssi_confidence(Some(-65)) - 0.75).abs() < 0.01);
-    assert!((wifi::rssi_confidence(Some(-80)) - 0.60).abs() < 0.01);
-    assert!((wifi::rssi_confidence(Some(-90)) - 0.45).abs() < 0.01);
-    assert!((wifi::rssi_confidence(None) - 0.45).abs() < 0.01);
+    assert!((wifi::rssi_confidence(Some(-40)) - confidence::VERY_HIGH_PLUS).abs() < 0.01);
+    assert!((wifi::rssi_confidence(Some(-65)) - confidence::VERY_HIGH).abs() < 0.01);
+    assert!((wifi::rssi_confidence(Some(-80)) - confidence::MEDIUM_PLUS).abs() < 0.01);
+    assert!((wifi::rssi_confidence(Some(-90)) - confidence::LOW_MEDIUM).abs() < 0.01);
+    assert!((wifi::rssi_confidence(None) - confidence::LOW_MEDIUM).abs() < 0.01);
 }
 
 // ── bluetooth parser ───────────────────────────────────────────────────────
@@ -88,13 +127,13 @@ fn bluetooth_parse_valid_devices() {
         {"address":"AA:BB:CC:DD:EE:01","name":"Headphones","type":"classic","bondState":"bonded"},
         {"address":"AA:BB:CC:DD:EE:02","name":"Speaker","type":"le","bondState":"none"}
     ]"#;
-    let result = bluetooth::parse_bt_json(json, "test-scan");
+    let result = bluetooth::parse_bt_json(json, "test-scan").expect("valid BT JSON parses");
     assert_eq!(result.len(), 2);
 
     let d1 = &result.entities[0];
     assert_eq!(d1.kind, EntityKind::MacAddress);
     assert_eq!(d1.value, "aa:bb:cc:dd:ee:01");
-    assert!((d1.confidence - 0.80).abs() < 0.01);
+    assert!((d1.confidence - confidence::HIGH_PLUSPLUS).abs() < 0.01);
     assert!(d1.has_tag("bluetooth"));
     assert!(d1.has_tag("bt-classic"));
     assert!(d1.has_tag("bond:bonded"));
@@ -107,21 +146,8 @@ fn bluetooth_skip_placeholder_address() {
         {"address":"","name":"Empty"},
         {"address":"AA:BB:CC:DD:EE:FF","name":"Good"}
     ]"#;
-    let result = bluetooth::parse_bt_json(json, "test-scan");
+    let result = bluetooth::parse_bt_json(json, "test-scan").expect("valid BT JSON parses");
     assert_eq!(result.len(), 1);
-}
-
-#[test]
-fn bluetooth_hcitool_parse() {
-    let text = b"Scanning ...\n\t11:22:33:44:55:66\tMouse\n\t77:88:99:AA:BB:CC\tKeyboard\n";
-    let result = bluetooth::parse_hcitool(text, "test-scan");
-    assert_eq!(result.len(), 2);
-    // hcitool addresses are passed through as-is; normalisation may lower-case
-    assert_eq!(
-        result.entities[0].value.to_ascii_lowercase(),
-        "11:22:33:44:55:66"
-    );
-    assert!(result.entities[0].has_tag("bt-classic"));
 }
 
 // ── cell parser ────────────────────────────────────────────────────────────
@@ -132,13 +158,13 @@ fn cell_parse_valid_towers() {
         {"type":"LTE","registered":true,"dbm":-80,"cid":12345,"lac":null,"tac":678,"mcc":"505","mnc":"01"},
         {"type":"GSM","registered":false,"dbm":-95,"cid":999,"lac":100,"tac":null,"mcc":505,"mnc":3}
     ]"#;
-    let result = cell::parse_cells(json, "test-scan");
+    let result = cell::parse_cells(json, "test-scan").expect("valid cell JSON parses");
     assert_eq!(result.len(), 2);
 
     let t1 = &result.entities[0];
     assert_eq!(t1.kind, EntityKind::DeviceId);
     assert_eq!(t1.value, "505-01-678-12345");
-    assert!((t1.confidence - 0.75).abs() < 0.01);
+    assert!((t1.confidence - confidence::VERY_HIGH).abs() < 0.01);
     assert!(t1.has_tag(crate::core::tags::CELL_TOWER));
     assert!(t1.has_tag("lte"));
     assert!(t1.has_tag("registered"));
@@ -155,8 +181,36 @@ fn cell_skip_incomplete_towers() {
         {"type":"LTE","cid":1234,"mcc":"","mnc":"01"},
         {"type":"LTE","cid":null,"mcc":"505","mnc":"01"}
     ]"#;
-    let result = cell::parse_cells(json, "test-scan");
+    let result = cell::parse_cells(json, "test-scan").expect("valid cell JSON parses");
     assert!(result.is_empty());
+}
+
+// ── scan_cell (redundant signalstrength call) ──────────────────────────────
+
+#[tokio::test]
+async fn scan_cell_does_not_spawn_the_discarded_signalstrength_tool() {
+    use crate::util::termux::{clear_unavailable_for_test, is_marked_unavailable_for_test};
+
+    // Known state regardless of what earlier tests in this process did.
+    clear_unavailable_for_test(crate::modules::termux_sensor::Sensor::CellInfo.tool());
+    clear_unavailable_for_test("termux-telephony-signalstrength");
+
+    let _ = scan_cell("test-scan").await;
+
+    // Off-device (this sandbox), the real tool fails to spawn (ENOENT),
+    // which caches it unavailable — proves the harness genuinely exercised
+    // termux_cmd rather than short-circuiting before ever calling it.
+    assert!(
+        is_marked_unavailable_for_test(crate::modules::termux_sensor::Sensor::CellInfo.tool()),
+        "cellinfo must actually be invoked by scan_cell"
+    );
+    // signalstrength's result was always discarded (`_sigstrength`), so it
+    // must never be spawned at all now. This fails against the pre-fix code,
+    // which called (and threw away) it on every scan.
+    assert!(
+        !is_marked_unavailable_for_test("termux-telephony-signalstrength"),
+        "signalstrength must not be spawned when its result is unused"
+    );
 }
 
 // ── ARP parser ─────────────────────────────────────────────────────────────
@@ -182,7 +236,7 @@ fn arp_parse_valid_entries() {
         ips.iter().any(|e| e.value == "192.168.1.1"),
         "missing 192.168.1.1"
     );
-    assert!((ips[0].confidence - 0.85).abs() < 0.01);
+    assert!((ips[0].confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < 0.01);
     assert!(ips[0].has_tag("lan-host"));
 
     let macs: Vec<_> = result

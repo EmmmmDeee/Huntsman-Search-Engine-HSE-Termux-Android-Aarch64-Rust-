@@ -27,6 +27,35 @@ fn module_covers_queensland() {
     assert!(m.produces().contains(&EntityKind::Organisation));
 }
 
+// A genuine end-to-end exercise of the (T2.119-fixed) `process()` path against
+// the real QLD Public Trustee CKAN datastore — proving the primary fetch,
+// `success` check, parse, and entity extraction all work on live data and that
+// a healthy query returns `Ok` (never the new error path spuriously). Ignored
+// by default (hits the network); run manually with `--ignored`. Mirrors the
+// sibling ASIC modules' live tests.
+#[tokio::test]
+#[ignore = "hits the live data.qld.gov.au unclaimed-money datastore; run manually"]
+async fn au_unclaimed_live_finds_qld_records_for_a_common_surname() {
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    let ctx = ModuleContext {
+        scan_id: "live".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let r = AuUnclaimed
+        .process(&Target::new(TargetKind::FullName, "John Smith"), &ctx)
+        .await
+        .expect("a healthy live QLD query must return Ok, not the T2.119 error path");
+    eprintln!("au_unclaimed live: {} entities", r.entities.len());
+    assert!(
+        !r.entities.is_empty(),
+        "the QLD unclaimed-money register holds many 'Smith' records — a live \
+         query should surface at least one entity"
+    );
+}
+
 // ── Queensland pass (folded in from the former `qld_unclaimed` module) ──────
 //
 // These pin that QLD's distinctive, richer capability survives the merge: joint
@@ -53,7 +82,7 @@ mod qld {
                 ]
             }
         }"#;
-        serde_json::from_str(raw).unwrap()
+        serde_json::from_str(raw).expect("should succeed")
     }
 
     #[test]
@@ -71,7 +100,7 @@ mod qld {
 
     #[test]
     fn classifies_exact_person_vs_surname_only_family() {
-        let recs = sample().result.unwrap().records;
+        let recs = sample().result.expect("should succeed").records;
         let curt = records_to_entities(&recs, 3, "Curt Avery", true, "s");
         let exact = |e: &Entity| e.tags.iter().any(|t| t.as_str() == "exact-name-match");
         let addrs: Vec<&Entity> = curt
@@ -89,7 +118,48 @@ mod qld {
                 .find(|e| e.kind == EntityKind::Person && e.value == v)
         };
         assert!(person("Curt Avery").is_some_and(exact));
-        assert!(person("Erik Avery").is_some_and(|e| !exact(e) && e.confidence < 0.50));
+        assert!(person("Erik Avery").is_some_and(|e| !exact(e) && e.confidence < crate::core::confidence::MEDIUM));
+    }
+
+    #[test]
+    fn per_record_address_tags_are_correct_before_any_merge() {
+        // Real-scan reproduction (a "Riley Morley" scan): two records at the SAME
+        // postcode (4001), NEITHER owner matching the seed — "ANN SQUARE
+        // INVESTMENT PTY LTD" (a company, no person name at all) and "FLANNAN
+        // MORLEY & GERALDINE F MORLEY" (surname-only family). Per
+        // `records_to_entities`'s own contract, EVERY Address it returns for
+        // these two records must be tagged `family-candidate`, never
+        // `exact-name-match` — confirms the per-record classification itself is
+        // sound before any entity-merge step (which happens downstream, outside
+        // this function) has a chance to union tags across postcode-sharing
+        // records.
+        let raw = r#"{"result":{"total":2,"records":[
+            {"_id":100,"Owner":"ANN SQUARE INVESTMENT PTY LTD","Amount":"714.65","SenderName":"OFFICE OF INDUSTRIAL RELATIONS","DateRec":"2024-10-31","PCode":"4001"},
+            {"_id":101,"Owner":"FLANNAN MORLEY & GERALDINE F MORLEY","Amount":"55.65","PCode":"4001"}
+        ]}}"#;
+        let recs = serde_json::from_str::<CkanResp>(raw)
+            .expect("should succeed")
+            .result
+            .expect("should succeed")
+            .records;
+        let ents = records_to_entities(&recs, 2, "Riley Morley", true, "s");
+        let addrs: Vec<&Entity> = ents
+            .iter()
+            .filter(|e| e.kind == EntityKind::Address)
+            .collect();
+        assert_eq!(addrs.len(), 2, "one Address entity per record");
+        for a in &addrs {
+            assert!(
+                a.tags.iter().any(|t| t.as_str() == "family-candidate"),
+                "postcode-only address from a non-exact owner must be family-candidate: {:?}",
+                a.tags
+            );
+            assert!(
+                !a.tags.iter().any(|t| t.as_str() == "exact-name-match"),
+                "neither owner matches 'Riley Morley' — must NOT be exact-name-match: {:?}",
+                a.tags
+            );
+        }
     }
 
     #[test]
@@ -98,9 +168,9 @@ mod qld {
             {"_id":7,"Owner":"ACME WIDGETS PTY LTD","Amount":"1200.00","SenderName":"ASX","PCode":"4000"}
         ]}}"#;
         let recs = serde_json::from_str::<CkanResp>(raw)
-            .unwrap()
+            .expect("should succeed")
             .result
-            .unwrap()
+            .expect("should succeed")
             .records;
         let ents = records_to_entities(&recs, 1, "ACME Widgets", true, "s");
         let org = ents
@@ -120,9 +190,9 @@ mod qld {
             {"_id":8,"Owner":"Jane Citizen","Amount":"500.00","SenderName":"GLOBEX EMPLOYMENT PTY LTD","PCode":"4000"}
         ]}}"#;
         let recs = serde_json::from_str::<CkanResp>(raw)
-            .unwrap()
+            .expect("should succeed")
             .result
-            .unwrap()
+            .expect("should succeed")
             .records;
         let ents = records_to_entities(&recs, 1, "Jane Citizen", true, "s");
         let sender = ents
@@ -143,10 +213,10 @@ mod qld {
     #[test]
     fn parses_records_into_geo_addresses_tagged_qld_source() {
         let resp = sample();
-        let result = resp.result.unwrap();
+        let result = resp.result.expect("should succeed");
         let ents = records_to_entities(
             &result.records,
-            result.total.unwrap(),
+            result.total.expect("should succeed"),
             "Avery",
             true,
             "scan-1",
@@ -205,6 +275,6 @@ mod qld {
                 "Conondale, QLD 4552, Australia",
             ]
         );
-        assert!(ents.iter().all(|e| e.confidence < 0.50));
+        assert!(ents.iter().all(|e| e.confidence < crate::core::confidence::MEDIUM));
     }
 }

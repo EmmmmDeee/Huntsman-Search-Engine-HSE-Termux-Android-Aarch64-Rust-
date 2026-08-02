@@ -3,15 +3,20 @@
 //! # Architecture invariants
 //! - SHA-256 deterministic UIDs
 //! - GREATEST-semantics merge (confidence, corroboration only ever increase)
-//! - `C_eff = clamp(C × (1 + 0.15 × ln(corroboration)), 0.0, 1.0)`
+//! - `C_eff = clamp(max(C × (1 + 0.15·ln n), 1 − (1−C)·0.65^(n−1)), 0.0, 1.0)`,
+//!   where `n = source_count()` (distinct corroborating sources) — NOT the raw
+//!   `corroboration` field, a separate per-module observation magnitude. See
+//!   [`Entity::c_effective`] and [`Entity::source_count`].
 //! - `Classify()` is derived-only from `C_eff`
 //! - No unsafe, no std::sync::Mutex (use tokio::sync)
 //! - Zero CGO / native deps
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::hash_map::RandomState;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
+use std::hash::BuildHasher;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -74,6 +79,17 @@ pub fn is_enrichment_source(source: &str) -> bool {
     ENRICHMENT_ONLY_SOURCES.contains(&source)
 }
 
+/// Canonical comparison form of a handle: ASCII-lowercased with the handle
+/// separators (`.`, `_`, `-`) removed, so equivalent spellings across services
+/// collapse to one token.
+pub(in crate::core) fn canonical_handle(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| !matches!(c, '.' | '_' | '-'))
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
 /// Evidence source name of the recall pass — the local-database replay that
 /// re-injects a prior scan's entity into the working set.
 ///
@@ -100,29 +116,60 @@ pub const RECALL_SOURCE: &str = "recall";
 /// inflate [`Entity::source_count`] / `c_effective`.
 pub const CROSS_SCAN_SOURCE: &str = "cross_scan_history";
 
-/// The evidence source attached by the AU-066 cross-scan-corroboration boost
-/// (`engine::passes::promote_cross_scan_corroborated`). Like
-/// [`CROSS_SCAN_SOURCE`], it records a link to prior scans of the same subject
-/// and is kept/shown for the analyst — but recurrence in the LOCAL store is not
-/// an independent observation, so it must never inflate [`Entity::source_count`]
-/// / `c_effective` (that silently graded a lead a whole tier higher merely for
-/// having been seen before, so a fresh scan and a re-scan disagreed on
-/// classification — the "local data must not be incorporated unless purposely
-/// added" contract, applied to confidence).
+/// Evidence source name of the final breach-consensus grading pass
+/// ([`crate::core::breach_consensus`]).
+///
+/// The pass reads the evidence the breach modules already attached and records
+/// how many DISTINCT corpora attest each finding. It is a *summary of* those
+/// observations, not a new one — counting it would let an entity corroborate
+/// itself, and would do so most strongly for the entities the grading singled
+/// out as weakest. The summary is attached (and is what the audit trail reads)
+/// but, like [`RECALL_SOURCE`] and [`CROSS_SCAN_SOURCE`], it can never inflate
+/// [`Entity::source_count`] / `c_effective`.
+pub const CONSENSUS_SOURCE: &str = "breach_consensus";
+
+/// Evidence source name emitted by the multipath-corroboration promotion pass
+/// (`promote_multipath_corroborated` in `crate::core::engine::passes`).
+///
+/// This is a DERIVED signal: it records that the engine found two identity
+/// endpoints connected across ≥2 edge-disjoint paths — it is NOT a new
+/// independent data source. It may amplify an already-grounded entity's
+/// `source_count`, but it must never be the sole reason an entity is considered
+/// corroborated (see [`source_count`][Entity::source_count]).
+pub const MULTIPATH_CORROBORATION_SOURCE: &str = "multipath_corroboration";
+
+/// Evidence source name emitted by the cross-scan-corroboration promotion pass
+/// (`promote_cross_scan_corroborated` in `crate::core::engine::passes`).
+///
+/// Same semantics as [`MULTIPATH_CORROBORATION_SOURCE`]: engine-derived signal,
+/// not an independent observation.
 pub const CROSS_SCAN_CORROBORATION_SOURCE: &str = "cross_scan_corroboration";
+
+/// True if `source` is an engine **promotion pass** rather than an independent
+/// observation. Promotion passes amplify entities that are already grounded by
+/// real sources; they must never GROUND an entity by themselves.
+///
+/// This is distinct from [`is_non_corroborating_source`]: non-corroborating
+/// sources are NEVER counted; promotion sources ARE counted, but only when the
+/// entity already has at least one real corroborating source (the grounding gate
+/// in [`Entity::source_count`]).
+#[inline]
+pub fn is_promotion_source(source: &str) -> bool {
+    source == MULTIPATH_CORROBORATION_SOURCE || source == CROSS_SCAN_CORROBORATION_SOURCE
+}
 
 /// True if `source` must NOT count toward cross-source corroboration — a
 /// deterministic self-enrichment pass ([`ENRICHMENT_ONLY_SOURCES`]), the recall
-/// replay ([`RECALL_SOURCE`]), or a cross-scan history link
-/// ([`CROSS_SCAN_SOURCE`] / [`CROSS_SCAN_CORROBORATION_SOURCE`]). All attach
-/// genuine, useful evidence, but none is an independent observation, so none may
-/// inflate the corroboration count.
+/// replay ([`RECALL_SOURCE`]), the cross-scan history link ([`CROSS_SCAN_SOURCE`]),
+/// or the breach-consensus summary ([`CONSENSUS_SOURCE`]). All attach genuine,
+/// useful evidence, but none is an independent observation, so none may inflate
+/// the corroboration count.
 #[inline]
 pub fn is_non_corroborating_source(source: &str) -> bool {
     is_enrichment_source(source)
         || source == RECALL_SOURCE
         || source == CROSS_SCAN_SOURCE
-        || source == CROSS_SCAN_CORROBORATION_SOURCE
+        || source == CONSENSUS_SOURCE
 }
 
 // ─── EntityKind ──────────────────────────────────────────────────────────────
@@ -304,6 +351,24 @@ impl fmt::Display for Classification {
 
 // ─── Evidence ────────────────────────────────────────────────────────────────
 
+/// Verification method for account ownership or data derivation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationMethod {
+    /// Account email matches a known entity's email.
+    EmailLinked,
+    /// Platform-native verification (checkmark, badge, official status).
+    PlatformVerified,
+    /// Activity proof: recent posts, followers, creation signals.
+    ActivityProof,
+    /// Self-disclosure: bio, pinned post, or explicit linking to other identity.
+    SelfDisclosed,
+    /// Account linked to another entity's profile.
+    LinkedProfile,
+    /// Unverified handle enumeration (present on platform, ownership unknown).
+    Unverified,
+}
+
 /// A single piece of evidence attached to an entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Evidence {
@@ -324,6 +389,18 @@ pub struct Evidence {
     pub attributes: BTreeMap<String, String>,
     /// Unix timestamp (seconds) when evidence was recorded.
     pub recorded_at: u64,
+    /// Verification status for account/handle ownership. None if not applicable.
+    /// Marked at evidence creation and propagated through correlations to gate
+    /// account-attribution rules — prevents unverified accounts from being linked
+    /// to persons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<VerificationMethod>,
+    /// True if this evidence represents a derivation or inference rather than
+    /// a direct observation. Inferred data (e.g., names permuted from usernames,
+    /// coordinates calculated from addresses) must be confidence-capped below HIGH
+    /// and should decay confidence in downstream correlations.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_inferred: bool,
 }
 
 impl Evidence {
@@ -333,6 +410,8 @@ impl Evidence {
             summary: summary.into(),
             attributes: BTreeMap::new(),
             recorded_at: unix_now(),
+            verification: None,
+            is_inferred: false,
         }
     }
 
@@ -362,6 +441,23 @@ impl Evidence {
         }
         self
     }
+
+    /// Set the verification status for this evidence (used to mark account ownership verification).
+    pub fn with_verification(mut self, v: VerificationMethod) -> Self {
+        self.verification = Some(v);
+        self
+    }
+
+    /// Mark this evidence as inferred/derived rather than directly observed.
+    pub fn with_inferred(mut self, inferred: bool) -> Self {
+        self.is_inferred = inferred;
+        self
+    }
+}
+
+/// Helper for serde skip_serializing_if on bool false values.
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 // ─── Entity ───────────────────────────────────────────────────────────────────
@@ -372,7 +468,11 @@ impl Evidence {
 /// `uid = hex(SHA-256(kind_str + ":" + value_normalised))`
 ///
 /// # Confidence formula
-/// `C_eff = clamp(confidence × (1 + 0.15 × ln(corroboration)), 0.0, 1.0)`
+/// `C_eff = clamp(max(confidence × (1 + 0.15·ln n), 1 − (1−confidence)·0.65^(n−1)), 0, 1)`,
+/// where `n = source_count()` — the count of DISTINCT corroborating sources,
+/// floored at 1. **Not** the raw `corroboration` field below, which is a
+/// separate summed observation magnitude that never drives `C_eff` directly.
+/// See [`Entity::c_effective`] and [`Entity::source_count`].
 ///
 /// # GREATEST-semantics merge
 /// `confidence` and `corroboration` only ever increase during merge.
@@ -388,7 +488,12 @@ pub struct Entity {
     pub raw_value: String,
     /// Base confidence ∈ [0, 1].
     pub confidence: f64,
-    /// Number of independent corroborating sources (≥ 1).
+    /// Raw observation-magnitude counter (≥ 1): seeded per-module (e.g. a
+    /// breach-count, an engine-agreement count) and summed on every
+    /// GREATEST-semantics merge via [`Self::absorb`] — never deduplicated by
+    /// source. **This is not a count of independent sources** and does not
+    /// drive [`Self::c_effective`]; that uses [`Self::source_count`] instead.
+    /// Retained as a ranking/diagnostics signal (see its doc comment for why).
     pub corroboration: u32,
     /// Decay timestamp (Unix seconds). Used to compute time-decay.
     pub observed_at: u64,
@@ -399,6 +504,17 @@ pub struct Entity {
     pub tags: Vec<String>,
     /// Scan ID this entity was first seen in.
     pub scan_id: String,
+    /// Expansion **generation**: how many recursive expansion rounds from the
+    /// seed this entity was first discovered — its distance, in pivots, from the
+    /// queried subject. `0` = the seed round (found directly by scanning the
+    /// subject), `N` = surfaced by pivoting on a generation-`N-1` entity, i.e.
+    /// `N` hops out along its derivation trail. Engine-assigned (modules always
+    /// create at `0`); the engine stamps a genuinely-new entity with the round
+    /// it was born in, and `merge` preserves the EARLIEST generation an entity
+    /// entered the graph at. Rides in `data_json` — old rows deserialize to `0`
+    /// via `#[serde(default)]`, so no storage migration is needed.
+    #[serde(default)]
+    pub generation: u32,
 }
 
 impl Entity {
@@ -425,6 +541,10 @@ impl Entity {
             evidence: Vec::new(),
             tags: Vec::new(),
             scan_id: scan_id.into(),
+            // Modules never know their expansion round, so every freshly-built
+            // entity starts at the seed generation; the engine re-stamps a
+            // genuinely-new entity with the round it was actually born in.
+            generation: 0,
         }
     }
 
@@ -460,21 +580,45 @@ impl Entity {
         // overhead. A source is counted exactly once, at its first occurrence:
         // for each record we scan only the evidence *before* it for the same
         // source. Entity evidence chains are short (a handful of sources), so
-        // this O(k²) scan over tiny `k` beats hashing + heap allocation, and the
-        // distinct set it yields is identical to `corroborating_sources().len()`.
-        let mut distinct: u32 = 0;
+        // this O(k²) scan over tiny `k` beats hashing + heap allocation.
+        //
+        // GROUNDING GATE: promotion-pass sources (`multipath_corroboration`,
+        // `cross_scan_corroboration`) are tracked separately and only COUNT
+        // when the entity is already independently grounded. They re-fire every
+        // scan, so a value the engine merely DERIVED (a name→email permutation,
+        // an inferred handle — the `derived` tag) whose lone real source is its
+        // own generator must NOT be lifted into apparent cross-source agreement.
+        // Gate: for observed entities (no `derived` tag) 1 real source suffices;
+        // for derived entities we require ≥2 real (corroborating, non-promotion)
+        // sources before promotion counts. If the generator is itself
+        // non-corroborating (e.g. `name_intel`), it does not contribute to
+        // `real`, so external confirmation is needed regardless.
+        let derived = self.has_tag("derived");
+        let mut real: u32 = 0;
+        let mut promo: u32 = 0;
         for (i, ev) in self.evidence.iter().enumerate() {
             let s = ev.source.as_str();
             if is_non_corroborating_source(s) {
                 continue;
             }
-            if !self.evidence[..i]
+            if self.evidence[..i]
                 .iter()
                 .any(|prev| prev.source == ev.source)
             {
-                distinct += 1;
+                continue; // duplicate source — only count first occurrence
+            }
+            if is_promotion_source(s) {
+                promo += 1;
+            } else {
+                real += 1;
             }
         }
+        // For observed entities: 1 real source satisfies the gate.
+        // For derived entities: need ≥2 real corroborating sources before
+        // promotion passes count. Non-corroborating generators (e.g. `name_intel`)
+        // do not contribute to `real`, so they do not satisfy the gate alone.
+        let grounded = real >= if derived { 2 } else { 1 };
+        let distinct = real + if grounded { promo } else { 0 };
         if distinct > 0 {
             // Evidence is attached: distinct *corroborating* sources is the
             // authoritative cross-correlation count. The summed `corroboration`
@@ -556,6 +700,23 @@ impl Entity {
         let residual_doubt = (1.0 - self.confidence) * CORROBORATION_DOUBT_DECAY.powf(n - 1.0);
         let agreement = 1.0 - residual_doubt;
         multiplicative.max(agreement).clamp(0.0, 1.0)
+    }
+
+    /// [`Self::c_effective`] discounted by expansion **depth-decay**: each
+    /// generation (pivot) away from the seed multiplies confidence by `base`
+    /// (`0 < base ≤ 1`), so a finding `N` hops out is scaled by `base^N`. A
+    /// gen-0 (seed-round) entity is unchanged (`base^0 = 1`), and `base = 1.0`
+    /// is a total no-op at any depth. Models the intuition that every pivot adds
+    /// drift, so seed-adjacent leads are inherently more trustworthy than ones
+    /// reached far down a chain of pivots.
+    ///
+    /// Pure; `base` is supplied by the caller. Only consulted when the opt-in
+    /// `feature.depth_decay` expansion policy is enabled (default off), so the
+    /// raw [`Self::c_effective`] every correlation/display/gate reads is
+    /// untouched unless an operator deliberately turns the policy on.
+    #[inline]
+    pub fn c_effective_depth_decayed(&self, base: f64) -> f64 {
+        (self.c_effective() * base.powf(f64::from(self.generation))).clamp(0.0, 1.0)
     }
 
     /// Derived classification tier from [`Self::c_effective`]: `Verified` at
@@ -709,6 +870,34 @@ impl Entity {
             .collect()
     }
 
+    /// The set of DISTINCT corroborating evidence *records* — `(source, summary)`
+    /// pairs whose source counts toward corroboration (see
+    /// [`is_non_corroborating_source`]). Unlike [`Self::corroborating_sources`],
+    /// which collapses every record to the bare source NAME, this keeps
+    /// per-record granularity: two entities share a record only when the same
+    /// source produced the *same finding* for both.
+    ///
+    /// This is the correct key for **co-occurrence** (does an independent source
+    /// name entities A and B *together*?). Keying co-occurrence on the source
+    /// name alone conflates genuine joint sightings with one-to-many *fan-out
+    /// enumeration*: a module like `username_search` probes a single handle
+    /// across dozens of platforms and attaches a distinct per-platform summary
+    /// (`"@h has a profile on Threads"`, `"… on OnlyFans"`, …) to a separate
+    /// entity each — independent existence-proofs of one selector, not a shared
+    /// sighting. Under the name-level key those N entities collapse to one shared
+    /// `username_search` source and wire into a false N-clique; under the
+    /// record-level key their summaries differ, so no spurious edge is drawn. A
+    /// genuine joint record (both selectors in the *same* breach — identical
+    /// `("hibp", "Breach 'Apollo'")` — or on the same crawled page) is shared
+    /// verbatim, so the real co-occurrence edge survives.
+    pub fn corroborating_records(&self) -> std::collections::HashSet<(&str, &str)> {
+        self.evidence
+            .iter()
+            .filter(|ev| !is_non_corroborating_source(&ev.source))
+            .map(|ev| (ev.source.as_str(), ev.summary.as_str()))
+            .collect()
+    }
+
     pub fn has_evidence_from(&self, source: &str) -> bool {
         self.evidence.iter().any(|ev| ev.source == source)
     }
@@ -754,6 +943,7 @@ impl Entity {
     /// - `corroboration` += other.corroboration  — only increases
     /// - `observed_at`  = max(self, other)        — most recent wins
     /// - `raw_value`    = min(self, other)        — deterministic display value
+    /// - `generation`   = preserved (self's)      — earliest generation wins
     /// - `evidence` merged, de-duplicated by `(source, summary)`
     /// - `tags` unioned (de-duplicated)
     ///
@@ -813,6 +1003,15 @@ impl Entity {
             .saturating_add(other.corroboration)
             .max(1);
         self.observed_at = u64::max(self.observed_at, other.observed_at);
+        // `generation` is deliberately NOT merged here: it is engine-assigned in
+        // monotonic round order (a genuinely-new entity is stamped with the round
+        // it was born in AFTER insertion), while every module-built `other` still
+        // carries the meaningless default `0`. Taking a min would let a later
+        // round's re-emission (`other.generation == 0`) reset an existing entity's
+        // real generation back to the seed. Keeping `self`'s value preserves the
+        // earliest generation the entity actually entered the graph — the invariant the
+        // engine relies on (merges only ever fold `other` INTO the pre-existing,
+        // earlier-or-equal entity).
         // Deduplicate evidence by (source, summary) to prevent accumulation
         // across live mode iterations or re-scans — a repeated observation by the
         // SAME source with the SAME summary is the same record, not new
@@ -838,32 +1037,103 @@ impl Entity {
                 }
             }
         } else {
-            // Owned keys: a borrowed `&str` map would alias `self.evidence`, which
-            // we mutate. Seed it with the existing rows; a later incoming row
-            // duplicating an existing record OR an earlier incoming one merges
-            // into it (so duplicates within `other` are folded too).
-            let mut index: std::collections::HashMap<(String, String), usize> = self
-                .evidence
-                .iter()
-                .enumerate()
-                .map(|(i, e)| ((e.source.clone(), e.summary.clone()), i))
-                .collect();
+            // Index compact identity fingerprints instead of cloning every source
+            // and summary. Each bucket retains all matching indices and the lookup
+            // verifies the original strings, so hash collisions cannot merge
+            // unrelated evidence.
+            let identity_hash_builder = RandomState::new();
+            // Existing rows establish the minimum useful capacity. Incoming rows
+            // grow the map only when they introduce unique identities, avoiding
+            // an upper-bound allocation when a batch is mostly duplicates.
+            let mut index: HashMap<u64, EvidenceIdentityBucket> =
+                HashMap::with_capacity(self.evidence.len());
+            for (i, evidence) in self.evidence.iter().enumerate() {
+                index
+                    .entry(evidence_identity_hash(
+                        &identity_hash_builder,
+                        &evidence.source,
+                        &evidence.summary,
+                    ))
+                    .and_modify(|bucket| bucket.push(i))
+                    .or_insert_with(|| EvidenceIdentityBucket::new(i));
+            }
             self.evidence.reserve(other.evidence.len());
             for ev in other.evidence {
-                let key = (ev.source.clone(), ev.summary.clone());
-                match index.get(&key) {
-                    Some(&i) => merge_evidence_attrs(&mut self.evidence[i], ev),
+                let identity_hash =
+                    evidence_identity_hash(&identity_hash_builder, &ev.source, &ev.summary);
+                // A randomized 64-bit fingerprint makes multi-entry buckets
+                // exceptional; the exact comparison is the collision-safe path.
+                let existing_index = index.get(&identity_hash).and_then(|bucket| {
+                    bucket.indices().find(|&i| {
+                        self.evidence[i].source == ev.source
+                            && self.evidence[i].summary == ev.summary
+                    })
+                });
+                match existing_index {
+                    Some(i) => merge_evidence_attrs(&mut self.evidence[i], ev),
                     None => {
-                        index.insert(key, self.evidence.len());
+                        index
+                            .entry(identity_hash)
+                            .and_modify(|bucket| bucket.push(self.evidence.len()))
+                            .or_insert_with(|| EvidenceIdentityBucket::new(self.evidence.len()));
                         self.evidence.push(ev);
                     }
                 }
             }
         }
+        // `candidate` is a confidence-TIER quarantine stamped by
+        // `demote_to_candidate`, not an accumulating multi-source label like an
+        // ordinary tag — every default view filters entities purely on this tag
+        // (`api::scan_export`, `api::scan_handlers::analysis`), so blindly
+        // unioning it would let a stranger's non-matching, low-confidence
+        // observation of the SAME uid silently quarantine an otherwise-verified
+        // entity. Confidence already resolves to the max of the two sides
+        // above; tag status must track that: skip carrying the tag itself over
+        // in the general union below, then promote `self` out of quarantine
+        // the moment `other` was NOT itself a candidate — a single non-candidate
+        // corroboration is enough, symmetric with the confidence rule.
+        let other_is_candidate = other.tags.iter().any(|t| t == crate::core::tags::CANDIDATE);
         for t in other.tags {
-            self.tag(t);
+            if t != crate::core::tags::CANDIDATE {
+                self.tag(t);
+            }
+        }
+        if !other_is_candidate {
+            self.tags.retain(|t| t != crate::core::tags::CANDIDATE);
         }
     }
+}
+
+/// Index bucket that stores the common single fingerprint match inline and
+/// allocates only when a real hash collision creates additional candidates.
+struct EvidenceIdentityBucket {
+    first: usize,
+    collisions: Vec<usize>,
+}
+
+impl EvidenceIdentityBucket {
+    fn new(first: usize) -> Self {
+        Self {
+            first,
+            collisions: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, index: usize) {
+        self.collisions.push(index);
+    }
+
+    fn indices(&self) -> impl Iterator<Item = usize> + '_ {
+        std::iter::once(self.first).chain(self.collisions.iter().copied())
+    }
+}
+
+/// Compact fingerprint for an evidence `(source, summary)` identity.
+///
+/// The per-merge randomized state resists adversarial collision batches. Callers
+/// must still resolve every collision by comparing both original strings.
+fn evidence_identity_hash(state: &RandomState, source: &str, summary: &str) -> u64 {
+    state.hash_one((source, summary))
 }
 
 /// Merge `incoming`'s attributes into `existing` — they are the same evidence
@@ -934,10 +1204,86 @@ impl From<&Entity> for EntityRef {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/// Fold a normalised value into the form that defines **identity**, as distinct
+/// from the form that is **displayed**.
+///
+/// For most kinds these coincide and this borrows unchanged. For free-text NAME
+/// kinds they must not: a person's identity does not depend on the capitalisation
+/// or the run of spaces a particular source happened to emit, but the display
+/// value very much does — nobody wants a dossier headed `jeremy stewart`.
+///
+/// [`normalise`] cannot do this job, because its output IS the display value
+/// (`Entity::value`). Its catch-all arm is `value.trim()`, so `Person` receives
+/// no folding whatsoever, and three sightings of one person fork into three
+/// graph nodes:
+///
+/// ```text
+/// "Jeremy Stewart"    -> bf2bbc2d…
+/// "jeremy stewart"    -> c9973045…
+/// "Jeremy  Stewart"   -> f0523905…
+/// ```
+///
+/// Each fragment carries only the evidence of the source that spelled it that
+/// way, so `corroborated_fraction` — the share of entities backed by ≥2 distinct
+/// sources — is structurally suppressed toward zero no matter how many sources
+/// agree. A real 1081-entity dossier drawing on 11 sources reported **0%**
+/// corroborated, and listed `Jeremy Stewart` and `jeremy stewart` as separate
+/// co-reference endpoints. `derive_canonical_identities` papers over the split
+/// with `SameAs` edges, but an edge between two half-evidenced nodes is not the
+/// same thing as one fully-evidenced node.
+///
+/// Excluded on purpose:
+/// * `Ssid` — Wi-Fi network names are case-SENSITIVE by IEEE 802.11; folding
+///   them would merge two genuinely different networks.
+/// * `Address` — real address equivalence needs component parsing
+///   (`Street`/`St`, unit notation), not case folding. Folding case alone would
+///   imply a normalisation that has not happened.
+/// * Every identifier kind — `Email`, `Username`, `Domain`, `Phone`,
+///   `IpAddress`, `MacAddress`, `Url`, `Coordinates` — already normalises to a
+///   canonical form in [`normalise`], where identity and display legitimately
+///   coincide. Their UIDs are byte-identical before and after this change.
+fn identity_fold<'a>(kind: &EntityKind, normalised: &'a str) -> std::borrow::Cow<'a, str> {
+    match kind {
+        EntityKind::Person | EntityKind::Organisation => {
+            // `split_whitespace` collapses runs AND trims, so "Jeremy  Stewart"
+            // and " Jeremy Stewart " reach the same key as "Jeremy Stewart".
+            let folded = normalised
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase();
+            if folded == normalised {
+                std::borrow::Cow::Borrowed(normalised)
+            } else {
+                std::borrow::Cow::Owned(folded)
+            }
+        }
+        _ => std::borrow::Cow::Borrowed(normalised),
+    }
+}
+
 /// Derive a deterministic SHA-256 UID from kind + normalised value.
 ///
-/// Format: `hex(SHA-256("<kind_str>:<normalised_value>"))`
+/// Format: `hex(SHA-256("<kind_str>:<identity_fold(normalised_value)>"))`
+///
+/// The fold lives HERE rather than in [`Entity::new`] because `derive_uid` is
+/// not the private helper of one constructor — it is called from six places,
+/// and one of them is the engine deriving the **seed's** UID from the operator's
+/// target string (`core::engine`), with others in dispatch and history. Folding
+/// in the constructor alone would give a seed typed as `Jeremy Stewart` a
+/// different UID from the `jeremy stewart` its own modules emit: the seed would
+/// land in the graph as an isolated node while every derived edge attached to a
+/// twin it could not reach. That is precisely the "subject has no derived
+/// connections" state observed in a real dossier, so fixing identity anywhere
+/// but at the single authoritative definition would have reproduced the defect
+/// while appearing to cure it.
+///
+/// Migration: `Person` and `Organisation` UIDs computed before this change do
+/// not match those computed after, so entities already persisted under a
+/// mixed-case spelling are reachable only by re-scanning. Every other kind is
+/// bit-for-bit unchanged.
 pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
+    let normalised_value = &*identity_fold(kind, normalised_value);
     // digest 0.11 dropped the `io::Write` impl for hashers. Stream the `Display`
     // of `<kind>` straight into the hasher through [`HashWrite`] so the
     // per-entity hot path (every `Entity::new`) allocates NO intermediate
@@ -946,9 +1292,53 @@ pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
     // unchanged.
     use fmt::Write as _;
     let mut h = Sha256::new();
-    let _ = write!(HashWrite(&mut h), "{kind}:");
+    match kind {
+        EntityKind::Other(s) => {
+            // Unlike every fixed-string kind (drawn from a small closed set that
+            // never contains `:`), `Other`'s inner name is attacker/scrape
+            // controlled (`modules::breach_rich`'s catch-all loop mints these
+            // straight from untrusted JSON field names) and can itself contain
+            // `:`. Hashing `"other:{s}:{value}"` via the plain Display path
+            // below is ambiguous at the name/value boundary: Other("a") with
+            // value "b:c" and Other("a:b") with value "c" both produce the
+            // identical preimage "other:a:b:c" and therefore the SAME uid.
+            // Length-prefixing `s` fixes the split point unambiguously — this
+            // changes ONLY `Other`'s hash preimage (hence only its UIDs);
+            // every other kind's byte-identical Display-based path below is
+            // untouched.
+            let _ = write!(HashWrite(&mut h), "other:{}:", s.len());
+            h.update(s.as_bytes());
+            h.update(b":");
+        }
+        _ => {
+            let _ = write!(HashWrite(&mut h), "{kind}:");
+        }
+    }
     h.update(normalised_value.as_bytes());
     hex::encode(h.finalize())
+}
+
+/// Mint an entity UID from a **raw, un-normalised** value — the single entry
+/// point for the two-step `normalise` → [`derive_uid`] contract that identity
+/// callers previously copy-pasted (engine seed derivation, dispatch source
+/// counting, username history bridging). Folding the two steps here means a
+/// caller with a raw operator/target string can never accidentally hash a
+/// value that skipped [`normalise`] — which would land it in the graph under a
+/// UID no module's emitted entity shares.
+///
+/// The result is byte-identical to `derive_uid(kind, &normalise(kind, value))`,
+/// so this preserves the SHA-256-deterministic-UID invariant exactly.
+///
+/// NOT used by:
+/// * [`Entity::new`], which needs the intermediate normalised form for its own
+///   `value` field and so computes `normalise` once and calls [`derive_uid`]
+///   directly — routing it through here would recompute `normalise` on every
+///   entity constructed (the hottest path in the engine).
+/// * Callers that already hold a **normalised** (`canon`) value; they call
+///   [`derive_uid`] directly, because re-normalising a canonical value is at
+///   best wasted work and at worst not provably idempotent for every kind.
+pub(crate) fn uid_for(kind: &EntityKind, value: &str) -> String {
+    derive_uid(kind, &normalise(kind, value))
 }
 
 /// A [`fmt::Write`] shim that streams formatted text straight into a SHA-256
@@ -1336,6 +1726,22 @@ pub fn evidence_sources(entities: &[Entity]) -> std::collections::BTreeSet<&str>
         .iter()
         .flat_map(|e| e.evidence.iter().map(|ev| ev.source.as_str()))
         .collect()
+}
+
+/// The **expansion timeline**: how many entities were first discovered in each
+/// expansion generation ([`Entity::generation`]), ordered from the seed outward.
+/// Generation 0 is the seed round (found directly by scanning the subject); each
+/// later generation is one pivot further out along its derivation trail. The
+/// shape of this distribution is the scan's expansion curve — the working graph
+/// growing round by round, then converging as leads are exhausted or pruned.
+/// Pure; returns a `BTreeMap` so generations are already in order.
+#[must_use]
+pub fn expansion_timeline(entities: &[Entity]) -> std::collections::BTreeMap<u32, usize> {
+    let mut hist = std::collections::BTreeMap::new();
+    for e in entities {
+        *hist.entry(e.generation).or_insert(0) += 1;
+    }
+    hist
 }
 
 /// Current Unix timestamp in seconds.

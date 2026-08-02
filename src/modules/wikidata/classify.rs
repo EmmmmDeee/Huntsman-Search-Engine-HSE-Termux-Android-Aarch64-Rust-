@@ -27,16 +27,5 @@ pub(super) fn seed_kind(seed: TargetKind) -> EntityKind {
 /// True if `name` contains every token of the seed `query` as a whole word
 /// (case-insensitive) — the same precision gate as `acnc_charities`/`gleif_lei`.
 pub(super) fn name_matches_query(name: &str, query: &str) -> bool {
-    let words: Vec<&str> = name
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let tokens: Vec<&str> = query
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .collect();
-    !tokens.is_empty()
-        && tokens
-            .iter()
-            .all(|tok| words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
+    crate::util::str_util::whole_word_token_match(name, query)
 }

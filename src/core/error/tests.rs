@@ -21,7 +21,7 @@ use super::*;
     #[test]
     fn error_from_json() {
         let bad = serde_json::from_str::<serde_json::Value>("not json");
-        let e: Error = bad.unwrap_err().into();
+        let e: Error = bad.expect_err("should be an error").into();
         assert!(e.to_string().contains("json"));
     }
 
@@ -67,6 +67,7 @@ use super::*;
                 Error::InvalidTarget(m) => assert_eq!(s, format!("invalid target: {m}")),
                 Error::MissingKey(m) => assert_eq!(s, format!("missing key: {m}")),
                 Error::Module { module, message } => assert_eq!(s, format!("[{module}] {message}")),
+                Error::RateLimited(m) => assert_eq!(s, format!("rate limited: {m}")),
                 Error::Other(m) => assert_eq!(&s, m),
             }
         }
@@ -75,12 +76,13 @@ use super::*;
         assert_display(&Error::Storage(rusqlite::Error::QueryReturnedNoRows));
         assert_display(&Error::Io(std::io::Error::other("x")));
         assert_display(&Error::Json(
-            serde_json::from_str::<serde_json::Value>("nope").unwrap_err(),
+            serde_json::from_str::<serde_json::Value>("nope").expect_err("should be an error"),
         ));
         assert_display(&Error::Http("boom".into()));
         assert_display(&Error::InvalidTarget("1.2.3".into()));
         assert_display(&Error::MissingKey("HUNTSMAN_X".into()));
         assert_display(&Error::module("m", "msg"));
+        assert_display(&Error::RateLimited("seek_now: throttled".into()));
         assert_display(&Error::Other("plain".into()));
     }
 
@@ -97,7 +99,7 @@ use super::*;
             .get("ftp://example.invalid/v1/lookup?apikey=SECRETKEY123&q=target@example.com")
             .send()
             .await
-            .unwrap_err();
+            .expect_err("should be an error");
         // Exercise the crate's `From<reqwest::Error>` (what a bare `?` invokes).
         let e: Error = transport.into();
         let s = e.to_string();

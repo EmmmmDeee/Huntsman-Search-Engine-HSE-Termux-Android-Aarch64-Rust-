@@ -59,6 +59,31 @@ pub(in crate::modules::search_engines) const ENGINE_DOMAINS: &[&str] = &[
     "dogpile.com",
     "swisscows.com",
     "system1.com",
+    // you.com's own CDN chrome (`<link rel="dns-prefetch"
+    // href="https://cdn.you.com"/>`) — a real live capture
+    // (`fetch/testdata/you_kylo4kylo.html`) showed this leaking through as a
+    // fake organic hit because `you.com` itself was never in this list (only
+    // its cousins were), even though the generic href-extraction pass reads
+    // ANY `href=` attribute, not just `<a>` result anchors.
+    "you.com",
+    // MetaGer's own homepage/language-switcher/footer chrome — a real live
+    // capture (`fetch/testdata/metager_kylo4kylo.html`) showed EVERY hit the
+    // parser extracted from a genuine `eingabe=` response was one of these,
+    // not a single actual organic result. `metager.de` is a distinct TLD from
+    // `metager.org` (not covered by the same entry) and hosts the
+    // `maps.metager.de`/`gitlab.metager.de` sub-products; `suma-ev.de` is
+    // MetaGer's own nonprofit operator, self-disclosed on the captured page
+    // itself ("MetaGer is developed and run by our nonprofit organization,
+    // SUMA-EV"); `hetzner.de` and `wecanhelp.de` appear only as MetaGer's own
+    // about-page hosting-provider sustainability credit and donation-affiliate
+    // widget respectively in this same capture — engine-adjacent chrome, the
+    // same category as the app-store/Tor entries below, not a claim that
+    // either is never a legitimate third-party finding elsewhere.
+    "metager.org",
+    "metager.de",
+    "suma-ev.de",
+    "hetzner.de",
+    "wecanhelp.de",
     "flocdn.com",
     "cookielaw.org",
     "onetrust.com",
@@ -242,6 +267,35 @@ pub(in crate::modules::search_engines) fn is_tracking_url(url: &str) -> bool {
                 "guce.aol.com",
                 "advertising.yahoo.com",
                 "feedback.yahoo.com",
+                // Dogpile's and Swisscows' own official social-media accounts —
+                // unlike their SERP chrome (already covered by the
+                // `dogpile.com`/`swisscows.com` `ENGINE_DOMAINS` entries), these
+                // sit on generic third-party platforms (facebook/instagram/
+                // linkedin/twitter) this codebase can't blanket-exclude without
+                // also hiding a real target's own genuine profile on those same
+                // platforms. Real live captures (`fetch/testdata/
+                // dogpile_kylo4kylo.html`, `swisscows_kylo4kylo.html`) showed
+                // every one of these leaking through as fake "organic" hits for
+                // an unrelated query — Dogpile's mascot page and Swisscows'
+                // branded handles are specific, known, never-the-subject's-own
+                // URLs, so a full-path match is safe here in a way a bare
+                // `facebook.com` entry would not be.
+                "facebook.com/arfiefromdogpile",
+                "facebook.com/swisscows",
+                "instagram.com/swisscows.official",
+                "linkedin.com/company/swisscows",
+                "twitter.com/swisscows_ch",
+                // Startpage's own official social-media accounts — same
+                // category as Dogpile's/Swisscows' above (generic third-party
+                // platforms, so a bare-domain `ENGINE_DOMAINS` entry would also
+                // hide a real target's own genuine profile there). A real live
+                // capture (`fetch/testdata/startpage_kylo4kylo.html`) showed
+                // all 4 leaking through as fake "organic" hits for an
+                // unrelated query.
+                "x.com/startpage",
+                "instagram.com/startpage/",
+                "facebook.com/startpagesearch",
+                "reddit.com/r/startpagesearch",
             ])
         });
     TRACKING.is_match(url)

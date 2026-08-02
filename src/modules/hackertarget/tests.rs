@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
     #[test]
@@ -29,8 +30,8 @@ use super::*;
 
     #[test]
     fn hostsearch_yields_subdomains_external_hosts_and_ips() {
-        // sub of example.com → 0.75 + subdomain tag; an external CNAME target →
-        // 0.50, no subdomain tag; each routable IP → one IpAddress entity.
+        // sub of example.com → confidence::VERY_HIGH + subdomain tag; an external CNAME target →
+        // confidence::MEDIUM, no subdomain tag; each routable IP → one IpAddress entity.
         let body = "mail.example.com,93.184.216.34\n\
                     api.example.com,93.184.216.35\n\
                     cdn.fastly.net,151.101.1.10";
@@ -38,15 +39,15 @@ use super::*;
 
         let domains = of_kind(&ents, EntityKind::Domain);
         assert_eq!(domains.len(), 3);
-        let sub = domains.iter().find(|e| e.value == "mail.example.com").unwrap();
-        assert!((sub.confidence - 0.75).abs() < 1e-9);
+        let sub = domains.iter().find(|e| e.value == "mail.example.com").expect("should succeed");
+        assert!((sub.confidence - confidence::VERY_HIGH).abs() < 1e-9);
         assert!(sub.has_tag("hackertarget") && sub.has_tag(tags::SUBDOMAIN));
         assert_eq!(
             sub.evidence[0].attributes.get("resolved_ip").map(String::as_str),
             Some("93.184.216.34")
         );
-        let ext = domains.iter().find(|e| e.value == "cdn.fastly.net").unwrap();
-        assert!((ext.confidence - 0.50).abs() < 1e-9, "external host → 0.50");
+        let ext = domains.iter().find(|e| e.value == "cdn.fastly.net").expect("should succeed");
+        assert!((ext.confidence - confidence::MEDIUM).abs() < 1e-9, "external host → confidence::MEDIUM");
         assert!(!ext.has_tag(tags::SUBDOMAIN));
 
         let ips = of_kind(&ents, EntityKind::IpAddress);
@@ -114,7 +115,7 @@ use super::*;
         assert_eq!(ents.len(), 1);
         let e = &ents[0];
         assert_eq!(e.value, "host.example.com", "trailing dot stripped");
-        assert!((e.confidence - 0.70).abs() < 1e-9);
+        assert!((e.confidence - confidence::HIGH_PLUS).abs() < 1e-9);
         assert!(e.has_tag("hackertarget") && e.has_tag(tags::PTR));
         assert!(e.evidence[0].summary.contains("Reverse DNS for 1.2.3.4"));
     }

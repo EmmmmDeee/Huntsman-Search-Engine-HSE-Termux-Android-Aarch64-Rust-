@@ -14,10 +14,14 @@
 //! of the scan — and any concurrent scan sharing the same rate-limited endpoint —
 //! skips it cleanly until a cooldown elapses:
 //!
-//!   * **rate-limit / quota / payment** (HTTP 429/402, "rate limit", "quota",
-//!     "count exceeded", "credit") → trips immediately for [`RATE_LIMIT_COOLDOWN`].
-//!     These are deterministic: the next call cannot succeed until the window
-//!     resets, so one trip saves every remaining per-target retry.
+//!   * **rate-limit / quota / payment** (HTTP 429/402 as a standalone token,
+//!     "rate limit", "quota", "count exceeded", "out of credit", …) → trips
+//!     immediately for [`RATE_LIMIT_COOLDOWN`]. These are deterministic: the
+//!     next call cannot succeed until the window resets, so one trip saves
+//!     every remaining per-target retry. The vocabulary is deliberately
+//!     narrow (see [`is_rate_limited`]) — a bare "exceeded" or "credit" also
+//!     matches a transport timeout or an echoed breach record, which would
+//!     wrongly bench a healthy provider.
 //!   * **hard transport error / timeout** → a single occurrence can be transient
 //!     (a flaky DNS hop), so it trips only after [`SOFT_TRIP_THRESHOLD`]
 //!     consecutive failures, for the shorter [`SOFT_COOLDOWN`]; one success
@@ -61,13 +65,14 @@ fn state() -> &'static Mutex<HashMap<&'static str, Trip>> {
     STATE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Distinctive rate-limit / quota prose — safe as case-insensitive substrings
-/// because each is a multi-word or compound phrase that does not occur inside
-/// unrelated text. Crucially this list contains NO bare ambiguous word: `exceeded`
-/// (matches the transport-timeout `deadline exceeded`) and `credit` (matches the
-/// breach-record `credit card`) are gone, present ONLY as the quota-specific
-/// compounds `count exceeded` / `out of credit` / `credit exhausted` / …. So a
-/// timeout or an echoed identifier no longer mis-classifies as a hard rate-limit.
+/// Rate-limit/quota/payment prose distinctive enough to match as a plain
+/// case-insensitive substring — each is a multi-word or compound phrase that
+/// doesn't occur inside unrelated text. Deliberately excludes the bare, single
+/// words `exceeded` and `credit`: those alone match a transport timeout's
+/// "deadline exceeded" and a breach record's "credit card", so a healthy
+/// module doing perfectly normal work could trip the long
+/// [`RATE_LIMIT_COOLDOWN`] on a coincidental substring in its own error text
+/// or in scraped content it happened to echo back.
 const QUOTA_PROSE: &[&str] = &[
     "too many requests",
     "rate limit",
@@ -82,22 +87,26 @@ const QUOTA_PROSE: &[&str] = &[
     "out of credit",
     "insufficient credit",
     "credit exceeded",
-    "credits remaining",
 ];
 
 /// Classify a module error message as a retry-futile rate-limit/quota signal.
 ///
-/// Two matchers, both false-positive-hardened because a hard match trips the long
-/// [`RATE_LIMIT_COOLDOWN`] (600 s) that silently drops every subsequent finding a
-/// healthy provider would produce:
-/// 1. the distinctive [`QUOTA_PROSE`] compounds (case-insensitive substring); and
-/// 2. the HTTP status codes `429` / `402` matched ONLY as a standalone token —
-///    split on non-alphanumerics — so a digit run that merely *contains* them (an
-///    echoed phone `+61429551402`, an ID, a breach record) can't trip the breaker.
+/// Two matchers, both hardened against false positives — a hard match trips
+/// the long [`RATE_LIMIT_COOLDOWN`] (600s), which silently drops every
+/// subsequent finding a healthy provider would otherwise have produced for the
+/// rest of the scan:
+/// 1. the distinctive [`QUOTA_PROSE`] compounds (case-insensitive substring);
+///    and
+/// 2. the HTTP status codes `429`/`402` matched ONLY as a standalone token —
+///    split on non-alphanumeric bytes — so a digit run that merely *contains*
+///    them (an echoed phone number like `+61429551402`, an ID, a breach
+///    record) can't trip the breaker.
 ///
-/// Anything not caught here falls through to the 3-strike [`SOFT_TRIP_THRESHOLD`]
-/// soft path (a genuinely persistent quota wall still trips, just after a couple
-/// of retries and with the shorter [`SOFT_COOLDOWN`]).
+/// Anything not caught here falls through to the [`SOFT_TRIP_THRESHOLD`]
+/// soft path: a genuinely persistent quota wall still trips, just after a
+/// couple of retries and with the shorter [`SOFT_COOLDOWN`] — a false
+/// negative here costs a retry or two, never a wrongly-benched healthy
+/// provider.
 fn is_rate_limited(msg: &str) -> bool {
     let m = msg.to_ascii_lowercase();
     if QUOTA_PROSE.iter().any(|needle| m.contains(needle)) {

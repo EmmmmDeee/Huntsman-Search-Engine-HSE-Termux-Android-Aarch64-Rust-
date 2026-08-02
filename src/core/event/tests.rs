@@ -26,10 +26,10 @@ use super::*;
             target_kind: "email".into(),
             target_value: "a@b.com".into(),
         };
-        let json = serde_json::to_string(&kind).unwrap();
+        let json = serde_json::to_string(&kind).expect("should succeed");
         assert!(json.contains("\"type\":\"scan_start\""));
 
-        let back: EventKind = serde_json::from_str(&json).unwrap();
+        let back: EventKind = serde_json::from_str(&json).expect("should succeed");
         match back {
             EventKind::ScanStart {
                 target_kind,
@@ -49,10 +49,10 @@ use super::*;
             value: "104.20.37.187".into(),
             reason: "incidental_infra".into(),
         };
-        let json = serde_json::to_string(&kind).unwrap();
+        let json = serde_json::to_string(&kind).expect("should succeed");
         assert!(json.contains("\"type\":\"entity_excluded\""));
         assert_eq!(kind.event_type_str(), "entity_excluded");
-        let back: EventKind = serde_json::from_str(&json).unwrap();
+        let back: EventKind = serde_json::from_str(&json).expect("should succeed");
         match back {
             EventKind::EntityExcluded {
                 kind,
@@ -73,8 +73,8 @@ use super::*;
             module: "whois".into(),
             found: 7,
         };
-        let json = serde_json::to_string(&kind).unwrap();
-        let back: EventKind = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&kind).expect("should succeed");
+        let back: EventKind = serde_json::from_str(&json).expect("should succeed");
         match back {
             EventKind::ModuleDone { module, found } => {
                 assert_eq!(module, "whois");
@@ -90,8 +90,8 @@ use super::*;
             module: "dns_resolve".into(),
             error: "timeout".into(),
         };
-        let json = serde_json::to_string(&kind).unwrap();
-        let back: EventKind = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&kind).expect("should succeed");
+        let back: EventKind = serde_json::from_str(&json).expect("should succeed");
         match back {
             EventKind::ModuleError { module, error } => {
                 assert_eq!(module, "dns_resolve");
@@ -107,8 +107,8 @@ use super::*;
             scan_id: "scan-99".into(),
             entity_count: 42,
         };
-        let json = serde_json::to_string(&kind).unwrap();
-        let back: EventKind = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&kind).expect("should succeed");
+        let back: EventKind = serde_json::from_str(&json).expect("should succeed");
         match back {
             EventKind::ScanComplete {
                 scan_id,
@@ -173,6 +173,17 @@ use super::*;
                 value: "1.2.3.4".into(),
                 reason: "r".into(),
             },
+            EventKind::BreachSweep {
+                anchors: 3,
+                probes: 12,
+                dropped: 1,
+            },
+            EventKind::ConsensusAudit {
+                verdict: "pass".into(),
+                examined: 4,
+                corroborated: 2,
+                flags: 1,
+            },
             EventKind::CorrelationFound {
                 correlation: Correlation::new(
                     "AU-001",
@@ -219,6 +230,8 @@ use super::*;
                 | EventKind::ExpansionTick { .. }
                 | EventKind::ExpansionStop { .. }
                 | EventKind::EntityExcluded { .. }
+                | EventKind::BreachSweep { .. }
+                | EventKind::ConsensusAudit { .. }
                 | EventKind::CorrelationFound { .. }
                 | EventKind::CorrelationsDone { .. }
                 | EventKind::LiveStart { .. }
@@ -227,7 +240,7 @@ use super::*;
                 | EventKind::ScanComplete { .. } => {}
             }
 
-            let value = serde_json::to_value(kind).unwrap();
+            let value = serde_json::to_value(kind).expect("should succeed");
             let serde_tag = value
                 .get("type")
                 .and_then(|t| t.as_str())
@@ -239,8 +252,8 @@ use super::*;
             );
 
             // The tag survives a full JSON round-trip (the SSE/event-log path).
-            let json = serde_json::to_string(kind).unwrap();
-            let back: EventKind = serde_json::from_str(&json).unwrap();
+            let json = serde_json::to_string(kind).expect("should succeed");
+            let back: EventKind = serde_json::from_str(&json).expect("should succeed");
             assert_eq!(
                 back.event_type_str(),
                 kind.event_type_str(),
@@ -248,7 +261,7 @@ use super::*;
             );
         }
 
-        assert_eq!(every.len(), 15, "one representative per EventKind variant");
+        assert_eq!(every.len(), 17, "one representative per EventKind variant");
     }
 
     // ── Full Event round-trip ───────────────────────────────────────────
@@ -262,8 +275,8 @@ use super::*;
                 found: 3,
             },
         );
-        let json = serde_json::to_string(&evt).unwrap();
-        let back: Event = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&evt).expect("should succeed");
+        let back: Event = serde_json::from_str(&json).expect("should succeed");
 
         assert_eq!(back.scan_id, evt.scan_id);
         assert_eq!(back.ts, evt.ts);

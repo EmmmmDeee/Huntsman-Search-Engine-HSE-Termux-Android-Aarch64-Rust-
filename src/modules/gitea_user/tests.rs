@@ -35,7 +35,7 @@ fn emits_username_and_profile_url() {
     let u = ents
         .iter()
         .find(|e| e.kind == EntityKind::Username)
-        .unwrap();
+        .expect("should succeed");
     assert!(u.has_tag("gitea") && u.has_tag("public-profile"));
 }
 
@@ -45,8 +45,8 @@ fn emits_person_from_multi_word_full_name() {
     let ents = build_entities(user, "scan-gt-002");
     let p = ents.iter().find(|e| e.kind == EntityKind::Person);
     assert!(p.is_some(), "must emit Person from multi-word full_name");
-    assert_eq!(p.unwrap().value, "Gitea Developer");
-    assert!(p.unwrap().has_tag("gitea"));
+    assert_eq!(p.expect("should succeed").value, "Gitea Developer");
+    assert!(p.expect("should succeed").has_tag("gitea"));
 }
 
 #[test]
@@ -55,8 +55,28 @@ fn emits_public_email() {
     let ents = build_entities(user, "scan-gt-003");
     let em = ents.iter().find(|e| e.kind == EntityKind::Email);
     assert!(em.is_some(), "must emit Email from public email field");
-    assert_eq!(em.unwrap().value, "gdev@example.com");
-    assert!(em.unwrap().has_tag("gitea"));
+    assert_eq!(em.expect("should succeed").value, "gdev@example.com");
+    assert!(em.expect("should succeed").has_tag("gitea"));
+}
+
+#[test]
+fn skips_forge_noreply_masking_email() {
+    // A forge no-reply masking address is a privacy placeholder, not a real
+    // contact — it must not seed an Email finding (agreeing with codeberg_user
+    // on the identical Forgejo API).
+    let user = make_user(
+        "gdev",
+        None,
+        Some("gdev@users.noreply.gitea.io"),
+        None,
+        None,
+        None,
+    );
+    let ents = build_entities(user, "scan-gt-noreply");
+    assert!(
+        ents.iter().all(|e| e.kind != EntityKind::Email),
+        "a forge no-reply masking address must not seed an Email finding"
+    );
 }
 
 #[test]
@@ -79,8 +99,8 @@ fn emits_address_from_location() {
     let ents = build_entities(user, "scan-gt-005");
     let a = ents.iter().find(|e| e.kind == EntityKind::Address);
     assert!(a.is_some(), "must emit Address from location");
-    assert_eq!(a.unwrap().value, "Berlin, Germany");
-    assert!(a.unwrap().has_tag("self-asserted"));
+    assert_eq!(a.expect("should succeed").value, "Berlin, Germany");
+    assert!(a.expect("should succeed").has_tag("self-asserted"));
 }
 
 #[test]

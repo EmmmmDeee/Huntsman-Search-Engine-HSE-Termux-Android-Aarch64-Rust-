@@ -3,7 +3,7 @@ use super::*;
     #[test]
     fn extract_github_location_from_html() {
         let html = r#"<li itemprop="homeLocation"><svg></svg><span class="p-label">Brisbane, Australia</span></li>"#;
-        let loc = extract_github_location(html).unwrap();
+        let loc = extract_github_location(html).expect("should succeed");
         assert_eq!(loc, "Brisbane, Australia");
     }
 
@@ -15,7 +15,7 @@ use super::*;
     #[test]
     fn extract_meta_geo_placename() {
         let html = r#"<meta name="geo.placename" content="Sydney, NSW">"#;
-        let loc = extract_meta_location(html).unwrap();
+        let loc = extract_meta_location(html).expect("should succeed");
         assert_eq!(loc, "Sydney, NSW");
     }
 
@@ -25,7 +25,7 @@ use super::*;
         // forward-only scan from the name attr missed this. Bounding the whole
         // element finds it in either order.
         let html = r#"<meta content="Brisbane, QLD" property="og:region">"#;
-        assert_eq!(extract_meta_location(html).unwrap(), "Brisbane, QLD");
+        assert_eq!(extract_meta_location(html).expect("should succeed"), "Brisbane, QLD");
     }
 
     #[test]
@@ -34,7 +34,7 @@ use super::*;
         // slice, and an unterminated content="… must be skipped, not coerced
         // to an empty string.
         let ok = r#"<meta name="og:locality" content="Café Nundah">"#;
-        assert_eq!(extract_meta_location(ok).unwrap(), "Café Nundah");
+        assert_eq!(extract_meta_location(ok).expect("should succeed"), "Café Nundah");
         let unterminated = r#"<meta name="og:locality" content="Nundah"#;
         assert!(extract_meta_location(unterminated).is_none());
     }

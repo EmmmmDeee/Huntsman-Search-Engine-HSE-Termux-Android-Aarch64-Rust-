@@ -118,10 +118,26 @@ pub struct ScanOptions {
     /// expansion candidates by a convexity premium for heavy-tailed upside
     /// divided by per-kind dispatch cost (see [`crate::core::convex`]), so the
     /// bounded budget favours cheap, high-optionality identity leads over
-    /// expensive, saturated infrastructure. Off by default (the base
-    /// expected-value ranking is unchanged).
-    #[serde(default)]
+    /// expensive, saturated infrastructure. **On by default** for API/web scans
+    /// (see [`default_convex_budget`]) so each query maximises optionality-
+    /// weighted return out of the box; the base expected-value ranking is only
+    /// re-sorted on the uncertain tail and the expensive infrastructure, so the
+    /// confident identity core keeps its order. Opt out with the API field /
+    /// `--no-convex-budget`.
+    #[serde(default = "default_convex_budget")]
     pub convex_budget: bool,
+
+    /// **Capability-aware dispatch:** skip modules whose parser has provably
+    /// gone dead — persistent hard failures or silent zero-yield drift, from the
+    /// cross-scan health signal (see [`crate::util::scraper_health`]) — so their
+    /// dispatch slot goes to a source that still works, maximising the useful
+    /// return of each query. **On by default** for API/web scans (see
+    /// [`default_skip_dead_modules`]). Only culls the automatic comprehensive
+    /// fan-out: a scan with an explicit module allowlist, or `hse scan --full`,
+    /// never quarantines anything. Self-recovering — a module drops out the
+    /// moment it emits one healthy result. Opt out with `--no-skip-dead-modules`.
+    #[serde(default = "default_skip_dead_modules")]
+    pub skip_dead_modules: bool,
 
     /// Australian-focused regional searching. **On by default** — the search
     /// module adds a minimal set of `.au`/AU-directory dorks on top of the
@@ -281,7 +297,7 @@ impl std::str::FromStr for ExpansionStrategy {
 /// Termux device each extra hop fans the frontier out roughly exponentially, so
 /// operator-requested depth is capped here. Change this one constant to raise
 /// or lower the ceiling.
-pub const MAX_DEPTH: u32 = 3;
+pub const MAX_DEPTH: u32 = 5;
 
 /// Hard ceiling on operator-requested module concurrency, applied where
 /// `max_concurrent` is consumed via [`ScanOptions::effective_max_concurrent`].
@@ -324,7 +340,13 @@ pub const THROTTLE_CEILING_MS: u64 = 30_000;
 /// programmatic/API callers and the test suite remain deterministic; this product
 /// default is applied at the CLI boundary in `cli::scan`. Operators who want a
 /// faster, shallower sweep set `--depth` explicitly.
-pub const DEFAULT_SCAN_DEPTH: u32 = MAX_DEPTH;
+/// Deliberately BELOW [`MAX_DEPTH`]. The ceiling was raised to 5 so the live
+/// radar can chase a device-observed signal through the full identity chain,
+/// but a bare `hse scan` keeps its established 3-hop behaviour: each extra hop
+/// fans the frontier out roughly exponentially, and silently making every scan
+/// two hops deeper would multiply the runtime and API spend of a command whose
+/// behaviour operators already depend on.
+pub const DEFAULT_SCAN_DEPTH: u32 = 3;
 
 // Compile-time guard: the product default must never exceed the clamp ceiling,
 // or a bare `hse scan` would emit the "clamped to MAX_DEPTH" warning on every run.
@@ -483,7 +505,17 @@ impl Default for ScanOptions {
             webhook_url: None,
             profile: None,
             max_roi: false,
+            // Library default stays OFF for deterministic unit tests, DECOUPLED
+            // from the serde/product default (`default_convex_budget()` = true):
+            // an API/web/CLI scan gets optionality allocation on out of the box,
+            // while a programmatic `ScanOptions::default()` keeps the plain
+            // expected-value ranking — same split as `min_expand_confidence`.
             convex_budget: false,
+            // Library default OFF (same split + rationale as convex_budget): a
+            // programmatic `ScanOptions::default()` never consults the health DB,
+            // so unit tests stay deterministic; the serde/product default
+            // (`default_skip_dead_modules()` = true) turns it on for real scans.
+            skip_dead_modules: false,
             // AU-focused by default: every scan adds Australian-source dorks
             // (`.au` TLDs, AU directories) on top of the geo-neutral base, so the
             // tool favours Australian results out of the box. Opt out with
@@ -545,6 +577,27 @@ fn default_regional_search() -> bool {
     true
 }
 
+/// Serde default for [`ScanOptions::convex_budget`] — **on by default** so every
+/// API/web scan spends its bounded budget the optionality-maximising way (cheap,
+/// high-upside identity leads over saturated infrastructure; see
+/// [`crate::core::convex`]), matching the CLI `hse scan` default. Opt out with
+/// `--no-convex-budget` / the API field. Kept separate from the library
+/// [`ScanOptions::default`] (which stays `false` for deterministic unit tests),
+/// exactly as [`default_min_expand_confidence`] splits its two defaults.
+fn default_convex_budget() -> bool {
+    true
+}
+
+/// Serde default for [`ScanOptions::skip_dead_modules`] — **on by default** so
+/// every API/web scan stops wasting its bounded budget on modules whose parser
+/// has provably gone dead, matching the CLI `hse scan` default. Opt out with
+/// `--no-skip-dead-modules` / the API field. Kept separate from the library
+/// [`ScanOptions::default`] (which stays `false` for deterministic unit tests),
+/// exactly as [`default_convex_budget`] splits its two defaults.
+fn default_skip_dead_modules() -> bool {
+    true
+}
+
 /// Serde default for [`ScanOptions::depth`] — the product default applied to
 /// API/web requests that omit `depth` (mirrors the CLI's `hse scan` default).
 fn default_scan_depth() -> u32 {
@@ -566,6 +619,13 @@ pub(crate) fn default_scan_options() -> ScanOptions {
         depth: DEFAULT_SCAN_DEPTH,
         min_expand_confidence: DEFAULT_MIN_EXPAND_CONFIDENCE,
         max_entities: Some(DEFAULT_MAX_ENTITIES),
+        // On in the product path (value-per-query), matching the per-field serde
+        // default so omitting `convex_budget` inside an `options` object behaves
+        // identically to omitting `options` entirely.
+        convex_budget: default_convex_budget(),
+        // Likewise on in the product path: skip provably-dead modules so the
+        // comprehensive fan-out spends its budget on sources that still work.
+        skip_dead_modules: default_skip_dead_modules(),
         ..Default::default()
     }
 }

@@ -1,11 +1,12 @@
 use super::*;
+use crate::core::confidence;
 
 fn email_target() -> Target {
     Target::new(TargetKind::Email, "jane@example.com")
 }
 
 fn build(json: &str) -> Vec<Entity> {
-    let body: EpieosResp = serde_json::from_str(json).unwrap();
+    let body: EpieosResp = serde_json::from_str(json).expect("should succeed");
     build_entities(&email_target(), &body, "s")
 }
 
@@ -35,9 +36,9 @@ fn parse_response() {
     let raw = r#"{"google_id":"123","name":"John Smith",
         "maps_reviews":[{"place_name":"Sydney Opera House","rating":5.0,"date":"2024-01-15"}],
         "skype":{"handle":"john.smith.au","name":"John Smith","city":"Sydney","country":"AU"}}"#;
-    let r: EpieosResp = serde_json::from_str(raw).unwrap();
+    let r: EpieosResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(r.name.as_deref(), Some("John Smith"));
-    assert_eq!(r.maps_reviews.unwrap().len(), 1);
+    assert_eq!(r.maps_reviews.expect("should succeed").len(), 1);
 }
 
 // ── Core: full extraction incl. the recovered fields ─────────────────
@@ -56,7 +57,10 @@ fn extracts_full_profile_with_review_rating_and_text() {
     );
 
     // Enriched email anchor carries the Skype name (previously discarded).
-    let anchor = es.iter().find(|e| e.kind == EntityKind::Email).unwrap();
+    let anchor = es
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("should succeed");
     let ev = &anchor.evidence[0];
     assert!(
         anchor.has_tag("google-account")
@@ -109,12 +113,15 @@ fn extracts_full_profile_with_review_rating_and_text() {
         .iter()
         .filter(|e| e.kind == EntityKind::Address)
         .collect();
-    let skype_loc = addrs.iter().find(|a| a.value == "Sydney, AU").unwrap();
+    let skype_loc = addrs
+        .iter()
+        .find(|a| a.value == "Sydney, AU")
+        .expect("should succeed");
     assert!(skype_loc.has_tag("skype"));
     let place = addrs
         .iter()
         .find(|a| a.value == "Sydney Opera House")
-        .unwrap();
+        .expect("should succeed");
     assert!(place.has_tag("google-maps"));
     let pev = &place.evidence[0];
     assert_eq!(
@@ -128,6 +135,35 @@ fn extracts_full_profile_with_review_rating_and_text() {
     assert_eq!(
         pev.attributes.get("review_date").map(String::as_str),
         Some("2024-01-15")
+    );
+}
+
+#[test]
+fn profile_picture_is_emitted_as_url_entity() {
+    // The Google avatar was previously deserialized and folded only into the
+    // anchor's evidence attrs, never surfaced as its own pivotable entity.
+    let es = build(
+        r#"{"google_id":"1234567890","name":"Jane Doe",
+            "profile_picture":"https://lh3.googleusercontent.com/p"}"#,
+    );
+    let pic = es
+        .iter()
+        .find(|e| e.kind == EntityKind::Url && e.value == "https://lh3.googleusercontent.com/p")
+        .expect("profile_picture should be emitted as a Url entity");
+    assert!(pic.has_tag("epieos") && pic.has_tag("google-avatar"));
+    assert_eq!(pic.confidence, confidence::MEDIUM_HIGH);
+
+    // The anchor's evidence attr is unchanged — the Url is additive.
+    let anchor = es
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("should succeed");
+    assert_eq!(
+        anchor.evidence[0]
+            .attributes
+            .get("profile_picture")
+            .map(String::as_str),
+        Some("https://lh3.googleusercontent.com/p")
     );
 }
 
@@ -157,8 +193,14 @@ fn review_text_is_preserved_verbatim() {
     let es = build(&format!(
         r#"{{"maps_reviews":[{{"place_name":"Café ☕","text":"{long}"}}]}}"#
     ));
-    let place = es.iter().find(|e| e.value == "Café ☕").unwrap();
-    let text = place.evidence[0].attributes.get("review_text").unwrap();
+    let place = es
+        .iter()
+        .find(|e| e.value == "Café ☕")
+        .expect("should succeed");
+    let text = place.evidence[0]
+        .attributes
+        .get("review_text")
+        .expect("should succeed");
     assert_eq!(text, &long);
 }
 

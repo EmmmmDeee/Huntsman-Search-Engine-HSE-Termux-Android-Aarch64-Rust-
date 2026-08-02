@@ -21,6 +21,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -99,7 +100,7 @@ fn build_entities(coord: &str, attrs: &HashMap<String, Value>, scan_id: &str) ->
 
     let mut out = Vec::new();
 
-    let mut coords = Entity::new(EntityKind::Coordinates, coord, 0.78, scan_id);
+    let mut coords = Entity::new(EntityKind::Coordinates, coord, confidence::STRONG, scan_id);
     coords.tag(SRC);
     coords.tag("geoint");
     coords.tag("country:AU");
@@ -127,7 +128,12 @@ fn build_entities(coord: &str, attrs: &HashMap<String, Value>, scan_id: &str) ->
 
     if let Some(loc) = &locality {
         let addr_value = format!("{loc}, Queensland");
-        let mut addr = Entity::new(EntityKind::Address, &addr_value, 0.55, scan_id);
+        let mut addr = Entity::new(
+            EntityKind::Address,
+            &addr_value,
+            confidence::MEDIUM_HIGH,
+            scan_id,
+        );
         addr.tag(SRC);
         addr.tag("cadastre-derived");
         addr.tag("country:AU");
@@ -153,7 +159,7 @@ impl Module for QldCadastre {
         "qld_cadastre"
     }
     fn description(&self) -> &'static str {
-        "Queensland DCDB cadastre — lot/plan, locality and tenure for coordinates inside QLD"
+        "Queensland DCDB cadastre recon — resolves coordinates inside QLD to lot/plan, locality, and tenure"
     }
     fn priority(&self) -> u8 {
         18
@@ -169,7 +175,10 @@ impl Module for QldCadastre {
         KINDS
     }
     fn max_timeout_ms(&self) -> u64 {
-        15_000
+        // Budget for two requests plus a bounded Retry-After sleep on a 429
+        // (see the retry in `process`), not just the single original call —
+        // 15s left no headroom for a real retry path.
+        25_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -180,16 +189,32 @@ impl Module for QldCadastre {
             return Ok(ModuleResult::new());
         }
 
-        let resp = ctx
+        let mut resp = ctx
             .http
             .get(build_query_url(lat, lon))
             .send_tagged(SRC)
             .await?;
 
-        let status = resp.status();
-        if status.as_u16() == 429 {
-            return Ok(ModuleResult::new());
+        // A 429 here used to degrade straight to Ok(empty) — indistinguishable
+        // from "no cadastre parcel at this point" — with no retry, no backoff,
+        // and no circuit-breaker engagement at all (this module calls
+        // send_tagged directly rather than the shared fetch_json_inner/
+        // fetch_keyed_json helpers that every other rate-limit-aware module
+        // routes through). Honour a real server Retry-After (clamped so the
+        // retry path stays inside this module's own 15s budget) and retry
+        // once before giving up; a second 429 is now a real, surfaced error
+        // instead of a silent empty success.
+        if resp.status().as_u16() == 429 {
+            let delay = crate::util::http::retry_after_secs(resp.headers(), 3, 5);
+            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            resp = ctx
+                .http
+                .get(build_query_url(lat, lon))
+                .send_tagged(SRC)
+                .await?;
         }
+
+        let status = resp.status();
         if !status.is_success() {
             return Err(Error::module(SRC, format!("HTTP {status}")));
         }

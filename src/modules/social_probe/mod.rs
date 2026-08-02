@@ -1,9 +1,15 @@
 //! Direct social profile probing — free, zero API keys.
 //!
 //! For a Username target, sends HEAD/GET requests to known profile URL
-//! patterns on 20+ platforms. A 200 response confirms the profile exists;
-//! 404 confirms it doesn't. Each confirmed profile becomes a Url entity
-//! with the platform tagged.
+//! patterns on 20+ platforms. A matching status code is a hit; for the
+//! handful of platforms known to return that status for any handle
+//! (soft-404/SPA-shell), a `negative_patterns` body check must also pass —
+//! see `Platform::negative_patterns`. Each confirmed profile becomes a Url
+//! entity with the platform tagged, plus `verified-detection` (body-marker
+//! confirmed) or `weak-detection` (status code alone — the correlator
+//! discounts these, see `core::correlator::rules::identity::account`'s
+//! AU-055 and `cluster`'s AU-003) so a bare status-only guess is never
+//! presented as a confirmed, subject-controlled account.
 //!
 //! For a FullName target, probes people-search directories that use
 //! name-in-URL patterns (PeeKYou, Facebook public directory, etc.).
@@ -14,6 +20,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -35,6 +42,21 @@ pub(super) struct Platform {
     /// whether a user exists. Leave empty (`&[]`) for platforms where the
     /// status code is reliable.
     pub(super) negative_patterns: &'static [&'static str],
+}
+
+/// Confidence + verified-flag a hit earns, tiered by rigour — mirrors
+/// `streaming_probe`/`username_search`'s `detection_strength`. A platform
+/// with a `negative_patterns` check just had its body inspected for a
+/// "doesn't exist" marker and passed — a real confirmation (0.92, verified).
+/// A platform with no negative pattern rests entirely on the HTTP status
+/// code, which a soft-404/SPA-shell can return for almost any handle — an
+/// unconfirmed status-only lead (0.74, unverified). Tagging the weak case
+/// `weak-detection` lets the correlator (AU-003/AU-038/AU-045/AU-055)
+/// discount it instead of counting a guess as a confirmed, subject-controlled
+/// account — the exact false signal a real scan against a guessed handle
+/// produced across 30+ status-only platforms.
+fn detection_strength(platform: &Platform) -> (f64, bool) {
+    crate::util::probe_confidence::detection_strength(!platform.negative_patterns.is_empty())
 }
 
 pub(super) const USERNAME_PLATFORMS: &[Platform] = &[
@@ -76,7 +98,13 @@ pub(super) const USERNAME_PLATFORMS: &[Platform] = &[
     },
     Platform {
         name: "reddit",
-        url_pattern: "https://www.reddit.com/user/{}/about.json",
+        // The public Atom feed, NOT `about.json`. Verified live in July 2026:
+        // the JSON endpoint answers 403 to every non-OAuth client regardless of
+        // User-Agent, which this probe read as "account does not exist" — so
+        // reddit reported a silent false negative on every scan. `.rss` answers
+        // 200 for a real account and 404 for one that does not exist, which is
+        // the clean existence oracle `exists_codes` needs.
+        url_pattern: "https://www.reddit.com/user/{}/.rss",
         exists_codes: &[200],
         negative_patterns: &[],
     },
@@ -270,7 +298,7 @@ impl Module for SocialProbe {
     }
 
     fn description(&self) -> &'static str {
-        "Direct profile probing across 20+ social platforms"
+        "Social identity sweep — direct profile probing across 20+ platforms"
     }
 
     fn priority(&self) -> u8 {
@@ -348,14 +376,29 @@ impl Module for SocialProbe {
                 found_count += 1;
                 found_platforms.push(platform.name);
 
-                let mut entity = Entity::new(EntityKind::Url, &url, 0.80, &ctx.scan_id);
+                let (confidence, verified) = detection_strength(platform);
+
+                let mut entity = Entity::new(EntityKind::Url, &url, confidence, &ctx.scan_id);
                 entity.tag("social-profile");
                 entity.tag(format!("platform:{}", platform.name));
+                entity.tag(if verified {
+                    "verified-detection"
+                } else {
+                    "weak-detection"
+                });
                 entity.add_evidence(
                     Evidence::new(SRC, format!("Profile found on {}", platform.name))
                         .with_attr("platform", platform.name)
                         .with_attr("http_status", code.to_string())
-                        .with_attr("profile_url", &url),
+                        .with_attr("profile_url", &url)
+                        .with_attr(
+                            "detection",
+                            if verified {
+                                "body-marker"
+                            } else {
+                                "status-only"
+                            },
+                        ),
                 );
                 result.push(entity);
 
@@ -374,7 +417,8 @@ impl Module for SocialProbe {
                     && host.contains('.')
                     && !crate::core::scan::is_noncentral_domain(&host)
                 {
-                    let mut dom = Entity::new(EntityKind::Domain, &host, 0.40, &ctx.scan_id);
+                    let mut dom =
+                        Entity::new(EntityKind::Domain, &host, confidence::LOW, &ctx.scan_id);
                     dom.tag("social-platform");
                     dom.add_evidence(
                         Evidence::new(
@@ -444,6 +488,16 @@ pub(super) fn build_target_summary(
         )
         .with_attr("checked", checked_count.to_string())
         .with_attr("found", found_count.to_string())
+        // `platforms_count` is the canonical attribute the cross-platform
+        // username-footprint correlator (AU-011) reads to count how many
+        // platforms one module confirmed a handle on. The sibling aggregate
+        // probes (`username_search`, `streaming_probe`) both stamp it; without
+        // it AU-011 falls back to counting distinct PLATFORM_SOURCES modules —
+        // and `social_probe` is not on that list — so a handle this module
+        // confirmed on ≥3 platforms would silently never fire AU-011 despite
+        // being tagged `multi-platform` here. Kept alongside `found` (its own
+        // profiles-checked convention) rather than replacing it.
+        .with_attr("platforms_count", found_platforms.len().to_string())
         .with_attr("platforms", found_platforms.join(", ")),
     );
     Some(summary)

@@ -15,11 +15,19 @@
 //! family, so a handle confirmed here adds genuine cross-service agreement to the
 //! correlator's AU-045 "multi-service identity confirmation" (rather than echoing
 //! a single source). Official, stable, and rate-limit-free.
+//!
+//! Both the bio and the user's Algolia-indexed submissions (comments/Show-HN
+//! posts — real, unmoderated developer free text) are also run through the
+//! universal `found_keys`/`key_harvest` classifier: developers occasionally
+//! paste a code snippet containing a live key/token in an HN discussion. No
+//! extra fetch — both bodies are already in memory for the entity extraction
+//! above.
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -52,7 +60,7 @@ impl Module for HackerNews {
     }
 
     fn description(&self) -> &'static str {
-        "Hacker News account lookup (karma, created, bio) via the official public API"
+        "Hacker News account recon — resolves a handle to karma, created date, and bio via the official public API"
     }
 
     fn priority(&self) -> u8 {
@@ -105,10 +113,12 @@ impl Module for HackerNews {
             return Ok(ModuleResult::new());
         };
 
+        let pool = crate::util::key_pool::global_pool();
         let mut result = ModuleResult::new();
-        result.entities = build_entities(user, &ctx.scan_id);
+        result.entities = build_entities(user, &ctx.scan_id, &pool);
 
-        let algolia_entities = fetch_algolia_submissions(&ctx.http, handle, &ctx.scan_id).await;
+        let algolia_entities =
+            fetch_algolia_submissions(&ctx.http, handle, &ctx.scan_id, &pool).await;
         result.extend(algolia_entities);
 
         Ok(result)
@@ -118,10 +128,19 @@ impl Module for HackerNews {
 /// Pure account→entity mapping. Separated from `process()` so every branch is
 /// unit-testable without I/O. Emits the confirmed Username with account metadata,
 /// plus an Email and/or Url when found in the free-text `about` bio.
-pub(super) fn build_entities(user: HnUser, scan_id: &str) -> Vec<Entity> {
+pub(super) fn build_entities(
+    user: HnUser,
+    scan_id: &str,
+    pool: &crate::util::key_pool::KeyPool,
+) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
-    let mut u = Entity::new(EntityKind::Username, &user.id, 0.90, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        &user.id,
+        confidence::VERY_HIGH_PLUS,
+        scan_id,
+    );
     u.tag("hacker-news");
     let submissions = user.submitted.as_ref().map_or(0, Vec::len);
     let ev = [
@@ -143,10 +162,18 @@ pub(super) fn build_entities(user: HnUser, scan_id: &str) -> Vec<Entity> {
     result.push(u);
 
     if let Some(about) = user.about.as_deref() {
+        // Also scan the bio for a leaked API key/credential via the universal
+        // `found_keys`/`key_harvest` classifier — the same one `web_crawler`/
+        // `username_search`/`wayback` run over their own fetched text. Bios
+        // are free text developers write themselves; occasionally that
+        // includes a pasted key/token. No extra fetch — `about` is already
+        // in memory.
+        mine_keys_from_text(pool, about, &user.id, "bio");
+
         // Extract ALL emails and URLs from the bio (HN bios are HTML-escaped
         // free text; both often appear multiple times in developer profiles).
         for email in crate::util::extract::emails(about) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.78, scan_id);
+            let mut e = Entity::new(EntityKind::Email, &email, confidence::STRONG, scan_id);
             e.tag("hacker-news");
             e.tag("public-profile");
             e.add_evidence(
@@ -161,7 +188,7 @@ pub(super) fn build_entities(user: HnUser, scan_id: &str) -> Vec<Entity> {
             if !seen_urls.insert(link.to_string()) {
                 continue;
             }
-            let mut url_e = Entity::new(EntityKind::Url, link, 0.72, scan_id);
+            let mut url_e = Entity::new(EntityKind::Url, link, confidence::ATTRIBUTED, scan_id);
             url_e.tag("hacker-news");
             url_e.tag("personal-site");
             url_e.add_evidence(
@@ -174,7 +201,7 @@ pub(super) fn build_entities(user: HnUser, scan_id: &str) -> Vec<Entity> {
                 && host != "ycombinator.com"
                 && host != "news.ycombinator.com"
             {
-                let mut d = Entity::new(EntityKind::Domain, &host, 0.65, scan_id);
+                let mut d = Entity::new(EntityKind::Domain, &host, confidence::HIGH, scan_id);
                 d.tag("hacker-news");
                 d.tag("derived");
                 d.add_evidence(
@@ -194,6 +221,7 @@ async fn fetch_algolia_submissions(
     http: &reqwest::Client,
     username: &str,
     scan_id: &str,
+    pool: &crate::util::key_pool::KeyPool,
 ) -> Vec<Entity> {
     let url = format!(
         "https://hn.algolia.com/api/v1/search?tags=author_{}&hitsPerPage=50",
@@ -218,7 +246,46 @@ async fn fetch_algolia_submissions(
         return Vec::new();
     };
 
+    // A user's Algolia-indexed comments/Show-HN posts are real, unmoderated
+    // free text (`comment_text`/`story_text` fields) — developers routinely
+    // paste code snippets in HN discussions, occasionally with a live key.
+    // Already-fetched bytes, no extra network cost.
+    mine_keys_from_text(pool, &body, username, "submissions");
+
     algolia_domain_entities(&body, username, scan_id)
+}
+
+/// Scan Hacker News text (a bio or an Algolia submissions body) for a leaked
+/// API key via the universal `found_keys`/`key_harvest` classifier — the
+/// same one `web_crawler`/`username_search`/`wayback` run over their own
+/// fetched bodies — and pool any poolable hit. No network I/O of its own, so
+/// it's exercised directly by tests without mocking HTTP.
+fn mine_keys_from_text(
+    pool: &crate::util::key_pool::KeyPool,
+    text: &str,
+    username: &str,
+    source_label: &str,
+) {
+    use crate::util::found_keys::{MAX_TOKEN, key_tokens};
+    use crate::util::key_harvest::identify_api_key;
+
+    for token in key_tokens(text, MAX_TOKEN) {
+        if let Some((service, key_val)) = identify_api_key(token) {
+            let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+            entry.notes = Some(format!("Hacker News {source_label} — user {username}"));
+            entry.status = crate::util::key_pool::KeyStatus::Untested;
+            entry.discovered_at = Some(crate::core::entity::unix_now());
+            entry.discovered_by = Some(format!("hacker_news:{username}"));
+            if pool.add(service, entry) {
+                tracing::info!(
+                    service,
+                    username,
+                    source_label,
+                    "API key discovered in Hacker News content"
+                );
+            }
+        }
+    }
 }
 
 /// Emit one `Domain` entity per distinct domain linked from a user's HN
@@ -246,7 +313,7 @@ fn algolia_domain_entities(body: &str, username: &str, scan_id: &str) -> Vec<Ent
     domains
         .into_iter()
         .map(|dom| {
-            let mut d = Entity::new(EntityKind::Domain, &dom, 0.50, scan_id);
+            let mut d = Entity::new(EntityKind::Domain, &dom, confidence::MEDIUM, scan_id);
             d.tag("hn-submission");
             d.add_evidence(
                 Evidence::new(

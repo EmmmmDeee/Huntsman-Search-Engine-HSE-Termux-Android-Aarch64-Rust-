@@ -4,7 +4,7 @@
 //! source reads as implementation; tests reach private items via `use super::*`.
 
 use super::*;
-use crate::core::entity::{Entity, EntityKind};
+use crate::core::entity::{Entity, EntityKind, Evidence};
 use crate::core::event::EventKind;
 use crate::core::scan::{Scan, Target, TargetKind};
 
@@ -27,7 +27,7 @@ fn tmp_db() -> String {
 fn insert_scan(store: &Store, id: &str) {
     let target = Target::new(TargetKind::Email, "x@y.com");
     let scan = Scan::new(id, target);
-    store.upsert_scan(&scan).unwrap();
+    store.upsert_scan(&scan).expect("should succeed");
 }
 
 #[test]
@@ -37,9 +37,12 @@ fn open_restricts_the_db_file_to_owner_only() {
     // world-readable (SQLite creates it with the process umask, often 0644).
     use std::os::unix::fs::PermissionsExt;
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "s-perm"); // a write so the -wal/-shm siblings exist too
-    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    let mode = std::fs::metadata(&path)
+        .expect("should succeed")
+        .permissions()
+        .mode();
     assert_eq!(mode & 0o777, 0o600, "the DB must be owner-only (§7 S3)");
     drop(store);
     let _ = std::fs::remove_file(&path);
@@ -79,27 +82,30 @@ fn integrity_check_reports_ok_on_healthy_db() {
     // signal `hse doctor` relies on to distinguish a clean store from a
     // corrupt one (FTA E5.1 / T5).
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "scan-ic");
     let e = Entity::new(EntityKind::Email, "x@y.com", 0.9, "scan-ic");
-    store.upsert_entity(&e).unwrap();
-    assert_eq!(store.integrity_check().unwrap(), vec!["ok".to_string()]);
+    store.upsert_entity(&e).expect("should succeed");
+    assert_eq!(
+        store.integrity_check().expect("should succeed"),
+        vec!["ok".to_string()]
+    );
 }
 
 #[test]
 fn entity_observed_by_two_scans_appears_in_both() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "scan-a");
     insert_scan(&store, "scan-b");
     let mut e_a = Entity::new(EntityKind::Email, "x@y.com", 0.7, "scan-a");
     e_a.observed_at = 1000;
-    store.upsert_entity(&e_a).unwrap();
+    store.upsert_entity(&e_a).expect("should succeed");
     let mut e_b = Entity::new(EntityKind::Email, "x@y.com", 0.9, "scan-b");
     e_b.observed_at = 2000;
-    store.upsert_entity(&e_b).unwrap();
-    let from_a = store.entities_for_scan("scan-a").unwrap();
-    let from_b = store.entities_for_scan("scan-b").unwrap();
+    store.upsert_entity(&e_b).expect("should succeed");
+    let from_a = store.entities_for_scan("scan-a").expect("should succeed");
+    let from_b = store.entities_for_scan("scan-b").expect("should succeed");
     assert_eq!(from_a.len(), 1, "scan-a should still see the entity");
     assert_eq!(from_b.len(), 1, "scan-b should see the entity");
     assert_eq!(from_a[0].uid, from_b[0].uid);
@@ -114,24 +120,32 @@ fn latest_completed_scan_is_deterministic_on_same_second_ties() {
     // latest` could resolve to a different scan on identical state.
     use crate::core::scan::ScanStatus;
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     let mk = |id: &str| {
         let mut s = Scan::new(id, Target::new(TargetKind::Email, "x@y.com"));
         s.status = ScanStatus::Complete;
         s.started_at = 1_700_000_000; // identical second for both rows
-        store.upsert_scan(&s).unwrap();
+        store.upsert_scan(&s).expect("should succeed");
     };
     mk("scan-aaa");
     mk("scan-zzz");
     // id DESC tie-break ⇒ the lexicographically larger id wins on every call.
-    let winner = store.latest_completed_scan().unwrap().unwrap().id;
+    let winner = store
+        .latest_completed_scan()
+        .expect("should succeed")
+        .expect("should succeed")
+        .id;
     assert_eq!(
         winner, "scan-zzz",
         "tie must break deterministically on id DESC"
     );
     for _ in 0..5 {
         assert_eq!(
-            store.latest_completed_scan().unwrap().unwrap().id,
+            store
+                .latest_completed_scan()
+                .expect("should succeed")
+                .expect("should succeed")
+                .id,
             winner,
             "latest must be stable across repeated calls on identical state"
         );
@@ -149,7 +163,7 @@ fn latest_completed_scan_errors_loudly_on_a_corrupt_row_instead_of_reporting_non
     // report `Ok(None)`, which `resolve_scan_id` turns into the misleading
     // "no completed scans in store" when a complete scan actually exists.
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     {
         let conn = store.conn.lock();
         // Valid JSON (so the `json_extract(...) = 'complete'` SQL filter
@@ -161,7 +175,7 @@ fn latest_completed_scan_errors_loudly_on_a_corrupt_row_instead_of_reporting_non
              VALUES('scan-corrupt', 'email', 'x@y.com', 'complete', 0, 0, 0, NULL, ?1)",
             params![r#"{"status":"complete"}"#],
         )
-        .unwrap();
+        .expect("should succeed");
     }
     let result = store.latest_completed_scan();
     assert!(
@@ -184,17 +198,17 @@ fn entities_for_scan_orders_deterministically_on_confidence_ties() {
     // require identical retrieval order, sorted by (confidence desc, uid asc).
     let order_of = |insert: &[&str]| -> Vec<String> {
         let path = tmp_db();
-        let store = Store::open(&path).unwrap();
+        let store = Store::open(&path).expect("should succeed");
         insert_scan(&store, "s-tie");
         for v in insert {
             // Identical confidence on purpose, so uid is the only tie-break.
             store
                 .upsert_entity(&Entity::new(EntityKind::Username, *v, 0.5, "s-tie"))
-                .unwrap();
+                .expect("should succeed");
         }
         let got: Vec<String> = store
             .entities_for_scan("s-tie")
-            .unwrap()
+            .expect("should succeed")
             .into_iter()
             .map(|e| e.uid)
             .collect();
@@ -315,7 +329,7 @@ fn entities_for_scan_ranks_by_corroboration_and_demotes_shared_infra() {
     //     mere existence is.
     use crate::core::entity::Evidence;
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "s-rank");
 
     // Multi-source identity: same RAW confidence as the single-source one below,
@@ -341,13 +355,13 @@ fn entities_for_scan_ranks_by_corroboration_and_demotes_shared_infra() {
 
     // Insert in an order that the OLD `confidence DESC` rule would have led with
     // the CDN IP (0.95) — proving the new ranking overrides raw confidence.
-    store.upsert_entity(&cdn).unwrap();
-    store.upsert_entity(&single).unwrap();
-    store.upsert_entity(&subject).unwrap();
+    store.upsert_entity(&cdn).expect("should succeed");
+    store.upsert_entity(&single).expect("should succeed");
+    store.upsert_entity(&subject).expect("should succeed");
 
     let order: Vec<String> = store
         .entities_for_scan("s-rank")
-        .unwrap()
+        .expect("should succeed")
         .into_iter()
         .map(|e| e.value)
         .collect();
@@ -367,37 +381,37 @@ fn entities_for_scan_ranks_by_corroboration_and_demotes_shared_infra() {
 #[test]
 fn scan_ids_for_entity_returns_all_observers() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "s1");
     insert_scan(&store, "s2");
     insert_scan(&store, "s3");
     let mut e = Entity::new(EntityKind::Domain, "example.com", 0.8, "s1");
     e.observed_at = 100;
-    store.upsert_entity(&e).unwrap();
+    store.upsert_entity(&e).expect("should succeed");
     let mut e = Entity::new(EntityKind::Domain, "example.com", 0.8, "s2");
     e.observed_at = 200;
-    store.upsert_entity(&e).unwrap();
+    store.upsert_entity(&e).expect("should succeed");
     let mut e = Entity::new(EntityKind::Domain, "example.com", 0.8, "s3");
     e.observed_at = 300;
-    store.upsert_entity(&e).unwrap();
+    store.upsert_entity(&e).expect("should succeed");
     let uid = &e.uid;
-    let scans = store.scan_ids_for_entity(uid).unwrap();
+    let scans = store.scan_ids_for_entity(uid).expect("should succeed");
     assert_eq!(scans.len(), 3);
     assert_eq!(scans[0], "s3");
     assert_eq!(scans[2], "s1");
-    assert_eq!(store.observation_count(uid).unwrap(), 3);
+    assert_eq!(store.observation_count(uid).expect("should succeed"), 3);
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn entity_only_in_other_scan_does_not_leak() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "s1");
     insert_scan(&store, "s2");
     let e = Entity::new(EntityKind::Email, "only-in-s1@x.com", 0.7, "s1");
-    store.upsert_entity(&e).unwrap();
-    let from_s2 = store.entities_for_scan("s2").unwrap();
+    store.upsert_entity(&e).expect("should succeed");
+    let from_s2 = store.entities_for_scan("s2").expect("should succeed");
     assert!(from_s2.is_empty(), "s2 never observed this entity");
     let _ = std::fs::remove_file(&path);
 }
@@ -405,63 +419,90 @@ fn entity_only_in_other_scan_does_not_leak() {
 #[test]
 fn re_observing_same_pair_is_idempotent() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "s1");
     let e = Entity::new(EntityKind::Phone, "+61400000000", 0.8, "s1");
-    store.upsert_entity(&e).unwrap();
-    store.upsert_entity(&e).unwrap();
-    store.upsert_entity(&e).unwrap();
-    assert_eq!(store.observation_count(&e.uid).unwrap(), 1);
+    store.upsert_entity(&e).expect("should succeed");
+    store.upsert_entity(&e).expect("should succeed");
+    store.upsert_entity(&e).expect("should succeed");
+    assert_eq!(store.observation_count(&e.uid).expect("should succeed"), 1);
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn delete_scan_cascade_removes_orphans_but_keeps_shared_entities() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "scan-doomed");
     insert_scan(&store, "scan-keeper");
     let shared = Entity::new(EntityKind::Domain, "example.com", 0.8, "scan-doomed");
-    store.upsert_entity(&shared).unwrap();
+    store.upsert_entity(&shared).expect("should succeed");
     let mut shared2 = Entity::new(EntityKind::Domain, "example.com", 0.8, "scan-keeper");
     shared2.observed_at = shared.observed_at + 1;
-    store.upsert_entity(&shared2).unwrap();
+    store.upsert_entity(&shared2).expect("should succeed");
     let only_doomed = Entity::new(EntityKind::Email, "lonely@example.com", 0.6, "scan-doomed");
-    store.upsert_entity(&only_doomed).unwrap();
-    assert_eq!(store.entities_for_scan("scan-doomed").unwrap().len(), 2);
-    let removed = store.delete_scan("scan-doomed").unwrap();
+    store.upsert_entity(&only_doomed).expect("should succeed");
+    assert_eq!(
+        store
+            .entities_for_scan("scan-doomed")
+            .expect("should succeed")
+            .len(),
+        2
+    );
+    let removed = store.delete_scan("scan-doomed").expect("should succeed");
     assert!(removed);
-    let keeper = store.entities_for_scan("scan-keeper").unwrap();
+    let keeper = store
+        .entities_for_scan("scan-keeper")
+        .expect("should succeed");
     assert_eq!(keeper.len(), 1);
     assert_eq!(keeper[0].value, "example.com");
     assert!(
         store
             .scan_ids_for_entity(&only_doomed.uid)
-            .unwrap()
+            .expect("should succeed")
             .is_empty()
     );
-    assert_eq!(store.observation_count(&only_doomed.uid).unwrap(), 0);
-    assert!(store.get_scan("scan-doomed").unwrap().is_none());
-    assert!(store.get_scan("scan-keeper").unwrap().is_some());
-    assert!(!store.delete_scan("scan-doomed").unwrap());
+    assert_eq!(
+        store
+            .observation_count(&only_doomed.uid)
+            .expect("should succeed"),
+        0
+    );
+    assert!(
+        store
+            .get_scan("scan-doomed")
+            .expect("should succeed")
+            .is_none()
+    );
+    assert!(
+        store
+            .get_scan("scan-keeper")
+            .expect("should succeed")
+            .is_some()
+    );
+    assert!(!store.delete_scan("scan-doomed").expect("should succeed"));
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn delete_scan_with_unknown_id_does_not_purge_orphans() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "real-scan");
-    let conn = parking_lot::Mutex::new(rusqlite::Connection::open(&path).unwrap());
+    let conn = parking_lot::Mutex::new(rusqlite::Connection::open(&path).expect("should succeed"));
     {
         let c = conn.lock();
         c.execute(
                 "INSERT INTO entities(uid, scan_id, kind, value, confidence, corroboration, observed_at, data_json)
                  VALUES('orphan-uid', 'real-scan', 'domain', 'orphan.example.com', 0.5, 1, 1, '{}')",
                 [],
-            ).unwrap();
+            ).expect("should succeed");
     }
-    assert!(!store.delete_scan("nonexistent-scan-id").unwrap());
+    assert!(
+        !store
+            .delete_scan("nonexistent-scan-id")
+            .expect("should succeed")
+    );
     let count: i64 = {
         let c = conn.lock();
         c.query_row(
@@ -469,7 +510,7 @@ fn delete_scan_with_unknown_id_does_not_purge_orphans() {
             [],
             |r| r.get(0),
         )
-        .unwrap()
+        .expect("should succeed")
     };
     assert_eq!(count, 1, "delete_scan must not purge on unknown id");
     let _ = std::fs::remove_file(&path);
@@ -479,15 +520,15 @@ fn delete_scan_with_unknown_id_does_not_purge_orphans() {
 fn list_scans_returns_newest_first() {
     use crate::core::entity::unix_now;
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     let base = unix_now();
     for (id, offset) in [("oldest", 0u64), ("middle", 100), ("newest", 200)] {
         let target = Target::new(TargetKind::Email, "x@y.com");
         let mut scan = Scan::new(id, target);
         scan.started_at = base + offset;
-        store.upsert_scan(&scan).unwrap();
+        store.upsert_scan(&scan).expect("should succeed");
     }
-    let scans = store.list_scans(10).unwrap();
+    let scans = store.list_scans(10).expect("should succeed");
     assert_eq!(scans.len(), 3);
     assert_eq!(scans[0].id, "newest");
     assert_eq!(scans[1].id, "middle");
@@ -498,14 +539,14 @@ fn list_scans_returns_newest_first() {
 #[test]
 fn list_scans_respects_limit() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     for i in 0..5 {
         let target = Target::new(TargetKind::Email, "x@y.com");
         let mut scan = Scan::new(format!("scan-{i}"), target);
         scan.started_at = 1000 + i as u64;
-        store.upsert_scan(&scan).unwrap();
+        store.upsert_scan(&scan).expect("should succeed");
     }
-    let scans = store.list_scans(2).unwrap();
+    let scans = store.list_scans(2).expect("should succeed");
     assert_eq!(scans.len(), 2, "should return exactly 2 scans");
     let _ = std::fs::remove_file(&path);
 }
@@ -513,9 +554,72 @@ fn list_scans_respects_limit() {
 #[test]
 fn list_scans_empty_db_returns_empty_vec() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
-    let scans = store.list_scans(10).unwrap();
+    let store = Store::open(&path).expect("should succeed");
+    let scans = store.list_scans(10).expect("should succeed");
     assert!(scans.is_empty());
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn radar_history_returns_only_radar_sentinel_scans_newest_first() {
+    use crate::core::entity::unix_now;
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    let base = unix_now();
+    // Two ordinary (non-radar) scans that must NEVER appear in radar history,
+    // even though one shares Coordinates/MacAddress kinds with a real value.
+    let mut ordinary_email = Scan::new("ordinary-email", Target::new(TargetKind::Email, "x@y.com"));
+    ordinary_email.started_at = base;
+    store.upsert_scan(&ordinary_email).expect("should succeed");
+    let mut ordinary_coords = Scan::new(
+        "ordinary-coords",
+        Target::new(TargetKind::Coordinates, "-33.8688,151.2093"),
+    );
+    ordinary_coords.started_at = base + 50;
+    store.upsert_scan(&ordinary_coords).expect("should succeed");
+    // The two genuine radar sentinel shapes `radar_scan_spec` produces.
+    let mut radar_gps = Scan::new("radar-gps", Target::new(TargetKind::Coordinates, "0,0"));
+    radar_gps.started_at = base + 100;
+    store.upsert_scan(&radar_gps).expect("should succeed");
+    let mut radar_mac = Scan::new(
+        "radar-mac",
+        Target::new(TargetKind::MacAddress, "00:00:00:00:00:00"),
+    );
+    radar_mac.started_at = base + 200;
+    store.upsert_scan(&radar_mac).expect("should succeed");
+
+    let sweeps = store.radar_history(10).expect("should succeed");
+    assert_eq!(
+        sweeps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+        vec!["radar-mac", "radar-gps"],
+        "only the two radar-sentinel scans must be returned, newest first: {sweeps:?}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn radar_history_respects_limit() {
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    for i in 0..5 {
+        let mut scan = Scan::new(
+            format!("radar-{i}"),
+            Target::new(TargetKind::Coordinates, "0,0"),
+        );
+        scan.started_at = 1000 + i as u64;
+        store.upsert_scan(&scan).expect("should succeed");
+    }
+    let sweeps = store.radar_history(2).expect("should succeed");
+    assert_eq!(sweeps.len(), 2, "should return exactly 2 sweeps");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn radar_history_empty_db_returns_empty_vec() {
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    let sweeps = store.radar_history(10).expect("should succeed");
+    assert!(sweeps.is_empty());
     let _ = std::fs::remove_file(&path);
 }
 
@@ -523,15 +627,18 @@ fn list_scans_empty_db_returns_empty_vec() {
 fn upsert_scan_updates_existing() {
     use crate::core::scan::ScanStatus;
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     let target = Target::new(TargetKind::Email, "x@y.com");
     let mut scan = Scan::new("update-me", target);
     scan.status = ScanStatus::Running;
-    store.upsert_scan(&scan).unwrap();
+    store.upsert_scan(&scan).expect("should succeed");
     scan.status = ScanStatus::Complete;
     scan.entity_count = 42;
-    store.upsert_scan(&scan).unwrap();
-    let fetched = store.get_scan("update-me").unwrap().unwrap();
+    store.upsert_scan(&scan).expect("should succeed");
+    let fetched = store
+        .get_scan("update-me")
+        .expect("should succeed")
+        .expect("should succeed");
     assert_eq!(fetched.status, ScanStatus::Complete);
     assert_eq!(fetched.entity_count, 42);
     let _ = std::fs::remove_file(&path);
@@ -540,8 +647,8 @@ fn upsert_scan_updates_existing() {
 #[test]
 fn get_scan_nonexistent_returns_none() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
-    let result = store.get_scan("nonexistent").unwrap();
+    let store = Store::open(&path).expect("should succeed");
+    let result = store.get_scan("nonexistent").expect("should succeed");
     assert!(result.is_none());
     let _ = std::fs::remove_file(&path);
 }
@@ -550,7 +657,7 @@ fn get_scan_nonexistent_returns_none() {
 fn upsert_correlation_and_correlations_for_scan_round_trip() {
     use crate::core::correlator::{Correlation, Severity};
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "corr-scan");
     let c = Correlation::new(
         "AU-001",
@@ -561,8 +668,10 @@ fn upsert_correlation_and_correlations_for_scan_round_trip() {
         "corr-scan",
         12345,
     );
-    store.upsert_correlation(&c).unwrap();
-    let corrs = store.correlations_for_scan("corr-scan").unwrap();
+    store.upsert_correlation(&c).expect("should succeed");
+    let corrs = store
+        .correlations_for_scan("corr-scan")
+        .expect("should succeed");
     assert_eq!(corrs.len(), 1);
     assert_eq!(corrs[0].rule_id, "AU-001");
     assert_eq!(corrs[0].rule_name, "Test rule");
@@ -578,7 +687,7 @@ fn upsert_correlation_and_correlations_for_scan_round_trip() {
 fn upsert_correlation_supersedes_growing_aggregate_cluster() {
     use crate::core::correlator::{Correlation, Severity};
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "agg");
     let mk = |desc: &str, uids: Vec<&str>, ts: u64| {
         Correlation::new(
@@ -594,7 +703,7 @@ fn upsert_correlation_supersedes_growing_aggregate_cluster() {
     // Round 1: a partial cluster {A,B}.
     store
         .upsert_correlation(&mk("2 entities on the local network", vec!["A", "B"], 1))
-        .unwrap();
+        .expect("should succeed");
     // Round 2: the SAME cluster grown to {A,B,C} with a new count — must
     // supersede the partial row, not add a second one.
     store
@@ -603,8 +712,8 @@ fn upsert_correlation_supersedes_growing_aggregate_cluster() {
             vec!["A", "B", "C"],
             2,
         ))
-        .unwrap();
-    let got = store.correlations_for_scan("agg").unwrap();
+        .expect("should succeed");
+    let got = store.correlations_for_scan("agg").expect("should succeed");
     assert_eq!(
         got.len(),
         1,
@@ -618,14 +727,23 @@ fn upsert_correlation_supersedes_growing_aggregate_cluster() {
     // A stale subset re-emission (round 1 again) is ignored.
     store
         .upsert_correlation(&mk("2 entities on the local network", vec!["A", "B"], 3))
-        .unwrap();
-    assert_eq!(store.correlations_for_scan("agg").unwrap().len(), 1);
+        .expect("should succeed");
+    assert_eq!(
+        store
+            .correlations_for_scan("agg")
+            .expect("should succeed")
+            .len(),
+        1
+    );
     // A genuinely distinct cluster (disjoint uids) coexists as its own row.
     store
         .upsert_correlation(&mk("cluster 2", vec!["X", "Y"], 4))
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(
-        store.correlations_for_scan("agg").unwrap().len(),
+        store
+            .correlations_for_scan("agg")
+            .expect("should succeed")
+            .len(),
         2,
         "disjoint clusters must coexist"
     );
@@ -635,8 +753,10 @@ fn upsert_correlation_supersedes_growing_aggregate_cluster() {
 #[test]
 fn correlations_for_scan_empty_scan_returns_empty() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
-    let corrs = store.correlations_for_scan("unknown-scan").unwrap();
+    let store = Store::open(&path).expect("should succeed");
+    let corrs = store
+        .correlations_for_scan("unknown-scan")
+        .expect("should succeed");
     assert!(corrs.is_empty());
     let _ = std::fs::remove_file(&path);
 }
@@ -645,7 +765,7 @@ fn correlations_for_scan_empty_scan_returns_empty() {
 fn correlations_for_scan_orders_by_severity() {
     use crate::core::correlator::{Correlation, Severity};
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "sev-scan");
     let c_low = Correlation::new(
         "R-LOW",
@@ -674,10 +794,12 @@ fn correlations_for_scan_orders_by_severity() {
         "sev-scan",
         300,
     );
-    store.upsert_correlation(&c_low).unwrap();
-    store.upsert_correlation(&c_crit).unwrap();
-    store.upsert_correlation(&c_high).unwrap();
-    let corrs = store.correlations_for_scan("sev-scan").unwrap();
+    store.upsert_correlation(&c_low).expect("should succeed");
+    store.upsert_correlation(&c_crit).expect("should succeed");
+    store.upsert_correlation(&c_high).expect("should succeed");
+    let corrs = store
+        .correlations_for_scan("sev-scan")
+        .expect("should succeed");
     assert_eq!(corrs.len(), 3);
     assert_eq!(corrs[0].severity, Severity::Critical);
     assert_eq!(corrs[1].severity, Severity::High);
@@ -689,7 +811,7 @@ fn correlations_for_scan_orders_by_severity() {
 fn duplicate_correlation_is_ignored_upsert_idempotent() {
     use crate::core::correlator::{Correlation, Severity};
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "dup-scan");
     let c = Correlation::new(
         "AU-001",
@@ -700,9 +822,11 @@ fn duplicate_correlation_is_ignored_upsert_idempotent() {
         "dup-scan",
         12345,
     );
-    store.upsert_correlation(&c).unwrap();
-    store.upsert_correlation(&c).unwrap();
-    let corrs = store.correlations_for_scan("dup-scan").unwrap();
+    store.upsert_correlation(&c).expect("should succeed");
+    store.upsert_correlation(&c).expect("should succeed");
+    let corrs = store
+        .correlations_for_scan("dup-scan")
+        .expect("should succeed");
     assert_eq!(corrs.len(), 1, "duplicate correlation should be ignored");
     let _ = std::fs::remove_file(&path);
 }
@@ -710,7 +834,7 @@ fn duplicate_correlation_is_ignored_upsert_idempotent() {
 #[test]
 fn event_log_round_trips_in_emission_order() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "scan-evt");
     for (i, kind) in [
         EventKind::ScanStart {
@@ -730,11 +854,11 @@ fn event_log_round_trips_in_emission_order() {
     {
         let mut ev = Event::new("scan-evt", kind);
         ev.ts = 1000 + i as u64;
-        store.insert_event(&ev).unwrap();
+        store.insert_event(&ev).expect("should succeed");
     }
     let other = Event::new("scan-other", EventKind::ModuleStart { module: "x".into() });
-    store.insert_event(&other).unwrap();
-    let evs = store.events_for_scan("scan-evt").unwrap();
+    store.insert_event(&other).expect("should succeed");
+    let evs = store.events_for_scan("scan-evt").expect("should succeed");
     assert_eq!(evs.len(), 3, "expected three events for scan-evt only");
     let kinds: Vec<&'static str> = evs
         .iter()
@@ -746,8 +870,93 @@ fn event_log_round_trips_in_emission_order() {
         })
         .collect();
     assert_eq!(kinds, ["scan_start", "module_start", "module_done"]);
-    let other_evs = store.events_for_scan("scan-other").unwrap();
+    let other_evs = store.events_for_scan("scan-other").expect("should succeed");
     assert_eq!(other_evs.len(), 1);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn recent_module_outcome_events_filters_orders_and_bounds_across_scans() {
+    // The substrate for the per-source health signal (T2.7 / SOL-HEALTH-SIGNAL):
+    // only ModuleDone/ModuleError matter, newest-first, across ALL scan_ids, and
+    // respecting the caller's limit.
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    insert_scan(&store, "scan-a");
+    insert_scan(&store, "scan-b");
+
+    let rows = [
+        (
+            "scan-a",
+            100,
+            EventKind::ScanStart {
+                target_kind: "domain".into(),
+                target_value: "example.com".into(),
+            },
+        ),
+        (
+            "scan-a",
+            101,
+            EventKind::ModuleStart {
+                module: "dns_intel".into(),
+            },
+        ),
+        (
+            "scan-a",
+            102,
+            EventKind::ModuleDone {
+                module: "dns_intel".into(),
+                found: 3,
+            },
+        ),
+        (
+            "scan-b",
+            200,
+            EventKind::ModuleError {
+                module: "shodan".into(),
+                error: "timeout".into(),
+            },
+        ),
+        (
+            "scan-b",
+            201,
+            EventKind::ModuleSkipped {
+                module: "crtsh".into(),
+                reason: "no key".into(),
+            },
+        ),
+    ];
+    for (scan_id, ts, kind) in rows {
+        let mut ev = Event::new(scan_id, kind);
+        ev.ts = ts;
+        store.insert_event(&ev).expect("should succeed");
+    }
+
+    let outcomes = store
+        .recent_module_outcome_events(100)
+        .expect("should succeed");
+    assert_eq!(
+        outcomes.len(),
+        2,
+        "only module_done/module_error rows, across both scans"
+    );
+    // Newest first.
+    assert!(matches!(
+        &outcomes[0].kind,
+        EventKind::ModuleError { module, .. } if module == "shodan"
+    ));
+    assert!(matches!(
+        &outcomes[1].kind,
+        EventKind::ModuleDone { module, .. } if module == "dns_intel"
+    ));
+
+    // limit is respected.
+    let bounded = store
+        .recent_module_outcome_events(1)
+        .expect("should succeed");
+    assert_eq!(bounded.len(), 1);
+    assert!(matches!(&bounded[0].kind, EventKind::ModuleError { .. }));
+
     let _ = std::fs::remove_file(&path);
 }
 
@@ -760,7 +969,7 @@ fn entities_for_scan_recovers_from_event_log_when_not_finalised() {
     // recover from that log instead of reporting nothing — folding duplicate
     // UIDs through merge exactly once (corroboration summed, NOT double-counted).
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "scan-live");
 
     // Two distinct entities plus a DUPLICATE of the first (same kind+value =>
@@ -773,11 +982,13 @@ fn entities_for_scan_recovers_from_event_log_when_not_finalised() {
     for (i, entity) in [e1, e1_again, e2].into_iter().enumerate() {
         let mut ev = Event::new("scan-live", EventKind::EntityFound { entity });
         ev.ts = 2000 + i as u64;
-        store.insert_event(&ev).unwrap();
+        store.insert_event(&ev).expect("should succeed");
     }
 
     // entities_for_scan transparently falls back to the event log.
-    let recovered = store.entities_for_scan("scan-live").unwrap();
+    let recovered = store
+        .entities_for_scan("scan-live")
+        .expect("should succeed");
     assert_eq!(
         recovered.len(),
         2,
@@ -793,19 +1004,30 @@ fn entities_for_scan_recovers_from_event_log_when_not_finalised() {
     );
 
     // The direct reconstruction agrees with the fallback.
-    assert_eq!(store.entities_from_events("scan-live").unwrap().len(), 2);
+    assert_eq!(
+        store
+            .entities_from_events("scan-live")
+            .expect("should succeed")
+            .len(),
+        2
+    );
 
     // A genuinely empty scan (no EntityFound events) recovers empty — the
     // fallback never invents a false positive.
     insert_scan(&store, "scan-empty");
-    assert!(store.entities_for_scan("scan-empty").unwrap().is_empty());
+    assert!(
+        store
+            .entities_for_scan("scan-empty")
+            .expect("should succeed")
+            .is_empty()
+    );
 
     // A FINALISED scan (rows in the entities table) keeps using them, never the
     // event log: upsert one entity, log a DIFFERENT one as an event, and confirm
     // only the persisted row is returned.
     insert_scan(&store, "scan-final");
     let persisted = Entity::new(EntityKind::Email, "final@example.com", 0.9, "scan-final");
-    store.upsert_entity(&persisted).unwrap();
+    store.upsert_entity(&persisted).expect("should succeed");
     store
         .insert_event(&Event::new(
             "scan-final",
@@ -813,8 +1035,10 @@ fn entities_for_scan_recovers_from_event_log_when_not_finalised() {
                 entity: Entity::new(EntityKind::Person, "Decoy Person", 0.8, "scan-final"),
             },
         ))
-        .unwrap();
-    let finalised = store.entities_for_scan("scan-final").unwrap();
+        .expect("should succeed");
+    let finalised = store
+        .entities_for_scan("scan-final")
+        .expect("should succeed");
     assert_eq!(
         finalised.len(),
         1,
@@ -826,10 +1050,86 @@ fn entities_for_scan_recovers_from_event_log_when_not_finalised() {
 }
 
 #[test]
+fn entities_from_events_canonicalizes_evidence_order_regardless_of_arrival_order() {
+    // C7 (forensic determinism): entities_from_events is the recovery path used
+    // whenever a scan didn't finalise (routine on Termux/Android). The finalised
+    // path already normalises each entity's evidence/tag order before persist
+    // (core/engine/mod.rs, via Entity::canonicalize_order) so concurrent dispatch's
+    // completion-order merging can't leak into the exported result — this proves
+    // the recovery path gives the same guarantee, by folding the SAME two evidence
+    // sources in opposite arrival order across two scans and asserting the
+    // recovered entity's evidence vec is byte-identical either way.
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    insert_scan(&store, "scan-order-a");
+    insert_scan(&store, "scan-order-b");
+
+    let mut zzz_a = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-order-a");
+    zzz_a.add_evidence(Evidence::new("zzz_module", "seen"));
+    let mut aaa_a = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-order-a");
+    aaa_a.add_evidence(Evidence::new("aaa_module", "seen"));
+
+    // Scan A: zzz_module's EntityFound event arrives before aaa_module's.
+    for (i, entity) in [zzz_a, aaa_a].into_iter().enumerate() {
+        let mut ev = Event::new("scan-order-a", EventKind::EntityFound { entity });
+        ev.ts = 3000 + i as u64;
+        store.insert_event(&ev).expect("should succeed");
+    }
+
+    // Scan B: the same two sources, reversed (aaa_module arrives first) — its
+    // own entities, scan_id-tagged "scan-order-b", not clones of scan A's (
+    // Entity::merge never updates scan_id, so reusing scan A's entities here
+    // would recover an entity whose scan_id lies about which scan it came
+    // from, masking any future regression where scan_id becomes relevant to
+    // recovery/export behaviour).
+    let mut zzz_b = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-order-b");
+    zzz_b.add_evidence(Evidence::new("zzz_module", "seen"));
+    let mut aaa_b = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-order-b");
+    aaa_b.add_evidence(Evidence::new("aaa_module", "seen"));
+    for (i, entity) in [aaa_b, zzz_b].into_iter().enumerate() {
+        let mut ev = Event::new("scan-order-b", EventKind::EntityFound { entity });
+        ev.ts = 3000 + i as u64;
+        store.insert_event(&ev).expect("should succeed");
+    }
+
+    let recovered_a = store
+        .entities_from_events("scan-order-a")
+        .expect("should succeed");
+    let recovered_b = store
+        .entities_from_events("scan-order-b")
+        .expect("should succeed");
+    assert_eq!(recovered_a.len(), 1);
+    assert_eq!(recovered_b.len(), 1);
+    let sources_a: Vec<&str> = recovered_a[0]
+        .evidence
+        .iter()
+        .map(|ev| ev.source.as_str())
+        .collect();
+    let sources_b: Vec<&str> = recovered_b[0]
+        .evidence
+        .iter()
+        .map(|ev| ev.source.as_str())
+        .collect();
+    assert_eq!(
+        sources_a, sources_b,
+        "evidence order must be canonicalised, not leak arrival order: {sources_a:?} vs {sources_b:?}"
+    );
+    assert_eq!(
+        sources_a,
+        ["aaa_module", "zzz_module"],
+        "canonical order is lexicographic by source, per Entity::canonicalize_order"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn events_for_scan_returns_empty_for_unknown_id() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
-    let evs = store.events_for_scan("never-existed").unwrap();
+    let store = Store::open(&path).expect("should succeed");
+    let evs = store
+        .events_for_scan("never-existed")
+        .expect("should succeed");
     assert!(evs.is_empty());
     let _ = std::fs::remove_file(&path);
 }
@@ -837,7 +1137,7 @@ fn events_for_scan_returns_empty_for_unknown_id() {
 #[test]
 fn delete_scan_cascades_to_events() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "scan-with-events");
     insert_scan(&store, "scan-keeper");
     store
@@ -847,7 +1147,7 @@ fn delete_scan_cascades_to_events() {
                 module: "dns_intel".into(),
             },
         ))
-        .unwrap();
+        .expect("should succeed");
     store
         .insert_event(&Event::new(
             "scan-with-events",
@@ -856,7 +1156,7 @@ fn delete_scan_cascades_to_events() {
                 found: 1,
             },
         ))
-        .unwrap();
+        .expect("should succeed");
     store
         .insert_event(&Event::new(
             "scan-keeper",
@@ -864,16 +1164,89 @@ fn delete_scan_cascades_to_events() {
                 module: "whois".into(),
             },
         ))
-        .unwrap();
-    assert_eq!(store.events_for_scan("scan-with-events").unwrap().len(), 2);
-    assert!(store.delete_scan("scan-with-events").unwrap());
+        .expect("should succeed");
+    assert_eq!(
+        store
+            .events_for_scan("scan-with-events")
+            .expect("should succeed")
+            .len(),
+        2
+    );
+    assert!(
+        store
+            .delete_scan("scan-with-events")
+            .expect("should succeed")
+    );
     assert!(
         store
             .events_for_scan("scan-with-events")
-            .unwrap()
+            .expect("should succeed")
             .is_empty()
     );
-    assert_eq!(store.events_for_scan("scan-keeper").unwrap().len(), 1);
+    assert_eq!(
+        store
+            .events_for_scan("scan-keeper")
+            .expect("should succeed")
+            .len(),
+        1
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn delete_scan_cascades_to_stealer_rows() {
+    use crate::core::stealer_row::{StealerRow, StealerRowKind};
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    insert_scan(&store, "scan-with-creds");
+    insert_scan(&store, "scan-keeper");
+    let row = |login: &str, password: &str| StealerRow {
+        log_id: Some("log-1".into()),
+        domain: Some("example.com".into()),
+        login: Some(login.into()),
+        password: Some(password.into()),
+        pwned_at: Some("2026-05-20T21:00:00Z".into()),
+        kind: StealerRowKind::classify(Some("example.com")),
+    };
+    store
+        .insert_stealer_rows_batch(
+            "scan-with-creds",
+            &[row("alice", "hunter2"), row("bob", "pw")],
+        )
+        .expect("should succeed");
+    store
+        .insert_stealer_rows_batch("scan-keeper", &[row("carol", "keepme")])
+        .expect("should succeed");
+    assert_eq!(
+        store
+            .stealer_rows_for_scan("scan-with-creds")
+            .expect("should succeed")
+            .len(),
+        2
+    );
+
+    // Deleting the scan must purge its stolen credentials — they are the most
+    // sensitive payload in the store and have no other prune path.
+    assert!(
+        store
+            .delete_scan("scan-with-creds")
+            .expect("should succeed")
+    );
+    assert!(
+        store
+            .stealer_rows_for_scan("scan-with-creds")
+            .expect("should succeed")
+            .is_empty(),
+        "delete_scan must cascade to stealer_rows so stolen credentials do not persist"
+    );
+    // An unrelated scan's credentials are untouched.
+    assert_eq!(
+        store
+            .stealer_rows_for_scan("scan-keeper")
+            .expect("should succeed")
+            .len(),
+        1
+    );
     let _ = std::fs::remove_file(&path);
 }
 
@@ -882,15 +1255,15 @@ fn delete_scan_cascades_to_events() {
 #[test]
 fn entities_filtered_by_kind() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "filt-scan");
     let email = Entity::new(EntityKind::Email, "alice@example.com", 0.8, "filt-scan");
     let domain = Entity::new(EntityKind::Domain, "example.com", 0.7, "filt-scan");
-    store.upsert_entity(&email).unwrap();
-    store.upsert_entity(&domain).unwrap();
+    store.upsert_entity(&email).expect("should succeed");
+    store.upsert_entity(&domain).expect("should succeed");
     let results = store
         .entities_filtered("filt-scan", Some("email"), None, None, None)
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].kind, EntityKind::Email);
     let _ = std::fs::remove_file(&path);
@@ -904,7 +1277,7 @@ fn entities_filtered_returns_the_complete_result_not_a_capped_500() {
     // Fail-before: a hardcoded `LIMIT 500` silently dropped the lowest-confidence
     // matches past rank 500 with no total/flag/pagination.
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "big-scan");
     for i in 0..600 {
         let conf = 0.30 + (i % 50) as f64 / 100.0; // varied, exercises the ordering
@@ -914,11 +1287,11 @@ fn entities_filtered_returns_the_complete_result_not_a_capped_500() {
             conf,
             "big-scan",
         );
-        store.upsert_entity(&e).unwrap();
+        store.upsert_entity(&e).expect("should succeed");
     }
     let results = store
         .entities_filtered("big-scan", Some("email"), None, None, None)
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(
         results.len(),
         600,
@@ -930,15 +1303,15 @@ fn entities_filtered_returns_the_complete_result_not_a_capped_500() {
 #[test]
 fn entities_filtered_by_kind_and_min_confidence() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "conf-scan");
     let low = Entity::new(EntityKind::Email, "low@example.com", 0.3, "conf-scan");
     let high = Entity::new(EntityKind::Email, "high@example.com", 0.9, "conf-scan");
-    store.upsert_entity(&low).unwrap();
-    store.upsert_entity(&high).unwrap();
+    store.upsert_entity(&low).expect("should succeed");
+    store.upsert_entity(&high).expect("should succeed");
     let results = store
         .entities_filtered("conf-scan", Some("email"), Some(0.5), None, None)
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].value, "high@example.com");
     let _ = std::fs::remove_file(&path);
@@ -947,15 +1320,15 @@ fn entities_filtered_by_kind_and_min_confidence() {
 #[test]
 fn entities_filtered_by_kind_min_conf_and_value() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "val-scan");
     let alice = Entity::new(EntityKind::Email, "alice@example.com", 0.8, "val-scan");
     let bob = Entity::new(EntityKind::Email, "bob@test.com", 0.8, "val-scan");
-    store.upsert_entity(&alice).unwrap();
-    store.upsert_entity(&bob).unwrap();
+    store.upsert_entity(&alice).expect("should succeed");
+    store.upsert_entity(&bob).expect("should succeed");
     let results = store
         .entities_filtered("val-scan", Some("email"), Some(0.1), Some("alice"), None)
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].value, "alice@example.com");
     let _ = std::fs::remove_file(&path);
@@ -964,15 +1337,15 @@ fn entities_filtered_by_kind_min_conf_and_value() {
 #[test]
 fn entities_filtered_min_confidence_without_kind() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "gap-scan");
     let low = Entity::new(EntityKind::Email, "lo@y.com", 0.2, "gap-scan");
     let high = Entity::new(EntityKind::Domain, "hi.com", 0.9, "gap-scan");
-    store.upsert_entity(&low).unwrap();
-    store.upsert_entity(&high).unwrap();
+    store.upsert_entity(&low).expect("should succeed");
+    store.upsert_entity(&high).expect("should succeed");
     let results = store
         .entities_filtered("gap-scan", None, Some(0.5), None, None)
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].value, "hi.com");
     let _ = std::fs::remove_file(&path);
@@ -981,15 +1354,15 @@ fn entities_filtered_min_confidence_without_kind() {
 #[test]
 fn entities_filtered_value_contains_without_kind() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "vc-scan");
     let alice = Entity::new(EntityKind::Email, "alice@example.com", 0.8, "vc-scan");
     let bob = Entity::new(EntityKind::Email, "bob@test.com", 0.8, "vc-scan");
-    store.upsert_entity(&alice).unwrap();
-    store.upsert_entity(&bob).unwrap();
+    store.upsert_entity(&alice).expect("should succeed");
+    store.upsert_entity(&bob).expect("should succeed");
     let results = store
         .entities_filtered("vc-scan", None, None, Some("alice"), None)
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].value, "alice@example.com");
     let _ = std::fs::remove_file(&path);
@@ -998,17 +1371,17 @@ fn entities_filtered_value_contains_without_kind() {
 #[test]
 fn entities_filtered_with_no_filters_returns_all() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "all-scan");
     let e1 = Entity::new(EntityKind::Email, "a@example.com", 0.8, "all-scan");
     let e2 = Entity::new(EntityKind::Domain, "example.com", 0.7, "all-scan");
     let e3 = Entity::new(EntityKind::Phone, "+61400000000", 0.6, "all-scan");
-    store.upsert_entity(&e1).unwrap();
-    store.upsert_entity(&e2).unwrap();
-    store.upsert_entity(&e3).unwrap();
+    store.upsert_entity(&e1).expect("should succeed");
+    store.upsert_entity(&e2).expect("should succeed");
+    store.upsert_entity(&e3).expect("should succeed");
     let results = store
         .entities_filtered("all-scan", None, None, None, None)
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(results.len(), 3, "all three entities should be returned");
     let _ = std::fs::remove_file(&path);
 }
@@ -1016,15 +1389,15 @@ fn entities_filtered_with_no_filters_returns_all() {
 #[test]
 fn entity_facets_counts_by_kind() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "facet-scan");
     let e1 = Entity::new(EntityKind::Email, "a@example.com", 0.8, "facet-scan");
     let e2 = Entity::new(EntityKind::Email, "b@example.com", 0.7, "facet-scan");
     let e3 = Entity::new(EntityKind::Domain, "example.com", 0.6, "facet-scan");
-    store.upsert_entity(&e1).unwrap();
-    store.upsert_entity(&e2).unwrap();
-    store.upsert_entity(&e3).unwrap();
-    let facets = store.entity_facets("facet-scan").unwrap();
+    store.upsert_entity(&e1).expect("should succeed");
+    store.upsert_entity(&e2).expect("should succeed");
+    store.upsert_entity(&e3).expect("should succeed");
+    let facets = store.entity_facets("facet-scan").expect("should succeed");
     assert_eq!(facets.len(), 2);
     assert_eq!(facets[0].0, "email");
     assert_eq!(facets[0].1, 2);
@@ -1036,12 +1409,15 @@ fn entity_facets_counts_by_kind() {
 #[test]
 fn get_entity_found() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "get-scan");
     let e = Entity::new(EntityKind::Email, "found@example.com", 0.8, "get-scan");
     let uid = e.uid.clone();
-    store.upsert_entity(&e).unwrap();
-    let fetched = store.get_entity(&uid).unwrap().unwrap();
+    store.upsert_entity(&e).expect("should succeed");
+    let fetched = store
+        .get_entity(&uid)
+        .expect("should succeed")
+        .expect("should succeed");
     assert_eq!(fetched.uid, uid);
     assert_eq!(fetched.value, "found@example.com");
     assert_eq!(fetched.kind, EntityKind::Email);
@@ -1052,7 +1428,7 @@ fn get_entity_found() {
 fn entity_survives_a_full_fidelity_storage_roundtrip() {
     use crate::core::entity::{Evidence, derive_uid, normalise};
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "rt");
     // Exercise every field that a lossy persistence layer could drop or
     // reorder: a `raw_value` that differs from the normalised value, ordered
@@ -1071,12 +1447,15 @@ fn entity_survives_a_full_fidelity_storage_roundtrip() {
 
     // The strongest single invariant: serialise → persist → reload →
     // serialise must be byte-identical. Catches any dropped/reordered field.
-    let before = serde_json::to_string(&e).unwrap();
-    store.upsert_entity(&e).unwrap();
-    let got = store.get_entity(&uid).unwrap().unwrap();
+    let before = serde_json::to_string(&e).expect("should succeed");
+    store.upsert_entity(&e).expect("should succeed");
+    let got = store
+        .get_entity(&uid)
+        .expect("should succeed")
+        .expect("should succeed");
     assert_eq!(
         before,
-        serde_json::to_string(&got).unwrap(),
+        serde_json::to_string(&got).expect("should succeed"),
         "storage round-trip changed the entity"
     );
     // The persisted UID must remain reconstructible from its (kind, value),
@@ -1095,8 +1474,8 @@ fn entity_survives_a_full_fidelity_storage_roundtrip() {
 #[test]
 fn get_entity_not_found() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
-    let result = store.get_entity("nonexistent-uid").unwrap();
+    let store = Store::open(&path).expect("should succeed");
+    let result = store.get_entity("nonexistent-uid").expect("should succeed");
     assert!(result.is_none());
     let _ = std::fs::remove_file(&path);
 }
@@ -1104,15 +1483,15 @@ fn get_entity_not_found() {
 #[test]
 fn search_entities_matches_substring() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "search-scan");
     let e1 = Entity::new(EntityKind::Email, "alice@example.com", 0.8, "search-scan");
     let e2 = Entity::new(EntityKind::Email, "bob@test.com", 0.7, "search-scan");
     let e3 = Entity::new(EntityKind::Domain, "alice-domain.com", 0.6, "search-scan");
-    store.upsert_entity(&e1).unwrap();
-    store.upsert_entity(&e2).unwrap();
-    store.upsert_entity(&e3).unwrap();
-    let results = store.search_entities("alice", 10).unwrap();
+    store.upsert_entity(&e1).expect("should succeed");
+    store.upsert_entity(&e2).expect("should succeed");
+    store.upsert_entity(&e3).expect("should succeed");
+    let results = store.search_entities("alice", 10).expect("should succeed");
     assert_eq!(results.len(), 2);
     for r in &results {
         assert!(
@@ -1127,7 +1506,7 @@ fn search_entities_matches_substring() {
 #[test]
 fn search_entities_respects_limit() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "lim-scan");
     for i in 0..5 {
         let e = Entity::new(
@@ -1136,9 +1515,11 @@ fn search_entities_respects_limit() {
             0.8,
             "lim-scan",
         );
-        store.upsert_entity(&e).unwrap();
+        store.upsert_entity(&e).expect("should succeed");
     }
-    let results = store.search_entities("matching", 1).unwrap();
+    let results = store
+        .search_entities("matching", 1)
+        .expect("should succeed");
     assert_eq!(results.len(), 1, "should return exactly 1 result");
     let _ = std::fs::remove_file(&path);
 }
@@ -1146,11 +1527,13 @@ fn search_entities_respects_limit() {
 #[test]
 fn search_entities_empty_query_returns_nothing() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "empty-scan");
     let e = Entity::new(EntityKind::Email, "x@y.com", 0.8, "empty-scan");
-    store.upsert_entity(&e).unwrap();
-    let results = store.search_entities("zzzz_no_match_xyzzy_42", 10).unwrap();
+    store.upsert_entity(&e).expect("should succeed");
+    let results = store
+        .search_entities("zzzz_no_match_xyzzy_42", 10)
+        .expect("should succeed");
     assert!(results.is_empty());
     let _ = std::fs::remove_file(&path);
 }
@@ -1170,15 +1553,15 @@ fn search_like_fallback_escapes_backslash() {
     // A bare `\` query has no FTS tokens, so it exercises the LIKE fallback.
     // It must match a literal backslash, not (mis-escaped) a `%`.
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "bs");
     store
         .upsert_entity(&Entity::new(EntityKind::Username, "back\\slash", 0.9, "bs"))
-        .unwrap();
+        .expect("should succeed");
     store
         .upsert_entity(&Entity::new(EntityKind::Username, "plainname", 0.9, "bs"))
-        .unwrap();
-    let hits = store.search_entities("\\", 10).unwrap();
+        .expect("should succeed");
+    let hits = store.search_entities("\\", 10).expect("should succeed");
     assert!(
         hits.iter().any(|e| e.value == "back\\slash"),
         "backslash query must match a literal backslash: {hits:?}"
@@ -1195,7 +1578,7 @@ fn fts_prefix_token_search_matches_partial_word() {
     // FTS5 path: a partial word token must hit via prefix matching — what
     // the old LIKE-only search could only do as an anchored substring.
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "fts-scan");
     store
         .upsert_entity(&Entity::new(
@@ -1204,13 +1587,30 @@ fn fts_prefix_token_search_matches_partial_word() {
             0.9,
             "fts-scan",
         ))
-        .unwrap();
+        .expect("should succeed");
     // Token prefix: "jord" -> "Jordan"; "mey" -> "Meyer".
-    assert_eq!(store.search_entities("jord", 10).unwrap().len(), 1);
-    assert_eq!(store.search_entities("mey", 10).unwrap().len(), 1);
+    assert_eq!(
+        store
+            .search_entities("jord", 10)
+            .expect("should succeed")
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .search_entities("mey", 10)
+            .expect("should succeed")
+            .len(),
+        1
+    );
     // A non-matching token returns nothing (and doesn't fall through to a
     // spurious LIKE hit).
-    assert!(store.search_entities("smith", 10).unwrap().is_empty());
+    assert!(
+        store
+            .search_entities("smith", 10)
+            .expect("should succeed")
+            .is_empty()
+    );
     let _ = std::fs::remove_file(&path);
 }
 
@@ -1221,7 +1621,7 @@ fn fts_matches_tokens_in_any_order_unlike_like() {
     // raw query CANNOT — "%meyer jordan%" never matches "Jordan Meyer".
     // This isolates the FTS path from the LIKE fallback.
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "order-scan");
     store
         .upsert_entity(&Entity::new(
@@ -1230,9 +1630,12 @@ fn fts_matches_tokens_in_any_order_unlike_like() {
             0.9,
             "order-scan",
         ))
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(
-        store.search_entities("meyer jordan", 10).unwrap().len(),
+        store
+            .search_entities("meyer jordan", 10)
+            .expect("should succeed")
+            .len(),
         1,
         "FTS must match tokens in any order; the LIKE fallback alone cannot"
     );
@@ -1247,7 +1650,7 @@ fn fts_index_stays_synchronized_on_value_change() {
     // possible (uid derives from value), so instead verify a freshly
     // inserted entity is immediately searchable and a rebuild is a no-op.
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "sync-scan");
     store
         .upsert_entity(&Entity::new(
@@ -1256,9 +1659,15 @@ fn fts_index_stays_synchronized_on_value_change() {
             0.8,
             "sync-scan",
         ))
-        .unwrap();
+        .expect("should succeed");
     // Immediately visible via FTS, no separate index step.
-    assert_eq!(store.search_entities("syncexample", 10).unwrap().len(), 1);
+    assert_eq!(
+        store
+            .search_entities("syncexample", 10)
+            .expect("should succeed")
+            .len(),
+        1
+    );
     // Re-upsert the same entity (merge path) — index must remain correct,
     // not duplicate.
     store
@@ -1268,9 +1677,12 @@ fn fts_index_stays_synchronized_on_value_change() {
             0.9,
             "sync-scan",
         ))
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(
-        store.search_entities("syncexample", 10).unwrap().len(),
+        store
+            .search_entities("syncexample", 10)
+            .expect("should succeed")
+            .len(),
         1,
         "merge must not duplicate the FTS row"
     );
@@ -1283,7 +1695,7 @@ fn fts_backfill_indexes_preexisting_rows() {
     // after reopen (the open() backfill path).
     let path = tmp_db();
     {
-        let store = Store::open(&path).unwrap();
+        let store = Store::open(&path).expect("should succeed");
         insert_scan(&store, "bf-scan");
         store
             .upsert_entity(&Entity::new(
@@ -1292,14 +1704,18 @@ fn fts_backfill_indexes_preexisting_rows() {
                 0.7,
                 "bf-scan",
             ))
-            .unwrap();
+            .expect("should succeed");
         // Drop the FTS table to emulate a pre-index DB, then reopen.
         let conn = store.conn.lock();
-        conn.execute_batch("DROP TABLE entities_fts;").unwrap();
+        conn.execute_batch("DROP TABLE entities_fts;")
+            .expect("should succeed");
     }
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     assert_eq!(
-        store.search_entities("backfill", 10).unwrap().len(),
+        store
+            .search_entities("backfill", 10)
+            .expect("should succeed")
+            .len(),
         1,
         "reopen must backfill the FTS index from existing rows"
     );
@@ -1310,18 +1726,21 @@ fn fts_backfill_indexes_preexisting_rows() {
 fn upsert_entity_cross_scan_merge_preserves_evidence_and_tags() {
     use crate::core::entity::Evidence;
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "scan-a");
     insert_scan(&store, "scan-b");
     let mut e_a = Entity::new(EntityKind::Email, "shared@example.com", 0.6, "scan-a");
     e_a.add_evidence(Evidence::new("module_a", "found in source A"));
     e_a.tag("tag-a");
-    store.upsert_entity(&e_a).unwrap();
+    store.upsert_entity(&e_a).expect("should succeed");
     let mut e_b = Entity::new(EntityKind::Email, "shared@example.com", 0.9, "scan-b");
     e_b.add_evidence(Evidence::new("module_b", "found in source B"));
     e_b.tag("tag-b");
-    store.upsert_entity(&e_b).unwrap();
-    let merged = store.get_entity(&e_a.uid).unwrap().unwrap();
+    store.upsert_entity(&e_b).expect("should succeed");
+    let merged = store
+        .get_entity(&e_a.uid)
+        .expect("should succeed")
+        .expect("should succeed");
     assert!(
         (merged.confidence - 0.9).abs() < 1e-9,
         "confidence should be max(0.6, 0.9) = 0.9, got {}",
@@ -1342,26 +1761,73 @@ fn upsert_entity_cross_scan_merge_preserves_evidence_and_tags() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[test]
+fn upsert_entity_merge_result_is_insertion_order_independent() {
+    // `merge_and_persist_entity`'s slow (ON CONFLICT) path merges the
+    // incoming entity into the already-stored one via `Entity::merge`, whose
+    // `absorb` appends evidence/tags in whatever order the two sides happen
+    // to arrive in (see `Entity::absorb`'s doc comment) — so without a
+    // re-canonicalisation after the merge, which of two same-uid entities
+    // reaches storage FIRST leaks into the persisted evidence/tag order.
+    // `entities_from_events` already re-canonicalises after its own in-memory
+    // merge fold; this pins the same guarantee for the direct storage-merge
+    // path. Insert the same two entities in both orders and require
+    // byte-identical persisted evidence/tag order either way.
+    use crate::core::entity::Evidence;
+    let persisted_order = |first_source: &str, second_source: &str| -> (Vec<String>, Vec<String>) {
+        let path = tmp_db();
+        let store = Store::open(&path).expect("should succeed");
+        insert_scan(&store, "order-scan");
+        let mut a = Entity::new(EntityKind::Email, "dup@x.com", 0.5, "order-scan");
+        a.add_evidence(Evidence::new(first_source, "seen"));
+        a.tag("z-tag");
+        store.upsert_entity(&a).expect("should succeed");
+        let mut b = Entity::new(EntityKind::Email, "dup@x.com", 0.5, "order-scan");
+        b.add_evidence(Evidence::new(second_source, "seen"));
+        b.tag("a-tag");
+        store.upsert_entity(&b).expect("should succeed");
+        let merged = store
+            .get_entity(&a.uid)
+            .expect("should succeed")
+            .expect("should succeed");
+        let _ = std::fs::remove_file(&path);
+        (
+            merged.evidence.iter().map(|e| e.source.clone()).collect(),
+            merged.tags,
+        )
+    };
+    let forward = persisted_order("mod_a", "mod_b");
+    let reversed = persisted_order("mod_b", "mod_a");
+    assert_eq!(
+        forward, reversed,
+        "persisted evidence/tag order must not depend on which same-uid entity was upserted first"
+    );
+}
+
 // ── upsert_entities_batch ──────────────────────────────────────────────
 
 #[test]
 fn upsert_entities_batch_persists_all_and_records_observations() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "batch-scan");
     let entities = vec![
         Entity::new(EntityKind::Email, "a@x.com", 0.8, "batch-scan"),
         Entity::new(EntityKind::Domain, "x.com", 0.7, "batch-scan"),
         Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.9, "batch-scan"),
     ];
-    let n = store.upsert_entities_batch(&entities).unwrap();
+    let n = store
+        .upsert_entities_batch(&entities)
+        .expect("should succeed");
     assert_eq!(n, 3, "batch should report every entity persisted");
-    let got = store.entities_for_scan("batch-scan").unwrap();
+    let got = store
+        .entities_for_scan("batch-scan")
+        .expect("should succeed");
     assert_eq!(got.len(), 3);
     // The observation junction must be populated for every entity, exactly
     // as the per-entity upsert path does.
     for e in &entities {
-        assert_eq!(store.observation_count(&e.uid).unwrap(), 1);
+        assert_eq!(store.observation_count(&e.uid).expect("should succeed"), 1);
     }
     let _ = std::fs::remove_file(&path);
 }
@@ -1369,17 +1835,20 @@ fn upsert_entities_batch_persists_all_and_records_observations() {
 #[test]
 fn upsert_entities_batch_merges_on_conflict() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "bm-scan");
     let first = Entity::new(EntityKind::Email, "dup@x.com", 0.5, "bm-scan");
-    store.upsert_entity(&first).unwrap();
+    store.upsert_entity(&first).expect("should succeed");
     // Same uid, higher confidence → GREATEST-merge through the batch path.
     let again = Entity::new(EntityKind::Email, "dup@x.com", 0.9, "bm-scan");
     let n = store
         .upsert_entities_batch(std::slice::from_ref(&again))
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(n, 1);
-    let merged = store.get_entity(&first.uid).unwrap().unwrap();
+    let merged = store
+        .get_entity(&first.uid)
+        .expect("should succeed")
+        .expect("should succeed");
     assert!(
         (merged.confidence - 0.9).abs() < 1e-9,
         "GREATEST-merge must apply inside the batch path"
@@ -1394,8 +1863,8 @@ fn upsert_entities_batch_merges_on_conflict() {
 #[test]
 fn upsert_entities_batch_empty_is_zero() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
-    assert_eq!(store.upsert_entities_batch(&[]).unwrap(), 0);
+    let store = Store::open(&path).expect("should succeed");
+    assert_eq!(store.upsert_entities_batch(&[]).expect("should succeed"), 0);
     let _ = std::fs::remove_file(&path);
 }
 
@@ -1405,7 +1874,7 @@ fn upsert_entities_batch_empty_is_zero() {
 fn relation_round_trip_and_idempotent_upsert() {
     use crate::core::relation::{Relation, RelationKind};
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "rel-scan");
     let r = Relation::new(
         "childUid",
@@ -1414,10 +1883,12 @@ fn relation_round_trip_and_idempotent_upsert() {
         0.8,
         "rel-scan",
     );
-    store.upsert_relation(&r).unwrap();
+    store.upsert_relation(&r).expect("should succeed");
     // Re-inserting the same deterministic id is a no-op (no duplicate row).
-    store.upsert_relation(&r).unwrap();
-    let got = store.relations_for_scan("rel-scan").unwrap();
+    store.upsert_relation(&r).expect("should succeed");
+    let got = store
+        .relations_for_scan("rel-scan")
+        .expect("should succeed");
     assert_eq!(got.len(), 1, "idempotent on deterministic id");
     assert_eq!(got[0].from_uid, "childUid");
     assert_eq!(got[0].to_uid, "parentUid");
@@ -1426,10 +1897,83 @@ fn relation_round_trip_and_idempotent_upsert() {
 }
 
 #[test]
+fn upsert_relations_batch_persists_all_and_is_idempotent() {
+    use crate::core::relation::{Relation, RelationKind};
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    insert_scan(&store, "relb-scan");
+    let rels = vec![
+        Relation::new("c1", "p1", RelationKind::SubdomainOf, 0.8, "relb-scan"),
+        Relation::new("c2", "p2", RelationKind::HostedOn, 0.7, "relb-scan"),
+    ];
+    let n = store.upsert_relations_batch(&rels).expect("should succeed");
+    assert_eq!(n, 2, "batch reports every relation persisted");
+    assert_eq!(
+        store
+            .relations_for_scan("relb-scan")
+            .expect("should succeed")
+            .len(),
+        2
+    );
+    // Idempotent on the deterministic id — re-batching the same set adds no rows,
+    // exactly as the per-relation `upsert_relation` path (ON CONFLICT DO NOTHING).
+    store.upsert_relations_batch(&rels).expect("should succeed");
+    assert_eq!(
+        store
+            .relations_for_scan("relb-scan")
+            .expect("should succeed")
+            .len(),
+        2
+    );
+    // An empty batch is a clean zero, not an error.
+    assert_eq!(
+        store.upsert_relations_batch(&[]).expect("should succeed"),
+        0
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn insert_events_batch_persists_all_in_emission_order() {
+    let path = tmp_db();
+    let store = Store::open(&path).expect("should succeed");
+    insert_scan(&store, "evb-scan");
+    let events = vec![
+        Event::new(
+            "evb-scan",
+            EventKind::ScanStart {
+                target_kind: "domain".into(),
+                target_value: "example.com".into(),
+            },
+        ),
+        Event::new(
+            "evb-scan",
+            EventKind::ModuleStart {
+                module: "dns_intel".into(),
+            },
+        ),
+        Event::new(
+            "evb-scan",
+            EventKind::ModuleDone {
+                module: "dns_intel".into(),
+                found: 3,
+            },
+        ),
+    ];
+    let n = store.insert_events_batch(&events).expect("should succeed");
+    assert_eq!(n, 3, "batch reports every event inserted");
+    let got = store.events_for_scan("evb-scan").expect("should succeed");
+    assert_eq!(got.len(), 3, "all events persisted in one transaction");
+    // An empty batch is a clean zero, matching the per-event path's semantics.
+    assert_eq!(store.insert_events_batch(&[]).expect("should succeed"), 0);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn relations_for_scan_is_scan_scoped() {
     use crate::core::relation::{Relation, RelationKind};
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "rs-a");
     insert_scan(&store, "rs-b");
     store
@@ -1440,9 +1984,20 @@ fn relations_for_scan_is_scan_scoped() {
             1.0,
             "rs-a",
         ))
-        .unwrap();
-    assert_eq!(store.relations_for_scan("rs-a").unwrap().len(), 1);
-    assert!(store.relations_for_scan("rs-b").unwrap().is_empty());
+        .expect("should succeed");
+    assert_eq!(
+        store
+            .relations_for_scan("rs-a")
+            .expect("should succeed")
+            .len(),
+        1
+    );
+    assert!(
+        store
+            .relations_for_scan("rs-b")
+            .expect("should succeed")
+            .is_empty()
+    );
     let _ = std::fs::remove_file(&path);
 }
 
@@ -1450,7 +2005,7 @@ fn relations_for_scan_is_scan_scoped() {
 fn delete_scan_cascades_to_relations() {
     use crate::core::relation::{Relation, RelationKind};
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "rd-scan");
     store
         .upsert_relation(&Relation::new(
@@ -1460,10 +2015,21 @@ fn delete_scan_cascades_to_relations() {
             0.9,
             "rd-scan",
         ))
-        .unwrap();
-    assert_eq!(store.relations_for_scan("rd-scan").unwrap().len(), 1);
-    assert!(store.delete_scan("rd-scan").unwrap());
-    assert!(store.relations_for_scan("rd-scan").unwrap().is_empty());
+        .expect("should succeed");
+    assert_eq!(
+        store
+            .relations_for_scan("rd-scan")
+            .expect("should succeed")
+            .len(),
+        1
+    );
+    assert!(store.delete_scan("rd-scan").expect("should succeed"));
+    assert!(
+        store
+            .relations_for_scan("rd-scan")
+            .expect("should succeed")
+            .is_empty()
+    );
     let _ = std::fs::remove_file(&path);
 }
 /// Characterisation: pins the EXACT schema (tables + indexes) and the
@@ -1472,15 +2038,15 @@ fn delete_scan_cascades_to_relations() {
 #[test]
 fn open_produces_exact_schema_and_pragmas() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     let conn = store.conn.lock();
     let mut stmt = conn
         .prepare("SELECT type || '|' || name FROM sqlite_master ORDER BY type, name")
-        .unwrap();
+        .expect("should succeed");
     let got: Vec<String> = stmt
         .query_map([], |r| r.get::<_, String>(0))
-        .unwrap()
-        .map(|r| r.unwrap())
+        .expect("should succeed")
+        .map(|r| r.expect("should succeed"))
         .collect();
     drop(stmt);
     let expected = [
@@ -1488,10 +2054,13 @@ fn open_produces_exact_schema_and_pragmas() {
         "index|idx_entities_kind",
         "index|idx_entities_scan",
         "index|idx_events_scan",
+        "index|idx_events_type",
         "index|idx_obs_entity",
         "index|idx_obs_scan",
         "index|idx_relations_scan",
         "index|idx_scans_started",
+        "index|idx_stealer_rows_log",
+        "index|idx_stealer_rows_scan",
         "index|sqlite_autoindex_correlations_1",
         "index|sqlite_autoindex_entities_1",
         "index|sqlite_autoindex_entity_observations_1",
@@ -1520,15 +2089,16 @@ fn open_produces_exact_schema_and_pragmas() {
         // planner, no app data, and improve query plans on Termux.
         "table|sqlite_stat1",
         "table|sqlite_stat4",
+        "table|stealer_rows",
     ];
     assert_eq!(got, expected, "schema (tables + indexes) must be identical");
 
     let fk: i64 = conn
         .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
-        .unwrap();
+        .expect("should succeed");
     let jm: String = conn
         .query_row("PRAGMA journal_mode", [], |r| r.get(0))
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(fk, 1, "foreign_keys must stay ON");
     assert_eq!(jm, "wal", "journal_mode must stay WAL");
     drop(conn);
@@ -1541,11 +2111,11 @@ fn wal_autocheckpoint_bound_is_asserted() {
     // 1000-page default — the 'WAL+checkpoint, everything bounded'
     // invariant.
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     let n: i64 = {
         let conn = store.conn.lock();
         conn.query_row("PRAGMA wal_autocheckpoint", [], |r| r.get(0))
-            .unwrap()
+            .expect("should succeed")
     };
     assert_eq!(
         n, 512,
@@ -1560,7 +2130,7 @@ fn checkpoint_truncate_resets_wal_file_and_keeps_data() {
     // autocheckpoint never shrinks it) without losing durable data.
     let path = tmp_db();
     let wal = format!("{path}-wal");
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "wal-scan");
     // Force the WAL to grow: many separate commits, each appending frames.
     for i in 0..300 {
@@ -1571,7 +2141,7 @@ fn checkpoint_truncate_resets_wal_file_and_keeps_data() {
                 0.5,
                 "wal-scan",
             ))
-            .unwrap();
+            .expect("should succeed");
     }
     let pre = std::fs::metadata(&wal).map_or(0, |m| m.len());
     assert!(
@@ -1579,13 +2149,16 @@ fn checkpoint_truncate_resets_wal_file_and_keeps_data() {
         "WAL should hold frames before checkpoint (was {pre})"
     );
 
-    store.checkpoint_truncate().unwrap();
+    store.checkpoint_truncate().expect("should succeed");
 
     let post = std::fs::metadata(&wal).map_or(0, |m| m.len());
     assert_eq!(post, 0, "TRUNCATE checkpoint must reset the -wal to zero");
     // Data survived the fold-back into the main DB.
     assert_eq!(
-        store.entities_for_scan("wal-scan").unwrap().len(),
+        store
+            .entities_for_scan("wal-scan")
+            .expect("should succeed")
+            .len(),
         300,
         "checkpoint must not lose committed entities"
     );
@@ -1597,7 +2170,7 @@ fn checkpoint_truncate_resets_wal_file_and_keeps_data() {
 #[test]
 fn search_entities_never_errors_on_adversarial_queries() {
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "adv");
     for v in [
         "Jordan Meyer",
@@ -1608,7 +2181,7 @@ fn search_entities_never_errors_on_adversarial_queries() {
     ] {
         store
             .upsert_entity(&Entity::new(EntityKind::Person, v, 0.9, "adv"))
-            .unwrap();
+            .expect("should succeed");
     }
     for q in [
         "\"",
@@ -1637,7 +2210,12 @@ fn search_entities_never_errors_on_adversarial_queries() {
             .unwrap_or_else(|e| panic!("search_entities({q:?}) ERRORED: {e}"));
     }
     // entities table still present after the injection-y query
-    assert!(!store.search_entities("jordan", 10).unwrap().is_empty());
+    assert!(
+        !store
+            .search_entities("jordan", 10)
+            .expect("should succeed")
+            .is_empty()
+    );
     let _ = std::fs::remove_file(&path);
 }
 
@@ -1650,7 +2228,7 @@ fn delete_scan_syncs_fts_so_rowid_reuse_cannot_poison_search() {
     // returns that unrelated entity. Reproduce exactly that rowid-reuse
     // scenario and prove the index stays clean.
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
 
     insert_scan(&store, "scan-old");
     store
@@ -1660,12 +2238,18 @@ fn delete_scan_syncs_fts_so_rowid_reuse_cannot_poison_search() {
             0.9,
             "scan-old",
         ))
-        .unwrap();
-    assert_eq!(store.search_entities("jordan", 10).unwrap().len(), 1);
+        .expect("should succeed");
+    assert_eq!(
+        store
+            .search_entities("jordan", 10)
+            .expect("should succeed")
+            .len(),
+        1
+    );
 
     // Purge the scan — the entity is orphaned and deleted; its rowid (the
     // table's highest) is freed for reuse.
-    assert!(store.delete_scan("scan-old").unwrap());
+    assert!(store.delete_scan("scan-old").expect("should succeed"));
 
     // New entity takes the freed rowid.
     insert_scan(&store, "scan-new");
@@ -1676,16 +2260,19 @@ fn delete_scan_syncs_fts_so_rowid_reuse_cannot_poison_search() {
             0.9,
             "scan-new",
         ))
-        .unwrap();
+        .expect("should succeed");
 
     // The deleted value must match NOTHING — a stale posting would join the
     // reused rowid and hand back "Casey Smith" for a "jordan" query.
     assert!(
-        store.search_entities("jordan", 10).unwrap().is_empty(),
+        store
+            .search_entities("jordan", 10)
+            .expect("should succeed")
+            .is_empty(),
         "deleted entity's text must not resolve to the entity that reused its rowid"
     );
     // The new entity is still searchable normally.
-    let hits = store.search_entities("casey", 10).unwrap();
+    let hits = store.search_entities("casey", 10).expect("should succeed");
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].value, "Casey Smith");
     // And FTS5's own structural audit agrees the index matches the content
@@ -1708,7 +2295,10 @@ fn delete_scan_syncs_fts_so_rowid_reuse_cannot_poison_search() {
 struct VecWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
 impl std::io::Write for VecWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
+        self.0
+            .lock()
+            .expect("should succeed")
+            .extend_from_slice(buf);
         Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -1730,7 +2320,8 @@ fn capture_warn_logs<T>(f: impl FnOnce() -> T) -> (T, String) {
         .without_time()
         .finish();
     let out = tracing::subscriber::with_default(subscriber, f);
-    let log = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+    let log =
+        String::from_utf8(buf.lock().expect("should succeed").clone()).expect("should succeed");
     (out, log)
 }
 
@@ -1800,7 +2391,7 @@ fn list_scans_drops_a_corrupt_row_end_to_end_without_erroring() {
     // must not error or panic the read, and the well-formed sibling row
     // must still come back.
     let path = tmp_db();
-    let store = Store::open(&path).unwrap();
+    let store = Store::open(&path).expect("should succeed");
     insert_scan(&store, "scan-good");
     {
         let conn = store.conn.lock();
@@ -1810,7 +2401,7 @@ fn list_scans_drops_a_corrupt_row_end_to_end_without_erroring() {
              VALUES('scan-corrupt', 'email', 'x@y.com', 'completed', 0, NULL, 0, NULL, ?1)",
             params!["not valid json"],
         )
-        .unwrap();
+        .expect("should succeed");
     }
     let scans = store
         .list_scans(10)

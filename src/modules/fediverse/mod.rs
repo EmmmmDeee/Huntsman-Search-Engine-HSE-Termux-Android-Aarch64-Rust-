@@ -18,13 +18,14 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
 use crate::util::extract::looks_like_email;
-use crate::util::http::{fetch_json_or_404, urlencode};
+use crate::util::http::{fetch_json_probe, urlencode};
 
 const SRC: &str = "fediverse";
 
@@ -53,7 +54,7 @@ impl Module for Fediverse {
     }
 
     fn description(&self) -> &'static str {
-        "Fediverse/Mastodon account discovery via WebFinger (email-shaped handle → profile)"
+        "Fediverse/Mastodon account discovery — resolves an email-shaped handle to its profile via WebFinger"
     }
 
     fn priority(&self) -> u8 {
@@ -111,8 +112,10 @@ impl Module for Fediverse {
             urlencode(&format!("acct:{email}"))
         );
         // 404 (the overwhelming case for ordinary mail domains) → not a Fediverse
-        // account, a clean miss.
-        let Some(wf): Option<WebFinger> = fetch_json_or_404(&ctx.http, SRC, &url).await? else {
+        // account, a clean miss. A domain that is simply unreachable (runs no
+        // server, DNS/TLS/connection failure) is the SAME "no account here" miss,
+        // not a module error — `fetch_json_probe` folds both into `None`.
+        let Some(wf): Option<WebFinger> = fetch_json_probe(&ctx.http, SRC, &url).await else {
             return Ok(result);
         };
         if wf.links.is_empty() && wf.aliases.is_empty() {
@@ -176,6 +179,25 @@ fn extract_webfinger(
         }
     }
 
+    // `aliases` are additional self-referential URIs WebFinger asserts for the
+    // same subject — sibling data to the typed `rel` links above, but untyped
+    // (no `rel`/`type` to confirm which is the profile page vs. the actor), so
+    // each is still a URL pivot, just at a confidence below the typed
+    // actor/profile-page tiers.
+    for alias in wf.aliases.iter().filter(|a| a.starts_with("http")) {
+        let mut url_e = Entity::new(
+            EntityKind::Url,
+            alias.as_str(),
+            confidence::HIGH_PLUS,
+            scan_id,
+        );
+        url_e.tag("fediverse");
+        url_e.tag("mastodon");
+        url_e.tag("webfinger-alias");
+        url_e.add_evidence(ev.clone());
+        result.push(url_e);
+    }
+
     // The local username — a pivot into the free username stack.
     if local.len() >= 2 {
         let mut u = Entity::new(EntityKind::Username, local, 0.68, scan_id);
@@ -187,7 +209,7 @@ fn extract_webfinger(
 
     // Flag the seed email itself as a confirmed Fediverse identity (GREATEST-
     // merge only ever adds the tag/evidence, never lowers existing confidence).
-    let mut seed = Entity::new(EntityKind::Email, email, 0.78, scan_id);
+    let mut seed = Entity::new(EntityKind::Email, email, confidence::STRONG, scan_id);
     seed.tag("fediverse");
     seed.add_evidence(ev);
     result.push(seed);

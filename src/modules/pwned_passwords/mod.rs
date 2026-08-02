@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use sha1::{Digest, Sha1};
 
 use crate::core::{
+    confidence,
     entity::{Entity, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -39,11 +40,11 @@ fn parse_breach_count(body: &str, suffix: &str) -> Option<u64> {
 /// confidence the credential is genuinely compromised. **Pure.**
 fn confidence_for(count: u64) -> f64 {
     if count >= 100 {
-        0.90
+        confidence::VERY_HIGH_PLUS
     } else if count >= 10 {
-        0.80
+        confidence::HIGH_PLUSPLUS
     } else {
-        0.70
+        confidence::HIGH_PLUS
     }
 }
 
@@ -77,13 +78,38 @@ fn build_entities(target: &Target, count: u64, prefix: &str, scan_id: &str) -> V
     vec![entity]
 }
 
+/// Fetch the k-Anonymity range listing at `url` and read its body — the
+/// network shell `process()` delegates to, with `url` parameterised so this
+/// is directly testable against a real local server, unlike `process()`
+/// itself, whose target host is hardcoded to `api.pwnedpasswords.com`.
+///
+/// A non-success HTTP status (a transient 429/5xx) is a genuine operational
+/// failure, not the API's "not found" signal — the k-Anonymity API's genuine
+/// clean miss is always a `200` whose suffix listing simply omits the
+/// target's suffix (handled by [`parse_breach_count`] returning `None`), so
+/// it now propagates as `Error::module` instead of folding into the same
+/// empty result a real non-hit produces (T2.116: sibling Breach modules
+/// already propagate non-2xx as `Err`; this one silently read a rate limit
+/// or server error as "this credential is not in any known breach").
+async fn fetch_range(http: &reqwest::Client, url: &str) -> Result<String> {
+    let resp = http
+        .get(url)
+        .header("Add-Padding", "true")
+        .send_tagged(SRC)
+        .await?;
+    if !resp.status().is_success() {
+        return Err(crate::util::http::http_status_error(SRC, resp).await);
+    }
+    crate::util::http::read_text(SRC, resp).await
+}
+
 #[async_trait]
 impl Module for PwnedPasswords {
     fn name(&self) -> &'static str {
         "pwned_passwords"
     }
     fn description(&self) -> &'static str {
-        "HIBP Pwned Passwords k-Anonymity check for credential breach exposure"
+        "HIBP Pwned Passwords recon — k-Anonymity check that surfaces a credential's breach exposure without transmitting it"
     }
     fn priority(&self) -> u8 {
         115
@@ -134,19 +160,7 @@ impl Module for PwnedPasswords {
         let suffix = &hash[5..];
 
         let url = format!("https://api.pwnedpasswords.com/range/{prefix}");
-
-        let resp = ctx
-            .http
-            .get(&url)
-            .header("Add-Padding", "true")
-            .send_tagged(SRC)
-            .await?;
-
-        if !resp.status().is_success() {
-            return Ok(ModuleResult::new());
-        }
-
-        let body = crate::util::http::read_text(SRC, resp).await?;
+        let body = fetch_range(&ctx.http, &url).await?;
 
         let Some(count) = parse_breach_count(&body, suffix) else {
             return Ok(ModuleResult::new());

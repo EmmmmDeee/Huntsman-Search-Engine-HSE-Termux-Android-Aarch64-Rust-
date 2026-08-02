@@ -13,6 +13,24 @@
 //!   * data.gov.au Geocoded National Address File (GNAF) — suburb/postcode
 //!     from lot/plan references, open-data, no key required
 //!
+//! **Live status (2026-07-14):** all three legacy endpoints this module
+//! targets are currently confirmed dead — real, non-proxy-blocked live
+//! requests to each (root domain reachable, specific path gone) return:
+//! NSW's `/services/public/Property_Name_Address` → `404` (the domain now
+//! serves an unrelated client-rendered "SDT Explorer" SPA at `/explorer/`,
+//! the same "legacy static endpoint retired for a client-rendered app"
+//! pattern already confirmed for `au_electoral`'s AEC leg and `metager`);
+//! VIC's `/mapsharevic/ows` WFS endpoint → `404` (IIS "File or directory not
+//! found", root MapShareVic app itself still live at `200`); QLD's
+//! `/environment/land/title/searching/owners` → `404` (qld.gov.au's own
+//! "Page not found" template). No replacement endpoint identified yet for
+//! any of the three — named as this module's next candidate work. Until a
+//! replacement is found, `process()` distinguishes "every portal is down"
+//! (a real `Error::module` failure, surfaced to the operator and to the
+//! T2.7 scraper-health signal) from "a portal responded but had no match for
+//! this name" (the ordinary, honest empty success) — see
+//! `all_legs_unreachable` in this module.
+//!
 //! MITRE ATT&CK:
 //!   * T1591.001 — Determine Physical Locations (property address + suburb)
 //!   * T1591.002 — Business Relationships (co-owners, trusts, companies)
@@ -22,7 +40,7 @@
 //!   * Registered owner with suburb + state: 0.74 (title register is
 //!     government-maintained, higher than directory or electoral sources)
 //!   * Suburb + postcode only (no street address exposed): 0.62
-//!   * Coordinates from suburb centroid: 0.60 (derived, not raw)
+//!   * Coordinates from suburb centroid: confidence::MEDIUM_PLUS (derived, not raw)
 //!
 //! Orthogonal to `au_electoral` (electoral roll), `au_people` (residential
 //! directories), `abn_lookup` (business register), `asic_director` (company
@@ -37,7 +55,7 @@ use async_trait::async_trait;
 
 use crate::core::{
     entity::{Entity, EntityKind},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -59,9 +77,7 @@ impl Module for AuProperty {
     }
 
     fn description(&self) -> &'static str {
-        "Australian property and land title register searches — finds registered \
-         ownership records (suburb/state/postcode) for a full-name seed via NSW, \
-         VIC, and QLD public cadastral portals"
+        "Australian property & land-title recon — pivots a full-name seed to registered ownership records (suburb/state/postcode) across the NSW, VIC, and QLD public cadastral portals"
     }
 
     fn accepts(&self, t: &Target) -> bool {
@@ -105,6 +121,11 @@ impl Module for AuProperty {
         let ua = crate::util::http::UA_BROWSER;
 
         let mut all_entities: Vec<Entity> = Vec::new();
+        // Set whenever ANY leg's HTTP request came back with a success status —
+        // distinguishes "every portal is down" (a real failure worth surfacing)
+        // from "a portal responded but simply had no match for this name" (an
+        // honest empty success). See `all_legs_unreachable`.
+        let mut any_leg_ok = false;
 
         // ── NSW Spatial / ELVIS cadastral ─────────────────────────────────
         // ELVIS name search endpoint — surname + given name query.
@@ -121,13 +142,15 @@ impl Module for AuProperty {
             .send_tagged(SRC)
             .await
             && resp.status().is_success()
-            && let Some(body) = read_body_capped(resp, 1_000_000).await
         {
-            all_entities.extend(
-                parse_nsw_response(&body, full_name)
-                    .iter()
-                    .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
-            );
+            any_leg_ok = true;
+            if let Some(body) = read_body_capped(resp, 1_000_000).await {
+                all_entities.extend(
+                    parse_nsw_response(&body, full_name)
+                        .iter()
+                        .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
+                );
+            }
         }
 
         // ── VIC MapShare ──────────────────────────────────────────────────
@@ -145,13 +168,15 @@ impl Module for AuProperty {
                 .send_tagged(SRC)
                 .await
                 && resp.status().is_success()
-                && let Some(body) = read_body_capped(resp, 1_000_000).await
             {
-                all_entities.extend(
-                    parse_vic_response(&body, full_name)
-                        .iter()
-                        .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
-                );
+                any_leg_ok = true;
+                if let Some(body) = read_body_capped(resp, 1_000_000).await {
+                    all_entities.extend(
+                        parse_vic_response(&body, full_name)
+                            .iter()
+                            .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
+                    );
+                }
             }
         }
 
@@ -168,21 +193,47 @@ impl Module for AuProperty {
                 .send_tagged(SRC)
                 .await
                 && resp.status().is_success()
-                && let Some(body) = read_body_capped(resp, 1_000_000).await
             {
-                all_entities.extend(
-                    parse_qld_response(&body, full_name)
-                        .iter()
-                        .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
-                );
+                any_leg_ok = true;
+                if let Some(body) = read_body_capped(resp, 1_000_000).await {
+                    all_entities.extend(
+                        parse_qld_response(&body, full_name)
+                            .iter()
+                            .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
+                    );
+                }
             }
         }
 
         // Dedup by (kind, value) — different portals may agree on the same suburb.
         dedup_entities(&mut all_entities);
 
+        if all_legs_unreachable(any_leg_ok, !all_entities.is_empty()) {
+            return Err(Error::module(
+                SRC,
+                "all three property-register endpoints (NSW ELVIS, VIC MapShare WFS, QLD \
+                 titles search) returned a non-success HTTP status — likely retired/migrated \
+                 legacy URLs (see this module's doc comment), not \"no property records for \
+                 this name\"",
+            ));
+        }
+
         let mut result = ModuleResult::new();
         result.entities = all_entities;
         Ok(result)
     }
+}
+
+/// Whether `process()` should surface a hard failure rather than its
+/// ordinary empty success: true precisely when every attempted portal leg
+/// failed at the transport/HTTP-status level (`any_leg_http_ok` is false)
+/// AND nothing was found (`found_any_entity` is false). A leg that responded
+/// successfully but simply had no match for this name is not a failure —
+/// only a shared, portal-wide outage is, which is exactly the confirmed
+/// 2026-07-14 state this module's doc comment records. Pure and free of
+/// `ModuleContext`/network so it is unit-testable without a live server —
+/// see `tests::all_legs_unreachable_*`.
+#[must_use]
+fn all_legs_unreachable(any_leg_http_ok: bool, found_any_entity: bool) -> bool {
+    !any_leg_http_ok && !found_any_entity
 }

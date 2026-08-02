@@ -1,46 +1,35 @@
 use serde_json::json;
 
 use super::budget::{
-    budget_increment, budget_snapshot, clear_quota_probe, is_quota_exhausted, reset_budget,
+    budget_increment, budget_snapshot, is_quota_exhausted, release_quota_probe, reset_budget,
     scale_scan_cap, scan_budget_remaining, set_scan_cap_override, should_probe_quota,
 };
 use super::client::{
-    CLIENT, HARDCODED_KEY_FOR_TESTS, cache_get, cache_key, cache_put, is_auth_error,
-    key_fingerprint, parse_response, resolve_key, typed_cache_key,
+    CLIENT, CLIENT_FAST, HARDCODED_KEY_FOR_TESTS, base_urls_for, cache_get, cache_key, cache_put,
+    classify_status, is_auth_error, key_fingerprint, parse_response, resolve_key, typed_cache_key,
 };
-use super::endpoints::{SEARCH_LIMIT, build_search_body, extract_items, parse_credits};
+use super::endpoints::{
+    CreditsOutcome, CreditsProbe, SEARCH_LIMIT, build_search_body, classify_credits_probe,
+    extract_items, parse_credits_body,
+};
 use crate::util::curl_client::AuthScheme;
 
 #[test]
-fn parse_credits_reads_the_live_icu_enterprise_shape() {
-    // The exact body see-know.icu returns for an enterprise key. The daily cap is
+fn credits_body_reads_the_live_ru_enterprise_shape() {
+    // The exact body see-know.ru returns for an enterprise key. The daily cap is
     // `credits_daily_limit` — the field the old parser (daily_limit/total/daily)
     // missed, leaving scale_scan_cap_from_daily blind to the 15k/day ceiling.
-    let live = json!({
-        "plan": "enterprise",
-        "credits_remaining": 15000,
-        "credits_daily_limit": 15000,
-        "credits_used_today": 0,
-        "resets_at": "2026-07-11T00:00:00.000Z"
-    });
-    assert_eq!(parse_credits(&live), Some((15000, Some(15000))));
-
-    // Legacy/alternate shapes still parse (back-compat).
-    assert_eq!(
-        parse_credits(&json!({"credits_remaining": 4200, "daily_limit": 5000})),
-        Some((4200, Some(5000)))
-    );
-    assert_eq!(
-        parse_credits(&json!({"data": {"credits_remaining": 100, "total": 500}})),
-        Some((100, Some(500)))
-    );
-    // Remaining present, no daily field → daily_limit None (not a parse failure).
-    assert_eq!(
-        parse_credits(&json!({"credits_remaining": 7})),
-        Some((7, None))
-    );
-    // No remaining field at all → None.
-    assert_eq!(parse_credits(&json!({"plan": "free"})), None);
+    let live = r#"{"plan":"enterprise","credits_remaining":15000,"credits_daily_limit":15000,"credits_used_today":0,"resets_at":"2026-07-11T00:00:00.000Z"}"#;
+    match parse_credits_body(live) {
+        CreditsOutcome::Data {
+            remaining,
+            daily_limit,
+        } => {
+            assert_eq!(remaining, 15000);
+            assert_eq!(daily_limit, Some(15000));
+        }
+        _ => panic!("expected Data outcome for the live enterprise shape"),
+    }
 }
 
 #[test]
@@ -63,6 +52,17 @@ fn client_timeout_budget_exceeds_name_search_server_cap() {
         CLIENT.outer_timeout_ms(),
         CLIENT.curl_timeout_secs()
     );
+    // The fast-GET client must be TIGHTER than the /search client: the fast
+    // endpoints answer in ~2-5s, so a hung GET must fail well before it burns the
+    // module's whole per-scan timeout budget on /search's 75s ceiling. Its outer
+    // timeout still exceeds its curl ceiling so curl's own exit code surfaces.
+    assert!(
+        CLIENT_FAST.curl_timeout_secs() < CLIENT.curl_timeout_secs(),
+        "fast-GET curl budget ({}s) must be tighter than /search's ({}s)",
+        CLIENT_FAST.curl_timeout_secs(),
+        CLIENT.curl_timeout_secs()
+    );
+    assert!(CLIENT_FAST.outer_timeout_ms() > CLIENT_FAST.curl_timeout_secs() * 1000);
 }
 
 #[test]
@@ -71,20 +71,97 @@ fn resolve_key_uses_provided_when_non_empty() {
 }
 
 #[test]
+fn classify_status_diverts_5xx_and_no_response_to_transient_retry() {
+    use crate::core::error::Error;
+    // A 5xx (with either an HTML error page or a JSON error body) is a transient
+    // upstream failure → RateLimited, so the retry loops back off and retry it,
+    // instead of the old behaviour where the HTML page parsed to an empty miss
+    // and the paid call was silently lost.
+    assert!(
+        matches!(
+            classify_status("<html>503 Bad Gateway</html>", 503),
+            Err(Error::RateLimited(_))
+        ),
+        "a 503 must be retryable-transient, not an empty miss"
+    );
+    assert!(
+        matches!(
+            classify_status(r#"{"error":"upstream"}"#, 500),
+            Err(Error::RateLimited(_))
+        ),
+        "a 500 with a JSON body must still be retryable-transient"
+    );
+    // curl reporting no HTTP response at all (status 0) is transient too.
+    assert!(matches!(classify_status("", 0), Err(Error::RateLimited(_))));
+    // A 2xx-empty body is a GENUINE miss — parse_response yields Ok, no retry.
+    assert!(
+        classify_status("", 200).is_ok(),
+        "a 200 empty result is a real miss, not retried"
+    );
+    // A 4xx JSON body is NOT diverted — it keeps parse_response's existing
+    // classification (a 404/400 miss here) rather than being treated transient.
+    assert!(
+        classify_status(r#"{"total":0}"#, 404).is_ok(),
+        "a 4xx JSON body keeps parse_response's classification"
+    );
+}
+
+#[test]
+fn reset_budget_clears_the_cross_module_response_cache() {
+    // Regression: RESPONSE_CACHE dedups identical endpoint queries WITHIN one
+    // scan (its own doc comment), but reset_budget() previously only reset
+    // the quota counters and the key-invalid/quota-probed latches -- a
+    // long-lived `hse serve`/`hse live` process would silently keep serving
+    // the FIRST scan's cached SeekNow records for every later re-scan of the
+    // same email/username/phone, forever, with no live re-check.
+    // reset_budget() must also clear the cache.
+    //
+    // Isolation note: RESPONSE_CACHE is a process-global `static` that ANY
+    // concurrent scan-running test clears via `reset_per_scan` →
+    // `see_know::reset_budget` — a lock inside this file cannot serialise
+    // against those. So the "value present" sanity below can be cleared out
+    // from under us by an unrelated test (an observed CI flake). Retry the put
+    // until we observe our own UNIQUE entry (tolerating a rare external clear
+    // landing in the window); the real contract — that reset_budget() then
+    // clears it — is the final assertion, which no external test can spuriously
+    // satisfy for this unique key (nothing else ever puts it).
+    let key = "reset_budget_clears_cache_test_key";
+    let mut observed_present = false;
+    for _ in 0..200 {
+        cache_put(key.to_string(), vec![json!({"stale": true})]);
+        if cache_get(key).is_some() {
+            observed_present = true;
+            break;
+        }
+    }
+    assert!(
+        observed_present,
+        "sanity: a non-empty put must be observable at least once in 200 tries"
+    );
+    reset_budget();
+    assert!(
+        cache_get(key).is_none(),
+        "reset_budget() must clear RESPONSE_CACHE so a new scan re-queries live"
+    );
+}
+
+#[test]
 fn key_fingerprint_identifies_origin_without_full_secret() {
     // A SYNTHETIC key in the `seek-…` shape — never a real/embedded value, so
     // the "single source of truth for embedded keys" architecture guard isn't
     // tripped by a literal living outside util::keys.rs.
     let fp = key_fingerprint("seek-1234567890aaaabbbbccccddddeeeeffff0000111122223333");
-    // Provider-prefixed, head + tail present, middle elided.
-    assert!(fp.starts_with("see-know.ru:seek-12345"), "got {fp}");
+    // Provider-prefixed, head + tail present, middle elided. Domain-agnostic
+    // prefix — see-know rotates across three domains, so the fingerprint
+    // never names one (mirrors the `provider` evidence attribute fix).
+    assert!(fp.starts_with("see-know:seek-12345"), "got {fp}");
     assert!(fp.ends_with("223333"), "got {fp}");
     assert!(fp.contains('\u{2026}'));
     // The full secret never appears verbatim — the elided middle is dropped.
     assert!(!fp.contains("aaaabbbbccccddddeeeeffff"));
     // Short/empty keys degrade gracefully.
-    assert_eq!(key_fingerprint(""), "see-know.ru:(no key)");
-    assert_eq!(key_fingerprint("short"), "see-know.ru:short");
+    assert_eq!(key_fingerprint(""), "see-know:(no key)");
+    assert_eq!(key_fingerprint("short"), "see-know:short");
 }
 
 #[test]
@@ -218,20 +295,36 @@ fn extract_items_empty_for_unknown_shape() {
 }
 
 #[test]
-fn parse_credits_tolerates_string_and_float_encoded_meters() {
+fn credits_body_tolerates_string_and_float_encoded_meters() {
     // Number-serialization drift on the one call that governs paid-budget
-    // scaling must not collapse the parse to None (which pins the cap at floor).
-    assert_eq!(
-        parse_credits(&json!({"credits_remaining": "15000", "credits_daily_limit": "15000"})),
-        Some((15000, Some(15000)))
-    );
+    // scaling must not collapse the parse to Unparseable (which pins the cap
+    // at floor).
+    match parse_credits_body(r#"{"credits_remaining": "15000", "credits_daily_limit": "15000"}"#) {
+        CreditsOutcome::Data {
+            remaining,
+            daily_limit,
+        } => {
+            assert_eq!(remaining, 15000);
+            assert_eq!(daily_limit, Some(15000));
+        }
+        _ => panic!("expected Data outcome for stringified meters"),
+    }
     // Float-encoded meters coerce (truncating toward zero).
-    assert_eq!(
-        parse_credits(&json!({"credits_remaining": 4200.0, "daily_limit": 5000.0})),
-        Some((4200, Some(5000)))
-    );
+    match parse_credits_body(r#"{"credits_remaining": 4200.0, "daily_limit": 5000.0}"#) {
+        CreditsOutcome::Data {
+            remaining,
+            daily_limit,
+        } => {
+            assert_eq!(remaining, 4200);
+            assert_eq!(daily_limit, Some(5000));
+        }
+        _ => panic!("expected Data outcome for float-encoded meters"),
+    }
     // A non-numeric string is rejected (no false meter).
-    assert_eq!(parse_credits(&json!({"credits_remaining": "n/a"})), None);
+    assert!(matches!(
+        parse_credits_body(r#"{"credits_remaining": "n/a"}"#),
+        CreditsOutcome::Unparseable
+    ));
 }
 
 #[test]
@@ -342,6 +435,12 @@ fn empty_results_are_never_cached_but_non_empty_are() {
     // Regression for the transient-empty poisoning bug: cache_put() must
     // refuse an empty result so a transient `total:0` cannot poison later
     // lookups of the same query, while a real hit is memoised.
+    //
+    // Isolation note (see `reset_budget_clears_the_cross_module_response_cache`):
+    // RESPONSE_CACHE is a process-global cleared by any concurrent scan-running
+    // test, so the `hit_key` read-after-write below is retried until observed;
+    // the empty-key assertion is robust either way (an empty result is never
+    // cached, and no external test ever puts these unique keys).
     let empty_key = typed_cache_key("search", "transient-empty-probe", "name");
     cache_put(empty_key.clone(), Vec::new());
     assert!(
@@ -350,12 +449,19 @@ fn empty_results_are_never_cached_but_non_empty_are() {
     );
 
     let hit_key = typed_cache_key("search", "real-hit-probe", "name");
-    cache_put(
-        hit_key.clone(),
-        vec![serde_json::json!({"email": "x@y.com"})],
-    );
+    let mut hit_len = None;
+    for _ in 0..200 {
+        cache_put(
+            hit_key.clone(),
+            vec![serde_json::json!({"email": "x@y.com"})],
+        );
+        hit_len = cache_get(&hit_key).map(|v| v.len());
+        if hit_len.is_some() {
+            break;
+        }
+    }
     assert_eq!(
-        cache_get(&hit_key).map(|v| v.len()),
+        hit_len,
         Some(1),
         "a non-empty result must be cached and retrievable"
     );
@@ -386,24 +492,6 @@ fn scan_budget_remaining_decreases_with_increments() {
 }
 
 #[test]
-fn clear_quota_probe_reenables_probing() {
-    let _guard = BUDGET_TEST_LOCK.lock();
-    reset_budget(); // clears QUOTA_PROBED
-    assert!(should_probe_quota(), "first probe after reset should fire");
-    assert!(
-        !should_probe_quota(),
-        "latched — a second call must not re-fire"
-    );
-    // A transient /credits failure clears the latch so the NEXT target retries.
-    clear_quota_probe();
-    assert!(
-        should_probe_quota(),
-        "after clear_quota_probe the next target must re-probe"
-    );
-    reset_budget();
-}
-
-#[test]
 fn scale_scan_cap_clamps_to_remaining_and_latches_at_zero() {
     let _guard = BUDGET_TEST_LOCK.lock();
     // An explicit operator cap override takes precedence and would mask the
@@ -428,6 +516,27 @@ fn scale_scan_cap_clamps_to_remaining_and_latches_at_zero() {
     assert!(
         is_quota_exhausted(),
         "a zero balance must latch quota-exhausted instead of scaling a cap"
+    );
+    reset_budget();
+}
+
+#[test]
+fn a_failed_quota_probe_releases_the_latch_so_a_later_seed_re_probes() {
+    let _guard = BUDGET_TEST_LOCK.lock();
+    reset_budget(); // clears the one-shot QUOTA_PROBED latch
+    // First caller claims the one-shot probe; a concurrent duplicate is refused.
+    assert!(should_probe_quota(), "first caller wins the probe claim");
+    assert!(
+        !should_probe_quota(),
+        "the latch blocks a duplicate concurrent probe"
+    );
+    // The probe the claim guarded FAILED (transient blip) → release the latch.
+    release_quota_probe();
+    // A later seed must now be able to re-probe, instead of the whole scan
+    // running pinned to the un-scaled default cap after one blip.
+    assert!(
+        should_probe_quota(),
+        "after a failed probe releases the latch, a later seed re-probes"
     );
     reset_budget();
 }
@@ -569,27 +678,39 @@ fn parse_response_ignores_auth_marker_inside_data_payload() {
 }
 
 #[test]
-fn parse_response_rate_limit_is_transient_until_sustained() {
-    let _guard = BUDGET_TEST_LOCK.lock();
+fn parse_response_treats_rate_limit_as_retryable_not_quota_exhausted() {
+    // Regression: a transient burst rate-limit (`{"error":"rate_limit"}`) used
+    // to be classified identically to true daily-quota exhaustion, latching
+    // `mark_quota_exhausted()` and silently abandoning SeekNow for every
+    // remaining endpoint call in the scan (with no backoff at all). It must
+    // now surface as a distinguishable `Error::RateLimited` and must NOT
+    // latch the quota-exhausted flag — a burst throttle is recoverable
+    // within the same scan via backoff, unlike real exhaustion.
     reset_budget();
-    // A single rate-limit is a per-minute throttle, not a daily wall — skip the
-    // call (Null) but do NOT permanently latch the scan.
-    let v = parse_response(r#"{"error":"rate_limit"}"#).expect("rate limit → Ok(Null)");
-    assert!(v.is_null());
+    let err = parse_response(r#"{"error":"rate_limit","message":"slow down"}"#)
+        .expect_err("a rate-limit body must surface as an Err, not Ok(Null)");
+    assert!(
+        matches!(err, crate::core::error::Error::RateLimited(_)),
+        "must classify as RateLimited, not a generic error: {err:?}"
+    );
     assert!(
         !is_quota_exhausted(),
-        "one rate-limit spike must not zero out the rest of the scan"
+        "a transient rate-limit must NOT latch true quota exhaustion"
     );
-    // A clean response between spikes lifts the throttle (resets the streak).
-    parse_response(r#"{"total":1,"results":[{"email":"a@x.com"}]}"#).expect("clean response");
-    // A SUSTAINED consecutive streak (broadened matching: `rate_limited` too)
-    // eventually escalates to a quota latch so the fan-out stops hammering.
-    for _ in 0..4 {
-        let _ = parse_response(r#"{"error":"rate_limited"}"#);
-    }
+    reset_budget();
+}
+
+#[test]
+fn parse_response_still_treats_true_exhaustion_as_quota_not_rate_limited() {
+    // Sibling regression: real exhaustion signals must keep latching
+    // mark_quota_exhausted() exactly as before — only bare "rate_limit" is
+    // the new, distinct, retryable case.
+    reset_budget();
+    let v = parse_response(r#"{"error":"quota_exceeded"}"#).expect("quota exhaustion is Ok(Null)");
+    assert!(v.is_null());
     assert!(
         is_quota_exhausted(),
-        "sustained consecutive rate-limits must latch to stop budget burn"
+        "true exhaustion must still latch the quota-exhausted flag"
     );
     reset_budget();
 }
@@ -604,11 +725,67 @@ fn client_base_url_uses_endpoint_override_or_default() {
         url.starts_with("https://"),
         "SeekNow base URL must be HTTPS — got {url}"
     );
-    // Must be a well-known domain (see-know.icu) or an override matching HTTPS + non-local rules
+    // Must be a well-known domain (see-know.ru) or an override matching HTTPS + non-local rules
     assert!(
         url.contains("see-know."),
         "SeekNow base URL must reference the canonical domain — got {url}"
     );
+    // Regression guard: the default host is `.ru` (promoted to primary
+    // 2026-07-29; `.xyz`, `.eu` and `.icu` remain fallbacks in
+    // `all_base_urls`), unless the operator's own shell has
+    // HUNTSMAN_SEEKNOW_BASE set, in which case that override legitimately wins.
+    if std::env::var("HUNTSMAN_SEEKNOW_BASE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .is_none()
+    {
+        assert_eq!(
+            url, "https://see-know.ru/api/v1",
+            "SeekNow default base URL must be the `.ru` domain — got {url}"
+        );
+    }
+}
+
+#[test]
+fn base_urls_for_default_rotates_through_every_known_public_domain() {
+    // No override active (primary == the built-in default): full 4-domain
+    // rotation across every known SeekNow public domain.
+    let urls = base_urls_for("https://see-know.ru/api/v1".to_string());
+    assert_eq!(
+        urls,
+        vec![
+            "https://see-know.ru/api/v1",
+            "https://see-know.xyz/api/v1",
+            "https://see-know.eu/api/v1",
+            "https://see-know.icu/api/v1",
+        ]
+    );
+}
+
+#[test]
+fn base_urls_for_active_override_is_exclusive_no_public_fallback() {
+    // An accepted HUNTSMAN_SEEKNOW_BASE override (primary != the built-in
+    // default) must NOT fall through to see-know.eu/.icu/.ru on failure — that
+    // would silently send the key-bearing, PII-bearing request to a host the
+    // operator explicitly did not choose, and (for the carrier-DNS-filtering
+    // workaround `hse doctor` itself recommends) just reproduces the exact
+    // resolution failure the override exists to route around.
+    let urls = base_urls_for("https://my-private-relay.example/api/v1".to_string());
+    assert_eq!(
+        urls,
+        vec!["https://my-private-relay.example/api/v1"],
+        "an active override must be the ONLY url tried — got {urls:?}"
+    );
+}
+
+#[test]
+fn base_urls_for_override_pinned_to_a_known_fallback_is_also_exclusive() {
+    // Even when the override happens to equal one of the two hardcoded
+    // fallback domains, it must still win exclusively — the operator's
+    // explicit choice, not the rotation order, decides once an override
+    // is set at all.
+    let urls = base_urls_for("https://see-know.eu/api/v1".to_string());
+    assert_eq!(urls, vec!["https://see-know.eu/api/v1"]);
 }
 
 #[test]
@@ -620,5 +797,171 @@ fn client_auth_scheme_is_x_api_key_header() {
         CLIENT.auth_scheme(),
         crate::util::curl_client::AuthScheme::XApiKey,
         "SeekNow MUST use X-API-Key header per spec"
+    );
+}
+
+// ── `/credits` response classification (hse doctor's SeekNow diagnostic) ──
+//
+// `query_credits` is also the probe `hse doctor`'s "SeekNow account" section
+// uses to catch a dead/rejected key from a FRESH process — before this fix,
+// only a data-bearing `search`/`get_path` call ever classified+latched an
+// auth rejection, so a process that only ever called `query_credits` (like
+// `hse doctor`) could never detect a dead key. These tests pin the pure
+// classification `parse_credits_body` performs, live-verified against this
+// operator's actual embedded SeekNow key: a real `hse scan --modules
+// see_know` run against `see-know.icu` confirmed it currently returns
+// exactly the `{"error":"invalid_api_key",...}` shape the AuthError case
+// below models.
+
+#[test]
+fn credits_body_classifies_an_auth_rejection_as_auth_error() {
+    let body = r#"{"error":"invalid_api_key","message":"Invalid API key"}"#;
+    assert!(matches!(
+        parse_credits_body(body),
+        CreditsOutcome::AuthError
+    ));
+}
+
+#[test]
+fn credits_body_classifies_plan_required_as_auth_error_too() {
+    // A recognised key whose account lacks a paid plan is terminal for the
+    // held key in the exact same way an outright-invalid key is (see
+    // `client::is_auth_error`'s own doc comment) — the fix isn't a header
+    // change, the account needs a plan, so both classify identically here.
+    let body = r#"{"error":"plan_required","message":"Upgrade your plan"}"#;
+    assert!(matches!(
+        parse_credits_body(body),
+        CreditsOutcome::AuthError
+    ));
+}
+
+#[test]
+fn credits_body_extracts_remaining_and_daily_limit_from_every_known_shape() {
+    let shapes = [
+        r#"{"credits_remaining": 4200, "daily_limit": 5000, "plan": "enterprise"}"#,
+        r#"{"data": {"credits_remaining": 4200, "daily_limit": 5000}}"#,
+        r#"{"remaining": 4200, "total": 5000}"#,
+        r#"{"credits": {"remaining": 4200, "daily": 5000}}"#,
+    ];
+    for body in shapes {
+        match parse_credits_body(body) {
+            CreditsOutcome::Data {
+                remaining,
+                daily_limit,
+            } => {
+                assert_eq!(remaining, 4200, "shape: {body}");
+                assert_eq!(daily_limit, Some(5000), "shape: {body}");
+            }
+            _ => panic!("expected Data outcome for shape: {body}"),
+        }
+    }
+}
+
+#[test]
+fn credits_body_missing_daily_limit_still_returns_remaining() {
+    let body = r#"{"credits_remaining": 100}"#;
+    match parse_credits_body(body) {
+        CreditsOutcome::Data {
+            remaining,
+            daily_limit,
+        } => {
+            assert_eq!(remaining, 100);
+            assert_eq!(daily_limit, None);
+        }
+        _ => panic!("expected Data outcome"),
+    }
+}
+
+#[test]
+fn credits_body_garbage_is_unparseable_not_auth_error() {
+    // A network blip / HTML error page / truncated body must NEVER be
+    // mistaken for a confirmed dead key — only a genuine, classified auth
+    // rejection may latch `mark_key_invalid`.
+    for body in ["", "not json", "<html>502 Bad Gateway</html>", "{}"] {
+        assert!(
+            matches!(parse_credits_body(body), CreditsOutcome::Unparseable),
+            "body {body:?} must classify as Unparseable, not AuthError"
+        );
+    }
+}
+
+// ── `credits_probe` outcome classification (hse doctor's actionable SeekNow
+//    diagnostic). A live Termux scan showed EVERY see_know call failing with
+//    `[seek_now] curl exited 6` (curl "could not resolve host"), then the
+//    circuit breaker cooling the module down — but the old `query_credits`
+//    dropped the curl detail (`.ok()?`), so `hse doctor` could only print the
+//    catch-all "could not reach SeekNow", never revealing the real cause was
+//    DNS host-resolution (typically carrier/ISP domain filtering), not a bad
+//    key. These pin the transport-vs-key distinction the new probe restores.
+
+#[test]
+fn credits_probe_maps_a_transport_failure_to_unreachable_with_the_curl_detail() {
+    // The exact string the curl client surfaces for a DNS failure — the module
+    // error the live bundle recorded. It must classify as Unreachable (a
+    // network problem) and preserve curl's own detail verbatim, NOT be reported
+    // as an invalid key.
+    let curl_dns_failure =
+        "curl exited 6: curl: (6) Could not resolve host: see-know.eu".to_string();
+    match classify_credits_probe(Err(curl_dns_failure.clone())) {
+        CreditsProbe::Unreachable(detail) => assert_eq!(detail, curl_dns_failure),
+        other => panic!("a transport failure must be Unreachable, got {other:?}"),
+    }
+}
+
+#[test]
+fn credits_probe_maps_a_good_body_to_ok_with_the_parsed_numbers() {
+    let body = r#"{"credits_remaining": 4200, "daily_limit": 5000}"#.to_string();
+    match classify_credits_probe(Ok(body)) {
+        CreditsProbe::Ok {
+            remaining,
+            daily_limit,
+        } => {
+            assert_eq!(remaining, 4200);
+            assert_eq!(daily_limit, Some(5000));
+        }
+        other => panic!("a valid credits body must be Ok, got {other:?}"),
+    }
+}
+
+#[test]
+fn credits_probe_maps_an_unrecognised_body_to_unparseable_not_unreachable() {
+    // Reachable host, but a body with no credits field: a schema/plan problem,
+    // distinct from both a transport failure and a dead key.
+    match classify_credits_probe(Ok("<html>200 but no json</html>".to_string())) {
+        CreditsProbe::Unparseable => {}
+        other => panic!("a reachable-but-unrecognised body must be Unparseable, got {other:?}"),
+    }
+}
+
+#[test]
+fn deep_search_cache_key_namespace_is_distinct_from_fast_search() {
+    // A fast-search miss and a subsequent deep-search hit for the SAME query
+    // must never collide in the response cache — one endpoint's cached
+    // (non-empty) result must not be served back as the other's. `search`
+    // and `search_deep` both build their cache key via `typed_cache_key`
+    // keyed on the literal endpoint-name string passed as `path`, so this
+    // pins that the two call sites actually use different literals.
+    let fast = typed_cache_key("search", "alice@example.com", "email");
+    let deep = typed_cache_key("search_deep", "alice@example.com", "email");
+    assert_ne!(fast, deep);
+    assert!(fast.starts_with("search#"));
+    assert!(deep.starts_with("search_deep#"));
+}
+
+#[test]
+fn deep_search_reuses_the_same_verified_request_body_contract_as_fast_search() {
+    // `search_deep`'s only documented difference from `search`
+    // (`docs/SEEKNOW_SETUP.md`'s endpoint table + FAQ) is the URL path and
+    // corpus depth searched server-side — request shape and credit cost are
+    // identical. Reusing `build_search_body` (already covered by
+    // `search_body_includes_limit_and_optional_type`) rather than a second,
+    // independently-written body builder is what makes that guarantee real
+    // instead of just asserted in a doc comment.
+    let deep_body = build_search_body("alice@example.com", "email", SEARCH_LIMIT);
+    let fast_body = build_search_body("alice@example.com", "email", SEARCH_LIMIT);
+    assert_eq!(
+        deep_body, fast_body,
+        "search_deep must build its request body with the exact same function \
+         fast search uses — no independent, unverified body construction"
     );
 }

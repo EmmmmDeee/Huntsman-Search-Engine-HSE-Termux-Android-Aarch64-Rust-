@@ -3,10 +3,11 @@ use super::*;
 use crate::util::geohash::geohash;
 
 pub(in crate::core::correlator) fn rule_au_016_breach_ip_geo_chain(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let breach_ips: Vec<&Entity> = entities_of_kind(entities, EntityKind::IpAddress)
         .into_iter()
         .filter(|e| e.has_tag("breach"))
@@ -34,33 +35,34 @@ pub(in crate::core::correlator) fn rule_au_016_breach_ip_geo_chain(
     }
     let mut uids: Vec<String> = breach_ips.iter().map(|e| e.uid.clone()).collect();
     uids.extend(linked.iter().map(|e| e.uid.clone()));
-    vec![Correlation {
-        rule_id: "AU-016".into(),
-        rule_name: "Breach IP → geolocation chain".into(),
-        severity: Severity::High,
-        description: format!(
+    vec![Correlation::new(
+        "AU-016",
+        "Breach IP → geolocation chain",
+        Severity::High,
+        format!(
             "{} breach IP(s) resolved to {} coordinate(s) via geolocation pipeline",
             breach_ips.len(),
             linked.len()
         ),
-        entity_uids: uids,
-        scan_id: scan_id.into(),
+        uids,
+        scan_id,
         ts,
-        rank: 0.0,
-        techniques: Vec::new(),
-    }]
+    )]
 }
 
 pub(in crate::core::correlator) fn rule_au_017_multi_geo_convergence(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Cheap precondition: fewer than two confirmed coordinate entities can never
     // form a cluster, so bail before parsing anything.
     if entities
         .iter()
-        .filter(|e| e.kind == EntityKind::Coordinates && e.confidence >= 0.50)
+        .filter(|e| {
+            e.kind == EntityKind::Coordinates && e.confidence >= 0.50 && !is_infrastructure_geo(e)
+        })
         .take(2)
         .count()
         < 2
@@ -71,9 +73,15 @@ pub(in crate::core::correlator) fn rule_au_017_multi_geo_convergence(
     // junk ("200,300") is dropped here rather than silently clustered. Each
     // surviving entity carries its (lat, lon) so the inner loop never re-parses.
     // Filter and parse fuse into one pass — no intermediate `coords` Vec.
+    // Infrastructure coordinates (a domain's hosting datacentre, a WHOIS
+    // registrant location) are NOT the subject's whereabouts, so they must not
+    // fuse into a "subject physically located here" convergence — parity with
+    // AU-030/AU-099 and the sibling geo rules.
     let mut parsed: Vec<(&Entity, (f64, f64))> = entities
         .iter()
-        .filter(|e| e.kind == EntityKind::Coordinates && e.confidence >= 0.50)
+        .filter(|e| {
+            e.kind == EntityKind::Coordinates && e.confidence >= 0.50 && !is_infrastructure_geo(e)
+        })
         .filter_map(|c| crate::util::geohash::parse_coords(&c.value).map(|ll| (c, ll)))
         .collect();
     // Deterministic clustering: the greedy single-link assignment below
@@ -110,30 +118,29 @@ pub(in crate::core::correlator) fn rule_au_017_multi_geo_convergence(
                 .iter()
                 .flat_map(|(e, _)| e.evidence.iter().map(|ev| ev.source.as_str()))
                 .collect();
-            Correlation {
-                rule_id: "AU-017".into(),
-                rule_name: "Multi-source geographic convergence".into(),
-                severity: Severity::High,
-                description: format!(
+            Correlation::new(
+                "AU-017",
+                "Multi-source geographic convergence",
+                Severity::High,
+                format!(
                     "{} coordinate entities converge within 0.5° (~55km), from {} source(s)",
                     cl.len(),
                     sources.len()
                 ),
-                entity_uids: uids,
-                scan_id: scan_id.into(),
+                uids,
+                scan_id,
                 ts,
-                rank: 0.0,
-                techniques: Vec::new(),
-            }
+            )
         })
         .collect()
 }
 
 pub(in crate::core::correlator) fn rule_au_026_validated_address(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const GEO_SOURCES: &[&str] = &[
         "geocode",
         "photon",
@@ -195,17 +202,30 @@ pub(in crate::core::correlator) fn rule_au_026_validated_address(
 /// convergence is AU-017's job; this asserts the *primary* address↔coordinate
 /// location.
 pub(in crate::core::correlator) fn rule_au_027_address_coordinates_chain(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let addresses: Vec<&Entity> = entities_of_kind(entities, EntityKind::Address)
         .into_iter()
         .filter(|e| e.confidence >= 0.55)
         .collect();
     let coords: Vec<&Entity> = entities_of_kind(entities, EntityKind::Coordinates)
         .into_iter()
-        .filter(|e| e.confidence >= 0.55)
+        // Unlike its siblings (AU-030/052/053/057/059) this rule doesn't gate on
+        // `is_infrastructure_geo` — it relies on the geo-tag check below instead,
+        // and existing regression fixtures assume untagged/unanchored coordinates
+        // still cluster. But the `hse radar` sentinel seed (0,0) must still never
+        // become the "dominant cluster" this rule anchors on, so exclude it
+        // specifically rather than pulling in the broader anchoring-source gate.
+        .filter(|e| {
+            e.confidence >= 0.55
+                && !crate::core::scan::is_radar_sentinel(
+                    crate::core::scan::TargetKind::Coordinates,
+                    &e.value,
+                )
+        })
         .collect();
     if addresses.is_empty() || coords.is_empty() {
         return Vec::new();
@@ -287,10 +307,11 @@ pub(in crate::core::correlator) fn rule_au_027_address_coordinates_chain(
 /// not verified here (see AU-027 on why the correlator can't). AU-017 covers
 /// spatial clustering of `Coordinates`.
 pub(in crate::core::correlator) fn rule_au_030_geo_convergence_score(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let geo_entities: Vec<&Entity> = entities
         .iter()
         .filter(|e| {
@@ -353,23 +374,38 @@ pub(in crate::core::correlator) fn rule_au_030_geo_convergence_score(
 
 /// AU-057 — Synthesised location fix (weighted geometric median).
 ///
-/// Collects all confirmed (`confidence ≥ 0.60`) `Coordinates` entities, weights
-/// each by its confidence, and computes the
+/// Collects confirmed (`confidence ≥ 0.60`) **person-anchored** `Coordinates`
+/// entities ([`is_infrastructure_geo`] — the same admissibility gate AU-052/053/059
+/// already use, so a hosting IP, a map POI, or a bare IP/WHOIS-derived fix can
+/// never enter the subject's "primary location" here either), weights each by
+/// its confidence AND its source's real-world spatial precision
+/// ([`precision_weight_multiplier`] — a GPS/geocode fix pulls harder than a
+/// phone-carrier or search-snippet fix at equal confidence), and computes the
 /// [`crate::util::geometry::weighted_geometric_median`] — the point that
-/// minimises the confidence-weighted sum of great-circle distances to all
-/// inputs. This converts the qualitative "sources agree" assertion from
-/// AU-017/AU-030 into a single computable best-estimate lat/lon.
+/// minimises the weighted sum of great-circle distances to all inputs. This
+/// converts the qualitative "sources agree" assertion from AU-017/AU-030 into a
+/// single computable best-estimate lat/lon.
+///
+/// Before this gate existed, a live phone scan reproduced the exact failure it
+/// prevents: a residential `ip_geo` fix (its own doc comment records "free
+/// IP-geo providers routinely miss residential geolocation by 30-80 km") sat at
+/// exactly the 0.60 floor and fused into this median at full, unweighted
+/// footing — a "primary location" synthesised partly from infrastructure noise,
+/// not a subject sighting.
 ///
 /// Requires ≥ 2 valid inputs; `High` at ≥ 3 inputs, `Medium` at 2.
 pub(in crate::core::correlator) fn rule_au_057_synthesised_location_fix(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let candidates: Vec<(&Entity, (f64, f64))> =
         entities_of_kind(entities, EntityKind::Coordinates)
             .into_iter()
-            .filter(|e| e.confidence >= 0.60)
+            // Exclude infrastructure coordinates: a synthesised "location fix" must
+            // come from the subject's own points, not a hosting/registrant datacentre.
+            .filter(|e| e.confidence >= 0.60 && !is_infrastructure_geo(e))
             .filter_map(|e| crate::util::geohash::parse_coords(&e.value).map(|ll| (e, ll)))
             .collect();
 
@@ -379,7 +415,11 @@ pub(in crate::core::correlator) fn rule_au_057_synthesised_location_fix(
 
     let weighted: Vec<((f64, f64), f64)> = candidates
         .iter()
-        .map(|(e, ll)| (*ll, e.confidence))
+        .map(|(e, ll)| {
+            let precision_bonus =
+                best_precision_radius_m(e).map_or(1.0, precision_weight_multiplier);
+            (*ll, e.confidence * precision_bonus)
+        })
         .collect();
 
     let Some((lat, lon)) = crate::util::geometry::weighted_geometric_median(&weighted) else {

@@ -1,10 +1,11 @@
 use super::*;
 
 pub(in crate::core::correlator) fn rule_au_013_local_network_discovery(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const LAN_TAGS: &[&str] = &[
         crate::core::tags::LOCAL_ARP,
         crate::core::tags::LOCAL_INTERFACE,
@@ -39,10 +40,11 @@ pub(in crate::core::correlator) fn rule_au_013_local_network_discovery(
 }
 
 pub(in crate::core::correlator) fn rule_au_014_geo_cluster(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const GEO_TAGS: &[&str] = &["geoint", "wifi-observed"];
     entities_of_kind(entities, EntityKind::Coordinates)
         .into_iter()
@@ -83,11 +85,12 @@ pub(in crate::core::correlator) fn rule_au_014_geo_cluster(
 /// the pairwise geo rules (AU-017/AU-030) don't surface. Deterministic:
 /// component membership is edge-defined and the output is uid-sorted.
 pub(in crate::core::correlator) fn rule_au_032_colocation_cluster(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::{HashMap, HashSet};
 
     // The correlator runs over the quarantine-filtered (candidate-stripped)
@@ -178,10 +181,11 @@ pub(in crate::core::correlator) fn rule_au_032_colocation_cluster(
 /// position to within a cell footprint). The Coordinates entities spawned by these
 /// towers are the primary geoint leads; this rule surfaces the corroboration quality.
 pub(in crate::core::correlator) fn rule_au_084_cell_tower_dual_source(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let corroborated: Vec<&Entity> = entities_of_kind(entities, EntityKind::DeviceId)
         .into_iter()
         .filter(|e| {
@@ -219,4 +223,76 @@ pub(in crate::core::correlator) fn rule_au_084_cell_tower_dual_source(
         scan_id,
         ts,
     )]
+}
+
+/// AU-115 — Personal Wi-Fi network geolocated.
+///
+/// A personalised SSID (a home/office network name, frequently surfaced from a
+/// stealer log) that WiGLE resolves to a physical location places the network's
+/// OWNER. `wigle::emit_ssid_entities` mints `ssid-located` Coordinates whose
+/// evidence carries the originating `ssid` attribute; this rule joins each
+/// `Ssid` entity to the WiGLE Coordinates that name it and reports the
+/// geolocation — a high-value GEOINT lead (a subject-owned network is a far
+/// stronger location anchor than a coarse IP-geo fix), previously surfaced by no
+/// correlation.
+///
+/// Precision: matches on the exact case-folded SSID name, requires WiGLE's
+/// `ssid-located` provenance tag (so only a network WiGLE's own uniqueness gate
+/// admitted participates — a generic `linksys`/`xfinitywifi` name never reaches
+/// emission), and runs on the confirmed (candidate-filtered) view.
+pub(in crate::core::correlator) fn rule_au_115_personal_wifi_geolocated(
+    context: &RuleContext,
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let entities = context.entities();
+    let ssids = entities_of_kind(entities, EntityKind::Ssid);
+    if ssids.is_empty() {
+        return Vec::new();
+    }
+    let located: Vec<&Entity> = entities_of_kind(entities, EntityKind::Coordinates)
+        .into_iter()
+        .filter(|e| e.has_tag("ssid-located"))
+        .collect();
+    if located.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for ssid in ssids {
+        let name_lc = ssid.value.trim().to_lowercase();
+        let matches: Vec<&Entity> = located
+            .iter()
+            .copied()
+            .filter(|c| {
+                c.evidence.iter().any(|ev| {
+                    ev.attributes
+                        .get("ssid")
+                        .is_some_and(|s| s.trim().to_lowercase() == name_lc)
+                })
+            })
+            .collect();
+        if matches.is_empty() {
+            continue;
+        }
+        let mut uids: Vec<String> = matches.iter().map(|c| c.uid.clone()).collect();
+        uids.push(ssid.uid.clone());
+        uids.sort_unstable();
+        uids.dedup();
+        out.push(Correlation::new(
+            "AU-115",
+            "Personal Wi-Fi network geolocated",
+            Severity::High,
+            format!(
+                "Personal Wi-Fi network '{}' geolocated by WiGLE to {} observed position(s) — a \
+                 subject-owned network placing its owner (MITRE T1590 Gather Victim Network Information)",
+                ssid.value,
+                matches.len(),
+            ),
+            uids,
+            scan_id,
+            ts,
+        ));
+    }
+    out
 }

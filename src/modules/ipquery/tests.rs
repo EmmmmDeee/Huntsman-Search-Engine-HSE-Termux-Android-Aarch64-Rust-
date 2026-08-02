@@ -17,9 +17,9 @@ use super::*;
     #[test]
     fn deser() {
         let j = r#"{"ip":"8.8.8.8","isp":{"asn":"AS15169","org":"Google LLC","isp":"Google LLC"},"location":{"country":"United States","country_code":"US","city":"Mountain View","state":"California","latitude":37.41,"longitude":-122.11},"risk":{"is_mobile":false,"is_vpn":false,"is_tor":false,"is_proxy":false,"is_datacenter":true,"risk_score":0}}"#;
-        let r: Resp = serde_json::from_str(j).unwrap();
-        assert_eq!(r.risk.unwrap().risk_score, Some(0));
-        assert_eq!(r.location.unwrap().city.as_deref(), Some("Mountain View"));
+        let r: Resp = serde_json::from_str(j).expect("should succeed");
+        assert_eq!(r.risk.expect("should succeed").risk_score, Some(0));
+        assert_eq!(r.location.expect("should succeed").city.as_deref(), Some("Mountain View"));
     }
 
     fn resp(json: &str) -> Resp {
@@ -72,4 +72,64 @@ use super::*;
         let addr = es.iter().find(|e| e.kind == EntityKind::Address).expect("address");
         assert!(addr.tags.iter().any(|t| t == "country:AU"));
         assert_eq!(addr.value, "Gatton, Queensland, Australia");
+    }
+
+    #[test]
+    fn build_surfaces_the_postcode_on_both_geo_entities() {
+        // The `zipcode` field (previously decoded nowhere) is a finer geo grain
+        // than city/state and must surface as a `postcode` attribute on both the
+        // Coordinates and the Address (both fold in the shared geo_ev()).
+        let d = resp(
+            r#"{"location":{"country":"Australia","country_code":"AU","city":"Gatton","state":"Queensland","zipcode":"4343","latitude":-27.55,"longitude":152.27},"risk":{"is_datacenter":false}}"#,
+        );
+        let es = build_geo_isp_entities("203.0.113.9", &d, "t");
+        let coords = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Coordinates)
+            .expect("coords");
+        assert_eq!(
+            coords.evidence[0]
+                .attributes
+                .get("postcode")
+                .map(String::as_str),
+            Some("4343")
+        );
+        let addr = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Address)
+            .expect("address");
+        assert_eq!(
+            addr.evidence[0]
+                .attributes
+                .get("postcode")
+                .map(String::as_str),
+            Some("4343")
+        );
+    }
+
+    #[test]
+    fn coordinates_carry_the_originating_ip_for_login_ip_recognition() {
+        // Like `ip_geo`, this module's Coordinates fix only emits once
+        // `untrusted_geo_reason` clears the IP (CDN/anycast/VPN/Tor/proxy/
+        // datacenter all suppressed, per `build_suppresses_geo_for_anonymiser_
+        // keeps_infrastructure` — the module's own doc comment states admitting
+        // untrusted coords "poisons identity-location correlation"), and uses
+        // the same recalibrated-confidence `coarse_provider_coords` helper — a
+        // sibling in the same IP-geolocation family as `ip_geo`. The
+        // correlator's shared `person_login_ip_coords` (used by
+        // `best_au_location_estimate` and `au_location_corroboration`) only
+        // recognises a Coordinates fix as tied to a subject's breach/stealer
+        // login IP when its evidence carries an `ip` attribute equal to that IP.
+        let d = resp(RESIDENTIAL);
+        let es = build_geo_isp_entities("203.0.113.9", &d, "t");
+        let coords = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Coordinates)
+            .expect("coords");
+        assert_eq!(
+            coords.evidence[0].attributes.get("ip").map(String::as_str),
+            Some("203.0.113.9"),
+            "Coordinates evidence must carry the originating IP so \
+             person_login_ip_coords can recognise this as a login-IP fix"
+        );
     }

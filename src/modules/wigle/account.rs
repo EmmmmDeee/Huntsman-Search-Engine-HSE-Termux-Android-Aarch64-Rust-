@@ -109,3 +109,31 @@ pub async fn refresh_account_status(
 pub fn is_unverified() -> bool {
     matches!(account_status().verified, Some(false))
 }
+
+/// Record that a query endpoint itself just proved the account unverified —
+/// WiGLE answers `network/search` with HTTP 412 (`"Email is not verified for
+/// account"`) rather than a 200 with a thinner body, so this is learned as a
+/// side effect of `fetch.rs`'s normal traffic, not a dedicated poll. Leaves
+/// `user` untouched (a bare 412 carries no username) and only ever narrows
+/// unknown/stale state to the ground truth WiGLE just reported.
+pub(super) fn mark_unverified(now: u64) {
+    if let Ok(mut g) = account_status_cache().lock() {
+        g.verified = Some(false);
+        g.last_polled_ts = Some(now);
+    }
+}
+
+/// The symmetric counterpart of [`mark_unverified`]: a query endpoint that
+/// succeeds (any non-412 success) is equally conclusive proof the account
+/// IS verified, learned from the same live traffic. Without this, a 412 seen
+/// once earlier in a long-lived `hse serve`/`hse live` process — e.g. before
+/// the operator completed WiGLE's email-verify step — would latch
+/// `verified: Some(false)` for the rest of the process even after every
+/// later query succeeds, leaving `hse doctor` / `/api/v1/stats` reporting a
+/// stale "unverified" warning long after the real condition self-resolved.
+pub(super) fn mark_verified(now: u64) {
+    if let Ok(mut g) = account_status_cache().lock() {
+        g.verified = Some(true);
+        g.last_polled_ts = Some(now);
+    }
+}

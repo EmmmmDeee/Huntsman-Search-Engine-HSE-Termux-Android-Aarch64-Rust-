@@ -41,6 +41,7 @@ const BROWSER_UA: &str = crate::util::curl::UA_MOBILE;
 const BROWSER_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;\
     q=0.9,image/avif,image/webp,*/*;q=0.8";
 
+use crate::core::confidence;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
@@ -71,11 +72,7 @@ impl Module for StreamingProbe {
     }
 
     fn description(&self) -> &'static str {
-        "Webcam, fan-subscription, and adult-video platform identity discovery \
-         across ~40 sites including international platforms: Russia (Runetki, Boosty), \
-         France (Mym), Germany (MyDirtyHobby), Eastern Europe (Cherry.tv, 4Based), \
-         LGBTQ+ (JustForFans), Spanish LATAM (OhMyFans), Japan (Iwara), \
-         and the English-language mainstream (Chaturbate, OnlyFans, Fansly, Pornhub, …)."
+        "Webcam, fan-subscription, and adult-video identity sweep across ~40 sites including international platforms: Russia (Runetki, Boosty), France (Mym), Germany (MyDirtyHobby), Eastern Europe (Cherry.tv, 4Based), LGBTQ+ (JustForFans), Spanish LATAM (OhMyFans), Japan (Iwara), and the English-language mainstream (Chaturbate, OnlyFans, Fansly, Pornhub, …)."
     }
 
     fn is_passive(&self) -> bool {
@@ -260,10 +257,10 @@ struct ProbeTally {
 /// confirmed hit. Emitting a flat 0.92 on a status-only cam/adult match fabricates a
 /// high-confidence, sensitive identity association from an unverified 200.
 fn detection_strength(detect: &Detect) -> (f64, bool) {
-    match detect {
-        Detect::StatusAndNotBody(..) => (0.92, true),
-        Detect::StatusEq(_) => (0.74, false),
-    }
+    crate::util::probe_confidence::detection_strength(matches!(
+        detect,
+        Detect::StatusAndNotBody(..)
+    ))
 }
 
 /// Build the per-hit `Url` entities and the summary `Username` entity from the
@@ -332,7 +329,12 @@ fn build_entities(username: &str, scan_id: &str, hits: &[Hit], tally: &ProbeTall
         module_result.push(e);
     }
 
-    let mut summary = Entity::new(EntityKind::Username, username, 0.95, scan_id);
+    let mut summary = Entity::new(
+        EntityKind::Username,
+        username,
+        confidence::VERY_HIGH_PLUSPLUS,
+        scan_id,
+    );
     summary.tag("streaming-identity");
     cat_counts
         .keys()

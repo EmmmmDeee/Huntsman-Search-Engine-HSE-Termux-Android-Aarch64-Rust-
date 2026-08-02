@@ -48,6 +48,39 @@ fn strip_tags_inserts_word_boundary_between_adjacent_elements() {
 }
 
 #[test]
+fn strip_tags_does_not_leak_img_attributes_with_gt_in_a_quoted_value() {
+    // Real Brave (Svelte) SERP shape from an on-device scan (target "Jeremy
+    // Stewart"): a favicon <img>'s base64 `src` + `loading`/`onerror` attributes
+    // leaked into the page_title, because a '>' inside a quoted attribute value
+    // desynced the naive tag scanner and dumped the rest of the tag as text.
+    let html = "<div class=\"title search-snippet-title\">\
+                <img class=\"favicon\" onerror=\"if(w>0)this.hidden=1\" \
+                src=\"https://imgs.search.brave.com/aHR0cDovL2Zhdmljb25zLnNlYXJjaC5icmF2ZQ\" \
+                loading=\"lazy\"/>Kylo - YouTube</div>";
+    let got = strip_tags(html, 200);
+    assert_eq!(got, "Kylo - YouTube");
+    assert!(
+        !got.contains("aHR0cDov"),
+        "base64 favicon src must not leak: {got}"
+    );
+    assert!(
+        !got.contains("loading="),
+        "img attributes must not leak: {got}"
+    );
+    assert!(!got.contains("onerror="));
+}
+
+#[test]
+fn strip_tags_drops_html_comments_including_ones_with_a_stray_gt() {
+    // Svelte hydration markers (`<!--[-->`, `<!--]-->`) fill Brave SERPs; a comment
+    // carrying a stray '>' must not desync the scanner and leak following markup.
+    let html = "<!--[--><span>Real Title</span><!-- note: a>b legacy --><img src=\"x\"/><!--]-->";
+    let got = strip_tags(html, 200);
+    assert_eq!(got, "Real Title");
+    assert!(!got.contains("legacy") && !got.contains("a>b") && !got.contains("src="));
+}
+
+#[test]
 fn extract_snippet_near_does_not_dump_anchor_tag_attributes() {
     // Real Startpage capture: the snippet slice begins right after the matched
     // href URL — INSIDE the `<a …>` tag. Its attributes (rel/target/aria-label/
@@ -165,6 +198,27 @@ fn extract_orgs_does_not_panic_on_non_ascii_lowercase_divergence() {
     assert!(
         got.iter().any(|o| o.contains("ACME Pty Ltd")),
         "expected ACME Pty Ltd, got {got:?}"
+    );
+}
+
+#[test]
+fn extract_orgs_requires_a_word_boundary_after_the_suffix() {
+    // Regression (live `rhino.ryno23` scan): " Inc" matched INSIDE "including",
+    // minting the garbage org "…Repco inc" from a prose snippet. The token
+    // "rhino" collided with the "Rhino Rack" brand and satisfied the term
+    // filter, so only the trailing word-boundary check stops it.
+    let terms = vec!["rhino".to_string()];
+    let text = "Discover Rhino Rack's range at Repco including pioneer platforms";
+    let orgs = extract_organisations_from_text(text, &terms);
+    assert!(
+        orgs.is_empty(),
+        "a mid-word ' Inc' in 'including' must not be an org, got {orgs:?}"
+    );
+    // A genuine suffix at a word boundary still extracts.
+    let real = extract_organisations_from_text("Rhino Rack Pty Ltd is listed", &terms);
+    assert!(
+        real.iter().any(|o| o.contains("Pty Ltd")),
+        "a real ' Pty Ltd' at a boundary must still extract, got {real:?}"
     );
 }
 
@@ -731,6 +785,57 @@ fn extract_surrounding_text_returns_empty_when_anchor_absent() {
     assert_eq!(
         extract_surrounding_text("<p>no marker here</p>", "ANCHOR", 200),
         "",
+    );
+}
+
+#[test]
+fn extract_surrounding_text_does_not_leak_a_straddling_svg_paths_raw_data() {
+    // Regression, found investigating a real Swisscows SERP capture: an
+    // icon-only social link (no visible anchor text) falls back to this
+    // ±300-char window. When the window's start (`pos - 300`) lands strictly
+    // INSIDE a preceding <svg> block — the block's own opening tag is further
+    // back, outside the window, so the local `strip_inline_blocks` scan never
+    // sees the pair as a whole — the raw `d="…"` path coordinates between the
+    // window's start and the next recognised tag leak straight through as if
+    // they were visible text.
+    //
+    // The path data is padded long enough (well over 300 chars) that the
+    // block's OPENING tag sits more than 300 bytes before the anchor while its
+    // CLOSING tag sits within the last 300 — reproducing the exact straddle,
+    // not just a short fragment that a ±300 window would swallow whole.
+    let long_path = "A".repeat(400);
+    let html = format!(
+        r#"<svg><path d="{long_path}" clip-rule="evenodd"></path></svg><p>Real Co</p><a href="ANCHOR"><svg><path d="M5 6L7 8Z"></path></svg></a>"#
+    );
+    let pos = html.find("ANCHOR").expect("should succeed");
+    assert!(
+        pos.saturating_sub(300) < html.find("<svg").expect("should succeed") + 400,
+        "test setup sanity: the naive window start must land inside the first \
+         svg block, or this test doesn't reproduce the bug"
+    );
+    let out = extract_surrounding_text(&html, "ANCHOR", 200);
+    assert!(
+        !out.contains("clip-rule") && !out.contains("AAAA"),
+        "the preceding icon's raw SVG path/attribute data must not leak into \
+         the extracted text: {out:?}"
+    );
+    assert!(
+        out.contains("Real Co"),
+        "genuine visible text near the anchor must still be kept: {out:?}"
+    );
+}
+
+#[test]
+fn extract_surrounding_text_excludes_swisscows_own_icon_svg_path_from_a_real_capture() {
+    // Same regression, proven against the real capture that surfaced it
+    // rather than only a synthetic fragment.
+    let html = include_str!("../fetch/testdata/swisscows_kylo4kylo.html");
+    let anchor = "https://www.facebook.com/swisscows/";
+    let out = extract_surrounding_text(html, anchor, 300);
+    assert!(
+        !out.contains("clip-rule") && !out.contains("d=\"M"),
+        "raw SVG path/attribute data from a real capture leaked into the \
+         extracted text: {out:?}"
     );
 }
 

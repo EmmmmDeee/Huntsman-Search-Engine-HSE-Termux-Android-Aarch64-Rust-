@@ -24,19 +24,18 @@ use std::sync::Arc;
 use crate::core::error::{Error, Result};
 use crate::util::http::build_client;
 
-use super::build_runtime;
-
 pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()> {
     use std::net::SocketAddr;
 
     use crate::api::{AppState, UpdateInfo, UpdatePhase, routes::router};
-    use crate::cli::update::{apply_update, check_updates, self_restart};
+    use crate::app::update::{apply_update, check_updates, self_restart};
     use crate::core::live::LiveScanner;
 
     // Pin `localhost` to the v4 loopback for reliable Chrome-on-device access.
     let bind = normalise_bind(&bind);
 
-    let (store, bus, engine) = build_runtime(1024)?;
+    let crate::app::runtime::ApplicationRuntime { store, bus, engine } =
+        crate::app::runtime::build_runtime(1024)?;
     let http = build_client();
     let live = LiveScanner::new(
         Arc::clone(&engine),
@@ -53,11 +52,13 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
         http,
         allow_key_write,
         cancellations: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
-        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
         scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
             crate::api::MAX_CONCURRENT_SCANS,
         )),
         update_info: Arc::clone(&update_info),
+        cells_import: Arc::new(std::sync::Mutex::new(
+            crate::api::CellsImportPhase::default(),
+        )),
     });
 
     // A separate clone for the shutdown path — `router` consumes `state` by
@@ -80,7 +81,7 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&n| n >= 60)
-        .unwrap_or(900);
+        .unwrap_or(crate::modules::search_engines::health::DEFAULT_REFRESH_SECS);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(health_secs));
         loop {
@@ -128,7 +129,7 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
                 // Share the check timestamp with the CLI auto-update gate so a
                 // recent server-side check throttles the CLI path too (one device,
                 // one cadence) — and vice-versa.
-                crate::cli::update::record_check_stamp(now_secs);
+                crate::app::update::record_check_stamp(now_secs);
                 if behind.unwrap_or(0) > 0
                     && crate::util::settings::get_bool("feature.auto_update", true)
                 {

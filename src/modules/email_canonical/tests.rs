@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
     use std::collections::HashMap;
 
@@ -9,7 +10,6 @@ use super::*;
             http: crate::util::http::build_client(),
             keys: HashMap::default(),
             cancel: crate::core::cancel::CancelHandle::new(),
-            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
         }
     }
 
@@ -73,13 +73,13 @@ use super::*;
     #[tokio::test]
     async fn process_emits_canonical_email_above_floor() {
         let t = Target::new(TargetKind::Email, "j.doe+work@googlemail.com");
-        let r = EmailCanonical.process(&t, &ctx()).await.unwrap();
+        let r = EmailCanonical.process(&t, &ctx()).await.expect("should succeed");
         assert_eq!(r.entities.len(), 1);
         let e = &r.entities[0];
         assert_eq!(e.kind, EntityKind::Email);
         assert_eq!(e.value, "jdoe@gmail.com");
         assert!(
-            e.confidence >= 0.50,
+            e.confidence >= confidence::MEDIUM,
             "canonical mailbox should pivot at depth"
         );
         assert!(e.has_tag("canonical"));
@@ -89,7 +89,7 @@ use super::*;
     #[tokio::test]
     async fn process_emits_nothing_when_already_canonical() {
         let t = Target::new(TargetKind::Email, "jdoe@gmail.com");
-        let r = EmailCanonical.process(&t, &ctx()).await.unwrap();
+        let r = EmailCanonical.process(&t, &ctx()).await.expect("should succeed");
         assert!(r.entities.is_empty());
     }
 

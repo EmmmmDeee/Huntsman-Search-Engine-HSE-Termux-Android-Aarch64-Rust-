@@ -1,7 +1,8 @@
 //! Shared SeekNow (see-know.ru) API client — a direct OathNet competitor
 //! with its own daily-lookup pool.
 //!
-//! Endpoint surface (all under `https://see-know.ru/api/v1`):
+//! Endpoint surface (primary `https://see-know.ru/api/v1`; `.xyz`/`.eu`/`.icu`
+//! fallback in [`client::all_base_urls`]):
 //!
 //!   POST /search                — universal search: breach + stealer + external
 //!                                 records unified in one call, with
@@ -31,6 +32,8 @@
 
 mod budget;
 mod client;
+pub mod config;
+pub mod data_log;
 mod endpoints;
 
 // Enterprise configuration consumed by the budget/quota layer.
@@ -39,22 +42,34 @@ pub mod enterprise_config;
 #[cfg(test)]
 mod tests;
 
+// Honest coverage ledger for SeekNow's documented API surface vs. what HSE
+// actually calls (see the file's own doc comment for the "previously made a
+// false comprehensive-coverage claim, now self-consistency-checked with
+// citations" history). Was orphaned — present on disk but never declared as a
+// module — since the `dc4fb56` restructure; restored so its 3 real assertions
+// (endpoint ledger counts, credit-cost coverage, per-target-type wiring) run
+// again instead of silently doing nothing.
+#[cfg(test)]
+mod integration_tests;
+
 // Budget / quota management — includes BudgetSnapshot re-export so external
 // consumers (`api::handlers::stats`) keep working through the original path.
 pub use budget::{
-    BudgetSnapshot, budget_remaining, budget_snapshot, clear_quota_probe, is_key_invalid,
-    is_quota_exhausted, refresh_round_budget, reset_budget, scale_scan_cap,
+    BudgetSnapshot, budget_remaining, budget_snapshot, is_key_invalid, is_quota_exhausted,
+    refresh_round_budget, release_quota_probe, reset_budget, scale_scan_cap,
     scale_scan_cap_from_daily, scan_budget_remaining, set_scan_cap_override, should_probe_quota,
 };
 
-// Key helpers
-pub use client::{key_fingerprint, resolve_key};
+// Key helpers + the resolved API base host (so `hse doctor` can show WHICH
+// host a failing probe tried — the single most useful fact when the failure is
+// DNS host-resolution, the observed live symptom).
+pub use client::{base_url, key_fingerprint, resolve_key};
 
 // Endpoint functions
 pub(crate) use endpoints::get_path;
 pub use endpoints::{
-    SearchOutcome, discord_to_roblox, discord_user, query_credits, search, search_deep,
-    steam_profile,
+    CreditsProbe, SearchOutcome, credits_probe, discord_to_roblox, discord_user, query_credits,
+    search, search_deep, steam_profile,
 };
 
 /// Extract a string field from a JSON Value.

@@ -1,9 +1,10 @@
 use super::Proxycurl;
 use super::build::build_entities;
 use super::build::email_domain;
-use super::types::{DateField, Education, LinkedInProfile};
+use super::types::{Certification, DateField, Education, LinkedInProfile};
 use super::url::profile_url;
 use crate::core::{
+    confidence,
     entity::EntityKind,
     module::{Module, ModuleCost},
     scan::{Target, TargetKind},
@@ -23,7 +24,7 @@ fn emails_and_phones_are_not_capped() {
         "personal_emails": ["a@acme1.com","b@acme2.com","c@acme3.com","d@acme4.com","e@acme5.com"],
         "personal_numbers": ["+61400000001","+61400000002","+61400000003","+61400000004","+61400000005"]
     }"#;
-    let profile: LinkedInProfile = serde_json::from_str(raw).unwrap();
+    let profile: LinkedInProfile = serde_json::from_str(raw).expect("should succeed");
     let r = build_entities(&profile, &target(), "scan");
     let count = |k: EntityKind| r.entities.iter().filter(|e| e.kind == k).count();
     assert_eq!(
@@ -66,10 +67,14 @@ fn full_profile() -> LinkedInProfile {
         "education": [
             {"school": "University of Melbourne", "degree_name": "BSc", "field_of_study": "Computer Science"}
         ],
+        "certifications": [
+            {"name": "AWS Certified Solutions Architect", "authority": "Amazon Web Services"},
+            {"name": "CISSP"}
+        ],
         "personal_emails": ["jane@acme-corp.com", "jane@gmail.com", "jane@acme-corp.com"],
         "personal_numbers": ["+61412345678", "123"]
     }"#;
-    serde_json::from_str(raw).unwrap()
+    serde_json::from_str(raw).expect("should succeed")
 }
 
 // ── Module surface ──────────────────────────────────────────────────
@@ -100,11 +105,12 @@ fn module_metadata() {
 // ── URL construction (process's only non-pure decision) ─────────────
 #[test]
 fn profile_url_per_kind() {
-    let email = profile_url(&Target::new(TargetKind::Email, "a@b.com")).unwrap();
+    let email = profile_url(&Target::new(TargetKind::Email, "a@b.com")).expect("should succeed");
     assert!(email.contains("resolve/email?work_email="));
-    let url = profile_url(&Target::new(TargetKind::Url, "https://linkedin.com/in/x")).unwrap();
+    let url = profile_url(&Target::new(TargetKind::Url, "https://linkedin.com/in/x"))
+        .expect("should succeed");
     assert!(url.contains("api/v2/linkedin?url="));
-    let user = profile_url(&Target::new(TargetKind::Username, "x")).unwrap();
+    let user = profile_url(&Target::new(TargetKind::Username, "x")).expect("should succeed");
     assert!(user.contains("linkedin.com%2Fin%2Fx"));
     // No-op targets spend no paid call.
     assert!(profile_url(&Target::new(TargetKind::Email, "not-an-email")).is_none());
@@ -125,7 +131,7 @@ fn date_field_to_string() {
 #[test]
 fn display_name_prefers_full_then_falls_back() {
     let mk = |full: Option<&str>, f: Option<&str>, l: Option<&str>| {
-        let mut p: LinkedInProfile = serde_json::from_str("{}").unwrap();
+        let mut p: LinkedInProfile = serde_json::from_str("{}").expect("should succeed");
         p.full_name = full.map(String::from);
         p.first_name = f.map(String::from);
         p.last_name = l.map(String::from);
@@ -172,6 +178,40 @@ fn education_describe_combines_available_parts() {
 }
 
 #[test]
+fn certification_describe_combines_name_and_authority() {
+    let mk = |n: Option<&str>, a: Option<&str>| {
+        Certification {
+            name: n.map(String::from),
+            authority: a.map(String::from),
+        }
+        .describe()
+    };
+    assert_eq!(
+        mk(Some("CISSP"), Some("ISC2")).as_deref(),
+        Some("CISSP (ISC2)")
+    );
+    assert_eq!(mk(Some("CISSP"), None).as_deref(), Some("CISSP"));
+    assert_eq!(mk(None, Some("ISC2")), None); // no name → no entry
+}
+
+#[test]
+fn build_entities_omits_certifications_attr_when_absent() {
+    // A profile with no certifications must not carry an empty attr.
+    let profile: LinkedInProfile =
+        serde_json::from_str(r#"{"full_name": "Jane Doe"}"#).expect("should succeed");
+    let r = build_entities(&profile, &target(), "scan");
+    let person = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .expect("person entity");
+    assert!(
+        !person.evidence[0].attributes.contains_key("certifications"),
+        "no certifications field → no attr"
+    );
+}
+
+#[test]
 fn email_domain_extracts_registrable() {
     assert_eq!(
         email_domain("a@acme-corp.com").as_deref(),
@@ -186,6 +226,21 @@ fn email_domain_extracts_registrable() {
 }
 
 // ── The core: build_entities maps every field, with no waste ─────────
+#[test]
+fn build_entities_mints_the_vanity_handle_as_a_username() {
+    // The `public_identifier` (`/in/{slug}`) is a cross-platform identity pivot,
+    // not just the Person's `linkedin_id` attribute — it must also surface as a
+    // platform-prefixed Username so BFS can pivot on the handle.
+    let r = build_entities(&full_profile(), &target(), "scan");
+    let handle = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Username)
+        .expect("vanity handle surfaces as a Username");
+    assert_eq!(handle.value, "linkedin:jane-doe");
+    assert!(handle.has_tag("linkedin") && handle.has_tag("proxycurl"));
+}
+
 #[test]
 fn build_entities_extracts_full_profile() {
     use crate::core::entity::Entity;
@@ -228,6 +283,11 @@ fn build_entities_extracts_full_profile() {
         ev.attributes.get("education").map(String::as_str),
         Some("University of Melbourne — BSc, Computer Science")
     );
+    // Certifications the description() promised but the struct never parsed.
+    assert_eq!(
+        ev.attributes.get("certifications").map(String::as_str),
+        Some("AWS Certified Solutions Architect (Amazon Web Services); CISSP")
+    );
 
     // Address from ≥2 location parts, with an uppercased country tag.
     let addr = by(EntityKind::Address);
@@ -255,10 +315,31 @@ fn build_entities_extracts_full_profile() {
     assert_eq!(phones.len(), 1);
     assert_eq!(phones[0].value, "+61412345678");
 
-    // Organisations: both employers; current one tagged; job LOCATION kept.
+    // Organisations: both employers plus the alma mater; current employer
+    // tagged; job LOCATION kept; school carries degree/field_of_study.
     let orgs = by(EntityKind::Organisation);
-    assert_eq!(orgs.len(), 2);
-    let atlassian = orgs.iter().find(|e| e.value == "Atlassian").unwrap();
+    assert_eq!(orgs.len(), 3);
+    let uni = orgs
+        .iter()
+        .find(|e| e.value == "University of Melbourne")
+        .expect("should succeed");
+    assert!(uni.has_tag("education"));
+    assert_eq!(uni.confidence, confidence::MEDIUM_HIGH);
+    assert_eq!(
+        uni.evidence[0].attributes.get("degree").map(String::as_str),
+        Some("BSc")
+    );
+    assert_eq!(
+        uni.evidence[0]
+            .attributes
+            .get("field_of_study")
+            .map(String::as_str),
+        Some("Computer Science")
+    );
+    let atlassian = orgs
+        .iter()
+        .find(|e| e.value == "Atlassian")
+        .expect("should succeed");
     assert!(atlassian.has_tag("current-employer"));
     assert_eq!(
         atlassian.evidence[0]
@@ -274,7 +355,10 @@ fn build_entities_extracts_full_profile() {
             .map(String::as_str),
         Some("2020-01")
     );
-    let canva = orgs.iter().find(|e| e.value == "Canva").unwrap();
+    let canva = orgs
+        .iter()
+        .find(|e| e.value == "Canva")
+        .expect("should succeed");
     assert!(!canva.has_tag("current-employer"));
     assert_eq!(
         canva.evidence[0]
@@ -287,15 +371,15 @@ fn build_entities_extracts_full_profile() {
 
 #[test]
 fn build_entities_empty_profile_yields_nothing() {
-    let p: LinkedInProfile = serde_json::from_str("{}").unwrap();
+    let p: LinkedInProfile = serde_json::from_str("{}").expect("should succeed");
     assert!(build_entities(&p, &target(), "scan").entities.is_empty());
 }
 
 #[test]
 fn build_entities_resolves_name_from_first_last_only() {
     // The email-resolve endpoint shape: no full_name, just first/last.
-    let p: LinkedInProfile =
-        serde_json::from_str(r#"{"first_name":"Sam","last_name":"Vimes"}"#).unwrap();
+    let p: LinkedInProfile = serde_json::from_str(r#"{"first_name":"Sam","last_name":"Vimes"}"#)
+        .expect("should succeed");
     let r = build_entities(&p, &target(), "scan");
     let person: Vec<_> = r
         .entities
@@ -309,7 +393,8 @@ fn build_entities_resolves_name_from_first_last_only() {
 #[test]
 fn build_entities_single_location_part_is_not_an_address() {
     let p: LinkedInProfile =
-        serde_json::from_str(r#"{"full_name":"A B","country_full_name":"Australia"}"#).unwrap();
+        serde_json::from_str(r#"{"full_name":"A B","country_full_name":"Australia"}"#)
+            .expect("should succeed");
     let r = build_entities(&p, &target(), "scan");
     assert!(!r.entities.iter().any(|e| e.kind == EntityKind::Address));
 }

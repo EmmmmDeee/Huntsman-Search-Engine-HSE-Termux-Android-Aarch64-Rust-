@@ -33,7 +33,7 @@ fn extract_acn_finds_nine_digits() {
 fn extract_au_address_finds_state_postcode() {
     let addr = extract_au_address("Level 5 Collins St Melbourne VIC 3000 Australia");
     assert!(addr.is_some());
-    let a = addr.unwrap();
+    let a = addr.expect("should succeed");
     assert!(a.contains("VIC") && a.contains("3000"));
 }
 
@@ -50,7 +50,7 @@ fn build_director_entities_emits_org_acn_address() {
     assert!(ents.iter().any(|e| e.kind == EntityKind::AbnAcn));
     let addr = ents.iter().find(|e| e.kind == EntityKind::Address);
     assert!(addr.is_some());
-    assert!(addr.unwrap().has_tag("registered-office"));
+    assert!(addr.expect("should succeed").has_tag("registered-office"));
 }
 
 #[test]
@@ -98,4 +98,32 @@ fn extract_au_address_requires_valid_postcode_range() {
     assert!(extract_au_address("Invalid NSW 9999").is_none());
     // No state abbreviation → no address.
     assert!(extract_au_address("Somewhere 3000").is_none());
+}
+
+// ── `request_failed` — the "ASIC Connect Online never answered" vs
+// "genuinely no director records" distinction (T2.120). ──────────────────
+
+#[test]
+fn request_failed_true_when_the_request_never_read_and_nothing_found() {
+    // Regression: before this fix, `process()` collapsed a transport error,
+    // a non-success HTTP status, AND an unreadable body all into the same
+    // silent `Ok(ModuleResult::new())` as a genuine "no director records for
+    // this name" result — indistinguishable from a real outage or a
+    // rejected request.
+    assert!(request_failed(false, false));
+}
+
+#[test]
+fn request_failed_false_when_the_request_read_even_with_no_match() {
+    // The request got a real, readable response — this name simply had no
+    // director record in it. An honest empty result, not a failure.
+    assert!(!request_failed(true, false));
+}
+
+#[test]
+fn request_failed_false_when_entities_were_found() {
+    // Found something, regardless of the html_read_ok bookkeeping — never
+    // report a hard failure over a real result.
+    assert!(!request_failed(false, true));
+    assert!(!request_failed(true, true));
 }

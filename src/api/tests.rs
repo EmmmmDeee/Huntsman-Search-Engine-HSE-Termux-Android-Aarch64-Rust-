@@ -22,7 +22,7 @@ use super::*;
 
         let _guard = CancelRegistryGuard::install(Arc::clone(&registry), "scan-2".into(), handle);
 
-        let stored = registry.lock().get("scan-2").cloned().unwrap();
+        let stored = registry.lock().get("scan-2").cloned().expect("should succeed");
         stored.cancel();
         assert!(handle_clone.is_cancelled());
     }
@@ -50,7 +50,7 @@ use super::*;
         // these tests exercise the `cancellations` (scan) side of
         // `drain_in_flight_work`; `LiveScanner::list`/`stop` have their own
         // dedicated coverage in `core::live::tests`.
-        let store = crate::storage::Store::open(":memory:").unwrap();
+        let store = crate::storage::Store::open(":memory:").expect("should succeed");
         let store: std::sync::Arc<dyn crate::core::port::StoragePort> = std::sync::Arc::new(store);
         let (bus, _rx) = tokio::sync::broadcast::channel(16);
         let engine = std::sync::Arc::new(crate::core::engine::ScanEngine::new(

@@ -1,434 +1,73 @@
-//! Enterprise-hardcoded configuration for SeekNow integration.
-//! All calculations, thresholds, and parameters optimized for 15,000 daily credit plan.
+//! Tunable constants for the SeekNow integration — every field here is read
+//! by exactly one real call site (see each field's doc comment); nothing is
+//! illustrative-only. The speculative workflow/monitoring/SLA/key-pattern
+//! tables that once lived here were unwired scaffolding and were removed
+//! (see the dead-code sweep, `PROBLEM_TREE` T2.58/T2.62).
+//!
+//! `daily_limit`/`per_scan_cap` fields that previously lived here (claiming
+//! "15,000 credits/day... the operator's actual plan parameters") were
+//! removed entirely, not just left unwired: the REAL daily limit only ever
+//! comes from the live `/credits` probe (a hardcoded 15,000 is simply wrong
+//! for any operator on a different plan tier, from Beginner's 100/day up),
+//! and the real per-scan cap is always DERIVED from that live value via
+//! [`super::budget::scale_scan_cap_from_daily`] — so those two fields were
+//! not just dead, they actively misdescribed the system to a reader as
+//! "the operator's actual plan" when no code path ever consulted them for
+//! anything runtime-relevant.
 
-/// Enterprise plan parameters (hardcoded).
+/// Tunable SeekNow integration parameters — each field's doc comment names
+/// its one real call site.
 pub struct EnterprisePlan {
-    pub daily_limit: u32,
-    pub per_scan_cap: u32,
+    /// Pre-probe fallback default AND the floor of
+    /// [`super::budget::scale_scan_cap_from_daily`]'s clamp — read at
+    /// `super::budget::BUDGET`'s construction (`budget.rs`) and at
+    /// `scale_scan_cap_from_daily`'s `.clamp(floor, ceil)` call.
     pub scan_budget_floor: u32,
+    /// Ceiling of `scale_scan_cap_from_daily`'s clamp — prevents runaway
+    /// fan-out on an unlimited/very-large plan even though the live daily
+    /// limit could be far higher.
     pub scan_budget_ceil: u32,
+    /// Per-session ceiling — set high; the server's own daily quota is the
+    /// real backstop. Read at `BUDGET`'s construction.
     pub session_cap: u32,
+    /// In-process response-cache capacity. Read by
+    /// `super::client::RESPONSE_CACHE`'s construction.
     pub cache_size: usize,
+    /// Transient-error retry count (used for both the 429 backoff policy
+    /// and the plain-transport-error retry loop). Read by
+    /// `super::endpoints::RATE_LIMIT_BACKOFF`'s construction.
     pub max_retries: u32,
+    /// curl subprocess timeout, seconds. Read by `super::client::CLIENT`'s
+    /// construction.
     pub curl_timeout_secs: u64,
+    /// Outer tokio timeout wrapping the curl call, milliseconds — SHOULD
+    /// exceed `curl_timeout_secs * 1000` so curl's own timeout (exit 28)
+    /// fires before tokio aborts the process mid-flight. Read by
+    /// `super::client::CLIENT`'s construction.
     pub tokio_timeout_millis: u64,
+    /// curl timeout, seconds, for the FAST single-parameter GET endpoints
+    /// (network/*, gaming/*, username/*, domain/*, discord/*). Those respond in
+    /// ~2–5 s, so they must NOT inherit `curl_timeout_secs`'s wide ceiling (sized
+    /// for the ~55 s `/search` name path): a single hung GET would otherwise
+    /// waste up to 75 s of the module's per-scan timeout budget before failing.
+    /// Read by `super::client::CLIENT_FAST`'s construction.
+    pub get_timeout_secs: u64,
+    /// Outer tokio timeout wrapping a `CLIENT_FAST` GET, milliseconds — same
+    /// `> get_timeout_secs * 1000` headroom rule as `tokio_timeout_millis`. Read
+    /// by `super::client::CLIENT_FAST`'s construction.
+    pub get_tokio_timeout_millis: u64,
 }
 
-/// Production enterprise configuration (15,000 credits/day).
-/// These are the operator's actual plan parameters.
+/// The live SeekNow integration configuration — every field consumed by a
+/// real call site, see [`EnterprisePlan`]'s per-field doc comments.
 pub const ENTERPRISE: EnterprisePlan = EnterprisePlan {
-    daily_limit: 15_000,
-    per_scan_cap: 750, // daily_limit / 20 = 15,000 / 20 = 750 (clamped 300-2500)
-    scan_budget_floor: 300, // minimum per-scan budget
-    scan_budget_ceil: 2_500, // maximum per-scan budget
-    session_cap: 100_000, // local session ceiling (server quota is backstop)
-    cache_size: 1_024, // in-process response cache entries
-    max_retries: 3,    // transient error retry count
-    curl_timeout_secs: 75, // curl timeout (above /search max ~55s)
-    tokio_timeout_millis: 78_000, // outer tokio timeout (curl < outer)
+    scan_budget_floor: 300,
+    scan_budget_ceil: 2_500,
+    session_cap: 100_000,
+    cache_size: 1_024,
+    max_retries: 3,
+    curl_timeout_secs: 75,        // above /search's documented ~55s worst case
+    tokio_timeout_millis: 78_000, // curl_timeout_secs * 1000 + headroom
+    get_timeout_secs: 30,         // fast GETs answer in ~2-5s; fail a hung one early
+    get_tokio_timeout_millis: 33_000, // get_timeout_secs * 1000 + headroom
 };
-
-/// Cost-efficiency thresholds per scan type (hardcoded from analytics).
-pub struct ScanProfile {
-    pub name: &'static str,
-    pub depth: u32,
-    pub estimated_budget: u32,
-    pub estimated_time_secs: u32,
-    pub typical_entities: u32,
-    pub cost_per_entity: f32,
-}
-
-/// All 9 production workflows with hardcoded budgets and metrics.
-pub const WORKFLOWS: &[ScanProfile] = &[
-    ScanProfile {
-        name: "email_investigation",
-        depth: 1,
-        estimated_budget: 75, // 50-100 clamped to 75 midpoint
-        estimated_time_secs: 30,
-        typical_entities: 12,
-        cost_per_entity: 0.17,
-    },
-    ScanProfile {
-        name: "username_recon",
-        depth: 2,
-        estimated_budget: 225, // 150-300 clamped to 225 midpoint
-        estimated_time_secs: 120,
-        typical_entities: 25,
-        cost_per_entity: 0.20,
-    },
-    ScanProfile {
-        name: "domain_assessment",
-        depth: 3,
-        estimated_budget: 525, // 300-750 clamped to 525 midpoint
-        estimated_time_secs: 300,
-        typical_entities: 87,
-        cost_per_entity: 0.06,
-    },
-    ScanProfile {
-        name: "ip_geolocation",
-        depth: 2,
-        estimated_budget: 150, // 100-200 clamped to 150 midpoint
-        estimated_time_secs: 60,
-        typical_entities: 8,
-        cost_per_entity: 0.19,
-    },
-    ScanProfile {
-        name: "phone_osint",
-        depth: 1,
-        estimated_budget: 35, // 20-50 clamped to 35 midpoint
-        estimated_time_secs: 10,
-        typical_entities: 3,
-        cost_per_entity: 0.39,
-    },
-    ScanProfile {
-        name: "person_profile",
-        depth: 3,
-        estimated_budget: 750, // 500-1000 clamped to 750 midpoint
-        estimated_time_secs: 600,
-        typical_entities: 45,
-        cost_per_entity: 0.60,
-    },
-    ScanProfile {
-        name: "threat_actor_hunting",
-        depth: 3,
-        estimated_budget: 1_000,  // 1000+ clamped to 1000
-        estimated_time_secs: 900, // 15 min for 3 variants
-        typical_entities: 145,
-        cost_per_entity: 0.60,
-    },
-    ScanProfile {
-        name: "incident_response",
-        depth: 2,
-        estimated_budget: 350, // 200-500 clamped to 350 midpoint
-        estimated_time_secs: 300,
-        typical_entities: 40,
-        cost_per_entity: 0.35,
-    },
-    ScanProfile {
-        name: "api_key_hunting",
-        depth: 3,
-        estimated_budget: 1_125, // 750-1500 clamped to 1125 midpoint
-        estimated_time_secs: 600,
-        typical_entities: 50,
-        cost_per_entity: 0.90,
-    },
-];
-
-/// Daily usage patterns for the 15,000 credit plan.
-pub struct DailyRecommendation {
-    pub pattern: &'static str,
-    pub scans_per_day: u32,
-    pub total_credits: u32,
-    pub best_for: &'static str,
-}
-
-pub const DAILY_RECOMMENDATIONS: &[DailyRecommendation] = &[
-    DailyRecommendation {
-        pattern: "aggressive_deep",
-        scans_per_day: 15,
-        total_credits: 7_875, // 15 × 525 (domain_assessment avg)
-        best_for: "Infrastructure-focused investigations",
-    },
-    DailyRecommendation {
-        pattern: "balanced_mixed",
-        scans_per_day: 35,
-        total_credits: 7_875, // 5×525 (domain) + 30×75 (email)
-        best_for: "Mixed OSINT with broad coverage",
-    },
-    DailyRecommendation {
-        pattern: "aggressive_broad",
-        scans_per_day: 100,
-        total_credits: 7_500, // 100 × 75 (email_investigation avg)
-        best_for: "High-volume quick scans",
-    },
-    DailyRecommendation {
-        pattern: "threat_hunting",
-        scans_per_day: 3,
-        total_credits: 3_000, // 3 × 1000 (threat_actor_hunting)
-        best_for: "Focused threat actor profiling",
-    },
-];
-
-/// API key pattern recognition (80+ patterns hardcoded).
-pub struct ApiKeyPattern {
-    pub prefix: &'static str,
-    pub provider: &'static str,
-    pub force_multiplier: bool, // unlocks downstream modules
-}
-
-pub const API_KEY_PATTERNS: &[ApiKeyPattern] = &[
-    // OpenAI / Anthropic
-    ApiKeyPattern {
-        prefix: "sk-ant-",
-        provider: "anthropic",
-        force_multiplier: true,
-    },
-    ApiKeyPattern {
-        prefix: "sk-proj-",
-        provider: "openai",
-        force_multiplier: true,
-    },
-    ApiKeyPattern {
-        prefix: "sk-",
-        provider: "openai",
-        force_multiplier: true,
-    },
-    // AWS
-    ApiKeyPattern {
-        prefix: "AKIA",
-        provider: "aws",
-        force_multiplier: true,
-    },
-    ApiKeyPattern {
-        prefix: "ASIA",
-        provider: "aws",
-        force_multiplier: true,
-    },
-    // GitHub
-    ApiKeyPattern {
-        prefix: "ghp_",
-        provider: "github",
-        force_multiplier: true,
-    },
-    ApiKeyPattern {
-        prefix: "ghu_",
-        provider: "github",
-        force_multiplier: true,
-    },
-    ApiKeyPattern {
-        prefix: "ghs_",
-        provider: "github",
-        force_multiplier: true,
-    },
-    ApiKeyPattern {
-        prefix: "gho_",
-        provider: "github",
-        force_multiplier: true,
-    },
-    // Google
-    ApiKeyPattern {
-        prefix: "AIzaSy",
-        provider: "google",
-        force_multiplier: true,
-    },
-    // Stripe
-    ApiKeyPattern {
-        prefix: "sk_live_",
-        provider: "stripe",
-        force_multiplier: true,
-    },
-    ApiKeyPattern {
-        prefix: "sk_test_",
-        provider: "stripe",
-        force_multiplier: true,
-    },
-    ApiKeyPattern {
-        prefix: "rk_live_",
-        provider: "stripe",
-        force_multiplier: true,
-    },
-    // Slack
-    ApiKeyPattern {
-        prefix: "xoxb-",
-        provider: "slack",
-        force_multiplier: true,
-    },
-    ApiKeyPattern {
-        prefix: "xoxp-",
-        provider: "slack",
-        force_multiplier: true,
-    },
-    // JWT / Bearer tokens
-    ApiKeyPattern {
-        prefix: "eyJ",
-        provider: "jwt",
-        force_multiplier: true,
-    },
-    // Shodan (force-multiplier unlock)
-    ApiKeyPattern {
-        prefix: "SHODAN_KEY=",
-        provider: "shodan",
-        force_multiplier: true,
-    },
-    // Censys (force-multiplier unlock)
-    ApiKeyPattern {
-        prefix: "CENSYS_API_ID=",
-        provider: "censys",
-        force_multiplier: true,
-    },
-    // SecurityTrails (force-multiplier unlock)
-    ApiKeyPattern {
-        prefix: "SECURITYTRAILS_KEY=",
-        provider: "securitytrails",
-        force_multiplier: true,
-    },
-];
-
-/// Entity extraction patterns (17 types hardcoded).
-pub struct EntityExtractor {
-    pub entity_type: &'static str,
-    pub patterns: &'static [&'static str],
-}
-
-pub const ENTITY_EXTRACTORS: &[EntityExtractor] = &[
-    EntityExtractor {
-        entity_type: "email",
-        patterns: &["\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}\\b"],
-    },
-    EntityExtractor {
-        entity_type: "username",
-        patterns: &["username", "user", "login", "handle"],
-    },
-    EntityExtractor {
-        entity_type: "password",
-        patterns: &["password", "passwd", "pwd", "pass"],
-    },
-    EntityExtractor {
-        entity_type: "phone",
-        patterns: &["\\+?\\d{1,3}[- ]?\\d{3}[- ]?\\d{3}[- ]?\\d{4}"],
-    },
-    EntityExtractor {
-        entity_type: "person",
-        patterns: &["name", "firstname", "lastname", "full_name"],
-    },
-    EntityExtractor {
-        entity_type: "domain",
-        patterns: &["domain", "host", "server", "site"],
-    },
-    EntityExtractor {
-        entity_type: "ip_address",
-        patterns: &["\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b", "ipv4", "ip"],
-    },
-    EntityExtractor {
-        entity_type: "api_key",
-        patterns: &["key", "token", "secret", "credential", "api_key"],
-    },
-    EntityExtractor {
-        entity_type: "credentials",
-        patterns: &["username", "password"],
-    },
-    EntityExtractor {
-        entity_type: "address",
-        patterns: &["address", "street", "city", "state", "zip", "postal"],
-    },
-    EntityExtractor {
-        entity_type: "coordinates",
-        patterns: &["latitude", "longitude", "lat", "lon", "geo"],
-    },
-    EntityExtractor {
-        entity_type: "organisation",
-        patterns: &["company", "organization", "employer", "org"],
-    },
-    EntityExtractor {
-        entity_type: "asn",
-        patterns: &["asn", "as_number", "autonomous_system"],
-    },
-    EntityExtractor {
-        entity_type: "mac_address",
-        patterns: &["\\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\\b"],
-    },
-    EntityExtractor {
-        entity_type: "device_id",
-        patterns: &["device_id", "imei", "serial", "uuid"],
-    },
-    EntityExtractor {
-        entity_type: "url",
-        patterns: &["http", "https", "ftp", "url", "link"],
-    },
-    EntityExtractor {
-        entity_type: "crypto_address",
-        patterns: &["bitcoin", "ethereum", "wallet", "0x"],
-    },
-];
-
-/// Performance monitoring thresholds (hardcoded).
-pub struct MonitoringThreshold {
-    pub metric: &'static str,
-    pub alert_level: u32,
-    pub action: &'static str,
-}
-
-pub const MONITORING_THRESHOLDS: &[MonitoringThreshold] = &[
-    MonitoringThreshold {
-        metric: "daily_quota_used_percent",
-        alert_level: 80,
-        action: "warn_quota_80",
-    },
-    MonitoringThreshold {
-        metric: "response_time_ms",
-        alert_level: 30_000,
-        action: "warn_slow_response",
-    },
-    MonitoringThreshold {
-        metric: "error_rate_percent",
-        alert_level: 20,
-        action: "warn_high_errors",
-    },
-    MonitoringThreshold {
-        metric: "cache_hit_rate_percent",
-        alert_level: 10, // if BELOW 10%, warn about cache effectiveness
-        action: "warn_low_cache_hits",
-    },
-];
-
-/// Hardcoded SLA and service parameters.
-pub struct ServiceLevelAgreement {
-    pub uptime_percent: f32,
-    pub response_time_p95_ms: u32,
-    pub response_time_p99_ms: u32,
-    pub rate_limit_per_minute: u32,
-}
-
-pub const SLA: ServiceLevelAgreement = ServiceLevelAgreement {
-    uptime_percent: 99.97,
-    response_time_p95_ms: 5_000,
-    response_time_p99_ms: 15_000,
-    rate_limit_per_minute: 60, // see-know.ru unlimited on enterprise plan
-};
-
-/// Autocomplete recommendation based on scan type (hardcoded).
-pub struct WorkflowRecommendation {
-    pub target_type: &'static str,
-    pub recommended_profile: &'static str,
-    pub min_budget: u32,
-    pub max_budget: u32,
-}
-
-pub const WORKFLOW_RECOMMENDATIONS: &[WorkflowRecommendation] = &[
-    WorkflowRecommendation {
-        target_type: "email",
-        recommended_profile: "email_investigation",
-        min_budget: 50,
-        max_budget: 100,
-    },
-    WorkflowRecommendation {
-        target_type: "username",
-        recommended_profile: "username_recon",
-        min_budget: 150,
-        max_budget: 300,
-    },
-    WorkflowRecommendation {
-        target_type: "domain",
-        recommended_profile: "domain_assessment",
-        min_budget: 300,
-        max_budget: 750,
-    },
-    WorkflowRecommendation {
-        target_type: "ip",
-        recommended_profile: "ip_geolocation",
-        min_budget: 100,
-        max_budget: 200,
-    },
-    WorkflowRecommendation {
-        target_type: "phone",
-        recommended_profile: "phone_osint",
-        min_budget: 20,
-        max_budget: 50,
-    },
-    WorkflowRecommendation {
-        target_type: "name",
-        recommended_profile: "person_profile",
-        min_budget: 500,
-        max_budget: 1_000,
-    },
-];

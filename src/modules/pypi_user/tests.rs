@@ -111,7 +111,7 @@ fn package_coverage_reports_the_true_total_not_a_capped_count() {
     let u = ents
         .iter()
         .find(|e| e.kind == EntityKind::Username && e.value == "prolific")
-        .unwrap();
+        .expect("should succeed");
     assert!(
         u.evidence.iter().any(|ev| ev
             .attributes
@@ -128,7 +128,7 @@ fn emits_email_from_author_email_field() {
     let ents = build_entities("alice", &pkgs, Some(&info), "scan-pypi-002");
     let em = ents.iter().find(|e| e.kind == EntityKind::Email);
     assert!(em.is_some(), "must emit Email");
-    assert_eq!(em.unwrap().value, "alice@example.com");
+    assert_eq!(em.expect("should succeed").value, "alice@example.com");
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn emits_person_from_rfc5322_name() {
     let ents = build_entities("alice", &pkgs, Some(&info), "scan-pypi-003");
     let p = ents.iter().find(|e| e.kind == EntityKind::Person);
     assert!(p.is_some(), "must emit Person from RFC5322 name");
-    assert_eq!(p.unwrap().value, "Alice Smith");
+    assert_eq!(p.expect("should succeed").value, "Alice Smith");
 }
 
 #[test]
@@ -175,6 +175,32 @@ fn emits_homepage_url_and_domain() {
         ents.iter()
             .any(|e| e.kind == EntityKind::Domain && e.value == "alice.dev"),
         "must emit domain from homepage"
+    );
+}
+
+#[test]
+fn package_coverage_reports_the_true_total_not_the_max_packages_cap() {
+    // An owner/maintainer with more packages than MAX_PACKAGES (30) must have
+    // their real total reported in the `packages` evidence attribute, not the
+    // capped sample's own length — the old code used `pkg_names.len()` (post-
+    // cap) for both the threshold check and the count, silently understating a
+    // 40-package owner as "(30 packages)".
+    let pkgs: Vec<(String, String)> = (0..40)
+        .map(|i| ("Owner".to_string(), format!("pkg{i}")))
+        .collect();
+    let ents = build_entities("prolific", &pkgs, None, "scan-pypi-008");
+    let u = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Username && e.value == "prolific")
+        .expect("username entity");
+    let summary = u
+        .evidence
+        .iter()
+        .find_map(|e| e.attributes.get("packages"))
+        .expect("package coverage evidence attribute");
+    assert!(
+        summary.ends_with("(40 packages)"),
+        "must report the true total (40), not the MAX_PACKAGES-capped sample length (30): {summary}"
     );
 }
 

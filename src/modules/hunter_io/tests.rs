@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
 #[test]
@@ -114,12 +115,54 @@ fn build_entities_real_email_maps_value_and_person() {
         .find(|e| e.kind == EntityKind::Email)
         .expect("email entity");
     assert_eq!(email.value, "jane.doe@acme.com");
-    assert!((email.confidence - 0.85).abs() < f64::EPSILON);
+    assert!((email.confidence - confidence::HIGH_PLUSPLUS_PLUS).abs() < f64::EPSILON);
     assert!(!email.tags.iter().any(|t| t == "email-pattern-synthesised"));
     // Person co-located.
     assert!(emails_of(&es, EntityKind::Person).contains(&"Jane Doe"));
     // Organisation surfaced.
     assert!(emails_of(&es, EntityKind::Organisation).contains(&"Acme"));
+}
+
+#[test]
+fn build_entities_emits_direct_phone_and_verification_status() {
+    let d = data(
+        r#"{
+                "organization": "Acme",
+                "emails": [
+                    {"value": "jane.doe@acme.com", "confidence": 95,
+                     "first_name": "Jane", "last_name": "Doe",
+                     "phone_number": "+1 (212) 555-1234",
+                     "verification": {"status": "valid", "date": "2026-01-02"}}
+                ]
+            }"#,
+    );
+    let es = build_entities(&d, "acme.com", "t");
+    // The direct-dial phone surfaces as a normalised E.164 Phone pivot.
+    let phone = es
+        .iter()
+        .find(|e| e.kind == EntityKind::Phone)
+        .expect("phone entity");
+    assert_eq!(phone.value, "+12125551234");
+    // The deliverability verdict is stamped on the email evidence.
+    let email = es
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("email entity");
+    assert_eq!(
+        email.evidence[0]
+            .attributes
+            .get("verification_status")
+            .map(String::as_str),
+        Some("valid")
+    );
+}
+
+#[test]
+fn build_entities_ignores_a_too_short_phone_fragment() {
+    // Fewer than 7 digits is not a dialable number — no Phone entity.
+    let d = data(r#"{ "emails": [ {"value": "x@acme.com", "phone_number": "12345"} ] }"#);
+    let es = build_entities(&d, "acme.com", "t");
+    assert!(!es.iter().any(|e| e.kind == EntityKind::Phone));
 }
 
 #[test]
@@ -158,6 +201,53 @@ fn build_entities_emits_all_source_pivots() {
 }
 
 #[test]
+fn build_entities_linkedin_url_becomes_url_pivot() {
+    let d = data(
+        r#"{
+                "emails": [{
+                    "value": "j@acme.com",
+                    "linkedin": "https://linkedin.com/in/jdoe"
+                }]
+            }"#,
+    );
+    let es = build_entities(&d, "acme.com", "t");
+    let url = es
+        .iter()
+        .find(|e| e.kind == EntityKind::Url && e.value == "https://linkedin.com/in/jdoe")
+        .expect("linkedin URL pivot");
+    assert!(url.tags.iter().any(|t| t == "social-profile"));
+}
+
+#[test]
+fn build_entities_twitter_bare_handle_becomes_username_pivot() {
+    let d = data(
+        r#"{
+                "emails": [{
+                    "value": "j@acme.com",
+                    "twitter": "jdoe"
+                }]
+            }"#,
+    );
+    let es = build_entities(&d, "acme.com", "t");
+    let user = es
+        .iter()
+        .find(|e| e.kind == EntityKind::Username)
+        .expect("twitter handle pivot");
+    assert_eq!(user.value, "twitter:jdoe");
+    assert!(user.tags.iter().any(|t| t == "social-profile"));
+}
+
+#[test]
+fn build_entities_absent_social_fields_emit_no_pivots() {
+    let d = data(r#"{ "emails": [{"value": "j@acme.com"}] }"#);
+    let es = build_entities(&d, "acme.com", "t");
+    assert!(
+        !es.iter()
+            .any(|e| e.tags.iter().any(|t| t == "social-profile"))
+    );
+}
+
+#[test]
 fn build_entities_synthesises_email_when_value_missing() {
     let d = data(
         r#"{
@@ -175,7 +265,7 @@ fn build_entities_synthesises_email_when_value_missing() {
         .expect("synthesised email");
     // Synthesised against Hunter's CANONICAL domain, low confidence, weak lead.
     assert_eq!(email.value, "mary.sue@acme.io");
-    assert!((email.confidence - 0.40).abs() < f64::EPSILON);
+    assert!((email.confidence - confidence::LOW).abs() < f64::EPSILON);
     assert!(email.tags.iter().any(|t| t == "email-pattern-synthesised"));
     assert!(email.tags.iter().any(|t| t == "weak-lead"));
     // Still attributes the person.
@@ -218,13 +308,13 @@ fn confidence_mapping_for_hunter_confidence_score() {
     // (previously the test re-implemented the match arms and
     // asserted against its own copy).
     let cases: [(Option<u8>, f64); 7] = [
-        (Some(95), 0.85),
-        (Some(75), 0.70),
-        (Some(50), 0.55),
-        (Some(20), 0.45),
-        (Some(1), 0.45),
-        (Some(0), 0.50), // explicit 0 collapses to unknown floor
-        (None, 0.50),
+        (Some(95), confidence::HIGH_PLUSPLUS_PLUS),
+        (Some(75), confidence::HIGH_PLUS),
+        (Some(50), confidence::MEDIUM_HIGH),
+        (Some(20), confidence::LOW_MEDIUM),
+        (Some(1), confidence::LOW_MEDIUM),
+        (Some(0), confidence::MEDIUM), // explicit 0 collapses to unknown floor
+        (None, confidence::MEDIUM),
     ];
     for (input, expected) in cases {
         let got = confidence_from_hunter_score(input);

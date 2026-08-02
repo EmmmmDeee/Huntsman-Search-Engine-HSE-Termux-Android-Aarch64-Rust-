@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -38,6 +39,12 @@ struct IpInfoResp {
     postal: Option<String>,
     #[serde(default)]
     timezone: Option<String>,
+    /// ipinfo.io flags anycast IPs (a single address announced from many sites).
+    /// Their `loc`/city is the geographic centroid of the announcement, not any
+    /// one host's real location — so it must not seed a subject Coordinates or
+    /// Address, exactly like the per-IP CDN/anycast-edge trust gate.
+    #[serde(default)]
+    anycast: Option<bool>,
 }
 
 /// Map an ipinfo.io record to its entities. **Pure** (no network/IO): yields up
@@ -45,6 +52,11 @@ struct IpInfoResp {
 /// city/region/country, an `Organisation` plus the leading `Asn` parsed out of
 /// the `org` string (`"AS15169 Google LLC"`), and the PTR `Domain` from a
 /// dotted `hostname`. Each is independent; absent/blank fields are skipped.
+///
+/// When ipinfo reports `anycast: true`, the geolocation is the centroid of a
+/// multi-site announcement rather than any host's real position, so the
+/// `Coordinates`/`Address` are suppressed — but the ASN/Organisation and PTR
+/// hostname (which describe the network, not a place) still emit.
 fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
     let mut out = Vec::new();
 
@@ -61,12 +73,17 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
         return out;
     }
 
-    if let Some(loc) = &data.loc {
+    // Response-level anycast flag: suppresses the place-based findings
+    // (Coordinates/Address) while leaving the network-based ones intact. This
+    // catches anycast IPs the static per-IP gate above doesn't enumerate.
+    let suppress_geo = data.anycast == Some(true);
+
+    if let Some(loc) = data.loc.as_ref().filter(|_| !suppress_geo) {
         let mut parts = loc.split(',');
         if let (Some(lat_s), Some(lon_s)) = (parts.next(), parts.next())
             && let (Ok(lat), Ok(lon)) = (lat_s.trim().parse::<f64>(), lon_s.trim().parse::<f64>())
             // Confidence recalibrated 0.68 → 0.58 — see ip_geo.rs.
-            && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, 0.58, scan_id)
+            && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, confidence::MEDIUM_SOLID, scan_id)
         {
             ce.tag("ipinfo");
             crate::util::geo::tag_au_state(&mut ce, lat, lon);
@@ -81,7 +98,17 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
             .into_iter()
             .filter_map(|(key, value)| value.map(|v| (key, v)))
             .fold(
-                Evidence::new(SRC, format!("IP geo for {ip}")),
+                Evidence::new(SRC, format!("IP geo for {ip}"))
+                    // The originating IP, recorded explicitly so a finalise pass
+                    // can robustly tie this coordinate back to its source
+                    // IpAddress (e.g. to recognise a person's breach login IP)
+                    // without parsing the summary string — mirrors `ip_geo`'s
+                    // identical attribute. Without it,
+                    // `person_login_ip_coords` (the shared definition
+                    // `best_au_location_estimate` and
+                    // `au_location_corroboration` both use) can never
+                    // recognise this provider's fix as a login-IP location.
+                    .with_attr("ip", ip),
                 |ev, (key, v)| ev.with_attr(key, v),
             );
             ce.add_evidence(ev);
@@ -92,9 +119,9 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
     let city = data.city.as_deref().unwrap_or("");
     let region = data.region.as_deref().unwrap_or("");
     let country = data.country.as_deref().unwrap_or("");
-    if !city.is_empty() {
+    if !city.is_empty() && !suppress_geo {
         let addr = crate::util::geo::compose_address(city, region, country);
-        let mut ae = Entity::new(EntityKind::Address, &addr, 0.60, scan_id);
+        let mut ae = Entity::new(EntityKind::Address, &addr, confidence::MEDIUM_PLUS, scan_id);
         ae.tag("ipinfo");
         // Postal/ZIP narrows the address below city granularity — surface it as
         // evidence (it refines, but does not redefine, the address identity).
@@ -109,7 +136,7 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
     if let Some(org) = &data.org
         && !org.is_empty()
     {
-        let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, scan_id);
+        let mut oe = Entity::new(EntityKind::Organisation, org, confidence::HIGH, scan_id);
         oe.tag("ipinfo");
         oe.add_evidence(Evidence::new(SRC, format!("Org for {ip}")));
         out.push(oe);
@@ -126,7 +153,7 @@ fn build_entities(ip: &str, data: &IpInfoResp, scan_id: &str) -> Vec<Entity> {
         && !hostname.is_empty()
         && hostname.contains('.')
     {
-        let mut de = Entity::new(EntityKind::Domain, hostname, 0.70, scan_id);
+        let mut de = Entity::new(EntityKind::Domain, hostname, confidence::HIGH_PLUS, scan_id);
         de.tag("ipinfo");
         de.tag(tags::PTR);
         de.add_evidence(Evidence::new(SRC, format!("Hostname for {ip}")));
@@ -144,7 +171,7 @@ impl Module for IpInfo {
         "ipinfo"
     }
     fn description(&self) -> &'static str {
-        "IP intelligence via ipinfo.io (free, 50K/month, no key)"
+        "ipinfo.io IP intelligence — geolocates and enriches an IP address (free, 50K/month, no key)"
     }
     fn priority(&self) -> u8 {
         25

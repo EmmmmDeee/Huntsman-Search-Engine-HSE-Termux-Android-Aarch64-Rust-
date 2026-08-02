@@ -14,19 +14,7 @@ pub(super) fn non_empty(s: Option<String>) -> Option<String> {
 /// (case-insensitive). Whole-word, not substring, so a short seed token can't
 /// match inside an unrelated word. (Same precision rule as `acnc_charities`.)
 pub(super) fn name_matches_query(name: &str, query: &str) -> bool {
-    let words: Vec<&str> = name
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let tokens: Vec<&str> = query
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .collect();
-    // At least one token, and every token present as a whole word.
-    !tokens.is_empty()
-        && tokens
-            .iter()
-            .all(|tok| words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
+    crate::util::str_util::whole_word_token_match(name, query)
 }
 
 /// The lei-records search URL for one legal-name query. JSON:API bracket params
@@ -41,6 +29,27 @@ pub(super) fn query_url(name: &str) -> String {
 }
 
 const BASE_URL: &str = "https://api.gleif.org/api/v1/lei-records";
+
+/// A syntactically valid LEI: exactly 20 uppercase-alphanumeric characters
+/// (ISO 17442).
+///
+/// This is a security gate, not a tidiness check. An LEI read out of an API
+/// response is interpolated straight into a URL **path segment** by
+/// [`family_url`]; anything containing `/`, `?`, `#`, `.` or an escape would
+/// otherwise be able to redirect the request somewhere other than the record it
+/// claims to be. Restricting to the ISO 17442 alphabet makes that impossible by
+/// construction rather than by escaping.
+pub(super) fn is_lei(s: &str) -> bool {
+    s.len() == 20
+        && s.bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
+/// The Level-2 relationship URL for one LEI (`.../lei-records/{lei}/{path}`),
+/// or `None` when the LEI is not well-formed — see [`is_lei`].
+pub(super) fn family_url(lei: &str, path: &str) -> Option<String> {
+    is_lei(lei).then(|| format!("{BASE_URL}/{lei}/{path}"))
+}
 
 /// `registeredAs` digits when this AU entity's local registry id is a valid
 /// ACN (9) or ABN (11). GLEIF stores it spaced ("004 028 077"); we strip to

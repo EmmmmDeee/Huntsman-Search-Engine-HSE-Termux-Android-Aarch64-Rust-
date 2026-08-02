@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -36,6 +37,8 @@ struct Resp {
     #[serde(default)]
     region: Option<String>,
     #[serde(default)]
+    region_code: Option<String>,
+    #[serde(default)]
     city: Option<String>,
     #[serde(default)]
     latitude: Option<f64>,
@@ -57,6 +60,10 @@ struct Connection {
     org: Option<String>,
     #[serde(default, rename = "asn")]
     asn_num: Option<u64>,
+    /// The ISP/AS operator's registrable domain (e.g. `telstra.com`) — a
+    /// network-attribution lead, previously decoded nowhere.
+    #[serde(default)]
+    domain: Option<String>,
 }
 
 /// Map a decoded ipwho.is record to its entities. **Pure** (no network/IO), so
@@ -64,9 +71,10 @@ struct Connection {
 /// directly off JSON fixtures.
 ///
 /// Gates internally (both moved here from the transport shell so they are
-/// tested): a `success:false` lookup yields an empty `Vec`, and a CDN/anycast
-/// edge IP — [`crate::core::validation::is_cdn_edge_ip`] — is skipped (its geo
-/// is the datacenter's, not the subject's).
+/// tested): a `success:false` lookup yields an empty `Vec`, and an IP the shared
+/// [`crate::core::validation::untrusted_ip_geo_reason`] gate flags as
+/// infrastructure (CDN/anycast edge, …) is skipped (its geo is the datacenter's,
+/// not the subject's) — the same policy every other IP-geo provider applies.
 ///
 /// Coordinates are gated by the coarse-provider
 /// [`crate::util::geo::is_plausible_provider_coord`] (null-island band /
@@ -79,9 +87,20 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
         return Vec::new();
     }
 
-    // CDN/anycast edge IP → datacenter location, not the subject. Skip (see
-    // ip_geo.rs); prevents false identity-location correlations.
-    if crate::core::validation::is_cdn_edge_ip(ip) {
+    // Shared trust gate (same policy as ip_geo/ipinfo/ip2location/ipquery): an
+    // IP whose geolocation is infrastructure — a CDN/anycast edge, and whatever
+    // else `untrusted_ip_geo_reason` grows to cover — is the datacenter's
+    // location, not the subject's. Routing through the one gate (instead of a
+    // local `is_cdn_edge_ip` call) keeps the policy consistent across every
+    // IP-geo provider and logs *why* it was skipped (no black-box).
+    if let Some(reason) = crate::core::validation::untrusted_ip_geo_reason(ip) {
+        tracing::debug!(
+            target: "huntsman::geo",
+            module = SRC,
+            ip,
+            reason,
+            "skipping IP-geo — location is the infrastructure, not the subject"
+        );
         return Vec::new();
     }
 
@@ -100,11 +119,16 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
         }
 
         let coords = format!("{lat:.6},{lon:.6}");
-        // Confidence recalibrated 0.68 → 0.55 — WHOIS-based geo is
+        // Confidence recalibrated 0.68 → confidence::MEDIUM_HIGH — WHOIS-based geo is
         // particularly coarse (registrar address, not host
         // location) so this provider should rank below the
         // residential-DB-backed IP-geo modules.
-        let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.55, scan_id);
+        let mut e = Entity::new(
+            EntityKind::Coordinates,
+            &coords,
+            confidence::MEDIUM_HIGH,
+            scan_id,
+        );
         e.tag("geoint");
         if let Some(cc) = data.country_code.as_deref().filter(|c| !c.is_empty()) {
             e.tag(format!("country:{}", cc.to_uppercase()));
@@ -120,10 +144,12 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
             ("country", data.country.as_deref()),
             ("country_code", data.country_code.as_deref()),
             ("region", data.region.as_deref()),
+            ("region_code", data.region_code.as_deref()),
             ("city", data.city.as_deref()),
             ("postal", data.postal.as_deref()),
             ("timezone", data.timezone_id.as_deref()),
             ("isp", conn.and_then(|c| c.isp.as_deref())),
+            ("isp_domain", conn.and_then(|c| c.domain.as_deref())),
         ]
         .into_iter()
         .filter_map(|(key, value)| {
@@ -142,6 +168,17 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
         )
         .fold(
             Evidence::new(SRC, format!("IP geolocation for {ip}"))
+                // The originating IP, recorded explicitly so a finalise pass can
+                // robustly tie this coordinate back to its source IpAddress (e.g.
+                // to recognise a person's breach login IP) without parsing the
+                // summary string — mirrors `ip_geo`'s identical attribute, which
+                // this module is documented as the corroborating second source
+                // for. Without it, `person_login_ip_coords` (the shared
+                // definition `best_au_location_estimate` and
+                // `au_location_corroboration` both use) can never recognise this
+                // provider's fix as a login-IP location, silently excluding it
+                // from the person-location signal even on a genuine subject IP.
+                .with_attr("ip", ip)
                 .with_attr("latitude", lat.to_string())
                 .with_attr("longitude", lon.to_string())
                 .with_attr("source", "ipwho.is"),
@@ -166,7 +203,7 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
 
         if parts.len() >= 2 {
             let addr_str = parts.join(", ");
-            let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.50, scan_id);
+            let mut addr = Entity::new(EntityKind::Address, &addr_str, confidence::MEDIUM, scan_id);
             addr.tag("geoint");
             addr.tag("derived");
             addr.add_evidence(
@@ -184,12 +221,24 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
         && let Some(org) = &conn.org
         && !org.is_empty()
     {
-        let mut e = Entity::new(EntityKind::Organisation, org, 0.60, scan_id);
+        let mut e = Entity::new(
+            EntityKind::Organisation,
+            org,
+            confidence::MEDIUM_PLUS,
+            scan_id,
+        );
         let ev = [
             ("asn", conn.asn_num.map(|a| format!("AS{a}"))),
             (
                 "isp",
                 conn.isp
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .map(String::from),
+            ),
+            (
+                "isp_domain",
+                conn.domain
                     .as_deref()
                     .filter(|s| !s.is_empty())
                     .map(String::from),
@@ -214,6 +263,23 @@ fn build_entities(data: &Resp, ip: &str, scan_id: &str) -> Vec<Entity> {
         result.push(ae);
     }
 
+    if let Some(conn) = &data.connection
+        && let Some(domain) = conn.domain.as_deref().filter(|s| !s.is_empty())
+    {
+        // The ASN/ISP's own registered domain (e.g. "cloudflare.com" for
+        // AS13335) — a distinct signal from the Organisation name a few
+        // lines up: it's a pivotable identifier in its own right (WHOIS,
+        // cert transparency, etc.), not just a display label.
+        let mut de = Entity::new(EntityKind::Domain, domain, confidence::MEDIUM_HIGH, scan_id);
+        de.tag("geoint");
+        de.tag("derived");
+        de.tag("ip-whois");
+        de.add_evidence(
+            Evidence::new(SRC, format!("IP org domain for {ip}")).with_attr("domain", domain),
+        );
+        result.push(de);
+    }
+
     result
 }
 
@@ -224,7 +290,7 @@ impl Module for IpWhois {
     }
 
     fn description(&self) -> &'static str {
-        "HTTPS IP geolocation via ipwho.is (second source for geo-cluster correlation)"
+        "ipwho.is geolocation recon (HTTPS) — second source for geo-cluster correlation of an IP"
     }
 
     fn priority(&self) -> u8 {
@@ -245,6 +311,7 @@ impl Module for IpWhois {
             EntityKind::Address,
             EntityKind::Asn,
             EntityKind::Organisation,
+            EntityKind::Domain,
         ];
         KINDS
     }

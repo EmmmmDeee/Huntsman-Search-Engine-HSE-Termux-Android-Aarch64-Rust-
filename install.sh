@@ -391,18 +391,10 @@ if [[ "${HSE_NO_PKG:-0}" != "1" ]]; then
         _apt "Installing packages" install -y rust binutils git clang make pkg-config openssl-tool curl \
             || die "package install failed — check $LOG_FILE for missing packages"
         ok "Packages installed: rust, binutils, git, clang, make, pkg-config, openssl-tool, curl"
-
-        # Optional: termux-api is needed for sensor modules (v0.6+).
-        if ! pkg show termux-api >/dev/null 2>&1; then
-            log_warn "termux-api package metadata unavailable"
-        elif ! command -v termux-info >/dev/null 2>&1; then
-            log_warn "termux-api is not installed — sensor modules (v0.6+) will no-op"
-            hint "Install later: pkg install termux-api"
-            hint "And install the Termux:API app from F-Droid for sensor access."
-        fi
     elif [[ "$OS" == "Linux" ]] && command -v apt-get >/dev/null 2>&1; then
         step "Installing apt packages (build-essential, git, pkg-config)"
-        sudo apt-get update -y && sudo apt-get install -y build-essential git pkg-config curl
+        sudo apt-get update -y && sudo apt-get install -y build-essential git pkg-config curl \
+            || die "apt package install failed — install build-essential, git, pkg-config, curl manually and re-run"
     elif [[ "$OS" == "Darwin" ]]; then
         step "macOS detected — ensuring Xcode CLT and rustup"
         if ! xcode-select -p >/dev/null 2>&1; then
@@ -508,22 +500,42 @@ clone_help() {
     hint "      HSE_REPO_URL=$token_url ./install.sh"
 }
 
+# One unified path for both a fresh install and an update, built on `git
+# fetch <ref>` + `checkout FETCH_HEAD` rather than `git clone --branch <ref>` /
+# `checkout origin/<ref>`. This matters because HSE_REF is documented to
+# accept a branch, a tag, OR a raw commit SHA, but the old two-path version
+# only actually worked for a branch: `git clone --branch` rejects a bare SHA
+# outright (it only resolves branches/tags), and on an EXISTING clone (which
+# `git clone --depth 1 --branch X` narrows to a single-branch fetch refspec,
+# `+refs/heads/X:refs/remotes/origin/X`) a later `git fetch origin <tag-or-
+# other-ref>` downloads the object fine but never creates `origin/<ref>` —
+# that name only exists for the one branch the refspec was narrowed to — so
+# `checkout -B "$HSE_REF" "origin/$HSE_REF"` died with "not a commit and a
+# branch ... cannot be created from it" for any HSE_REF other than the
+# original clone's branch. `FETCH_HEAD` is set correctly by `git fetch` for
+# a branch, a tag, or a SHA alike (empirically verified against a real repo
+# for all three, plus switching ref on an existing clone), so checking it
+# out directly removes the asymmetry instead of patching one branch of it.
+mkdir -p "$HSE_INSTALL_DIR"
 if [[ -d "$HSE_INSTALL_DIR/.git" ]]; then
     # Re-point origin at $HSE_REPO_URL first, so an SSH/token override
     # (HSE_REPO_URL=git@... ./install.sh) actually takes effect on a re-install
     # whose existing origin is the private HTTPS URL — otherwise the fetch
     # below would keep using the old, credential-gated remote.
     git -C "$HSE_INSTALL_DIR" remote set-url origin "$HSE_REPO_URL" 2>/dev/null || true
-    git -C "$HSE_INSTALL_DIR" fetch --depth 1 origin "$HSE_REF" \
-        || { clone_help; die "git fetch failed"; }
-    git -C "$HSE_INSTALL_DIR" checkout -B "$HSE_REF" "origin/$HSE_REF" \
-        || die "git checkout failed"
-    ok "Updated existing clone"
+    ACTION="Updated existing clone"
 else
-    git clone --depth 1 --branch "$HSE_REF" "$HSE_REPO_URL" "$HSE_INSTALL_DIR" \
-        || { clone_help; die "git clone failed"; }
-    ok "Cloned fresh"
+    git -C "$HSE_INSTALL_DIR" init -q \
+        || die "could not init $HSE_INSTALL_DIR"
+    git -C "$HSE_INSTALL_DIR" remote add origin "$HSE_REPO_URL" \
+        || die "could not configure origin remote"
+    ACTION="Cloned fresh"
 fi
+git -C "$HSE_INSTALL_DIR" fetch --depth 1 origin "$HSE_REF" \
+    || { clone_help; die "git fetch failed"; }
+git -C "$HSE_INSTALL_DIR" checkout -B "$HSE_REF" FETCH_HEAD \
+    || die "git checkout failed"
+ok "$ACTION"
 
 cd "$HSE_INSTALL_DIR"
 
@@ -579,6 +591,19 @@ if [[ $IS_TERMUX -eq 1 ]]; then
     export TMPDIR="${TMPDIR:-$HOME/tmp}"
     mkdir -p "$TMPDIR"
 fi
+
+# This build has no `--target` — it always compiles for whatever `rustc`'s host
+# is, i.e. host == target, unconditionally (on a real Termux device that's
+# aarch64-linux-android; on a dev's own machine it's whatever that machine is).
+# `-C target-cpu=native` is therefore always safe HERE specifically — unlike in
+# `.cargo/config.toml`, which is keyed by target triple and can't tell this
+# native build apart from CI's cross-compile of the SAME triple from a
+# different host arch (where "native" would mean the wrong CPU). Exporting
+# RUSTFLAGS (rather than editing config.toml) confines the flag to this one
+# on-device invocation; it also REPLACES rather than merges with config.toml's
+# `target.*.rustflags` for this call, so `--as-needed` is repeated here to keep
+# that benefit rather than silently dropping it.
+export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native -C link-arg=-Wl,--as-needed"
 
 # Live progress so a long build never looks frozen:
 #  1. Force cargo's progress bar ON even though stdout is piped to `tee` (a pipe
@@ -775,6 +800,136 @@ WRAPPER
     chmod 0755 "$BG_WRAPPER"
     ok "Installed hse-bg wrapper (start|stop|status|log)"
 
+    # Unattended recurring collection. `hse-watch` sweeps a watchlist of seeds on
+    # a fixed interval (wake-lock held) via `hse scan --input-file`, accumulating
+    # findings in the local store for later review in the web UI. Opt-in: it stays
+    # idle until the watchlist has at least one seed.
+    WATCH_WRAPPER="$HSE_BIN_DIR/hse-watch"
+    cat > "$WATCH_WRAPPER" <<'WATCH'
+#!/data/data/com.termux/files/usr/bin/bash
+# hse-watch — unattended, recurring OSINT collection over a watchlist.
+#
+# Sweeps every seed in the watchlist on a fixed interval, accumulating findings
+# in the local store, holding a wake-lock so Android can't kill it when the
+# screen is off. Review results any time in the web UI (hse-bg start →
+# http://127.0.0.1:8080). Opt-in: it stays idle until the watchlist has a seed.
+#
+#   Watchlist : $HSE_WATCHLIST       (default ~/.huntsman/watchlist.txt)
+#               one seed per line; blank lines and # comments are ignored.
+#   Interval  : $HSE_WATCH_INTERVAL  (default 3600 = one sweep per hour)
+#   Scan args : $HSE_WATCH_ARGS      (default empty — hse's comprehensive default)
+#
+# Control: hse-watch [start|stop|status|log|run-once]
+set -euo pipefail
+
+WATCHLIST="${HSE_WATCHLIST:-$HOME/.huntsman/watchlist.txt}"
+INTERVAL="${HSE_WATCH_INTERVAL:-3600}"
+PID_FILE="$HOME/.cache/hse-watch.pid"
+LOG_FILE="$HOME/.cache/hse-watch.log"
+mkdir -p "$(dirname "$PID_FILE")"
+
+stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# Count non-blank, non-comment seeds (0 when the file is absent). `grep -c`
+# exits 1 on a zero count, so `|| true` keeps it from tripping `set -e`.
+seed_count() {
+    [ -f "$WATCHLIST" ] || { echo 0; return; }
+    grep -cvE '^[[:space:]]*(#|$)' "$WATCHLIST" || true
+}
+
+sweep_once() {
+    if [ "$(seed_count)" -eq 0 ]; then
+        echo "$(stamp) no active seeds in $WATCHLIST — nothing to do"
+        return 0
+    fi
+    echo "$(stamp) sweep start — $(seed_count) seed(s) from $WATCHLIST"
+    # SC2086: HSE_WATCH_ARGS is an intentional, user-supplied argument list.
+    # shellcheck disable=SC2086
+    hse scan --input-file "$WATCHLIST" ${HSE_WATCH_ARGS:-} \
+        || echo "$(stamp) sweep reported an error (see log above)"
+    echo "$(stamp) sweep done"
+}
+
+run_loop() {
+    command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock || true
+    trap 'command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock || true; exit 0' TERM INT
+    while true; do
+        sweep_once
+        sleep "$INTERVAL"
+    done
+}
+
+case "${1:-start}" in
+    start)
+        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+            echo "hse-watch already running (pid $(cat "$PID_FILE"))"
+            exit 0
+        fi
+        if [ "$(seed_count)" -eq 0 ]; then
+            echo "watchlist $WATCHLIST has no seeds — add one per line, then: hse-watch start"
+            exit 0
+        fi
+        nohup "$0" run-loop >>"$LOG_FILE" 2>&1 &
+        echo $! >"$PID_FILE"
+        echo "Started hse-watch (pid $(cat "$PID_FILE"); every ${INTERVAL}s; $(seed_count) seed(s))"
+        echo "Logs: $LOG_FILE"
+        ;;
+    run-loop)
+        run_loop
+        ;;
+    run-once)
+        sweep_once
+        ;;
+    stop)
+        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+            kill "$(cat "$PID_FILE")"
+            rm -f "$PID_FILE"
+            command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock || true
+            echo "Stopped"
+        else
+            echo "Not running"
+            rm -f "$PID_FILE"
+        fi
+        ;;
+    status)
+        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+            echo "Running: pid $(cat "$PID_FILE"); $(seed_count) seed(s); every ${INTERVAL}s"
+        else
+            echo "Not running; $(seed_count) seed(s) in $WATCHLIST"
+        fi
+        ;;
+    log)
+        tail -f "$LOG_FILE"
+        ;;
+    *)
+        echo "usage: hse-watch [start|stop|status|log|run-once]"
+        exit 1
+        ;;
+esac
+WATCH
+    chmod 0755 "$WATCH_WRAPPER"
+    ok "Installed hse-watch wrapper (start|stop|status|log|run-once)"
+
+    # Example watchlist so the operator only has to add seeds. Kept empty
+    # (comments only) so `hse-watch` / the boot script stay idle until opted in.
+    WATCHLIST_PATH="$HOME/.huntsman/watchlist.txt"
+    if [[ ! -f "$WATCHLIST_PATH" ]]; then
+        mkdir -p "$(dirname "$WATCHLIST_PATH")"
+        cat > "$WATCHLIST_PATH" <<'WATCHLIST'
+# hse-watch watchlist — one seed per line; blank lines and # comments ignored.
+# The kind is auto-detected from the value; findings accumulate in the store.
+# Add your seeds below, then start recurring collection:
+#   hse-watch start          # sweep every hour (HSE_WATCH_INTERVAL to change)
+#   hse-watch status
+# Examples (uncomment / replace):
+# example.com
+# alice@example.com
+# 8.8.8.8
+WATCHLIST
+        chmod 0600 "$WATCHLIST_PATH"
+        ok "Created example watchlist at $WATCHLIST_PATH (empty → hse-watch idle)"
+    fi
+
     # Termux:Boot autostart — only set up if the boot dir already exists
     # (created by Termux:Boot app). We don't force-create it because that
     # implies the user installed the APK.
@@ -786,6 +941,9 @@ WRAPPER
 #!/data/data/com.termux/files/usr/bin/bash
 termux-wake-lock 2>/dev/null || true
 hse-bg start
+# Recurring collection — no-op while the watchlist is empty, so this is safe to
+# leave on; it begins sweeping only once you add a seed to ~/.huntsman/watchlist.txt.
+hse-watch start
 BOOT
             chmod 0755 "$BOOT_SCRIPT"
             ok "Termux:Boot autostart installed → ${BOOT_SCRIPT}"
@@ -796,12 +954,22 @@ BOOT
     fi
 
     # termux-api package + APK reminder. The package is the CLI tools;
-    # the APK from F-Droid is the actual sensor bridge.
+    # the APK from F-Droid is the actual sensor bridge. The single check here
+    # (moved from a now-removed, earlier duplicate in the package-install
+    # section above) always reports status, install-attempt or not — the old
+    # early copy only ever printed a warning and never installed anything,
+    # and both copies were gated on HSE_NO_PKG, so setting HSE_NO_PKG=1 left
+    # an operator with NO sensor-module warning at all when termux-api was
+    # missing. This one warns unconditionally when absent, and only attempts
+    # the actual install when package installs aren't suppressed.
     if ! command -v termux-info >/dev/null 2>&1; then
         if [[ "${HSE_NO_PKG:-0}" != "1" ]]; then
             pkg install -y termux-api 2>/dev/null \
                 && ok "Installed termux-api package" \
                 || log_warn "Could not install termux-api (sensor modules will no-op)"
+        else
+            log_warn "termux-api is not installed — sensor modules (v0.6+) will no-op"
+            hint "Install later: pkg install termux-api"
         fi
     else
         ok "termux-api CLI present"
@@ -812,84 +980,18 @@ BOOT
     fi
 fi
 
-# ─── Keys template ───────────────────────────────────────────────────────────
+# ─── Keys / env file (single canonical template) ───────────────────────────────────
+# Delegate to `hse provision` — the Rust-native env-merge that owns the ONE
+# canonical template (src/cli/env_template.txt). A second, hand-maintained copy
+# of the template used to live here and could drift out of sync; there is now
+# exactly one source. `--discover` autonomously folds any HUNTSMAN_* key already
+# present in the environment into the file, pre-configuring it with no manual
+# step. Idempotent: the merge preserves every real value, adds only newly-shipped
+# template keys, and skips the write entirely when nothing changed.
 KEYS_PATH="$HOME/.huntsman.env"
-if [[ ! -f "$KEYS_PATH" ]]; then
-    step "Creating keys template at $KEYS_PATH"
-    cat > "$KEYS_PATH" <<'TEMPLATE'
-# Huntsman Search Engine — API keys & configuration
-#
-# Uncomment and paste a value to enable the corresponding key-gated module.
-# File is chmod 0600 — never commit this file.
-#
-# Free modules (95 of 128) need no keys at all.
-# The Settings page (hse serve → http://127.0.0.1:8080/settings) lets you
-# paste and save any key directly from Chrome on the device.
-#
-# ── Identity / breach ─────────────────────────────────────────────────────────
-#HUNTSMAN_HIBP_KEY=
-#HUNTSMAN_OATHNET_KEY=
-#HUNTSMAN_SEEKNOW_KEY=
-#HUNTSMAN_FULLCONTACT_KEY=
-#HUNTSMAN_NIAMONX_KEY=
-# DeHashed — active search subscription + credits required:
-#HUNTSMAN_DEHASHED_KEY=
-#HUNTSMAN_INTELX_KEY=
-#HUNTSMAN_HUNTER_KEY=
-# ── Infrastructure / threat intel ─────────────────────────────────────────────
-#HUNTSMAN_SHODAN_KEY=
-#HUNTSMAN_SECTRAILS_KEY=
-#HUNTSMAN_CENSYS_ID=
-#HUNTSMAN_CENSYS_SECRET=
-#HUNTSMAN_NETLAS_KEY=
-#HUNTSMAN_ONYPHE_KEY=
-#HUNTSMAN_LEAKIX_KEY=
-#HUNTSMAN_ABUSEIPDB_KEY=
-#HUNTSMAN_THREATFOX_KEY=
-#HUNTSMAN_CRIMINALIP_KEY=
-#HUNTSMAN_IPQS_KEY=
-#HUNTSMAN_VIRUSTOTAL_KEY=
-#HUNTSMAN_ZOOMEYE_KEY=
-#HUNTSMAN_OSINTCAT_KEY=
-# ── Search ────────────────────────────────────────────────────────────────────
-#HUNTSMAN_EXA_KEY=
-# ── Phone / HLR ───────────────────────────────────────────────────────────────
-#HUNTSMAN_HLR_KEY=
-#HUNTSMAN_OPENCNAM_KEY=
-# ── Geolocation / cell towers ─────────────────────────────────────────────────
-#HUNTSMAN_OPENCELLID_KEY=
-# ── Validation / enrichment ───────────────────────────────────────────────────
-#HUNTSMAN_NUMVERIFY_KEY=
-#HUNTSMAN_WHOISXML_KEY=
-#HUNTSMAN_WIGLE_USER=
-#HUNTSMAN_WIGLE_TOKEN=
-#HUNTSMAN_TROVE_KEY=
-#HUNTSMAN_ABR_GUID=
-# ── OSINT orchestration / identity ────────────────────────────────────────────
-#HUNTSMAN_SEON_KEY=
-#HUNTSMAN_EMAILREP_KEY=
-#HUNTSMAN_EPIEOS_KEY=
-#HUNTSMAN_PROXYCURL_KEY=
-#HUNTSMAN_OPENCORP_KEY=
-#
-# ── Operator defaults ─────────────────────────────────────────────────────────
-# Set your own default scan target to avoid retyping --value every run.
-# An explicit --value always overrides this.
-#HUNTSMAN_DEFAULT_SEED=
-#
-# ── Egress rotation (optional) ────────────────────────────────────────────────
-# Route scans through a proxy / rotate DNS resolvers to avoid per-source limits.
-# Hosts listed here are auto-excluded from being scanned as targets.
-#   HUNTSMAN_SEARCH_PROXY=socks5://127.0.0.1:9050,http://host:3128
-#   HUNTSMAN_DNS_RESOLVERS=cloudflare,google,quad9
-#HUNTSMAN_SEARCH_PROXY=
-#HUNTSMAN_DNS_RESOLVERS=
-TEMPLATE
-    chmod 0600 "$KEYS_PATH"
-    ok "Template created (chmod 0600)"
-else
-    ok "Keys file already present at $KEYS_PATH"
-fi
+step "Configuring keys at $KEYS_PATH (canonical template + autonomous key discovery)"
+"$HSE_BIN_DIR/hse" provision --env-only --discover \
+    || log_warn "hse provision failed — configure keys later: hse provision --env-only --discover"
 
 # ─── Record install location for `hse update` ────────────────────────────────
 # hse update reads HUNTSMAN_INSTALL_DIR from ~/.huntsman.env to find install.sh.
@@ -914,7 +1016,12 @@ date +%s > "$LOG_DIR/hse-autoupdate.stamp" 2>/dev/null || true
 step "Verifying installation"
 "$HSE_BIN_DIR/hse" --version
 echo
-"$HSE_BIN_DIR/hse" doctor
+# `hse doctor` is an informational health report here — `--version` above is the
+# install-success gate. `doctor` now exits non-zero on a CRITICAL storage fault
+# (e.g. a pre-existing corrupt database this fresh binary did not create and
+# cannot fix), so `|| true` keeps that from aborting an otherwise-successful
+# install under `set -e`; the FAIL lines still print for the operator to see.
+"$HSE_BIN_DIR/hse" doctor || true
 
 # ─── Restart an already-running server onto the new binary ───────────────────
 # Completes the "all-in-one upgrade" contract: a re-install over a live server
@@ -952,6 +1059,12 @@ if [[ $IS_TERMUX -eq 1 ]]; then
     printf '  hse-bg log                                          # tail the log\n'
     printf '  hse-bg stop                                         # release wake-lock\n'
     printf '  Then open: %shttp://127.0.0.1:8080%s in Chrome on the device\n\n' "$BOLD" "$NC"
+    printf '%sUnattended recurring collection (Termux):%s\n' "$CYAN" "$NC"
+    printf '  Add seeds to %s~/.huntsman/watchlist.txt%s (one per line), then:\n' "$BOLD" "$NC"
+    printf '  hse-watch start                                     # sweep the watchlist hourly\n'
+    printf '  hse-watch status                                    # seeds + running state\n'
+    printf '  hse-watch run-once                                  # one immediate sweep\n'
+    printf '  HSE_WATCH_INTERVAL=1800 hse-watch start             # change the cadence (sec)\n\n'
     printf '%sBattery & process survival:%s\n' "$CYAN" "$NC"
     printf '  Android > Settings > Apps > Termux > Battery: unrestricted\n'
     printf '  Android > Settings > Apps > Termux > Allow background data\n\n'

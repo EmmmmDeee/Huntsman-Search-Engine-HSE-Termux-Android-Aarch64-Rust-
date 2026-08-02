@@ -25,6 +25,9 @@ fn module_metadata() {
     assert_eq!(m.name(), "censys");
     assert_eq!(m.priority(), 78);
     assert_eq!(m.max_timeout_ms(), 10_000);
+    // Host-scan data is stable within a day — one of C9's own named
+    // motivating examples for the inter-scan cache.
+    assert_eq!(m.cache_ttl_secs(), 86_400);
     let desc = m.description();
     assert!(desc.contains("Censys"));
     assert!(desc.contains("port"));
@@ -64,27 +67,27 @@ fn deserialise_full_response() {
         }
     }"#;
 
-    let resp: CensysResp = serde_json::from_str(json).unwrap();
-    let host = resp.result.unwrap();
+    let resp: CensysResp = serde_json::from_str(json).expect("should succeed");
+    let host = resp.result.expect("should succeed");
     assert_eq!(host.services.len(), 3);
     assert_eq!(host.services[0].port, Some(80));
     assert_eq!(host.services[0].service_name.as_deref(), Some("HTTP"));
     assert_eq!(host.services[0].transport_protocol.as_deref(), Some("TCP"));
 
-    let loc = host.location.unwrap();
+    let loc = host.location.expect("should succeed");
     assert_eq!(loc.country.as_deref(), Some("Australia"));
     assert_eq!(loc.country_code.as_deref(), Some("AU"));
     assert_eq!(loc.city.as_deref(), Some("Sydney"));
-    let coords = loc.coordinates.unwrap();
-    assert!((coords.latitude.unwrap() - (-33.8688)).abs() < 1e-4);
-    assert!((coords.longitude.unwrap() - 151.2093).abs() < 1e-4);
+    let coords = loc.coordinates.expect("should succeed");
+    assert!((coords.latitude.expect("should succeed") - (-33.8688)).abs() < 1e-4);
+    assert!((coords.longitude.expect("should succeed") - 151.2093).abs() < 1e-4);
 }
 
 #[test]
 fn deserialise_empty_result() {
     let json = r#"{ "result": { "services": [], "location": null } }"#;
-    let resp: CensysResp = serde_json::from_str(json).unwrap();
-    let host = resp.result.unwrap();
+    let resp: CensysResp = serde_json::from_str(json).expect("should succeed");
+    let host = resp.result.expect("should succeed");
     assert!(host.services.is_empty());
     assert!(host.location.is_none());
 }
@@ -92,8 +95,8 @@ fn deserialise_empty_result() {
 #[test]
 fn deserialise_missing_fields() {
     let json = r#"{ "result": { "services": [{ "port": 53 }] } }"#;
-    let resp: CensysResp = serde_json::from_str(json).unwrap();
-    let host = resp.result.unwrap();
+    let resp: CensysResp = serde_json::from_str(json).expect("should succeed");
+    let host = resp.result.expect("should succeed");
     assert_eq!(host.services.len(), 1);
     assert_eq!(host.services[0].port, Some(53));
     assert!(host.services[0].service_name.is_none());
@@ -103,7 +106,7 @@ fn deserialise_missing_fields() {
 #[test]
 fn deserialise_no_result() {
     let json = r"{}";
-    let resp: CensysResp = serde_json::from_str(json).unwrap();
+    let resp: CensysResp = serde_json::from_str(json).expect("should succeed");
     assert!(resp.result.is_none());
 }
 
@@ -175,6 +178,78 @@ fn full_host_yields_ip_coords_and_address() {
     let addr = of_kind(&ents, EntityKind::Address).expect("address");
     assert_eq!(addr.value, "Sydney, New South Wales, Australia");
     assert!(addr.has_tag("censys") && addr.has_tag("geoint"));
+}
+
+#[test]
+fn autonomous_system_yields_asn_org_and_reverse_dns_domains() {
+    let ents = build_entities(
+        &host(
+            r#"{ "result": {
+                "services": [{ "port": 443 }],
+                "autonomous_system": {
+                    "asn": 15169, "name": "GOOGLE",
+                    "description": "Google LLC", "country_code": "US"
+                },
+                "dns": { "reverse_dns": { "names": [
+                    "dns.google", "dns.google", "8.8.8.8", "no-dot", "dns.google."
+                ] } }
+            } }"#,
+        ),
+        "8.8.8.8",
+        "s",
+    );
+
+    let asn = of_kind(&ents, EntityKind::Asn).expect("AS<n> Asn entity");
+    assert_eq!(asn.value, "AS15169");
+    assert!(asn.has_tag("censys"));
+    assert_eq!(
+        asn.evidence[0]
+            .attributes
+            .get("country")
+            .map(String::as_str),
+        Some("US")
+    );
+
+    let org = of_kind(&ents, EntityKind::Organisation).expect("operator Organisation");
+    // Prefers `name` over `description`.
+    assert_eq!(org.value, "GOOGLE");
+
+    // Reverse-DNS names → one deduped Domain (IP-shaped + dotless + dup dropped).
+    let domains: Vec<&str> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain)
+        .map(|e| e.value.as_str())
+        .collect();
+    assert_eq!(domains, ["dns.google"], "deduped, IP/dotless dropped");
+    assert!(
+        ents.iter()
+            .find(|e| e.kind == EntityKind::Domain)
+            .expect("should succeed")
+            .has_tag("ptr")
+    );
+}
+
+#[test]
+fn zero_or_absent_asn_is_skipped_but_operator_org_survives() {
+    let ents = build_entities(
+        &host(
+            r#"{ "result": { "services": [],
+                "autonomous_system": { "asn": 0, "description": "Some Net" } } }"#,
+        ),
+        "1.2.3.4",
+        "s",
+    );
+    assert!(
+        of_kind(&ents, EntityKind::Asn).is_none(),
+        "a 0 ASN is skipped, never emitted as AS0"
+    );
+    // Falls back to `description` when `name` is absent.
+    assert_eq!(
+        of_kind(&ents, EntityKind::Organisation)
+            .expect("should succeed")
+            .value,
+        "Some Net"
+    );
 }
 
 #[test]
@@ -258,7 +333,9 @@ fn address_omits_province_when_absent() {
         "s",
     );
     assert_eq!(
-        of_kind(&ents, EntityKind::Address).unwrap().value,
+        of_kind(&ents, EntityKind::Address)
+            .expect("should succeed")
+            .value,
         "Sydney, Australia"
     );
 }

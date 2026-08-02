@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 pub struct AuditEntity {
     pub kind: String,
     pub value: String,
-    pub confidence: f64,
     pub c_effective: f64,
     pub corroboration: u32,
     pub sources: Vec<String>,
@@ -31,7 +30,6 @@ impl AuditEntity {
         Self {
             kind: e.kind.to_string(),
             value: e.value.clone(),
-            confidence: e.confidence,
             c_effective: e.c_effective(),
             corroboration: e.corroboration,
             sources,

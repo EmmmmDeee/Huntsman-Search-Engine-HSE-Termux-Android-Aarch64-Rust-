@@ -41,14 +41,14 @@ fn replace_overwrites_previous_entry() {
     let second = vec![make_entity("2.2.2.2"), make_entity("3.3.3.3")];
     store
         .archive_module_result("mod:ip_address:1.1.1.1", 3600, &first)
-        .unwrap();
+        .expect("should succeed");
     store
         .archive_module_result("mod:ip_address:1.1.1.1", 3600, &second)
-        .unwrap();
+        .expect("should succeed");
     let cached = store
         .lookup_module_result_fresh("mod:ip_address:1.1.1.1")
-        .unwrap()
-        .unwrap();
+        .expect("should succeed")
+        .expect("should succeed");
     assert_eq!(cached.len(), 2);
     assert_eq!(cached[0].value, "2.2.2.2");
 }
@@ -59,9 +59,9 @@ fn prune_deletes_expired_rows_and_caps_to_newest() {
     let e = vec![make_entity("1.1.1.1")];
     // Three still-fresh entries (ttl 3600) plus one already-expired (ttl 0).
     for key in ["A", "B", "C"] {
-        store.archive_module_result(key, 3600, &e).unwrap();
+        store.archive_module_result(key, 3600, &e).expect("should succeed");
     }
-    store.archive_module_result("X", 0, &e).unwrap(); // expired on write
+    store.archive_module_result("X", 0, &e).expect("should succeed"); // expired on write
 
     // Cap to the newest 2 fresh rows: prune must delete the expired X AND one
     // excess fresh row (3 fresh − cap 2 = 1), never more.
@@ -70,14 +70,14 @@ fn prune_deletes_expired_rows_and_caps_to_newest() {
 
     // The expired entry is gone regardless of which fresh rows the cap kept.
     assert!(
-        store.lookup_module_result_fresh("X").unwrap().is_none(),
+        store.lookup_module_result_fresh("X").expect("should succeed").is_none(),
         "expired row must be pruned"
     );
     // Exactly the cap of fresh rows survives (which two is timing-dependent on the
     // one-second archival tie-break, so assert the count, not the identity).
     let survivors = ["A", "B", "C"]
         .iter()
-        .filter(|k| store.lookup_module_result_fresh(k).unwrap().is_some())
+        .filter(|k| store.lookup_module_result_fresh(k).expect("should succeed").is_some())
         .count();
     assert_eq!(survivors, 2, "capped to the newest max_rows fresh rows");
 }
@@ -89,10 +89,10 @@ fn expired_entry_returns_none() {
     let entities = vec![make_entity("9.9.9.9")];
     store
         .archive_module_result("mod:ip_address:9.9.9.9", 0, &entities)
-        .unwrap();
+        .expect("should succeed");
     let result = store
         .lookup_module_result_fresh("mod:ip_address:9.9.9.9")
-        .unwrap();
+        .expect("should succeed");
     assert!(
         result.is_none(),
         "ttl=0 entry must be treated as already expired"

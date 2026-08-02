@@ -83,3 +83,38 @@ fn build_cnam_person_preserves_resolved_number() {
     // No usable name → no entity.
     assert!(build_cnam_person(&CnamResp::default(), "0400000000", "scan").is_none());
 }
+
+#[test]
+fn build_cnam_person_rejects_carrier_placeholders() {
+    let mk = |name: &str, number: &str| {
+        build_cnam_person(
+            &CnamResp {
+                name: Some(name.into()),
+                number: None,
+            },
+            number,
+            "scan",
+        )
+    };
+    // OpenCNAM's placeholder returns for unmatched / prepaid / VoIP numbers must
+    // never become a fabricated Person (they recur verbatim → false-merge risk).
+    for placeholder in [
+        "WIRELESS CALLER",
+        "Unavailable",
+        "TOLL FREE",
+        "UNKNOWN",
+        "CELL PHONE",
+        "Private",
+        "V1234567",
+    ] {
+        assert!(
+            mk(placeholder, "0400000000").is_none(),
+            "{placeholder} must be rejected as a carrier placeholder"
+        );
+    }
+    // The queried number echoed back as the "name" is not an identity.
+    assert!(mk("0400000000", "0400000000").is_none());
+    assert!(mk("+61 400 000 000", "0400000000").is_none());
+    // A real subscriber name still resolves.
+    assert!(mk("Jane Roe", "0400000000").is_some());
+}

@@ -27,6 +27,11 @@ pub(super) struct SdnRecord {
     pub(super) name: String,
     pub(super) kind: SdnKind,
     pub(super) program: String,
+    /// The `Title` column (role/position, e.g. "Director of ..."). Carries
+    /// misattribution-relevant identity data — see `T2.107` — so it is kept
+    /// and surfaced as evidence rather than discarded like the vessel-only
+    /// columns.
+    pub(super) title: String,
     pub(super) remarks: String,
 }
 
@@ -115,6 +120,7 @@ fn parse_sdn_line(line: &str) -> Option<SdnRecord> {
     }
     let kind = SdnKind::from_field(fields[2].trim());
     let program = fields[3].trim();
+    let title = fields[4].trim();
     let remarks = fields[11].trim();
     Some(SdnRecord {
         ent_num,
@@ -124,6 +130,11 @@ fn parse_sdn_line(line: &str) -> Option<SdnRecord> {
             String::new()
         } else {
             program.to_string()
+        },
+        title: if is_absent(title) {
+            String::new()
+        } else {
+            title.to_string()
         },
         remarks: if is_absent(remarks) {
             String::new()

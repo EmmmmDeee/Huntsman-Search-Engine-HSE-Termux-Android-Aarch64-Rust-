@@ -55,7 +55,7 @@ fn snippets(text: &str) -> Vec<Entity> {
 #[test]
 fn mine_snippet_extracts_email() {
     let ents = snippets("Contact us at sales@acme.com for pricing.");
-    let email = ents.iter().find(|e| e.kind == EntityKind::Email).unwrap();
+    let email = ents.iter().find(|e| e.kind == EntityKind::Email).expect("should succeed");
     assert_eq!(email.value, "sales@acme.com");
     assert!(email.has_tag("exa-search") && email.has_tag("web-scraped"));
     assert_eq!(
@@ -72,7 +72,7 @@ fn mine_snippet_extracts_phone() {
     let ents = snippets("Call +61 2 9000 1234 for bookings.");
     let phone = ents.iter().find(|e| e.kind == EntityKind::Phone);
     assert!(phone.is_some(), "expected a Phone entity");
-    let phone = phone.unwrap();
+    let phone = phone.expect("should succeed");
     assert!(phone.has_tag("exa-search") && phone.has_tag("web-scraped"));
 }
 
@@ -96,7 +96,7 @@ fn mine_snippet_no_matches_yields_nothing() {
 #[test]
 fn mine_snippet_email_lowercased() {
     let ents = snippets("Email ALICE@EXAMPLE.COM now.");
-    let email = ents.iter().find(|e| e.kind == EntityKind::Email).unwrap();
+    let email = ents.iter().find(|e| e.kind == EntityKind::Email).expect("should succeed");
     assert_eq!(email.value, "alice@example.com");
 }
 

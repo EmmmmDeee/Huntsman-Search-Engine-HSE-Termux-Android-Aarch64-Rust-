@@ -1,4 +1,9 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// Parses a probe's JSON response into `(label, value)` evidence pairs —
+/// see [`ServiceDef::probe_parser`].
+pub type ProbeParser = fn(&Value) -> Vec<(String, String)>;
 
 /// Static metadata for one keyed external provider — the single registry the
 /// key-management surface (validation probes, the key pool, ROI accounting) reads
@@ -18,6 +23,14 @@ pub struct ServiceDef {
     pub key_header: KeyPlacement,
     /// Seconds to back off after a rate-limit response from this service.
     pub rate_limit_reset_secs: u64,
+    /// For services `api_key_probe` can enrich with live account metadata
+    /// (plan, credits, quota) beyond a bare pass/fail validation — parses
+    /// the probe response into `(label, value)` evidence pairs. `None` for
+    /// definitions that exist purely for pool validation/rotation. Not
+    /// serializable (a function pointer), so skipped on both directions —
+    /// `ServiceDef` is (de)serialized only where its data fields matter.
+    #[serde(skip)]
+    pub probe_parser: Option<ProbeParser>,
 }
 
 /// The rate-limit back-off window (seconds) for `service`, or a conservative
@@ -34,6 +47,11 @@ pub enum KeyPlacement {
     Header(&'static str),
     BasicAuth,
     BearerAuth,
+    /// A header carrying a custom scheme prefix directly followed by the key
+    /// (header name, prefix) — e.g. OpenSanctions' `Authorization: ApiKey
+    /// <key>`. Distinct from `BearerAuth`, which is hardcoded to the literal
+    /// `bearer` scheme and can't express a different prefix word.
+    HeaderPrefixed(&'static str, &'static str),
 }
 
 static SERVICE_DEFS: &[ServiceDef] = &[
@@ -44,6 +62,19 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.shodan.io/api-info?key=",
         key_header: KeyPlacement::QueryParam("key"),
         rate_limit_reset_secs: 300,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if let Some(p) = v.get("plan").and_then(|v| v.as_str()) {
+                out.push(("plan".into(), p.to_string()));
+            }
+            if let Some(c) = v.get("query_credits").and_then(serde_json::Value::as_u64) {
+                out.push(("query_credits".into(), c.to_string()));
+            }
+            if let Some(c) = v.get("scan_credits").and_then(serde_json::Value::as_u64) {
+                out.push(("scan_credits".into(), c.to_string()));
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "intelx",
@@ -52,14 +83,34 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://2.intelx.io/authenticate/info",
         key_header: KeyPlacement::Header("x-key"),
         rate_limit_reset_secs: 60,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if let Some(n) = v.get("Name").and_then(|v| v.as_str()) {
+                out.push(("account_name".into(), n.to_string()));
+            }
+            if let Some(c) = v.get("CreditBalance").and_then(serde_json::Value::as_i64) {
+                out.push(("credit_balance".into(), c.to_string()));
+            }
+            if let Some(p) = v.get("MaxCredits").and_then(serde_json::Value::as_i64) {
+                out.push(("max_credits".into(), p.to_string()));
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "securitytrails",
         env_var: "HUNTSMAN_SECTRAILS_KEY",
         category: "infrastructure",
-        test_url: "https://api.securitytrails.com/v1/account/usage",
+        test_url: "https://api.securitytrails.com/v1/ping",
         key_header: KeyPlacement::Header("APIKEY"),
         rate_limit_reset_secs: 60,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if v.get("success").and_then(serde_json::Value::as_bool) == Some(true) {
+                out.push(("status".into(), "authenticated".into()));
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "leakix",
@@ -68,6 +119,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://leakix.net/api/subdomains/example.com",
         key_header: KeyPlacement::Header("api-key"),
         rate_limit_reset_secs: 60,
+        probe_parser: Some(|_v| vec![("status".into(), "authenticated".into())]),
     },
     ServiceDef {
         name: "ipqs",
@@ -76,6 +128,16 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://ipqualityscore.com/api/json/account/",
         key_header: KeyPlacement::QueryParam("key"),
         rate_limit_reset_secs: 60,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if let Some(c) = v.get("credits").and_then(serde_json::Value::as_u64) {
+                out.push(("credits".into(), c.to_string()));
+            }
+            if let Some(p) = v.get("plan").and_then(|v| v.as_str()) {
+                out.push(("plan".into(), p.to_string()));
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "numverify",
@@ -84,6 +146,13 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://apilayer.net/api/validate?number=14158586273&access_key=",
         key_header: KeyPlacement::QueryParam("access_key"),
         rate_limit_reset_secs: 60,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if v.get("valid").and_then(serde_json::Value::as_bool) == Some(true) {
+                out.push(("status".into(), "authenticated".into()));
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "criminal_ip",
@@ -92,15 +161,48 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.criminalip.io/v1/user/me",
         key_header: KeyPlacement::Header("x-api-key"),
         rate_limit_reset_secs: 60,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if let Some(data) = v.get("data")
+                && let Some(p) = data.get("plan").and_then(|v| v.as_str())
+            {
+                out.push(("plan".into(), p.to_string()));
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "virustotal",
         env_var: "HUNTSMAN_VIRUSTOTAL_KEY",
         category: "threat_intel",
-        test_url: "https://www.virustotal.com/api/v3/urls",
+        test_url: "https://www.virustotal.com/api/v3/users/me",
         key_header: KeyPlacement::Header("x-apikey"),
         rate_limit_reset_secs: 15,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if let Some(data) = v.get("data").and_then(|d| d.get("attributes")) {
+                if let Some(q) = data.get("quotas")
+                    && let Some(api) = q.get("api_requests_daily")
+                    && let Some(allowed) = api.get("allowed").and_then(serde_json::Value::as_u64)
+                {
+                    out.push(("daily_quota".into(), allowed.to_string()));
+                }
+                if let Some(p) = data.get("privileges") {
+                    out.push(("privileges".into(), format!("{p}")));
+                }
+            }
+            out
+        }),
     },
+    // KNOWN LIMITATION: WiGLE actually authenticates with HTTP Basic Auth
+    // over a username:token PAIR (see modules/wigle/fetch.rs/account.rs's
+    // real `.basic_auth(user, Some(token))` calls) — a single-value
+    // `ApiKey` credential can't represent that, so this def (and the
+    // `censys`/`censys_secret` pair below, which has the same two-part
+    // shape) validates only the bare token via a plain `Authorization`
+    // header, which a real WiGLE key will always fail. Pre-existing in
+    // both tables this def was merged from; a real fix needs a paired-
+    // credential `KeyPlacement` variant, deliberately out of scope here.
     ServiceDef {
         name: "wigle",
         env_var: "HUNTSMAN_WIGLE_TOKEN",
@@ -108,6 +210,13 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.wigle.net/api/v2/profile/user",
         key_header: KeyPlacement::Header("Authorization"),
         rate_limit_reset_secs: 60,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if let Some(u) = v.get("userid").and_then(|v| v.as_str()) {
+                out.push(("userid".into(), u.to_string()));
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "hunter",
@@ -116,6 +225,23 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.hunter.io/v2/account?api_key=",
         key_header: KeyPlacement::QueryParam("api_key"),
         rate_limit_reset_secs: 4,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if let Some(data) = v.get("data") {
+                if let Some(p) = data.get("plan_name").and_then(|v| v.as_str()) {
+                    out.push(("plan".into(), p.to_string()));
+                }
+                if let Some(r) = data.get("requests")
+                    && let Some(avail) = r
+                        .get("searches")
+                        .and_then(|s| s.get("available"))
+                        .and_then(serde_json::Value::as_u64)
+                {
+                    out.push(("searches_available".into(), avail.to_string()));
+                }
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "hibp",
@@ -124,6 +250,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://haveibeenpwned.com/api/v3/breaches",
         key_header: KeyPlacement::Header("hibp-api-key"),
         rate_limit_reset_secs: 6,
+        probe_parser: Some(|_v| vec![("status".into(), "authenticated".into())]),
     },
     // NOTE: DeHashed is intentionally absent. Its v2 API is POST-only
     // (`POST /v2/search` with a `Dehashed-Api-Key` header), which the
@@ -138,6 +265,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://threatfox-api.abuse.ch/api/v1/",
         key_header: KeyPlacement::Header("API-KEY"),
         rate_limit_reset_secs: 60,
+        probe_parser: None,
     },
     ServiceDef {
         name: "passivetotal",
@@ -146,6 +274,17 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.passivetotal.org/v2/account/quota",
         key_header: KeyPlacement::BasicAuth,
         rate_limit_reset_secs: 60,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if let Some(u) = v
+                .get("user")
+                .and_then(|u| u.get("owner"))
+                .and_then(|v| v.as_str())
+            {
+                out.push(("owner".into(), u.to_string()));
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "onyphe",
@@ -154,6 +293,13 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://www.onyphe.io/api/v2/simple/whois/best/8.8.8.8",
         key_header: KeyPlacement::BearerAuth,
         rate_limit_reset_secs: 60,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if v.get("count").is_some() {
+                out.push(("status".into(), "authenticated".into()));
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "zoomeye",
@@ -162,6 +308,20 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.zoomeye.org/resources-info",
         key_header: KeyPlacement::Header("API-KEY"),
         rate_limit_reset_secs: 60,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if let Some(p) = v.get("plan").and_then(|v| v.as_str()) {
+                out.push(("plan".into(), p.to_string()));
+            }
+            if let Some(c) = v
+                .get("resources")
+                .and_then(|r| r.get("search"))
+                .and_then(serde_json::Value::as_u64)
+            {
+                out.push(("search_credits".into(), c.to_string()));
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "fofa",
@@ -170,6 +330,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://fofa.info/api/v1/info/my",
         key_header: KeyPlacement::QueryParam("key"),
         rate_limit_reset_secs: 60,
+        probe_parser: None,
     },
     ServiceDef {
         name: "netlas",
@@ -181,6 +342,13 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         // mis-report it invalid.
         key_header: KeyPlacement::Header("X-API-Key"),
         rate_limit_reset_secs: 60,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if v.get("email").is_some() {
+                out.push(("status".into(), "authenticated".into()));
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "pulsedive",
@@ -189,6 +357,13 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://pulsedive.com/api/info.php?indicator=pulsedive.com&key=",
         key_header: KeyPlacement::QueryParam("key"),
         rate_limit_reset_secs: 30,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if v.get("indicator").is_some() {
+                out.push(("status".into(), "authenticated".into()));
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "builtwith",
@@ -197,6 +372,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.builtwith.com/usagev2/api.json?KEY=",
         key_header: KeyPlacement::QueryParam("KEY"),
         rate_limit_reset_secs: 60,
+        probe_parser: None,
     },
     ServiceDef {
         name: "emailrep",
@@ -205,6 +381,13 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://emailrep.io/test@example.com",
         key_header: KeyPlacement::Header("Key"),
         rate_limit_reset_secs: 60,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if v.get("reputation").is_some() {
+                out.push(("status".into(), "authenticated".into()));
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "whoisxml",
@@ -213,6 +396,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://www.whoisxmlapi.com/whoisserver/WhoisService?domainName=example.com&outputFormat=JSON&apiKey=",
         key_header: KeyPlacement::QueryParam("apiKey"),
         rate_limit_reset_secs: 60,
+        probe_parser: None,
     },
     ServiceDef {
         name: "breachdirectory",
@@ -221,6 +405,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://breachdirectory.p.rapidapi.com/?func=auto&term=test@example.com",
         key_header: KeyPlacement::Header("X-RapidAPI-Key"),
         rate_limit_reset_secs: 60,
+        probe_parser: None,
     },
     ServiceDef {
         name: "c99",
@@ -229,14 +414,25 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.c99.nl/",
         key_header: KeyPlacement::QueryParam("key"),
         rate_limit_reset_secs: 60,
+        probe_parser: None,
     },
     ServiceDef {
         name: "greynoise",
         env_var: "HUNTSMAN_GREYNOISE_KEY",
         category: "threat_intel",
-        test_url: "https://api.greynoise.io/v3/community/8.8.8.8",
+        test_url: "https://api.greynoise.io/v3/ip/8.8.8.8",
         key_header: KeyPlacement::Header("key"),
         rate_limit_reset_secs: 60,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if v.get("ip").is_some() && v.get("seen").is_some() {
+                out.push(("status".into(), "authenticated".into()));
+                if let Some(c) = v.get("classification").and_then(|v| v.as_str()) {
+                    out.push(("classification".into(), c.to_string()));
+                }
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "urlscan",
@@ -245,6 +441,13 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://urlscan.io/api/v1/search/?q=domain:example.com&size=1",
         key_header: KeyPlacement::Header("API-Key"),
         rate_limit_reset_secs: 5,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if v.get("results").is_some() {
+                out.push(("status".into(), "authenticated".into()));
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "censys",
@@ -253,6 +456,14 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://search.censys.io/api/v2/hosts/1.1.1.1",
         key_header: KeyPlacement::BasicAuth,
         rate_limit_reset_secs: 3,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if let Some(ip) = v.get("ip").and_then(|v| v.as_str()) {
+                out.push(("status".into(), "authenticated".into()));
+                out.push(("test_ip".into(), ip.to_string()));
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "censys_secret",
@@ -261,6 +472,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://search.censys.io/api/v2/hosts/1.1.1.1",
         key_header: KeyPlacement::BasicAuth,
         rate_limit_reset_secs: 3,
+        probe_parser: None,
     },
     // (DeHashed v2 is key-only; the former `dehashed_user` account-email def
     // is obsolete — see the note where the `dehashed` def used to live.)
@@ -271,6 +483,20 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.binaryedge.io/v2/user/subscription",
         key_header: KeyPlacement::Header("X-Key"),
         rate_limit_reset_secs: 60,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if let Some(p) = v
+                .get("subscription")
+                .and_then(|s| s.get("name"))
+                .and_then(|v| v.as_str())
+            {
+                out.push(("plan".into(), p.to_string()));
+            }
+            if let Some(c) = v.get("requests_left").and_then(serde_json::Value::as_u64) {
+                out.push(("requests_left".into(), c.to_string()));
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "abuseipdb",
@@ -279,6 +505,13 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.abuseipdb.com/api/v2/check?ipAddress=8.8.8.8&maxAgeInDays=1",
         key_header: KeyPlacement::Header("Key"),
         rate_limit_reset_secs: 60,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if v.get("data").is_some() {
+                out.push(("status".into(), "authenticated".into()));
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "fullhunt",
@@ -287,6 +520,25 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://fullhunt.io/api/v1/auth/status",
         key_header: KeyPlacement::Header("X-API-KEY"),
         rate_limit_reset_secs: 60,
+        probe_parser: Some(|v| {
+            let mut out = Vec::new();
+            if let Some(u) = v
+                .get("user")
+                .and_then(|u| u.get("plan"))
+                .and_then(|v| v.as_str())
+            {
+                out.push(("plan".into(), u.to_string()));
+            }
+            if let Some(c) = v
+                .get("user")
+                .and_then(|u| u.get("credits"))
+                .and_then(|u| u.get("remaining"))
+                .and_then(serde_json::Value::as_u64)
+            {
+                out.push(("credits_remaining".into(), c.to_string()));
+            }
+            out
+        }),
     },
     ServiceDef {
         name: "abr",
@@ -295,6 +547,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://abr.business.gov.au/json/AbnDetails.aspx?abn=51824753556&callback=cb&guid=",
         key_header: KeyPlacement::QueryParam("guid"),
         rate_limit_reset_secs: 5,
+        probe_parser: None,
     },
     ServiceDef {
         name: "wigle_user",
@@ -303,6 +556,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.wigle.net/api/v2/profile/user",
         key_header: KeyPlacement::Header("Authorization"),
         rate_limit_reset_secs: 60,
+        probe_parser: None,
     },
     ServiceDef {
         name: "opencellid",
@@ -311,6 +565,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://opencellid.org/cell/get?key=",
         key_header: KeyPlacement::QueryParam("key"),
         rate_limit_reset_secs: 60,
+        probe_parser: None,
     },
     ServiceDef {
         name: "seon",
@@ -319,6 +574,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.seon.io/SeonRestService/email-api/v3",
         key_header: KeyPlacement::Header("X-API-KEY"),
         rate_limit_reset_secs: 18,
+        probe_parser: None,
     },
     ServiceDef {
         name: "epieos",
@@ -327,6 +583,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.epieos.com/api/v1/email",
         key_header: KeyPlacement::BearerAuth,
         rate_limit_reset_secs: 36,
+        probe_parser: None,
     },
     ServiceDef {
         name: "proxycurl",
@@ -335,6 +592,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://nubela.co/proxycurl/api/v2/linkedin",
         key_header: KeyPlacement::BearerAuth,
         rate_limit_reset_secs: 12,
+        probe_parser: None,
     },
     ServiceDef {
         name: "opencorporates",
@@ -343,16 +601,33 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.opencorporates.com/v0.4/companies/search?q=test",
         key_header: KeyPlacement::QueryParam("api_token"),
         rate_limit_reset_secs: 60,
+        probe_parser: None,
+    },
+    // OpenSanctions — sanctions/PEP/watchlist screening (OFAC, UN, EU, DFAT
+    // AU, 400+ sources). /statements is free to call (no quota charge) but
+    // still requires a valid key, so it validates without spending a paid
+    // /match query.
+    ServiceDef {
+        name: "opensanctions",
+        env_var: "HUNTSMAN_OPENSANCTIONS_KEY",
+        category: "identity",
+        test_url: "https://api.opensanctions.org/statements",
+        key_header: KeyPlacement::HeaderPrefixed("Authorization", "ApiKey "),
+        rate_limit_reset_secs: 60,
+        probe_parser: None,
     },
     // SeekNow (see-know.ru — the live domain as of 2026-08; the legacy
     // see-know.icu host is dead, verified returning HTTP 502) — direct OathNet
     // competitor. Auth: `X-API-Key: <key>` — the server answers a keyless probe
     // with "Missing API key. Use X-API-Key: seek-…" and a bad key with 401
     // `invalid_api_key` "Invalid API key" (verified live against see-know.ru; see
-    // see_know/client.rs, which authenticates with KeyPlacement::Header). The
+    // see_know/client.rs, which authenticates with AuthScheme::XApiKey). The
     // validation probe must send that header or it mis-reports a valid key as
     // invalid. /credits is a free introspection endpoint (200 with credits JSON
-    // for a valid key, 401 for a bad one).
+    // for a valid key, 401 for a bad one). `.ru` matches `client::base_url()`'s
+    // primary domain (promoted 2026-07-29; `.xyz`/`.eu`/`.icu` remain fallback
+    // there) so a validated key is probed against the same host the live
+    // search calls actually hit.
     ServiceDef {
         name: "see_know",
         env_var: "HUNTSMAN_SEEKNOW_KEY",
@@ -360,6 +635,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://see-know.ru/api/v1/credits",
         key_header: KeyPlacement::Header("X-API-Key"),
         rate_limit_reset_secs: 17,
+        probe_parser: None,
     },
     // Exa AI neural search — semantic web search for entity discovery.
     // x-api-key header. POST endpoint, but the GET /search?q=test path
@@ -371,11 +647,150 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.exa.ai/search",
         key_header: KeyPlacement::Header("x-api-key"),
         rate_limit_reset_secs: 5,
+        probe_parser: None,
+    },
+    // The following nine were confirmed live (module code + a real 2026-07-14
+    // GET probe against each host from this environment) to be genuine
+    // per-service API keys with ZERO key-pool integration: never poolable
+    // (`is_poolable_service` gates on this registry), invisible on the
+    // operator's key-health dashboard, and the documented
+    // `HUNTSMAN_X_KEY=a,b,c` multi-key convention silently breaking (the CSV
+    // split in `util/keys/io.rs` only runs for a registered `env_var`, so an
+    // operator following that convention here would send the literal
+    // comma-joined string as one broken credential). `github_user`/
+    // `github_code_search`/`github_commits`/`urlhaus` additionally needed a
+    // module-side fix (they swallowed 401/403/429 without ever calling
+    // `ctx.report_key_exhausted`); `trove_au`/`fullcontact`/`domainsdb`/
+    // `niamonx`/`osintcat` already reported correctly — for those five,
+    // registration alone turns their existing (previously no-op) reports into
+    // real pool state.
+    ServiceDef {
+        name: "github",
+        env_var: "HUNTSMAN_GITHUB_TOKEN",
+        category: "identity",
+        // GitHub's documented "get the authenticated user" endpoint — 200 for
+        // a valid token, 401 for an invalid/expired one, zero side effects.
+        test_url: "https://api.github.com/user",
+        key_header: KeyPlacement::BearerAuth,
+        rate_limit_reset_secs: 60,
+        probe_parser: None,
+    },
+    // abuse.ch's URLhaus. Confirmed live (2026-07-14, real requests from this
+    // environment against `modules/urlhaus/mod.rs`'s own base URL): no
+    // `Auth-Key` header → 401; a present-but-wrong `Auth-Key` → 404 (its real
+    // endpoints are POST-only, so this GET path doesn't cleanly echo the
+    // auth verdict a valid key would get). Either way the probe lands
+    // `Indeterminate`, never a false `Invalid` — the same safe trade-off
+    // `dehashed`'s omission note above documents for a POST-only API.
+    // abuse.ch's 2024 auth rollout unified URLhaus/ThreatFox/MalwareBazaar
+    // under one Auth-Key, which is why `urlhaus`'s own code falls back to
+    // `HUNTSMAN_THREATFOX_KEY` when no dedicated key is set — registered here
+    // as its own service so a *dedicated* URLhaus key still pools/rotates
+    // independently.
+    ServiceDef {
+        name: "urlhaus",
+        env_var: "HUNTSMAN_ABUSECH_KEY",
+        category: "threat_intel",
+        test_url: "https://urlhaus-api.abuse.ch/v1/",
+        key_header: KeyPlacement::Header("Auth-Key"),
+        rate_limit_reset_secs: 60,
+        probe_parser: None,
+    },
+    ServiceDef {
+        name: "hlrlookups",
+        env_var: "HUNTSMAN_HLR_KEY",
+        category: "identity",
+        // hlrlookups.com has no keyless account-status endpoint; the real
+        // lookup endpoint requires an MSISDN, so the probe uses a NANP
+        // fictional-use reserved number (+1-555-01xx, ITU/NANPA-reserved for
+        // testing — never a real subscriber) purely to exercise the auth
+        // header, not to look anyone up.
+        test_url: "https://api.hlrlookups.com/api/lookup?msisdn=%2B15555550100",
+        key_header: KeyPlacement::QueryParam("api_key"),
+        rate_limit_reset_secs: 300,
+        probe_parser: None,
+    },
+    ServiceDef {
+        name: "opencnam",
+        env_var: "HUNTSMAN_OPENCNAM_KEY",
+        category: "identity",
+        // Same reserved-number rationale as `hlrlookups` above. OpenCNAM's
+        // API additionally requires a (non-secret, hardcoded) `account_sid` —
+        // `modules/hlr_cnam/mod.rs` always sends `account_sid=huntsman`, so the
+        // probe mirrors that exact pairing.
+        test_url: "https://api.opencnam.com/v2/phone/+15555550100?account_sid=huntsman",
+        key_header: KeyPlacement::QueryParam("auth_token"),
+        rate_limit_reset_secs: 300,
+        probe_parser: None,
+    },
+    ServiceDef {
+        name: "trove_au",
+        env_var: "HUNTSMAN_TROVE_KEY",
+        category: "identity",
+        // The module's own real endpoint (National Library of Australia
+        // newspaper search), minimised to `n=1` — a genuine, cheap live query.
+        test_url: "https://api.trove.nla.gov.au/v3/result?q=test&zone=newspaper&encoding=json&n=1&reclevel=brief",
+        key_header: KeyPlacement::Header("X-API-KEY"),
+        rate_limit_reset_secs: 60,
+        probe_parser: None,
+    },
+    ServiceDef {
+        name: "fullcontact",
+        env_var: "HUNTSMAN_FULLCONTACT_KEY",
+        category: "identity",
+        // FullContact's enrichment endpoint is POST-only (`modules/fullcontact/
+        // mod.rs`), so — same reasoning as `urlhaus`/`dehashed` above — a
+        // GET-based probe safely lands `Indeterminate` rather than a false
+        // `Invalid`; it still confirms the pool integration (rotation,
+        // dashboard visibility, real `report_key_exhausted` effect) works.
+        test_url: "https://api.fullcontact.com/v3/person.enrich",
+        key_header: KeyPlacement::BearerAuth,
+        rate_limit_reset_secs: 300,
+        probe_parser: None,
+    },
+    ServiceDef {
+        name: "domainsdb",
+        env_var: "HUNTSMAN_DOMAINSDB_KEY",
+        category: "infrastructure",
+        // Confirmed live (2026-07-14): domainsdb.info's search endpoint does
+        // NOT actually verify a bearer token's authenticity — it 401s with NO
+        // `Authorization` header at all, but accepts ANY non-empty bearer
+        // value and returns a normal 200 (empty result set for a garbage
+        // token, same shape as a real zero-match search). A `domain=`-bearing
+        // test_url would therefore make the probe read a garbage key as
+        // `Valid` — a false positive, worse than the safe `Indeterminate`
+        // the POST-only services above accept. Omitting the required
+        // `domain` param sidesteps that: auth-presence is still checked
+        // first (no header → 401), but any present token then hits this
+        // param-validation 400 before the (unreliable) key check would ever
+        // matter — so this probe can only land `Indeterminate`, never a
+        // false `Valid` or a false `Invalid`. domainsdb.info made the key
+        // mandatory in 2025 (T2.48); the module's own doc comment ("free, no
+        // key") is now stale, corrected here.
+        test_url: "https://api.domainsdb.info/v1/domains/search?zone=com&limit=1",
+        key_header: KeyPlacement::BearerAuth,
+        rate_limit_reset_secs: 60,
+        probe_parser: None,
+    },
+    ServiceDef {
+        name: "niamonx",
+        env_var: "HUNTSMAN_NIAMONX_KEY",
+        category: "breach",
+        // NiamonX's PBS v1 search is POST-only (`modules/niamonx/mod.rs`'s own
+        // `BASE`) — same safe `Indeterminate`-only trade-off as `urlhaus`/
+        // `fullcontact`.
+        test_url: "https://dash.niamonx.io/api/v2/breaches_search",
+        key_header: KeyPlacement::Header("X-API-Key"),
+        rate_limit_reset_secs: 60,
+        probe_parser: None,
     },
     // OSINTCat (osintcat.net) — aggregated breach/footprint lookups. The free
     // `GET /api/user` account endpoint the `osintcat` module already uses as its
-    // own key check (with the `x-api-key` header) doubles as a cheap validation
-    // probe, so this registers cleanly for pooling/rotation/validation.
+    // own credit preflight (with the `x-api-key` header, checked before every
+    // paid call — see `modules/osintcat/mod.rs`'s own module doc) doubles as a
+    // cheap validation probe. Deliberately NOT `/api/email-osint`: that is the
+    // module's PAID deep-search endpoint, so using it here would spend a real
+    // credit on every key-validation probe.
     ServiceDef {
         name: "osintcat",
         env_var: "HUNTSMAN_OSINTCAT_KEY",
@@ -383,6 +798,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://www.osintcat.net/api/user",
         key_header: KeyPlacement::Header("x-api-key"),
         rate_limit_reset_secs: 60,
+        probe_parser: None,
     },
     // GitHub personal-access token — optional for github_user/_commits/
     // _code_search (raises the rate limit). `Authorization: Bearer <token>`;
@@ -395,6 +811,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.github.com/user",
         key_header: KeyPlacement::BearerAuth,
         rate_limit_reset_secs: 60,
+        probe_parser: None,
     },
     ServiceDef {
         name: "abusech",
@@ -403,6 +820,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://urlhaus-api.abuse.ch/v1/urls/recent/",
         key_header: KeyPlacement::Header("Auth-Key"),
         rate_limit_reset_secs: 120,
+        probe_parser: None,
     },
     // Intentionally NOT registered (same reasoning as DeHashed above): `niamonx`
     // (POST `/breaches_search`, `X-API-Key` header) and `fullcontact` (POST

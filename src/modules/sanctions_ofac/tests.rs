@@ -1,10 +1,20 @@
 use super::*;
 
+use super::crypto::SanctionedAddress;
+use super::entity::{ADDRESS_HIT_CONFIDENCE, HIT_CONFIDENCE};
+use super::parse::SdnKind;
+
 #[test]
-fn accepts_fullname_and_organisation_only() {
+fn accepts_names_organisations_and_crypto_addresses() {
     let m = SanctionsOfac;
     assert!(m.accepts(&Target::new(TargetKind::FullName, "Abu Abbas")));
     assert!(m.accepts(&Target::new(TargetKind::Organisation, "Banco Nacional de Cuba")));
+    // A wallet is screenable because OFAC designates addresses inline in the
+    // remarks this module already downloads.
+    assert!(m.accepts(&Target::new(
+        TargetKind::CryptoAddress,
+        "1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    )));
     assert!(!m.accepts(&Target::new(TargetKind::Email, "x@y.com")));
     assert!(!m.accepts(&Target::new(TargetKind::Domain, "example.com")));
 }
@@ -17,11 +27,12 @@ fn module_metadata() {
 }
 
 #[test]
-fn produces_only_person_and_organisation() {
+fn produces_person_organisation_and_crypto_address() {
     let kinds = SanctionsOfac.produces();
     assert!(kinds.contains(&EntityKind::Person));
     assert!(kinds.contains(&EntityKind::Organisation));
-    assert_eq!(kinds.len(), 2);
+    assert!(kinds.contains(&EntityKind::CryptoAddress));
+    assert_eq!(kinds.len(), 3);
 }
 
 fn individual_record() -> SdnRecord {
@@ -30,6 +41,7 @@ fn individual_record() -> SdnRecord {
         name: "ABBAS, Abu".to_string(),
         kind: SdnKind::Individual,
         program: "SDGT".to_string(),
+        title: "Director of PALESTINE LIBERATION FRONT".to_string(),
         remarks: "DOB 10 Dec 1948; Director of PALESTINE LIBERATION FRONT.".to_string(),
     }
 }
@@ -40,6 +52,7 @@ fn organisation_record() -> SdnRecord {
         name: "AEROCARIBBEAN AIRLINES".to_string(),
         kind: SdnKind::Organisation,
         program: "CUBA".to_string(),
+        title: String::new(),
         remarks: String::new(),
     }
 }
@@ -50,13 +63,30 @@ fn vessel_record() -> SdnRecord {
         name: "MAR AZUL".to_string(),
         kind: SdnKind::Vessel,
         program: "CUBA".to_string(),
+        title: String::new(),
         remarks: String::new(),
+    }
+}
+
+/// An individual whose entry designates one Bitcoin wallet — the shape that
+/// makes the name path a pivot into `chain_intel`.
+fn wallet_record() -> SdnRecord {
+    SdnRecord {
+        ent_num: 31234,
+        name: "IVANOV, Ivan".to_string(),
+        kind: SdnKind::Individual,
+        program: "CYBER2".to_string(),
+        title: String::new(),
+        remarks: "DOB 01 Jan 1980; Digital Currency Address - XBT \
+                  1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2."
+            .to_string(),
     }
 }
 
 #[test]
 fn individual_hit_emits_person_with_reordered_name_and_caution() {
-    let e = build_entity(&individual_record(), "s").expect("individual should emit an entity");
+    let e = build_subject(&individual_record(), "s", Provenance::Name)
+        .expect("individual should emit an entity");
     assert_eq!(e.kind, EntityKind::Person);
     assert_eq!(e.value, "Abu Abbas");
     assert!((e.confidence - HIT_CONFIDENCE).abs() < 1e-9);
@@ -65,12 +95,30 @@ fn individual_hit_emits_person_with_reordered_name_and_caution() {
     let attrs = &e.evidence[0].attributes;
     assert!(attrs.contains_key("caution"));
     assert_eq!(attrs.get("program").map(String::as_str), Some("SDGT"));
-    assert!(attrs.get("remarks").is_some_and(|r| r.contains("DOB 10 Dec 1948")));
+    assert_eq!(
+        attrs.get("title").map(String::as_str),
+        Some("Director of PALESTINE LIBERATION FRONT")
+    );
+    assert!(
+        attrs
+            .get("remarks")
+            .is_some_and(|r| r.contains("DOB 10 Dec 1948"))
+    );
+}
+
+#[test]
+fn hit_with_blank_title_omits_title_attribute() {
+    let e = build_subject(&organisation_record(), "s", Provenance::Name)
+        .expect("organisation should emit an entity");
+    // organisation_record() has an empty title (the -0- placeholder normalises
+    // to "") — the attribute must be absent, not present-and-empty.
+    assert!(!e.evidence[0].attributes.contains_key("title"));
 }
 
 #[test]
 fn organisation_hit_emits_organisation_without_reordering() {
-    let e = build_entity(&organisation_record(), "s").expect("organisation should emit an entity");
+    let e = build_subject(&organisation_record(), "s", Provenance::Name)
+        .expect("organisation should emit an entity");
     assert_eq!(e.kind, EntityKind::Organisation);
     assert_eq!(e.value, "AEROCARIBBEAN AIRLINES");
     assert!(e.has_tag("sanctions") && e.has_tag("needs-identity-verification"));
@@ -79,10 +127,198 @@ fn organisation_hit_emits_organisation_without_reordering() {
 }
 
 #[test]
-fn vessel_and_aircraft_rows_emit_no_entity() {
-    assert!(build_entity(&vessel_record(), "s").is_none());
+fn vessel_and_aircraft_rows_emit_no_subject() {
+    assert!(build_subject(&vessel_record(), "s", Provenance::Name).is_none());
     let mut aircraft = vessel_record();
     aircraft.kind = SdnKind::Aircraft;
-    assert!(build_entity(&aircraft, "s").is_none());
+    assert!(build_subject(&aircraft, "s", Provenance::Address).is_none());
 }
 
+#[test]
+fn address_provenance_grades_higher_and_drops_the_identity_hedge() {
+    let name_hit = build_subject(&individual_record(), "s", Provenance::Name)
+        .expect("individual should emit an entity");
+    let addr_hit = build_subject(&individual_record(), "s", Provenance::Address)
+        .expect("individual should emit an entity");
+
+    assert!(
+        addr_hit.confidence > name_hit.confidence,
+        "an exact identifier match must outrank a fuzzy name match"
+    );
+    assert!((addr_hit.confidence - ADDRESS_HIT_CONFIDENCE).abs() < 1e-9);
+
+    // The hedge exists because NAME matching is fuzzy; it must not survive onto
+    // a finding reached by an exact identifier.
+    assert!(!addr_hit.has_tag("needs-identity-verification"));
+    let attrs = &addr_hit.evidence[0].attributes;
+    assert!(!attrs.contains_key("caution"));
+    assert!(attrs.contains_key("match_basis"));
+    // Everything that is still true regardless of how the row was reached.
+    assert!(addr_hit.has_tag("sanctions") && addr_hit.has_tag("ofac"));
+    assert_eq!(attrs.get("program").map(String::as_str), Some("SDGT"));
+}
+
+#[test]
+fn wallet_entity_records_ofacs_symbol_and_hses_inferred_chain_separately() {
+    let sa = SanctionedAddress {
+        symbol: "XBT".to_string(),
+        address: "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2".to_string(),
+    };
+    let e = build_wallet(&wallet_record(), &sa, "s", Provenance::Address);
+
+    assert_eq!(e.kind, EntityKind::CryptoAddress);
+    assert_eq!(e.value, "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2");
+    assert!(e.has_tag("sanctioned-wallet") && e.has_tag("crypto-address"));
+    // HSE's shape-based inference, which `chain_intel` keys off…
+    assert!(
+        e.has_tag("chain:btc"),
+        "a valid base58check BTC address must carry the pivot tag: {:?}",
+        e.tags
+    );
+    // …kept distinct from Treasury's own statement of what it designated.
+    let attrs = &e.evidence[0].attributes;
+    assert_eq!(
+        attrs.get("designated_currency").map(String::as_str),
+        Some("XBT")
+    );
+    assert_eq!(
+        attrs.get("designated_entity").map(String::as_str),
+        Some("Ivan Ivanov"),
+        "the wallet must name whose entry designated it, humanised like the subject"
+    );
+}
+
+#[test]
+fn a_wallet_reached_by_a_name_match_inherits_the_name_matchs_weakness() {
+    let sa = SanctionedAddress {
+        symbol: "XBT".to_string(),
+        address: "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2".to_string(),
+    };
+    let pivot = build_wallet(&wallet_record(), &sa, "s", Provenance::Name);
+    let direct = build_wallet(&wallet_record(), &sa, "s", Provenance::Address);
+
+    // OFAC certainly designated this wallet either way — but reached via a
+    // fuzzy name, its link to the operator's SUBJECT is only as strong as that
+    // name match, so it must not be graded as if the operator had pasted it.
+    assert!((pivot.confidence - HIT_CONFIDENCE).abs() < 1e-9);
+    assert!(pivot.confidence < direct.confidence);
+    assert!(pivot.has_tag("needs-identity-verification"));
+    assert!(pivot.evidence[0].attributes.contains_key("caution"));
+    // Both still assert the designation itself, which is not in doubt.
+    assert!(pivot.has_tag("sanctioned-wallet") && direct.has_tag("sanctioned-wallet"));
+}
+
+#[test]
+fn an_unrecognisable_address_shape_still_emits_the_designation() {
+    // A symbol HSE has no classifier for (TRX, USDT, DASH, …) must not cause
+    // the sanctions finding to be dropped — the designation is OFAC's, not
+    // ours, and only the `chain:` pivot tag depends on our recognising it.
+    let sa = SanctionedAddress {
+        symbol: "TRX".to_string(),
+        address: "TZ4UXDV5ZhNW7fb2AMSbgfAEZ7hWsnYS2g".to_string(),
+    };
+    let e = build_wallet(&wallet_record(), &sa, "s", Provenance::Address);
+    assert_eq!(e.value, "TZ4UXDV5ZhNW7fb2AMSbgfAEZ7hWsnYS2g");
+    assert!(e.has_tag("sanctioned-wallet"));
+    assert_eq!(
+        e.evidence[0]
+            .attributes
+            .get("designated_currency")
+            .map(String::as_str),
+        Some("TRX")
+    );
+    assert!(
+        !e.tags.iter().any(|t| t.starts_with("chain:")),
+        "no chain tag may be invented for a shape HSE cannot classify: {:?}",
+        e.tags
+    );
+}
+
+/// A failed OFAC download with NO usable cached list must be an error, never an
+/// empty screening set.
+///
+/// This is the module's worst possible failure: the caller iterates the returned
+/// records to find hits, so an empty set produces zero hits — byte-identical to
+/// the answer for a subject who is genuinely not designated. A transport failure
+/// would therefore render as an affirmative sanctions clearance for a name that
+/// was never actually checked, and that output is used in engagement reporting.
+///
+/// The stale-list path is deliberately NOT an error: OFAC publishes irregularly,
+/// so screening against a previously-downloaded set still answers the question.
+#[test]
+fn failed_download_without_a_cached_list_is_an_error_not_a_clean_screen() {
+    use super::list::degrade_on_fetch_failure;
+
+    let rec = |name: &str| super::parse::SdnRecord {
+        ent_num: 1,
+        name: name.to_string(),
+        kind: SdnKind::Individual,
+        program: "SDN".to_string(),
+        title: String::new(),
+        remarks: String::new(),
+    };
+
+    // Cold cache: nothing has ever loaded. Screening is impossible, not clean.
+    let err = degrade_on_fetch_failure(None)
+        .expect_err("a cold-cache download failure must NOT yield an empty screening set");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("sanctions_ofac"),
+        "error must name the module so it reaches the operator: {msg}"
+    );
+
+    // An empty cached list screens exactly as blindly as no list at all, so it
+    // must be treated the same way rather than passed off as a real set.
+    degrade_on_fetch_failure(Some(Vec::new()))
+        .expect_err("an EMPTY cached list is not a usable screening set");
+
+    // A stale but populated list IS a sound degradation — preserved, not broken.
+    let stale = vec![rec("ABBAS, Abu"), rec("Banco Nacional de Cuba")];
+    let got = degrade_on_fetch_failure(Some(stale.clone()))
+        .expect("a populated cached list must still screen");
+    assert_eq!(
+        got.len(),
+        stale.len(),
+        "the stale list must be returned intact, not truncated or emptied"
+    );
+    assert_eq!(got[0].name, "ABBAS, Abu");
+}
+
+/// Every route that can hand the caller a record set must agree on what counts as
+/// screenable, because each one of them is a way to produce a false clean screen.
+///
+/// The first version of this fix guarded only the transport-failure route and left
+/// two others returning `Ok(vec![])`: the cache fast path (an empty cached set was
+/// served straight back as a successful screen) and a 2xx whose body parsed to zero
+/// rows (which was then cached, serving that blindness for the whole 12h TTL).
+/// `is_screenable` is the single definition all three now consult, so they cannot
+/// drift apart again.
+#[test]
+fn an_empty_record_set_is_never_screenable_by_any_route() {
+    use super::list::{degrade_on_fetch_failure, is_screenable};
+
+    let rec = || super::parse::SdnRecord {
+        ent_num: 1,
+        name: "ABBAS, Abu".to_string(),
+        kind: SdnKind::Individual,
+        program: "SDN".to_string(),
+        title: String::new(),
+        remarks: String::new(),
+    };
+
+    // The shared rule itself.
+    assert!(
+        !is_screenable(&[]),
+        "an empty set answers every query with 'no designations' — never screenable"
+    );
+    assert!(is_screenable(&[rec()]), "a populated set is screenable");
+
+    // The degradation route consults the same rule, so an empty cache is an error
+    // rather than a clean screen.
+    degrade_on_fetch_failure(Some(Vec::new()))
+        .expect_err("an empty cached set must not be served as a successful screen");
+    assert!(
+        degrade_on_fetch_failure(Some(vec![rec()])).is_ok(),
+        "a populated cached set must still degrade gracefully"
+    );
+}

@@ -11,7 +11,10 @@ use crate::core::{
 
 mod archive; // `impl Store`: inter-scan entity cache (`raw_archive`)
 mod entities; // `impl Store`: entity persistence + FTS query
+mod stealer_rows; // `impl Store`: paired stealer-log credential row persistence
 mod templates; // `impl Store`: cross-scan pathway-template learning
+
+pub use entities::EvidenceAnomaly;
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -96,7 +99,27 @@ const SCHEMA_DDL: &str = "
             CREATE INDEX IF NOT EXISTS idx_obs_scan      ON entity_observations(scan_id);
             CREATE INDEX IF NOT EXISTS idx_obs_entity    ON entity_observations(entity_uid);
             CREATE INDEX IF NOT EXISTS idx_events_scan   ON events(scan_id, id);
+            CREATE INDEX IF NOT EXISTS idx_events_type   ON events(event_type, id);
             CREATE INDEX IF NOT EXISTS idx_relations_scan ON relations(scan_id);
+
+            -- Paired stealer-log credential rows (Stealer Logs Viewer,
+            -- `core::stealer_row::StealerRow`). Persisted ALONGSIDE the
+            -- generic entity graph, not instead of it: `entities` flattens a
+            -- credential into independent Email/Username/Credential rows for
+            -- correlation, which loses the login/password/domain pairing an
+            -- operator browsing a stolen-credential dump actually wants back.
+            CREATE TABLE IF NOT EXISTS stealer_rows (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id  TEXT NOT NULL,
+                log_id   TEXT,
+                domain   TEXT,
+                login    TEXT,
+                password TEXT,
+                pwned_at TEXT,
+                row_kind TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_stealer_rows_scan ON stealer_rows(scan_id);
+            CREATE INDEX IF NOT EXISTS idx_stealer_rows_log  ON stealer_rows(scan_id, log_id);
 
             -- Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN). Keyed by
             -- `module:target_kind:normalised_target` so a repeat scan of the
@@ -424,6 +447,48 @@ impl Store {
         Ok(deserialize_rows(raw, "list_scans"))
     }
 
+    /// Chronological (newest-first) list of past **radar sweeps** — scans
+    /// whose target is one of `radar_scan_spec`'s two sentinel anchors
+    /// (`Coordinates "0,0"` or `MacAddress "00:00:00:00:00:00"`; the sensors
+    /// ignore the value, so it is never a real target). Filters at the SQL
+    /// layer with the same `json_extract` technique as
+    /// [`Store::latest_completed_scan`], so a deployment with thousands of
+    /// ordinary scans doesn't pay to deserialise every one just to find the
+    /// radar-tagged handful.
+    ///
+    /// Sourced entirely from the persisted `scans` table — unlike the
+    /// in-memory `LiveSession` bookkeeping (cleared on every restart), this
+    /// survives a `hse serve` restart, so an operator reviewing what was
+    /// around them earlier can do so without remembering a session id. This
+    /// is the query behind `GET /api/v1/radar/history`.
+    pub fn radar_history(&self, limit: usize) -> Result<Vec<Scan>> {
+        // The raw "0,0"/"00:00:00:00:00:00" `radar_scan_spec` passes to
+        // `Target::new` is NOT what ends up persisted: coordinate normalisation
+        // (`core::entity::normalise`) rounds to 6 decimal places, so the stored
+        // value is `RADAR_SENTINEL_COORD_NORMALISED` — the MAC sentinel is
+        // already normalised-form (lowercase, colon-sep, all-zero) and passes
+        // through unchanged. Sourced from `core::scan`'s single-defined
+        // constants (not re-hardcoded) so this query can't silently drift from
+        // what `radar_scan_spec` / `cli::radar` actually seed a sweep with.
+        let query = format!(
+            "SELECT data_json FROM scans
+             WHERE (json_extract(data_json, '$.target.kind') = 'coordinates'
+                    AND json_extract(data_json, '$.target.value') = '{}')
+                OR (json_extract(data_json, '$.target.kind') = 'mac_address'
+                    AND json_extract(data_json, '$.target.value') = '{}')
+             ORDER BY started_at DESC, id DESC LIMIT ?1",
+            crate::core::scan::RADAR_SENTINEL_COORD_NORMALISED,
+            crate::core::scan::RADAR_SENTINEL_MAC,
+        );
+        let raw: Vec<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached(&query)?;
+            let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
+            collect_rows(rows, "radar_history")
+        };
+        Ok(deserialize_rows(raw, "radar_history"))
+    }
+
     /// Return the most recent scan whose serialised status matches
     /// `complete` (the lower-case canonical form used by ScanStatus::
     /// as_str). Filters at the SQL layer using a JSON-extract probe
@@ -601,6 +666,36 @@ impl Store {
         Ok(())
     }
 
+    /// Batch-insert relations in ONE transaction (one autocommit → one fsync
+    /// instead of one per edge at finalise). All-or-nothing; the caller falls
+    /// back to per-relation [`Self::upsert_relation`] on error. Returns
+    /// `rels.len()`. Same `ON CONFLICT(id) DO NOTHING` idempotence as the
+    /// single-row path, so a re-scan re-deriving the same edge never duplicates.
+    pub fn upsert_relations_batch(&self, rels: &[Relation]) -> Result<usize> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        for r in rels {
+            let json = serde_json::to_string(r)?;
+            tx.prepare_cached(
+                "INSERT INTO relations(id, scan_id, from_uid, to_uid, kind, confidence, observed_at, data_json)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(id) DO NOTHING",
+            )?
+            .execute(params![
+                r.id,
+                r.scan_id,
+                r.from_uid,
+                r.to_uid,
+                r.kind.as_str(),
+                r.confidence,
+                r.observed_at as i64,
+                json,
+            ])?;
+        }
+        tx.commit()?;
+        Ok(rels.len())
+    }
+
     pub fn relations_for_scan(&self, scan_id: &str) -> Result<Vec<Relation>> {
         let raw: Vec<String> = {
             let conn = self.conn.lock();
@@ -635,6 +730,15 @@ impl Store {
         )?;
         tx.execute("DELETE FROM events WHERE scan_id = ?1", params![scan_id])?;
         tx.execute("DELETE FROM relations WHERE scan_id = ?1", params![scan_id])?;
+        // `stealer_rows` is scan-scoped like every table above and holds the most
+        // sensitive payload in the store — stolen login/password pairs. It has no
+        // other prune path, so omitting it here left a deleted scan's credentials
+        // live on disk (and `stealer_rows_for_scan` still returns them) and let the
+        // table grow unbounded. A cascade delete must reach it too.
+        tx.execute(
+            "DELETE FROM stealer_rows WHERE scan_id = ?1",
+            params![scan_id],
+        )?;
         // FTS sync: a contentless-external FTS5 index never observes a bare
         // DELETE on its content table, so each orphaned row's text must be
         // removed with an explicit 'delete' command BEFORE the row goes away.
@@ -776,6 +880,27 @@ impl Store {
         Ok(())
     }
 
+    /// Batch-insert events in ONE transaction. The db-writer coalesces up to 64
+    /// events per drain; committing them as 64 autocommit INSERTs meant 64
+    /// BEGIN/COMMIT + fsync round-trips on the phone's flash filesystem. All-or-
+    /// nothing; the caller falls back to per-event [`Self::insert_event`] on
+    /// error. Returns `events.len()`.
+    pub fn insert_events_batch(&self, events: &[Event]) -> Result<usize> {
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        for event in events {
+            let event_type = event.kind.event_type_str();
+            let json = serde_json::to_string(event)?;
+            tx.prepare_cached(
+                "INSERT INTO events(scan_id, ts, event_type, data_json)
+                 VALUES(?1, ?2, ?3, ?4)",
+            )?
+            .execute(params![event.scan_id, event.ts as i64, event_type, json])?;
+        }
+        tx.commit()?;
+        Ok(events.len())
+    }
+
     pub fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {
         let raw: Vec<String> = {
             let conn = self.conn.lock();
@@ -787,11 +912,41 @@ impl Store {
         };
         Ok(deserialize_rows(raw, "events_for_scan"))
     }
+
+    /// The most recent `ModuleDone`/`ModuleError` events **across all scans**,
+    /// newest first, bounded by `limit` — the raw substrate for the per-source
+    /// health signal (`PROBLEM_TREE` T2.7 / `SOLUTION_TREE` SOL-HEALTH-SIGNAL,
+    /// see [`crate::util::scraper_health`]). Filtered at the SQL layer (not by
+    /// the caller) so a health check never has to wade through
+    /// `ModuleStart`/`ModuleSkipped`/entity/correlation rows to find the two
+    /// kinds it cares about. Naturally a ROLLING window: `events` is already
+    /// pruned to [`crate::core::port::EVENTS_RETENTION_SECS`] /
+    /// [`crate::core::port::EVENTS_MAX_ROWS`] (see [`Self::prune_events`]), so
+    /// this reflects recent scans only, not full history — a source that
+    /// broke and was never scanned again ages out rather than staying flagged
+    /// forever.
+    pub fn recent_module_outcome_events(&self, limit: usize) -> Result<Vec<Event>> {
+        let raw: Vec<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached(
+                "SELECT data_json FROM events
+                 WHERE event_type IN ('module_done', 'module_error')
+                 ORDER BY id DESC LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
+            collect_rows(rows, "recent_module_outcome_events")
+        };
+        Ok(deserialize_rows(raw, "recent_module_outcome_events"))
+    }
 }
 
 impl crate::core::port::StoragePort for Store {
     fn checkpoint_truncate(&self) -> Result<()> {
         Store::checkpoint_truncate(self)
+    }
+
+    fn integrity_check(&self) -> Result<Vec<String>> {
+        Store::integrity_check(self)
     }
 
     fn prune_events(&self, max_age_secs: u64, max_rows: usize) -> Result<usize> {
@@ -812,6 +967,10 @@ impl crate::core::port::StoragePort for Store {
 
     fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
         Store::list_scans(self, limit)
+    }
+
+    fn radar_history(&self, limit: usize) -> Result<Vec<Scan>> {
+        Store::radar_history(self, limit)
     }
 
     fn delete_scan(&self, scan_id: &str) -> Result<bool> {
@@ -877,6 +1036,10 @@ impl crate::core::port::StoragePort for Store {
         Store::upsert_relation(self, r)
     }
 
+    fn upsert_relations_batch(&self, rels: &[Relation]) -> Result<usize> {
+        Store::upsert_relations_batch(self, rels)
+    }
+
     fn relations_for_scan(&self, scan_id: &str) -> Result<Vec<Relation>> {
         Store::relations_for_scan(self, scan_id)
     }
@@ -885,8 +1048,16 @@ impl crate::core::port::StoragePort for Store {
         Store::insert_event(self, event)
     }
 
+    fn insert_events_batch(&self, events: &[Event]) -> Result<usize> {
+        Store::insert_events_batch(self, events)
+    }
+
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {
         Store::events_for_scan(self, scan_id)
+    }
+
+    fn recent_module_outcome_events(&self, limit: usize) -> Result<Vec<Event>> {
+        Store::recent_module_outcome_events(self, limit)
     }
 
     fn archive_module_result(&self, key: &str, ttl_secs: u64, entities: &[Entity]) -> Result<()> {
@@ -903,6 +1074,21 @@ impl crate::core::port::StoragePort for Store {
 
     fn pathway_template_count(&self, template: &str) -> Result<u32> {
         Store::pathway_template_count(self, template)
+    }
+
+    fn insert_stealer_rows_batch(
+        &self,
+        scan_id: &str,
+        rows: &[crate::core::stealer_row::StealerRow],
+    ) -> Result<usize> {
+        Store::insert_stealer_rows_batch(self, scan_id, rows)
+    }
+
+    fn stealer_rows_for_scan(
+        &self,
+        scan_id: &str,
+    ) -> Result<Vec<crate::core::stealer_row::StealerRow>> {
+        Store::stealer_rows_for_scan(self, scan_id)
     }
 }
 

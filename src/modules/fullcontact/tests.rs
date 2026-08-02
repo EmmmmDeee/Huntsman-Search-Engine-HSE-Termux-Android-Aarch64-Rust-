@@ -15,7 +15,7 @@ use super::*;
                 }
             }
         });
-        serde_json::from_value(json).unwrap()
+        serde_json::from_value(json).expect("should succeed")
     }
 
     #[test]
@@ -36,14 +36,53 @@ use super::*;
         // Every entity carries the source tag.
         assert!(es.iter().all(|e| e.has_tag("fullcontact")));
         // Current employer outranks historical.
-        let acme = es.iter().find(|e| e.value == "Acme Pty Ltd").unwrap();
-        let globex = es.iter().find(|e| e.value == "Globex").unwrap();
+        let acme = es.iter().find(|e| e.value == "Acme Pty Ltd").expect("should succeed");
+        let globex = es.iter().find(|e| e.value == "Globex").expect("should succeed");
         assert!(acme.confidence > globex.confidence);
     }
 
     #[test]
     fn build_entities_is_quiet_on_empty_response() {
         assert!(build_entities(&FcResp::default(), "scan").is_empty());
+    }
+
+    #[test]
+    fn build_entities_emits_contact_emails_and_phones_from_details() {
+        // The enrichment `details.emails` / `details.phones` (previously decoded
+        // nowhere) are direct Email/Phone BFS pivots. A malformed email must be
+        // rejected by the shared gate; the FullContact label is kept as a tag.
+        let json = serde_json::json!({
+            "fullName": "Jordan Avery",
+            "details": {
+                "emails": [
+                    { "value": "jordan@acme.com", "label": "work" },
+                    { "value": "not-an-email" }
+                ],
+                "phones": [
+                    { "value": "+1 (212) 555-1234", "label": "mobile" },
+                    { "value": "12345" }
+                ]
+            }
+        });
+        let r: FcResp = serde_json::from_value(json).expect("should succeed");
+        let es = build_entities(&r, "scan");
+        let has = |k: EntityKind, v: &str| es.iter().any(|e| e.kind == k && e.value == v);
+        assert!(has(EntityKind::Email, "jordan@acme.com"));
+        assert!(
+            !es.iter().any(|e| e.kind == EntityKind::Email && e.value == "not-an-email"),
+            "a malformed email value must be rejected"
+        );
+        assert!(has(EntityKind::Phone, "+12125551234"));
+        assert!(
+            !es.iter()
+                .any(|e| e.kind == EntityKind::Phone && e.value.contains("12345")),
+            "a sub-7-digit phone fragment must be rejected"
+        );
+        let email = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Email)
+            .expect("email");
+        assert!(email.has_tag("label:work"));
     }
 
     #[test]
@@ -65,7 +104,7 @@ use super::*;
                 "locations": [{ "formatted": "Melbourne, VIC, AU" }]
             }
         });
-        let r: FcResp = serde_json::from_value(json).unwrap();
+        let r: FcResp = serde_json::from_value(json).expect("should succeed");
         let es = build_entities(&r, "scan");
         assert!(es.iter().any(|e| e.kind == EntityKind::Person && e.value == "Solo Person"));
         assert!(es.iter().any(|e| e.kind == EntityKind::Address));

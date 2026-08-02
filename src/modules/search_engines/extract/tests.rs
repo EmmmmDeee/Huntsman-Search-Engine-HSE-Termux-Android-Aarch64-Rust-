@@ -1,5 +1,85 @@
 use super::*;
 
+    #[test]
+    fn extract_coords_from_text_reads_marked_forms_only() {
+        // Positive: an unambiguous geo: URI and a Plus Code in snippet prose
+        // each yield exactly one coordinate.
+        let geo = extract_coords_from_text("Meet here geo:-27.4766,153.0166;u=35 tonight");
+        assert_eq!(geo.len(), 1, "geo: URI must yield one coordinate: {geo:?}");
+        assert!(geo[0].starts_with("-27.476"), "got {geo:?}");
+
+        let plus = extract_coords_from_text("Location code 4RRH46RW+RH7 near the CBD");
+        assert_eq!(plus.len(), 1, "Plus Code must yield one coordinate: {plus:?}");
+
+        // NEGATIVE (the whole point of the conservative design): ordinary prose
+        // numbers that would parse as an in-range decimal pair must NOT fabricate
+        // a coordinate.
+        for prose in [
+            "The item is $33.50, 151.20 including tax",
+            "Upgrade to version 1.5, 2.3 today",
+            "Call 0410 959 140 or visit us",
+            "Scores were 12.5, 45.9 across the board",
+            "Ranked 4.5, 9.8 out of ten",
+        ] {
+            assert!(
+                extract_coords_from_text(prose).is_empty(),
+                "prose must not fabricate a coordinate: {prose:?} -> {:?}",
+                extract_coords_from_text(prose)
+            );
+        }
+
+        // Same point twice ⇒ deduped.
+        let dup = extract_coords_from_text("geo:-27.4766,153.0166 and again geo:-27.4766,153.0166");
+        assert_eq!(dup.len(), 1, "identical points must dedup: {dup:?}");
+    }
+
+    /// Non-ASCII snippet text must not panic. The `geo:` prefix test indexes the
+    /// candidate token by BYTE, so a token whose 4th byte falls inside a
+    /// multi-byte character used to split it and panic — observed live as
+    /// `end byte index 4 is not a char boundary; it is inside 'í' (bytes 3..5)`,
+    /// which took the whole `search_engines` module down for that target (the
+    /// engine's `catch_unwind` contained it, but the module returned nothing).
+    ///
+    /// Accented words are ordinary in real search snippets, so this is routine
+    /// input, not a crafted edge case.
+    #[test]
+    fn extract_coords_from_text_survives_multibyte_tokens() {
+        // Each token places a multi-byte char across the byte-4 boundary the
+        // `geo:` check slices at ("Cru" is 3 bytes, 'í' spans bytes 3..5).
+        for text in [
+            "Cruíz",
+            "Foo Cruíz bar",
+            "José",
+            "señor",
+            "naïve café",
+            "Ruíz-Menéndez lives in Córdoba",
+            // Multi-byte at the very start, and a 4-byte codepoint.
+            "ñandú",
+            "😀abc",
+            "abc😀def",
+            // Shorter-than-prefix tokens must stay safe too.
+            "í",
+            "aí",
+            "abí",
+        ] {
+            let got = extract_coords_from_text(text);
+            assert!(
+                got.is_empty(),
+                "non-coordinate prose must yield nothing: {text:?} -> {got:?}"
+            );
+        }
+
+        // A real geo: URI still parses when multi-byte text surrounds it — the
+        // fix must not cost the positive case.
+        let mixed = extract_coords_from_text("Café Cruíz geo:-27.4766,153.0166 señor");
+        assert_eq!(mixed.len(), 1, "geo: URI beside multibyte text: {mixed:?}");
+        assert!(mixed[0].starts_with("-27.476"), "got {mixed:?}");
+
+        // Case-insensitivity of the `geo:` scheme is preserved.
+        let upper = extract_coords_from_text("GEO:-27.4766,153.0166");
+        assert_eq!(upper.len(), 1, "scheme is case-insensitive: {upper:?}");
+    }
+
     /// The recycler must respect the module's hard fetch deadline: with a deadline
     /// already in the past it issues NO requests and adds NO entities, so it can
     /// never overrun the engine's kill timeout (which would discard the whole
@@ -10,11 +90,11 @@ use super::*;
         use crate::core::module::{ModuleContext, ModuleResult};
 
         let mut result = ModuleResult::new();
-        // A ≥0.40 entity that would otherwise trigger recycle re-queries.
+        // A ≥confidence::LOW entity that would otherwise trigger recycle re-queries.
         result.push(Entity::new(
             EntityKind::Email,
             "jane.doe@example.com",
-            0.60,
+            confidence::MEDIUM_PLUS,
             "scan",
         ));
         let before = result.entities.len();
@@ -26,7 +106,6 @@ use super::*;
             http: reqwest::Client::new(),
             keys: std::collections::HashMap::new(),
             cancel: crate::core::cancel::CancelHandle::new(),
-            proxy_pool: Default::default(),
         };
         let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
 
@@ -166,7 +245,7 @@ use super::*;
         let e = &entities[0];
         assert_eq!(e.kind, EntityKind::Person);
         assert_eq!(e.value, "Ryne Manka");
-        assert!((e.confidence - 0.65).abs() < 1e-9);
+        assert!((e.confidence - confidence::HIGH).abs() < 1e-9);
         assert!(e.has_tag("social-name"));
         assert!(e.has_tag(crate::core::tags::SEARCH_DISCOVERED));
         assert!(e.has_tag("derived"));
@@ -253,7 +332,7 @@ use super::*;
         let e = &entities[0];
         assert_eq!(e.kind, EntityKind::Url);
         assert_eq!(e.value, "https://linktr.ee/ryno23");
-        assert!((e.confidence - 0.70).abs() < 1e-9, "bio aggregator conf should be 0.70");
+        assert!((e.confidence - confidence::HIGH_PLUS).abs() < 1e-9, "bio aggregator conf should be confidence::HIGH_PLUS");
         assert!(e.has_tag("bio-aggregator"));
         assert!(e.has_tag("social-profile"));
         assert!(e.has_tag(crate::core::tags::SEARCH_DISCOVERED));
@@ -272,7 +351,7 @@ use super::*;
         let entities = extract_bio_aggregator_urls(&results, &target, "s");
         assert_eq!(entities.len(), 1);
         let e = &entities[0];
-        assert!((e.confidence - 0.65).abs() < 1e-9, "messaging conf should be 0.65");
+        assert!((e.confidence - confidence::HIGH).abs() < 1e-9, "messaging conf should be confidence::HIGH");
         assert!(e.has_tag("messaging-profile"));
         assert!(!e.has_tag("bio-aggregator"));
     }
@@ -291,7 +370,7 @@ use super::*;
         assert_eq!(entities.len(), 1, "bio URL from snippet text should be emitted");
         let e = &entities[0];
         assert_eq!(e.value, "https://linktr.ee/ryno23");
-        assert!((e.confidence - 0.65).abs() < 1e-9, "text signal conf should be 0.65");
+        assert!((e.confidence - confidence::HIGH).abs() < 1e-9, "text signal conf should be confidence::HIGH");
         assert!(e.has_tag("bio-aggregator"));
     }
 

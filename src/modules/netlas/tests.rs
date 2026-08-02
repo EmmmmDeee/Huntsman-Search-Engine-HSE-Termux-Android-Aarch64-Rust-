@@ -24,8 +24,11 @@ fn build_entities_surfaces_previously_dropped_cert_issuer_and_http_fields() {
     use crate::core::entity::EntityKind;
     // fields=* fetches the cert issuer CA, the HTTP page title and status code;
     // they were decoded into the response structs but never surfaced. The pure
-    // builder must now fold all three onto the IP entity's evidence.
+    // builder must now fold all three onto the IP entity's evidence. The
+    // top-level `count` (total matches for the query) was likewise dropped and
+    // must now surface as `result_count`.
     let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "count": 42,
         "items": [{
             "data": {
                 "ip": "203.0.113.10",
@@ -39,7 +42,7 @@ fn build_entities_surfaces_previously_dropped_cert_issuer_and_http_fields() {
             }
         }]
     }))
-    .unwrap();
+    .expect("should succeed");
     let r = super::build_entities(&body, "203.0.113.10", "scan");
     let ip = r
         .entities
@@ -56,8 +59,75 @@ fn build_entities_surfaces_previously_dropped_cert_issuer_and_http_fields() {
     assert_eq!(attr("ssl_issuer"), "Let's Encrypt R3");
     assert_eq!(attr("http_title"), "ACME Corporate Portal");
     assert_eq!(attr("http_status"), "200");
+    // The query's total match count, decoded but previously dropped.
+    assert_eq!(attr("result_count"), "42");
     // Pre-existing behaviour preserved: the subject CN still surfaces as ssl_cn.
     assert_eq!(attr("ssl_cn"), "example.com");
+}
+
+#[test]
+fn build_entities_emits_every_unique_cve_with_a_disclosed_count() {
+    use crate::core::entity::EntityKind;
+    // A host with 8 distinct CVEs (spread across two response items, with a
+    // duplicate) must surface ALL 8, deduplicated, plus a cve_count — not the
+    // old silent .take(5). CVEs are the vulnerabilities an analyst pivots on.
+    let cves_a: Vec<_> = (0..5).map(|i| format!("CVE-2024-000{i}")).collect();
+    let cves_b: Vec<_> = (3..8).map(|i| format!("CVE-2024-000{i}")).collect();
+    let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "items": [
+            { "data": { "ip": "203.0.113.10", "port": 443, "protocol": "tcp",
+                        "cve": cves_a.iter().map(|n| serde_json::json!({"name": n})).collect::<Vec<_>>() } },
+            { "data": { "ip": "203.0.113.10", "port": 80, "protocol": "tcp",
+                        "cve": cves_b.iter().map(|n| serde_json::json!({"name": n})).collect::<Vec<_>>() } }
+        ]
+    }))
+    .expect("should succeed");
+    let r = super::build_entities(&body, "203.0.113.10", "scan");
+    let ip = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress)
+        .expect("ip entity");
+    let ev = &ip.evidence[0];
+    let cves = ev.attributes.get("cves").expect("cves attr");
+    let listed: Vec<&str> = cves.split(',').collect();
+    assert_eq!(
+        listed.len(),
+        8,
+        "all 8 distinct CVEs must surface (deduped): {cves}"
+    );
+    assert_eq!(
+        ev.attributes.get("cve_count").map(String::as_str),
+        Some("8")
+    );
+    let mut sorted = listed.clone();
+    sorted.sort_unstable();
+    assert_eq!(listed, sorted, "CVEs must emit in sorted order");
+}
+
+#[test]
+fn build_entities_discloses_technology_count() {
+    use crate::core::entity::EntityKind;
+    let techs: Vec<String> = (0..14).map(|i| format!("tech{i:02}")).collect();
+    let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "items": [ { "data": { "ip": "203.0.113.10", "port": 443, "protocol": "tcp",
+                               "technologies": techs } } ]
+    }))
+    .expect("should succeed");
+    let r = super::build_entities(&body, "203.0.113.10", "scan");
+    let ip = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress)
+        .expect("ip entity");
+    assert_eq!(
+        ip.evidence[0]
+            .attributes
+            .get("technology_count")
+            .map(String::as_str),
+        Some("14"),
+        "technology_count must disclose the true total even when the list is display-capped"
+    );
 }
 
 #[test]
@@ -76,7 +146,7 @@ fn build_entities_emits_every_unique_san_domain_and_email() {
             "http": { "emails": emails }
         }}]
     }))
-    .unwrap();
+    .expect("should succeed");
     let r = super::build_entities(&body, "203.0.113.10", "scan");
     let domain_ct = r
         .entities
@@ -160,7 +230,7 @@ fn build_entities_emits_every_unique_cert_subject_org() {
             "certificate": { "subject": { "organization": orgs } }
         }}]
     }))
-    .unwrap();
+    .expect("should succeed");
     let r = super::build_entities(&body, "203.0.113.10", "scan");
     let org_ct = r
         .entities
@@ -189,7 +259,7 @@ fn build_entities_emits_a_deterministic_jarm_fingerprint() {
             { "data": { "ip": "203.0.113.10", "port": 9443, "jarm": "bbbb2222" } },
         ]
     }))
-    .unwrap();
+    .expect("should succeed");
     let r = super::build_entities(&body, "203.0.113.10", "scan");
     let ip = r
         .entities
@@ -203,6 +273,59 @@ fn build_entities_emits_a_deterministic_jarm_fingerprint() {
             .map(String::as_str),
         Some("aaaa1111"),
         "the smallest JARM fingerprint must be emitted, deterministically"
+    );
+}
+
+#[test]
+fn build_entities_suppresses_geo_for_cdn_edge_but_keeps_isp() {
+    use crate::core::entity::EntityKind;
+    // A CDN/anycast edge IP (Cloudflare 104.16.0.1): the answering datacentre's
+    // geo is NOT the subject's location, so — as the 8 sibling IP-geo modules do
+    // — the Coordinates and Address must be suppressed. The infrastructure
+    // attribution (the ISP Organisation) is unaffected and must still emit.
+    let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "items": [{ "data": {
+            "ip": "104.16.0.1",
+            "isp": "Cloudflare, Inc.",
+            "geo": { "latitude": 37.7757, "longitude": -122.395, "country": "United States", "city": "San Francisco" }
+        }}]
+    }))
+    .expect("should succeed");
+    let r = super::build_entities(&body, "104.16.0.1", "scan");
+    assert!(
+        !r.entities.iter().any(|e| e.kind == EntityKind::Coordinates),
+        "a CDN-edge IP's Coordinates must be suppressed"
+    );
+    assert!(
+        !r.entities.iter().any(|e| e.kind == EntityKind::Address),
+        "a CDN-edge IP's Address must be suppressed"
+    );
+    assert!(
+        r.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Organisation && e.has_tag("isp")),
+        "the ISP Organisation is infrastructure attribution and must still emit"
+    );
+}
+
+#[test]
+fn build_entities_rejects_out_of_range_coordinates() {
+    use crate::core::entity::EntityKind;
+    // Netlas geo occasionally carries out-of-range junk (lat/lon = 200). The
+    // shared is_valid_coords guard must reject it rather than emitting a
+    // Coordinates entity from a physically impossible fix (the old ad-hoc
+    // `abs() > 0.001` band let it straight through).
+    let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "items": [{ "data": {
+            "ip": "203.0.113.10",
+            "geo": { "latitude": 200.0, "longitude": 200.0, "country": "Nowhere", "city": "Nowhere" }
+        }}]
+    }))
+    .expect("should succeed");
+    let r = super::build_entities(&body, "203.0.113.10", "scan");
+    assert!(
+        !r.entities.iter().any(|e| e.kind == EntityKind::Coordinates),
+        "out-of-range coordinates must be rejected by is_valid_coords"
     );
 }
 

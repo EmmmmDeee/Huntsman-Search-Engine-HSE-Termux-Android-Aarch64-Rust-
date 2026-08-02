@@ -5,7 +5,7 @@ const REC: &str = r#"{
   "BN_REG_DT":"04/12/2019","BN_ABN":"86634681397","BN_STATE_OF_REG":"QLD"}"#;
 
 fn rec(json: &str) -> Map<String, Value> {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 #[test]
@@ -105,7 +105,6 @@ async fn asic_business_names_live_resolves_a_name() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let r = AsicBusinessNames
         .process(&Target::new(TargetKind::Organisation, "Cut Above Painting"), &ctx)

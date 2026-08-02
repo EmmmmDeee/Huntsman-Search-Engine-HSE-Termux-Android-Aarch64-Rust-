@@ -51,13 +51,13 @@ fn path_middle_is_the_pivot() {
     let relations = vec![rel(&a, &b), rel(&b, &c)];
     let pivots = detect(&entities, &relations);
     assert_eq!(pivots[0].uid, b.uid, "the middle node is the top pivot");
-    let pb = pivots.iter().find(|p| p.uid == b.uid).unwrap();
+    let pb = pivots.iter().find(|p| p.uid == b.uid).expect("should succeed");
     assert!(
         (pb.betweenness - 1.0).abs() < 1e-9,
         "the middle carries the only a–c route: {}",
         pb.betweenness
     );
-    let pa = pivots.iter().find(|p| p.uid == a.uid).unwrap();
+    let pa = pivots.iter().find(|p| p.uid == a.uid).expect("should succeed");
     assert!(pa.betweenness.abs() < 1e-9, "an endpoint bridges nothing");
 }
 
@@ -119,7 +119,7 @@ fn cut_vertex_flag_marks_articulation_points() {
     let entities = vec![a.clone(), b.clone(), c.clone()];
     let relations = vec![rel(&a, &b), rel(&b, &c)];
     let pivots = detect(&entities, &relations);
-    let pb = pivots.iter().find(|p| p.uid == b.uid).unwrap();
+    let pb = pivots.iter().find(|p| p.uid == b.uid).expect("should succeed");
     assert!(pb.is_cut_vertex, "the middle node fragments the graph if removed");
     for p in pivots.iter().filter(|p| p.uid != b.uid) {
         assert!(!p.is_cut_vertex, "an endpoint is not a single point of failure");
@@ -190,11 +190,11 @@ fn coreness_separates_the_fragile_hub_from_the_robust_core() {
     relations.push(rel(&tri[0], &tri[2]));
 
     let pivots = detect(&entities, &relations);
-    let ph = pivots.iter().find(|p| p.uid == hub.uid).unwrap();
+    let ph = pivots.iter().find(|p| p.uid == hub.uid).expect("should succeed");
     assert!(ph.is_cut_vertex, "the hub is a single point of failure");
     assert_eq!(ph.coreness, 1, "a fragile hub-in-a-tree has coreness 1 despite its degree");
     for t in &tri {
-        let pt = pivots.iter().find(|p| p.uid == t.uid).unwrap();
+        let pt = pivots.iter().find(|p| p.uid == t.uid).expect("should succeed");
         assert_eq!(pt.coreness, 2, "triangle members are the robust 2-core");
     }
 }

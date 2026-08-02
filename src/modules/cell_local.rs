@@ -10,8 +10,9 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -31,8 +32,7 @@ impl Module for CellLocal {
     }
 
     fn description(&self) -> &'static str {
-        "Local OpenCelliD database: query imported cell towers near a coordinate \
-         (no API calls; run hse cells import first)"
+        "Local OpenCelliD recon — queries imported cell towers near a coordinate offline (no API calls; run hse cells import first)"
     }
 
     fn priority(&self) -> u8 {
@@ -77,10 +77,10 @@ impl Module for CellLocal {
                 lon + DELTA,
                 200,
             )
-            .map_err(|e| crate::core::error::Error::Other(e.to_string()))
+            .map_err(|e| Error::module(SRC, e.to_string()))
         })
         .await
-        .map_err(|e| crate::core::error::Error::Other(e.to_string()))??;
+        .map_err(|e| Error::module(SRC, e.to_string()))??;
 
         if cells.is_empty() {
             return Ok(ModuleResult::new());
@@ -91,7 +91,12 @@ impl Module for CellLocal {
             let tower_id = format!("{}-{}-{}-{}", cell.mcc, cell.mnc, cell.lac, cell.cid);
 
             // ── DeviceId entity ──────────────────────────────────────────────
-            let mut device = Entity::new(EntityKind::DeviceId, &tower_id, 0.78, &ctx.scan_id);
+            let mut device = Entity::new(
+                EntityKind::DeviceId,
+                &tower_id,
+                confidence::STRONG,
+                &ctx.scan_id,
+            );
             device.tag(crate::core::tags::CELL_TOWER);
             device.tag("cell-local");
             device.tag(format!("radio:{}", cell.radio.to_lowercase()));
@@ -133,17 +138,7 @@ impl Module for CellLocal {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Convert a cell tower's reported accuracy radius to a confidence score.
-/// Mirrors the same function in `cell_intel` for consistent output.
-fn accuracy_to_confidence(range_m: u64) -> f64 {
-    match range_m {
-        0..=100 => 0.85,
-        101..=500 => 0.75,
-        501..=2000 => 0.65,
-        2001..=10000 => 0.50,
-        _ => 0.35,
-    }
-}
+use crate::util::cell_db::accuracy_to_confidence;
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -183,10 +178,10 @@ mod tests {
 
     #[test]
     fn accuracy_to_confidence_tiers() {
-        assert!((accuracy_to_confidence(50) - 0.85).abs() < 1e-6);
-        assert!((accuracy_to_confidence(300) - 0.75).abs() < 1e-6);
-        assert!((accuracy_to_confidence(1000) - 0.65).abs() < 1e-6);
-        assert!((accuracy_to_confidence(5000) - 0.50).abs() < 1e-6);
+        assert!((accuracy_to_confidence(50) - confidence::HIGH_PLUSPLUS_PLUS).abs() < 1e-6);
+        assert!((accuracy_to_confidence(300) - confidence::VERY_HIGH).abs() < 1e-6);
+        assert!((accuracy_to_confidence(1000) - confidence::HIGH).abs() < 1e-6);
+        assert!((accuracy_to_confidence(5000) - confidence::MEDIUM).abs() < 1e-6);
         assert!((accuracy_to_confidence(50_000) - 0.35).abs() < 1e-6);
     }
 }

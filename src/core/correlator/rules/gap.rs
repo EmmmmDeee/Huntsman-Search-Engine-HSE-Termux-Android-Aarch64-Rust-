@@ -36,11 +36,13 @@ const CORROBORATING_FAMILIES: &[&str] = &[
 ];
 
 /// A single-route link is surfaced as its own detailed AU-063 finding only when
-/// at least one endpoint is this confident — i.e. it is a connection actually
-/// worth corroborating. A link between two low-confidence, name-derived
-/// permutation candidates (the bulk of a broad name scan) is not individually
-/// actionable; it is consolidated into the summary finding instead. Probable
-/// tier, so a corroborated/real endpoint always earns its detail.
+/// its *weaker* endpoint is this confident — the gate tests the `min` of the two
+/// endpoint confidences (the `Candidate::priority` set below), so *both* ends
+/// must clear it. A link that leans on even one low-confidence, name-derived
+/// permutation candidate (the bulk of a broad name scan) is not individually
+/// actionable; it is consolidated into the summary finding instead. This is the
+/// Probable-tier floor, so a link Probable at *both* ends earns its detail — a
+/// confident hub tied to a speculative permutation does not.
 const AU063_DETAIL_MIN_CONF: f64 = 0.40;
 
 /// Cap on individually-surfaced AU-063 gap findings (strongest endpoints first).
@@ -77,23 +79,24 @@ pub(in crate::core) struct SingleRouteLink {
 /// [`IDENTITY_PAIR_PROBE_CAP`] bounds the pair COUNT so the `O(identities²)` sweep
 /// can't dominate finalise (the identical bound AU-062's multipath sweep uses).
 pub(in crate::core) fn single_route_identity_links(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
 ) -> Vec<SingleRouteLink> {
-    single_route_identity_links_capped(entities, relations, IDENTITY_PAIR_PROBE_CAP)
+    single_route_identity_links_capped(context, relations, IDENTITY_PAIR_PROBE_CAP)
 }
 
 /// [`single_route_identity_links`] with an explicit pair-probe ceiling — the
 /// public entry pins it to [`IDENTITY_PAIR_PROBE_CAP`]; the parameter exists so the
 /// cap is unit-testable without a 6 000-entity fixture.
 fn single_route_identity_links_capped(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     max_pair_probes: usize,
 ) -> Vec<SingleRouteLink> {
     const MAX_HOPS: usize = 5;
     const MAX_PATHS: usize = 4;
 
+    let entities = context.entities();
     let identity_uids = identity_uids(entities);
     // Build the traversal graph ONCE and reuse it across every pair.
     let adj = sorted_confined_adjacency(entities, relations);
@@ -144,9 +147,10 @@ pub(in crate::core) struct GapProbe {
 /// families unioned). The shared selector behind the engine's active gap-fill, so
 /// what the lead names and what the engine pursues are the same set.
 pub(in crate::core) fn gap_fill_probes(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
 ) -> Vec<GapProbe> {
+    let entities = context.entities();
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
     let families_of = |uid: &str| -> BTreeSet<&'static str> {
         by_uid
@@ -156,7 +160,7 @@ pub(in crate::core) fn gap_fill_probes(
     };
 
     let mut by_endpoint: BTreeMap<String, BTreeSet<&'static str>> = BTreeMap::new();
-    for link in single_route_identity_links(entities, relations) {
+    for link in single_route_identity_links(context, relations) {
         let mut present: BTreeSet<&'static str> = families_of(&link.a_uid);
         present.extend(families_of(&link.b_uid));
         for step in &link.route {
@@ -198,11 +202,12 @@ pub(in crate::core) fn gap_fill_probes(
 /// orthogonal source families absent from its single route: the logical
 /// requirement that would corroborate the connection from another pathway.
 pub(in crate::core::correlator) fn rule_au_063_corroboration_gap(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
 
     let families_of = |uid: &str| -> BTreeSet<&'static str> {
@@ -213,10 +218,11 @@ pub(in crate::core::correlator) fn rule_au_063_corroboration_gap(
     };
 
     // One detail candidate per fragile link: the finding itself, the priority
-    // that decides which gaps are worth surfacing in full (the stronger
-    // endpoint's effective confidence — corroborate the real leads first), the
-    // orthogonal families it needs (for the consolidated summary), and its
-    // endpoints (for the summary's pivot set).
+    // that decides which gaps are worth surfacing in full (the *weaker*
+    // endpoint's effective confidence — a link is only as credible as its min
+    // end, so this both ranks strong-to-strong links first and consolidates the
+    // permutation tail), the orthogonal families it needs (for the consolidated
+    // summary), and its endpoints (for the summary's pivot set).
     struct Candidate {
         priority: f64,
         corr: Correlation,
@@ -225,7 +231,7 @@ pub(in crate::core::correlator) fn rule_au_063_corroboration_gap(
         b: String,
     }
     let mut cands: Vec<Candidate> = Vec::new();
-    for link in single_route_identity_links(entities, relations) {
+    for link in single_route_identity_links(context, relations) {
         let (a, b) = (link.a_uid.as_str(), link.b_uid.as_str());
 
         // Families already represented on the single link.
@@ -397,26 +403,26 @@ mod tests {
 
         // Full (effectively uncapped) run finds many fragile links, and the public
         // entry agrees with a huge explicit cap.
-        let full = single_route_identity_links_capped(&chain, &rels, usize::MAX);
+        let full = single_route_identity_links_capped(&RuleContext::new(&chain), &rels, usize::MAX);
         assert!(
             full.len() >= 5,
             "the chain topology must yield several single-route links, got {}",
             full.len()
         );
         assert_eq!(
-            single_route_identity_links(&chain, &rels).len(),
+            single_route_identity_links(&RuleContext::new(&chain), &rels).len(),
             full.len(),
             "the public entry runs at the production cap; this fixture is under it"
         );
 
         // The cap bounds the pair sweep: 0 probes → no links; 1 probe → ≤1 link.
-        assert!(single_route_identity_links_capped(&chain, &rels, 0).is_empty());
-        assert!(single_route_identity_links_capped(&chain, &rels, 1).len() <= 1);
+        assert!(single_route_identity_links_capped(&RuleContext::new(&chain), &rels, 0).is_empty());
+        assert!(single_route_identity_links_capped(&RuleContext::new(&chain), &rels, 1).len() <= 1);
 
         // A partial cap yields a deterministic subset of the full result — same
         // bytes every run, and never more than the full sweep.
-        let a = single_route_identity_links_capped(&chain, &rels, 4);
-        let b = single_route_identity_links_capped(&chain, &rels, 4);
+        let a = single_route_identity_links_capped(&RuleContext::new(&chain), &rels, 4);
+        let b = single_route_identity_links_capped(&RuleContext::new(&chain), &rels, 4);
         assert_eq!(
             a.iter().map(|l| (&l.a_uid, &l.b_uid)).collect::<Vec<_>>(),
             b.iter().map(|l| (&l.a_uid, &l.b_uid)).collect::<Vec<_>>(),
@@ -435,7 +441,12 @@ mod tests {
             rel(&a, &d, RelationKind::BelongsToDomain),
             rel(&d, &b, RelationKind::DerivedFrom),
         ];
-        let out = rule_au_063_corroboration_gap(&[a.clone(), b.clone(), d], &rels, "s", 0);
+        let out = rule_au_063_corroboration_gap(
+            &RuleContext::new(&[a.clone(), b.clone(), d]),
+            &rels,
+            "s",
+            0,
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rule_id, "AU-063");
         assert_eq!(out[0].severity, Severity::Low);
@@ -455,7 +466,7 @@ mod tests {
             rel(&a, &d, RelationKind::BelongsToDomain),
             rel(&d, &b, RelationKind::DerivedFrom),
         ];
-        let probes = gap_fill_probes(&[a.clone(), b.clone(), d], &rels);
+        let probes = gap_fill_probes(&RuleContext::new(&[a.clone(), b.clone(), d]), &rels);
         assert_eq!(probes.len(), 2, "both endpoints are probed");
         assert!(
             probes
@@ -480,7 +491,7 @@ mod tests {
             rel(&a, &o, RelationKind::RegisteredBy),
             rel(&o, &b, RelationKind::DerivedFrom),
         ];
-        assert!(gap_fill_probes(&[a, b, d, o], &rels).is_empty());
+        assert!(gap_fill_probes(&RuleContext::new(&[a, b, d, o]), &rels).is_empty());
     }
 
     #[test]
@@ -496,7 +507,10 @@ mod tests {
             rel(&a, &o, RelationKind::RegisteredBy),
             rel(&o, &b, RelationKind::DerivedFrom),
         ];
-        assert!(rule_au_063_corroboration_gap(&[a, b, d, o], &rels, "s", 0).is_empty());
+        assert!(
+            rule_au_063_corroboration_gap(&RuleContext::new(&[a, b, d, o]), &rels, "s", 0)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -505,7 +519,9 @@ mod tests {
         let a = id(EntityKind::Email, "a@x.com");
         let b = id(EntityKind::Username, "bob");
         let rels = [rel(&a, &b, RelationKind::AliasOf)];
-        assert!(rule_au_063_corroboration_gap(&[a, b], &rels, "s", 0).is_empty());
+        assert!(
+            rule_au_063_corroboration_gap(&RuleContext::new(&[a, b]), &rels, "s", 0).is_empty()
+        );
     }
 
     #[test]
@@ -525,7 +541,7 @@ mod tests {
             rels.push(rel(&u, &d, RelationKind::DerivedFrom));
             ents.push(u);
         }
-        let out = rule_au_063_corroboration_gap(&ents, &rels, "s", 0);
+        let out = rule_au_063_corroboration_gap(&RuleContext::new(&ents), &rels, "s", 0);
         // Bounded: never one-per-link. At least one consolidated summary present.
         assert!(
             out.len() <= AU063_DETAIL_CAP + 1,
@@ -559,7 +575,7 @@ mod tests {
             rels.push(rel(&u, &d, RelationKind::DerivedFrom));
             ents.push(u);
         }
-        let out = rule_au_063_corroboration_gap(&ents, &rels, "s", 0);
+        let out = rule_au_063_corroboration_gap(&RuleContext::new(&ents), &rels, "s", 0);
         // The confident email↔user gap is surfaced in detail (names both values).
         assert!(
             out.iter().any(|c| {

@@ -1,10 +1,12 @@
-//! Cell tower scanner for signal_radar — reads `termux-telephony-cellinfo`
-//! and `termux-telephony-signalstrength` in parallel.
+//! Cell tower scanner for signal_radar — reads `termux-telephony-cellinfo`,
+//! which already carries per-cell `dbm`/signal data (see [`Cell::dbm`]).
 
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
+    error::Result,
     module::ModuleResult,
 };
 
@@ -24,11 +26,10 @@ pub(super) struct Cell {
 }
 
 fn json_to_str(v: &Option<serde_json::Value>) -> String {
-    match v {
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(serde_json::Value::Number(n)) => n.to_string(),
-        _ => String::new(),
-    }
+    v.as_ref()
+        .and_then(crate::util::json::scalar_str)
+        .map(std::borrow::Cow::into_owned)
+        .unwrap_or_default()
 }
 
 fn tech_tag(cell_type: Option<&str>) -> &'static str {
@@ -42,11 +43,12 @@ fn tech_tag(cell_type: Option<&str>) -> &'static str {
 }
 
 /// Parse `termux-telephony-cellinfo` JSON array into DeviceId entities.
-pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> ModuleResult {
-    let cells: Vec<Cell> = match serde_json::from_slice(cellinfo) {
-        Ok(v) => v,
-        Err(_) => return ModuleResult::new(),
-    };
+pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> Result<ModuleResult> {
+    if super::is_blank(cellinfo) {
+        return Ok(ModuleResult::new());
+    }
+    let cells: Vec<Cell> = serde_json::from_slice(cellinfo)
+        .map_err(|e| super::unparseable(super::Sensor::CellInfo, &e))?;
 
     let mut result = ModuleResult::with_capacity(cells.len());
 
@@ -64,7 +66,12 @@ pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> ModuleResult {
         let tech = tech_tag(cell.cell_type.as_deref());
         let registered = cell.registered.unwrap_or(false);
 
-        let mut e = Entity::new(EntityKind::DeviceId, &tower_id, 0.75, scan_id);
+        let mut e = Entity::new(
+            EntityKind::DeviceId,
+            &tower_id,
+            confidence::VERY_HIGH,
+            scan_id,
+        );
         e.tag(crate::core::tags::CELL_TOWER);
         e.tag(tech);
         if registered {
@@ -86,5 +93,5 @@ pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> ModuleResult {
         result.push(e);
     }
 
-    result
+    Ok(result)
 }

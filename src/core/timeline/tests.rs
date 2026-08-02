@@ -1,6 +1,18 @@
 use super::*;
     use crate::core::entity::{Entity, EntityKind, Evidence};
 
+    #[test]
+    fn utc_date_known_and_edge_instants() {
+        // The canonical epoch->civil inverse shared by structured_id /
+        // discord_snowflake. Cover the Unix epoch, the Discord epoch, a leap
+        // day, and a pre-1970 negative (exercising the div_euclid floor).
+        assert_eq!(utc_date(0), "1970-01-01");
+        assert_eq!(utc_date(1_420_070_400), "2015-01-01");
+        assert_eq!(utc_date(1_577_836_800), "2020-01-01");
+        assert_eq!(utc_date(951_782_400), "2000-02-29");
+        assert_eq!(utc_date(-1), "1969-12-31");
+    }
+
     fn entity_with_attrs(
         kind: EntityKind,
         value: &str,
@@ -18,28 +30,28 @@ use super::*;
 
     #[test]
     fn parses_epoch_seconds() {
-        let (ts, iso) = parse_date("1262304000").unwrap();
+        let (ts, iso) = parse_date("1262304000").expect("should succeed");
         assert_eq!(ts, 1_262_304_000);
         assert_eq!(iso, "2010-01-01");
     }
 
     #[test]
     fn parses_epoch_millis() {
-        let (ts, _) = parse_date("1262304000000").unwrap();
+        let (ts, _) = parse_date("1262304000000").expect("should succeed");
         assert_eq!(ts, 1_262_304_000);
     }
 
     #[test]
     fn parses_iso_date_and_datetime() {
-        assert_eq!(parse_date("2019-03-15").unwrap().1, "2019-03-15");
-        let (_, iso) = parse_date("2019-03-15T08:30:00Z").unwrap();
+        assert_eq!(parse_date("2019-03-15").expect("should succeed").1, "2019-03-15");
+        let (_, iso) = parse_date("2019-03-15T08:30:00Z").expect("should succeed");
         assert_eq!(iso, "2019-03-15T08:30:00Z");
-        assert_eq!(parse_date("2019/03/15").unwrap().1, "2019-03-15");
+        assert_eq!(parse_date("2019/03/15").expect("should succeed").1, "2019-03-15");
     }
 
     #[test]
     fn parses_bare_year() {
-        assert_eq!(parse_date("1998").unwrap().1, "1998-01-01");
+        assert_eq!(parse_date("1998").expect("should succeed").1, "1998-01-01");
     }
 
     #[test]
@@ -53,16 +65,16 @@ use super::*;
         assert!(parse_date("2019-03-15T25:00:00").is_none());
         // Hour- and minute-only times remain valid (trailing parts default 0).
         assert_eq!(
-            parse_date("2019-03-15T08").unwrap().1,
+            parse_date("2019-03-15T08").expect("should succeed").1,
             "2019-03-15T08:00:00Z"
         );
         assert_eq!(
-            parse_date("2019-03-15T08:30").unwrap().1,
+            parse_date("2019-03-15T08:30").expect("should succeed").1,
             "2019-03-15T08:30:00Z"
         );
         // Seconds stay lenient so a timezone offset (split onto the seconds
         // token by ':') doesn't reject an otherwise-valid timestamp.
-        let (_, iso) = parse_date("2019-03-15T08:30:00+05:00").unwrap();
+        let (_, iso) = parse_date("2019-03-15T08:30:00+05:00").expect("should succeed");
         assert_eq!(iso, "2019-03-15T08:30:00Z");
     }
 
@@ -78,7 +90,7 @@ use super::*;
     #[test]
     fn epoch_roundtrips_through_civil() {
         // A known instant: 2021-06-15 -> seconds -> back to same ISO.
-        let (ts, _) = parse_date("2021-06-15").unwrap();
+        let (ts, _) = parse_date("2021-06-15").expect("should succeed");
         assert_eq!(from_unix(ts).1, "2021-06-15");
     }
 
@@ -113,7 +125,7 @@ use super::*;
         // Regression: a pre-1970 calendar date must yield a *negative* Unix
         // timestamp, not clamp to 0. Otherwise reconstruct()'s oldest-first
         // sort places, e.g., a 1965 date of birth *after* every 1970+ event.
-        let (ts, iso) = parse_date("1965-03-10").unwrap();
+        let (ts, iso) = parse_date("1965-03-10").expect("should succeed");
         assert!(ts < 0, "pre-1970 date must be negative, got {ts}");
         assert_eq!(iso, "1965-03-10");
         // The display string round-trips through the signed inverse too.
@@ -192,6 +204,10 @@ use super::*;
         // `devto` (`joined_at`), `discord_snowflake`'s decoded snowflake
         // timestamp (`discord_created_date`/`discord_created_unix_ms`), and
         // `structured_id`'s decoded UUIDv1 timestamp (`uuid_created_date`).
+        // `structured_id`'s three other timestamp-embedding ID decoders
+        // (MongoDB ObjectID, ULID, KSUID) stamp the exact same evidence-
+        // attribute shape via the same `emit_creation` helper as the UUIDv1
+        // case right beside it, but were left out of the original fix.
         use TimelineEventKind::AccountCreated;
         for key in [
             "account_created",
@@ -199,6 +215,9 @@ use super::*;
             "discord_created_date",
             "discord_created_unix_ms",
             "uuid_created_date",
+            "objectid_created_date",
+            "ulid_created_date",
+            "ksuid_created_date",
         ] {
             assert!(
                 matches!(classify(key), Some(AccountCreated)),
@@ -235,6 +254,71 @@ use super::*;
         assert_eq!(tl.len(), 1);
         assert!(matches!(tl[0].kind, TimelineEventKind::AccountCreated));
         assert_eq!(tl[0].iso, "2015-06-12");
+    }
+
+    #[test]
+    fn reconstruct_surfaces_a_structured_id_ulid_created_event_end_to_end() {
+        // `structured_id::emit_creation` stamps `ulid_created_date` (and its
+        // ObjectID/KSUID siblings) in exactly this `YYYY-MM-DD` shape — proves
+        // the full pipeline, not just `classify` in isolation, for the three
+        // decoders that were missed alongside `uuid_created_date`.
+        let e = entity_with_attrs(
+            EntityKind::Other("derived-id".into()),
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "structured_id",
+            &[("ulid_created_date", "2016-07-30")],
+        );
+        let tl = reconstruct(&[e]);
+        assert_eq!(tl.len(), 1);
+        assert!(matches!(tl[0].kind, TimelineEventKind::AccountCreated));
+        assert_eq!(tl[0].iso, "2016-07-30");
+    }
+
+    #[test]
+    fn classify_recognises_exif_shot_time_as_location_visited() {
+        // `exif_geo` stamps `shot_time` (the EXIF `DateTimeOriginal`/`DateTime`
+        // tag) on every entity a photo yields, including its extracted
+        // `Coordinates` — the movement/timeline geo signal C5/C1(c) name as
+        // remaining. Before this fix, `classify` had no arm for it at all, so
+        // the key silently never reached `parse_date`.
+        assert!(matches!(
+            classify("shot_time"),
+            Some(TimelineEventKind::LocationVisited)
+        ));
+    }
+
+    #[test]
+    fn parse_date_accepts_the_real_exif_datetime_format() {
+        // The EXIF standard's own separator is `:`, not `-` — `exif_geo::parse::
+        // read_str` returns the tag's ASCII value verbatim (e.g.
+        // `"2019:03:15 08:30:00"`), so the timeline parser must speak that
+        // format directly rather than requiring a pre-normalised one.
+        let (ts, iso) = parse_date("2019:03:15 08:30:00").expect("EXIF datetime must parse");
+        assert_eq!(iso, "2019-03-15T08:30:00Z");
+        assert!(ts > 0);
+        // The date-only EXIF form (no time component) is also valid.
+        assert_eq!(parse_date("2019:03:15").expect("should succeed").1, "2019-03-15");
+    }
+
+    #[test]
+    fn reconstruct_surfaces_a_location_visited_event_from_a_real_exif_shot_time() {
+        // End-to-end: a `Coordinates` entity carrying `exif_geo`'s real
+        // `shot_time` evidence attribute must produce a genuine
+        // `LocationVisited` timeline event, not silently vanish. Regression for
+        // the dead-key defect: pre-fix, `classify("shot_time")` returned `None`
+        // so this reconstruct call yielded zero events.
+        let e = entity_with_attrs(
+            EntityKind::Coordinates,
+            "40.712776,-74.005974",
+            "exif_geo",
+            &[("shot_time", "2021:06:15 14:22:05"), ("camera_make", "Apple")],
+        );
+        let tl = reconstruct(&[e]);
+        assert_eq!(tl.len(), 1, "camera_make is not a recognised date key");
+        assert_eq!(tl[0].kind, TimelineEventKind::LocationVisited);
+        assert_eq!(tl[0].iso, "2021-06-15T14:22:05Z");
+        assert_eq!(tl[0].entity_value, "40.712776,-74.005974");
+        assert_eq!(tl[0].entity_kind, "coordinates");
     }
 
     #[test]
@@ -350,7 +434,7 @@ use super::*;
             &[("date_of_birth", "1980-01-01"), ("breach_date", "2015-06-01")],
         );
         let events = reconstruct(&[p]);
-        let t = online_tenure(&events).unwrap();
+        let t = online_tenure(&events).expect("should succeed");
         assert!(
             t.earliest_iso.starts_with("2015"),
             "DOB 1980 excluded; earliest is the 2015 breach"
@@ -401,4 +485,97 @@ use super::*;
         let r = footprint_recency(now + 3 * YEAR, now); // latest after now
         assert_eq!(r.years_since_latest, 0);
         assert_eq!(r.status, FootprintStatus::Active);
+    }
+
+    #[test]
+    fn movement_path_none_with_fewer_than_two_fixes() {
+        // Zero fixes.
+        assert!(movement_path(&[]).is_none());
+        // A single dated location isn't a path — it's a point. Fabricating a
+        // "movement" out of one photo would misstate what was observed.
+        let e = entity_with_attrs(
+            EntityKind::Coordinates,
+            "40.712776,-74.005974",
+            "exif_geo",
+            &[("shot_time", "2021-06-15")],
+        );
+        let events = reconstruct(&[e]);
+        assert_eq!(events.len(), 1);
+        assert!(movement_path(&events).is_none());
+    }
+
+    #[test]
+    fn movement_path_walks_real_fixes_chronologically_with_real_distance() {
+        // Two real, geotagged photos of the same subject/device: New York on
+        // 2021-06-15, then Sydney (CBD, -33.8688,151.2093) a week later. The
+        // real-world great-circle distance NYC↔Sydney is ~15,990 km.
+        let sydney = entity_with_attrs(
+            EntityKind::Coordinates,
+            "-33.868800,151.209300",
+            "exif_geo",
+            &[("shot_time", "2021-06-22")],
+        );
+        let nyc = entity_with_attrs(
+            EntityKind::Coordinates,
+            "40.712776,-74.005974",
+            "exif_geo",
+            &[("shot_time", "2021-06-15")],
+        );
+        // Deliberately passed out of chronological order — `reconstruct`
+        // itself is what guarantees oldest-first, `movement_path` must not
+        // silently depend on caller-supplied ordering being lucky.
+        let events = reconstruct(&[sydney, nyc]);
+        assert_eq!(events[0].entity_value, "40.712776,-74.005974"); // oldest first
+        let mv = movement_path(&events).expect("2 real fixes must yield a path");
+        assert_eq!(mv.locations_visited, 2);
+        assert_eq!(mv.legs.len(), 1);
+        let leg = &mv.legs[0];
+        assert_eq!(leg.from_coords, "40.712776,-74.005974");
+        assert_eq!(leg.to_coords, "-33.868800,151.209300");
+        // Real NYC↔Sydney great-circle distance is ~15,990 km — a wide
+        // tolerance guards against float-precision nitpicks while still
+        // pinning "this is really computing a distance", not a stub.
+        assert!(
+            (mv.total_km - 15_990.0).abs() < 200.0,
+            "expected ~15,990 km, got {}",
+            mv.total_km
+        );
+        assert!((leg.distance_km - mv.total_km).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn movement_path_sums_multiple_legs_and_skips_unparseable_fixes() {
+        // Three real fixes plus one `LocationVisited`-classified value that
+        // doesn't actually parse as a coordinate — defensive against a future
+        // producer stamping `shot_time` onto a non-`Coordinates`-shaped value.
+        // It must be skipped, not break the chain into two shorter paths.
+        let a = entity_with_attrs(
+            EntityKind::Coordinates,
+            "-27.470125,153.021072", // Brisbane
+            "exif_geo",
+            &[("shot_time", "2020-01-01")],
+        );
+        let junk = entity_with_attrs(
+            EntityKind::Coordinates,
+            "not-a-coordinate",
+            "exif_geo",
+            &[("shot_time", "2020-06-01")],
+        );
+        let b = entity_with_attrs(
+            EntityKind::Coordinates,
+            "-33.868800,151.209300", // Sydney
+            "exif_geo",
+            &[("shot_time", "2021-01-01")],
+        );
+        let events = reconstruct(&[a, junk, b]);
+        assert_eq!(events.len(), 3, "the unparseable fix still classifies");
+        let mv = movement_path(&events).expect("2 parseable fixes must yield a path");
+        assert_eq!(mv.locations_visited, 2, "the junk fix must not count");
+        assert_eq!(mv.legs.len(), 1);
+        // Real Brisbane↔Sydney great-circle distance is ~730 km.
+        assert!(
+            (mv.total_km - 730.0).abs() < 50.0,
+            "expected ~730 km, got {}",
+            mv.total_km
+        );
     }

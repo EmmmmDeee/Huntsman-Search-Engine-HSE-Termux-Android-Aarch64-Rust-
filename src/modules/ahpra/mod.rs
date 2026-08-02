@@ -10,6 +10,7 @@ mod tests;
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -25,7 +26,8 @@ pub struct Ahpra;
 /// `(name, profession, registration_number)` rows.
 ///
 /// A dependency-free `<tr>`/`<td>` walk (no scraper crate, in keeping with the
-/// lean Termux build): each cell's text is taken via [`strip_tags`] and rows
+/// lean Termux build): each cell's text is taken via
+/// [`strip_tags_plain`](crate::util::html::strip_tags_plain) and rows
 /// with at least three cells are kept. The header row (`Name`/`Practitioner`)
 /// and nameless rows are dropped, so the result is data-only. Pure given
 /// `html` — unit-testable against a captured response.
@@ -55,7 +57,7 @@ pub(super) fn parse_ahpra_html(html: &str) -> Vec<(String, String, String)> {
                 let Some(td_end) = r.find("</td>") else { break };
                 let cell = &r[..td_end];
                 // Strip remaining HTML tags.
-                let text = strip_tags(cell);
+                let text = crate::util::html::strip_tags_plain(cell);
                 cells.push(text.trim().to_string());
                 r = &r[td_end + 5..];
             }
@@ -77,25 +79,6 @@ pub(super) fn parse_ahpra_html(html: &str) -> Vec<(String, String, String)> {
 /// Remove HTML tags from a table cell, returning its visible text — a
 /// single-pass character filter that drops everything between `<` and `>`.
 /// Sufficient for the flat, well-formed AHPRA cells; the caller trims.
-fn strip_tags(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for c in html.chars() {
-        match c {
-            '<' => {
-                in_tag = true;
-            }
-            '>' => {
-                in_tag = false;
-            }
-            _ if !in_tag => {
-                out.push(c);
-            }
-            _ => {}
-        }
-    }
-    out
-}
 
 #[async_trait]
 impl Module for Ahpra {
@@ -104,7 +87,7 @@ impl Module for Ahpra {
     }
 
     fn description(&self) -> &'static str {
-        "AHPRA practitioner register: registered health practitioners by name or organisation"
+        "AHPRA practitioner-register recon — enumerates registered health practitioners by name or organisation"
     }
 
     fn priority(&self) -> u8 {
@@ -171,7 +154,7 @@ pub(super) fn build_practitioner_entities(
 ) -> Vec<Entity> {
     let mut out = Vec::with_capacity(practitioners.len());
     for (name, profession, reg_no) in practitioners {
-        let mut person = Entity::new(EntityKind::Person, name, 0.70, scan_id);
+        let mut person = Entity::new(EntityKind::Person, name, confidence::HIGH_PLUS, scan_id);
         person.tag("ahpra");
         person.tag("health-practitioner");
         if !profession.is_empty() {

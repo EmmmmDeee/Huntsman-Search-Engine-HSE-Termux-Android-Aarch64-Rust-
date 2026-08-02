@@ -6,7 +6,7 @@ use crate::core::entity::is_enrichment_source;
 
 /// Source record identifiers extracted from evidence attributes.
 /// Used to determine if a wallet and identity come from the same breach record.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum SourceRecord {
     /// Breach record (oathnet_pro, see_know): identified by (dbname, email, username)
     BreachRecord {
@@ -61,90 +61,98 @@ fn extract_source_record(entity: &Entity) -> SourceRecord {
     SourceRecord::Other
 }
 
-/// Check if a wallet and an identity come from the same source record.
-/// This validates the "relatedness criterion" — both must originate from the same
-/// breach/stealer dump record (same dbname + email + username) or the same
-/// chain-intelligence lookup.
-fn is_same_source_record(wallet: &Entity, identity: &Entity) -> bool {
-    let wallet_record = extract_source_record(wallet);
-    let identity_record = extract_source_record(identity);
-
-    match (&wallet_record, &identity_record) {
-        // Both from same breach record: dbname, email, and username must match
-        (
-            SourceRecord::BreachRecord {
-                dbname: w_db,
-                email: w_email,
-                username: w_user,
-            },
-            SourceRecord::BreachRecord {
-                dbname: i_db,
-                email: i_email,
-                username: i_user,
-            },
-        ) => w_db == i_db && w_email == i_email && w_user == i_user,
-
-        // Both from same chain record: chain and address must match
-        (
-            SourceRecord::ChainRecord {
-                chain: w_chain,
-                address: w_addr,
-            },
-            SourceRecord::ChainRecord {
-                chain: i_chain,
-                address: i_addr,
-            },
-        ) => w_chain == i_chain && w_addr == i_addr,
-
-        // All other combinations (mixed sources, enrichment-only, intelx) = unrelated
-        _ => false,
+/// Buckets `ents` by their [`SourceRecord`] — dbname+email+username for a breach
+/// record, chain+address for a chain-intel record — so an anchor lookup for one
+/// entity is a single `record → candidates` map probe instead of a full rescan.
+/// `SourceRecord::Other` (enrichment-only / unrecognised / no shared provenance)
+/// is deliberately never indexed: two `Other`-classified entities must NOT be
+/// treated as sharing a record just because they hash to the same key — that is
+/// exactly the "random cross-module collision" this rule's own docs say must not
+/// fire. Shared by [`rule_au_039_wallet_identity`]'s wallet→Person and
+/// wallet→Email anchor passes.
+fn index_by_source<'a>(ents: &[&'a Entity]) -> HashMap<SourceRecord, Vec<&'a Entity>> {
+    let mut idx: HashMap<SourceRecord, Vec<&Entity>> = HashMap::new();
+    for &e in ents {
+        let rec = extract_source_record(e);
+        if rec != SourceRecord::Other {
+            idx.entry(rec).or_default().push(e);
+        }
     }
+    idx
+}
+
+/// Entities in `idx` that share `w`'s EXACT [`SourceRecord`], reached via the
+/// record index instead of a rescan. `w` classifying as `SourceRecord::Other`
+/// yields no anchors (an unlinked wallet has no validated attribution).
+fn anchors_for<'a>(w: &Entity, idx: &HashMap<SourceRecord, Vec<&'a Entity>>) -> Vec<&'a Entity> {
+    let rec = extract_source_record(w);
+    if rec == SourceRecord::Other {
+        return Vec::new();
+    }
+    idx.get(&rec).cloned().unwrap_or_default()
 }
 
 /// AU-039 — a cryptocurrency wallet co-occurring with a real identity (Person or
-/// Email) in the same confirmed scan: an attribution lead linking on-chain funds
-/// to a person. Co-presence alone is NOT proof; this rule applies **validated
-/// linkage only** — both wallet and identity must originate from the same source
-/// record within a breach/stealer dump (shared dbname + email + username for breach
-/// modules, or shared chain for chain_intel). This filters out random cross-module
-/// collisions that pass the co-presence gate but have no shared provenance.
+/// Email) that **originate from the same source record**: an attribution lead
+/// linking on-chain funds to a person. Co-presence alone is NOT proof; this rule
+/// applies validated linkage only — both wallet and identity must originate from
+/// the same source record within a breach/stealer dump (shared dbname + email +
+/// username for breach modules, or shared chain for chain_intel), so `High`
+/// (warrants attention) rather than `Critical`.
 ///
-/// Severity: `High` for validated same-record attribution. Unlinked co-occurrences
-/// (wallet and identity from different sources, or enrichment-only) do not fire
-/// (or fire as a lower-severity `AU-039b` co-presence lead in future revisions).
+/// Attribution requires a real co-location tie, not mere co-existence in the same
+/// scan. The pre-fix rule anchored EVERY wallet to the single lexicographically-
+/// smallest Person UID (else Email) across the whole confirmed set, with no check
+/// that the wallet and that identity shared any evidence — so a scan carrying
+/// several unrelated people (spouse / next-of-kin / stealer-log owner, all minted
+/// by AU-075) reported one wallet as belonging to whichever name sorted first,
+/// fabricating attribution to a bystander purely by UID order (T2.39). Instead,
+/// each wallet is anchored only to identities that share its EXACT [`SourceRecord`]
+/// — not merely the same collecting module: two different breach dumps
+/// oathnet_pro happens to have surfaced are
+/// NOT "the same source" and must not cross-attribute). Person is preferred over
+/// Email as the more specific identity; when several identities of the preferred
+/// kind are genuinely tied, each is reported (every pair is an independent, real
+/// lead — none is arbitrarily singled out); when no identity shares the wallet's
+/// exact record, no attribution is emitted. The selection is a pure function of
+/// the entity set (record membership + UID order), so the live (HashMap-ordered)
+/// and finalise passes agree.
 ///
-/// One firing per wallet, anchored to the most specific identity present
-/// (Person preferred over Email) that shares the same source record.
+/// Anchor lookup is index-based, not the pairwise `wallets × persons` (+
+/// `wallets × emails`) rescan every anchor used to cost: each Person/Email is
+/// bucketed once by its own [`SourceRecord`] (O(evidence-count), bounded per
+/// entity), so finding a wallet's anchors is a single `record → candidates`
+/// lookup instead of a full rescan of `persons`/`emails`. Measured via
+/// `correlator::perf::per_rule_breakdown` as one of the two rules (the other
+/// is AU-087) dominating the correlation pass's entity-count scaling.
 pub(in crate::core::correlator) fn rule_au_039_wallet_identity(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let wallets = entities_of_kind(entities, EntityKind::CryptoAddress);
     if wallets.is_empty() {
         return Vec::new();
     }
+    let persons = entities_of_kind(entities, EntityKind::Person);
+    let emails = entities_of_kind(entities, EntityKind::Email);
 
-    let mut correlations = Vec::new();
+    let persons_by_source = index_by_source(&persons);
+    let emails_by_source = index_by_source(&emails);
 
+    let mut out = Vec::new();
     for wallet in wallets {
-        // Find the best anchor (Person or Email) that shares the same source record
-        // as the wallet. Prefer Person over Email; among the same kind, prefer the
-        // lexicographically smallest UID for determinism.
-        let anchor = entities
-            .iter()
-            .filter(|e| e.kind == EntityKind::Person && is_same_source_record(wallet, e))
-            .min_by(|a, b| a.uid.cmp(&b.uid))
-            .or_else(|| {
-                entities
-                    .iter()
-                    .filter(|e| e.kind == EntityKind::Email && is_same_source_record(wallet, e))
-                    .min_by(|a, b| a.uid.cmp(&b.uid))
-            });
-
-        // Only fire if we found a related identity from the same source record.
-        if let Some(anchor) = anchor {
-            correlations.push(Correlation::new(
+        // Person preferred over Email: only fall back to email anchors when no
+        // person is tied to this wallet by its exact source record.
+        let mut tied = anchors_for(wallet, &persons_by_source);
+        if tied.is_empty() {
+            tied = anchors_for(wallet, &emails_by_source);
+        }
+        // Deterministic order for the (same-rule_id) tie-break downstream.
+        tied.sort_by(|a, b| a.uid.cmp(&b.uid));
+        for anchor in tied {
+            out.push(Correlation::new(
                 "AU-039",
                 "Cryptocurrency wallet linked to identity",
                 Severity::High,
@@ -159,18 +167,18 @@ pub(in crate::core::correlator) fn rule_au_039_wallet_identity(
             ));
         }
     }
-
-    correlations
+    out
 }
 
 /// AU-040 — a cryptocurrency wallet recovered from breach / stealer data
 /// (clipboard-hijacker malware harvests these in volume). Distinct from AU-039:
 /// this is about the *exposure source*, not co-located identity.
 pub(in crate::core::correlator) fn rule_au_040_wallet_breach_exposure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::CryptoAddress)
@@ -193,10 +201,11 @@ pub(in crate::core::correlator) fn rule_au_040_wallet_breach_exposure(
 /// (`chain_intel`): an on-chain → identity edge. `Medium` (a handle is a lead,
 /// not an identity by itself).
 pub(in crate::core::correlator) fn rule_au_041_ens_identity(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::Username && e.has_tag("ens"))

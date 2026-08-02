@@ -93,7 +93,6 @@ async fn gaming_profile_live_resolves_real_accounts() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
 
     // Roblox account id 1 is the canonical "Roblox" handle — a stable live hit.

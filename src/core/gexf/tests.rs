@@ -18,14 +18,104 @@ use super::*;
     }
 
     #[test]
-    fn gexf_creates_edges_for_shared_sources() {
+    fn gexf_exports_the_diamond_vertex_per_kind() {
+        // The attribution vertex is a first-class node attribute so Gephi can
+        // partition the whole graph by Diamond role, not just by kind. It must
+        // reflect the per-kind classification, not a single bucket.
+        let email = Entity::new(EntityKind::Email, "alice@example.com", 0.9, "s"); // victim
+        let ip = Entity::new(EntityKind::IpAddress, "203.0.113.7", 0.9, "s"); // infrastructure
+        let pw = Entity::new(EntityKind::Password, "leaked", 0.9, "s"); // capability
+        let xml = entities_to_gexf(&[email, ip, pw], &[], "s");
+        assert!(
+            xml.contains(r#"<attribute id="7" title="diamond_vertex" type="string"/>"#),
+            "the diamond_vertex attribute must be declared: {xml}"
+        );
+        assert!(xml.contains(r#"<attvalue for="7" value="victim"/>"#), "{xml}");
+        assert!(
+            xml.contains(r#"<attvalue for="7" value="infrastructure"/>"#),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(r#"<attvalue for="7" value="capability"/>"#),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn gexf_exports_generation_as_a_node_attribute() {
+        // `generation` (pivot distance from the seed) is a first-class node
+        // attribute so a Gephi analyst can size/colour the graph by expansion
+        // depth — the debug bundle and CSV export already carry it, and GEXF was
+        // the last graph artifact dropping it.
+        let seed = Entity::new(EntityKind::Email, "seed@example.com", 0.9, "s"); // generation 0
+        let mut deep = Entity::new(EntityKind::Username, "farpivot", 0.6, "s");
+        deep.generation = 3;
+        let xml = entities_to_gexf(&[seed, deep], &[], "s");
+        assert!(
+            xml.contains(r#"<attribute id="8" title="generation" type="integer"/>"#),
+            "the generation attribute must be declared: {xml}"
+        );
+        assert!(
+            xml.contains(r#"<attvalue for="8" value="0"/>"#),
+            "the seed's generation (0) must be emitted: {xml}"
+        );
+        assert!(
+            xml.contains(r#"<attvalue for="8" value="3"/>"#),
+            "a pivoted entity's generation must be emitted verbatim: {xml}"
+        );
+    }
+
+    #[test]
+    fn gexf_creates_edges_for_a_shared_evidence_record() {
+        // Two selectors that appear in the SAME breach record (identical source
+        // AND summary) genuinely co-occur → one edge, labelled by the source.
         let mut a = Entity::new(EntityKind::Email, "a@x.com", 0.8, "s");
-        a.add_evidence(Evidence::new("hibp", "breach"));
+        a.add_evidence(Evidence::new("hibp", "Breach 'Apollo'"));
         let mut b = Entity::new(EntityKind::Domain, "x.com", 0.7, "s");
-        b.add_evidence(Evidence::new("hibp", "domain breach"));
+        b.add_evidence(Evidence::new("hibp", "Breach 'Apollo'"));
         let xml = entities_to_gexf(&[a, b], &[], "test-scan");
-        assert!(xml.contains("<edge"), "shared source should create edge");
-        assert!(xml.contains("hibp"));
+        assert!(
+            xml.contains("<edge"),
+            "a shared evidence record should create an edge"
+        );
+        assert!(xml.contains(r#"label="hibp""#));
+    }
+
+    #[test]
+    fn gexf_co_occurrence_is_record_level_not_source_level() {
+        // MUST-NOT-FIRE: a one-to-many fan-out enumeration (`username_search`
+        // probing one handle across platforms) attaches a DISTINCT per-platform
+        // summary to a separate entity each — independent existence-proofs of the
+        // same selector, not a joint sighting. They must NOT be wired together.
+        // Under the old source-NAME key both carried `username_search` and an edge
+        // was drawn; this is the regression guard for that false clique (which, on
+        // a real username scan, was ~80% of all export edges).
+        let mut insta = Entity::new(EntityKind::Url, "https://instagram.com/h", 0.6, "s");
+        insta.add_evidence(Evidence::new(
+            "username_search",
+            "@h has a profile on Instagram",
+        ));
+        let mut tiktok = Entity::new(EntityKind::Url, "https://tiktok.com/@h", 0.6, "s");
+        tiktok.add_evidence(Evidence::new("username_search", "@h has a profile on TikTok"));
+        let xml = entities_to_gexf(&[insta, tiktok], &[], "s");
+        assert!(
+            !xml.contains(r#"<edge "#),
+            "same source name but different per-platform records must NOT co-occur:\n{xml}"
+        );
+
+        // MUST-FIRE: the SAME source AND SAME summary is one shared record — a
+        // genuine joint sighting → exactly one edge, labelled by that source.
+        let mut a = Entity::new(EntityKind::Email, "a@x.com", 0.6, "s");
+        a.add_evidence(Evidence::new("hibp", "Breach 'Apollo'"));
+        let mut b = Entity::new(EntityKind::Username, "aaa", 0.6, "s");
+        b.add_evidence(Evidence::new("hibp", "Breach 'Apollo'"));
+        let xml = entities_to_gexf(&[a, b], &[], "s");
+        assert_eq!(
+            xml.matches(r#"<edge "#).count(),
+            1,
+            "one shared breach record → exactly one edge:\n{xml}"
+        );
+        assert!(xml.contains(r#"label="hibp""#));
     }
 
     #[test]
@@ -237,6 +327,8 @@ use super::*;
       <attribute id="4" title="corroboration" type="integer"/>
       <attribute id="5" title="coreness" type="integer"/>
       <attribute id="6" title="tags" type="string"/>
+      <attribute id="7" title="diamond_vertex" type="string"/>
+      <attribute id="8" title="generation" type="integer"/>
     </attributes>
     <nodes>
       <node id="ed152b32b035" label="example.com">
@@ -248,6 +340,8 @@ use super::*;
           <attvalue for="4" value="1"/>
           <attvalue for="5" value="1"/>
           <attvalue for="6" value="breach|geoint"/>
+          <attvalue for="7" value="infrastructure"/>
+          <attvalue for="8" value="0"/>
         </attvalues>
       </node>
       <node id="df4bda23ac18" label="blog.example.com">
@@ -259,6 +353,8 @@ use super::*;
           <attvalue for="4" value="1"/>
           <attvalue for="5" value="1"/>
           <attvalue for="6" value=""/>
+          <attvalue for="7" value="infrastructure"/>
+          <attvalue for="8" value="0"/>
         </attvalues>
       </node>
     </nodes>

@@ -15,12 +15,13 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{read_body_capped, urldecode, urlencode};
+use crate::util::http::{RequestBuilderExt, read_body_capped, urldecode, urlencode};
 
 const SRC: &str = "pgp";
 
@@ -37,7 +38,7 @@ impl Module for Pgp {
     }
 
     fn description(&self) -> &'static str {
-        "PGP keyserver lookup (email → owner name + alternate emails via HKP index)"
+        "PGP keyserver recon — pivots an email to owner name and alternate emails via the HKP index"
     }
 
     fn priority(&self) -> u8 {
@@ -86,13 +87,18 @@ impl Module for Pgp {
             "https://keyserver.ubuntu.com/pks/lookup?op=index&options=mr&exact=on&search={}",
             urlencode(email)
         );
-        let resp = match ctx.http.get(&url).send().await {
-            Ok(r) => r,
-            Err(_) => return Ok(result), // network hiccup → quiet, not fatal
-        };
-        // 404 / no-keys is the clean "no PGP key for this email" signal.
-        if !resp.status().is_success() {
+        let resp = ctx.http.get(&url).send_tagged(SRC).await?;
+        // 404 is the keyserver's clean "no PGP key for this email" signal — keep
+        // it as an empty result. But a transport error (propagated above) or any
+        // OTHER non-2xx (5xx outage, 429 throttle, proxy error page) is a real
+        // keyserver failure, not an absence of keys: surfacing it instead of a
+        // silent empty stops a keyserver outage from masquerading as "this email
+        // has no PGP key."
+        if resp.status().as_u16() == 404 {
             return Ok(result);
+        }
+        if !resp.status().is_success() {
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
         let Some(body) = read_body_capped(resp, BODY_CAP).await else {
             return Ok(result);
@@ -145,7 +151,7 @@ fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResu
             && name.trim().contains(' ')
             && seen_person.insert(name.to_lowercase())
         {
-            let mut e = Entity::new(EntityKind::Person, name.trim(), 0.65, scan_id);
+            let mut e = Entity::new(EntityKind::Person, name.trim(), confidence::HIGH, scan_id);
             e.tag(SRC);
             e.add_evidence(ev());
             result.push(e);
@@ -163,7 +169,7 @@ fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResu
             // Alternate emails bound to the same key are the high-value pivot;
             // the queried email itself adds nothing new as a standalone entity.
             if lower.contains('@') && lower != query_lower && seen_email.insert(lower) {
-                let mut e = Entity::new(EntityKind::Email, email, 0.70, scan_id);
+                let mut e = Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
                 e.tag(SRC);
                 e.tag("pgp-linked");
                 e.add_evidence(ev());
@@ -183,7 +189,12 @@ fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResu
             continue;
         }
         let value = format!("pgp:{}", fp.to_lowercase());
-        let mut cred = Entity::new(EntityKind::Credential, &value, 0.85, scan_id);
+        let mut cred = Entity::new(
+            EntityKind::Credential,
+            &value,
+            confidence::HIGH_PLUSPLUS_PLUS,
+            scan_id,
+        );
         cred.tag("pgp-key");
         cred.tag("public-key");
         cred.tag(SRC);

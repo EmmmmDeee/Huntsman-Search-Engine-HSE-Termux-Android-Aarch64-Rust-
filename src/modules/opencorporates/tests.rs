@@ -34,11 +34,51 @@ fn full_name_search_uses_officer_endpoint_and_is_global() {
 }
 
 #[test]
+fn should_report_key_status_covers_401_403_429_but_not_404_or_success() {
+    assert!(should_report_key_status(401));
+    assert!(should_report_key_status(403));
+    assert!(should_report_key_status(429));
+    assert!(!should_report_key_status(404));
+    assert!(!should_report_key_status(200));
+}
+
+#[test]
 fn module_metadata() {
     assert_eq!(OpenCorporates.name(), "opencorporates");
     // Government / public-records band (see priority() doc).
     assert_eq!(OpenCorporates.priority(), 116);
     assert_eq!(OpenCorporates.max_timeout_ms(), 10_000);
+    // Key-gated since OpenCorporates withdrew its keyless public tier (2023);
+    // a `Free` classification silently swallowed the 401 on every scan.
+    assert!(matches!(
+        OpenCorporates.cost(),
+        crate::core::module::ModuleCost::KeyGated
+    ));
+}
+
+#[tokio::test]
+async fn missing_key_yields_a_clean_needs_key_skip_not_a_silent_empty() {
+    // Regression: the keyless public tier is gone (every anonymous request
+    // 401s), so an unconfigured scan must surface `Error::MissingKey` — which
+    // dispatch renders as a "needs API key" skip with the signup hint — NOT
+    // the `Ok(empty)` the pre-fix `key_opt` + 401-swallow path produced on
+    // every scan, hiding the fact a key is required.
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let ctx = ModuleContext {
+        scan_id: "t".into(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let err = OpenCorporates
+        .process(&Target::new(TargetKind::Organisation, "Atlassian"), &ctx)
+        .await
+        .expect_err("an unconfigured key must be a MissingKey skip, not a silent empty result");
+    assert!(
+        matches!(err, crate::core::error::Error::MissingKey(ref k) if k == KEY_ENV),
+        "must name the OpenCorporates key env so the operator sees the signup hint: {err:?}"
+    );
 }
 
 #[test]
@@ -60,15 +100,18 @@ fn parse_response() {
             "total_count": 1
         }
     }"#;
-    let r: OcResp = serde_json::from_str(raw).unwrap();
-    let results = r.results.unwrap();
-    let co = results.companies[0].company.as_ref().unwrap();
+    let r: OcResp = serde_json::from_str(raw).expect("should succeed");
+    let results = r.results.expect("should succeed");
+    let co = results.companies[0]
+        .company
+        .as_ref()
+        .expect("should succeed");
     assert_eq!(co.name.as_deref(), Some("ATLASSIAN PTY LTD"));
     assert_eq!(co.jurisdiction_code.as_deref(), Some("au"));
 }
 
 fn company(json: &str) -> OcCompany {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 fn org_attr<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {
@@ -87,10 +130,10 @@ fn au_company_yields_org_address_and_company_number() {
         }"#,
     );
     let ents = build_company_entities(&co, 7, "s");
-    // Org + Address + optional Coordinates (Sydney matches city_coords) + AbnAcn.
+    // Org + Address + optional Coordinates (Sydney matches city_coords) + Url + AbnAcn.
     assert!(
-        ents.len() >= 3,
-        "expected at least 3 entities, got {}",
+        ents.len() >= 4,
+        "expected at least 4 entities, got {}",
         ents.len()
     );
 
@@ -105,9 +148,36 @@ fn au_company_yields_org_address_and_company_number() {
         && e.has_tag("registered-address")
         && e.has_tag("validated")));
 
+    assert!(ents.iter().any(|e| e.kind == EntityKind::Url
+        && e.has_tag("profile-url")
+        && e.value == "https://opencorporates.com/companies/au/111222333"));
+
     assert!(ents.iter().any(|e| e.kind == EntityKind::AbnAcn
         && e.has_tag("company-number")
         && e.value == "111222333"));
+}
+
+#[test]
+fn au_company_opencorporates_url_becomes_pivotable_url_entity() {
+    // The company's own OpenCorporates profile URL must be emitted as a
+    // pivotable `Url` entity, not just stashed as Organisation evidence.
+    let co = company(
+        r#"{
+            "name":"ATLASSIAN PTY LTD","company_number":"111222333",
+            "jurisdiction_code":"au",
+            "opencorporates_url":"https://opencorporates.com/companies/au/111222333"
+        }"#,
+    );
+    let ents = build_company_entities(&co, 1, "s");
+    let url_ent = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Url)
+        .expect("opencorporates_url must yield a Url entity");
+    assert_eq!(
+        url_ent.value,
+        "https://opencorporates.com/companies/au/111222333"
+    );
+    assert!(url_ent.has_tag("opencorporates") && url_ent.has_tag("profile-url"));
 }
 
 #[test]
@@ -157,7 +227,7 @@ fn blank_name_yields_nothing() {
 }
 
 fn officer(json: &str) -> OcOfficer {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 #[test]

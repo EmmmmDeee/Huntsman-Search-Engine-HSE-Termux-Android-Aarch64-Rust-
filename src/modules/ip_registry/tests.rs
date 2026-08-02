@@ -42,7 +42,7 @@ fn parse_arin_rdap_response() {
         {"eventAction":"registration","eventDate":"2014-03-14T16:52:05-04:00"}
       ]
     }"#;
-    let r: RdapResp = serde_json::from_str(raw).unwrap();
+    let r: RdapResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(r.handle.as_deref(), Some("NET-8-8-8-0-1"));
     assert_eq!(r.country.as_deref(), Some("US"));
     assert_eq!(r.cidr0_cidrs.len(), 1);
@@ -63,9 +63,9 @@ fn parse_bgpview_asn_response() {
         "website": "https://about.google"
       }
     }"#;
-    let r: AsnResp = serde_json::from_str(raw).unwrap();
+    let r: AsnResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(r.status, "ok");
-    let data = r.data.unwrap();
+    let data = r.data.expect("should succeed");
     assert_eq!(data.name.as_deref(), Some("GOOGLE"));
     assert_eq!(data.country_code.as_deref(), Some("US"));
 }
@@ -121,6 +121,101 @@ fn rdap_blank_country_adds_no_tag_or_attr() {
     assert!(!e.evidence[0].attributes.contains_key("country"));
 }
 
+#[test]
+fn rdap_no_contacts_yields_only_the_ip_entity() {
+    // A record with no `entities` array must still produce exactly the one
+    // IpAddress entity — the nested-contact mining is purely additive.
+    let body = rdap(r#"{ "handle":"NET-1", "country":"US" }"#);
+    let ents = build_rdap_entities(&body, "1.2.3.4", "s");
+    assert_eq!(ents.len(), 1);
+    assert_eq!(ents[0].kind, EntityKind::IpAddress);
+}
+
+// A trimmed ARIN-shaped record: a registrant (org kind) that itself nests an
+// abuse contact and a technical/administrative contact — the real RDAP shape.
+const RDAP_WITH_CONTACTS: &str = r#"{
+  "handle":"NET-8-8-8-0-2", "name":"GOGL", "country":"US", "ipVersion":"v4",
+  "cidr0_cidrs":[{"v4prefix":"8.8.8.0","length":24}],
+  "entities":[{
+    "handle":"GOGL", "roles":["registrant"],
+    "vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Google LLC"],["kind",{},"text","org"]]],
+    "entities":[
+      {"handle":"ABUSE5250-ARIN","roles":["abuse"],
+       "vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Abuse"],["kind",{},"text","group"],["email",{},"text","network-abuse@google.com"]]]},
+      {"handle":"ZG39-ARIN","roles":["technical","administrative"],
+       "vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Google LLC"],["kind",{},"text","group"],["email",{},"text","arin-contact@google.com"]]]}
+    ]
+  }]
+}"#;
+
+#[test]
+fn rdap_mines_registrant_org_and_nested_abuse_email() {
+    let ents = build_rdap_entities(&rdap(RDAP_WITH_CONTACTS), "8.8.8.8", "s");
+    // IpAddress + registrant Organisation + abuse Email.
+    assert_eq!(ents.len(), 3);
+
+    let org = of_kind(&ents, EntityKind::Organisation).expect("registrant org");
+    assert_eq!(org.value, "Google LLC");
+    assert!(org.has_tag("ip-registrant") && org.has_tag("rdap"));
+    assert_eq!(
+        org.evidence[0].attributes.get("ip").map(String::as_str),
+        Some("8.8.8.8")
+    );
+
+    // The abuse contact is nested one level under the registrant — the walk
+    // must recurse to reach it.
+    let email = of_kind(&ents, EntityKind::Email).expect("abuse email");
+    assert_eq!(email.value, "network-abuse@google.com");
+    assert!(email.has_tag("role:abuse") && email.has_tag("rdap-contact"));
+    assert_eq!(
+        email.evidence[0]
+            .attributes
+            .get("contact_role")
+            .map(String::as_str),
+        Some("abuse")
+    );
+
+    // Technical/administrative contact emails are deliberately NOT surfaced —
+    // only the abuse role, which is never GDPR-redacted for IP allocations.
+    assert!(
+        !ents
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "arin-contact@google.com"),
+        "only the abuse-role email is emitted"
+    );
+}
+
+#[test]
+fn rdap_individual_registrant_is_not_emitted_as_org() {
+    // A natural-person registrant (vCard kind=individual) must never surface as
+    // an Organisation, even though IP blocks are normally operator-held.
+    let body = rdap(
+        r#"{ "handle":"NET-X", "entities":[{
+            "roles":["registrant"],
+            "vcardArray":["vcard",[["fn",{},"text","Jane Q Public"],["kind",{},"text","individual"]]]
+        }] }"#,
+    );
+    let ents = build_rdap_entities(&body, "1.2.3.4", "s");
+    assert!(
+        of_kind(&ents, EntityKind::Organisation).is_none(),
+        "individual-kind registrant is not an Organisation"
+    );
+    assert_eq!(ents.len(), 1, "only the IpAddress entity remains");
+}
+
+#[test]
+fn rdap_abuse_contact_with_non_email_vcard_yields_no_email() {
+    // An abuse contact whose vCard email field is malformed is dropped.
+    let body = rdap(
+        r#"{ "entities":[{
+            "roles":["abuse"],
+            "vcardArray":["vcard",[["email",{},"text","not-an-email"]]]
+        }] }"#,
+    );
+    let ents = build_rdap_entities(&body, "1.2.3.4", "s");
+    assert!(of_kind(&ents, EntityKind::Email).is_none());
+}
+
 // ── build_bgp_ip_entities (pure) ────────────────────────────────────
 
 fn ip_resp(json: &str) -> IpResp {
@@ -174,10 +269,10 @@ fn asn_record_yields_registry_contacts_and_website() {
             "website": "https://about.google" } }"#,
     );
     let ents = build_asn_entities(&body, 15169, "s");
-    // registry ASN + admin email + abuse email + website URL
-    assert_eq!(ents.len(), 4);
+    // registry ASN + operator org + admin email + abuse email + website URL
+    assert_eq!(ents.len(), 5);
 
-    let asn = of_kind(&ents, EntityKind::Asn).unwrap();
+    let asn = of_kind(&ents, EntityKind::Asn).expect("should succeed");
     assert_eq!(asn.value, "AS15169");
     assert!(asn.has_tag("registered"));
     let attr = |k: &str| asn.evidence[0].attributes.get(k).map(String::as_str);
@@ -185,6 +280,11 @@ fn asn_record_yields_registry_contacts_and_website() {
     assert_eq!(attr("name"), Some("Google LLC"));
     assert_eq!(attr("rir"), Some("ARIN"));
     assert_eq!(attr("allocated"), Some("2000-03-30"));
+
+    let org = of_kind(&ents, EntityKind::Organisation).expect("should succeed");
+    assert_eq!(org.value, "Google LLC");
+    assert!(org.has_tag("bgpview"));
+    assert!(org.has_tag("asn-operator"));
 
     let emails: Vec<&str> = ents
         .iter()
@@ -194,7 +294,7 @@ fn asn_record_yields_registry_contacts_and_website() {
     assert_eq!(emails.len(), 2);
     assert!(emails.contains(&"noc@google.com") && emails.contains(&"abuse@google.com"));
 
-    let url = of_kind(&ents, EntityKind::Url).unwrap();
+    let url = of_kind(&ents, EntityKind::Url).expect("should succeed");
     assert_eq!(url.value, "https://about.google");
     assert!(url.has_tag("asn-website"));
 }
@@ -214,7 +314,7 @@ fn asn_non_http_website_yields_no_url_entity() {
         "a non-http(s) website must not become a Url entity"
     );
     // ...but it is still recorded as an attribute on the ASN evidence.
-    let asn = of_kind(&ents, EntityKind::Asn).unwrap();
+    let asn = of_kind(&ents, EntityKind::Asn).expect("should succeed");
     assert_eq!(
         asn.evidence[0]
             .attributes

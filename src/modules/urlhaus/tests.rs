@@ -1,4 +1,31 @@
+use crate::core::confidence;
 use super::*;
+
+#[test]
+fn resolve_key_prefers_dedicated_urlhaus_key() {
+    let r = resolve_key(Some("uh-key"), Some("tf-key"));
+    assert_eq!(r, Some(("uh-key", "urlhaus")));
+}
+
+#[test]
+fn resolve_key_falls_back_to_threatfox_key() {
+    let r = resolve_key(None, Some("tf-key"));
+    assert_eq!(r, Some(("tf-key", "threatfox")));
+}
+
+#[test]
+fn resolve_key_treats_empty_primary_as_absent() {
+    // A present-but-empty env var (e.g. `HUNTSMAN_ABUSECH_KEY=`) must not win
+    // over a real fallback key, and must not itself be returned as "the key".
+    let r = resolve_key(Some(""), Some("tf-key"));
+    assert_eq!(r, Some(("tf-key", "threatfox")));
+}
+
+#[test]
+fn resolve_key_none_when_both_absent_or_empty() {
+    assert_eq!(resolve_key(None, None), None);
+    assert_eq!(resolve_key(Some(""), Some("")), None);
+}
 
 #[test]
 fn accepts_domain_and_ip() {
@@ -11,7 +38,7 @@ fn accepts_domain_and_ip() {
     #[test]
     fn parse_clean_response() {
         let raw = r#"{"query_status":"no_results"}"#;
-        let r: UrlhausResp = serde_json::from_str(raw).unwrap();
+        let r: UrlhausResp = serde_json::from_str(raw).expect("should succeed");
         assert_eq!(r.query_status, "no_results");
         assert!(r.urls.is_none());
     }
@@ -30,14 +57,14 @@ fn accepts_domain_and_ip() {
               {"threat":"phishing","url_status":"offline"}
             ]
         }"#;
-        let r: UrlhausResp = serde_json::from_str(raw).unwrap();
+        let r: UrlhausResp = serde_json::from_str(raw).expect("should succeed");
         assert_eq!(r.query_status, "ok");
         assert_eq!(r.url_count.as_deref(), Some("3"));
-        assert_eq!(r.urls.as_ref().unwrap().len(), 2);
+        assert_eq!(r.urls.as_ref().expect("should succeed").len(), 2);
     }
 
     fn resp(json: &str) -> UrlhausResp {
-        serde_json::from_str(json).unwrap()
+        serde_json::from_str(json).expect("should succeed")
     }
 
     fn attr<'a>(e: &'a crate::core::entity::Entity, k: &str) -> Option<&'a str> {
@@ -64,7 +91,7 @@ fn accepts_domain_and_ip() {
         let e = build_threat_entity(EntityKind::Domain, "evil.test", &body, 3, "s");
         assert_eq!(e.kind, EntityKind::Domain);
         assert!(e.has_tag(crate::core::tags::MALICIOUS) && e.has_tag("urlhaus"));
-        assert!((e.confidence - 0.90).abs() < 1e-9);
+        assert!((e.confidence - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
         assert_eq!(attr(&e, "url_count"), Some("3"));
         assert_eq!(
             attr(&e, "reference"),
@@ -92,7 +119,7 @@ fn accepts_domain_and_ip() {
             .join(",");
         let body = resp(&format!(r#"{{"query_status":"ok","urls":[{urls}]}}"#));
         let e = build_threat_entity(EntityKind::Domain, "h", &body, 10, "s");
-        let threats = attr(&e, "threats").unwrap();
+        let threats = attr(&e, "threats").expect("should succeed");
         assert_eq!(threats.split(',').count(), 10);
         assert_eq!(threats, "a,b,c,d,e,f,m,x,y,z");
     }

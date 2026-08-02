@@ -1,13 +1,20 @@
 //! `hse radar` — continuous-sensor + auto-pivot scanning loop.
 //!
-//! Each sweep runs the local-sensor modules (device_sensors, wifi_intel,
-//! cell_intel, local_net) and pivots on any newly-discovered entity
-//! through the full module graph. Designed for long-running situational
-//! awareness on a device that's moving through space.
+//! **Running or stopped: there is nothing else to set.** `hse radar` starts it,
+//! Ctrl-C stops it. Every input it needs comes from this device's own radios
+//! via Termux — Wi-Fi and Bluetooth scans, GNSS fixes, the cell serving-cell,
+//! and the local ARP table — so there is no seed to supply and no target to
+//! name. Options were removed rather than defaulted: a knob on this command is
+//! a way to run it wrong.
 //!
-//! `--interval` controls sweep cadence; `--depth` the per-pivot
-//! recursion; `--sweeps` an optional iteration cap; `--free-only`
-//! restricts pivots to keyless modules to preserve API quota.
+//! Each sweep runs the local-sensor modules ([`SENSOR_MODULES`]) and hands
+//! every newly-observed signal to the SAME pipeline a manually-initiated
+//! `hse scan` uses — the full module graph, no module exclusions, no
+//! free-only restriction, the standard expansion floor — so a MAC seen over
+//! the air is enumerated exactly as thoroughly as one typed on the command
+//! line. Pivots recurse [`RADAR_PIVOT_DEPTH`] hops, deep enough to carry an
+//! observed signal through the identity chain SeekNow and the breach corpora
+//! open up.
 
 use std::sync::Arc;
 
@@ -18,9 +25,26 @@ use crate::core::{
 };
 use crate::util::{http::build_client, keys, uid::scan_id};
 
-use super::{build_runtime, color_confidence, truncate, use_color};
+use super::{color_confidence, truncate, use_color};
 
 use crate::core::engine::LOCAL_PASSIVE_MODULES as SENSOR_MODULES;
+
+/// Seconds between sensor sweeps. Not operator-tunable: the radar has exactly
+/// two states, and 10 s is fast enough to track a device moving on foot or in
+/// traffic while leaving the radios idle most of the time.
+const RADAR_SWEEP_INTERVAL_SECS: u64 = 10;
+
+/// Expansion depth applied to every signal the sensors observe.
+///
+/// A radio observation starts further from an identity than a typed seed does:
+/// a BSSID resolves to a location, the location to an address, the address to
+/// a person, the person to their accounts and breach records — SeekNow and the
+/// breach corpora only enter the chain several hops in. Five hops is the
+/// shallowest depth that reaches them, and is why [`MAX_DEPTH`] was raised to
+/// match.
+///
+/// [`MAX_DEPTH`]: crate::core::scan::MAX_DEPTH
+const RADAR_PIVOT_DEPTH: u32 = 5;
 
 /// Run one sub-scan (a sensor sweep or a pivot), racing an operator Ctrl-C
 /// against it. A press signals the scan's OWN cooperative-cancel flag (so it
@@ -51,12 +75,7 @@ async fn run_sub_scan(
     result
 }
 
-pub(super) async fn cmd_radar(
-    interval: u64,
-    depth: u32,
-    sweeps: Option<u32>,
-    free_only: bool,
-) -> Result<()> {
+pub(super) async fn cmd_radar() -> Result<()> {
     use std::collections::HashSet;
 
     // The radar is armed by default — running `hse radar` IS the deliberate
@@ -79,12 +98,17 @@ pub(super) async fn cmd_radar(
         "{}",
         color_confidence(
             0.85,
-            &format!("HSE radar — sweep every {interval}s, depth={depth}, Ctrl-C to stop"),
+            &format!(
+                "HSE radar — device radios (WiFi/Bluetooth/GNSS/cell/LAN), \
+                 sweep every {RADAR_SWEEP_INTERVAL_SECS}s, pivot depth \
+                 {RADAR_PIVOT_DEPTH}, Ctrl-C to stop"
+            ),
             color
         )
     );
 
-    let (store, bus, engine) = build_runtime(1024)?;
+    let crate::app::runtime::ApplicationRuntime { store, bus, engine } =
+        crate::app::runtime::build_runtime(1024)?;
     let mut seen_entities: HashSet<String> = HashSet::new();
     let mut sweep_num = 0u32;
     // Set by `run_sub_scan` the moment Ctrl-C interrupts an in-flight sweep or
@@ -93,11 +117,6 @@ pub(super) async fn cmd_radar(
 
     'sweeps: loop {
         sweep_num += 1;
-        if let Some(max) = sweeps
-            && sweep_num > max
-        {
-            break;
-        }
 
         eprintln!(
             "\n{}",
@@ -111,7 +130,10 @@ pub(super) async fn cmd_radar(
         // with a sentinel coordinate. (A `Domain` seed is NOT accepted by the
         // sensors, so the sweep would dispatch nothing.) The seed is tagged `seed`
         // and excluded from the pivot phase below, so it contributes no noise.
-        let sweep_target = Target::new(crate::core::scan::TargetKind::Coordinates, "0,0");
+        let sweep_target = Target::new(
+            crate::core::scan::TargetKind::Coordinates,
+            crate::core::scan::RADAR_SENTINEL_COORD_RAW,
+        );
         let sweep_opts = ScanOptions {
             modules: Some(SENSOR_MODULES.iter().map(|s| (*s).to_string()).collect()),
             passive_only: true,
@@ -135,11 +157,15 @@ pub(super) async fn cmd_radar(
             http: build_client(),
             keys: sweep_keys,
             cancel: crate::core::cancel::CancelHandle::new(),
-            proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
         };
 
+        // Bracket the sweep with the Termux bridge's activity counters, so an
+        // empty sweep can say WHICH empty it is: radios read and quiet, or
+        // radios never read. See the `no new signals` branch below.
+        let sensors_before = crate::util::termux::activity();
         let sweep_result =
             run_sub_scan(&engine, sweep_scan, sweep_target, sweep_ctx, &radar_stop).await?;
+        let sensors = crate::util::termux::activity().since(sensors_before);
         if radar_stop.load(std::sync::atomic::Ordering::Relaxed) {
             eprintln!("\nradar stopped");
             break 'sweeps;
@@ -167,15 +193,31 @@ pub(super) async fn cmd_radar(
         }
 
         if new_targets.is_empty() {
-            eprintln!(
-                "  {} no new signals ({} entities, {} known)",
-                color_confidence(0.3, "○", color),
-                sweep_result.entity_count,
-                seen_entities.len()
-            );
+            // "Nothing new" has two very different causes, and reporting the
+            // second as the first is the radar telling the operator the area is
+            // quiet when in truth it never listened. A sweep in which no Termux
+            // sensor tool returned data observed nothing — it did not observe
+            // nothing being there.
+            if sensors.took_no_readings() {
+                eprintln!(
+                    "  {} no sensor readings this sweep — {} tool call(s) skipped, {} \
+                     unanswered; the radios were NOT read, so this is not evidence that \
+                     nothing is nearby",
+                    color_confidence(0.3, "⚠", color),
+                    sensors.skipped,
+                    sensors.failed,
+                );
+            } else {
+                eprintln!(
+                    "  {} no new signals ({} entities, {} known)",
+                    color_confidence(0.3, "○", color),
+                    sweep_result.entity_count,
+                    seen_entities.len()
+                );
+            }
         } else {
             eprintln!(
-                "  {} {} new signal(s) → pivoting at depth {depth}",
+                "  {} {} new signal(s) → pivoting at depth {RADAR_PIVOT_DEPTH}",
                 color_confidence(0.85, "▶", color),
                 new_targets.len()
             );
@@ -188,25 +230,22 @@ pub(super) async fn cmd_radar(
                 // (IPs, domains, coords, MACs, ASNs). Sensor-discovered entities
                 // rarely yield OathNet breach results and the quota is better
                 // spent on identity-type entities discovered through other paths.
-                let is_infra = matches!(
-                    tk,
-                    crate::core::scan::TargetKind::IpAddress
-                        | crate::core::scan::TargetKind::Domain
-                        | crate::core::scan::TargetKind::Coordinates
-                        | crate::core::scan::TargetKind::MacAddress
-                        | crate::core::scan::TargetKind::Asn
-                );
-                let mut exclude = Vec::new();
-                if is_infra {
-                    exclude.push("oathnet_pro".to_string());
-                    exclude.push("see_know".to_string());
-                }
+                // No module exclusions and no free-only restriction: an
+                // observed signal gets the SAME treatment as a manually
+                // initiated scan. SeekNow and the breach corpora used to be
+                // excluded for infrastructure-kind pivots to save quota, but
+                // that severed the chain exactly where it starts paying off —
+                // a BSSID becomes a location, an address, a person, and only
+                // THEN an identity SeekNow can enumerate. Budgets already bound
+                // the spend; suppressing the module bounded the findings.
                 let pivot_opts = ScanOptions {
-                    depth,
-                    free_only,
-                    exclude_modules: exclude,
+                    depth: RADAR_PIVOT_DEPTH,
                     max_concurrent: 4,
-                    min_expand_confidence: 0.50,
+                    // The product expansion floor, as a manual scan uses. The
+                    // old 0.50 discarded the derived identifiers (name →
+                    // email/handle permutations, emitted at 0.20–0.30) that the
+                    // deeper hops exist to confirm.
+                    min_expand_confidence: crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE,
                     // The pivot runs the full expansion pipeline; without the entity
                     // ceiling every one-shot `hse scan` carries, a fan-out pivot on
                     // the long-running radar loop grows the frontier unbounded in RAM
@@ -225,7 +264,6 @@ pub(super) async fn cmd_radar(
                     http: build_client(),
                     keys: pivot_keys,
                     cancel: crate::core::cancel::CancelHandle::new(),
-                    proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
                 };
 
                 let result =
@@ -277,13 +315,13 @@ pub(super) async fn cmd_radar(
                 eprintln!("\nradar stopped");
                 break;
             }
-            _ = tokio::time::sleep(std::time::Duration::from_secs(interval)) => {}
+            _ = tokio::time::sleep(std::time::Duration::from_secs(RADAR_SWEEP_INTERVAL_SECS)) => {}
         }
     }
 
     eprintln!(
         "\n{} sweeps, {} unique entities discovered",
-        sweep_num.min(sweeps.unwrap_or(sweep_num)),
+        sweep_num,
         seen_entities.len()
     );
     Ok(())

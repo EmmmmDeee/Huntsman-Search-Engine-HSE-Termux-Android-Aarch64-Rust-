@@ -16,8 +16,12 @@
 //! `country:AU` tag only when the response itself reports
 //! `jurisdiction_code == "au"`, regardless of what was searched.
 //!
-//! Auth:     Optional API Token (`HUNTSMAN_OPENCORP_KEY`). Free tier requires
-//!           a key since late 2023; without one all requests return 401.
+//! Auth:     Required API Token (`HUNTSMAN_OPENCORP_KEY`, sent as
+//!           `&api_token=`). OpenCorporates withdrew its keyless public tier
+//!           in late 2023 — every unauthenticated request now returns
+//!           `401 {"error":{"message":"Invalid Api Token…"}}` — so the module
+//!           is [`ModuleCost::KeyGated`]: an unconfigured scan is a clean
+//!           "needs key" skip rather than a silent no-op.
 //!
 //! Company search is used for `Organisation`/`AbnAcn` targets; officer search
 //! is used for `FullName` targets to find companies where the person serves as
@@ -27,6 +31,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -51,10 +56,11 @@ pub(super) const MIN_ADDRESS_LEN: usize = 5;
 /// Map one OpenCorporates company record to its entities. **Pure** (no
 /// network/IO): always yields the `Organisation` (tagged with jurisdiction /
 /// active status and all present registry fields as evidence), and additionally
-/// a `validated` `Address` entity when a usable registered address is present and
-/// an `AbnAcn` company-number entity for AU registrations. `total` is the
-/// search's full match count, carried on the org evidence. Returns an empty `Vec`
-/// for a record with no usable name.
+/// a `validated` `Address` entity when a usable registered address is present, a
+/// pivotable `Url` entity for the record's own OpenCorporates profile page when
+/// present, and an `AbnAcn` company-number entity for AU registrations. `total`
+/// is the search's full match count, carried on the org evidence. Returns an
+/// empty `Vec` for a record with no usable name.
 pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) -> Vec<Entity> {
     let Some(name) = co.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) else {
         return Vec::new();
@@ -62,7 +68,12 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
 
     let mut out = Vec::new();
 
-    let mut entity = Entity::new(EntityKind::Organisation, name, 0.75, scan_id);
+    let mut entity = Entity::new(
+        EntityKind::Organisation,
+        name,
+        confidence::VERY_HIGH,
+        scan_id,
+    );
     entity.tag("opencorporates");
     if co.jurisdiction_code.as_deref() == Some("au") {
         entity.tag("country:AU");
@@ -115,7 +126,7 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
     if let Some(addr) = co.registered_address_in_full.as_deref().map(str::trim)
         && addr.len() >= MIN_ADDRESS_LEN
     {
-        let mut ae = Entity::new(EntityKind::Address, addr, 0.70, scan_id);
+        let mut ae = Entity::new(EntityKind::Address, addr, confidence::HIGH_PLUS, scan_id);
         ae.tag("opencorporates");
         ae.tag("registered-address");
         ae.tag("validated");
@@ -129,7 +140,12 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
 
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(addr) {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.62, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::NOTABLE,
+                scan_id,
+            );
             c.tag("addr-derived");
             c.tag("geoint");
             c.tag("opencorporates");
@@ -145,11 +161,22 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
         }
     }
 
+    if let Some(url) = co.opencorporates_url.as_deref().filter(|u| !u.is_empty()) {
+        let mut ue = Entity::new(EntityKind::Url, url, 0.68, scan_id);
+        ue.tag("opencorporates");
+        ue.tag("profile-url");
+        ue.add_evidence(Evidence::new(
+            SRC,
+            format!("OpenCorporates profile URL for {name}"),
+        ));
+        out.push(ue);
+    }
+
     if let Some(num) = co.company_number.as_deref()
         && !num.is_empty()
         && co.jurisdiction_code.as_deref() == Some("au")
     {
-        let mut acn = Entity::new(EntityKind::AbnAcn, num, 0.80, scan_id);
+        let mut acn = Entity::new(EntityKind::AbnAcn, num, confidence::HIGH_PLUSPLUS, scan_id);
         acn.tag("opencorporates");
         acn.tag("company-number");
         acn.add_evidence(
@@ -182,6 +209,16 @@ pub(super) fn build_search_url(target_kind: TargetKind, query: &str) -> String {
         "https://api.opencorporates.com/v0.4/{endpoint}/search?q={}{jurisdiction_param}&per_page={PER_PAGE}",
         urlencode(query),
     )
+}
+
+/// Whether this HTTP status means the configured key itself should be
+/// reported to the pool: 401/403 (bad/expired key → `Invalid`) or 429
+/// (rate-limited → `RateLimited`, its own recoverable cooldown window) —
+/// `report_key_exhausted` tells the two apart from the status value itself.
+/// 404 is a genuine no-match and reports nothing. Pure so this three-way
+/// routing is unit-testable without a live HTTP call.
+pub(super) fn should_report_key_status(status: u16) -> bool {
+    matches!(status, 401 | 403 | 429)
 }
 
 /// Officer search response: `/v0.4/officers/search`.
@@ -230,10 +267,12 @@ pub(super) struct OcOfficerCompany {
 }
 
 /// Map one OpenCorporates officer record to entities. **Pure** (no network/IO):
-/// emits the `Organisation` the person directs (if usable), an `AbnAcn` for AU
-/// registrations, and a corroborating `Person` entity carrying the officer name
-/// and position as evidence. `total` is the officer-search hit count. Returns
-/// an empty `Vec` when neither the officer name nor the company name is usable.
+/// emits the `Organisation` the person directs (if usable), a pivotable `Url`
+/// entity for that company's own OpenCorporates profile page when present, an
+/// `AbnAcn` for AU registrations, and a corroborating `Person` entity carrying
+/// the officer name and position as evidence. `total` is the officer-search hit
+/// count. Returns an empty `Vec` when neither the officer name nor the company
+/// name is usable.
 pub(super) fn build_officer_entities(
     officer: &OcOfficer,
     total: u64,
@@ -255,7 +294,12 @@ pub(super) fn build_officer_entities(
     if let Some(co) = officer.company.as_ref() {
         let co_name = co.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
         if let Some(name) = co_name {
-            let mut org = Entity::new(EntityKind::Organisation, name, 0.72, scan_id);
+            let mut org = Entity::new(
+                EntityKind::Organisation,
+                name,
+                confidence::ATTRIBUTED,
+                scan_id,
+            );
             org.tag("opencorporates");
             if co.jurisdiction_code.as_deref() == Some("au") {
                 org.tag("country:AU");
@@ -280,11 +324,22 @@ pub(super) fn build_officer_entities(
             org.add_evidence(ev);
             out.push(org);
 
+            if let Some(url) = co.opencorporates_url.as_deref().filter(|u| !u.is_empty()) {
+                let mut ue = Entity::new(EntityKind::Url, url, 0.68, scan_id);
+                ue.tag("opencorporates");
+                ue.tag("profile-url");
+                ue.add_evidence(Evidence::new(
+                    SRC,
+                    format!("OpenCorporates profile URL for {name}"),
+                ));
+                out.push(ue);
+            }
+
             if let Some(num) = co.company_number.as_deref()
                 && !num.is_empty()
                 && co.jurisdiction_code.as_deref() == Some("au")
             {
-                let mut acn = Entity::new(EntityKind::AbnAcn, num, 0.78, scan_id);
+                let mut acn = Entity::new(EntityKind::AbnAcn, num, confidence::STRONG, scan_id);
                 acn.tag("opencorporates");
                 acn.tag("company-number");
                 acn.add_evidence(
@@ -298,7 +353,7 @@ pub(super) fn build_officer_entities(
 
     // Corroborating Person entity for the officer name (confirms handle→identity).
     if let Some(name) = officer_name.filter(|n| n.contains(' ')) {
-        let mut pe = Entity::new(EntityKind::Person, name, 0.72, scan_id);
+        let mut pe = Entity::new(EntityKind::Person, name, confidence::ATTRIBUTED, scan_id);
         pe.tag("opencorporates");
         pe.tag("officer");
         if let Some(p) = position {
@@ -364,15 +419,22 @@ impl Module for OpenCorporates {
         "opencorporates"
     }
     fn description(&self) -> &'static str {
-        "OpenCorporates global company/director search (AU-restricted for AbnAcn lookups)"
+        "OpenCorporates recon — enumerates global company and director records (AU-restricted for AbnAcn lookups)"
     }
     fn priority(&self) -> u8 {
         // Government / public-records band (110-118): company registry, dispatched
         // just below abn_lookup and above the generic free modules.
         116
     }
+    /// Key-gated: OpenCorporates withdrew its keyless public tier (late 2023) —
+    /// every unauthenticated request now returns `401 {"error":{"message":
+    /// "Invalid Api Token…"}}` (live-confirmed). While classified `Free` the
+    /// module fired a doomed keyless request on every scan and swallowed the
+    /// 401 into an empty result, so the operator was never told a key was
+    /// required. `KeyGated` makes an unconfigured scan a clean "needs key" skip
+    /// and lets `--free-only` skip it up front.
     fn cost(&self) -> ModuleCost {
-        ModuleCost::Free
+        ModuleCost::KeyGated
     }
     fn accepts(&self, t: &Target) -> bool {
         matches!(
@@ -404,6 +466,7 @@ impl Module for OpenCorporates {
             EntityKind::Coordinates,
             // Person: emitted from officer search (FullName targets only).
             EntityKind::Person,
+            EntityKind::Url,
         ];
         KINDS
     }
@@ -418,10 +481,13 @@ impl Module for OpenCorporates {
         // organisation names and ABN/ACN numbers pivot through company search.
         let use_officer_search = target.kind == TargetKind::FullName;
 
+        // Key-gated (the keyless tier was withdrawn): an unconfigured key
+        // returns `Error::MissingKey`, which the dispatch finaliser renders as
+        // a clean "needs key" skip with the signup hint — NOT the silent
+        // 401-swallow the pre-fix `key_opt` path produced on every scan.
+        let key = ctx.key(KEY_ENV)?;
         let mut url = build_search_url(target.kind, query);
-        if let Some(key) = ctx.key_opt(KEY_ENV) {
-            url.push_str(&format!("&api_token={}", urlencode(key)));
-        }
+        url.push_str(&format!("&api_token={}", urlencode(key)));
 
         let resp = ctx
             .http
@@ -431,15 +497,22 @@ impl Module for OpenCorporates {
             .await?;
 
         let status = resp.status();
-        // Graceful no-op statuses. OpenCorporates' v0.4 search now answers 401
-        // (sometimes 403) to unauthenticated callers — its keyless public tier
-        // was withdrawn — so on a no-key scan this means "nothing to do", not an
-        // error worth a WARN (observed live: a keyless FullName scan logged
-        // `module error … HTTP 401 Unauthorized`). 404 = no match, 429 = rate
-        // limited. All degrade to an empty result (the module is best-effort).
-        // A *configured* key that gets 401/403 is a bad key, also nothing to
-        // surface as a scan error — the key pool handles key health separately.
-        if matches!(status.as_u16(), 401 | 403 | 404 | 429) {
+        // A configured key that gets 401/403 is bad/expired, and a 429 means
+        // it's rate-limited — report all three to the key pool for rotation
+        // (401/403 were already reported; 429 was previously NOT, the one
+        // inconsistency in this three-way handling despite
+        // `is_keyed_error_status` grouping all three together — see
+        // `should_report_key_status`). `report_key_exhausted` itself tells a
+        // 429 (`RateLimited`, its own per-service cooldown window) apart from
+        // a genuine 401/403 (`Invalid`), so the key recovers automatically
+        // instead of this module silently degrading with no signal anywhere
+        // that the key is currently rate-limited. 404 = a genuine no-match,
+        // the only case that stays a plain empty result with no report.
+        if should_report_key_status(status.as_u16()) {
+            ctx.report_key_exhausted(SRC, key, status.as_u16());
+            return Ok(ModuleResult::new());
+        }
+        if status.as_u16() == 404 {
             return Ok(ModuleResult::new());
         }
         if !status.is_success() {

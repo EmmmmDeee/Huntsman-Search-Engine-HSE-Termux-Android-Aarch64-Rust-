@@ -23,13 +23,14 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 
+use crate::core::confidence;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::termux::termux_cmd;
+use crate::modules::termux_sensor;
 
 use helpers::{accuracy_to_confidence, build_tower_device, mcc_to_centroid, query_opencellid};
 use types::TowerKey;
@@ -47,7 +48,7 @@ impl Module for CellIntel {
     }
 
     fn description(&self) -> &'static str {
-        "Cell tower survey and geolocation via Termux + OpenCelliD"
+        "Cell-tower survey & geolocation — sweeps nearby towers via Termux and geolocates them against OpenCelliD"
     }
 
     fn priority(&self) -> u8 {
@@ -95,14 +96,22 @@ impl Module for CellIntel {
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         // Single invocation — the key performance win over two separate modules.
-        let Some(stdout) = termux_cmd("termux-telephony-cellinfo", &[], 5000).await else {
+        let Some(stdout) = termux_sensor::Sensor::CellInfo.read().await else {
             return Ok(ModuleResult::new());
         };
 
-        let cells: Vec<types::Cell> = match serde_json::from_slice(&stdout) {
-            Ok(v) => v,
-            Err(_) => return Ok(ModuleResult::new()),
-        };
+        // Blank output means the tool exited 0 with nothing to report — an
+        // honest empty answer. Non-blank output that will not parse means the
+        // tool answered with something broken, which is a malfunction and must
+        // surface as a real error: reporting it as zero cells would be
+        // indistinguishable from "no towers in range". Mirrors
+        // `signal_radar::cell::parse_cells`, which shares this tool.
+        if termux_sensor::is_blank(&stdout) {
+            return Ok(ModuleResult::new());
+        }
+        let cells: Vec<types::Cell> = serde_json::from_slice(&stdout).map_err(|e| {
+            termux_sensor::unparseable_for(SRC, termux_sensor::Sensor::CellInfo, &e)
+        })?;
 
         let api_key = ctx.key_opt(OPENCELLID_KEY_ENV);
         let mut result = ModuleResult::new();
@@ -127,7 +136,7 @@ impl Module for CellIntel {
             let radio = key.radio_code();
 
             if let Some(api) = api_key
-                && let Some((lat, lon, range)) = query_opencellid(&ctx.http, api, &key, radio).await
+                && let Some((lat, lon, range)) = query_opencellid(ctx, api, &key, radio).await
             {
                 let coords = format!("{lat:.6},{lon:.6}");
                 let confidence = accuracy_to_confidence(range);
@@ -157,7 +166,12 @@ impl Module for CellIntel {
             // Fallback: MCC -> country centroid (coarse but free, offline)
             if let Some((lat, lon, country)) = mcc_to_centroid(&key.mcc) {
                 let coords = format!("{lat:.4},{lon:.4}");
-                let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.25, &ctx.scan_id);
+                let mut e = Entity::new(
+                    EntityKind::Coordinates,
+                    &coords,
+                    confidence::VERY_LOW,
+                    &ctx.scan_id,
+                );
                 e.tag("geoint");
                 e.tag(crate::core::tags::CELL_TOWER);
                 e.tag(crate::core::tags::COARSE);

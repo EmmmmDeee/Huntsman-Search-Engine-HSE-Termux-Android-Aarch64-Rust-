@@ -36,7 +36,7 @@
 //! Messages, Instagram) strip EXIF on send, so URLs to those
 //! sources usually return empty. Photos hosted on personal
 //! websites, archive sites, and old social-platform uploads
-//! frequently retain GPS. Confidence is set conservatively (0.80)
+//! frequently retain GPS. Confidence is set conservatively (confidence::HIGH_PLUSPLUS)
 //! because EXIF GPS can be wrong by ±50 m on the originating
 //! device but is otherwise authoritative.
 
@@ -50,6 +50,7 @@ use async_trait::async_trait;
 use exif::{Reader, Tag};
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -57,7 +58,9 @@ use crate::core::{
 };
 
 use extract::{clean_owner, device_fingerprint, looks_like_image_url};
-use parse::{extract_gps, read_str};
+use parse::{
+    extract_altitude, extract_gps, extract_img_direction, extract_positioning_error, read_str,
+};
 
 const SRC: &str = "exif_geo";
 
@@ -85,7 +88,7 @@ impl Module for ExifGeo {
     }
 
     fn description(&self) -> &'static str {
-        "Extract GPS coordinates + camera metadata from image URLs via EXIF parsing"
+        "EXIF geolocation — parses image URLs to extract GPS coordinates and camera metadata for geolocation"
     }
 
     fn priority(&self) -> u8 {
@@ -231,29 +234,68 @@ impl Module for ExifGeo {
             )
         };
 
-        // 1. Coordinates — GPS IFD. Empirically reliable to ~10–50 m; base 0.80,
-        //    above single-source IP-geo (0.55–0.60), below WiGLE consensus (0.85).
+        // 1. Coordinates — GPS IFD. Empirically reliable to ~10–50 m; base confidence::HIGH_PLUSPLUS,
+        //    above single-source IP-geo (confidence::MEDIUM_HIGH–confidence::MEDIUM_PLUS), below WiGLE consensus (confidence::HIGH_PLUSPLUS_PLUS).
         if let Some((lat, lon)) = gps {
             let coord_str = format!("{lat:.6},{lon:.6}");
-            let mut e = Entity::new(EntityKind::Coordinates, &coord_str, 0.80, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Coordinates,
+                &coord_str,
+                confidence::HIGH_PLUSPLUS,
+                &ctx.scan_id,
+            );
             e.tag("geoint");
             e.tag("exif");
             e.tag("photo-derived");
             crate::util::geo::tag_au_state(&mut e, lat, lon);
-            e.add_evidence(
-                evidence(format!("EXIF GPS extracted from {url}"))
-                    .with_attr("latitude", lat.to_string())
-                    .with_attr("longitude", lon.to_string()),
-            );
+            // Real horizontal accuracy (GPSHPositioningError), when the camera
+            // reported it: stamp the `accuracy:<n>m` precision tag the location
+            // fusion ladder reads (`coord_accuracy_km`), so a phone fix that
+            // knows it is ±8 m is weighted at that grain instead of the generic
+            // photo grain. Absent tag ⇒ no tag — never a fabricated radius.
+            let accuracy_m = extract_positioning_error(&exif);
+            if let Some(acc) = accuracy_m {
+                // Preserve the camera's reported radius — the fusion ladder
+                // parses it as f64. Rounding to an integer metre would understate
+                // a 12.4 m radius as 12 m (claiming better accuracy than
+                // reported); the extractor already rejects a 0 m radius.
+                e.tag(format!("accuracy:{acc:.1}m"));
+            }
+            // Altitude (3-D fix) and camera heading (what the lens faced) — real
+            // GPS-IFD signals the scan path previously dropped; the local-ingest
+            // path already surfaces altitude, so this brings the two to parity.
+            let mut ev = evidence(format!("EXIF GPS extracted from {url}"))
+                .with_attr("latitude", lat.to_string())
+                .with_attr("longitude", lon.to_string());
+            if let Some(alt) = extract_altitude(&exif) {
+                ev = ev.with_attr("altitude_m", format!("{alt:.1}"));
+            }
+            if let Some((deg, r)) = extract_img_direction(&exif) {
+                ev = ev
+                    .with_attr("camera_heading_deg", format!("{deg:.1}"))
+                    .with_attr(
+                        "camera_heading_ref",
+                        if r == 'M' { "magnetic" } else { "true" },
+                    );
+            }
+            if let Some(acc) = accuracy_m {
+                ev = ev.with_attr("gps_accuracy_m", format!("{acc:.1}"));
+            }
+            e.add_evidence(ev);
             result.push(e);
         }
 
         // 2. DeviceId — a camera serial uniquely identifies one physical device,
         //    so the same serial across images links them to the same camera (and
         //    usually the same person): the highest-value EXIF cross-correlation.
-        //    Authoritative (camera firmware wrote it) → 0.75.
+        //    Authoritative (camera firmware wrote it) → confidence::VERY_HIGH.
         if let Some(fp) = fingerprint {
-            let mut e = Entity::new(EntityKind::DeviceId, &fp, 0.75, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::DeviceId,
+                &fp,
+                confidence::VERY_HIGH,
+                &ctx.scan_id,
+            );
             e.tag("exif");
             e.tag("camera");
             e.tag("device-fingerprint");
@@ -265,11 +307,16 @@ impl Module for ExifGeo {
 
         // 3. Person — the owner/artist named in metadata. CameraOwnerName is set
         //    in-camera by the owner, so it is a real identity lead. Kept below the
-        //    0.50 expansion floor (a metadata name is a lead, not a confirmed
+        //    confidence::MEDIUM expansion floor (a metadata name is a lead, not a confirmed
         //    identity) but NOT quarantined, so it correlates with same-named
         //    Person entities surfaced by search/breach modules.
         if let Some(name) = person_name {
-            let mut e = Entity::new(EntityKind::Person, &name, 0.45, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Person,
+                &name,
+                confidence::LOW_MEDIUM,
+                &ctx.scan_id,
+            );
             e.tag("exif");
             e.tag("photo-owner");
             e.add_evidence(evidence(format!(

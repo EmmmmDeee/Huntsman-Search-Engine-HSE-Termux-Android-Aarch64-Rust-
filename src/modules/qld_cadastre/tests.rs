@@ -31,6 +31,22 @@ use super::*;
     }
 
     #[test]
+    fn max_timeout_covers_a_429_retry_path() {
+        // Regression guard: a 429 used to degrade straight to a silent
+        // Ok(empty) with no retry at all. `process` now sleeps a real
+        // Retry-After (clamped to 5s max, see the retry_after_secs call
+        // there) and retries once — the budget must comfortably cover two
+        // requests plus that sleep, not just the original single call.
+        let max_retry_after_sleep_secs = 5;
+        assert!(
+            QldCadastre.max_timeout_ms() > max_retry_after_sleep_secs * 1000,
+            "budget {} leaves no headroom for a real request plus the {}s retry sleep",
+            QldCadastre.max_timeout_ms(),
+            max_retry_after_sleep_secs
+        );
+    }
+
+    #[test]
     fn build_query_url_targets_layer_4_point_in_qld() {
         let url = build_query_url(-27.4766, 153.0166);
         assert!(url.contains("spatial-gis.information.qld.gov.au"));
@@ -141,7 +157,7 @@ use super::*;
     fn parse_response_extracts_attributes() {
         let raw = r#"{"features":[{"attributes":{"lot":"12","plan":"RP123456",
             "lotplan":"12RP123456","locality":"NUNDAH"}}],"exceededTransferLimit":false}"#;
-        let r: QueryResp = serde_json::from_str(raw).unwrap();
+        let r: QueryResp = serde_json::from_str(raw).expect("should succeed");
         assert_eq!(r.features.len(), 1);
         assert_eq!(
             r.features[0].attributes.get("lotplan"),

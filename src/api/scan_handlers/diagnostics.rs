@@ -16,22 +16,24 @@ pub async fn scan_audit(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
-    // Both the entities read AND the event-log read are synchronous SQLite — run
-    // them together off the ~2-worker reactor. The event-log read was the residual
-    // on-reactor gap (the entities read was already offloaded).
+    // The scan record itself is read alongside entities/events so the audit
+    // can anchor the engine-health signal to WHEN this scan actually ran,
+    // not to whatever the live liveness cache says right now (see
+    // `engine_health_signals`). Same off-reactor batching as before.
     let loaded = tokio::task::spawn_blocking(move || {
+        let scan = store.get_scan(&id2)?;
         let entities = store.entities_for_scan(&id2)?;
         let events = store.events_for_scan(&id2).unwrap_or_default();
-        Ok::<_, crate::core::error::Error>((entities, events))
+        Ok::<_, crate::core::error::Error>((scan, entities, events))
     })
     .await;
-    let (entities, events) = match loaded {
-        Ok(Ok(pair)) => pair,
+    let (scan, entities, events) = match loaded {
+        Ok(Ok(triple)) => triple,
         Ok(Err(e)) => return internal_error(&e),
         Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
@@ -39,33 +41,81 @@ pub async fn scan_audit(
         .iter()
         .map(crate::audit::AuditEntity::from_entity)
         .collect();
-    let mut signals = engine_health_signals();
+    // `scan_missing` above already confirmed the id exists; `get_scan`
+    // returning `None` here would only happen on a delete racing this
+    // request, so `finished_at`/`started_at` unavailable just means the
+    // engine-health signal is honestly omitted (see below) rather than
+    // guessed at.
+    let scan_reference_ts = scan
+        .as_ref()
+        .map(|sc| sc.finished_at.unwrap_or(sc.started_at));
+    let mut signals = engine_health_signals(scan_reference_ts);
     crate::audit::fold_events(&mut signals, &events);
     let report = crate::audit::audit(&normalised, signals);
     Json(report.to_json()).into_response()
 }
 
 /// Translate the latest cached search-engine liveness sweep into auditor
-/// source-health signals (parser-defect vs down vs blocked).
-fn engine_health_signals() -> crate::audit::LogSignals {
+/// source-health signals (parser-defect vs down vs blocked) — but ONLY when
+/// that snapshot plausibly still describes conditions as of `scan_reference_ts`
+/// (a scan's own `finished_at`/`started_at`, or `None` if the scan record
+/// couldn't be read).
+///
+/// The liveness cache is a single, continuously-refreshed, process-global
+/// snapshot of "conditions right now" (`crate::modules::search_engines::health`),
+/// while `hse audit` is a historical explanation of ONE scan's results. Blending
+/// the two without checking their relative timing is a silent stale-attribution
+/// bug in BOTH directions: engines that break weeks after a scan with full
+/// coverage would wrongly mark that old (actually-complete) scan as
+/// coverage-degraded (false positive); engines that recover before a later
+/// audit of a scan that genuinely ran during an outage would hide that real
+/// historical gap entirely (false negative). Gating on
+/// [`snapshot_still_relevant_to`] — using the health sweep's own refresh
+/// cadence as the tolerance, not an invented number — means a routine
+/// audit-shortly-after-scan still gets the signal, while a scan audited long
+/// after it ran gets an honest omission instead of a misattributed one.
+fn engine_health_signals(scan_reference_ts: Option<u64>) -> crate::audit::LogSignals {
     use crate::modules::search_engines::health::{self, EngineStatus};
     let mut sig = crate::audit::LogSignals::default();
-    if let Some(snap) = health::cached() {
-        for h in &snap.engines {
-            match h.status {
-                EngineStatus::Down => sig.engines_down.push(h.name.to_string()),
-                EngineStatus::Blocked => {
-                    if h.detail.contains("PARSER") {
-                        sig.engine_parser_defects.push(h.name.to_string());
-                    } else {
-                        sig.engines_blocked.push(h.name.to_string());
-                    }
+    let Some(snap) = health::cached() else {
+        return sig;
+    };
+    let Some(scan_ts) = scan_reference_ts else {
+        return sig;
+    };
+    if !snapshot_still_relevant_to(snap.checked_at, scan_ts) {
+        return sig;
+    }
+    for h in &snap.engines {
+        match h.status {
+            EngineStatus::Down => sig.engines_down.push(h.name.to_string()),
+            EngineStatus::Blocked => {
+                if h.detail.contains("PARSER") {
+                    sig.engine_parser_defects.push(h.name.to_string());
+                } else {
+                    sig.engines_blocked.push(h.name.to_string());
                 }
-                EngineStatus::Up => {}
             }
+            EngineStatus::Up => {}
         }
     }
     sig
+}
+
+/// True if a liveness snapshot taken at `checked_at` plausibly still
+/// describes conditions as of `scan_reference_ts`. Tolerance is
+/// [`crate::modules::search_engines::health::DEFAULT_REFRESH_SECS`] × 2 — one
+/// full periodic-sweep cycle of slack beyond the shortest interval the cache
+/// would normally have been re-measured within, so an audit run shortly
+/// after its scan (the common case) still gets the signal. `checked_at`
+/// predating `scan_reference_ts` (the cache hasn't caught up to a
+/// just-finished scan yet) is never rejected here — that's the cache being
+/// merely incomplete, not misattributed, and `health::cached()` returning
+/// `None` already covers "no data yet" separately.
+#[must_use]
+pub(crate) fn snapshot_still_relevant_to(checked_at: u64, scan_reference_ts: u64) -> bool {
+    use crate::modules::search_engines::health::DEFAULT_REFRESH_SECS;
+    checked_at.saturating_sub(scan_reference_ts) <= DEFAULT_REFRESH_SECS * 2
 }
 
 /// `GET /api/v1/scans/{id}/metrics` — objective per-scan quality / telemetry measures.
@@ -73,7 +123,7 @@ pub async fn scan_metrics(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
@@ -99,7 +149,7 @@ pub async fn scan_duplicates(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
@@ -119,7 +169,7 @@ pub async fn scan_pivots(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
@@ -155,7 +205,7 @@ pub async fn scan_gaps(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(resp) = super::scan_missing(&s, &id) {
+    if let Some(resp) = super::scan_missing(&s, &id).await {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
@@ -228,22 +278,27 @@ pub async fn scan_benchmark(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let scan = match s.store.get_scan(&id) {
-        Ok(Some(sc)) => sc,
-        Ok(None) => return not_found(),
-        Err(e) => return internal_error(&e),
-    };
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
+    // Existence probe folded into the SAME blocking batch as the entity /
+    // relation loads — a synchronous SQLite read under the global connection
+    // mutex must never run on the async reactor (it can stall a worker on the
+    // ~2-worker Termux runtime and starve SSE / `/health`). The `scan` record
+    // is needed for the report, so it rides along in the batch.
     let loaded = tokio::task::spawn_blocking(move || {
-        Ok::<_, crate::core::error::Error>((
+        let Some(scan) = store.get_scan(&id2)? else {
+            return Ok::<_, crate::core::error::Error>(None);
+        };
+        Ok(Some((
+            scan,
             store.entities_for_scan(&id2)?,
             store.relations_for_scan(&id2)?,
-        ))
+        )))
     })
     .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
+    let (scan, entities, relations) = match loaded {
+        Ok(Ok(Some(triple))) => triple,
+        Ok(Ok(None)) => return not_found(),
         Ok(Err(e)) => return internal_error(&e),
         Err(e) => return internal_error(&format!("query task failed: {e}")),
     };

@@ -85,7 +85,7 @@ use super::*;
             value: "cloudflare.com".to_string(),
             options: Default::default(),
         };
-        let (_, target2) = build_scan_from_request(req2).unwrap();
+        let (_, target2) = build_scan_from_request(req2).expect("should succeed");
         assert_eq!(target.kind, target2.kind);
         assert_eq!(target.value, target2.value);
     }
@@ -137,7 +137,7 @@ use super::*;
         );
         // The named profile's own tuning still takes effect (depth is clamped
         // to MAX_DEPTH by `clamp_depth`, same as any other scan).
-        let investigate = crate::core::profiles::resolve_profile("investigate").unwrap();
+        let investigate = crate::core::profiles::resolve_profile("investigate").expect("should succeed");
         assert_eq!(scan.options.depth, crate::core::scan::MAX_DEPTH);
         assert_eq!(scan.options.max_entities, investigate.max_entities);
     }
@@ -149,7 +149,7 @@ use super::*;
             value: "no-dot-here".to_string(),
             options: Default::default(),
         };
-        let err = build_scan_from_request(req).unwrap_err();
+        let err = build_scan_from_request(req).expect_err("should be an error");
         assert!(
             err.starts_with("invalid target: "),
             "error must carry the client-facing prefix, got: {err}"
@@ -158,10 +158,10 @@ use super::*;
 
     #[test]
     fn radar_scan_spec_activates_only_the_live_sensors() {
-        // Default (no seed) → GPS/RF ambient survey on a sentinel coordinate.
+        // The radar takes no parameters: one fixed sentinel coordinate, always.
         // (`Target::new` canonicalises the coordinate pair; the sensors ignore the
         // value entirely, so the exact sentinel form is immaterial.)
-        let (target, opts) = radar_scan_spec(None);
+        let (target, opts) = radar_scan_spec();
         assert_eq!(target.kind, TargetKind::Coordinates);
         assert!(
             target.value.starts_with('0') && target.value.contains(','),
@@ -185,21 +185,137 @@ use super::*;
         let got: std::collections::HashSet<&str> = mods.iter().map(String::as_str).collect();
         assert_eq!(got, want, "radar runs exactly the live device sensors");
 
-        // BSSID-anchored variant → MacAddress sentinel, same sensor invariants.
-        for seed in ["mac", "mac_address", "bssid"] {
-            let (t, o) = radar_scan_spec(Some(seed));
-            assert_eq!(t.kind, TargetKind::MacAddress, "seed={seed}");
-            assert!(o.allow_live_sensors);
-            assert_eq!(
-                o.modules.as_deref().map(<[String]>::len),
-                Some(crate::core::engine::LOCAL_PASSIVE_MODULES.len())
+        // Deterministic: the radar has no inputs, so repeated activation must
+        // produce byte-identical scan specs.
+        let (again, _) = radar_scan_spec();
+        assert_eq!(again.kind, target.kind);
+        assert_eq!(again.value, target.value);
+    }
+
+    /// Every sensor gates on `Coordinates | MacAddress` and ignores the VALUE,
+    /// so the removed `?seed=` knob could not change what any of them collected
+    /// — it only chose which sentinel kind to label the sweep with. This pins
+    /// the property that made removing it safe.
+    #[test]
+    fn every_live_sensor_accepts_the_radar_sentinel() {
+        let (target, _) = radar_scan_spec();
+        let registry = crate::modules::registry();
+        for name in crate::core::engine::LOCAL_PASSIVE_MODULES {
+            let m = registry
+                .iter()
+                .find(|m| m.name() == *name)
+                .unwrap_or_else(|| panic!("{name} must be registered"));
+            assert!(
+                m.accepts(&target),
+                "{name} must accept the radar sentinel, or the sweep dispatches nothing"
             );
         }
+    }
 
-        // An unknown seed value falls back to the safe default (coordinates),
-        // never an arbitrary target kind.
-        assert_eq!(
-            radar_scan_spec(Some("example.com")).0.kind,
-            TargetKind::Coordinates
+    // ── `snapshot_still_relevant_to` (stale engine-health-cache attribution) ──
+
+    #[test]
+    fn a_snapshot_taken_shortly_after_the_scan_is_relevant() {
+        // Audit run moments after the scan finished — the ordinary case.
+        assert!(snapshot_still_relevant_to(1_000, 1_000));
+        assert!(snapshot_still_relevant_to(1_500, 1_000));
+    }
+
+    #[test]
+    fn a_snapshot_from_well_before_the_relevance_window_expires_is_relevant() {
+        use crate::modules::search_engines::health::DEFAULT_REFRESH_SECS;
+        let scan_ts = 1_000;
+        let checked_at = scan_ts + DEFAULT_REFRESH_SECS * 2;
+        assert!(
+            snapshot_still_relevant_to(checked_at, scan_ts),
+            "exactly at the 2x-refresh-interval boundary is still relevant"
         );
+    }
+
+    #[test]
+    fn a_snapshot_from_long_after_the_scan_is_not_relevant() {
+        // The exact false-positive scenario the bug named: a scan that ran with
+        // full coverage, audited weeks later after engines broke — today's
+        // snapshot must NOT be attributed to that old scan's report.
+        use crate::modules::search_engines::health::DEFAULT_REFRESH_SECS;
+        let scan_ts = 1_000;
+        let two_weeks_later = scan_ts + 14 * 24 * 60 * 60;
+        assert!(two_weeks_later - scan_ts > DEFAULT_REFRESH_SECS * 2);
+        assert!(
+            !snapshot_still_relevant_to(two_weeks_later, scan_ts),
+            "a snapshot two weeks newer than the scan describes a different era"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_older_than_the_scan_is_never_rejected_here() {
+        // The cache hasn't caught up to a just-finished scan yet — that's the
+        // cache being incomplete (handled separately by `health::cached()`
+        // returning `None`), not a misattribution, so this helper must not
+        // reject it.
+        assert!(snapshot_still_relevant_to(500, 1_000));
+    }
+
+    #[test]
+    fn apply_candidate_gate_hides_candidates_unless_opted_in() {
+        use crate::core::entity::{Entity, EntityKind};
+        use crate::core::tags::CANDIDATE;
+        use std::collections::HashMap;
+
+        let subject = Entity::new(EntityKind::Email, "subject@real.example", 0.9, "s");
+        let mut candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, "s");
+        candidate.tag(CANDIDATE);
+
+        // Default (no query params): the quarantined candidate is dropped.
+        let mut ents = vec![subject.clone(), candidate.clone()];
+        apply_candidate_gate(&mut ents, &HashMap::new());
+        assert_eq!(ents.len(), 1);
+        assert_eq!(ents[0].value, "subject@real.example");
+
+        // Opt-in with `?include_candidates=1`: both retained.
+        let mut ents = vec![subject, candidate];
+        let params = HashMap::from([("include_candidates".to_string(), "1".to_string())]);
+        apply_candidate_gate(&mut ents, &params);
+        assert_eq!(ents.len(), 2);
+    }
+
+    #[test]
+    fn confine_graph_to_visible_drops_candidate_nodes_and_their_dangling_edges() {
+        use crate::core::entity::{Entity, EntityKind};
+        use crate::core::relation::{Relation, RelationKind};
+        use crate::core::tags::CANDIDATE;
+        use std::collections::HashMap;
+
+        let subject = Entity::new(EntityKind::Email, "subject@real.example", 0.9, "s");
+        let mut candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, "s");
+        candidate.tag(CANDIDATE);
+        // Edge subject → candidate: once the candidate NODE is hidden this edge
+        // would dangle and re-expose the candidate's UID, so it must go too.
+        let edge = Relation::new(
+            subject.uid.as_str(),
+            candidate.uid.as_str(),
+            RelationKind::AssociatedWith,
+            0.5,
+            "s",
+        );
+
+        // Default: candidate node gone AND the edge to it gone.
+        let (ents, rels) = confine_graph_to_visible(
+            vec![subject.clone(), candidate.clone()],
+            vec![edge.clone()],
+            &HashMap::new(),
+        );
+        assert_eq!(ents.len(), 1);
+        assert_eq!(ents[0].value, "subject@real.example");
+        assert!(
+            rels.is_empty(),
+            "the edge to the hidden candidate must be dropped, not left dangling"
+        );
+
+        // Opt-in: full graph returned untouched.
+        let params = HashMap::from([("include_candidates".to_string(), "on".to_string())]);
+        let (ents, rels) =
+            confine_graph_to_visible(vec![subject, candidate], vec![edge], &params);
+        assert_eq!(ents.len(), 2);
+        assert_eq!(rels.len(), 1);
     }

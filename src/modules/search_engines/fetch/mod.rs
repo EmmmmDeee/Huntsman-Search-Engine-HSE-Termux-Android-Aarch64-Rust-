@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use super::helpers::*;
 use super::{EngineSpec, MAX_RESULTS_PER_ENGINE, SearchResult};
-use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+use crate::util::key_harvest::identify_api_key;
 
 /// Per-request fetch ceiling (ms): the most any single SERP request may take.
 pub(in crate::modules::search_engines) const MAX_FETCH_MS: u64 = 8_000;
@@ -122,8 +122,8 @@ pub(super) async fn try_fetch(
         crate::util::curl::fetch_with_ua(url, timeout_ms, ua).await
     };
 
-    // If direct fetch failed, try through the HUNTSMAN_SEARCH_PROXY env
-    // or fall back to the proxy pool (populated by util::proxy::harvest)
+    // If direct fetch failed, retry once through the operator-configured
+    // HUNTSMAN_SEARCH_PROXY (a single upstream proxy), when set.
     let body = match body {
         Some(b) if b.len() >= 500 => Some(b),
         _ => {

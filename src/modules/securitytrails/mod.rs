@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -73,7 +74,7 @@ fn build_subdomain_entity(
         return None;
     }
     let host = format!("{sub}.{domain}");
-    let mut e = Entity::new(EntityKind::Domain, &host, 0.88, scan_id);
+    let mut e = Entity::new(EntityKind::Domain, &host, confidence::EXPERT, scan_id);
     e.tag("subdomain");
     e.tag("securitytrails");
     e.add_evidence(
@@ -103,7 +104,12 @@ fn build_associated_entity(
     {
         return None;
     }
-    let mut e = Entity::new(EntityKind::Domain, hostname, 0.82, scan_id);
+    let mut e = Entity::new(
+        EntityKind::Domain,
+        hostname,
+        confidence::CORROBORATED,
+        scan_id,
+    );
     e.tag("securitytrails");
     e.tag("reverse-ip");
     e.add_evidence(
@@ -148,7 +154,7 @@ impl Module for SecurityTrails {
         "securitytrails"
     }
     fn description(&self) -> &'static str {
-        "Subdomain enumeration and reverse IP lookup via SecurityTrails"
+        "SecurityTrails recon — enumerates subdomains and pivots via reverse IP lookup"
     }
     fn priority(&self) -> u8 {
         45
@@ -255,32 +261,48 @@ impl SecurityTrails {
         url: &str,
         ctx: &ModuleContext,
     ) -> Result<T> {
-        let mut retries = 2u8;
-        loop {
-            if ctx.cancel.is_cancelled() {
-                return Err(Error::module(SRC, "cancelled"));
-            }
-            let resp = ctx
-                .http
-                .get(url)
-                .header("APIKEY", key)
-                .header("Accept", "application/json")
-                .send_tagged(SRC)
-                .await?;
-            let status = resp.status();
-            if status.as_u16() == 404 {
-                return Err(Error::module(SRC, "404 Not Found"));
-            }
-            if !status.is_success() {
-                let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
-                    continue;
+        // Key cascade: begin on the passed (hot-injected) key and, on a terminal
+        // 401/403/429, rotate to the next usable pooled SecurityTrails key and
+        // retry, so one call spends every credential the pool holds before it
+        // fails. `tried` stops a burned key being re-handed.
+        let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut key = key.to_string();
+        'cascade: loop {
+            tried.insert(key.clone());
+            let mut retries = 2u8;
+            loop {
+                if ctx.cancel.is_cancelled() {
+                    return Err(Error::module(SRC, "cancelled"));
                 }
-                return Err(crate::util::http::http_status_error(SRC, resp).await);
+                let resp = ctx
+                    .http
+                    .get(url)
+                    .header("APIKEY", &key)
+                    .header("Accept", "application/json")
+                    .send_tagged(SRC)
+                    .await?;
+                let status = resp.status();
+                if status.as_u16() == 404 {
+                    return Err(Error::module(SRC, "404 Not Found"));
+                }
+                if !status.is_success() {
+                    let code = status.as_u16();
+                    if handle_keyed_error(code, resp.headers(), &mut retries, SRC, &key, ctx).await
+                    {
+                        continue;
+                    }
+                    if crate::util::http::is_keyed_error_status(code)
+                        && let Some(next) = ctx.next_pooled_key(SRC, &tried)
+                    {
+                        key = next;
+                        continue 'cascade;
+                    }
+                    return Err(crate::util::http::http_status_error(SRC, resp).await);
+                }
+                // Capped decode (32 MiB) — a raw `resp.json()` would buffer an
+                // unbounded body on the low-RAM Termux target.
+                return crate::util::http::json_decode(SRC, resp).await;
             }
-            // Capped decode (32 MiB) — a raw `resp.json()` would buffer an
-            // unbounded body on the low-RAM Termux target.
-            return crate::util::http::json_decode(SRC, resp).await;
         }
     }
 }

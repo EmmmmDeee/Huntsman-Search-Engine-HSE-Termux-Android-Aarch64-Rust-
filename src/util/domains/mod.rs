@@ -314,10 +314,8 @@ pub fn is_freemail(domain: &str) -> bool {
 pub fn is_role_localpart(local: &str) -> bool {
     // Compare the de-tagged, separator-stripped form so `no-reply`/`no_reply`
     // also match `noreply`.
-    let base = local
-        .split('+')
-        .next()
-        .unwrap_or(local)
+    let detagged = local.split('+').next().unwrap_or(local);
+    let base = detagged
         .chars()
         .filter(char::is_ascii_alphanumeric)
         .collect::<String>();
@@ -382,7 +380,33 @@ pub fn is_role_localpart(local: &str) -> bool {
         "whois",
         "nic",
     ];
-    ROLE.contains(&base.as_str())
+    if ROLE.contains(&base.as_str()) {
+        return true;
+    }
+    // Provider-prefixed system mailboxes — `awsdns-hostmaster` (the standard AWS
+    // Route53 SOA RNAME), `dns-hostmaster`, `cloudflare-abuse` — are role accounts
+    // a whole-string match misses. Match a system-role token as a
+    // hyphen/dot/underscore-delimited SEGMENT too. Only the UNAMBIGUOUS
+    // never-personal tokens are segment-matched: a real subject's local-part can
+    // legitimately contain business words like `info`/`contact`/`sales`, so those
+    // stay whole-string-only — suppressing a genuine subject email is worse than
+    // missing an infra one.
+    const SYSTEM_ROLE_SEGMENTS: &[&str] = &[
+        "hostmaster",
+        "postmaster",
+        "webmaster",
+        "namehost",
+        "mailerdaemon",
+        "noreply",
+        "donotreply",
+        "abuse",
+        "dns",
+        "nic",
+    ];
+    detagged.split(['-', '.', '_']).any(|seg| {
+        let s: String = seg.chars().filter(char::is_ascii_alphanumeric).collect();
+        SYSTEM_ROLE_SEGMENTS.contains(&s.as_str())
+    })
 }
 
 /// True if a full email address is **infrastructure contact** rather than the
@@ -416,6 +440,25 @@ pub fn is_infrastructure_email(email: &str) -> bool {
     INFRA_MAIL
         .iter()
         .any(|d| registrable == *d || is_or_subdomain_of(domain, d))
+}
+
+/// True if `email`'s **domain** is a platform-generated no-reply / masking
+/// address (`user@noreply.codeberg.org`, `user@users.noreply.github.com`,
+/// `123+user@users.noreply.github.com`, …). Distinct from
+/// [`is_role_localpart`], where the masking is in the *local* part: forges mint
+/// these domain-masked addresses for commit metadata when a user hides their
+/// real email, so they are never a real contact pivot and must not seed an
+/// Email finding. Matches any `noreply` / `no-reply` / `donotreply` domain
+/// label (case- and separator-insensitive).
+#[must_use]
+pub fn is_noreply_email_domain(email: &str) -> bool {
+    let Some((_, domain)) = email.trim().rsplit_once('@') else {
+        return false;
+    };
+    domain.to_ascii_lowercase().split('.').any(|label| {
+        let base: String = label.chars().filter(char::is_ascii_alphanumeric).collect();
+        base == "noreply" || base == "donotreply"
+    })
 }
 
 /// Registrable domains of CDN / cloud / registrar / DNS / ESP providers whose

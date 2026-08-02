@@ -4,10 +4,11 @@
 use super::*;
 
 pub(in crate::core::correlator) fn rule_au_012_identity_linked_domain(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let username_uids: Vec<String> = entities
         .iter()
         .filter(|e| e.kind == EntityKind::Username)
@@ -45,10 +46,11 @@ pub(in crate::core::correlator) fn rule_au_012_identity_linked_domain(
 }
 
 pub(in crate::core::correlator) fn rule_au_022_organisation_with_breach(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let orgs: Vec<&Entity> = entities
         .iter()
         .filter(|e| e.kind == EntityKind::Organisation && e.confidence >= 0.60)
@@ -82,10 +84,11 @@ pub(in crate::core::correlator) fn rule_au_022_organisation_with_breach(
 }
 
 pub(in crate::core::correlator) fn rule_au_024_email_fraud_signal(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::Email)
@@ -127,10 +130,11 @@ pub(in crate::core::correlator) fn rule_au_024_email_fraud_signal(
 }
 
 pub(in crate::core::correlator) fn rule_au_025_corporate_identity_link(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let orgs: Vec<&Entity> = entities
         .iter()
         .filter(|e| e.kind == EntityKind::Organisation && e.has_tag("opencorporates"))
@@ -173,10 +177,11 @@ pub(in crate::core::correlator) fn rule_au_025_corporate_identity_link(
 /// (AU-025 covers Organisation ↔ Person). Organisations are gated on a registry
 /// tag so unrelated `Organisation` names (e.g. from search_engines) don't link.
 pub(in crate::core::correlator) fn rule_au_033_abn_organisation_link(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let abns: Vec<&Entity> = entities
         .iter()
         .filter(|e| e.kind == EntityKind::AbnAcn)
@@ -242,11 +247,12 @@ fn is_proxy_registrant(value: &str, is_email: bool) -> bool {
 /// matching AU-044's shared-ownership tier. Deterministic: registrants iterated
 /// in uid order, member domains sorted by uid.
 pub(in crate::core::correlator) fn rule_au_109_shared_registrant(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // uid → entity, for endpoint lookup.
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
 
@@ -360,11 +366,12 @@ const MAX_CO_HOSTED_REGISTRABLE: usize = 5;
 /// Severity Medium. Deterministic: IPs iterated in uid order, member domains and
 /// the named registrable set sorted.
 pub(in crate::core::correlator) fn rule_au_110_shared_hosting_ip(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
 
     // IP uid → distinct domain uids resolving to it (insertion order preserved).
@@ -444,6 +451,164 @@ pub(in crate::core::correlator) fn rule_au_110_shared_hosting_ip(
     out
 }
 
+/// Direct-connect service subdomains that commonly bypass a CDN's proxying —
+/// the same leak vector `SOLUTION_TREE` SOL-NETINT names (control-panel/mail
+/// endpoints are rarely proxied, since doing so would break TLS-cert or
+/// protocol assumptions those services depend on). Deliberately narrow: a
+/// generic subdomain (`assets.`, `cdn.`) resolving off-CDN is not evidence of
+/// anything — it may simply not be the site's primary origin.
+const DIRECT_CONNECT_LABELS: &[&str] = &["cpanel", "ftp", "mail", "webmail", "dev"];
+
+/// True when `host`'s leftmost label is a known direct-connect service label.
+fn has_direct_connect_label(host: &str) -> bool {
+    host.split('.')
+        .next()
+        .is_some_and(|label| DIRECT_CONNECT_LABELS.contains(&label))
+}
+
+/// AU-113 — CDN origin-candidate unmasking via a non-proxied sibling.
+///
+/// A site fronted by a CDN/anycast edge (Cloudflare, etc.) hides its true
+/// origin IP from a direct `A`/`AAAA` lookup of the apex — but an MX record or
+/// a direct-connect service subdomain (`cpanel.`/`ftp.`/`mail.`/`webmail.`/
+/// `dev.`) is commonly left unproxied, since CDN-proxying those would break
+/// mail delivery or the service's own TLS/protocol assumptions. When such a
+/// sibling, under the SAME registrable domain as a CDN-fronted apex, resolves
+/// to a real (non-CDN, routable) IP, that IP is a strong candidate for the
+/// site's actual origin — the whole point of CDN-fronting is defeated once the
+/// origin is known (direct DDoS, WAF bypass, precise geolocation).
+///
+/// Requires:
+/// 1. An **apex** `Domain` entity (its value equals its own registrable
+///    domain — the registered site itself, not a subdomain) whose resolved
+///    IP(s) are ALL CDN/anycast edges. No apex resolution on record → nothing
+///    to compare against, skipped.
+/// 2. A **sibling** `Domain` entity under the same registrable domain, tagged
+///    `mx` (an MX record target) or both `subdomain` + `dns-brute` with a
+///    direct-connect label, that resolves to at least one non-CDN,
+///    routable IP.
+///
+/// One correlation per (apex, sibling) pair with a genuine origin-candidate
+/// IP. Severity Medium — a strong lead, not a confirmed unmasking (the
+/// sibling's IP may be a distinct backend, not the apex's own origin).
+/// Deterministic: registrable-domain groups and sibling/candidate lists sorted.
+/// Sibling signal: AU-111 (`rules::infra`) unmasks the same CDN-origin
+/// question from an SPF-authorised-mail-sender angle instead of a
+/// direct-connect subdomain — kept independent per the technique-diversity
+/// principle (TA0043), not merged; see AU-111's own doc comment.
+pub(in crate::core::correlator) fn rule_au_113_direct_connect_origin_candidate(
+    context: &RuleContext,
+    relations: &[Relation],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let entities = context.entities();
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+
+    // Domain uid -> resolved IP entities (Domain --ResolvesTo--> IpAddress).
+    let mut domain_ips: HashMap<&str, Vec<&Entity>> = HashMap::new();
+    for r in relations
+        .iter()
+        .filter(|r| r.kind == RelationKind::ResolvesTo)
+    {
+        let (Some(&dom), Some(&ip)) = (
+            by_uid.get(r.from_uid.as_str()),
+            by_uid.get(r.to_uid.as_str()),
+        ) else {
+            continue;
+        };
+        if dom.kind != EntityKind::Domain || ip.kind != EntityKind::IpAddress {
+            continue;
+        }
+        domain_ips.entry(r.from_uid.as_str()).or_default().push(ip);
+    }
+
+    // Domain entities grouped by registrable domain.
+    let mut groups: HashMap<String, Vec<&Entity>> = HashMap::new();
+    for e in entities.iter().filter(|e| e.kind == EntityKind::Domain) {
+        if let Some(reg) = crate::util::domains::registrable_domain(&e.value) {
+            groups.entry(reg).or_default().push(e);
+        }
+    }
+    let mut regs: Vec<&String> = groups.keys().collect();
+    regs.sort_unstable();
+
+    let mut out = Vec::new();
+    for reg in regs {
+        let members = &groups[reg];
+        let Some(apex) = members.iter().find(|d| &d.value == reg) else {
+            continue;
+        };
+        let Some(apex_ips) = domain_ips.get(apex.uid.as_str()) else {
+            continue;
+        };
+        if apex_ips.is_empty()
+            || !apex_ips
+                .iter()
+                .all(|ip| crate::core::validation::is_cdn_edge_ip(&ip.value))
+        {
+            continue; // apex isn't (fully) CDN-fronted — nothing to unmask.
+        }
+        let mut apex_ip_labels: Vec<&str> = apex_ips.iter().map(|ip| ip.value.as_str()).collect();
+        apex_ip_labels.sort_unstable();
+
+        let mut siblings: Vec<&&Entity> = members
+            .iter()
+            .filter(|d| d.uid != apex.uid)
+            .filter(|d| {
+                d.has_tag("mx")
+                    || (d.has_tag("subdomain")
+                        && d.has_tag("dns-brute")
+                        && has_direct_connect_label(&d.value))
+            })
+            .collect();
+        siblings.sort_unstable_by(|a, b| a.value.cmp(&b.value));
+
+        for sib in siblings {
+            let Some(sib_ips) = domain_ips.get(sib.uid.as_str()) else {
+                continue;
+            };
+            let mut candidate_ips: Vec<&&Entity> = sib_ips
+                .iter()
+                .filter(|ip| {
+                    !crate::core::validation::is_cdn_edge_ip(&ip.value)
+                        && !crate::core::validation::is_non_routable_ip(&ip.value)
+                })
+                .collect();
+            if candidate_ips.is_empty() {
+                continue;
+            }
+            candidate_ips.sort_unstable_by(|a, b| a.value.cmp(&b.value));
+            let candidate_labels: Vec<&str> =
+                candidate_ips.iter().map(|ip| ip.value.as_str()).collect();
+
+            let mut uids: Vec<String> = Vec::with_capacity(2 + candidate_ips.len());
+            uids.push(apex.uid.clone());
+            uids.push(sib.uid.clone());
+            uids.extend(candidate_ips.iter().map(|ip| ip.uid.clone()));
+
+            out.push(Correlation::new(
+                "AU-113",
+                "CDN origin-candidate — non-proxied sibling leaks the real IP",
+                Severity::Medium,
+                format!(
+                    "{} is fronted by a CDN/anycast edge ({}), but its sibling {} \
+                     resolves directly to {} — a candidate for the site's true \
+                     origin IP, bypassing the CDN's protection.",
+                    apex.value,
+                    apex_ip_labels.join(", "),
+                    sib.value,
+                    candidate_labels.join(", ")
+                ),
+                uids,
+                scan_id,
+                ts,
+            ));
+        }
+    }
+    out
+}
+
 /// AU-087 — Shared organisational email domain (institutional / professional affiliation).
 ///
 /// Groups confirmed `Email` entities by their domain and fires when two or more
@@ -469,10 +634,11 @@ pub(in crate::core::correlator) fn rule_au_110_shared_hosting_ip(
 /// emails can't manufacture a false affiliation. Deterministic: domains and the
 /// displayed addresses are iterated in sorted (`BTreeMap`/`BTreeSet`) order.
 pub(in crate::core::correlator) fn rule_au_087_shared_org_email_domain(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::{BTreeMap, BTreeSet};
     // Cheap precondition: a cluster needs ≥2 emails, so fewer than two Email
     // entities anywhere means no shared domain can form.
@@ -504,23 +670,72 @@ pub(in crate::core::correlator) fn rule_au_087_shared_org_email_domain(
         entry.1.insert(e.uid.clone());
     }
 
+    // Ride-along: link any Person whose name derives one of the local-parts —
+    // the actual people affiliated at this organisation (same dictionary-free
+    // identity overlap the engine's wrong-identity gate uses), so the firing
+    // names people, not just addresses.
+    //
+    // Structural fix, not a cap: the naive `persons × organisational-addresses`
+    // pairwise `identity_overlaps` scan is a genuine O(n²) hazard —
+    // `correlator::perf::per_rule_breakdown` found it (alongside AU-039)
+    // dominating the correlation pass's entity-count scaling. `identity_overlaps`
+    // itself is exactly: either normalized side shorter than
+    // `IDENTITY_OVERLAP_MIN` (4) chars ⟹ requires full EXACT equality of both
+    // normalized strings; both sides ≥4 chars ⟹ requires a shared substring of
+    // length ≥4, which is exactly "shares at least one 4-gram" (any common
+    // substring of length ≥4 necessarily contains a common 4-character window,
+    // and sharing one 4-gram is itself a length-4 common substring). Indexing
+    // every Person's normalized name once — by its exact value (covers the
+    // short-side case) and by its 4-grams (covers the long-side case) — turns
+    // matching one local-part into O(local-part length) hash lookups instead of
+    // an O(persons) rescan, with identical results.
+    let persons: Vec<(&Entity, String)> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Person)
+        .map(|p| (p, crate::core::scan::identity_norm(&p.value)))
+        .filter(|(_, norm)| !norm.is_empty())
+        .collect();
+    let mut exact_index: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut kmer_index: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, (_, norm)) in persons.iter().enumerate() {
+        exact_index.entry(norm.as_str()).or_default().push(i);
+        if norm.len() >= crate::core::scan::IDENTITY_OVERLAP_MIN {
+            for w in 0..=(norm.len() - crate::core::scan::IDENTITY_OVERLAP_MIN) {
+                kmer_index
+                    .entry(&norm[w..w + crate::core::scan::IDENTITY_OVERLAP_MIN])
+                    .or_default()
+                    .push(i);
+            }
+        }
+    }
+
     let mut out = Vec::new();
     for (domain, (addresses, mut uids)) in by_domain {
         if addresses.len() < 2 {
             continue;
         }
-        // Ride-along: link any Person whose name derives one of the local-parts —
-        // the actual people affiliated at this organisation (same dictionary-free
-        // identity overlap the engine's wrong-identity gate uses), so the firing
-        // names people, not just addresses.
-        for p in entities.iter().filter(|e| e.kind == EntityKind::Person) {
-            let matches = addresses.iter().any(|addr| {
-                let local = addr.split('@').next().unwrap_or(addr);
-                crate::core::scan::identity_overlaps(&p.value, local)
-            });
-            if matches {
-                uids.insert(p.uid.clone());
+        let mut matched: BTreeSet<usize> = BTreeSet::new();
+        for addr in &addresses {
+            let local = addr.split('@').next().unwrap_or(addr);
+            let local_norm = crate::core::scan::identity_norm(local);
+            if local_norm.is_empty() {
+                continue;
             }
+            if let Some(hits) = exact_index.get(local_norm.as_str()) {
+                matched.extend(hits);
+            }
+            if local_norm.len() >= crate::core::scan::IDENTITY_OVERLAP_MIN {
+                for w in 0..=(local_norm.len() - crate::core::scan::IDENTITY_OVERLAP_MIN) {
+                    if let Some(hits) =
+                        kmer_index.get(&local_norm[w..w + crate::core::scan::IDENTITY_OVERLAP_MIN])
+                    {
+                        matched.extend(hits);
+                    }
+                }
+            }
+        }
+        for i in matched {
+            uids.insert(persons[i].0.uid.clone());
         }
         // Show a bounded, sorted sample so a company-wide breach dump doesn't emit
         // a multi-kilobyte description; the link set still carries every uid.
@@ -571,10 +786,11 @@ pub(in crate::core::correlator) fn rule_au_087_shared_org_email_domain(
 /// deliberately excluded: they carry no ACN and are not the controllable
 /// corporate vehicles this rule is about. Pure over the confirmed entity set.
 pub(in crate::core::correlator) fn rule_au_089_corporate_network(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::BTreeMap;
 
     // canonical ACN → contributing entity uids (one company per distinct ACN).
@@ -639,10 +855,11 @@ pub(in crate::core::correlator) fn rule_au_089_corporate_network(
 /// the GST and business-name registers, short of the asset-mapping weight of a
 /// multi-company controller footprint. Pure over the confirmed entity set.
 pub(in crate::core::correlator) fn rule_au_094_sole_trader_abn(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::BTreeSet;
 
     // Group as `NN NNN NNN NNN` for display; passthrough if not 11 digits. Pure.
@@ -709,10 +926,11 @@ pub(in crate::core::correlator) fn rule_au_094_sole_trader_abn(
 /// the same domain) and to the registered AU entity behind the domain. Severity
 /// Medium; one finding per distinct organisational domain. Pure over the set.
 pub(in crate::core::correlator) fn rule_au_100_au_employer_affiliation(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::{BTreeMap, BTreeSet};
 
     // domain -> (registrant category, contributing uids, distinct emails).
@@ -789,10 +1007,11 @@ pub(in crate::core::correlator) fn rule_au_100_au_employer_affiliation(
 /// so a co-occurrence stranger's employer never leaks in. Deterministic
 /// (`BTreeMap` by name, sorted sources/uids).
 pub(in crate::core::correlator) fn rule_au_107_breach_employer_affiliation(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::{BTreeMap, BTreeSet};
     // canonical lowercase name -> (display name, distinct breach sources, uids).
     let mut by_name: BTreeMap<String, (String, BTreeSet<String>, BTreeSet<String>)> =
@@ -837,6 +1056,102 @@ pub(in crate::core::correlator) fn rule_au_107_breach_employer_affiliation(
                 scan_id,
                 ts,
             )
+        })
+        .collect()
+}
+
+/// AU-114 — Subject flagged on a sanctions / debarment / PEP list.
+///
+/// A `Person`/`Organisation` an `opensanctions` definitive match (or Wikidata's
+/// PEP signal) escalates carries the `tags::SANCTIONED`, `tags::DEBARRED` and/or
+/// `tags::PEP` markers — among the highest-consequence signals an OSINT screen can
+/// surface — yet no correlation named them, so a designated-party hit never
+/// reached the ranked findings view (the producing entity sat in the graph, but
+/// the analyst had to notice the tag by hand). This rule reports one finding per
+/// flagged identity, at a severity graded by the strongest flag it carries:
+///   * sanctioned → CRITICAL (a designated party — OFAC/UN/EU/DFAT SDN, …),
+///   * debarred   → HIGH     (barred from public contracting),
+///   * PEP-only   → MEDIUM   (elevated due-diligence signal, not a determination).
+///
+/// Evidentiary care: fires only for a CONFIRMED (candidate-filtered) entity at or
+/// above the producers' definitive-match confidence floor, frames a PEP hit as a
+/// due-diligence lead rather than a finding of guilt, and surfaces the sanctions
+/// programme / source datasets from the entity's own evidence — consistent with
+/// the producers' "an OSINT signal, never a legal determination" doctrine.
+/// One finding per entity, so `entity_uids` is a single already-sorted uid.
+pub(in crate::core::correlator) fn rule_au_114_sanctions_exposure(
+    context: &RuleContext,
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let entities = context.entities();
+    use crate::core::tags;
+    entities
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::Person | EntityKind::Organisation))
+        .filter(|e| e.confidence >= 0.55)
+        .filter_map(|e| {
+            let sanctioned = e.has_tag(tags::SANCTIONED);
+            let debarred = e.has_tag(tags::DEBARRED);
+            let pep = e.has_tag(tags::PEP);
+            if !(sanctioned || debarred || pep) {
+                return None;
+            }
+            // Strongest flag sets the severity and the headline; all present
+            // flags are enumerated in the description.
+            let (severity, headline) = if sanctioned {
+                (Severity::Critical, "matches a sanctions designation")
+            } else if debarred {
+                (Severity::High, "is debarred from public contracting")
+            } else {
+                (
+                    Severity::Medium,
+                    "is flagged as a politically-exposed person (elevated due diligence)",
+                )
+            };
+            let mut flags: Vec<&str> = Vec::new();
+            if sanctioned {
+                flags.push("sanctioned");
+            }
+            if debarred {
+                flags.push("debarred");
+            }
+            if pep {
+                flags.push("PEP");
+            }
+            // Surface the sanctions programme / source datasets / topics if the
+            // producing module recorded any of them on the entity's evidence.
+            let detail = e
+                .evidence
+                .iter()
+                .find_map(|ev| {
+                    ev.attributes
+                        .get("program_id")
+                        .or_else(|| ev.attributes.get("datasets"))
+                        .or_else(|| ev.attributes.get("topics"))
+                })
+                .map(|d| format!(" [{d}]"))
+                .unwrap_or_default();
+            let kind_label = if e.kind == EntityKind::Person {
+                "Person"
+            } else {
+                "Organisation"
+            };
+            Some(Correlation::new(
+                "AU-114",
+                "Sanctions / debarment / PEP exposure",
+                severity,
+                format!(
+                    "{kind_label} '{value}' {headline} (flags: {flags}){detail} — an \
+                     OSINT screening signal for analyst verification, not a legal \
+                     determination",
+                    value = e.value,
+                    flags = flags.join(", "),
+                ),
+                vec![e.uid.clone()],
+                scan_id,
+                ts,
+            ))
         })
         .collect()
 }

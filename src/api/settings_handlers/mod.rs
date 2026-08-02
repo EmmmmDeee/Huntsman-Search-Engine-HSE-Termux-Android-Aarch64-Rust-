@@ -25,7 +25,7 @@ use crate::util::keys;
 /// see what shapes the scanner recognises — and so dashboards can
 /// surface per-service coverage stats.
 pub async fn keys_patterns() -> Json<Value> {
-    let patterns = crate::modules::oathnet_pro::key_harvest::pattern_catalogue();
+    let patterns = crate::util::key_harvest::pattern_catalogue();
     let by_service: std::collections::BTreeMap<&str, usize> =
         patterns
             .iter()
@@ -55,11 +55,22 @@ pub(crate) struct ServiceQuota {
     pub revoked: usize,
     pub uses: u64,
     pub errors: u64,
-    /// Mean [`crate::util::key_pool::KeyEntry::health_score`] across this service's
-    /// keys — the at-a-glance "how healthy is this pool" number (0.0–1.0), `0.0`
-    /// for a service with no keys. The status counts above say *what* the keys
-    /// are; this says how operationally healthy they are overall.
-    pub avg_health: f64,
+    /// How many of this service's keys carry a real verdict — i.e. are anything
+    /// other than [`crate::util::key_pool::KeyStatus::Untested`]. This is the
+    /// population `avg_health` is averaged over; it is `0` when every key is
+    /// still untested.
+    pub tested: usize,
+    /// Mean [`crate::util::key_pool::KeyEntry::health_score`] across this
+    /// service's *tested* keys — the at-a-glance "how healthy is this pool"
+    /// number (0.0–1.0) — or `None` when no key has been exercised yet. An
+    /// untested key has no operational history, so its `health_score` falls
+    /// back to an optimistic `~0.97`; folding that into the mean would report a
+    /// wholly unproven pool as healthy. Averaging over tested keys only (and
+    /// reporting `None` when there are none) keeps the number honest: the pool
+    /// reads as "untested" until a real dispatch grades at least one key. The
+    /// status counts above say *what* the keys are; this says how operationally
+    /// healthy the exercised ones are.
+    pub avg_health: Option<f64>,
 }
 
 /// Summarise a key-pool snapshot into per-service status counts (plus the mean
@@ -90,19 +101,75 @@ pub(crate) fn summarize_pool(data: &crate::util::key_pool::PoolData) -> Vec<Serv
                 }
                 q.uses += e.use_count;
                 q.errors += e.error_count;
-                health_sum += e.health_score(now);
+                // Only keys with a real verdict feed the health average — an
+                // untested key's optimistic default score would otherwise make a
+                // wholly-unexercised pool read as healthy (see `avg_health` doc).
+                if e.status != KeyStatus::Untested {
+                    health_sum += e.health_score(now);
+                    q.tested += 1;
+                }
             }
-            // Mean over all keys; 0.0 for an empty service (avoids 0/0).
-            q.avg_health = if entries.is_empty() {
-                0.0
-            } else {
-                health_sum / entries.len() as f64
-            };
+            // Mean over TESTED keys; `None` when none have been exercised yet
+            // (all-untested or empty service) so the dashboard shows "untested"
+            // rather than a fabricated percentage.
+            q.avg_health = (q.tested > 0).then(|| health_sum / q.tested as f64);
             q
         })
         .collect();
     out.sort_by(|a, b| a.service.cmp(&b.service));
     out
+}
+
+/// `GET /api/v1/keys/health` — CONFIGURED keys the upstream is actively
+/// rejecting, derived from what real scans observed (auth-shaped failure
+/// streaks), never a synthetic probe — so it can't mis-report a working key. The
+/// signal that on the CLI lives in `hse doctor`, brought to the web Settings page
+/// so a Termux no-root operator sees a dead key (and exactly which env var to
+/// renew) without dropping to a shell. Loopback-only and value-free, matching the
+/// sibling key endpoints.
+pub async fn keys_health(
+    State(s): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "key health is loopback-only" })),
+        )
+            .into_response();
+    }
+    // Off-reactor: the recent-outcome scan is a blocking SQLite read.
+    let store = Arc::clone(&s.store);
+    let events = match tokio::task::spawn_blocking(move || {
+        store.recent_module_outcome_events(crate::util::scraper_health::RECENT_EVENTS_WINDOW)
+    })
+    .await
+    {
+        Ok(Ok(ev)) => ev,
+        Ok(Err(e)) => return super::handlers::internal_error(&e),
+        Err(e) => {
+            return super::handlers::internal_error(&format!("keys-health query task failed: {e}"));
+        }
+    };
+    let health = crate::util::scraper_health::aggregate_source_health(&events);
+    let loaded = keys::load();
+    // Only surface keys that are actually CONFIGURED and being rejected — the
+    // actionable case. An auth failure on an unset key is expected (the module
+    // skips) and already covered by the acquisition guidance.
+    let rejected: Vec<Value> = crate::util::key_health::auth_failing_sources(&health)
+        .into_iter()
+        .filter(|i| i.likely_env_var.is_some_and(|e| loaded.contains_key(e)))
+        .map(|i| {
+            json!({
+                "module": i.module,
+                "env_var": i.likely_env_var,
+                "consecutive_failures": i.consecutive_failures,
+                "detail": i.detail,
+                "hint": i.likely_env_var.and_then(keys::signup_hint),
+            })
+        })
+        .collect();
+    Json(json!({ "count": rejected.len(), "rejected": rejected })).into_response()
 }
 
 /// `GET /api/v1/keys/status` — per-service key-pool health (counts by status,
@@ -124,7 +191,23 @@ pub async fn keys_status(ConnectInfo(peer): ConnectInfo<SocketAddr>) -> impl Int
     Json(json!({ "count": services.len(), "services": services })).into_response()
 }
 
-pub async fn settings_keys_get(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+/// `GET /api/v1/settings/keys` — which key services are configured (name +
+/// `set` boolean per service) plus the on-disk env file path. The same class
+/// of "which services hold keys" infrastructure metadata `keys_status` /
+/// `keys_pool_get` / `keys_harvest` already treat as sensitive enough to
+/// gate loopback-only — this is that gate's missing sibling: the PUT on this
+/// SAME route already refuses a non-loopback peer, but the GET did not.
+pub async fn settings_keys_get(
+    State(s): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "key configuration is loopback-only" })),
+        )
+            .into_response();
+    }
     use std::path::PathBuf;
     let path = keys::env_path();
     let loaded = keys::load_from_file_only(&PathBuf::from(&path));
@@ -141,13 +224,106 @@ pub async fn settings_keys_get(State(s): State<Arc<AppState>>) -> impl IntoRespo
         })
         .collect();
     let count = entries.len();
+    // Convex acquisition guidance: unset keys ranked highest-leverage first
+    // (multiplier > expansion > terminal) with a free-signup hint each — the same
+    // ranking `hse doctor` prints, surfaced to the web-UI operator so the single
+    // highest-value action (register the free multiplier keys) is one tap away
+    // instead of CLI-only. Sourced from the one canonical `key_roi::rank_unset_keys`.
+    let acquisition: Vec<Value> = crate::util::key_roi::rank_unset_keys(|k| loaded.contains_key(k))
+        .into_iter()
+        .map(|(name, roi)| {
+            json!({
+                "name": name,
+                "tier": roi.label(),
+                "hint": keys::signup_hint(name),
+            })
+        })
+        .collect();
     Json(json!({
         "keys": entries,
         "count": count,
         "write_enabled": s.allow_key_write,
         "env_path": path,
+        "acquisition": acquisition,
     }))
     .into_response()
+}
+
+/// Body for `POST /keys/pool/add` — a new key for a poolable service, with
+/// the same optional `notes`/`env` labels `hse keys add` accepts.
+#[derive(Deserialize)]
+pub struct KeysPoolAddRequest {
+    pub service: String,
+    pub key: String,
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub env: Option<String>,
+}
+
+/// `POST /api/v1/keys/pool/add` — add a NEW key to a service's rotation pool.
+/// The web Settings page's key editor (`settings/keys` PUT) already lets an
+/// operator set the PRIMARY `HUNTSMAN_*_KEY` env var for any service; this is
+/// the pool's own "add" (`hse keys add`), for operators who want to add a
+/// second/backup key for load-balancing across quota limits — previously the
+/// only way to do this was the CLI. Gated exactly like the sibling pool
+/// writes (`revoke`/`rotate`): loopback-only AND requires
+/// `--allow-key-write`.
+pub async fn keys_pool_add(
+    State(s): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(req): Json<KeysPoolAddRequest>,
+) -> impl IntoResponse {
+    if !s.allow_key_write {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "key writes disabled; restart with `hse serve --allow-key-write`"
+            })),
+        )
+            .into_response();
+    }
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "key writes are loopback-only" })),
+        )
+            .into_response();
+    }
+    let service = req.service.trim();
+    let key = req.key.trim();
+    if service.is_empty() || key.is_empty() {
+        return bad_request("service and key are required");
+    }
+    if !crate::util::service_defs::is_poolable_service(service) {
+        let names: Vec<&str> = crate::util::key_pool::service_defs()
+            .iter()
+            .map(|d| d.name)
+            .collect();
+        return bad_request(format!(
+            "'{service}' is not a poolable service — poolable services: {}",
+            names.join(", ")
+        ));
+    }
+    let pool = crate::util::key_pool::global_pool();
+    let mut entry = crate::util::key_pool::KeyEntry::new(key);
+    entry.notes = req.notes.clone();
+    entry.environment = req.env.clone();
+    if pool.add(service, entry) {
+        crate::util::key_pool::save_pool_best_effort(&pool);
+        tracing::info!(service, "key pool: added via web");
+        (
+            StatusCode::OK,
+            Json(json!({ "status": "added", "service": service, "count": pool.service_count(service) })),
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::OK,
+            Json(json!({ "status": "duplicate", "service": service })),
+        )
+            .into_response()
+    }
 }
 
 /// Body for `POST /keys/pool/revoke` — identify a pooled key by its non-secret

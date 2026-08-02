@@ -34,6 +34,13 @@ pub enum DeviceClass {
     Router,
     Printer,
     Beacon,
+    /// A locally-administered (randomized / private) address — NOT a
+    /// manufacturer-assigned identity. Modern phones (iOS 8+, Android 10+),
+    /// AirTags/SmartTags, and other privacy-hardened devices rotate these
+    /// (often every ~15 min), so the address is ephemeral and its OUI bytes are
+    /// randomly generated. Callers must not attribute it to a vendor or treat it
+    /// as a persistent device identifier for colocation / tracking.
+    Randomized,
     Unknown,
     Unregistered,
 }
@@ -54,6 +61,7 @@ impl DeviceClass {
             Self::Router => "router",
             Self::Printer => "printer",
             Self::Beacon => "beacon",
+            Self::Randomized => "randomized",
             Self::Unknown => "unknown",
             Self::Unregistered => "unregistered",
         }
@@ -67,12 +75,43 @@ pub struct OuiInfo {
     pub class: DeviceClass,
 }
 
+/// True if `mac` is a **locally-administered** address — the U/L bit (bit 1 of
+/// the first octet, mask `0x02`) is set. These are randomized / private
+/// addresses that modern phones (iOS 8+, Android 10+), AirTags/SmartTags, and
+/// other privacy-hardened devices rotate (often every ~15 min), NOT a
+/// manufacturer-assigned identity: the first three bytes are randomly generated,
+/// so an OUI lookup on them is meaningless and treating the address as a
+/// persistent device identifier (for colocation / tracking) would outrun the
+/// evidence. Universally-administered (real IEEE OUI) addresses return
+/// `Some(false)`. Returns `None` when `mac` has no parseable first octet.
+#[must_use]
+pub fn is_locally_administered(mac: &str) -> Option<bool> {
+    let hex: String = mac
+        .chars()
+        .filter(char::is_ascii_hexdigit)
+        .take(2)
+        .collect();
+    if hex.len() != 2 {
+        return None;
+    }
+    let first = u8::from_str_radix(&hex, 16).ok()?;
+    Some(first & 0x02 != 0)
+}
+
 /// Look up the OUI for a MAC address and return vendor + device
 /// class. Accepts any common MAC formatting (`AA:BB:CC:DD:EE:FF`,
 /// `aa-bb-cc-dd-ee-ff`, `aabbccddeeff`). Returns `None` only if the
 /// string can't be parsed as a MAC at all.
 ///
-/// Unrecognised OUIs return `OuiInfo { vendor: "Unknown", class:
+/// A locally-administered (randomized / private) address — see
+/// [`is_locally_administered`] — is reported as
+/// `OuiInfo { vendor: "Randomized (private)", class: Randomized }` WITHOUT an
+/// OUI lookup: its prefix bytes are randomly generated, so attributing it to a
+/// vendor would fabricate an identity, and its rotation makes it useless as a
+/// persistent device key. This keeps a privacy address from posing as a real
+/// device.
+///
+/// Unrecognised (but genuine) OUIs return `OuiInfo { vendor: "Unknown", class:
 /// Unregistered }` so callers can still surface the prefix as
 /// evidence even when our curated set doesn't know it.
 pub fn classify_mac(mac: &str) -> Option<OuiInfo> {
@@ -83,6 +122,15 @@ pub fn classify_mac(mac: &str) -> Option<OuiInfo> {
         .collect();
     if hex.len() != 6 {
         return None;
+    }
+    // Randomized / private address: the U/L bit is set, so the prefix carries no
+    // real OUI. Surface it as Randomized instead of a meaningless table lookup.
+    let first = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    if first & 0x02 != 0 {
+        return Some(OuiInfo {
+            vendor: "Randomized (private)",
+            class: DeviceClass::Randomized,
+        });
     }
     let prefix = hex.to_uppercase();
     Some(lookup_prefix(&prefix))

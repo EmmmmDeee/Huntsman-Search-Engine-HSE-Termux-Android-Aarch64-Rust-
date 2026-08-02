@@ -192,11 +192,54 @@ pub fn autonomous_target_score(
     kind_pivot_value(kind) * leverage * c_eff.clamp(0.0, 1.0)
 }
 
-/// Default diversity weight for [`plan_autonomous_sweep`]. `0.0` reproduces a pure
-/// composite-score ordering (each pivotable selector ranked independently by
-/// [`autonomous_target_score`]); larger values spread investigative effort across
-/// more identifier kinds. `0.5` balances "investigate the single strongest target"
-/// against "don't tunnel a whole budget on one kind".
+/// Rank entities for fully autonomous investigation — the multi-factor,
+/// no-operator-input ranking that a continuous loop drives.
+///
+/// Scores every pivotable [`history::is_cross_scan_candidate`] identifier by
+/// [`autonomous_target_score`] (pivot-value × leverage × confidence), letting the
+/// platform *classify and prioritise* the whole working set, then work down it.
+/// `degree_of` supplies each UID's cross-investigation degree (typically
+/// [`StoragePort::observation_count`]); `exclude` holds UIDs already investigated
+/// this cycle, so the loop never re-seeds the same target and converges. Results
+/// are strongest-first, ties broken by UID for determinism, truncated to `limit`.
+/// Pure given `degree_of` — no I/O of its own. Also the flat-ranking oracle
+/// [`plan_autonomous_sweep`] (at `diversity = 0.0`) and
+/// [`rank_identity_aware_targets`] (for singleton identities) are tested against.
+pub fn rank_autonomous_targets<F: Fn(&str) -> usize>(
+    entities: &[Entity],
+    degree_of: F,
+    exclude: &std::collections::HashSet<String>,
+    limit: usize,
+) -> Vec<AutonomousTarget> {
+    let mut out: Vec<AutonomousTarget> = entities
+        .iter()
+        .filter(|e| !exclude.contains(&e.uid) && history::is_cross_scan_candidate(e))
+        .filter_map(|e| {
+            let kind = crate::core::scan::TargetKind::from_entity_kind(&e.kind)?;
+            let degree = degree_of(&e.uid);
+            Some(AutonomousTarget {
+                uid: e.uid.clone(),
+                kind,
+                value: e.value.clone(),
+                score: autonomous_target_score(&e.kind, degree, e.c_effective()),
+                cross_scan_degree: degree,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
+    out.truncate(limit);
+    out
+}
+
+/// Default diversity weight for [`plan_autonomous_sweep`]. `0.0` reproduces the
+/// pure score ordering of [`rank_autonomous_targets`]; larger values spread
+/// investigative effort across more identifier kinds. `0.5` balances "investigate
+/// the single strongest target" against "don't tunnel a whole budget on one kind".
 pub const DEFAULT_SWEEP_DIVERSITY: f64 = 0.5;
 
 /// A diversity-aware autonomous investigation plan — the ordered queue the

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::core::error::Result;
 use crate::core::scan::{ScanOptions, Target};
 
-use super::{build_runtime, parse_target_kind, split_csv};
+use super::{parse_target_kind, split_csv};
 
 pub(super) struct LiveCmd {
     /// `None` (or `"auto"`) auto-detects the kind from `value` — the unified scan.
@@ -30,6 +30,7 @@ pub(super) struct LiveCmd {
     pub max_concurrent: usize,
     pub max_roi: bool,
     pub convex_budget: bool,
+    pub skip_dead_modules: bool,
     pub regional_search: bool,
     pub min_marginal_yield: Option<f64>,
     pub expansion_strategy: String,
@@ -63,7 +64,7 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
     let target = Target::new(target_kind, cmd.value.clone());
     // Reject junk/placeholder seeds at the CLI boundary (mirrors `cmd_scan`
     // and the HTTP API's `validated_target`).
-    if let Err(msg) = target.validate() {
+    if let Err(msg) = target.validate_verbose() {
         return Err(crate::core::error::Error::Other(format!(
             "invalid target '{}': {msg}",
             target.value
@@ -77,7 +78,11 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
         radar: cmd.radar,
     };
 
-    let (_store, bus, engine) = build_runtime(1024)?;
+    let crate::app::runtime::ApplicationRuntime {
+        store: _store,
+        bus,
+        engine,
+    } = crate::app::runtime::build_runtime(1024)?;
     let scanner = LiveScanner::new(
         Arc::clone(&engine),
         bus.clone(),
@@ -176,6 +181,7 @@ fn build_live_scan_options(cmd: &LiveCmd) -> Result<ScanOptions> {
         webhook_url: crate::core::webhook::webhook_url_from_env(),
         max_roi: cmd.max_roi,
         convex_budget: cmd.convex_budget,
+        skip_dead_modules: cmd.skip_dead_modules,
         regional_search: cmd.regional_search,
         min_marginal_yield: cmd.min_marginal_yield,
         expansion_strategy,
@@ -238,6 +244,31 @@ fn render_event(kind: &crate::core::event::EventKind) -> String {
         } => {
             format!("  ⊘ not expanded [{kind}] {value} — {reason}")
         }
+        E::BreachSweep {
+            anchors,
+            probes,
+            dropped,
+        } => {
+            let over = if *dropped > 0 {
+                format!(" ({dropped} over cap)")
+            } else {
+                String::new()
+            };
+            format!(
+                "  ⇉ breach sweep — {probes} probe{} from {anchors} anchor{}{over}",
+                plural2(*probes),
+                plural2(*anchors)
+            )
+        }
+        E::ConsensusAudit {
+            verdict,
+            examined,
+            corroborated,
+            flags,
+        } => format!(
+            "  ⚖ breach audit — {verdict}: {corroborated}/{examined} corroborated, {flags} flag{}",
+            plural2(*flags)
+        ),
         E::CorrelationFound { correlation } => format!(
             "  ⚑ correlation [{}] {} — {}",
             correlation.severity, correlation.rule_name, correlation.description

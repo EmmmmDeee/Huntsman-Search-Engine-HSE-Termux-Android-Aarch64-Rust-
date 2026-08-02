@@ -152,6 +152,16 @@ impl super::Store {
             let mut merged = serde_json::from_str::<Entity>(&existing_json)?;
             let old_value = merged.value.clone();
             merged.merge(entity.clone());
+            // `merge`'s evidence/tag Vecs are appended in whatever order the two
+            // sides happened to be in (see `Entity::absorb`) — that order depends
+            // on which of the two same-uid entities reached storage first, so
+            // without this the PERSISTED row leaks insertion order exactly as
+            // `Entity::canonicalize_order`'s own doc comment warns against.
+            // `entities_from_events` already re-canonicalises after its own
+            // in-memory merge fold; this direct storage-merge path needs the same
+            // call so a batch upsert containing two same-uid entities (forward
+            // vs. reversed) persists byte-identically either way.
+            merged.canonicalize_order();
             let merged_json = serde_json::to_string(&merged)?;
             tx.prepare_cached(
                 "UPDATE entities SET scan_id = ?1, confidence = ?2, corroboration = ?3,
@@ -281,7 +291,10 @@ impl super::Store {
     /// exactly once, so corroboration sums correctly and is never double-counted.
     /// The result is a faithful (if not yet finalise-enriched: no address-locality
     /// consolidation, geo-family promotion, or cross-scan history) view of what
-    /// the scan found, ranked identically to a finalised read.
+    /// the scan found, ranked identically to a finalised read — including each
+    /// entity's internal evidence/tag order, which is canonicalised exactly as
+    /// the finalisation path does (see `Entity::canonicalize_order`), so a
+    /// recovered in-flight scan's export is as deterministic as a finalised one.
     pub fn entities_from_events(&self, scan_id: &str) -> Result<Vec<Entity>> {
         let mut map: HashMap<String, Entity> = HashMap::new();
         for ev in self.events_for_scan(scan_id)? {
@@ -295,6 +308,9 @@ impl super::Store {
             }
         }
         let mut entities: Vec<Entity> = map.into_values().collect();
+        for e in &mut entities {
+            e.canonicalize_order();
+        }
         Self::sort_entities_for_display(&mut entities);
         Ok(entities)
     }
@@ -493,6 +509,7 @@ fn is_incidental_infra(e: &Entity) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::entity::EntityKind;
     use crate::storage::Store;
 
@@ -508,21 +525,26 @@ mod tests {
         let mut weak = Entity::new(EntityKind::Username, "ghost", 0.20, "scan-a");
         weak.add_evidence(Evidence::new("username_search", "speculative handle"));
         weak.observed_at = now;
-        store.upsert_entity(&weak).unwrap();
+        store.upsert_entity(&weak).expect("should succeed");
 
         // Strong + recent → above the threshold, not an anomaly.
-        let mut strong = Entity::new(EntityKind::Email, "real@example.com", 0.80, "scan-a");
+        let mut strong = Entity::new(
+            EntityKind::Email,
+            "real@example.com",
+            confidence::HIGH_PLUSPLUS,
+            "scan-a",
+        );
         strong.observed_at = now;
-        store.upsert_entity(&strong).unwrap();
+        store.upsert_entity(&strong).expect("should succeed");
 
         // Weak but OLD → outside the since-window, not flagged.
         let mut stale = Entity::new(EntityKind::Username, "stale", 0.10, "scan-a");
         stale.observed_at = now.saturating_sub(100_000);
-        store.upsert_entity(&stale).unwrap();
+        store.upsert_entity(&stale).expect("should succeed");
 
         let anomalies = store
             .low_confidence_evidence(Store::DEFAULT_LOW_CONFIDENCE_THRESHOLD, 3_600)
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(
             anomalies.len(),
             1,
@@ -537,7 +559,7 @@ mod tests {
         assert!(
             store
                 .low_confidence_evidence(0.15, 3_600)
-                .unwrap()
+                .expect("should succeed")
                 .is_empty(),
             "0.20 is not below a 0.15 threshold"
         );
@@ -577,13 +599,18 @@ mod tests {
     #[test]
     fn is_incidental_infra_flags_cdn_edge_ip() {
         // A Cloudflare anycast edge IP — high-confidence but shared infrastructure.
-        let e = Entity::new(EntityKind::IpAddress, "104.20.37.187", 0.95, "s");
+        let e = Entity::new(
+            EntityKind::IpAddress,
+            "104.20.37.187",
+            confidence::VERY_HIGH_PLUSPLUS,
+            "s",
+        );
         assert!(is_incidental_infra(&e));
     }
 
     #[test]
     fn is_incidental_infra_flags_mega_domain() {
-        let e = Entity::new(EntityKind::Domain, "facebook.com", 0.50, "s");
+        let e = Entity::new(EntityKind::Domain, "facebook.com", confidence::MEDIUM, "s");
         assert!(is_incidental_infra(&e));
     }
 
@@ -591,8 +618,13 @@ mod tests {
     fn is_incidental_infra_ignores_non_infra_kinds() {
         // The default arm: a person/username is never "shared infrastructure",
         // regardless of value.
-        let person = Entity::new(EntityKind::Person, "104.20.37.187", 0.50, "s");
-        let user = Entity::new(EntityKind::Username, "facebook.com", 0.50, "s");
+        let person = Entity::new(EntityKind::Person, "104.20.37.187", confidence::MEDIUM, "s");
+        let user = Entity::new(
+            EntityKind::Username,
+            "facebook.com",
+            confidence::MEDIUM,
+            "s",
+        );
         assert!(!is_incidental_infra(&person));
         assert!(!is_incidental_infra(&user));
     }

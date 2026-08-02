@@ -1,10 +1,11 @@
-//! Huntsman Search Engine (HSE) — prototype.
+//! Huntsman Search Engine (HSE) — an all-source OSINT / GEOINT / NETINT
+//! reconnaissance engine in the GhostSec tradition: SpiderFoot-inspired breadth
+//! without the daemon or the footprint.
 //!
-//! Lightweight pure-Rust OSINT/GEOINT scaffold designed to run inside Termux
-//! on aarch64 Android with no root. Boots either as a CLI (`hse scan|live|
-//! modules|doctor`) or as `hse serve` — an axum HTTP server with a minimal
-//! hand-rolled SPA bound to `127.0.0.1` for use from Chrome / Firefox on
-//! the device.
+//! Pure-Rust and keyless-first, forged to run entirely inside Termux on aarch64
+//! Android with no root. Boots either as a CLI (`hse scan|live|modules|doctor`)
+//! or as `hse serve` — an axum HTTP server with a minimal hand-rolled SPA bound
+//! to `127.0.0.1` for use from Chrome / Firefox on the device.
 //!
 //! Architecture invariants (do not change):
 //!   - `#![forbid(unsafe_code)]`
@@ -56,13 +57,16 @@ pub const WORKER_THREADS: usize = 2;
 /// realistic workload. Applied in `main` via a hand-built runtime.
 pub const MAX_BLOCKING_THREADS: usize = 16;
 
-// Live-mode tuning constants (used from v0.5+):
+/// Default seconds between `hse live` iterations (the `--interval` default and
+/// the API's live-request fallback). The only live-mode tuning constant that is
+/// actually wired: `--depth`/`--throttle` default to 0 (seed-only, un-throttled)
+/// per iteration by design, and there is no concurrency knob — the former
+/// `LIVE_MAX_DEPTH`/`LIVE_DEFAULT_THROTTLE_MS`/`LIVE_DEFAULT_CONCURRENT` were
+/// aspirational values that never matched a real default and never had a reader.
 pub const LIVE_DEFAULT_INTERVAL_SECS: u64 = 30;
-pub const LIVE_MAX_DEPTH: u32 = 5;
-pub const LIVE_DEFAULT_THROTTLE_MS: u64 = 100;
-pub const LIVE_DEFAULT_CONCURRENT: usize = 4;
 
 pub mod api;
+pub mod app;
 pub mod audit;
 pub mod cli;
 pub mod core;
@@ -80,18 +84,15 @@ pub fn is_termux() -> bool {
 /// Resolve the default database path, creating the parent directory if needed.
 ///
 /// Termux: `$HOME/.huntsman/huntsman.db` (typically under `/data/data/com.termux/files/home`).
-/// Falls back to `./huntsman.db` if `$HOME` is unset.
+/// Falls back to `./.huntsman/huntsman.db` if `$HOME` is unset (see
+/// [`crate::util::paths::huntsman_dir`] — the layout stays together under
+/// `.huntsman` rather than scattering a bare file into the CWD).
 pub fn default_db_path() -> String {
-    std::env::var("HOME").map_or_else(
-        |_| "huntsman.db".to_string(),
-        |home| {
-            let dir = std::path::Path::new(&home).join(".huntsman");
-            // 0700 so the store + dossiers + key pool under ~/.huntsman aren't
-            // world-listable on a shared host (PROBLEM_TREE §7 S3).
-            let _ = crate::util::atomic_file::create_dir_private(&dir);
-            dir.join("huntsman.db").to_string_lossy().into_owned()
-        },
-    )
+    // `~/.huntsman` created 0700 (owner-only) by `paths::data_file` so the store +
+    // dossiers + key pool under it aren't world-listable (PROBLEM_TREE §7 S3).
+    crate::util::paths::data_file("huntsman.db")
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[cfg(test)]

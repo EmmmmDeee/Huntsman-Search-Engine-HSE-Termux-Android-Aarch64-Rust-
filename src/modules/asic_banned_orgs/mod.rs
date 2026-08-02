@@ -11,21 +11,24 @@
 //! (`abn_lookup`, `asic_director`). No mock: fetched live from ASIC's own open
 //! dataset.
 
-use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{RequestBuilderExt, UA_BROWSER, read_text, urlencode};
+use crate::util::ckan::{Response as CkanResp, datastore_search_url, field_str};
+use crate::util::http::fetch_json;
 
 const SRC: &str = "asic_banned_orgs";
-const CKAN: &str = "https://data.gov.au/data/api/3/action/datastore_search";
+/// data.gov.au CKAN action base — `datastore_search` is appended by
+/// [`datastore_search_url`].
+const CKAN_BASE: &str = "https://data.gov.au/data/api/3/action";
 /// ASIC – Banned and Disqualified Organisations dataset (data.gov.au resource).
 const RES: &str = "ced03961-e6f7-4263-895a-0fd1d7996043";
 /// Max matched records surfaced. Raised to the query `limit` so no genuine
@@ -35,18 +38,6 @@ const MAX_HITS: usize = 100;
 
 pub struct AsicBannedOrgs;
 
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct CkanResp {
-    result: CkanResult,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct CkanResult {
-    records: Vec<Map<String, Value>>,
-}
-
 #[async_trait]
 impl Module for AsicBannedOrgs {
     fn name(&self) -> &'static str {
@@ -54,7 +45,7 @@ impl Module for AsicBannedOrgs {
     }
 
     fn description(&self) -> &'static str {
-        "ASIC Banned & Disqualified Organisations register (keyless) — org name → ban status, ACN, period"
+        "ASIC Banned & Disqualified Organisations recon (keyless) — pivots an org name to ban status, ACN, and period"
     }
 
     fn priority(&self) -> u8 {
@@ -92,7 +83,7 @@ impl Module for AsicBannedOrgs {
             return Ok(result);
         }
 
-        let records = ckan_query(ctx, name).await;
+        let records = ckan_query(ctx, name).await?;
         for rec in records
             .iter()
             .filter(|r| record_name_matches(r, &tokens))
@@ -104,26 +95,26 @@ impl Module for AsicBannedOrgs {
     }
 }
 
-async fn ckan_query(ctx: &ModuleContext, name: &str) -> Vec<Map<String, Value>> {
-    let url = format!("{CKAN}?resource_id={RES}&limit=100&q={}", urlencode(name));
-    let Ok(resp) = ctx
-        .http
-        .get(&url)
-        .header("User-Agent", UA_BROWSER)
-        .send_tagged(SRC)
-        .await
-    else {
-        return Vec::new();
-    };
-    if !resp.status().is_success() {
-        return Vec::new();
+/// Query the Banned & Disqualified Organisations datastore by free-text name,
+/// via the shared CKAN envelope (T2.118). Unlike the previous hand-rolled fetch
+/// — which collapsed a transport error, a non-2xx status, a body-read failure,
+/// AND a CKAN application error (`success: false`, returned with HTTP 200) all
+/// into an empty `Vec` indistinguishable from a genuine "no banned org by this
+/// name" — every real failure now surfaces: `fetch_json` propagates transport/
+/// status/parse failures via `?`, and a `success == Some(false)` envelope
+/// (bad resource id / datastore offline / rate-limit) becomes an explicit
+/// `Error::module`. A genuine empty result set (no `result`, or an empty
+/// `records`) is still the honest clean miss.
+async fn ckan_query(ctx: &ModuleContext, name: &str) -> Result<Vec<Map<String, Value>>> {
+    let url = datastore_search_url(CKAN_BASE, RES, name, MAX_HITS);
+    let resp: CkanResp = fetch_json(&ctx.http, SRC, &url).await?;
+    if resp.success == Some(false) {
+        return Err(Error::module(
+            SRC,
+            "CKAN datastore_search returned success=false (bad resource id or portal error)",
+        ));
     }
-    let Ok(body) = read_text(SRC, resp).await else {
-        return Vec::new();
-    };
-    serde_json::from_str::<CkanResp>(&body)
-        .map(|r| r.result.records)
-        .unwrap_or_default()
+    Ok(resp.result.map(|r| r.records).unwrap_or_default())
 }
 
 fn name_tokens(name: &str) -> Vec<String> {
@@ -167,7 +158,12 @@ fn emit_banned_org(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleR
         }
     }
 
-    let mut org = Entity::new(EntityKind::Organisation, &org_name, 0.60, scan_id);
+    let mut org = Entity::new(
+        EntityKind::Organisation,
+        &org_name,
+        confidence::MEDIUM_PLUS,
+        scan_id,
+    );
     org.tag("au");
     org.tag("asic");
     org.tag("asic-banned");
@@ -179,7 +175,7 @@ fn emit_banned_org(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleR
     if let Some(acn) =
         field(rec, "BD_ORG_ACN").filter(|a| a.chars().filter(char::is_ascii_digit).count() == 9)
     {
-        let mut e = Entity::new(EntityKind::AbnAcn, &acn, 0.62, scan_id);
+        let mut e = Entity::new(EntityKind::AbnAcn, &acn, confidence::NOTABLE, scan_id);
         e.tag("au");
         e.tag("asic");
         e.tag("asic-banned");
@@ -192,18 +188,14 @@ fn emit_banned_org(rec: &Map<String, Value>, scan_id: &str, result: &mut ModuleR
     }
 }
 
+/// A usable ASIC field value: the shared CKAN [`field_str`] stringification
+/// (CONVENTIONS §4 — one stringifier, not a per-module copy) with this
+/// register's dataset-specific sentinel filter on top. ASIC stores an absent
+/// value as the literal `"null"` or `"Not available"` text, which `field_str`
+/// (which only drops JSON null / empty) would otherwise surface as a real value.
 fn field(rec: &Map<String, Value>, key: &str) -> Option<String> {
-    match rec.get(key)? {
-        Value::String(s) => {
-            let t = s.trim();
-            (!t.is_empty()
-                && !t.eq_ignore_ascii_case("null")
-                && !t.eq_ignore_ascii_case("Not available"))
-            .then(|| t.to_string())
-        }
-        Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    }
+    field_str(rec, key)
+        .filter(|s| !s.eq_ignore_ascii_case("null") && !s.eq_ignore_ascii_case("Not available"))
 }
 
 #[cfg(test)]

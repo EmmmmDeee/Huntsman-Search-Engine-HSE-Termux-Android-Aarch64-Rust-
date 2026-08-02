@@ -1,0 +1,79 @@
+name: Fuzz
+
+# Coverage-guided fuzzing of the untrusted-byte parsers `proptest`'s random
+# generation doesn't reach as deeply as libFuzzer's mutation engine.
+# Deliberately its own workflow, not a job in ci.yml, mirroring audit.yml's
+# rationale: `cargo-fuzz` needs nightly (not the stable toolchain the rest of
+# CI verifies against) and a full from-scratch ASAN-instrumented rebuild of
+# the whole crate (a sizeable, growing codebase) is too slow to sit on every
+# push/PR. Advisory-quality, like audit.yml —
+# NOT a required check, so a fuzz-run hiccup never blocks an unrelated PR; it
+# surfaces on the schedule, on a change to the fuzz harness itself, and on
+# manual dispatch.
+
+on:
+  schedule:
+    - cron: '0 7 * * 1'   # Mondays 07:00 UTC (audit.yml already owns 06:00)
+  workflow_dispatch:
+  push:
+    paths:
+      - 'fuzz/**'
+      - 'src/modules/cert_intel/**'
+      - '.github/workflows/fuzz.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: cargo fuzz (cert_der, nightly)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "fuzz"
+
+      # Installed directly rather than via a third-party action — same
+      # action-pinning-drift rationale as ci.yml/audit.yml's direct
+      # `cargo install` calls.
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      # Seeds a scratch corpus dir from the project's existing real-certificate
+      # fixture (`src/modules/cert_intel/testdata/`) — single-sourced test
+      # data, never duplicated in the repo.
+      # IMPORTANT: libFuzzer treats every directory given on its command line
+      # as read *and write* — it saves newly-discovered interesting inputs
+      # back into it. Pointing it at the real fixture directory would litter
+      # `src/modules/cert_intel/testdata/` with generated files on every run,
+      # so the seed is copied into a throwaway `fuzz/corpus/cert_der/`
+      # (gitignored, recreated fresh each run) instead of fuzzing the source
+      # tree in place. Bounded to 120s wall-clock: enough to both replay the
+      # seed as a deterministic regression check AND spend real mutation
+      # budget on this schedule, without an open-ended run that could hang a
+      # scheduled job.
+      - name: Fuzz cert_der (120s, seeded from the real DER fixture)
+        run: |
+          mkdir -p fuzz/corpus/cert_der
+          cp src/modules/cert_intel/testdata/selfsigned.der fuzz/corpus/cert_der/seed_selfsigned.der
+          cd fuzz
+          # `+nightly` is REQUIRED: the repo-root rust-toolchain.toml pins stable
+          # 1.97.1, and rustup resolves that file ABOVE the `rustup default
+          # nightly` the install step sets — so a bare `cargo fuzz run` builds on
+          # 1.97.1 and dies with "error: the option `Z` is only accepted on the
+          # nightly compiler" (cargo-fuzz's ASAN build passes `-Zsanitizer`). The
+          # explicit `+nightly` is rustup's highest-precedence selector (above
+          # rust-toolchain.toml) and propagates via RUSTUP_TOOLCHAIN to the inner
+          # `cargo build` cargo-fuzz spawns — the same override the documented
+          # local command in fuzz/README.md already uses.
+          cargo +nightly fuzz run cert_der corpus/cert_der -- -max_total_time=120 -seed=1

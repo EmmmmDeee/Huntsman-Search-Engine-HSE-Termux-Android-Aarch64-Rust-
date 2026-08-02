@@ -158,7 +158,7 @@ fn dms_zero_zero_zero_is_zero_decimal() {
 #[test]
 fn dms_one_degree_thirty_minutes_is_one_point_five() {
     let v = Value::Rational(vec![rat(1, 1), rat(30, 1), rat(0, 1)]);
-    let d = dms_to_decimal(&v).unwrap();
+    let d = dms_to_decimal(&v).expect("should succeed");
     assert!((d - 1.5).abs() < 1e-9);
 }
 
@@ -166,7 +166,7 @@ fn dms_one_degree_thirty_minutes_is_one_point_five() {
 fn dms_with_fractional_seconds() {
     // 27° 28' 35.76" → 27.476600
     let v = Value::Rational(vec![rat(27, 1), rat(28, 1), rat(3576, 100)]);
-    let d = dms_to_decimal(&v).unwrap();
+    let d = dms_to_decimal(&v).expect("should succeed");
     assert!((d - 27.476600).abs() < 1e-4, "got {d}");
 }
 

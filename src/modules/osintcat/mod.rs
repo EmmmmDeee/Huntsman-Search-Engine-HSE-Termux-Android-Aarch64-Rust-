@@ -11,9 +11,10 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -80,7 +81,7 @@ impl Module for OsintCat {
     }
 
     fn description(&self) -> &'static str {
-        "OsintCat email footprint, breach, and deep-osint enrichment"
+        "OsintCat enrichment — sweeps an email footprint for breach and deep-osint intelligence"
     }
 
     fn priority(&self) -> u8 {
@@ -120,7 +121,7 @@ impl Module for OsintCat {
         let credits = user.email_osint_credits;
         debug!(balance = credits.current_balance, "osintcat credit check");
 
-        let mut entity = target.to_entity(0.75, &ctx.scan_id);
+        let mut entity = target.to_entity(confidence::VERY_HIGH, &ctx.scan_id);
         entity.tag(SRC);
 
         // Footprint — free endpoint.
@@ -148,7 +149,11 @@ impl Module for OsintCat {
                 Err(e) => warn!(error = %e, "osintcat email-osint failed"),
             }
         } else {
-            warn!(
+            // `info!`, not `warn!`: skipping a paid lookup for insufficient
+            // budget is a routine, expected clean-skip (the platform's "no
+            // key / no budget → skip cleanly, never an error" contract), not a
+            // failure. The genuine failure path above (line ~149) stays `warn!`.
+            info!(
                 balance = credits.current_balance,
                 price = credits.price_per_search,
                 "osintcat skipping email-osint: insufficient credits"
@@ -223,7 +228,12 @@ fn emit_footprint(fp: &OcFootprintResponse, entity: &mut Entity, result: &mut Mo
                 if k.eq_ignore_ascii_case("username")
                     && let Some(uname) = v.as_str()
                 {
-                    let mut pivot = Entity::new(EntityKind::Username, uname, 0.70, &entity.scan_id);
+                    let mut pivot = Entity::new(
+                        EntityKind::Username,
+                        uname,
+                        confidence::HIGH_PLUS,
+                        &entity.scan_id,
+                    );
                     pivot.tag("osintcat");
                     pivot.tag("footprint-pivot");
                     result.push(pivot);

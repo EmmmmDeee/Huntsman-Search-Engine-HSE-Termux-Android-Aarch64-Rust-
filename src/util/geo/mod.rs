@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use crate::core::error::{Error, Result};
 
 pub mod coords;
@@ -15,30 +16,24 @@ pub mod coords;
 /// an output-filtering policy for provider responses ([`is_valid_coords`]),
 /// not an input-parsing concern for a seed the operator typed deliberately.
 pub fn parse_coords(value: &str) -> Result<(f64, f64)> {
-    let (a, b) = value
-        .split_once(',')
-        .ok_or_else(|| Error::module("geo", "coordinates must be 'lat,lon'"))?;
-    let lat: f64 = a
-        .trim()
-        .parse()
-        .map_err(|_| Error::module("geo", "invalid latitude"))?;
-    let lon: f64 = b
-        .trim()
-        .parse()
-        .map_err(|_| Error::module("geo", "invalid longitude"))?;
-    if !lat.is_finite() || !(-90.0..=90.0).contains(&lat) {
-        return Err(Error::module("geo", "latitude out of range (-90..=90)"));
-    }
-    if !lon.is_finite() || !(-180.0..=180.0).contains(&lon) {
-        return Err(Error::module("geo", "longitude out of range (-180..=180)"));
-    }
-    Ok((lat, lon))
+    // Single source of truth: delegate to `geohash::parse_coords` (the same
+    // split/trim/parse/range gate) and wrap its `Option` in the module `Result`
+    // this boundary hands to `?`. Previously both functions hand-rolled the same
+    // logic; keeping one implementation guarantees they can never drift about
+    // what a valid coordinate is. Null Island (`0,0`) is intentionally accepted
+    // here — it's a deliberately-typed seed, not a provider sentinel.
+    crate::util::geohash::parse_coords(value).ok_or_else(|| {
+        Error::module(
+            "geo",
+            "coordinates must be 'lat,lon' with lat -90..=90 and lon -180..=180",
+        )
+    })
 }
 
 /// Canonical validity check for a geographic coordinate, shared by every
 /// module that turns an external lat/lon into a `Coordinates` entity (the
 /// forward geocoders `geocode`/`photon`/`overpass`, the precise-fix sources
-/// `geo_intel`/`exif_geo`/`wifi_intel`/`cell_intel`/`mls`, …). Modules
+/// `geo_intel`/`exif_geo`/`wifi_intel`/`cell_intel`, …). Modules
 /// previously hand-rolled some subset of these guards — most only rejected
 /// `0,0` and let out-of-range/NaN values through, which then became
 /// high-confidence false fixes that poison the geo-cluster correlator. One
@@ -423,7 +418,7 @@ pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 /// ```
 /// use huntsman_search_engine::util::geo::nearest_au_locality;
 ///
-/// let (name, state, km) = nearest_au_locality(-27.47, 153.02).unwrap(); // Brisbane CBD
+/// let (name, state, km) = nearest_au_locality(-27.47, 153.02).expect("should succeed"); // Brisbane CBD
 /// assert_eq!((name, state), ("Brisbane", "QLD"));
 /// assert!(km < 5.0);
 /// assert!(nearest_au_locality(40.71, -74.0).is_none()); // New York → not AU
@@ -448,6 +443,48 @@ pub fn tag_au_state(entity: &mut crate::core::entity::Entity, lat: f64, lon: f64
     if let Some(state) = au_state_for_coords(lat, lon) {
         entity.tag(format!("au-state:{state}"));
         entity.tag("country:AU");
+    }
+}
+
+/// Score a wireless-geolocation fix by the accuracy radius (in metres) its
+/// provider reported: a fix good to a doorway is worth more than one good to a
+/// suburb.
+///
+/// Shared by the BSSID-geolocation providers (`mylnikov`, `beacondb`) so two
+/// answers to the same question are scored on one scale — a provider-local copy
+/// of this ladder would let the same 150 m fix outrank or undercut its peer
+/// purely by which module happened to return it, and the correlator ranks
+/// coordinates across sources.
+///
+/// A missing radius is treated as the wide 5000 m default. Untrusted JSON is
+/// handled up front: a negative, NaN or infinite radius also degrades to that
+/// default, because `f64 as u64` saturates (negative and NaN both land on `0`)
+/// and would otherwise score a malformed value as the *tightest* possible fix.
+///
+/// ```
+/// use huntsman_search_engine::util::geo::confidence_for_accuracy_m;
+/// use huntsman_search_engine::core::confidence;
+///
+/// assert_eq!(confidence_for_accuracy_m(Some(25.0)), confidence::VERY_HIGH);
+/// assert_eq!(confidence_for_accuracy_m(Some(2_000.0)), confidence::MEDIUM);
+/// // A 25 km IP-derived radius is not a wireless fix.
+/// assert_eq!(confidence_for_accuracy_m(Some(25_000.0)), 0.35);
+/// // Malformed input degrades to the wide default, never to a tight fix.
+/// assert_eq!(confidence_for_accuracy_m(Some(-1.0)), confidence_for_accuracy_m(None));
+/// assert_eq!(confidence_for_accuracy_m(Some(f64::NAN)), confidence_for_accuracy_m(None));
+/// ```
+#[must_use]
+pub fn confidence_for_accuracy_m(metres: Option<f64>) -> f64 {
+    use crate::core::confidence;
+    let metres = match metres {
+        Some(m) if m.is_finite() && m >= 0.0 => m,
+        _ => 5000.0,
+    };
+    match metres as u64 {
+        0..=200 => confidence::VERY_HIGH,
+        201..=1000 => confidence::HIGH,
+        1001..=5000 => confidence::MEDIUM,
+        _ => 0.35,
     }
 }
 
@@ -531,7 +568,7 @@ pub fn coarse_provider_coords(
 /// (`ip_geo` / `ipinfo` / `ip2location` / `ipquery` / `ip_whois_geo`).
 ///
 /// Each of those modules emitted exactly
-/// `Entity::new(EntityKind::Asn, asn, 0.80, scan_id)` carrying a single
+/// `Entity::new(EntityKind::Asn, asn, confidence::HIGH_PLUSPLUS, scan_id)` carrying a single
 /// `Evidence::new(src, format!("ASN for {ip}"))`, then optionally stamped one
 /// provider tag on top. That birth was byte-identical across all five, so it
 /// lives here once: the fixed `0.80` confidence and the `"ASN for {ip}"`
@@ -558,8 +595,12 @@ pub fn coarse_provider_coords(
 /// ```
 #[must_use]
 pub fn ip_asn_entity(asn: &str, src: &str, ip: &str, scan_id: &str) -> crate::core::entity::Entity {
-    let mut e =
-        crate::core::entity::Entity::new(crate::core::entity::EntityKind::Asn, asn, 0.80, scan_id);
+    let mut e = crate::core::entity::Entity::new(
+        crate::core::entity::EntityKind::Asn,
+        asn,
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
     e.add_evidence(crate::core::entity::Evidence::new(
         src,
         format!("ASN for {ip}"),

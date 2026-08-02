@@ -15,9 +15,10 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -185,7 +186,7 @@ impl Module for NiamonX {
     }
 
     fn description(&self) -> &'static str {
-        "NiamonX PBS v1/v2 breach search and ULP infostealer lookup"
+        "NiamonX recon — sweeps PBS v1/v2 breach corpora and ULP infostealer records"
     }
 
     fn priority(&self) -> u8 {
@@ -211,6 +212,16 @@ impl Module for NiamonX {
         ModuleCategory::Breach
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Breach default covers Credentials (T1589.001) + Email Addresses
+        // (T1589.002), but PBS v1's `meta.names` corroboration also mints
+        // Person entities (see `produces()`/`process()` below) → T1589.003
+        // Employee Names, which the default omits. Same pattern as
+        // `dehashed`/`see_know`/`oathnet_pro` declaring it for their own
+        // name-field Person extraction.
+        &["T1589.001", "T1589.002", "T1589.003"]
+    }
+
     fn produces(&self) -> &'static [EntityKind] {
         // Domain is accepted as input but no Domain pivot entity is ever emitted.
         // Person is emitted from PBS v1 meta.names corroboration.
@@ -219,6 +230,7 @@ impl Module for NiamonX {
             EntityKind::Username,
             EntityKind::Phone,
             EntityKind::Person,
+            EntityKind::Url,
         ];
         KINDS
     }
@@ -226,7 +238,6 @@ impl Module for NiamonX {
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
         let query = &target.value;
-        let key = ctx.key(KEY_ENV)?;
         let ulp_type = match target.kind {
             TargetKind::Email => "email",
             TargetKind::Username => "username",
@@ -234,34 +245,118 @@ impl Module for NiamonX {
             _ => "auto",
         };
 
-        // All three endpoints are independent — run concurrently.
-        let (r1, r2, r3) = tokio::join!(
-            fetch_pbs_v1(&ctx.http, key, query, ctx),
-            fetch_pbs_v2(&ctx.http, key, query, ctx),
-            fetch_ulp(&ctx.http, key, query, ulp_type, ctx),
-        );
+        // Key cascade across the concurrent endpoint batch. The three endpoints
+        // share one key; if EVERY one fails AND that key was burned in the pool
+        // this call (a 401/403/429 routed through `note_keyed_error` marks it
+        // non-usable), rotate to the next usable pooled key and retry the whole
+        // batch — so one process() spends every credential the pool holds before
+        // reporting an outage. A partial success, or a non-key failure such as a
+        // transient 5xx, leaves the key usable and does NOT cascade, so keys are
+        // never churned on anything but a genuine key/quota failure. `tried` stops
+        // re-handing a burned key; single-key setups never enter the branch.
+        use crate::util::key_pool::KeyStatus;
+        // A key is "burned" once the pool marks it non-usable. We compare the
+        // pool status BEFORE and AFTER this batch so a cascade fires only on a
+        // FRESH burn THIS batch caused (usable before, non-usable after). Reading
+        // only the after-status would misfire on a stale RateLimited/Invalid mark
+        // left by an EARLIER target in the same scan: a genuine key-independent
+        // outage (all three endpoints 5xx) would then churn a good second key even
+        // though nothing here was a key problem.
+        let is_burned = |s: Option<KeyStatus>| {
+            matches!(
+                s,
+                Some(
+                    KeyStatus::Invalid
+                        | KeyStatus::RateLimited
+                        | KeyStatus::Revoked
+                        | KeyStatus::Exhausted
+                )
+            )
+        };
+        let mut tried: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let injected = ctx.key(KEY_ENV)?.to_string();
+        // Start from the pool's best USABLE niamonx key. `next_pooled_key`
+        // (`next_key`) is cooldown-AWARE: it evaluates `is_usable` (which honours
+        // a rate-limit window that has since elapsed) and flips such a key back to
+        // healthy on selection. That fixes two things at once:
+        //   (a) `ctx.keys` persists across every target in a scan and is only
+        //       gap-filled (never overwritten), so a key rate-limited on an
+        //       earlier target is still the injected value here — starting on it
+        //       blindly, combined with the fresh-burn gate below, made every later
+        //       target silently return empty while a sibling sat idle; and
+        //   (b) it must NOT permanently exclude that key once its 60s cooldown has
+        //       elapsed and it is usable again — an earlier raw-status skip did,
+        //       so a later target could fail even though the cooled-down key would
+        //       have succeeded.
+        // Selecting through the pool honours cooldown for both. Falls back to the
+        // injected env key when the pool holds no niamonx keys (env-only setup).
+        let mut key = ctx.next_pooled_key(SRC, &tried).unwrap_or(injected);
+        let (r1, r2, r3) = loop {
+            tried.insert(key.clone());
+            let before = crate::util::key_pool::global_pool().entry_status(SRC, &key);
+            // All three endpoints are independent — run concurrently.
+            let results = tokio::join!(
+                fetch_pbs_v1(&ctx.http, &key, query, ctx),
+                fetch_pbs_v2(&ctx.http, &key, query, ctx),
+                fetch_ulp(&ctx.http, &key, query, ulp_type, ctx),
+            );
+            let all_failed = results.0.is_err() && results.1.is_err() && results.2.is_err();
+            if all_failed {
+                let after = crate::util::key_pool::global_pool().entry_status(SRC, &key);
+                // Cascade only when this batch turned a usable key non-usable — a
+                // 5xx outage leaves it usable, and a pre-existing bad status is
+                // never re-attributed to this call.
+                if is_burned(after)
+                    && !is_burned(before)
+                    && let Some(next) = ctx.next_pooled_key(SRC, &tried)
+                {
+                    key = next;
+                    continue;
+                }
+            }
+            break results;
+        };
 
-        let mut entity = target.to_entity(0.80, &ctx.scan_id);
+        let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, &ctx.scan_id);
         entity.tag(SRC);
 
+        // The last genuine transport/parse failure seen across the three
+        // independent endpoints (T2.114). Real evidence from any endpoint is
+        // never discarded because a *different* endpoint failed — see
+        // `ModuleResult::or_hard_failure` below.
+        let mut hard_failure: Option<Error> = None;
         match r1 {
             Ok(r) => emit_pbs_v1(r, &mut entity, &mut result, query, &ctx.scan_id),
-            Err(e) => warn!(error = %e, "niamonx pbs_v1 failed"),
+            Err(e) => {
+                warn!(error = %e, "niamonx pbs_v1 failed");
+                hard_failure = Some(e);
+            }
         }
         match r2 {
             Ok(r) => emit_pbs_v2(r, &mut entity, &mut result, query, &ctx.scan_id),
-            Err(e) => warn!(error = %e, "niamonx pbs_v2 failed"),
+            Err(e) => {
+                warn!(error = %e, "niamonx pbs_v2 failed");
+                hard_failure.get_or_insert(e);
+            }
         }
         match r3 {
             Ok(r) => emit_ulp(r, &mut entity, &mut result, query, &ctx.scan_id),
-            Err(e) => warn!(error = %e, "niamonx ulp failed"),
+            Err(e) => {
+                warn!(error = %e, "niamonx ulp failed");
+                hard_failure.get_or_insert(e);
+            }
         }
 
         // Only emit the entity when at least one endpoint contributed evidence.
         if !entity.evidence.is_empty() {
             result.push(entity);
         }
-        Ok(result)
+        // All three endpoints failing (e.g. a revoked API key, or a full
+        // dash.niamonx.io outage) previously read as "nothing found on any of
+        // the three PBS/ULP surfaces" — indistinguishable from a genuine
+        // triple-negative. Surface it as a real error instead, unless at
+        // least one endpoint already produced real evidence.
+        result.or_hard_failure(hard_failure)
     }
 }
 
@@ -398,6 +493,13 @@ fn emit_pbs_v1(
             .with_attr("blocks_total", meta.blocks_total.to_string());
             if let Some(first_seen) = &meta.first_seen {
                 ev = ev.with_attr("first_seen", first_seen);
+                // Mirror the PBS-v2 path's canonical `breach_date` key (see the
+                // `.with_attr("breach_date", …)` in emit_pbs_v2): the entity is
+                // `breach`-tagged, so AU-019's temporal breach-cluster rule
+                // (rules/breach.rs) reads `breach_date`, not `first_seen`. Its
+                // absence here left every PBS-v1 breach hit unable to
+                // date-cluster despite carrying an earliest-exposure date.
+                ev = ev.with_attr("breach_date", first_seen);
             }
             if let Some(last_seen) = &meta.last_seen {
                 ev = ev.with_attr("last_seen", last_seen);
@@ -407,16 +509,23 @@ fn emit_pbs_v1(
         // Corroborating emails as BFS pivots.
         for email in meta.emails.iter().flatten() {
             if !email.eq_ignore_ascii_case(query) {
-                let mut pivot = Entity::new(EntityKind::Email, email, 0.70, scan_id);
+                let mut pivot =
+                    Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
                 pivot.tag(SRC);
                 pivot.tag("pbs-v1-pivot");
                 result.push(pivot);
             }
         }
-        // Corroborating names as Person pivots.
+        // Corroborating names as Person pivots. Some breach databases store
+        // `names = ["{username} {username}"]` (doubled/slug usernames) when no
+        // real name is available — the same schema the sibling see_know and
+        // oathnet_pro extractors guard against. Reject before it reaches the graph
+        // so a slug username is never minted as a fabricated Person.
         for name in meta.names.iter().flatten() {
-            if !name.eq_ignore_ascii_case(query) {
-                let mut pivot = Entity::new(EntityKind::Person, name, 0.65, scan_id);
+            if !name.eq_ignore_ascii_case(query)
+                && !crate::core::validation::is_username_derived_name(name)
+            {
+                let mut pivot = Entity::new(EntityKind::Person, name, confidence::HIGH, scan_id);
                 pivot.tag(SRC);
                 pivot.tag("pbs-v1-pivot");
                 result.push(pivot);
@@ -427,7 +536,9 @@ fn emit_pbs_v1(
     if let Some(rate) = &data.rate
         && rate.remaining < 10
     {
-        warn!(remaining = rate.remaining, "niamonx pbs_v1 quota low");
+        // `info!`, not `warn!`: approaching a provider quota is informational
+        // telemetry, not a failure — nothing went wrong and the scan proceeds.
+        info!(remaining = rate.remaining, "niamonx pbs_v1 quota low");
     }
 
     let blocks = data.blocks.unwrap_or_default();
@@ -533,7 +644,7 @@ fn emit_pbs_v2(
             .as_deref()
             .filter(|e| !e.eq_ignore_ascii_case(query))
         {
-            let mut pivot = Entity::new(EntityKind::Email, email, 0.70, scan_id);
+            let mut pivot = Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
             pivot.tag(SRC);
             pivot.tag("pbs-v2-pivot");
             result.push(pivot);
@@ -543,13 +654,14 @@ fn emit_pbs_v2(
             .as_deref()
             .filter(|u| !u.eq_ignore_ascii_case(query))
         {
-            let mut pivot = Entity::new(EntityKind::Username, uname, 0.70, scan_id);
+            let mut pivot =
+                Entity::new(EntityKind::Username, uname, confidence::HIGH_PLUS, scan_id);
             pivot.tag(SRC);
             pivot.tag("pbs-v2-pivot");
             result.push(pivot);
         }
         if let Some(phone) = &record.phone {
-            let mut pivot = Entity::new(EntityKind::Phone, phone, 0.70, scan_id);
+            let mut pivot = Entity::new(EntityKind::Phone, phone, confidence::HIGH_PLUS, scan_id);
             pivot.tag(SRC);
             pivot.tag("pbs-v2-pivot");
             result.push(pivot);
@@ -628,10 +740,29 @@ fn emit_ulp(
             } else {
                 EntityKind::Username
             };
-            let mut pivot = Entity::new(kind, login, 0.70, scan_id);
+            let mut pivot = Entity::new(kind, login, confidence::HIGH_PLUS, scan_id);
             pivot.tag(SRC);
             pivot.tag("ulp-pivot");
             result.push(pivot);
+        }
+
+        // The login `url` is where the credentials were captured — the most
+        // actionable pivot in a stealer record (mirrors
+        // oathnet_pro::stealer::extract_stealer_entities' identical field).
+        // Emit it as a first-class Url. Its host is deliberately NOT also
+        // minted as a Domain: a stealer-log host is a third-party service the
+        // subject merely has an account on, not a domain they own — minting
+        // it would spawn subdomain-proliferation noise and misdirect
+        // dns/cert/wayback expansion onto the *platform's* infrastructure.
+        if let Some(u) = record.url.as_deref() {
+            let u = u.trim();
+            if u.starts_with("http") && u.contains('.') {
+                let mut pivot = Entity::new(EntityKind::Url, u, confidence::MEDIUM_HIGH, scan_id);
+                pivot.tag(SRC);
+                pivot.tag("ulp-pivot");
+                pivot.tag("credential-url");
+                result.push(pivot);
+            }
         }
     }
 }

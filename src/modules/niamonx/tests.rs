@@ -34,7 +34,7 @@ fn pbs_v1_skips_not_found_status() {
         }),
     };
     let target = Target::new(TargetKind::Email, "x@y.com");
-    let mut entity = target.to_entity(0.80, "s");
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s");
     assert!(!entity.has_tag("breach"));
@@ -66,11 +66,23 @@ fn pbs_v1_found_with_blocks_tags_breach_and_pivots_names() {
         }),
     };
     let target = Target::new(TargetKind::Email, "x@y.com");
-    let mut entity = target.to_entity(0.80, "s");
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s");
     assert!(entity.has_tag("breach"));
     assert!(entity.has_tag("niamonx:breach:exampleleak"));
+    // The breach-block evidence carries the canonical `breach_date` key AU-019's
+    // temporal breach-cluster rule reads (mirroring the PBS-v2 path), taken from
+    // `first_seen` — without it a PBS-v1 hit could never date-cluster.
+    let block_ev = entity
+        .evidence
+        .iter()
+        .find(|e| e.attributes.contains_key("blocks_total"))
+        .expect("PBS-v1 breach-block evidence must be present");
+    assert_eq!(
+        block_ev.attributes.get("breach_date").map(String::as_str),
+        Some("2019-01-01")
+    );
     // One Email pivot + one Person pivot.
     assert!(
         result
@@ -83,6 +95,40 @@ fn pbs_v1_found_with_blocks_tags_breach_and_pivots_names() {
             .entities
             .iter()
             .any(|e| e.kind == EntityKind::Email && e.value == "other@example.com")
+    );
+}
+
+#[test]
+fn pbs_v1_suppresses_username_derived_name_pivots() {
+    // A breach `meta.names` entry that is a doubled/slug username
+    // ("rhino-ryno23 rhino-ryno23") is not a real person and must never be minted
+    // as a Person pivot — the shared `is_username_derived_name` guard (also used
+    // by see_know/oathnet_pro) suppresses it. A genuine hit is still present
+    // (blocks_total > 0), so the guard is what drops the pivot, not an empty hit.
+    let resp = PbsV1Response {
+        success: true,
+        data: Some(PbsV1Data {
+            status: Some("found".to_string()),
+            error: None,
+            meta: Some(PbsV1Meta {
+                blocks_total: 1,
+                emails: None,
+                names: Some(vec!["rhino-ryno23 rhino-ryno23".to_string()]),
+                first_seen: None,
+                last_seen: None,
+            }),
+            risk: None,
+            blocks: None,
+            rate: None,
+        }),
+    };
+    let target = Target::new(TargetKind::Email, "x@y.com");
+    let mut entity = target.to_entity(0.80, "s");
+    let mut result = ModuleResult::new();
+    emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s");
+    assert!(
+        !result.entities.iter().any(|e| e.kind == EntityKind::Person),
+        "a username-derived meta.names entry must not mint a Person pivot"
     );
 }
 
@@ -105,14 +151,73 @@ fn ulp_emits_stealer_tag_and_pivots() {
         }),
     };
     let target = Target::new(TargetKind::Email, "victim@example.com");
-    let mut entity = target.to_entity(0.80, "s");
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     emit_ulp(resp, &mut entity, &mut result, "victim@example.com", "s");
     assert!(entity.has_tag("stealer-log"));
     assert!(entity.has_tag("infostealer"));
-    // login differs from query → pivot emitted
-    assert_eq!(result.entities.len(), 1);
-    assert_eq!(result.entities[0].kind, EntityKind::Email);
+    // login differs from query → Email pivot emitted, plus the login-URL Url pivot.
+    assert_eq!(result.entities.len(), 2);
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "other@example.com")
+    );
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Url && e.value == "https://bank.example.com/login")
+    );
+}
+
+#[test]
+fn ulp_promotes_the_login_url_to_a_first_class_url_pivot() {
+    // Gap fix: the captured login `url` — the page where credentials were stolen —
+    // was previously only ever stamped on evidence text/attrs, never minted as its
+    // own pivot entity, unlike the sibling oathnet_pro stealer extractor which mints
+    // exactly this field as EntityKind::Url. It must now surface as a real Url pivot
+    // so downstream modules (wayback/cert/dns) can chase the credential-capture page.
+    let resp = UlpResponse {
+        success: true,
+        data: Some(UlpData {
+            error: None,
+            stats: Some(UlpStats {
+                total: 1,
+                unique_hosts: 1,
+                with_password: 1,
+            }),
+            records: Some(vec![UlpRecord {
+                url: Some("https://bank.example.com/login".to_string()),
+                host: Some("bank.example.com".to_string()),
+                login: Some("victim@example.com".to_string()),
+            }]),
+        }),
+    };
+    // Login equals the query, so no Email/Username pivot fires — isolating the
+    // Url pivot as the only entity this record can produce.
+    let target = Target::new(TargetKind::Email, "victim@example.com");
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
+    let mut result = ModuleResult::new();
+    emit_ulp(resp, &mut entity, &mut result, "victim@example.com", "s");
+    let url_pivot = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Url)
+        .expect("the ULP login url must surface as a first-class Url pivot");
+    assert_eq!(url_pivot.value, "https://bank.example.com/login");
+    assert!(url_pivot.has_tag("ulp-pivot"));
+    assert!(url_pivot.has_tag("credential-url"));
+    // The record's host is deliberately NOT also minted as a Domain (matches
+    // oathnet_pro's rationale: a stealer host is a third-party service, not
+    // something the subject owns).
+    assert!(
+        !result
+            .entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Domain && e.value == "bank.example.com")
+    );
 }
 
 #[test]
@@ -142,7 +247,7 @@ fn ulp_recovers_the_login_on_username_and_ip_scans() {
             }),
         };
         let target = Target::new(kind, query);
-        let mut entity = target.to_entity(0.80, "s");
+        let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
         let mut result = ModuleResult::new();
         emit_ulp(resp, &mut entity, &mut result, query, "s");
         // The differing login is now promoted to a first-class Email pivot…
@@ -175,6 +280,20 @@ fn module_metadata() {
 }
 
 #[test]
+fn attack_techniques_include_employee_names_for_the_pbs_v1_name_pivot() {
+    use crate::core::attack;
+    let t = NiamonX.attack_techniques();
+    // The Breach-category default (Credentials + Email Addresses) omits
+    // Employee Names, but PBS v1's meta.names corroboration mints Person
+    // entities (process()'s name-pivot loop) — the same pattern
+    // dehashed/see_know/oathnet_pro declare T1589.003 for.
+    for id in ["T1589.001", "T1589.002", "T1589.003"] {
+        assert!(t.contains(&id), "niamonx must claim {id}, got {t:?}");
+        assert!(attack::technique(id).is_some(), "{id} must be catalogued");
+    }
+}
+
+#[test]
 fn pbs_v2_found_with_records_tags_breach() {
     let resp = PbsV2Response {
         success: true,
@@ -200,7 +319,7 @@ fn pbs_v2_found_with_records_tags_breach() {
         }),
     };
     let target = Target::new(TargetKind::Email, "victim@example.com");
-    let mut entity = target.to_entity(0.80, "s");
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     emit_pbs_v2(resp, &mut entity, &mut result, "victim@example.com", "s");
     assert!(entity.has_tag("breach"), "breach tag must be set on hit");
@@ -225,7 +344,7 @@ fn pbs_v2_zero_found_is_quiet() {
         }),
     };
     let target = Target::new(TargetKind::Email, "clean@example.com");
-    let mut entity = target.to_entity(0.80, "s");
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS, "s");
     let mut result = ModuleResult::new();
     emit_pbs_v2(resp, &mut entity, &mut result, "clean@example.com", "s");
     assert!(!entity.has_tag("breach"));

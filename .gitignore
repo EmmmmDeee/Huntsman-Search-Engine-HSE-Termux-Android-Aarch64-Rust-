@@ -9,7 +9,13 @@
 # aggregate of the tree, and bundling every key-detector test fixture into one
 # new file trips GitHub secret-scanning push protection on the repo's own
 # SYNTHETIC AWS-key fixtures (e.g. AKIAIOSFODNN7EXAMPLE in *_tests.rs).
+# Also covers any compressed form (e.g. a manual `gzip`) — decompressing one
+# reproduces the identical secret-scanning-triggering content, so compressing
+# before commit only evades push-time scanning, not the reason for excluding
+# it; a compressed copy previously slipped in this way and cost every Termux
+# `git fetch --depth 1` install 2.9 MB of unused dead weight.
 /HSE_MONOLITH.glm5.txt
+/HSE_MONOLITH.glm5.txt.*
 
 # IDE / editor
 .idea/

@@ -177,18 +177,19 @@ pub fn derive_resolution(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     out
 }
 
-/// Derive `RegisteredBy` edges (Domain → Organisation / Email) from WHOIS
-/// registrant evidence.
+/// Derive `RegisteredBy` edges (Domain → Organisation / Email / Person) from
+/// WHOIS registrant evidence.
 ///
 /// Robust by design, mirroring `derive_resolution`: it matches a Domain
 /// entity's evidence attribute *values* (e.g. `whois`'s `registrant_org` /
-/// `registrant_email` attrs) against present Organisation and Email entities,
-/// rather than coupling to attribute keys. `whois` emits the registrant org
-/// and contact emails as their own entities, so both endpoints are present.
-/// `registrar`-keyed attributes are skipped, so a registrar that happens to be
-/// a present Organisation entity isn't mistaken for the registrant. Org names
-/// are matched as whole trimmed values (not tokenised) since they contain
-/// spaces. One edge per (domain, registrant).
+/// `registrant_email` / `registrant_name` attrs) against present Organisation,
+/// Email and Person entities, rather than coupling to attribute keys. `whois`
+/// emits the registrant org, contact emails and registrant/admin/tech names as
+/// their own entities and folds the name values into the domain evidence, so
+/// every endpoint is present. `registrar`-keyed attributes are skipped, so a
+/// registrar that happens to be a present Organisation entity isn't mistaken
+/// for the registrant. Org/Person names are matched as whole trimmed values
+/// (not tokenised) since they contain spaces. One edge per (domain, registrant).
 pub fn derive_registration(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     use std::collections::{HashMap, HashSet};
 
@@ -202,7 +203,11 @@ pub fn derive_registration(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
         .filter(|e| e.kind == EntityKind::Email)
         .map(|e| (e.value.as_str(), e))
         .collect();
-    if org_by_value.is_empty() && email_by_value.is_empty() {
+    // Registrant/admin/tech NAMES (folded into the domain evidence by `whois`)
+    // resolve to a present Person via this deterministic index, so the human who
+    // registered the domain is linked to it — not just the org/email contacts.
+    let persons = persons_by_name(entities);
+    if org_by_value.is_empty() && email_by_value.is_empty() && persons.is_empty() {
         return Vec::new();
     }
 
@@ -228,6 +233,17 @@ pub fn derive_registration(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
                 // present Organisation entity. ("registrant" does not contain
                 // "registrar", so registrant_* keys are kept.)
                 if k.contains("registrar") {
+                    continue;
+                }
+                // Registrant/admin/tech name → the human registrant Person.
+                // Checked BEFORE org/email so a name value can't be mis-matched
+                // as an org. `*_name` selects exactly registrant_name/admin_name/
+                // tech_name (name_servers ends with "servers", registrar_* is
+                // already skipped).
+                if k.ends_with("_name") {
+                    if let Some(&p) = persons.get(v.trim().to_lowercase().as_str()) {
+                        link(dom, p, &mut out);
+                    }
                     continue;
                 }
                 // Organisation: whole trimmed value (org names contain spaces).
@@ -820,7 +836,7 @@ pub fn derive_handles(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
 /// real edge instead of only reading it off a standalone correlation.
 ///
 /// Delegates to the correlator's own [`crate::core::correlator::Secret`]
-/// classification and [`crate::core::correlator::canonical_handle`]
+/// classification and [`crate::core::entity::canonical_handle`]
 /// handle-folding (Rule 4: one classifier/one folder, so the graph edge and
 /// the correlation can never disagree on which secrets qualify or which
 /// handles are the same account). Emits a full pairwise clique over every
@@ -828,7 +844,8 @@ pub fn derive_handles(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
 /// through one arbitrarily-chosen hub), so `identity_paths`' BFS finds the
 /// direct edge between ANY two accounts a shared secret ties together.
 pub fn derive_reused_secret_link(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
-    use crate::core::correlator::{Secret, canonical_handle};
+    use crate::core::correlator::Secret;
+    use crate::core::entity::canonical_handle;
     use std::collections::BTreeSet;
 
     let secrets: Vec<&Entity> = entities
@@ -995,23 +1012,19 @@ pub fn derive_residency(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
         .filter(|e| matches!(e.kind, EntityKind::Address | EntityKind::Coordinates))
     {
         let mut linked = false;
-        for ev in &place.evidence {
-            for (k, v) in &ev.attributes {
-                if !PERSON_NAME_ATTRS.iter().any(|a| k.eq_ignore_ascii_case(a)) {
-                    continue;
-                }
-                if let Some(&p) = person_by_name.get(v.trim().to_lowercase().as_str())
-                    && seen.insert((p.uid.clone(), place.uid.clone()))
-                {
-                    out.push(Relation::new(
-                        p.uid.as_str(),
-                        place.uid.as_str(),
-                        RelationKind::LocatedAt,
-                        p.confidence.min(place.confidence),
-                        scan_id,
-                    ));
-                    linked = true;
-                }
+        // Reuse the shared person-at-place resolver (same evidence order, filter,
+        // lookup and per-place uid dedup); the global `seen` still handles
+        // cross-place dedup and the exact-name fallback below.
+        for p in residents_of(place, &person_by_name) {
+            if seen.insert((p.uid.clone(), place.uid.clone())) {
+                out.push(Relation::new(
+                    p.uid.as_str(),
+                    place.uid.as_str(),
+                    RelationKind::LocatedAt,
+                    p.confidence.min(place.confidence),
+                    scan_id,
+                ));
+                linked = true;
             }
         }
         if linked || !place.has_tag("exact-name-match") {

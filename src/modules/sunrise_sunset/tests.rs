@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
     #[test]
@@ -27,9 +28,9 @@ use super::*;
                 "civil_twilight_end": "2024-06-16T07:30:00+00:00"
             }
         }"#;
-        let r: SsResp = serde_json::from_str(raw).unwrap();
+        let r: SsResp = serde_json::from_str(raw).expect("should succeed");
         assert_eq!(r.status.as_deref(), Some("OK"));
-        let res = r.results.unwrap();
+        let res = r.results.expect("should succeed");
         assert!(res.sunrise.is_some());
         assert!(res.sunset.is_some());
     }
@@ -47,7 +48,7 @@ use super::*;
     }
 
     fn results(json: &str) -> SsResults {
-        serde_json::from_str(json).unwrap()
+        serde_json::from_str(json).expect("should succeed")
     }
 
     fn attr<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {
@@ -68,7 +69,7 @@ use super::*;
         let e = build_solar_entity("-33.8,151.2", -33.8, 151.2, "2024-06-16", &res, "s");
         assert_eq!(e.kind, EntityKind::Coordinates);
         assert!(e.has_tag("sunrise-sunset") && e.has_tag("chronolocation") && e.has_tag("geoint"));
-        assert!((e.confidence - 0.55).abs() < 1e-9);
+        assert!((e.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
         assert_eq!(attr(&e, "date"), Some("2024-06-16"));
         assert_eq!(attr(&e, "latitude"), Some("-33.800000"));
         assert_eq!(attr(&e, "longitude"), Some("151.200000"));

@@ -9,7 +9,10 @@ use futures::StreamExt;
 use super::fetch::fetch_one;
 use super::helpers::*;
 use super::{ENGINE_CONCURRENCY, engine_enabled, is_social_host, proven_live_engines};
-use crate::core::module::{ModuleContext, ModuleResult};
+use crate::core::{
+    confidence,
+    module::{ModuleContext, ModuleResult},
+};
 
 pub(super) async fn recycle_entities(
     ctx: &ModuleContext,
@@ -20,11 +23,12 @@ pub(super) async fn recycle_entities(
 ) {
     let reliable = proven_live_engines();
 
-    let mut recycle_queries: Vec<String> = Vec::new();
-    let mut seen_queries: HashSet<String> = HashSet::new();
+    // Pre-allocate based on typical entity count (most pass the confidence filter).
+    let mut recycle_queries: Vec<String> = Vec::with_capacity((result.entities.len() / 2).max(4));
+    let mut seen_queries: HashSet<String> = HashSet::with_capacity(recycle_queries.capacity());
 
     for entity in &result.entities {
-        if entity.confidence < 0.40 {
+        if entity.confidence < confidence::LOW {
             continue;
         }
         let q = match entity.kind {
@@ -40,18 +44,18 @@ pub(super) async fn recycle_entities(
                 Some(format!("\"{}\" address OR location OR city", entity.value))
             }
             EntityKind::Person => Some(format!("\"{}\" address OR email OR phone", entity.value)),
-            EntityKind::Address if entity.confidence >= 0.40 => Some(format!(
+            EntityKind::Address if entity.confidence >= confidence::LOW => Some(format!(
                 "\"{}\" name OR resident OR owner OR phone",
                 entity.value
             )),
             EntityKind::Phone => Some(format!("\"{}\" name OR address OR owner", entity.value)),
-            EntityKind::Domain if entity.confidence >= 0.55 => {
+            EntityKind::Domain if entity.confidence >= confidence::MEDIUM_HIGH => {
                 let domain = &entity.value;
                 Some(format!(
                     "\"{domain}\" location OR address OR city OR suburb"
                 ))
             }
-            EntityKind::Organisation if entity.confidence >= 0.50 => {
+            EntityKind::Organisation if entity.confidence >= confidence::MEDIUM => {
                 Some(format!("\"{}\" address OR ABN OR location", entity.value))
             }
             _ => None,
@@ -111,6 +115,9 @@ pub(super) async fn recycle_entities(
     let mut seen_addrs: HashSet<String> = HashSet::new();
     let mut seen_emails: HashSet<String> = HashSet::new();
     let mut seen_phones: HashSet<String> = HashSet::new();
+    // Coordinates already present (or discovered here), keyed to 4 decimal
+    // places so the same point from two snippets isn't double-emitted.
+    let mut seen_coords: HashSet<String> = HashSet::new();
 
     // Collect existing entity values to avoid duplicates
     for e in &result.entities {
@@ -123,6 +130,9 @@ pub(super) async fn recycle_entities(
             }
             EntityKind::Phone => {
                 seen_phones.insert(e.value.clone());
+            }
+            EntityKind::Coordinates => {
+                seen_coords.insert(e.value.clone());
             }
             _ => {}
         }
@@ -137,7 +147,11 @@ pub(super) async fn recycle_entities(
                     .split_whitespace()
                     .last()
                     .is_some_and(|t| t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()));
-                let base_conf = if has_postcode { 0.55 } else { 0.45 };
+                let base_conf = if has_postcode {
+                    confidence::MEDIUM_HIGH
+                } else {
+                    confidence::LOW_MEDIUM
+                };
                 let mut e = Entity::new(EntityKind::Address, &addr, base_conf, &scan_id);
                 e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 e.tag("recycled");
@@ -172,7 +186,8 @@ pub(super) async fn recycle_entities(
                 continue;
             }
             if seen_emails.insert(email.clone()) {
-                let mut e = Entity::new(EntityKind::Email, &email, 0.55, &scan_id);
+                let mut e =
+                    Entity::new(EntityKind::Email, &email, confidence::MEDIUM_HIGH, &scan_id);
                 e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 e.tag("recycled");
                 e.add_evidence(recycled_evidence(r, "Email", &email, &combined));
@@ -182,14 +197,88 @@ pub(super) async fn recycle_entities(
 
         for phone in extract_phones_from_text(&combined) {
             if seen_phones.insert(phone.clone()) {
-                let mut e = Entity::new(EntityKind::Phone, &phone, 0.50, &scan_id);
+                let mut e = Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM, &scan_id);
                 e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 e.tag("recycled");
                 e.add_evidence(recycled_evidence(r, "Phone", &phone, &combined));
                 result.push(e);
             }
         }
+
+        // Coordinate literals sitting directly in the snippet/title — a
+        // location-sharing `geo:` URI or a Google Plus Code — become a
+        // first-class Coordinates entity instead of being lost. This is the
+        // snippet-native complement to the address→city_coords derivation above:
+        // that infers a coordinate from a matched place NAME; this reads a
+        // coordinate the page literally states. Deliberately conservative (see
+        // `extract_coords_from_text`) so prose numbers never fabricate a point.
+        for coord in extract_coords_from_text(&combined) {
+            if seen_coords.insert(coord.clone()) {
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord,
+                    confidence::MEDIUM,
+                    &scan_id,
+                );
+                c.tag(crate::core::tags::SEARCH_DISCOVERED);
+                c.tag("recycled");
+                c.tag("geoint");
+                c.tag("snippet-coord");
+                c.add_evidence(recycled_evidence(r, "Coordinates", &coord, &combined));
+                result.push(c);
+            }
+        }
     }
+}
+
+/// Scan snippet/title text for coordinate literals, returning each as a
+/// `"{lat:.4},{lon:.4}"` string. **Deliberately conservative**: only the two
+/// unambiguously-marked forms are scanned —
+///
+/// * `geo:` URIs (RFC 5870), a whitespace-delimited token beginning `geo:`; and
+/// * Open Location Code / "Plus Code" tokens (the `+`-bearing OLC form, e.g.
+///   `4RRH54JX+3M`).
+///
+/// Bare decimal pairs and DMS are intentionally NOT scanned here: prose like
+/// `$33.50, 151.20` or `version 1.5, 2.3` parses as a perfectly in-range
+/// coordinate, and HSE's evidentiary doctrine treats a fabricated coordinate as
+/// worse than a missed one — so only forms whose surface syntax cannot occur by
+/// accident in ordinary text are accepted. Every candidate is still validated by
+/// [`crate::util::geo::coords::parse`] (range + format), and the caller dedups.
+/// Bounded and pure.
+fn extract_coords_from_text(text: &str) -> Vec<String> {
+    use crate::util::geo::coords;
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<(i64, i64)> = HashSet::new();
+    // Bound the tokens scanned so a pathological blob can't balloon work.
+    for tok in text
+        .split(|c: char| c.is_whitespace() || matches!(c, '"' | '<' | '>' | '(' | ')' | '[' | ']'))
+        .take(2048)
+    {
+        // Trim trailing sentence punctuation a snippet may append (`geo:1,2.`).
+        let cand = tok.trim_end_matches(['.', ',', ';', '!', '?']);
+        // Compare the scheme over BYTES, not a `str` slice: `cand[..4]` panics
+        // when the 4th byte falls inside a multi-byte character (`"Cruíz"` —
+        // 'í' spans bytes 3..5), which is ordinary in real snippet prose and
+        // took the whole module down for that target. Byte slicing has no
+        // boundary rule, and the `len() > 4` guard already covers the range.
+        // Matches the crate's established prefix-test idiom (`util::dmarc`,
+        // `util::spf`, `util::tlsrpt`, `core::scan::classify`).
+        let is_geo = cand.len() > 4 && cand.as_bytes()[..4].eq_ignore_ascii_case(b"geo:");
+        // A Plus Code always carries exactly one '+' with 8 chars before it; a
+        // cheap pre-filter before the full OLC parse.
+        let is_plus = cand.contains('+') && cand.find('+') == Some(8);
+        if !(is_geo || is_plus) {
+            continue;
+        }
+        if let Some(ll) = coords::parse(cand) {
+            let key = ((ll.lat * 1e4).round() as i64, (ll.lon * 1e4).round() as i64);
+            if seen.insert(key) {
+                out.push(format!("{:.4},{:.4}", ll.lat, ll.lon));
+            }
+        }
+    }
+    out
 }
 
 /// Build a fully-attributed evidence record for a finding extracted from a
@@ -331,17 +420,11 @@ pub(super) fn extract_family_names(
             if !seen.insert(first.to_string()) {
                 continue;
             }
-            // Title-case by CHAR, not byte: `lastname` is not ASCII-validated
-            // (only `first` is, above), so byte slicing it would panic on a
-            // multi-byte surname like "Müller".
-            let titlecase = |w: &str| -> String {
-                let mut c = w.chars();
-                match c.next() {
-                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                    None => String::new(),
-                }
-            };
-            let name = format!("{} {}", titlecase(first), titlecase(&lastname));
+            // `upper_first` capitalises by CHAR, not byte: `lastname` is not
+            // ASCII-validated (only `first` is, above), so byte slicing it would
+            // panic on a multi-byte surname like "Müller".
+            use crate::util::str_util::upper_first;
+            let name = format!("{} {}", upper_first(first), upper_first(&lastname));
             found.push((name, r.url.clone()));
         }
     }
@@ -472,7 +555,7 @@ pub(super) fn extract_username_pivots(results: &[SearchResult], target: &Target)
 ///   banners and gamertag-only display names like `ZMKCR (@ZMKCR)`).
 /// - Duplicates are deduplicated by lowercase key within one call.
 ///
-/// Confidence: 0.65 — social title is a near-certain identity disclosure, but
+/// Confidence: confidence::HIGH — social title is a near-certain identity disclosure, but
 /// display names are not always real names (gamertags, aliases).
 pub(super) fn extract_display_names_from_titles(
     results: &[SearchResult],
@@ -506,7 +589,7 @@ pub(super) fn extract_display_names_from_titles(
         }
         let key = raw_name.to_lowercase();
         if seen.insert(key) {
-            let mut e = Entity::new(EntityKind::Person, &raw_name, 0.65, scan_id);
+            let mut e = Entity::new(EntityKind::Person, &raw_name, confidence::HIGH, scan_id);
             e.tag("derived");
             e.tag("social-name");
             e.tag(crate::core::tags::SEARCH_DISCOVERED);
@@ -528,12 +611,12 @@ pub(super) fn extract_display_names_from_titles(
 ///
 /// Two signals are combined:
 ///
-/// **Signal 1 — result URL is a bio aggregator or messaging host** (0.70 / 0.65
+/// **Signal 1 — result URL is a bio aggregator or messaging host** (confidence::HIGH_PLUS / confidence::HIGH
 /// conf): a search engine returned `https://linktr.ee/slug` as a top result.
 /// Only emitted when at least one seed term appears in the title+snippet to
 /// confirm the page is about the target.
 ///
-/// **Signal 2 — bio URL appears in SERP text** (0.65 / 0.60 conf): the SERP
+/// **Signal 2 — bio URL appears in SERP text** (confidence::HIGH / confidence::MEDIUM_PLUS conf): the SERP
 /// snippet or title contains text like `linktr.ee/slug` (with or without
 /// `https://`). The URL is reconstructed with an `https://` prefix.
 ///
@@ -564,7 +647,11 @@ pub(super) fn extract_bio_aggregator_urls(
         if is_bio || is_msg {
             let url_str = r.url.trim_end_matches('/').to_string();
             if seen.insert(url_str.to_lowercase()) {
-                let conf = if is_msg { 0.65 } else { 0.70 };
+                let conf = if is_msg {
+                    confidence::HIGH
+                } else {
+                    confidence::HIGH_PLUS
+                };
                 let tag = if is_msg {
                     "messaging-profile"
                 } else {
@@ -602,7 +689,11 @@ pub(super) fn extract_bio_aggregator_urls(
             let reconstructed = format!("https://{slug_host}/{slug}");
             if seen.insert(reconstructed.to_lowercase()) {
                 let is_messaging = MESSAGING_DIRECT_HOSTS.contains(&slug_host);
-                let conf = if is_messaging { 0.60 } else { 0.65 };
+                let conf = if is_messaging {
+                    confidence::MEDIUM_PLUS
+                } else {
+                    confidence::HIGH
+                };
                 let tag = if is_messaging {
                     "messaging-profile"
                 } else {

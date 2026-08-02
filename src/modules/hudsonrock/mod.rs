@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -48,7 +49,7 @@ struct Stealer {
 /// (actual malware exfiltration, not compilations), so the baseline is
 /// higher than database breaches. Recent compromises get boosted further
 /// by `freshness_boost`.
-const BASE_CONFIDENCE: f64 = 0.85;
+const BASE_CONFIDENCE: f64 = confidence::HIGH_PLUSPLUS_PLUS;
 
 /// Boost confidence to this value when the compromise date is within
 /// 90 days. Per Recorded Future's 2025 report, 53% of credentials are
@@ -66,7 +67,7 @@ impl Module for HudsonRock {
     }
 
     fn description(&self) -> &'static str {
-        "Free stealer-log lookup via HudsonRock Cavalier"
+        "HudsonRock Cavalier recon (free) — sweeps stealer-log corpora for a target's infostealer exposure"
     }
 
     fn priority(&self) -> u8 {
@@ -157,76 +158,7 @@ impl Module for HudsonRock {
             return Ok(ModuleResult::new());
         };
 
-        if data.stealers.is_empty() {
-            return Ok(ModuleResult::new());
-        }
-
-        let confidence = compute_confidence(&data.stealers, crate::core::entity::unix_now());
-        let mut entity = target.to_entity(confidence, &ctx.scan_id);
-        entity.tag(tags::BREACH);
-        entity.tag(tags::STEALER_LOG);
-
-        let seen_families: std::collections::BTreeSet<&str> = data
-            .stealers
-            .iter()
-            .filter_map(|s| s.stealer_family.as_deref())
-            .collect();
-        let seen_hosts: std::collections::BTreeSet<&str> = data
-            .stealers
-            .iter()
-            .filter_map(|s| s.computer_name.as_deref())
-            .collect();
-
-        data.stealers.iter().for_each(|stealer| {
-            let cred_count = stealer.credentials.len();
-            let family = stealer.stealer_family.as_deref().unwrap_or("-");
-            let ev = [
-                ("date_uploaded", stealer.date_uploaded.as_deref()),
-                ("victim_ip", stealer.ip.as_deref()),
-            ]
-            .into_iter()
-            .filter_map(|(key, value)| value.map(|v| (key, v)))
-            .fold(
-                Evidence::new(
-                    SRC,
-                    format!("Stealer log: {cred_count} credentials on compromised machine"),
-                )
-                .with_attr(
-                    "computer_name",
-                    stealer.computer_name.as_deref().unwrap_or("-"),
-                )
-                .with_attr(
-                    "operating_system",
-                    stealer.operating_system.as_deref().unwrap_or("-"),
-                )
-                .with_attr(
-                    "date_compromised",
-                    stealer.date_compromised.as_deref().unwrap_or("-"),
-                )
-                .with_attr("stealer_family", family)
-                .with_attr(
-                    "malware_path",
-                    stealer.malware_path.as_deref().unwrap_or("-"),
-                )
-                .with_attr("credential_count", cred_count.to_string()),
-                |ev, (key, v)| ev.with_attr(key, v),
-            );
-            entity.add_evidence(ev);
-        });
-
-        seen_families
-            .iter()
-            .for_each(|family| entity.tag(format!("stealer:{}", family.to_lowercase())));
-        if seen_hosts.len() >= 2 {
-            entity.tag(tags::MULTI_DEVICE);
-        }
-        entity.tag(format!("stealer-count:{}", data.stealers.len()));
-
-        let mut result = ModuleResult::new();
-        result.push(entity);
-        result.extend(victim_ip_entities(&data.stealers, &ctx.scan_id));
-
-        Ok(result)
+        Ok(build_result(target, &data, &ctx.scan_id))
     }
 }
 
@@ -255,7 +187,7 @@ fn victim_ip_entities(stealers: &[Stealer], scan_id: &str) -> Vec<Entity> {
             let mut e = Entity::new(
                 crate::core::entity::EntityKind::IpAddress,
                 ip,
-                0.70,
+                confidence::HIGH_PLUS,
                 scan_id,
             );
             e.tag(tags::STEALER_LOG);
@@ -285,13 +217,104 @@ fn search_by_login_url(email: &str) -> String {
     )
 }
 
-/// Confidence for a stealer-log hit evaluated at epoch second `now_secs`.
+/// Build the module's entities from an already-fetched Cavalier response.
 ///
-/// Takes `now` rather than sampling the clock so the freshness decision is a
-/// pure function of its inputs (the `circuit_breaker::allow_host(host, now)`
-/// convention). The window is *rolling* — `[now - 90d, now]` — so a fixture
-/// pinned to a fixed calendar date silently ages out of it; keeping the clock
-/// at the call site lets a test pin `now` and assert the boundary exactly.
+/// Split out of [`HudsonRock::process`] as a pure, HTTP-free seam so the
+/// entity/evidence shape — in particular the canonical `breach_date` stamping
+/// AU-019's temporal breach-cluster rule (`rules/breach.rs`) depends on — is
+/// unit-testable without a live endpoint.
+fn build_result(target: &Target, data: &CavalierResp, scan_id: &str) -> ModuleResult {
+    if data.stealers.is_empty() {
+        return ModuleResult::new();
+    }
+
+    let confidence = compute_confidence(&data.stealers, crate::core::entity::unix_now());
+    let mut entity = target.to_entity(confidence, scan_id);
+    entity.tag(tags::BREACH);
+    entity.tag(tags::STEALER_LOG);
+
+    let seen_families: std::collections::BTreeSet<&str> = data
+        .stealers
+        .iter()
+        .filter_map(|s| s.stealer_family.as_deref())
+        .collect();
+    let seen_hosts: std::collections::BTreeSet<&str> = data
+        .stealers
+        .iter()
+        .filter_map(|s| s.computer_name.as_deref())
+        .collect();
+
+    data.stealers.iter().for_each(|stealer| {
+        let cred_count = stealer.credentials.len();
+        let family = stealer.stealer_family.as_deref().unwrap_or("-");
+        let ev = [
+            ("date_uploaded", stealer.date_uploaded.as_deref()),
+            ("victim_ip", stealer.ip.as_deref()),
+            // The compromise date IS the breach/exposure event (date_uploaded is
+            // merely when the log was indexed), so stamp it under the canonical
+            // `breach_date` key AU-019 reads — the entity is `breach`-tagged, and
+            // without this its stealer-log dates could never date-cluster with
+            // other breach sources. Only stamped when present (this optional
+            // array skips `None`), so AU-019 never parses the "-" placeholder the
+            // separate `date_compromised` attribute below carries.
+            ("breach_date", stealer.date_compromised.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .fold(
+            Evidence::new(
+                SRC,
+                format!("Stealer log: {cred_count} credentials on compromised machine"),
+            )
+            .with_attr(
+                "computer_name",
+                stealer.computer_name.as_deref().unwrap_or("-"),
+            )
+            .with_attr(
+                "operating_system",
+                stealer.operating_system.as_deref().unwrap_or("-"),
+            )
+            .with_attr(
+                "date_compromised",
+                stealer.date_compromised.as_deref().unwrap_or("-"),
+            )
+            .with_attr("stealer_family", family)
+            .with_attr(
+                "malware_path",
+                stealer.malware_path.as_deref().unwrap_or("-"),
+            )
+            .with_attr("credential_count", cred_count.to_string()),
+            |ev, (key, v)| ev.with_attr(key, v),
+        );
+        entity.add_evidence(ev);
+    });
+
+    seen_families
+        .iter()
+        .for_each(|family| entity.tag(format!("stealer:{}", family.to_lowercase())));
+    if seen_hosts.len() >= 2 {
+        entity.tag(tags::MULTI_DEVICE);
+    }
+    entity.tag(format!("stealer-count:{}", data.stealers.len()));
+
+    let mut result = ModuleResult::new();
+    result.push(entity);
+    result.extend(victim_ip_entities(&data.stealers, scan_id));
+
+    result
+}
+
+/// Freshness verdict for a stealer set, relative to an explicitly supplied
+/// `now_secs`.
+///
+/// The clock is a parameter rather than an internal `unix_now()` call so the
+/// function is pure and its tests are deterministic. Taking the clock from
+/// inside made the freshness verdict depend on the wall clock at test time:
+/// a test pinning an absolute `date_compromised` and asserting
+/// [`FRESH_CONFIDENCE`] necessarily starts failing once real time drifts past
+/// [`FRESHNESS_WINDOW_DAYS`] from that date — which is exactly what happened
+/// (a fixture dated 2026-05-01 went stale, and CI red, on 2026-07-30). A
+/// caller-supplied clock removes the whole failure class.
 fn compute_confidence(stealers: &[Stealer], now_secs: u64) -> f64 {
     let cutoff = now_secs.saturating_sub(FRESHNESS_WINDOW_DAYS * 86400);
 

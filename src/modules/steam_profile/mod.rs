@@ -21,6 +21,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -39,7 +40,7 @@ impl Module for SteamProfile {
     }
 
     fn description(&self) -> &'static str {
-        "Free Steam profile lookup (SteamID64 / vanity → real name, location) via public XML"
+        "Free Steam profile recon — resolves SteamID64 / vanity to real name and location via public XML"
     }
 
     fn priority(&self) -> u8 {
@@ -65,8 +66,19 @@ impl Module for SteamProfile {
             EntityKind::Url,
             EntityKind::Address,
             EntityKind::Coordinates,
+            EntityKind::Email,
+            EntityKind::Domain,
         ];
         KINDS
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Social default (T1593.001 Social Media + T1589.003 Employee Names)
+        // is correct for the realname/persona Person entities, but this
+        // module now also mines emails out of the free-text `<summary>` bio
+        // (matching `reddit_user`'s identical policy), which needs the
+        // explicit T1589.002 (Email Addresses) addition.
+        &["T1589.002", "T1589.003", "T1593.001"]
     }
 
     fn max_timeout_ms(&self) -> u64 {
@@ -113,13 +125,17 @@ fn steam_lookup_url(v: &str) -> Option<(String, f64)> {
     if val.len() == 17 && val.bytes().all(|b| b.is_ascii_digit()) && val.starts_with("7656119") {
         return Some((
             format!("https://steamcommunity.com/profiles/{val}?xml=1"),
-            0.85,
+            confidence::HIGH_PLUSPLUS_PLUS,
         ));
     }
     // Vanity: an explicit `steam:` handle (strong context) or a plausibly-shaped
     // custom URL. A bare numeric (e.g. a phone/ID) is not a vanity.
     if prefixed || is_vanity_shaped(val) {
-        let conf = if prefixed { 0.70 } else { 0.60 };
+        let conf = if prefixed {
+            confidence::HIGH_PLUS
+        } else {
+            confidence::MEDIUM_PLUS
+        };
         return Some((
             format!("https://steamcommunity.com/id/{}?xml=1", urlencode(val)),
             conf,
@@ -160,17 +176,58 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
     result.push(url_e);
 
     // Real name — the high-value Steam-ID → person link.
-    if let Some(realname) = extract_tag(xml, "realname").filter(|n| n.len() >= 3 && n.len() <= 80) {
+    let realname = extract_tag(xml, "realname").filter(|n| n.len() >= 3 && n.len() <= 80);
+    if let Some(realname) = realname.as_deref() {
         let mut p = Entity::new(
             EntityKind::Person,
-            &realname,
-            (conf - 0.13).max(0.45),
+            realname,
+            (conf - 0.13).max(confidence::LOW_MEDIUM),
             scan_id,
         );
         p.tag("steam");
         p.tag("derived");
-        p.add_evidence(ev.clone().with_attr("realname", realname.as_str()));
+        p.add_evidence(ev.clone().with_attr("realname", realname));
         result.push(p);
+    }
+
+    // Persona name (`<steamID>`) — the account's own chosen display name,
+    // distinct from both `<realname>` and the vanity `<customURL>`. A
+    // multi-word persona reads as a real name, so it is promoted to Person
+    // (mirroring `realname`, at a lower confidence since a self-chosen
+    // persona isn't guaranteed genuine) exactly like every sibling profile
+    // module's `profile_kit::person_from_name` display-name policy; a
+    // single-token persona is a handle rather than a name, so it becomes a
+    // Username pivot instead. Skipped when it merely duplicates a field
+    // already emitted above.
+    let vanity = extract_tag(xml, "customURL").filter(|u| is_vanity_shaped(u));
+    if let Some(persona) =
+        extract_tag(xml, "steamID").filter(|p| realname.is_none_or(|r| !r.eq_ignore_ascii_case(p)))
+    {
+        if let Some(mut p) = crate::modules::profile_kit::person_from_name(
+            &persona,
+            (conf - 0.20).max(confidence::LOW),
+            scan_id,
+        ) {
+            p.tag("steam");
+            p.tag("persona");
+            p.tag("derived");
+            p.add_evidence(ev.clone().with_attr("persona_name", persona.as_str()));
+            result.push(p);
+        } else if vanity
+            .as_deref()
+            .is_none_or(|v| !v.eq_ignore_ascii_case(&persona))
+        {
+            let mut u = Entity::new(
+                EntityKind::Username,
+                &persona,
+                (conf - 0.05).max(confidence::MEDIUM),
+                scan_id,
+            );
+            u.tag("steam");
+            u.tag("persona");
+            u.add_evidence(ev.clone().with_attr("persona_name", persona.as_str()));
+            result.push(u);
+        }
     }
 
     // Self-reported profile location → Address (+ inline geocode).
@@ -198,12 +255,59 @@ fn extract_profile(xml: &str, conf: f64, scan_id: &str, result: &mut ModuleResul
     }
 
     // Vanity custom URL → a Username pivot.
-    if let Some(vanity) = extract_tag(xml, "customURL").filter(|u| is_vanity_shaped(u)) {
-        let mut u = Entity::new(EntityKind::Username, &vanity, conf, scan_id);
+    if let Some(vanity) = vanity.as_deref() {
+        let mut u = Entity::new(EntityKind::Username, vanity, conf, scan_id);
         u.tag("steam");
         u.tag("steam-vanity");
-        u.add_evidence(ev.with_attr("custom_url", vanity.as_str()));
+        u.add_evidence(ev.clone().with_attr("custom_url", vanity));
         result.push(u);
+    }
+
+    // Free-text bio (`<summary>`) → mined emails/URLs, matching every sibling
+    // Social module's bio-scanning policy (`reddit_user`, `hacker_news`, …).
+    // No cap: `util::extract::emails`/`urls` already dedupe internally.
+    if let Some(bio) = extract_tag(xml, "summary") {
+        for email in crate::util::extract::emails(&bio) {
+            let mut e = Entity::new(
+                EntityKind::Email,
+                &email,
+                (conf - 0.15).max(confidence::LOW_MEDIUM),
+                scan_id,
+            );
+            e.tag("steam");
+            e.tag("public-profile");
+            e.add_evidence(ev.clone().with_attr("source_field", "summary"));
+            result.push(e);
+        }
+        for link in crate::util::extract::urls(&bio) {
+            let link = link.as_str();
+            let mut url_e = Entity::new(
+                EntityKind::Url,
+                link,
+                (conf - 0.20).max(confidence::LOW),
+                scan_id,
+            );
+            url_e.tag("steam");
+            url_e.tag("personal-site");
+            url_e.add_evidence(ev.clone().with_attr("source_field", "summary"));
+            result.push(url_e);
+            if let Some(host) = crate::util::url_util::host_from_url(link)
+                && host.contains('.')
+                && host != "steamcommunity.com"
+            {
+                let mut d =
+                    Entity::new(EntityKind::Domain, &host, (conf - 0.25).max(0.38), scan_id);
+                d.tag("steam");
+                d.tag("derived");
+                d.tag("personal-site");
+                d.add_evidence(
+                    ev.clone()
+                        .with_attr("source_url", link)
+                        .with_attr("source_field", "summary"),
+                );
+                result.push(d);
+            }
+        }
     }
 }
 

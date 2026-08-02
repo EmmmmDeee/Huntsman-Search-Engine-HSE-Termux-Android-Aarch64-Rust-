@@ -69,7 +69,7 @@ fn build_body_keeps_paid_secret_in_full_with_meta_header() {
         1_780_726_449,
         r#"{"results":[{"password":"PLAINTEXT-kept"}]}"#,
     );
-    let v: Value = serde_json::from_str(&body).unwrap();
+    let v: Value = serde_json::from_str(&body).expect("should succeed");
     assert_eq!(v["_meta"]["provider"], "see_know");
     assert_eq!(v["_meta"]["endpoint"], "stealer");
     assert_eq!(v["_meta"]["query"], "seed@x.com");
@@ -87,7 +87,7 @@ fn build_body_falls_back_to_verbatim_string_for_non_json() {
         0,
         "503 Service Unavailable",
     );
-    let v: Value = serde_json::from_str(&body).unwrap();
+    let v: Value = serde_json::from_str(&body).expect("should succeed");
     assert_eq!(v["raw"], "503 Service Unavailable");
 }
 
@@ -151,7 +151,10 @@ fn describe_url_redacts_a_path_embedded_own_key() {
 }
 
 #[test]
-fn records_in_window_recovers_full_responses_and_filters_by_time() {
+fn records_filtered_dir_recovers_full_responses_and_filters_by_time() {
+    // Exercises the shared `records_filtered_dir` core directly (its window
+    // filter, optional query-set filter, and parse) — the same core
+    // `records_for_queries` builds on — rather than through a dead pub wrapper.
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
@@ -174,7 +177,7 @@ fn records_in_window_recovers_full_responses_and_filters_by_time() {
             r#"{"results":[{"source":"INF0SEC Leaks"}]}"#,
         ),
     )
-    .unwrap();
+    .expect("should succeed");
     write_file(
         &dir.join(build_filename(
             "oathnet",
@@ -191,12 +194,12 @@ fn records_in_window_recovers_full_responses_and_filters_by_time() {
             r#"{"data":{"items":[{"password":"PLAINTEXT"}]}}"#,
         ),
     )
-    .unwrap();
+    .expect("should succeed");
     write_file(
         &dir.join(build_filename("see-know", "search-email", "old", 50, 3)),
         &build_body("see-know", "search-email", "old", 50, r#"{"x":1}"#),
     )
-    .unwrap();
+    .expect("should succeed");
 
     let got = records_filtered_dir(&dir, 900, 1100, None);
     assert_eq!(got.len(), 2, "only the two in-window responses");
@@ -222,6 +225,60 @@ fn records_in_window_recovers_full_responses_and_filters_by_time() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A `FullName` seed (e.g. "Brett Lawnton") is archived under its raw,
+/// case-preserving value — `slug` deliberately keeps case for a legible
+/// filename (`slug_is_human_legible_and_filesystem_safe` above pins
+/// `slug("Jordan Avery", 80) == "Jordan_Avery"`) — but the dossier renderer
+/// builds its query set from `scan.target.value.to_lowercase()`
+/// (`cli::export::renderers`). Before this fix, the cheap filename
+/// pre-filter compared the two without normalising case, so it silently
+/// dropped every archived file for any target with an uppercase letter —
+/// i.e. virtually every Person/FullName scan — before the correct,
+/// already-case-insensitive `_meta.query` check two steps later was ever
+/// reached. This is what made a real "Brett Lawnton" scan's dossier report
+/// "RAW SOURCE RECORDS (0 responses)" despite the archive holding real,
+/// in-window, on-topic data.
+#[test]
+fn records_for_a_mixed_case_query_are_not_dropped_by_the_filename_prefilter() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let dir = std::env::temp_dir().join(format!("hse_case_{}_{nanos}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    write_file(
+        &dir.join(build_filename(
+            "oathnet",
+            "breach-search",
+            "Brett Lawnton",
+            1000,
+            1,
+        )),
+        &build_body(
+            "oathnet",
+            "breach-search",
+            "Brett Lawnton",
+            1000,
+            r#"{"data":{"items":[{"email":"brett.lawnton@gmail.com"}]}}"#,
+        ),
+    )
+    .expect("should succeed");
+
+    // Mirrors renderers.rs's `scan.target.value.to_lowercase()` exactly.
+    let mut queries: std::collections::HashSet<String> = std::collections::HashSet::new();
+    queries.insert("Brett Lawnton".to_lowercase());
+
+    let got = records_filtered_dir(&dir, 900, 1100, Some(&queries));
+    assert_eq!(
+        got.len(),
+        1,
+        "an archived file for a mixed-case query must still be found when \
+         the caller's query set is lower-cased"
+    );
+    assert_eq!(got[0].query, "Brett Lawnton");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn records_filtered_dir_matches_query_set_case_insensitively() {
     // Regression: the filename pre-filter compared the archived query slug
@@ -239,7 +296,7 @@ fn records_filtered_dir_matches_query_set_case_insensitively() {
         &dir.join(build_filename("see-know", "search", "JaneSmith", 1000, 1)),
         &build_body("see-know", "search", "JaneSmith", 1000, r#"{"hit":true}"#),
     )
-    .unwrap();
+    .expect("should succeed");
     // The caller passes the lower-cased query set (as the authoritative check
     // itself requires); the mixed-case archived response must still be returned.
     let mut want: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -282,11 +339,14 @@ fn write_file_persists_individual_named_response_on_disk() {
 
     assert!(path.exists());
     assert_eq!(
-        path.file_name().unwrap().to_str().unwrap(),
+        path.file_name()
+            .expect("should succeed")
+            .to_str()
+            .expect("should succeed"),
         "see_know__search-email__vanamill_at_hotmail.com__20260606T061409Z__0003.json"
     );
-    let read = std::fs::read_to_string(&path).unwrap();
-    let v: Value = serde_json::from_str(&read).unwrap();
+    let read = std::fs::read_to_string(&path).expect("should succeed");
+    let v: Value = serde_json::from_str(&read).expect("should succeed");
     assert_eq!(v["raw"]["x"], 1);
 
     let _ = std::fs::remove_dir_all(&dir);

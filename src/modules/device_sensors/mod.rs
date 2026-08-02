@@ -1,12 +1,17 @@
 //! Device location sensors — WiFi connection info and GPS/network fix via Termux.
 //!
-//! Merges the former `wifi_connect` and `gps_fix` modules into a single
-//! passive sensor pass.  Invokes `termux-wifi-connectioninfo` (3 s ceiling),
-//! then a location fix that degrades from a fresh lock to the phone's
-//! passively-cached last-known position so a fix is established with no input:
-//! `-p gps -r once` (12 s) → `-p network -r once` (8 s) → `-p gps -r last` →
-//! `-p network -r last` (the last-known stages are near-instant and tagged
-//! `fix-age:last-known`).
+//! Merges the former `wifi_connect` and `gps_fix` modules into a single passive
+//! sensor pass: the associated-network read
+//! ([`crate::modules::termux_sensor::Sensor::WifiConnection`]) and a location
+//! fix ([`crate::modules::device_fix::scan_location_ladder`], which degrades
+//! from a fresh lock to the phone's passively-cached last-known position so a
+//! fix is established with no input).
+//!
+//! Both the tool budgets and the ladder's stages live at those two definitions
+//! and are deliberately NOT restated here. This header used to spell out all
+//! four stages and their timeouts, which made it a third copy of a fact the
+//! compiler cannot check — the same drift the two definitions exist to end,
+//! displaced into prose.
 //!
 //! Off-device behaviour: termux-api binary missing → no-op (no error).
 
@@ -14,19 +19,29 @@ use async_trait::async_trait;
 
 use crate::core::{
     entity::EntityKind,
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::termux::termux_cmd;
 
-mod gps;
 mod wifi;
 
 #[cfg(test)]
 mod tests;
 
 pub(super) const SRC: &str = "device_sensors";
+
+// The blank-vs-unparseable contract is single-sourced in
+// `crate::modules::termux_sensor`; re-exported here so this module's sensor
+// submodules keep calling `super::is_blank` / `super::unparseable`.
+pub(super) use crate::modules::termux_sensor::{Sensor, is_blank};
+
+/// [`crate::modules::termux_sensor::unparseable_for`] bound to this module's
+/// `SRC`. Takes the [`Sensor`] rather than a label string, so an error can only
+/// name a tool this module actually reads.
+pub(super) fn unparseable(sensor: Sensor, e: &serde_json::Error) -> Error {
+    crate::modules::termux_sensor::unparseable_for(SRC, sensor, e)
+}
 
 pub struct DeviceSensors;
 
@@ -37,7 +52,7 @@ impl Module for DeviceSensors {
     }
 
     fn description(&self) -> &'static str {
-        "Device location sensors: WiFi connection info and GPS/network fix via Termux"
+        "Device sensor recon — geolocates via WiFi connection info and GPS/network fix through Termux"
     }
 
     fn priority(&self) -> u8 {
@@ -74,60 +89,37 @@ impl Module for DeviceSensors {
     }
 
     async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        // The two sensors are independent observations of different things, so
+        // a failure in one must never discard the other's evidence: everything
+        // collected is kept, and a failure surfaces only when nothing at all
+        // was observed. Same `or_hard_failure` contract as `signal_radar`.
+        let wifi_out =
+            crate::modules::termux_sensor::read_and_parse(Sensor::WifiConnection, |stdout| {
+                wifi::parse_conn(stdout, &ctx.scan_id)
+            })
+            .await;
+        let loc_out = scan_location(&ctx.scan_id).await;
+
         let mut result = ModuleResult::new();
-
-        if let Some(stdout) = termux_cmd("termux-wifi-connectioninfo", &[], 3000).await {
-            result.extend(wifi::parse_conn(&stdout, &ctx.scan_id).entities);
-        }
-
-        result.extend(scan_location(&ctx.scan_id).await.entities);
-
-        Ok(result)
-    }
-}
-
-/// Run `termux-location -p <provider> -r <request>`, bounded by `timeout_ms`,
-/// and parse the result. Returns an empty `ModuleResult` off-device (binary
-/// missing), on timeout, or on an invalid/no-fix payload. A `last` request reads
-/// the OS's passively-cached last-known location and the entities are tagged
-/// `fix-age:last-known` so a cached position is never read as a fresh lock.
-async fn fetch_fix(provider: &str, request: &str, timeout_ms: u64, scan_id: &str) -> ModuleResult {
-    match termux_cmd(
-        "termux-location",
-        &["-p", provider, "-r", request],
-        timeout_ms,
-    )
-    .await
-    {
-        Some(stdout) => {
-            let mut r = gps::parse_fix(&stdout, scan_id);
-            if request == "last" {
-                for e in &mut r.entities {
-                    e.tag("fix-age:last-known");
+        let mut first_failure = None;
+        for outcome in [wifi_out, loc_out] {
+            match outcome {
+                Ok(r) => result.extend(r.entities),
+                Err(e) => {
+                    tracing::warn!(module = SRC, error = %e, "device_sensors: sensor failed");
+                    first_failure.get_or_insert(e);
                 }
             }
-            r
         }
-        None => ModuleResult::new(),
+        result.or_hard_failure(first_failure)
     }
 }
 
-/// Establish a device location fix from passive on-device signals, most precise
-/// first and degrading to the OS's passively-cached last-known location so a
-/// position is still established when no fresh lock is available — needs no
-/// input: fresh GPS → fresh network → last-known GPS → last-known network.
-async fn scan_location(scan_id: &str) -> ModuleResult {
-    const STAGES: &[(&str, &str, u64)] = &[
-        ("gps", "once", 12_000),
-        ("network", "once", 8_000),
-        ("gps", "last", 3_000),
-        ("network", "last", 3_000),
-    ];
-    for &(provider, request, timeout_ms) in STAGES {
-        let r = fetch_fix(provider, request, timeout_ms, scan_id).await;
-        if !r.is_empty() {
-            return r;
-        }
-    }
-    ModuleResult::new()
+/// Establish a device location fix from passive on-device signals — the shared
+/// ladder in [`crate::modules::device_fix::scan_location_ladder`], bound to this
+/// module's evidence-source tag. The stages, their budgets and the
+/// last-known-fix fallback semantics live there, single-sourced with
+/// `signal_radar`, which ran a byte-identical copy.
+async fn scan_location(scan_id: &str) -> Result<ModuleResult> {
+    crate::modules::device_fix::scan_location_ladder(scan_id, SRC).await
 }

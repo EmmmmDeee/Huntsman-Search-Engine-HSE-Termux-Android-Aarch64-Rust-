@@ -24,11 +24,12 @@ use std::collections::HashSet;
 use serde_json::Value;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
     tags,
+    validation::is_username_derived_name,
 };
-use crate::util::extract::EMAIL_RE;
 use crate::util::geo::is_valid_coords;
 use crate::util::json::val_str_or_coerce;
 use crate::util::see_know::val_str;
@@ -37,65 +38,6 @@ use crate::util::target_match::TargetMatch;
 use super::SRC;
 use super::pivots::looks_like_steam_id;
 
-/// Matches `<@id>` and `<@!id>` Discord user-mention shapes.
-static MESSAGE_MENTION_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"<@!?(\d{17,20})>").expect("constant discord-mention regex")
-});
-
-/// Mine a `discord_messages` item's free-text `content` for embedded emails
-/// and emit each as a low-confidence `Email` entity (0.30 — below pivot floor).
-pub(super) fn extract_message_emails(
-    item: &Value,
-    scan_id: &str,
-    seen: &mut HashSet<String>,
-    result: &mut ModuleResult,
-) {
-    let Some(content) = val_str(item, "content") else {
-        return;
-    };
-    let ev = Evidence::new(SRC, "SeekNow discord_messages content")
-        .with_attr("source", "discord_messages");
-    for m in EMAIL_RE.find_iter(&content) {
-        let email = m.as_str().to_lowercase();
-        if seen.insert(email.clone()) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.30, scan_id);
-            e.tag("see-know");
-            e.tag("discord-message");
-            e.tag("weak-lead");
-            e.add_evidence(ev.clone());
-            result.push(e);
-        }
-    }
-}
-
-/// Mine a `discord_messages` item's free-text `content` for `<@id>` / `<@!id>`
-/// Discord user-mention snowflakes and emit each as a low-confidence `Username`
-/// entity (`discord:<id>`, 0.30 — below pivot floor).
-pub(super) fn extract_message_mentions(
-    item: &Value,
-    scan_id: &str,
-    seen: &mut HashSet<String>,
-    result: &mut ModuleResult,
-) {
-    let Some(content) = val_str(item, "content") else {
-        return;
-    };
-    let ev = Evidence::new(SRC, "SeekNow discord_messages content")
-        .with_attr("source", "discord_messages");
-    for caps in MESSAGE_MENTION_RE.captures_iter(&content) {
-        let id = &caps[1];
-        if seen.insert(format!("@discord:{id}")) {
-            let mut e = Entity::new(EntityKind::Username, format!("discord:{id}"), 0.30, scan_id);
-            e.tag("see-know");
-            e.tag("discord-message");
-            e.tag("weak-lead");
-            e.tag("mention");
-            e.add_evidence(ev.clone());
-            result.push(e);
-        }
-    }
-}
-
 /// Build an [`Evidence`] record that preserves EVERY field of the raw source
 /// record `item` as an attribute — full fidelity, nothing redacted or omitted
 /// (operator data-fidelity policy). Scalars are stored as-is; nested
@@ -103,17 +45,27 @@ pub(super) fn extract_message_mentions(
 /// actual raw source record rather than just a module name + entity hash.
 fn record_evidence(item: &Value, dbname: &str, endpoint: &str, key_fp: &str) -> Evidence {
     let ev = Evidence::new(SRC, format!("SeekNow record from {dbname}"))
+        // `dbname` is the canonical breach-name attribute the credential-reuse
+        // correlator (AU-105) groups on; without it AU-105 falls back to the
+        // Evidence `source` FIELD (the module name) and collapses every SeekNow
+        // record into one pseudo-breach, so cross-breach reuse among a subject's
+        // SeekNow hits could never fire. `source` is retained (existing consumers
+        // read it) but is an attribute, not the field AU-105's fallback inspects.
+        .with_attr("dbname", dbname)
         .with_attr("source", dbname)
         // Provenance: which provider, which exact API key, and which endpoint
         // returned this record. Stamped on EVERY record so a finding always
         // declares its origin (operator directive: specify the API key origin).
-        .with_attr("provider", "see-know.ru")
+        // Domain-agnostic — SeekNow rotates across three domains (see
+        // `see_know::client::all_base_urls`), so a literal TLD here would
+        // misdescribe records served by a fallback and go stale on rotation.
+        .with_attr("provider", "see-know")
         .with_attr("api_key_origin", key_fp)
         .with_attr("via_endpoint", endpoint);
     let Some(obj) = item.as_object() else {
         return ev;
     };
-    obj.iter().fold(ev, |ev, (k, v)| {
+    let ev = obj.iter().fold(ev, |ev, (k, v)| {
         let val = match v {
             Value::Null => return ev,
             Value::String(s) => s.clone(),
@@ -129,55 +81,28 @@ fn record_evidence(item: &Value, dbname: &str, endpoint: &str, key_fp: &str) -> 
             k.as_str()
         };
         ev.with_attr(key, val)
-    })
-}
-
-/// Normalized identity-demographic tags (`dob:` / `gender:` / `age:`) for the
-/// subject node, read across the key spellings the providers use for the same
-/// datum. Returned in a stable order; empty when the record carries no
-/// demographics. The caller stamps these on the Person so the subject's
-/// headline surfaces its demographics as first-class, queryable tags.
-fn identity_tags(item: &Value) -> Vec<String> {
-    let mut tags = Vec::new();
-    // Date of birth — one canonical `dob:` tag from whichever key holds it.
-    if let Some(dob) = val_str(item, "date_birth")
-        .or_else(|| val_str(item, "birthdate"))
-        .or_else(|| val_str(item, "date_of_birth"))
-        .or_else(|| val_str(item, "dob"))
-    {
-        let d = dob.trim();
-        if !d.is_empty() {
-            tags.push(format!("dob:{d}"));
-        }
-    }
-    // Gender — collapse the obvious spellings to a single uppercase initial so
-    // `gender:M` from one record merges with `gender:male` from another.
-    if let Some(g) = val_str(item, "gender") {
-        let gt = g.trim();
-        if !gt.is_empty() {
-            let norm = match gt.to_ascii_lowercase().as_str() {
-                "m" | "male" => "M",
-                "f" | "female" => "F",
-                _ => gt,
-            };
-            tags.push(format!("gender:{norm}"));
-        }
-    }
-    // Age — a number or a numeric string; skip a placeholder/zero.
-    let age = item.get("age").map(|a| {
-        if a.is_number() {
-            a.to_string()
-        } else {
-            a.as_str().unwrap_or("").trim().to_string()
-        }
     });
-    if let Some(a) = age
-        && !a.is_empty()
-        && a != "0"
-    {
-        tags.push(format!("age:{a}"));
+    // SeekNow labels the subject's self-reported postcode `postal`, but the
+    // AU-locality correlator (AU-091/AU-093, `rules/breach_pii.rs`) reads the
+    // canonical `postcode` key. Stamp it additively (the raw `postal` is left
+    // untouched for existing consumers) so a breach record's OWN postcode reaches
+    // the rule — a producer-side alias exactly like the `dbname` fix above.
+    // Deliberately NOT done by widening the rule's shared `POSTCODE_KEYS`:
+    // `postal` is also stamped by the IP-geo modules (`ip_geo`/`ipinfo`/
+    // `ip_whois_geo`) on network-derived `Coordinates`, a different evidentiary
+    // class that must not masquerade as self-reported breach PII. Skipped when
+    // the record already carries `postcode`, so a real value is never overridden.
+    if !obj.contains_key("postcode") {
+        let postal = match obj.get("postal") {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Null) | None => String::new(),
+            Some(other) => other.to_string(),
+        };
+        if !postal.is_empty() {
+            return ev.with_attr("postcode", postal);
+        }
     }
-    tags
+    ev
 }
 
 /// Container keys whose nested object holds the real payload of a wrapped SeekNow
@@ -233,9 +158,14 @@ fn flatten_record(item: &Value) -> Value {
     Value::Object(out)
 }
 
+// Coordinates 8 distinct inputs (raw target + prebuilt matcher + provenance +
+// two accumulators); bundling them into a struct would only move the arity, so
+// this follows the module's existing convention (`see_know/mod.rs`).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn extract_entities(
     item: &Value,
     target_value: &str,
+    match_ctx: &TargetMatch,
     scan_id: &str,
     endpoint: &str,
     key_fp: &str,
@@ -267,7 +197,7 @@ pub(super) fn extract_entities(
     // `candidate` leads below (mirroring oathnet_pro), so they never reach the
     // subject's full-confidence tier. `quarantine_start` marks where this
     // record's entities begin so the demotion targets exactly them.
-    let is_target = TargetMatch::new(target_value).matches(item);
+    let is_target = match_ctx.matches(item);
     let quarantine_start = result.entities.len();
 
     if let Some(email) = val_str(item, "email") {
@@ -275,7 +205,7 @@ pub(super) fn extract_entities(
         if crate::util::extract::looks_like_email(&lower) && seen.insert(lower) {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Email, &email, 0.70, scan_id),
+                Entity::new(EntityKind::Email, &email, confidence::HIGH_PLUS, scan_id),
                 &ev,
                 &[],
             );
@@ -286,7 +216,7 @@ pub(super) fn extract_entities(
         if lower.len() >= 3 && seen.insert(lower) {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::Username, &uname, 0.65, scan_id),
+                Entity::new(EntityKind::Username, &uname, confidence::HIGH, scan_id),
                 &ev,
                 &[],
             );
@@ -299,14 +229,15 @@ pub(super) fn extract_entities(
         && phone.len() >= 7
     {
         // Lowercase `phone` once and reuse that single copy for both the dedup
-        // key and the target comparison, instead of lowercasing it twice (and
-        // the target unconditionally). Preserves the exact prior comparison.
+        // key and the target comparison. The target's lowercased form is reused
+        // from the shared `match_ctx` (computed once per scan), not re-derived
+        // per record. Preserves the exact prior comparison.
         let phone_lower = phone.to_lowercase();
         if seen.insert(phone_lower.clone()) {
-            let conf = if phone_lower == target_value.to_lowercase() {
-                0.70
+            let conf = if phone_lower == match_ctx.lower() {
+                confidence::HIGH_PLUS
             } else {
-                0.55
+                confidence::MEDIUM_HIGH
             };
             push_breach_entity(
                 result,
@@ -327,15 +258,20 @@ pub(super) fn extract_entities(
         .or_else(|| val_str(item, "real_name"))
         .or_else(|| val_str(item, "realname"))
         && name.trim().contains(' ')
+        // Some breach databases store `full_name = "{username} {username}"`
+        // when no real name is available — reject before it reaches the graph
+        // (the sibling `oathnet_pro` extractor shares this exact schema and
+        // the same guard, `oathnet_pro/breach.rs`).
+        && !is_username_derived_name(name.trim())
         && seen.insert(name.to_lowercase())
     {
-        let mut person = Entity::new(EntityKind::Person, name.trim(), 0.65, scan_id);
+        let mut person = Entity::new(EntityKind::Person, name.trim(), confidence::HIGH, scan_id);
         // Surface the record's identity demographics (DOB / gender / age) as
         // normalized first-class tags on the subject node, not only buried in
         // the raw-record evidence the full-field fold already carries. The
         // dossier headline then reads "Ali Kareem [dob:…] [gender:M]" directly,
         // and the tags merge by UID across every record that re-states them.
-        for tag in identity_tags(item) {
+        for tag in crate::util::identity::identity_tags(item) {
             person.tag(tag);
         }
         push_breach_entity(result, person, &ev, &[]);
@@ -352,7 +288,7 @@ pub(super) fn extract_entities(
         {
             push_breach_entity(
                 result,
-                Entity::new(EntityKind::IpAddress, &ip, 0.60, scan_id),
+                Entity::new(EntityKind::IpAddress, &ip, confidence::MEDIUM_PLUS, scan_id),
                 &ev,
                 &["geolocation-lead"],
             );
@@ -364,7 +300,12 @@ pub(super) fn extract_entities(
     {
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(&country) {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::LOW_MEDIUM,
+                scan_id,
+            );
             c.tag("addr-derived");
             c.tag("geoint");
             c.tag("breach");
@@ -374,7 +315,12 @@ pub(super) fn extract_entities(
         }
         push_breach_entity(
             result,
-            Entity::new(EntityKind::Address, &country, 0.55, scan_id),
+            Entity::new(
+                EntityKind::Address,
+                &country,
+                confidence::MEDIUM_HIGH,
+                scan_id,
+            ),
             &ev,
             &[],
         );
@@ -390,7 +336,7 @@ pub(super) fn extract_entities(
             Entity::new(
                 EntityKind::Username,
                 format!("discord:{did}"),
-                0.60,
+                confidence::MEDIUM_PLUS,
                 scan_id,
             ),
             &ev,
@@ -407,10 +353,83 @@ pub(super) fn extract_entities(
     {
         push_breach_entity(
             result,
-            Entity::new(EntityKind::Username, format!("steam:{sid}"), 0.60, scan_id),
+            Entity::new(
+                EntityKind::Username,
+                format!("steam:{sid}"),
+                confidence::MEDIUM_PLUS,
+                scan_id,
+            ),
             &ev,
             &["steam"],
         );
+    }
+    // ── Discord connected_accounts → cross-platform identity pivots. ──
+    // Discord's `connected_accounts` (a.k.a. `connections`) array is its
+    // canonical cross-platform identity edge and the highest-yield artifact the
+    // discord/user endpoint returns. Each entry is `{type, id, name}`. A `steam`
+    // link mints the SAME `steam:<id>` Username the direct field does, so it
+    // plugs straight into the existing, already-tested steam pivot; every other
+    // platform mints a `{type}:{handle}` Username matching the breach_rich handle
+    // convention. Shape-gated (entry is an object with a short alnum `type` and
+    // an id/name) so an unrelated array named `connections` can't inject noise.
+    for arr_key in ["connected_accounts", "connections"] {
+        let Some(arr) = item.get(arr_key).and_then(Value::as_array) else {
+            continue;
+        };
+        for conn in arr {
+            let Some(obj) = conn.as_object() else {
+                continue;
+            };
+            let ty = obj
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if ty.is_empty() || !ty.chars().all(|c| c.is_ascii_alphanumeric()) {
+                continue;
+            }
+            let id = obj.get("id").and_then(Value::as_str).map(str::trim);
+            let name = obj.get("name").and_then(Value::as_str).map(str::trim);
+            // Steam link → the pivot-feeding `steam:<id>` shape when the id validates.
+            if ty == "steam"
+                && let Some(sid) = id.filter(|s| looks_like_steam_id(s))
+                && seen.insert(format!("@steam:{sid}"))
+            {
+                push_breach_entity(
+                    result,
+                    Entity::new(
+                        EntityKind::Username,
+                        format!("steam:{sid}"),
+                        confidence::MEDIUM_HIGH,
+                        scan_id,
+                    ),
+                    &ev,
+                    &["steam", "discord-linked"],
+                );
+                continue;
+            }
+            // Any other platform → a `{type}:{handle}` Username pivot. Prefer the
+            // human handle (`name`); fall back to the numeric id.
+            let handle = name.filter(|s| !s.is_empty()).or(id);
+            if let Some(h) = handle.filter(|s| s.len() >= 2)
+                && seen.insert(format!("@{ty}:{}", h.to_lowercase()))
+            {
+                // Borrow `ty` for the tag slice (no per-entry allocation/leak).
+                let tags = [ty.as_str(), "discord-linked"];
+                push_breach_entity(
+                    result,
+                    Entity::new(
+                        EntityKind::Username,
+                        format!("{ty}:{h}"),
+                        confidence::MEDIUM_HIGH,
+                        scan_id,
+                    ),
+                    &ev,
+                    &tags,
+                );
+            }
+        }
     }
     // Leaked credentials were previously dropped entirely — capture them as
     // first-class Password entities (operator policy: never redacted). The full
@@ -434,7 +453,7 @@ pub(super) fn extract_entities(
             // than mint a junk Password (the same fix as oathnet_pro's breach path).
             crate::util::extract::CredentialField::Email => {
                 if seen.insert(format!("@pw-email:{}", p.to_lowercase())) {
-                    let mut e = Entity::new(EntityKind::Email, p, 0.45, scan_id);
+                    let mut e = Entity::new(EntityKind::Email, p, confidence::LOW_MEDIUM, scan_id);
                     e.tag("see-know");
                     e.tag("recovered-from-password");
                     e.add_evidence(ev.clone());
@@ -463,7 +482,16 @@ pub(super) fn extract_entities(
                             .to_string(),
                         );
                     }
-                    if crate::util::hashcat::is_salted(p) {
+                    // Salted if the digest itself carries an appended salt OR the
+                    // record has a dedicated `salt` column (Snusbase-style schema).
+                    // Without the column check a fast MD5/SHA-1 shipped alongside a
+                    // separate salt was mis-tagged `crackable:fast` — overstating
+                    // exposure and inviting a bogus rainbow-table pivot. OathNet's
+                    // breach path already reads this field; SeekNow was the outlier
+                    // on its own schema.
+                    if crate::util::hashcat::is_salted(p)
+                        || val_str(item, "salt").is_some_and(|s| !s.trim().is_empty())
+                    {
                         tags.push("salted".to_string());
                     }
                     let cracked = crate::util::hashcat::crack_common(p);
@@ -473,7 +501,7 @@ pub(super) fn extract_entities(
                     let tag_refs: Vec<&str> = tags.iter().map(String::as_str).collect();
                     push_breach_entity(
                         result,
-                        Entity::new(EntityKind::Password, p, 0.75, scan_id),
+                        Entity::new(EntityKind::Password, p, confidence::VERY_HIGH, scan_id),
                         &ev,
                         &tag_refs,
                     );
@@ -484,7 +512,7 @@ pub(super) fn extract_entities(
                     {
                         push_breach_entity(
                             result,
-                            Entity::new(EntityKind::Password, pt, 0.78, scan_id),
+                            Entity::new(EntityKind::Password, pt, confidence::STRONG, scan_id),
                             &ev,
                             &["cracked", "weak-password", "from-hash"],
                         );
@@ -492,6 +520,44 @@ pub(super) fn extract_entities(
                     break;
                 }
             }
+        }
+    }
+
+    // ── IBAN — a leaked bank-account number ───────────────────────────────
+    // Emit ONLY when the ISO 7064 mod-97 check digit validates (via the shared
+    // `util::extract::iban_is_valid`), so a redacted sentinel or a transcription
+    // error in the `iban` field never mints a bogus financial artifact — the same
+    // discipline OathNet's breach path already applies. Before this, SeekNow's
+    // `iban` field fell through to breach_rich's UNVALIDATED catch-all, minting an
+    // `Other("iban")` node for ANY string (bad check digit included); `iban` is
+    // now in `RICH_DETAIL_SKIP` so the catch-all no longer emits it unvalidated.
+    // No dedicated financial `EntityKind` exists, so it lands as `Other("iban")`
+    // tagged `financial` for the dossier/export.
+    if let Some(iban) = val_str(item, "iban") {
+        // Normalise (strip whitespace, upper-case) BEFORE validating: the shared
+        // `iban_is_valid` requires an all-alphanumeric body, and breach exports
+        // routinely store the grouped "GB82 WEST …" form — the same normalisation
+        // OathNet's validator wrapper applies. The DISPLAYED value keeps the
+        // trimmed original spacing, exactly as OathNet emits it.
+        let normalized: String = iban
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+            .to_ascii_uppercase();
+        if crate::util::extract::iban_is_valid(&normalized)
+            && seen.insert(format!("@iban:{normalized}"))
+        {
+            push_breach_entity(
+                result,
+                Entity::new(
+                    EntityKind::Other("iban".to_string()),
+                    iban.trim(),
+                    0.70,
+                    scan_id,
+                ),
+                &ev,
+                &["iban", "financial"],
+            );
         }
     }
 
@@ -529,7 +595,7 @@ pub(super) fn extract_entities(
             && u.contains('.')
             && seen.insert(format!("@url:{}", u.to_lowercase()))
         {
-            let mut e = Entity::new(EntityKind::Url, u, 0.60, scan_id);
+            let mut e = Entity::new(EntityKind::Url, u, confidence::MEDIUM_PLUS, scan_id);
             e.tag("see-know");
             e.tag("stealer");
             e.add_evidence(ev.clone());
@@ -540,7 +606,12 @@ pub(super) fn extract_entities(
         if let Some(uname) = val_str(item, "username") {
             let cred_val = format!("{uname}@{url}");
             if seen.insert(format!("@cred:{}", cred_val.to_lowercase())) {
-                let mut e = Entity::new(EntityKind::Credential, &cred_val, 0.60, scan_id);
+                let mut e = Entity::new(
+                    EntityKind::Credential,
+                    &cred_val,
+                    confidence::MEDIUM_PLUS,
+                    scan_id,
+                );
                 e.tag("see-know");
                 e.tag("stealer");
                 e.add_evidence(ev.clone());
@@ -555,6 +626,36 @@ pub(super) fn extract_entities(
     // valuable stays locked inside the evidence blob. Operator directive: "I
     // want everything. Maximum raw data."
     extract_rich_detail(item, scan_id, &ev, seen, result);
+
+    // ── /domain/intel subdomains → the target's OWN attack surface. ──
+    // Only the domain/intel response carries a `subdomains` array. Each is a
+    // first-class seed the dns_intel/cert_intel/crtsh/web_crawler modules fan out
+    // from — a paid domain-intel corpus may hold subdomains the free CT/DNS stack
+    // misses. Gated on `is_or_subdomain_of(sub, queried_domain)` so ONLY the
+    // target's own tree is minted, never a third-party host the record merely
+    // mentions (unlike the deliberately un-minted stealer URL host below). Not
+    // tagged `breach` — a subdomain is infrastructure, exactly like the `domain`
+    // field below. Pushed inside the quarantine range so a non-matching record's
+    // subdomains demote with the rest.
+    if endpoint == "domain_intel"
+        && let Some(subs) = item.get("subdomains").and_then(Value::as_array)
+    {
+        for sub in subs {
+            let Some(raw) = sub.as_str() else { continue };
+            let s = raw.trim().trim_end_matches('.').to_ascii_lowercase();
+            if crate::util::domains::looks_like_domain(&s)
+                && crate::util::domains::is_or_subdomain_of(&s, target_value)
+                && seen.insert(format!("@subdomain:{s}"))
+            {
+                let mut e = Entity::new(EntityKind::Domain, &s, confidence::MEDIUM_PLUS, scan_id);
+                e.tag("see-know");
+                e.tag("subdomain");
+                e.tag("dns");
+                e.add_evidence(ev.clone());
+                result.push(e);
+            }
+        }
+    }
 
     // Quarantine a non-matching record's identity/credential/raw-detail entities
     // to CANDIDATE strength with a `candidate` tag — the same demotion
@@ -582,7 +683,12 @@ pub(super) fn extract_entities(
         && crate::util::domains::looks_like_domain(&domain)
         && seen.insert(domain.to_lowercase())
     {
-        let mut e = Entity::new(EntityKind::Domain, &domain, 0.55, scan_id);
+        let mut e = Entity::new(
+            EntityKind::Domain,
+            &domain,
+            confidence::MEDIUM_HIGH,
+            scan_id,
+        );
         e.tag("see-know");
         // Same quarantine as the identity block above (this push lands after it,
         // so it is demoted here rather than by the range pass).
@@ -683,6 +789,7 @@ mod tests {
         extract_entities(
             &wrapped,
             "mriconic",
+            &TargetMatch::new("mriconic"),
             "scan",
             "username/tiktok",
             "fp",
@@ -720,6 +827,7 @@ mod tests {
         extract_entities(
             &item,
             "mriconic",
+            &TargetMatch::new("mriconic"),
             "scan",
             "username/social",
             "fp",
@@ -807,7 +915,10 @@ mod tests {
         );
 
         // Every relative carries the declared edge data + corroboration tag.
-        let erik = persons.iter().find(|e| e.value == "Erik Diegmann").unwrap();
+        let erik = persons
+            .iter()
+            .find(|e| e.value == "Erik Diegmann")
+            .expect("should succeed");
         assert!(erik.has_tag("family-candidate"));
         let related_to = erik
             .evidence
@@ -816,7 +927,10 @@ mod tests {
             .map(String::as_str);
         assert_eq!(related_to, Some("Kyle Diegmann"));
         // Associates are not in the surname cluster → tagged differently.
-        let jane = persons.iter().find(|e| e.value == "Jane Smith").unwrap();
+        let jane = persons
+            .iter()
+            .find(|e| e.value == "Jane Smith")
+            .expect("should succeed");
         assert!(jane.has_tag("associate-candidate"));
     }
 
@@ -828,5 +942,37 @@ mod tests {
         let mut result = ModuleResult::new();
         extract_associates(&item, "Someone", "s", "fp", &mut seen, &mut result);
         assert!(result.entities.is_empty());
+    }
+
+    #[test]
+    fn associates_reject_username_derived_and_null_pair_names() {
+        // A relationship-array element that is a doubled/slug username (breach
+        // `full_name = "{username} {username}"`) or the "\N \N" SQL-null pair must
+        // NOT be minted as a fabricated associate Person — the same guard the
+        // subject-name path applies. A real associate in the same array survives.
+        let item = json!({
+            "known_associates": ["rhino-ryno23 rhino-ryno23", "\\N \\N", "Jane Smith"],
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_associates(&item, "Kyle Diegmann", "s", "fp", &mut seen, &mut result);
+
+        let names: std::collections::BTreeSet<&str> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Person)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert!(
+            !names
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case("rhino-ryno23 rhino-ryno23")),
+            "doubled-username associate must be rejected, not minted as a Person"
+        );
+        assert!(
+            names.contains("Jane Smith"),
+            "a real associate in the same array is unaffected"
+        );
+        assert_eq!(names.len(), 1, "only the legitimate associate survives");
     }
 }

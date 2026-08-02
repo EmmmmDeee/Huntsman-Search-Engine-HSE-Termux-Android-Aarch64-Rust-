@@ -85,8 +85,10 @@ pub fn apply_profile_overlay(base: ScanOptions, profile: ScanOptions) -> ScanOpt
     }
 }
 
-/// Every selectable profile as `(name, one-line description)` — the catalogue the
-/// CLI `--help` and the API/SPA profile picker render. Aliases are omitted (each
+/// Every selectable profile as `(name, one-line description)` — the single
+/// source of the profile catalogue. Rendered by the CLI's unknown-`--profile`
+/// error (so the help text can't drift from [`resolve_profile`]'s accepted set)
+/// and available to the API/SPA profile picker. Aliases are omitted (each
 /// profile is listed once under its canonical name).
 #[must_use]
 pub fn list_profiles() -> Vec<(&'static str, &'static str)> {

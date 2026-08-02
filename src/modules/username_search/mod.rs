@@ -49,12 +49,13 @@ const BROWSER_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;\
     q=0.9,image/avif,image/webp,*/*;q=0.8";
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::urlencode;
+use crate::util::http::{RequestBuilderExt, urlencode};
 
 const SRC: &str = "username_search";
 
@@ -81,7 +82,7 @@ impl Module for UsernameSearch {
     }
 
     fn description(&self) -> &'static str {
-        "Maigret-style username enumeration across 150+ sites (social, dev, gaming, music, video, dating, …) with category tagging."
+        "Maigret-style username enumeration — sweeps a handle across 150+ sites (social, dev, gaming, music, video, dating, …) with category tagging"
     }
 
     fn is_passive(&self) -> bool {
@@ -164,53 +165,69 @@ impl Module for UsernameSearch {
                     .header("User-Agent", BROWSER_UA)
                     .header("Accept", BROWSER_ACCEPT)
                     .header("Accept-Language", "en-US,en;q=0.9");
-                let resp = tokio::time::timeout(per_site_timeout, req.send()).await;
-                let resp = match resp {
-                    Ok(Ok(r)) => r,
-                    _ => return ProbeResult::Error,
-                };
+                // The ENTIRE probe — request dispatch AND the body read — shares
+                // ONE `per_site_timeout` budget. Previously only `send()` was
+                // bounded here; the `read_body_capped` branches then fell back to
+                // the shared client's 30s read_timeout while still holding a
+                // semaphore permit, so a few slow-body sites could each pin one of
+                // the MAX_CONCURRENT_PROBES slots for ~34.5s and shrink coverage on
+                // exactly the flaky mobile links this module targets.
+                let probe = async {
+                    let resp = match req.send_tagged(SRC).await {
+                        Ok(r) => r,
+                        Err(_) => return ProbeResult::Error,
+                    };
 
-                let status = resp.status().as_u16();
-                let found = |url: String| ProbeResult::Found {
-                    url,
-                    confidence: hit_conf,
-                    verified: hit_verified,
+                    let status = resp.status().as_u16();
+                    let found = |url: String| ProbeResult::Found {
+                        url,
+                        confidence: hit_conf,
+                        verified: hit_verified,
+                    };
+                    match site.detect {
+                        Detect::StatusEq(want) if status == want => found(url),
+                        Detect::StatusEq(_) => ProbeResult::NotFound,
+                        Detect::StatusAndBody(want, needle) => {
+                            if status != want {
+                                return ProbeResult::NotFound;
+                            }
+                            let body =
+                                match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP)
+                                    .await
+                                {
+                                    Some(t) => t,
+                                    None => return ProbeResult::Error,
+                                };
+                            scan_text_for_keys(&body);
+                            if body.contains(needle) {
+                                found(url)
+                            } else {
+                                ProbeResult::NotFound
+                            }
+                        }
+                        Detect::StatusAndNotBody(want, needle) => {
+                            if status != want {
+                                return ProbeResult::NotFound;
+                            }
+                            let body =
+                                match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP)
+                                    .await
+                                {
+                                    Some(t) => t,
+                                    None => return ProbeResult::Error,
+                                };
+                            scan_text_for_keys(&body);
+                            if body.contains(needle) {
+                                ProbeResult::NotFound
+                            } else {
+                                found(url)
+                            }
+                        }
+                    }
                 };
-                match site.detect {
-                    Detect::StatusEq(want) if status == want => found(url),
-                    Detect::StatusEq(_) => ProbeResult::NotFound,
-                    Detect::StatusAndBody(want, needle) => {
-                        if status != want {
-                            return ProbeResult::NotFound;
-                        }
-                        let body =
-                            match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP).await {
-                                Some(t) => t,
-                                None => return ProbeResult::Error,
-                            };
-                        scan_text_for_keys(&body);
-                        if body.contains(needle) {
-                            found(url)
-                        } else {
-                            ProbeResult::NotFound
-                        }
-                    }
-                    Detect::StatusAndNotBody(want, needle) => {
-                        if status != want {
-                            return ProbeResult::NotFound;
-                        }
-                        let body =
-                            match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP).await {
-                                Some(t) => t,
-                                None => return ProbeResult::Error,
-                            };
-                        scan_text_for_keys(&body);
-                        if body.contains(needle) {
-                            ProbeResult::NotFound
-                        } else {
-                            found(url)
-                        }
-                    }
+                match tokio::time::timeout(per_site_timeout, probe).await {
+                    Ok(result) => result,
+                    Err(_) => ProbeResult::Error,
                 }
             }
             .then_with_site(site.name, site.cat)
@@ -299,7 +316,12 @@ impl Module for UsernameSearch {
         // the SPA's Entities table shows a single "N platforms" row for
         // the username itself, alongside the per-platform Url entities.
         if !found_names.is_empty() {
-            let mut summary = Entity::new(EntityKind::Username, username, 0.95, &ctx.scan_id);
+            let mut summary = Entity::new(
+                EntityKind::Username,
+                username,
+                confidence::VERY_HIGH_PLUSPLUS,
+                &ctx.scan_id,
+            );
             summary.tag("multi-platform");
 
             // Tag each category that had at least one hit.
@@ -393,10 +415,10 @@ enum ProbeResult {
 /// floor — a status-200 hit is still worth pivoting on — but ranks visibly below
 /// a body-confirmed 0.92 so the correlator and SPA can weight it accordingly.
 fn detection_strength(detect: &Detect) -> (f64, bool) {
-    match detect {
-        Detect::StatusAndBody(..) | Detect::StatusAndNotBody(..) => (0.92, true),
-        Detect::StatusEq(_) => (0.74, false),
-    }
+    crate::util::probe_confidence::detection_strength(matches!(
+        detect,
+        Detect::StatusAndBody(..) | Detect::StatusAndNotBody(..)
+    ))
 }
 
 /// True when a zero-hit run is *inconclusive* rather than a confirmed absence:
@@ -430,14 +452,11 @@ trait WithSite: Sized + std::future::Future<Output = ProbeResult> {
 impl<F> WithSite for F where F: std::future::Future<Output = ProbeResult> + Send + 'static {}
 
 fn scan_text_for_keys(body: &str) {
-    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+    use crate::util::found_keys::{MAX_TOKEN, key_tokens};
+    use crate::util::key_harvest::identify_api_key;
     let pool = crate::util::key_pool::global_pool();
-    for word in body.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '`') {
-        let t = word.trim();
-        if t.len() >= 16
-            && t.len() <= 200
-            && let Some((service, key_val)) = identify_api_key(t)
-        {
+    for t in key_tokens(body, MAX_TOKEN) {
+        if let Some((service, key_val)) = identify_api_key(t) {
             let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
             entry.status = crate::util::key_pool::KeyStatus::Untested;
             entry.notes = Some("Profile page body".into());

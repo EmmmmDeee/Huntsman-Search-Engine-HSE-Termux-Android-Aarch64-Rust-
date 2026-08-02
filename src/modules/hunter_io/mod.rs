@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -85,6 +86,30 @@ struct HunterEmail {
     department: Option<String>,
     #[serde(default)]
     sources: Vec<HunterSource>,
+    /// LinkedIn/Twitter profile fields. Hunter's documented shape for these
+    /// has varied across API examples (a full profile URL for one, a bare
+    /// handle for the other), so `build_entities` inspects the actual value
+    /// rather than assuming a fixed shape per field.
+    #[serde(default)]
+    linkedin: Option<String>,
+    #[serde(default)]
+    twitter: Option<String>,
+    /// Direct-dial phone Hunter occasionally attaches to a person — a real
+    /// contactability pivot, previously decoded nowhere.
+    #[serde(default)]
+    phone_number: Option<String>,
+    /// The deliverability verdict Hunter records for the address (valid /
+    /// accept_all / webmail / disposable / …) and when it was last checked.
+    #[serde(default)]
+    verification: Option<HunterVerification>,
+}
+
+#[derive(Deserialize)]
+struct HunterVerification {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    date: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -102,7 +127,7 @@ impl Module for HunterIo {
     }
 
     fn description(&self) -> &'static str {
-        "Email-finder: enumerate addresses associated with a target domain"
+        "Email-finder recon — enumerates addresses associated with a target domain for onward pivoting"
     }
 
     fn category(&self) -> ModuleCategory {
@@ -140,8 +165,13 @@ impl Module for HunterIo {
             EntityKind::Organisation,
             // Hunter's canonical org domain + every email's source domain.
             EntityKind::Domain,
-            // The public source pages where Hunter saw each address.
+            // The public source pages where Hunter saw each address, plus a
+            // LinkedIn/Twitter field when Hunter returns a full profile URL.
             EntityKind::Url,
+            // A LinkedIn/Twitter field when Hunter returns a bare handle.
+            EntityKind::Username,
+            // A direct-dial phone Hunter attaches to a person.
+            EntityKind::Phone,
         ]
     }
 
@@ -240,7 +270,12 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
 
     // ── Organisation entity (if Hunter resolved one for the domain) ──
     if let Some(org) = nonempty(&data.organization) {
-        let mut e = Entity::new(EntityKind::Organisation, &org, 0.70, scan_id);
+        let mut e = Entity::new(
+            EntityKind::Organisation,
+            &org,
+            confidence::HIGH_PLUS,
+            scan_id,
+        );
         e.tag("hunter-io");
         let mut ev = Evidence::new(
             SRC,
@@ -264,7 +299,7 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
     if let Some(dom) = &canonical
         && seen.insert(format!("dom:{}", dom.to_lowercase()))
     {
-        let mut e = Entity::new(EntityKind::Domain, dom, 0.60, scan_id);
+        let mut e = Entity::new(EntityKind::Domain, dom, confidence::MEDIUM_PLUS, scan_id);
         e.tag("hunter-io");
         e.tag("org-domain");
         e.add_evidence(
@@ -303,7 +338,7 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
             continue;
         }
 
-        let email_conf = if synthesised { 0.40 } else { conf };
+        let email_conf = if synthesised { confidence::LOW } else { conf };
         let mut ee = Entity::new(EntityKind::Email, &addr, email_conf, scan_id);
         ee.tag("hunter-io");
         ee.tag("email-finder");
@@ -326,6 +361,17 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
         if let Some(d) = nonempty(&entry.department) {
             ev = ev.with_attr("department", &d);
         }
+        // Deliverability verdict — surfaces whether the address is a live
+        // mailbox, a catch-all/webmail, or disposable (an evidentiary-weight
+        // signal), plus when Hunter last verified it.
+        if let Some(ver) = &entry.verification {
+            if let Some(s) = nonempty(&ver.status) {
+                ev = ev.with_attr("verification_status", &s);
+            }
+            if let Some(d) = nonempty(&ver.date) {
+                ev = ev.with_attr("verification_date", &d);
+            }
+        }
         if let Some(src) = entry.sources.first() {
             if let Some(uri) = nonempty(&src.uri) {
                 ev = ev.with_attr("source_url", &uri);
@@ -340,7 +386,12 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
         // ── Person entity if Hunter has a name attached ──
         if let (Some(first), Some(last)) = (&first, &last) {
             let full = format!("{first} {last}");
-            let mut pe = Entity::new(EntityKind::Person, &full, email_conf.min(0.75), scan_id);
+            let mut pe = Entity::new(
+                EntityKind::Person,
+                &full,
+                email_conf.min(confidence::VERY_HIGH),
+                scan_id,
+            );
             pe.tag("hunter-io");
             pe.tag("email-attribution");
             let mut pev = Evidence::new(SRC, format!("Hunter.io attributed {addr} to {full}"))
@@ -356,12 +407,31 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
             out.push(pe);
         }
 
+        // ── Direct-dial phone Hunter attached to the address ──
+        // Guard on digit count (≥7) so a formatted number mints one Phone while
+        // a stray fragment does not; Entity::new normalises the formatting.
+        if let Some(phone) = nonempty(&entry.phone_number) {
+            let digits: String = phone.chars().filter(char::is_ascii_digit).collect();
+            if digits.len() >= 7 && seen.insert(format!("phone:{digits}")) {
+                let mut phe =
+                    Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM_PLUS, scan_id);
+                phe.tag("hunter-io");
+                phe.tag("email-attribution");
+                phe.add_evidence(
+                    Evidence::new(SRC, format!("Hunter.io phone for {addr}"))
+                        .with_attr("email", &addr)
+                        .with_attr("domain", target_domain),
+                );
+                out.push(phe);
+            }
+        }
+
         // ── Source pivots: every page Hunter saw the address on. ──
         for src in &entry.sources {
             if let Some(uri) = nonempty(&src.uri)
                 && seen.insert(format!("url:{}", uri.to_lowercase()))
             {
-                let mut e = Entity::new(EntityKind::Url, &uri, 0.45, scan_id);
+                let mut e = Entity::new(EntityKind::Url, &uri, confidence::LOW_MEDIUM, scan_id);
                 e.tag("hunter-io");
                 e.tag("email-source");
                 e.add_evidence(
@@ -373,7 +443,7 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
             if let Some(d) = nonempty(&src.domain)
                 && seen.insert(format!("dom:{}", d.to_lowercase()))
             {
-                let mut e = Entity::new(EntityKind::Domain, &d, 0.40, scan_id);
+                let mut e = Entity::new(EntityKind::Domain, &d, confidence::LOW, scan_id);
                 e.tag("hunter-io");
                 e.tag("email-source");
                 e.add_evidence(
@@ -381,6 +451,47 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
                         .with_attr("email", &addr),
                 );
                 out.push(e);
+            }
+        }
+
+        // ── Social-profile pivots: LinkedIn/Twitter, previously deserialized
+        // straight past into nothing. A full URL becomes a Url pivot; a bare
+        // handle becomes a platform-prefixed Username pivot, mirroring
+        // fullcontact's established convention for the same distinction.
+        for (network, value) in [("linkedin", &entry.linkedin), ("twitter", &entry.twitter)] {
+            let Some(v) = nonempty(value) else {
+                continue;
+            };
+            if v.starts_with("http") {
+                if seen.insert(format!("url:{}", v.to_lowercase())) {
+                    let mut e = Entity::new(EntityKind::Url, &v, confidence::MEDIUM_HIGH, scan_id);
+                    e.tag("hunter-io");
+                    e.tag("social-profile");
+                    e.add_evidence(
+                        Evidence::new(SRC, format!("Hunter.io {network} profile for {addr}"))
+                            .with_attr("email", &addr)
+                            .with_attr("network", network),
+                    );
+                    out.push(e);
+                }
+            } else {
+                let handle = format!("{network}:{v}");
+                if seen.insert(format!("user:{}", handle.to_lowercase())) {
+                    let mut e = Entity::new(
+                        EntityKind::Username,
+                        &handle,
+                        confidence::MEDIUM_HIGH,
+                        scan_id,
+                    );
+                    e.tag("hunter-io");
+                    e.tag("social-profile");
+                    e.add_evidence(
+                        Evidence::new(SRC, format!("Hunter.io {network} handle for {addr}"))
+                            .with_attr("email", &addr)
+                            .with_attr("network", network),
+                    );
+                    out.push(e);
+                }
             }
         }
     }
@@ -437,11 +548,11 @@ fn apply_email_pattern(pattern: &str, first: &str, last: &str, domain: &str) -> 
 /// shouldn't outrank a missing field).
 fn confidence_from_hunter_score(score: Option<u8>) -> f64 {
     match score {
-        Some(c) if c >= 90 => 0.85,
-        Some(c) if c >= 70 => 0.70,
-        Some(c) if c >= 40 => 0.55,
-        Some(c) if c > 0 => 0.45,
-        _ => 0.50,
+        Some(c) if c >= 90 => confidence::HIGH_PLUSPLUS_PLUS,
+        Some(c) if c >= 70 => confidence::HIGH_PLUS,
+        Some(c) if c >= 40 => confidence::MEDIUM_HIGH,
+        Some(c) if c > 0 => confidence::LOW_MEDIUM,
+        _ => confidence::MEDIUM,
     }
 }
 

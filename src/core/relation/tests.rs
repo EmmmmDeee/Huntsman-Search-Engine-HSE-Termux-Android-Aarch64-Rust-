@@ -50,11 +50,11 @@ fn relation_kind_as_str_matches_serde() {
             | RelationKind::SameIdentity
             | RelationKind::SharesSecretWith => {}
         }
-        let json = serde_json::to_string(&k).unwrap();
+        let json = serde_json::to_string(&k).expect("should succeed");
         let tag = json.trim_matches('"');
         assert_eq!(tag, k.as_str(), "as_str vs serde: {k:?}");
         assert_eq!(k.to_string(), k.as_str(), "Display vs as_str: {k:?}");
-        let back: RelationKind = serde_json::from_str(&json).unwrap();
+        let back: RelationKind = serde_json::from_str(&json).expect("should succeed");
         assert_eq!(back, k, "serde round-trip: {k:?}");
     }
     assert_eq!(EVERY.len(), 15, "one entry per RelationKind variant");
@@ -1030,6 +1030,30 @@ fn registration_dedups_repeated_registrant() {
     );
 }
 
+#[test]
+fn registration_links_domain_to_registrant_person() {
+    use crate::core::entity::Evidence;
+    // whois folds the registrant NAME into the domain evidence and emits the
+    // registrant as a Person entity — the human registrant must be linked to the
+    // domain (RegisteredBy), not left an orphan. No org/email here, so this also
+    // covers the early-return guard now admitting a Person-only registrant.
+    let mut dom = Entity::new(EntityKind::Domain, "example.com", 0.92, "rel-scan");
+    dom.add_evidence(
+        Evidence::new("whois", "WHOIS for example.com")
+            .with_attr("registrant_name", "Jordan Avery")
+            .with_attr("registrar", "MarkMonitor Inc."),
+    );
+    let person = ent(EntityKind::Person, "Jordan Avery", 0.72);
+    let rels = derive_registration(&[dom.clone(), person.clone()], "s");
+    assert_eq!(rels.len(), 1, "domain -> registrant person");
+    assert_eq!(rels[0].kind, RelationKind::RegisteredBy);
+    assert_eq!(rels[0].from_uid, dom.uid, "edge originates at the domain");
+    assert_eq!(
+        rels[0].to_uid, person.uid,
+        "edge targets the registrant person"
+    );
+}
+
 // ── Identity relations ───────────────────────────────────────────────────────
 
 #[test]
@@ -1150,8 +1174,14 @@ fn identity_ownership_evidence_then_fingerprint() {
             "Person is the `from` (owner) endpoint"
         );
     }
-    let owned_edge = rels.iter().find(|r| r.to_uid == owned.uid).unwrap();
-    let fp_edge = rels.iter().find(|r| r.to_uid == fp.uid).unwrap();
+    let owned_edge = rels
+        .iter()
+        .find(|r| r.to_uid == owned.uid)
+        .expect("should succeed");
+    let fp_edge = rels
+        .iter()
+        .find(|r| r.to_uid == fp.uid)
+        .expect("should succeed");
     // Evidence edge carries full endpoint trust; fingerprint edge is damped.
     assert!((owned_edge.confidence - 0.6_f64.min(0.9)).abs() < 1e-9);
     assert!(
@@ -1425,7 +1455,10 @@ fn diegmann_family_connects_from_any_seed_angle() {
             adj.entry(&r.from_uid).or_default().push(&r.to_uid);
             adj.entry(&r.to_uid).or_default().push(&r.from_uid);
         }
-        let subject = ents.iter().find(|e| e.value == seed).unwrap();
+        let subject = ents
+            .iter()
+            .find(|e| e.value == seed)
+            .expect("should succeed");
         let mut reached = std::collections::HashSet::new();
         let mut stack = vec![subject.uid.as_str()];
         while let Some(u) = stack.pop() {
@@ -1825,4 +1858,42 @@ fn collapse_to_max_confidence_keeps_the_strongest_of_duplicate_edges() {
     // Deterministic first-occurrence order; the distinct a→c edge is untouched.
     assert_eq!(collapsed[0].to_uid, "b");
     assert_eq!(collapsed[1].to_uid, "c");
+}
+
+// ── provenance_chain (derivation trail) ─────────────────────────────────
+
+#[test]
+fn provenance_chain_walks_derivedfrom_back_to_the_root() {
+    // root ← child ← grand: each DerivedFrom points child → parent.
+    let rels = vec![
+        Relation::new("child", "root", RelationKind::DerivedFrom, 0.9, "s"),
+        Relation::new("grand", "child", RelationKind::DerivedFrom, 0.9, "s"),
+    ];
+    // From the deepest node the trail walks back to the seed root.
+    assert_eq!(
+        provenance_chain("grand", &rels),
+        vec!["grand", "child", "root"]
+    );
+    // A root (no parent edge) is its own single-element chain.
+    assert_eq!(provenance_chain("root", &rels), vec!["root"]);
+    // A non-DerivedFrom edge is ignored by the walk.
+    let noise = vec![Relation::new(
+        "grand",
+        "x",
+        RelationKind::HostedOn,
+        0.9,
+        "s",
+    )];
+    assert_eq!(provenance_chain("grand", &noise), vec!["grand"]);
+}
+
+#[test]
+fn provenance_chain_is_cycle_safe() {
+    // A pathological a↔b DerivedFrom cycle must terminate, not loop forever.
+    let rels = vec![
+        Relation::new("a", "b", RelationKind::DerivedFrom, 0.5, "s"),
+        Relation::new("b", "a", RelationKind::DerivedFrom, 0.5, "s"),
+    ];
+    // a → b → (a already seen → stop).
+    assert_eq!(provenance_chain("a", &rels), vec!["a", "b"]);
 }

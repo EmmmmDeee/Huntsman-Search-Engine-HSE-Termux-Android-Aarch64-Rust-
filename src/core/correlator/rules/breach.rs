@@ -333,10 +333,11 @@ fn distinct_sources(secret: &Entity) -> BTreeSet<String> {
 /// a first-class `Password` entity alike, so a leaked plaintext password drives
 /// the link directly; the corroborating unique sources are named in the finding.
 pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Classify every secret up front; bail before any further work if none link.
     let secrets: Vec<(&Entity, Secret)> = entities
         .iter()
@@ -498,10 +499,11 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
 /// its owner knows, a household / shared machine is a real — if rare — confound,
 /// so the link sits one tier below the reused-secret proof.
 pub(in crate::core::correlator) fn rule_au_106_shared_device_identity(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // A fingerprint shorter than this is a short/generic hostname, not a hardware
     // id, and must never link people (hwid/machine_id GUIDs are far longer).
     const MIN_FP_LEN: usize = 12;
@@ -607,10 +609,11 @@ pub(in crate::core::correlator) fn rule_au_106_shared_device_identity(
 }
 
 pub(in crate::core::correlator) fn rule_au_001_multi_breach(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const BREACH_SOURCES: &[&str] = &[
         "hudsonrock",
         "xposed_or_not",
@@ -661,10 +664,11 @@ pub(in crate::core::correlator) fn rule_au_001_multi_breach(
 }
 
 pub(in crate::core::correlator) fn rule_au_009_stealer_log(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::Email && e.has_tag("stealer-log"))
@@ -683,10 +687,11 @@ pub(in crate::core::correlator) fn rule_au_009_stealer_log(
 }
 
 pub(in crate::core::correlator) fn rule_au_019_temporal_breach_cluster(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let mut breach_dates: Vec<(&Entity, &str)> = Vec::new();
     for e in entities {
         if !e.has_tag("breach") {
@@ -758,10 +763,11 @@ pub(in crate::core::correlator) fn rule_au_019_temporal_breach_cluster(
 }
 
 pub(in crate::core::correlator) fn rule_au_021_api_key_exposure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::ApiKey)
@@ -796,10 +802,11 @@ pub(in crate::core::correlator) fn rule_au_021_api_key_exposure(
 /// rank as `unrated`, still counted. Critical when any high-criticality key is
 /// present, else High. One summary finding per scan.
 pub(in crate::core::correlator) fn rule_au_095_exposed_key_portfolio(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::BTreeMap;
 
     fn tag_suffix<'a>(e: &'a Entity, prefix: &str) -> Option<&'a str> {
@@ -919,10 +926,11 @@ pub(in crate::core::correlator) fn rule_au_095_exposed_key_portfolio(
 /// authenticate. Severity High (a strong, specific attribution): a single OSINT
 /// key is a lead, several across categories is a profile. One finding per scan.
 pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::{BTreeMap, BTreeSet};
 
     let mut providers: BTreeSet<&str> = BTreeSet::new();
@@ -992,10 +1000,11 @@ pub(in crate::core::correlator) fn rule_au_096_osint_practitioner(
 /// leaked, and reports only COUNTS — the raw secret values stay in the entities
 /// (full-fidelity policy) and are never copied into correlation text.
 pub(in crate::core::correlator) fn rule_au_037_credential_exposure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // One pass: collect the capped secret uids and tally passwords-vs-credentials
     // together, instead of filtering the whole entity list three times.
     let mut secret_uids: Vec<String> = Vec::new();
@@ -1061,10 +1070,11 @@ pub(in crate::core::correlator) fn rule_au_037_credential_exposure(
 /// a public-exposure signal that corroborates breach findings. `Medium`. One
 /// grouped firing over all paste URLs.
 pub(in crate::core::correlator) fn rule_au_043_paste_exposure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let uids: Vec<String> = entities
         .iter()
         .filter(|e| e.kind == EntityKind::Url && e.has_tag(crate::core::tags::PASTE_EXPOSED))
@@ -1098,10 +1108,11 @@ pub(in crate::core::correlator) fn rule_au_043_paste_exposure(
 /// names the dual-pathway, giving the operator an unambiguous remediation
 /// directive that AU-021 (single-source) cannot provide.
 pub(in crate::core::correlator) fn rule_au_082_api_key_dual_pathway(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::ApiKey)
@@ -1146,6 +1157,7 @@ pub(in crate::core::correlator) fn rule_au_082_api_key_dual_pathway(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::entity::Evidence;
 
     // ── is_salted_hash ────────────────────────────────────────────────────────
@@ -1228,8 +1240,8 @@ mod tests {
 
     #[test]
     fn classify_admits_wallet_and_api_key_unconditionally() {
-        let wallet = Entity::new(EntityKind::CryptoAddress, "0xabc", 0.5, "s");
-        let api = Entity::new(EntityKind::ApiKey, "sk-xyz", 0.5, "s");
+        let wallet = Entity::new(EntityKind::CryptoAddress, "0xabc", confidence::MEDIUM, "s");
+        let api = Entity::new(EntityKind::ApiKey, "sk-xyz", confidence::MEDIUM, "s");
         assert!(matches!(
             Secret::classify(&wallet),
             Some(Secret::WalletAddress)
@@ -1239,7 +1251,12 @@ mod tests {
 
     #[test]
     fn classify_routes_salted_hash_password_to_salted_hash() {
-        let e = Entity::new(EntityKind::Password, "$2a$10$abcdefghijklmnop", 0.5, "s");
+        let e = Entity::new(
+            EntityKind::Password,
+            "$2a$10$abcdefghijklmnop",
+            confidence::MEDIUM,
+            "s",
+        );
         assert!(matches!(Secret::classify(&e), Some(Secret::SaltedHash)));
     }
 
@@ -1247,7 +1264,7 @@ mod tests {
     fn classify_session_token_requires_tag_and_shape() {
         let token = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6";
         // With the session-token provenance tag → SessionToken.
-        let mut tagged = Entity::new(EntityKind::Credential, token, 0.5, "s");
+        let mut tagged = Entity::new(EntityKind::Credential, token, confidence::MEDIUM, "s");
         tagged.tag("session-token");
         assert!(matches!(
             Secret::classify(&tagged),
@@ -1255,13 +1272,18 @@ mod tests {
         ));
         // Same value, no tag: the hex shape is an unsalted-digest lookalike, so it
         // is NOT admitted as a plaintext password → None.
-        let untagged = Entity::new(EntityKind::Credential, token, 0.5, "s");
+        let untagged = Entity::new(EntityKind::Credential, token, confidence::MEDIUM, "s");
         assert!(Secret::classify(&untagged).is_none());
     }
 
     #[test]
     fn classify_reusable_plaintext_password_is_admitted() {
-        let e = Entity::new(EntityKind::Password, "correcthorse", 0.5, "s");
+        let e = Entity::new(
+            EntityKind::Password,
+            "correcthorse",
+            confidence::MEDIUM,
+            "s",
+        );
         let c = Secret::classify(&e).expect("rare plaintext password links");
         assert!(c.is_plaintext_password());
         assert_eq!(c.label(), "password");
@@ -1269,9 +1291,9 @@ mod tests {
 
     #[test]
     fn classify_rejects_non_credential_kinds_and_weak_passwords() {
-        let email = Entity::new(EntityKind::Email, "a@b.com", 0.5, "s");
+        let email = Entity::new(EntityKind::Email, "a@b.com", confidence::MEDIUM, "s");
         assert!(Secret::classify(&email).is_none());
-        let weak = Entity::new(EntityKind::Password, "123456", 0.5, "s");
+        let weak = Entity::new(EntityKind::Password, "123456", confidence::MEDIUM, "s");
         assert!(Secret::classify(&weak).is_none());
     }
 
@@ -1279,7 +1301,7 @@ mod tests {
 
     #[test]
     fn distinct_sources_unions_attrs_splits_lists_and_drops_sentinels() {
-        let mut e = Entity::new(EntityKind::Password, "$2a$10$x", 0.5, "s");
+        let mut e = Entity::new(EntityKind::Password, "$2a$10$x", confidence::MEDIUM, "s");
         e.add_evidence(Evidence::new("oathnet", "hit").with_attr("dbname", "LinkedIn"));
         e.add_evidence(
             Evidence::new("dehashed", "hit").with_attr("top_databases", "Adobe, MySpace, unknown"),

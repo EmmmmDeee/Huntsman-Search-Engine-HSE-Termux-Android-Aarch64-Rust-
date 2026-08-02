@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -51,6 +52,8 @@ struct LocationBlock {
     #[serde(default)]
     state: Option<String>,
     #[serde(default)]
+    zipcode: Option<String>,
+    #[serde(default)]
     latitude: Option<f64>,
     #[serde(default)]
     longitude: Option<f64>,
@@ -82,7 +85,7 @@ impl Module for IpQuery {
         "ipquery"
     }
     fn description(&self) -> &'static str {
-        "Free IP risk assessment + geolocation via ipquery.io (no key, unlimited)"
+        "ipquery.io recon — resolves an IP to risk assessment and geolocation (free, no key, unlimited)"
     }
     fn priority(&self) -> u8 {
         27
@@ -144,7 +147,7 @@ impl Module for IpQuery {
         let risk = data.risk.as_ref();
         let risk_score = risk.and_then(|r| r.risk_score).unwrap_or(0);
 
-        let mut ip_entity = target.to_entity(0.80, &ctx.scan_id);
+        let mut ip_entity = target.to_entity(confidence::HIGH_PLUSPLUS, &ctx.scan_id);
         ip_entity.tag("ipquery");
         [
             (risk.and_then(|r| r.is_vpn), tags::VPN),
@@ -241,20 +244,39 @@ fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
     if let Some(loc) = data.location.as_ref().filter(|_| trusted_geo) {
         let cc = loc.country_code.as_deref().unwrap_or("");
         let tz = loc.timezone.as_deref().unwrap_or("");
+        let zip = loc.zipcode.as_deref().unwrap_or("");
         let geo_ev = || {
-            let mut ev = Evidence::new(SRC, format!("Geolocation for {ip}"));
+            // The originating IP, recorded explicitly so a finalise pass can
+            // robustly tie this coordinate back to its source IpAddress (e.g.
+            // to recognise a person's breach login IP) without parsing the
+            // summary string — mirrors `ip_geo`'s identical attribute. Without
+            // it, `person_login_ip_coords` (the shared definition
+            // `best_au_location_estimate` and `au_location_corroboration` both
+            // use) can never recognise this provider's fix as a login-IP
+            // location.
+            let mut ev = Evidence::new(SRC, format!("Geolocation for {ip}")).with_attr("ip", ip);
             if !cc.is_empty() {
                 ev = ev.with_attr("country_iso", cc);
             }
             if !tz.is_empty() {
                 ev = ev.with_attr("timezone", tz);
             }
+            // Residential postcode — a finer geo grain than city/state, folded
+            // onto both the Coordinates and the Address (both carry geo_ev()).
+            if !zip.is_empty() {
+                ev = ev.with_attr("postcode", zip);
+            }
             ev
         };
 
         // Confidence recalibrated 0.68 → 0.58 — see ip_geo.rs.
         if let (Some(lat), Some(lon)) = (loc.latitude, loc.longitude)
-            && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, 0.58, scan_id)
+            && let Some(mut ce) = crate::util::geo::coarse_provider_coords(
+                lat,
+                lon,
+                confidence::MEDIUM_SOLID,
+                scan_id,
+            )
         {
             ce.tag("ipquery");
             crate::util::geo::tag_au_state(&mut ce, lat, lon);
@@ -267,7 +289,7 @@ fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
         let country = loc.country.as_deref().unwrap_or("");
         if !city.is_empty() && !country.is_empty() {
             let addr = crate::util::geo::compose_address(city, state, country);
-            let mut ae = Entity::new(EntityKind::Address, &addr, 0.62, scan_id);
+            let mut ae = Entity::new(EntityKind::Address, &addr, confidence::NOTABLE, scan_id);
             ae.tag("ipquery");
             if cc.eq_ignore_ascii_case("AU") {
                 ae.tag("country:AU");
@@ -284,7 +306,7 @@ fn build_geo_isp_entities(ip: &str, data: &Resp, scan_id: &str) -> Vec<Entity> {
             out.push(ae);
         }
         if let Some(org) = isp.org.as_deref().filter(|s| !s.is_empty()) {
-            let mut oe = Entity::new(EntityKind::Organisation, org, 0.65, scan_id);
+            let mut oe = Entity::new(EntityKind::Organisation, org, confidence::HIGH, scan_id);
             oe.tag("ipquery");
             oe.add_evidence(Evidence::new(SRC, format!("ISP org for {ip}")));
             out.push(oe);

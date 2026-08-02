@@ -201,24 +201,6 @@ fn present_uids(entities: &[Entity]) -> HashSet<&str> {
     entities.iter().map(|e| e.uid.as_str()).collect()
 }
 
-/// Shortest connection path (fewest hops) between two entity UIDs over the undirected
-/// relation graph, or `None` if they are unconnected within [`MAX_HOPS`] (or either
-/// UID is absent from the graph). Deterministic.
-#[must_use]
-pub fn shortest_path(
-    entities: &[Entity],
-    relations: &[Relation],
-    from_uid: &str,
-    to_uid: &str,
-) -> Option<ConnectionPath> {
-    let present = present_uids(entities);
-    if !present.contains(from_uid) || !present.contains(to_uid) {
-        return None;
-    }
-    let adj = build_adjacency(&present, relations);
-    bfs_path(&adj, from_uid, to_uid, &HashSet::new())
-}
-
 /// Up to `max_paths` DISTINCT connection pathways between two UIDs, shortest first.
 /// Each successive path is forced to route around the previous paths' edges
 /// (edge-disjoint), so the result is genuinely diverse routes — the multiple

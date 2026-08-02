@@ -38,12 +38,14 @@ use url::Url;
 
 use crate::core::{
     classifier::Classified,
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
+use crate::util::http::RequestBuilderExt;
 
 const SRC: &str = "web_crawler";
 
@@ -140,7 +142,7 @@ impl Module for WebCrawler {
     }
 
     fn description(&self) -> &'static str {
-        "Recursive web crawler with framework fingerprinting"
+        "Recursive web-crawler recon — sweeps a site and fingerprints its underlying framework"
     }
 
     fn priority(&self) -> u8 {
@@ -253,7 +255,12 @@ impl Module for WebCrawler {
             domain_was_leaky = true;
             for (service, key_val) in keys {
                 let roi = crate::util::key_roi::classify(service);
-                let mut e = Entity::new(EntityKind::ApiKey, key_val, 0.90, &ctx.scan_id);
+                let mut e = Entity::new(
+                    EntityKind::ApiKey,
+                    key_val,
+                    confidence::VERY_HIGH_PLUS,
+                    &ctx.scan_id,
+                );
                 e.tag("api-key");
                 e.tag("config-leak");
                 e.tag("web-crawler");
@@ -309,7 +316,7 @@ impl Module for WebCrawler {
                 continue;
             }
 
-            let resp = match ctx.http.get(&url).send().await {
+            let resp = match ctx.http.get(&url).send_tagged(SRC).await {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::debug!(url = %url, error = %e, "web_crawler: fetch failed");
@@ -414,7 +421,12 @@ fn build_entities(
 ) {
     // For URL targets, emit the URL entity itself with crawl results
     if is_url_target {
-        let mut url_entity = Entity::new(EntityKind::Url, seed_url, 0.90, scan_id);
+        let mut url_entity = Entity::new(
+            EntityKind::Url,
+            seed_url,
+            confidence::VERY_HIGH_PLUS,
+            scan_id,
+        );
         url_entity.tag(tags::WEB);
         url_entity.tag(tags::CRAWLED);
         for fw in &state.frameworks {
@@ -436,7 +448,12 @@ fn build_entities(
     }
 
     // Main domain entity with crawl summary
-    let mut entity = Entity::new(EntityKind::Domain, domain, 0.90, scan_id);
+    let mut entity = Entity::new(
+        EntityKind::Domain,
+        domain,
+        confidence::VERY_HIGH_PLUS,
+        scan_id,
+    );
     entity.tag(tags::WEB);
     entity.tag(tags::CRAWLED);
 
@@ -509,7 +526,7 @@ fn build_entities(
     let mut subs: Vec<&str> = state.subdomains.iter().map(String::as_str).collect();
     subs.sort_unstable();
     state.result.extend(subs.into_iter().map(|sub| {
-        let mut e = Entity::new(EntityKind::Domain, sub, 0.82, scan_id);
+        let mut e = Entity::new(EntityKind::Domain, sub, confidence::CORROBORATED, scan_id);
         e.tag(tags::WEB);
         e.tag(tags::SUBDOMAIN);
         e.add_evidence(
@@ -523,7 +540,7 @@ fn build_entities(
     let mut exts: Vec<&str> = state.external_domains.iter().map(String::as_str).collect();
     exts.sort_unstable();
     state.result.extend(exts.into_iter().map(|ext| {
-        let mut e = Entity::new(EntityKind::Domain, ext, 0.50, scan_id);
+        let mut e = Entity::new(EntityKind::Domain, ext, confidence::MEDIUM, scan_id);
         e.tag(tags::EXTERNAL);
         e.add_evidence(
             Evidence::new(SRC, format!("External domain linked from {domain}"))
@@ -543,7 +560,7 @@ fn build_entities(
         let mut emails: Vec<&str> = state.emails.iter().map(String::as_str).collect();
         emails.sort_unstable();
         state.result.extend(emails.into_iter().map(|email| {
-            let mut e = Entity::new(EntityKind::Email, email, 0.75, scan_id);
+            let mut e = Entity::new(EntityKind::Email, email, confidence::VERY_HIGH, scan_id);
             e.tag(tags::WEB_SCRAPED);
             e.add_evidence(
                 Evidence::new(SRC, format!("Email found on {domain}"))
@@ -554,7 +571,7 @@ fn build_entities(
     }
 
     // Tracking-ID entities (web-analytics affiliate pivot). The id is a hard
-    // identifier, so confidence is high (0.80); the `source_domain` attr lets the
+    // identifier, so confidence is high (confidence::HIGH_PLUSPLUS); the `source_domain` attr lets the
     // correlator count how many distinct sites carry the same id (shared id ⇒
     // common ownership). When two crawled domains share an id, both emit the same
     // TrackingId value → it merges to one entity, raising corroboration.
@@ -563,7 +580,12 @@ fn build_entities(
     state
         .result
         .extend(tracking_ids.into_iter().map(|(id, provider)| {
-            let mut e = Entity::new(EntityKind::TrackingId, id.as_str(), 0.80, scan_id);
+            let mut e = Entity::new(
+                EntityKind::TrackingId,
+                id.as_str(),
+                confidence::HIGH_PLUSPLUS,
+                scan_id,
+            );
             e.tag(tags::WEB_SCRAPED);
             e.tag("web-analytics");
             e.add_evidence(
@@ -580,7 +602,7 @@ fn build_entities(
         let mut phones: Vec<&str> = state.phones.iter().map(String::as_str).collect();
         phones.sort_unstable();
         state.result.extend(phones.into_iter().map(|phone| {
-            let mut e = Entity::new(EntityKind::Phone, phone, 0.75, scan_id);
+            let mut e = Entity::new(EntityKind::Phone, phone, confidence::VERY_HIGH, scan_id);
             e.tag(tags::WEB_SCRAPED);
             e.add_evidence(
                 Evidence::new(SRC, format!("Phone found on {domain}"))

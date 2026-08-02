@@ -23,13 +23,14 @@ pub mod intel;
 // ─── Public re-exports ────────────────────────────────────────────────────────
 
 pub use analysis::{
-    scan_correlations, scan_diff, scan_entities, scan_entities_facets, scan_entities_filter,
-    scan_identities, scan_location, scan_network, scan_relations,
+    scan_attack, scan_correlations, scan_cross_scan, scan_diamond, scan_diff, scan_entities,
+    scan_entities_facets, scan_entities_filter, scan_exposure, scan_identities, scan_location,
+    scan_network, scan_relations, scan_snake_svg, scan_stealer_rows,
 };
 pub use core::{
-    plan_preview, radar_live, radar_sweep, scan_auto, scan_auto_plan, scan_auto_sweep, scan_batch,
-    scan_cancel, scan_create, scan_delete, scan_events_history, scan_get, scan_import, scan_list,
-    scan_rerun,
+    plan_preview, radar_history, radar_live, radar_recurring, radar_sweep, scan_auto,
+    scan_auto_plan, scan_auto_sweep, scan_batch, scan_cancel, scan_create, scan_delete,
+    scan_events_history, scan_get, scan_import, scan_list, scan_profiles, scan_rerun,
 };
 pub use diagnostics::{
     scan_audit, scan_benchmark, scan_duplicates, scan_gaps, scan_metrics, scan_pivots,
@@ -39,6 +40,8 @@ pub use intel::{scan_communities, scan_leads, scan_path, scan_timeline, scan_tru
 // Re-exported for tests (private helper, only needed in the test module).
 #[cfg(test)]
 pub(crate) use core::radar_scan_spec;
+#[cfg(test)]
+pub(crate) use diagnostics::snapshot_still_relevant_to;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -73,11 +76,19 @@ pub(super) fn build_scan_from_request(req: ScanRequest) -> Result<(Scan, Target)
 /// `Some(404)` when no scan with `id` exists (or `Some(500)` on a store error),
 /// else `None`. Sub-resource handlers call this first so an unknown scan yields
 /// 404 rather than a misleading empty 200.
-pub(crate) fn scan_missing(s: &AppState, id: &str) -> Option<axum::response::Response> {
-    match s.store.get_scan(id) {
-        Ok(Some(_)) => None,
-        Ok(None) => Some(not_found()),
-        Err(e) => Some(internal_error(&e)),
+///
+/// The `get_scan` probe is synchronous SQLite under the global connection mutex,
+/// so it runs on the blocking pool — not inline on the ~2-worker async reactor
+/// where it would block a worker before each sub-resource handler's own
+/// `spawn_blocking` read.
+pub(crate) async fn scan_missing(s: &AppState, id: &str) -> Option<axum::response::Response> {
+    let store = std::sync::Arc::clone(&s.store);
+    let id = id.to_string();
+    match tokio::task::spawn_blocking(move || store.get_scan(&id)).await {
+        Ok(Ok(Some(_))) => None,
+        Ok(Ok(None)) => Some(not_found()),
+        Ok(Err(e)) => Some(internal_error(&e)),
+        Err(e) => Some(internal_error(&format!("query task failed: {e}"))),
     }
 }
 
@@ -97,6 +108,51 @@ pub(crate) fn wants_infra(params: &std::collections::HashMap<String, String>) ->
     params
         .get("include_infra")
         .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+}
+
+/// Drop quarantined `candidate` entities in place unless the request opted in
+/// via `?include_candidates=1`. THE single enforcement point for the candidate
+/// quarantine on every entity-serving read endpoint (`/entities`, `/diamond`,
+/// `/attack`, the filtered `/entities` view, `/identities`, …) — so a new
+/// handler physically cannot forget it and re-leak low-confidence, non-subject
+/// PII by default. Mirrors the download-side quarantine (`report.json`, CSV,
+/// `graph.gexf`).
+pub(crate) fn apply_candidate_gate(
+    entities: &mut Vec<crate::core::entity::Entity>,
+    params: &std::collections::HashMap<String, String>,
+) {
+    if !wants_candidates(params) {
+        entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+    }
+}
+
+/// Graph analogue of [`apply_candidate_gate`]: hide quarantined `candidate`
+/// entities AND drop every relation with a now-hidden endpoint, so a
+/// graph / network / relations view leaks a candidate neither as a node value
+/// nor as a dangling edge whose `from_uid`/`to_uid` re-exposes the quarantined
+/// entity's UID (the class of leak the CLI/GEXF dangling-edge fix already closed
+/// on the export side). Returns the visible entities paired with the relations
+/// confined to them; when the caller opts into candidates the pair is returned
+/// untouched.
+pub(crate) fn confine_graph_to_visible(
+    mut entities: Vec<crate::core::entity::Entity>,
+    relations: Vec<crate::core::relation::Relation>,
+    params: &std::collections::HashMap<String, String>,
+) -> (
+    Vec<crate::core::entity::Entity>,
+    Vec<crate::core::relation::Relation>,
+) {
+    if wants_candidates(params) {
+        return (entities, relations);
+    }
+    apply_candidate_gate(&mut entities, params);
+    let visible: std::collections::HashSet<&str> =
+        entities.iter().map(|e| e.uid.as_str()).collect();
+    let relations = relations
+        .into_iter()
+        .filter(|r| visible.contains(r.from_uid.as_str()) && visible.contains(r.to_uid.as_str()))
+        .collect();
+    (entities, relations)
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────

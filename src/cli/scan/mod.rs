@@ -10,15 +10,16 @@ use crate::core::module::ModuleContext;
 use crate::core::scan::{Scan, ScanOptions, Target};
 use crate::util::{keys, uid::scan_id};
 
-use super::{
-    build_runtime, color_confidence, color_severity, parse_target_kind, split_csv, truncate,
-    use_color,
-};
+use super::{color_confidence, color_severity, parse_target_kind, split_csv, truncate, use_color};
 
+#[derive(Clone)]
 pub(super) struct ScanCmd {
     /// `None` (or `"auto"`) auto-detects the kind from `value` — the unified scan.
     pub kind: Option<String>,
     pub value: String,
+    /// Batch mode: a path to a file of seeds (one target per line). When set,
+    /// `value` is ignored and the same scan pipeline runs once per file seed.
+    pub input_file: Option<String>,
     pub modules: Option<String>,
     pub exclude: Option<String>,
     pub throttle_ms: u64,
@@ -38,6 +39,7 @@ pub(super) struct ScanCmd {
     pub adaptive: bool,
     pub max_roi: bool,
     pub convex_budget: bool,
+    pub skip_dead_modules: bool,
     pub regional_search: bool,
     pub min_marginal_yield: Option<f64>,
     pub expansion_strategy: String,
@@ -53,7 +55,63 @@ pub(super) struct ScanCmd {
     pub include_infra: bool,
 }
 
+/// Parse a batch seed-list file body into ordered, de-duplicated seeds: one
+/// target per line, blank lines and `#`-comment lines skipped, surrounding
+/// whitespace trimmed. **Pure** (no IO) so the parsing is unit-tested directly.
+pub(super) fn parse_seed_list(body: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    body.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter(|l| seen.insert(l.to_string()))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Batch mode: run the SAME scan pipeline for every seed in `--input-file`,
+/// reusing [`cmd_scan`] per seed. This is HSE's keyless, any-seed generalisation
+/// of a "process this list of targets" batch tool — each seed's findings are
+/// scanned, stored (exportable afterwards per `scan_id` via `hse export`), and a
+/// per-seed failure is reported without aborting the run (one bad target must
+/// not sink the whole list).
+async fn run_batch(base: ScanCmd, path: &str) -> crate::core::error::Result<()> {
+    let body = std::fs::read_to_string(path).map_err(|e| {
+        crate::core::error::Error::Other(format!("cannot read --input-file '{path}': {e}"))
+    })?;
+    let seeds = parse_seed_list(&body);
+    if seeds.is_empty() {
+        return Err(crate::core::error::Error::Other(format!(
+            "no seeds in --input-file '{path}' (one target per line; blank and # lines ignored)"
+        )));
+    }
+    let total = seeds.len();
+    eprintln!("batch: scanning {total} seed(s) from {path}");
+    let (mut ok, mut failed) = (0usize, 0usize);
+    for (i, seed) in seeds.into_iter().enumerate() {
+        eprintln!("\n── batch [{}/{total}] {seed} ──", i + 1);
+        let mut per = base.clone();
+        per.value = seed.clone();
+        per.input_file = None; // guard against re-entry
+        // Box the recursive call: cmd_scan ↔ run_batch is a cycle, so at least
+        // one edge must be heap-indirected to keep the future finite-sized.
+        match Box::pin(cmd_scan(per)).await {
+            Ok(()) => ok += 1,
+            Err(e) => {
+                failed += 1;
+                eprintln!("batch: seed '{seed}' failed: {e}");
+            }
+        }
+    }
+    eprintln!("\nbatch complete: {ok} succeeded, {failed} failed, {total} total");
+    Ok(())
+}
+
 pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
+    // Batch mode short-circuit: `--input-file` runs the whole pipeline once per
+    // file seed, reusing this same function (value is overwritten per seed).
+    if let Some(path) = cmd.input_file.clone() {
+        return run_batch(cmd, &path).await;
+    }
     // Unified scan: an omitted (or `auto`) --kind is inferred from the value's
     // shape; an explicit kind is parsed as before. Detection is reported on
     // stderr so the operator sees (and can override) what was chosen.
@@ -76,7 +134,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     // domain --value example.com` would dispatch every module against a reserved
     // documentation domain — exactly the "example anything" the engine must not
     // scan.
-    if let Err(msg) = target.validate() {
+    if let Err(msg) = target.validate_verbose() {
         return Err(crate::core::error::Error::Other(format!(
             "invalid target '{}': {msg}",
             target.value
@@ -201,6 +259,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         profile: None,
         max_roi: cmd.max_roi,
         convex_budget: cmd.convex_budget,
+        skip_dead_modules: cmd.skip_dead_modules,
         regional_search: cmd.regional_search,
         min_marginal_yield: cmd.min_marginal_yield,
         expansion_strategy,
@@ -236,7 +295,8 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     }
 
     let sid = scan_id(target_kind.canonical_str(), &cmd.value);
-    let (store, bus, engine) = build_runtime(64)?;
+    let crate::app::runtime::ApplicationRuntime { store, bus, engine } =
+        crate::app::runtime::build_runtime(64)?;
 
     let scan = Scan::new(sid.clone(), target.clone()).with_options(options);
     let keys = keys::populate_and_load().await;
@@ -248,7 +308,6 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         http: crate::util::http::build_client_with_trace(&sid),
         keys,
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
     };
 
     // Wire an operator Ctrl-C to the engine's cooperative cancel flag — without
@@ -278,7 +337,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     // dossier (every entity, full provenance, every raw API response embedded)
     // and announce its path on stderr — regardless of the chosen stdout format.
     // Best-effort: a dossier write failure must never fail the scan itself.
-    match crate::cli::export::write_full_dossier(store.as_ref(), &sid) {
+    match crate::app::export::write_full_dossier(store.as_ref(), &sid) {
         Ok(path) => eprintln!("full dossier: {}", path.display()),
         Err(e) => eprintln!("warning: could not write full dossier: {e}"),
     }
@@ -384,6 +443,18 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             "  precision: {n_verified} verified · {n_probable} probable · {n_candidate} candidate ({} quarantined non-subject)\n",
             quarantined.len()
         );
+        // Expansion timeline: how the working graph grew generation by generation
+        // outward from the seed. Only shown when expansion actually reached beyond
+        // the seed round (more than one generation present), so a plain depth-0
+        // scan stays uncluttered.
+        let timeline = crate::core::entity::expansion_timeline(&entities);
+        if timeline.len() > 1 {
+            let parts: Vec<String> = timeline
+                .iter()
+                .map(|(g, n)| format!("gen {g}: {n}"))
+                .collect();
+            println!("  expansion: {}\n", parts.join("  ·  "));
+        }
         println!(
             "{:<16} {:>6} {:>6}  {:<10} {:<26} VALUE",
             "KIND", "CONF", "C_EFF", "CLASS", "SOURCES"
@@ -452,10 +523,17 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
 /// values for those two fields, not because it was correct.
 fn apply_named_profile(name: &str, options: ScanOptions) -> Result<ScanOptions, String> {
     let p = crate::core::profiles::resolve_profile(name).ok_or_else(|| {
-        format!(
-            "unknown --profile '{name}' (try: recommended, passive, footprint, \
-             investigate, fast, skiptrace)"
-        )
+        // Render the SINGLE-SOURCED catalogue from `core::profiles::list_profiles`
+        // rather than a hand-typed name list: the previous literal
+        // ("recommended, passive, …") was a copy that would silently go stale the
+        // next time a profile is added, and it hid the one-line descriptions
+        // `list_profiles` carries — so the help now also tells the operator what
+        // each profile DOES, not just its name.
+        let mut msg = format!("unknown --profile '{name}'. Available profiles:");
+        for (pname, desc) in crate::core::profiles::list_profiles() {
+            msg.push_str(&format!("\n  {pname} — {desc}"));
+        }
+        msg
     })?;
     Ok(crate::core::profiles::apply_profile_overlay(options, p).clamp_depth())
 }
@@ -597,6 +675,7 @@ fn entity_source_labels(e: &crate::core::entity::Entity) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::entity::{Entity, EntityKind, Evidence};
     use std::cell::Cell;
 
@@ -629,6 +708,34 @@ mod tests {
             Some("email")
         );
         assert!(v.get("confidence").is_some());
+    }
+
+    #[test]
+    fn parse_seed_list_skips_blanks_comments_and_dedups() {
+        let body = "\
+8.8.8.8
+  1.1.1.1
+
+# a comment line
+example.com
+8.8.8.8
+# another comment
+alice@example.com
+";
+        let seeds = parse_seed_list(body);
+        // Order preserved, whitespace trimmed, blanks + # lines dropped, the
+        // duplicate 8.8.8.8 collapsed to its first occurrence.
+        assert_eq!(
+            seeds,
+            vec![
+                "8.8.8.8".to_string(),
+                "1.1.1.1".to_string(),
+                "example.com".to_string(),
+                "alice@example.com".to_string(),
+            ]
+        );
+        // An all-blank / all-comment body yields no seeds (run_batch errors on it).
+        assert!(parse_seed_list("\n\n#only a comment\n   \n").is_empty());
     }
 
     #[test]
@@ -670,9 +777,19 @@ mod tests {
         // showed platform-infra entities regardless of the flag, unlike
         // `hse export` / the API which quarantine them by default. Pin the
         // actual filter behaviour the flag now drives.
-        let mut infra = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.6, "s");
+        let mut infra = Entity::new(
+            EntityKind::IpAddress,
+            "104.16.0.1",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         infra.tag(crate::core::tags::PLATFORM_INFRA);
-        let subject = Entity::new(EntityKind::Domain, "example-subject.test", 0.9, "s");
+        let subject = Entity::new(
+            EntityKind::Domain,
+            "example-subject.test",
+            confidence::VERY_HIGH_PLUS,
+            "s",
+        );
         let mut entities = vec![infra, subject];
 
         filter_infra_entities(&mut entities, false);
@@ -682,7 +799,12 @@ mod tests {
 
     #[test]
     fn filter_infra_entities_restores_infra_when_flag_set() {
-        let mut infra = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.6, "s");
+        let mut infra = Entity::new(
+            EntityKind::IpAddress,
+            "104.16.0.1",
+            confidence::MEDIUM_PLUS,
+            "s",
+        );
         infra.tag(crate::core::tags::PLATFORM_INFRA);
         let mut entities = vec![infra];
 
@@ -699,7 +821,12 @@ mod tests {
         // A scan seeded with a datacenter/CDN IP that an IP module re-emits as
         // `hosting`, which then merges `platform-infra` onto the seed anchor —
         // the seed must still appear in its own report.
-        let mut seed = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.9, "s");
+        let mut seed = Entity::new(
+            EntityKind::IpAddress,
+            "104.16.0.1",
+            confidence::VERY_HIGH_PLUS,
+            "s",
+        );
         seed.tag(crate::core::tags::PLATFORM_INFRA);
         seed.tag("seed");
         let mut entities = vec![seed];
@@ -781,7 +908,7 @@ mod tests {
 
     #[test]
     fn source_labels_prefer_source_attr_then_dedup_and_sort() {
-        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.5, "s");
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", confidence::MEDIUM, "s");
         // A "source" attr overrides the raw evidence source name.
         e.add_evidence(Evidence::new("modB", "m").with_attr("source", "haveibeenpwned"));
         // No "source" attr → falls back to ev.source ("modA")…
@@ -794,7 +921,7 @@ mod tests {
 
     #[test]
     fn source_labels_em_dash_when_no_evidence() {
-        let e = Entity::new(EntityKind::Email, "x@y.com", 0.5, "s");
+        let e = Entity::new(EntityKind::Email, "x@y.com", confidence::MEDIUM, "s");
         assert_eq!(entity_source_labels(&e), "—");
     }
 
@@ -814,7 +941,7 @@ mod tests {
             regional_search: false,
             ..ScanOptions::default()
         };
-        let merged = apply_named_profile("skiptrace", options.clone()).unwrap();
+        let merged = apply_named_profile("skiptrace", options.clone()).expect("should succeed");
         assert_eq!(
             merged.modules, options.modules,
             "--modules must survive the overlay"
@@ -823,7 +950,8 @@ mod tests {
             merged.min_confidence, options.min_confidence,
             "--min-confidence must survive the overlay"
         );
-        let skiptrace = crate::core::profiles::resolve_profile("skiptrace").unwrap();
+        let skiptrace =
+            crate::core::profiles::resolve_profile("skiptrace").expect("should succeed");
         assert_eq!(merged.depth, skiptrace.depth);
         assert_eq!(
             merged.expansion_strategy, skiptrace.expansion_strategy,
@@ -837,10 +965,29 @@ mod tests {
 
     #[test]
     fn apply_named_profile_rejects_unknown_name() {
-        let err = apply_named_profile("not-a-real-profile", ScanOptions::default()).unwrap_err();
+        let err = apply_named_profile("not-a-real-profile", ScanOptions::default())
+            .expect_err("should be an error");
         assert!(
             err.starts_with("unknown --profile "),
             "error must carry the client-facing prefix, got: {err}"
         );
+        // The help is rendered from the single-sourced `core::profiles::list_profiles`
+        // catalogue, so it can't drift from the selectable set: every profile's
+        // NAME and its one-line DESCRIPTION must appear. This ties the CLI's
+        // unknown-profile help to the catalogue the way the module-count guard
+        // ties the README to the registry — add a profile and this fails until
+        // the help is sourced from the shared list, not a hand-typed literal.
+        // (Fails against the pre-wire error, which listed bare names and no
+        // descriptions at all.)
+        for (name, desc) in crate::core::profiles::list_profiles() {
+            assert!(
+                err.contains(name),
+                "unknown-profile help must list every profile name — missing '{name}': {err}"
+            );
+            assert!(
+                err.contains(desc),
+                "unknown-profile help must render each profile's description — missing '{name}'s: {err}"
+            );
+        }
     }
 }

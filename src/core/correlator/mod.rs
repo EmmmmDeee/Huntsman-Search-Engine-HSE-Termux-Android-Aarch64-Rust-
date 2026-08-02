@@ -16,15 +16,60 @@
 // scan and emitted on the event bus. Rules are deterministic — no LLMs,
 // no fuzzy matching.
 
+use crate::core::confidence;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use crate::core::entity::Entity;
+use crate::core::entity::{Entity, EntityKind, Evidence, canonical_handle};
 use crate::core::error::Result;
 use crate::core::port::StoragePort;
 use crate::core::relation::Relation;
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+// ─── RuleContext ───────────────────────────────────────────────────────────
+// Lazy-cached precomputed indexes shared across all correlation rules,
+// eliminating O(R·E) redundant index rebuilds. Each rule independently calling
+// canonical_handle() on the same entities 24 times per pass is O(R·E) with a
+// large constant factor. RuleContext precomputes indexes once and shares them
+// via method calls, amortizing the cost to O(E) + O(R·log E) rule dispatch.
+
+pub struct RuleContext<'a> {
+    entities: &'a [Entity],
+    // Lazy-cached: by_canonical_handle maps canonical_handle(entity) → vec of entities with that handle
+    by_canonical_handle: RefCell<Option<HashMap<String, Vec<&'a Entity>>>>,
+}
+
+impl<'a> RuleContext<'a> {
+    pub fn new(entities: &'a [Entity]) -> Self {
+        Self {
+            entities,
+            by_canonical_handle: RefCell::new(None),
+        }
+    }
+
+    pub fn entities(&self) -> &'a [Entity] {
+        self.entities
+    }
+
+    /// Returns a reference to the cached canonical-handle map. Builds and caches
+    /// on first call, returns cached on subsequent calls.
+    pub fn by_canonical_handle(&self) -> std::cell::Ref<'_, HashMap<String, Vec<&'a Entity>>> {
+        if self.by_canonical_handle.borrow().is_none() {
+            let mut map: HashMap<String, Vec<&Entity>> = HashMap::new();
+            for entity in self.entities {
+                let canonical = canonical_handle(&entity.value);
+                map.entry(canonical).or_default().push(entity);
+            }
+            *self.by_canonical_handle.borrow_mut() = Some(map);
+        }
+        std::cell::Ref::map(self.by_canonical_handle.borrow(), |opt| {
+            opt.as_ref().expect("just populated")
+        })
+    }
+}
 
 // ─── Severity ──────────────────────────────────────────────────────────────
 
@@ -210,12 +255,16 @@ impl Correlator {
         // finalise pass that runs both, that was two full clones of the entity
         // set per scan.
         let confirmed = confirmed_only(&entities);
+        // Build shared RuleContext once, shared by both entity and relation rule
+        // passes. This precomputes indexes (e.g. canonical-handle map) that all
+        // rules would otherwise rebuild independently.
+        let context = RuleContext::new(&confirmed);
         let now = crate::core::entity::unix_now();
         // One shared wall-clock deadline across the entity AND relation passes, so
         // the WHOLE finalise correlator phase is bounded (a huge recalled graph
         // can't hang the scan). Never reached by a normal scan.
         let deadline = Some(std::time::Instant::now() + CORRELATOR_BUDGET);
-        let mut firings = evaluate_rules_on(&confirmed, scan_id, now, deadline);
+        let mut firings = evaluate_rules_on(&context, scan_id, now, deadline);
 
         // Graph-aware pass: rules that need the typed relation edges (the
         // attribution graph), not just the flat entity list. Relations are
@@ -223,7 +272,7 @@ impl Correlator {
         let relations = self.store.relations_for_scan(scan_id)?;
         if !relations.is_empty() {
             firings.extend(evaluate_relation_rules_on(
-                &confirmed, &relations, scan_id, now, deadline,
+                &context, &relations, scan_id, now, deadline,
             ));
         }
 
@@ -242,16 +291,47 @@ impl Correlator {
         for c in &firings {
             self.store.upsert_correlation(c)?;
         }
-        debug!(scan_id, fired = firings.len(), "correlator done");
+        // Report what was EXAMINED, not just what fired. `fired = 0` alone is
+        // ambiguous between "the rules ran over the whole scan and nothing
+        // correlated" and "almost every entity was quarantined, so the rules had
+        // nothing to run over" — opposite conditions demanding opposite operator
+        // responses, previously indistinguishable in the logs.
+        let examined = confirmed.len();
+        let quarantined = entities.len().saturating_sub(examined);
+        debug!(
+            scan_id,
+            fired = firings.len(),
+            examined,
+            quarantined,
+            total = entities.len(),
+            "correlator done"
+        );
+        // A scan whose findings are overwhelmingly quarantined has not been
+        // correlated in any meaningful sense, and the operator cannot see that
+        // from a correlation count of zero. This is the one condition worth
+        // raising above debug: it is actionable (the quarantine lifts when the
+        // subject gains a confirmed location) and it silently voids the entire
+        // correlation phase.
+        if quarantined > 0 && examined * QUARANTINE_ALARM_RATIO < entities.len() {
+            tracing::warn!(
+                scan_id,
+                examined,
+                quarantined,
+                total = entities.len(),
+                "correlation ran over a small fraction of the scan — most entities are \
+                 candidate-quarantined, so a low correlation count reflects what was \
+                 EXAMINED, not what was found"
+            );
+        }
         Ok(firings)
     }
 }
 
 // ─── Rules ─────────────────────────────────────────────────────────────────
 
-type RuleFn = fn(&[Entity], &str, u64) -> Vec<Correlation>;
+type RuleFn = fn(&RuleContext, &str, u64) -> Vec<Correlation>;
 
-mod rules;
+pub(crate) mod rules;
 pub(crate) use rules::location::{
     au_location_corroboration, au059_synergy_fix, best_au_location_estimate,
     is_anchoring_geo_source,
@@ -276,7 +356,12 @@ pub(in crate::core) use rules::source_family;
 // edge and the AU-047/AU-048/AU-106 correlations can never disagree on which
 // secrets/handles qualify.
 pub(in crate::core) use rules::Secret;
-pub(in crate::core) use rules::canonical_handle;
+pub(in crate::core) use rules::is_anchorable_handle;
+// The breach/stealer corpus classifier: `core::breach_consensus` grades an
+// entity's corroboration by counting DISTINCT breach sources, and must agree
+// exactly with the correlator on which sources those are — a second, drifting
+// list would let the consensus pass certify agreement the rules never saw.
+pub(in crate::core) use rules::breach_pii::{DOB_KEYS, is_breach_source};
 use rules::*;
 
 const RULES: &[RuleFn] = &[
@@ -446,6 +531,54 @@ const RULES: &[RuleFn] = &[
     // AU-108: the subject's breach-listed accounts across >=2 platforms — a stated
     // cross-platform footprint from the `platform:handle` breach Usernames.
     rule_au_108_breach_social_footprint,
+    // AU-111: a CDN-fronted domain's SPF-authorised mail-sender IP is a likely
+    // origin/hosting-network candidate — mail isn't proxied by the CDN edge.
+    rule_au_111_cdn_origin_candidate,
+    // AU-112: an independently-discovered IP address falling within a narrow
+    // network block also discovered this scan — shared hosting infrastructure,
+    // reusing util::spf's CIDR-containment maths rather than duplicating it.
+    rule_au_112_shared_cidr_infrastructure,
+    // AU-114: a confirmed Person/Organisation flagged on a sanctions / debarment
+    // / PEP list (opensanctions definitive match, Wikidata PEP signal) — the
+    // highest-consequence OSINT screening signal, graded Critical/High/Medium by
+    // the strongest flag. Surfaces what previously sat un-named in the graph.
+    rule_au_114_sanctions_exposure,
+    // AU-115: a personal Wi-Fi SSID that WiGLE geolocated (ssid-located
+    // Coordinates naming it) — a subject-owned network placing its owner, a
+    // high-value GEOINT lead previously surfaced by no correlation.
+    rule_au_115_personal_wifi_geolocated,
+    // AU-117: the operator's OWN bonded (paired) Bluetooth kit whose members
+    // broadcast persistent hardware MACs — a self-carried tracking fingerprint,
+    // the bonded counterpart to AU-122's third-party trackable devices.
+    rule_au_117_personal_device_constellation,
+    // AU-118: two distinct registrable domains in one scan whose brand labels
+    // are homoglyph/typo look-alikes — a phishing/brand-abuse domain standing up
+    // beside the genuine one (dnstwist at the correlation layer, across every
+    // discovered domain rather than only seed permutations).
+    rule_au_118_lookalike_domain_impersonation,
+    // AU-119: the subject's confirmed dating-platform profiles — a location-
+    // bearing personal-exposure surface the generic footprint rules bury in a
+    // list; surfaced on its own at a severity that reflects the exposure.
+    rule_au_119_dating_platform_exposure,
+    // AU-120: the subject's confirmed subscription-creator / webcam / adult
+    // profiles — a deliberate, identity-linked (payment/KYC) footprint elevated
+    // above the generic account roster.
+    rule_au_120_monetized_creator_exposure,
+    // AU-121: the transitive closure of reused-secret links — a chain of
+    // accounts no single secret spans (AU-047's blind spot), reported as one
+    // credential-reuse blast radius. (Renumbered from AU-114 on merge — main's
+    // AU-114 is sanctions exposure.)
+    rule_au_121_credential_reuse_blast_radius,
+    // AU-122: an RF-observed (radar/WiGLE) sweep's trackable hardware devices —
+    // universally-administered MACs a real device broadcasts — separated from
+    // the randomized privacy addresses that rotate and can't be followed.
+    // (Renumbered from AU-115 on merge — main's AU-115 is personal-wifi-geo.)
+    rule_au_122_trackable_rf_device,
+    // AU-123: Username handles that share a digit-folded stem (jdiegmann /
+    // jdiegmann92 / jdiegmann_2024) across ≥2 sources — the base-handle-plus-
+    // number pattern one operator reuses across platforms, which the exact-match
+    // handle rules (canonical_handle keeps digits) never join. A Medium lead.
+    rule_au_123_numeric_variant_handle_persona,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
@@ -459,9 +592,10 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     // corroboration out of noise. The entities remain in the store and the
     // candidates view; they simply don't get to assert relationships.
     let confirmed = confirmed_only(entities);
+    let context = RuleContext::new(&confirmed);
     // The live incremental pass is per-round and small — no budget, full
     // determinism (its streaming correlations must be reproducible).
-    evaluate_rules_on(&confirmed, scan_id, now, None)
+    evaluate_rules_on(&context, scan_id, now, None)
 }
 
 /// Wall-clock budget for the FINALISE correlator pass (entity rules + the
@@ -479,15 +613,26 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
 /// scans keep every correlation.
 const CORRELATOR_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Raise the quarantine alarm when the examined set is under `1/N` of the scan.
+///
+/// Four (i.e. under 25% examined) is deliberately well clear of a scan that
+/// merely carries some breach candidates — quarantining a minority is the
+/// system working as designed. It fires on the pathological shape actually
+/// observed: a 1081-entity dossier in which every breach record stayed
+/// quarantined because the subject never gained a confirmed location, leaving
+/// ~7 entities for the rules and a correlation count of zero that read as
+/// "nothing correlated" rather than "nothing was examined".
+const QUARANTINE_ALARM_RATIO: usize = 4;
+
 /// Run every entity-only rule over an already quarantine-filtered, confirmed
-/// entity slice. Split out from [`evaluate_rules`] so a caller that runs both
-/// the entity and the relation passes (`Correlator::run`) can filter once and
-/// share the confirmed view instead of cloning it per pass. `deadline` (set only
-/// on the finalise pass) caps total wall-time: once reached, no further rule is
-/// started and the pass returns what it has — a complete scan with partial
-/// correlations beats one hung forever.
+/// entity slice using a pre-built RuleContext. Split out from [`evaluate_rules`]
+/// so a caller that runs both the entity and the relation passes (`Correlator::run`)
+/// can filter once and share the confirmed view and RuleContext instead of
+/// cloning per pass. `deadline` (set only on the finalise pass) caps total
+/// wall-time: once reached, no further rule is started and the pass returns what
+/// it has — a complete scan with partial correlations beats one hung forever.
 fn evaluate_rules_on(
-    confirmed: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     now: u64,
     deadline: Option<std::time::Instant>,
@@ -503,21 +648,34 @@ fn evaluate_rules_on(
             );
             break;
         }
-        out.extend(rule(confirmed, scan_id, now));
+        out.extend(rule(context, scan_id, now));
     }
     out
 }
 
 /// Entities minus the `candidate`-tagged quarantine set — the view every
-/// correlation rule sees. Allocates a filtered copy because the rule fns take
-/// `&[Entity]`; correlation runs are infrequent and entity counts bounded, so
-/// the clone is negligible.
-fn confirmed_only(entities: &[Entity]) -> Vec<Entity> {
-    entities
+/// correlation rule sees. Returns a [`Cow`](std::borrow::Cow): when nothing is quarantined (the
+/// common case for a focused email/username/domain scan) the caller's slice is
+/// BORROWED, avoiding a full clone of the entity set — each [`Entity`] owns its
+/// `Vec<Evidence>`, so that clone is far from free on a large recalled graph and
+/// ran on every correlation round. Only when a `candidate` entity is actually
+/// present does it allocate the filtered copy. Both call sites pass `&confirmed`
+/// to a `&[Entity]` parameter, so deref coercion keeps them unchanged.
+fn confirmed_only(entities: &[Entity]) -> std::borrow::Cow<'_, [Entity]> {
+    if entities
         .iter()
-        .filter(|e| !e.has_tag(crate::core::tags::CANDIDATE))
-        .cloned()
-        .collect()
+        .all(|e| !e.has_tag(crate::core::tags::CANDIDATE))
+    {
+        std::borrow::Cow::Borrowed(entities)
+    } else {
+        std::borrow::Cow::Owned(
+            entities
+                .iter()
+                .filter(|e| !e.has_tag(crate::core::tags::CANDIDATE))
+                .cloned()
+                .collect(),
+        )
+    }
 }
 
 /// Evaluate the entity-only rules against an in-memory entity slice.
@@ -531,12 +689,121 @@ pub(crate) fn correlate_entities(entities: &[Entity], scan_id: &str) -> Vec<Corr
     evaluate_rules(entities, scan_id)
 }
 
+// ─── Bench-only entry points (F.3 / SOL-F3: "widen criterion to the
+// correlation pass") ────────────────────────────────────────────────────────
+//
+// `benches/*.rs` are separate compilation units that link against this
+// crate's PUBLIC API only — unlike `#[cfg(test)]` code (see `perf`, below),
+// they never see `pub(crate)` items and don't run under `cargo bench`'s
+// release-profile build, so `correlate_entities` — deliberately `pub(crate)`,
+// an internal fast path, not published API — was unreachable from a
+// criterion bench. This is the same narrow, documented `#[doc(hidden)] pub
+// fn` widening `cert_intel::fuzz_entry_parse_der` established for
+// `cargo-fuzz` (SOL-F3's other leg): additive, harness-only, no new
+// production surface.
+//
+// `bench_synthetic_entities` is also the single generator `perf`'s in-crate
+// `#[ignore]`d guard (`scaling_baseline`/`pass_is_subquadratic`) delegates
+// to, so the two harnesses can never silently diverge on what "representative
+// load" means (`docs/CONVENTIONS.md` §3, single-sourced vocabularies).
+
+/// Build a representative confirmed-entity set of `n` entities that exercises
+/// the heavier correlation rules with *real* work (not early-outs):
+///
+/// * ~¼ `Username` + ~¼ `Email` drawn from a shared, overlapping handle space,
+///   so AU-034 (handle reuse) actually matches across the two sets — the path
+///   that was once quadratic. Username and email of a shared handle carry
+///   *different* evidence sources, so the rule's ≥2-distinct-source gate is
+///   satisfied and the match work is performed rather than skipped.
+/// * the remaining half spread across the other kinds, a fraction tagged
+///   `breach`/`stealer-log` with multi-source evidence, to give the breach /
+///   identity / corroboration rules realistic input.
+///
+/// Pure and deterministic (no RNG) so runs are comparable across `cargo
+/// bench`/`cargo test -- --ignored` invocations.
+#[doc(hidden)]
+#[must_use]
+pub fn bench_synthetic_entities(n: usize) -> Vec<Entity> {
+    let mut out = Vec::with_capacity(n);
+    let quarter = n / 4;
+    // Shared handle space: handles repeat every `handle_space` indices so a
+    // username and an email can land on the same canonical handle.
+    let handle_space = (quarter / 2).max(1);
+
+    for i in 0..n {
+        let bucket = i % 4;
+        let mut e = match bucket {
+            0 => {
+                // Username on a shared handle, observed on a platform.
+                let mut e = Entity::new(
+                    EntityKind::Username,
+                    format!("handle{:04}", i % handle_space),
+                    confidence::HIGH_PLUSPLUS,
+                    "scan",
+                );
+                e.add_evidence(Evidence::new("username_search", "observed"));
+                e
+            }
+            1 => {
+                // Email whose local-part is the same shared handle, from a
+                // *different* source so AU-034's ≥2-source gate passes.
+                let mut e = Entity::new(
+                    EntityKind::Email,
+                    format!("handle{:04}@example{}.com", i % handle_space, i % 7),
+                    confidence::HIGH_PLUSPLUS,
+                    "scan",
+                );
+                e.add_evidence(Evidence::new("hunter_io", "observed"));
+                if i % 5 == 0 {
+                    e.tag(crate::core::tags::BREACH);
+                    e.add_evidence(Evidence::new("oathnet_pro", "breach row"));
+                }
+                e
+            }
+            2 => {
+                let kind = match (i / 4) % 4 {
+                    0 => EntityKind::IpAddress,
+                    1 => EntityKind::Domain,
+                    2 => EntityKind::Person,
+                    _ => EntityKind::Address,
+                };
+                let mut e = Entity::new(kind, format!("v{i}"), confidence::HIGH_PLUS, "scan");
+                e.add_evidence(Evidence::new("name_intel", "derived"));
+                if i % 11 == 0 {
+                    e.tag(crate::core::tags::STEALER_LOG);
+                }
+                e
+            }
+            _ => {
+                let kind = match (i / 4) % 3 {
+                    0 => EntityKind::Url,
+                    1 => EntityKind::CryptoAddress,
+                    _ => EntityKind::Organisation,
+                };
+                let mut e = Entity::new(kind, format!("w{i}"), confidence::MEDIUM_PLUS, "scan");
+                e.add_evidence(Evidence::new("exa_search", "hit"));
+                e
+            }
+        };
+        e.tag("src");
+        out.push(e);
+    }
+    out
+}
+
+/// Bench-visible entry point for the correlation pass itself — see
+/// [`bench_synthetic_entities`] for the generator that feeds it.
+#[doc(hidden)]
+pub fn bench_correlate_entities(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
+    correlate_entities(entities, scan_id)
+}
+
 // ─── Graph-aware rules ───────────────────────────────────────────────────────
 // Rules that consume the typed `Relation` edge set in addition to entities.
 // Kept separate from `RULES` so the 30 entity-only rules need no signature
 // change.
 
-type RelationRuleFn = fn(&[Entity], &[Relation], &str, u64) -> Vec<Correlation>;
+type RelationRuleFn = fn(&RuleContext, &[Relation], &str, u64) -> Vec<Correlation>;
 
 const RELATION_RULES: &[RelationRuleFn] = &[
     rule_au_031_malicious_adjacency,
@@ -551,13 +818,31 @@ const RELATION_RULES: &[RelationRuleFn] = &[
     rule_au_071_robust_identity_cluster,
     rule_au_109_shared_registrant,
     rule_au_110_shared_hosting_ip,
+    rule_au_113_direct_connect_origin_candidate,
+    // AU-116: the multi-hop transitive closure of the infrastructure graph — a
+    // hosting footprint chained across ≥2 IPs that no single-shared-host rule
+    // (AU-110) can see; the infra analogue of AU-060's identity closure.
+    rule_au_116_infrastructure_pivot_closure,
 ];
+
+/// `(entity-only rule count, graph-aware relation rule count)` — the live,
+/// authoritative split behind every "N rules (E entity + R graph-aware
+/// relation)" prose mention (`README.md`, `docs/ARCHITECTURE_AUDIT.md`). A
+/// hand-maintained copy of this pair drifted silently every time a rule was
+/// added in this same session (four cycles' worth of manual reconciliation
+/// across the docs) — this accessor lets an architecture test tie the prose
+/// to the registry directly, the same guard `modules::registry().len()`
+/// already gives the module count.
+#[must_use]
+pub fn rule_counts() -> (usize, usize) {
+    (RULES.len(), RELATION_RULES.len())
+}
 
 /// Run every relation-aware rule over an already quarantine-filtered, confirmed
 /// entity slice (see [`evaluate_rules_on`]). Lets `Correlator::run` reuse the
-/// single confirmed view it already built for the entity pass.
+/// single confirmed view and shared RuleContext it already built for the entity pass.
 fn evaluate_relation_rules_on(
-    confirmed: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
@@ -576,7 +861,7 @@ fn evaluate_relation_rules_on(
             );
             break;
         }
-        out.extend(rule(confirmed, relations, scan_id, now));
+        out.extend(rule(context, relations, scan_id, now));
     }
     out
 }

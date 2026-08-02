@@ -21,6 +21,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -33,7 +34,7 @@ mod types;
 #[cfg(test)]
 mod tests;
 
-use types::{AsnResp, IpResp, RdapResp};
+use types::{AsnResp, IpResp, RdapContact, RdapResp};
 
 const SRC: &str = "ip_registry";
 
@@ -46,7 +47,7 @@ impl Module for IpRegistry {
     }
 
     fn description(&self) -> &'static str {
-        "IP registration and ASN data via RDAP and BGPView"
+        "IP registration recon — resolves registration and ASN data via RDAP and BGPView"
     }
 
     fn priority(&self) -> u8 {
@@ -80,6 +81,7 @@ impl Module for IpRegistry {
             EntityKind::Asn,
             EntityKind::Email,
             EntityKind::Url,
+            EntityKind::Organisation,
         ];
         KINDS
     }
@@ -161,11 +163,14 @@ async fn bgp_lookup_asn(target: &Target, ctx: &ModuleContext) -> Result<ModuleRe
 
 // ── Pure builders (record → entities, no I/O) ────────────────────────────────
 
-/// Build the `IpAddress` allocation entity from an RDAP record. **Pure.** The
-/// CIDR derivation (explicit prefix, else the start–end range), the `country:`
-/// tag, and the registration/event evidence all live here. RDAP returning a
-/// record at all means the block is allocated, so exactly one entity is always
-/// produced.
+/// Build entities from an RDAP IP record. **Pure.** Always emits the
+/// `IpAddress` allocation entity (RDAP returning a record at all means the block
+/// is allocated): the CIDR derivation (explicit prefix, else the start–end
+/// range), the `country:` tag, and the registration/event evidence all live
+/// here. Additionally mines the nested contact tree for the registrant
+/// `Organisation` (the network operator holding the block) and the abuse-desk
+/// `Email` — parity with the `whois` RDAP-over-HTTPS fallback and with the
+/// BGPView abuse/admin contacts this module already surfaces for ASN targets.
 fn build_rdap_entities(body: &RdapResp, ip: &str, scan_id: &str) -> Vec<Entity> {
     let cidr = body
         .cidr0_cidrs
@@ -184,7 +189,12 @@ fn build_rdap_entities(body: &RdapResp, ip: &str, scan_id: &str) -> Vec<Entity> 
             },
         );
 
-    let mut entity = Entity::new(EntityKind::IpAddress, ip, 0.90, scan_id);
+    let mut entity = Entity::new(
+        EntityKind::IpAddress,
+        ip,
+        confidence::VERY_HIGH_PLUS,
+        scan_id,
+    );
     entity.tag("rdap");
     if let Some(c) = body.country.as_deref().filter(|c| !c.is_empty()) {
         entity.tag(format!("country:{}", c.to_uppercase()));
@@ -213,7 +223,86 @@ fn build_rdap_entities(body: &RdapResp, ip: &str, scan_id: &str) -> Vec<Entity> 
         });
     entity.add_evidence(ev);
 
-    vec![entity]
+    let mut out = vec![entity];
+    // Registrant organisation — the network operator that holds the block, a
+    // high-value attribution pivot (blocks held by the same operator cluster).
+    if let Some(org) = build_registrant_org(&body.entities, ip, scan_id) {
+        out.push(org);
+    }
+    // Abuse-desk email — an operational role contact, never GDPR-redacted for
+    // IP allocations. Mirrors the BGPView `abuse_contacts` surfaced for ASNs.
+    if let Some(email) = build_abuse_email(&body.entities, ip, scan_id) {
+        out.push(email);
+    }
+    out
+}
+
+/// Walk the RDAP contact tree (contacts nest — a registrant entity carries its
+/// own abuse/technical children) and return the first entity whose `roles`
+/// include `role`. **Pure.** Mirrors `whois::find_ip_entity`.
+fn find_contact<'a>(contacts: &'a [RdapContact], role: &str) -> Option<&'a RdapContact> {
+    for c in contacts {
+        if c.roles.iter().any(|r| r == role) {
+            return Some(c);
+        }
+        if let Some(found) = find_contact(&c.entities, role) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Build the registrant `Organisation` from the RDAP contact tree. **Pure.**
+/// `None` unless a registrant-role contact carries a usable vCard `fn`/`org`.
+/// Gated on vCard `kind`: IP blocks are allocated to network operators, but a
+/// rare `individual`-kind registrant is a natural person and is skipped so their
+/// name never surfaces as an organisation.
+fn build_registrant_org(contacts: &[RdapContact], ip: &str, scan_id: &str) -> Option<Entity> {
+    let vc = find_contact(contacts, "registrant")?.vcard_array.as_ref()?;
+    if crate::modules::whois::vcard_field(vc, "kind")
+        .is_some_and(|k| k.eq_ignore_ascii_case("individual"))
+    {
+        return None;
+    }
+    let name = crate::modules::whois::vcard_field(vc, "fn")
+        .or_else(|| crate::modules::whois::vcard_field(vc, "org"))
+        .map(|s| s.trim().to_string())
+        .filter(|s| s.len() >= 3)?;
+
+    let mut oe = Entity::new(
+        EntityKind::Organisation,
+        &name,
+        confidence::ATTRIBUTED,
+        scan_id,
+    );
+    oe.tag("rdap");
+    oe.tag("ip-registrant");
+    oe.add_evidence(
+        Evidence::new(SRC, format!("RDAP network registrant for {ip}")).with_attr("ip", ip),
+    );
+    Some(oe)
+}
+
+/// Build the abuse-desk `Email` from the RDAP contact tree. **Pure.** `None`
+/// unless an abuse-role contact carries a vCard `email` that parses as an
+/// address. Tagged `role:abuse`, matching the BGPView contact convention.
+fn build_abuse_email(contacts: &[RdapContact], ip: &str, scan_id: &str) -> Option<Entity> {
+    let vc = find_contact(contacts, "abuse")?.vcard_array.as_ref()?;
+    let email = crate::modules::whois::vcard_field(vc, "email")?;
+    let email = email.trim();
+    if !crate::util::extract::looks_like_email(email) {
+        return None;
+    }
+    let mut ee = Entity::new(EntityKind::Email, email, confidence::STRONG, scan_id);
+    ee.tag("rdap-contact");
+    ee.tag("role:abuse");
+    ee.add_evidence(
+        Evidence::new(SRC, format!("RDAP abuse contact for {ip}"))
+            .with_attr("source", "rdap")
+            .with_attr("ip", ip)
+            .with_attr("contact_role", "abuse"),
+    );
+    Some(ee)
 }
 
 /// Build the announcing-`Asn` entity for an IP from a BGPView `ip` record.
@@ -237,7 +326,12 @@ fn build_bgp_ip_entities(body: &IpResp, ip: &str, scan_id: &str) -> Vec<Entity> 
     };
 
     let asn_num_str = asn_num.to_string();
-    let mut e = Entity::new(EntityKind::Asn, format!("AS{asn_num}"), 0.88, scan_id);
+    let mut e = Entity::new(
+        EntityKind::Asn,
+        format!("AS{asn_num}"),
+        confidence::EXPERT,
+        scan_id,
+    );
     e.tag("announcing");
     let mut ev =
         Evidence::new(SRC, format!("ASN announcing {ip}")).with_attr("asn_number", &asn_num_str);
@@ -272,7 +366,12 @@ fn build_asn_entities(body: &AsnResp, asn: u64, scan_id: &str) -> Vec<Entity> {
     let asn_str = asn.to_string();
     let mut result = Vec::new();
 
-    let mut entity = Entity::new(EntityKind::Asn, &asn_label, 0.92, scan_id);
+    let mut entity = Entity::new(
+        EntityKind::Asn,
+        &asn_label,
+        confidence::AUTHORITATIVE,
+        scan_id,
+    );
     entity.tag("registered");
     let mut ev = Evidence::new(SRC, format!("ASN {asn_label} registry record"))
         .with_attr("asn_number", &asn_str);
@@ -299,6 +398,30 @@ fn build_asn_entities(body: &AsnResp, asn: u64, scan_id: &str) -> Vec<Entity> {
     entity.add_evidence(ev);
     result.push(entity);
 
+    // Operator organisation — the entity that holds the ASN, a high-value
+    // attribution pivot (ASNs/blocks held by the same operator cluster).
+    // Mirrors `build_registrant_org`'s RDAP promotion, sourced from BGPView
+    // instead: prefer the full legible name, fall back to the registry handle.
+    let operator_name = data
+        .description_short
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| data.name.as_deref().filter(|s| !s.trim().is_empty()));
+    if let Some(name) = operator_name {
+        let mut oe = Entity::new(
+            EntityKind::Organisation,
+            name,
+            confidence::HIGH_PLUS,
+            scan_id,
+        );
+        oe.tag("bgpview");
+        oe.tag("asn-operator");
+        oe.add_evidence(
+            Evidence::new(SRC, format!("Operator of {asn_label}")).with_attr("asn", &asn_str),
+        );
+        result.push(oe);
+    }
+
     result.extend(contact_emails(
         data.email_contacts.as_deref(),
         "admin",
@@ -319,7 +442,7 @@ fn build_asn_entities(body: &AsnResp, asn: u64, scan_id: &str) -> Vec<Entity> {
         .as_deref()
         .filter(|w| w.starts_with("http://") || w.starts_with("https://"))
     {
-        let mut u = Entity::new(EntityKind::Url, w, 0.75, scan_id);
+        let mut u = Entity::new(EntityKind::Url, w, confidence::VERY_HIGH, scan_id);
         u.tag("asn-website");
         u.add_evidence(
             Evidence::new(SRC, format!("Website of {asn_label}")).with_attr("asn", &asn_str),
@@ -345,7 +468,12 @@ fn contact_emails(
         .iter()
         .filter(|email| crate::util::extract::looks_like_email(email))
         .map(|email| {
-            let mut e = Entity::new(EntityKind::Email, email.as_str(), 0.78, scan_id);
+            let mut e = Entity::new(
+                EntityKind::Email,
+                email.as_str(),
+                confidence::STRONG,
+                scan_id,
+            );
             e.tag("asn-contact");
             e.tag(format!("role:{role}"));
             e.add_evidence(

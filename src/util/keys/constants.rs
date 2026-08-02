@@ -6,6 +6,8 @@
 pub const KNOWN_KEYS: &[&str] = &[
     // Identity / breach
     "HUNTSMAN_OATHNET_KEY",
+    "HUNTSMAN_NIAMONX_KEY",
+    "HUNTSMAN_OSINTCAT_KEY",
     "HUNTSMAN_HIBP_KEY",
     "HUNTSMAN_DEHASHED_KEY",
     "HUNTSMAN_HUNTER_KEY",
@@ -19,6 +21,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_VIRUSTOTAL_KEY",
     "HUNTSMAN_ABUSECH_KEY",
     "HUNTSMAN_THREATFOX_KEY",
+    "HUNTSMAN_ALIENVAULT_KEY",
     // Expanded services (api_key_probe compatible)
     "HUNTSMAN_ABUSEIPDB_KEY",
     "HUNTSMAN_CENSYS_ID",
@@ -38,7 +41,9 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_WHOISXML_KEY",
     "HUNTSMAN_BREACHDIR_KEY",
     "HUNTSMAN_C99_KEY",
+    "HUNTSMAN_DOMAINSDB_KEY",
     // Validation / enrichment
+    "HUNTSMAN_FULLCONTACT_KEY",
     "HUNTSMAN_NUMVERIFY_KEY",
     "HUNTSMAN_HLR_KEY",
     "HUNTSMAN_OPENCNAM_KEY",
@@ -50,6 +55,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_TROVE_KEY",
     // OSINT orchestration APIs
     "HUNTSMAN_SEON_KEY",
+    "HUNTSMAN_OPENSANCTIONS_KEY",
     "HUNTSMAN_EPIEOS_KEY",
     "HUNTSMAN_PROXYCURL_KEY",
     "HUNTSMAN_OPENCORP_KEY",
@@ -86,6 +92,7 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
             "VirusTotal — free key at https://www.virustotal.com/gui/join-us"
         }
         "HUNTSMAN_ABUSEIPDB_KEY" => "AbuseIPDB — free key at https://www.abuseipdb.com/register",
+        "HUNTSMAN_ALIENVAULT_KEY" => "AlienVault OTX — free key at https://otx.alienvault.com/api",
         "HUNTSMAN_SHODAN_KEY" => "Shodan — free key at https://account.shodan.io/register",
         "HUNTSMAN_SECTRAILS_KEY" => {
             "SecurityTrails — free tier at https://securitytrails.com/app/signup"
@@ -106,6 +113,9 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
             "Censys — free tier at https://accounts.censys.io/register"
         }
         "HUNTSMAN_WHOISXML_KEY" => "WhoisXML — free tier at https://whois.whoisxmlapi.com",
+        "HUNTSMAN_DOMAINSDB_KEY" => {
+            "domainsDB — key required (anonymous access disabled); obtain one at https://domainsdb.info"
+        }
         "HUNTSMAN_ONYPHE_KEY" => "ONYPHE — free tier at https://www.onyphe.io/login/#register",
         "HUNTSMAN_NETLAS_KEY" => "Netlas — free tier at https://app.netlas.io/registration",
         "HUNTSMAN_PULSEDIVE_KEY" => "Pulsedive — free key at https://pulsedive.com/about/api",
@@ -128,6 +138,9 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
         }
         "HUNTSMAN_PROXYCURL_KEY" => "Proxycurl — paid, https://nubela.co/proxycurl",
         "HUNTSMAN_SEON_KEY" => "SEON — free trial at https://seon.io",
+        "HUNTSMAN_OPENSANCTIONS_KEY" => {
+            "OpenSanctions — free trial/nonprofit key at https://www.opensanctions.org/api/"
+        }
         "HUNTSMAN_EPIEOS_KEY" => "Epieos — https://epieos.com",
         "HUNTSMAN_SEEKNOW_KEY" => "SeekNow (see-know.ru) — https://see-know.ru",
         "HUNTSMAN_OATHNET_KEY" => "OathNet — https://oathnet.org",
@@ -180,7 +193,7 @@ pub fn acquisition_status() -> Vec<KeyAcquisition> {
         .map(|&env| KeyAcquisition {
             env,
             has_embedded_default: HARDCODED.iter().any(|(k, _)| *k == env),
-            present_in_env: std::env::var(env).map(|v| !v.is_empty()).unwrap_or(false),
+            present_in_env: std::env::var(env).is_ok_and(|v| !v.is_empty()),
             signup: signup_hint(env),
         })
         .collect()
@@ -216,35 +229,42 @@ pub const HIBP_DEFAULT_KEY: &str = "42587552dce6424a87312941c8a2c3c5";
 pub const WIGLE_DEFAULT_USER: &str = "AID4493a33e2df9d07ab9666a27c8aead17";
 /// WiGLE API token (HTTP Basic password).
 pub const WIGLE_DEFAULT_TOKEN: &str = "1aedb7ad0171ff3d6be5a844cca5d977";
-/// SeekNow (see-know.icu / see-know.icu) key — the current embedded default,
-/// supplied directly by the operator. LIVE-VERIFIED HTTP 200 against
-/// `https://see-know.icu/api/v1/search` (POST, `X-API-Key`). This is the same
-/// key the operator carries in their `~/.huntsman.env`; promoting it to the
-/// embedded default makes a fresh zero-config install work without an env file.
-/// The previous embedded default (`seek-fd18f1…`) tested DEAD (HTTP 401
-/// `invalid_api_key`) and has been moved to [`SEEKNOW_SUPERSEDED_KEY_5`].
+/// SeekNow key — the current embedded default, supplied directly by the
+/// operator and matching their live `~/.huntsman.env`. NOT verified working:
+/// with the endpoint migrated to the live `see-know.ru` host (the old
+/// `.icu`/`.eu` hosts are dead — confirmed HTTP 502), this key is rejected as
+/// `{"error":"invalid_api_key","message":"Invalid API key"}` by
+/// `GET https://see-know.ru/api/v1/credits`. Kept as the embedded default
+/// because it is the operator's actual configured key (so a fresh
+/// zero-config install matches their real setup rather than a fabricated
+/// substitute), not because it is confirmed live — see
+/// `docs/gap_register.md`'s SeekNow `.ru` migration entry for the open
+/// key-provisioning gap. `main`'s independently-rotated candidate
+/// (`seek-0b493c7c…`) was tested against the same live endpoint and is
+/// equally rejected, so there is no currently-known-good key to prefer.
 pub const SEEKNOW_DEFAULT_KEY: &str = "seek-fdc8677a1c480a7bf59b866b81eda1f44b9944caf395c699";
 /// SeekNow key that has been ROTATED OUT — kept only so a stale env file written
 /// by a previous build upgrades to [`SEEKNOW_DEFAULT_KEY`]. Never used as a live
-/// default. Was the prior embedded default (Enterprise plan, 5,000 daily
-/// credits, live-verified HTTP 200 at the time it was set).
-pub const SEEKNOW_SUPERSEDED_KEY: &str = "seek-62650f9a36e446fc3b1c1bcdf32a825048e608160e0fd0a4";
+/// default. Was the prior embedded default; confirmed DEAD against
+/// `see-know.icu` (2026-07-13) — `.eu` status was never re-verified before
+/// being superseded.
+pub const SEEKNOW_SUPERSEDED_KEY: &str = "seek-fd18f1db9afdce325c90b8d0d27e8ebc02af489c95d0a9eb";
+/// Earlier retired SeekNow key — also upgraded in place to the current default.
+/// Was the prior embedded default (Enterprise plan, 5,000 daily credits,
+/// live-verified HTTP 200 at the time it was set).
+pub(super) const SEEKNOW_SUPERSEDED_KEY_2: &str =
+    "seek-62650f9a36e446fc3b1c1bcdf32a825048e608160e0fd0a4";
 /// Earlier retired SeekNow key — also upgraded in place to the current default.
 /// Verified DEAD (HTTP 401 invalid_api_key) at the time it was retired.
-pub(super) const SEEKNOW_SUPERSEDED_KEY_2: &str =
+pub(super) const SEEKNOW_SUPERSEDED_KEY_3: &str =
     "seek-f419aa7ab831864149892e5145f6bc65dbb336e6ca94b4bc";
 /// Earlier retired SeekNow key — also upgraded in place to the current default.
-pub(super) const SEEKNOW_SUPERSEDED_KEY_3: &str =
+pub(super) const SEEKNOW_SUPERSEDED_KEY_4: &str =
     "seek-4b33b63d408dd7149765da4e76384ce91fd9f6df518f9a25";
 /// Prior embedded default (free-tier `seek-b4a9…`), rotated out in favour of the
 /// enterprise key above.
-pub(super) const SEEKNOW_SUPERSEDED_KEY_4: &str =
-    "seek-b4a9cd56f7e95bc6ea30b17925f482514a07a52e7ab0961a";
-/// Prior embedded default (`seek-fd18f1…`), rotated out after testing DEAD
-/// (HTTP 401 `invalid_api_key`) against `see-know.icu` on 2026-07-09. Kept only
-/// so a stale env file carrying it upgrades in place to [`SEEKNOW_DEFAULT_KEY`].
 pub(super) const SEEKNOW_SUPERSEDED_KEY_5: &str =
-    "seek-fd18f1db9afdce325c90b8d0d27e8ebc02af489c95d0a9eb";
+    "seek-b4a9cd56f7e95bc6ea30b17925f482514a07a52e7ab0961a";
 
 /// API keys embedded in the build so a fresh install works zero-config.
 /// `ensure_hardcoded_keys` writes any that are absent from the env file.

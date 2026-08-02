@@ -18,10 +18,9 @@
 //!
 //! `core/` and `api/` never import `storage::Store` directly —
 //! architecture tests in `tests/architecture.rs` scan the source tree
-//! and fail CI if a direct import is introduced. The only legitimate
-//! `Store::open()` call sites are the CLI composition roots
-//! (`cli/mod.rs`, `cli/provision.rs`) which construct the concrete
-//! instance and immediately upcast to `Arc<dyn StoragePort>`.
+//! and fail CI if a direct import is introduced. Shared runtime construction
+//! belongs to `app::runtime`, which opens the concrete store and immediately
+//! upcasts it to `Arc<dyn StoragePort>` for the CLI and HTTP adapters.
 
 use crate::core::{
     correlator::Correlation, entity::Entity, error::Result, event::Event, relation::Relation,
@@ -46,6 +45,10 @@ pub trait StoragePort: Send + Sync {
     fn upsert_scan(&self, scan: &Scan) -> Result<()>;
     fn get_scan(&self, id: &str) -> Result<Option<Scan>>;
     fn list_scans(&self, limit: usize) -> Result<Vec<Scan>>;
+    /// Chronological (newest-first) list of past radar sweeps — scans whose
+    /// target is one of the radar endpoints' sentinel anchors. See
+    /// `crate::storage::Store::radar_history` for the full rationale.
+    fn radar_history(&self, limit: usize) -> Result<Vec<Scan>>;
     fn delete_scan(&self, scan_id: &str) -> Result<bool>;
 
     // ── Entities ───────────────────────────────────────────────────────────
@@ -86,11 +89,42 @@ pub trait StoragePort: Send + Sync {
 
     // ── Relations (typed entity-to-entity edges) ────────────────────────────
     fn upsert_relation(&self, r: &Relation) -> Result<()>;
+    /// Persist many relations in a single transaction. The default loops
+    /// [`upsert_relation`](Self::upsert_relation) so in-memory / test impls
+    /// need no change; the SQLite store overrides it to avoid an autocommit
+    /// (BEGIN/COMMIT + fsync) per edge at finalise. Takes a slice so the
+    /// caller can fall back to per-relation persistence if the batch rolls back.
+    fn upsert_relations_batch(&self, rels: &[Relation]) -> Result<usize> {
+        for r in rels {
+            self.upsert_relation(r)?;
+        }
+        Ok(rels.len())
+    }
     fn relations_for_scan(&self, scan_id: &str) -> Result<Vec<Relation>>;
 
     // ── Events ─────────────────────────────────────────────────────────────
     fn insert_event(&self, event: &Event) -> Result<()>;
+    /// Insert many events in a single transaction. The default loops
+    /// [`insert_event`](Self::insert_event); the SQLite store overrides it so
+    /// the db-writer's coalesced ≤64-event drain commits once (one fsync on a
+    /// phone's flash filesystem) instead of once per event. Slice-taking so the
+    /// caller can fall back to per-event insertion on a batch rollback.
+    fn insert_events_batch(&self, events: &[Event]) -> Result<usize> {
+        for e in events {
+            self.insert_event(e)?;
+        }
+        Ok(events.len())
+    }
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>>;
+
+    /// Recent `ModuleDone`/`ModuleError` outcome events across ALL scans,
+    /// newest-first, bounded to `limit` — the substrate for
+    /// `util::scraper_health`'s per-source health signal (`hse doctor`'s
+    /// "Scraper health" section and the SPA's Engines-page panel). Default
+    /// empty for test doubles; the real impl lives on `Store`.
+    fn recent_module_outcome_events(&self, _limit: usize) -> Result<Vec<Event>> {
+        Ok(Vec::new())
+    }
 
     // ── Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN) ────────────────
     /// Persist a module result under `key` with a TTL. Called after a
@@ -135,12 +169,44 @@ pub trait StoragePort: Send + Sync {
         Ok(0)
     }
 
+    // ── Stealer-log credential rows (Stealer Logs Viewer) ───────────────────
+    /// Persist paired stealer-log credential rows for one scan/import.
+    /// Best-effort, called only from the stealer-log importer. Default no-op
+    /// for test doubles; the SQLite `Store` persists to `stealer_rows`.
+    fn insert_stealer_rows_batch(
+        &self,
+        _scan_id: &str,
+        _rows: &[crate::core::stealer_row::StealerRow],
+    ) -> Result<usize> {
+        Ok(0)
+    }
+
+    /// Every persisted stealer-log credential row for a scan, insertion
+    /// order. Default empty for test doubles; the SQLite `Store` reads
+    /// `stealer_rows`.
+    fn stealer_rows_for_scan(
+        &self,
+        _scan_id: &str,
+    ) -> Result<Vec<crate::core::stealer_row::StealerRow>> {
+        Ok(Vec::new())
+    }
+
     // ── Maintenance ─────────────────────────────────────────────────────────
     /// Bound the backing store's write-ahead footprint at a safe boundary
     /// (e.g. a completed scan). Default is a no-op for backends without a
     /// WAL; the SQLite store truncates its `-wal` file. Best-effort.
     fn checkpoint_truncate(&self) -> Result<()> {
         Ok(())
+    }
+
+    /// Run the backing store's integrity check, returning the check rows —
+    /// exactly `["ok"]` for a healthy database, or one or more problem
+    /// descriptions for a corrupt one. Default `["ok"]` for backends without a
+    /// verifier (test doubles); the SQLite store runs `PRAGMA integrity_check`.
+    /// Surfaced by the system debug bundle so on-disk corruption — invisible to
+    /// every other health signal — reaches the DETECTED ISSUES verdict.
+    fn integrity_check(&self) -> Result<Vec<String>> {
+        Ok(vec!["ok".to_string()])
     }
 
     /// Bound the `events` table: delete rows older than `max_age_secs` and

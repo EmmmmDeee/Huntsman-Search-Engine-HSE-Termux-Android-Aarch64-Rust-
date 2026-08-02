@@ -399,3 +399,159 @@ fn origin_label_maps_each_variant_to_its_plan_string() {
     assert_eq!(Origin::PhoneFormat.label(), "phone-format");
     assert_eq!(Origin::EmailCandidate.label(), "email-candidate");
 }
+
+// ── Recursive expansion (`recurse_depth`) ────────────────────────────────────
+
+#[test]
+fn recurse_depth_zero_is_byte_identical_to_the_single_level_plan() {
+    // Opt-in guarantee: recurse_depth 0 (the default) must leave the plan exactly
+    // as the single-level generator produced it — for EVERY seed kind — so every
+    // existing guarantee-test remains valid.
+    for (kind, val) in [
+        (TargetKind::Email, "john.doe@example.com"),
+        (TargetKind::Username, "johndoe"),
+        (TargetKind::FullName, "John Doe"),
+        (TargetKind::Domain, "example.com"),
+        (TargetKind::Phone, "+14155550123"),
+        (TargetKind::IpAddress, "8.8.8.8"),
+    ] {
+        let default = generate(kind, val, &BatchOptions::default());
+        let explicit_zero = generate(
+            kind,
+            val,
+            &BatchOptions {
+                recurse_depth: 0,
+                ..BatchOptions::default()
+            },
+        );
+        assert_eq!(
+            default, explicit_zero,
+            "recurse_depth 0 changed the {kind:?} plan"
+        );
+    }
+}
+
+#[test]
+fn recursion_appends_deeper_queries_keeping_the_base_plan_as_a_prefix() {
+    // Recursion only appends after the base plan (the global first-occurrence
+    // dedup then keeps the base queries, which come first), so the single-level
+    // plan is preserved verbatim as the prefix and the seed still leads.
+    let base = generate(
+        TargetKind::Email,
+        "john.doe@example.com",
+        &BatchOptions {
+            synthesize_emails: true,
+            ..BatchOptions::default()
+        },
+    );
+    let recursed = generate(
+        TargetKind::Email,
+        "john.doe@example.com",
+        &BatchOptions {
+            synthesize_emails: true,
+            recurse_depth: 2,
+            ..BatchOptions::default()
+        },
+    );
+    assert!(
+        recursed.len() > base.len(),
+        "recursion must add deeper queries (base={}, recursed={})",
+        base.len(),
+        recursed.len()
+    );
+    assert_eq!(
+        &recursed[..base.len()],
+        base.as_slice(),
+        "the single-level plan must be preserved as the exact prefix"
+    );
+    assert_eq!(recursed[0].origin, Origin::Seed, "seed still leads");
+}
+
+#[test]
+fn recursion_reexpands_a_derived_domain_into_its_role_emails() {
+    // A depth-only effect: gen_email queries the derived domain but does NOT
+    // synthesise its role emails; recursion re-runs the derived domain through the
+    // full domain fan-out (which DOES synth), so `admin@example.com` appears only
+    // once recursion is enabled. Proves the derived value is genuinely pivoted on.
+    let base = generate(
+        TargetKind::Email,
+        "john.doe@example.com",
+        &BatchOptions {
+            synthesize_emails: true,
+            ..BatchOptions::default()
+        },
+    );
+    assert!(
+        !has(&base, Surface::Breach, "email", "admin@example.com"),
+        "role email must NOT exist at the single level"
+    );
+
+    let recursed = generate(
+        TargetKind::Email,
+        "john.doe@example.com",
+        &BatchOptions {
+            synthesize_emails: true,
+            recurse_depth: 1,
+            ..BatchOptions::default()
+        },
+    );
+    assert!(
+        has(&recursed, Surface::Breach, "email", "admin@example.com"),
+        "recursion must re-expand the derived domain into its role emails"
+    );
+}
+
+#[test]
+fn recursion_terminates_and_stays_bounded_under_a_deep_explosive_config() {
+    // The cycle guard (a value is expanded at most once) guarantees termination
+    // even at an absurd depth crossed with the explosive synth option; max_queries
+    // remains the hard cap; and the result stays deterministic and de-duplicated.
+    let opts = BatchOptions {
+        synthesize_emails: true,
+        recurse_depth: 8,
+        max_queries: 30,
+        ..BatchOptions::default()
+    };
+    let qs = generate(TargetKind::FullName, "John Doe", &opts);
+    assert_eq!(qs.len(), 30, "must be capped at max_queries");
+
+    let again = generate(TargetKind::FullName, "John Doe", &opts);
+    assert_eq!(qs, again, "deep recursion must be deterministic");
+
+    let mut seen = std::collections::HashSet::new();
+    assert!(
+        qs.iter()
+            .all(|q| seen.insert((q.surface, q.field, q.value.to_lowercase()))),
+        "recursion must not reintroduce duplicates"
+    );
+}
+
+#[test]
+fn recursion_is_bounded_by_depth_not_runaway() {
+    // Each successive depth can only add queries (monotonic), and once the
+    // reachable derivation graph is exhausted a deeper depth adds nothing — it
+    // does not loop. Uncapped so the counts reflect real termination, not a cap.
+    let plan = |d: u32| {
+        generate(
+            TargetKind::Email,
+            "john.doe@example.com",
+            &BatchOptions {
+                synthesize_emails: true,
+                recurse_depth: d,
+                ..BatchOptions::default()
+            },
+        )
+        .len()
+    };
+    let (d0, d1, d2, d10) = (plan(0), plan(1), plan(2), plan(10));
+    assert!(d1 > d0, "depth 1 expands beyond the base plan");
+    assert!(d2 >= d1, "depth is monotonic");
+    // The derivation graph is finite, so a very deep bound converges — it must not
+    // keep growing unboundedly (which would signal a broken cycle guard).
+    assert_eq!(
+        d10,
+        plan(20),
+        "expansion converges — the cycle guard terminates it"
+    );
+    assert!(d10 >= d2);
+}

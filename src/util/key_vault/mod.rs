@@ -52,20 +52,9 @@ use crate::util::found_keys::FoundKey;
 /// touched by scan-level cleanup operations.
 #[must_use]
 pub fn vault_path() -> PathBuf {
-    std::env::var("HOME").map_or_else(
-        |_| PathBuf::from("key_vault.db"),
-        |home| {
-            let dir = PathBuf::from(&home).join(".huntsman");
-            let _ = std::fs::create_dir_all(&dir);
-            // Restrict to owner-only on Unix so harvested keys are not world-readable.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-            }
-            dir.join("key_vault.db")
-        },
-    )
+    // `paths::data_file` creates `~/.huntsman` 0700 (owner-only) so harvested
+    // keys in the vault DB aren't world-readable.
+    crate::util::paths::data_file("key_vault.db")
 }
 
 // ── Connection ────────────────────────────────────────────────────────────────
@@ -307,29 +296,29 @@ mod tests {
         let db_path = dir.join("test_vault.db");
         let _ = std::fs::remove_file(&db_path); // clean slate
 
-        let conn = Connection::open(&db_path).unwrap();
-        ensure_schema(&conn).unwrap();
+        let conn = Connection::open(&db_path).expect("should succeed");
+        ensure_schema(&conn).expect("should succeed");
 
         let keys = vec![
             test_key("stripe_live", "sk-live-abc123xyz789"),
             test_key("aws_access_key", "AKIAIOSFODNN7EXAMPLE"),
         ];
-        write_batch(&conn, &keys, "scan-001", 1_000_000).unwrap();
+        write_batch(&conn, &keys, "scan-001", 1_000_000).expect("should succeed");
 
-        let entries = query_all(&conn).unwrap();
+        let entries = query_all(&conn).expect("should succeed");
         assert_eq!(entries.len(), 2);
         assert!(entries.iter().any(|e| e.service == "stripe_live"));
         assert!(entries.iter().any(|e| e.service == "aws_access_key"));
 
         // Second scan with same key — should increment discovery_count.
         let same = vec![test_key("stripe_live", "sk-live-abc123xyz789")];
-        write_batch(&conn, &same, "scan-002", 1_000_100).unwrap();
+        write_batch(&conn, &same, "scan-002", 1_000_100).expect("should succeed");
 
-        let entries2 = query_all(&conn).unwrap();
+        let entries2 = query_all(&conn).expect("should succeed");
         let stripe = entries2
             .iter()
             .find(|e| e.service == "stripe_live")
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(stripe.first_scan_id, "scan-001");
         assert_eq!(stripe.last_scan_id, "scan-002");
         assert_eq!(stripe.discovery_count, 2);

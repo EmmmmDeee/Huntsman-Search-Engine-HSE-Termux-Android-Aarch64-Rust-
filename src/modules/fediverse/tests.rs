@@ -12,7 +12,7 @@ const FIXTURE: &str = r#"{
 
 #[test]
 fn extract_pulls_profile_actor_and_username() {
-    let wf: WebFinger = serde_json::from_str(FIXTURE).unwrap();
+    let wf: WebFinger = serde_json::from_str(FIXTURE).expect("should succeed");
     let mut result = ModuleResult::new();
     extract_webfinger(&wf, "Gargron@mastodon.social", "mastodon.social", "scan", &mut result);
     let e = &result.entities;
@@ -39,6 +39,48 @@ fn extract_pulls_profile_actor_and_username() {
             .any(|x| x.kind == EntityKind::Email
                 && x.value.eq_ignore_ascii_case("Gargron@mastodon.social")
                 && x.has_tag("fediverse"))
+    );
+}
+
+/// `aliases` are a distinct array from `links` — a WebFinger document can (and
+/// often does, per the WebFinger spec) alias a subject to a URI that has no
+/// corresponding typed `rel` link. This fixture deliberately gives the alias a
+/// URI that appears nowhere in `links`, so the assertion can only pass if
+/// `extract_webfinger` walks `aliases` itself rather than happening to catch
+/// the value via the links-derived loop.
+const ALIAS_DIVERGES_FIXTURE: &str = r#"{
+  "subject": "acct:alice@example.social",
+  "aliases": ["https://example.social/alias/alice-alt"],
+  "links": [
+    { "rel": "http://webfinger.net/rel/profile-page", "type": "text/html", "href": "https://example.social/@alice" },
+    { "rel": "self", "type": "application/activity+json", "href": "https://example.social/users/alice" }
+  ]
+}"#;
+
+#[test]
+fn extract_emits_alias_uris_that_diverge_from_links() {
+    let wf: WebFinger = serde_json::from_str(ALIAS_DIVERGES_FIXTURE).expect("should succeed");
+    let mut result = ModuleResult::new();
+    extract_webfinger(&wf, "alice@example.social", "example.social", "scan", &mut result);
+    let e = &result.entities;
+    // The alias URI, absent from `links`, is still emitted as its own URL pivot.
+    assert!(
+        e.iter().any(|x| x.kind == EntityKind::Url
+            && x.value.eq_ignore_ascii_case("https://example.social/alias/alice-alt")
+            && x.has_tag("fediverse")
+            && x.has_tag("mastodon")
+            && x.has_tag("webfinger-alias"))
+    );
+    // The links-derived profile page / actor URLs are untouched by the change.
+    assert!(
+        e.iter()
+            .any(|x| x.kind == EntityKind::Url
+                && x.value.to_ascii_lowercase().contains("example.social/@alice"))
+    );
+    assert!(
+        e.iter()
+            .any(|x| x.kind == EntityKind::Url
+                && x.value.to_ascii_lowercase().contains("example.social/users/alice"))
     );
 }
 
@@ -77,7 +119,6 @@ async fn fediverse_live_resolves_a_known_handle() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let target = Target::new(TargetKind::Email, "Gargron@mastodon.social");
     let r = Fediverse

@@ -14,11 +14,11 @@ fn ssh_fingerprint_is_comment_invariant_and_key_specific() {
     // SAME fingerprint — that is what links one key across two accounts; a
     // different key must differ; malformed input is dropped.
     let base = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAExampleKeyMaterialHere";
-    let a = ssh_fingerprint(&format!("{base} ghost@laptop")).unwrap();
-    let b = ssh_fingerprint(&format!("{base} jsmith@work-pc")).unwrap();
+    let a = ssh_fingerprint(&format!("{base} ghost@laptop")).expect("should succeed");
+    let b = ssh_fingerprint(&format!("{base} jsmith@work-pc")).expect("should succeed");
     assert_eq!(a, b, "comment must not change the fingerprint");
     assert!(a.starts_with("ssh:"));
-    let other = ssh_fingerprint("ssh-rsa AAAAB3DifferentKeyMaterialXX").unwrap();
+    let other = ssh_fingerprint("ssh-rsa AAAAB3DifferentKeyMaterialXX").expect("should succeed");
     assert_ne!(a, other);
     assert!(ssh_fingerprint("malformed").is_none());
     assert!(ssh_fingerprint("ssh-rsa short").is_none());
@@ -118,7 +118,8 @@ fn commit_email_entities_emits_every_distinct_email_not_a_capped_ten() {
         })
         .collect::<Vec<_>>()
         .join(",");
-    let events: Vec<GhEvent> = serde_json::from_str(&format!("[{events_json}]")).unwrap();
+    let events: Vec<GhEvent> =
+        serde_json::from_str(&format!("[{events_json}]")).expect("should succeed");
     let out = commit_email_entities(&events, "scan-ce", "octocat");
     assert_eq!(
         out.len(),
@@ -144,7 +145,7 @@ fn commit_email_entities_emits_every_distinct_email_not_a_capped_ten() {
             {"author":{"email":"noreply@github.com"}}
         ]}}
     ]"#;
-    let events: Vec<GhEvent> = serde_json::from_str(dupe_json).unwrap();
+    let events: Vec<GhEvent> = serde_json::from_str(dupe_json).expect("should succeed");
     let out = commit_email_entities(&events, "scan-ce", "octocat");
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].value, "real@personal.dev");
@@ -213,7 +214,7 @@ fn deserialize_full_profile() {
         "following":50,"created_at":"2020-01-15T00:00:00Z",
         "html_url":"https://github.com/alice"
     }"#;
-    let u: GhUser = serde_json::from_str(json).unwrap();
+    let u: GhUser = serde_json::from_str(json).expect("should succeed");
     assert_eq!(u.login, "alice");
     assert_eq!(u.id, 12345);
     assert_eq!(u.name.as_deref(), Some("Alice Smith"));
@@ -228,7 +229,7 @@ fn deserialize_full_profile() {
 #[test]
 fn deserialize_minimal_profile() {
     let json = r#"{"login":"bob","id":999}"#;
-    let u: GhUser = serde_json::from_str(json).unwrap();
+    let u: GhUser = serde_json::from_str(json).expect("should succeed");
     assert_eq!(u.login, "bob");
     assert!(u.name.is_none());
     assert!(u.email.is_none());
@@ -276,8 +277,8 @@ fn company_strips_at_prefix() {
 #[test]
 fn blog_url_domain_extraction() {
     let blog = "https://alice.dev/about";
-    let parsed = url::Url::parse(blog).unwrap();
-    let host = parsed.host_str().unwrap().to_lowercase();
+    let parsed = url::Url::parse(blog).expect("should succeed");
+    let host = parsed.host_str().expect("should succeed").to_lowercase();
     assert_eq!(host, "alice.dev");
     assert!(host.contains('.'));
     assert_ne!(host, "github.com");

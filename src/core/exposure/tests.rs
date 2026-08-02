@@ -154,6 +154,56 @@ fn sensitive_pii_recognises_wikidata_birth_date_spelling() {
 }
 
 #[test]
+fn sensitive_pii_dob_gov_id_keys_are_single_sourced_from_breach_pii() {
+    // Regression: `DOB_KEYS`/the gov-ID keys used to be separate local copies
+    // that had drifted to a narrower subset of AU-073/AU-074's canonical
+    // vocabularies in `core::correlator::rules::breach_pii` — undercounting
+    // any breach record using one of the un-mirrored spellings. Both are now
+    // single-sourced from that module, so a spelling AU-073/AU-074 already
+    // recognise must score here too, with zero separate list to drift.
+    //
+    // `date_birth` — OathNet/SeekNow's own DOB field spelling (breach_pii's
+    // own comment calls it "a major breach source that the older key list
+    // missed") — was never in exposure's old 3-spelling DOB_KEYS.
+    let mut dob = Entity::new(EntityKind::Person, "Dana Whitlock", 0.8, "s");
+    dob.add_evidence(Evidence::new("oathnet_pro", "rec").with_attr("date_birth", "1990-01-01"));
+    let dob_idx = assess(&[dob], &[]);
+    let s = component(&dob_idx, "Sensitive PII");
+    assert_eq!(
+        s.score, 7,
+        "date_birth (OathNet/SeekNow's spelling) must score as a DOB disclosure"
+    );
+
+    // `tax_file_number` — one of AU-074's 4 TFN spellings — was never in
+    // exposure's old 1-spelling-per-class GOV_ID_KEYS (only bare `tfn`).
+    let mut gov = Entity::new(EntityKind::Person, "Dana Whitlock", 0.8, "s");
+    gov.add_evidence(Evidence::new("oathnet_pro", "rec").with_attr("tax_file_number", "123456782"));
+    let gov_idx = assess(&[gov], &[]);
+    let s = component(&gov_idx, "Sensitive PII");
+    assert_eq!(
+        s.score, 15,
+        "tax_file_number must score as a government-ID disclosure"
+    );
+}
+
+#[test]
+fn sensitive_pii_bank_account_number_keys_are_single_sourced_from_breach_pii() {
+    // Regression: exposure's Financial flag only recognised the bare
+    // `bank_account` spelling — AU-104's own `BANK_ACCOUNT_KEYS` in
+    // `breach_pii` has 4 more (`account_number`/`account_no`/`acct_number`/
+    // `acct_no`) that were silently unmirrored, undercounting the exposure
+    // score for a breach record using one of them instead.
+    let mut fin = Entity::new(EntityKind::Person, "Dana Whitlock", 0.8, "s");
+    fin.add_evidence(Evidence::new("oathnet_pro", "rec").with_attr("account_number", "123456"));
+    let fin_idx = assess(&[fin], &[]);
+    let s = component(&fin_idx, "Sensitive PII");
+    assert_eq!(
+        s.score, 5,
+        "account_number must score as a financial disclosure"
+    );
+}
+
+#[test]
 fn identifier_surface_counts_distinct_capped() {
     let ents = vec![
         Entity::new(EntityKind::Email, "a@x.com", 0.8, "s"),

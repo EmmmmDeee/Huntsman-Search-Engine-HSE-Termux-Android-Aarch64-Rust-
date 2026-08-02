@@ -34,16 +34,16 @@ fn parse_response() {
         "references": 15,
         "details": {"credential_leaked": true, "data_breach": true, "profiles": ["linkedin"]}
     }"#;
-    let r: RepResp = serde_json::from_str(raw).unwrap();
+    let r: RepResp = serde_json::from_str(raw).expect("should succeed");
     assert_eq!(r.reputation.as_deref(), Some("high"));
-    let d = r.details.unwrap();
+    let d = r.details.expect("should succeed");
     assert_eq!(d.credential_leaked, Some(true));
     assert_eq!(d.profiles.len(), 1);
 }
 
 // ── The core: build_email_entity surfaces every signal ───────────────
 fn build(json: &str) -> Entity {
-    let body: RepResp = serde_json::from_str(json).unwrap();
+    let body: RepResp = serde_json::from_str(json).expect("should succeed");
     build_email_entity(&email_target(), &body, "scan")
 }
 
@@ -164,7 +164,10 @@ fn profiles_are_emitted_in_full() {
         r#"{{"details":{{"profiles":[{}]}}}}"#,
         profiles.join(",")
     ));
-    let csv = e.evidence[0].attributes.get("profiles").unwrap();
+    let csv = e.evidence[0]
+        .attributes
+        .get("profiles")
+        .expect("should succeed");
     assert_eq!(csv.split(',').count(), 30);
     // …and the reported count matches the true total.
     assert_eq!(

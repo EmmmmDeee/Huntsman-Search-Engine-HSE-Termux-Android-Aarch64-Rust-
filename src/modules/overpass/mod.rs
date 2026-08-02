@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -104,7 +105,12 @@ fn classify_element(tags: &std::collections::HashMap<String, String>) -> &'stati
 fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<Entity> {
     let mut out = Vec::new();
 
-    let mut summary = Entity::new(EntityKind::Coordinates, coord, 0.70, scan_id);
+    let mut summary = Entity::new(
+        EntityKind::Coordinates,
+        coord,
+        confidence::HIGH_PLUS,
+        scan_id,
+    );
     summary.tag("overpass");
     summary.tag("geoint");
     // Attempt to parse the query coordinates for state tagging.
@@ -152,7 +158,12 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
             && crate::util::geo::is_valid_coords(nlat, nlon)
         {
             let node_coords = format!("{nlat:.6},{nlon:.6}");
-            let mut ce = Entity::new(EntityKind::Coordinates, &node_coords, 0.55, scan_id);
+            let mut ce = Entity::new(
+                EntityKind::Coordinates,
+                &node_coords,
+                confidence::MEDIUM_HIGH,
+                scan_id,
+            );
             ce.tag("overpass");
             ce.tag("geoint");
             ce.tag(format!("infra:{category}"));
@@ -200,7 +211,7 @@ impl Module for Overpass {
         "overpass"
     }
     fn description(&self) -> &'static str {
-        "OpenStreetMap infrastructure query — cell towers, substations, cameras near coordinates"
+        "OpenStreetMap infrastructure probe — enumerates cell towers, substations, and cameras near coordinates"
     }
     fn priority(&self) -> u8 {
         15
@@ -209,7 +220,12 @@ impl Module for Overpass {
         matches!(t.kind, TargetKind::Coordinates)
     }
     fn max_timeout_ms(&self) -> u64 {
-        30_000
+        // The query itself is server-documented [timeout:25] (up to 25s of
+        // Overpass-side execution). A 429 retry (see `process`) can now
+        // mean a second full query execution after a short bounded sleep —
+        // budget for two worst-case query executions plus the sleep and
+        // headroom, not just one.
+        58_000
     }
 
     fn category(&self) -> ModuleCategory {
@@ -241,7 +257,7 @@ impl Module for Overpass {
 out center;"#
         );
 
-        let resp = ctx
+        let mut resp = ctx
             .http
             .post("https://overpass-api.de/api/interpreter")
             .header("Content-Type", "application/x-www-form-urlencoded")
@@ -249,10 +265,28 @@ out center;"#
             .send_tagged(SRC)
             .await?;
 
-        let status = resp.status();
-        if status.as_u16() == 429 {
-            return Ok(ModuleResult::new());
+        // A 429 here used to degrade straight to Ok(empty) — indistinguishable
+        // from "nothing found nearby" — with no retry, no backoff, and no
+        // circuit-breaker engagement (this module calls send_tagged directly
+        // rather than the shared fetch_json_inner/fetch_keyed_json helpers
+        // every rate-limit-aware module routes through). Honour a real
+        // server Retry-After (kept short — Overpass is a shared public
+        // resource and this query is server-documented as expensive, so this
+        // retries once, not aggressively) before giving up; a second 429 is
+        // now a real, surfaced error instead of a silent empty success.
+        if resp.status().as_u16() == 429 {
+            let delay = crate::util::http::retry_after_secs(resp.headers(), 2, 4);
+            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            resp = ctx
+                .http
+                .post("https://overpass-api.de/api/interpreter")
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .body(format!("data={}", crate::util::http::urlencode(&query)))
+                .send_tagged(SRC)
+                .await?;
         }
+
+        let status = resp.status();
         if !status.is_success() {
             return Err(Error::module(SRC, format!("HTTP {status}")));
         }

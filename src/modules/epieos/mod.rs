@@ -21,6 +21,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -96,7 +97,7 @@ pub(super) fn is_person_name(s: &str) -> bool {
 /// every field → entity/tag/confidence decision is unit-tested directly.
 ///
 /// Confidence encodes source authority: the Google-confirmed name is strong
-/// (0.75); a Skype name slightly less (0.70); a *reviewed* place is a weak
+/// (confidence::VERY_HIGH); a Skype name slightly less (confidence::HIGH_PLUS); a *reviewed* place is a weak
 /// location lead (0.48 — it's somewhere the subject has been, not where they
 /// live).
 pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) -> Vec<Entity> {
@@ -104,7 +105,7 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
     let mut out = Vec::new();
 
     // ── Enriched email (the anchor) ──────────────────────────────────────
-    let mut entity = target.to_entity(0.85, scan_id);
+    let mut entity = target.to_entity(confidence::HIGH_PLUSPLUS_PLUS, scan_id);
     entity.tag("epieos");
     let mut ev = Evidence::new(SRC, format!("Epieos identity resolution for {email}"));
     if let Some(gid) = nonempty(&body.google_id) {
@@ -115,7 +116,12 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
         // just an evidence attr. The id is a stable Google identity that the
         // cross-platform username rules can link on; it was deserialized and then
         // confined to evidence.
-        let mut g = Entity::new(EntityKind::Username, format!("google:{gid}"), 0.65, scan_id);
+        let mut g = Entity::new(
+            EntityKind::Username,
+            format!("google:{gid}"),
+            confidence::HIGH,
+            scan_id,
+        );
         g.tag("epieos");
         g.tag("platform:google");
         g.add_evidence(
@@ -129,6 +135,19 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
     }
     if let Some(pic) = nonempty(&body.profile_picture) {
         ev = ev.with_attr("profile_picture", pic);
+        // Surface the avatar as a first-class pivot — a `Url` entity, not just
+        // an evidence attr. It was deserialized and then confined to evidence,
+        // same as `google_id` was before it got the Username treatment above.
+        if pic.starts_with("http") {
+            let mut pe = Entity::new(EntityKind::Url, pic, confidence::MEDIUM_HIGH, scan_id);
+            pe.tag("epieos");
+            pe.tag("google-avatar");
+            pe.add_evidence(Evidence::new(
+                SRC,
+                format!("Google profile picture for {email}"),
+            ));
+            out.push(pe);
+        }
     }
     let skype = body.skype.as_ref();
     if let Some(h) = skype.and_then(|s| nonempty(&s.handle)) {
@@ -161,10 +180,10 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
     // ── Person leads from each DISTINCT real name (Google + Skype + Calendar) ─
     let mut seen_names = HashSet::new();
     for (label, conf, name) in [
-        ("google", 0.75, nonempty(&body.name)),
+        ("google", confidence::VERY_HIGH, nonempty(&body.name)),
         (
             "platform:skype",
-            0.70,
+            confidence::HIGH_PLUS,
             skype.and_then(|s| nonempty(&s.name)),
         ),
         (
@@ -187,7 +206,7 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
     // ── Skype handle → Username, Skype location → Address ─────────────────
     if let Some(s) = skype {
         if let Some(handle) = nonempty(&s.handle).filter(|h| h.chars().count() >= 3) {
-            let mut ue = Entity::new(EntityKind::Username, handle, 0.70, scan_id);
+            let mut ue = Entity::new(EntityKind::Username, handle, confidence::HIGH_PLUS, scan_id);
             ue.tag("epieos");
             ue.tag("platform:skype");
             ue.add_evidence(Evidence::new(SRC, format!("Skype handle for {email}")));
@@ -198,7 +217,12 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
                 Some(c) => format!("{city}, {c}"),
                 None => city.to_string(),
             };
-            let mut ae = Entity::new(EntityKind::Address, &location, 0.52, scan_id);
+            let mut ae = Entity::new(
+                EntityKind::Address,
+                &location,
+                confidence::MEDIUM_LIGHT,
+                scan_id,
+            );
             ae.tag("epieos");
             ae.tag("skype");
             ae.tag("geoint");
@@ -230,7 +254,12 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
             else {
                 continue;
             };
-            let mut ae = Entity::new(EntityKind::Address, place, 0.52, scan_id);
+            let mut ae = Entity::new(
+                EntityKind::Address,
+                place,
+                confidence::MEDIUM_LIGHT,
+                scan_id,
+            );
             ae.tag("epieos");
             ae.tag("google-maps");
             ae.tag("geoint");
@@ -277,7 +306,7 @@ impl Module for Epieos {
         "epieos"
     }
     fn description(&self) -> &'static str {
-        "Email-to-identity: Google profile, Maps reviews, Skype handle via Epieos"
+        "Email-to-identity unmasking via Epieos — surfaces Google profile, Maps reviews, and Skype handle from an email"
     }
     fn priority(&self) -> u8 {
         92
@@ -313,6 +342,7 @@ impl Module for Epieos {
             EntityKind::Email,
             EntityKind::Person,
             EntityKind::Username,
+            EntityKind::Url,
             EntityKind::Address,
             EntityKind::Coordinates,
         ];

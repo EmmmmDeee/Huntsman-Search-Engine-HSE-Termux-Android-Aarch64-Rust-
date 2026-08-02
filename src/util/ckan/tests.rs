@@ -1,7 +1,7 @@
 use super::*;
 
     fn record(json: &str) -> Map<String, Value> {
-        serde_json::from_str(json).unwrap()
+        serde_json::from_str(json).expect("should succeed")
     }
 
     #[test]
@@ -38,7 +38,7 @@ use super::*;
         // reporting "no findings".
         let err: Response =
             serde_json::from_str(r#"{"success":false,"error":{"message":"Resource not found"}}"#)
-                .unwrap();
+                .expect("should succeed");
         assert_eq!(err.success, Some(false));
         assert!(err.result.is_none());
     }
@@ -51,7 +51,7 @@ use super::*;
                 {"_id":2,"Owner":"B","Amount":4.5}
             ]}}"#,
         )
-        .unwrap();
+        .expect("should succeed");
         assert_eq!(ok.success, Some(true));
         let res = ok.result.expect("result present");
         assert_eq!(res.total, Some(2));
@@ -81,10 +81,10 @@ use super::*;
         // A bare/empty object must deserialize (every field is `#[serde(default)]`)
         // so a truncated or unexpected body degrades to "no findings", not a parse
         // error that masks the miss.
-        let empty: Response = serde_json::from_str("{}").unwrap();
+        let empty: Response = serde_json::from_str("{}").expect("should succeed");
         assert_eq!(empty.success, None);
         assert!(empty.result.is_none());
-        let no_total: ResultSet = serde_json::from_str(r#"{"records":[]}"#).unwrap();
+        let no_total: ResultSet = serde_json::from_str(r#"{"records":[]}"#).expect("should succeed");
         assert_eq!(no_total.total, None);
         assert!(no_total.records.is_empty());
     }

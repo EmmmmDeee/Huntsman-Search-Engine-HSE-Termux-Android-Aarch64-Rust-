@@ -2,10 +2,27 @@
 
 use serde_json::Value;
 
-use crate::core::error::Result;
+use crate::core::error::{Error, Result};
+use crate::util::backoff::BackoffPolicy;
 
-use super::budget::{budget_try_increment, is_key_invalid};
-use super::client::{base_url, cache_get, cache_put, get_json, post_json, typed_cache_key};
+use super::budget::{budget_try_increment, is_key_invalid, mark_key_invalid};
+use super::client::{
+    cache_get, cache_put, get_json_with_fallback, get_raw_with_fallback, is_auth_error,
+    post_json_with_fallback, typed_cache_key,
+};
+use super::enterprise_config::ENTERPRISE;
+
+/// Retry pacing for a transient see-know.ru rate-limit response
+/// (`Error::RateLimited`, distinct from true quota exhaustion — see
+/// `client::Terminal::RateLimited`'s doc comment). [`ENTERPRISE`]`.max_retries`
+/// attempts (the initial call plus 2 retries), doubling 2s → 4s, capped at
+/// 8s, jittered so several concurrently-dispatched endpoint calls that all
+/// get rate-limited at once don't all retry in lockstep. These are the same
+/// figures a prior, never-wired `RETRY_STRATEGY` constant in
+/// `orchestration.rs` already specified — reused here now that they have a
+/// real, live call site.
+const RATE_LIMIT_BACKOFF: BackoffPolicy =
+    BackoffPolicy::new(ENTERPRISE.max_retries, 2_000, 8_000, true);
 
 /// Max records per the see-know.ru Universal Search spec (`limit`, default 100,
 /// **max 500**). Requested in full — the standing directive is to use
@@ -65,6 +82,10 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<SearchOu
 /// seed), returning `mode:"deep"`. ~40s server-side, within the module's 80s cap.
 /// Its result set is a superset of `/search`, so the module uses it as the primary
 /// universal query and only falls back to [`search`] when deep yields nothing.
+///
+/// Callers should reserve this for a confirmed EMPTY [`search`] result: it costs
+/// the same credit but roughly 8x the latency, so calling it after a fast HIT
+/// would waste both quota and wall-time for zero additional coverage.
 pub async fn search_deep(key: &str, query: &str, query_type: &str) -> Result<SearchOutcome> {
     search_impl(key, query, query_type, true).await
 }
@@ -98,7 +119,6 @@ async fn search_impl(
         return Ok(SearchOutcome::default());
     }
     let path = if deep { "search/deep" } else { "search" };
-    let url = format!("{}/{path}", base_url());
     let body = build_search_body(query, query_type, SEARCH_LIMIT);
     // Human archive label: variant + optional `-<type>`, with the actual looked-up
     // value — so the saved filename names exactly what was queried.
@@ -107,17 +127,32 @@ async fn search_impl(
     } else {
         format!("{cache_ns}-{query_type}")
     };
-    // The name/auto `/search` path intermittently returns `total:0` even when
-    // the record exists (server-side cap races). Retry once on a transient
-    // empty before giving up. `cache_put` already refuses to memoise an empty
-    // result, so a transient miss can never poison later lookups of this query.
-    const MAX_ATTEMPTS: u32 = 2;
-    let mut last_err = None;
-    for attempt in 0..MAX_ATTEMPTS {
-        match post_json(&url, key, &body, &archive_endpoint, query).await {
+    // Two independent, differently-paced retry classes share this loop:
+    //  - a transient EMPTY result on the fast (non-deep) path (server-side cap
+    //    race on the name/auto path) → retry once immediately, no delay.
+    //    `cache_put` already refuses to memoise an empty result, so a transient
+    //    miss can never poison later lookups of this query. The deep path skips
+    //    this retry — an already-~40s call retried would double the worst-case
+    //    latency for no evidenced benefit (there is no equivalent documented
+    //    flakiness for `/search/deep`).
+    //  - a transient RATE-LIMIT response (`Error::RateLimited`, distinct from
+    //    true quota exhaustion — see `client::Terminal::RateLimited`) → retry
+    //    with exponential backoff (`RATE_LIMIT_BACKOFF`) instead of giving up
+    //    immediately, which is what happened before this was diagnosed: a
+    //    burst throttle used to latch the shared budget and silently abandon
+    //    SeekNow for the rest of the scan.
+    //  - connection/network errors → retried via domain fallback
+    //    (`post_json_with_fallback` tries all known domains before returning error)
+    let empty_retry_attempts: u32 = if deep { 1 } else { 2 };
+    let mut attempt = 0u32;
+    loop {
+        match post_json_with_fallback(&format!("/{path}"), key, &body, &archive_endpoint, query)
+            .await
+        {
             Ok(resp) => {
                 let items = extract_items(&resp);
                 if !items.is_empty() {
+                    super::data_log::log_search(&format!("/{path}"), query, query_type, &items);
                     cache_put(ck, items.clone());
                     // Read the envelope counters BEFORE returning — top-level per
                     // the live shape, with a `/data` fallback for a wrapped body.
@@ -134,23 +169,46 @@ async fn search_impl(
                         items,
                     });
                 }
-                // Transient empty: not cached. Retry if attempts remain.
+                attempt += 1;
+                if attempt >= empty_retry_attempts {
+                    // Every attempt came back empty — an uncached genuine miss.
+                    return Ok(SearchOutcome::default());
+                }
+                tracing::debug!(
+                    query_type,
+                    deep,
+                    attempt,
+                    "see_know /{path} returned empty — retrying once"
+                );
             }
-            Err(e) => last_err = Some(e),
+            Err(Error::RateLimited(msg)) => {
+                if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
+                    return Err(Error::RateLimited(msg));
+                }
+                let delay = RATE_LIMIT_BACKOFF.delay(attempt);
+                tracing::debug!(
+                    query_type,
+                    deep,
+                    attempt = attempt + 1,
+                    delay_ms = delay.as_millis() as u64,
+                    "see_know /{path} rate-limited — backing off"
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+            Err(e) => {
+                attempt += 1;
+                if attempt > empty_retry_attempts {
+                    return Err(e);
+                }
+                tracing::debug!(
+                    query_type,
+                    deep,
+                    attempt,
+                    "see_know /{path} errored — retrying once"
+                );
+            }
         }
-        if attempt + 1 < MAX_ATTEMPTS {
-            tracing::debug!(
-                query_type,
-                attempt = attempt + 1,
-                "see_know /search returned empty or errored — retrying once"
-            );
-        }
-    }
-    // Both attempts empty/errored. Surface the error (so the curl exit code
-    // reaches the logs) if we have one; otherwise an uncached empty outcome.
-    match last_err {
-        Some(e) => Err(e),
-        None => Ok(SearchOutcome::default()),
     }
 }
 
@@ -204,7 +262,7 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
     if is_key_invalid() || !budget_try_increment() {
         return Ok(Vec::new());
     }
-    let url = format!("{}/{path}?{qs}", base_url());
+    let endpoint_path = format!("/{path}");
     // Human archive label: the endpoint path (e.g. `stealer`,
     // `breachhub/search`) and the actual looked-up value (first query param),
     // so the saved filename names exactly what was queried.
@@ -217,30 +275,59 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
     // returns empty for a given seed, and retrying those would double scan
     // wall-time for no gain. `cache_put` already refuses to memoise an empty
     // result, so a genuine miss never poisons a later lookup.
-    const MAX_ATTEMPTS: u32 = 2;
-    let mut last_err = None;
-    for attempt in 0..MAX_ATTEMPTS {
-        match get_json(&url, key, path, archive_query).await {
+    //
+    // A `RateLimited` error is paced separately (`RATE_LIMIT_BACKOFF`,
+    // distinct from true quota exhaustion — see `client::Terminal::
+    // RateLimited`): previously this response was classified identically to
+    // exhausted credits, latching the shared budget and silently abandoning
+    // SeekNow for every remaining endpoint call in the scan with zero
+    // backoff or retry. Connection errors also trigger domain fallback retries.
+    let mut attempt = 0u32;
+    loop {
+        match get_json_with_fallback(&endpoint_path, key, &qs, path, archive_query).await {
             Ok(resp) => {
                 let items = extract_items(&resp);
+                super::data_log::log_search(&endpoint_path, archive_query, "", &items);
                 cache_put(ck.clone(), items.clone());
                 return Ok(items);
             }
-            Err(e) => {
-                if attempt + 1 < MAX_ATTEMPTS {
-                    tracing::debug!(
-                        path,
-                        attempt = attempt + 1,
-                        "see_know GET errored — retrying once"
-                    );
+            // Both transient classes — a burst rate-limit AND a 5xx/no-response
+            // (now surfaced as `RateLimited` by `client::classify_status`) — pace
+            // through the SAME `RATE_LIMIT_BACKOFF` (bounded by
+            // `ENTERPRISE.max_retries`), so the whole retry budget lives in one
+            // place instead of the old split policy.
+            Err(Error::RateLimited(msg)) => {
+                if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
+                    return Err(Error::RateLimited(msg));
                 }
-                last_err = Some(e);
+                let delay = RATE_LIMIT_BACKOFF.delay(attempt);
+                tracing::debug!(
+                    path,
+                    attempt = attempt + 1,
+                    delay_ms = delay.as_millis() as u64,
+                    "see_know GET transient (rate-limit/5xx) — backing off"
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+            // A plain transport error (connection drop on a flaky mobile link)
+            // now ALSO backs off on that shared budget rather than the old
+            // zero-delay double-shot — a genuine drop recovers on a paced retry.
+            Err(e) => {
+                if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
+                    return Err(e);
+                }
+                let delay = RATE_LIMIT_BACKOFF.delay(attempt);
+                tracing::debug!(
+                    path,
+                    attempt = attempt + 1,
+                    delay_ms = delay.as_millis() as u64,
+                    "see_know GET transport error — backing off"
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
             }
         }
-    }
-    match last_err {
-        Some(e) => Err(e),
-        None => Ok(Vec::new()),
     }
 }
 
@@ -338,6 +425,13 @@ fn flatten_victims(victims: &[Value]) -> Vec<Value> {
 /// NOT consume a budget slot — it is a meta-query used to scale the scan cap
 /// dynamically to the operator's actual plan, not a data lookup.
 ///
+/// Also the diagnostic probe `hse doctor` uses to catch a dead/rejected key
+/// BEFORE a scan discovers it only as SeekNow silently returning nothing:
+/// an `invalid_api_key`/`plan_required` response here now latches
+/// [`mark_key_invalid`] (previously only the data-bearing `search`/`get_path`
+/// calls did this classification — a fresh process that only ever calls
+/// `query_credits`, like `hse doctor`, could not detect a dead key at all).
+///
 /// Handles several observed response shapes:
 /// ```json
 /// {"plan":"enterprise","credits_remaining":15000,"credits_daily_limit":15000,"credits_used_today":0}
@@ -353,11 +447,13 @@ fn flatten_victims(victims: &[Value]) -> Vec<Value> {
 /// [`super::budget::scale_scan_cap_from_daily`] never saw the real 15k/day
 /// ceiling and the scan cap fell back to the floor.
 pub async fn query_credits(key: &str) -> Option<(u32, Option<u32>)> {
-    let url = format!("{}/credits", base_url());
-    // Direct HTTP call — no budget gate, no archive (meta-query, not paid data).
-    let body = super::client::CLIENT.get(&url, key).await.ok()?;
-    let v: serde_json::Value = serde_json::from_str(body.trim()).ok()?;
-    parse_credits(&v)
+    match credits_probe(key).await {
+        CreditsProbe::Ok {
+            remaining,
+            daily_limit,
+        } => Some((remaining, daily_limit)),
+        _ => None,
+    }
 }
 
 /// A `/credits` meter coerced to `u32`, tolerant of number-serialization drift:
@@ -376,19 +472,127 @@ fn credit_as_u32(v: &serde_json::Value) -> Option<u32> {
     u32::try_from(n).ok()
 }
 
-/// Pure extractor for `(credits_remaining, daily_limit)` from a `/credits`
-/// response body, split out so the multi-shape field-walk is unit-testable
-/// without a live call. `daily_limit` is `None` when the response omits it.
-pub(super) fn parse_credits(v: &serde_json::Value) -> Option<(u32, Option<u32>)> {
+/// The distinguishable outcomes of the `/credits` diagnostic probe, for
+/// `hse doctor`'s SeekNow section. `query_credits` collapses this to `Option`
+/// for the budget-scaling / key-harvest callers that only need the number, but
+/// a human diagnosing "why is SeekNow returning nothing?" needs the *class* of
+/// failure — an unreachable API host (DNS/connect/timeout) is a completely
+/// different fix from a rejected key, which is different again from a reachable
+/// host returning an unrecognised body. A live Termux scan surfaced exactly
+/// this ambiguity: every `see_know` call failed with `[seek_now] curl exited 6`
+/// (curl's "could not resolve host"), then the circuit breaker cooled the
+/// module down — but `query_credits`'s `.ok()?` discarded the curl detail, so
+/// `hse doctor` could only report the catch-all "could not reach SeekNow",
+/// giving the operator no signal that the real cause was DNS-level host
+/// resolution (commonly carrier/ISP filtering of the domain), not a bad key or
+/// an exhausted plan.
+#[derive(Debug)]
+pub enum CreditsProbe {
+    /// The key works and the account has quota.
+    Ok {
+        remaining: u32,
+        daily_limit: Option<u32>,
+    },
+    /// A classified auth/plan rejection (`invalid_api_key` / `plan_required`).
+    /// [`mark_key_invalid`] has been latched.
+    InvalidKey,
+    /// The API host could not be reached at all — DNS resolution, connection,
+    /// or timeout failure. Carries curl's own one-line diagnostic (e.g.
+    /// `curl exited 6: curl: (6) Could not resolve host: see-know.ru`) so the
+    /// operator sees WHICH host failed and WHY. NOT a dead key — never latches
+    /// [`mark_key_invalid`].
+    Unreachable(String),
+    /// The host answered but the body carried no recognised `credits` field
+    /// (schema drift, or a plan whose `/credits` shape this parser doesn't
+    /// know). Reachable, so also not a confirmed dead key.
+    Unparseable,
+}
+
+/// Diagnostic probe of `GET /api/v1/credits`, classifying the outcome for
+/// `hse doctor`. Does NOT consume a budget slot. See [`CreditsProbe`] for why
+/// the transport-failure case is kept distinct from an auth rejection.
+pub async fn credits_probe(key: &str) -> CreditsProbe {
+    // Direct HTTP call with multi-domain fallback — no budget gate, no archive
+    // (meta-query, not paid data). Tries all known SeekNow domains (the service
+    // intentionally rotates domains) before giving up. The transport error is
+    // stringified and handed to the pure classifier so the Unreachable / auth /
+    // schema branches are all unit-testable without a live round-trip.
+    let result = get_raw_with_fallback("/credits", key)
+        .await
+        .map_err(|e| e.to_string());
+    classify_credits_probe(result)
+}
+
+/// Pure classification of a `/credits` fetch result into a [`CreditsProbe`].
+/// Split from the network call so every branch is unit-tested directly. The
+/// auth branch is the only one with a side effect — it latches
+/// [`mark_key_invalid`], matching the data-bearing `search`/`get_path` paths —
+/// so a confirmed-dead key is caught even when this probe is the first-ever
+/// call a process makes (`hse doctor`). Transport failures and unparseable
+/// bodies are NOT confirmed dead keys and never latch it.
+pub(super) fn classify_credits_probe(result: std::result::Result<String, String>) -> CreditsProbe {
+    let body = match result {
+        Ok(b) => b,
+        // Transport failure (curl non-zero exit): keep the detail so doctor can
+        // tell the operator it was DNS / connect / timeout, not a key problem.
+        Err(detail) => return CreditsProbe::Unreachable(detail),
+    };
+    match parse_credits_body(&body) {
+        CreditsOutcome::Data {
+            remaining,
+            daily_limit,
+        } => CreditsProbe::Ok {
+            remaining,
+            daily_limit,
+        },
+        CreditsOutcome::AuthError => {
+            mark_key_invalid(&body);
+            CreditsProbe::InvalidKey
+        }
+        CreditsOutcome::Unparseable => CreditsProbe::Unparseable,
+    }
+}
+
+/// The three distinguishable outcomes of parsing a raw `/credits` response
+/// body. Kept separate from `Option<(u32, Option<u32>)>` specifically so an
+/// auth rejection (a REAL, classified "this key is dead" signal) can never
+/// be conflated with a merely-unparseable body (network noise, a schema this
+/// function doesn't recognise) — the two must not both collapse to a bare
+/// `None` the caller can't tell apart, since only the former should latch
+/// [`mark_key_invalid`].
+pub(super) enum CreditsOutcome {
+    Data {
+        remaining: u32,
+        daily_limit: Option<u32>,
+    },
+    AuthError,
+    Unparseable,
+}
+
+/// Parse a raw `/credits` response body. Pure (no network, no global state)
+/// so the classification is unit-tested directly, without a live HTTP
+/// round-trip.
+pub(super) fn parse_credits_body(body: &str) -> CreditsOutcome {
+    if is_auth_error(body) {
+        return CreditsOutcome::AuthError;
+    }
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body.trim()) else {
+        return CreditsOutcome::Unparseable;
+    };
     // Walk candidate shapes to find (remaining, daily_limit).
-    let root = if let Some(d) = v.get("data") { d } else { v };
+    let root = if let Some(d) = v.get("data") { d } else { &v };
     let inner = root.get("credits").unwrap_or(root);
 
-    let remaining = inner
+    let Some(remaining) = inner
         .get("credits_remaining")
         .or_else(|| inner.get("remaining"))
-        .and_then(credit_as_u32)?;
+        .and_then(credit_as_u32)
+    else {
+        return CreditsOutcome::Unparseable;
+    };
 
+    // `credits_daily_limit` is the live see-know.ru enterprise field name;
+    // `daily_limit`/`total`/`daily` cover the other observed response shapes.
     let daily_limit = inner
         .get("credits_daily_limit")
         .or_else(|| inner.get("daily_limit"))
@@ -396,7 +600,10 @@ pub(super) fn parse_credits(v: &serde_json::Value) -> Option<(u32, Option<u32>)>
         .or_else(|| inner.get("daily"))
         .and_then(credit_as_u32);
 
-    Some((remaining, daily_limit))
+    CreditsOutcome::Data {
+        remaining,
+        daily_limit,
+    }
 }
 
 /// Escape `s` for embedding inside a JSON string literal — the two body-builder

@@ -12,7 +12,6 @@ fn ctx_with_rx() -> (ModuleContext, tokio::sync::broadcast::Receiver<Event>) {
         http: reqwest::Client::new(),
         keys: HashMap::new(),
         cancel: CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     (ctx, rx)
 }
@@ -64,7 +63,7 @@ async fn process_emits_reinjectable_seeds_from_text() {
         TargetKind::FullName,
         "Kyle at kyle.d@example.com, host 8.8.8.8, ABN 51 824 753 556, site https://acme.example",
     );
-    let res = m.process(&target, &ctx).await.unwrap();
+    let res = m.process(&target, &ctx).await.expect("should succeed");
 
     assert!(!res.entities.is_empty(), "extracted typed entities from the blob");
     for e in &res.entities {
@@ -91,7 +90,7 @@ async fn output_pivots_into_a_new_scan_cycle() {
     let m = ClassifyModule;
     let (ctx, _rx) = ctx_with_rx();
     let target = Target::new(TargetKind::FullName, "see https://example.com and 8.8.8.8");
-    let res = m.process(&target, &ctx).await.unwrap();
+    let res = m.process(&target, &ctx).await.expect("should succeed");
 
     let seed = res
         .entities
@@ -118,7 +117,7 @@ async fn below_floor_candidates_are_announced_not_discarded() {
     let m = ClassifyModule;
     let (ctx, mut rx) = ctx_with_rx();
     let target = Target::new(TargetKind::Organisation, "internal ref 1234567890123456 noted");
-    let _ = m.process(&target, &ctx).await.unwrap();
+    let _ = m.process(&target, &ctx).await.expect("should succeed");
 
     let mut saw_exclusion = false;
     while let Ok(ev) = rx.try_recv() {

@@ -4,6 +4,7 @@
 
 use serde_json::{Map, Value};
 
+use crate::core::confidence;
 use crate::core::entity::{Entity, EntityKind, Evidence};
 use crate::util::ckan::field_str;
 use crate::util::url_util::host_from_url;
@@ -42,18 +43,7 @@ pub(super) fn other_names(rec: &Map<String, Value>) -> Vec<String> {
 /// doesn't match inside `"Mildred"`. Tokenises on non-alphanumeric boundaries
 /// and compares with `eq_ignore_ascii_case` (no per-token `String` allocation).
 pub(super) fn name_matches_query(name: &str, query: &str) -> bool {
-    let words: Vec<&str> = name
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let tokens: Vec<&str> = query
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .collect();
-    !tokens.is_empty()
-        && tokens
-            .iter()
-            .all(|tok| words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
+    crate::util::str_util::whole_word_token_match(name, query)
 }
 
 /// True if the seed matches the charity's legal name or any of its other names.
@@ -239,7 +229,12 @@ pub(super) fn records_to_entities(
             // Inline Coordinates for immediate AU-052/053 participation.
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.62, scan_id);
+                let mut c = Entity::new(
+                    EntityKind::Coordinates,
+                    &coord_val,
+                    confidence::NOTABLE,
+                    scan_id,
+                );
                 c.tag("addr-derived");
                 c.tag("geoint");
                 c.tag("acnc");

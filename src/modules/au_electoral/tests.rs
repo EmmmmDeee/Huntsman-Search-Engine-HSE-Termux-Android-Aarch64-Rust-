@@ -12,7 +12,7 @@ use crate::core::module::Module;
 
 #[test]
 fn division_centroid_returns_sydney_for_sydney() {
-    let info = division_centroid("Sydney").unwrap();
+    let info = division_centroid("Sydney").expect("should succeed");
     assert_eq!(info.state, "NSW");
     assert!((info.lat - -33.8688).abs() < 0.01);
     assert!((info.lon - 151.2093).abs() < 0.01);
@@ -59,7 +59,7 @@ fn extract_division_parses_aec_pattern() {
     for (html, expected_div, _suburb) in cases {
         let result = extract_division(html);
         assert!(result.is_some(), "expected a division from: {html}");
-        let (div, _) = result.unwrap();
+        let (div, _) = result.expect("should succeed");
         assert!(
             div.to_lowercase().contains(&expected_div.to_lowercase()),
             "expected '{expected_div}' in div '{div}'"
@@ -121,7 +121,7 @@ fn address_confidence_reflects_whether_a_suburb_was_resolved() {
     let addr = with_suburb
         .iter()
         .find(|e| e.kind == EntityKind::Address)
-        .unwrap();
+        .expect("should succeed");
     assert!(
         (addr.confidence - 0.72).abs() < 1e-9,
         "suburb-level match must score 0.72, got {}",
@@ -136,7 +136,7 @@ fn address_confidence_reflects_whether_a_suburb_was_resolved() {
     let addr2 = division_only
         .iter()
         .find(|e| e.kind == EntityKind::Address)
-        .unwrap();
+        .expect("should succeed");
     assert!(
         (addr2.confidence - 0.58).abs() < 1e-9,
         "division-only match must score 0.58, not the suburb-level 0.72: got {}",
@@ -147,7 +147,10 @@ fn address_confidence_reflects_whether_a_suburb_was_resolved() {
 #[test]
 fn build_electoral_entities_suburb_hint_overrides_centroid_suburb() {
     let ents = build_electoral_entities("Sydney", Some("Newtown"), "Test", "s");
-    let addr = ents.iter().find(|e| e.kind == EntityKind::Address).unwrap();
+    let addr = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("should succeed");
     assert!(
         addr.value.contains("Newtown"),
         "suburb hint should override centroid suburb: {}",
@@ -169,11 +172,31 @@ fn strip_electoral_html_separates_adjacent_tags() {
 }
 
 #[test]
-fn split_name_handles_edge_cases() {
-    assert_eq!(super::split_name("Haigen Bamford"), ("Haigen", "Bamford"));
-    assert_eq!(super::split_name("Mary Ann Jones"), ("Mary", "Ann Jones"));
-    assert_eq!(super::split_name("Cher"), ("Cher", ""));
-    assert_eq!(super::split_name("  Anna  Smith  "), ("Anna", "Smith"));
+fn extract_division_returns_none_for_the_real_retired_aec_namesearch_response() {
+    // Golden fixture (T2.7 corpus): a REAL response captured live
+    // (2026-07-13) from `electorate.aec.gov.au/NameSearch.aspx`, the
+    // endpoint this module's now-removed AEC leg used to query. Both a
+    // nonsense name and a real enrolled public figure got the identical
+    // generic "Temporarily Unavailable" error page rather than a
+    // query-specific result, confirming the name-search capability is
+    // permanently retired (see the module doc comment) — this pins that
+    // real observed shape so `extract_division` never mistakes the error
+    // page's boilerplate for an enrolment result if anything is ever
+    // repointed at this endpoint again.
+    let html = include_str!("testdata/aec_namesearch_retired.html");
+    assert!(
+        extract_division(html).is_none(),
+        "the retired AEC error page must not parse as an enrolment result"
+    );
+}
+
+#[test]
+fn module_no_longer_dispatches_the_retired_aec_leg() {
+    // Regression for the AEC-leg removal: three sequential state EC lookups
+    // (NSW -> VIC -> ECQ), not four (the retired AEC national leg no longer
+    // budgeted for).
+    let m = AuElectoral;
+    assert_eq!(m.max_timeout_ms(), 15_000);
 }
 
 #[test]
@@ -216,4 +239,22 @@ fn extract_division_no_panic_on_multibyte_before_marker() {
     let html = "<p>İstanbul — Division of Sydney.</p>";
     let (div, _) = extract_division(html).expect("division parses without panic");
     assert!(div.starts_with("Sydney"), "got {div:?}");
+}
+
+/// Adversarial-input coverage (PROBLEM_TREE T2.7): `au_electoral` was one of
+/// the two modules (alongside `au_property`) still missing the never-panics
+/// proptest already applied to `au_people`'s HTML parsers. `html` is the
+/// untrusted, scraped AEC/state-EC response; a plain proptest string covers
+/// it directly since `extract_division` takes no seed name.
+mod prop {
+    use proptest::prelude::*;
+
+    use super::extract_division;
+
+    proptest! {
+        #[test]
+        fn extract_division_never_panics(s in ".{0,256}") {
+            let _ = extract_division(&s);
+        }
+    }
 }

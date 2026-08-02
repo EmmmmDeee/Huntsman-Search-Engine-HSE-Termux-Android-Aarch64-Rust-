@@ -9,10 +9,11 @@ use super::super::{
 };
 
 pub(in crate::core::correlator) fn rule_au_011_cross_platform_username(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Username-keyed account modules: each one that independently confirms a
     // handle is a distinct PLATFORM, so three of them agreeing is a genuine
     // cross-platform footprint even when no single module reported a count.
@@ -125,10 +126,11 @@ pub(in crate::core::correlator) fn rule_au_011_cross_platform_username(
 /// are one controller. Exactly the seam that links a target's rotated/burner
 /// handles when they didn't regenerate their key. Critical.
 pub(in crate::core::correlator) fn rule_au_048_shared_public_key(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::BTreeSet;
     // Cheap precondition: with no key-tagged credential present, no link can
     // fire — bail before building the identity index.
@@ -196,8 +198,13 @@ pub(in crate::core::correlator) fn rule_au_048_shared_public_key(
             rule_name: "Shared public key links accounts".into(),
             severity: Severity::Critical,
             description: format!(
-                "A reused public key proves one person controls {} accounts (same private key): {}",
-                accounts.len(),
+                "A reused public key proves one person controls {} accounts (same private key) \
+                 — key evidence names: {}",
+                // Count DISTINCT controllers (handles), not identifier spellings: the
+                // guard above already treats "alice" + "alice@x.com" as ONE account,
+                // so reporting `accounts.len()` here would over-state control (e.g.
+                // "3 accounts" for alice's login+email plus bob, who are 2 owners).
+                handles.len(),
                 join_capped(accounts.iter().map(String::as_str), 6)
             ),
             entity_uids: uids,
@@ -229,10 +236,11 @@ pub(in crate::core::correlator) fn rule_au_048_shared_public_key(
 ///     `name_intel`) can't self-correlate — the reuse must be independently
 ///     observed. This mirrors the ≥2-source gate AU-001/AU-023 use.
 pub(in crate::core::correlator) fn rule_au_034_handle_reuse_identity(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const MIN_HANDLE_LEN: usize = 4;
     const MIN_DISTINCT_SOURCES: usize = 2;
 
@@ -322,10 +330,11 @@ pub(in crate::core::correlator) fn rule_au_034_handle_reuse_identity(
 /// the same merged entity, so a handle that was only ever observed (a normal
 /// find) or only ever guessed (an unconfirmed candidate) does not fire.
 pub(in crate::core::correlator) fn rule_au_035_confirmed_derived_handle(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let mut out = Vec::new();
     for e in entities_of_kind(entities, EntityKind::Username) {
         let sources = e.evidence_sources();
@@ -374,10 +383,11 @@ pub(in crate::core::correlator) fn rule_au_035_confirmed_derived_handle(
 /// closes the `email_canonical` loop the way AU-035 closes the handle-
 /// derivation loop. Deterministic; no module logic is duplicated.
 pub(in crate::core::correlator) fn rule_au_036_email_alias_convergence(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let mut out = Vec::new();
     for e in entities_of_kind(entities, EntityKind::Email) {
         let mut aliases: Vec<&str> = e
@@ -421,17 +431,25 @@ pub(in crate::core::correlator) fn rule_au_036_email_alias_convergence(
 /// `username_search`'s `platforms_count`: AU-038 fires from the search-engine or
 /// social-probe signal alone, so either source surfaces the cross-platform
 /// identity on its own.
+///
+/// Excludes `weak-detection`-tagged URLs for the same reason as AU-055: a
+/// `social-profile` tag is applied to a bare HTTP-status guess just as readily
+/// as to a body-marker-confirmed hit, and this rule's own name promises
+/// "verified" — a claim only the latter earns. See AU-055's doc comment for
+/// the real-scan finding that surfaced this.
 pub(in crate::core::correlator) fn rule_au_038_verified_cross_platform_identity(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::BTreeSet;
     let confirmed: Vec<&Entity> = entities
         .iter()
         .filter(|e| {
             e.kind == EntityKind::Url
                 && (e.has_tag("confirmed-profile") || e.has_tag("social-profile"))
+                && !e.has_tag("weak-detection")
         })
         .collect();
     // Distinct registrable-ish hosts among the confirmed profiles (www-stripped).
@@ -454,16 +472,7 @@ pub(in crate::core::correlator) fn rule_au_038_verified_cross_platform_identity(
         format!(
             "Identity confirmed on {} distinct platforms: {}",
             hosts.len(),
-            hosts
-                .into_iter()
-                .enumerate()
-                .fold(String::new(), |mut acc, (i, s)| {
-                    if i > 0 {
-                        acc.push_str(", ");
-                    }
-                    acc.push_str(&s);
-                    acc
-                })
+            hosts.into_iter().collect::<Vec<_>>().join(", ")
         ),
         uids,
         scan_id,
@@ -482,10 +491,11 @@ pub(in crate::core::correlator) fn rule_au_038_verified_cross_platform_identity(
 /// multi-email evidence, so it does not fire (the rule's "two or more" contract).
 /// An email with no fingerprint can't be attributed to a key and is excluded.
 pub(in crate::core::correlator) fn rule_au_042_pgp_email_identity(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::{BTreeMap, BTreeSet};
     // fingerprint -> (address -> emitting uid). BTreeMaps keep the output
     // deterministic (fingerprint order, then address order) with no HashMap leak.
@@ -542,10 +552,11 @@ pub(in crate::core::correlator) fn rule_au_042_pgp_email_identity(
 /// shared id accumulates one evidence row per site. Fires when ≥2 distinct sites
 /// carry the same id.
 pub(in crate::core::correlator) fn rule_au_044_shared_tracking_id(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::TrackingId)
@@ -601,10 +612,11 @@ pub(in crate::core::correlator) fn rule_au_044_shared_tracking_id(
 /// Matches `Url` entities only (a profile URL is a real listing), not a bare
 /// broker `Domain`. Broker names and uids are sorted, so output is deterministic.
 pub(in crate::core::correlator) fn rule_au_054_data_broker_exposure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use crate::core::data_broker::broker_for_host;
     use std::collections::BTreeSet;
 
@@ -674,14 +686,27 @@ pub(in crate::core::correlator) fn rule_au_054_data_broker_exposure(
 /// is the broker's listing, not the subject's account, and belongs to AU-054
 /// (low-credibility), never here.
 ///
+/// Also excludes `weak-detection`-tagged URLs: `username_search`/
+/// `streaming_probe` tag a hit `social-profile` regardless of whether the
+/// match came from a body-marker check (`verified-detection`) or a bare
+/// HTTP-status guess (`weak-detection` — a soft-404/SPA-shell can fake this
+/// for almost any handle). A real scan against a guessed handle produced a
+/// `CRITICAL "primary-source accounts... the subject controls"` finding
+/// across 60+ platforms where nearly every one was `weak-detection` — status-
+/// only guesses presented as confirmed ownership. Requiring the absence of
+/// that tag means a lone `verified-detection` hit (or a tag-only source with
+/// no strength marker at all, e.g. a real account API) still fires this rule
+/// the same as before; only the unverified guesses are excluded.
+///
 /// Severity puts primary sources above brokers by construction: High for one or
 /// two confirmed accounts, Critical for a confirmed footprint across ≥3 distinct
 /// platforms — always outranking AU-054's Low/Medium broker findings.
 pub(in crate::core::correlator) fn rule_au_055_primary_source_accounts(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use crate::core::data_broker::broker_for_host;
     use std::collections::BTreeSet;
 
@@ -694,13 +719,15 @@ pub(in crate::core::correlator) fn rule_au_055_primary_source_accounts(
 
     // Distinct platform hosts (www-stripped) of confirmed owned-account URLs,
     // and the backing uids. Broker hosts are excluded — a broker listing is not
-    // an account the subject controls.
+    // an account the subject controls. `weak-detection`-tagged hits are
+    // excluded too — a bare status-code guess is not a confirmed account.
     let mut platforms: BTreeSet<String> = BTreeSet::new();
     let mut uids: Vec<String> = Vec::new();
-    for e in entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Url && OWNED_ACCOUNT_TAGS.iter().any(|t| e.has_tag(t)))
-    {
+    for e in entities.iter().filter(|e| {
+        e.kind == EntityKind::Url
+            && OWNED_ACCOUNT_TAGS.iter().any(|t| e.has_tag(t))
+            && !e.has_tag("weak-detection")
+    }) {
         let Some(host) = url::Url::parse(&e.value).ok().and_then(|u| {
             u.host_str()
                 .map(|h| h.trim_start_matches("www.").to_lowercase())
@@ -766,10 +793,11 @@ pub(in crate::core::correlator) fn rule_au_055_primary_source_accounts(
 /// every email form and every username form it unifies — the full identity
 /// cluster in a single row, with no value lost.
 pub(in crate::core::correlator) fn rule_au_076_email_username_localpart_bridge(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::{BTreeMap, BTreeSet};
 
     // Username index: canonical_handle → the Username entities sharing it.
@@ -870,10 +898,11 @@ pub(in crate::core::correlator) fn rule_au_076_email_username_localpart_bridge(
 /// name-intelligence pass emitted as a speculative candidate but that a live probe
 /// independently found in the wild is almost certainly the subject's actual handle.
 pub(in crate::core::correlator) fn rule_au_077_name_derived_username_confirmed(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::Username)
@@ -936,10 +965,11 @@ pub(in crate::core::correlator) fn rule_au_077_name_derived_username_confirmed(
 /// it to a High correlation so the operator sees exactly which guessed address
 /// was confirmed real.
 pub(in crate::core::correlator) fn rule_au_086_name_derived_email_confirmed(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::Email)
@@ -1001,10 +1031,11 @@ pub(in crate::core::correlator) fn rule_au_086_name_derived_email_confirmed(
 /// the cross-scan history pass that produces the tag); when recall is off the tag
 /// is never written and this rule never fires.
 pub(in crate::core::correlator) fn rule_au_078_hub_entity(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     entities
         .iter()
         .filter(|e| e.has_tag("hub-entity"))
@@ -1074,10 +1105,11 @@ fn extract_at_mentions(text: &str) -> Vec<String> {
 /// Severity: High — explicit self-reference across platforms from independent
 /// sources is one of the strongest free identity links available.
 pub(in crate::core::correlator) fn rule_au_079_bio_cross_mention(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Pre-build canonical username index so inner loop is O(1) per mention.
     let username_index: HashMap<String, &Entity> = entities
         .iter()
@@ -1208,10 +1240,11 @@ pub(in crate::core::correlator) fn rule_au_079_bio_cross_mention(
 /// Evidence is provenance-only (non-corroborating by design); this rule
 /// surfaces the association as a visible finding without inflating C_eff.
 pub(in crate::core::correlator) fn rule_au_080_recurring_cooccurrence_link(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // The co-occurrence evidence summary prefix written by the history pass.
     const COOCCURRENCE_PREFIX: &str = "Co-occurred with `";
 
@@ -1219,13 +1252,29 @@ pub(in crate::core::correlator) fn rule_au_080_recurring_cooccurrence_link(
     let entity_by_value: HashMap<&str, &Entity> =
         entities.iter().map(|e| (e.value.as_str(), e)).collect();
 
-    let mut out: Vec<Correlation> = Vec::new();
+    // A recurring co-occurrence is only signal between entities that are
+    // themselves corroborated. A name's GENERATED permutations — variant handles
+    // and speculative mailboxes minted identically on every scan — "co-occur
+    // across investigations" purely by construction, not by any real-world
+    // association, and an unbounded pass over them is the single largest source
+    // of correlation noise (a live 57-entity scan emitted ~100 of these). Gate
+    // both endpoints on a confidence floor, then rank what survives and bound the
+    // O(pairs) tail below so the few hub-level pairings that are the actual
+    // signal are not buried.
+    const MIN_CONF: f64 = 0.50;
+    const MAX_PAIRS: usize = 12;
+    // Distinct entities named in the rolled-up tail edge — bounded so the summary
+    // cannot itself become a giant hyperedge.
+    const ROLLUP_UID_CAP: usize = 25;
+    // (is_hub, shared_scans, correlation), kept together so the tail can be
+    // ranked strongest-first before it is bounded.
+    let mut ranked: Vec<(bool, usize, Correlation)> = Vec::new();
     // Deduplicate pairs (order-independent) so A→B and B→A don't both fire.
     let mut seen: HashSet<[String; 2]> = HashSet::new();
 
     for entity in entities
         .iter()
-        .filter(|e| e.has_tag("cross-scan-cooccurrence"))
+        .filter(|e| e.has_tag("cross-scan-cooccurrence") && e.confidence >= MIN_CONF)
     {
         for ev in &entity.evidence {
             // Only parse cross-scan-history co-occurrence records.
@@ -1243,6 +1292,11 @@ pub(in crate::core::correlator) fn rule_au_080_recurring_cooccurrence_link(
             let Some(&partner_e) = entity_by_value.get(partner_value) else {
                 continue;
             };
+            // The partner must clear the same floor: a corroborated endpoint
+            // recurring with a bare generated candidate is still noise.
+            if partner_e.confidence < MIN_CONF {
+                continue;
+            }
 
             // Deduplicate the pair (alphabetical order of UIDs).
             let mut pair = [entity.uid.clone(), partner_e.uid.clone()];
@@ -1269,28 +1323,71 @@ pub(in crate::core::correlator) fn rule_au_080_recurring_cooccurrence_link(
 
             let mut uids = vec![entity.uid.clone(), partner_e.uid.clone()];
             uids.sort_unstable();
-            out.push(Correlation {
-                rule_id: "AU-080".into(),
-                rule_name: "Recurring co-occurrence identity association".into(),
-                severity,
-                description: format!(
-                    "{} '{}' and {} '{}' have appeared together in {shared} prior \
-                     investigation(s) — a recurring structural association in the local \
-                     intelligence database that bridges cases{}",
-                    entity.kind,
-                    entity.value,
-                    partner_e.kind,
-                    partner_e.value,
-                    if is_hub { " (hub-level frequency)" } else { "" },
+            ranked.push((
+                is_hub,
+                shared,
+                Correlation::new(
+                    "AU-080",
+                    "Recurring co-occurrence identity association",
+                    severity,
+                    format!(
+                        "{} '{}' and {} '{}' have appeared together in {shared} prior \
+                         investigation(s) — a recurring structural association in the local \
+                         intelligence database that bridges cases{}",
+                        entity.kind,
+                        entity.value,
+                        partner_e.kind,
+                        partner_e.value,
+                        if is_hub { " (hub-level frequency)" } else { "" },
+                    ),
+                    uids,
+                    scan_id,
+                    ts,
                 ),
-                entity_uids: uids,
-                scan_id: scan_id.into(),
-                ts,
-                rank: 0.0,
-                techniques: Vec::new(),
-            });
+            ));
         }
     }
+
+    // Strongest first: hub-level pairings, then higher prior-scan frequency,
+    // with a deterministic uid tie-break so the kept set is stable across runs
+    // (the store orders by uid and the dossier diffs on it).
+    ranked.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(b.1.cmp(&a.1))
+            .then_with(|| a.2.entity_uids.cmp(&b.2.entity_uids))
+    });
+
+    if ranked.len() <= MAX_PAIRS {
+        return ranked.into_iter().map(|(_, _, c)| c).collect();
+    }
+
+    // Bound the O(pairs) tail. The suppressed pairs are the low-frequency long
+    // tail that buries the signal; roll them into ONE honest summary rather than
+    // dropping them silently — each pair's co-occurrence evidence stays on the
+    // entities themselves, so the underlying data is not lost, only de-duplicated
+    // in the correlation view.
+    let suppressed = ranked.len() - MAX_PAIRS;
+    let mut out: Vec<Correlation> = ranked.drain(..MAX_PAIRS).map(|(_, _, c)| c).collect();
+    let mut tail_uids: Vec<String> = ranked
+        .into_iter()
+        .flat_map(|(_, _, c)| c.entity_uids)
+        .collect();
+    tail_uids.sort_unstable();
+    tail_uids.dedup();
+    tail_uids.truncate(ROLLUP_UID_CAP);
+    out.push(Correlation::new(
+        "AU-080",
+        "Recurring co-occurrence identity association",
+        Severity::Low,
+        format!(
+            "{suppressed} further recurring co-occurrence pair(s), below the top {MAX_PAIRS} by \
+             frequency, were rolled up to reduce noise — each pairing's evidence remains on the \
+             entities involved"
+        ),
+        tail_uids,
+        scan_id,
+        ts,
+    ));
     out
 }
 
@@ -1325,10 +1422,11 @@ pub(in crate::core::correlator) fn rule_au_080_recurring_cooccurrence_link(
 /// evidentiary tool, so the discount is applied here exactly as the kin rules
 /// apply it to shared-surname pivots.
 pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Normalise: lowercase → split on whitespace/comma/hyphen/period → filter
     // ≥ 2-char tokens → sort → join with space.
     fn normalise_name(s: &str) -> Option<String> {
@@ -1355,36 +1453,85 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
         return Vec::new();
     }
 
+    // Group person indices by canonical name in one O(P) pass. Only a same-name
+    // group of size >= 2 can produce a pair, so pairing WITHIN groups replaces
+    // the former O(P^2) all-pairs name comparison. This is never worse than the
+    // old scan — when every name is distinct each group is a singleton and the
+    // body below does no work — and strictly better in the multi-namesake
+    // clusters this rule exists to resolve (where a recall/breach sweep can push
+    // the same-name group into the dozens or hundreds).
+    let mut groups: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (idx, (name, _)) in persons.iter().enumerate() {
+        groups.entry(name.as_str()).or_default().push(idx);
+    }
+
+    // Precompute each duplicated person's corroborating-source set and its
+    // source-FAMILY set exactly once. The old code rebuilt BOTH (a fresh HashSet
+    // allocation each) for every pair a person took part in — O(g^2) set
+    // allocations for a same-name group of size g; this is O(g). Persons in a
+    // singleton group never pair, so their sets are never built (`None`).
+    let mut precomp: Vec<Option<(HashSet<&str>, HashSet<&'static str>)>> =
+        std::iter::repeat_with(|| None)
+            .take(persons.len())
+            .collect();
+    for members in groups.values() {
+        if members.len() < 2 {
+            continue;
+        }
+        for &idx in members {
+            let src = persons[idx].1.corroborating_sources();
+            let fam: HashSet<&'static str> = src.iter().map(|s| source_family(s)).collect();
+            precomp[idx] = Some((src, fam));
+        }
+    }
+
     let mut out: Vec<Correlation> = Vec::new();
     let mut seen: HashSet<[String; 2]> = HashSet::new();
 
+    // Iterate i ascending and pair with same-name members j > i. This reproduces
+    // the EXACT (i, j) ordering — hence the exact output order and `seen` dedup
+    // behaviour — of the former nested `for i { for j in i+1.. }` scan.
     for i in 0..persons.len() {
-        for j in (i + 1)..persons.len() {
-            if persons[i].0 != persons[j].0 {
+        // Independence gate. "Independent" means the two records were collected
+        // by genuinely different real-world methods — so every part of the gate
+        // runs over CORROBORATING sources only ([`Entity::corroborating_sources`]),
+        // NOT the raw `evidence` list. The deterministic self-enrichment passes
+        // (`name_intel`'s own firstname/lastname permutation of the seed,
+        // `geo_normalize`) and the `recall` / `cross_scan_history` replays attach
+        // useful evidence but are NOT independent observations — `name_intel` in
+        // particular DERIVES a `Person` from the seed name and maps to the real
+        // `identity_registry` family, so hand-rolling the sets from raw `evidence`
+        // (as this rule used to) let the tool's OWN name derivation pose as a
+        // second, independently-sourced record and manufacture a High "same
+        // individual" match. This is the identical honest set `source_families` /
+        // `source_count` already build on.
+        //
+        // (0) A name known ONLY from the tool's own derivation (`name_intel`) or a
+        //     prior-scan replay (`recall`) is not an independently collected record
+        //     at all — a side with no corroborating source can never be one half of
+        //     an "independent match". `precomp[i]` is `None` for singleton-group
+        //     persons (which never pair); an empty corroborating set is the
+        //     no-independent-source case handled here.
+        let Some((src1, fam1)) = precomp[i].as_ref() else {
+            continue;
+        };
+        if src1.is_empty() {
+            continue;
+        }
+        for &j in &groups[persons[i].0.as_str()] {
+            if j <= i {
                 continue;
             }
             let e1 = persons[i].1;
             let e2 = persons[j].1;
-
-            // Independence: require at least one source family that differs.
-            let fam1: HashSet<&str> = e1
-                .evidence
-                .iter()
-                .map(|ev| source_family(ev.source.as_str()))
-                .collect();
-            let fam2: HashSet<&str> = e2
-                .evidence
-                .iter()
-                .map(|ev| source_family(ev.source.as_str()))
-                .collect();
-            // Independence gate, in two parts — "independent" means the two
-            // records were collected by genuinely different methods, not merely
-            // two rows of one database:
-            //
-            // (1) Skip when the exact source SETS are equal — literally the same
-            //     source(s) re-derived the name (e.g. two `name_intel` outputs).
-            let src1: HashSet<&str> = e1.evidence.iter().map(|ev| ev.source.as_str()).collect();
-            let src2: HashSet<&str> = e2.evidence.iter().map(|ev| ev.source.as_str()).collect();
+            let (src2, fam2) = precomp[j]
+                .as_ref()
+                .expect("j is drawn from the same multi-member group as i");
+            if src2.is_empty() {
+                continue;
+            }
+            // (1) Skip when the exact corroborating-source SETS are equal —
+            //     literally the same source(s) re-derived the name.
             if src1 == src2 {
                 continue; // exactly the same source(s) — not independent
             }
@@ -1404,14 +1551,19 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
                 continue;
             }
 
-            let src1_label = e1
-                .evidence
-                .first()
-                .map_or("unknown", |ev| ev.source.as_str());
-            let src2_label = e2
-                .evidence
-                .first()
-                .map_or("unknown", |ev| ev.source.as_str());
+            // Label the match with the first genuine (corroborating) source, never
+            // a `name_intel`/`recall` pass — the gate above guarantees both sides
+            // carry one, so the `"unknown"` fallback is purely defensive. A local
+            // `fn` (not a closure) so the returned `&str` borrows from its argument.
+            fn corr_label(e: &Entity) -> &str {
+                e.evidence
+                    .iter()
+                    .map(|ev| ev.source.as_str())
+                    .find(|s| !crate::core::entity::is_non_corroborating_source(s))
+                    .unwrap_or("unknown")
+            }
+            let src1_label = corr_label(e1);
+            let src2_label = corr_label(e2);
 
             let mut uids = vec![e1.uid.clone(), e2.uid.clone()];
             uids.sort_unstable();
@@ -1506,10 +1658,11 @@ fn au_register_authority(source: &str) -> Option<&'static str> {
 /// [`AUTHORITATIVE_AU_REGISTERS`]). Deterministic: authorities and linked uids
 /// are emitted in sorted (`BTreeSet`) order.
 pub(in crate::core::correlator) fn rule_au_088_authoritative_register_confirmation(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::BTreeSet;
     let mut authorities: BTreeSet<&'static str> = BTreeSet::new();
     let mut uids: BTreeSet<String> = BTreeSet::new();
@@ -1582,10 +1735,11 @@ const BREACH_SOCIAL_PLATFORMS: &[&str] = &[
 /// fires; two handles on one platform don't inflate). Runs on the confirmed view.
 /// Deterministic (`BTreeSet` of platforms, sorted uids).
 pub(in crate::core::correlator) fn rule_au_108_breach_social_footprint(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::BTreeSet;
     let mut platforms: BTreeSet<&'static str> = BTreeSet::new();
     let mut uids: Vec<String> = Vec::new();

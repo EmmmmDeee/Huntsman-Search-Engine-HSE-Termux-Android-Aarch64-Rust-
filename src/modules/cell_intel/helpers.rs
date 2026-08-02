@@ -4,6 +4,7 @@
 use std::borrow::Cow;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
 };
@@ -18,7 +19,12 @@ use super::types::{Cell, OpenCellidResp, TowerKey};
 /// `parse_cells_survey` test helper so the two can never drift in their tags or
 /// evidence-attribute set (they were previously byte-identical copies).
 pub(super) fn build_tower_device(cell: &Cell, key: &TowerKey, scan_id: &str) -> Entity {
-    let mut e = Entity::new(EntityKind::DeviceId, &key.tower_id, 0.80, scan_id);
+    let mut e = Entity::new(
+        EntityKind::DeviceId,
+        &key.tower_id,
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
     e.tag(crate::core::tags::CELL_TOWER);
     e.tag(format!("radio:{}", key.ctype));
     e.add_evidence(
@@ -38,7 +44,7 @@ pub(super) fn build_tower_device(cell: &Cell, key: &TowerKey, scan_id: &str) -> 
 }
 
 pub(super) async fn query_opencellid(
-    http: &reqwest::Client,
+    ctx: &crate::core::module::ModuleContext,
     api_key: &str,
     tower: &TowerKey<'_>,
     radio: &str,
@@ -57,19 +63,38 @@ pub(super) async fn query_opencellid(
         urlencode(radio),
     );
 
-    let resp = http
+    let resp = ctx
+        .http
         .get(&url)
         .header("Accept", "application/json")
         .send()
         .await
         .ok()?;
 
-    if !resp.status().is_success() {
+    let status = resp.status();
+    if !status.is_success() {
+        // Reported against the registered "opencellid" SERVICE, not this
+        // module's own `SRC` ("cell_intel") — `HUNTSMAN_OPENCELLID_KEY` is
+        // the same key the standalone `opencellid` module uses and reports
+        // against; reporting under "cell_intel" would silently no-op (no
+        // such service registered) and the pool would never learn the real
+        // "opencellid" key was rejected/throttled, exactly the T2.153 class
+        // of bug this fixes.
+        crate::util::http::note_keyed_error(status.as_u16(), "opencellid", api_key, ctx);
         return None;
     }
 
     let data: OpenCellidResp = crate::util::http::json_scanned(resp, SRC).await.ok()?;
 
+    if data.error.is_some() {
+        // See `OpenCellidResp::error`'s doc comment — a body-level key
+        // failure OpenCelliD signals as a plain 200, so this can't be
+        // caught by the status check above. Distinct from the `status:
+        // "error"` case just below (a genuine "couldn't geolocate this
+        // tower" negative with a real key — not a key problem).
+        crate::util::http::note_keyed_error(401, "opencellid", api_key, ctx);
+        return None;
+    }
     if data.status.as_deref() == Some("error") {
         return None;
     }
@@ -85,27 +110,16 @@ pub(super) async fn query_opencellid(
     Some((lat, lon, data.range.unwrap_or(5000)))
 }
 
-/// Map a cell fix's accuracy radius (metres) to a coordinate confidence: a tight
-/// tower range (≤100 m, a dense urban small-cell) is trusted at 0.85, widening to
-/// 0.35 for a >10 km rural macro-cell whose centroid could be far from the device.
-pub(super) fn accuracy_to_confidence(range_m: u64) -> f64 {
-    match range_m {
-        0..=100 => 0.85,
-        101..=500 => 0.75,
-        501..=2000 => 0.65,
-        2001..=10000 => 0.50,
-        _ => 0.35,
-    }
-}
+/// Map a cell fix's accuracy radius (metres) to a coordinate confidence.
+/// Delegates to the single authoritative implementation in `cell_db`.
+pub(super) use crate::util::cell_db::accuracy_to_confidence;
 
 /// `mcc`/`mnc` come as `"505"` on some Android versions and `505` on others.
 /// Normalise to string; missing -> empty.
 pub(super) fn json_to_str(v: &Option<serde_json::Value>) -> Cow<'_, str> {
-    match v {
-        Some(serde_json::Value::String(s)) => Cow::Borrowed(s.as_str()),
-        Some(serde_json::Value::Number(n)) => Cow::Owned(n.to_string()),
-        _ => Cow::Borrowed(""),
-    }
+    v.as_ref()
+        .and_then(crate::util::json::scalar_str)
+        .unwrap_or(Cow::Borrowed(""))
 }
 
 /// Coarse country fix from a cell's **Mobile Country Code**: `(lat, lon, ISO)` at

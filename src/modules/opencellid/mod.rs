@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -41,12 +42,25 @@ const BBOX_DELTA: f64 = 0.005;
 pub(super) struct AreaResp {
     #[serde(default)]
     pub(super) cells: Vec<CellEntry>,
+    /// Present (with no `cells` key at all) on a key-level failure — see
+    /// [`CellEntry::error`].
+    #[serde(default)]
+    pub(super) error: Option<String>,
 }
 
 /// Shared field layout for both `cell/getInArea` (array element) and `cell/get`
 /// (top-level object).  OpenCelliD uses the same field aliases in both responses.
 #[derive(Deserialize)]
 pub(super) struct CellEntry {
+    /// OpenCelliD signals a bad/unknown API key as a plain HTTP `200` whose
+    /// ENTIRE body is `{"error":"API Key not known: <key>","code":2}` — no
+    /// HTTP-level 401/403/429 at all. Live-confirmed 2026-07-15. Every other
+    /// field below is naturally absent (`#[serde(default)]`) on this shape, so
+    /// checking `error.is_some()` after a successful deserialize is the only
+    /// way to detect it — a bad key was previously indistinguishable from a
+    /// genuine "no towers here" empty result.
+    #[serde(default)]
+    pub(super) error: Option<String>,
     #[serde(default)]
     pub(super) radio: Option<String>,
     #[serde(default)]
@@ -83,7 +97,7 @@ impl Module for OpenCellId {
     }
 
     fn description(&self) -> &'static str {
-        "OpenCelliD: enumerate towers near a coordinate (getInArea) or geolocate a tower by ID (cell/get)"
+        "OpenCelliD recon — enumerates towers near a coordinate (getInArea) or geolocates a tower by ID (cell/get)"
     }
 
     fn priority(&self) -> u8 {
@@ -181,7 +195,12 @@ async fn process_area(target: &Target, ctx: &ModuleContext, api_key: &str) -> Re
     let Ok(resp) = resp else {
         return Ok(ModuleResult::new());
     };
-    if !resp.status().is_success() {
+    let status = resp.status();
+    if !status.is_success() {
+        // A present key that gets rejected/throttled must be reported to the
+        // pool, or a dead/throttled key silently degrades every future scan
+        // with no operator-visible signal and no chance to rotate.
+        crate::util::http::note_keyed_error(status.as_u16(), SRC, api_key, ctx);
         return Ok(ModuleResult::new());
     }
 
@@ -189,6 +208,13 @@ async fn process_area(target: &Target, ctx: &ModuleContext, api_key: &str) -> Re
         Ok(d) => d,
         Err(_) => return Ok(ModuleResult::new()),
     };
+    if data.error.is_some() {
+        // See `CellEntry::error`'s doc comment — a body-level key failure
+        // OpenCelliD signals as a plain 200, so this can't be caught by the
+        // status check above.
+        crate::util::http::note_keyed_error(401, SRC, api_key, ctx);
+        return Ok(ModuleResult::new());
+    }
 
     let mut result = ModuleResult::new();
     for cell in &data.cells {
@@ -227,7 +253,10 @@ async fn process_tower(
     let Ok(resp) = resp else {
         return Ok(ModuleResult::new());
     };
-    if !resp.status().is_success() {
+    let status = resp.status();
+    if !status.is_success() {
+        // Same reporting rationale as `process_area` above.
+        crate::util::http::note_keyed_error(status.as_u16(), SRC, api_key, ctx);
         return Ok(ModuleResult::new());
     }
 
@@ -235,6 +264,11 @@ async fn process_tower(
         Ok(d) => d,
         Err(_) => return Ok(ModuleResult::new()),
     };
+    if cell.error.is_some() {
+        // See `CellEntry::error`'s doc comment.
+        crate::util::http::note_keyed_error(401, SRC, api_key, ctx);
+        return Ok(ModuleResult::new());
+    }
 
     let mut result = ModuleResult::new();
     emit_cell_entities(&mut result, &cell, &ctx.scan_id);
@@ -253,7 +287,7 @@ fn emit_cell_entities(result: &mut ModuleResult, cell: &CellEntry, scan_id: &str
     let tower_id = format!("{mcc}-{mnc}-{lac}-{cid}");
 
     // DeviceId entity
-    let mut device = Entity::new(EntityKind::DeviceId, &tower_id, 0.78, scan_id);
+    let mut device = Entity::new(EntityKind::DeviceId, &tower_id, confidence::STRONG, scan_id);
     device.tag(crate::core::tags::CELL_TOWER);
     device.tag(format!("radio:{}", radio.to_lowercase()));
     let mut ev = Evidence::new(SRC, format!("OpenCelliD tower {tower_id} ({radio})"))
@@ -298,14 +332,4 @@ fn emit_cell_entities(result: &mut ModuleResult, cell: &CellEntry, scan_id: &str
     result.push(geo);
 }
 
-/// Map the reported accuracy radius (metres) to an entity confidence level.
-/// Tighter coverage → higher confidence. Identical scale to `cell_intel`.
-pub(super) fn accuracy_to_confidence(range_m: u64) -> f64 {
-    match range_m {
-        0..=100 => 0.85,
-        101..=500 => 0.75,
-        501..=2000 => 0.65,
-        2001..=10000 => 0.50,
-        _ => 0.35,
-    }
-}
+use crate::util::cell_db::accuracy_to_confidence;

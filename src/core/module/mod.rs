@@ -286,8 +286,8 @@ pub trait Module: Send + Sync {
     /// lives in one place. Override only when the category is too coarse for the
     /// module's actual technique (e.g. an *active* scanner sitting in the
     /// `Infrastructure` category maps to Active Scanning, not Search Open
-    /// Technical Databases). Returned IDs must exist in
-    /// [`crate::core::attack::RECONNAISSANCE`]; an architecture test enforces it.
+    /// Technical Databases). Returned IDs must exist in the ATT&CK catalogue
+    /// ([`crate::core::attack::technique`]); an architecture test enforces it.
     fn attack_techniques(&self) -> &'static [&'static str] {
         crate::core::attack::techniques_for_category(self.category())
     }
@@ -329,24 +329,37 @@ pub struct ModuleContext {
     /// abort mid-process for faster cancel latency. Default-constructed
     /// handles never fire.
     pub cancel: crate::core::cancel::CancelHandle,
-    /// Shared proxy pool for free scraping modules. Populated once at
-    /// scan start; modules call `ctx.proxy_pool.next()` to rotate.
-    pub proxy_pool: std::sync::Arc<crate::util::proxy::ProxyPool>,
 }
 
 impl ModuleContext {
     /// Fetch a required key by env-var name. Returns `Error::MissingKey` if
     /// absent — the engine logs this and moves on without aborting the scan.
     pub fn key(&self, name: &str) -> Result<&str> {
-        self.keys
-            .get(name)
-            .map(String::as_str)
+        self.key_opt(name)
             .ok_or_else(|| Error::MissingKey(name.into()))
     }
 
     /// Fetch an optional key — None if absent (no error).
     pub fn key_opt(&self, name: &str) -> Option<&str> {
         self.keys.get(name).map(String::as_str)
+    }
+
+    /// Fetch the next pooled key for `service` that isn't already in `tried` —
+    /// the in-scan **key cascade**. A keyed module whose current key hits a
+    /// terminal 401/403/429 records that value in `tried` and calls this to get
+    /// the next usable credential the pool holds, retrying the same request with
+    /// it. This spends every key the pool has for the service within one
+    /// `process()` call instead of stranding sibling keys until a later expansion
+    /// round re-injects one. Returns `None` once no untried, usable key remains.
+    ///
+    /// The caller seeds `tried` with the key it started on (the one hot-injected
+    /// into `ctx.keys`) so the cascade never re-hands the key that just failed.
+    pub fn next_pooled_key(
+        &self,
+        service: &str,
+        tried: &std::collections::HashSet<String>,
+    ) -> Option<String> {
+        crate::util::key_pool::global_pool().next_key_excluding(service, tried)
     }
 
     /// Report that a key received a rate-limit (429) or auth failure (401/403).
@@ -360,27 +373,10 @@ impl ModuleContext {
             crate::util::key_pool::KeyStatus::Invalid
         };
         pool.mark_status(service, key_value, key_status);
-        // The in-memory marks above are immediate; persistence is offloaded.
-        persist_key_pool(pool);
-    }
-}
-
-/// Persist the key pool to disk *off* the async runtime. `save_pool` does a
-/// blocking `fsync` + `rename`, and this is reached from async keyed-error
-/// handling on a tokio worker — a burst of 401/403/429s across keyed modules
-/// would otherwise stall the executor. Inside a runtime we hand the blocking I/O
-/// to `spawn_blocking` (fire-and-forget; the in-memory state is already updated
-/// and persistence is best-effort); outside one (CLI / tests) we save inline.
-fn persist_key_pool(pool: std::sync::Arc<crate::util::key_pool::KeyPool>) {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            handle.spawn_blocking(move || {
-                crate::util::key_pool::save_pool_best_effort(&pool);
-            });
-        }
-        Err(_) => {
-            crate::util::key_pool::save_pool_best_effort(&pool);
-        }
+        // The in-memory marks above are immediate; persistence is offloaded (see
+        // `key_pool::persist_off_thread` — the canonical off-runtime persist path
+        // every opportunistic save site shares).
+        crate::util::key_pool::persist_off_thread(pool);
     }
 }
 
@@ -429,6 +425,30 @@ impl ModuleResult {
     #[must_use]
     pub fn len(&self) -> usize {
         self.entities.len()
+    }
+
+    /// Fold a module's outcome across several *independent* concurrent
+    /// sub-fetches into its final `process()` return value: if nothing was
+    /// collected AND a genuine hard failure occurred among the sub-fetches,
+    /// surface that failure as a real `Error` (a `ModuleError` event the
+    /// operator and circuit breaker can react to) instead of a silent empty
+    /// success — a total outage must never be indistinguishable from a clean
+    /// negative. But if ANY sub-fetch already produced real evidence, that
+    /// evidence is always kept even when a *different* sub-fetch failed, so a
+    /// partial outage can never discard a genuine finding. `hard_failure` is
+    /// typically the last (or first) `Err` observed across the sub-fetches —
+    /// callers don't need to distinguish which one, since this only fires
+    /// when nothing was found at all. Shared by every module with
+    /// independent concurrent sub-fetches (`ip_reputation`, T2.111;
+    /// `niamonx`, T2.114) so this evidentiary-integrity invariant is defined
+    /// once, not re-derived per module.
+    pub fn or_hard_failure(self, hard_failure: Option<Error>) -> Result<Self> {
+        if self.is_empty()
+            && let Some(e) = hard_failure
+        {
+            return Err(e);
+        }
+        Ok(self)
     }
 }
 

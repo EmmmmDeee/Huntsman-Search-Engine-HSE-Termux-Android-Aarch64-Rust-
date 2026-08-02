@@ -13,6 +13,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -30,7 +31,7 @@ impl Module for GeoDomainClassifier {
     }
 
     fn description(&self) -> &'static str {
-        "Infer country/region from geo-indicative domain names and TLDs"
+        "Geo-domain classifier — infers country/region from geo-indicative domain names and TLDs"
     }
 
     fn priority(&self) -> u8 {
@@ -261,7 +262,7 @@ fn classify_by_known_service(domain: &str) -> Option<GeoClassification> {
         .map(|&(_, location, cc)| GeoClassification {
             location,
             country_code: cc,
-            confidence: 0.60,
+            confidence: confidence::MEDIUM_PLUS,
             method: "known_service",
             au_state: None,
         })
@@ -274,7 +275,7 @@ fn classify_by_cctld(domain: &str) -> Option<GeoClassification> {
         .map(|&(_, location, cc)| GeoClassification {
             location,
             country_code: cc,
-            confidence: 0.45,
+            confidence: confidence::LOW_MEDIUM,
             method: "cctld",
             au_state: None,
         })

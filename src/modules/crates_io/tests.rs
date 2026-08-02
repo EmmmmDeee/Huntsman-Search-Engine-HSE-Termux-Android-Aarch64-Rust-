@@ -18,13 +18,13 @@ use super::*;
     fn deserializes_user_and_missing() {
         let json = r#"{"user":{"id":1,"login":"alice","name":"Alice Smith",
             "avatar":"https://x/a","url":"https://github.com/alice"}}"#;
-        let r: UserResp = serde_json::from_str(json).unwrap();
-        let u = r.user.unwrap();
+        let r: UserResp = serde_json::from_str(json).expect("should succeed");
+        let u = r.user.expect("should succeed");
         assert_eq!(u.login, "alice");
         assert_eq!(u.name.as_deref(), Some("Alice Smith"));
         assert_eq!(u.url.as_deref(), Some("https://github.com/alice"));
         // A no-user body deserializes to None.
-        let empty: UserResp = serde_json::from_str(r#"{}"#).unwrap();
+        let empty: UserResp = serde_json::from_str(r#"{}"#).expect("should succeed");
         assert!(empty.user.is_none());
     }
 
@@ -73,7 +73,7 @@ use super::*;
         let gh = ents.iter().find(|e| e.kind == EntityKind::Username && e.value == "alice"
             && e.has_tag("github"));
         assert!(gh.is_some(), "must emit GitHub username pivot");
-        assert!(gh.unwrap().has_tag("crates-io-pivot"));
+        assert!(gh.expect("should succeed").has_tag("crates-io-pivot"));
 
         let p = of_kind(&ents, EntityKind::Person).expect("person entity");
         assert_eq!(p.value, "Alice Smith");
@@ -89,6 +89,42 @@ use super::*;
     }
 
     #[test]
+    fn deserialises_real_shape_and_surfaces_created_at() {
+        // A body trimmed verbatim from the live `/api/v1/users/dtolnay` response.
+        // The pre-fix `CrateUser` had no `created_at` field, so the account-age
+        // signal every sibling code-registry module records was silently dropped.
+        let body = user_resp(
+            r#"{"user":{"id":3618,"login":"dtolnay","name":"David Tolnay",
+                "avatar":"https://avatars.githubusercontent.com/u/1940490?v=4",
+                "url":"https://github.com/dtolnay",
+                "created_at":"2012-07-09T03:55:40Z"}}"#,
+        );
+        assert_eq!(
+            body.user.as_ref().expect("should succeed").created_at.as_deref(),
+            Some("2012-07-09T03:55:40Z"),
+            "the real response's created_at must deserialise"
+        );
+        let ents = build_entities(&body, "s");
+        let u = of_kind(&ents, EntityKind::Username).expect("username entity");
+        assert_eq!(
+            u.evidence[0].attributes.get("created_at").map(String::as_str),
+            Some("2012-07-09T03:55:40Z"),
+            "account-creation date must be surfaced as evidence"
+        );
+    }
+
+    #[test]
+    fn blank_created_at_adds_no_attr() {
+        let body = user_resp(r#"{"user":{"login":"frank","created_at":""}}"#);
+        let ents = build_entities(&body, "s");
+        let u = of_kind(&ents, EntityKind::Username).expect("should succeed");
+        assert!(
+            !u.evidence[0].attributes.contains_key("created_at"),
+            "a blank created_at must not become an attribute"
+        );
+    }
+
+    #[test]
     fn no_user_yields_nothing() {
         assert!(build_entities(&user_resp(r#"{}"#), "s").is_empty());
     }
@@ -100,7 +136,7 @@ use super::*;
         let body = user_resp(r#"{"user":{"login":"bob","name":"bob"}}"#);
         let ents = build_entities(&body, "s");
         assert!(of_kind(&ents, EntityKind::Person).is_none());
-        let u = of_kind(&ents, EntityKind::Username).unwrap();
+        let u = of_kind(&ents, EntityKind::Username).expect("should succeed");
         assert_eq!(
             u.evidence[0].attributes.get("name").map(String::as_str),
             Some("bob")
@@ -112,7 +148,7 @@ use super::*;
         let body = user_resp(r#"{"user":{"login":"carol","name":""}}"#);
         let ents = build_entities(&body, "s");
         assert!(of_kind(&ents, EntityKind::Person).is_none());
-        let u = of_kind(&ents, EntityKind::Username).unwrap();
+        let u = of_kind(&ents, EntityKind::Username).expect("should succeed");
         assert!(
             !u.evidence[0].attributes.contains_key("name"),
             "a blank name must not become a `name` attribute"
@@ -136,6 +172,79 @@ use super::*;
         assert!(of_kind(&ents, EntityKind::Url).is_none());
     }
 
+    // ── crate_url_entities (pure) ───────────────────────────────────────
+
+    fn crates_resp(json: &str) -> CratesResp {
+        serde_json::from_str(json).expect("valid CratesResp fixture")
+    }
+
+    #[test]
+    fn crate_urls_dedup_sort_and_extract_github_owner() {
+        let resp = crates_resp(
+            r#"{"crates":[
+                {"repository":"https://github.com/serde-rs/serde","homepage":"https://serde.rs","documentation":"https://docs.rs/serde"},
+                {"repository":"https://github.com/serde-rs/serde","homepage":"https://serde.rs"},
+                {"repository":"ssh://git@example/x","homepage":"ftp://nope"}
+            ]}"#,
+        );
+        let ents = crate_url_entities(&resp, "s");
+
+        // http(s) URLs only, deduped + sorted (BTreeSet order).
+        let urls: Vec<&str> = ents
+            .iter()
+            .filter(|e| e.kind == EntityKind::Url)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert_eq!(
+            urls,
+            [
+                "https://docs.rs/serde",
+                "https://github.com/serde-rs/serde",
+                "https://serde.rs"
+            ]
+        );
+        assert!(
+            ents.iter()
+                .filter(|e| e.kind == EntityKind::Url)
+                .all(|e| e.has_tag("crates-io") && e.has_tag("code"))
+        );
+        // The non-http repo/homepage are dropped (no ssh/ftp Url).
+        assert!(!urls.iter().any(|u| u.starts_with("ssh") || u.starts_with("ftp")));
+
+        // GitHub owner extracted from the source-repository URL → Username pivot.
+        let owners: Vec<&str> = ents
+            .iter()
+            .filter(|e| e.kind == EntityKind::Username)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert_eq!(owners, ["serde-rs"], "one deduped github owner");
+        assert!(
+            ents.iter()
+                .find(|e| e.kind == EntityKind::Username)
+                .expect("should succeed")
+                .has_tag("github")
+        );
+    }
+
+    #[test]
+    fn empty_crate_listing_yields_nothing() {
+        assert!(crate_url_entities(&crates_resp(r#"{"crates":[]}"#), "s").is_empty());
+    }
+
+    #[test]
+    fn github_owner_extraction_handles_repo_and_rejects_junk() {
+        assert_eq!(
+            github_owner_from_url("https://github.com/serde-rs/serde"),
+            Some("serde-rs")
+        );
+        assert_eq!(
+            github_owner_from_url("https://github.com/dtolnay"),
+            Some("dtolnay")
+        );
+        assert!(github_owner_from_url("https://gitlab.com/x/y").is_none());
+        assert!(github_owner_from_url("https://github.com/").is_none());
+    }
+
     #[test]
     fn placeholder_name_is_not_promoted_to_person() {
         // A template/placeholder full name must never be promoted to a Person
@@ -146,7 +255,7 @@ use super::*;
             of_kind(&ents, EntityKind::Person).is_none(),
             "a placeholder full name must not yield a Person entity"
         );
-        let u = of_kind(&ents, EntityKind::Username).unwrap();
+        let u = of_kind(&ents, EntityKind::Username).expect("should succeed");
         assert_eq!(
             u.evidence[0].attributes.get("name").map(String::as_str),
             Some("John Doe")

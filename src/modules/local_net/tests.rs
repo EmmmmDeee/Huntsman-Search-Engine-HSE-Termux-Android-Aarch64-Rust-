@@ -83,24 +83,24 @@ IP address       HW type     Flags       HW address            Mask     Device
         let ip = &r.entities[0];
         assert_eq!(ip.kind, EntityKind::IpAddress);
         assert_eq!(ip.value, "192.168.1.1");
-        assert!((ip.confidence - 0.95).abs() < 1e-6);
+        assert!((ip.confidence - confidence::VERY_HIGH_PLUSPLUS).abs() < 1e-6);
         assert!(ip.has_tag(crate::core::tags::LOCAL_ARP));
         assert_eq!(ip.evidence.len(), 1);
         assert_eq!(ip.evidence[0].source, "local_net");
         assert_eq!(
-            ip.evidence[0].attributes.get("mac").unwrap(),
+            ip.evidence[0].attributes.get("mac").expect("should succeed"),
             "aa:bb:cc:dd:ee:ff"
         );
-        assert_eq!(ip.evidence[0].attributes.get("interface").unwrap(), "wlan0");
+        assert_eq!(ip.evidence[0].attributes.get("interface").expect("should succeed"), "wlan0");
 
         // Second entity: MAC address
         let mac = &r.entities[1];
         assert_eq!(mac.kind, EntityKind::MacAddress);
         assert_eq!(mac.value, "aa:bb:cc:dd:ee:ff");
         assert!(mac.has_tag(crate::core::tags::LOCAL_ARP));
-        assert_eq!(mac.evidence[0].attributes.get("ip").unwrap(), "192.168.1.1");
+        assert_eq!(mac.evidence[0].attributes.get("ip").expect("should succeed"), "192.168.1.1");
         assert_eq!(
-            mac.evidence[0].attributes.get("interface").unwrap(),
+            mac.evidence[0].attributes.get("interface").expect("should succeed"),
             "wlan0"
         );
     }

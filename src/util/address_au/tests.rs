@@ -1,5 +1,9 @@
 use super::*;
 
+    fn extract_first(text: &str) -> Option<AuAddress> {
+        extract_all(text).into_iter().next()
+    }
+
     #[test]
     fn parses_level_address() {
         let s = "Our office is at Level 11, 133 Mary Street, Brisbane City QLD 4000";
@@ -95,6 +99,23 @@ use super::*;
     }
 
     #[test]
+    fn single_state_code_only_resolves_unambiguous_states() {
+        // A single, unambiguous state → resolved (by code or by full name).
+        assert_eq!(single_state_code("Melbourne / VIC"), Some("VIC"));
+        assert_eq!(single_state_code("Brisbane / QLD"), Some("QLD"));
+        assert_eq!(single_state_code("Hobart / TAS"), Some("TAS"));
+        assert_eq!(single_state_code("Sydney, New South Wales"), Some("NSW"));
+        // Ambiguous multi-state labels — a coarse phone area code (02, 08) spans
+        // several states — must NOT collapse to one fabricated jurisdiction.
+        assert_eq!(single_state_code("Sydney / NSW / ACT"), None);
+        assert_eq!(single_state_code("Perth / SA / NT"), None);
+        // No state signal, and (unlike `state_code`) NO postcode fallback: an
+        // explicit state mention is required.
+        assert_eq!(single_state_code("just some text"), None);
+        assert_eq!(single_state_code("PO Box, 3001"), None);
+    }
+
+    #[test]
     fn locality_key_folds_postcode_variants_but_keeps_streets_distinct() {
         // Same suburb, two granularities → one key.
         assert_eq!(
@@ -152,6 +173,34 @@ use super::*;
         assert_eq!(
             normalise_phone("1300 846 637").as_deref(),
             Some("+611300846637")
+        );
+    }
+
+    #[test]
+    fn normalise_phone_never_emits_invalid_e164() {
+        // Regression: the `+61…` / `0061…` / `1300…` branches used to return
+        // their candidate unvalidated, leaking syntactically invalid E.164
+        // (too short, or country-code-only) straight into correlation keys.
+        // Every branch now routes through the strict E.164 gate.
+        for junk in [
+            "+61",          // country code only
+            "+6100",        // too short + invalid national lead
+            "+610",         // leading-zero national part, too short
+            "0061",         // → "+61", country code only
+            "0061 0",       // → "+610", too short
+            "1300",         // → "+611300", 6 digits, below the 10-digit floor
+            "1800",         // → "+611800", ditto
+        ] {
+            assert_eq!(
+                normalise_phone(junk),
+                None,
+                "invalid/too-short input {junk:?} must not yield a malformed E.164"
+            );
+        }
+        // A well-formed international/local number is still accepted unchanged.
+        assert_eq!(
+            normalise_phone("+61 2 9374 4000").as_deref(),
+            Some("+61293744000")
         );
     }
 
@@ -252,36 +301,36 @@ use super::*;
     fn au_phone_line_type_classifies_every_au_number_class() {
         // Mobile, geographic, VoIP, and the three service classes.
         assert_eq!(
-            au_phone_line_type("0412 345 678").unwrap().0,
+            au_phone_line_type("0412 345 678").expect("should succeed").0,
             AuLineType::Mobile
         );
         assert_eq!(
-            au_phone_line_type("(07) 3739 4511").unwrap().0,
+            au_phone_line_type("(07) 3739 4511").expect("should succeed").0,
             AuLineType::GeographicFixed
         );
         assert_eq!(
-            au_phone_line_type("+61 2 9876 5432").unwrap().0,
+            au_phone_line_type("+61 2 9876 5432").expect("should succeed").0,
             AuLineType::GeographicFixed
         );
         assert_eq!(
-            au_phone_line_type("0512 345 678").unwrap().0,
+            au_phone_line_type("0512 345 678").expect("should succeed").0,
             AuLineType::Voip
         );
         assert_eq!(
-            au_phone_line_type("1800 123 456").unwrap().0,
+            au_phone_line_type("1800 123 456").expect("should succeed").0,
             AuLineType::Freephone
         );
         assert_eq!(
-            au_phone_line_type("1300 975 707").unwrap().0,
+            au_phone_line_type("1300 975 707").expect("should succeed").0,
             AuLineType::LocalRate
         );
         // The 6-digit `13xxxx` short form the normaliser doesn't tabulate.
         assert_eq!(
-            au_phone_line_type("13 11 14").unwrap().0,
+            au_phone_line_type("13 11 14").expect("should succeed").0,
             AuLineType::LocalRate
         );
         assert_eq!(
-            au_phone_line_type("1902 123 456").unwrap().0,
+            au_phone_line_type("1902 123 456").expect("should succeed").0,
             AuLineType::Premium
         );
         // Not Australian / not a phone.
@@ -291,13 +340,10 @@ use super::*;
 
     #[test]
     fn au_line_type_predicates_split_personal_from_business() {
-        assert!(AuLineType::Mobile.is_personal());
-        assert!(AuLineType::GeographicFixed.is_personal());
         assert!(!AuLineType::Mobile.is_business_service());
         assert!(AuLineType::Freephone.is_business_service());
         assert!(AuLineType::LocalRate.is_business_service());
         assert!(AuLineType::Premium.is_business_service());
-        assert!(!AuLineType::Freephone.is_personal());
         // Slugs are stable.
         assert_eq!(AuLineType::Mobile.slug(), "mobile");
         assert_eq!(AuLineType::GeographicFixed.slug(), "geographic");
@@ -361,7 +407,7 @@ use super::*;
         assert_eq!(cat("JANE.ID.AU"), Some("individual"));
         assert_eq!(cat("acme.com.au."), Some("commercial"));
         // Each carries a human label distinct from the bare tag.
-        assert!(au_domain_registrant("john.id.au").unwrap().1.contains("natural-person"));
+        assert!(au_domain_registrant("john.id.au").expect("should succeed").1.contains("natural-person"));
     }
 
     #[test]

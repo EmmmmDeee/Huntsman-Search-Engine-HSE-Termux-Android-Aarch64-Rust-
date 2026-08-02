@@ -9,7 +9,11 @@ use crate::core::scan::{Target, TargetKind};
 ///
 /// These target secrets leaking via code repos, cloud storage, paste sites,
 /// and misconfigured servers. Returns an empty Vec for target kinds where
-/// exposure dorking is not applicable (Coordinates, ASN, ABN/ACN).
+/// exposure dorking doesn't add signal beyond `build_queries_base` (`Url`,
+/// `Asn`, `Cidr`, `Coordinates`, `AbnAcn`, `MacAddress`, `ApiKey`,
+/// `CryptoAddress` — `CryptoAddress`'s own base arm already bakes in
+/// scam/abuse/fraud/attribution dorks, unlike `Address` below — `DeviceId`,
+/// `Ssid`, `TrackingId`).
 pub(super) fn build_queries_exposure(target: &Target) -> Vec<String> {
     let v = target.value.trim();
     if v.is_empty() {
@@ -21,6 +25,9 @@ pub(super) fn build_queries_exposure(target: &Target) -> Vec<String> {
         TargetKind::Username => username_exposure(v),
         TargetKind::Organisation => org_exposure(v),
         TargetKind::IpAddress => ip_exposure(v),
+        TargetKind::Phone => phone_exposure(v),
+        TargetKind::FullName => fullname_exposure(v),
+        TargetKind::Address => address_exposure(v),
         _ => Vec::new(),
     }
 }
@@ -28,14 +35,12 @@ pub(super) fn build_queries_exposure(target: &Target) -> Vec<String> {
 fn domain_exposure(v: &str) -> Vec<String> {
     vec![
         // Exposed environment files
+        format!("site:github.com \"{v}\" inurl:.env OR inurl:.env.production OR inurl:.env.local"),
         format!(
-            "site:github.com \"{v}\" filename:.env OR filename:.env.production OR filename:.env.local"
-        ),
-        format!(
-            "site:github.com \"{v}\" filename:wp-config.php OR filename:config.php OR filename:settings.py"
+            "site:github.com \"{v}\" inurl:wp-config.php OR inurl:config.php OR inurl:settings.py"
         ),
         // AWS/cloud credentials
-        format!("site:github.com \"{v}\" filename:credentials OR filename:aws.config"),
+        format!("site:github.com \"{v}\" inurl:credentials OR inurl:aws.config"),
         format!("site:s3.amazonaws.com \"{v}\""),
         format!("site:storage.googleapis.com \"{v}\""),
         format!("site:blob.core.windows.net \"{v}\""),
@@ -58,7 +63,7 @@ fn domain_exposure(v: &str) -> Vec<String> {
         // Exposed admin panels
         format!("site:{v} inurl:phpmyadmin OR inurl:adminer OR inurl:\"/_cpanel\""),
         // Docker/K8s
-        format!("site:github.com \"{v}\" filename:docker-compose.yml OR filename:Dockerfile"),
+        format!("site:github.com \"{v}\" inurl:docker-compose.yml OR inurl:Dockerfile"),
     ]
 }
 
@@ -91,7 +96,7 @@ fn username_exposure(v: &str) -> Vec<String> {
         // Paste sites
         format!("\"{v}\" site:pastebin.com credentials OR email OR password"),
         // Credentials in code
-        format!("site:github.com \"{v}\" filename:.env OR filename:config.json"),
+        format!("site:github.com \"{v}\" inurl:.env OR inurl:config.json"),
         // Exposed personal tokens
         format!("site:github.com \"{v}\" \"ghp_\" OR \"github_pat_\" OR \"token\""),
     ]
@@ -100,7 +105,7 @@ fn username_exposure(v: &str) -> Vec<String> {
 fn org_exposure(v: &str) -> Vec<String> {
     vec![
         // Code repo leaks
-        format!("site:github.com \"{v}\" filename:.env OR filename:credentials"),
+        format!("site:github.com \"{v}\" inurl:.env OR inurl:credentials"),
         format!("site:github.com \"{v}\" \"aws_access_key\" OR \"PRIVATE_KEY\""),
         // Cloud storage
         format!("site:s3.amazonaws.com \"{v}\""),
@@ -109,6 +114,50 @@ fn org_exposure(v: &str) -> Vec<String> {
         format!("\"{v}\" filetype:pdf confidential OR internal OR proprietary"),
         // Employee data
         format!("\"{v}\" site:pastebin.com email OR employee OR password"),
+    ]
+}
+
+fn phone_exposure(v: &str) -> Vec<String> {
+    vec![
+        // Credential/breach dumps naming this number
+        format!("\"{v}\" site:pastebin.com password OR leaked OR breach"),
+        format!("\"{v}\" site:dehashed.com OR site:leakcheck.io OR site:snusbase.com"),
+        // Code repos accidentally committing an SMS/2FA config with the number
+        format!("site:github.com \"{v}\" inurl:.env OR inurl:config.json"),
+        // Cloud storage exposure
+        format!("site:s3.amazonaws.com \"{v}\""),
+        // People-search aggregators
+        format!("\"{v}\" site:truepeoplesearch.com OR site:fastpeoplesearch.com"),
+    ]
+}
+
+fn fullname_exposure(v: &str) -> Vec<String> {
+    vec![
+        // Credential/breach dumps naming the subject
+        format!("\"{v}\" site:pastebin.com password OR email OR leaked"),
+        format!("\"{v}\" site:dehashed.com OR site:leakcheck.io OR site:snusbase.com"),
+        // Code repos exposing personal documents (resumes, internal docs)
+        format!("site:github.com \"{v}\" resume OR cv OR inurl:.env"),
+        // Leaked/confidential documents naming the subject
+        format!("\"{v}\" filetype:pdf confidential OR internal OR resume"),
+        // People-search aggregators
+        format!("\"{v}\" site:truepeoplesearch.com OR site:fastpeoplesearch.com"),
+    ]
+}
+
+fn address_exposure(v: &str) -> Vec<String> {
+    vec![
+        // Credential/breach dumps naming the address (a common secondary
+        // identity field in breach records alongside email/phone).
+        format!("\"{v}\" site:pastebin.com password OR leaked OR breach"),
+        format!("\"{v}\" site:dehashed.com OR site:leakcheck.io OR site:snusbase.com"),
+        // Code repos/configs accidentally committing the address (shipping
+        // labels, customer records, KYC data).
+        format!("site:github.com \"{v}\" inurl:.env OR inurl:config.json"),
+        // Cloud storage exposure
+        format!("site:s3.amazonaws.com \"{v}\""),
+        // People-search aggregators
+        format!("\"{v}\" site:truepeoplesearch.com OR site:fastpeoplesearch.com"),
     ]
 }
 
@@ -137,7 +186,7 @@ mod tests {
     fn build_queries_exposure_domain_targets_env_files() {
         let q = build_queries_exposure(&Target::new(TargetKind::Domain, "example.com"));
         assert!(!q.is_empty());
-        assert!(q.iter().any(|s| s.contains("filename:.env")));
+        assert!(q.iter().any(|s| s.contains("inurl:.env")));
     }
 
     #[test]
@@ -172,6 +221,39 @@ mod tests {
     }
 
     #[test]
+    fn build_queries_exposure_phone_targets_breach_dumps() {
+        let q = build_queries_exposure(&Target::new(TargetKind::Phone, "+61412345678"));
+        assert!(!q.is_empty());
+        assert!(
+            q.iter()
+                .any(|s| s.contains("site:dehashed.com") && s.contains("+61412345678"))
+        );
+    }
+
+    #[test]
+    fn build_queries_exposure_fullname_targets_breach_dumps() {
+        let q = build_queries_exposure(&Target::new(TargetKind::FullName, "Jordan Avery"));
+        assert!(!q.is_empty());
+        assert!(
+            q.iter()
+                .any(|s| s.contains("site:dehashed.com") && s.contains("Jordan Avery"))
+        );
+    }
+
+    #[test]
+    fn build_queries_exposure_address_targets_breach_dumps() {
+        let q = build_queries_exposure(&Target::new(
+            TargetKind::Address,
+            "123 Main St, Springfield",
+        ));
+        assert!(!q.is_empty());
+        assert!(
+            q.iter()
+                .any(|s| s.contains("site:dehashed.com") && s.contains("123 Main St, Springfield"))
+        );
+    }
+
+    #[test]
     fn build_queries_exposure_unhandled_kind_is_empty() {
         // Coordinates is one of the explicitly-unsupported kinds (per the doc
         // comment) and hits the `_ => Vec::new()` arm.
@@ -193,7 +275,7 @@ mod tests {
             q.iter()
                 .any(|s| s == "inurl:\"/.git/config\" site:example.com")
         );
-        assert!(q.iter().any(|s| s.contains("filename:docker-compose.yml")));
+        assert!(q.iter().any(|s| s.contains("inurl:docker-compose.yml")));
     }
 
     #[test]
@@ -230,6 +312,44 @@ mod tests {
         assert_eq!(q.len(), 6);
         assert!(q.iter().any(|s| s == "\"8.8.8.8\" site:shodan.io"));
         assert!(q.iter().any(|s| s == "\"8.8.8.8\" site:censys.io"));
+    }
+
+    #[test]
+    fn phone_exposure_shape() {
+        let q = phone_exposure("+61412345678");
+        assert_eq!(q.len(), 5);
+        assert!(q.iter().any(
+            |s| s == "\"+61412345678\" site:truepeoplesearch.com OR site:fastpeoplesearch.com"
+        ));
+        assert!(
+            q.iter()
+                .any(|s| s.contains("site:s3.amazonaws.com") && s.contains("+61412345678"))
+        );
+    }
+
+    #[test]
+    fn fullname_exposure_shape() {
+        let q = fullname_exposure("Jordan Avery");
+        assert_eq!(q.len(), 5);
+        assert!(q.iter().any(
+            |s| s == "\"Jordan Avery\" site:truepeoplesearch.com OR site:fastpeoplesearch.com"
+        ));
+        assert!(
+            q.iter()
+                .any(|s| s == "\"Jordan Avery\" filetype:pdf confidential OR internal OR resume")
+        );
+    }
+
+    #[test]
+    fn address_exposure_shape() {
+        let q = address_exposure("123 Main St, Springfield");
+        assert_eq!(q.len(), 5);
+        assert!(q.iter().any(|s| s
+            == "\"123 Main St, Springfield\" site:truepeoplesearch.com OR site:fastpeoplesearch.com"));
+        assert!(
+            q.iter()
+                .any(|s| s.contains("site:s3.amazonaws.com") && s.contains("123 Main St"))
+        );
     }
 
     // ── email_exposure: local.len() >= 3 branch ──────────────────────────────

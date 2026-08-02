@@ -230,10 +230,11 @@ fn residence_groups(entities: &[Entity]) -> std::collections::BTreeMap<String, G
 /// ≥2 *distinct person names* — two of one person's own emails at one address is
 /// not an association, so the anchor is named people, not raw handle count.
 pub(in crate::core::correlator) fn rule_au_049_shared_address_association(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Cheap precondition: every firing needs ≥2 distinct persons in one group,
     // so fewer than two Person entities anywhere means no household can form —
     // bail before building the residence-group map.
@@ -284,10 +285,11 @@ pub(in crate::core::correlator) fn rule_au_049_shared_address_association(
 /// the cluster must contain ≥2 *distinct person names*, never one person's two
 /// addresses on a single line.
 pub(in crate::core::correlator) fn rule_au_050_shared_phone_association(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Cheap precondition: every firing needs ≥2 distinct persons on one line, so
     // fewer than two Person entities anywhere means no association can form.
     if entities
@@ -358,17 +360,27 @@ pub(in crate::core::correlator) fn rule_au_050_shared_phone_association(
 /// AU-051 — Shared-surname kin signal (likely relatives).
 ///
 /// A strict escalation of AU-049: when two or more co-residents at one address
-/// also share a **family name**, they are very likely *relatives*, not merely
+/// also share a **family name**, they are likely *relatives*, not merely
 /// roommates — the kin link that lets an investigator walk a family tree to a
-/// target who is themselves dark. Requires both a shared residence (so two
-/// unrelated people named "Smith" never link) and a shared surname, and fires
-/// Critical because a confirmed kin relationship is the highest-value pivot in
-/// this family.
+/// target who is themselves dark. Requires both a shared residence and a
+/// shared surname (so two unrelated same-surname people at different
+/// addresses never link).
+///
+/// Severity depends on how distinctive the surname is
+/// ([`crate::util::surnames::is_common`]): a distinctive shared surname fires
+/// Critical as a confirmed kin pivot, but a *common* surname (Smith, Nguyen,
+/// …) is downgraded to a High "verify before treating as a kin pivot" lead —
+/// an apartment tower or share-house whose unit numbers are absent from the
+/// data can collapse unrelated same-surname co-residents onto one residence
+/// key, and a popular name makes that coincidence likely enough that
+/// asserting a confirmed kin pivot at Critical would be a confident false
+/// claim.
 pub(in crate::core::correlator) fn rule_au_051_shared_surname_kin(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     // Cheap precondition: kin needs ≥2 distinct persons sharing a residence, so
     // fewer than two Person entities anywhere can never fire — bail before
     // building the residence-group map.
@@ -453,6 +465,7 @@ pub(in crate::core::correlator) fn rule_au_051_shared_surname_kin(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::confidence;
     use crate::core::entity::Evidence;
 
     // ── normalise_address ─────────────────────────────────────────────────────
@@ -513,7 +526,7 @@ mod tests {
 
     #[test]
     fn entity_phones_normalises_and_dedups_across_evidence() {
-        let mut e = Entity::new(EntityKind::Person, "Jane Doe", 0.6, "s");
+        let mut e = Entity::new(EntityKind::Person, "Jane Doe", confidence::MEDIUM_PLUS, "s");
         e.add_evidence(Evidence::new("oathnet", "hit").with_attr("phone", "+1 (415) 555-0100"));
         // Same line, different formatting → one key after normalisation.
         e.add_evidence(Evidence::new("dehashed", "hit").with_attr("phone", "1-415-555-0100"));
@@ -529,7 +542,7 @@ mod tests {
         // (the with_attr / absorb convention), each must be judged on its own — a
         // whole-string normalise would concatenate the two phones' digits into one
         // bogus key and garble the two addresses into one non-matching key.
-        let mut e = Entity::new(EntityKind::Person, "Jane Doe", 0.6, "s");
+        let mut e = Entity::new(EntityKind::Person, "Jane Doe", confidence::MEDIUM_PLUS, "s");
         e.add_evidence(
             Evidence::new("oathnet", "hit")
                 .with_attr("phone", "+1 (415) 555-0100")
@@ -543,7 +556,7 @@ mod tests {
             "both numbers recovered, not a concatenated digit-run"
         );
 
-        let mut h = Entity::new(EntityKind::Person, "Jane Doe", 0.6, "s");
+        let mut h = Entity::new(EntityKind::Person, "Jane Doe", confidence::MEDIUM_PLUS, "s");
         h.add_evidence(
             Evidence::new("oathnet", "hit")
                 .with_attr("address", "12 Wattle St, Logan QLD 4114")

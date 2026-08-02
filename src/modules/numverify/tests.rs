@@ -12,7 +12,7 @@ use super::*;
             international_format: Some("+61400000000".into()),
         };
         let entities = build_entities(&r, "scan");
-        let e = entities.iter().find(|e| e.kind == EntityKind::Address).unwrap();
+        let e = entities.iter().find(|e| e.kind == EntityKind::Address).expect("should succeed");
         assert_eq!(e.value, "Queensland, Australia");
         assert!(
             e.has_tag("phone-region") && e.has_tag("carrier-known") && e.has_tag("line:mobile")
@@ -22,7 +22,7 @@ use super::*;
         assert_eq!(attr("line_type"), "mobile");
         assert_eq!(attr("country_code"), "AU");
         // Carrier Organisation entity should also be emitted.
-        let org = entities.iter().find(|e| e.kind == EntityKind::Organisation).unwrap();
+        let org = entities.iter().find(|e| e.kind == EntityKind::Organisation).expect("should succeed");
         assert_eq!(org.value, "Telstra");
         assert!(org.has_tag("carrier"));
     }
@@ -44,7 +44,7 @@ use super::*;
             ..Default::default()
         };
         let entities = build_entities(&r, "scan");
-        let e = entities.iter().find(|e| e.kind == EntityKind::Address).unwrap();
+        let e = entities.iter().find(|e| e.kind == EntityKind::Address).expect("should succeed");
         assert_eq!(e.value, "Australia");
     }
 
@@ -79,7 +79,7 @@ use super::*;
                 ..Default::default()
             };
             let entities = build_entities(&r, "s");
-            let e = entities.iter().find(|e| e.kind == EntityKind::Address).unwrap();
+            let e = entities.iter().find(|e| e.kind == EntityKind::Address).expect("should succeed");
             assert!(e.has_tag(&format!("line:{lt}")), "missing line:{lt} tag");
         }
     }

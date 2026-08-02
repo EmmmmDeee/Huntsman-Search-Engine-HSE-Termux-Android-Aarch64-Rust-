@@ -17,7 +17,7 @@ fn npub_decodes_to_known_pubkey() {
 fn pubkey_encodes_to_known_npub_and_round_trips() {
     assert_eq!(encode_npub(HEX).as_deref(), Some(NPUB));
     // decode ∘ encode is the identity on a real key.
-    let back = decode_npub(&encode_npub(HEX).unwrap()).unwrap();
+    let back = decode_npub(&encode_npub(HEX).expect("should succeed")).expect("should succeed");
     assert_eq!(back, HEX);
 }
 
@@ -182,7 +182,6 @@ async fn process_decodes_npub_offline() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let r = Nostr
         .process(&Target::new(TargetKind::Username, NPUB), &ctx)
@@ -224,7 +223,6 @@ async fn nostr_live_resolves_nip05() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let target = Target::new(TargetKind::Email, "_@fiatjaf.com");
     let r = Nostr

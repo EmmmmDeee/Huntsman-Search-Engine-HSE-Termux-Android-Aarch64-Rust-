@@ -19,10 +19,11 @@ use super::*;
 /// or only addresses, yields nothing (there is nothing to cross-check). Pure
 /// over the confirmed entity set.
 pub(in crate::core::correlator) fn rule_au_056_jurisdiction_cross_check(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::{BTreeMap, BTreeSet};
 
     // state -> contributing uids, for each signal class.
@@ -34,6 +35,13 @@ pub(in crate::core::correlator) fn rule_au_056_jurisdiction_cross_check(
             coord_states.entry(state).or_default().push(e.uid.clone());
         } else if e.kind == EntityKind::Address
             && e.confidence >= 0.50
+            // A hosting / WHOIS-registrant datacentre address is the host's
+            // location, not the SUBJECT's, so it must not vote a jurisdiction —
+            // excluding it here mirrors the coordinate side (`coord_state`) and
+            // the sibling AU-018/026/030 address rollups. Without this a datacentre
+            // "Sydney NSW" manufactured a false AU-056 agreement (or conflict)
+            // against the subject's real interstate address.
+            && !is_infrastructure_geo(e)
             && let Some(state) = crate::util::address_au::state_code(&e.value)
         {
             addr_states.entry(state).or_default().push(e.uid.clone());
@@ -143,10 +151,11 @@ fn join_slash<'a>(it: impl Iterator<Item = &'a str>) -> String {
 /// [`crate::util::address_au::au_phone_region`]), so it fires on any AU Phone
 /// entity — imported numbers too, not only `phone_au`-tagged ones. Pure.
 pub(in crate::core::correlator) fn rule_au_085_phone_region_jurisdiction(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::{BTreeMap, BTreeSet};
 
     // The union of state codes implied by every AU geographic phone, the region
@@ -169,6 +178,10 @@ pub(in crate::core::correlator) fn rule_au_085_phone_region_jurisdiction(
             loc_states.entry(state).or_default().push(e.uid.clone());
         } else if e.kind == EntityKind::Address
             && e.confidence >= 0.50
+            // Same infrastructure-geo exclusion as AU-056: a hosting/registrant
+            // datacentre address is not the subject's jurisdiction, so it must not
+            // corroborate (or contradict) the phone region.
+            && !is_infrastructure_geo(e)
             && let Some(state) = crate::util::address_au::state_code(&e.value)
         {
             loc_states.entry(state).or_default().push(e.uid.clone());
@@ -264,10 +277,11 @@ fn plural(n: usize) -> &'static str {
 /// value itself (via [`crate::util::address_au::au_phone_line_type`]), so it
 /// fires on any AU `Phone` entity. Pure over the confirmed set.
 pub(in crate::core::correlator) fn rule_au_102_phone_line_type_profile(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use crate::util::address_au::AuLineType;
     use crate::util::address_au::au_phone_line_type;
     use crate::util::address_au::au_phone_region;

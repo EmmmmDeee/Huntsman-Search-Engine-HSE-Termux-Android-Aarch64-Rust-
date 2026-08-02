@@ -29,7 +29,7 @@ use super::*;
     #[test]
     fn bare_postcode_resolves() {
         // Capital-city postcodes resolve via the fallback table.
-        let (lat, lon) = city_coords("4000").unwrap();
+        let (lat, lon) = city_coords("4000").expect("should succeed");
         assert!((lat - -27.4698).abs() < 0.01);
         assert!((lon - 153.0251).abs() < 0.01);
         assert!(city_coords("3000").is_some());
@@ -157,7 +157,7 @@ use super::*;
             "7250 resolves to exact Launceston, not the region centroid"
         );
         // And it is meaningfully tighter than the region fallback for 72xx.
-        let (rlat, rlon) = au_postcode_region("7250").unwrap();
+        let (rlat, rlon) = au_postcode_region("7250").expect("should succeed");
         assert!(
             haversine_km(lat, lon, -41.4388, 147.1347)
                 < haversine_km(rlat, rlon, -41.4388, 147.1347),

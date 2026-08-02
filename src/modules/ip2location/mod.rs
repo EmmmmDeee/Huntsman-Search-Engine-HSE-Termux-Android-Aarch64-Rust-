@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -55,7 +56,7 @@ impl Module for Ip2Location {
         "ip2location"
     }
     fn description(&self) -> &'static str {
-        "Suburb-precision IP geolocation via ip2location.io (free, 1K/day)"
+        "ip2location.io geolocation recon (free, 1K/day) — geolocates an IP to suburb precision"
     }
     fn priority(&self) -> u8 {
         26
@@ -162,7 +163,8 @@ fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<E
     // stays slightly above ipinfo.
     if let (Some(lat), Some(lon)) = (data.latitude, data.longitude)
         && !skip_geo
-        && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, 0.62, scan_id)
+        && let Some(mut ce) =
+            crate::util::geo::coarse_provider_coords(lat, lon, confidence::NOTABLE, scan_id)
     {
         ce.tag("ip2location");
         if data.is_proxy == Some(true) {
@@ -202,6 +204,12 @@ fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<E
         let mut ae = Entity::new(EntityKind::Address, &addr, 0.68, scan_id);
         ae.tag("ip2location");
         ae.tag(tags::GEOINT);
+        // An anonymiser/VPN exit's city is not the subject's location — tag it so
+        // it is filterable, exactly as the Coordinates above already are (the
+        // Address previously emitted the proxy-exit address untagged).
+        if data.is_proxy == Some(true) {
+            ae.tag(tags::PROXY);
+        }
         if is_au {
             ae.tag("country:AU");
         }
@@ -228,7 +236,7 @@ fn build_entities(data: &Resp, ip: &str, skip_geo: bool, scan_id: &str) -> Vec<E
     if let Some(as_name) = &data.as_name
         && !as_name.is_empty()
     {
-        let mut oe = Entity::new(EntityKind::Organisation, as_name, 0.65, scan_id);
+        let mut oe = Entity::new(EntityKind::Organisation, as_name, confidence::HIGH, scan_id);
         oe.tag("ip2location");
         oe.add_evidence(Evidence::new(SRC, format!("ISP for {ip}")));
         out.push(oe);

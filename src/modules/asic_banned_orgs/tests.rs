@@ -9,7 +9,7 @@ const REC: &str = "{\"BD_ORG_ACN\":\"081402379\",\
   \"BD_ORG_COMMENT\":\"No comment made\"}";
 
 fn rec(json: &str) -> Map<String, Value> {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 #[test]
@@ -69,7 +69,6 @@ async fn asic_banned_orgs_live_finds_a_banned_org() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let r = AsicBannedOrgs
         .process(

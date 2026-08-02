@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::{sleep, timeout};
-use tracing::{Instrument, debug, info, warn};
+use tracing::{Instrument, debug, warn};
 
 use super::{DispatchLog, ModuleStats};
 use crate::core::entity::{Entity, normalise};
@@ -209,15 +209,24 @@ pub(super) async fn run_module_guarded(
     {
         Ok(timeout_result) => timeout_result,
         Err(payload) => {
-            let msg = payload
-                .downcast_ref::<&str>()
-                .map(|s| (*s).to_string())
-                .or_else(|| payload.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "module panicked".to_string());
+            let msg = panic_payload_to_string(&payload);
             warn!(module = name, %msg, "module panic contained");
             Ok(Err(Error::module(name, format!("panicked: {msg}"))))
         }
     }
+}
+
+/// Best-effort human-readable message from a caught panic payload — the
+/// `&str`/`String` cases `panic!`/`.expect("should succeed")`/`.expect()` produce, or a
+/// generic fallback for anything else (a custom payload type via
+/// `panic_any`). Shared by every `catch_unwind` site in the engine so the
+/// extraction logic can't drift between them.
+pub(super) fn panic_payload_to_string(payload: &Box<dyn std::any::Any + Send>) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "panicked with a non-string payload".to_string())
 }
 
 /// What a spawned per-module task returns to the consumer loop.
@@ -265,8 +274,7 @@ pub(super) fn target_distinct_sources(
     target: &Target,
 ) -> usize {
     let entity_kind = target.kind.to_entity_kind();
-    let normalised = normalise(&entity_kind, &target.value);
-    let uid = crate::core::entity::derive_uid(&entity_kind, &normalised);
+    let uid = crate::core::entity::uid_for(&entity_kind, &target.value);
     entity_map
         .get(&uid)
         .map_or(0, |e| e.corroborating_sources().len())
@@ -444,18 +452,29 @@ pub(super) struct DispatchCx<'a> {
     /// artifact is the legitimate subject only when the scan itself targets
     /// infrastructure (Domain/IP/CIDR/ASN/URL), and is noise on an identity scan.
     pub(super) seed_kind: TargetKind,
+    /// Modules quarantined for THIS scan by capability-aware dispatch — those
+    /// whose parser has provably gone dead (persistent drift; see
+    /// [`crate::util::scraper_health::quarantined_modules`]). Empty unless the
+    /// scan enabled `skip_dead_modules` on the automatic comprehensive fan-out,
+    /// so an explicit allowlist / `--full` run carries an empty set and skips
+    /// nothing. Computed once per scan and borrowed by every round.
+    pub(super) quarantined: &'a std::collections::HashSet<String>,
 }
 
 /// Mutable per-scan dispatch accumulators threaded through every module run: the
-/// working entity set (merged by uid), the run/skip/error/dedup tallies, and the
-/// paid-dedup ledger (each `module × normalised-target` fired at most once). One
-/// `&mut` borrow replaces three always-together out-parameters; the fields are
-/// borrowed separately at their use sites so the entity merge, the stat bump,
-/// and the ledger insert never contend.
+/// working entity set (merged by uid), the run/skip/error/dedup tallies, the
+/// paid-dedup ledger (each `module × normalised-target` fired at most once), and
+/// the UIDs of entities genuinely NEW this dispatch (never merged into an
+/// existing one) — lets a caller attribute lineage (`DerivedFrom`) without
+/// re-diffing the whole `entity_map` before and after. One `&mut` borrow
+/// replaces four always-together out-parameters; the fields are borrowed
+/// separately at their use sites so the entity merge, the stat bump, the
+/// ledger insert, and the new-uid record never contend.
 pub(super) struct DispatchState<'a> {
-    pub(super) entity_map: &'a mut HashMap<String, Entity>,
+    pub(super) entity_map: &'a mut super::TrackedEntityMap,
     pub(super) stats: &'a mut ModuleStats,
     pub(super) dispatched: &'a mut DispatchLog,
+    pub(super) newly_inserted: &'a mut Vec<String>,
 }
 
 impl super::ScanEngine {
@@ -481,13 +500,20 @@ impl super::ScanEngine {
         attack_techniques: &'static [&'static str],
         from_cache: bool,
     ) {
-        state.stats.run += 1;
+        // A cache replay is tallied in `stats.cached` by `replay_cached_result`; it
+        // is NOT a module run (no provider call was made), and `ModuleStats.run` is
+        // documented "Not counted in run" for cached results. Gating here keeps the
+        // reported `modules_run` honest instead of double-counting every replay.
+        if !from_cache {
+            state.stats.run += 1;
+        }
         match result {
             Err(_) => {
                 state.stats.timed_out += 1;
                 // A timeout carries no message to classify, so it's a soft
                 // failure: trips only after a streak (one slow round is transient).
                 super::circuit::record_soft_failure(name);
+                super::health::record_failure(name);
                 warn!(module = name, "timeout");
                 self.emit(
                     cx.scan_id,
@@ -527,9 +553,20 @@ impl super::ScanEngine {
             }
             Ok(Err(e)) => {
                 state.stats.errored += 1;
-                // Feed the breaker: a rate-limit/quota message trips immediately;
-                // any other hard error counts toward the soft streak.
-                super::circuit::record_error(name, &e.to_string());
+                // Feed the breaker: a rate-limit/quota error trips immediately; any
+                // other hard error counts toward the soft streak. Classify the
+                // TYPED `RateLimited` variant directly — the string path
+                // (`record_error`) only trips it today because `RateLimited`'s
+                // Display happens to contain "rate limited", so an edit to that
+                // Display would silently downgrade a real throttle to a 3-strike
+                // soft failure with no compile error. Non-typed errors that still
+                // carry a "429"/quota message in their text keep the string path.
+                if matches!(e, crate::core::error::Error::RateLimited(_)) {
+                    super::circuit::record_rate_limit(name);
+                } else {
+                    super::circuit::record_error(name, &e.to_string());
+                }
+                super::health::record_failure(name);
                 warn!(module = name, error = %e, "module error");
                 self.emit(
                     cx.scan_id,
@@ -548,8 +585,12 @@ impl super::ScanEngine {
                 // degrading provider, or resetting a soft-trip countdown), so the
                 // breaker's success path is skipped for replays. A replay is
                 // neither success nor failure to the breaker — it is invisible.
+                // `health::record_success` mirrors `circuit::record_success`'s
+                // recovery philosophy by design (see its own doc comment), so the
+                // same cache-replay exclusion applies to it too.
                 if !from_cache {
                     super::circuit::record_success(name);
+                    super::health::record_success(name);
                 }
                 let mut found = 0usize;
                 for mut entity in mr.entities.drain(..) {
@@ -565,16 +606,22 @@ impl super::ScanEngine {
                         continue;
                     }
                     // Universal MITRE ATT&CK provenance: stamp every ADMITTED
-                    // entity with the Reconnaissance technique(s) of the module
-                    // that produced it, as inline `attack:<ID>` tags. This makes
-                    // the technique that collected each datum travel with the data
-                    // (JSON `tags`, the full dossier, the DB) — MITRE alignment
-                    // lives in the findings themselves, not a separate coverage
-                    // report. `Entity::tag` de-dupes and `Entity::merge` unions
-                    // tags, so an entity collected via several modules carries all
-                    // of their techniques. Done at the single admission point AFTER
-                    // every drop filter so only surviving findings are stamped.
+                    // entity with the Reconnaissance technique(s) it represents
+                    // and the module that collected it, as inline `attack:<ID>`
+                    // tags. This makes the technique that collected each datum
+                    // travel with the data (JSON `tags`, the full dossier, the DB)
+                    // — MITRE alignment lives in the findings themselves, not a
+                    // separate coverage report. Tagging happens at two layers:
+                    // 1. Module-level: what kind of collection the module does
+                    // 2. Entity-type-level: what kind of data this entity is
+                    // `Entity::tag` de-dupes so overlaps (e.g., a Username from a
+                    // Social module tagged with both `T1593.001`) are idempotent.
+                    // Done at the single admission point AFTER every drop filter so
+                    // only surviving findings are stamped.
                     for id in attack_techniques {
+                        entity.tag(format!("attack:{id}"));
+                    }
+                    for id in crate::core::attack::techniques_for_entity_kind(&entity.kind) {
                         entity.tag(format!("attack:{id}"));
                     }
                     // Universal breach-sector wiring: stamp the source's sector
@@ -594,11 +641,12 @@ impl super::ScanEngine {
                             entity: entity.clone(),
                         },
                     );
-                    super::scan_entity_for_keys(&entity);
+                    super::scan_entity_for_keys(&entity, self.module_runtime.as_ref());
                     super::enrich_geospatial(&mut entity);
                     if let Some(existing) = state.entity_map.get_mut(&entity.uid) {
                         existing.merge(entity);
                     } else {
+                        state.newly_inserted.push(entity.uid.clone());
                         state.entity_map.insert(entity.uid.clone(), entity);
                     }
                     found += 1;
@@ -610,7 +658,12 @@ impl super::ScanEngine {
                         found,
                     },
                 );
-                info!(module = name, found, "done");
+                // `debug!`, not `info!`: the structured `EventKind::ModuleDone`
+                // emitted just above is the real per-module completion signal
+                // (UI / SSE / metrics consume it). This log line is raw-tier
+                // detail — at info it fired once per module per scan (dozens of
+                // lines) and buried the handful of events that explain a scan.
+                debug!(module = name, found, "done");
             }
         }
     }
@@ -720,10 +773,31 @@ impl super::ScanEngine {
                 "module skipped"
             );
             self.emit_skipped(cx.scan_id, module.name(), reason);
-            true
-        } else {
-            false
+            return true;
         }
+        // Capability-aware dispatch — the cross-scan, persisted counterpart of
+        // the in-scan circuit breaker. Checked LAST, only for a module that
+        // every standard gate above cleared to run: if its parser has provably
+        // gone dead across recent scans (persistent hard failures or silent
+        // zero-yield drift, see `util::scraper_health::quarantined_modules`),
+        // skip it so its dispatch slot goes to a source that still works — the
+        // budget the scan needs to find more. `cx.quarantined` is empty (so this
+        // never fires) unless the scan enabled `skip_dead_modules` on the
+        // automatic comprehensive fan-out; an explicit `--modules` allowlist or
+        // `--full` run carries an empty set and quarantines nothing. Placed last
+        // so a module filtered for a more specific reason still reports THAT
+        // reason. Self-recovering: a module leaves the set the moment it emits
+        // one healthy result.
+        if cx.quarantined.contains(module.name()) {
+            stats.skipped += 1;
+            self.emit_skipped(
+                cx.scan_id,
+                module.name(),
+                "capability-quarantined — persistent drift (auto-retries once it recovers)",
+            );
+            return true;
+        }
+        false
     }
 
     /// Sequential dispatcher (max_concurrent == 0).
@@ -733,17 +807,22 @@ impl super::ScanEngine {
         ctx: &mut ModuleContext,
         state: &mut DispatchState<'_>,
     ) -> Result<()> {
-        // O(1) dispatch-index lookup replaces the O(M) accepts() scan.
-        // Modules are already priority-sorted within each bucket so we
-        // walk them in the same order the legacy `for module in &self.modules`
-        // loop did. Iterating index-by-index (instead of pre-allocating
-        // a `Vec<Arc<dyn Module>>` and Arc-cloning per target) avoids
-        // a heap allocation + N atomic increments per dispatch — meaningful
-        // on the hot path that runs once per expansion candidate.
+        // O(1) dispatch-index lookup replaces the O(M) accepts() scan. Each
+        // bucket is pre-sorted — by plain module priority, or (under
+        // `convex_budget`) by convex query value so the cheapest, highest-
+        // optionality queries fire first and a budget-truncated sequence keeps
+        // the most valuable ones; `dispatch_order_for` picks the order from the
+        // flag. Iterating index-by-index (instead of pre-allocating a
+        // `Vec<Arc<dyn Module>>` and Arc-cloning per target) avoids a heap
+        // allocation + N atomic increments per dispatch — meaningful on the hot
+        // path that runs once per expansion candidate.
         // Distinct-source count of the target entity (for the high-value-API
         // cross-correlation gate); computed once per target, not per module.
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
-        for &idx in self.graph.modules_for(cx.target.kind) {
+        for &idx in self
+            .graph
+            .dispatch_order_for(cx.target.kind, cx.opts.convex_budget)
+        {
             let Some(module) = self.modules.get(idx) else {
                 continue;
             };
@@ -908,7 +987,10 @@ impl super::ScanEngine {
         let ctx_shared: Arc<ModuleContext> = Arc::new(ctx.clone());
 
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
-        for &idx in self.graph.modules_for(cx.target.kind) {
+        for &idx in self
+            .graph
+            .dispatch_order_for(cx.target.kind, cx.opts.convex_budget)
+        {
             // Absorb any finished tasks so the `max_entities` gate below reads live.
             while let Some(joined) = set.try_join_next() {
                 self.absorb_dispatch_outcome(cx, joined, state);
@@ -1056,7 +1138,10 @@ impl super::ScanEngine {
         let ctx_shared: Arc<ModuleContext> = Arc::new(ctx.clone());
 
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
-        for &idx in self.graph.modules_for(cx.target.kind) {
+        for &idx in self
+            .graph
+            .dispatch_order_for(cx.target.kind, cx.opts.convex_budget)
+        {
             // Opportunistically absorb any modules that already finished so
             // `entity_map.len()` below is live, not the round-start snapshot —
             // otherwise every module accepted for this target gets spawned
@@ -1133,60 +1218,73 @@ impl super::ScanEngine {
             // where `finalise_module_result` stamps each admitted entity.
             let attack_techniques = module.attack_techniques();
 
-            // Re-set the foreign-key scan-scope ambient INSIDE the spawned task:
-            // tokio task-locals do NOT propagate across `spawn`, so without this the
-            // concurrent path's `scan_body` calls would land in the unscoped bucket
-            // and be lost at drain (PROBLEM_TREE T2.11). `with_scan` is the
-            // allow-listed pure `core → util::found_keys` leaf.
+            // Re-set the foreign-key scan-scope AND regional-search ambients
+            // INSIDE the spawned task: tokio task-locals do NOT propagate
+            // across `spawn`, so without this the concurrent path's
+            // `scan_body` calls would land in the unscoped bucket and be lost
+            // at drain, and `search_engines::regional_enabled()` would
+            // silently read the unscoped `false` default instead of this
+            // scan's actual setting (PROBLEM_TREE T2.11). Both `with_scan`
+            // and `with_regional` are allow-listed pure `core → util` leaves.
+            // `regional_enabled()` reads the CURRENT task's ambient — still
+            // valid here since dispatch runs on the same task `with_regional`
+            // was established on in `run_with_ledger`, right up to this spawn.
             let scope_sid = sid.to_string();
-            set.spawn(crate::util::found_keys::with_scan(scope_sid, async move {
-                let _permit = permit;
+            let regional_on = crate::util::regional::regional_enabled();
+            set.spawn(crate::util::found_keys::with_scan(
+                scope_sid,
+                crate::util::regional::with_regional(regional_on, async move {
+                    let _permit = permit;
 
-                log_module_dispatch(name, &target);
-                emitter.emit(
-                    &sid,
-                    EventKind::ModuleStart {
-                        module: name.into(),
-                    },
-                );
+                    log_module_dispatch(name, &target);
+                    emitter.emit(
+                        &sid,
+                        EventKind::ModuleStart {
+                            module: name.into(),
+                        },
+                    );
 
-                // Politeness delay BEFORE hitting the upstream — the throttle
-                // exists to be polite to providers, i.e. to space out the CALLS.
-                // It must come before the fetch, not after: a spawned task's result
-                // is finalised by the drain loop (not inside the task, as the
-                // sequential path does before ITS throttle), so a throttle sitting
-                // between a completed fetch and the task's return is an abortable
-                // await that discards an already-fetched result when an operator
-                // cancel triggers `abort_all`. Before the fetch there is no result
-                // to lose, and the pacing is unchanged (consecutive fetches on a
-                // permit stay throttle_ms apart either way).
-                if throttle_ms > 0 {
-                    sleep(Duration::from_millis(throttle_ms)).await;
-                }
+                    // Politeness delay BEFORE hitting the upstream — the throttle
+                    // exists to be polite to providers, i.e. to space out the CALLS.
+                    // It must come before the fetch, not after: a spawned task's result
+                    // is finalised by the drain loop (not inside the task, as the
+                    // sequential path does before ITS throttle), so a throttle sitting
+                    // between a completed fetch and the task's return is an abortable
+                    // await that discards an already-fetched result when an operator
+                    // cancel triggers `abort_all`. Before the fetch there is no result
+                    // to lose, and the pacing is unchanged (consecutive fetches on a
+                    // permit stay throttle_ms apart either way).
+                    if throttle_ms > 0 {
+                        sleep(Duration::from_millis(throttle_ms)).await;
+                    }
 
-                // `.instrument()` (not an ambient span) because a spawned task
-                // does NOT inherit the dispatcher's current span — without it the
-                // external HTTP logs from this concurrently-running module would
-                // be context-less. Carries {scan_id, module, target} for the same
-                // end-to-end trace the sequential path gets.
-                let result =
-                    run_module_guarded(module_timeout_ms, name, module_arc.process(&target, &ctx))
-                        .instrument(tracing::info_span!(
-                            "module",
-                            module = name,
-                            scan_id = %sid,
-                            target = %target.value
-                        ))
-                        .await;
+                    // `.instrument()` (not an ambient span) because a spawned task
+                    // does NOT inherit the dispatcher's current span — without it the
+                    // external HTTP logs from this concurrently-running module would
+                    // be context-less. Carries {scan_id, module, target} for the same
+                    // end-to-end trace the sequential path gets.
+                    let result = run_module_guarded(
+                        module_timeout_ms,
+                        name,
+                        module_arc.process(&target, &ctx),
+                    )
+                    .instrument(tracing::info_span!(
+                        "module",
+                        module = name,
+                        scan_id = %sid,
+                        target = %target.value
+                    ))
+                    .await;
 
-                DispatchOutcome {
-                    name,
-                    result,
-                    ttl_secs,
-                    cache_key,
-                    attack_techniques,
-                }
-            }));
+                    DispatchOutcome {
+                        name,
+                        result,
+                        ttl_secs,
+                        cache_key,
+                        attack_techniques,
+                    }
+                }),
+            ));
         }
 
         while let Some(joined) = set.join_next().await {

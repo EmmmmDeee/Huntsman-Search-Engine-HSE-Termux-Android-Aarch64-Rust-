@@ -38,17 +38,24 @@ const MAX_SENSITIVE: u8 = 30;
 const MAX_IDENTIFIERS: u8 = 20;
 const MAX_CORRELATION: u8 = 15;
 
-/// Evidence-attribute keys that mark a sensitive disclosure. Kept local (small,
-/// self-contained) rather than reaching into the correlator's private rule sets —
-/// the canonical keys the breach/dossier producers stamp (`core::correlator::rules`
-/// AU-073/074 scan the same names).
-const GOV_ID_KEYS: &[&str] = &["tfn", "medicare", "crn", "drivers_licence", "passport"];
-/// `birth_date` is `wikidata`'s own canonical spelling (distinct from
-/// `date_of_birth`, which the breach/stealer producers normalise to) — a
-/// first-party producer this list's own doc comment says it tracks, so
-/// omitting it silently undercounted a Wikidata-sourced DOB disclosure.
-const DOB_KEYS: &[&str] = &["date_of_birth", "dob", "birth_date"];
-const FINANCIAL_KEYS: &[&str] = &["iban", "bank_account", "card_number"];
+/// Evidence-attribute keys that mark a sensitive disclosure. `DOB_KEYS` and the
+/// government-ID keys are single-sourced from `core::correlator::rules::breach_pii`
+/// (AU-073/AU-074's own canonical vocabularies) rather than kept as a separate
+/// copy — the previous local copies had drifted to a narrower subset (5 of 22
+/// government-ID spellings; 3 of 9 DOB spellings), silently undercounting the
+/// exposure score for a breach record naming e.g. `tax_file_number` or
+/// `date_birth` (OathNet/SeekNow's own DOB field name — a major breach source)
+/// instead of the one spelling each list used to know about.
+use crate::core::correlator::rules::breach_pii::{BANK_ACCOUNT_KEYS, DOB_KEYS, GOV_IDS};
+
+/// Financial evidence-attribute keys. The bank-account-number spellings are
+/// single-sourced from `breach_pii::BANK_ACCOUNT_KEYS` (AU-104's own canonical
+/// list) for the same reason as `DOB_KEYS`/`GOV_IDS` above — a prior local
+/// copy here only recognised the bare `bank_account` spelling and silently
+/// missed `account_number`/`account_no`/`acct_number`/`acct_no`. `iban` and
+/// `card_number` have no `breach_pii` equivalent (AU-104 is BSB/domestic-
+/// account-number scoped) and stay as this module's own literals.
+const FINANCIAL_KEYS: &[&str] = &["iban", "card_number"];
 
 /// Qualitative band for the headline number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -216,9 +223,10 @@ fn sensitive_component(confirmed: &[&Entity]) -> ExposureComponent {
         for ev in &e.evidence {
             for k in ev.attributes.keys() {
                 let kl = k.to_ascii_lowercase();
-                gov |= GOV_ID_KEYS.contains(&kl.as_str());
+                gov |= GOV_IDS.iter().any(|g| g.keys.contains(&kl.as_str()));
                 dob |= DOB_KEYS.contains(&kl.as_str());
-                fin |= FINANCIAL_KEYS.contains(&kl.as_str());
+                fin |= FINANCIAL_KEYS.contains(&kl.as_str())
+                    || BANK_ACCOUNT_KEYS.contains(&kl.as_str());
             }
         }
     }

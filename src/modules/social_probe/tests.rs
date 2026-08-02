@@ -72,6 +72,44 @@ fn negative_patterns_field_compiles_and_defaults_empty() {
 }
 
 #[test]
+fn detection_strength_matches_negative_pattern_presence() {
+    // No negative pattern → bare status-code guess → weak/unverified.
+    let weak = Platform {
+        name: "x",
+        url_pattern: "https://x.com/{}",
+        exists_codes: &[200],
+        negative_patterns: &[],
+    };
+    assert_eq!(detection_strength(&weak), (0.74, false));
+
+    // A negative pattern means the body was actually inspected → verified.
+    let strong = Platform {
+        name: "y",
+        url_pattern: "https://y.com/{}",
+        exists_codes: &[200],
+        negative_patterns: &["user not found"],
+    };
+    assert_eq!(detection_strength(&strong), (0.92, true));
+}
+
+#[test]
+fn every_standard_platform_is_weak_and_every_high_risk_platform_is_verified() {
+    // Cross-check against the F2.4 high-risk/standard split: every platform
+    // without a negative pattern must be classified weak (matching the
+    // "fast path, no body capture" intent), and every one with a pattern
+    // must be classified verified.
+    for p in USERNAME_PLATFORMS {
+        let (_, verified) = detection_strength(p);
+        assert_eq!(
+            verified,
+            !p.negative_patterns.is_empty(),
+            "platform {} detection_strength disagrees with its negative_patterns",
+            p.name
+        );
+    }
+}
+
+#[test]
 fn accepts_username_and_fullname() {
     let m = SocialProbe;
     assert!(m.accepts(&Target::new(TargetKind::Username, "test")));
@@ -125,12 +163,36 @@ fn module_metadata() {
 fn build_target_summary_evidence_lists_confirmed_platforms() {
     let t = Target::new(TargetKind::Username, "testuser");
     let confirmed = &["github", "reddit"];
-    let e = build_target_summary(&t, 2, 30, confirmed, "scan").unwrap();
+    let e = build_target_summary(&t, 2, 30, confirmed, "scan").expect("should succeed");
     let attr = e.evidence[0]
         .attributes
         .get("platforms")
         .map(String::as_str);
     assert!(attr.is_some(), "platforms attribute must be present");
-    let platforms = attr.unwrap();
+    let platforms = attr.expect("should succeed");
     assert!(platforms.contains("github") && platforms.contains("reddit"));
+}
+
+#[test]
+fn build_target_summary_stamps_platforms_count_for_au011() {
+    // AU-011 (cross-platform username footprint) counts how many platforms ONE
+    // module confirmed a handle on by reading the `platforms_count` evidence
+    // attribute — the same attribute the sibling aggregate probes
+    // (`username_search`, `streaming_probe`) stamp, and `social_probe` is not on
+    // AU-011's PLATFORM_SOURCES fallback list. `social_probe` previously wrote
+    // only `found`/`platforms`, so AU-011 read a count of 0 and a handle
+    // confirmed here on ≥3 platforms silently never fired the finding. The
+    // canonical count attribute must now be present and equal the number of
+    // confirmed platforms.
+    let t = Target::new(TargetKind::Username, "testuser");
+    let e = build_target_summary(&t, 3, 30, &["github", "reddit", "twitch"], "scan")
+        .expect("should succeed");
+    assert_eq!(
+        e.evidence[0]
+            .attributes
+            .get("platforms_count")
+            .map(String::as_str),
+        Some("3"),
+        "platforms_count must equal the confirmed-platform count so AU-011 can count it"
+    );
 }

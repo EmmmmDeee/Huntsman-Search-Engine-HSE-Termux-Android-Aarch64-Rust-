@@ -105,6 +105,11 @@ pub async fn json_decode<T: DeserializeOwned>(module: &str, resp: reqwest::Respo
 /// `.send().await.map_err(|e| Error::module(module, e.without_url().to_string()))`
 /// tail that ~40 modules repeated (several still in the bare, *leaking* form).
 ///
+/// The full `source()` cause chain is preserved after stripping, so the logged
+/// error reads e.g. `"error sending request: invalid peer certificate:
+/// UnknownIssuer"` or `"error sending request: operation timed out"` rather
+/// than the useless generic top-level string alone.
+///
 /// Crate-internal (`pub(crate)`), so the `async fn` carries no public auto-trait
 /// caveat: callers invoke it on the concrete `RequestBuilder`, whose future is
 /// `Send`, so it composes inside their `async_trait` module methods.
@@ -116,10 +121,28 @@ impl RequestBuilderExt for reqwest::RequestBuilder {
     async fn send_tagged(self, module: &'static str) -> Result<reqwest::Response> {
         self.send()
             .await
-            // `without_url()` drops the URL — it carries the API key and the
-            // target's PII in its query string, and this error reaches the logs.
-            .map_err(|e| Error::module(module, e.without_url().to_string()))
+            .map_err(|e| Error::module(module, error_cause_chain(e.without_url())))
     }
+}
+
+/// Build a single `: `-joined string of the full `std::error::Error::source()`
+/// chain, then credential-redact it.
+///
+/// reqwest's bare `Display` for transport errors is `"error sending request"`
+/// — useful only as a category label. The actual fault (TLS verify failure,
+/// DNS resolution, proxy CONNECT reject, timeout) lives in the source() chain
+/// and was previously discarded by `.to_string()`. This helper appends each
+/// cause level so the log reads `"error sending request: operation timed out"`
+/// or `"error sending request: invalid peer certificate: UnknownIssuer"`.
+fn error_cause_chain(e: impl std::error::Error) -> String {
+    use std::fmt::Write;
+    let mut msg = e.to_string();
+    let mut src = e.source();
+    while let Some(cause) = src {
+        let _ = write!(msg, ": {cause}");
+        src = cause.source();
+    }
+    super::redact_credentials(&msg)
 }
 
 #[cfg(test)]

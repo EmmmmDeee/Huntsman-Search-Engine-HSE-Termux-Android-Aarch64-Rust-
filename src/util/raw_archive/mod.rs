@@ -92,18 +92,6 @@ pub fn record(provider: &str, endpoint: &str, query: &str, raw: &str) {
     }
 }
 
-/// Every archived response whose capture time falls within `[start_unix,
-/// end_unix]` — i.e. every paid API response a single scan fetched, recovered
-/// verbatim from the on-disk archive so a dossier can embed the COMPLETE raw
-/// corpus (including thin records that produced no entity). Returns them in
-/// chronological order. Best-effort: unreadable / malformed files are skipped,
-/// never fatal. The archive files themselves are left in place (the raw dumps
-/// stay saved separately).
-#[must_use]
-pub fn records_in_window(start_unix: u64, end_unix: u64) -> Vec<ArchivedResponse> {
-    query::records_filtered_dir(&config::archive_dir(), start_unix, end_unix, None)
-}
-
 /// Every archived response captured within `[start_unix, end_unix]` **whose
 /// query is one of `queries`** (lower-cased). This is how a dossier ties raw
 /// responses to a specific scan precisely: the time window excludes earlier runs

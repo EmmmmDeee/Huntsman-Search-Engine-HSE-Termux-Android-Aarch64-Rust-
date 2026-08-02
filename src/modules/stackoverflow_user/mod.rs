@@ -20,6 +20,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -41,10 +42,22 @@ const SRC: &str = "stackoverflow_user";
 /// API revision; the default cannot). Usernames may contain spaces, so the query
 /// is URL-encoded.
 fn users_by_name_url(handle: &str) -> String {
+    // `pagesize=100` (the anonymous maximum) instead of the API's default 30: the
+    // exact-name match we want can sit past position 30 for a common display name,
+    // so the wider page raises match recall at no extra request cost (one search
+    // either way). Live-verified the parameter is accepted.
     format!(
-        "https://api.stackexchange.com/2.3/users?inname={}&site=stackoverflow",
+        "https://api.stackexchange.com/2.3/users?inname={}&site=stackoverflow&pagesize=100",
         crate::util::http::urlencode(handle)
     )
+}
+
+/// The network-wide "associated accounts" endpoint for a Stack Exchange
+/// `account_id`: the SAME person's presence across EVERY Stack Exchange site
+/// (Server Fault, Super User, the topical SEs, …) — a strong cross-platform
+/// footprint + interest signal. **Pure.**
+fn associated_url(account_id: i64) -> String {
+    format!("https://api.stackexchange.com/2.3/users/{account_id}/associated?pagesize=100")
 }
 
 pub struct StackoverflowUser;
@@ -72,6 +85,29 @@ pub(super) struct SoUser {
     /// anchor breach/activity timelines).
     #[serde(default)]
     pub(super) creation_date: Option<i64>,
+    /// Network-wide Stack Exchange account id — stable across every SE site and
+    /// the key to the `associated` cross-site footprint lookup.
+    #[serde(default)]
+    pub(super) account_id: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct SoAssociatedResp {
+    #[serde(default)]
+    pub(super) items: Vec<SoAssociated>,
+}
+
+/// One site in a user's Stack Exchange network footprint.
+#[derive(Deserialize)]
+pub(super) struct SoAssociated {
+    #[serde(default)]
+    pub(super) site_name: Option<String>,
+    #[serde(default)]
+    pub(super) site_url: Option<String>,
+    #[serde(default)]
+    pub(super) user_id: Option<i64>,
+    #[serde(default)]
+    pub(super) reputation: Option<i64>,
 }
 
 #[async_trait]
@@ -81,7 +117,7 @@ impl Module for StackoverflowUser {
     }
 
     fn description(&self) -> &'static str {
-        "Stack Overflow account lookup (display name, location, website) via public API"
+        "Stack Overflow account recon — resolves display name, location, and website via public API"
     }
 
     fn priority(&self) -> u8 {
@@ -140,18 +176,44 @@ impl Module for StackoverflowUser {
             None => return Ok(ModuleResult::new()),
         };
 
+        // Cross-Stack-Exchange footprint: a second, best-effort call to the
+        // `associated` endpoint (keyed on the network account_id). A failure —
+        // the anonymous ~300/day rate wall's 429, a transport error — is
+        // swallowed, since the SO profile above stands on its own.
+        let associated: Vec<SoAssociated> = match user.account_id {
+            Some(aid) => {
+                match fetch_json_or_404::<SoAssociatedResp>(&ctx.http, SRC, &associated_url(aid))
+                    .await
+                {
+                    Ok(Some(r)) => r.items,
+                    _ => Vec::new(),
+                }
+            }
+            None => Vec::new(),
+        };
+
         let mut result = ModuleResult::new();
-        result.entities = build_entities(user, &ctx.scan_id);
+        result.entities = build_entities(user, &associated, &ctx.scan_id);
         Ok(result)
     }
 }
 
-/// Pure account→entity mapping.
-pub(super) fn build_entities(user: SoUser, scan_id: &str) -> Vec<Entity> {
+/// Pure account→entity mapping. `associated` is the (possibly empty) network
+/// footprint from the `associated` endpoint.
+pub(super) fn build_entities(
+    user: SoUser,
+    associated: &[SoAssociated],
+    scan_id: &str,
+) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
     // Confirmed-on-StackOverflow username.
-    let mut u = Entity::new(EntityKind::Username, &user.display_name, 0.82, scan_id);
+    let mut u = Entity::new(
+        EntityKind::Username,
+        &user.display_name,
+        confidence::CORROBORATED,
+        scan_id,
+    );
     u.tag("stackoverflow");
     u.tag("forum");
     let mut ev = Evidence::new(
@@ -167,11 +229,75 @@ pub(super) fn build_entities(user: SoUser, scan_id: &str) -> Vec<Entity> {
     if let Some(created) = user.creation_date.and_then(crate::util::timefmt::ymd_utc) {
         ev = ev.with_attr("account_created", created);
     }
+    // Network-wide account id — a stable identifier across every SE site.
+    if let Some(aid) = user.account_id {
+        ev = ev.with_attr("account_id", aid.to_string());
+    }
+    // Summarise the cross-network footprint on the username itself (the
+    // per-site profile URLs are emitted separately below).
+    if !associated.is_empty() {
+        let mut sites: Vec<&str> = associated
+            .iter()
+            .filter_map(|a| a.site_name.as_deref())
+            .collect();
+        sites.sort_unstable();
+        sites.dedup();
+        ev = ev
+            .with_attr("stackexchange_sites", sites.len().to_string())
+            .with_attr("stackexchange_network", sites.join(", "));
+    }
     u.add_evidence(ev);
     result.push(u);
 
+    // Cross-Stack-Exchange footprint → one Url per site the SAME account is
+    // active on (Server Fault, Super User, topical SEs). The primary
+    // stackoverflow.com profile is already emitted via `link`, so it is skipped
+    // here. Capped, and only real profiles (a resolvable `site_url` + `user_id`).
+    const MAX_ASSOCIATED: usize = 15;
+    let mut assoc_sorted: Vec<&SoAssociated> = associated.iter().collect();
+    // Most-active (highest reputation) sites first, so the cap keeps the signal.
+    assoc_sorted.sort_by_key(|a| std::cmp::Reverse(a.reputation.unwrap_or(0)));
+    for a in assoc_sorted.into_iter().take(MAX_ASSOCIATED) {
+        let (Some(site_url), Some(uid)) = (
+            a.site_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| s.starts_with("http")),
+            a.user_id,
+        ) else {
+            continue;
+        };
+        // Skip the primary Stack Overflow profile (already surfaced via `link`).
+        if site_url.contains("stackoverflow.com") {
+            continue;
+        }
+        let profile = format!("{}/users/{uid}", site_url.trim_end_matches('/'));
+        let mut e = Entity::new(EntityKind::Url, &profile, confidence::ATTRIBUTED, scan_id);
+        e.tag("stackexchange");
+        e.tag("cross-platform");
+        let mut pev = Evidence::new(
+            SRC,
+            format!(
+                "Same Stack Exchange account '{}' active on {}",
+                user.display_name,
+                a.site_name.as_deref().unwrap_or("another SE site")
+            ),
+        )
+        .with_attr("so_username", &user.display_name);
+        if let Some(sn) = a.site_name.as_deref() {
+            pev = pev.with_attr("site_name", sn);
+        }
+        if let Some(rep) = a.reputation {
+            pev = pev.with_attr("reputation", rep.to_string());
+        }
+        e.add_evidence(pev);
+        result.push(e);
+    }
+
     // Display name → Person when it looks like a real name (≥2 words).
-    if let Some(mut p) = profile_kit::person_from_name(&user.display_name, 0.55, scan_id) {
+    if let Some(mut p) =
+        profile_kit::person_from_name(&user.display_name, confidence::MEDIUM_HIGH, scan_id)
+    {
         p.tag("stackoverflow");
         p.tag("derived");
         p.add_evidence(
@@ -191,7 +317,7 @@ pub(super) fn build_entities(user: SoUser, scan_id: &str) -> Vec<Entity> {
     if let Some(ref link) = user.link
         && link.starts_with("http")
     {
-        let mut url_e = Entity::new(EntityKind::Url, link, 0.75, scan_id);
+        let mut url_e = Entity::new(EntityKind::Url, link, confidence::VERY_HIGH, scan_id);
         url_e.tag("stackoverflow");
         url_e.add_evidence(Evidence::new(
             SRC,
@@ -202,7 +328,12 @@ pub(super) fn build_entities(user: SoUser, scan_id: &str) -> Vec<Entity> {
 
     // Personal website URL + Domain.
     if let Some(ref site) = user.website_url {
-        for mut e in profile_kit::website_url_and_domain(site, 0.70, 0.62, scan_id) {
+        for mut e in profile_kit::website_url_and_domain(
+            site,
+            confidence::HIGH_PLUS,
+            confidence::NOTABLE,
+            scan_id,
+        ) {
             e.tag("stackoverflow");
             match e.kind {
                 EntityKind::Domain => {
@@ -310,19 +441,32 @@ mod tests {
             link: link.map(str::to_string),
             reputation,
             creation_date: Some(1_546_300_800), // 2019-01-01T00:00:00Z
+            account_id: None,
+        }
+    }
+
+    fn assoc(site_name: &str, site_url: &str, user_id: i64, reputation: i64) -> SoAssociated {
+        SoAssociated {
+            site_name: Some(site_name.to_string()),
+            site_url: Some(site_url.to_string()),
+            user_id: Some(user_id),
+            reputation: Some(reputation),
         }
     }
 
     #[test]
     fn builds_username_entity_confirmed_on_so() {
         let user = make_user("alice", None, None, None, Some(1234));
-        let ents = build_entities(user, "scan-so-001");
+        let ents = build_entities(user, &[], "scan-so-001");
         let u = ents
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "alice");
         assert!(u.is_some(), "must emit Username entity");
-        assert!((u.unwrap().confidence - 0.82).abs() < 0.01);
-        assert!(u.unwrap().has_tag("stackoverflow") && u.unwrap().has_tag("forum"));
+        assert!((u.expect("should succeed").confidence - 0.82).abs() < 0.01);
+        assert!(
+            u.expect("should succeed").has_tag("stackoverflow")
+                && u.expect("should succeed").has_tag("forum")
+        );
     }
 
     #[test]
@@ -330,7 +474,7 @@ mod tests {
         // creation_date was deserialized but dropped; it must now appear as the
         // `account_created` evidence attr (UTC date) — an account-age signal.
         let user = make_user("alice", None, None, None, Some(1234));
-        let ents = build_entities(user, "scan-so-created");
+        let ents = build_entities(user, &[], "scan-so-created");
         let u = ents
             .iter()
             .find(|e| e.kind == EntityKind::Username && e.value == "alice")
@@ -348,16 +492,16 @@ mod tests {
     #[test]
     fn emits_person_from_multi_word_display_name() {
         let user = make_user("Alice Developer", None, None, None, None);
-        let ents = build_entities(user, "scan-so-002");
+        let ents = build_entities(user, &[], "scan-so-002");
         let p = ents.iter().find(|e| e.kind == EntityKind::Person);
         assert!(p.is_some(), "must emit Person from multi-word display name");
-        assert_eq!(p.unwrap().value, "Alice Developer");
+        assert_eq!(p.expect("should succeed").value, "Alice Developer");
     }
 
     #[test]
     fn no_person_for_single_word_name() {
         let user = make_user("alice", None, None, None, None);
-        let ents = build_entities(user, "scan-so-003");
+        let ents = build_entities(user, &[], "scan-so-003");
         assert!(
             ents.iter().all(|e| e.kind != EntityKind::Person),
             "single-token display name must not produce a Person entity"
@@ -373,7 +517,7 @@ mod tests {
             Some("https://stackoverflow.com/users/1/alice"),
             None,
         );
-        let ents = build_entities(user, "scan-so-004");
+        let ents = build_entities(user, &[], "scan-so-004");
         assert!(
             ents.iter()
                 .any(|e| e.kind == EntityKind::Url && e.value == "https://alice.dev"),
@@ -389,18 +533,97 @@ mod tests {
     #[test]
     fn emits_address_from_location() {
         let user = make_user("alice", Some("Berlin, DE"), None, None, None);
-        let ents = build_entities(user, "scan-so-005");
+        let ents = build_entities(user, &[], "scan-so-005");
         let a = ents.iter().find(|e| e.kind == EntityKind::Address);
         assert!(a.is_some(), "must emit Address from location");
-        assert_eq!(a.unwrap().value, "Berlin, DE");
-        assert!(a.unwrap().has_tag("self-asserted"));
+        assert_eq!(a.expect("should succeed").value, "Berlin, DE");
+        assert!(a.expect("should succeed").has_tag("self-asserted"));
     }
 
     #[test]
     fn no_entities_for_absent_optional_fields() {
         let user = make_user("quietuser", None, None, None, None);
-        let ents = build_entities(user, "scan-so-006");
+        let ents = build_entities(user, &[], "scan-so-006");
         assert_eq!(ents.len(), 1, "only Username when no optional fields");
         assert_eq!(ents[0].kind, EntityKind::Username);
+    }
+
+    #[test]
+    fn associated_url_targets_the_network_account() {
+        assert_eq!(
+            associated_url(11683),
+            "https://api.stackexchange.com/2.3/users/11683/associated?pagesize=100"
+        );
+    }
+
+    #[test]
+    fn search_url_requests_the_max_page_size() {
+        assert!(users_by_name_url("alice").contains("pagesize=100"));
+    }
+
+    #[test]
+    fn account_id_and_network_footprint_surface() {
+        // Verbatim shape of the live `associated` response (Jon Skeet, account 11683):
+        // the same account across Server Fault / Super User / Meta, each with a
+        // per-site user_id → a resolvable profile URL. The primary stackoverflow.com
+        // profile is skipped (already emitted via `link`).
+        let mut user = make_user(
+            "Jon Skeet",
+            None,
+            None,
+            Some("https://stackoverflow.com/users/22656/jon-skeet"),
+            Some(1_528_530),
+        );
+        user.account_id = Some(11683);
+        let assoc = vec![
+            assoc(
+                "Stack Overflow",
+                "https://stackoverflow.com",
+                22656,
+                1_528_530,
+            ),
+            assoc("Server Fault", "https://serverfault.com", 173, 5117),
+            assoc("Super User", "https://superuser.com", 410, 5144),
+        ];
+        let ents = build_entities(user, &assoc, "scan-so-assoc");
+
+        // account_id + network summary land on the username entity.
+        let u = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Username)
+            .expect("should succeed");
+        assert_eq!(
+            u.evidence[0]
+                .attributes
+                .get("account_id")
+                .map(String::as_str),
+            Some("11683")
+        );
+        assert_eq!(
+            u.evidence[0]
+                .attributes
+                .get("stackexchange_sites")
+                .map(String::as_str),
+            Some("3")
+        );
+
+        // Per-site profile URLs for the OTHER sites, tagged cross-platform;
+        // the stackoverflow.com one is NOT re-emitted here.
+        let assoc_urls: Vec<&str> = ents
+            .iter()
+            .filter(|e| e.kind == EntityKind::Url && e.has_tag("stackexchange"))
+            .map(|e| e.value.as_str())
+            .collect();
+        assert!(assoc_urls.contains(&"https://serverfault.com/users/173"));
+        assert!(assoc_urls.contains(&"https://superuser.com/users/410"));
+        assert!(
+            !assoc_urls.iter().any(|u| u.contains("stackoverflow.com")),
+            "primary SO profile must not be duplicated as an associated URL"
+        );
+        assert!(
+            ents.iter()
+                .filter(|e| e.has_tag("stackexchange"))
+                .all(|e| e.has_tag("cross-platform"))
+        );
     }
 }

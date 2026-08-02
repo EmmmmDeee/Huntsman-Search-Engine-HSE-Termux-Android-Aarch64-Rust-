@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
     #[test]
@@ -47,9 +48,9 @@ use super::*;
         // this third field surviving the match.
         let s3 = matching_fingerprints("bucket.s3.amazonaws.com")
             .next()
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(s3.2, Some("NoSuchBucket"));
-        let azure = matching_fingerprints("svc.cloudapp.net").next().unwrap();
+        let azure = matching_fingerprints("svc.cloudapp.net").next().expect("should succeed");
         assert_eq!(azure.2, None);
     }
 
@@ -62,7 +63,7 @@ use super::*;
         let e = &ents[0];
         assert_eq!(e.kind, EntityKind::Domain);
         assert_eq!(e.value, "app.example.com");
-        assert!((e.confidence - 0.90).abs() < 1e-9);
+        assert!((e.confidence - confidence::VERY_HIGH_PLUS).abs() < 1e-9);
         assert!(e.has_tag(crate::core::tags::VULNERABLE) && e.has_tag("subdomain-takeover"));
         assert!(e.has_tag("takeover:Heroku"));
 

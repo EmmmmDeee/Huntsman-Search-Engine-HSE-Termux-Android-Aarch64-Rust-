@@ -21,7 +21,6 @@
 //!    validator signatures, preserving binary compatibility for
 //!    downstream modules.
 
-mod composite;
 mod confusable;
 mod coordinates;
 mod domain;
@@ -34,10 +33,8 @@ mod report;
 #[cfg(test)]
 mod tests;
 
-pub use composite::validate_for_kind;
 pub use confusable::{
-    confusable_report, is_confusable_mixed_script, looks_like_gibberish_name, skeleton,
-    strip_invisible,
+    is_confusable_mixed_script, looks_like_gibberish_name, skeleton, strip_invisible,
 };
 pub use coordinates::validate_coordinates;
 pub use domain::validate_domain_shape;
@@ -46,6 +43,6 @@ pub use ip::{is_bogus_ip, is_cdn_edge_ip, is_non_routable_ip, untrusted_ip_geo_r
 pub use phone::{to_e164_au, validate_phone_e164};
 pub use placeholder::{
     is_fragment_value, is_placeholder_domain, is_placeholder_entity, is_specific_residence,
-    is_username_derived_name,
+    is_username_derived_name, is_whois_privacy_placeholder,
 };
 pub use report::ValidationReport;

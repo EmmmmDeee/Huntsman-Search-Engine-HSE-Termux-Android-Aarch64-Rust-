@@ -38,7 +38,7 @@ fn parse_abn_response() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Organisation)
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(org.value, "BHP GROUP LIMITED");
     assert!(org.tags.contains(&"abr".to_string()));
     assert!(org.tags.contains(&"active".to_string()));
@@ -47,14 +47,14 @@ fn parse_abn_response() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::AbnAcn)
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(abn.value, "19415776361");
 
     let addr = result
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Address)
-        .unwrap();
+        .expect("should succeed");
     assert!(addr.value.contains("VIC"));
 }
 
@@ -175,7 +175,7 @@ fn jsonp_strip() {
 #[test]
 fn parse_jsonp_body_strips_wrapper_and_deserializes() {
     use super::fetch::parse_jsonp_body;
-    let v = parse_jsonp_body(r#"cb({"Abn":"123","EntityName":"ACME"})"#).unwrap();
+    let v = parse_jsonp_body(r#"cb({"Abn":"123","EntityName":"ACME"})"#).expect("should succeed");
     assert_eq!(v.get("Abn").and_then(|x| x.as_str()), Some("123"));
     assert_eq!(v.get("EntityName").and_then(|x| x.as_str()), Some("ACME"));
 }
@@ -195,6 +195,79 @@ fn parse_jsonp_body_returns_none_for_malformed_inner_json() {
 }
 
 #[test]
+fn is_invalid_guid_message_matches_the_real_live_confirmed_abr_wording() {
+    use super::fetch::is_invalid_guid_message;
+    // Live-confirmed 2026-07-15: a garbage GUID against the real ABR endpoint
+    // returns HTTP 200 with exactly this message (every other field blank) —
+    // the API never signals a bad credential via status code at all.
+    assert!(is_invalid_guid_message(
+        "The GUID entered is not recognised as a Registered Party"
+    ));
+}
+
+#[test]
+fn is_invalid_guid_message_is_case_insensitive() {
+    use super::fetch::is_invalid_guid_message;
+    assert!(is_invalid_guid_message("guid revoked"));
+    assert!(is_invalid_guid_message("GUID REVOKED"));
+    assert!(is_invalid_guid_message("Invalid Guid supplied"));
+}
+
+#[test]
+fn is_invalid_guid_message_does_not_false_positive_on_a_genuine_no_match() {
+    use super::fetch::is_invalid_guid_message;
+    // The existing fixture used by `parse_abn_response`'s sibling "no match"
+    // test elsewhere in this file — a real ABR "clean miss" message must
+    // never be misread as a bad-credential signal.
+    assert!(!is_invalid_guid_message("No records found"));
+    assert!(!is_invalid_guid_message(""));
+}
+
+#[test]
+fn split_curl_headers_extracts_retry_after_and_the_real_body() {
+    use super::fetch::split_curl_headers;
+    let raw = "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 30\r\nContent-Type: text/plain\r\n\r\ncb({\"Abn\":\"123\"})";
+    let (body, retry_after) = split_curl_headers(raw);
+    assert_eq!(body, "cb({\"Abn\":\"123\"})");
+    assert_eq!(retry_after.as_deref(), Some("30"));
+}
+
+#[test]
+fn split_curl_headers_uses_only_the_final_hop_after_a_redirect() {
+    use super::fetch::split_curl_headers;
+    // -L follows redirects, so curl's -D - dump can contain multiple header
+    // blocks — only the LAST one belongs to the response actually returned.
+    // A Retry-After on an earlier (redirect) hop must not leak through.
+    let raw = "HTTP/1.1 302 Found\r\nRetry-After: 999\r\nLocation: https://x/y\r\n\r\nHTTP/1.1 429 Too Many Requests\r\nRetry-After: 12\r\n\r\ncb({})";
+    let (body, retry_after) = split_curl_headers(raw);
+    assert_eq!(body, "cb({})");
+    assert_eq!(
+        retry_after.as_deref(),
+        Some("12"),
+        "must use the final hop's header, not an earlier redirect's"
+    );
+}
+
+#[test]
+fn split_curl_headers_returns_none_when_header_absent() {
+    use super::fetch::split_curl_headers;
+    let raw = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\ncb({\"Abn\":\"123\"})";
+    let (body, retry_after) = split_curl_headers(raw);
+    assert_eq!(body, "cb({\"Abn\":\"123\"})");
+    assert_eq!(retry_after, None);
+}
+
+#[test]
+fn split_curl_headers_falls_back_to_whole_input_as_body_when_no_header_block() {
+    use super::fetch::split_curl_headers;
+    // Defensive fallback: if -D - somehow produced no header block at all,
+    // treat the whole input as body rather than losing it.
+    let (body, retry_after) = split_curl_headers("cb({\"Abn\":\"123\"})");
+    assert_eq!(body, "cb({\"Abn\":\"123\"})");
+    assert_eq!(retry_after, None);
+}
+
+#[test]
 fn str_field_returns_nonempty_string_else_none() {
     use super::parse::str_field;
     let v = serde_json::json!({"Abn": "123", "Empty": "", "Num": 7, "Null": null});
@@ -208,13 +281,15 @@ fn str_field_returns_nonempty_string_else_none() {
 #[test]
 fn max_timeout_covers_worst_case_retry_path() {
     // Regression guard: fetch_jsonp's worst case is curl(12s tokio
-    // timeout) + sleep(5s on 429) + curl(12s) ≈ 29s. If a future edit
-    // drops the override back to the 3s default, the engine kills
-    // process() before the first fetch returns and the module silently
-    // yields nothing on any real network.
+    // timeout) + sleep(up to 8s max on a 429, whether from a real
+    // Retry-After header or the no-header default) + curl(12s) ≈ 32s. If a
+    // future edit drops the override back to the 3s default (or raises the
+    // Retry-After clamp without raising this budget to match), the engine
+    // kills process() before the first fetch returns and the module
+    // silently yields nothing on any real network.
     let curl_timeout_ms = 10_000 + 2_000; // see curl_with_status
-    let sleep_ms = 5_000; // 429 backoff in fetch_jsonp
-    let worst_case = curl_timeout_ms * 2 + sleep_ms;
+    let max_retry_after_sleep_ms = 8_000; // parse_retry_after_secs's max_secs in fetch_jsonp
+    let worst_case = curl_timeout_ms * 2 + max_retry_after_sleep_ms;
     assert!(
         AbnLookup.max_timeout_ms() >= worst_case,
         "budget {} < worst-case retry path {worst_case}ms",

@@ -258,22 +258,22 @@ use super::*;
     fn primary_outranks_secondary() {
         let u = usernames(&p("Jordan Meyers"));
         let by = |h: &str| u.iter().find(|s| s.handle == h).map(|s| s.weight);
-        assert!(by("jordan.meyers").unwrap() > by("meyers.jordan").unwrap());
+        assert!(by("jordan.meyers").expect("should succeed") > by("meyers.jordan").expect("should succeed"));
     }
 
     #[test]
     fn derived_usernames_stay_below_the_probable_floor() {
         // Derived handles are unconfirmed guesses — every one must classify as
-        // Candidate (c_eff < 0.40) until a discovery module corroborates it, per
+        // Candidate (c_eff < confidence::LOW) until a discovery module corroborates it, per
         // name_intel's documented "low-confidence candidate" contract. Guards
         // every handle weight (incl. W_PRIMARY) against drifting back over the
-        // 0.40 floor, where a pure guess would masquerade as a Probable finding.
+        // confidence::LOW floor, where a pure guess would masquerade as a Probable finding.
         use crate::core::entity::{Classification, Entity, EntityKind};
         let handles = usernames(&p("Jordan Leigh Meyers 1987"));
         let max_w = handles.iter().map(|u| u.weight).fold(0.0_f64, f64::max);
         assert!(
-            max_w < 0.40,
-            "strongest derived handle weight {max_w} must stay below the 0.40 Probable floor"
+            max_w < confidence::LOW,
+            "strongest derived handle weight {max_w} must stay below the confidence::LOW Probable floor"
         );
         for u in &handles {
             let e = Entity::new(EntityKind::Username, &u.handle, u.weight, "s");
@@ -341,7 +341,7 @@ use super::*;
             .split("/avatar/")
             .nth(1)
             .and_then(|t| t.split('?').next())
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(hash.len(), 32);
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
     }
@@ -390,7 +390,7 @@ use super::*;
             assert_eq!(provider_weight(d), 0.5, "{d}");
         }
         for d in ["icloud.com", "me.com", "mac.com"] {
-            assert_eq!(provider_weight(d), 0.45, "{d}");
+            assert_eq!(provider_weight(d), confidence::LOW_MEDIUM, "{d}");
         }
         assert_eq!(provider_weight("aol.com"), 0.4);
         for d in ["gmx.com", "gmx.net", "mail.com"] {
@@ -531,7 +531,7 @@ use super::*;
     fn hyphenated_surname_yields_last_parts() {
         let n = p("Emily Smith-Jones");
         assert_eq!(n.last, "smithjones");
-        let parts = n.last_parts.as_deref().unwrap();
+        let parts = n.last_parts.as_deref().expect("should succeed");
         assert_eq!(parts, ["smith", "jones"]);
     }
 
@@ -560,7 +560,7 @@ use super::*;
         // Alias handles must still be below the Probable floor.
         let handles = usernames(&p("Michael Smith"));
         let max_w = handles.iter().map(|u| u.weight).fold(0.0_f64, f64::max);
-        assert!(max_w < 0.40, "alias handle weight {max_w} above Probable floor");
+        assert!(max_w < confidence::LOW, "alias handle weight {max_w} above Probable floor");
     }
 
     #[test]

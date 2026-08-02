@@ -107,3 +107,34 @@ use super::*;
         assert_eq!(extract_host_port(TargetKind::Domain, "x.com/path"), None);
         assert_eq!(extract_host_port(TargetKind::Domain, "  "), None);
     }
+
+    #[test]
+    fn banner_entity_rebases_a_url_target_to_its_host_domain() {
+        // The probe only ever HEADs the domain root (see `extract_host_port`
+        // discarding the path) — a real scan against a guessed profile handle
+        // (`https://<platform>/<handle>`) showed this module re-emitting the
+        // full path via `to_entity()`, so its evidence (which is identical
+        // for ANY handle on that platform) counted as an "independent source"
+        // corroborating that specific, unverified path. Rebasing to the host
+        // as a Domain entity is the fix: the entity now matches what was
+        // actually confirmed.
+        let t = Target::new(TargetKind::Url, "https://onlyfans.com/rob_dorito");
+        let e = banner_entity(&t, "onlyfans.com", confidence::HIGH_PLUSPLUS_PLUS, "scan1");
+        assert_eq!(e.kind, EntityKind::Domain);
+        assert_eq!(e.value, "onlyfans.com");
+    }
+
+    #[test]
+    fn banner_entity_keeps_domain_and_ip_targets_as_is() {
+        // These ARE the exact value HEADed, so re-emitting them verbatim via
+        // `to_entity()` is correct — only the Url case needs rebasing.
+        let t = Target::new(TargetKind::Domain, "example.com");
+        let e = banner_entity(&t, "example.com", confidence::HIGH_PLUSPLUS_PLUS, "scan1");
+        assert_eq!(e.kind, EntityKind::Domain);
+        assert_eq!(e.value, "example.com");
+
+        let t = Target::new(TargetKind::IpAddress, "1.2.3.4");
+        let e = banner_entity(&t, "1.2.3.4", confidence::HIGH_PLUSPLUS_PLUS, "scan1");
+        assert_eq!(e.kind, EntityKind::IpAddress);
+        assert_eq!(e.value, "1.2.3.4");
+    }

@@ -21,6 +21,13 @@ use crate::core::scan::Scan;
 /// and never spawn a SQLite connection. Mirrors the GREATEST-merge contract of
 /// the real store closely enough for halting/budget assertions: `upsert_entity`
 /// keeps the higher-confidence copy on UID collision.
+///
+/// It also mirrors the real store's `entity_observations` table (see
+/// [`Inner::observations`]) — without it, an entity recorded by three scans
+/// collapsed to whichever scan happened to insert it first, and every
+/// cross-scan property (history bridging, enrichment leverage, transitive
+/// closure) was untestable against this port because it could only ever answer
+/// "one scan".
 #[derive(Default)]
 pub struct InMemoryStore {
     inner: Mutex<Inner>,
@@ -30,6 +37,14 @@ pub struct InMemoryStore {
 struct Inner {
     scans: HashMap<String, Scan>,
     entities: HashMap<String, Entity>,
+    /// The `entity_observations` join table: entity uid → every `(scan_id,
+    /// observed_at)` that recorded it, deduplicated on `(uid, scan_id)` exactly
+    /// as the real store's `INSERT OR IGNORE` does.
+    ///
+    /// This is what makes an entity's *identity* (the uid) independent of the
+    /// scan that first saw it. `Entity::scan_id` is only the originating scan;
+    /// membership of a scan is this ledger, and reads must go through it.
+    observations: HashMap<String, Vec<(String, u64)>>,
     correlations: Vec<Correlation>,
     relations: Vec<Relation>,
     events: Vec<Event>,
@@ -82,12 +97,37 @@ impl StoragePort for InMemoryStore {
         Ok(scans)
     }
 
+    fn radar_history(&self, limit: usize) -> Result<Vec<Scan>> {
+        // Mirror Store::radar_history's sentinel filter exactly, via the same
+        // canonical predicate (`core::scan::is_radar_sentinel`) so this mock
+        // can't silently drift from the real implementation.
+        let mut scans: Vec<Scan> = self
+            .inner
+            .lock()
+            .scans
+            .values()
+            .filter(|s| crate::core::scan::is_radar_sentinel(s.target.kind, &s.target.value))
+            .cloned()
+            .collect();
+        scans.sort_by_key(|s| std::cmp::Reverse(s.started_at));
+        scans.truncate(limit);
+        Ok(scans)
+    }
+
     fn delete_scan(&self, scan_id: &str) -> Result<bool> {
         Ok(self.inner.lock().scans.remove(scan_id).is_some())
     }
 
     fn upsert_entity(&self, entity: &Entity) -> Result<()> {
         let mut g = self.inner.lock();
+        // Record the observation first, mirroring the real store's
+        // `INSERT OR IGNORE INTO entity_observations` — one row per distinct
+        // (uid, scan_id), so re-upserting within a scan does not inflate the
+        // cross-scan degree.
+        let obs = g.observations.entry(entity.uid.clone()).or_default();
+        if !obs.iter().any(|(s, _)| *s == entity.scan_id) {
+            obs.push((entity.scan_id.clone(), entity.observed_at));
+        }
         match g.entities.get_mut(&entity.uid) {
             // Mirror the real store's GREATEST-merge contract exactly: on UID
             // collision, MERGE (max confidence, accumulate corroboration,
@@ -111,20 +151,28 @@ impl StoragePort for InMemoryStore {
     }
 
     fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>> {
-        // Mirror Store::entities_for_scan ordering (confidence desc) so the
-        // in-memory port is deterministic across runs.
-        let mut ents: Vec<Entity> = self
-            .inner
-            .lock()
+        // Mirror Store::entities_for_scan: JOIN through entity_observations, NOT
+        // a filter on `Entity::scan_id`. A merged entity keeps the originating
+        // scan's id in that field, so filtering on it hid the entity from every
+        // later scan that also observed it.
+        let g = self.inner.lock();
+        let mut ents: Vec<Entity> = g
             .entities
             .values()
-            .filter(|e| e.scan_id == scan_id)
+            .filter(|e| {
+                g.observations
+                    .get(&e.uid)
+                    .is_some_and(|obs| obs.iter().any(|(s, _)| s == scan_id))
+            })
             .cloned()
             .collect();
+        // Confidence desc, uid asc — the real store's ORDER BY, so ties are
+        // deterministic across runs.
         ents.sort_by(|a, b| {
             b.confidence
                 .partial_cmp(&a.confidence)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.uid.cmp(&b.uid))
         });
         Ok(ents)
     }
@@ -210,22 +258,23 @@ impl StoragePort for InMemoryStore {
     }
 
     fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>> {
-        Ok(self
-            .inner
-            .lock()
-            .entities
-            .get(entity_uid)
-            .map(|e| vec![e.scan_id.clone()])
-            .unwrap_or_default())
+        // Real store: ORDER BY observed_at DESC, scan_id DESC.
+        let g = self.inner.lock();
+        let mut obs = g.observations.get(entity_uid).cloned().unwrap_or_default();
+        obs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
+        Ok(obs.into_iter().map(|(s, _)| s).collect())
     }
 
     fn observation_count(&self, entity_uid: &str) -> Result<usize> {
+        // Real store: COUNT(*) FROM entity_observations — the number of distinct
+        // scans that recorded the entity, which is not the same thing as its
+        // accumulated corroboration (distinct *sources* within a scan).
         Ok(self
             .inner
             .lock()
-            .entities
+            .observations
             .get(entity_uid)
-            .map_or(0, |e| e.corroboration as usize))
+            .map_or(0, Vec::len))
     }
 
     fn upsert_correlation(&self, c: &Correlation) -> Result<()> {

@@ -18,330 +18,11 @@ use huntsman_search_engine::{
     util::{http::build_client, uid::scan_id},
 };
 
-/// Echoes the seed back as an entity of the same kind.
-struct SyntheticModule;
-
-#[async_trait]
-impl Module for SyntheticModule {
-    fn name(&self) -> &'static str {
-        "synthetic"
-    }
-    fn priority(&self) -> u8 {
-        100
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Email)
-    }
-    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut r = ModuleResult::new();
-        let mut e = Entity::new(EntityKind::Email, &target.value, 0.95, &ctx.scan_id);
-        e.tag("synthetic");
-        r.push(e);
-        Ok(r)
-    }
-}
-
-/// Accepts Email, produces ONE Username derived from the local part.
-struct EmailToUsernameSynth;
-
-#[async_trait]
-impl Module for EmailToUsernameSynth {
-    fn name(&self) -> &'static str {
-        "synth_e2u"
-    }
-    fn priority(&self) -> u8 {
-        80
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Email)
-    }
-    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut r = ModuleResult::new();
-        let local = target.value.split('@').next().unwrap_or("anon");
-        // High base confidence so c_effective() ≥ 0.75 expansion threshold.
-        let mut e = Entity::new(EntityKind::Username, local, 0.95, &ctx.scan_id);
-        e.tag("derived");
-        r.push(e);
-        Ok(r)
-    }
-}
-
-/// A keyed module with no key configured: returns `Err(MissingKey)`, which the
-/// engine must treat as a CLEAN SKIP (needs-key notice), not a module error.
-struct NeedsKeyModule;
-
-#[async_trait]
-impl Module for NeedsKeyModule {
-    fn name(&self) -> &'static str {
-        "needs_key"
-    }
-    fn priority(&self) -> u8 {
-        90
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Email)
-    }
-    async fn process(&self, _t: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
-        Err(huntsman_search_engine::core::error::Error::MissingKey(
-            "HUNTSMAN_VIRUSTOTAL_KEY".into(),
-        ))
-    }
-}
-
-/// Accepts Username, produces ONE Phone (synthetic).
-struct UsernameToPhoneSynth;
-
-#[async_trait]
-impl Module for UsernameToPhoneSynth {
-    fn name(&self) -> &'static str {
-        "synth_u2p"
-    }
-    fn priority(&self) -> u8 {
-        70
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Username)
-    }
-    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut r = ModuleResult::new();
-        let phone = format!("+1{:0>10}", target.value.len() * 1111);
-        let mut e = Entity::new(EntityKind::Phone, &phone, 0.95, &ctx.scan_id);
-        e.tag("synthetic");
-        r.push(e);
-        Ok(r)
-    }
-}
-
-/// Adversarial generative module: for an Email target it emits a *brand-new,
-/// never-before-seen* Email each call (local part grows by one char), so the
-/// monotone visited-set can never block it. Left unbounded it would expand
-/// forever — used to prove the recursion HALTS purely on the entity budget.
-struct HydraModule;
-
-#[async_trait]
-impl Module for HydraModule {
-    fn name(&self) -> &'static str {
-        "hydra"
-    }
-    fn priority(&self) -> u8 {
-        100
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Email)
-    }
-    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut r = ModuleResult::new();
-        let local = target.value.split('@').next().unwrap_or("a");
-        // High confidence so it always clears the expansion floor; unique each
-        // round so `visited` never short-circuits it.
-        let next = format!("{local}x@h.test");
-        let mut e = Entity::new(EntityKind::Email, next, 0.95, &ctx.scan_id);
-        e.tag("hydra");
-        r.push(e);
-        Ok(r)
-    }
-}
-
-/// Accepts Email, produces a low-confidence Username — should be ignored
-/// by expansion when min_expand_confidence is 0.75.
-struct LowConfidenceModule;
-
-#[async_trait]
-impl Module for LowConfidenceModule {
-    fn name(&self) -> &'static str {
-        "synth_low"
-    }
-    fn priority(&self) -> u8 {
-        60
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Email)
-    }
-    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut r = ModuleResult::new();
-        let local = target.value.split('@').next().unwrap_or("anon");
-        // Base confidence 0.3 → c_effective 0.3 → below 0.75 threshold.
-        let mut e = Entity::new(EntityKind::Username, local, 0.3, &ctx.scan_id);
-        e.tag("low");
-        r.push(e);
-        Ok(r)
-    }
-}
-
-// ── Key-chaining harness ───────────────────────────────────────────────────
-//
-// These modules simulate the force-multiplication chain:
-//   1. KeyDiscovererModule (high priority) writes a fake key into the
-//      global key pool, mimicking oathnet_pro extracting a Shodan key
-//      from breach data.
-//   2. KeyConsumerModule (low priority) only emits an entity if the
-//      target key is present in ctx.keys.
-//
-// If the hot-inject works, KeyConsumerModule sees the key and the scan
-// produces the consumer's entity. If the hot-inject is broken, the
-// consumer sees a stale ctx clone with no key and emits nothing.
-
-const CHAIN_TEST_SERVICE: &str = "shodan";
-const CHAIN_TEST_ENV: &str = "HUNTSMAN_SHODAN_KEY";
-
-struct KeyDiscovererModule;
-
-#[async_trait]
-impl Module for KeyDiscovererModule {
-    fn name(&self) -> &'static str {
-        "key_discoverer"
-    }
-    fn priority(&self) -> u8 {
-        // Higher than KeyConsumerModule so it runs first.
-        // Also marked Paid so the concurrent dispatcher routes it into
-        // Phase 1 (synchronous) before Phase 2 spawns the consumer.
-        150
-    }
-    fn cost(&self) -> huntsman_search_engine::core::module::ModuleCost {
-        huntsman_search_engine::core::module::ModuleCost::Paid
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Email)
-    }
-    async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        // Simulate oathnet_pro discovering a key in breach data.
-        let pool = huntsman_search_engine::util::key_pool::global_pool();
-        let entry = huntsman_search_engine::util::key_pool::KeyEntry::new(
-            "test-shodan-key-chained-via-hot-inject",
-        );
-        pool.add(CHAIN_TEST_SERVICE, entry);
-
-        // Emit a marker entity proving this module ran.
-        let mut r = ModuleResult::new();
-        let mut e = Entity::new(
-            EntityKind::Email,
-            "discoverer@chainmarker.io",
-            0.95,
-            &ctx.scan_id,
-        );
-        e.tag("key-discoverer-fired");
-        r.push(e);
-        Ok(r)
-    }
-}
-
-struct KeyConsumerModule;
-
-#[async_trait]
-impl Module for KeyConsumerModule {
-    fn name(&self) -> &'static str {
-        "key_consumer"
-    }
-    fn priority(&self) -> u8 {
-        // Lower than discoverer so it runs after the hot-inject fires.
-        50
-    }
-    fn cost(&self) -> huntsman_search_engine::core::module::ModuleCost {
-        huntsman_search_engine::core::module::ModuleCost::KeyGated
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Email)
-    }
-    async fn process(&self, _target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut r = ModuleResult::new();
-        // Only emit if the chained key reached us via hot-inject.
-        if let Some(key) = ctx.key_opt(CHAIN_TEST_ENV)
-            && key == "test-shodan-key-chained-via-hot-inject"
-        {
-            let mut e = Entity::new(
-                EntityKind::Email,
-                "consumer@chainmarker.io",
-                0.95,
-                &ctx.scan_id,
-            );
-            e.tag("key-consumer-saw-key");
-            r.push(e);
-        }
-        Ok(r)
-    }
-}
-
-/// Emits a mega-domain (facebook.com) and a target-specific domain from a
-/// username — to exercise the expansion gate that skips incidentally-discovered
-/// mega-domains. Both are high-confidence + corroborated so they clear the gate.
-struct UsernameToDomainsSynth;
-#[async_trait]
-impl Module for UsernameToDomainsSynth {
-    fn name(&self) -> &'static str {
-        "u2domains"
-    }
-    fn priority(&self) -> u8 {
-        100
-    }
-    fn description(&self) -> &'static str {
-        "test: username → domains"
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Username)
-    }
-    async fn process(&self, _t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut r = ModuleResult::new();
-        for d in ["facebook.com", "johndoe-personal.com"] {
-            let mut e = Entity::new(EntityKind::Domain, d, 0.95, &ctx.scan_id);
-            e.corroboration = 3;
-            r.push(e);
-        }
-        Ok(r)
-    }
-}
-
-/// Records each Domain target it is dispatched on by emitting a marker entity,
-/// so a test can assert which domains the engine chose to expand.
-struct DomainSensor;
-#[async_trait]
-impl Module for DomainSensor {
-    fn name(&self) -> &'static str {
-        "domain_sensor"
-    }
-    fn priority(&self) -> u8 {
-        90
-    }
-    fn description(&self) -> &'static str {
-        "test: marks domains it runs on"
-    }
-    fn accepts(&self, t: &Target) -> bool {
-        matches!(t.kind, TargetKind::Domain)
-    }
-    async fn process(&self, t: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut r = ModuleResult::new();
-        let mut e = Entity::new(
-            EntityKind::Url,
-            format!("sensed://{}", t.value),
-            0.95,
-            &ctx.scan_id,
-        );
-        e.tag("domain-sensor");
-        r.push(e);
-        Ok(r)
-    }
-}
-
-/// Clear any pre-existing keys for the chain-test service from the process-
-/// global pool so the key-chaining tests are hermetic. The global pool is a
-/// `OnceLock` seeded from the persisted `~/.huntsman/key_pool.json`, which can
-/// already hold real `shodan` keys (from prior CLI use or scans); those perturb
-/// `next_key("shodan")` selection and make the hot-inject assertion flaky
-/// depending on test order / the developer's local pool. Removal is in-memory
-/// only (never writes the file), so it cannot affect real keys on disk.
-fn reset_chain_pool() {
-    let pool = huntsman_search_engine::util::key_pool::global_pool();
-    let existing: Vec<String> = pool
-        .snapshot()
-        .services
-        .get(CHAIN_TEST_SERVICE)
-        .into_iter()
-        .flatten()
-        .map(|e| e.value.clone())
-        .collect();
-    for value in existing {
-        pool.remove(CHAIN_TEST_SERVICE, &value);
-    }
-}
+use common::{
+    DomainSensor, EmailToUsernameSynth, HydraModule, KeyConsumerModule, KeyDiscovererModule,
+    LowConfidenceModule, NeedsKeyModule, RegionalProbeModule, SyntheticModule,
+    UsernameToDomainsSynth, UsernameToPhoneSynth, reset_chain_pool,
+};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn key_chaining_sequential_dispatch() {
@@ -404,6 +85,67 @@ async fn key_chaining_concurrent_dispatch() {
         saw_consumer,
         "consumer (KeyGated, Phase 2) must see the key via hot-inject — \
          concurrent chain is broken"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_scans_do_not_contaminate_each_others_regional_setting() {
+    // PROBLEM_TREE T2.11: `search_engines::regional_enabled()` used to read a
+    // single process-global `AtomicBool`, shared unkeyed across `hse serve`'s
+    // concurrent scans — "last writer wins for the overlap window". Two real
+    // scans, run genuinely CONCURRENTLY via `tokio::join!` with OPPOSITE
+    // `regional_search` settings, each dispatching through the concurrent
+    // (`max_concurrent > 0`) path — the one that needs the `dispatch.rs`
+    // spawn-point re-scope, not just `run_with_ledger`'s outer wrap — must
+    // each observe only its OWN setting, never the other's.
+    use huntsman_search_engine::core::engine::DispatchLog;
+
+    let (engine_a, store_a, sid_a, target_a, ctx_a) = setup(
+        vec![Arc::new(RegionalProbeModule)],
+        "regional-a",
+        TargetKind::Email,
+        "regional-a@contoso.com",
+    );
+    let (engine_b, store_b, sid_b, target_b, ctx_b) = setup(
+        vec![Arc::new(RegionalProbeModule)],
+        "regional-b",
+        TargetKind::Email,
+        "regional-b@contoso.com",
+    );
+
+    let opts_a = ScanOptions {
+        regional_search: true,
+        max_concurrent: 4,
+        ..Default::default()
+    };
+    let opts_b = ScanOptions {
+        regional_search: false,
+        max_concurrent: 4,
+        ..Default::default()
+    };
+    let scan_a = Scan::new(sid_a.clone(), target_a.clone()).with_options(opts_a);
+    let scan_b = Scan::new(sid_b.clone(), target_b.clone()).with_options(opts_b);
+
+    let mut ledger_a = DispatchLog::new();
+    let mut ledger_b = DispatchLog::new();
+    let (res_a, res_b) = tokio::join!(
+        engine_a.run_with_ledger(scan_a, target_a, ctx_a, &mut ledger_a),
+        engine_b.run_with_ledger(scan_b, target_b, ctx_b, &mut ledger_b),
+    );
+    res_a.unwrap();
+    res_b.unwrap();
+
+    let entities_a = store_a.entities_for_scan(&sid_a).unwrap();
+    let entities_b = store_b.entities_for_scan(&sid_b).unwrap();
+    assert!(
+        entities_a.iter().any(|e| e.has_tag("regional-was-true")),
+        "scan A (regional_search=true) must observe true even while B runs \
+         concurrently with false: {entities_a:?}"
+    );
+    assert!(
+        entities_b.iter().any(|e| e.has_tag("regional-was-false")),
+        "scan B (regional_search=false) must observe false even while A runs \
+         concurrently with true: {entities_b:?}"
     );
 }
 
@@ -1132,7 +874,6 @@ async fn radar_persistent_ledger_does_not_re_query_paid_apis_on_covered_seeds() 
         http: build_client(),
         keys: Default::default(),
         cancel: Default::default(),
-        proxy_pool: Default::default(),
     };
 
     // Radar: ONE ledger threaded across three sweeps of the SAME seed → the
@@ -2481,6 +2222,9 @@ impl StoragePort for CountingStore {
     fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
         self.inner.list_scans(limit)
     }
+    fn radar_history(&self, limit: usize) -> Result<Vec<Scan>> {
+        self.inner.radar_history(limit)
+    }
     fn delete_scan(&self, scan_id: &str) -> Result<bool> {
         self.inner.delete_scan(scan_id)
     }
@@ -2582,7 +2326,6 @@ async fn entities_are_checkpointed_each_round_for_durability() {
         http: build_client(),
         keys: Default::default(),
         cancel: Default::default(),
-        proxy_pool: Default::default(),
     };
     // depth=1: seed round (email -> username) then expansion (username -> phone).
     let opts = ScanOptions {

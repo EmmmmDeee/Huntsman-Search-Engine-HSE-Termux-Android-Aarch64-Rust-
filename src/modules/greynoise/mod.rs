@@ -25,6 +25,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -56,6 +57,10 @@ pub(crate) struct CommunityResp {
     /// Human-readable status message (e.g. "IP not observed scanning the internet").
     #[serde(default)]
     pub message: Option<String>,
+    /// Last time GreyNoise observed this IP (ISO-8601) — a recency signal that
+    /// tells the analyst whether a "malicious" classification is current or stale.
+    #[serde(default)]
+    pub last_seen: Option<String>,
 }
 
 /// The keyed `v3/ip/{ip}` response. A superset of [`CommunityResp`]'s fields
@@ -82,6 +87,8 @@ pub(crate) struct PaidResp {
     pub link: Option<String>,
     #[serde(default)]
     pub message: Option<String>,
+    #[serde(default)]
+    pub last_seen: Option<String>,
 }
 
 // ── Module ────────────────────────────────────────────────────────
@@ -99,6 +106,7 @@ struct Signal<'a> {
     name: Option<&'a str>,
     link: Option<&'a str>,
     message: Option<&'a str>,
+    last_seen: Option<&'a str>,
     /// An extra positive signal the community tier never sets (the paid
     /// tier's `seen`) — folded into the no-findings gate so a paid record
     /// that's `seen` but otherwise unclassified still surfaces, tagged
@@ -125,9 +133,9 @@ fn build_entities_from_signal(sig: &Signal, ip: &str, scan_id: &str) -> Vec<Enti
     }
 
     let confidence = match sig.classification {
-        Some("malicious") => 0.80,
-        Some("benign") => 0.70,
-        _ => 0.55,
+        Some("malicious") => confidence::HIGH_PLUSPLUS,
+        Some("benign") => confidence::HIGH_PLUS,
+        _ => confidence::MEDIUM_HIGH,
     };
 
     let mut entity = Entity::new(EntityKind::IpAddress, ip, confidence, scan_id);
@@ -165,6 +173,8 @@ fn build_entities_from_signal(sig: &Signal, ip: &str, scan_id: &str) -> Vec<Enti
         // GreyNoise's own status text (e.g. the RIOT service description) —
         // surfaced as the API's words, not synthesised from the booleans.
         ("message", sig.message),
+        // Recency: whether a "malicious" verdict is current or long stale.
+        ("last_seen", sig.last_seen),
     ]
     .into_iter()
     .filter_map(|(key, value)| value.filter(|s| !s.is_empty()).map(|v| (key, v)))
@@ -180,7 +190,7 @@ fn build_entities_from_signal(sig: &Signal, ip: &str, scan_id: &str) -> Vec<Enti
         .map(str::trim)
         .filter(|n| n.len() >= 2 && !n.eq_ignore_ascii_case("unknown"))
     {
-        let mut o = Entity::new(EntityKind::Organisation, name, 0.62, scan_id);
+        let mut o = Entity::new(EntityKind::Organisation, name, confidence::NOTABLE, scan_id);
         o.tag("greynoise");
         o.tag("ip-operator");
         o.add_evidence(
@@ -203,6 +213,7 @@ fn build_entities(data: &CommunityResp, ip: &str, scan_id: &str) -> Vec<Entity> 
             name: data.name.as_deref(),
             link: data.link.as_deref(),
             message: data.message.as_deref(),
+            last_seen: data.last_seen.as_deref(),
             extra_signal: false,
         },
         ip,
@@ -222,6 +233,7 @@ fn build_paid_entities(data: &PaidResp, ip: &str, scan_id: &str) -> Vec<Entity> 
             name: data.name.as_deref(),
             link: data.link.as_deref(),
             message: data.message.as_deref(),
+            last_seen: data.last_seen.as_deref(),
             extra_signal: data.seen,
         },
         ip,
@@ -246,7 +258,7 @@ impl Module for GreyNoise {
     }
 
     fn description(&self) -> &'static str {
-        "GreyNoise IP reputation: internet noise and RIOT classification (paid v3/ip lookup when keyed)"
+        "GreyNoise IP reputation — classifies internet noise and RIOT status (paid v3/ip lookup when keyed)"
     }
 
     fn priority(&self) -> u8 {

@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -26,6 +27,20 @@ const KEY_ENV: &str = "HUNTSMAN_NETLAS_KEY";
 
 pub struct Netlas;
 
+// No top-level `count`/total field: investigated (2026-07-14, T2.100) after a
+// systematic sweep for the T2.97-99 "parsed but never read" class flagged one
+// here too. Unlike those three, this one does NOT reproduce as a real dropped-
+// evidence bug — Netlas's `GET /api/responses/` (the exact endpoint this
+// module calls) never returns a match-total field; the total lives only on
+// the separate `GET /api/responses_count/` endpoint this module doesn't call.
+// A `count` field was previously declared and deserialized here regardless
+// (always `None` against the real API — `#[serde(default)]` silently no-ops
+// on the ever-absent key), which is worse than harmless: it invited exactly
+// the false "surface it like psbdmp's total_matches" fix this investigation
+// almost made. Deliberately not calling `responses_count/` to manufacture a
+// real value either — that's a second network round-trip against the
+// operator's key quota, a real behaviour/cost change, not a mechanical
+// evidence-disclosure fix.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct NetlasResp {
@@ -136,7 +151,7 @@ impl Module for Netlas {
     }
 
     fn description(&self) -> &'static str {
-        "Netlas host intelligence: open ports, JARM, SSL-cert email extraction, CVEs, ISP"
+        "Netlas host intelligence — fingerprints open ports, JARM, SSL-cert email extraction, CVEs, and ISP"
     }
 
     fn priority(&self) -> u8 {
@@ -209,8 +224,9 @@ impl Module for Netlas {
 /// network shell owns auth/transport, this owns the response→entity mapping
 /// (unit-testable without a key). Accumulates host facts across `body.items`,
 /// then emits the IP entity — carrying the port/JARM/SSL/CVE/tech/ISP evidence
-/// plus the previously-dropped `ssl_issuer` (issuing CA), `http_title` and
-/// `http_status` — the ISP and cert-subject Organisations, the geo
+/// plus the previously-dropped `ssl_issuer` (issuing CA), `http_title`,
+/// `http_status`, and `result_count` (the query's total Netlas match count) —
+/// the ISP and cert-subject Organisations, the geo
 /// Coordinates/Address, the SAN Domains, and the SSL/HTTP-extracted Emails.
 /// `target_value` is the queried value used as the IP fallback; an empty item
 /// set yields an empty result.
@@ -249,7 +265,11 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
     // byte-identical-output guarantee. Ordered set → the lexicographically
     // smallest fingerprint, deterministically.
     let mut jarm_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut cve_list: Vec<String> = Vec::new();
+    // BTreeSet, not Vec: a host's CVE set is load-bearing pivot/prioritisation
+    // intelligence, so it is emitted in full (no cap) — deduped across response
+    // items and sorted for byte-deterministic output. Mirrors the full-fidelity
+    // vuln policy in the sibling `shodan` module.
+    let mut cve_set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut tech_list: Vec<String> = Vec::new();
     let mut isp_val: Option<String> = None;
     let mut geo_val: Option<(f64, f64, String, String)> = None;
@@ -282,7 +302,9 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         if let Some(geo) = &data.geo
             && geo_val.is_none()
             && let (Some(lat), Some(lon)) = (geo.latitude, geo.longitude)
-            && (lat.abs() > 0.001 || lon.abs() > 0.001)
+            // Shared validator: finite, in-range, not Null Island — replaces the
+            // ad-hoc 0.001 band that let out-of-range / near-(0,0) junk through.
+            && crate::util::geo::is_valid_coords(lat, lon)
         {
             geo_val = Some((
                 lat,
@@ -352,9 +374,9 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
             emails.iter().for_each(|em| record_email(em, EMAIL_WHOIS));
         }
         if let Some(cves) = &data.cve {
-            for cve in cves.iter().take(5) {
-                if let Some(n) = &cve.name {
-                    cve_list.push(n.clone());
+            for cve in cves {
+                if let Some(n) = cve.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                    cve_set.insert(n.to_string());
                 }
             }
         }
@@ -369,7 +391,12 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
 
     // Emit IP entity.
     let ip_str = ip_val.as_deref().unwrap_or(target_value);
-    let mut ip_entity = Entity::new(EntityKind::IpAddress, ip_str, 0.85, scan_id);
+    let mut ip_entity = Entity::new(
+        EntityKind::IpAddress,
+        ip_str,
+        confidence::HIGH_PLUSPLUS_PLUS,
+        scan_id,
+    );
     ip_entity.tag("netlas");
     port_list.sort();
     port_list.dedup();
@@ -402,32 +429,48 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
     if let Some(code) = http_status {
         ev = ev.with_attr("http_status", code.to_string());
     }
-    if !cve_list.is_empty() {
-        ev = ev.with_attr(
-            "cves",
-            cve_list
-                .iter()
-                .take(5)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(","),
-        );
+    if !cve_set.is_empty() {
+        // Emit the complete, deduplicated CVE set plus a disclosed count — a
+        // host's vulnerabilities are the intelligence an analyst pivots on.
+        ev = ev
+            .with_attr(
+                "cves",
+                cve_set
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )
+            .with_attr("cve_count", cve_set.len().to_string());
     }
     if !tech_list.is_empty() {
         tech_list.sort();
         tech_list.dedup();
-        ev = ev.with_attr(
-            "technologies",
-            tech_list
-                .iter()
-                .take(10)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(","),
-        );
+        // Disclose the full detected-technology count so a host running more than
+        // the displayed sample does not silently lose stack-attribution pivots
+        // (mirrors `port_count` alongside the capped `open_ports`).
+        ev = ev
+            .with_attr("technology_count", tech_list.len().to_string())
+            .with_attr(
+                "technologies",
+                tech_list
+                    .iter()
+                    .take(10)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
     }
     if let Some(isp) = &isp_val {
         ev = ev.with_attr("isp", isp);
+    }
+    // Total number of indexed responses Netlas matched for this query — the
+    // top-level `count`, distinct from the returned `items` page (which the
+    // `fields=*` request caps). Surfacing it tells an investigator how much of
+    // the host's Netlas footprint the returned page represents, i.e. whether the
+    // results were truncated. Decoded but previously dropped.
+    if let Some(total) = body.count {
+        ev = ev.with_attr("result_count", total.to_string());
     }
     ip_entity.add_evidence(ev);
     result.push(ip_entity);
@@ -438,7 +481,12 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty());
     if let Some(isp) = isp_val.as_deref().filter(|s| s.len() >= 3) {
-        let mut org = Entity::new(EntityKind::Organisation, isp, 0.60, scan_id);
+        let mut org = Entity::new(
+            EntityKind::Organisation,
+            isp,
+            confidence::MEDIUM_PLUS,
+            scan_id,
+        );
         org.tag("netlas");
         org.tag("isp");
         org.add_evidence(
@@ -460,7 +508,12 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         if org_lc.len() < 3 || isp_lc.as_deref() == Some(&org_lc) {
             continue;
         }
-        let mut oe = Entity::new(EntityKind::Organisation, cert_org.trim(), 0.70, scan_id);
+        let mut oe = Entity::new(
+            EntityKind::Organisation,
+            cert_org.trim(),
+            confidence::HIGH_PLUS,
+            scan_id,
+        );
         oe.tag("netlas");
         oe.tag("ssl-subject-org");
         oe.add_evidence(
@@ -474,10 +527,20 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         result.push(oe);
     }
 
-    // Geolocation → Coordinates + Address.
-    if let Some((lat, lon, country, city)) = geo_val {
+    // Geolocation → Coordinates + Address. Suppressed when the host IP is a
+    // CDN/anycast edge (the geo is the datacentre, not the subject) — parity
+    // with the 8 sibling IP-geo modules. ISP/ASN/cert Organisations above are
+    // unaffected.
+    if let Some((lat, lon, country, city)) = geo_val
+        && crate::core::validation::untrusted_ip_geo_reason(ip_str).is_none()
+    {
         let coord_str = format!("{lat:.6},{lon:.6}");
-        let mut geo_e = Entity::new(EntityKind::Coordinates, &coord_str, 0.60, scan_id);
+        let mut geo_e = Entity::new(
+            EntityKind::Coordinates,
+            &coord_str,
+            confidence::MEDIUM_PLUS,
+            scan_id,
+        );
         geo_e.tag("netlas");
         geo_e.tag("geoint");
         if !country.is_empty() {
@@ -497,7 +560,12 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
 
         if !city.is_empty() && !country.is_empty() {
             let addr_str = format!("{city}, {country}");
-            let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.55, scan_id);
+            let mut addr = Entity::new(
+                EntityKind::Address,
+                &addr_str,
+                confidence::MEDIUM_HIGH,
+                scan_id,
+            );
             addr.tag("netlas");
             addr.add_evidence(Evidence::new(SRC, format!("Netlas location for {ip_str}")));
             result.push(addr);
@@ -514,7 +582,7 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
     for dom in &all_cert_domains {
         let dom = dom.trim().trim_start_matches('*').trim_start_matches('.');
         if dom.len() >= 4 && dom.contains('.') && !dom.contains(char::is_whitespace) {
-            let mut de = Entity::new(EntityKind::Domain, dom, 0.70, scan_id);
+            let mut de = Entity::new(EntityKind::Domain, dom, confidence::HIGH_PLUS, scan_id);
             de.tag("netlas");
             de.tag("ssl-san");
             de.add_evidence(

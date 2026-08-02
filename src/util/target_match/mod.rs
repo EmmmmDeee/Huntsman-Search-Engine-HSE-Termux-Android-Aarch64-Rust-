@@ -64,6 +64,15 @@ impl TargetMatch {
         }
     }
 
+    /// The pre-computed lowercased target value. Lets callers reuse the single
+    /// `to_lowercase()` allocation already held here (e.g. for an exact-equality
+    /// comparison against a record field) instead of re-lowercasing the target
+    /// once per record on a hot per-row loop.
+    #[inline]
+    pub fn lower(&self) -> &str {
+        &self.lower
+    }
+
     /// True if any matchable field of `item` identifies the target.
     pub fn matches(&self, item: &Value) -> bool {
         for field in MATCH_FIELDS {

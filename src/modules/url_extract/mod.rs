@@ -22,6 +22,7 @@
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -32,7 +33,7 @@ const SRC: &str = "url_extract";
 
 /// Confidence of the extracted domain. High — the URL that contains it was
 /// already an observed entity, so the host is a proven fact, not a guess.
-const DOMAIN_CONF: f64 = 0.80;
+const DOMAIN_CONF: f64 = confidence::HIGH_PLUSPLUS;
 
 pub struct UrlExtract;
 
@@ -65,7 +66,7 @@ impl Module for UrlExtract {
     }
 
     fn description(&self) -> &'static str {
-        "Extract the host domain or IP from a URL so the full domain/IP intelligence stack is seeded next round"
+        "URL dissection — extracts the host domain or IP to seed the full domain/IP intelligence stack next round"
     }
 
     fn priority(&self) -> u8 {
@@ -127,21 +128,21 @@ mod tests {
 
     #[test]
     fn extracts_domain() {
-        let (h, ip) = host("https://github.com/jdoe/repo").unwrap();
+        let (h, ip) = host("https://github.com/jdoe/repo").expect("should succeed");
         assert_eq!(h, "github.com");
         assert!(!ip);
     }
 
     #[test]
     fn extracts_subdomain() {
-        let (h, ip) = host("https://api.example.org/v1/users").unwrap();
+        let (h, ip) = host("https://api.example.org/v1/users").expect("should succeed");
         assert_eq!(h, "api.example.org");
         assert!(!ip);
     }
 
     #[test]
     fn extracts_ipv4() {
-        let (h, ip) = host("http://192.168.1.1/admin").unwrap();
+        let (h, ip) = host("http://192.168.1.1/admin").expect("should succeed");
         assert_eq!(h, "192.168.1.1");
         assert!(ip);
     }

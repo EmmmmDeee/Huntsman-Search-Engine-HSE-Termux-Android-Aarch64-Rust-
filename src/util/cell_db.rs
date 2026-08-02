@@ -10,17 +10,12 @@ use rusqlite::{Connection, params};
 // ── Public path helper ──────────────────────────────────────────────────────
 
 /// Path to the cell towers DB file: `$HOME/.huntsman/cell_towers.db`.
-/// Falls back to `./cell_towers.db` when `$HOME` is unset.
+/// Falls back to `./.huntsman/cell_towers.db` when `$HOME` is unset (see
+/// [`crate::util::paths::huntsman_dir`] — the layout stays together under
+/// `.huntsman` rather than scattering a bare file into the CWD).
 #[must_use]
 pub fn cell_db_path() -> PathBuf {
-    std::env::var("HOME").map_or_else(
-        |_| PathBuf::from("cell_towers.db"),
-        |home| {
-            let dir = PathBuf::from(&home).join(".huntsman");
-            let _ = std::fs::create_dir_all(&dir);
-            dir.join("cell_towers.db")
-        },
-    )
+    crate::util::paths::data_file("cell_towers.db")
 }
 
 // ── Connection helpers ──────────────────────────────────────────────────────
@@ -208,6 +203,24 @@ pub fn count_by_mcc(conn: &Connection) -> rusqlite::Result<Vec<(i64, u64)>> {
     rows.collect()
 }
 
+/// Map a cell tower's reported accuracy radius (metres) to a coordinate
+/// confidence score: a tight urban small-cell (≤100 m) is highly trusted;
+/// a rural macro-cell (>10 km centroid) is only loosely trusted.
+///
+/// Single authoritative implementation shared by `cell_intel`, `cell_local`,
+/// and `opencellid` — all three modules use the same [`CellRow::range_m`] field
+/// so the scale must be identical across them.
+pub fn accuracy_to_confidence(range_m: u64) -> f64 {
+    use crate::core::confidence;
+    match range_m {
+        0..=100 => confidence::HIGH_PLUSPLUS_PLUS,
+        101..=500 => confidence::VERY_HIGH,
+        501..=2000 => confidence::HIGH,
+        2001..=10000 => confidence::MEDIUM,
+        _ => 0.35,
+    }
+}
+
 // ── Import history ─────────────────────────────────────────────────────────────
 
 /// Record a completed import in `cell_imports`.
@@ -228,6 +241,22 @@ pub fn record_import(
         params![now, mcc, source, rows as i64, duration_ms as i64],
     )?;
     Ok(())
+}
+
+/// A local cell-tower import is considered **stale** once this many days have
+/// elapsed since the last import. OpenCelliD's public dataset changes as
+/// towers are added/decommissioned, and this project has no auto-resync —
+/// `hse cells import` is a manual trigger only (`SOLUTION_TREE` §4a's
+/// "cell_local auto-sync" gap notes no scheduler exists yet) — so a database
+/// that has gone quiet for 6+ months is a genuine "consider refreshing"
+/// signal for the operator, not noise.
+pub const STALE_THRESHOLD_DAYS: u32 = 180;
+
+/// Whether an import at `imported_at` (unix seconds) is stale as of `now_unix`.
+/// Pure so it is unit-testable without a live DB or a wall-clock dependency.
+#[must_use]
+pub fn is_stale(imported_at: i64, now_unix: i64) -> bool {
+    now_unix.saturating_sub(imported_at) > i64::from(STALE_THRESHOLD_DAYS) * 86_400
 }
 
 /// The most recent import record, if any.
@@ -404,6 +433,16 @@ mod tests {
         // 505 has 2 entries, 310 has 1 — sorted desc
         assert_eq!(by_mcc[0], (505, 2));
         assert_eq!(by_mcc[1], (310, 1));
+    }
+
+    #[test]
+    fn is_stale_true_past_the_threshold_false_before_it() {
+        let now: i64 = 1_800_000_000;
+        let just_under = now - i64::from(STALE_THRESHOLD_DAYS) * 86_400 + 1;
+        let just_over = now - i64::from(STALE_THRESHOLD_DAYS) * 86_400 - 1;
+        assert!(!is_stale(just_under, now), "not yet stale");
+        assert!(is_stale(just_over, now), "past the threshold");
+        assert!(!is_stale(now, now), "a fresh import is never stale");
     }
 
     #[test]

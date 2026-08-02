@@ -74,11 +74,6 @@ fn full_pattern() -> &'static Regex {
     })
 }
 
-/// Find the first plausible Australian address in a free-text blob.
-pub fn extract_first(text: &str) -> Option<AuAddress> {
-    extract_all(text).into_iter().next()
-}
-
 /// Find all plausible Australian addresses in a free-text blob.
 pub fn extract_all(text: &str) -> Vec<AuAddress> {
     let mut out = Vec::new();
@@ -207,6 +202,18 @@ static STATE_NAMES_MATCHER: std::sync::LazyLock<MatchSet> =
 /// Best-effort canonical AU state/territory code for a free-text fragment
 /// (`"Brisbane City, Queensland, Australia"`, `"… QLD 4000"`, `"4017"`).
 ///
+/// Iterator over the AU state codes named as whole 2–3 letter tokens in `text`
+/// (case-insensitive), in reading order, with repeats. Shared by [`state_code`]
+/// (which takes the first) and [`single_state_code`] (which checks distinctness),
+/// so the whole-token abbreviation scan lives in exactly one place.
+/// `eq_ignore_ascii_case` tests membership without allocating an uppercased copy
+/// of each token.
+fn state_abbrev_tokens(text: &str) -> impl Iterator<Item = &'static str> + '_ {
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| t.len() == 2 || t.len() == 3)
+        .filter_map(|t| STATES.iter().copied().find(|s| s.eq_ignore_ascii_case(t)))
+}
+
 /// Resolution order, most authoritative first: a whole-token state abbreviation
 /// (`QLD`), then a full state name (`Queensland`), then a 4-digit postcode via
 /// [`state_for_postcode`]. Returns `None` when nothing in the text names a
@@ -214,14 +221,9 @@ static STATE_NAMES_MATCHER: std::sync::LazyLock<MatchSet> =
 /// (the `WA` in "Walesby", the `SA` in "Sandgate"). Pure; no I/O.
 #[must_use]
 pub fn state_code(text: &str) -> Option<&'static str> {
-    // 1) Whole-token abbreviation (case-insensitive), split on non-alphanumerics.
-    for tok in text.split(|c: char| !c.is_ascii_alphanumeric()) {
-        if tok.len() == 2 || tok.len() == 3 {
-            let up = tok.to_ascii_uppercase();
-            if let Some(s) = STATES.iter().copied().find(|s| *s == up) {
-                return Some(s);
-            }
-        }
+    // 1) Whole-token abbreviation (case-insensitive) — first match wins.
+    if let Some(s) = state_abbrev_tokens(text).next() {
+        return Some(s);
     }
     // 2) Full state name as a substring (names are distinctive multi-word or
     //    long single words; ordered longest-first in STATE_NAMES). One
@@ -251,6 +253,44 @@ pub fn state_code(text: &str) -> Option<&'static str> {
     None
 }
 
+/// The AU state named by `text`, but **only when exactly one** distinct state is
+/// present — by 2–3 letter code as a whole token (`NSW`, `WA`, …) or by full
+/// state name as a case-insensitive substring (`"western australia"`).
+///
+/// Ambiguous text that spans several states returns [`None`]. The motivating
+/// case is a coarse phone area-code label such as `"Sydney / NSW / ACT"` or
+/// `"Perth / SA / NT"`, where a single Australian area code (`02`, `08`) covers
+/// more than one state/territory: [`state_code`] returns the *first* token it
+/// sees (`NSW`, `SA`), fabricating one hard jurisdiction for a value that
+/// genuinely spans several. This guard refuses to pick one.
+///
+/// Unlike [`state_code`], an EXPLICIT state mention is required — there is no
+/// postcode fallback (a postcode always resolves to exactly one state, which
+/// would defeat the "is it unambiguous?" question this answers). Pure.
+#[must_use]
+pub fn single_state_code(text: &str) -> Option<&'static str> {
+    let lc = text.to_lowercase();
+    // Whole-token abbreviations (shared with `state_code`) chained with full state
+    // names as a substring, folded through ONE distinctness pass: the first state
+    // seen is held; a second, DIFFERENT state proves the text spans several → None.
+    // `STATE_NAMES_MATCHER` is deliberately NOT reused for the name step — its
+    // `find_id` yields only the leftmost match, but detecting ambiguity needs EVERY
+    // distinct name present.
+    let names = STATE_NAMES
+        .iter()
+        .filter(|&&(n, _)| lc.contains(n))
+        .map(|&(_, c)| c);
+
+    let mut found: Option<&'static str> = None;
+    for code in state_abbrev_tokens(text).chain(names) {
+        match found {
+            Some(prev) if prev != code => return None,
+            _ => found = Some(code),
+        }
+    }
+    found
+}
+
 /// AU phone-number normaliser: returns E.164 form (`+61…`) when the
 /// input is a recognisable Australian number (08/02/03/04/07/13/1300/1800).
 ///
@@ -269,15 +309,25 @@ pub fn state_code(text: &str) -> Option<&'static str> {
 /// assert_eq!(normalise_phone("not a phone"), None);
 /// ```
 pub fn normalise_phone(s: &str) -> Option<String> {
+    // Every branch below routes its candidate through the strict E.164 gate, so
+    // this function can NEVER emit a syntactically invalid number (e.g. a bare
+    // "+61", "0061" → "+61", or "1300" → "+611300"). The `+61…` / `0061…` early
+    // returns used to pass their output back unvalidated, leaking malformed
+    // too-short E.164 straight into correlation keys; the gate closes that.
+    let validated = |e164: String| {
+        crate::core::validation::validate_phone_e164(&e164)
+            .valid
+            .then_some(e164)
+    };
     let digits: String = s
         .chars()
         .filter(|c| c.is_ascii_digit() || *c == '+')
         .collect();
     if digits.starts_with("+61") {
-        return Some(digits);
+        return validated(digits);
     }
     if digits.starts_with("0061") {
-        return Some(format!("+{}", &digits[2..]));
+        return validated(format!("+{}", &digits[2..]));
     }
     // The second digit must be a real ACMA AU national-significant-number
     // lead (2/3/4/5/7/8), matching the gate the 9-digit branch below already
@@ -294,7 +344,7 @@ pub fn normalise_phone(s: &str) -> Option<String> {
             b'2' | b'3' | b'4' | b'5' | b'7' | b'8'
         )
     {
-        return Some(format!("+61{}", &digits[1..]));
+        return validated(format!("+61{}", &digits[1..]));
     }
     if digits.len() == 9
         && (digits.starts_with('2')
@@ -304,10 +354,10 @@ pub fn normalise_phone(s: &str) -> Option<String> {
             || digits.starts_with('7')
             || digits.starts_with('8'))
     {
-        return Some(format!("+61{digits}"));
+        return validated(format!("+61{digits}"));
     }
     if digits.starts_with("1300") || digits.starts_with("1800") {
-        return Some(format!("+61{digits}"));
+        return validated(format!("+61{digits}"));
     }
     None
 }
@@ -343,7 +393,7 @@ pub fn au_area_code_region(
 /// ```
 /// use huntsman_search_engine::util::address_au::au_phone_region;
 ///
-/// let (_slug, name, states) = au_phone_region("+61 2 9876 5432").unwrap();
+/// let (_slug, name, states) = au_phone_region("+61 2 9876 5432").expect("should succeed");
 /// assert_eq!(name, "Central East");
 /// assert_eq!(states, &["NSW", "ACT"]);
 /// assert!(au_phone_region("+61 412 345 678").is_none()); // mobile — no region
@@ -395,13 +445,6 @@ impl AuLineType {
         }
     }
 
-    /// True for a line that names a person's personal device or premises (mobile
-    /// or geographic fixed line), as opposed to a business/service number.
-    #[must_use]
-    pub fn is_personal(self) -> bool {
-        matches!(self, Self::Mobile | Self::GeographicFixed)
-    }
-
     /// True for an inbound business/service line (`1300`/`1800`/`13`/`190x`) —
     /// a number that ties its holder to an organisation rather than a person.
     #[must_use]
@@ -429,10 +472,10 @@ impl AuLineType {
 /// ```
 /// use huntsman_search_engine::util::address_au::{au_phone_line_type, AuLineType};
 ///
-/// assert_eq!(au_phone_line_type("0412 345 678").unwrap().0, AuLineType::Mobile);
-/// assert_eq!(au_phone_line_type("(07) 3739 4511").unwrap().0, AuLineType::GeographicFixed);
-/// assert_eq!(au_phone_line_type("1800 123 456").unwrap().0, AuLineType::Freephone);
-/// assert_eq!(au_phone_line_type("1300 975 707").unwrap().0, AuLineType::LocalRate);
+/// assert_eq!(au_phone_line_type("0412 345 678").expect("should succeed").0, AuLineType::Mobile);
+/// assert_eq!(au_phone_line_type("(07) 3739 4511").expect("should succeed").0, AuLineType::GeographicFixed);
+/// assert_eq!(au_phone_line_type("1800 123 456").expect("should succeed").0, AuLineType::Freephone);
+/// assert_eq!(au_phone_line_type("1300 975 707").expect("should succeed").0, AuLineType::LocalRate);
 /// assert!(au_phone_line_type("+1 555 123 4567").is_none()); // not Australian
 /// ```
 #[must_use]
@@ -442,7 +485,7 @@ pub fn au_phone_line_type(value: &str) -> Option<(AuLineType, &'static str)> {
     // `6`, so a bare leading `61` is only stripped when a `+` marks it as a
     // country code — a plain `61…` foreign number is left intact (→ `None`).
     let plus = value.contains('+');
-    let digits: String = value.chars().filter(char::is_ascii_digit).collect();
+    let digits = crate::util::str_util::ascii_digits(value);
     let nat = if let Some(rest) = digits.strip_prefix("0061") {
         rest
     } else if plus && let Some(rest) = digits.strip_prefix("61") {

@@ -19,6 +19,7 @@ use serde::Deserialize;
 
 use super::profile_kit;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -63,7 +64,7 @@ pub(super) fn build_entities(user: CwUser, scan_id: &str) -> Vec<Entity> {
     out.push(e);
 
     // Profile URL.
-    let mut u = Entity::new(EntityKind::Url, &profile_url, 0.78, scan_id);
+    let mut u = Entity::new(EntityKind::Url, &profile_url, confidence::STRONG, scan_id);
     u.tag("codewars");
     u.add_evidence(ev());
     out.push(u);
@@ -115,7 +116,7 @@ impl Module for CodewarsUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Codewars profile: real name, clan/org, city via public kata-platform API (free)"
+        "Codewars profile recon — surfaces real name, clan/org, and city via the public kata-platform API (free)"
     }
     fn priority(&self) -> u8 {
         49
@@ -163,9 +164,11 @@ impl Module for CodewarsUser {
             "https://www.codewars.com/api/v1/users/{}",
             urlencode(handle)
         );
-        let user: CwUser = match fetch_json_or_404(&ctx.http, SRC, &url).await {
-            Ok(Some(u)) => u,
-            Ok(None) | Err(_) => return Ok(ModuleResult::new()),
+        // 404 (`Ok(None)`) = genuine "no such user" clean miss; every other
+        // failure (429/5xx/transport) propagates via `?` instead of a fake 404
+        // (T2.117 — `fetch_json_or_404`'s split is pinned in `util::http::tests`).
+        let Some(user) = fetch_json_or_404::<CwUser>(&ctx.http, SRC, &url).await? else {
+            return Ok(ModuleResult::new());
         };
         if !user.username.eq_ignore_ascii_case(handle) {
             return Ok(ModuleResult::new());

@@ -15,13 +15,12 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::RequestBuilderExt;
-use crate::util::http::handle_keyed_error;
 
 const KEY_ENV: &str = "HUNTSMAN_LEAKIX_KEY";
 const SRC: &str = "leakix";
@@ -62,7 +61,7 @@ const MAX_PORTS: usize = 20;
 /// timestamps), and raises the `leak` / `ssh-exposed` tags. Caller guarantees the
 /// response carries at least one service or leak event.
 fn build_exposure_entity(kind: EntityKind, value: &str, body: &HostResp, scan_id: &str) -> Entity {
-    let mut entity = Entity::new(kind, value, 0.88, scan_id);
+    let mut entity = Entity::new(kind, value, confidence::EXPERT, scan_id);
     entity.tag("leakix");
     if !body.leaks.is_empty() {
         entity.tag("leak");
@@ -139,7 +138,7 @@ impl Module for LeakIx {
         "leakix"
     }
     fn description(&self) -> &'static str {
-        "Host and domain exposure event analysis"
+        "LeakIX exposure recon — correlates host and domain exposure events to surface leaks"
     }
     fn priority(&self) -> u8 {
         102
@@ -175,7 +174,7 @@ impl Module for LeakIx {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let key = match ctx.key_opt(KEY_ENV) {
+        let initial_key = match ctx.key_opt(KEY_ENV) {
             Some(k) => k,
             None => return Ok(ModuleResult::new()),
         };
@@ -189,35 +188,26 @@ impl Module for LeakIx {
             _ => return Ok(ModuleResult::new()),
         };
         let url = format!("https://leakix.net/{path}/{value}");
-        let mut retries = 2u8;
-        let body: HostResp = loop {
-            if ctx.cancel.is_cancelled() {
-                return Ok(ModuleResult::new());
-            }
-            let resp = ctx
-                .http
+        // Key cascade via the shared primitive: on a terminal key quota/auth
+        // failure, rotate to the next untried usable pooled key so one call
+        // spends every credential the pool holds. `absent_statuses: &[404]` —
+        // LeakIX answers an unindexed host with 404, a clean miss rather than
+        // an error, exactly as this module treated it before.
+        let Some(resp) = crate::util::http::keyed_cascade(ctx, SRC, initial_key, &[404], |key| {
+            ctx.http
                 .get(&url)
                 .header("api-key", key)
                 .header("Accept", "application/json")
-                .send_tagged(SRC)
-                .await?;
-            let status = resp.status();
-            if status.as_u16() == 404 {
-                return Ok(ModuleResult::new());
-            }
-            if !status.is_success() {
-                let code = status.as_u16();
-                if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
-                    continue;
-                }
-                return Err(crate::util::http::http_status_error(SRC, resp).await);
-            }
-            // json_scanned: leakix responses contain exposure/credential data —
-            // scan the raw body for embedded API keys.
-            break crate::util::http::json_scanned(resp, SRC)
-                .await
-                .map_err(|e| crate::core::error::Error::module(SRC, e))?;
+        })
+        .await?
+        else {
+            return Ok(ModuleResult::new());
         };
+        // json_scanned: leakix responses contain exposure/credential data —
+        // scan the raw body for embedded API keys.
+        let body: HostResp = crate::util::http::json_scanned(resp, SRC)
+            .await
+            .map_err(|e| crate::core::error::Error::module(SRC, e))?;
         if body.services.is_empty() && body.leaks.is_empty() {
             return Ok(ModuleResult::new());
         }

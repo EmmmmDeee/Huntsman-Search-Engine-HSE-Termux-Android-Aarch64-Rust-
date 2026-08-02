@@ -40,18 +40,18 @@ use super::*;
                 "domain": "cloudflare.com"
             }
         }"#;
-        let r: Resp = serde_json::from_str(json).unwrap();
+        let r: Resp = serde_json::from_str(json).expect("should succeed");
         assert_eq!(r.success, Some(true));
-        assert!((r.latitude.unwrap() - (-27.4766)).abs() < 0.001);
-        assert!((r.longitude.unwrap() - 153.0166).abs() < 0.001);
+        assert!((r.latitude.expect("should succeed") - (-27.4766)).abs() < 0.001);
+        assert!((r.longitude.expect("should succeed") - 153.0166).abs() < 0.001);
         assert_eq!(r.city.as_deref(), Some("South Brisbane"));
-        assert_eq!(r.connection.as_ref().unwrap().asn_num, Some(13335));
+        assert_eq!(r.connection.as_ref().expect("should succeed").asn_num, Some(13335));
     }
 
     #[test]
     fn resp_deserializes_failure() {
         let json = r#"{"success": false, "message": "Invalid IP address"}"#;
-        let r: Resp = serde_json::from_str(json).unwrap();
+        let r: Resp = serde_json::from_str(json).expect("should succeed");
         assert_eq!(r.success, Some(false));
         assert!(r.latitude.is_none());
     }
@@ -59,7 +59,7 @@ use super::*;
     #[test]
     fn resp_tolerates_missing_fields() {
         let json = r#"{"success": true, "latitude": 0.0, "longitude": 0.0}"#;
-        let r: Resp = serde_json::from_str(json).unwrap();
+        let r: Resp = serde_json::from_str(json).expect("should succeed");
         assert_eq!(r.success, Some(true));
         assert!(r.connection.is_none());
         assert!(r.city.is_none());
@@ -103,7 +103,7 @@ use super::*;
         let coords = of_kind(&ents, EntityKind::Coordinates).expect("Coordinates entity");
         // ip_whois_geo formats coords to 6 dp directly.
         assert_eq!(coords.value, "-27.476600,153.016600");
-        assert!((coords.confidence - 0.55).abs() < 1e-9);
+        assert!((coords.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
         assert!(coords.has_tag("geoint"));
         assert!(coords.has_tag("country:AU"), "country code is uppercased");
         assert!(coords.has_tag("au-state:QLD"), "Brisbane → QLD box");
@@ -132,6 +132,57 @@ use super::*;
         let asn = of_kind(&ents, EntityKind::Asn).expect("Asn");
         assert_eq!(asn.value, "AS13335");
         assert!(asn.has_tag("ip-whois"));
+    }
+
+    #[test]
+    fn surfaces_region_code_and_isp_domain_previously_dropped() {
+        let body = resp(
+            r#"{
+                "success": true, "country": "Australia", "country_code": "AU",
+                "region": "Queensland", "region_code": "QLD", "city": "South Brisbane",
+                "latitude": -27.4766, "longitude": 153.0166,
+                "connection": { "isp": "Telstra", "org": "Telstra Corporation", "asn": 1221, "domain": "telstra.com" }
+            }"#,
+        );
+        let ents = build_entities(&body, "203.0.113.9", "s");
+        let coords = of_kind(&ents, EntityKind::Coordinates).expect("Coordinates");
+        let attr = |k: &str| coords.evidence[0].attributes.get(k).map(String::as_str);
+        assert_eq!(attr("region_code"), Some("QLD"));
+        assert_eq!(attr("isp_domain"), Some("telstra.com"));
+        // The ISP domain is also stamped on the Organisation attribution.
+        let org = of_kind(&ents, EntityKind::Organisation).expect("Organisation");
+        assert_eq!(
+            org.evidence[0].attributes.get("isp_domain").map(String::as_str),
+            Some("telstra.com")
+        );
+    }
+
+    #[test]
+    fn coordinates_carry_the_originating_ip_for_login_ip_recognition() {
+        // The module's own doc comment frames it as `ip_geo`'s "second-source"
+        // corroborating partner, and `build_entities` explicitly filters CDN/
+        // anycast edge IPs because "its geo is the datacenter's, not the
+        // subject's" — this module's coordinate fix is meant to represent the
+        // SUBJECT's location, exactly like `ip_geo`'s. The correlator's shared
+        // `person_login_ip_coords` definition (used by both
+        // `best_au_location_estimate` and `au_location_corroboration`) only
+        // recognises a Coordinates fix as tied to a breach/stealer login IP when
+        // its evidence carries an `ip` attribute equal to that IP — `ip_geo`
+        // stamps it, but this module previously did not, so an ipwho.is fix on
+        // the exact same login IP silently never counted as person-location
+        // corroboration despite being eligible (not hosting/proxy/platform-infra
+        // tagged). The attribute must equal the input IP verbatim.
+        let body = resp(
+            r#"{"success": true, "country_code": "AU", "latitude": -33.8688, "longitude": 151.2093}"#,
+        );
+        let ents = build_entities(&body, "203.0.113.7", "s");
+        let coords = of_kind(&ents, EntityKind::Coordinates).expect("Coordinates entity");
+        assert_eq!(
+            coords.evidence[0].attributes.get("ip").map(String::as_str),
+            Some("203.0.113.7"),
+            "Coordinates evidence must carry the originating IP so \
+             person_login_ip_coords can recognise this as a login-IP fix"
+        );
     }
 
     #[test]
@@ -213,6 +264,75 @@ use super::*;
     }
 
     #[test]
+    fn connection_domain_yields_a_domain_entity() {
+        // connection.domain (the ASN/ISP's own registered domain, e.g.
+        // "cloudflare.com" for AS13335) has no struct field prior to this
+        // fix, so serde silently drops it and it never becomes an entity —
+        // even though the sibling connection.org field on the exact same
+        // object is turned into an Organisation a few lines below. Locks in
+        // that a populated connection.domain now surfaces as its own Domain
+        // entity, distinct from (and in addition to) the Organisation.
+        let body = resp(
+            r#"{
+                "success": true, "country": "Australia", "country_code": "AU",
+                "region": "Queensland", "city": "South Brisbane",
+                "latitude": -27.4766, "longitude": 153.0166, "postal": "4101",
+                "timezone_id": "Australia/Brisbane",
+                "connection": {
+                    "isp": "Cloudflare Inc", "org": "APNIC Research",
+                    "asn": 13335, "domain": "cloudflare.com"
+                }
+            }"#,
+        );
+        let ents = build_entities(&body, "1.1.1.1", "s");
+        assert_eq!(
+            ents.len(),
+            5,
+            "coords + address + org + asn + the new domain entity"
+        );
+
+        let dom = of_kind(&ents, EntityKind::Domain).expect("Domain entity from connection.domain");
+        assert_eq!(dom.value, "cloudflare.com");
+        assert!((dom.confidence - confidence::MEDIUM_HIGH).abs() < 1e-9);
+        assert!(dom.has_tag("geoint"));
+        assert!(dom.has_tag("derived"));
+        assert!(dom.has_tag("ip-whois"));
+        assert_eq!(
+            dom.evidence[0].attributes.get("domain").map(String::as_str),
+            Some("cloudflare.com")
+        );
+
+        // The sibling Organisation is still built independently from the
+        // same connection object — this fix must not alter it.
+        let org = of_kind(&ents, EntityKind::Organisation).expect("Organisation");
+        assert_eq!(org.value, "APNIC Research");
+    }
+
+    #[test]
+    fn absent_connection_domain_yields_no_domain_entity() {
+        // Most fixtures (e.g. full_au_record_yields_coords_address_org_and_asn)
+        // have no "domain" key in connection at all — must deserialize fine
+        // (#[serde(default)]) and simply not emit a Domain entity.
+        let body = resp(
+            r#"{"success": true, "latitude": -27.4766, "longitude": 153.0166,
+                "connection": { "isp": "Cloudflare Inc", "org": "APNIC Research", "asn": 13335 }}"#,
+        );
+        assert!(body.connection.as_ref().expect("should succeed").domain.is_none());
+        let ents = build_entities(&body, "1.1.1.1", "s");
+        assert!(of_kind(&ents, EntityKind::Domain).is_none());
+    }
+
+    #[test]
+    fn blank_connection_domain_yields_no_domain_entity() {
+        let body = resp(
+            r#"{"success": true, "latitude": -27.4766, "longitude": 153.0166,
+                "connection": { "org": "APNIC Research", "asn": 13335, "domain": "" }}"#,
+        );
+        let ents = build_entities(&body, "1.1.1.1", "s");
+        assert!(of_kind(&ents, EntityKind::Domain).is_none());
+    }
+
+    #[test]
     fn no_coords_still_yields_org_and_asn() {
         // No lat/lon at all: the coords block is skipped, but the connection
         // still produces Organisation + ASN entities.
@@ -220,8 +340,8 @@ use super::*;
         let ents = build_entities(&body, "1.2.3.4", "s");
         assert!(of_kind(&ents, EntityKind::Coordinates).is_none());
         assert_eq!(
-            of_kind(&ents, EntityKind::Organisation).unwrap().value,
+            of_kind(&ents, EntityKind::Organisation).expect("should succeed").value,
             "Telstra"
         );
-        assert_eq!(of_kind(&ents, EntityKind::Asn).unwrap().value, "AS1221");
+        assert_eq!(of_kind(&ents, EntityKind::Asn).expect("should succeed").value, "AS1221");
     }

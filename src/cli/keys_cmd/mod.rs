@@ -1,7 +1,7 @@
 //! `hse keys` — manage the global API-key pool.
 //!
-//! Subcommands: add / list / validate / remove / status / bank / services /
-//! import-tsv. The pool lives at $HOME/.huntsman_keys.json (mode 0600)
+//! Subcommands: add / list / validate / remove / status / health / prune /
+//! bank / services / import-tsv. The pool lives at $HOME/.huntsman_keys.json (mode 0600)
 //! and is shared across scans; every `identify_api_key` discovery and
 //! `hse set-key` mutation lands here.
 //!
@@ -149,6 +149,28 @@ pub enum KeysAction {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Operator health roll-up per service: total/usable key counts, the
+    /// per-status census, and mean/worst health scores. Read-only.
+    Health,
+    /// Prune degraded low-value keys — drop Trial/Basic keys whose success rate
+    /// has fallen below `--min-success-rate`, once they have at least
+    /// `--min-uses` recorded uses to judge by. Scarce Standard/Premium
+    /// credentials are always retained (revoke those deliberately).
+    ///
+    /// Dry-run by DEFAULT: without `--apply` it previews the count against a
+    /// throwaway clone and mutates nothing. Pass `--apply` to prune the real
+    /// pool and persist the result.
+    Prune {
+        /// Drop a judged key when its success rate is below this (0.0–1.0).
+        #[arg(long, default_value_t = 0.5)]
+        min_success_rate: f64,
+        /// Minimum recorded uses before a key is eligible to be judged.
+        #[arg(long, default_value_t = 10)]
+        min_uses: u64,
+        /// Actually prune and save. Omit for a non-destructive preview.
+        #[arg(long)]
+        apply: bool,
+    },
 }
 
 pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
@@ -157,14 +179,7 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
     let pool = key_pool::global_pool();
 
     match action {
-        KeysAction::Set { name, value } => {
-            use std::collections::BTreeMap;
-            let mut updates = BTreeMap::new();
-            updates.insert(name.clone(), value);
-            crate::util::keys::write_keys(&updates, &[])
-                .map_err(|e| Error::Other(e.to_string()))?;
-            println!("✓ {name} set in {}", crate::util::keys::env_path());
-        }
+        KeysAction::Set { name, value } => cmd_set_key(name, value)?,
         KeysAction::Add {
             service,
             key,
@@ -185,6 +200,7 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
                     names.join(", ")
                 )));
             }
+
             let mut entry = KeyEntry::new(&key);
             entry.notes = notes;
             entry.environment = env;
@@ -273,22 +289,26 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             let mut validated = 0u32;
             let mut active = 0u32;
             for (svc, entries) in &targets {
+                // Whether `service_defs` even defines a probe for this service —
+                // the difference between "no validator exists" and "the probe ran
+                // but was inconclusive" (a blocked/timed-out/5xx endpoint).
+                let known = crate::util::service_defs::find_service(svc).is_some();
                 for entry in entries {
                     print!("  {svc}: testing {}… ", char_prefix(&entry.value, 8));
-                    match key_pool::validate_key(svc, &entry.value).await {
+                    let outcome = key_pool::validate_key(svc, &entry.value).await;
+                    match outcome {
                         Some(true) => {
                             pool.mark_validated(svc, &entry.value, true);
-                            println!("ACTIVE");
                             active += 1;
                         }
                         Some(false) => {
                             pool.mark_validated(svc, &entry.value, false);
-                            println!("INVALID");
                         }
-                        None => {
-                            println!("UNKNOWN (no validator for service)");
-                        }
+                        // Indeterminate (or unknown service) — leave the stored
+                        // status untouched, exactly as `validate_key` intends.
+                        None => {}
                     }
+                    println!("{}", validation_label(known, outcome));
                     validated += 1;
                 }
             }
@@ -575,8 +595,115 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
                 println!("Validation done: {active} active, {invalid} invalid.");
             }
         }
+
+        KeysAction::Health => {
+            let mut report = pool.health_report();
+            if report.is_empty() {
+                println!("Key pool is empty. Use `hse keys add <service> <key>` to add keys.");
+                return Ok(());
+            }
+            report.sort_by(|a, b| a.service.cmp(&b.service));
+            println!(
+                "{:<20} {:>5} {:>6} {:>6} {:>6}  STATUS CENSUS",
+                "SERVICE", "TOTAL", "USABLE", "AVG", "WORST"
+            );
+            println!("{}", "-".repeat(78));
+            for h in &report {
+                let b = &h.breakdown;
+                println!(
+                    "{:<20} {:>5} {:>6} {:>6.2} {:>6.2}  {} active / {} untested / {} invalid / \
+                     {} rate-limited / {} exhausted / {} revoked",
+                    h.service,
+                    h.total,
+                    h.usable,
+                    h.avg_health,
+                    h.min_health,
+                    b.active,
+                    b.untested,
+                    b.invalid,
+                    b.rate_limited,
+                    b.exhausted,
+                    b.revoked
+                );
+            }
+        }
+
+        KeysAction::Prune {
+            min_success_rate,
+            min_uses,
+            apply,
+        } => {
+            let pruned = run_prune(&pool, min_success_rate, min_uses, apply);
+            if apply {
+                key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save pool: {e}")))?;
+                println!(
+                    "Pruned {pruned} degraded key(s) from the pool ({} remaining).",
+                    pool.total_keys()
+                );
+            } else {
+                println!(
+                    "DRY-RUN: {pruned} degraded key(s) WOULD be pruned (success rate < \
+                     {min_success_rate}, \u{2265} {min_uses} uses, Trial/Basic tier). Re-run \
+                     with --apply to prune and save."
+                );
+            }
+        }
     }
     Ok(())
+}
+
+pub(super) fn cmd_set_key(name: String, value: String) -> Result<()> {
+    use std::collections::BTreeMap;
+
+    let mut updates = BTreeMap::new();
+    updates.insert(name.clone(), value);
+    crate::util::keys::write_keys(&updates, &[]).map_err(|e| Error::Other(e.to_string()))?;
+    println!("✓ {name} set in {}", crate::util::keys::env_path());
+    Ok(())
+}
+
+/// Human-readable status for one `hse keys validate` probe. `validate_key`
+/// returns `None` for TWO distinct reasons and the caller must tell them apart:
+/// either the service is unknown to `service_defs` (no probe is possible), or the
+/// probe ran but was INCONCLUSIVE — a transport failure, timeout, 429, or 5xx,
+/// which `validate_key` deliberately does not treat as a rejection. The old CLI
+/// printed "no validator for service" for both, so a KNOWN service whose endpoint
+/// was merely blocked/timed-out (e.g. `see_know` behind a denied egress → curl
+/// 56 / HTTP 502) was mislabelled as if no validator existed. `service_known`
+/// disambiguates. **Pure** — unit-tested directly.
+fn validation_label(service_known: bool, outcome: Option<bool>) -> &'static str {
+    match outcome {
+        Some(true) => "ACTIVE",
+        Some(false) => "INVALID",
+        None if service_known => {
+            "UNKNOWN (probe inconclusive — transport error / timeout / rate-limited; left unchanged)"
+        }
+        None => "UNKNOWN (no validator for service)",
+    }
+}
+
+/// Prune degraded low-value keys from `pool`. Pure over the passed-in pool (no
+/// `global_pool()` singleton, no network, no persistence) so it is unit-testable,
+/// mirroring [`run_tsv_import`].
+///
+/// When `apply` is `false` the prune runs against a throwaway clone
+/// (`KeyPool::from_data(pool.snapshot())`) so the real pool is left untouched; the
+/// returned count is exactly what an `--apply` run WOULD remove, reusing the same
+/// [`crate::util::key_pool::KeyPool::prune_degraded`] predicate with no logic
+/// duplication. When `apply` is `true` the real `pool` is pruned in place. Returns
+/// the number of keys pruned.
+fn run_prune(
+    pool: &crate::util::key_pool::KeyPool,
+    min_success_rate: f64,
+    min_uses: u64,
+    apply: bool,
+) -> usize {
+    if apply {
+        pool.prune_degraded(min_success_rate, min_uses)
+    } else {
+        let preview = crate::util::key_pool::KeyPool::from_data(pool.snapshot());
+        preview.prune_degraded(min_success_rate, min_uses)
+    }
 }
 
 /// Take up to `n` chars from the start of `s` — char-aware to avoid
@@ -610,7 +737,7 @@ fn run_tsv_import(
     dry_run: bool,
     pool: &crate::util::key_pool::KeyPool,
 ) -> TsvImportSummary {
-    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+    use crate::util::key_harvest::identify_api_key;
     use crate::util::key_pool::{KeyEntry, KeyStatus};
 
     let mut summary = TsvImportSummary {

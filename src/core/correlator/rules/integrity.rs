@@ -17,11 +17,12 @@ use crate::core::relation::{identity_uids, sorted_confined_adjacency, strongest_
 
 /// AU-069 — High-integrity connection.
 pub(in crate::core::correlator) fn rule_au_069_high_integrity_connection(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const MAX_HOPS: usize = 5;
     // Every link on the strongest route must clear this floor for the connection
     // to count as reliable end to end.
@@ -111,8 +112,12 @@ mod tests {
         let mid = mk(EntityKind::Person, "Alice");
         let b = mk(EntityKind::Username, "alice");
         let rels = [edge(&a, &mid, 0.9), edge(&mid, &b, 0.9)];
-        let out =
-            rule_au_069_high_integrity_connection(&[a.clone(), mid, b.clone()], &rels, "s", 0);
+        let out = rule_au_069_high_integrity_connection(
+            &RuleContext::new(&[a.clone(), mid, b.clone()]),
+            &rels,
+            "s",
+            0,
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].rule_id, "AU-069");
         assert_eq!(out[0].severity, Severity::High);
@@ -127,7 +132,10 @@ mod tests {
         let mid = mk(EntityKind::Person, "Alice");
         let b = mk(EntityKind::Username, "alice");
         let rels = [edge(&a, &mid, 0.9), edge(&mid, &b, 0.3)];
-        assert!(rule_au_069_high_integrity_connection(&[a, mid, b], &rels, "s", 0).is_empty());
+        assert!(
+            rule_au_069_high_integrity_connection(&RuleContext::new(&[a, mid, b]), &rels, "s", 0)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -136,6 +144,9 @@ mod tests {
         let a = mk(EntityKind::Email, "a@x.com");
         let b = mk(EntityKind::Username, "alice");
         let rels = [edge(&a, &b, 0.95)];
-        assert!(rule_au_069_high_integrity_connection(&[a, b], &rels, "s", 0).is_empty());
+        assert!(
+            rule_au_069_high_integrity_connection(&RuleContext::new(&[a, b]), &rels, "s", 0)
+                .is_empty()
+        );
     }
 }

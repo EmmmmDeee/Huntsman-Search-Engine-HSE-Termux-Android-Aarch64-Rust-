@@ -19,7 +19,7 @@
 //!     III, PhD, MD, Esq. removed before handle derivation.
 //!   * **Hyphenated surname** — "Smith-Jones" yields merged and per-part shapes.
 
-use url::form_urlencoded::byte_serialize;
+use crate::core::confidence;
 
 // ── Output caps ──────────────────────────────────────────────────────────────
 pub(super) const MAX_USERNAMES: usize = 48;
@@ -36,7 +36,7 @@ const W_ALIAS: f64 = 0.26;
 
 pub(super) const EMAIL_CONF: f64 = 0.30;
 pub(super) const PIVOT_CONF: f64 = 0.20;
-pub(super) const SUBJECT_CONF: f64 = 0.60;
+pub(super) const SUBJECT_CONF: f64 = confidence::MEDIUM_PLUS;
 
 // ── Provider set ─────────────────────────────────────────────────────────────
 const DEFAULT_DOMAINS: &[&str] = &[
@@ -93,7 +93,7 @@ fn provider_weight(domain: &str) -> f64 {
         "gmail.com" | "googlemail.com" => 1.0,
         "outlook.com" | "hotmail.com" | "live.com" | "msn.com" => 0.6,
         "yahoo.com" | "ymail.com" => 0.5,
-        "icloud.com" | "me.com" | "mac.com" => 0.45,
+        "icloud.com" | "me.com" | "mac.com" => confidence::LOW_MEDIUM,
         "aol.com" => 0.4,
         "gmx.com" | "gmx.net" | "mail.com" => 0.35,
         "proton.me" | "protonmail.com" | "pm.me" | "tutanota.com" => 0.3,
@@ -616,17 +616,17 @@ pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<String> {
 
     let mut logins: Vec<(String, f64)> = vec![
         (format!("{f}.{l}"), 1.00),
-        (format!("{f}{l}"), 0.95),
-        (format!("{fi}{l}"), 0.70),
-        (format!("{f}_{l}"), 0.60),
-        (format!("{f}{li}"), 0.45),
-        (format!("{l}.{f}"), 0.40),
+        (format!("{f}{l}"), confidence::VERY_HIGH_PLUSPLUS),
+        (format!("{fi}{l}"), confidence::HIGH_PLUS),
+        (format!("{f}_{l}"), confidence::MEDIUM_PLUS),
+        (format!("{f}{li}"), confidence::LOW_MEDIUM),
+        (format!("{l}.{f}"), confidence::LOW),
     ];
     if let Some(m) = p.middle.as_deref() {
-        logins.push((format!("{f}{m}{l}"), 0.50));
+        logins.push((format!("{f}{m}{l}"), confidence::MEDIUM));
     }
     if let Some(n) = p.number.as_deref() {
-        logins.push((format!("{f}.{l}{n}"), 0.45));
+        logins.push((format!("{f}.{l}{n}"), confidence::LOW_MEDIUM));
         logins.push((format!("{f}{l}{n}"), 0.42));
     }
 
@@ -818,8 +818,12 @@ fn initial(s: &str) -> char {
     s.chars().next().unwrap_or('x')
 }
 
+/// Terse local alias for the canonical percent-encoder. The encoding logic
+/// lives in exactly one place ([`crate::util::http::urlencode`]); this keeps the
+/// URL-builder call sites above readable without re-implementing it.
+#[inline]
 fn q(s: &str) -> String {
-    byte_serialize(s.as_bytes()).collect()
+    crate::util::http::urlencode(s)
 }
 
 fn extract_number(raw: &str) -> Option<String> {
@@ -858,11 +862,7 @@ fn clean_display_token(tok: &str) -> Option<String> {
 }
 
 fn titlecase(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
+    crate::util::str_util::upper_first(s)
 }
 
 fn sanitize(s: &str) -> String {

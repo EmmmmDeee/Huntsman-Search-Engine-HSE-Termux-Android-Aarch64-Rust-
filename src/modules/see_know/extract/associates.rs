@@ -4,6 +4,7 @@
 //! tags. Reaches parent helpers/imports via `use super::*`.
 
 use super::*;
+use crate::core::confidence;
 
 /// People-search relationship arrays SeekNow returns on a name / identity
 /// record, mapped to the relationship label stamped on each emitted Person.
@@ -33,9 +34,9 @@ const RELATIONSHIP_FIELDS: &[(&str, &str)] = &[
 ];
 
 /// Confidence for a relative/associate Person — a corroborating lead, held
-/// deliberately below the 0.50 expansion floor so the family graph is recorded
+/// deliberately below the confidence::MEDIUM expansion floor so the family graph is recorded
 /// and connected without auto-pivoting a sub-scan of every named relative.
-const ASSOCIATE_CONF: f64 = 0.45;
+const ASSOCIATE_CONF: f64 = confidence::LOW_MEDIUM;
 
 /// Pull a person name from a relationship-array element: a bare string, or an
 /// object carrying `full_name` / `name` / `first_name`+`last_name`.
@@ -59,7 +60,7 @@ fn associate_name(v: &Value) -> Option<String> {
 /// on one family member surface — and connect to — the others (the angle-
 /// independent family graph: searching any member returns the rest). The emitted
 /// Person is a secondary, record-derived lead at [`ASSOCIATE_CONF`] — deliberately
-/// below the 0.50 expansion floor, so a relative is recorded and connected but not
+/// below the confidence::MEDIUM expansion floor, so a relative is recorded and connected but not
 /// auto-pivoted into a full sub-scan (the family tree can't fan out unbounded);
 /// the relation builders, not this pass, assert the edge.
 pub(super) fn extract_associates(
@@ -80,9 +81,17 @@ pub(super) fn extract_associates(
                 continue;
             };
             // A relationship entry must look like a real person name (a space) and
-            // not be the subject re-listed.
+            // not be the subject re-listed. Reject a doubled/slug username
+            // masquerading as a name (breach `full_name = "{username} {username}"`)
+            // and the `"\N \N"` SQL-null pair (identical tokens the doubled-token
+            // rule also catches) — the SAME guard the subject-name path applies
+            // (extract/mod.rs), so an associate is held to identical integrity.
             let name = crate::util::str_util::title_case(&raw);
-            if !name.contains(' ') || name.len() < 5 || name.eq_ignore_ascii_case(subject) {
+            if !name.contains(' ')
+                || name.len() < 5
+                || name.eq_ignore_ascii_case(subject)
+                || is_username_derived_name(&name)
+            {
                 continue;
             }
             if !seen.insert(format!("@assoc:{}", name.to_lowercase())) {
@@ -101,7 +110,11 @@ pub(super) fn extract_associates(
             });
             let mut ev = Evidence::new(SRC, format!("SeekNow {label} of {subject}"))
                 .with_attr("relationship", *label)
-                .with_attr("provider", "see-know.ru")
+                // Domain-agnostic — SeekNow rotates across three domains
+                // (see `see_know::client::all_base_urls`), so a literal TLD
+                // here would misdescribe records served by a fallback and go
+                // stale on the next rotation.
+                .with_attr("provider", "see-know")
                 .with_attr("api_key_origin", key_fp);
             if !subject.is_empty() {
                 ev = ev.with_attr("related_to", subject);

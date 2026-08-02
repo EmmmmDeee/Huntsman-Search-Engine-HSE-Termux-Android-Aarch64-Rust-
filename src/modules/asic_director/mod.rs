@@ -16,7 +16,7 @@
 //!   * T1591.001 — Determine Physical Locations (registered office address)
 //!
 //! Confidence model:
-//!   * Exact name match in ASIC register: 0.80 (official govt source)
+//!   * Exact name match in ASIC register: confidence::HIGH_PLUSPLUS (official govt source)
 //!   * ACN emitted for downstream abn_lookup: 0.82
 //!   * Address from registered office: 0.72
 //!
@@ -25,12 +25,19 @@
 //! via `abn_lookup` then enriches the full company record including HQ address
 //! and geolocation — making this the highest-confidence AU geo pivot after a
 //! FullName seed.
+//!
+//! `process()` distinguishes "the request never actually got a readable
+//! response" (a real `Error::module` failure, surfaced to the operator and to
+//! the T2.7 scraper-health signal) from "ASIC Connect Online answered but had
+//! no director record matching this name" (the ordinary, honest empty
+//! success) — see [`request_failed`].
 
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -103,7 +110,12 @@ fn build_director_entities(
     .with_attr("register", "ASIC");
 
     // Organisation entity.
-    let mut org = Entity::new(EntityKind::Organisation, company_name, 0.80, scan_id);
+    let mut org = Entity::new(
+        EntityKind::Organisation,
+        company_name,
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
     org.tag(SRC);
     org.tag("asic");
     org.tag("au-company");
@@ -119,7 +131,12 @@ fn build_director_entities(
     if !acn.is_empty() {
         let acn_clean: String = acn.chars().filter(char::is_ascii_digit).collect();
         if acn_clean.len() == 9 {
-            let mut acn_e = Entity::new(EntityKind::AbnAcn, &acn_clean, 0.82, scan_id);
+            let mut acn_e = Entity::new(
+                EntityKind::AbnAcn,
+                &acn_clean,
+                confidence::CORROBORATED,
+                scan_id,
+            );
             acn_e.tag(SRC);
             acn_e.tag("asic");
             acn_e.tag("acn");
@@ -136,7 +153,7 @@ fn build_director_entities(
 
     // Address from registered office.
     if let Some(addr) = address.filter(|s| !s.trim().is_empty()) {
-        let mut ae = Entity::new(EntityKind::Address, addr, 0.72, scan_id);
+        let mut ae = Entity::new(EntityKind::Address, addr, confidence::ATTRIBUTED, scan_id);
         ae.tag(SRC);
         ae.tag("asic");
         ae.tag("registered-office");
@@ -148,7 +165,12 @@ fn build_director_entities(
         out.push(ae);
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(addr) {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.62, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::NOTABLE,
+                scan_id,
+            );
             c.tag(SRC);
             c.tag("addr-derived");
             c.tag("geoint");
@@ -242,7 +264,7 @@ impl Module for AsicDirector {
     }
 
     fn description(&self) -> &'static str {
-        "ASIC company directors register — find director appointments for a full name and pivot to company ACN/address"
+        "ASIC company-directors recon — surfaces director appointments for a full name and pivots to company ACN/address"
     }
 
     fn priority(&self) -> u8 {
@@ -292,35 +314,62 @@ impl Module for AsicDirector {
             crate::util::http::urlencode(full_name),
         );
 
-        let resp = match ctx
+        let mut html_read_ok = false;
+        let mut result = ModuleResult::new();
+
+        if let Ok(resp) = ctx
             .http
             .get(&url)
             .header("User-Agent", crate::util::http::UA_BROWSER)
             .header("Accept", "text/html,application/xhtml+xml")
             .send_tagged(SRC)
             .await
+            && resp.status().is_success()
+            && let Some(html) = crate::util::http::read_body_capped(resp, 1_000_000).await
         {
-            Ok(r) => r,
-            Err(_) => return Ok(ModuleResult::new()),
-        };
-
-        if !resp.status().is_success() {
-            return Ok(ModuleResult::new());
+            html_read_ok = true;
+            result.extend(parse_asic_html(&html, full_name).into_iter().flat_map(
+                |(company, acn, address)| {
+                    build_director_entities(
+                        &company,
+                        &acn,
+                        full_name,
+                        address.as_deref(),
+                        &ctx.scan_id,
+                    )
+                },
+            ));
         }
 
-        let html = match crate::util::http::read_body_capped(resp, 1_000_000).await {
-            Some(h) => h,
-            None => return Ok(ModuleResult::new()),
-        };
+        if request_failed(html_read_ok, !result.entities.is_empty()) {
+            return Err(Error::module(
+                SRC,
+                "ASIC Connect Online request failed at the transport level, returned a \
+                 non-success HTTP status, or its response body was unreadable — not \"no \
+                 director records for this name\"",
+            ));
+        }
 
-        let mut result = ModuleResult::new();
-        result.extend(parse_asic_html(&html, full_name).into_iter().flat_map(
-            |(company, acn, address)| {
-                build_director_entities(&company, &acn, full_name, address.as_deref(), &ctx.scan_id)
-            },
-        ));
         Ok(result)
     }
+}
+
+/// Whether `process()`'s single ASIC Connect Online request should be
+/// surfaced as a real `Error::module` failure rather than its ordinary empty
+/// success. True precisely when the request never produced a readable HTML
+/// body (`html_read_ok` false — a transport error, non-success HTTP status,
+/// or an oversized/undecodable body) AND nothing was found
+/// (`found_any_entity` false). A request that read successfully but simply
+/// matched no director record for this name is not a failure — only "ASIC
+/// Connect Online never actually answered this scan" is. Mirrors
+/// `au_property`'s `all_legs_unreachable` for this module's single-request
+/// case (T2.120: "same defect class already fixed the same day for sibling
+/// `au_property` — `asic_director` was missed"); pure and free of
+/// `ModuleContext`/network so it is unit-testable without a live server —
+/// see `tests::request_failed_*`.
+#[must_use]
+fn request_failed(html_read_ok: bool, found_any_entity: bool) -> bool {
+    !html_read_ok && !found_any_entity
 }
 
 #[cfg(test)]

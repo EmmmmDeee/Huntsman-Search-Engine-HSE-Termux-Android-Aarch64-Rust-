@@ -1,6 +1,7 @@
 use serde_json::Value;
 
 use crate::core::{
+    confidence,
     entity::EntityKind,
     module::{ModuleCategory, ModuleCost},
     scan::{Target, TargetKind},
@@ -98,7 +99,7 @@ fn primary_fans_out_person_website_and_handles() {
     let gh = ents
         .iter()
         .find(|e| e.kind == EntityKind::Username && e.value == "torvalds")
-        .unwrap();
+        .expect("should succeed");
     assert!(gh.tags.iter().any(|t| t == "github"));
 }
 
@@ -154,7 +155,7 @@ fn candidate_is_sub_floor_with_description_evidence() {
     };
     let e = candidate_entity(&hit, TargetKind::FullName, "s");
     assert_eq!(e.kind, EntityKind::Person);
-    assert!(e.confidence < 0.50);
+    assert!(e.confidence < confidence::MEDIUM);
     assert!(e.tags.iter().any(|t| t == "name-candidate"));
     assert!(e.tags.iter().any(|t| t == "Q123"));
     assert!(

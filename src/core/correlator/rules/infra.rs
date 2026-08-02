@@ -4,10 +4,11 @@
 use super::*;
 
 pub(in crate::core::correlator) fn rule_au_004_malicious_infrastructure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     entities
         .iter()
         .filter(|e| {
@@ -42,10 +43,11 @@ pub(in crate::core::correlator) fn rule_au_004_malicious_infrastructure(
 }
 
 pub(in crate::core::correlator) fn rule_au_005_anonymous_network(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const ANON_TAGS: &[&str] = &["tor-exit", "tor", "anonymous-network", "anonymous-vpn"];
     entities
         .iter()
@@ -77,10 +79,11 @@ pub(in crate::core::correlator) fn rule_au_005_anonymous_network(
 }
 
 pub(in crate::core::correlator) fn rule_au_006_proxy_vpn(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const ANON_TAGS: &[&str] = &["tor-exit", "tor", "anonymous-network", "anonymous-vpn"];
     entities
         .iter()
@@ -116,10 +119,11 @@ pub(in crate::core::correlator) fn rule_au_006_proxy_vpn(
 }
 
 pub(in crate::core::correlator) fn rule_au_007_high_risk_reputation(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const RISK_TAGS: &[&str] = &[
         "high-risk",
         "high-risk-inbound",
@@ -157,10 +161,11 @@ pub(in crate::core::correlator) fn rule_au_007_high_risk_reputation(
 }
 
 pub(in crate::core::correlator) fn rule_au_008_exposed_service(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const EXPOSURE_TAGS: &[&str] = &[crate::core::tags::VULNERABLE, "ssh-exposed", "leak"];
     entities
         .iter()
@@ -195,10 +200,11 @@ pub(in crate::core::correlator) fn rule_au_008_exposed_service(
 }
 
 pub(in crate::core::correlator) fn rule_au_010_infra_consensus(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let mut out = Vec::new();
     for e in entities
         .iter()
@@ -238,10 +244,11 @@ pub(in crate::core::correlator) fn rule_au_010_infra_consensus(
 }
 
 pub(in crate::core::correlator) fn rule_au_015_threat_intel_hit(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     const TI_SOURCES: &[&str] = &["ip_reputation", "threatfox"];
 
     entities
@@ -259,16 +266,7 @@ pub(in crate::core::correlator) fn rule_au_015_threat_intel_hit(
             let attribution = if sources.is_empty() {
                 "a curated threat-intel feed".to_string()
             } else {
-                sources
-                    .into_iter()
-                    .enumerate()
-                    .fold(String::new(), |mut acc, (i, s)| {
-                        if i > 0 {
-                            acc.push_str(" + ");
-                        }
-                        acc.push_str(s);
-                        acc
-                    })
+                sources.into_iter().collect::<Vec<_>>().join(" + ")
             };
             let ti_hints: Vec<&str> = e
                 .tags
@@ -296,10 +294,11 @@ pub(in crate::core::correlator) fn rule_au_015_threat_intel_hit(
 }
 
 pub(in crate::core::correlator) fn rule_au_028_subdomain_takeover_risk(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     entities
         .iter()
         .filter(|e| e.kind == EntityKind::Domain && e.has_tag("subdomain-takeover"))
@@ -321,10 +320,11 @@ pub(in crate::core::correlator) fn rule_au_028_subdomain_takeover_risk(
 }
 
 pub(in crate::core::correlator) fn rule_au_029_cloud_storage_exposure(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     let exposed: Vec<&Entity> = entities
         .iter()
         .filter(|e| e.has_tag("cloud-storage") && e.has_tag(crate::core::tags::VULNERABLE))
@@ -366,11 +366,12 @@ pub(in crate::core::correlator) fn rule_au_029_cloud_storage_exposure(
 /// already-flagged nodes are left to AU-004/AU-008/AU-015. Deterministic
 /// (BTreeMap-ordered).
 pub(in crate::core::correlator) fn rule_au_031_malicious_adjacency(
-    entities: &[Entity],
+    context: &RuleContext,
     relations: &[Relation],
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use crate::core::relation::RelationKind;
     use std::collections::{BTreeMap, HashMap};
 
@@ -530,10 +531,11 @@ pub(in crate::core::correlator) fn au_network_of(
 /// One finding per distinct network. Consumer ISP → Medium (residency/connection
 /// signal); AARNet → High (specific affiliation). Pure over the confirmed set.
 pub(in crate::core::correlator) fn rule_au_097_au_isp_network(
-    entities: &[Entity],
+    context: &RuleContext,
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
+    let entities = context.entities();
     use std::collections::{BTreeMap, BTreeSet};
 
     let mut found: BTreeMap<&'static str, (AuNetworkKind, BTreeSet<String>)> = BTreeMap::new();
@@ -582,4 +584,212 @@ pub(in crate::core::correlator) fn rule_au_097_au_isp_network(
             )
         })
         .collect()
+}
+
+/// CDN/reverse-proxy providers known to front DNS **globally**, via an anycast
+/// edge network — the visible A/AAAA record is always the CDN's edge, never
+/// the origin. Deliberately excludes the on-premise WAF appliances
+/// `waf_detect` also fingerprints (F5 BIG-IP, Citrix NetScaler, Barracuda,
+/// ModSecurity): those typically sit in front of infrastructure that still
+/// resolves directly on the operator's own network, so treating their
+/// presence as "the DNS record isn't the origin" would be an unsupported
+/// generalisation — precision over recall, matching this codebase's stance
+/// that a false unmasking claim is worse than a missed one.
+const DNS_FRONTING_CDN_PROVIDERS: &[&str] = &[
+    "Cloudflare",
+    "Akamai",
+    "Fastly",
+    "CloudFront",
+    "Sucuri",
+    "Incapsula",
+    "StackPath",
+    "KeyCDN",
+];
+
+/// AU-111 — CDN-fronted domain's SPF-authorised sender IP is a likely origin
+/// candidate.
+///
+/// `waf_detect` fingerprints a domain sitting behind a global anycast CDN
+/// (Cloudflare et al.) from its HTTP response headers/cookies. When
+/// `dns_intel` finds that same domain's SPF record authorising a specific IP
+/// as a mail sender, that IP is genuine mail infrastructure — SMTP isn't
+/// proxied the way HTTP/HTTPS is, so a CDN reverse-proxy never fronts it —
+/// making it a likely member of the same network as the true web origin the
+/// CDN is hiding. This is `PROBLEM_TREE` C4's named "MX/SPF/TXT records (mail
+/// isn't proxied → origin leak)" origin-unmasking signal, built from data
+/// both modules already collect (no new external API/network dependency).
+///
+/// Not a certainty — a subject may run mail on infrastructure entirely
+/// separate from their web origin — so this is Medium, an operator pivot
+/// point rather than a confirmed unmasking. Sibling signal: AU-113 unmasks
+/// the same CDN-origin question from a direct-connect-subdomain angle
+/// instead of SPF (`rules::org`) — kept as two independent rules rather than
+/// merged, per the technique-diversity principle (TA0043): each is real
+/// evidence from a different angle, and either firing alone is still useful
+/// even when the other's precondition (an SPF record / a direct-connect
+/// subdomain) doesn't hold.
+pub(in crate::core::correlator) fn rule_au_111_cdn_origin_candidate(
+    context: &RuleContext,
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let entities = context.entities();
+    let fronted: Vec<(&Entity, &str)> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain && e.has_tag("waf-detected"))
+        .filter_map(|e| {
+            DNS_FRONTING_CDN_PROVIDERS
+                .iter()
+                .find(|p| e.has_tag(&format!("waf:{p}")))
+                .map(|p| (e, *p))
+        })
+        .collect();
+    if fronted.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for (dom, provider) in fronted {
+        let candidates = entities.iter().filter(|e| {
+            e.kind == EntityKind::IpAddress
+                && e.has_tag("spf")
+                && e.evidence
+                    .iter()
+                    .any(|ev| ev.attributes.get("domain").is_some_and(|d| d == &dom.value))
+        });
+        for ip in candidates {
+            out.push(Correlation::new(
+                "AU-111",
+                "CDN origin candidate",
+                Severity::Medium,
+                format!(
+                    "'{}' is CDN-fronted ({provider}); its SPF-authorised mail sender {} is not \
+                     proxied by the CDN and is a likely origin/hosting-network candidate",
+                    dom.value, ip.value
+                ),
+                vec![dom.uid.clone(), ip.uid.clone()],
+                scan_id,
+                ts,
+            ));
+        }
+    }
+    out
+}
+
+/// Narrowest-permitted (largest) IPv4 block this rule will treat as a
+/// meaningful shared-infrastructure signal: `/22`, the same "largest block a
+/// single operator typically owns end-to-end" floor `netblock`'s `MAX_HOSTS`
+/// comment already establishes. A `Cidr` entity broader than this (an ISP or
+/// cloud-provider allocation spanning many unrelated customers) would turn
+/// "these two IPs are in the same block" into noise rather than signal.
+const MIN_IPV4_CIDR_PREFIX: u8 = 22;
+
+/// The IPv6 analogue of [`MIN_IPV4_CIDR_PREFIX`]: `/48` is the conventional
+/// smallest end-site allocation (RFC 6177), so anything broader is provider-
+/// scale address space, not a single shared deployment.
+const MIN_IPV6_CIDR_PREFIX: u8 = 48;
+
+/// True if `ip_entity` is already explicitly linked to `block` by another
+/// module's own evidence (e.g. `netblock`'s host-expansion, which tags each
+/// emitted `IpAddress` `netblock-member` and records the parent block as a
+/// `cidr` evidence attribute). Re-deriving that as a fresh AU-112 correlation
+/// would just restate an already-explicit parent/child relationship as if it
+/// were a new inference.
+fn already_linked_to_block(ip_entity: &Entity, block: &str) -> bool {
+    ip_entity
+        .evidence
+        .iter()
+        .any(|ev| ev.attributes.get("cidr").is_some_and(|c| c == block))
+}
+
+/// AU-112 — an independently-discovered IP address falls within a network
+/// block (`Cidr` entity) also discovered in this scan — shared hosting
+/// infrastructure, not personal ownership.
+///
+/// `bgpview`/`ripestat`/`netblock` surface `Cidr` entities (an ASN's announced
+/// prefix, or an explicit netblock target) using the CIDR-containment maths
+/// [`crate::util::spf`] already built (and tests) for SPF `ip4:`/`ip6:`
+/// mechanisms — reused here rather than re-implemented, per this project's
+/// one-classifier-per-concern convention. An `IpAddress` entity reached by a
+/// *different* route (DNS resolution, a banner grab, a second subdomain) that
+/// happens to fall inside that same block is evidence the two share a hosting
+/// network/provider — useful for infrastructure mapping, but explicitly not a
+/// personal-ownership or co-location claim, so this stays Medium and framed as
+/// a hosting/infra pivot, matching AU-111's precedent for inferred
+/// infrastructure signals. Scoped to narrow blocks only
+/// ([`MIN_IPV4_CIDR_PREFIX`]/[`MIN_IPV6_CIDR_PREFIX`]) so a broad ISP/cloud
+/// allocation containing thousands of unrelated customers can't manufacture
+/// noise, and skips pairs [`already_linked_to_block`] already makes explicit.
+pub(in crate::core::correlator) fn rule_au_112_shared_cidr_infrastructure(
+    context: &RuleContext,
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let entities = context.entities();
+    use crate::util::spf::Ipv4Cidr;
+    use crate::util::spf::Ipv6Cidr;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    enum Block {
+        V4(Ipv4Cidr),
+        V6(Ipv6Cidr),
+    }
+
+    let mut blocks: Vec<(&Entity, Block)> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Cidr)
+        .filter_map(|e| {
+            let v = e.value.trim();
+            if v.contains(':') {
+                let c = Ipv6Cidr::parse(v)?;
+                (c.prefix_len() >= MIN_IPV6_CIDR_PREFIX).then_some((e, Block::V6(c)))
+            } else {
+                let c = Ipv4Cidr::parse(v)?;
+                (c.prefix_len() >= MIN_IPV4_CIDR_PREFIX).then_some((e, Block::V4(c)))
+            }
+        })
+        .collect();
+    if blocks.is_empty() {
+        return Vec::new();
+    }
+    // Deterministic (CONVENTIONS.md §5): `entities` order is not guaranteed
+    // stable across runs, so fix the iteration order explicitly rather than
+    // let it leak into which pair's Correlation is constructed first.
+    blocks.sort_by(|a, b| a.0.value.cmp(&b.0.value).then(a.0.uid.cmp(&b.0.uid)));
+
+    let mut ips: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+    ips.sort_by(|a, b| a.value.cmp(&b.value).then(a.uid.cmp(&b.uid)));
+
+    let mut out = Vec::new();
+    for (block_entity, block) in &blocks {
+        for ip in &ips {
+            if already_linked_to_block(ip, &block_entity.value) {
+                continue;
+            }
+            let contained = match block {
+                Block::V4(c) => ip.value.parse::<Ipv4Addr>().is_ok_and(|a| c.contains(a)),
+                Block::V6(c) => ip.value.parse::<Ipv6Addr>().is_ok_and(|a| c.contains(a)),
+            };
+            if !contained {
+                continue;
+            }
+            out.push(Correlation::new(
+                "AU-112",
+                "Shared CIDR infrastructure",
+                Severity::Medium,
+                format!(
+                    "IP {} falls within network block {} also discovered this scan — likely \
+                     shared hosting infrastructure, not necessarily common ownership",
+                    ip.value, block_entity.value
+                ),
+                vec![block_entity.uid.clone(), ip.uid.clone()],
+                scan_id,
+                ts,
+            ));
+        }
+    }
+    out
 }

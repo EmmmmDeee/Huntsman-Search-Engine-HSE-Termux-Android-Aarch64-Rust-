@@ -13,7 +13,9 @@
 //! - Address entity from city/region/country fields (free geolocation)
 //! - SSID-derived intelligence (names, business identifiers)
 //! - WiFi density and encryption breakdown (neighbourhood profiling)
-//! - MacAddress entities for device/AP correlation (top 5 only)
+//! - MacAddress entities for the closest APs (true distinct count on each)
+//! - Ssid entities for person-named networks, pivotable back to every
+//!   location that network has been observed at
 
 mod account;
 mod emit;
@@ -27,6 +29,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
@@ -35,6 +38,8 @@ use crate::core::{
 use crate::util::budget::{BudgetSnapshot, QuotaBudget};
 
 use emit::{emit_bssid_entities, emit_ssid_entities, extract_bluetooth_intel, extract_cell_intel};
+#[cfg(test)]
+use fetch::get_with_retry;
 use fetch::{fetch_detail, fetch_wigle, fetch_wigle_ssid, fetch_wigle_typed};
 
 // WiGLE credentials (env names + embedded fallbacks) are resolved by the
@@ -78,19 +83,39 @@ struct Network {
 
 pub(super) const SRC: &str = "wigle";
 
+/// Access points emitted per geo search. A bbox query returns up to 100
+/// networks; the closest few are the ones that locate anything, and the true
+/// distinct count rides along on every emitted entity as `aps_observed`.
+const MAX_EMITTED_APS: usize = 5;
+
 /// Per-scan + per-session WiGLE budgets, backed by the shared
 /// [`QuotaBudget`] primitive that `util::see_know` and
 /// `util::oathnet` already use.
 ///
 /// WiGLE's quota is generous (300/day free, higher tiers paid) so we
-/// allow:
+/// allow, **per HTTP request issued** — not per dispatch:
 ///   - 3 geo searches per scan (the most expensive endpoint — bbox
 ///     scan returns up to 100 networks)
 ///   - 5 BSSID lookups per scan (single-record, cheap)
 ///   - 2 cell tower searches per scan
 ///   - 2 Bluetooth beacon searches per scan
+///   - 3 SSID searches per scan
 ///
-/// Session ceilings (50/100/30/30 respectively) keep `hse serve` /
+/// The per-request denomination is the whole point and was previously
+/// only aspirational: a dispatch is charged one unit, but a geo dispatch
+/// issues a second request when the tight bounding box comes back empty,
+/// and a BSSID dispatch probes the WiFi, cell and Bluetooth corpora in
+/// turn. A scan billed for 3 + 5 could therefore spend 6 + 15 against an
+/// allowance denominated in requests. Every call site now charges
+/// immediately before the request it pays for, so these numbers mean
+/// what they say.
+///
+/// [`BSSID_BUDGET`] is shared with `modules::wifi_intel`, which resolves
+/// scanned access points through the same `/detail` endpoint on the same
+/// credentials; two modules drawing on one upstream quota have to meter
+/// against one budget or neither number is real.
+///
+/// Session ceilings (50/100/30/30/40 respectively) keep `hse serve` /
 /// `hse live` sessions well below the daily allowance even with deep
 /// pivot chains. Both layers are env-tunable so operators on paid
 /// tiers can raise them without recompiling.
@@ -151,16 +176,23 @@ pub fn budget_snapshot() -> WigleBudgets {
         bssid: BSSID_BUDGET.snapshot(),
         cell: CELL_BUDGET.snapshot(),
         bluetooth: BLUETOOTH_BUDGET.snapshot(),
+        ssid: SSID_BUDGET.snapshot(),
     }
 }
 
-/// All four WiGLE budgets in one struct, for diagnostic surfaces.
+/// Every WiGLE budget in one struct, for diagnostic surfaces.
+///
+/// `ssid` was missing here while being declared, reset and consumed like the
+/// rest, so an operator whose SSID allowance was exhausted saw nothing on
+/// `/api/v1/stats` or in the dossier and had no way to tell why SSID pivots had
+/// stopped firing.
 #[derive(Debug, Clone, Copy)]
 pub struct WigleBudgets {
     pub geo: BudgetSnapshot,
     pub bssid: BudgetSnapshot,
     pub cell: BudgetSnapshot,
     pub bluetooth: BudgetSnapshot,
+    pub ssid: BudgetSnapshot,
 }
 
 pub struct Wigle;
@@ -171,7 +203,7 @@ impl Module for Wigle {
         "wigle"
     }
     fn description(&self) -> &'static str {
-        "WiGLE wireless intel — WiFi + cell tower + Bluetooth beacon observations by coords / BSSID"
+        "WiGLE wireless intel — pulls WiFi, cell-tower, and Bluetooth beacon observations by coords or BSSID to geolocate signals"
     }
     fn priority(&self) -> u8 {
         // Geolocation FINALISER — dispatched last so it resolves the coordinates,
@@ -200,6 +232,7 @@ impl Module for Wigle {
             EntityKind::Address,
             EntityKind::MacAddress,
             EntityKind::Organisation,
+            EntityKind::Ssid,
         ];
         KINDS
     }
@@ -222,19 +255,16 @@ impl Module for Wigle {
 
         let (user, token) = crate::util::keys::wigle_credentials(ctx);
 
+        // Each sub-search charges at the point a request is actually issued —
+        // SSID past its skip filters, BSSID per observation kind probed — so a
+        // dispatch that ends up making no call costs the operator nothing.
         if target.kind == TargetKind::Ssid {
-            if !SSID_BUDGET.try_increment() {
-                return Ok(ModuleResult::new());
-            }
             return self
                 .ssid_search(user, token, target.value.trim(), ctx)
                 .await;
         }
 
         if target.kind == TargetKind::MacAddress {
-            if !BSSID_BUDGET.try_increment() {
-                return Ok(ModuleResult::new());
-            }
             return self.bssid_lookup(user, token, &target.value, ctx).await;
         }
 
@@ -244,15 +274,17 @@ impl Module for Wigle {
 
         let (lat, lon) = crate::util::geo::parse_coords(&target.value)?;
 
-        let body = {
-            let tight = fetch_wigle(&ctx.http, user, token, lat, lon, 0.002).await?;
-            if tight.success == Some(true)
-                && tight.total_results.or(tight.result_count).unwrap_or(0) > 0
-            {
-                tight
-            } else {
-                fetch_wigle(&ctx.http, user, token, lat, lon, 0.01).await?
-            }
+        // Tight bbox first, widening only when it came back empty. The widened
+        // retry is a second billable request, so it draws its own unit: charging
+        // once for a path that issues two calls is what made a documented
+        // "3 geo searches per scan" cost up to six.
+        let tight = fetch_wigle(&ctx.http, user, token, lat, lon, 0.002).await?;
+        let empty = tight.success != Some(true)
+            || tight.total_results.or(tight.result_count).unwrap_or(0) == 0;
+        let body = if empty && GEO_BUDGET.try_increment() {
+            fetch_wigle(&ctx.http, user, token, lat, lon, 0.01).await?
+        } else {
+            tight
         };
 
         if body.success != Some(true) {
@@ -269,8 +301,12 @@ impl Module for Wigle {
         let mut result = ModuleResult::new();
 
         // ── Primary: Coordinates entity with WiFi corroboration ─────
-        let mut coords_entity =
-            Entity::new(EntityKind::Coordinates, &target.value, 0.85, &ctx.scan_id);
+        let mut coords_entity = Entity::new(
+            EntityKind::Coordinates,
+            &target.value,
+            confidence::HIGH_PLUSPLUS_PLUS,
+            &ctx.scan_id,
+        );
         coords_entity.tag("wigle");
         coords_entity.tag("wifi-observed");
         if let Some((lat, lon)) = crate::util::geohash::parse_coords(&target.value)
@@ -372,7 +408,12 @@ impl Module for Wigle {
             if !top_postcode.is_empty() {
                 addr_str = format!("{addr_str} {top_postcode}");
             }
-            let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.65, &ctx.scan_id);
+            let mut addr = Entity::new(
+                EntityKind::Address,
+                &addr_str,
+                confidence::HIGH,
+                &ctx.scan_id,
+            );
             addr.tag("wigle");
             addr.tag("wifi-derived");
             addr.add_evidence(
@@ -393,46 +434,19 @@ impl Module for Wigle {
 
         // ── SSID intelligence: extract names and business identifiers ──
         // Named-looking SSIDs ("Smith-Family") → identity leads.
-        let mut ssid_names: Vec<String> = body
-            .results
-            .iter()
-            .filter_map(|net| {
-                let ssid = net.ssid.as_deref()?.trim();
-                if ssid.is_empty() || ssid.len() < 4 || ssid.starts_with("DIRECT-") {
-                    return None;
-                }
-                if is_generic_ssid(ssid) {
-                    return None;
-                }
-                let parts: Vec<&str> = ssid.split(['-', '_', ' ']).collect();
-                (parts.len() >= 2
-                    && parts[0].len() >= 3
-                    && parts[0].starts_with(|c: char| c.is_ascii_uppercase()))
-                .then(|| ssid.to_string())
-            })
-            .collect();
-        ssid_names.sort();
-        ssid_names.dedup();
-
-        if !ssid_names.is_empty() {
-            let top_ssids: Vec<&str> = ssid_names.iter().take(10).map(String::as_str).collect();
-            let mut ssid_ev = Evidence::new(
-                SRC,
-                format!(
-                    "{} named WiFi network(s) near {}",
-                    top_ssids.len(),
-                    target.value
-                ),
-            )
-            .with_attr("named_ssids", top_ssids.join(", "));
-            if let Some(ref t) = most_recent {
-                ssid_ev = ssid_ev.with_attr("most_recent", t);
-            }
-            // Attach to the coordinates entity's evidence
-            if let Some(first) = result.entities.first_mut() {
-                first.add_evidence(ssid_ev);
-            }
+        if let Some(ssid_ev) =
+            named_ssid_evidence(&body.results, &target.value, most_recent.as_deref())
+            && let Some(first) = result.entities.first_mut()
+        {
+            first.add_evidence(ssid_ev);
         }
+        // …and as pivotable entities, so the expansion loop can resolve each
+        // name back to every location that network has been observed at.
+        result.extend(named_ssid_entities(
+            &body.results,
+            &target.value,
+            &ctx.scan_id,
+        ));
 
         // ── Top MAC addresses (AP BSSIDs) + each AP's OWN observed position ──
         result.extend(wifi_ap_entities(
@@ -534,11 +548,23 @@ fn wifi_ap_entities(
             Some((mac, dist, ap))
         })
         .collect();
-    macs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    // Deduplicate BEFORE ranking. `dedup_by_key` only removes CONSECUTIVE
+    // duplicates, so deduplicating after a distance sort left a BSSID that
+    // WiGLE reported twice at slightly different positions as two separate
+    // entries — consuming two of the emitted slots with one access point.
+    macs.sort_by(|a, b| a.0.cmp(b.0));
     macs.dedup_by_key(|m| m.0);
+    let distinct_aps = macs.len();
+    macs.sort_by(|a, b| {
+        a.1.partial_cmp(&b.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            // Total order: equal distances tie-break on BSSID so the emitted
+            // set is identical across runs regardless of response ordering.
+            .then_with(|| a.0.cmp(b.0))
+    });
 
     let mut out = Vec::new();
-    for &(mac, _, ap) in macs.iter().take(5) {
+    for &(mac, _, ap) in macs.iter().take(MAX_EMITTED_APS) {
         if mac.len() < 12 {
             continue;
         }
@@ -548,11 +574,20 @@ fn wifi_ap_entities(
         let (clat, clon) = ap.unwrap_or((qlat, qlon));
         let coord_val = format!("{clat:.6},{clon:.6}");
 
-        let mut e = Entity::new(EntityKind::MacAddress, mac, 0.60, scan_id);
+        let mut e = Entity::new(
+            EntityKind::MacAddress,
+            mac,
+            confidence::MEDIUM_PLUS,
+            scan_id,
+        );
         e.tag("wigle");
         e.tag(crate::core::tags::WIFI_AP);
         let mut ev = Evidence::new(SRC, format!("WiFi AP near {query_label}"))
-            .with_attr("coordinates", &coord_val);
+            .with_attr("coordinates", &coord_val)
+            // The emitted set is the closest `MAX_EMITTED_APS`; state how many
+            // distinct APs were actually observed so a bounded view is never
+            // mistaken for the whole corpus.
+            .with_attr("aps_observed", distinct_aps.to_string());
         if let Some(oui) = crate::util::oui::classify_mac(mac) {
             e.tag(format!("vendor:{}", oui.vendor));
             e.tag(format!("device:{}", oui.class.as_str()));
@@ -567,7 +602,12 @@ fn wifi_ap_entities(
         // only when WiGLE gave a real per-AP position (no phantom from the
         // query-point fallback).
         if let Some((alat, alon)) = ap {
-            let mut ce = Entity::new(EntityKind::Coordinates, &coord_val, 0.70, scan_id);
+            let mut ce = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::HIGH_PLUS,
+                scan_id,
+            );
             ce.tag("wigle");
             ce.tag("wifi-observed");
             ce.tag("geoint");
@@ -587,21 +627,190 @@ fn wifi_ap_entities(
     out
 }
 
-pub(super) fn is_generic_ssid(s: &str) -> bool {
-    // One cached `aho-corasick` pass via `util::scan` (SOL-F1) — equivalent to the
-    // old `GENERIC_SSIDS.iter().any(|g| lower.contains(g))`. Case-sensitive over the
-    // Unicode-lowercased string (the patterns are lowercase), so it preserves the
-    // exact `to_lowercase()` fold (non-ASCII included), unlike an ASCII-CI matcher.
-    static GENERIC: std::sync::LazyLock<crate::util::scan::MatchSet> =
-        std::sync::LazyLock::new(|| crate::util::scan::MatchSet::new(GENERIC_SSIDS));
-    GENERIC.is_match(&s.to_lowercase())
+/// SSIDs from a result set that look like a name a PERSON chose rather than a
+/// vendor default: at least two `-`/`_`/space separated parts, a first part of
+/// three or more characters starting with a capital, and not a
+/// carrier/default name ([`is_generic_ssid`]). Sorted and deduplicated.
+///
+/// One definition shared by [`named_ssid_evidence`] and
+/// [`named_ssid_entities`], so the prose count and the emitted entities can
+/// never disagree about which networks qualified.
+fn named_ssids(results: &[Network]) -> Vec<String> {
+    let mut names: Vec<String> = results
+        .iter()
+        .filter_map(|net| {
+            let ssid = net.ssid.as_deref()?.trim();
+            if ssid.is_empty() || ssid.len() < 4 || ssid.starts_with("DIRECT-") {
+                return None;
+            }
+            if is_generic_ssid(ssid) {
+                return None;
+            }
+            let parts: Vec<&str> = ssid.split(['-', '_', ' ']).collect();
+            (parts.len() >= 2
+                && parts[0].len() >= 3
+                && parts[0].starts_with(|c: char| c.is_ascii_uppercase()))
+            .then(|| ssid.to_string())
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
-pub(super) const GENERIC_SSIDS: &[&str] = &[
-    "linksys", "netgear", "default", "dlink", "tp-link", "tplink", "asus", "xfinity", "spectrum",
-    "att", "optimum", "cox", "telstra", "optus", "vodafone", "nbn", "iinet", "eduroam", "guest",
-    "free", "public", "open", "android", "iphone", "galaxy", "pixel", "setup", "config", "admin",
-    "test", "hidden", "unknown", "unnamed",
+/// Named networks observed near the target, as first-class [`EntityKind::Ssid`]
+/// entities.
+///
+/// This closes WiGLE's most valuable pivot. A geo search finds `Smith-Family`
+/// 200 m from the subject and the name was previously recorded only as a text
+/// attribute on some other entity — a dead end. `TargetKind::Ssid` is a valid
+/// scan target that this same module accepts, and [`Wigle::ssid_search`]
+/// resolves a sufficiently unique SSID to every GPS point it has ever been
+/// observed at. Emitting the name as an entity lets the expansion loop walk
+/// that edge: from "a named network near this coordinate" to "everywhere that
+/// network has been seen", which places its owner.
+///
+/// Confidence is deliberately `LOW`: a bounding box returns the neighbours'
+/// networks too, so proximity alone does not prove the subject owns this one.
+/// It sits above the expansion floor so the pivot runs, and below `MEDIUM` so
+/// nothing downstream reads it as an established link — `ssid_search`'s own
+/// uniqueness gate, and the correlator, decide whether it means anything.
+/// **Pure** (no I/O).
+fn named_ssid_entities(results: &[Network], query_label: &str, scan_id: &str) -> Vec<Entity> {
+    let names = named_ssids(results);
+    let observed = names.len();
+    names
+        .into_iter()
+        .map(|ssid| {
+            let mut e = Entity::new(EntityKind::Ssid, &ssid, confidence::LOW, scan_id);
+            e.tag(SRC);
+            e.tag("wifi-network");
+            e.tag("geo-lead");
+            e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("Named WiFi network observed near {query_label}"),
+                )
+                .with_attr("ssid", &ssid)
+                .with_attr("named_ssids_observed", observed.to_string()),
+            );
+            e
+        })
+        .collect()
+}
+
+/// Extract named/business-identifier SSIDs ("Smith-Family") from a WiGLE
+/// result set and build one summarising evidence record. Returns `None` when
+/// no SSID passes the name-shape filter. **Pure** (no I/O) so the headline
+/// count is unit-tested directly.
+///
+/// The evidence headline states the TRUE count of matching SSIDs, while the
+/// `named_ssids` attribute lists only the first 10 (bounded attribute size)
+/// — the two must stay distinct, or an operator with more than 10 named
+/// networks nearby would be told a false, truncated total.
+fn named_ssid_evidence(
+    results: &[Network],
+    target_value: &str,
+    most_recent: Option<&str>,
+) -> Option<Evidence> {
+    let ssid_names = named_ssids(results);
+    if ssid_names.is_empty() {
+        return None;
+    }
+
+    let top_ssids: Vec<&str> = ssid_names.iter().take(10).map(String::as_str).collect();
+    let mut ev = Evidence::new(
+        SRC,
+        format!(
+            "{} named WiFi network(s) near {target_value}",
+            ssid_names.len()
+        ),
+    )
+    .with_attr("named_ssids", top_ssids.join(", "));
+    if let Some(t) = most_recent {
+        ev = ev.with_attr("most_recent", t);
+    }
+    Some(ev)
+}
+
+/// True when an SSID is a default/carrier/generic name rather than one a person
+/// chose — the names whose WiGLE observations belong to strangers' routers, not
+/// the subject's.
+///
+/// Two matchers, because the terms fall into two very different classes.
+///
+/// Distinctive vendor and carrier strings ([`GENERIC_SSID_BRANDS`]) match as
+/// **substrings**: real defaults concatenate them (`xfinitywifi`, `NETGEAR47`,
+/// `TelstraFDA3B2`), and the strings are long and specific enough that they do
+/// not turn up inside ordinary words.
+///
+/// Short English words ([`GENERIC_SSID_WORDS`]) match only as **whole tokens**.
+/// Substring-matching these silently destroyed the module's flagship
+/// capability: `att`, `free`, `open` and `test` occur inside perfectly ordinary
+/// surnames, so `Seattle-Cafe`, `Freeman-Family`, `Openshaw-House` and
+/// `Testa-Household` were all classified generic — and because
+/// [`Wigle::ssid_search`] consults this before issuing any request, those
+/// subjects were never looked up at all. A whole-token test keeps
+/// `Free Public WiFi` generic while letting `Freeman-Family` through.
+pub(super) fn is_generic_ssid(s: &str) -> bool {
+    let lower = s.to_lowercase();
+
+    // One cached `aho-corasick` pass via `util::scan` (SOL-F1). Case-sensitive
+    // over the Unicode-lowercased string (the patterns are lowercase), so it
+    // preserves the exact `to_lowercase()` fold, unlike an ASCII-CI matcher.
+    static BRANDS: std::sync::LazyLock<crate::util::scan::MatchSet> =
+        std::sync::LazyLock::new(|| crate::util::scan::MatchSet::new(GENERIC_SSID_BRANDS));
+    if BRANDS.is_match(&lower) {
+        return true;
+    }
+
+    ssid_tokens(&lower).any(|tok| GENERIC_SSID_WORDS.contains(&tok))
+}
+
+/// Split an SSID into comparable word tokens: separated on any non-alphanumeric
+/// character and at every letter↔digit boundary, so `ATT4G-Home` yields
+/// `att`, `4`, `g`, `home` and the carrier prefix is recognised without
+/// substring-matching `att` inside `Seattle`.
+fn ssid_tokens(lower: &str) -> impl Iterator<Item = &str> {
+    lower
+        .split(|c: char| !c.is_alphanumeric())
+        .flat_map(|part| {
+            let mut tokens = Vec::new();
+            let mut start = 0;
+            let mut prev: Option<char> = None;
+            for (idx, ch) in part.char_indices() {
+                if let Some(p) = prev
+                    && p.is_numeric() != ch.is_numeric()
+                {
+                    tokens.push(&part[start..idx]);
+                    start = idx;
+                }
+                prev = Some(ch);
+            }
+            if start < part.len() {
+                tokens.push(&part[start..]);
+            }
+            tokens
+        })
+        .filter(|t| !t.is_empty())
+}
+
+/// Vendor/carrier strings distinctive enough to match anywhere in the name —
+/// defaults routinely concatenate them with hex or digits.
+pub(super) const GENERIC_SSID_BRANDS: &[&str] = &[
+    "linksys", "netgear", "dlink", "tp-link", "tplink", "xfinity", "spectrum", "optimum",
+    "telstra", "optus", "vodafone", "iinet", "eduroam", "android", "iphone", "galaxy", "unnamed",
+    "unknown", "hidden",
+];
+
+/// Short, common words that must match as a WHOLE TOKEN. Every one of these
+/// occurs inside ordinary surnames and place names; see [`is_generic_ssid`].
+/// `wifi`/`wlan` are deliberately absent: they are descriptive suffixes people
+/// append to their own names (`Smith-WiFi`), so treating them as generic would
+/// re-create the very false-positive class this split exists to remove.
+pub(super) const GENERIC_SSID_WORDS: &[&str] = &[
+    "default", "asus", "att", "cox", "nbn", "guest", "free", "public", "open", "pixel", "setup",
+    "config", "admin", "test",
 ];
 
 impl Wigle {
@@ -612,7 +821,13 @@ impl Wigle {
         bssid: &str,
         ctx: &ModuleContext,
     ) -> Result<ModuleResult> {
+        // One unit per kind actually probed, not one per dispatch: a BSSID absent
+        // from the WiFi and cell corpora costs three requests before the
+        // Bluetooth probe answers, and the caller used to be billed for one.
         for kind in [NetworkKind::Wifi, NetworkKind::Cell, NetworkKind::Bluetooth] {
+            if !BSSID_BUDGET.try_increment() {
+                break;
+            }
             if let Some(body) = fetch_detail(&ctx.http, user, token, bssid, kind).await
                 && body.success == Some(true)
                 && !body.results.is_empty()
@@ -641,6 +856,12 @@ impl Wigle {
         ctx: &ModuleContext,
     ) -> Result<ModuleResult> {
         if ssid.is_empty() || is_generic_ssid(ssid) {
+            return Ok(ModuleResult::new());
+        }
+        // Charged here, past the skip filters: a scan whose SSIDs are all
+        // carrier defaults issues no request and must keep its full allowance
+        // for the one distinctive name that appears later in the pivot chain.
+        if !SSID_BUDGET.try_increment() {
             return Ok(ModuleResult::new());
         }
         let body = fetch_wigle_ssid(&ctx.http, user, token, ssid).await?;

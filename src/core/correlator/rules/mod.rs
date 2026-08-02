@@ -7,8 +7,8 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use super::{Correlation, Severity};
-use crate::core::entity::{Entity, EntityKind};
+use super::{Correlation, RuleContext, Severity};
+use crate::core::entity::{Entity, EntityKind, canonical_handle};
 use crate::core::relation::{Relation, RelationKind};
 
 fn entities_of_kind(entities: &[Entity], kind: EntityKind) -> Vec<&Entity> {
@@ -167,24 +167,6 @@ const NON_IDENTITY_TOKENS: &[&str] = &[
     "from", "dns", "www", "http", "https", "html", "href", "mailto", "tel", "url",
 ];
 
-/// Canonical comparison form of a handle: ASCII-lowercased with the handle
-/// separators (`.`, `_`, `-`) removed, so the same handle written with
-/// inconsistent punctuation collapses to one token (`jordan.meyers`,
-/// `jordan_meyers`, `jordanmeyers` → `jordanmeyers`). People reuse a single
-/// handle across services with different separators; this is the comparison
-/// the match needs.
-///
-/// `pub(in crate::core)` (re-exported from `correlator::mod`): shared with
-/// `core::relation::builders::derive_reused_secret_link`, which folds handles
-/// identically to AU-047/AU-048/AU-106 so the graph edge and the correlations
-/// agree on which handles are the same account.
-pub(in crate::core) fn canonical_handle(s: &str) -> String {
-    s.chars()
-        .filter(|c| !matches!(c, '.' | '_' | '-'))
-        .map(|c| c.to_ascii_lowercase())
-        .collect()
-}
-
 /// Join at most `cap` of `values` with ", ", appending "(+N more)" when there
 /// are more — the single disclosure policy for every rule that names a
 /// handful of the identifiers/sources behind a finding (AU-047, AU-048,
@@ -217,6 +199,22 @@ fn is_generic_handle(handle: &str) -> bool {
     crate::util::preflight::is_placeholder_username(handle)
         || GENERIC_HANDLES.contains(&handle)
         || NON_IDENTITY_TOKENS.contains(&handle)
+}
+
+/// True when a handle value is a usable identity anchor: long enough once
+/// canonicalised, and not a generic / role / extraction-noise token. Junk handles
+/// (`from`, `dns`, role mailboxes) must never seed an identity claim — a live
+/// person-scan fired AU-045 on `from` and `dns`, mis-extracted as usernames and
+/// "confirmed" across two source families; those are parser artifacts, not
+/// aliases.
+///
+/// `pub(in crate::core)`: shared with `core::cross_scan`, so the handle a
+/// cross-scan history probe is willing to chase is exactly the handle the AU-034 /
+/// AU-045 / AU-076 rules are willing to anchor on.
+pub(in crate::core) fn is_anchorable_handle(value: &str) -> bool {
+    const MIN_HANDLE_LEN: usize = 4;
+    let handle = canonical_handle(value);
+    handle.len() >= MIN_HANDLE_LEN && !is_generic_handle(&handle)
 }
 
 /// Modules that *derive* a username by inference — a name permutation, an email
@@ -353,6 +351,16 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "breach",
         "stealer",
         "hudsonrock", // infostealer-log intelligence (exact module name)
+        // The remaining `ModuleCategory::Breach` modules, whose names carry no
+        // generic breach token and so fell through to `"other"` — the catch-all
+        // that is EXCLUDED from family-diversity counts. Four breach corpora were
+        // therefore contributing nothing to cross-family corroboration, and were
+        // invisible to the gap analysis's missing-family search. Exact module
+        // names; `source_family_covers_every_breach_category_module` pins them.
+        "comb_search", // COMB combo-list corpus
+        "psbdmp",      // Pastebin dump archive (paste exposure)
+        "niamonx",     // Niamonx breach-lookup API
+        "osintcat",    // OSINTCat breach-lookup API
     ]) {
         "breach"
     } else if has(&[
@@ -459,6 +467,11 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "rdap",
         "crtsh",
         "cert",
+        // Free passive-DNS subdomain aggregator (exact module: anubis). Its form
+        // matches no earlier needle, so without this it fell to `other` and was
+        // silently dropped from cross-family corroboration — unlike its CT/DNS
+        // siblings crtsh/certspotter(`cert`)/hackertarget which resolve here.
+        "anubis",
         "shodan",
         "censys",
         "greynoise",
@@ -473,6 +486,11 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "geo",
         "wigle",
         "mylnikov",
+        // Exact module name: `beacondb` contains no earlier needle (its "db"
+        // suffix matches nothing), so without it a beaconDB BSSID fix fell to
+        // `other` and was dropped from cross-family corroboration entirely —
+        // the same silent under-count documented for `anubis` above.
+        "beacondb",
         "overpass",
         "registry",
         // Internet-wide asset/IP scanners and IP-reputation feeds — exact registry
@@ -503,20 +521,28 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
 
 mod assoc;
 mod breach;
-mod breach_pii;
+pub(crate) mod breach_pii;
 mod broker;
+mod creator_exposure;
 mod crypto;
+mod dating_exposure;
+mod device_constellation;
+mod device_track;
 pub(crate) mod gap;
 mod geo;
+mod handle_variant;
 mod identity;
 mod infra;
+mod infra_closure;
 mod integrity;
 mod locale;
 pub(crate) mod location;
+mod lookalike;
 pub(crate) mod multipath;
 mod org;
 mod payid;
 mod resolved;
+mod reuse_closure;
 mod robust;
 mod sim;
 mod template;
@@ -524,6 +550,8 @@ mod transitive;
 
 pub(super) use assoc::*;
 pub(super) use breach::*;
+pub(super) use device_constellation::*;
+pub(super) use device_track::*;
 // Narrow re-export at the enum's own `pub(in crate::core)` visibility — the
 // blanket glob above is only `pub(super)` (correlator-internal), which would
 // otherwise cap `Secret` there too and block `core::relation::builders` from
@@ -531,18 +559,24 @@ pub(super) use breach::*;
 pub(in crate::core) use breach::Secret;
 pub(super) use breach_pii::*;
 pub(super) use broker::*;
+pub(super) use creator_exposure::*;
 pub(super) use crypto::*;
+pub(super) use dating_exposure::*;
 pub(super) use gap::*;
 pub(super) use geo::*;
+pub(super) use handle_variant::*;
 pub(super) use identity::*;
 pub(super) use infra::*;
+pub(super) use infra_closure::*;
 pub(super) use integrity::*;
 pub(super) use locale::*;
 pub(super) use location::*;
+pub(super) use lookalike::*;
 pub(super) use multipath::*;
 pub(super) use org::*;
 pub(super) use payid::*;
 pub(super) use resolved::*;
+pub(super) use reuse_closure::*;
 pub(super) use robust::*;
 pub(super) use sim::*;
 pub(super) use template::*;

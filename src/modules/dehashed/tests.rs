@@ -2,6 +2,7 @@ use super::DeHashed;
 use super::build::{balance_str, build_breach_entity, db_names, extract_records, selector_for};
 use super::types::DehashedResp;
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind},
     module::{Module, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
@@ -32,6 +33,14 @@ fn has(result: &ModuleResult, kind: EntityKind, value: &str) -> bool {
 }
 
 #[test]
+fn cache_ttl_is_24h_so_repeat_scans_dont_re_spend_a_paid_lookup() {
+    use crate::core::module::Module;
+    // Immutable breach dumps ⇒ the inter-scan cache serves a repeat scan for
+    // free; a 0 (trait default) would disable it, so pin the window.
+    assert_eq!(DeHashed.cache_ttl_secs(), 86_400);
+}
+
+#[test]
 fn accepts_six_kinds() {
     let m = DeHashed;
     for k in [
@@ -49,6 +58,31 @@ fn accepts_six_kinds() {
 #[test]
 fn cost_is_paid() {
     assert!(matches!(DeHashed.cost(), ModuleCost::Paid));
+}
+
+#[test]
+fn attack_techniques_reflect_the_full_shared_breach_rich_extraction() {
+    use crate::core::attack;
+    let t = DeHashed.attack_techniques();
+    // Each claimed technique is backed by a concrete extractor: credentials,
+    // emails, employee names (this file), IP addresses (this file), and —
+    // via the shared `breach_rich` catch-all this module runs — physical
+    // locations, business relationships, host fingerprints, and social
+    // media handles.
+    for id in [
+        "T1589.001",
+        "T1589.002",
+        "T1589.003",
+        "T1590.005",
+        "T1591.001",
+        "T1591.002",
+        "T1592",
+        "T1593.001",
+        "T1597.002",
+    ] {
+        assert!(t.contains(&id), "dehashed must claim {id}, got {t:?}");
+        assert!(attack::technique(id).is_some(), "{id} must be catalogued");
+    }
 }
 
 #[test]
@@ -108,7 +142,7 @@ fn aggregates_hits_top_databases_and_balance_from_v2_arrays() {
     .expect("exact `email` selector with a positive total emits a headline");
     assert_eq!(e.kind, EntityKind::Email);
     assert!(e.has_tag(tags::BREACH) && e.has_tag("dehashed"));
-    assert!((e.confidence - 0.88).abs() < 1e-9);
+    assert!((e.confidence - confidence::EXPERT).abs() < 1e-9);
     assert_eq!(attr(&e, "hits"), Some("900")); // server total, not len
     assert_eq!(attr(&e, "returned"), Some("3"));
     assert_eq!(attr(&e, "selector"), Some("email"));
@@ -134,7 +168,7 @@ fn count_only_response_omits_optional_aggregates() {
 
 #[test]
 fn name_headline_is_gated_on_a_real_subject_match() {
-    // A broad `name:` search returns same-name STRANGERS. The 0.88 breach-presence
+    // A broad `name:` search returns same-name STRANGERS. The confidence::EXPERT breach-presence
     // headline merges onto the engine's pre-seeded subject anchor, so it must NOT
     // be minted off a page that contains no record actually matching the subject
     // — nor off a bare count with no rows to verify (`oathnet_pro`'s gate). The
@@ -212,8 +246,8 @@ fn v2_record_surfaces_identity_and_hash_for_entity_linking() {
             }
         ]
     }"#;
-    let r: DehashedResp = serde_json::from_str(raw).unwrap();
-    let entries = r.entries.unwrap();
+    let r: DehashedResp = serde_json::from_str(raw).expect("should succeed");
+    let entries = r.entries.expect("should succeed");
     assert_eq!(entries.len(), 1);
     assert_eq!(db_names(&entries[0]["database_name"]), vec!["Collection#1"]);
 
@@ -244,7 +278,7 @@ fn v2_record_surfaces_identity_and_hash_for_entity_linking() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Password && e.value.starts_with("5f4"))
-        .unwrap();
+        .expect("should succeed");
     assert!(hash_ent.has_tag("password-hash"));
     assert!(result.entities.iter().all(|e| !e.has_tag(tags::CANDIDATE)));
 
@@ -255,7 +289,7 @@ fn v2_record_surfaces_identity_and_hash_for_entity_linking() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Email)
-        .unwrap();
+        .expect("should succeed");
     assert_eq!(
         attr(email_ent, "hashed_password"),
         Some("5f4dcc3b5aa765d61d8327deb882cf99")
@@ -280,8 +314,8 @@ fn email_in_the_password_slot_is_recovered_as_an_email_lead() {
             }
         ]
     }"#;
-    let r: DehashedResp = serde_json::from_str(raw).unwrap();
-    let entries = r.entries.unwrap();
+    let r: DehashedResp = serde_json::from_str(raw).expect("should succeed");
+    let entries = r.entries.expect("should succeed");
     let mut seen = HashSet::new();
     let mut result = ModuleResult::new();
     extract_records(
@@ -306,7 +340,7 @@ fn email_in_the_password_slot_is_recovered_as_an_email_lead() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Email && e.value == "leaked@corp.com")
-        .unwrap();
+        .expect("should succeed");
     assert!(recovered.has_tag("recovered-from-password"));
 }
 
@@ -338,6 +372,37 @@ fn non_target_stranger_record_is_quarantined_not_dropped() {
 }
 
 #[test]
+fn record_evidence_stamps_canonical_dbname_for_au105() {
+    // AU-105 (credential reuse across breaches) groups records by the `dbname`
+    // evidence attribute, falling back to the Evidence `source` FIELD (the module
+    // name "dehashed") when it is absent. DeHashed must therefore stamp the breach
+    // name under `dbname`, not only the `source` attribute — otherwise every
+    // DeHashed record collapses to one pseudo-breach and cross-breach reuse among
+    // a subject's DeHashed hits can never fire.
+    let entries = vec![json!({
+        "email": ["a@b.com"],
+        "password": ["reused-secret-1"],
+        "database_name": ["Collection#1"]
+    })];
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_records(&entries, "a@b.com", "fp", "s", &mut seen, &mut result);
+
+    let email = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Email && e.value == "a@b.com")
+        .expect("the subject email entity");
+    assert_eq!(
+        attr(email, "dbname"),
+        Some("Collection#1"),
+        "the breach name must be on the canonical `dbname` attr AU-105 reads"
+    );
+    // The `source` attribute is retained for existing consumers.
+    assert_eq!(attr(email, "source"), Some("Collection#1"));
+}
+
+#[test]
 fn weak_hash_is_cracked_offline_to_its_plaintext() {
     // hashed_password is md5("password") — the offline reverse-lookup recovers the
     // plaintext, surfaces it as a first-class node, and tags the hash entity with
@@ -356,7 +421,7 @@ fn weak_hash_is_cracked_offline_to_its_plaintext() {
         .entities
         .iter()
         .find(|e| e.kind == EntityKind::Password && e.value == "5f4dcc3b5aa765d61d8327deb882cf99")
-        .unwrap();
+        .expect("should succeed");
     assert!(hash_ent.has_tag("cracked"));
     assert!(hash_ent.has_tag("hash:md5"));
     assert!(hash_ent.has_tag("crackable:fast"));
@@ -378,4 +443,30 @@ fn multi_value_fields_surface_every_value() {
     assert!(has(&result, EntityKind::Email, "a.b@work.com"));
     assert!(has(&result, EntityKind::Password, "hunter2"));
     assert!(has(&result, EntityKind::Password, "letmein99"));
+}
+
+#[test]
+fn username_derived_name_is_not_minted_as_person() {
+    // A DeHashed record whose `name` is a doubled username
+    // ("rhino-ryno23 rhino-ryno23") clears the space + non-sentinel checks yet is
+    // a fabricated Person — the same pattern guarded for oathnet_pro/see_know. It
+    // must never be minted as an EntityKind::Person.
+    let entries = vec![entry_named(
+        "rhino-ryno23 rhino-ryno23",
+        json!("Collection#1"),
+    )];
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_records(
+        &entries,
+        "rhino-ryno23 rhino-ryno23",
+        "fp",
+        "s",
+        &mut seen,
+        &mut result,
+    );
+    assert!(
+        !has(&result, EntityKind::Person, "rhino-ryno23 rhino-ryno23"),
+        "a username-derived name must never be minted as a Person"
+    );
 }

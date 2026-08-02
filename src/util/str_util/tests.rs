@@ -1,8 +1,25 @@
 
 use super::{
     ascii_digits, char_window, find_ascii_ci, fold_ascii_lower, is_handle, mask_secret, nonempty,
-    parse_asn, slugify, truncate_display, truncate_safe,
+    parse_asn, slugify, truncate_display, truncate_safe, whole_word_token_match,
 };
+
+    #[test]
+    fn whole_word_token_match_is_whole_word_ascii_ci_with_empty_guard() {
+        // Every needle token present as a whole word → match (ASCII case-insensitive).
+        assert!(whole_word_token_match("Linus Torvalds", "linus torvalds"));
+        assert!(whole_word_token_match("The Smith Family", "smith family"));
+        // Order-free and punctuation-delimited: register notation still matches.
+        assert!(whole_word_token_match("MOREAU, HERVE (owner)", "herve moreau"));
+        // Whole-word, not substring — the false-relative upgrades a substring gate makes:
+        assert!(!whole_word_token_match("Mildred Smith", "red")); // 'red' inside 'Mildred'
+        assert!(!whole_word_token_match("Moreau Family", "m")); // initial not a whole word
+        // A single missing token fails the whole match.
+        assert!(!whole_word_token_match("Linus Torvalds", "linus pauling"));
+        // Empty / whitespace-only needle matches nothing (the guard au_property's copy lacks).
+        assert!(!whole_word_token_match("anything at all", ""));
+        assert!(!whole_word_token_match("anything", "   "));
+    }
 
     #[test]
     fn is_handle_enforces_bounds_and_charset() {
@@ -210,7 +227,7 @@ use super::{
         // `İ` is 2 bytes; an offset from `to_lowercase()` would be wrong here.
         // The returned offset must index the ORIGINAL string on a char boundary.
         let s = "İ division of x";
-        let off = find_ascii_ci(s, "DIVISION OF ").unwrap();
+        let off = find_ascii_ci(s, "DIVISION OF ").expect("should succeed");
         assert_eq!(off, 3); // İ(2 bytes) + ' '(1)
         assert!(s[off..].starts_with("division of ")); // slice must not panic
     }

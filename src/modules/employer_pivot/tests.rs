@@ -240,6 +240,30 @@ fn role_email_check_is_case_sensitive() {
     assert!(!is_role_email_local("Hostmaster"));
 }
 
+// ── fetch_failed ─────────────────────────────────────────────────────────────
+
+#[test]
+fn fetch_failed_true_when_the_homepage_never_answered_and_nothing_collected() {
+    // T2.113: a total transport/HTTP failure on the homepage request — the
+    // module's own dead-domain fast path never even attempts a sub-page.
+    assert!(fetch_failed(false, false));
+}
+
+#[test]
+fn fetch_failed_false_when_the_homepage_answered_even_with_no_content_collected() {
+    // The homepage read fine (200) but every page was too short/had no
+    // business info — a genuine, honest empty result, not an outage.
+    assert!(!fetch_failed(true, false));
+}
+
+#[test]
+fn fetch_failed_false_when_content_was_collected_regardless_of_the_homepage_flag() {
+    // Defensive: even if a future change decoupled the two conditions, any
+    // real collected content means the fetch attempt was not a total failure.
+    assert!(!fetch_failed(false, true));
+    assert!(!fetch_failed(true, true));
+}
+
 // ── module metadata ──────────────────────────────────────────────────────────
 
 #[test]

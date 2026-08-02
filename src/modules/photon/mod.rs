@@ -41,7 +41,7 @@ impl Module for Photon {
         "photon"
     }
     fn description(&self) -> &'static str {
-        "Photon geocoder (Komoot) — independent forward/reverse geocoding for corroboration"
+        "Photon geocoder (Komoot) — independent forward/reverse geocoding to corroborate and cross-check location fixes"
     }
     fn priority(&self) -> u8 {
         20
@@ -77,6 +77,13 @@ impl Photon {
         if addr.len() <= 2 {
             return Ok(ModuleResult::new());
         }
+        // A bare country name geocodes to the country centroid — not a subject
+        // location — and cascades into the geo-convergence rules. Refuse it here
+        // too, matching `geocode` (see `util::place_grain`); a finer address
+        // still resolves normally.
+        if crate::util::place_grain::is_bare_country(addr) {
+            return Ok(ModuleResult::new());
+        }
 
         let url = format!(
             "https://photon.komoot.io/api/?q={}&limit=1",
@@ -89,13 +96,14 @@ impl Photon {
             .header("Accept", "application/json")
             .send_tagged(build::SRC)
             .await?;
+        // Photon signals a genuine "no match" with a 200 + empty `features`
+        // array, never a non-2xx or a malformed body — so a non-2xx status or a
+        // JSON parse failure is a real geocoder outage, not a clean miss.
+        // Surface it instead of reporting the address as ungeocodable.
         if !resp.status().is_success() {
-            return Ok(ModuleResult::new());
+            return Err(crate::util::http::http_status_error(build::SRC, resp).await);
         }
-        let body: PhotonResp = match crate::util::http::json_scanned(resp, build::SRC).await {
-            Ok(b) => b,
-            Err(_) => return Ok(ModuleResult::new()),
-        };
+        let body: PhotonResp = crate::util::http::json_decode(build::SRC, resp).await?;
 
         let mut result = ModuleResult::new();
         if let Some(feature) = body.features.first()
@@ -117,13 +125,14 @@ impl Photon {
             .header("Accept", "application/json")
             .send_tagged(build::SRC)
             .await?;
+        // Photon signals a genuine "no match" with a 200 + empty `features`
+        // array, never a non-2xx or a malformed body — so a non-2xx status or a
+        // JSON parse failure is a real geocoder outage, not a clean miss.
+        // Surface it instead of reporting the address as ungeocodable.
         if !resp.status().is_success() {
-            return Ok(ModuleResult::new());
+            return Err(crate::util::http::http_status_error(build::SRC, resp).await);
         }
-        let body: PhotonResp = match crate::util::http::json_scanned(resp, build::SRC).await {
-            Ok(b) => b,
-            Err(_) => return Ok(ModuleResult::new()),
-        };
+        let body: PhotonResp = crate::util::http::json_decode(build::SRC, resp).await?;
 
         let mut result = ModuleResult::new();
         if let Some(props) = body.features.first().and_then(|f| f.properties.as_ref())

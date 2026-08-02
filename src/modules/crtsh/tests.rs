@@ -1,3 +1,4 @@
+use crate::core::confidence;
 use super::*;
 
 #[test]
@@ -44,14 +45,14 @@ fn parse_dn_org_extracts_first_nonempty_o_field() {
 #[test]
 fn crt_entry_deser() {
     let json = r#"[{"common_name":"www.example.com","name_value":"www.example.com\nexample.com","issuer_name":"Let's Encrypt","not_before":"2024-01-01","not_after":"2024-04-01","serial_number":"abc123"}]"#;
-    let entries: Vec<CrtEntry> = serde_json::from_str(json).unwrap();
+    let entries: Vec<CrtEntry> = serde_json::from_str(json).expect("should succeed");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].common_name.as_deref(), Some("www.example.com"));
     assert!(
         entries[0]
             .name_value
             .as_deref()
-            .unwrap()
+            .expect("should succeed")
             .contains("example.com")
     );
 }
@@ -73,8 +74,50 @@ fn build_query_shapes_each_kind() {
     assert_eq!(build_query(TargetKind::Username, "u"), None);
 }
 
+#[test]
+fn apex_base_extracts_the_true_host_for_each_seed_kind() {
+    // A Domain seed is its own apex.
+    assert_eq!(apex_base(TargetKind::Domain, "example.com"), "example.com");
+    // A Url seed reduces to its host — NOT the full URL (the bug: the raw URL as
+    // base made every discovered subdomain classify as an unrelated external).
+    assert_eq!(
+        apex_base(TargetKind::Url, "https://sub.example.com/path?q=1"),
+        "sub.example.com"
+    );
+    // An Email seed reduces to its domain part (after the final `@`).
+    assert_eq!(apex_base(TargetKind::Email, "jane.doe@example.com"), "example.com");
+}
+
+#[test]
+fn url_seed_subdomains_are_classified_against_the_host_not_the_raw_url() {
+    // Regression: with a Url seed, a discovered subdomain of the seed's host must be
+    // recognised as a SUBDOMAIN (0.75, tagged) — the pivot the engine recurses into —
+    // instead of a 0.45 external. Feeding the raw target.value (a full URL) as the
+    // base is what previously suppressed that recursion.
+    let json = r#"[{"name_value":"mail.example.com","common_name":"mail.example.com"}]"#;
+    // Host is the apex `example.com`; the OLD code fed the raw URL
+    // `https://example.com/login` as the base, so is_or_subdomain_of never matched.
+    let base = apex_base(TargetKind::Url, "https://example.com/login");
+    assert_eq!(base, "example.com");
+    let ents = build_entities(&entries(json), &base, "s1");
+    let mail = ents
+        .iter()
+        .find(|e| e.value == "mail.example.com")
+        .expect("discovered subdomain must be present");
+    assert!(
+        mail.tags.iter().any(|t| t == crate::core::tags::SUBDOMAIN),
+        "a Url seed's discovered subdomain must be tagged SUBDOMAIN, got {:?}",
+        mail.tags
+    );
+    assert!(
+        mail.confidence > 0.6,
+        "subdomain confidence must be the boosted tier, got {}",
+        mail.confidence
+    );
+}
+
 fn entries(json: &str) -> Vec<CrtEntry> {
-    serde_json::from_str(json).unwrap()
+    serde_json::from_str(json).expect("should succeed")
 }
 
 #[test]
@@ -97,8 +140,8 @@ fn classifies_subdomains_dedups_and_skips_wildcards() {
     assert!(by_val("*.example.com").is_none());
 
     // Subdomain → high confidence + subdomain tag.
-    let api = by_val("api.example.com").unwrap();
-    assert!((api.confidence - 0.75).abs() < 1e-9);
+    let api = by_val("api.example.com").expect("should succeed");
+    assert!((api.confidence - confidence::VERY_HIGH).abs() < 1e-9);
     assert!(api.has_tag(tags::CT_LOG) && api.has_tag(tags::SUBDOMAIN));
     assert_eq!(
         api.evidence[0].attributes.get("issuer").map(String::as_str),
@@ -106,8 +149,8 @@ fn classifies_subdomains_dedups_and_skips_wildcards() {
     );
 
     // Unrelated domain → lower confidence, no subdomain tag.
-    let other = by_val("unrelated.org").unwrap();
-    assert!((other.confidence - 0.45).abs() < 1e-9);
+    let other = by_val("unrelated.org").expect("should succeed");
+    assert!((other.confidence - confidence::LOW_MEDIUM).abs() < 1e-9);
     assert!(!other.has_tag(tags::SUBDOMAIN));
 }
 
@@ -116,8 +159,8 @@ fn subdomain_match_is_case_insensitive_against_base() {
     // Mixed-case target base must still classify the SAN as a subdomain.
     let e = entries(r#"[{"name_value":"api.example.com"}]"#);
     let out = build_entities(&e, "Example.COM", "s");
-    let api = out.iter().find(|x| x.value == "api.example.com").unwrap();
-    assert!((api.confidence - 0.75).abs() < 1e-9);
+    let api = out.iter().find(|x| x.value == "api.example.com").expect("should succeed");
+    assert!((api.confidence - confidence::VERY_HIGH).abs() < 1e-9);
     assert!(api.has_tag(tags::SUBDOMAIN));
 }
 
@@ -128,9 +171,9 @@ fn surfaces_san_emails_above_min_length() {
     );
     let out = build_entities(&e, "example.com", "s");
     let email = out.iter().find(|x| x.kind == EntityKind::Email);
-    let email = email.unwrap();
+    let email = email.expect("should succeed");
     assert_eq!(email.value, "admin@example.com");
-    assert!((email.confidence - 0.70).abs() < 1e-9);
+    assert!((email.confidence - confidence::HIGH_PLUS).abs() < 1e-9);
     assert!(email.has_tag(tags::CT_LOG));
     // "a@b" is below MIN_EMAIL_LEN → not surfaced.
     assert!(!out.iter().any(|x| x.value == "a@b"));
@@ -138,8 +181,8 @@ fn surfaces_san_emails_above_min_length() {
 
 #[test]
 fn results_emit_all_confidence_first_uncapped() {
-    // 250 distinct unrelated external domains (conf 0.45) plus one subdomain
-    // (0.75). NO per-module cap: EVERY distinct entity is emitted (each a real
+    // 250 distinct unrelated external domains (conf confidence::LOW_MEDIUM) plus one subdomain
+    // (confidence::VERY_HIGH). NO per-module cap: EVERY distinct entity is emitted (each a real
     // BFS pivot the engine's frontier budget bounds, not this leaf module), with
     // the subdomain ranked first and the order confidence-descending.
     let n = 250usize;
@@ -189,7 +232,7 @@ fn recovers_certificate_serial_as_attribution_pivot() {
              "not_after":"2024-04-01","serial_number":"04ab9f"}]"#,
     );
     let out = build_entities(&e, "example.com", "s");
-    let dom = out.iter().find(|x| x.kind == EntityKind::Domain).unwrap();
+    let dom = out.iter().find(|x| x.kind == EntityKind::Domain).expect("should succeed");
     assert_eq!(
         dom.evidence[0].attributes.get("cert_serial").map(String::as_str),
         Some("04ab9f")
@@ -205,7 +248,7 @@ fn recovers_certificate_serial_as_attribution_pivot() {
 fn absent_serial_omits_the_attribute() {
     let e = entries(r#"[{"name_value":"a.example.com","issuer_name":"CA"}]"#);
     let out = build_entities(&e, "example.com", "s");
-    let dom = out.iter().find(|x| x.kind == EntityKind::Domain).unwrap();
+    let dom = out.iter().find(|x| x.kind == EntityKind::Domain).expect("should succeed");
     assert!(!dom.evidence[0].attributes.contains_key("cert_serial"));
 }
 
@@ -214,7 +257,7 @@ fn cert_evidence_always_stamps_issuer_and_validity() {
     let entries: Vec<CrtEntry> = serde_json::from_str(
         r#"[{"issuer_name":"Let's Encrypt","not_before":"2024-01-01","not_after":"2024-04-01","serial_number":"abc123"}]"#,
     )
-    .unwrap();
+    .expect("should succeed");
     let ev = cert_evidence(&entries[0], "summary text");
     assert_eq!(ev.source, SRC);
     assert_eq!(ev.summary, "summary text");
@@ -238,7 +281,7 @@ fn cert_evidence_always_stamps_issuer_and_validity() {
 
 #[test]
 fn cert_evidence_stamps_empty_strings_when_fields_absent_and_omits_blank_serial() {
-    let entries: Vec<CrtEntry> = serde_json::from_str(r#"[{}]"#).unwrap();
+    let entries: Vec<CrtEntry> = serde_json::from_str(r#"[{}]"#).expect("should succeed");
     let ev = cert_evidence(&entries[0], "s");
     assert_eq!(ev.attributes.get("issuer").map(String::as_str), Some(""));
     assert_eq!(ev.attributes.get("not_before").map(String::as_str), Some(""));
@@ -247,7 +290,7 @@ fn cert_evidence_stamps_empty_strings_when_fields_absent_and_omits_blank_serial(
         !ev.attributes.contains_key("cert_serial"),
         "blank serial omitted"
     );
-    let empty_serial: Vec<CrtEntry> = serde_json::from_str(r#"[{"serial_number":""}]"#).unwrap();
+    let empty_serial: Vec<CrtEntry> = serde_json::from_str(r#"[{"serial_number":""}]"#).expect("should succeed");
     let ev2 = cert_evidence(&empty_serial[0], "s");
     assert!(!ev2.attributes.contains_key("cert_serial"));
 }

@@ -9,7 +9,6 @@ use super::*;
             http: crate::util::http::build_client(),
             keys: HashMap::default(),
             cancel: crate::core::cancel::CancelHandle::new(),
-            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
         }
     }
 
@@ -35,7 +34,7 @@ use super::*;
                 &ctx("scan-x"),
             )
             .await
-            .unwrap();
+            .expect("should succeed");
 
         let mut persons = 0;
         let mut usernames = 0;
@@ -95,7 +94,7 @@ use super::*;
                 &ctx("scan-z"),
             )
             .await
-            .unwrap();
+            .expect("should succeed");
         assert!(!out.entities.is_empty(), "the contaminated name still parses");
         for e in &out.entities {
             for ev in &e.evidence {
@@ -124,7 +123,7 @@ use super::*;
                 &ctx("scan-y"),
             )
             .await
-            .unwrap();
+            .expect("should succeed");
         assert_eq!(
             out.entities.len(),
             1,
@@ -151,7 +150,7 @@ use super::*;
                 &ctx("scan-z"),
             )
             .await
-            .unwrap();
+            .expect("should succeed");
 
         assert!(
             out.entities.iter().any(|e| e.kind == EntityKind::Person),
@@ -180,7 +179,7 @@ use super::*;
                 &ctx("scan-p"),
             )
             .await
-            .unwrap();
+            .expect("should succeed");
         let person = out
             .entities
             .iter()
@@ -238,7 +237,7 @@ use super::*;
         let out = m
             .process(&Target::new(TargetKind::FullName, "Onur Ada"), &ctx("scan-onur-ada"))
             .await
-            .unwrap();
+            .expect("should succeed");
 
         let person = out
             .entities
@@ -275,12 +274,12 @@ use super::*;
         // A fresh "Onur Ada" Person entity with no relations is an Unexpanded
         // orphan — the gap analysis names it, classifies it, and points at the
         // corrective scan. This test exercises the full seed→gap pipeline.
-        use crate::core::{entity::EntityKind, gap};
+        use crate::core::{confidence, entity::EntityKind, gap};
 
         let mut entity = crate::core::entity::Entity::new(
             EntityKind::Person,
             "Onur Ada",
-            0.65,
+            confidence::HIGH,
             "scan-onur-ada",
         );
         entity.tag("seed");
@@ -296,7 +295,7 @@ use super::*;
         let orphan = &report.orphans[0];
         assert_eq!(orphan.value, "Onur Ada");
         assert_eq!(orphan.isolation, gap::Isolation::Unexpanded,
-            "confidence 0.65 is above EXPAND_FLOOR — must be Unexpanded, not {:?}", orphan.isolation);
+            "confidence confidence::HIGH is above EXPAND_FLOOR — must be Unexpanded, not {:?}", orphan.isolation);
         assert_eq!(
             orphan.reinjection_target.as_deref(),
             Some("full_name"),

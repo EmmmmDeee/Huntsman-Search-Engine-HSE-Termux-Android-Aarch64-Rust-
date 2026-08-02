@@ -5,13 +5,14 @@
 use std::collections::HashSet;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
     scan::Target,
 };
 use crate::util::domains::is_freemail;
 
-use super::types::{DateField, Education, LinkedInProfile};
+use super::types::{Certification, DateField, Education, LinkedInProfile};
 use super::{MAX_EXPERIENCES, MAX_LISTED, SRC};
 
 use crate::util::str_util::nonempty;
@@ -26,8 +27,8 @@ pub(super) fn email_domain(email: &str) -> Option<String> {
 /// so every field→entity mapping and confidence is unit-tested directly.
 ///
 /// Confidences encode source authority: a named LinkedIn profile is strong
-/// (0.85); a personal email is strong (0.80); a domain *derived* from that email
-/// is weaker (0.68); a self-reported location is soft (0.60).
+/// (confidence::HIGH_PLUSPLUS_PLUS); a personal email is strong (confidence::HIGH_PLUSPLUS); a domain *derived* from that email
+/// is weaker (0.68); a self-reported location is soft (confidence::MEDIUM_PLUS).
 pub(super) fn build_entities(
     profile: &LinkedInProfile,
     target: &Target,
@@ -37,7 +38,12 @@ pub(super) fn build_entities(
 
     // ── Person (the anchor) ───────────────────────────────────────────────
     if let Some(name) = profile.display_name() {
-        let mut pe = Entity::new(EntityKind::Person, &name, 0.85, scan_id);
+        let mut pe = Entity::new(
+            EntityKind::Person,
+            &name,
+            confidence::HIGH_PLUSPLUS_PLUS,
+            scan_id,
+        );
         pe.tag("proxycurl");
         pe.tag("linkedin");
         let mut ev = Evidence::new(SRC, format!("LinkedIn profile: {name}"))
@@ -81,8 +87,38 @@ pub(super) fn build_entities(
         if !schools.is_empty() {
             ev = ev.with_attr("education", schools.join("; "));
         }
+        let certs: Vec<String> = profile
+            .certifications
+            .iter()
+            .filter_map(Certification::describe)
+            .take(MAX_LISTED)
+            .collect();
+        if !certs.is_empty() {
+            ev = ev.with_attr("certifications", certs.join("; "));
+        }
         pe.add_evidence(ev);
         result.push(pe);
+    }
+
+    // ── LinkedIn vanity handle → Username pivot ───────────────────────────
+    // The `public_identifier` (the `/in/{slug}` handle) is a stable, cross-
+    // platform identity anchor in its own right — not merely a Person attribute
+    // — so mint it as a platform-prefixed Username the way the other social
+    // modules do, letting BFS pivot on the handle across sites.
+    if let Some(pid) = nonempty(&profile.public_identifier) {
+        let mut ue = Entity::new(
+            EntityKind::Username,
+            format!("linkedin:{pid}"),
+            confidence::HIGH_PLUSPLUS,
+            scan_id,
+        );
+        ue.tag("proxycurl");
+        ue.tag("linkedin");
+        ue.add_evidence(
+            Evidence::new(SRC, format!("LinkedIn vanity handle: {pid}"))
+                .with_attr("target", &target.value),
+        );
+        result.push(ue);
     }
 
     // ── Address (needs ≥2 of city/state/country to be meaningful) ─────────
@@ -96,7 +132,12 @@ pub(super) fn build_entities(
     .collect();
     if loc_parts.len() >= 2 {
         let location = loc_parts.join(", ");
-        let mut ae = Entity::new(EntityKind::Address, &location, 0.60, scan_id);
+        let mut ae = Entity::new(
+            EntityKind::Address,
+            &location,
+            confidence::MEDIUM_PLUS,
+            scan_id,
+        );
         ae.tag("proxycurl");
         ae.tag("linkedin");
         ae.tag("geoint");
@@ -114,7 +155,12 @@ pub(super) fn build_entities(
 
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(&location) {
             let coord_val = format!("{lat:.4},{lon:.4}");
-            let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.52, scan_id);
+            let mut c = Entity::new(
+                EntityKind::Coordinates,
+                &coord_val,
+                confidence::MEDIUM_LIGHT,
+                scan_id,
+            );
             c.tag("proxycurl");
             c.tag("linkedin");
             c.tag("addr-derived");
@@ -149,7 +195,7 @@ pub(super) fn build_entities(
         if !seen_emails.insert(email.to_lowercase()) {
             continue;
         }
-        let mut ee = Entity::new(EntityKind::Email, email, 0.80, scan_id);
+        let mut ee = Entity::new(EntityKind::Email, email, confidence::HIGH_PLUSPLUS, scan_id);
         ee.tag("proxycurl");
         ee.tag("linkedin");
         ee.add_evidence(Evidence::new(SRC, "Personal email from LinkedIn"));
@@ -176,7 +222,7 @@ pub(super) fn build_entities(
             .map(|p| p.trim())
             .filter(|p| p.len() >= 7)
             .map(|phone| {
-                let mut phe = Entity::new(EntityKind::Phone, phone, 0.75, scan_id);
+                let mut phe = Entity::new(EntityKind::Phone, phone, confidence::VERY_HIGH, scan_id);
                 phe.tag("proxycurl");
                 phe.tag("linkedin");
                 phe.add_evidence(Evidence::new(SRC, "Phone from LinkedIn"));
@@ -192,7 +238,8 @@ pub(super) fn build_entities(
             .take(MAX_EXPERIENCES)
             .filter_map(|exp| {
                 let company = nonempty(&exp.company).filter(|c| c.chars().count() >= 2)?;
-                let mut oe = Entity::new(EntityKind::Organisation, company, 0.65, scan_id);
+                let mut oe =
+                    Entity::new(EntityKind::Organisation, company, confidence::HIGH, scan_id);
                 oe.tag("proxycurl");
                 oe.tag("linkedin");
                 let mut ev = Evidence::new(SRC, format!("Employer: {company}"));
@@ -216,6 +263,31 @@ pub(super) fn build_entities(
             }),
     );
 
+    // ── Organisations (alma maters) — degree and field of study ───────────
+    // Lower confidence than the employer loop above: a school attended in the
+    // past is a weaker "current relationship" signal than a listed employer.
+    result.extend(profile.education.iter().take(MAX_LISTED).filter_map(|edu| {
+        let school = nonempty(&edu.school).filter(|s| s.chars().count() >= 2)?;
+        let mut oe = Entity::new(
+            EntityKind::Organisation,
+            school,
+            confidence::MEDIUM_HIGH,
+            scan_id,
+        );
+        oe.tag("proxycurl");
+        oe.tag("linkedin");
+        oe.tag("education");
+        let mut ev = Evidence::new(SRC, format!("Educational institution: {school}"));
+        if let Some(degree) = nonempty(&edu.degree_name) {
+            ev = ev.with_attr("degree", degree);
+        }
+        if let Some(field) = nonempty(&edu.field_of_study) {
+            ev = ev.with_attr("field_of_study", field);
+        }
+        oe.add_evidence(ev);
+        Some(oe)
+    }));
+
     // ── Personal website URL ──────────────────────────────────────────────
     if let Some(url) = profile
         .website_url
@@ -223,7 +295,7 @@ pub(super) fn build_entities(
         .map(str::trim)
         .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
     {
-        let mut ue = Entity::new(EntityKind::Url, url, 0.72, scan_id);
+        let mut ue = Entity::new(EntityKind::Url, url, confidence::ATTRIBUTED, scan_id);
         ue.tag("proxycurl");
         ue.tag("linkedin");
         ue.add_evidence(Evidence::new(SRC, "Website URL from LinkedIn profile"));

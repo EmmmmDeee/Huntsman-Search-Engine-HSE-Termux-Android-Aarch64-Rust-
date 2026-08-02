@@ -168,7 +168,7 @@ fn build_entities(body: &FofaResp, scan_id: &str) -> ModuleResult {
             let mut ip_entity = Entity::new(EntityKind::IpAddress, &hit.ip, 0.80, scan_id);
             ip_entity.tag("fofa-host");
 
-            let mut evidence = Evidence::new(SRC, format!("FOFA intelligence for {}", &hit.ip));
+            let mut evidence = Evidence::new(SRC, format!("FOFA intelligence for {}", hit.ip));
             if !hit.protocol.is_empty() {
                 evidence = evidence.with_attr("protocol", &hit.protocol);
             }
@@ -191,7 +191,7 @@ fn build_entities(body: &FofaResp, scan_id: &str) -> ModuleResult {
             domain_entity.tag("fofa-discovered");
             domain_entity.add_evidence(Evidence::new(
                 SRC,
-                format!("Domain discovered via FOFA for {}", &hit.ip),
+                format!("Domain discovered via FOFA for {}", hit.ip),
             ));
             result.push(domain_entity);
         }

@@ -23,6 +23,13 @@ const ALL_KINDS: &[TargetKind] = &[
 ];
 
 #[test]
+fn cache_ttl_is_24h_so_repeat_scans_dont_re_spend_a_paid_lookup() {
+    // Immutable leak/archive corpus ⇒ the inter-scan cache serves a repeat
+    // scan for free; a 0 (trait default) would disable it, so pin the window.
+    assert_eq!(IntelX.cache_ttl_secs(), 86_400);
+}
+
+#[test]
 fn accepts_every_kind_intelx_has_a_selector_for() {
     let m = IntelX;
     for k in [
@@ -130,6 +137,33 @@ fn bucket_family_collapses_dotted_names() {
 }
 
 #[test]
+fn earliest_breach_date_uses_leaks_family_only_and_gates_on_the_breach_tag() {
+    let rec = |bucket: &str, date: &str| Record {
+        bucket: Some(bucket.to_string()),
+        bucketh: None,
+        media: None,
+        date: Some(date.to_string()),
+    };
+    let records = vec![
+        rec("pastes", "2010-01-01"), // earlier, but NOT leaks-family
+        rec("leaks.public.general", "2019-05-13"), // earliest leaks record
+        rec("leaks.private.general", "2021-08-01"),
+        rec("darknet.tor", "2009-01-01"), // earlier, but not leaks
+    ];
+    // Earned the BREACH tag → earliest LEAKS date (paste/darknet ignored).
+    assert_eq!(
+        earliest_breach_date(&records, true),
+        Some("2019-05-13"),
+        "must pick the earliest leaks-family date, ignoring paste/darknet buckets"
+    );
+    // No BREACH tag (e.g. a text search) → no breach_date at all.
+    assert_eq!(earliest_breach_date(&records, false), None);
+    // No leaks-family records → None even when earned.
+    let non_leaks = vec![rec("pastes", "2015-01-01")];
+    assert_eq!(earliest_breach_date(&non_leaks, true), None);
+}
+
+#[test]
 fn text_search_withholds_the_strong_exposure_tags() {
     use crate::core::tags;
     use std::collections::BTreeSet;
@@ -176,12 +210,13 @@ fn text_search_withholds_the_strong_exposure_tags() {
 
 #[test]
 fn result_resp_terminal_status_parsing() {
-    let running: ResultResp = serde_json::from_str(r#"{"status":1,"records":[]}"#).unwrap();
+    let running: ResultResp =
+        serde_json::from_str(r#"{"status":1,"records":[]}"#).expect("should succeed");
     assert_eq!(running.status, Some(1)); // must NOT be treated as terminal
     let finished: ResultResp = serde_json::from_str(
         r#"{"status":2,"records":[{"bucket":"leaks.public.general","media":24,"date":"2024-01-01"}]}"#,
     )
-    .unwrap();
+    .expect("should succeed");
     assert_eq!(finished.status, Some(2));
     assert_eq!(finished.records[0].media, Some(24));
     assert_eq!(
@@ -194,7 +229,7 @@ fn result_resp_terminal_status_parsing() {
 fn record_tolerates_missing_and_human_bucket() {
     let r: ResultResp =
         serde_json::from_str(r#"{"status":2,"records":[{"bucketh":"Public Leaks","media":1}]}"#)
-            .unwrap();
+            .expect("should succeed");
     assert_eq!(r.records[0].bucketh.as_deref(), Some("Public Leaks"));
     assert!(r.records[0].bucket.is_none());
     assert!(r.records[0].date.is_none());

@@ -120,6 +120,20 @@ fn parse_address_does_not_mistake_street_number_for_postal() {
 }
 
 #[test]
+fn parse_address_postcode_prefers_trailing_part_over_leading_box_number() {
+    // Regression: the postal scan must take the address-TRAILING postcode, not an
+    // earlier comma-field whose last token happens to be a digit run (a PO-box or
+    // unit number). Before the reverse-scan fix these returned the box/unit no.
+    let a = parse_address("PO Box 4321, Sydney NSW 2000");
+    assert_eq!(a.postal_code.as_deref(), Some("2000"));
+    assert_eq!(a.state.as_deref(), Some("NSW"));
+
+    let b = parse_address("Unit 1203, 56 Smith St, Melbourne VIC 3000");
+    assert_eq!(b.postal_code.as_deref(), Some("3000"));
+    assert_eq!(b.state.as_deref(), Some("VIC"));
+}
+
+#[test]
 fn haversine_known_distance_sydney_to_melbourne() {
     // SYD (-33.87,151.21) → MEL (-37.81,144.96) is ~714 km great-circle.
     let d = haversine_km(-33.87, 151.21, -37.81, 144.96);

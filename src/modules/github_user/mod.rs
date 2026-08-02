@@ -24,6 +24,7 @@ mod tests;
 use async_trait::async_trait;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -43,7 +44,7 @@ impl Module for GithubUser {
     }
 
     fn description(&self) -> &'static str {
-        "GitHub profile, repos, and social metadata lookup"
+        "GitHub profile recon — harvests repos, bio, and social metadata to pivot a username outward"
     }
 
     fn priority(&self) -> u8 {
@@ -115,7 +116,10 @@ impl Module for GithubUser {
             .http
             .get(&url)
             .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header(
+                "X-GitHub-Api-Version",
+                crate::modules::github_api::API_VERSION,
+            )
             .send_tagged(SRC)
             .await?;
 
@@ -136,7 +140,12 @@ impl Module for GithubUser {
         let mut result = ModuleResult::new();
 
         // Username entity with GitHub profile metadata.
-        let mut u_entity = Entity::new(EntityKind::Username, &user.login, 0.95, &ctx.scan_id);
+        let mut u_entity = Entity::new(
+            EntityKind::Username,
+            &user.login,
+            confidence::VERY_HIGH_PLUSPLUS,
+            &ctx.scan_id,
+        );
         u_entity.tag("github");
         let profile_url = user.html_url.as_deref().map_or_else(
             || format!("https://github.com/{}", user.login),
@@ -187,8 +196,13 @@ impl Module for GithubUser {
             u_entity.tag("twitter-linked");
             // Emit the Twitter handle as a first-class Username so it becomes a
             // pivot target for username_search / social_probe in the next round.
-            // Confidence 0.70: self-asserted on a confirmed GitHub profile.
-            let mut tw_entity = Entity::new(EntityKind::Username, tw, 0.70, &ctx.scan_id);
+            // Confidence confidence::HIGH_PLUS: self-asserted on a confirmed GitHub profile.
+            let mut tw_entity = Entity::new(
+                EntityKind::Username,
+                tw,
+                confidence::HIGH_PLUS,
+                &ctx.scan_id,
+            );
             tw_entity.tag("twitter");
             tw_entity.tag("social-profile");
             tw_entity.add_evidence(
@@ -214,7 +228,12 @@ impl Module for GithubUser {
         {
             let handle = tw.trim_start_matches('@');
             if !handle.is_empty() {
-                let mut tw_e = Entity::new(EntityKind::Username, handle, 0.70, &ctx.scan_id);
+                let mut tw_e = Entity::new(
+                    EntityKind::Username,
+                    handle,
+                    confidence::HIGH_PLUS,
+                    &ctx.scan_id,
+                );
                 tw_e.tag("twitter");
                 tw_e.tag("derived");
                 tw_e.add_evidence(
@@ -232,7 +251,12 @@ impl Module for GithubUser {
         if let Some(name) = user.name.as_deref()
             && !name.trim().is_empty()
         {
-            let mut p = Entity::new(EntityKind::Person, name.trim(), 0.75, &ctx.scan_id);
+            let mut p = Entity::new(
+                EntityKind::Person,
+                name.trim(),
+                confidence::VERY_HIGH,
+                &ctx.scan_id,
+            );
             p.tag("derived");
             p.add_evidence(
                 Evidence::new(
@@ -249,7 +273,12 @@ impl Module for GithubUser {
         if let Some(email) = user.email.as_deref()
             && crate::util::extract::looks_like_email(email)
         {
-            let mut e = Entity::new(EntityKind::Email, email, 0.90, &ctx.scan_id);
+            let mut e = Entity::new(
+                EntityKind::Email,
+                email,
+                confidence::VERY_HIGH_PLUS,
+                &ctx.scan_id,
+            );
             e.tag("public-profile");
             e.add_evidence(
                 Evidence::new(
@@ -266,7 +295,12 @@ impl Module for GithubUser {
         if let Some(company) = user.company.as_deref() {
             let company = company.trim().trim_start_matches('@');
             if company.len() >= 2 {
-                let mut o = Entity::new(EntityKind::Organisation, company, 0.65, &ctx.scan_id);
+                let mut o = Entity::new(
+                    EntityKind::Organisation,
+                    company,
+                    confidence::HIGH,
+                    &ctx.scan_id,
+                );
                 o.tag("github");
                 o.tag("derived");
                 o.add_evidence(
@@ -281,11 +315,16 @@ impl Module for GithubUser {
         if let Some(location) = user.location.as_deref() {
             let location = location.trim();
             if location.len() >= 3 {
-                let mut a = Entity::new(EntityKind::Address, location, 0.55, &ctx.scan_id);
+                let mut a = Entity::new(
+                    EntityKind::Address,
+                    location,
+                    confidence::MEDIUM_HIGH,
+                    &ctx.scan_id,
+                );
                 a.tag("github");
                 a.tag("geoint");
                 a.tag("self-reported");
-                if let Some(sc) = crate::util::address_au::state_code(location) {
+                if let Some(sc) = crate::util::address_au::single_state_code(location) {
                     a.tag(format!("au-state:{sc}"));
                     a.tag("country:AU");
                 }
@@ -297,12 +336,16 @@ impl Module for GithubUser {
 
                 if let Some((lat, lon)) = crate::util::city_coords::city_coords(location) {
                     let coord_val = format!("{lat:.4},{lon:.4}");
-                    let mut c =
-                        Entity::new(EntityKind::Coordinates, &coord_val, 0.52, &ctx.scan_id);
+                    let mut c = Entity::new(
+                        EntityKind::Coordinates,
+                        &coord_val,
+                        confidence::MEDIUM_LIGHT,
+                        &ctx.scan_id,
+                    );
                     c.tag("addr-derived");
                     c.tag("geoint");
                     c.tag("github");
-                    if let Some(sc) = crate::util::address_au::state_code(location) {
+                    if let Some(sc) = crate::util::address_au::single_state_code(location) {
                         c.tag(format!("au-state:{sc}"));
                         c.tag("country:AU");
                     }
@@ -327,7 +370,12 @@ impl Module for GithubUser {
         {
             let blog = blog.trim();
             if blog.starts_with("http://") || blog.starts_with("https://") {
-                let mut u = Entity::new(EntityKind::Url, blog, 0.80, &ctx.scan_id);
+                let mut u = Entity::new(
+                    EntityKind::Url,
+                    blog,
+                    confidence::HIGH_PLUSPLUS,
+                    &ctx.scan_id,
+                );
                 u.tag("personal-site");
                 u.add_evidence(
                     Evidence::new(
@@ -343,7 +391,12 @@ impl Module for GithubUser {
                 {
                     let domain = host.to_lowercase();
                     if domain.contains('.') && domain != "github.com" && domain != "github.io" {
-                        let mut d = Entity::new(EntityKind::Domain, &domain, 0.72, &ctx.scan_id);
+                        let mut d = Entity::new(
+                            EntityKind::Domain,
+                            &domain,
+                            confidence::ATTRIBUTED,
+                            &ctx.scan_id,
+                        );
                         d.tag("derived");
                         d.tag("personal-site");
                         d.add_evidence(
@@ -365,9 +418,14 @@ impl Module for GithubUser {
 
         // GitHub organisations this user belongs to → Organisation entities.
         let token = ctx.key_opt("HUNTSMAN_GITHUB_TOKEN");
-        let org_logins = fetch::fetch_orgs(&ctx.http, login, token).await;
+        let org_logins = fetch::fetch_orgs(ctx, login, token).await;
         for org_login in org_logins {
-            let mut org = Entity::new(EntityKind::Organisation, &org_login, 0.70, &ctx.scan_id);
+            let mut org = Entity::new(
+                EntityKind::Organisation,
+                &org_login,
+                confidence::HIGH_PLUS,
+                &ctx.scan_id,
+            );
             org.tag("github-org");
             org.add_evidence(
                 Evidence::new(
@@ -383,7 +441,7 @@ impl Module for GithubUser {
         // Public gists → tag profile entity, then scan content for emails and
         // leaked API keys (send_tagged inside fetch_gist_content routes every
         // response body through the found_keys scanner automatically).
-        let gist_ids = fetch::fetch_gists(&ctx.http, login, token).await;
+        let gist_ids = fetch::fetch_gists(ctx, login, token).await;
         if !gist_ids.is_empty()
             && let Some(first) = result.entities.first_mut()
         {

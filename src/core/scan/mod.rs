@@ -13,8 +13,8 @@ use classify::domain_expansion_factor;
 // primitives; `core::relation` reuses them to bind a subject to their identifiers
 // and associates (rather than re-deriving a second, drift-prone copy).
 pub(crate) use classify::{
-    identity_norm, identity_overlaps, is_infra_domain, is_mega_domain, is_noncentral_domain,
-    is_wrong_identity_pivot,
+    IDENTITY_OVERLAP_MIN, identity_norm, identity_overlaps, is_infra_domain, is_mega_domain,
+    is_noncentral_domain, is_wrong_identity_pivot,
 };
 
 mod detect;
@@ -306,6 +306,45 @@ impl TargetKind {
     }
 }
 
+/// The radar sweep's sentinel target: `hse radar` / `POST /api/v1/radar` seed
+/// every sweep with one of these two placeholder values because the local
+/// sensor modules (`signal_radar`, `device_sensors`, `wifi_intel`, `cell_intel`,
+/// `local_net`) scan the DEVICE's own surroundings and ignore the target value
+/// entirely — a value is only present because `Target` requires one and the
+/// sensors gate on `Coordinates`/`MacAddress` kind to dispatch. It is never a
+/// real claimed location or a real device identity.
+///
+/// Single source of truth for both the RAW form `Target::new` is built with
+/// (`radar_scan_spec` / `cli::radar::cmd_radar`) and the NORMALISED form that
+/// results after `core::entity::normalise` rounds a coordinate to 6 decimal
+/// places (what ends up persisted and what `AuditEntity`/`Store::radar_history`
+/// compare against) — consolidating what were four independent hand-duplicated
+/// copies of these literals (the CLI, the API's `radar_scan_spec`, the storage
+/// layer's `radar_history` query, and its `test_support` mirror).
+pub const RADAR_SENTINEL_COORD_RAW: &str = "0,0";
+/// Post-normalisation form of [`RADAR_SENTINEL_COORD_RAW`] — what a persisted
+/// `Coordinates` entity/target actually reads as.
+pub const RADAR_SENTINEL_COORD_NORMALISED: &str = "0.000000,0.000000";
+/// The MAC sentinel needs no normalisation (already lowercase, colon-separated,
+/// all-zero), so raw and persisted forms are identical.
+pub const RADAR_SENTINEL_MAC: &str = "00:00:00:00:00:00";
+
+/// True if `(kind, value)` is the radar sweep's sentinel target/entity — in
+/// either its raw (`Target::new` input) or normalised (persisted) form. Callers
+/// that must not mistake the sentinel for a real claimed location/identity (the
+/// self-audit's cross-source geo-divergence check, any future radar-aware
+/// consumer) should gate on this rather than re-deriving the literal.
+#[must_use]
+pub fn is_radar_sentinel(kind: TargetKind, value: &str) -> bool {
+    match kind {
+        TargetKind::Coordinates => {
+            value == RADAR_SENTINEL_COORD_RAW || value == RADAR_SENTINEL_COORD_NORMALISED
+        }
+        TargetKind::MacAddress => value == RADAR_SENTINEL_MAC,
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Target {
     pub kind: TargetKind,
@@ -437,7 +476,7 @@ impl Target {
         // Cyrillic-`а` in `paypal.com`). A legitimate all-one-script non-ASCII
         // value has no ASCII letters to mix, so it is not flagged.
         if crate::core::validation::is_confusable_mixed_script(v) {
-            return Err("value contains a mixed-script homograph (possible spoof)");
+            return Err(HOMOGRAPH_REASON);
         }
         match self.kind {
             TargetKind::Email => {
@@ -613,7 +652,30 @@ impl Target {
         }
         Ok(())
     }
+
+    /// Same rejection as [`Self::validate`], but the mixed-script-homograph
+    /// case additionally names the ASCII skeleton the value normalizes to
+    /// (e.g. `pаypal.com` → `paypal.com`) — the concrete, auditable detail an
+    /// operator needs to see *why* a spoofed seed was refused, which
+    /// `validate`'s `&'static str` return can't carry without an allocation.
+    /// Every other rejection reuses `validate`'s message unchanged (zero-cost
+    /// `Cow::Borrowed`). Matches on the shared `HOMOGRAPH_REASON` constant
+    /// rather than a duplicated string literal, so the two can never drift.
+    pub fn validate_verbose(&self) -> std::result::Result<(), std::borrow::Cow<'static, str>> {
+        match self.validate() {
+            Err(HOMOGRAPH_REASON) => Err(std::borrow::Cow::Owned(format!(
+                "{HOMOGRAPH_REASON} — ascii skeleton: {}",
+                crate::core::validation::skeleton(self.value.trim())
+            ))),
+            Err(msg) => Err(std::borrow::Cow::Borrowed(msg)),
+            Ok(()) => Ok(()),
+        }
+    }
 }
+
+/// The mixed-script-homograph rejection message, single-sourced so
+/// [`Target::validate`] and [`Target::validate_verbose`] can never drift.
+const HOMOGRAPH_REASON: &str = "value contains a mixed-script homograph (possible spoof)";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -675,6 +737,25 @@ pub struct Scan {
 }
 
 impl Scan {
+    /// The six module-accounting counts as one canonical human sentence:
+    /// `"{run} run, {errored} errored, {timed_out} timed out, {skipped} skipped,
+    /// {cached} cached, {deduped} deduped"`. Single-sourced so every renderer
+    /// (the dossier, the debug-bundle header, any future one) surfaces the same
+    /// counts in the same order and can never again disagree — the drift this
+    /// prevents is exactly what once left the dossier showing only 3 of the 6.
+    /// Callers prepend their own label/prefix.
+    pub fn module_accounting_line(&self) -> String {
+        format!(
+            "{} run, {} errored, {} timed out, {} skipped, {} cached, {} deduped",
+            self.modules_run,
+            self.modules_errored,
+            self.modules_timed_out,
+            self.modules_skipped,
+            self.modules_cached,
+            self.modules_deduped
+        )
+    }
+
     pub fn new(id: impl Into<String>, target: Target) -> Self {
         Self {
             id: id.into(),

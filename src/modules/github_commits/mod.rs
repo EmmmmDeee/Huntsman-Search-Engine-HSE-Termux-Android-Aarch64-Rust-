@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::core::{
+    confidence,
     entity::{Entity, EntityKind, Evidence},
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -80,7 +81,7 @@ impl Module for GithubCommits {
     }
 
     fn description(&self) -> &'static str {
-        "Email → real name + GitHub account via commit-author search (free, no key)"
+        "GitHub commit-author search (free, no key) — pivots an email to a real name and GitHub account"
     }
 
     fn priority(&self) -> u8 {
@@ -126,7 +127,10 @@ impl Module for GithubCommits {
             .http
             .get(&url)
             .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header(
+                "X-GitHub-Api-Version",
+                crate::modules::github_api::API_VERSION,
+            )
             .header("User-Agent", UA_OSINT);
         // Optional token only raises the unauthenticated search rate limit
         // (10/min → 30/min); the module is fully functional without it.
@@ -137,7 +141,14 @@ impl Module for GithubCommits {
         let resp = req.send_tagged(SRC).await?;
         // Search is best-effort and free: a 403/429 means "rate-limited", not a
         // scan error. Degrade to an empty result rather than failing the module.
-        if !resp.status().is_success() {
+        let status = resp.status();
+        if !status.is_success() {
+            // If a token was in play, the key pool must still learn a 401/403/429
+            // happened, or a dead/throttled token silently degrades every future
+            // scan with no operator-visible signal and no chance to rotate.
+            if let Some(token) = ctx.key_opt("HUNTSMAN_GITHUB_TOKEN") {
+                crate::util::http::note_keyed_error(status.as_u16(), "github", token, ctx);
+            }
             return Ok(ModuleResult::new());
         }
         // json_scanned: commit messages are free-form text that can carry leaked
@@ -173,7 +184,7 @@ fn extract(items: &[CommitItem], email: &str, scan_id: &str) -> Vec<Entity> {
                 .filter(|l| !l.is_empty() && !l.to_ascii_lowercase().ends_with("[bot]"))
             && seen_login.insert(login.to_ascii_lowercase())
         {
-            let mut u = Entity::new(EntityKind::Username, login, 0.78, scan_id);
+            let mut u = Entity::new(EntityKind::Username, login, confidence::STRONG, scan_id);
             u.tag("github");
             u.tag("github-commit");
             u.add_evidence(
@@ -187,7 +198,7 @@ fn extract(items: &[CommitItem], email: &str, scan_id: &str) -> Vec<Entity> {
             out.push(u);
 
             if let Some(profile) = gh.html_url.as_deref().filter(|u| u.starts_with("http")) {
-                let mut url_e = Entity::new(EntityKind::Url, profile, 0.78, scan_id);
+                let mut url_e = Entity::new(EntityKind::Url, profile, confidence::STRONG, scan_id);
                 url_e.tag("github");
                 url_e.tag("github-commit");
                 url_e.add_evidence(
@@ -206,7 +217,7 @@ fn extract(items: &[CommitItem], email: &str, scan_id: &str) -> Vec<Entity> {
         if let Some(name) = item.commit.author.as_ref().and_then(|a| a.name.as_deref()) {
             let name = name.trim();
             if is_real_name(name) && seen_name.insert(name.to_ascii_lowercase()) {
-                let mut p = Entity::new(EntityKind::Person, name, 0.62, scan_id);
+                let mut p = Entity::new(EntityKind::Person, name, confidence::NOTABLE, scan_id);
                 p.tag("derived");
                 p.tag("github-commit");
                 p.add_evidence(

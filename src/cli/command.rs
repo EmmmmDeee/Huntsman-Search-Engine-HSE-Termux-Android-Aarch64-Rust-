@@ -13,9 +13,11 @@ use super::keys_cmd::KeysAction;
 #[command(
     name = "hse",
     version = crate::VERSION,
-    about = "Huntsman Search Engine — Termux aarch64 OSINT / GEOINT prototype",
-    long_about = "Pure-Rust OSINT scaffold for Termux on Android aarch64.\n\
-                  80+ modules (most free, no key), autonomous depth-bounded expansion.\n\
+    about = "Huntsman Search Engine (HSE) — GhostSec-tradition all-source OSINT / GEOINT recon for Termux aarch64",
+    long_about = "Huntsman Search Engine (HSE) — an all-source OSINT / GEOINT / NETINT reconnaissance\n\
+                  engine in the GhostSec tradition: SpiderFoot-inspired breadth without the daemon or the\n\
+                  footprint. Pure-Rust, keyless-first, autonomous depth-bounded expansion, forged to run\n\
+                  entirely inside Termux on Android aarch64 — single binary, zero native dependencies.\n\
                   Docs: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-"
 )]
 pub struct Cli {
@@ -43,6 +45,12 @@ pub enum Command {
         // the value, not parsed by clap as an unknown short flag.
         #[arg(short, long, allow_hyphen_values = true)]
         value: Option<String>,
+        /// Batch mode: path to a file of seeds, one target per line (blank lines
+        /// and `#` comments ignored). Runs the SAME scan for every listed seed —
+        /// bulk-scan an IP / domain / email / username list. When set, `--value`
+        /// is ignored; each seed's findings are stored and exportable per scan_id.
+        #[arg(long, value_name = "PATH")]
+        input_file: Option<String>,
         /// Comma-separated allowlist of module names.
         #[arg(short, long)]
         modules: Option<String>,
@@ -134,12 +142,23 @@ pub enum Command {
         /// (default 0.75 new entities per dispatched target).
         #[arg(long)]
         max_roi: bool,
-        /// Convex (optionality / barbell) budget allocation: re-weight expansion
-        /// candidates by a convexity premium for heavy-tailed upside over
-        /// per-kind dispatch cost, so the bounded budget favours cheap,
-        /// high-optionality identity leads over saturated infrastructure.
-        #[arg(long)]
-        convex_budget: bool,
+        /// Convex (optionality / barbell) budget allocation is ON by default:
+        /// expansion candidates are re-weighted by a convexity premium for
+        /// heavy-tailed upside over per-kind dispatch cost, so the bounded budget
+        /// favours cheap, high-optionality identity leads over saturated
+        /// infrastructure — maximising the value of each scan. Pass
+        /// `--no-convex-budget` for the plain expected-value ranking.
+        #[arg(long = "no-convex-budget", action = clap::ArgAction::SetTrue)]
+        no_convex_budget: bool,
+        /// Capability-aware dispatch is ON by default: modules whose parser has
+        /// provably gone dead across recent scans (persistent failures or silent
+        /// zero-yield drift) are skipped so their dispatch slot goes to a source
+        /// that still works — maximising each scan's useful return. Only culls
+        /// the automatic comprehensive fan-out; an explicit `--modules` set or
+        /// `--full` always runs everything. Pass `--no-skip-dead-modules` to run
+        /// every module regardless of health.
+        #[arg(long = "no-skip-dead-modules", action = clap::ArgAction::SetTrue)]
+        no_skip_dead_modules: bool,
         /// Australian-focused regional searching is ON by default: the search
         /// module adds minimal `.au` / AU-directory dorks on top of the
         /// geolocation-neutral base (a seed with no region signal defaults to
@@ -281,7 +300,13 @@ pub enum Command {
     /// Verify environment: DB path, key file, Termux detection, module counts.
     /// (Subsumed by `hse diagnostics`; kept for scripting and the API/UI.)
     #[command(hide = true)]
-    Doctor,
+    Doctor {
+        /// Also run a live capability preflight: probe every keyless module
+        /// against its real provider and report alive/empty/unreachable per
+        /// module. Opt-in and network-bound — the default run stays offline.
+        #[arg(long)]
+        live: bool,
+    },
     /// Validate every module and core feature, then exit (non-zero on any
     /// failure). (Subsumed by `hse diagnostics`; kept for scripting and the Web UI.)
     #[command(hide = true)]
@@ -312,6 +337,14 @@ pub enum Command {
         /// Show the merged env content without writing to disk.
         #[arg(long)]
         dry_run: bool,
+        /// Autonomously discover HUNTSMAN_* API keys already present in the
+        /// process environment (exported in a shell rc, CI, or passed inline)
+        /// that the env file doesn't yet carry, and pre-configure them into
+        /// `~/.huntsman.env`. Turns any key the operator already has into a
+        /// persisted, active one with zero manual `keys set`. No-op under
+        /// `--verify-only` (which never touches the env file).
+        #[arg(long)]
+        discover: bool,
     },
 
     /// Write a single `HUNTSMAN_*` key to `$HOME/.huntsman.env`.
@@ -332,6 +365,38 @@ pub enum Command {
         /// Output format: json, table, dossier.
         #[arg(short, long, default_value = "table")]
         output: String,
+    },
+    /// Parse documents (image/PDF/CSV/JSON/JSONL/text), extract entities (email, phone, IP, domain, hash, etc.),
+    /// classify by kind, assign confidence scores, and output as HSE-ready batch queries (JSONL/JSON/CSV/table).
+    Ingest {
+        /// Input file path (image, PDF, CSV, JSON, JSONL, text).
+        #[arg(short, long, value_name = "PATH")]
+        file: String,
+        /// Output format: jsonl (default), json, csv, table, or hse
+        /// (full core::entity::Entity records ready for the scan pipeline).
+        ///
+        /// Short flag is `-F`: `-f` is the input file and `-o` the output
+        /// file, and clap panics at startup on a duplicate short name.
+        #[arg(short = 'F', long, default_value = "jsonl")]
+        output_format: String,
+        /// Minimum confidence threshold (0.0-1.0, default 0.30).
+        #[arg(long, default_value = "0.30")]
+        min_confidence: f64,
+        /// Auto-scan extracted entities (future integration).
+        #[arg(long)]
+        auto_scan: bool,
+        /// Output file (default: stdout).
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Extract EXIF geolocation from images.
+        #[arg(long)]
+        extract_geolocation: bool,
+        /// Generate reverse image search variants for detected images.
+        #[arg(long)]
+        generate_reverse_search_variants: bool,
+        /// Output directory for reverse image search variants.
+        #[arg(long, value_name = "DIR")]
+        image_variant_output_dir: Option<String>,
     },
     /// Start the HTTP server + SPA (browse to http://127.0.0.1:8080 from Chrome).
     Serve {
@@ -411,9 +476,13 @@ pub enum Command {
         /// Same as `scan --max-roi`.
         #[arg(long)]
         max_roi: bool,
-        /// Same as `scan --convex-budget`.
-        #[arg(long)]
-        convex_budget: bool,
+        /// Same as `scan --no-convex-budget` (convex allocation is on by default).
+        #[arg(long = "no-convex-budget", action = clap::ArgAction::SetTrue)]
+        no_convex_budget: bool,
+        /// Same as `scan --no-skip-dead-modules` (capability-aware dispatch is on
+        /// by default).
+        #[arg(long = "no-skip-dead-modules", action = clap::ArgAction::SetTrue)]
+        no_skip_dead_modules: bool,
         /// Same as `scan --no-regional`.
         #[arg(long = "no-regional", action = clap::ArgAction::SetTrue)]
         no_regional: bool,
@@ -454,20 +523,11 @@ pub enum Command {
     ///
     /// Think of it as an intermittent radar that detects signals and
     /// automatically enriches them through all available modules.
-    Radar {
-        /// Seconds between sensor sweeps. Default 10.
-        #[arg(short, long, default_value_t = 10)]
-        interval: u64,
-        /// Expansion depth for each discovered entity. Default 2.
-        #[arg(short, long, default_value_t = 2)]
-        depth: u32,
-        /// Stop after this many sweeps. Omit for infinite (Ctrl-C to stop).
-        #[arg(long)]
-        sweeps: Option<u32>,
-        /// Skip paid modules when pivoting.
-        #[arg(long)]
-        free_only: bool,
-    },
+    ///
+    /// Takes no options: it is either running or stopped. Start it with
+    /// `hse radar`, stop it with Ctrl-C. Everything it needs it reads from this
+    /// device's own radios.
+    Radar {},
     /// Export a previous scan's entities to JSON / CSV / GEXF / JSON-report / full.
     ///
     /// JSON           — `[{ kind, value, ... }, ...]` flat entity list
@@ -502,6 +562,12 @@ pub enum Command {
         /// format but scoped only to the infra filter.
         #[arg(long, default_value_t = false)]
         include_infra: bool,
+        /// Redact subject PII for a shareable export: mask credential-class
+        /// values (passwords, credentials, harvested API keys) and coarsen
+        /// precise coordinates to ~11 km. Applies to json / csv / gexf only —
+        /// the full/debug dossiers are unredacted by contract.
+        #[arg(long, default_value_t = false)]
+        redact: bool,
     },
 
     /// Compare two completed scans: entities added / removed / re-scored.
@@ -545,11 +611,22 @@ pub enum Command {
         /// providers). Explosive — off by default.
         #[arg(long)]
         synthesize_emails: bool,
+        /// Recursively re-expand derived query values this many extra levels: a
+        /// derived username re-derives its own handles / candidate emails, a
+        /// derived domain its role emails, a synthesised email its own local-part
+        /// username + domain, and so on. Bounded and cycle-safe (a value is never
+        /// expanded twice), so it always terminates; `0` (default) keeps the
+        /// precise single-level plan. Compounds with `--synthesize-emails`, so use
+        /// `--max` to cap the result.
+        #[arg(long, default_value_t = 0)]
+        recurse_depth: u32,
         /// Cap the number of queries (after de-duplication). 0 = no cap.
         #[arg(long, default_value_t = 0)]
         max: usize,
-        /// Per-query record page size when executing. Default 100.
-        #[arg(long, default_value_t = 100)]
+        /// Per-query record page size when executing. Default 1000 — the
+        /// documented ceiling for Breach Search, clamped down automatically
+        /// per query to Stealer's own lower 100 maximum.
+        #[arg(long, default_value_t = 1000)]
         page_size: u32,
         /// Actually dispatch the plan against OathNet (spends credits). Without
         /// this the command only prints the plan.
@@ -568,7 +645,7 @@ pub enum Command {
     /// `hse cells clear [--yes]` — truncate the cells table.
     Cells {
         #[command(subcommand)]
-        action: super::cells::CellsAction,
+        action: crate::app::cells::CellsAction,
     },
 
     /// Upgrade hse in place: `git pull` + rebuild + atomic binary swap.
@@ -587,4 +664,24 @@ pub enum Command {
         #[arg(long, value_name = "REF")]
         r#ref: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// Validate the whole command tree at test time.
+    ///
+    /// clap's consistency checks (duplicate short flags, conflicting IDs,
+    /// malformed defaults) run inside a `debug_assert` on first parse — so a
+    /// broken definition does not fail the build, it panics at startup on
+    /// every invocation of the affected subcommand. `hse ingest` shipped that
+    /// way: `-o` was claimed by both `--output-format` and `--output`, and the
+    /// command aborted before doing any work. Asserting here turns that class
+    /// of defect into a failing test instead of a runtime crash.
+    #[test]
+    fn cli_definition_is_internally_consistent() {
+        Cli::command().debug_assert();
+    }
 }

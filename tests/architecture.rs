@@ -69,6 +69,65 @@ fn api_does_not_import_storage_directly() {
 }
 
 #[test]
+fn api_does_not_import_cli() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api");
+    let v = scan_for_violations(&dir, &["crate::cli", "use crate::cli"]);
+    assert!(
+        v.is_empty(),
+        "api/ must not import the CLI presentation layer; move shared use cases to app/.\n\
+         Violations:\n{}",
+        v.join("\n")
+    );
+}
+
+#[test]
+fn app_does_not_import_cli() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
+    let v = scan_for_violations(&dir, &["crate::cli", "use crate::cli"]);
+    assert!(
+        v.is_empty(),
+        "app/ owns shared use cases and must not depend on CLI presentation.\nViolations:\n{}",
+        v.join("\n")
+    );
+}
+
+#[test]
+fn application_layer_owns_runtime_composition() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let runtime = fs::read_to_string(root.join("src/app/runtime.rs")).unwrap();
+    for required in [
+        "Store::open(",
+        "ScanEngine::with_module_runtime(",
+        "registry()",
+        "module_runtime()",
+    ] {
+        assert!(
+            runtime.contains(required),
+            "src/app/runtime.rs must own shared runtime composition token {required:?}"
+        );
+    }
+
+    for layer in ["src/cli", "src/api"] {
+        let v = scan_for_violations(
+            &root.join(layer),
+            &[
+                "fn build_runtime(",
+                "ScanEngine::new(",
+                "ScanEngine::with_module_runtime(",
+                "Store::open(",
+                "crate::storage",
+            ],
+        );
+        assert!(
+            v.is_empty(),
+            "{layer} must consume app/ use cases rather than construct Store or ScanEngine.\n\
+             Violations:\n{}",
+            v.join("\n")
+        );
+    }
+}
+
+#[test]
 fn modules_do_not_import_engine_or_storage() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/modules");
     let v = scan_for_violations(&dir, &["crate::core::engine", "crate::storage"]);
@@ -80,20 +139,63 @@ fn modules_do_not_import_engine_or_storage() {
 }
 
 #[test]
+fn util_does_not_import_upper_layers() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/util");
+    let v = scan_for_violations(
+        &dir,
+        &[
+            "crate::api",
+            "crate::cli",
+            "crate::modules",
+            "crate::selftest",
+            "crate::storage",
+        ],
+    );
+    assert!(
+        v.is_empty(),
+        "util/ must not import upper application layers.\nViolations:\n{}",
+        v.join("\n")
+    );
+}
+
+#[test]
 fn core_does_not_import_util_directly() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core");
     let v = scan_for_violations(&dir, &["crate::util"]);
     let allowed: Vec<String> = v
         .into_iter()
         .filter(|line| {
-            !line.contains("util::proxy::ProxyPool")
-                && !line.contains("util::key_pool")
+            !line.contains("util::key_pool")
                 && !line.contains("util::key_roi")
                 && !line.contains("util::geohash")
                 // Pure, offline computational geometry (convex hull, geometric
                 // median, …) — the geo correlation rules' location estimators.
                 // Same justification as `util::geohash`: no I/O, no deps.
                 && !line.contains("util::geometry")
+                // Pure, offline CIDR containment (overflow-safe bitmask maths on
+                // std `Ipv4Addr`/`Ipv6Addr`; no I/O, no deps) — same leaf
+                // category as `util::geometry`. AU-112 uses it to test whether a
+                // discovered IP falls inside a discovered announced network block.
+                // Scoped to the two CIDR types actually used (confirmed: `core`
+                // imports nothing else from `util::spf` on either branch) rather
+                // than the whole module, so the guard stays precise if
+                // `util::spf` ever grows a non-pure item.
+                && !line.contains("util::spf::Ipv4Cidr")
+                && !line.contains("util::spf::Ipv6Cidr")
+                // Pure, offline, dependency-free IEEE OUI classifier (a const
+                // vendor table + a U/L-bit test on the first octet; no I/O, no
+                // deps) — same leaf category as `util::spf`/`util::abn`. AU-122
+                // uses it to separate a trackable universally-administered MAC
+                // from a randomized privacy address in a radar/WiGLE sweep, the
+                // same classifier the WiGLE emit path already applies so the two
+                // never disagree on which addresses are real hardware.
+                && !line.contains("util::oui")
+                // Pure, offline look-alike/typosquat comparison for domain
+                // labels (homoglyph skeleton fold + Levenshtein; no I/O, no
+                // deps, no Unicode tables) — same leaf category as
+                // `util::oui`/`util::abn`. AU-118 uses it to flag a phishing /
+                // brand-impersonation domain standing up beside the genuine one.
+                && !line.contains("util::confusable")
                 && !line.contains("util::preflight")
                 && !line.contains("util::keys::signup_hint")
                 && !line.contains("util::oathnet::reset_budget")
@@ -105,6 +207,18 @@ fn core_does_not_import_util_directly() {
                 // scans (PROBLEM_TREE T2.11). reset/drain still go through the module
                 // hook (they bridge to `core::entity`); only the pure scope is here.
                 && !line.contains("util::found_keys::with_scan")
+                // Pure task-local ambient (no I/O): the regional-search
+                // scan-scope, the same shape/justification as
+                // `found_keys::with_scan` immediately above. The engine wraps
+                // each scan + each spawned dispatch task in `with_regional` so
+                // `search_engines::regional_enabled()` reads the setting of
+                // the scan actually executing on the calling task, never a
+                // concurrently-running sibling's (PROBLEM_TREE T2.11).
+                // `regional_enabled` itself is read directly at the dispatch
+                // spawn site to capture the value before re-scoping it inside
+                // the spawned task.
+                && !line.contains("util::regional::with_regional")
+                && !line.contains("util::regional::regional_enabled")
                 // Persistent capability toggles (universal toggleability): the
                 // engine's module gate reads `module.<name>` on/off.
                 && !line.contains("util::settings::get_bool")
@@ -247,27 +361,61 @@ fn core_does_not_import_util_directly() {
                 && !line.contains("util::hashcat::is_common_password")
                 && !line.contains("util::hashcat::digests_of")
                 && !line.contains("util::hashcat::is_common_collision")
+                // Pure, dependency-free disjoint-set / union-find primitive (a
+                // flat parent `Vec<usize>` with path-halving; no state, no I/O,
+                // no deps), same leaf category as `util::geometry`. The
+                // credential-reuse (AU-121) and shared-infrastructure (AU-116)
+                // closure rules use it to compute connected components over
+                // handle/infra graphs; it is the single source of truth those
+                // rules and the diagnostics/relation clusterers all delegate to.
+                && !line.contains("util::union_find")
+                // Pure, IO-free recursive query generator + its value types (no
+                // network, no key, no state — `generate` is a deterministic
+                // `(kind, value, opts) -> Vec<BatchQuery>`), same leaf category
+                // as `util::union_find`. `core::breach_sweep` compiles the final
+                // bulk breach plan with it. Deliberately scoped to
+                // `oathnet_batch`: the OathNet *client* (`util::oathnet` —
+                // budget state, key resolution, `async fn search`) stays out of
+                // `core`, which is why the field→TargetKind mapping the sweep
+                // needs lives on `BatchQuery::target_kind` rather than being
+                // reached for as `util::oathnet::FIELD_*`.
+                && !line.contains("util::oathnet_batch")
         })
         .collect();
     assert!(
         allowed.is_empty(),
-        "core/ must not import util/ (except proxy::ProxyPool on ModuleContext).\nViolations:\n{}",
+        "core/ must not import util/ (except the allow-listed pure/leaf helpers above).\nViolations:\n{}",
         allowed.join("\n")
     );
 }
 
 #[test]
 fn core_does_not_import_modules() {
-    // core is module-agnostic: the engine drives modules through the registry
-    // and the `core::hooks` function-pointer registry, never the reverse
-    // (PROBLEM_TREE T1.4). The one legal `modules → core` hook edge is the
-    // install in `modules::registry`; `core` itself names no `crate::modules`.
+    // core is module-agnostic: the application layer injects the implementation
+    // of core's `ModuleRuntime` contract; core never names `crate::modules`.
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core");
     let v = scan_for_violations(&dir, &["crate::modules"]);
     assert!(
         v.is_empty(),
-        "core/ must not import modules/ — invert via `core::hooks`.\nViolations:\n{}",
+        "core/ must not import modules/ — invert via `core::module_runtime`.\nViolations:\n{}",
         v.join("\n")
+    );
+}
+
+#[test]
+fn module_runtime_has_no_process_global_installation() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let contract = fs::read_to_string(root.join("src/core/module_runtime.rs")).unwrap();
+    for forbidden in ["OnceLock", "static HOOKS", "fn install("] {
+        assert!(
+            !contract.contains(forbidden),
+            "ModuleRuntime must be injected per engine, not installed globally: {forbidden}"
+        );
+    }
+    let registry = fs::read_to_string(root.join("src/modules/mod.rs")).unwrap();
+    assert!(
+        !registry.contains("install_core_hooks"),
+        "module registry construction must remain free of process-global side effects"
     );
 }
 
@@ -314,33 +462,6 @@ fn module_registry_count_is_stable() {
 /// the whole class a CI failure rather than a silent runtime no-op. Passive
 /// modules (local sensors, pure computation) legitimately keep the default
 /// and are exempt.
-/// Every registered module must appear in `docs/MODULES.md`. The catalogue
-/// section there is generated from `hse modules --json`, but nothing stops a
-/// future contributor adding a module and forgetting to regenerate it — the
-/// doc had drifted to describe only 31 of 85 modules (and listed ~11 that no
-/// longer existed) before this guard. A missing module name here fails CI,
-/// keeping the operator-facing catalogue honest.
-#[test]
-fn modules_md_lists_every_registered_module() {
-    let doc = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/MODULES.md"))
-        .expect("docs/MODULES.md must exist");
-    let modules = huntsman_search_engine::modules::registry();
-    let missing: Vec<&str> = modules
-        .iter()
-        .map(|m| m.name())
-        .filter(|name| {
-            // Match the `\`name\`` form used in the generated table so a
-            // substring of another name can't accidentally satisfy it.
-            !doc.contains(&format!("`{name}`"))
-        })
-        .collect();
-    assert!(
-        missing.is_empty(),
-        "modules missing from docs/MODULES.md (regenerate the catalogue from \
-         `hse modules --json`): {missing:?}"
-    );
-}
-
 #[test]
 fn every_module_maps_to_valid_attack_reconnaissance_techniques() {
     // Every registered module declares the MITRE ATT&CK Reconnaissance technique
@@ -544,11 +665,12 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "shodan → scan-db + IP info + physical location + org"
     );
     // Censys likewise: scan db (T1596.005) + IP info (T1590.005) + datacenter
-    // coordinates and city as physical location (T1591.001).
+    // coordinates and city as physical location (T1591.001) + the ASN operator
+    // as an Organisation (T1591.002 Business Relationships).
     assert_eq!(
         techniques("censys"),
-        vec!["T1590.005", "T1596.005", "T1591.001"],
-        "censys → scan-db + IP info + physical location"
+        vec!["T1590.005", "T1596.005", "T1591.001", "T1591.002"],
+        "censys → scan-db + IP info + physical location + org"
     );
 
     // ip_whois_geo is a passive geolocation API identical in surface to the
@@ -641,20 +763,46 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "urlscan → IP Addresses + Physical Locations + Scan Databases"
     );
 
-    // DeHashed + IntelX: Breach category covers Credentials (T1589.001) and
-    // Email Addresses (T1589.002) but both modules also emit real-name Person
+    // IntelX: Breach category covers Credentials (T1589.001) and Email
+    // Addresses (T1589.002), but the module also emits real-name Person
     // entities → T1589.003 Employee Names must be declared explicitly.
-    for name in ["dehashed", "intelx"] {
-        assert_eq!(
-            techniques(name),
-            vec!["T1589.001", "T1589.002", "T1589.003"],
-            "{name} → Credentials + Email Addresses + Employee Names"
-        );
-        assert!(
-            techniques(name).contains(&"T1589.003"),
-            "{name} emits Person entities; must claim Employee Names (T1589.003)"
-        );
-    }
+    // Unlike DeHashed below, IntelX re-emits the scanned target as its own
+    // entity rather than extracting child entities from record content (its
+    // own doc comment: "does not extract child entities — see the
+    // no-document-bodies invariant"), so it does not run the shared
+    // `breach_rich` pass and does not need that pass's broader technique set.
+    assert_eq!(
+        techniques("intelx"),
+        vec!["T1589.001", "T1589.002", "T1589.003", "T1597.002"],
+        "intelx → Credentials + Email Addresses + Employee Names + Purchase Technical Data"
+    );
+    assert!(
+        techniques("intelx").contains(&"T1589.003"),
+        "intelx emits Person entities; must claim Employee Names (T1589.003)"
+    );
+
+    // DeHashed: Breach category covers Credentials + Email Addresses, but the
+    // module's own per-record extractor plus the shared `breach_rich`
+    // "maximum raw data" pass it runs (see `dehashed/build.rs`'s call site)
+    // together mint Person, IP, Address/Coordinates, Organisation, host
+    // fingerprints (MAC/device id), and social-media handles — the full
+    // breach-pool surface `see_know`/`oathnet_pro` declare for running the
+    // identical shared extractor, not just credentials/email/name.
+    assert_eq!(
+        techniques("dehashed"),
+        vec![
+            "T1589.001",
+            "T1589.002",
+            "T1589.003",
+            "T1590.005",
+            "T1591.001",
+            "T1591.002",
+            "T1592",
+            "T1593.001",
+            "T1597.002",
+        ],
+        "dehashed → the full shared breach_rich surface, from a purchased data feed"
+    );
 
     // WiGLE: Geo category (T1591.001 Physical Locations) but also surfaces
     // the cellular carrier / WiFi network operator as an Organisation →
@@ -850,11 +998,18 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "ipqs → Victim Identity (Phone) + Email Addresses + IP Addresses + Scan Databases + Threat Intel Vendors"
     );
 
-    // criminal_ip: existing override adds T1591.002 for ASN operator Organisation.
+    // criminal_ip: override adds T1591.002 for the ASN operator Organisation and
+    // T1591.001 for the whois city/region/lat-lon → Address/Coordinates.
     assert_eq!(
         techniques("criminal_ip"),
-        vec!["T1590.005", "T1591.002", "T1596.005", "T1597.001"],
-        "criminal_ip → IP Addresses + Business Relationships + Scan Databases + Threat Intel Vendors"
+        vec![
+            "T1590.005",
+            "T1591.001",
+            "T1591.002",
+            "T1596.005",
+            "T1597.001"
+        ],
+        "criminal_ip → IP Addresses + Physical Locations + Business Relationships + Scan Databases + Threat Intel Vendors"
     );
 
     // device_sensors: Sensor default (T1592 Host Information) but GPS coordinates
@@ -1092,7 +1247,6 @@ fn env_template_keys_are_all_consumed() {
     // Documented but not yet wired to a consuming module. Each MUST be marked
     // `[RESERVED]` in the template; setting it has no runtime effect (yet).
     const NOT_YET_WIRED: &[&str] = &[
-        "HUNTSMAN_ALIENVAULT_KEY",
         "HUNTSMAN_MALSHARE_KEY",
         "HUNTSMAN_PHISHTANK_KEY",
         "HUNTSMAN_XPOSEDORNOT_KEY",
@@ -1142,6 +1296,124 @@ fn env_template_keys_are_all_consumed() {
     assert!(
         stale.is_empty(),
         "NOT_YET_WIRED lists keys absent from the template (remove them): {stale:?}"
+    );
+}
+
+/// Collects every `HUNTSMAN_*` literal bound to a `const ..._ENV: &str = "..."`
+/// declaration under `dir` — the project-wide convention every key-gated
+/// module uses to name the env var it reads (`const KEY_ENV: &str =
+/// "HUNTSMAN_SHODAN_KEY"`, `const OTX_KEY_ENV: &str =
+/// "HUNTSMAN_ALIENVAULT_KEY"`, etc). Deliberately narrower than
+/// `collect_env_literals` (which also matches prose/doc-comment mentions): this
+/// is the precise "a module genuinely reads this env var" signal used to catch
+/// keys that are consumed but undocumented in a template — the inverse of what
+/// `env_template_keys_are_all_consumed` already guards.
+fn collect_key_env_consts(dir: &Path, out: &mut std::collections::HashSet<String>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_key_env_consts(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            let content = fs::read_to_string(&path).unwrap();
+            for line in content.lines() {
+                if !line.contains("const ") || !line.contains("ENV") {
+                    continue;
+                }
+                if let Some(start) = line.find("\"HUNTSMAN_") {
+                    let rest = &line[start + 1..];
+                    if let Some(end) = rest.find('"') {
+                        out.insert(rest[..end].to_string());
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Guards the THREE independent places a key-gated module's env var must be
+/// documented for an operator to ever discover it — `env_template.txt` (the
+/// `hse provision` template), `util::keys::constants::KNOWN_KEYS` (drives the
+/// Settings-page paste grid), and `install.sh`'s own hand-maintained
+/// `~/.huntsman.env` heredoc (what a fresh `curl | bash` install writes) — all
+/// stay in sync with the modules that actually exist.
+///
+/// This is the inverse direction of `env_template_keys_are_all_consumed`
+/// (documented ⇒ consumed) and closes the gap that let a real drift ship: a
+/// `const ...ENV: &str = "HUNTSMAN_NIAMONX_KEY"` in a live, registered module
+/// with NO test catching that `KNOWN_KEYS` (so the Settings UI could never
+/// surface it) or `env_template.txt` never mentioned it — discovered via a
+/// four-way audit of the actual embedded-vs-shipped provisioning templates
+/// after `src/cli/provision/env_template.txt` turned out to be a silently
+/// stale `include_str!` shadow copy of the real, tested `src/cli/env_template.txt`.
+#[test]
+fn key_gated_modules_are_documented_everywhere_an_operator_would_look() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    let mut consumed = std::collections::HashSet::new();
+    collect_key_env_consts(&root.join("src/modules"), &mut consumed);
+    assert!(
+        consumed.len() > 30,
+        "sanity: expected 30+ KEY_ENV-style consts across src/modules, found {}",
+        consumed.len()
+    );
+
+    // 1. env_template.txt (the file `hse provision` embeds — see the
+    //    `include_str!` in src/cli/provision/mod.rs, which must point HERE).
+    let template = fs::read_to_string(root.join("src/cli/env_template.txt")).unwrap();
+    let template_keys: std::collections::HashSet<&str> = template
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("HUNTSMAN_"))
+        .filter_map(|l| l.split('=').next())
+        .map(str::trim)
+        .collect();
+    let missing_from_template: Vec<&String> = consumed
+        .iter()
+        .filter(|k| !template_keys.contains(k.as_str()))
+        .collect();
+    assert!(
+        missing_from_template.is_empty(),
+        "module(s) read a key env_template.txt never mentions (hse provision \
+         can't offer it): {missing_from_template:?}"
+    );
+
+    // 2. util::keys::constants::KNOWN_KEYS (drives the Settings-page grid).
+    let known: std::collections::HashSet<&str> = huntsman_search_engine::util::keys::KNOWN_KEYS
+        .iter()
+        .copied()
+        .collect();
+    let missing_from_known_keys: Vec<&String> = consumed
+        .iter()
+        .filter(|k| !known.contains(k.as_str()))
+        .collect();
+    assert!(
+        missing_from_known_keys.is_empty(),
+        "module(s) read a key KNOWN_KEYS omits (Settings UI can never surface \
+         it): {missing_from_known_keys:?}"
+    );
+
+    // 3. install.sh must configure the fresh `~/.huntsman.env` through the ONE
+    //    canonical source. It previously carried a second, hand-maintained copy
+    //    of the key list in a `cat > "$KEYS_PATH" <<'TEMPLATE'` heredoc that
+    //    could (and did) drift from env_template.txt; that duplicate was removed
+    //    in favour of delegating to `hse provision --env-only --discover`, which
+    //    embeds env_template.txt (proven complete in step 1). So completeness for
+    //    a fresh `curl | bash` install now flows through that single source, and
+    //    the guard here is that the delegation is present — not that a rival
+    //    template exists to fall behind.
+    let install_sh = fs::read_to_string(root.join("install.sh")).unwrap();
+    assert!(
+        !install_sh.contains("cat > \"$KEYS_PATH\" <<'TEMPLATE'"),
+        "install.sh reintroduced a hand-maintained keys heredoc — that is a second \
+         template that will drift from env_template.txt. Configure keys by \
+         delegating to `hse provision` (the single canonical source) instead."
+    );
+    assert!(
+        install_sh.contains("provision --env-only --discover"),
+        "install.sh must configure ~/.huntsman.env by delegating to \
+         `hse provision --env-only --discover` (the single canonical env-template \
+         source), so a fresh install offers every key with autonomous discovery \
+         and no drift-prone second list"
     );
 }
 
@@ -1612,6 +1884,31 @@ fn readme_module_overview_count_matches_registry() {
          size ({n}); update README.md after adding/removing a module"
     );
 
+    // The heading's free/key-gated SPLIT is also authoritative and was previously
+    // unguarded — so it silently drifted (headline said "128 free, 34 paid" while
+    // the registry held a different split, and later edits compounded it). Tie the
+    // full split to the live cost() of every registered module so it can't rot
+    // again — the same no-silent-drift guard as the total above. (The per-category
+    // "highlight" subtotals lower down are a deliberately CURATED subset, not the
+    // registry total, so they are intentionally not checked here.)
+    use huntsman_search_engine::core::module::ModuleCost;
+    let registry = huntsman_search_engine::modules::registry();
+    let (mut free, mut key_gated_paid) = (0usize, 0usize);
+    for m in &registry {
+        match m.cost() {
+            ModuleCost::Free => free += 1,
+            ModuleCost::KeyGated | ModuleCost::Paid => key_gated_paid += 1,
+        }
+    }
+    let split =
+        format!("## Module Overview ({n} modules — {free} free, {key_gated_paid} key-gated/paid)");
+    assert!(
+        readme.contains(&split),
+        "README module-overview headline must cite the live free/key-gated split \
+         ({split:?}); update README.md after adding/removing a module or changing \
+         a module's cost()"
+    );
+
     // The heading check alone proved insufficient: the intro blurb and the
     // `hse modules` usage comment each carry their own hand-written count and
     // both rotted to a stale figure while the heading stayed correct. Sweep
@@ -1643,6 +1940,29 @@ fn readme_module_overview_count_matches_registry() {
     assert!(
         stale.is_empty(),
         "README cites a stale module total (registry holds {n}): {stale:?}"
+    );
+}
+
+/// The README's "Deterministic correlator: N rules (E entity + R graph-aware
+/// relation)" line is hand-maintained prose and had already drifted once
+/// (stated 108 while the registry held 109, immediately after a rule was
+/// added and only `docs/ARCHITECTURE_AUDIT.md` was reconciled). Tie it to
+/// [`huntsman_search_engine::core::correlator::rule_counts`] so it can't
+/// silently rot again — the same no-silent-drift guard as
+/// `readme_module_overview_count_matches_registry`.
+#[test]
+fn readme_correlator_rule_count_matches_registry() {
+    let readme = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+        .expect("README.md must exist");
+    let (entity, relation) = huntsman_search_engine::core::correlator::rule_counts();
+    let total = entity + relation;
+    let needle = format!(
+        "Deterministic correlator: {total} rules ({entity} entity + {relation} graph-aware relation)"
+    );
+    assert!(
+        readme.contains(&needle),
+        "README must cite the live correlator rule split ({needle:?}); update \
+         README.md (and docs/ARCHITECTURE_AUDIT.md) after adding/removing a rule"
     );
 }
 
@@ -2185,5 +2505,339 @@ fn every_checked_feature_flag_is_registered() {
     assert!(
         checked >= 3,
         "expected several literal feature.* checks outside settings, saw {checked}"
+    );
+}
+
+// ── Canonical entity classifier convergence tests ─────────────────────────────
+// Phase 1, item 1: `core::classifier` owns the canonical embedded-entity locators;
+// `util::entity_extractor` re-uses them. These tests assert that the re-exported
+// patterns are identical to the canonical ones and that classification is
+// deterministic.
+
+use huntsman_search_engine::core::classifier as core_classifier;
+use huntsman_search_engine::util::entity_extractor::EntityKind;
+use huntsman_search_engine::util::entity_extractor::classifier::EntityClassifier;
+use huntsman_search_engine::util::entity_extractor::patterns;
+
+#[test]
+fn entity_extractor_reuses_core_patterns() {
+    // The patterns re-exported by `util::entity_extractor::patterns` must be the
+    // *same* `Regex` instances as the canonical `core::classifier` patterns.
+    assert!(std::ptr::addr_eq(
+        &*patterns::EMAIL_PATTERN,
+        &*core_classifier::EMAIL_RE
+    ));
+    assert!(std::ptr::addr_eq(
+        &*patterns::IPV4_PATTERN,
+        &*core_classifier::IPV4_RE
+    ));
+    assert!(std::ptr::addr_eq(
+        &*patterns::DOMAIN_PATTERN,
+        &*core_classifier::DOMAIN_RE
+    ));
+    assert!(std::ptr::addr_eq(
+        &*patterns::URL_PATTERN,
+        &*core_classifier::URL_RE
+    ));
+}
+
+#[test]
+fn core_and_extractor_classifiers_agree_on_canonical_values() {
+    let classifier = EntityClassifier::new().expect("should succeed");
+
+    let cases: &[(&str, EntityKind)] = &[
+        ("test@example.com", EntityKind::Email),
+        ("https://example.com/path", EntityKind::Url),
+        ("192.168.1.1", EntityKind::Ipv4),
+        ("example.com", EntityKind::Domain),
+    ];
+
+    for (value, expected) in cases {
+        assert_eq!(
+            classifier.classify(value, None),
+            *expected,
+            "classifier mismatch for {value}"
+        );
+        let core = core_classifier::classify(value);
+        assert_eq!(
+            core.value, *value,
+            "core classifier must preserve the raw value"
+        );
+        assert!(
+            core.confidence > 0.0,
+            "core classifier must assign non-zero confidence to {value}"
+        );
+    }
+}
+
+#[test]
+fn core_extract_is_deterministic() {
+    let text = "Contact: alice@example.com or https://example.com and 8.8.8.8. \
+                Also example.org and @handle.";
+    let first = core_classifier::extract(text);
+    let second = core_classifier::extract(text);
+    assert_eq!(
+        first, second,
+        "core::classifier::extract must be deterministic for the same input"
+    );
+    // Smoke-check that the canonical locators actually found the expected entities.
+    assert!(
+        first
+            .iter()
+            .any(|c| c.kind == huntsman_search_engine::core::entity::EntityKind::Email),
+        "expected an email entity"
+    );
+    assert!(
+        first
+            .iter()
+            .any(|c| c.kind == huntsman_search_engine::core::entity::EntityKind::Url),
+        "expected a URL entity"
+    );
+    assert!(
+        first
+            .iter()
+            .any(|c| c.kind == huntsman_search_engine::core::entity::EntityKind::IpAddress),
+        "expected an IP entity"
+    );
+}
+
+// ── Confidence-ladder invariant ──────────────────────────────────────────────
+
+/// Split the top-level, comma-separated arguments of a call. `s` must start at
+/// the call's opening `(`. Nested delimiters and string literals are skipped so
+/// a multi-line call, or one whose arguments contain commas inside `{}`/`()`,
+/// still yields the correct argument list. Returns `None` if unterminated.
+fn call_args(s: &str) -> Option<Vec<String>> {
+    let mut depth = 0i32;
+    let mut args: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '(' | '[' | '{' => {
+                depth += 1;
+                if depth > 1 {
+                    cur.push(c);
+                }
+            }
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    args.push(cur);
+                    return Some(args);
+                }
+                cur.push(c);
+            }
+            ',' if depth == 1 => args.push(std::mem::take(&mut cur)),
+            '"' => {
+                cur.push(c);
+                while let Some(d) = chars.next() {
+                    cur.push(d);
+                    if d == '\\' {
+                        if let Some(e) = chars.next() {
+                            cur.push(e);
+                        }
+                        continue;
+                    }
+                    if d == '"' {
+                        break;
+                    }
+                }
+            }
+            _ => cur.push(c),
+        }
+    }
+    None
+}
+
+/// True for a bare float literal such as `0.68` — the thing this invariant
+/// forbids. A `confidence::HIGH_PLUS` path, or any compound expression, is not.
+fn is_bare_float(s: &str) -> bool {
+    let t = s.trim();
+    t.strip_prefix("0.")
+        .is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// The production slice of a source file: everything before the first
+/// `#[cfg(test)]`, with comment-only lines blanked. Doc examples are blanked
+/// deliberately — a `///` example is an illustrative fixture, and a doctest
+/// cannot see the parent module's `use` statements, so naming a constant there
+/// would not even compile. Mirrors the scoping `scan_dir` above already uses.
+fn production_source(content: &str) -> String {
+    let mut out = String::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "#[cfg(test)]" {
+            break;
+        }
+        if trimmed.starts_with("//") {
+            out.push('\n');
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// Collect every production `Entity::new` call whose confidence argument is a
+/// bare float literal, as `(repo-relative path, literal)`.
+fn collect_bare_confidence(dir: &Path, root: &Path, out: &mut Vec<(String, String)>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_bare_confidence(&path, root, out);
+            continue;
+        }
+        // `tests.rs` and every `*_tests.rs` are dedicated test-code files,
+        // `mod`/`include!`d under a `#[cfg(test)]` at their declaration site, so
+        // the gating marker is never inside the file itself for the scanner to
+        // see. Skip them whole — test fixtures are deliberately allowed to use
+        // bare literals (a threshold assertion that moves when a constant moves
+        // is a weaker test).
+        if path
+            .file_name()
+            .is_some_and(|n| n == "tests.rs" || n.to_string_lossy().ends_with("_tests.rs"))
+            || path.extension().is_none_or(|e| e != "rs")
+        {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let src = production_source(&fs::read_to_string(&path).unwrap());
+        for (idx, _) in src.match_indices("Entity::new") {
+            // Word boundary: don't match a longer identifier ending in this.
+            if src[..idx]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            {
+                continue;
+            }
+            let rest = &src[idx + "Entity::new".len()..];
+            let Some(open) = rest.find('(') else { continue };
+            if !rest[..open].trim().is_empty() {
+                continue;
+            }
+            let Some(args) = call_args(&rest[open..]) else {
+                continue;
+            };
+            // Entity::new(kind, value, confidence, scan_id)
+            if args.len() >= 3 && is_bare_float(&args[2]) {
+                out.push((rel.clone(), args[2].trim().to_string()));
+            }
+        }
+    }
+}
+
+/// Every production `Entity::new` confidence argument must be a named constant
+/// from [`huntsman_search_engine::core::confidence`], never a bare float.
+///
+/// The ladder exists so confidence is comparable across ~140 independently
+/// written modules; a bare literal is an unauditable magic number that defeats
+/// that. `src/core` is fully normalised and must stay that way.
+///
+/// The baseline below is the frozen inventory of sites that still carry an
+/// unnormalised value. Every one of them sits 0.01–0.03 away from an existing
+/// rung (0.66 vs `HIGH` 0.65, 0.68 vs `HIGH_PLUS` 0.70, 0.74 vs `VERY_HIGH`
+/// 0.75, 0.42 vs `LOW` 0.40, 0.38/0.28 between rungs) — evidence of
+/// uncoordinated drift between modules rather than deliberately designed tiers.
+/// They are NOT normalised here because doing so would change emitted
+/// confidence, which is a behavioural change that needs its own decision and
+/// its own regression evidence.
+///
+/// This is a ratchet, asserted as exact set equality:
+///   * a NEW bare literal fails the test — drift cannot grow;
+///   * normalising one also fails, asking you to delete its baseline row — so
+///     the inventory can only shrink, and never silently misreports.
+#[test]
+fn entity_confidence_uses_named_ladder_constants() {
+    /// Frozen drift inventory. Line-number free so unrelated edits above a site
+    /// don't churn it. Shrink this list; never extend it.
+    const BASELINE: &[(&str, &str)] = &[
+        ("src/modules/asic_business_names/mod.rs", "0.42"),
+        ("src/modules/crates_io/mod.rs", "0.66"),
+        ("src/modules/crates_io/mod.rs", "0.74"),
+        ("src/modules/doh_resolver/mod.rs", "0.68"),
+        ("src/modules/fediverse/mod.rs", "0.68"),
+        ("src/modules/geo_intel/ip_geo.rs", "0.68"),
+        ("src/modules/ip2location/mod.rs", "0.68"),
+        ("src/modules/ip_reputation/mod.rs", "0.68"),
+        ("src/modules/mastodon_user/mod.rs", "0.28"),
+        ("src/modules/mastodon_user/mod.rs", "0.38"),
+        ("src/modules/mastodon_user/mod.rs", "0.68"),
+        ("src/modules/nostr/mod.rs", "0.66"),
+        ("src/modules/npm_author/mod.rs", "0.66"),
+        ("src/modules/npm_author/mod.rs", "0.74"),
+        ("src/modules/proxycurl/build.rs", "0.68"),
+        ("src/modules/proxycurl/build.rs", "0.68"),
+    ];
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut found = Vec::new();
+    collect_bare_confidence(&root.join("src"), root, &mut found);
+    found.sort();
+
+    let mut expected: Vec<(String, String)> = BASELINE
+        .iter()
+        .map(|(p, v)| ((*p).to_string(), (*v).to_string()))
+        .collect();
+    expected.sort();
+
+    // Compare as MULTISETS, not sets. `Vec::contains` tests membership only, so
+    // with a duplicate baseline row (proxycurl/build.rs carries two 0.68 sites) a
+    // third identical literal in that same file would still be "contained" and
+    // slip through, and normalising one of a duplicate pair would leave the stale
+    // row undetected. Counting occurrences is what actually enforces the ratchet.
+    let tally = |rows: &[(String, String)]| {
+        let mut m: std::collections::BTreeMap<(String, String), usize> =
+            std::collections::BTreeMap::new();
+        for r in rows {
+            *m.entry(r.clone()).or_default() += 1;
+        }
+        m
+    };
+    let found_counts = tally(&found);
+    let expected_counts = tally(&expected);
+
+    // Occurrences present more often than the baseline allows.
+    let added: Vec<String> = found_counts
+        .iter()
+        .filter_map(|(k, n)| {
+            let allowed = expected_counts.get(k).copied().unwrap_or(0);
+            (*n > allowed).then(|| format!("{} `{}` x{} (baseline allows {allowed})", k.0, k.1, n))
+        })
+        .collect();
+    // Baseline rows that no longer occur that many times.
+    let fixed: Vec<String> = expected_counts
+        .iter()
+        .filter_map(|(k, n)| {
+            let actual = found_counts.get(k).copied().unwrap_or(0);
+            (*n > actual).then(|| format!("{} `{}` x{} (now only {actual})", k.0, k.1, n))
+        })
+        .collect();
+
+    assert!(
+        added.is_empty(),
+        "new bare confidence literal(s) in production Entity::new — use a \
+         named `confidence::` constant instead of a magic number:\n{added:#?}"
+    );
+    assert!(
+        fixed.is_empty(),
+        "these baseline entries no longer exist (nice — you normalised them). \
+         Delete them from BASELINE so the inventory stays truthful:\n{fixed:#?}"
+    );
+
+    // core must remain fully normalised.
+    assert!(
+        !found.iter().any(|(p, _)| p.starts_with("src/core/")),
+        "src/core must contain no bare confidence literals; found: {:#?}",
+        found
+            .iter()
+            .filter(|(p, _)| p.starts_with("src/core/"))
+            .collect::<Vec<_>>()
     );
 }

@@ -10,10 +10,7 @@
 //! This module is the single source of truth for "is service X an OSINT
 //! provider, and in which category?". It deliberately classifies only the
 //! recon/intelligence services — generic infra (AWS, Stripe, GitHub, MongoDB)
-//! returns `None` and is never flagged as practitioner tooling. The catalogue is
-//! the authoritative, comparable list the operator checks their own keys
-//! against; the doc `docs/OSINT_API_CATALOGUE.md` is generated from it and kept
-//! honest by a test.
+//! returns `None` and is never flagged as practitioner tooling.
 //!
 //! Retention-only: classifying a key never authenticates with it. The category
 //! drives tags + the OSINT-practitioner correlation, not any reuse.
@@ -264,27 +261,6 @@ mod tests {
                 "{infra} wrongly flagged OSINT"
             );
         }
-    }
-
-    /// The operator-facing catalogue doc must list every catalogued service tag,
-    /// so the comparison list the operator checks their own keys against stays
-    /// honest (the same no-drift guard as `docs/MODULES.md`).
-    #[test]
-    fn osint_catalogue_doc_lists_every_service() {
-        let doc = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/docs/OSINT_API_CATALOGUE.md"
-        ))
-        .expect("docs/OSINT_API_CATALOGUE.md must exist");
-        let missing: Vec<&str> = OSINT_SERVICES
-            .iter()
-            .map(|(s, _)| *s)
-            .filter(|s| !doc.contains(&format!("`{s}`")))
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "OSINT services missing from docs/OSINT_API_CATALOGUE.md: {missing:?}"
-        );
     }
 
     #[test]

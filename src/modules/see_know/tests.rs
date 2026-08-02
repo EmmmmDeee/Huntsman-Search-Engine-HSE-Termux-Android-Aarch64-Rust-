@@ -16,6 +16,34 @@ use crate::util::key_pool::KeyStatus;
         assert_eq!(terminal_pool_status(false, false), None);
     }
 
+/// Test shim. Production `extract::extract_entities` takes a prebuilt
+/// `&TargetMatch` (built once per result set on the hot path, not per record).
+/// These tests exercise it one record at a time against a raw target string, so
+/// this thin wrapper rebuilds the matcher per call to keep the call sites
+/// readable. It shadows the glob-imported production symbol within this module
+/// only; the shipped call sites in `mod.rs` build the matcher once, as intended.
+#[allow(clippy::too_many_arguments)]
+fn extract_entities(
+    item: &serde_json::Value,
+    target_value: &str,
+    scan_id: &str,
+    endpoint: &str,
+    key_fp: &str,
+    seen: &mut std::collections::HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    super::extract::extract_entities(
+        item,
+        target_value,
+        &crate::util::target_match::TargetMatch::new(target_value),
+        scan_id,
+        endpoint,
+        key_fp,
+        seen,
+        result,
+    );
+}
+
     #[test]
     fn module_timeout_exceeds_seeknow_curl_outer_budget() {
         // Regression: the engine aborts a module at max_timeout_ms. see_know's
@@ -68,6 +96,47 @@ use crate::util::key_pool::KeyStatus;
         assert!(!should_skip_seed(TargetKind::FullName, "Jordan Meyer"));
         assert!(!should_skip_seed(TargetKind::IpAddress, "8.8.8.8"));
         assert!(!should_skip_seed(TargetKind::Domain, "example.com"));
+    }
+
+    #[test]
+    fn search_subject_present_gates_on_a_real_match() {
+        use serde_json::json;
+        // T2.36-pattern regression: a broad `full_name` `/search` page of pure
+        // term-sharing strangers must not read as "subject present" — the
+        // caller would otherwise mint a confidence::HIGH_PLUSPLUS_PLUS BREACH parent that merges (via
+        // `absorb`, GREATEST semantics) straight onto the pre-seeded subject
+        // anchor regardless of whether any row actually concerns them.
+        let strangers: Vec<serde_json::Value> = (0..5)
+            .map(|i| {
+                json!({
+                    "full_name": format!("Stranger {i}"),
+                    "country": "ZZ",
+                })
+            })
+            .collect();
+        assert!(
+            !search_subject_present("Ali Kareem", &strangers),
+            "a page of strangers must not read as subject-present"
+        );
+
+        // When the subject's own row is present, the gate opens.
+        let mut page = strangers.clone();
+        page.push(json!({"full_name": "Ali Kareem", "country": "AU"}));
+        assert!(
+            search_subject_present("Ali Kareem", &page),
+            "the subject's own row must open the gate"
+        );
+
+        // Exact-selector kinds (email/phone/domain/IP) trivially match their
+        // own record — the parent must still fire for those.
+        let email_hit = vec![json!({"email": "jordan.meyer@wartburg.edu"})];
+        assert!(search_subject_present(
+            "jordan.meyer@wartburg.edu",
+            &email_hit
+        ));
+
+        // Empty results never read as subject-present.
+        assert!(!search_subject_present("Ali Kareem", &[]));
     }
 
     #[test]
@@ -286,6 +355,62 @@ use crate::util::key_pool::KeyStatus;
                 .iter()
                 .any(|e| e.kind == EntityKind::Person && e.value == "Ali Kareem"),
             "the subject person is still surfaced"
+        );
+    }
+
+    /// Same real failure mode as `oathnet_pro` (they share this breach schema):
+    /// a breach DB stores `full_name = "{username} {username}"` when no real
+    /// name is available. Minting `Person("rhino-ryno23 rhino-ryno23")` maps to
+    /// `TargetKind::FullName` and spawns a spurious, noise-dominated child scan.
+    #[test]
+    fn doubled_username_full_name_is_rejected_not_minted_as_person() {
+        use serde_json::json;
+        let item = json!({
+            "full_name": "rhino-ryno23 rhino-ryno23",
+            "username": "rhino-ryno23",
+            "source": "snusbase"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "rhino-ryno23",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            !result.entities.iter().any(|e| e.kind == EntityKind::Person),
+            "a username doubled into the full_name field must never mint a Person: {:?}",
+            result
+                .entities
+                .iter()
+                .map(|e| (e.kind.to_string(), e.value.clone()))
+                .collect::<Vec<_>>()
+        );
+
+        // A real name must still be admitted (no false positive from the guard).
+        let item2 = json!({ "full_name": "Jordan Avery", "source": "snusbase" });
+        let mut seen2 = HashSet::new();
+        let mut result2 = ModuleResult::new();
+        extract_entities(
+            &item2,
+            "Jordan Avery",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen2,
+            &mut result2,
+        );
+        assert!(
+            result2
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Person && e.value == "Jordan Avery"),
+            "a real name must still be admitted: {:?}",
+            result2.entities
         );
     }
 
@@ -512,6 +637,281 @@ use crate::util::key_pool::KeyStatus;
         assert!(
             !plain_pw.has_tag("password-hash") && !plain_pw.has_tag("cracked"),
             "a plaintext password must not gain hash tags"
+        );
+    }
+
+    #[test]
+    fn a_dedicated_salt_column_marks_a_fast_hash_salted() {
+        use serde_json::json;
+        // A fast MD5 shipped with a SEPARATE `salt` column (Snusbase-style schema)
+        // must be tagged `salted` — without the column check it was mis-classified
+        // as unsalted/rainbow-crackable, overstating exposure. Mirrors OathNet.
+        let hash = "a1b2c3d4e5f60718293a4b5c6d7e8f90"; // 32-hex, not a common pw
+        let item = json!({ "username": "u", "password_hash": hash, "salt": "deadbeef" });
+        let (mut seen, mut result) = (HashSet::new(), ModuleResult::new());
+        extract_entities(&item, "u", "scan", "search", "k", &mut seen, &mut result);
+        let h = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Password && e.value == hash)
+            .expect("the hash surfaces as a Password entity");
+        assert!(h.has_tag("hash:md5"), "still identified as md5");
+        assert!(
+            h.has_tag("salted"),
+            "a non-empty dedicated salt column must mark the hash salted"
+        );
+
+        // Control: the SAME hash with NO salt column stays unsalted.
+        let bare = json!({ "username": "u", "password_hash": hash });
+        let (mut s2, mut r2) = (HashSet::new(), ModuleResult::new());
+        extract_entities(&bare, "u", "scan", "search", "k", &mut s2, &mut r2);
+        let h2 = r2
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Password && e.value == hash)
+            .expect("hash entity");
+        assert!(
+            !h2.has_tag("salted"),
+            "no appended salt and no salt column ⇒ not salted"
+        );
+    }
+
+    #[test]
+    fn iban_field_is_validated_before_minting_a_financial_node() {
+        use serde_json::json;
+        let is_iban = |e: &crate::core::entity::Entity| {
+            matches!(&e.kind, EntityKind::Other(k) if k == "iban")
+        };
+        // A valid IBAN (canonical GB test value, in grouped form) mints a financial
+        // pivot; the grouped spacing must be normalised before the mod-97 check.
+        let valid = json!({ "username": "u", "iban": "GB82 WEST 1234 5698 7654 32" });
+        let (mut seen, mut result) = (HashSet::new(), ModuleResult::new());
+        extract_entities(&valid, "u", "scan", "search", "k", &mut seen, &mut result);
+        let iban = result
+            .entities
+            .iter()
+            .find(|e| is_iban(e))
+            .expect("a valid IBAN must mint an Other(\"iban\") node");
+        assert!(iban.has_tag("financial"), "a validated IBAN is tagged financial");
+
+        // A bad check digit must mint NOTHING — no bogus financial artifact.
+        let bad = json!({ "username": "u", "iban": "GB82 WEST 1234 5698 7654 99" });
+        let (mut s2, mut r2) = (HashSet::new(), ModuleResult::new());
+        extract_entities(&bad, "u", "scan", "search", "k", &mut s2, &mut r2);
+        assert!(
+            !r2.entities.iter().any(is_iban),
+            "an invalid IBAN must not mint a financial artifact"
+        );
+    }
+
+    #[test]
+    fn domain_intel_subdomains_mint_only_the_targets_own_tree() {
+        use serde_json::json;
+        let item = json!({
+            "domain": "acme.com",
+            "subdomains": ["mail.acme.com", "vpn.acme.com", "evil.example.net"],
+        });
+        let has_dom = |r: &ModuleResult, v: &str| {
+            r.entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == v)
+        };
+
+        let (mut seen, mut result) = (HashSet::new(), ModuleResult::new());
+        extract_entities(
+            &item,
+            "acme.com",
+            "scan",
+            "domain_intel",
+            "k",
+            &mut seen,
+            &mut result,
+        );
+        assert!(has_dom(&result, "mail.acme.com"), "target subdomain minted");
+        assert!(has_dom(&result, "vpn.acme.com"), "target subdomain minted");
+        assert!(
+            !has_dom(&result, "evil.example.net"),
+            "a third-party host in the array must NOT be minted"
+        );
+        let sd = result
+            .entities
+            .iter()
+            .find(|e| e.value == "mail.acme.com")
+            .expect("should succeed");
+        assert!(sd.has_tag("subdomain") && !sd.has_tag("breach"));
+
+        // Endpoint gate: the SAME record via a non-domain_intel endpoint mints
+        // no subdomains (only /domain/intel returns a subdomains array).
+        let (mut s2, mut r2) = (HashSet::new(), ModuleResult::new());
+        extract_entities(&item, "acme.com", "scan", "search", "k", &mut s2, &mut r2);
+        assert!(
+            !has_dom(&r2, "mail.acme.com"),
+            "subdomains are only minted for the domain_intel endpoint"
+        );
+    }
+
+    #[test]
+    fn discord_connected_accounts_mint_cross_platform_pivots() {
+        use serde_json::json;
+        let item = json!({
+            "discord_id": "80351110224678912",
+            "connected_accounts": [
+                { "type": "steam", "id": "76561197960287930", "name": "gaben" },
+                { "type": "twitch", "id": "44322889", "name": "ninja" },
+                { "type": "reddit", "name": "spez" },
+                // Junk shapes that must be ignored.
+                { "type": "", "name": "x" },
+                { "id": "no-type" },
+            ],
+        });
+        let has_u = |r: &ModuleResult, v: &str| {
+            r.entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username && e.value == v)
+        };
+        let (mut seen, mut result) = (HashSet::new(), ModuleResult::new());
+        extract_entities(
+            &item,
+            "80351110224678912",
+            "scan",
+            "discord_user",
+            "k",
+            &mut seen,
+            &mut result,
+        );
+        // Steam link → the pivot-feeding `steam:<id>` shape (fed to the steam pivot).
+        assert!(
+            has_u(&result, "steam:76561197960287930"),
+            "a steam connected_account must mint the steam:<id> pivot"
+        );
+        // Other platforms → `{type}:{handle}` (name preferred, id fallback).
+        assert!(has_u(&result, "twitch:ninja"), "twitch handle pivot");
+        assert!(has_u(&result, "reddit:spez"), "reddit handle pivot");
+        // Malformed entries must be ignored (no empty-type / no-handle nodes).
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username && e.value.starts_with(':')),
+            "an entry with an empty type must not mint a node"
+        );
+        let tw = result
+            .entities
+            .iter()
+            .find(|e| e.value == "twitch:ninja")
+            .expect("should succeed");
+        assert!(tw.has_tag("discord-linked") && tw.has_tag("twitch"));
+    }
+
+    #[test]
+    fn record_evidence_stamps_canonical_dbname_for_au105() {
+        use serde_json::json;
+        // AU-105 (credential reuse across breaches) groups records by the `dbname`
+        // evidence attribute. SeekNow labels the breach under `source` (renamed to
+        // `source_db` when folding the raw field), so a record that carries the
+        // breach name in `source` with NO `dbname` field previously produced NO
+        // `dbname` attribute at all — AU-105 then fell back to the module name and
+        // collapsed every SeekNow record into one pseudo-breach. The breach name
+        // must be stamped under the canonical `dbname` attr.
+        let item = json!({
+            "source": "TestBreach",
+            "email": "victim@example.com",
+            "password": "reused-secret-1",
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "victim@example.com",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        let email = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email && e.value == "victim@example.com")
+            .expect("the subject email entity");
+        assert_eq!(
+            email.evidence[0].attributes.get("dbname").map(String::as_str),
+            Some("TestBreach"),
+            "the breach name must be on the canonical `dbname` attr AU-105 reads"
+        );
+    }
+
+    #[test]
+    fn record_evidence_stamps_canonical_postcode_for_au091() {
+        use serde_json::json;
+        // AU-091/AU-093 (AU residential locality) read a subject's postcode from
+        // the canonical `postcode` key. SeekNow labels it `postal`, which the rule
+        // never inspects (widening its shared POSTCODE_KEYS is unsafe — the IP-geo
+        // modules also stamp `postal`, a network-derived class). The breach
+        // record's self-reported postcode must be aliased to `postcode` at the
+        // producer, leaving the raw `postal` intact.
+        let item = json!({
+            "dbname": "TestBreach",
+            "email": "victim@example.com",
+            "postal": "4000",
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "victim@example.com",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        let ev = &result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email && e.value == "victim@example.com")
+            .expect("the subject email entity")
+            .evidence[0];
+        assert_eq!(
+            ev.attributes.get("postcode").map(String::as_str),
+            Some("4000"),
+            "the self-reported postcode must be on the canonical `postcode` attr AU-091 reads"
+        );
+        assert_eq!(
+            ev.attributes.get("postal").map(String::as_str),
+            Some("4000"),
+            "the raw `postal` attribute is retained for existing consumers"
+        );
+
+        // A record that already carries a canonical `postcode` must keep it — the
+        // `postal`-derived alias never overrides a real value.
+        let item2 = json!({
+            "dbname": "TestBreach",
+            "email": "victim@example.com",
+            "postcode": "2000",
+            "postal": "4000",
+        });
+        let mut seen2 = HashSet::new();
+        let mut result2 = ModuleResult::new();
+        extract_entities(
+            &item2,
+            "victim@example.com",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen2,
+            &mut result2,
+        );
+        let ev2 = &result2
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email && e.value == "victim@example.com")
+            .expect("the subject email entity")
+            .evidence[0];
+        assert_eq!(
+            ev2.attributes.get("postcode").map(String::as_str),
+            Some("2000"),
+            "a real `postcode` must not be overridden by the `postal` alias"
         );
     }
 
@@ -770,10 +1170,20 @@ use crate::util::key_pool::KeyStatus;
             "T1591.002", // Business Relationships
             "T1592",     // Host Information (device fingerprints)
             "T1593.001", // Social Media
+            "T1597.002", // Purchase Technical Data (paid closed corpus)
         ] {
             assert!(t.contains(&id), "see_know must claim {id}");
             assert!(attack::technique(id).is_some(), "{id} must be catalogued");
         }
+    }
+
+    #[test]
+    fn cache_ttl_is_24h_so_repeat_scans_dont_re_spend_credits() {
+        // SeekNow is the highest-spend paid provider; the inter-scan persistent
+        // cache is what makes a repeat scan of the same subject cost zero
+        // credits. A 0 here (the trait default) would silently disable that
+        // path — the single largest per-query saving — so pin it.
+        assert_eq!(SeekNow.cache_ttl_secs(), 86_400);
     }
 
     #[test]
@@ -813,5 +1223,256 @@ use crate::util::key_pool::KeyStatus;
             result.entities.len(),
             before,
             "no pivot IDs ⇒ no dispatch, no growth, clean halt"
+        );
+    }
+
+    #[test]
+    fn extract_pivot_entities_also_harvests_a_leaked_key_from_a_pivot_response() {
+        // The identity-pivot responses (discord/user, discord/to-roblox,
+        // gaming/steam) were the one SeekNow data-ingestion point that skipped
+        // the key-harvest pass every other endpoint already runs every item
+        // through. A linked account's own response can carry a `token`/
+        // `password`/`note` field exactly like a breach/search row does —
+        // this proves `extract_pivot_entities` now reaches it too, not just
+        // identity/geo/message extraction.
+        let items = vec![(
+            "discord_user",
+            vec![serde_json::json!({
+                "id": "123456789012345678",
+                // AWS access-key shape — the same synthetic fixture
+                // `util::key_harvest`'s own orchestrator tests use.
+                "token": "AKIAJK28SLQQV61MNG9X",
+            })],
+        )];
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_pivot_entities(&items, "seed", "t", "see-know.eu:test", &mut seen, &mut result);
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::ApiKey && e.has_tag("service:aws")),
+            "expected an AWS ApiKey entity harvested from the pivot response's \
+             `token` field, got: {:?}",
+            result.entities.iter().map(|e| &e.kind).collect::<Vec<_>>()
+        );
+    }
+
+    // ── Email cascade detection (ROI-optimized multi-hop pivot) ──────────
+
+    #[test]
+    fn discover_high_confidence_emails_filters_administrative_mailboxes() {
+        // Cascade detection re-queries discovered emails through email-check to
+        // find new service registrations. Administrative sinks (admin@, info@,
+        // noreply@, etc.) and wildcard patterns are low-yield and would waste
+        // budget — they must be filtered out before dispatch.
+        let mut result = ModuleResult::new();
+        result.push(Entity::new(EntityKind::Email, "jordan.meyer@example.com", 0.9, "t"));
+        result.push(Entity::new(EntityKind::Email, "admin@example.com", 0.9, "t"));
+        result.push(Entity::new(EntityKind::Email, "noreply@example.com", 0.9, "t"));
+        result.push(Entity::new(EntityKind::Email, "info@example.com", 0.9, "t"));
+        result.push(Entity::new(EntityKind::Email, "support@example.com", 0.9, "t"));
+        result.push(Entity::new(EntityKind::Email, "general@example.com", 0.9, "t"));
+        result.push(Entity::new(EntityKind::Email, "*@example.com", 0.9, "t"));
+        result.push(Entity::new(EntityKind::Username, "jmeyer", 0.9, "t"));
+
+        let emails = discover_high_confidence_emails(&result);
+        assert_eq!(
+            emails,
+            vec!["jordan.meyer@example.com"],
+            "only the personal, non-administrative email should survive filtering"
+        );
+    }
+
+    #[test]
+    fn discover_high_confidence_emails_dedupes_case_insensitively() {
+        // Two records of the same email in different case must collapse to one
+        // cascade query — re-querying the same identifier wastes a credit.
+        let mut result = ModuleResult::new();
+        result.push(Entity::new(EntityKind::Email, "Jordan.Meyer@Example.com", 0.9, "t"));
+        result.push(Entity::new(EntityKind::Email, "jordan.meyer@example.com", 0.9, "t"));
+
+        let emails = discover_high_confidence_emails(&result);
+        assert_eq!(
+            emails.len(),
+            1,
+            "case-variant duplicates must collapse to a single cascade query"
+        );
+        assert_eq!(emails[0], "jordan.meyer@example.com");
+    }
+
+    #[tokio::test]
+    async fn dispatch_email_cascade_checks_is_noop_on_empty_input() {
+        // An empty email list converges immediately — no futures, no attempts,
+        // no HTTP. Mirrors the discord/steam dispatchers' empty-input guard so
+        // the cascade pass can never spin up work with nothing to resolve.
+        crate::util::see_know::reset_budget();
+        let (results, attempted) = dispatch_email_cascade_checks("key", Vec::new()).await;
+        assert!(results.is_empty());
+        assert!(attempted.is_empty());
+    }
+
+    // ── /search/deep fallback (T-current: the largest documented,
+    //    previously-unwired SeekNow coverage gap) ────────────────────────
+
+    #[test]
+    fn deep_search_fires_only_on_a_typed_query_that_drew_a_genuine_blank() {
+        // The core policy this fallback exists to express: never spend the
+        // extra ~40s latency when fast /search already found something, and
+        // never on the auto/name path (excluded — see `max_timeout_ms`'s doc
+        // comment for the timeout-budget arithmetic this protects).
+        assert!(
+            should_try_deep_search(0, "email", false),
+            "a genuine typed miss must trigger the fallback"
+        );
+        assert!(
+            !should_try_deep_search(1, "email", false),
+            "a typed HIT must never trigger the fallback — wasted latency+quota"
+        );
+        assert!(
+            !should_try_deep_search(0, "", false),
+            "the auto/name path (empty query_type) must never chain deep search"
+        );
+        assert!(
+            !should_try_deep_search(0, "email", true),
+            "a cancelled scan must never trigger a fresh ~40s call"
+        );
+    }
+
+    #[test]
+    fn deep_search_max_timeout_covers_the_typed_fast_plus_deep_worst_case() {
+        // 110s must comfortably exceed both the pre-existing single-call
+        // worst case (~60s, name/auto path, unaffected by this change) and
+        // the new chained worst case (typed fast ~15s + deep ~45s ≈ 60s) with
+        // real headroom — never regress to a budget that risks a spurious
+        // module-level timeout truncating a real deep-search response.
+        assert!(SeekNow.max_timeout_ms() >= 100_000);
+    }
+
+    #[test]
+    fn absorb_search_hits_builds_the_breach_parent_and_extracts_records_for_the_deep_endpoint() {
+        // Proves the refactored helper generalises correctly to the NEW
+        // /search/deep call site (not just the pre-existing fast /search
+        // behaviour the old inline code covered) — same construction, only
+        // the endpoint labels differ.
+        let target = Target::new(TargetKind::Email, "subject@example.com");
+        let items = vec![serde_json::json!({
+            "email": "subject@example.com",
+            "dbname": "examplebreach.com",
+        })];
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut result = ModuleResult::new();
+        let outcome = crate::util::see_know::SearchOutcome {
+            items,
+            ..Default::default()
+        };
+        absorb_search_hits(
+            &outcome,
+            &target,
+            "subject@example.com",
+            "/api/v1/search/deep",
+            "search/deep",
+            "see-know.eu:test",
+            "scan-1",
+            &mut seen,
+            &mut result,
+        );
+
+        let parent = result
+            .entities
+            .iter()
+            .find(|e| e.value == "subject@example.com" && e.has_tag(crate::core::tags::BREACH))
+            .expect("a BREACH parent entity for the matched subject");
+        assert!(parent.has_tag("see-know"));
+        let ev = &parent.evidence[0];
+        assert_eq!(
+            ev.attributes.get("endpoint").map(String::as_str),
+            Some("/api/v1/search/deep"),
+            "the deep endpoint's own path must be recorded, not fast /search's"
+        );
+        assert!(
+            ev.summary.contains("/api/v1/search/deep"),
+            "the evidence summary must name the endpoint that actually produced the hit: {}",
+            ev.summary
+        );
+    }
+
+    #[test]
+    fn absorb_search_hits_skips_the_breach_parent_when_no_row_matches_the_subject() {
+        // A broad seed can return term-sharing strangers; the parent stamp
+        // must stay gated on `search_subject_present`, exactly as the
+        // pre-refactor inline fast-path logic did.
+        let target = Target::new(TargetKind::Email, "subject@example.com");
+        let items = vec![serde_json::json!({
+            "email": "someone-else@example.com",
+            "dbname": "examplebreach.com",
+        })];
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut result = ModuleResult::new();
+        let outcome = crate::util::see_know::SearchOutcome {
+            items,
+            ..Default::default()
+        };
+        absorb_search_hits(
+            &outcome,
+            &target,
+            "subject@example.com",
+            "/api/v1/search",
+            "search",
+            "see-know.eu:test",
+            "scan-1",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| e.value == "subject@example.com" && e.has_tag(crate::core::tags::BREACH)),
+            "no row identified the subject — no BREACH parent should be minted"
+        );
+    }
+
+    #[test]
+    fn absorb_search_hits_extracts_geo_from_search_records() {
+        // Regression: `/search` and `/search/deep` are SeekNow's broadest,
+        // highest-yield calls, yet this absorption path used to skip
+        // `extract_geo_entities` (the per-endpoint dispatch path and the pivot
+        // path both already called it), silently dropping every coordinate /
+        // timezone / location lead from the module's single most productive
+        // endpoint. A `/search` record carrying a lat/lon pair must now mint a
+        // Coordinates lead so the downstream geocode/overpass/wigle correlators
+        // get it.
+        let target = Target::new(TargetKind::Email, "subject@example.com");
+        let items = vec![serde_json::json!({
+            "email": "subject@example.com",
+            "dbname": "examplebreach.com",
+            "latitude": 40.7128,
+            "longitude": -74.0060,
+        })];
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut result = ModuleResult::new();
+        let outcome = crate::util::see_know::SearchOutcome {
+            items,
+            ..Default::default()
+        };
+        absorb_search_hits(
+            &outcome,
+            &target,
+            "subject@example.com",
+            "/api/v1/search",
+            "search",
+            "see-know.eu:test",
+            "scan-1",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Coordinates && e.has_tag("via:search")),
+            "a Coordinates lead from the /search record must now be extracted — \
+             it was dropped before the geo wiring was added to absorb_search_hits"
         );
     }

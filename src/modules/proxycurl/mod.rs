@@ -16,6 +16,7 @@
 //! | `city`/`state`/`country_full_name`     | `Address` (+`country:` tag)         |
 //! | `experiences[].company`/`title`/dates/`location` | `Organisation` (+attrs)   |
 //! | `education[].school`/`degree`/`field`  | `education` attr on the `Person`    |
+//! | `certifications[].name`/`authority`    | `certifications` attr on the `Person` |
 //! | `personal_emails[]`                    | `Email` + derived non-freemail `Domain` |
 //! | `personal_numbers[]`                   | `Phone`                             |
 //!
@@ -57,7 +58,7 @@ impl Module for Proxycurl {
         "proxycurl"
     }
     fn description(&self) -> &'static str {
-        "LinkedIn profile extraction — employment, education, and certifications via Proxycurl"
+        "LinkedIn profile recon via Proxycurl — harvests employment, education, and certifications to enrich a target"
     }
     fn priority(&self) -> u8 {
         88
@@ -97,6 +98,9 @@ impl Module for Proxycurl {
             EntityKind::Phone,
             EntityKind::Organisation,
             EntityKind::Url,
+            // The LinkedIn vanity handle (public_identifier) as a cross-platform
+            // identity pivot.
+            EntityKind::Username,
         ];
         KINDS
     }
