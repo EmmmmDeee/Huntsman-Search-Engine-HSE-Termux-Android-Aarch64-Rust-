@@ -572,3 +572,57 @@ fn tlsrpt_ignores_non_tlsrpt_and_empty() {
     assert!(tlsrpt_entities(&[rec("v=TLSRPTv1;")], "x.com", "s").is_empty());
     assert!(tlsrpt_entities(&[], "x.com", "s").is_empty());
 }
+
+/// A DoH outage must not be reportable as "this domain has no such record".
+///
+/// `query_doh` previously returned a bare `Vec<DohRecord>`, so four different
+/// outcomes collapsed onto the same empty vec: both providers unreachable, both
+/// returning a non-zero DNS status, an undecodable reply, and a domain that
+/// genuinely has no record of that type. On Termux the DoH path is the PRIMARY
+/// transport — the system resolver is routinely blocked — so the outage case is
+/// common, and an operator reading "no MX records" could not tell whether the
+/// domain has none or whether DNS never answered.
+///
+/// `dns_wholly_unreachable` is the predicate that turns the all-unreachable case
+/// into a `ModuleError`. It is pure, so this is hermetic — no live resolver.
+#[test]
+fn an_unreachable_resolver_is_not_the_same_as_a_domain_with_no_records() {
+    use super::{DohOutcome, dns_wholly_unreachable};
+
+    // Every query failed to reach a resolver: nothing was established.
+    assert!(
+        dns_wholly_unreachable(&[DohOutcome::Unreachable, DohOutcome::Unreachable]),
+        "all-unreachable must be reported, not rendered as an empty success"
+    );
+
+    // A resolver that ANSWERED with zero records is a real negative — the domain
+    // genuinely has no record of that type. That must NOT be an error.
+    assert!(
+        !dns_wholly_unreachable(&[DohOutcome::Answered(Vec::new())]),
+        "an empty ANSWER is a real negative, not an outage"
+    );
+
+    // One provider answering rescues the whole query set: DNS demonstrably works,
+    // so the empties are genuine negatives.
+    assert!(
+        !dns_wholly_unreachable(&[
+            DohOutcome::Unreachable,
+            DohOutcome::Answered(Vec::new()),
+            DohOutcome::Unreachable,
+        ]),
+        "a single successful answer proves DNS worked"
+    );
+
+    // No queries ran at all (cancellation) — that is its own condition and must
+    // not be misreported as a DNS outage.
+    assert!(
+        !dns_wholly_unreachable(&[]),
+        "zero queries is cancellation, not an outage"
+    );
+
+    // `records()` must expose Unreachable as carrying nothing, so entity
+    // extension can treat both arms alike while the aggregate check still sees
+    // the difference.
+    assert!(DohOutcome::Unreachable.records().is_empty());
+    assert!(DohOutcome::Answered(Vec::new()).records().is_empty());
+}
