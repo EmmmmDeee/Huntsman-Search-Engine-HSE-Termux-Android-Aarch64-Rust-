@@ -16,6 +16,7 @@
 //! observed signal through the identity chain SeekNow and the breach corpora
 //! open up.
 
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use crate::core::error::Result;
@@ -45,6 +46,81 @@ const RADAR_SWEEP_INTERVAL_SECS: u64 = 10;
 ///
 /// [`MAX_DEPTH`]: crate::core::scan::MAX_DEPTH
 const RADAR_PIVOT_DEPTH: u32 = 5;
+
+/// Maximum number of already-seen entity uids the radar remembers across sweeps.
+///
+/// Generous enough that a stationary session (a location has at most a few
+/// hundred APs/towers/BT devices, plus the entities its pivots discover) never
+/// evicts, while bounding the memory a *moving* session accretes. `hse radar` is
+/// explicitly built to track a device in motion, so without a cap its seen-set
+/// grows with every signal passed en route for the whole session — the
+/// per-scan `max_entities` ceilings bound one scan, never this cross-sweep set.
+const SEEN_CAPACITY: usize = 50_000;
+
+/// Bounded, insertion-ordered membership set for entity uids the radar has
+/// already observed — the "have I seen this signal before?" check that makes
+/// each sweep pivot only on genuinely NEW signals.
+///
+/// A plain [`HashSet`] answers that but grows without limit across a long or
+/// moving session (see [`SEEN_CAPACITY`]). This caps the set and evicts
+/// oldest-first when full. FIFO is the correct policy here, not merely the
+/// simplest: the oldest uids are the signals left furthest behind as the device
+/// moves — the least likely to recur — and if an evicted signal IS re-observed
+/// later, treating it as new re-pivots it, which is bounded, correct rework, not
+/// a lost observation.
+struct SeenSet {
+    set: HashSet<String>,
+    order: VecDeque<String>,
+    capacity: usize,
+}
+
+impl SeenSet {
+    fn with_capacity(capacity: usize) -> Self {
+        // Runtime assert, not `debug_assert!`: a zero capacity would let the
+        // `len() <= capacity` guarantee below break silently in a release build,
+        // so the precondition must hold in every build, not just debug.
+        assert!(capacity >= 1, "a zero-capacity seen-set remembers nothing");
+        Self {
+            set: HashSet::with_capacity(capacity),
+            order: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    /// Record `uid`, returning `true` when it was NOT already present — the
+    /// "this is a new signal, pivot it" answer, matching [`HashSet::insert`]'s
+    /// return. When the set is at capacity, the oldest uid is evicted first so
+    /// the size never exceeds `capacity`.
+    fn insert(&mut self, uid: String) -> bool {
+        if self.set.len() < self.capacity {
+            // Warm-up (the overwhelmingly common path until the cap is reached):
+            // let `HashSet::insert` report novelty in a single hash of the key,
+            // rather than hashing twice via `contains` + `insert`.
+            let is_new = self.set.insert(uid.clone());
+            if is_new {
+                self.order.push_back(uid);
+            }
+            return is_new;
+        }
+        // At capacity: check membership before evicting so a re-sighting evicts
+        // nothing, and evict-before-insert so the size never momentarily exceeds
+        // `capacity`.
+        if self.set.contains(&uid) {
+            return false;
+        }
+        if let Some(oldest) = self.order.pop_front() {
+            self.set.remove(&oldest);
+        }
+        self.order.push_back(uid.clone());
+        self.set.insert(uid);
+        true
+    }
+
+    /// Number of uids currently remembered (never exceeds `capacity`).
+    fn len(&self) -> usize {
+        self.set.len()
+    }
+}
 
 /// Run one sub-scan (a sensor sweep or a pivot), racing an operator Ctrl-C
 /// against it. A press signals the scan's OWN cooperative-cancel flag (so it
@@ -76,8 +152,6 @@ async fn run_sub_scan(
 }
 
 pub(super) async fn cmd_radar() -> Result<()> {
-    use std::collections::HashSet;
-
     // The radar is armed by default — running `hse radar` IS the deliberate
     // activation, so no prior opt-in is needed. The `feature.live_radar` toggle is
     // now a kill-switch: it only refuses here if the operator has explicitly set it
@@ -109,7 +183,7 @@ pub(super) async fn cmd_radar() -> Result<()> {
 
     let crate::app::runtime::ApplicationRuntime { store, bus, engine } =
         crate::app::runtime::build_runtime(1024)?;
-    let mut seen_entities: HashSet<String> = HashSet::new();
+    let mut seen_entities = SeenSet::with_capacity(SEEN_CAPACITY);
     let mut sweep_num = 0u32;
     // Set by `run_sub_scan` the moment Ctrl-C interrupts an in-flight sweep or
     // pivot, so the loop stops immediately rather than starting another one.
@@ -325,4 +399,81 @@ pub(super) async fn cmd_radar() -> Result<()> {
         seen_entities.len()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insert_reports_novelty_like_a_hashset() {
+        let mut seen = SeenSet::with_capacity(8);
+        assert!(seen.insert("a".to_string()), "first sighting is new");
+        assert!(!seen.insert("a".to_string()), "second sighting is not new");
+        assert!(seen.insert("b".to_string()));
+        assert_eq!(seen.len(), 2);
+    }
+
+    #[test]
+    fn size_never_exceeds_capacity() {
+        // The whole point of the type: a long/moving session inserts far more
+        // distinct signals than the cap, and the set must stay bounded.
+        let cap = 16;
+        let mut seen = SeenSet::with_capacity(cap);
+        for i in 0..cap * 100 {
+            seen.insert(format!("uid-{i}"));
+            assert!(
+                seen.len() <= cap,
+                "size {} exceeded capacity {cap} after {i} inserts",
+                seen.len()
+            );
+        }
+        assert_eq!(seen.len(), cap, "a saturated set sits exactly at capacity");
+    }
+
+    #[test]
+    fn eviction_is_oldest_first() {
+        let mut seen = SeenSet::with_capacity(3);
+        for u in ["a", "b", "c"] {
+            assert!(seen.insert(u.to_string()));
+        }
+        // Inserting a 4th evicts the OLDEST ("a"), not "b"/"c".
+        assert!(seen.insert("d".to_string()));
+        assert_eq!(seen.len(), 3);
+        // "b" and "c" are still remembered (re-insert returns false)...
+        assert!(!seen.insert("b".to_string()), "b must still be present");
+        assert!(!seen.insert("c".to_string()), "c must still be present");
+        // ...while "a" was forgotten, so it reads as new again (a bounded,
+        // acceptable re-pivot — never a lost observation).
+        assert!(
+            seen.insert("a".to_string()),
+            "a was evicted, so it is new again"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "zero-capacity")]
+    fn zero_capacity_is_rejected_in_every_build() {
+        // The `len() <= capacity` guarantee is meaningless at capacity 0, so the
+        // constructor must reject it with a runtime assert (not a debug-only one
+        // that vanishes in release).
+        let _ = SeenSet::with_capacity(0);
+    }
+
+    #[test]
+    fn re_seeing_an_entry_does_not_change_its_eviction_age() {
+        // Membership re-hits must NOT refresh recency (this is FIFO, not LRU):
+        // re-observing "a" while it is present leaves it first in line to go.
+        let mut seen = SeenSet::with_capacity(2);
+        assert!(seen.insert("a".to_string()));
+        assert!(seen.insert("b".to_string()));
+        assert!(!seen.insert("a".to_string()), "a already present");
+        // Insert "c": capacity 2, so the oldest ("a") is evicted despite the re-hit.
+        assert!(seen.insert("c".to_string()));
+        assert!(
+            seen.insert("a".to_string()),
+            "a was still the oldest and got evicted"
+        );
+        assert!(!seen.insert("c".to_string()), "c remains");
+    }
 }
