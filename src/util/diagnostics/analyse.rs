@@ -4,8 +4,9 @@ use std::collections::HashMap;
 
 use super::cluster::{cluster_coordinates, cluster_entities_fuzzy};
 use super::types::{
-    AdaptiveRouting, ConfidenceStats, EntityOverlap, GeoPrecisionReport, LineageNode,
-    ModuleHistoricalScore, ModulePerformance, ProximityEdge, ScanDiagnostics,
+    AdaptiveRouting, ConfidenceStats, CoordinateCluster, EntityCluster, EntityOverlap,
+    GeoPrecisionReport, LineageNode, ModuleHistoricalScore, ModulePerformance, ProximityEdge,
+    ScanDiagnostics,
 };
 use crate::core::entity::Entity;
 
@@ -79,6 +80,102 @@ pub fn analyse(
     entities: &[Entity],
     events: &[crate::core::event::Event],
 ) -> ScanDiagnostics {
+    let EntityAccumulation {
+        by_source,
+        source_conf,
+        kind_counts,
+        entity_sources,
+        lineage,
+        mut geo,
+        coord_pairs,
+    } = accumulate_entities(entities);
+
+    // Pairwise Haversine distances — proximity graph (top-25 closest).
+    let proximity_graph = build_proximity_graph(&coord_pairs);
+
+    // Spatial clustering: ~5km single-linkage groups into "places".
+    let coordinate_clusters = cluster_coordinates(&coord_pairs);
+
+    // Fuzzy entity resolution for Person/Address/Organisation.
+    let entity_clusters = cluster_entities_fuzzy(entities);
+
+    // Closed feedback loop: read the cross-scan ledger.
+    let adaptive_routing = read_adaptive_routing();
+
+    // Multi-source convergence: are any two coordinates within 5 km? The closest pair is
+    // already `proximity_graph[0]` (sorted ascending above) and was computed with the
+    // shared `haversine_km`, so read the answer off it instead of re-scanning with a
+    // separate latitude-biased degree metric (`0.045°` is ~5 km only at the equator; at
+    // AU latitudes a degree of longitude is ~20% shorter, so that test disagreed with the
+    // 5 km `coordinate_clusters` shown beside it in the dossier). `<= 5.0` matches
+    // `cluster_coordinates`' `THRESHOLD_KM` exactly, so the flag and the clusters agree.
+    geo.multi_source_convergence = proximity_graph
+        .first()
+        .is_some_and(|e| e.distance_km <= 5.0);
+
+    // Confidence stats per source
+    let source_confidence = compute_source_confidence(source_conf);
+
+    // Compute novelty + finalise modules_by_yield
+    let modules_by_yield =
+        finalize_modules_by_yield(by_source, &entity_sources, &source_confidence);
+
+    // Cross-source overlaps with ≥2 distinct sources
+    let cross_source_overlap = compute_cross_source_overlap(entity_sources);
+
+    // Optimization hints based on what we observed.
+    let mut hints = build_optimization_hints(&modules_by_yield, &geo, wall_time_ms, events);
+
+    // Persist a digest to the cross-scan ledger
+    super::ledger::persist_ledger(&modules_by_yield, &kind_counts);
+
+    // Adaptive hints from the closed feedback loop, plus entity-resolution and
+    // spatial-clustering summaries.
+    append_adaptive_and_clustering_hints(
+        &mut hints,
+        &adaptive_routing,
+        &entity_clusters,
+        &coordinate_clusters,
+        &geo,
+    );
+
+    ScanDiagnostics {
+        scan_id: scan_id.into(),
+        seed_kind: seed_kind.into(),
+        seed_value: seed_value.into(),
+        wall_time_ms,
+        modules_by_yield,
+        source_confidence,
+        entity_kind_counts: kind_counts.into_iter().collect(),
+        geo_precision: geo,
+        proximity_graph,
+        coordinate_clusters,
+        entity_clusters,
+        cross_source_overlap,
+        adaptive_routing,
+        optimization_hints: hints,
+        enrichment_lineage: lineage,
+    }
+}
+
+/// The per-entity accumulation pass's output: everything downstream
+/// aggregation (proximity graph, confidence stats, novelty, overlap) is
+/// computed from.
+struct EntityAccumulation {
+    by_source: HashMap<String, ModulePerformance>,
+    source_conf: HashMap<String, Vec<f64>>,
+    kind_counts: HashMap<String, usize>,
+    entity_sources: HashMap<(String, String), Vec<String>>,
+    lineage: Vec<LineageNode>,
+    geo: GeoPrecisionReport,
+    coord_pairs: Vec<(f64, f64, String, std::collections::HashSet<String>, f64)>,
+}
+
+/// Walk every entity once, tallying per-kind counts, per-source performance
+/// and confidence samples, cross-source overlap keys, lineage nodes, and the
+/// geo-precision report (plus the raw coordinate list the proximity graph
+/// and spatial clustering are built from downstream).
+fn accumulate_entities(entities: &[Entity]) -> EntityAccumulation {
     let mut by_source: HashMap<String, ModulePerformance> = HashMap::new();
     let mut source_conf: HashMap<String, Vec<f64>> = HashMap::new();
     let mut kind_counts: HashMap<String, usize> = HashMap::new();
@@ -202,7 +299,23 @@ pub fn analyse(
     geo.timezones = tz_seen.into_iter().collect();
     geo.iso_countries = iso_seen.into_iter().collect();
 
-    // Pairwise Haversine distances — proximity graph (top-25 closest).
+    EntityAccumulation {
+        by_source,
+        source_conf,
+        kind_counts,
+        entity_sources,
+        lineage,
+        geo,
+        coord_pairs,
+    }
+}
+
+/// Pairwise Haversine distance between every coordinate pair, sorted
+/// ascending and capped to the 25 closest — the proximity graph shown in the
+/// dossier.
+fn build_proximity_graph(
+    coord_pairs: &[(f64, f64, String, std::collections::HashSet<String>, f64)],
+) -> Vec<ProximityEdge> {
     let mut proximity_graph: Vec<ProximityEdge> = Vec::new();
     for (i, (la1, lo1, v1, _, _)) in coord_pairs.iter().enumerate() {
         for (la2, lo2, v2, _, _) in coord_pairs.iter().skip(i + 1) {
@@ -228,29 +341,15 @@ pub fn analyse(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     proximity_graph.truncate(25);
+    proximity_graph
+}
 
-    // Spatial clustering: ~5km single-linkage groups into "places".
-    let coordinate_clusters = cluster_coordinates(&coord_pairs);
-
-    // Fuzzy entity resolution for Person/Address/Organisation.
-    let entity_clusters = cluster_entities_fuzzy(entities);
-
-    // Closed feedback loop: read the cross-scan ledger.
-    let adaptive_routing = read_adaptive_routing();
-
-    // Multi-source convergence: are any two coordinates within 5 km? The closest pair is
-    // already `proximity_graph[0]` (sorted ascending above) and was computed with the
-    // shared `haversine_km`, so read the answer off it instead of re-scanning with a
-    // separate latitude-biased degree metric (`0.045°` is ~5 km only at the equator; at
-    // AU latitudes a degree of longitude is ~20% shorter, so that test disagreed with the
-    // 5 km `coordinate_clusters` shown beside it in the dossier). `<= 5.0` matches
-    // `cluster_coordinates`' `THRESHOLD_KM` exactly, so the flag and the clusters agree.
-    geo.multi_source_convergence = proximity_graph
-        .first()
-        .is_some_and(|e| e.distance_km <= 5.0);
-
-    // Confidence stats per source
-    let source_confidence: std::collections::BTreeMap<String, ConfidenceStats> = source_conf
+/// Per-source confidence distribution (n/mean/min/max/p50/p90) over every
+/// entity that source contributed evidence to.
+fn compute_source_confidence(
+    source_conf: HashMap<String, Vec<f64>>,
+) -> std::collections::BTreeMap<String, ConfidenceStats> {
+    source_conf
         .into_iter()
         .map(|(src, mut vals)| {
             vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -273,9 +372,17 @@ pub fn analyse(
             };
             (src, stats)
         })
-        .collect();
+        .collect()
+}
 
-    // Compute novelty + finalise modules_by_yield
+/// Fill in each source's mean confidence and novelty ratio (share of its
+/// entities no other source also emitted), then sort into the final
+/// yield-descending `modules_by_yield` list.
+fn finalize_modules_by_yield(
+    mut by_source: HashMap<String, ModulePerformance>,
+    entity_sources: &HashMap<(String, String), Vec<String>>,
+    source_confidence: &std::collections::BTreeMap<String, ConfidenceStats>,
+) -> Vec<ModulePerformance> {
     for perf in by_source.values_mut() {
         let conf = source_confidence.get(&perf.name).map_or(0.0, |s| s.mean);
         perf.mean_confidence = conf;
@@ -299,8 +406,14 @@ pub fn analyse(
             .cmp(&a.entities_emitted)
             .then_with(|| a.name.cmp(&b.name))
     });
+    modules_by_yield
+}
 
-    // Cross-source overlaps with ≥2 distinct sources
+/// Entities two or more distinct sources both emitted — cross-source
+/// corroboration, capped to the top 50 by source count.
+fn compute_cross_source_overlap(
+    entity_sources: HashMap<(String, String), Vec<String>>,
+) -> Vec<EntityOverlap> {
     let mut cross_source_overlap: Vec<EntityOverlap> = entity_sources
         .into_iter()
         .filter_map(|((k, v), mut srcs)| {
@@ -328,20 +441,33 @@ pub fn analyse(
             .then_with(|| a.value.cmp(&b.value))
     });
     cross_source_overlap.truncate(50);
+    cross_source_overlap
+}
 
-    // Optimization hints based on what we observed.
-    //
-    // The scan-level "slow scan with wasted modules" hint IS here now (T2.14),
-    // event-sourced: `modules_by_yield` is built (above) exclusively from emitted
-    // entities' evidence, so a module that ran and found nothing is absent from it
-    // entirely — only the `ModuleDone { found: 0 }` events record that it ran. So
-    // this reads `events`, not `entities`. It fires as ONE aggregate line, gated on
-    // a >60s wall time, so a normal scan's dozens of legitimately-empty modules
-    // never flood the hints. A per-module zero-yield hint (one line per empty
-    // module) is still deferred (PROBLEM_TREE T2.14): it needs an explicit noise
-    // decision (cap to worst-N, cost-gate, or bounded count) before it earns a line.
+/// Module-quality and geo-coverage hints, plus the event-sourced scan-level
+/// slow-with-waste hint. Falls back to a single "well-tuned" line when none
+/// of the above fired — this fallback check runs BEFORE the adaptive-routing
+/// and clustering hints are appended by the caller, so it reflects only this
+/// batch (matching the pre-split behaviour exactly).
+///
+/// The scan-level "slow scan with wasted modules" hint IS here (T2.14),
+/// event-sourced: `modules_by_yield` is built exclusively from emitted
+/// entities' evidence, so a module that ran and found nothing is absent from
+/// it entirely — only the `ModuleDone { found: 0 }` events record that it
+/// ran. So this reads `events`, not `entities`. It fires as ONE aggregate
+/// line, gated on a >60s wall time, so a normal scan's dozens of
+/// legitimately-empty modules never flood the hints. A per-module zero-yield
+/// hint (one line per empty module) is still deferred (PROBLEM_TREE T2.14):
+/// it needs an explicit noise decision (cap to worst-N, cost-gate, or
+/// bounded count) before it earns a line.
+fn build_optimization_hints(
+    modules_by_yield: &[ModulePerformance],
+    geo: &GeoPrecisionReport,
+    wall_time_ms: u64,
+    events: &[crate::core::event::Event],
+) -> Vec<String> {
     let mut hints: Vec<String> = Vec::new();
-    for perf in &modules_by_yield {
+    for perf in modules_by_yield {
         if perf.mean_confidence < 0.35 && perf.entities_emitted > 10 {
             hints.push(format!(
                 "module '{}' produced {} entities at low mean confidence ({:.2}) — noisy source",
@@ -418,11 +544,21 @@ pub fn analyse(
         hints
             .push("no optimization signals detected — pipeline is well-tuned for this seed".into());
     }
+    hints
+}
 
-    // Persist a digest to the cross-scan ledger
-    super::ledger::persist_ledger(&modules_by_yield, &kind_counts);
-
-    // Adaptive hints from the closed feedback loop
+/// Append the closed-feedback-loop (adaptive-routing) hints plus the
+/// entity-resolution and spatial-clustering summaries. Runs AFTER the ledger
+/// persist and the `build_optimization_hints` empty-fallback check, so these
+/// lines can coexist with a "well-tuned" fallback line above them — matching
+/// the pre-split behaviour exactly.
+fn append_adaptive_and_clustering_hints(
+    hints: &mut Vec<String>,
+    adaptive_routing: &AdaptiveRouting,
+    entity_clusters: &[EntityCluster],
+    coordinate_clusters: &[CoordinateCluster],
+    geo: &GeoPrecisionReport,
+) {
     if !adaptive_routing.recommended_skips.is_empty() {
         hints.push(format!(
             "adaptive-routing: {} module(s) historically zero-yield ≥80% of the time over ≥5 scans — candidates for --adaptive skip: {}",
@@ -452,23 +588,5 @@ pub fn analyse(
             coordinate_clusters.len(),
             coordinate_clusters.iter().map(|c| c.diameter_km).sum::<f64>() / coordinate_clusters.len() as f64
         ));
-    }
-
-    ScanDiagnostics {
-        scan_id: scan_id.into(),
-        seed_kind: seed_kind.into(),
-        seed_value: seed_value.into(),
-        wall_time_ms,
-        modules_by_yield,
-        source_confidence,
-        entity_kind_counts: kind_counts.into_iter().collect(),
-        geo_precision: geo,
-        proximity_graph,
-        coordinate_clusters,
-        entity_clusters,
-        cross_source_overlap,
-        adaptive_routing,
-        optimization_hints: hints,
-        enrichment_lineage: lineage,
     }
 }
