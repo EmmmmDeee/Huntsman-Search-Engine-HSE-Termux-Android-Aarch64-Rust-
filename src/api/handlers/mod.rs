@@ -77,6 +77,31 @@ pub(crate) fn forbidden(msg: impl Into<String>) -> axum::response::Response {
     (StatusCode::FORBIDDEN, Json(json!({ "error": msg.into() }))).into_response()
 }
 
+/// Run a blocking storage/CPU-bound closure on the blocking pool and map both
+/// failure modes to the shared `500` shape: the closure's own `Result::Err`
+/// (via [`internal_error`]) and a join failure — the pool thread panicked or
+/// was cancelled — (as `"{context} task failed: {e}"`). One shape for the
+/// ~40 `tokio::task::spawn_blocking(...).await` call sites across the API
+/// layer, each of which previously hand-rolled this same 3-arm match.
+///
+/// `context` labels the join-failure message (e.g. `"query"`, `"keys-health"`,
+/// `"debug-bundle"`) so a panic in the blocking pool is still traceable to
+/// which call site triggered it; pass `"query"` for the common case.
+pub(crate) async fn offload<T, F>(
+    context: &str,
+    f: F,
+) -> std::result::Result<T, axum::response::Response>
+where
+    F: FnOnce() -> crate::core::error::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(internal_error(&e)),
+        Err(e) => Err(internal_error(&format!("{context} task failed: {e}"))),
+    }
+}
+
 /// The canonical list envelope every list endpoint returns:
 /// `{ "<key>": [items…], "count": <n> }`. One shape so the SPA and CLI parse
 /// every collection response (entities, relations, correlations, …) identically.
