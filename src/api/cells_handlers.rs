@@ -436,13 +436,12 @@ mod tests {
 
     #[tokio::test]
     async fn cells_clear_succeeds_with_confirm_true() {
-        // clear_cells_db() uses the real cell database file path (not the test's
-        // in-memory store). Pre-populate it so the endpoint can clear it.
-        let db_path = crate::util::paths::data_file("cell_towers.db");
-        if let Some(parent) = db_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        // Create an empty cell database (init_schema will add tables on open).
+        // clear_cells_db() operates on the real cell-tower DB file (not the
+        // test's in-memory store), and fails if it is absent. `open_rw` creates
+        // the file and its schema — and resolves through `paths::data_file`, so
+        // under `cfg(test)` that is the per-process temp root, and the directory
+        // is created 0700 on the way. No manual `create_dir_all` here: that would
+        // create at the ambient umask and bypass that guarantee.
         let _db = crate::util::cell_db::open_rw().expect("should create cell DB");
 
         let app = cells_router();
