@@ -253,25 +253,6 @@ pub(super) fn records_to_entities(
         // the entity-kind decision below.
         let pc = postcode(rec);
 
-        // Fold the optional money-trail fields into the evidence in a single
-        // pass: only the present (`Some`) attributes are attached; owner /
-        // register / total_matches always are.
-        let ev = [
-            ("amount_aud", amount.as_deref()),
-            ("sender", sender.as_deref()),
-            ("date_received", date.as_deref()),
-            ("reference", reference.as_deref()),
-            ("postcode", pc.as_deref()),
-        ]
-        .into_iter()
-        .filter_map(|(k, v)| v.map(|val| (k, val)))
-        .fold(
-            Evidence::new(SRC, format!("QLD unclaimed money: {owner}")).with_attr("owner", &owner),
-            |ev, (k, val)| ev.with_attr(k, val),
-        )
-        .with_attr("register", "QLD Public Trustee unclaimed monies")
-        .with_attr("total_matches", total.to_string());
-
         // A bare postcode is a COARSE locator, not a residence, so even an
         // exact-name register hit stays a Candidate-tier `Address` (it must not
         // masquerade as a precise, Probable address) — its evidentiary weight
@@ -289,129 +270,26 @@ pub(super) fn records_to_entities(
             (0.32, 0.35)
         };
 
-        // Geo pivot when we have a usable postcode; otherwise a plain finding.
-        // Borrow `pc` (don't move it) so the owner-Person pass below can still read
-        // the postcode for its residency evidence.
-        let mut entity = match &pc {
-            Some(p) => {
-                // Derive the OWNER's state from THEIR postcode, not the register's
-                // jurisdiction. The QLD Public Trustee holds the money, but the
-                // record carries the owner's last-known postcode, which spans every
-                // state — the real data lists NSW 2xxx postcodes (a Brisbane family
-                // member who moved to Sydney). Hardcoding "QLD" mis-placed them
-                // geographically and tripped the AU-056 jurisdiction cross-check
-                // (postcode-derived NSW vs a "QLD" tag). Fall back to QLD only when
-                // the postcode resolves to no state.
-                let state = crate::util::address_au::state_for_postcode(p).unwrap_or("QLD");
-                let mut e = Entity::new(
-                    EntityKind::Address,
-                    format!("{state} {p}, Australia"),
-                    addr_conf,
-                    scan_id,
-                );
-                e.tag("postcode-only");
-                // `geoint` only belongs on actual geo entities (Address/Coords);
-                // the no-postcode finding below is not geographic.
-                e.tag("geoint");
-                // A postcode spans many localities — flag the coarseness so the
-                // UI and geo rules treat it as a region, not a pinned address.
-                e.tag(crate::core::tags::COARSE);
-                // Tag the owner's true state (postcode-derived) so the AU-056
-                // jurisdiction cross-check compares like with like.
-                e.tag(format!("au-state:{state}"));
-                e
-            }
-            None => {
-                let amt = amount.as_deref().unwrap_or("?");
-                Entity::new(
-                    EntityKind::Other("unclaimed_money".to_string()),
-                    format!("{owner} — ${amt}"),
-                    find_conf,
-                    scan_id,
-                )
-            }
-        };
-        entity.tag(SRC);
-        entity.tag("unclaimed-money");
-        entity.tag("country:AU");
-        entity.tag(if exact {
-            "exact-name-match"
-        } else {
-            "family-candidate"
-        });
-        entity.add_evidence(ev);
-        out.push(entity);
-
-        // Emit each HUMAN owner as a first-class Person so the family/identity
-        // graph has people to connect. The relation layer then binds them: the
-        // shared surname links relatives from ANY seed angle (free), and a joint
-        // record's co-owners are linked explicitly via the declared `co_owner`
-        // attribute. Family-candidate Persons stay below the confidence::MEDIUM expansion floor
-        // (find_conf 0.35) so a relative is recorded and connected but never
-        // pivot-scanned as if they were the subject; an exact register hit on the
-        // seed merges with the name_intel subject anchor by its title-cased value.
-        let owner_persons = owner_person_names(&owner);
-        for (i, person) in owner_persons.iter().enumerate() {
-            // Exactness is PER-PERSON, not per-record: on a joint "HAYLEY & CURT"
-            // record seeded with "Curt", Curt is the exact subject while Hayley is
-            // a surname-only family candidate — so each co-owner is judged on its
-            // own name, and a family candidate stays below the confidence::MEDIUM pivot floor.
-            let person_exact = owner_matches_full_name(person, seed);
-            let pconf = if person_exact {
-                confidence::MEDIUM_PLUS
-            } else {
-                0.35
-            };
-            let mut p = Entity::new(EntityKind::Person, person, pconf, scan_id);
-            p.tag(SRC);
-            p.tag("unclaimed-money");
-            p.tag("country:AU");
-            p.tag(if person_exact {
-                "exact-name-match"
-            } else {
-                "family-candidate"
-            });
-            let mut pev = Evidence::new(SRC, format!("QLD unclaimed money owner: {person}"))
-                .with_attr("owner_name", person)
-                .with_attr("register", "QLD Public Trustee unclaimed monies");
-            if let Some(p4) = pc.as_deref() {
-                pev = pev.with_attr("postcode", p4);
-            }
-            // Joint record → declare the co-owner association (cyclic over the
-            // owners, so all co-owners on one record connect, not just a pair).
-            if owner_persons.len() > 1 {
-                pev = pev.with_attr("co_owner", &owner_persons[(i + 1) % owner_persons.len()]);
-            }
-            p.add_evidence(pev);
-            out.push(p);
-        }
-
-        // Unclaimed money is often owed to *companies* (dividends, refunds) — and
-        // frequently to joint syndicates of several companies. Emit one
-        // `Organisation` per individually-resolvable company name so the engine's
-        // expansion pivots each into abn_lookup / opencorporates and resolves its
-        // ABN/ACN, connecting the unclaimed-money graph to the business registry.
-        out.extend(
-            crate::util::abn::company_names(&owner)
-                .into_iter()
-                .map(|company| {
-                    let mut org =
-                        Entity::new(EntityKind::Organisation, &company, find_conf, scan_id);
-                    org.tag(SRC);
-                    org.tag("unclaimed-money");
-                    org.tag("country:AU");
-                    org.tag("company-owner");
-                    let mut oev =
-                        Evidence::new(SRC, format!("Company owed unclaimed money: {company}"))
-                            .with_attr("register", "QLD Public Trustee unclaimed monies");
-                    if company != owner {
-                        oev = oev.with_attr("joint_owner", &owner);
-                    }
-                    org.add_evidence(oev);
-                    org
-                }),
+        let ev = record_evidence(
+            total,
+            &owner,
+            amount.as_deref(),
+            sender.as_deref(),
+            date.as_deref(),
+            reference.as_deref(),
+            pc.as_deref(),
         );
-
+        out.push(record_place_entity(
+            &owner,
+            amount.as_deref(),
+            pc.as_deref(),
+            exact,
+            (addr_conf, find_conf),
+            scan_id,
+            ev,
+        ));
+        out.extend(owner_person_entities(&owner, seed, pc.as_deref(), scan_id));
+        out.extend(owner_company_entities(&owner, find_conf, scan_id));
         // The SENDER is the employer / estate / insurer that LODGED the unclaimed
         // money (a former employer, a dividend issuer) — the T1591.002 Business
         // Relationship the module header claims but never emitted: `SenderName` was
@@ -420,29 +298,211 @@ pub(super) fn records_to_entities(
         // abn_lookup / opencorporates, linking the subject to the business behind
         // the money.
         if let Some(sender) = &sender {
-            out.extend(
-                crate::util::abn::company_names(sender)
-                    .into_iter()
-                    .map(|company| {
-                        let mut org =
-                            Entity::new(EntityKind::Organisation, &company, find_conf, scan_id);
-                        org.tag(SRC);
-                        org.tag("unclaimed-money");
-                        org.tag("country:AU");
-                        org.tag("sender-company");
-                        let oev = Evidence::new(
-                            SRC,
-                            format!("Company that lodged unclaimed money: {company}"),
-                        )
-                        .with_attr("register", "QLD Public Trustee unclaimed monies")
-                        .with_attr("paid_to_owner", &owner);
-                        org.add_evidence(oev);
-                        org
-                    }),
-            );
+            out.extend(sender_company_entities(sender, &owner, find_conf, scan_id));
         }
     }
     out
+}
+
+/// The shared per-record evidence trail: owner / register / total_matches
+/// always attached, plus amount/sender/date/reference/postcode when present —
+/// folded in a single pass so only the fields this record actually has become
+/// attributes.
+fn record_evidence(
+    total: u64,
+    owner: &str,
+    amount: Option<&str>,
+    sender: Option<&str>,
+    date: Option<&str>,
+    reference: Option<&str>,
+    pc: Option<&str>,
+) -> Evidence {
+    [
+        ("amount_aud", amount),
+        ("sender", sender),
+        ("date_received", date),
+        ("reference", reference),
+        ("postcode", pc),
+    ]
+    .into_iter()
+    .filter_map(|(k, v)| v.map(|val| (k, val)))
+    .fold(
+        Evidence::new(SRC, format!("QLD unclaimed money: {owner}")).with_attr("owner", owner),
+        |ev, (k, val)| ev.with_attr(k, val),
+    )
+    .with_attr("register", "QLD Public Trustee unclaimed monies")
+    .with_attr("total_matches", total.to_string())
+}
+
+/// The record's headline entity: a geocodable `Address` anchored on the
+/// lodged postcode when present, else a plain `unclaimed_money` finding so
+/// the record is never dropped — tagged with its exact/family-candidate
+/// classification and carrying the shared per-record evidence. `conf` is
+/// `(addr_conf, find_conf)` — see the exact-vs-family confidence note at the
+/// call site.
+fn record_place_entity(
+    owner: &str,
+    amount: Option<&str>,
+    pc: Option<&str>,
+    exact: bool,
+    conf: (f64, f64),
+    scan_id: &str,
+    ev: Evidence,
+) -> Entity {
+    let (addr_conf, find_conf) = conf;
+    // Geo pivot when we have a usable postcode; otherwise a plain finding.
+    let mut entity = match pc {
+        Some(p) => {
+            // Derive the OWNER's state from THEIR postcode, not the register's
+            // jurisdiction. The QLD Public Trustee holds the money, but the
+            // record carries the owner's last-known postcode, which spans every
+            // state — the real data lists NSW 2xxx postcodes (a Brisbane family
+            // member who moved to Sydney). Hardcoding "QLD" mis-placed them
+            // geographically and tripped the AU-056 jurisdiction cross-check
+            // (postcode-derived NSW vs a "QLD" tag). Fall back to QLD only when
+            // the postcode resolves to no state.
+            let state = crate::util::address_au::state_for_postcode(p).unwrap_or("QLD");
+            let mut e = Entity::new(
+                EntityKind::Address,
+                format!("{state} {p}, Australia"),
+                addr_conf,
+                scan_id,
+            );
+            e.tag("postcode-only");
+            // `geoint` only belongs on actual geo entities (Address/Coords);
+            // the no-postcode finding below is not geographic.
+            e.tag("geoint");
+            // A postcode spans many localities — flag the coarseness so the
+            // UI and geo rules treat it as a region, not a pinned address.
+            e.tag(crate::core::tags::COARSE);
+            // Tag the owner's true state (postcode-derived) so the AU-056
+            // jurisdiction cross-check compares like with like.
+            e.tag(format!("au-state:{state}"));
+            e
+        }
+        None => {
+            let amt = amount.unwrap_or("?");
+            Entity::new(
+                EntityKind::Other("unclaimed_money".to_string()),
+                format!("{owner} — ${amt}"),
+                find_conf,
+                scan_id,
+            )
+        }
+    };
+    entity.tag(SRC);
+    entity.tag("unclaimed-money");
+    entity.tag("country:AU");
+    entity.tag(if exact {
+        "exact-name-match"
+    } else {
+        "family-candidate"
+    });
+    entity.add_evidence(ev);
+    entity
+}
+
+/// One `Person` per HUMAN owner on the record (joint records name several),
+/// so the family/identity graph has people to connect. The relation layer
+/// then binds them: the shared surname links relatives from ANY seed angle
+/// (free), and a joint record's co-owners are linked explicitly via the
+/// declared `co_owner` attribute. Family-candidate Persons stay below the
+/// confidence::MEDIUM expansion floor so a relative is recorded and connected
+/// but never pivot-scanned as if they were the subject; an exact register hit
+/// on the seed merges with the name_intel subject anchor by its title-cased
+/// value.
+fn owner_person_entities(owner: &str, seed: &str, pc: Option<&str>, scan_id: &str) -> Vec<Entity> {
+    let owner_persons = owner_person_names(owner);
+    let mut out = Vec::with_capacity(owner_persons.len());
+    for (i, person) in owner_persons.iter().enumerate() {
+        // Exactness is PER-PERSON, not per-record: on a joint "HAYLEY & CURT"
+        // record seeded with "Curt", Curt is the exact subject while Hayley is
+        // a surname-only family candidate — so each co-owner is judged on its
+        // own name, and a family candidate stays below the confidence::MEDIUM pivot floor.
+        let person_exact = owner_matches_full_name(person, seed);
+        let pconf = if person_exact {
+            confidence::MEDIUM_PLUS
+        } else {
+            0.35
+        };
+        let mut p = Entity::new(EntityKind::Person, person, pconf, scan_id);
+        p.tag(SRC);
+        p.tag("unclaimed-money");
+        p.tag("country:AU");
+        p.tag(if person_exact {
+            "exact-name-match"
+        } else {
+            "family-candidate"
+        });
+        let mut pev = Evidence::new(SRC, format!("QLD unclaimed money owner: {person}"))
+            .with_attr("owner_name", person)
+            .with_attr("register", "QLD Public Trustee unclaimed monies");
+        if let Some(p4) = pc {
+            pev = pev.with_attr("postcode", p4);
+        }
+        // Joint record → declare the co-owner association (cyclic over the
+        // owners, so all co-owners on one record connect, not just a pair).
+        if owner_persons.len() > 1 {
+            pev = pev.with_attr("co_owner", &owner_persons[(i + 1) % owner_persons.len()]);
+        }
+        p.add_evidence(pev);
+        out.push(p);
+    }
+    out
+}
+
+/// One `Organisation` per individually-resolvable company OWED money by this
+/// record — unclaimed money is often owed to companies (dividends, refunds),
+/// frequently a joint syndicate of several — so the engine's expansion pivots
+/// each into abn_lookup / opencorporates and resolves its ABN/ACN, connecting
+/// the unclaimed-money graph to the business registry.
+fn owner_company_entities(owner: &str, find_conf: f64, scan_id: &str) -> Vec<Entity> {
+    crate::util::abn::company_names(owner)
+        .into_iter()
+        .map(|company| {
+            let mut org = Entity::new(EntityKind::Organisation, &company, find_conf, scan_id);
+            org.tag(SRC);
+            org.tag("unclaimed-money");
+            org.tag("country:AU");
+            org.tag("company-owner");
+            let mut oev = Evidence::new(SRC, format!("Company owed unclaimed money: {company}"))
+                .with_attr("register", "QLD Public Trustee unclaimed monies");
+            if company != owner {
+                oev = oev.with_attr("joint_owner", owner);
+            }
+            org.add_evidence(oev);
+            org
+        })
+        .collect()
+}
+
+/// One `Organisation` per individually-resolvable company that LODGED this
+/// record's unclaimed money (a former employer, a dividend issuer, an
+/// insurer, …).
+fn sender_company_entities(
+    sender: &str,
+    owner: &str,
+    find_conf: f64,
+    scan_id: &str,
+) -> Vec<Entity> {
+    crate::util::abn::company_names(sender)
+        .into_iter()
+        .map(|company| {
+            let mut org = Entity::new(EntityKind::Organisation, &company, find_conf, scan_id);
+            org.tag(SRC);
+            org.tag("unclaimed-money");
+            org.tag("country:AU");
+            org.tag("sender-company");
+            let oev = Evidence::new(
+                SRC,
+                format!("Company that lodged unclaimed money: {company}"),
+            )
+            .with_attr("register", "QLD Public Trustee unclaimed monies")
+            .with_attr("paid_to_owner", owner);
+            org.add_evidence(oev);
+            org
+        })
+        .collect()
 }
 
 /// Depth-of-enumeration: turn each resolved postcode→localities set into geo
