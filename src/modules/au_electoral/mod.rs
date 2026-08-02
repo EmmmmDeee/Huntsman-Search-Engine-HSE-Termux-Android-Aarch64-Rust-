@@ -106,46 +106,23 @@ impl Module for AuElectoral {
         }
 
         let encoded = crate::util::http::urlencode(full_name);
-        let mut all_entities: Vec<Entity> = Vec::new();
 
         // No AEC national leg: `electorate.aec.gov.au/NameSearch.aspx` no
         // longer performs a name search (see the module doc comment) — every
         // call returned the identical generic error page, live-confirmed
         // against both a nonsense name and a real enrolled public figure.
 
-        // ── NSW Electoral Commission ─────────────────────────────────────
-        if all_entities.is_empty() {
-            let nsw_url = format!("https://check.elections.nsw.gov.au/search?name={encoded}");
-            if let Ok(resp) = ctx
-                .http
-                .get(&nsw_url)
-                .header("Accept", "text/html,application/xhtml+xml")
-                .header("User-Agent", crate::util::http::UA_BROWSER)
-                .send_tagged(SRC)
-                .await
-                && let Some(body) = read_body_capped(resp, 1_000_000).await
-                && let Some((div, suburb)) = extract_division(&body)
-            {
-                all_entities.extend(build_electoral_entities(
-                    &div,
-                    suburb.as_deref(),
-                    full_name,
-                    &ctx.scan_id,
-                ));
-            }
-        }
+        // Each state electoral commission portal is tried in turn until one
+        // resolves a division — NSW, then VIC, then ECQ (Queensland).
+        let legs = [
+            format!("https://check.elections.nsw.gov.au/search?name={encoded}"),
+            format!("https://check.vec.vic.gov.au/search?name={encoded}"),
+            format!("https://enrol.ecq.qld.gov.au/check?name={encoded}"),
+        ];
 
-        // ── Victorian Electoral Commission ────────────────────────────────
-        if all_entities.is_empty() {
-            let vec_url = format!("https://check.vec.vic.gov.au/search?name={encoded}");
-            if let Ok(resp) = ctx
-                .http
-                .get(&vec_url)
-                .header("Accept", "text/html,application/xhtml+xml")
-                .header("User-Agent", crate::util::http::UA_BROWSER)
-                .send_tagged(SRC)
-                .await
-                && let Some(body) = read_body_capped(resp, 1_000_000).await
+        let mut all_entities: Vec<Entity> = Vec::new();
+        for url in &legs {
+            if let Some(body) = try_leg(ctx, url).await
                 && let Some((div, suburb)) = extract_division(&body)
             {
                 all_entities.extend(build_electoral_entities(
@@ -154,28 +131,7 @@ impl Module for AuElectoral {
                     full_name,
                     &ctx.scan_id,
                 ));
-            }
-        }
-
-        // ── ECQ Queensland ───────────────────────────────────────────────
-        if all_entities.is_empty() {
-            let ecq_url = format!("https://enrol.ecq.qld.gov.au/check?name={encoded}");
-            if let Ok(resp) = ctx
-                .http
-                .get(&ecq_url)
-                .header("Accept", "text/html,application/xhtml+xml")
-                .header("User-Agent", crate::util::http::UA_BROWSER)
-                .send_tagged(SRC)
-                .await
-                && let Some(body) = read_body_capped(resp, 1_000_000).await
-                && let Some((div, suburb)) = extract_division(&body)
-            {
-                all_entities.extend(build_electoral_entities(
-                    &div,
-                    suburb.as_deref(),
-                    full_name,
-                    &ctx.scan_id,
-                ));
+                break;
             }
         }
 
@@ -183,4 +139,22 @@ impl Module for AuElectoral {
         result.entities = all_entities;
         Ok(result)
     }
+}
+
+/// GET one state electoral commission `url` (browser UA, HTML/XHTML accept
+/// header — the shape every portal here expects) and read its body, capped at
+/// 1 MB. `None` on any transport failure. Deliberately does **not** check
+/// `status().is_success()`: like the per-leg blocks this replaces, it reads
+/// whatever body the portal returned regardless of status — [`extract_division`]
+/// is the real "did this answer the query" signal, not the HTTP status.
+async fn try_leg(ctx: &ModuleContext, url: &str) -> Option<String> {
+    let resp = ctx
+        .http
+        .get(url)
+        .header("Accept", "text/html,application/xhtml+xml")
+        .header("User-Agent", crate::util::http::UA_BROWSER)
+        .send_tagged(SRC)
+        .await
+        .ok()?;
+    read_body_capped(resp, 1_000_000).await
 }

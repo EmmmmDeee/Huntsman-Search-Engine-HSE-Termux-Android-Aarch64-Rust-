@@ -118,7 +118,37 @@ impl Module for AuProperty {
         let sname = surname(full_name);
         let encoded_full = crate::util::http::urlencode(full_name);
         let encoded_sname = crate::util::http::urlencode(sname);
-        let ua = crate::util::http::UA_BROWSER;
+
+        // Each state portal is tried in turn until one yields a match — NSW
+        // Spatial/ELVIS cadastral (surname + given name query), then VIC
+        // MapShare, then QLD Globe/titles.
+        let legs = [
+            (
+                format!(
+                    "https://maps.six.nsw.gov.au/services/public/Property_Name_Address?surname={}&givenname={}&maxRows=10",
+                    crate::util::http::urlencode(last),
+                    crate::util::http::urlencode(first),
+                ),
+                "application/json,text/html",
+                parse_nsw_response as fn(&str, &str) -> Vec<parse::PropertyRecord>,
+            ),
+            (
+                format!(
+                    "https://mapshare.vic.gov.au/mapsharevic/ows?service=WFS&version=1.0.0\
+                     &request=GetFeature&typeName=CADASTRE:PARCEL&outputFormat=application/json\
+                     &CQL_FILTER=OWNER_NAME+LIKE+%27{encoded_sname}%25%27&maxFeatures=10"
+                ),
+                "application/json,text/html",
+                parse_vic_response,
+            ),
+            (
+                format!(
+                    "https://www.qld.gov.au/environment/land/title/searching/owners?owner={encoded_full}"
+                ),
+                "text/html,application/xhtml+xml",
+                parse_qld_response,
+            ),
+        ];
 
         let mut all_entities: Vec<Entity> = Vec::new();
         // Set whenever ANY leg's HTTP request came back with a success status —
@@ -127,81 +157,18 @@ impl Module for AuProperty {
         // honest empty success). See `all_legs_unreachable`.
         let mut any_leg_ok = false;
 
-        // ── NSW Spatial / ELVIS cadastral ─────────────────────────────────
-        // ELVIS name search endpoint — surname + given name query.
-        let nsw_url = format!(
-            "https://maps.six.nsw.gov.au/services/public/Property_Name_Address?surname={}&givenname={}&maxRows=10",
-            crate::util::http::urlencode(last),
-            crate::util::http::urlencode(first),
-        );
-        if let Ok(resp) = ctx
-            .http
-            .get(&nsw_url)
-            .header("Accept", "application/json,text/html")
-            .header("User-Agent", ua)
-            .send_tagged(SRC)
-            .await
-            && resp.status().is_success()
-        {
-            any_leg_ok = true;
-            if let Some(body) = read_body_capped(resp, 1_000_000).await {
+        for (url, accept, parser) in &legs {
+            if !all_entities.is_empty() {
+                break;
+            }
+            let (ok, body) = try_leg(ctx, url, accept).await;
+            any_leg_ok |= ok;
+            if let Some(body) = body {
                 all_entities.extend(
-                    parse_nsw_response(&body, full_name)
+                    parser(&body, full_name)
                         .iter()
                         .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
                 );
-            }
-        }
-
-        // ── VIC MapShare ──────────────────────────────────────────────────
-        if all_entities.is_empty() {
-            let vic_url = format!(
-                "https://mapshare.vic.gov.au/mapsharevic/ows?service=WFS&version=1.0.0\
-                 &request=GetFeature&typeName=CADASTRE:PARCEL&outputFormat=application/json\
-                 &CQL_FILTER=OWNER_NAME+LIKE+%27{encoded_sname}%25%27&maxFeatures=10"
-            );
-            if let Ok(resp) = ctx
-                .http
-                .get(&vic_url)
-                .header("Accept", "application/json,text/html")
-                .header("User-Agent", ua)
-                .send_tagged(SRC)
-                .await
-                && resp.status().is_success()
-            {
-                any_leg_ok = true;
-                if let Some(body) = read_body_capped(resp, 1_000_000).await {
-                    all_entities.extend(
-                        parse_vic_response(&body, full_name)
-                            .iter()
-                            .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
-                    );
-                }
-            }
-        }
-
-        // ── QLD Globe / titles ────────────────────────────────────────────
-        if all_entities.is_empty() {
-            let qld_url = format!(
-                "https://www.qld.gov.au/environment/land/title/searching/owners?owner={encoded_full}"
-            );
-            if let Ok(resp) = ctx
-                .http
-                .get(&qld_url)
-                .header("Accept", "text/html,application/xhtml+xml")
-                .header("User-Agent", ua)
-                .send_tagged(SRC)
-                .await
-                && resp.status().is_success()
-            {
-                any_leg_ok = true;
-                if let Some(body) = read_body_capped(resp, 1_000_000).await {
-                    all_entities.extend(
-                        parse_qld_response(&body, full_name)
-                            .iter()
-                            .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
-                    );
-                }
             }
         }
 
@@ -222,6 +189,29 @@ impl Module for AuProperty {
         result.entities = all_entities;
         Ok(result)
     }
+}
+
+/// GET one property-register `url` with `accept` and the shared browser UA
+/// header, returning `(transport_and_status_ok, body)`. The first element
+/// feeds `any_leg_ok`'s "was the portal itself reachable" signal — set purely
+/// from `status().is_success()`, independent of whether the body was
+/// readable — and the second is the capped (1 MB) body when the whole read
+/// succeeded. `(false, None)` on any transport failure or non-success status.
+async fn try_leg(ctx: &ModuleContext, url: &str, accept: &str) -> (bool, Option<String>) {
+    let Ok(resp) = ctx
+        .http
+        .get(url)
+        .header("Accept", accept)
+        .header("User-Agent", crate::util::http::UA_BROWSER)
+        .send_tagged(SRC)
+        .await
+    else {
+        return (false, None);
+    };
+    if !resp.status().is_success() {
+        return (false, None);
+    }
+    (true, read_body_capped(resp, 1_000_000).await)
 }
 
 /// Whether `process()` should surface a hard failure rather than its
