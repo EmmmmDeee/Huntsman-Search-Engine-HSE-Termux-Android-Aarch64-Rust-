@@ -733,6 +733,12 @@ pub(super) struct HarvestCtx<'a> {
     pub(super) scan_id: &'a str,
 }
 
+/// Scan one breach/stealer record for credentials across every strategy this
+/// harvester knows: named credential fields (shape/context match, base64
+/// decode-through, entropy fallback), multi-line `.env` dumps, the username
+/// field, URL query parameters, a provider `extra` object, and exported
+/// cookie arrays. Each strategy is independent — a record can trip several —
+/// so they all run unconditionally in this fixed order.
 pub fn extract_api_keys_from_item(
     item: &Value,
     scan_id: &str,
@@ -741,6 +747,33 @@ pub fn extract_api_keys_from_item(
     result: &mut ModuleResult,
 ) {
     let ctx = HarvestCtx { src, scan_id };
+
+    // The record's own URL host / domain is provider context for every credential
+    // field below, so a prefix-less OSINT key in an `api_key` / `password` field
+    // of an OSINT-provider record is attributed (and banked + flagged
+    // `osint-practitioner`) rather than missed. Empty context degrades to plain
+    // shape/prefix detection — identical to the prior behaviour.
+    let record_context = record_provider_context(item);
+
+    scan_credential_fields(item, &ctx, &record_context, seen, result);
+    scan_dotenv_blobs(item, &ctx, seen, result);
+    scan_username_field(item, &ctx, seen, result);
+    scan_url_query_params(item, &ctx, seen, result);
+    scan_extra_object(item, &ctx, seen, result);
+    scan_cookie_array(item, &ctx, seen, result);
+}
+
+/// Named credential fields (`password`, `api_key`, `token`, …, plus the
+/// stealer-log-specific and `.env`-dump aliases): for each field present,
+/// run the shape/context match, the base64 decode-through pass, and the
+/// entropy fallback — in that order, once per field.
+fn scan_credential_fields(
+    item: &Value,
+    ctx: &HarvestCtx,
+    record_context: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
     let fields = [
         // Core credential fields (breach + stealer common)
         "password",
@@ -788,78 +821,118 @@ pub fn extract_api_keys_from_item(
         "dotenv",
     ];
 
-    // The record's own URL host / domain is provider context for every credential
-    // field below, so a prefix-less OSINT key in an `api_key` / `password` field
-    // of an OSINT-provider record is attributed (and banked + flagged
-    // `osint-practitioner`) rather than missed. Empty context degrades to plain
-    // shape/prefix detection — identical to the prior behaviour.
-    let record_context = record_provider_context(item);
-
     for field in &fields {
-        if let Some(val) = val_str(item, field) {
-            if let Some((service, key_val, detection)) =
-                identify_with_context(&record_context, &val)
-            {
-                // A bare 32/64-hex value in a password/hash field is a leaked
-                // password *hash* (MD5/SHA), not an API key — the shape alone is
-                // the `generic_hex` fallback. Emitting it as a VERIFIED ApiKey is a
-                // double error (wrong kind + inflated confidence); the value is
-                // already captured as a credential by `store_api_credential`. A
-                // *vendor-prefixed* key (sk-…, AKIA…) — or one the record's own
-                // host attributes to a named provider — stored in a password field
-                // is still a genuine leaked key, so only the anonymous generic
-                // fallback is suppressed here. (Live email scan flooded with hex.)
-                if !(service == "generic_hex" && is_password_field(field)) {
-                    let db = val_str(item, "dbname").unwrap_or_default();
-                    let source = if db.is_empty() {
-                        format!("{field} field")
-                    } else {
-                        format!("breach ({db})")
-                    };
-                    emit_key_with(&ctx, service, key_val, &source, detection, seen, result);
-                }
-            }
-            // Decode-through pass: same field, treat the value as
-            // base64 of a key and recurse through `identify_api_key`.
-            // Catches stealer-log entries that wrap the secret to
-            // sneak it past lazy regex scanners, plus genuine
-            // base64-encoded-credential field schemas.
-            if let Some((service, decoded_key, depth)) = try_decode_through_scan(&val) {
-                let pre = result.entities.len();
-                let source = format!("{field} (base64-decoded, depth={depth})");
-                emit_key(&ctx, service, &decoded_key, &source, seen, result);
-                if result.entities.len() > pre
-                    && let Some(last) = result.entities.last_mut()
-                {
-                    last.tag("via-base64");
-                    last.tag(format!("base64_depth:{depth}"));
-                }
-            }
-
-            // ENTROPY-BASED FALLBACK: if pattern matching didn't find anything,
-            // use behavioral analysis (entropy, composition, length) to detect
-            // credentials that don't match known prefixes.
-            // This adds "proactive" + "creative" detection beyond pattern matching.
-            if identify_with_context(&record_context, &val).is_none()
-                && let Some(score) = try_entropy_detect(field, &val)
-            {
-                let pre = result.entities.len();
-                let source = format!("{field} (entropy-based, confidence={:.0}%)", score * 100.0);
-                emit_key(&ctx, "behavioral_credential", &val, &source, seen, result);
-                if result.entities.len() > pre
-                    && let Some(last) = result.entities.last_mut()
-                {
-                    last.tag("entropy-detected");
-                    last.tag(format!("entropy-score:{score:.2}"));
-                }
-            }
-        }
+        let Some(val) = val_str(item, field) else {
+            continue;
+        };
+        scan_field_shape_and_context_match(field, &val, record_context, item, ctx, seen, result);
+        scan_field_base64_decode_through(field, &val, ctx, seen, result);
+        scan_field_entropy_fallback(field, &val, record_context, ctx, seen, result);
     }
+}
 
-    // Multi-line `.env` parser — stealer logs commonly dump entire
-    // `.env` files into a single string field. Split on newlines,
-    // extract `KEY=VALUE` pairs, and scan each value through the
-    // same `identify_api_key` pipeline.
+/// Direct shape/context match against one field's value — the primary
+/// credential-field strategy. A prefix-less key is attributed via the
+/// record's own URL host/domain (`record_context`); a generic-hex match in a
+/// password/hash field is suppressed as a leaked hash rather than a
+/// mis-typed API key.
+fn scan_field_shape_and_context_match(
+    field: &str,
+    val: &str,
+    record_context: &str,
+    item: &Value,
+    ctx: &HarvestCtx,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    let Some((service, key_val, detection)) = identify_with_context(record_context, val) else {
+        return;
+    };
+    // A bare 32/64-hex value in a password/hash field is a leaked
+    // password *hash* (MD5/SHA), not an API key — the shape alone is
+    // the `generic_hex` fallback. Emitting it as a VERIFIED ApiKey is a
+    // double error (wrong kind + inflated confidence); the value is
+    // already captured as a credential by `store_api_credential`. A
+    // *vendor-prefixed* key (sk-…, AKIA…) — or one the record's own
+    // host attributes to a named provider — stored in a password field
+    // is still a genuine leaked key, so only the anonymous generic
+    // fallback is suppressed here. (Live email scan flooded with hex.)
+    if service == "generic_hex" && is_password_field(field) {
+        return;
+    }
+    let db = val_str(item, "dbname").unwrap_or_default();
+    let source = if db.is_empty() {
+        format!("{field} field")
+    } else {
+        format!("breach ({db})")
+    };
+    emit_key_with(ctx, service, key_val, &source, detection, seen, result);
+}
+
+/// Decode-through pass: treat the same field's value as base64 of a key and
+/// recurse through [`identify_api_key`]. Catches stealer-log entries that
+/// wrap the secret to sneak it past lazy regex scanners, plus genuine
+/// base64-encoded-credential field schemas.
+fn scan_field_base64_decode_through(
+    field: &str,
+    val: &str,
+    ctx: &HarvestCtx,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    let Some((service, decoded_key, depth)) = try_decode_through_scan(val) else {
+        return;
+    };
+    let pre = result.entities.len();
+    let source = format!("{field} (base64-decoded, depth={depth})");
+    emit_key(ctx, service, &decoded_key, &source, seen, result);
+    if result.entities.len() > pre
+        && let Some(last) = result.entities.last_mut()
+    {
+        last.tag("via-base64");
+        last.tag(format!("base64_depth:{depth}"));
+    }
+}
+
+/// Entropy-based fallback: if pattern matching found nothing for this field,
+/// use behavioral analysis (entropy, composition, length) to detect
+/// credentials that don't match known prefixes — "proactive" + "creative"
+/// detection beyond pattern matching.
+fn scan_field_entropy_fallback(
+    field: &str,
+    val: &str,
+    record_context: &str,
+    ctx: &HarvestCtx,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    if identify_with_context(record_context, val).is_some() {
+        return;
+    }
+    let Some(score) = try_entropy_detect(field, val) else {
+        return;
+    };
+    let pre = result.entities.len();
+    let source = format!("{field} (entropy-based, confidence={:.0}%)", score * 100.0);
+    emit_key(ctx, "behavioral_credential", val, &source, seen, result);
+    if result.entities.len() > pre
+        && let Some(last) = result.entities.last_mut()
+    {
+        last.tag("entropy-detected");
+        last.tag(format!("entropy-score:{score:.2}"));
+    }
+}
+
+/// Multi-line `.env` parser — stealer logs commonly dump entire `.env`
+/// files into a single string field. Split on newlines, extract
+/// `KEY=VALUE` pairs, and scan each value through the same
+/// `identify_api_key` pipeline.
+fn scan_dotenv_blobs(
+    item: &Value,
+    ctx: &HarvestCtx,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
     for env_field in ["env_content", "env", "dotenv", "note", "notes"] {
         if let Some(blob) = val_str(item, env_field)
             && blob.contains('\n')
@@ -880,7 +953,7 @@ pub fn extract_api_keys_from_item(
                             identify_with_context(raw_key, val)
                     {
                         emit_key_with(
-                            &ctx,
+                            ctx,
                             service,
                             key_val,
                             "dotenv line",
@@ -893,33 +966,48 @@ pub fn extract_api_keys_from_item(
             }
         }
     }
+}
 
-    // Scan username field — some stealer logs store API keys as usernames
+/// Scan the `username` field — some stealer logs store API keys as
+/// usernames.
+fn scan_username_field(
+    item: &Value,
+    ctx: &HarvestCtx,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
     if let Some(user) = val_str(item, "username")
         && let Some((service, key_val)) = identify_api_key(&user)
     {
-        emit_key(&ctx, service, key_val, "username field", seen, result);
+        emit_key(ctx, service, key_val, "username field", seen, result);
     }
+}
 
-    // Scan URL query parameters — stealer URLs often embed API keys:
-    // https://api.shodan.io/host/1.1.1.1?key=ACTUAL_KEY
+/// Scan URL query parameters — stealer URLs often embed API keys:
+/// `https://api.shodan.io/host/1.1.1.1?key=ACTUAL_KEY`. The URL *host* is
+/// the provider context: a bare `?key=<32 alnum>` on `api.shodan.io` is
+/// attributed to Shodan rather than missed, and a 64-hex key on an OSINT
+/// host is upgraded from `generic_hex` to the named provider. Only the host
+/// counts (`context_host`), so a provider name in the path/query cannot
+/// spoof the attribution.
+fn scan_url_query_params(
+    item: &Value,
+    ctx: &HarvestCtx,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
     for url_field in ["url", "url_str"] {
         if let Some(url) = val_str(item, url_field)
             && let Some(qmark) = url.find('?')
         {
             for param in url[qmark + 1..].split('&') {
-                // The URL *host* is the provider context: a bare `?key=<32 alnum>`
-                // on `api.shodan.io` is attributed to Shodan rather than missed,
-                // and a 64-hex key on an OSINT host is upgraded from `generic_hex`
-                // to the named provider. Only the host counts (`context_host`), so
-                // a provider name in the path/query cannot spoof the attribution.
                 if let Some((_, pval)) = param.split_once('=')
                     && pval.len() >= 16
                     && let Some((service, key_val, detection)) =
                         identify_with_context(context_host(&url), pval)
                 {
                     emit_key_with(
-                        &ctx,
+                        ctx,
                         service,
                         key_val,
                         "URL query parameter",
@@ -931,17 +1019,25 @@ pub fn extract_api_keys_from_item(
             }
         }
     }
+}
 
+/// Scan a provider `extra` object (`{"securitytrails_key": "<32 alnum>"}`).
+/// The object key names the secret, so it is provider context for
+/// `identify_with_context`.
+fn scan_extra_object(
+    item: &Value,
+    ctx: &HarvestCtx,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
     if let Some(extra) = item.get("extra").and_then(|v| v.as_object()) {
         for (ekey, eval) in extra {
-            // The object key names the secret (`{"securitytrails_key": "<32
-            // alnum>"}`), so it is provider context for `identify_with_context`.
             if let Some(s) = eval.as_str()
                 && s.len() >= 16
                 && let Some((service, key_val, detection)) = identify_with_context(ekey, s)
             {
                 emit_key_with(
-                    &ctx,
+                    ctx,
                     service,
                     key_val,
                     "extra field",
@@ -952,41 +1048,49 @@ pub fn extract_api_keys_from_item(
             }
         }
     }
+}
 
-    // Cookie arrays — stealer logs export browser cookies as
-    // `[{ name, value, domain, expires, ... }, ...]`. Cookie values
-    // sized like JWT / OAuth tokens get routed through the same
-    // pipeline; the domain field gives us the service-tag context.
-    if let Some(cookies) = item.get("cookies").and_then(|v| v.as_array()) {
-        for cookie in cookies {
-            let Some(obj) = cookie.as_object() else {
-                continue;
+/// Cookie arrays — stealer logs export browser cookies as
+/// `[{ name, value, domain, expires, ... }, ...]`. Cookie values sized like
+/// JWT / OAuth tokens get routed through the same pipeline; the domain field
+/// gives us the service-tag context.
+fn scan_cookie_array(
+    item: &Value,
+    ctx: &HarvestCtx,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    let Some(cookies) = item.get("cookies").and_then(|v| v.as_array()) else {
+        return;
+    };
+    for cookie in cookies {
+        let Some(obj) = cookie.as_object() else {
+            continue;
+        };
+        // Read the cookie fields straight off the object map. The prior code
+        // built `Value::Object(obj.clone())` — a full deep clone of every
+        // cookie's key/value map — twice per cookie just to call `val_str`;
+        // stealer logs export hundreds of cookies per record, so that was a
+        // large per-cookie allocation for nothing. `val_str`'s empty-string
+        // filter is preserved by the explicit `is_empty` / `< 16` guards.
+        let name = obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default();
+        let Some(value) = obj.get("value").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if value.len() < 16 {
+            continue;
+        }
+        if let Some((service, key_val)) = identify_api_key(value) {
+            let source = if name.is_empty() {
+                "cookie".to_string()
+            } else {
+                format!("cookie:{name}")
             };
-            // Read the cookie fields straight off the object map. The prior code
-            // built `Value::Object(obj.clone())` — a full deep clone of every
-            // cookie's key/value map — twice per cookie just to call `val_str`;
-            // stealer logs export hundreds of cookies per record, so that was a
-            // large per-cookie allocation for nothing. `val_str`'s empty-string
-            // filter is preserved by the explicit `is_empty` / `< 16` guards.
-            let name = obj
-                .get("name")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_default();
-            let Some(value) = obj.get("value").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            if value.len() < 16 {
-                continue;
-            }
-            if let Some((service, key_val)) = identify_api_key(value) {
-                let source = if name.is_empty() {
-                    "cookie".to_string()
-                } else {
-                    format!("cookie:{name}")
-                };
-                emit_key(&ctx, service, key_val, &source, seen, result);
-            }
+            emit_key(ctx, service, key_val, &source, seen, result);
         }
     }
 }
