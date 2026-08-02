@@ -173,36 +173,20 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         .into_response()
 }
 
-/// `GET /api/v1/scan/auto/plan` — preview the autonomous investigation queue
-/// **without dispatching anything**.
-///
-/// The read-only counterpart to [`scan_auto`]: it ranks the collected base with
-/// the same multi-factor priority, then applies diversity-aware
-/// ([`crate::core::engine::plan_autonomous_sweep`]) selection so the queue spreads
-/// effort across identifier kinds instead of tunnelling on the single
-/// most-represented one. Lets the operator (or the SPA) see exactly what the
-/// platform would investigate next, and in what order, before committing. Optional
-/// query params: `limit` (queue length, default 20, capped at 200) and `diversity`
-/// (0.0 = pure score order, higher interleaves kinds; default
-/// [`crate::core::engine::DEFAULT_SWEEP_DIVERSITY`]).
-pub async fn scan_auto_plan(
-    State(s): State<Arc<AppState>>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
-) -> impl IntoResponse {
+/// Build the candidate pool from recent-scan history (bounded by
+/// [`AUTONOMOUS_POOL_MAX_SCANS`]/[`AUTONOMOUS_POOL_MAX_ENTITIES`]) and run
+/// [`crate::core::engine::plan_autonomous_sweep`] against it, all on the
+/// blocking pool via [`offload`]. Shared by [`scan_auto_plan`] (`target_count`
+/// is the preview `limit`) and [`scan_auto_sweep`] (`target_count` is the
+/// dispatch `breadth`) — the two differ only in how many queue entries they
+/// ask for and what they do with the plan afterward.
+async fn plan_autonomous_sweep_via_store(
+    store: Arc<dyn crate::core::StoragePort>,
+    target_count: usize,
+    diversity: f64,
+) -> Result<crate::core::engine::AutonomousPlan, axum::response::Response> {
     use std::collections::HashSet;
-
-    let limit = params
-        .get("limit")
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(20)
-        .clamp(1, 200);
-    let diversity = params
-        .get("diversity")
-        .and_then(|v| v.parse::<f64>().ok())
-        .unwrap_or(crate::core::engine::DEFAULT_SWEEP_DIVERSITY);
-
-    let store = Arc::clone(&s.store);
-    let planned = offload(
+    offload(
         "query",
         move || -> crate::core::error::Result<crate::core::engine::AutonomousPlan> {
             let scans = store.list_scans(AUTONOMOUS_POOL_MAX_SCANS)?;
@@ -223,14 +207,41 @@ pub async fn scan_auto_plan(
                 &pool,
                 |uid| store.observation_count(uid).unwrap_or(0),
                 &exclude,
-                limit,
+                target_count,
                 diversity,
             ))
         },
     )
-    .await;
+    .await
+}
 
-    let plan = match planned {
+/// `GET /api/v1/scan/auto/plan` — preview the autonomous investigation queue
+/// **without dispatching anything**.
+///
+/// The read-only counterpart to [`scan_auto`]: it ranks the collected base with
+/// the same multi-factor priority, then applies diversity-aware
+/// ([`crate::core::engine::plan_autonomous_sweep`]) selection so the queue spreads
+/// effort across identifier kinds instead of tunnelling on the single
+/// most-represented one. Lets the operator (or the SPA) see exactly what the
+/// platform would investigate next, and in what order, before committing. Optional
+/// query params: `limit` (queue length, default 20, capped at 200) and `diversity`
+/// (0.0 = pure score order, higher interleaves kinds; default
+/// [`crate::core::engine::DEFAULT_SWEEP_DIVERSITY`]).
+pub async fn scan_auto_plan(
+    State(s): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(20)
+        .clamp(1, 200);
+    let diversity = params
+        .get("diversity")
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(crate::core::engine::DEFAULT_SWEEP_DIVERSITY);
+
+    let plan = match plan_autonomous_sweep_via_store(Arc::clone(&s.store), limit, diversity).await {
         Ok(p) => p,
         Err(resp) => return resp,
     };
@@ -267,8 +278,6 @@ pub async fn scan_auto_sweep(
     State(s): State<Arc<AppState>>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    use std::collections::HashSet;
-
     let breadth = params
         .get("breadth")
         .and_then(|v| v.parse::<usize>().ok())
@@ -279,36 +288,8 @@ pub async fn scan_auto_sweep(
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(crate::core::engine::DEFAULT_SWEEP_DIVERSITY);
 
-    let store = Arc::clone(&s.store);
-    let planned = offload(
-        "query",
-        move || -> crate::core::error::Result<crate::core::engine::AutonomousPlan> {
-            let scans = store.list_scans(AUTONOMOUS_POOL_MAX_SCANS)?;
-            let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
-            let mut seen: HashSet<String> = HashSet::new();
-            for sc in &scans {
-                if pool.len() >= AUTONOMOUS_POOL_MAX_ENTITIES {
-                    break;
-                }
-                for e in store.entities_for_scan(&sc.id)? {
-                    if seen.insert(e.uid.clone()) {
-                        pool.push(e);
-                    }
-                }
-            }
-            let exclude = HashSet::new();
-            Ok(crate::core::engine::plan_autonomous_sweep(
-                &pool,
-                |uid| store.observation_count(uid).unwrap_or(0),
-                &exclude,
-                breadth,
-                diversity,
-            ))
-        },
-    )
-    .await;
-
-    let plan = match planned {
+    let plan = match plan_autonomous_sweep_via_store(Arc::clone(&s.store), breadth, diversity).await
+    {
         Ok(p) => p,
         Err(resp) => return resp,
     };
