@@ -310,14 +310,18 @@ pub fn is_freemail(domain: &str) -> bool {
 /// a person's handle (`info@`, `dns@`, `noreply@`, `abuse@`, …). Such local-parts
 /// are never individualised PII — they are registrar/provider/automation desks —
 /// so they must not seed Username/Person entities nor be expanded as the subject.
+/// Case-insensitive (`Admin`/`ADMIN`/`admin` all match) — every caller's own
+/// local-part extraction is trusted verbatim, so the case-folding lives here
+/// rather than being a convention callers must each remember to apply.
 #[must_use]
 pub fn is_role_localpart(local: &str) -> bool {
-    // Compare the de-tagged, separator-stripped form so `no-reply`/`no_reply`
-    // also match `noreply`.
+    // Compare the de-tagged, separator-stripped, lower-cased form so
+    // `no-reply`/`no_reply`/`NoReply` all also match `noreply`.
     let detagged = local.split('+').next().unwrap_or(local);
     let base = detagged
         .chars()
         .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
         .collect::<String>();
     const ROLE: &[&str] = &[
         "admin",
@@ -379,6 +383,19 @@ pub fn is_role_localpart(local: &str) -> bool {
         "registrar",
         "whois",
         "nic",
+        // Network-operations / registry-infra desks — carried over from
+        // `core::validation::email::is_role_mailbox` when that detector was
+        // unified onto this one, so migrating callers lose no coverage.
+        "noc",
+        "registry",
+        "soa",
+        "ssladmin",
+        // Carried over from `employer_pivot`'s own role list at the same
+        // unification. "tech" was deliberately NOT carried over — it is too
+        // short/generic a token for a crate-wide reject-list (unlike the
+        // other entries here, it plausibly collides with a genuine short
+        // handle), so `employer_pivot` alone loses that one narrow exclusion.
+        "sysadmin",
     ];
     if ROLE.contains(&base.as_str()) {
         return true;
@@ -404,7 +421,11 @@ pub fn is_role_localpart(local: &str) -> bool {
         "nic",
     ];
     detagged.split(['-', '.', '_']).any(|seg| {
-        let s: String = seg.chars().filter(char::is_ascii_alphanumeric).collect();
+        let s: String = seg
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
         SYSTEM_ROLE_SEGMENTS.contains(&s.as_str())
     })
 }

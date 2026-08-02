@@ -106,7 +106,7 @@ impl Module for EmployerPivot {
         // scan subject (observed: dns@cloudflare.com → Cloudflare Sydney HQ).
         if target.kind == TargetKind::Email
             && let Some((local, _)) = target.value.rsplit_once('@')
-            && is_role_email_local(local)
+            && crate::util::domains::is_role_localpart(local)
         {
             return Ok(result);
         }
@@ -365,32 +365,6 @@ fn extract_profile_urls(text: &str) -> Vec<String> {
     re.find_iter(text)
         .map(|m| m.as_str().trim_end_matches(['/', '.', ',']).to_string())
         .collect()
-}
-
-fn is_role_email_local(local: &str) -> bool {
-    matches!(
-        local,
-        "abuse"
-            | "admin"
-            | "administrator"
-            | "billing"
-            | "dns"
-            | "hostmaster"
-            | "info"
-            | "legal"
-            | "marketing"
-            | "noc"
-            | "noreply"
-            | "no-reply"
-            | "postmaster"
-            | "privacy"
-            | "sales"
-            | "security"
-            | "support"
-            | "sysadmin"
-            | "tech"
-            | "webmaster"
-    )
 }
 
 fn canonical_address(a: &address_au::AuAddress) -> String {

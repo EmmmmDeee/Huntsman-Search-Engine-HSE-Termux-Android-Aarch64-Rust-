@@ -341,6 +341,15 @@ fn core_does_not_import_util_directly() {
                 // `util::domains` predicates. AU-100 uses it to exclude personal
                 // webmail when inferring an employer from a work-email domain.
                 && !line.contains("util::domains::is_freemail")
+                // Pure, dependency-free role/automation-mailbox local-part
+                // classifier (a curated embedded list + segment match; no state,
+                // no I/O), same leaf category as the other `util::domains`
+                // predicates. `core::validation::email::is_role_mailbox`
+                // delegates to it so the crate's role-mailbox detectors can't
+                // drift apart (unification task) — a role/infra desk local-part
+                // (`abuse@`, `dns@`, `hostmaster@`, …) is never the identity
+                // subject, so the engine drops it at admission.
+                && !line.contains("util::domains::is_role_localpart")
                 // Pure, dependency-free `.au` second-level-domain registrant
                 // classifier (no I/O), same leaf category as `state_code`. AU-100
                 // uses it to type the subject's organisational email domain.

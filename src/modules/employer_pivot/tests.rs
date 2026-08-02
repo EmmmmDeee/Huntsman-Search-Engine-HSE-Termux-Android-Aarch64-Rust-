@@ -186,7 +186,9 @@ fn accepts_email_and_domain_only() {
     assert!(!m.accepts(&Target::new(TargetKind::FullName, "Alice Smith")));
 }
 
-// ── is_role_email_local ──────────────────────────────────────────────────────
+// ── role-mailbox local-part gate (crate::util::domains::is_role_localpart —
+//    employer_pivot's own is_role_email_local was unified onto this shared
+//    detector so the catch-set can't drift between call sites) ─────────────
 
 #[test]
 fn role_email_local_parts_are_blocked() {
@@ -209,12 +211,11 @@ fn role_email_local_parts_are_blocked() {
         "security",
         "support",
         "sysadmin",
-        "tech",
         "webmaster",
     ];
     for local in blocked {
         assert!(
-            is_role_email_local(local),
+            crate::util::domains::is_role_localpart(local),
             "'{local}' must be classified as a role email local-part"
         );
     }
@@ -224,20 +225,32 @@ fn role_email_local_parts_are_blocked() {
 fn real_user_local_parts_not_blocked() {
     for local in ["alice", "bob.smith", "haigen", "jdoe", "h.bamford"] {
         assert!(
-            !is_role_email_local(local),
+            !crate::util::domains::is_role_localpart(local),
             "'{local}' must NOT be classified as a role email local-part"
         );
     }
 }
 
 #[test]
-fn role_email_check_is_case_sensitive() {
-    // The guard receives the raw local-part from target.value; callers that
-    // lowercase must do so before invoking. We do NOT lowercase inside the
-    // helper so RFC 5321 case-sensitive locals (rare but valid) are unaffected.
-    assert!(!is_role_email_local("Admin"));
-    assert!(!is_role_email_local("DNS"));
-    assert!(!is_role_email_local("Hostmaster"));
+fn role_email_check_is_now_case_insensitive_after_unification() {
+    // The shared detector case-folds internally (unlike the old
+    // employer_pivot-only check, which was deliberately case-sensitive) — a
+    // real behaviour improvement: `Admin@company.com` routes to the same
+    // mailbox as `admin@company.com` on every real mail system, so treating
+    // the capitalised form as a genuine employee address was itself the bug.
+    assert!(crate::util::domains::is_role_localpart("Admin"));
+    assert!(crate::util::domains::is_role_localpart("DNS"));
+    assert!(crate::util::domains::is_role_localpart("Hostmaster"));
+}
+
+#[test]
+fn tech_is_no_longer_blocked_after_unification() {
+    // "tech" was in employer_pivot's own role list but was deliberately NOT
+    // carried into the shared crate-wide list — too short/generic a token to
+    // safely reject everywhere a role-mailbox check now runs — so this one
+    // local-part narrowly stops being excluded here. Documented, not
+    // accidental (see util::domains::is_role_localpart's own comment).
+    assert!(!crate::util::domains::is_role_localpart("tech"));
 }
 
 // ── fetch_failed ─────────────────────────────────────────────────────────────
