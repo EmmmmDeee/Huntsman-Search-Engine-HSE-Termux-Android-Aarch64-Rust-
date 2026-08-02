@@ -548,6 +548,12 @@ fn parse_response_treats_rate_limit_as_retryable_not_quota_exhausted() {
     // now surface as a distinguishable `Error::RateLimited` and must NOT
     // latch the quota-exhausted flag — a burst throttle is recoverable
     // within the same scan via backoff, unlike real exhaustion.
+    //
+    // Holds BUDGET_TEST_LOCK because it mutates the process-global exhaustion
+    // flag: without it this test and its `quota_exceeded` sibling raced (one's
+    // `reset_budget()` clearing the flag the other had just latched), an
+    // intermittent CI failure that passed locally under a different schedule.
+    let _guard = BUDGET_TEST_LOCK.lock();
     reset_budget();
     let err = parse_response(r#"{"error":"rate_limit","message":"slow down"}"#)
         .expect_err("a rate-limit body must surface as an Err, not Ok(Null)");
@@ -567,6 +573,11 @@ fn parse_response_still_treats_true_exhaustion_as_quota_not_rate_limited() {
     // Sibling regression: real exhaustion signals must keep latching
     // mark_quota_exhausted() exactly as before — only bare "rate_limit" is
     // the new, distinct, retryable case.
+    //
+    // Same process-global exhaustion flag as the `rate_limit` sibling, so it
+    // takes BUDGET_TEST_LOCK for the same reason: serialise against every other
+    // budget-mutating test rather than race them.
+    let _guard = BUDGET_TEST_LOCK.lock();
     reset_budget();
     let v = parse_response(r#"{"error":"quota_exceeded"}"#).expect("quota exhaustion is Ok(Null)");
     assert!(v.is_null());

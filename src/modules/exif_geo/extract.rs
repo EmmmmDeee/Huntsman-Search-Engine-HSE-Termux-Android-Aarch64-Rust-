@@ -1,21 +1,11 @@
 //! High-level extraction helpers: URL classification, camera device
 //! fingerprinting, and owner-name sanitisation.
 
-use super::IMAGE_EXTS;
-
-/// True if the URL ends (case-insensitive) with one of the
-/// image extensions we extract EXIF from. Query strings and
-/// fragments are stripped before the check so
-/// `https://x.com/a.jpg?w=1024` still matches.
-pub(super) fn looks_like_image_url(url: &str) -> bool {
-    let trimmed = url.trim();
-    // Strip query string and fragment in one pass. `split(['?', '#'])`
-    // splits at either delimiter; the first segment is the URL path,
-    // which is what we want to extension-check.
-    let path = trimmed.split(['?', '#']).next().unwrap_or(trimmed);
-    let lower = path.to_lowercase();
-    IMAGE_EXTS.iter().any(|ext| lower.ends_with(ext))
-}
+/// The URL classifier lives in [`crate::util::exif`] so this module and
+/// `modules::web_crawler` (which surfaces discovered image links as EXIF leads)
+/// agree on exactly which formats are worth fetching. Re-exported here so call
+/// sites and tests keep naming `extract::looks_like_image_url`.
+pub(super) use crate::util::exif::looks_like_image_url;
 
 /// Build a stable cross-image correlation anchor for a physical camera — used
 /// **only** when a serial number is present. A serial uniquely identifies one
