@@ -226,8 +226,11 @@ enum Terminal {
     RateLimited,
 }
 
-/// True if either `credits_remaining` meter (top-level, or nested under `data`)
-/// reads exactly 0 — the JSON-scoped quota signal.
+/// True when a body signals true daily-quota exhaustion: a zero
+/// `credits_remaining` meter (top-level, or nested under `data`) on a body that
+/// is NOT a success. A `success:true` body is excluded even at zero credits —
+/// it still carries the data of the paid call that spent the last credit, so it
+/// must be returned rather than dropped (see the body comment).
 fn credits_exhausted(v: &Value) -> bool {
     // A SUCCESSFUL body that merely spent its last credit still carries its
     // data (`success:true, results:[...], credits_remaining:0`). Treating that
