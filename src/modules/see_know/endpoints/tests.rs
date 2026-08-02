@@ -38,6 +38,46 @@ use super::*;
     }
 
     #[test]
+    fn every_endpoint_sends_the_query_param_the_seeknow_contract_requires() {
+        // The SeekNow API keys each GET on a specific query-param NAME; a wrong
+        // name means the required argument never reaches the server (400 /
+        // empty). Regression: the public Discord endpoints were sending `id`,
+        // but the contract keys them on `discord_id` (only /enterprise/discord/*
+        // use `id`). Iterates the shared `ALL_ENDPOINT_CALLS` and maps each via
+        // an EXHAUSTIVE match, so adding an `EndpointCall` variant is a compile
+        // error here until its contract param is pinned — coverage can't
+        // silently lapse. SteamProfile maps to `None`: gaming/steam is a
+        // deliberate, in-code speculative endpoint absent from the contract.
+        for call in ALL_ENDPOINT_CALLS {
+            let expected: Option<&str> = match call {
+                EndpointCall::EmailCheck => Some("email"),
+                EndpointCall::SocialAggregate => Some("username"),
+                EndpointCall::GithubProfile => Some("username"),
+                EndpointCall::TwitterProfile => Some("username"),
+                EndpointCall::RedditProfile => Some("username"),
+                EndpointCall::TiktokProfile => Some("username"),
+                EndpointCall::UsernameHistory => Some("username"),
+                EndpointCall::RobloxProfile => Some("username"),
+                EndpointCall::XboxProfile => Some("gamertag"),
+                EndpointCall::MinecraftProfile => Some("username"),
+                EndpointCall::DiscordUser | EndpointCall::DiscordToRoblox => Some("discord_id"),
+                EndpointCall::PhoneInfo => Some("phone"),
+                EndpointCall::IpInfo => Some("ip"),
+                EndpointCall::DomainIntel => Some("domain"),
+                EndpointCall::Whois => Some("domain"),
+                EndpointCall::SteamProfile => None,
+            };
+            if let Some(param) = expected {
+                assert_eq!(
+                    call.spec().2,
+                    param,
+                    "{call:?} must send the documented `{param}` query param"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn endpoint_call_count_matches_the_documented_wired_total() {
         // `util::see_know::integration_tests`'s endpoint ledger asserts 18
         // of the 24 documented SeekNow endpoints are actually wired — 17
