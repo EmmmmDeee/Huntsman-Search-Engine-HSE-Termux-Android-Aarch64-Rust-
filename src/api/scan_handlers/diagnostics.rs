@@ -7,7 +7,7 @@ use axum::{
 use serde_json::json;
 use std::sync::Arc;
 
-use super::super::handlers::{internal_error, not_found, ok_list};
+use super::super::handlers::{not_found, offload, ok_list};
 use crate::api::AppState;
 use crate::core::scan::Target;
 
@@ -25,17 +25,16 @@ pub async fn scan_audit(
     // can anchor the engine-health signal to WHEN this scan actually ran,
     // not to whatever the live liveness cache says right now (see
     // `engine_health_signals`). Same off-reactor batching as before.
-    let loaded = tokio::task::spawn_blocking(move || {
+    let (scan, entities, events) = match offload("query", move || {
         let scan = store.get_scan(&id2)?;
         let entities = store.entities_for_scan(&id2)?;
         let events = store.events_for_scan(&id2).unwrap_or_default();
         Ok::<_, crate::core::error::Error>((scan, entities, events))
     })
-    .await;
-    let (scan, entities, events) = match loaded {
-        Ok(Ok(triple)) => triple,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    .await
+    {
+        Ok(triple) => triple,
+        Err(resp) => return resp,
     };
     let normalised: Vec<crate::audit::AuditEntity> = entities
         .iter()
@@ -128,17 +127,16 @@ pub async fn scan_metrics(
     }
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || {
+    let (entities, relations) = match offload("query", move || {
         Ok::<_, crate::core::error::Error>((
             store.entities_for_scan(&id2)?,
             store.relations_for_scan(&id2)?,
         ))
     })
-    .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    .await
+    {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
     };
     let metrics = crate::core::metrics::compute(&entities, &relations);
     (StatusCode::OK, Json(metrics)).into_response()
@@ -154,11 +152,9 @@ pub async fn scan_duplicates(
     }
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await;
-    let entities = match loaded {
-        Ok(Ok(e)) => e,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    let entities = match offload("query", move || store.entities_for_scan(&id2)).await {
+        Ok(e) => e,
+        Err(resp) => return resp,
     };
     let groups = crate::core::resolve::suggest_merges(&entities);
     ok_list("duplicates", groups)
@@ -174,17 +170,16 @@ pub async fn scan_pivots(
     }
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || {
+    let (entities, relations) = match offload("query", move || {
         Ok::<_, crate::core::error::Error>((
             store.entities_for_scan(&id2)?,
             store.relations_for_scan(&id2)?,
         ))
     })
-    .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    .await
+    {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
     };
     let pivots = crate::core::pivot::detect(&entities, &relations);
     let bridges = crate::core::pivot::bridges(&entities, &relations);
@@ -210,17 +205,16 @@ pub async fn scan_gaps(
     }
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || {
+    let (entities, relations) = match offload("query", move || {
         Ok::<_, crate::core::error::Error>((
             store.entities_for_scan(&id2)?,
             store.relations_for_scan(&id2)?,
         ))
     })
-    .await;
-    let (entities, relations) = match loaded {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    .await
+    {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
     };
 
     let report = crate::core::gap::analyze(&entities, &relations);
@@ -285,7 +279,7 @@ pub async fn scan_benchmark(
     // mutex must never run on the async reactor (it can stall a worker on the
     // ~2-worker Termux runtime and starve SSE / `/health`). The `scan` record
     // is needed for the report, so it rides along in the batch.
-    let loaded = tokio::task::spawn_blocking(move || {
+    let loaded = offload("query", move || {
         let Some(scan) = store.get_scan(&id2)? else {
             return Ok::<_, crate::core::error::Error>(None);
         };
@@ -297,10 +291,9 @@ pub async fn scan_benchmark(
     })
     .await;
     let (scan, entities, relations) = match loaded {
-        Ok(Ok(Some(triple))) => triple,
-        Ok(Ok(None)) => return not_found(),
-        Ok(Err(e)) => return internal_error(&e),
-        Err(e) => return internal_error(&format!("query task failed: {e}")),
+        Ok(Some(triple)) => triple,
+        Ok(None) => return not_found(),
+        Err(resp) => return resp,
     };
     let report = crate::core::benchmark::report(&scan, &entities, &relations);
     (StatusCode::OK, Json(report)).into_response()
