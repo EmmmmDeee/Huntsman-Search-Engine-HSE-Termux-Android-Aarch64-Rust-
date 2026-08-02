@@ -302,6 +302,21 @@ pub(super) fn extract_breach_entities(
     extract_breach_entities_with(item, is_target_row, scan_id, key_fp, seen, result);
 }
 
+/// Shared inputs every per-row breach-field extraction helper below needs:
+/// the raw record, its evidence trail, the emission dedup set, the output
+/// sink, the target-match gate, and the scan id. Bundled into one struct so
+/// each helper takes a single `&mut RowCtx` instead of repeating the same
+/// six parameters (and so none of them individually trips clippy's
+/// too-many-arguments lint).
+struct RowCtx<'a> {
+    item: &'a Value,
+    ev: &'a Evidence,
+    seen: &'a mut HashSet<String>,
+    result: &'a mut ModuleResult,
+    is_target_row: bool,
+    scan_id: &'a str,
+}
+
 pub(super) fn extract_breach_entities_with(
     item: &Value,
     is_target_row: bool,
@@ -349,47 +364,74 @@ pub(super) fn extract_breach_entities_with(
     // `candidate` (out of the default view and the correlator) so genuine leads
     // survive without flooding the result with strangers.
 
-    if let Some(email) = val_str(item, "email") {
+    let mut ctx = RowCtx {
+        item,
+        ev: &ev,
+        seen,
+        result,
+        is_target_row,
+        scan_id,
+    };
+    extract_contact_fields(&mut ctx);
+    extract_login_ip_fields(&mut ctx);
+    extract_location_fields(&mut ctx);
+    extract_social_handles(&mut ctx);
+    extract_org_and_domain_fields(&mut ctx);
+    extract_credential_fields(&mut ctx);
+    extract_iban_field(&mut ctx);
+    extract_additional_social_handles(&mut ctx);
+    extract_bio_mined_fields(&mut ctx);
+}
+
+/// Email / username / phone / person-name — the record's core identity
+/// fields.
+fn extract_contact_fields(ctx: &mut RowCtx) {
+    if let Some(email) = val_str(ctx.item, "email") {
         let lower = email.to_lowercase();
-        if looks_like_email(&lower) && seen.insert(lower) {
+        if looks_like_email(&lower) && ctx.seen.insert(lower) {
             push_oathnet_entity(
-                result,
-                Entity::new(EntityKind::Email, &email, confidence::HIGH_PLUS, scan_id),
-                &ev,
+                ctx.result,
+                Entity::new(
+                    EntityKind::Email,
+                    &email,
+                    confidence::HIGH_PLUS,
+                    ctx.scan_id,
+                ),
+                ctx.ev,
                 &[],
-                is_target_row,
+                ctx.is_target_row,
             );
         }
     }
 
-    if let Some(uname) = val_str(item, "username") {
+    if let Some(uname) = val_str(ctx.item, "username") {
         let lower = uname.to_lowercase();
-        if lower.len() >= 3 && seen.insert(lower) {
+        if lower.len() >= 3 && ctx.seen.insert(lower) {
             push_oathnet_entity(
-                result,
-                Entity::new(EntityKind::Username, &uname, confidence::HIGH, scan_id),
-                &ev,
+                ctx.result,
+                Entity::new(EntityKind::Username, &uname, confidence::HIGH, ctx.scan_id),
+                ctx.ev,
                 &[],
-                is_target_row,
+                ctx.is_target_row,
             );
         }
     }
 
-    if let Some(ph) = val_str_or_coerce(item, &["phone_number", "phone_national", "phone"])
+    if let Some(ph) = val_str_or_coerce(ctx.item, &["phone_number", "phone_national", "phone"])
         && has_min_digits(&ph, 7)
-        && seen.insert(ph.to_lowercase())
+        && ctx.seen.insert(ph.to_lowercase())
     {
         push_oathnet_entity(
-            result,
-            Entity::new(EntityKind::Phone, &ph, confidence::HIGH_PLUS, scan_id),
-            &ev,
+            ctx.result,
+            Entity::new(EntityKind::Phone, &ph, confidence::HIGH_PLUS, ctx.scan_id),
+            ctx.ev,
             &[],
-            is_target_row,
+            ctx.is_target_row,
         );
     }
 
     if let Some(n) = val_str_or(
-        item,
+        ctx.item,
         &[
             "full_name",
             "display_name",
@@ -409,45 +451,57 @@ pub(super) fn extract_breach_entities_with(
         if t.len() >= 4
             && t.contains(' ')
             && !is_username_derived_name(t)
-            && seen.insert(t.to_lowercase())
+            && ctx.seen.insert(t.to_lowercase())
         {
             // Parity with SeekNow: stamp the record's demographics (DOB / gender
             // / age) as normalized first-class tags on the Person, so OathNet's
             // subject nodes filter/merge on the same signals SeekNow's do.
-            let id_tags = crate::util::identity::identity_tags(item);
+            let id_tags = crate::util::identity::identity_tags(ctx.item);
             let id_refs: Vec<&str> = id_tags.iter().map(String::as_str).collect();
             push_oathnet_entity(
-                result,
-                Entity::new(EntityKind::Person, t, confidence::HIGH_PLUS, scan_id),
-                &ev,
+                ctx.result,
+                Entity::new(EntityKind::Person, t, confidence::HIGH_PLUS, ctx.scan_id),
+                ctx.ev,
                 &id_refs,
-                is_target_row,
+                ctx.is_target_row,
             );
         }
     }
+}
 
-    // Login IPs — the session `ip` AND the last-login `lastip`/`last_ip` are
-    // both geolocation leads tied to the account. snusbase-style records carry
-    // only `lastip`, so reading `ip` alone dropped the subject's login location;
-    // each distinct public address becomes its own lead.
+/// Login IPs — the session `ip` AND the last-login `lastip`/`last_ip` are
+/// both geolocation leads tied to the account. snusbase-style records carry
+/// only `lastip`, so reading `ip` alone dropped the subject's login location;
+/// each distinct public address becomes its own lead.
+fn extract_login_ip_fields(ctx: &mut RowCtx) {
     for ip_field in ["ip", "lastip", "last_ip"] {
-        if let Some(ip) = val_str(item, ip_field)
+        if let Some(ip) = val_str(ctx.item, ip_field)
             && is_public_ip(&ip)
-            && seen.insert(ip.clone())
+            && ctx.seen.insert(ip.clone())
         {
             push_oathnet_entity(
-                result,
-                Entity::new(EntityKind::IpAddress, &ip, confidence::MEDIUM_PLUS, scan_id),
-                &ev,
+                ctx.result,
+                Entity::new(
+                    EntityKind::IpAddress,
+                    &ip,
+                    confidence::MEDIUM_PLUS,
+                    ctx.scan_id,
+                ),
+                ctx.ev,
                 &["geolocation-lead"],
-                is_target_row,
+                ctx.is_target_row,
             );
         }
     }
+}
 
-    if let Some(country) = val_str(item, "country")
+/// Country, structured street/city/state/postal, and free-text `location` —
+/// each becomes an Address (plus an inline geocoded Coordinates when
+/// resolvable).
+fn extract_location_fields(ctx: &mut RowCtx) {
+    if let Some(country) = val_str(ctx.item, "country")
         && !is_absent(&country)
-        && seen.insert(format!("@country:{country}"))
+        && ctx.seen.insert(format!("@country:{country}"))
     {
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(&country) {
             let coord_val = format!("{lat:.4},{lon:.4}");
@@ -455,42 +509,42 @@ pub(super) fn extract_breach_entities_with(
                 EntityKind::Coordinates,
                 &coord_val,
                 confidence::LOW_MEDIUM,
-                scan_id,
+                ctx.scan_id,
             );
             c.tag("addr-derived");
             c.tag("geoint");
             c.tag("breach");
             c.tag("oathnet-pro");
-            if !is_target_row {
+            if !ctx.is_target_row {
                 c.demote_to_candidate();
             }
-            c.add_evidence(ev.clone());
-            result.push(c);
+            c.add_evidence(ctx.ev.clone());
+            ctx.result.push(c);
         }
         push_oathnet_entity(
-            result,
+            ctx.result,
             Entity::new(
                 EntityKind::Address,
                 &country,
                 confidence::MEDIUM_HIGH,
-                scan_id,
+                ctx.scan_id,
             ),
-            &ev,
+            ctx.ev,
             &[],
-            is_target_row,
+            ctx.is_target_row,
         );
     }
 
-    let street = val_str(item, "address_street");
-    let city = val_str_coerce(item, "city");
-    let state = val_str_coerce(item, "state");
+    let street = val_str(ctx.item, "address_street");
+    let city = val_str_coerce(ctx.item, "city");
+    let state = val_str_coerce(ctx.item, "state");
     // Include the postal code in the composed value (the breach record carries it
     // — e.g. `23666` for HAMPTON, VA). A postcode-qualified address geocodes to
     // the ZIP centroid instead of the whole city, the precision the downstream
     // geocode + geo-correlation chain depends on; it was previously kept only on
     // the evidence. Postcode alone never forms an address — the city/street gate
     // still guards that — so a bare ZIP can't mint a useless node.
-    let postal = val_str_coerce(item, "postal_code");
+    let postal = val_str_coerce(ctx.item, "postal_code");
     if city.is_some() || street.is_some() {
         let addr = [
             street.as_deref(),
@@ -509,31 +563,31 @@ pub(super) fn extract_breach_entities_with(
         .filter(|s| !s.is_empty() && !is_absent(s))
         .collect::<Vec<&str>>()
         .join(", ");
-        if addr.len() >= 4 && seen.insert(format!("@addr:{}", addr.to_lowercase())) {
+        if addr.len() >= 4 && ctx.seen.insert(format!("@addr:{}", addr.to_lowercase())) {
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
                 let mut c = Entity::new(
                     EntityKind::Coordinates,
                     &coord_val,
                     confidence::MEDIUM_HIGH,
-                    scan_id,
+                    ctx.scan_id,
                 );
                 c.tag("addr-derived");
                 c.tag("geoint");
                 c.tag("breach");
                 c.tag("oathnet-pro");
-                if !is_target_row {
+                if !ctx.is_target_row {
                     c.demote_to_candidate();
                 }
-                c.add_evidence(ev.clone());
-                result.push(c);
+                c.add_evidence(ctx.ev.clone());
+                ctx.result.push(c);
             }
             push_oathnet_entity(
-                result,
-                Entity::new(EntityKind::Address, &addr, confidence::HIGH, scan_id),
-                &ev,
+                ctx.result,
+                Entity::new(EntityKind::Address, &addr, confidence::HIGH, ctx.scan_id),
+                ctx.ev,
                 &[],
-                is_target_row,
+                ctx.is_target_row,
             );
         }
     }
@@ -542,9 +596,11 @@ pub(super) fn extract_breach_entities_with(
     // street/city/state address was found (or in addition to it if they differ).
     // Requires ≥4 chars to filter out empty-string variants and single tokens like
     // "US" that are already captured as the `country` evidence attribute.
-    if let Some(loc) = val_str(item, "location") {
+    if let Some(loc) = val_str(ctx.item, "location") {
         let loc = loc.trim();
-        if loc.len() >= 4 && !is_absent(loc) && seen.insert(format!("@loc:{}", loc.to_lowercase()))
+        if loc.len() >= 4
+            && !is_absent(loc)
+            && ctx.seen.insert(format!("@loc:{}", loc.to_lowercase()))
         {
             if let Some((lat, lon)) = crate::util::city_coords::city_coords(loc) {
                 let coord_val = format!("{lat:.4},{lon:.4}");
@@ -552,42 +608,47 @@ pub(super) fn extract_breach_entities_with(
                     EntityKind::Coordinates,
                     &coord_val,
                     confidence::SPECULATIVE,
-                    scan_id,
+                    ctx.scan_id,
                 );
                 c.tag("addr-derived");
                 c.tag("geoint");
                 c.tag("breach");
                 c.tag("oathnet-pro");
-                if !is_target_row {
+                if !ctx.is_target_row {
                     c.demote_to_candidate();
                 }
-                c.add_evidence(ev.clone());
-                result.push(c);
+                c.add_evidence(ctx.ev.clone());
+                ctx.result.push(c);
             }
             push_oathnet_entity(
-                result,
-                Entity::new(EntityKind::Address, loc, confidence::LOW, scan_id),
-                &ev,
+                ctx.result,
+                Entity::new(EntityKind::Address, loc, confidence::LOW, ctx.scan_id),
+                ctx.ev,
                 &["geo-hint", "free-text-location"],
-                is_target_row,
+                ctx.is_target_row,
             );
         }
     }
+}
 
-    if let Some(did) = val_str_coerce(item, "discordid")
-        && seen.insert(format!("@discord:{did}"))
+/// Discord ID, SteamID64, Instagram, and LinkedIn — each unlocks a distinct
+/// pivot module (discord expansion, gaming endpoints, username_search,
+/// proxycurl).
+fn extract_social_handles(ctx: &mut RowCtx) {
+    if let Some(did) = val_str_coerce(ctx.item, "discordid")
+        && ctx.seen.insert(format!("@discord:{did}"))
     {
         push_oathnet_entity(
-            result,
+            ctx.result,
             Entity::new(
                 EntityKind::Username,
                 format!("discord:{did}"),
                 0.55,
-                scan_id,
+                ctx.scan_id,
             ),
-            &ev,
+            ctx.ev,
             &["discord"],
-            is_target_row,
+            ctx.is_target_row,
         );
     }
 
@@ -595,72 +656,87 @@ pub(super) fn extract_breach_entities_with(
     // same V2 breach schema, so leaked SteamID64s appear here too; gate them by
     // the shared strict heuristic and mint the same `steam:<id>` Username pivot
     // (which feeds the gaming-endpoint expansion) instead of discarding them.
-    if let Some(sid) = val_str_or_coerce(item, &["steam_id", "steamid", "steam_id64"])
+    if let Some(sid) = val_str_or_coerce(ctx.item, &["steam_id", "steamid", "steam_id64"])
         && crate::util::identity::looks_like_steam_id(&sid)
-        && seen.insert(format!("@steam:{sid}"))
+        && ctx.seen.insert(format!("@steam:{sid}"))
     {
         push_oathnet_entity(
-            result,
+            ctx.result,
             Entity::new(
                 EntityKind::Username,
                 format!("steam:{sid}"),
                 confidence::MEDIUM_PLUS,
-                scan_id,
+                ctx.scan_id,
             ),
-            &ev,
+            ctx.ev,
             &["steam"],
-            is_target_row,
+            ctx.is_target_row,
         );
     }
 
-    if let Some(ig) = val_str(item, "instagram")
-        && seen.insert(format!("@ig:{}", ig.to_lowercase()))
+    if let Some(ig) = val_str(ctx.item, "instagram")
+        && ctx.seen.insert(format!("@ig:{}", ig.to_lowercase()))
     {
         push_oathnet_entity(
-            result,
-            Entity::new(EntityKind::Username, &ig, confidence::MEDIUM_HIGH, scan_id),
-            &ev,
+            ctx.result,
+            Entity::new(
+                EntityKind::Username,
+                &ig,
+                confidence::MEDIUM_HIGH,
+                ctx.scan_id,
+            ),
+            ctx.ev,
             &["instagram"],
-            is_target_row,
+            ctx.is_target_row,
         );
     }
 
     // LinkedIn handle — unlocks proxycurl (paid LinkedIn enrichment).
     // The field may contain a URL or a bare handle. Emit as Url if it
     // looks like a URL, else as Username with a linkedin: prefix.
-    if let Some(li) = val_str(item, "linkedin") {
+    if let Some(li) = val_str(ctx.item, "linkedin") {
         let lower = li.to_lowercase();
         if lower.contains("linkedin.com") {
-            if seen.insert(format!("@li:{lower}")) {
+            if ctx.seen.insert(format!("@li:{lower}")) {
                 let url_val = if lower.starts_with("http") {
                     li
                 } else {
                     format!("https://{li}")
                 };
                 push_oathnet_entity(
-                    result,
-                    Entity::new(EntityKind::Url, &url_val, confidence::MEDIUM_PLUS, scan_id),
-                    &ev,
+                    ctx.result,
+                    Entity::new(
+                        EntityKind::Url,
+                        &url_val,
+                        confidence::MEDIUM_PLUS,
+                        ctx.scan_id,
+                    ),
+                    ctx.ev,
                     &["linkedin"],
-                    is_target_row,
+                    ctx.is_target_row,
                 );
             }
-        } else if seen.insert(format!("@li-handle:{lower}")) {
+        } else if ctx.seen.insert(format!("@li-handle:{lower}")) {
             push_oathnet_entity(
-                result,
+                ctx.result,
                 Entity::new(
                     EntityKind::Username,
                     format!("linkedin:{li}"),
                     0.55,
-                    scan_id,
+                    ctx.scan_id,
                 ),
-                &ev,
+                ctx.ev,
                 &["linkedin"],
-                is_target_row,
+                ctx.is_target_row,
             );
         }
     }
+}
 
+/// Employer/company/organisation → Organisation entity, plus the account
+/// email's domain → Domain entity (unlocks dns_intel/cert_intel/
+/// securitytrails/wayback/cloud_storage for free).
+fn extract_org_and_domain_fields(ctx: &mut RowCtx) {
     // Employer / company → Organisation entity. Breach dumps from LinkedIn,
     // dating apps, and e-commerce platforms frequently carry an employer or
     // company field. Emitting it as Organisation feeds the employer_pivot and
@@ -672,17 +748,23 @@ pub(super) fn extract_breach_entities_with(
         "organisation",
         "workplace",
     ] {
-        if let Some(org) = val_str(item, k) {
+        if let Some(org) = val_str(ctx.item, k) {
             let org = org.trim();
             if org.len() >= 2
                 && !is_absent(org)
-                && seen.insert(format!("@org:{}", org.to_ascii_lowercase()))
+                && ctx
+                    .seen
+                    .insert(format!("@org:{}", org.to_ascii_lowercase()))
             {
-                let mut oe =
-                    Entity::new(EntityKind::Organisation, org, confidence::MEDIUM, scan_id);
+                let mut oe = Entity::new(
+                    EntityKind::Organisation,
+                    org,
+                    confidence::MEDIUM,
+                    ctx.scan_id,
+                );
                 oe.tag("oathnet");
                 oe.tag("employer-field");
-                push_oathnet_entity(result, oe, &ev, &[], is_target_row);
+                push_oathnet_entity(ctx.result, oe, ctx.ev, &[], ctx.is_target_row);
             }
         }
     }
@@ -691,27 +773,37 @@ pub(super) fn extract_breach_entities_with(
     // sender/account email's host as a dedicated field. Emitting it
     // unlocks dns_intel/cert_intel/securitytrails/wayback/cloud_storage
     // — all free modules — for that domain without further cost.
-    if let Some(ed) = val_str(item, "email_domain") {
+    if let Some(ed) = val_str(ctx.item, "email_domain") {
         let lower = ed.to_lowercase();
         if crate::util::domains::looks_like_domain(&lower)
-            && seen.insert(format!("@edomain:{lower}"))
+            && ctx.seen.insert(format!("@edomain:{lower}"))
         {
             push_oathnet_entity(
-                result,
-                Entity::new(EntityKind::Domain, &lower, confidence::MEDIUM_HIGH, scan_id),
-                &ev,
+                ctx.result,
+                Entity::new(
+                    EntityKind::Domain,
+                    &lower,
+                    confidence::MEDIUM_HIGH,
+                    ctx.scan_id,
+                ),
+                ctx.ev,
                 &["email-domain"],
-                is_target_row,
+                ctx.is_target_row,
             );
         }
     }
+}
 
+/// Password hash (classified + offline-cracked when possible) and plaintext
+/// password — the secrets the reused-secret correlator (AU-047) and
+/// credential-exposure rule (AU-037) operate on.
+fn extract_credential_fields(ctx: &mut RowCtx) {
     // Password hash → seed for pwned_passwords (free k-anonymity lookup
     // confirms whether the hash is in known breach corpora). Emit as a
     // low-confidence ApiKey entity tagged for that module.
-    if let Some(ph) = val_str(item, "password_hash")
+    if let Some(ph) = val_str(ctx.item, "password_hash")
         && ph.len() >= 32
-        && seen.insert(format!(
+        && ctx.seen.insert(format!(
             "@pwhash:{}",
             crate::util::str_util::truncate_safe(&ph, 16)
         ))
@@ -745,7 +837,7 @@ pub(super) fn extract_breach_entities_with(
                 .is_some_and(|(digest, rest)| {
                     digest.bytes().all(|b| b.is_ascii_hexdigit()) && !rest.trim().is_empty()
                 });
-        if appended_salt || val_str(item, "salt").is_some_and(|s| !s.trim().is_empty()) {
+        if appended_salt || val_str(ctx.item, "salt").is_some_and(|s| !s.trim().is_empty()) {
             extra.push("salted");
         }
         // Offline reverse-lookup: if this unsalted digest is a known common
@@ -755,22 +847,27 @@ pub(super) fn extract_breach_entities_with(
             extra.push("cracked");
         }
         push_oathnet_entity(
-            result,
-            Entity::new(EntityKind::Password, &ph, confidence::MEDIUM, scan_id),
-            &ev,
+            ctx.result,
+            Entity::new(EntityKind::Password, &ph, confidence::MEDIUM, ctx.scan_id),
+            ctx.ev,
             &extra,
-            is_target_row,
+            ctx.is_target_row,
         );
         // Synergy: surface the recovered weak plaintext as a first-class node.
         if let Some(pt) = cracked
-            && seen.insert(format!("@pw:{}", pt.to_lowercase()))
+            && ctx.seen.insert(format!("@pw:{}", pt.to_lowercase()))
         {
             push_oathnet_entity(
-                result,
-                Entity::new(EntityKind::Password, pt, confidence::MEDIUM_HIGH, scan_id),
-                &ev,
+                ctx.result,
+                Entity::new(
+                    EntityKind::Password,
+                    pt,
+                    confidence::MEDIUM_HIGH,
+                    ctx.scan_id,
+                ),
+                ctx.ev,
                 &["cracked", "weak-password", "from-hash"],
-                is_target_row,
+                ctx.is_target_row,
             );
         }
     }
@@ -782,7 +879,7 @@ pub(super) fn extract_breach_entities_with(
     // two same-value entities that merge by UID into one carrying both accounts'
     // evidence — exactly the ≥2-account signal AU-047 fires on. Redacted
     // sentinels and trivial (single-character / too-short) values are skipped.
-    if let Some(pw) = val_str(item, "password") {
+    if let Some(pw) = val_str(ctx.item, "password") {
         let p = pw.trim();
         match crate::util::extract::classify_credential_field(p) {
             // A capture sentinel ([fail], UPGRADE_TO_SEE…) is not a secret — drop it.
@@ -793,13 +890,13 @@ pub(super) fn extract_breach_entities_with(
             // at modest confidence (the field placement is itself suspect).
             CredentialField::Email => {
                 let lower = p.to_lowercase();
-                if seen.insert(format!("@pw-email:{lower}")) {
+                if ctx.seen.insert(format!("@pw-email:{lower}")) {
                     push_oathnet_entity(
-                        result,
-                        Entity::new(EntityKind::Email, p, confidence::LOW_MEDIUM, scan_id),
-                        &ev,
+                        ctx.result,
+                        Entity::new(EntityKind::Email, p, confidence::LOW_MEDIUM, ctx.scan_id),
+                        ctx.ev,
                         &["recovered-from-password"],
-                        is_target_row,
+                        ctx.is_target_row,
                     );
                 }
             }
@@ -807,56 +904,69 @@ pub(super) fn extract_breach_entities_with(
                 let len = p.chars().count();
                 let first = p.chars().next();
                 let varied = p.chars().any(|c| Some(c) != first);
-                let acct = val_str(item, "email")
-                    .or_else(|| val_str(item, "username"))
+                let acct = val_str(ctx.item, "email")
+                    .or_else(|| val_str(ctx.item, "username"))
                     .unwrap_or_default()
                     .to_lowercase();
                 if (6..=128).contains(&len)
                     && varied
-                    && seen.insert(format!("@pw:{}:{acct}", p.to_lowercase()))
+                    && ctx.seen.insert(format!("@pw:{}:{acct}", p.to_lowercase()))
                 {
                     push_oathnet_entity(
-                        result,
-                        Entity::new(EntityKind::Password, p, confidence::MEDIUM_HIGH, scan_id),
-                        &ev,
+                        ctx.result,
+                        Entity::new(
+                            EntityKind::Password,
+                            p,
+                            confidence::MEDIUM_HIGH,
+                            ctx.scan_id,
+                        ),
+                        ctx.ev,
                         &["plaintext-password"],
-                        is_target_row,
+                        ctx.is_target_row,
                     );
                 }
             }
         }
     }
+}
 
-    // IBAN — a leaked bank-account number. Emit ONLY when the ISO 7064 mod-97
-    // check digit validates, so a redacted sentinel or a transcription error in
-    // the `iban` field never mints a bogus financial artifact. There is no
-    // dedicated financial EntityKind, so it lands as `Other("iban")`, tagged
-    // `financial` for the dossier/export.
-    if let Some(iban) = val_str(item, "iban")
+/// IBAN — a leaked bank-account number. Emitted ONLY when the ISO 7064 mod-97
+/// check digit validates, so a redacted sentinel or a transcription error in
+/// the `iban` field never mints a bogus financial artifact. There is no
+/// dedicated financial EntityKind, so it lands as `Other("iban")`, tagged
+/// `financial` for the dossier/export.
+fn extract_iban_field(ctx: &mut RowCtx) {
+    if let Some(iban) = val_str(ctx.item, "iban")
         && iban_is_valid(&iban)
-        && seen.insert(format!(
+        && ctx.seen.insert(format!(
             "@iban:{}",
             iban.replace(|c: char| c.is_whitespace(), "").to_uppercase()
         ))
     {
         push_oathnet_entity(
-            result,
+            ctx.result,
             Entity::new(
                 EntityKind::Other("iban".to_string()),
                 iban.trim(),
                 0.70,
-                scan_id,
+                ctx.scan_id,
             ),
-            &ev,
+            ctx.ev,
             &["iban", "financial"],
-            is_target_row,
+            ctx.is_target_row,
         );
     }
+}
 
-    // Additional social handles → Username pivots (mirroring the instagram
-    // handler above). Each unlocks username_search / search_engines for free, so
-    // extracting them squeezes more reach from a breach query already paid for.
-    // Redacted sentinels and out-of-range junk are filtered.
+/// Additional social handles → Username pivots (mirroring
+/// `extract_social_handles`'s instagram handler). Each unlocks
+/// username_search / search_engines for free, so extracting them squeezes
+/// more reach from a breach query already paid for. Redacted sentinels and
+/// out-of-range junk are filtered. Kept as its own helper (not merged into
+/// `extract_social_handles`) so its entities keep landing after the org/
+/// domain/credential/iban passes, exactly as the original function ordered
+/// them.
+fn extract_additional_social_handles(ctx: &mut RowCtx) {
     for (field, platform) in [
         ("telegram", "telegram"),
         ("twitter", "twitter"),
@@ -866,48 +976,60 @@ pub(super) fn extract_breach_entities_with(
         ("tiktok", "tiktok"),
         ("reddit", "reddit"),
     ] {
-        if let Some(handle) = val_str(item, field) {
+        if let Some(handle) = val_str(ctx.item, field) {
             let h = handle.trim().trim_start_matches('@');
             if (2..=64).contains(&h.len())
                 && !is_redacted_sentinel(h)
-                && seen.insert(format!("@{platform}:{}", h.to_lowercase()))
+                && ctx.seen.insert(format!("@{platform}:{}", h.to_lowercase()))
             {
                 push_oathnet_entity(
-                    result,
-                    Entity::new(EntityKind::Username, h, confidence::MEDIUM_HIGH, scan_id),
-                    &ev,
+                    ctx.result,
+                    Entity::new(
+                        EntityKind::Username,
+                        h,
+                        confidence::MEDIUM_HIGH,
+                        ctx.scan_id,
+                    ),
+                    ctx.ev,
                     &[platform],
-                    is_target_row,
+                    ctx.is_target_row,
                 );
             }
         }
     }
+}
 
-    // Free-text `bio` mining — a profile bio routinely carries an alternate
-    // contact email or phone the structured columns miss. Reuse the canonical
-    // scanner-grade extractors (one definition of "what an email/phone looks like
-    // in free text") so this never drifts from the rest of the engine. Lower
-    // confidence than a structured field: these are inferred from prose.
-    if let Some(bio) = val_str(item, "bio") {
+/// Free-text `bio` mining — a profile bio routinely carries an alternate
+/// contact email or phone the structured columns miss. Reuse the canonical
+/// scanner-grade extractors (one definition of "what an email/phone looks like
+/// in free text") so this never drifts from the rest of the engine. Lower
+/// confidence than a structured field: these are inferred from prose.
+fn extract_bio_mined_fields(ctx: &mut RowCtx) {
+    if let Some(bio) = val_str(ctx.item, "bio") {
         for email in crate::util::extract::emails(&bio) {
-            if seen.insert(email.clone()) {
+            if ctx.seen.insert(email.clone()) {
                 push_oathnet_entity(
-                    result,
-                    Entity::new(EntityKind::Email, &email, confidence::MEDIUM_HIGH, scan_id),
-                    &ev,
+                    ctx.result,
+                    Entity::new(
+                        EntityKind::Email,
+                        &email,
+                        confidence::MEDIUM_HIGH,
+                        ctx.scan_id,
+                    ),
+                    ctx.ev,
                     &["bio-mined"],
-                    is_target_row,
+                    ctx.is_target_row,
                 );
             }
         }
         for phone in crate::util::extract::phones(&bio) {
-            if seen.insert(format!("@bio-phone:{phone}")) {
+            if ctx.seen.insert(format!("@bio-phone:{phone}")) {
                 push_oathnet_entity(
-                    result,
-                    Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM, scan_id),
-                    &ev,
+                    ctx.result,
+                    Entity::new(EntityKind::Phone, &phone, confidence::MEDIUM, ctx.scan_id),
+                    ctx.ev,
                     &["bio-mined"],
-                    is_target_row,
+                    ctx.is_target_row,
                 );
             }
         }
