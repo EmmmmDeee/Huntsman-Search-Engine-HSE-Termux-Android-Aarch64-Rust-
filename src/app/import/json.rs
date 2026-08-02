@@ -13,8 +13,6 @@ pub(super) async fn parse_oathnet_json(
     doc: &serde_json::Value,
     sid: &str,
 ) -> (Vec<crate::core::entity::Entity>, ImportStats) {
-    use crate::core::confidence;
-    use crate::core::entity::{Entity, EntityKind, Evidence};
     // A Combined Search JSON export (`{ "modules": [ { "results": [ … ] } ] }`) is a
     // `{`-leading body, so the import detector routes it here to the OathNet-native
     // JSON parser — yet it shares none of that shape (no `searchResults` /
@@ -28,392 +26,446 @@ pub(super) async fn parse_oathnet_json(
     }
     // Keep the (verbatim) parse body's `&sid` working — it expects an owned id.
     let sid = sid.to_string();
-    let mut entities: Vec<Entity> = Vec::new();
+    let mut entities: Vec<crate::core::entity::Entity> = Vec::new();
     let mut stats = ImportStats::default();
 
-    // ── Parse breach results ──
-    if let Some(breach) = doc
+    let mut ctx = JsonImportCtx {
+        sid: &sid,
+        entities: &mut entities,
+        stats: &mut stats,
+    };
+    parse_breach_results(doc, &mut ctx);
+    parse_stealer_victims(doc, &mut ctx);
+    parse_stealer_docs(doc, &mut ctx).await;
+    parse_victim_device_users(doc, &mut ctx);
+    parse_ip_geolocation(doc, &mut ctx);
+    parse_holehe_checks(doc, &mut ctx);
+
+    (entities, stats)
+}
+
+/// Shared per-import state threaded through `parse_oathnet_json`'s 6 JSON
+/// sub-shape parsers: the scan id, the entity sink, and the running stats.
+/// Bundling these avoids each parser re-declaring the same 3 parameters.
+struct JsonImportCtx<'a> {
+    sid: &'a str,
+    entities: &'a mut Vec<crate::core::entity::Entity>,
+    stats: &'a mut ImportStats,
+}
+
+/// JSON sub-shape 1: `searchResults/MULTI_SERVICE_RESULTS/breach/data/results`
+/// — breach hit emails and IPs.
+fn parse_breach_results(doc: &serde_json::Value, ctx: &mut JsonImportCtx) {
+    use crate::core::confidence;
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let Some(breach) = doc
         .pointer("/searchResults/MULTI_SERVICE_RESULTS/breach/data/results")
         .and_then(|v| v.as_array())
-    {
-        for item in breach {
-            stats.breach_records += 1;
-            if let Some(email) = item.get("email").and_then(|v| v.as_str())
-                && email.contains('@')
-                && !email.contains("UPGRADE")
-            {
-                let db = item
-                    .get("dbname")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                let mut e = Entity::new(EntityKind::Email, email, confidence::VERY_HIGH, &sid);
-                e.tag("breach");
-                e.tag("import");
-                e.add_evidence(
-                    Evidence::new("import:oathnet", format!("Breach on {db}"))
-                        .with_attr("dbname", db),
-                );
-                entities.push(e);
-                stats.emails += 1;
-            }
-            if let Some(ip) = item.get("ip").and_then(|v| v.as_str())
-                && ip.contains('.')
-                && !ip.contains("UPGRADE")
-            {
-                let mut e = Entity::new(EntityKind::IpAddress, ip, confidence::HIGH, &sid);
-                e.tag("breach");
-                e.tag("import");
-                entities.push(e);
-                stats.ips += 1;
-            }
-        }
-    }
-
-    // ── Parse stealer victims — IPs, emails, HWIDs, Discord IDs, severity ──
-    if let Some(victims) = doc
-        .pointer("/stealerData/victims")
-        .and_then(|v| v.as_array())
-    {
-        let mut seen_hwids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut seen_discord: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-        for victim in victims {
-            stats.victim_records += 1;
-            let total_docs = victim
-                .get("total_docs")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
-            let log_id = victim.get("log_id").and_then(|v| v.as_str()).unwrap_or("");
-
-            if let Some(ips) = victim.get("device_ips").and_then(|v| v.as_array()) {
-                for ip_val in ips {
-                    if let Some(ip) = ip_val.as_str()
-                        && ip.contains('.')
-                        && !ip.contains("UPGRADE")
-                    {
-                        let mut e =
-                            Entity::new(EntityKind::IpAddress, ip, confidence::MEDIUM_PLUS, &sid);
-                        e.tag("stealer-victim");
-                        e.tag("import");
-                        if total_docs > 100 {
-                            e.tag("high-exposure");
-                        }
-                        e.add_evidence(
-                            Evidence::new(
-                                "import:oathnet",
-                                format!("Victim device IP ({total_docs} creds stolen)"),
-                            )
-                            .with_attr("log_id", log_id)
-                            .with_attr("total_docs", total_docs.to_string()),
-                        );
-                        entities.push(e);
-                        stats.ips += 1;
-                    }
-                }
-            }
-            if let Some(emails) = victim.get("device_emails").and_then(|v| v.as_array()) {
-                for email_val in emails {
-                    if let Some(email) = email_val.as_str()
-                        && email.contains('@')
-                        && !email.contains("UPGRADE")
-                    {
-                        let mut e =
-                            Entity::new(EntityKind::Email, email, confidence::MEDIUM_HIGH, &sid);
-                        e.tag("stealer-victim");
-                        e.tag("import");
-                        entities.push(e);
-                        stats.emails += 1;
-                    }
-                }
-            }
-            // HWIDs — hardware identifiers for machine tracking
-            if let Some(hwids) = victim.get("hwids").and_then(|v| v.as_array()) {
-                for h in hwids {
-                    if let Some(hwid) = h.as_str()
-                        && !hwid.is_empty()
-                        && seen_hwids.insert(hwid.to_string())
-                    {
-                        let mut e =
-                            Entity::new(EntityKind::DeviceId, hwid, confidence::HIGH_PLUS, &sid);
-                        e.tag("hwid");
-                        e.tag("import");
-                        e.add_evidence(
-                            Evidence::new(
-                                "import:oathnet",
-                                format!("Hardware ID from infected machine ({total_docs} creds)"),
-                            )
-                            .with_attr("log_id", log_id),
-                        );
-                        entities.push(e);
-                        stats.hwids += 1;
-                    }
-                }
-            }
-            // Discord IDs — identity pivots
-            if let Some(dids) = victim.get("discord_ids").and_then(|v| v.as_array()) {
-                for d in dids {
-                    if let Some(did) = d.as_str()
-                        && !did.is_empty()
-                        && seen_discord.insert(did.to_string())
-                    {
-                        let mut e =
-                            Entity::new(EntityKind::Username, did, confidence::MEDIUM_PLUS, &sid);
-                        e.tag("discord-id");
-                        e.tag("import");
-                        entities.push(e);
-                        stats.discord_ids += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    // ── Parse stealer docs — domains, subdomains, URLs, usernames, timelines ──
-    if let Some(docs) = doc.pointer("/stealerData/docs").and_then(|v| v.as_array()) {
-        let mut seen_domains: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut seen_users: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut log_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut earliest_date: Option<String> = None;
-        let mut latest_date: Option<String> = None;
-
-        for doc_item in docs {
-            stats.stealer_docs += 1;
-
-            // Domains
-            if let Some(domains) = doc_item.get("domain").and_then(|v| v.as_array()) {
-                for d in domains {
-                    if let Some(domain) = d.as_str() {
-                        let lower = domain.to_lowercase();
-                        if seen_domains.insert(lower.clone()) && domain.contains('.') {
-                            let mut e =
-                                Entity::new(EntityKind::Domain, &lower, confidence::MEDIUM, &sid);
-                            e.tag("stealer-target");
-                            e.tag("import");
-                            entities.push(e);
-                            stats.domains += 1;
-                        }
-                    }
-                }
-            }
-
-            // Subdomains
-            if let Some(subs) = doc_item.get("subdomain").and_then(|v| v.as_array()) {
-                for s in subs {
-                    if let Some(sub) = s.as_str() {
-                        let lower = sub.to_lowercase();
-                        if lower.contains('.') && seen_domains.insert(format!("sub:{lower}")) {
-                            let mut e = Entity::new(
-                                EntityKind::Domain,
-                                &lower,
-                                confidence::MEDIUM_HIGH,
-                                &sid,
-                            );
-                            e.tag("subdomain");
-                            e.tag("stealer-target");
-                            e.tag("import");
-                            entities.push(e);
-                            stats.subdomains += 1;
-                        }
-                    }
-                }
-            }
-
-            // URLs (compromised login/register pages)
-            if let Some(url) = doc_item.get("url").and_then(|v| v.as_str())
-                && url.starts_with("http")
-                && seen_urls.insert(url.to_string())
-            {
-                let mut e = Entity::new(EntityKind::Url, url, confidence::LOW_MEDIUM, &sid);
-                e.tag("stealer-target");
-                e.tag("import");
-                entities.push(e);
-                stats.urls += 1;
-            }
-
-            // Usernames (identity pivots)
-            if let Some(username) = doc_item.get("username").and_then(|v| v.as_str())
-                && !username.is_empty()
-                && username.len() >= 3
-                && seen_users.insert(username.to_lowercase())
-            {
-                let conf = if username.contains('@') { 0.55 } else { 0.40 };
-                let kind = if username.contains('@') {
-                    EntityKind::Email
-                } else {
-                    EntityKind::Username
-                };
-                let mut e = Entity::new(kind, username, conf, &sid);
-                e.tag("stealer-username");
-                e.tag("import");
-                entities.push(e);
-                stats.usernames += 1;
-            }
-
-            // Log IDs (unique infected machines) → DeviceId entities
-            if let Some(lid) = doc_item.get("log_id").and_then(|v| v.as_str())
-                && log_ids.insert(lid.to_string())
-            {
-                let mut e = Entity::new(EntityKind::DeviceId, lid, confidence::MEDIUM, &sid);
-                e.tag("log-id");
-                e.tag("import");
-                entities.push(e);
-            }
-
-            // Paths (login/admin/API endpoints)
-            if let Some(paths) = doc_item.get("path").and_then(|v| v.as_array()) {
-                for p in paths {
-                    if let Some(path) = p.as_str() {
-                        let pl = path.to_lowercase();
-                        if (pl.contains("admin")
-                            || pl.contains("api")
-                            || pl.contains("login")
-                            || pl.contains("dashboard")
-                            || pl.contains("panel"))
-                            && seen_urls.insert(format!("path:{path}"))
-                            && let Some(doms) = doc_item.get("domain").and_then(|v| v.as_array())
-                            && let Some(dom) = doms.first().and_then(|d| d.as_str())
-                        {
-                            let full_url = format!("https://{dom}{path}");
-                            let mut e =
-                                Entity::new(EntityKind::Url, &full_url, confidence::MEDIUM, &sid);
-                            e.tag("admin-panel");
-                            e.tag("import");
-                            entities.push(e);
-                            stats.admin_paths += 1;
-                        }
-                    }
-                }
-            }
-
-            // API key pattern scanning on password field
-            if let Some(pw) = doc_item.get("password").and_then(|v| v.as_str())
-                && !pw.is_empty()
-                && pw.len() >= 16
-                && let Some((svc, e)) = detect_and_create_api_key_entity(pw, &sid, "import:oathnet")
-            {
-                entities.push(e);
-                stats.api_keys += 1;
-
-                let valid = crate::util::key_pool::add_and_validate(
-                    svc,
-                    pw,
-                    Some(format!("Import: {svc} key from stealer data")),
-                )
-                .await;
-                if valid {
-                    stats.api_keys_valid += 1;
-                }
-            }
-
-            // Infection timeline
-            if let Some(dt) = doc_item.get("pwned_at").and_then(|v| v.as_str()) {
-                let date = crate::util::str_util::truncate_safe(dt, 10);
-                if earliest_date.as_deref().is_none_or(|e| date < e) {
-                    earliest_date = Some(date.to_string());
-                }
-                if latest_date.as_deref().is_none_or(|l| date > l) {
-                    latest_date = Some(date.to_string());
-                }
-            }
-        }
-
-        stats.machines = log_ids.len();
-        stats.date_range = match (earliest_date, latest_date) {
-            (Some(e), Some(l)) => format!("{e} to {l}"),
-            _ => String::new(),
-        };
-    }
-
-    // ── Parse victim device_users (OS account names) ──
-    if let Some(victims) = doc
-        .pointer("/stealerData/victims")
-        .and_then(|v| v.as_array())
-    {
-        let mut seen_device_users: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        for victim in victims {
-            if let Some(users) = victim.get("device_users").and_then(|v| v.as_array()) {
-                for u in users {
-                    if let Some(name) = u.as_str()
-                        && !name.is_empty()
-                        && seen_device_users.insert(name.to_lowercase())
-                    {
-                        let mut e =
-                            Entity::new(EntityKind::Username, name, confidence::TENTATIVE, &sid);
-                        e.tag("device-user");
-                        e.tag("import");
-                        entities.push(e);
-                        stats.device_users += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    // ── Parse IP geolocation from osintData ──
-    if let Some(ip_info) = doc.pointer("/osintData/ipInfo").and_then(|v| v.as_object()) {
-        for (ip, info) in ip_info {
-            let city = info.get("city").and_then(|v| v.as_str()).unwrap_or("");
-            let region = info
-                .get("regionName")
+    else {
+        return;
+    };
+    for item in breach {
+        ctx.stats.breach_records += 1;
+        if let Some(email) = item.get("email").and_then(|v| v.as_str())
+            && email.contains('@')
+            && !email.contains("UPGRADE")
+        {
+            let db = item
+                .get("dbname")
                 .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let country = info.get("country").and_then(|v| v.as_str()).unwrap_or("");
-            let lat = info.get("lat").and_then(serde_json::Value::as_f64);
-            let lon = info.get("lon").and_then(serde_json::Value::as_f64);
-            let isp = info.get("isp").and_then(|v| v.as_str()).unwrap_or("");
-            create_geolocation_entities(
-                &GeoFields {
-                    ip,
-                    lat,
-                    lon,
-                    city,
-                    region,
-                    country,
-                    isp,
-                },
-                &sid,
-                &mut entities,
-                &mut stats,
+                .unwrap_or("unknown");
+            let mut e = Entity::new(EntityKind::Email, email, confidence::VERY_HIGH, ctx.sid);
+            e.tag("breach");
+            e.tag("import");
+            e.add_evidence(
+                Evidence::new("import:oathnet", format!("Breach on {db}")).with_attr("dbname", db),
             );
+            ctx.entities.push(e);
+            ctx.stats.emails += 1;
+        }
+        if let Some(ip) = item.get("ip").and_then(|v| v.as_str())
+            && ip.contains('.')
+            && !ip.contains("UPGRADE")
+        {
+            let mut e = Entity::new(EntityKind::IpAddress, ip, confidence::HIGH, ctx.sid);
+            e.tag("breach");
+            e.tag("import");
+            ctx.entities.push(e);
+            ctx.stats.ips += 1;
         }
     }
+}
 
-    // ── Parse Holehe platform checks ──
-    if let Some(holehe) = doc.pointer("/osintData/holehe").and_then(|v| v.as_object()) {
-        for (email, data) in holehe {
-            if let Some(domains) = data.pointer("/data/domains").and_then(|v| v.as_array()) {
-                let platforms: Vec<&str> = domains.iter().filter_map(|d| d.as_str()).collect();
-                if !platforms.is_empty() && !email.contains("UPGRADE") {
-                    let mut e = Entity::new(
-                        EntityKind::Email,
-                        email,
-                        confidence::HIGH_PLUSPLUS_PLUS,
-                        &sid,
+/// JSON sub-shape 2: `stealerData/victims` — device IPs, emails, HWIDs, and
+/// Discord IDs, deduplicated per victim record.
+fn parse_stealer_victims(doc: &serde_json::Value, ctx: &mut JsonImportCtx) {
+    use crate::core::confidence;
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let Some(victims) = doc
+        .pointer("/stealerData/victims")
+        .and_then(|v| v.as_array())
+    else {
+        return;
+    };
+    let mut seen_hwids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_discord: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for victim in victims {
+        ctx.stats.victim_records += 1;
+        let total_docs = victim
+            .get("total_docs")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let log_id = victim.get("log_id").and_then(|v| v.as_str()).unwrap_or("");
+
+        if let Some(ips) = victim.get("device_ips").and_then(|v| v.as_array()) {
+            for ip_val in ips {
+                if let Some(ip) = ip_val.as_str()
+                    && ip.contains('.')
+                    && !ip.contains("UPGRADE")
+                {
+                    let mut e =
+                        Entity::new(EntityKind::IpAddress, ip, confidence::MEDIUM_PLUS, ctx.sid);
+                    e.tag("stealer-victim");
+                    e.tag("import");
+                    if total_docs > 100 {
+                        e.tag("high-exposure");
+                    }
+                    e.add_evidence(
+                        Evidence::new(
+                            "import:oathnet",
+                            format!("Victim device IP ({total_docs} creds stolen)"),
+                        )
+                        .with_attr("log_id", log_id)
+                        .with_attr("total_docs", total_docs.to_string()),
                     );
-                    e.tag("holehe-verified");
+                    ctx.entities.push(e);
+                    ctx.stats.ips += 1;
+                }
+            }
+        }
+        if let Some(emails) = victim.get("device_emails").and_then(|v| v.as_array()) {
+            for email_val in emails {
+                if let Some(email) = email_val.as_str()
+                    && email.contains('@')
+                    && !email.contains("UPGRADE")
+                {
+                    let mut e =
+                        Entity::new(EntityKind::Email, email, confidence::MEDIUM_HIGH, ctx.sid);
+                    e.tag("stealer-victim");
+                    e.tag("import");
+                    ctx.entities.push(e);
+                    ctx.stats.emails += 1;
+                }
+            }
+        }
+        // HWIDs — hardware identifiers for machine tracking
+        if let Some(hwids) = victim.get("hwids").and_then(|v| v.as_array()) {
+            for h in hwids {
+                if let Some(hwid) = h.as_str()
+                    && !hwid.is_empty()
+                    && seen_hwids.insert(hwid.to_string())
+                {
+                    let mut e =
+                        Entity::new(EntityKind::DeviceId, hwid, confidence::HIGH_PLUS, ctx.sid);
+                    e.tag("hwid");
                     e.tag("import");
                     e.add_evidence(
                         Evidence::new(
                             "import:oathnet",
-                            format!(
-                                "Holehe: registered on {} platform(s): {}",
-                                platforms.len(),
-                                platforms.join(", ")
-                            ),
+                            format!("Hardware ID from infected machine ({total_docs} creds)"),
                         )
-                        .with_attr("platforms", platforms.join(", "))
-                        .with_attr("platform_count", platforms.len().to_string()),
+                        .with_attr("log_id", log_id),
                     );
-                    entities.push(e);
-                    stats.holehe += 1;
+                    ctx.entities.push(e);
+                    ctx.stats.hwids += 1;
+                }
+            }
+        }
+        // Discord IDs — identity pivots
+        if let Some(dids) = victim.get("discord_ids").and_then(|v| v.as_array()) {
+            for d in dids {
+                if let Some(did) = d.as_str()
+                    && !did.is_empty()
+                    && seen_discord.insert(did.to_string())
+                {
+                    let mut e =
+                        Entity::new(EntityKind::Username, did, confidence::MEDIUM_PLUS, ctx.sid);
+                    e.tag("discord-id");
+                    e.tag("import");
+                    ctx.entities.push(e);
+                    ctx.stats.discord_ids += 1;
                 }
             }
         }
     }
+}
 
-    (entities, stats)
+/// JSON sub-shape 3: `stealerData/docs` — domains, subdomains, URLs,
+/// usernames, log IDs, admin-panel paths, `async`-validated API keys found in
+/// the password field, and the infection timeline (`stats.date_range`).
+async fn parse_stealer_docs(doc: &serde_json::Value, ctx: &mut JsonImportCtx<'_>) {
+    use crate::core::confidence;
+    use crate::core::entity::{Entity, EntityKind};
+    let Some(docs) = doc.pointer("/stealerData/docs").and_then(|v| v.as_array()) else {
+        return;
+    };
+    let mut seen_domains: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_users: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut log_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut earliest_date: Option<String> = None;
+    let mut latest_date: Option<String> = None;
+
+    for doc_item in docs {
+        ctx.stats.stealer_docs += 1;
+
+        // Domains
+        if let Some(domains) = doc_item.get("domain").and_then(|v| v.as_array()) {
+            for d in domains {
+                if let Some(domain) = d.as_str() {
+                    let lower = domain.to_lowercase();
+                    if seen_domains.insert(lower.clone()) && domain.contains('.') {
+                        let mut e =
+                            Entity::new(EntityKind::Domain, &lower, confidence::MEDIUM, ctx.sid);
+                        e.tag("stealer-target");
+                        e.tag("import");
+                        ctx.entities.push(e);
+                        ctx.stats.domains += 1;
+                    }
+                }
+            }
+        }
+
+        // Subdomains
+        if let Some(subs) = doc_item.get("subdomain").and_then(|v| v.as_array()) {
+            for s in subs {
+                if let Some(sub) = s.as_str() {
+                    let lower = sub.to_lowercase();
+                    if lower.contains('.') && seen_domains.insert(format!("sub:{lower}")) {
+                        let mut e = Entity::new(
+                            EntityKind::Domain,
+                            &lower,
+                            confidence::MEDIUM_HIGH,
+                            ctx.sid,
+                        );
+                        e.tag("subdomain");
+                        e.tag("stealer-target");
+                        e.tag("import");
+                        ctx.entities.push(e);
+                        ctx.stats.subdomains += 1;
+                    }
+                }
+            }
+        }
+
+        // URLs (compromised login/register pages)
+        if let Some(url) = doc_item.get("url").and_then(|v| v.as_str())
+            && url.starts_with("http")
+            && seen_urls.insert(url.to_string())
+        {
+            let mut e = Entity::new(EntityKind::Url, url, confidence::LOW_MEDIUM, ctx.sid);
+            e.tag("stealer-target");
+            e.tag("import");
+            ctx.entities.push(e);
+            ctx.stats.urls += 1;
+        }
+
+        // Usernames (identity pivots)
+        if let Some(username) = doc_item.get("username").and_then(|v| v.as_str())
+            && !username.is_empty()
+            && username.len() >= 3
+            && seen_users.insert(username.to_lowercase())
+        {
+            let conf = if username.contains('@') { 0.55 } else { 0.40 };
+            let kind = if username.contains('@') {
+                EntityKind::Email
+            } else {
+                EntityKind::Username
+            };
+            let mut e = Entity::new(kind, username, conf, ctx.sid);
+            e.tag("stealer-username");
+            e.tag("import");
+            ctx.entities.push(e);
+            ctx.stats.usernames += 1;
+        }
+
+        // Log IDs (unique infected machines) → DeviceId entities
+        if let Some(lid) = doc_item.get("log_id").and_then(|v| v.as_str())
+            && log_ids.insert(lid.to_string())
+        {
+            let mut e = Entity::new(EntityKind::DeviceId, lid, confidence::MEDIUM, ctx.sid);
+            e.tag("log-id");
+            e.tag("import");
+            ctx.entities.push(e);
+        }
+
+        // Paths (login/admin/API endpoints)
+        if let Some(paths) = doc_item.get("path").and_then(|v| v.as_array()) {
+            for p in paths {
+                if let Some(path) = p.as_str() {
+                    let pl = path.to_lowercase();
+                    if (pl.contains("admin")
+                        || pl.contains("api")
+                        || pl.contains("login")
+                        || pl.contains("dashboard")
+                        || pl.contains("panel"))
+                        && seen_urls.insert(format!("path:{path}"))
+                        && let Some(doms) = doc_item.get("domain").and_then(|v| v.as_array())
+                        && let Some(dom) = doms.first().and_then(|d| d.as_str())
+                    {
+                        let full_url = format!("https://{dom}{path}");
+                        let mut e =
+                            Entity::new(EntityKind::Url, &full_url, confidence::MEDIUM, ctx.sid);
+                        e.tag("admin-panel");
+                        e.tag("import");
+                        ctx.entities.push(e);
+                        ctx.stats.admin_paths += 1;
+                    }
+                }
+            }
+        }
+
+        // API key pattern scanning on password field
+        if let Some(pw) = doc_item.get("password").and_then(|v| v.as_str())
+            && !pw.is_empty()
+            && pw.len() >= 16
+            && let Some((svc, e)) = detect_and_create_api_key_entity(pw, ctx.sid, "import:oathnet")
+        {
+            ctx.entities.push(e);
+            ctx.stats.api_keys += 1;
+
+            let valid = crate::util::key_pool::add_and_validate(
+                svc,
+                pw,
+                Some(format!("Import: {svc} key from stealer data")),
+            )
+            .await;
+            if valid {
+                ctx.stats.api_keys_valid += 1;
+            }
+        }
+
+        // Infection timeline
+        if let Some(dt) = doc_item.get("pwned_at").and_then(|v| v.as_str()) {
+            let date = crate::util::str_util::truncate_safe(dt, 10);
+            if earliest_date.as_deref().is_none_or(|e| date < e) {
+                earliest_date = Some(date.to_string());
+            }
+            if latest_date.as_deref().is_none_or(|l| date > l) {
+                latest_date = Some(date.to_string());
+            }
+        }
+    }
+
+    ctx.stats.machines = log_ids.len();
+    ctx.stats.date_range = match (earliest_date, latest_date) {
+        (Some(e), Some(l)) => format!("{e} to {l}"),
+        _ => String::new(),
+    };
+}
+
+/// JSON sub-shape 4: `stealerData/victims[].device_users` — OS account
+/// names, deduplicated case-insensitively across the whole document.
+fn parse_victim_device_users(doc: &serde_json::Value, ctx: &mut JsonImportCtx) {
+    use crate::core::confidence;
+    use crate::core::entity::{Entity, EntityKind};
+    let Some(victims) = doc
+        .pointer("/stealerData/victims")
+        .and_then(|v| v.as_array())
+    else {
+        return;
+    };
+    let mut seen_device_users: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for victim in victims {
+        if let Some(users) = victim.get("device_users").and_then(|v| v.as_array()) {
+            for u in users {
+                if let Some(name) = u.as_str()
+                    && !name.is_empty()
+                    && seen_device_users.insert(name.to_lowercase())
+                {
+                    let mut e =
+                        Entity::new(EntityKind::Username, name, confidence::TENTATIVE, ctx.sid);
+                    e.tag("device-user");
+                    e.tag("import");
+                    ctx.entities.push(e);
+                    ctx.stats.device_users += 1;
+                }
+            }
+        }
+    }
+}
+
+/// JSON sub-shape 5: `osintData/ipInfo` — per-IP geolocation, delegated to
+/// the shared [`create_geolocation_entities`] builder.
+fn parse_ip_geolocation(doc: &serde_json::Value, ctx: &mut JsonImportCtx) {
+    let Some(ip_info) = doc.pointer("/osintData/ipInfo").and_then(|v| v.as_object()) else {
+        return;
+    };
+    for (ip, info) in ip_info {
+        let city = info.get("city").and_then(|v| v.as_str()).unwrap_or("");
+        let region = info
+            .get("regionName")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let country = info.get("country").and_then(|v| v.as_str()).unwrap_or("");
+        let lat = info.get("lat").and_then(serde_json::Value::as_f64);
+        let lon = info.get("lon").and_then(serde_json::Value::as_f64);
+        let isp = info.get("isp").and_then(|v| v.as_str()).unwrap_or("");
+        create_geolocation_entities(
+            &GeoFields {
+                ip,
+                lat,
+                lon,
+                city,
+                region,
+                country,
+                isp,
+            },
+            ctx.sid,
+            ctx.entities,
+            ctx.stats,
+        );
+    }
+}
+
+/// JSON sub-shape 6: `osintData/holehe` — per-email platform-registration
+/// checks.
+fn parse_holehe_checks(doc: &serde_json::Value, ctx: &mut JsonImportCtx) {
+    use crate::core::confidence;
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let Some(holehe) = doc.pointer("/osintData/holehe").and_then(|v| v.as_object()) else {
+        return;
+    };
+    for (email, data) in holehe {
+        if let Some(domains) = data.pointer("/data/domains").and_then(|v| v.as_array()) {
+            let platforms: Vec<&str> = domains.iter().filter_map(|d| d.as_str()).collect();
+            if !platforms.is_empty() && !email.contains("UPGRADE") {
+                let mut e = Entity::new(
+                    EntityKind::Email,
+                    email,
+                    confidence::HIGH_PLUSPLUS_PLUS,
+                    ctx.sid,
+                );
+                e.tag("holehe-verified");
+                e.tag("import");
+                e.add_evidence(
+                    Evidence::new(
+                        "import:oathnet",
+                        format!(
+                            "Holehe: registered on {} platform(s): {}",
+                            platforms.len(),
+                            platforms.join(", ")
+                        ),
+                    )
+                    .with_attr("platforms", platforms.join(", "))
+                    .with_attr("platform_count", platforms.len().to_string()),
+                );
+                ctx.entities.push(e);
+                ctx.stats.holehe += 1;
+            }
+        }
+    }
 }
 
 /// Render the OathNet-JSON import result (CLI side only): a machine-readable
