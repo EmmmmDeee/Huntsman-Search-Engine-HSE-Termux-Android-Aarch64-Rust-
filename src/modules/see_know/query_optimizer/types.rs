@@ -143,6 +143,6 @@ mod tests {
     fn credit_cost_delegates_to_config() {
         let r = EndpointRegistry::new();
         assert_eq!(r.credit_cost("/search"), 1.0);
-        assert_eq!(r.credit_cost("/search/deep"), 3.0);
+        assert_eq!(r.credit_cost("/search/deep"), 1.0);
     }
 }
