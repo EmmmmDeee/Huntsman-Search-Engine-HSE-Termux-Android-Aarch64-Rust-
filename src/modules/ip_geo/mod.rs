@@ -49,9 +49,11 @@ struct IpApiResp {
 /// directly off JSON fixtures.
 ///
 /// Gates internally (both moved here from the transport shell so they are
-/// tested): a non-`"success"` status yields an empty `Vec`, and a CDN/anycast
-/// edge IP — [`crate::core::validation::is_cdn_edge_ip`] — is skipped (its geo
-/// is the answering datacenter's, not the subject's).
+/// tested): a non-`"success"` status yields an empty `Vec`, and the shared
+/// [`crate::core::validation::untrusted_ip_geo_reason`] trust gate (today, a
+/// CDN/anycast edge IP) is skipped (its geo is the answering datacenter's,
+/// not the subject's) — the same gate every other IP-geolocation module
+/// consults, so a future rule added there applies here too.
 ///
 /// Confidence is scaled by IP type (hosting/proxy/mobile); coordinates pass the
 /// shared [`crate::util::geo::coarse_provider_coords`] gate (4-dp `geoint`
@@ -67,11 +69,12 @@ fn build_entities(data: &IpApiResp, ip: &str, scan_id: &str) -> Vec<Entity> {
     // to the subject. Emitting those as Coordinates/Address PII produced the
     // false "geolocation convergence" and "email + physical location" hits in
     // a real scan of an Australian subject. Skip geo for edge IPs entirely.
-    if crate::core::validation::is_cdn_edge_ip(ip) {
+    if let Some(reason) = crate::core::validation::untrusted_ip_geo_reason(ip) {
         tracing::debug!(
             module = SRC,
             ip = %ip,
-            "skipping IP-geo — CDN/anycast edge IP, location is datacenter not subject"
+            reason,
+            "skipping IP-geo — location is the infrastructure, not the subject"
         );
         return Vec::new();
     }
