@@ -589,6 +589,50 @@ fn parse_response_still_treats_true_exhaustion_as_quota_not_rate_limited() {
 }
 
 #[test]
+fn a_successful_response_that_spent_its_last_credit_keeps_its_data() {
+    // Regression: `credits_remaining:0` was treated as terminal exhaustion on
+    // ANY body — including a `success:true` response carrying results. That made
+    // `parse_response` return `Ok(Value::Null)`, silently dropping the data of
+    // the final successful (paid) lookup before the quota ran out, and latching
+    // the budget on a call that actually succeeded. A successful body must be
+    // returned intact; only a NON-success zero-credit body is true exhaustion.
+    //
+    // Touches the process-global exhaustion flag, so it takes BUDGET_TEST_LOCK.
+    let _guard = BUDGET_TEST_LOCK.lock();
+    reset_budget();
+    let body =
+        r#"{"success":true,"total":1,"results":[{"email":"a@x.com"}],"credits_remaining":0}"#;
+    let v = parse_response(body).expect("a success body must parse");
+    assert!(
+        !v.is_null(),
+        "the last-credit success payload must survive, not be dropped as exhaustion"
+    );
+    assert_eq!(v["results"][0]["email"], "a@x.com");
+    assert!(
+        !is_quota_exhausted(),
+        "a successful response must not latch quota exhaustion"
+    );
+    reset_budget();
+}
+
+#[test]
+fn a_zero_credit_error_body_still_latches_true_exhaustion() {
+    // The other half of the contract: a NON-success body reporting zero credits
+    // IS true exhaustion and must keep latching + returning Ok(Null) — so the
+    // fix above narrows the trigger without losing the real exhaustion signal.
+    let _guard = BUDGET_TEST_LOCK.lock();
+    reset_budget();
+    let v = parse_response(r#"{"error":"credits_exhausted","credits_remaining":0}"#)
+        .expect("true exhaustion is Ok(Null)");
+    assert!(v.is_null());
+    assert!(
+        is_quota_exhausted(),
+        "a zero-credit error body must still latch exhaustion"
+    );
+    reset_budget();
+}
+
+#[test]
 fn client_base_url_uses_endpoint_override_or_default() {
     // The base URL is resolved from HUNTSMAN_SEEKNOW_BASE environment variable
     // (with security checks) or the canonical default. Tests that the resolution

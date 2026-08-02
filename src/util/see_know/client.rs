@@ -229,6 +229,16 @@ enum Terminal {
 /// True if either `credits_remaining` meter (top-level, or nested under `data`)
 /// reads exactly 0 — the JSON-scoped quota signal.
 fn credits_exhausted(v: &Value) -> bool {
+    // A SUCCESSFUL body that merely spent its last credit still carries its
+    // data (`success:true, results:[...], credits_remaining:0`). Treating that
+    // as exhaustion returned `Ok(Value::Null)` from `parse_response`, silently
+    // dropping the results of a paid call — the final successful lookup before
+    // the quota ran out lost its answer. True exhaustion is a NON-success body
+    // (the 429 / error envelope) reporting zero credits, so only classify the
+    // zero-credit meter as terminal when the body is not a success.
+    if v.get("success").and_then(Value::as_bool) == Some(true) {
+        return false;
+    }
     let zero = |o: &Value| o.get("credits_remaining").and_then(Value::as_i64) == Some(0);
     zero(v) || v.get("data").is_some_and(zero)
 }
