@@ -152,14 +152,7 @@ fn emit_oathnet_entry(
         }
     }
 
-    let mut push = |mut e: Entity, tag: &str| {
-        e.tag("import");
-        e.tag("oathnet");
-        e.tag("breach");
-        e.tag(tag);
-        e.add_evidence(ev.clone());
-        entities.push(e);
-    };
+    let mut push = breach_entity_pusher(entities, &ev, &["oathnet", "breach"]);
 
     if let Some(em) = get("email").map(str::to_ascii_lowercase)
         && em.contains('@')

@@ -209,14 +209,7 @@ fn emit_combined_records(
             }
         }
 
-        let mut push = |mut e: Entity, tag: &str| {
-            e.tag("import");
-            e.tag("combined-search");
-            e.tag("breach");
-            e.tag(tag);
-            e.add_evidence(ev.clone());
-            entities.push(e);
-        };
+        let mut push = breach_entity_pusher(&mut entities, &ev, &["combined-search", "breach"]);
 
         if let Some(em) = &email
             && em.contains('@')

@@ -256,13 +256,7 @@ fn emit_dossier_entry(
         }
     }
 
-    let mut push = |mut e: Entity, tag: &str| {
-        e.tag("import");
-        e.tag("dossier");
-        e.tag(tag);
-        e.add_evidence(ev.clone());
-        entities.push(e);
-    };
+    let mut push = breach_entity_pusher(entities, &ev, &["dossier"]);
 
     if let Some(em) = email {
         let em = em.to_ascii_lowercase();
