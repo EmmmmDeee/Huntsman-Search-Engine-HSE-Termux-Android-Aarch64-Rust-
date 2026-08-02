@@ -161,7 +161,38 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
         }
     }
 
-    if let Some(url) = co.opencorporates_url.as_deref().filter(|u| !u.is_empty()) {
+    emit_profile_url_and_company_number(
+        &mut out,
+        name,
+        co.opencorporates_url.as_deref(),
+        co.company_number.as_deref(),
+        co.jurisdiction_code.as_deref(),
+        confidence::HIGH_PLUSPLUS,
+        scan_id,
+    );
+
+    out
+}
+
+/// Emit the `Url` profile-page entity and, for an AU company, the `AbnAcn`
+/// company-number entity — the tail every OpenCorporates result (a full
+/// company record or an officer's `company`) shares regardless of which
+/// search produced it. `acn_confidence` is the one genuine difference
+/// between callers: a direct company search
+/// ([`build_company_entities`], `confidence::HIGH_PLUSPLUS`) is a more
+/// direct hit than a company reached via an officer search
+/// ([`build_officer_entities`], `confidence::STRONG`).
+#[allow(clippy::too_many_arguments)]
+fn emit_profile_url_and_company_number(
+    out: &mut Vec<Entity>,
+    name: &str,
+    opencorporates_url: Option<&str>,
+    company_number: Option<&str>,
+    jurisdiction_code: Option<&str>,
+    acn_confidence: f64,
+    scan_id: &str,
+) {
+    if let Some(url) = opencorporates_url.filter(|u| !u.is_empty()) {
         let mut ue = Entity::new(EntityKind::Url, url, 0.68, scan_id);
         ue.tag("opencorporates");
         ue.tag("profile-url");
@@ -172,11 +203,11 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
         out.push(ue);
     }
 
-    if let Some(num) = co.company_number.as_deref()
+    if let Some(num) = company_number
         && !num.is_empty()
-        && co.jurisdiction_code.as_deref() == Some("au")
+        && jurisdiction_code == Some("au")
     {
-        let mut acn = Entity::new(EntityKind::AbnAcn, num, confidence::HIGH_PLUSPLUS, scan_id);
+        let mut acn = Entity::new(EntityKind::AbnAcn, num, acn_confidence, scan_id);
         acn.tag("opencorporates");
         acn.tag("company-number");
         acn.add_evidence(
@@ -185,8 +216,6 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
         );
         out.push(acn);
     }
-
-    out
 }
 
 /// Build the OpenCorporates search URL for `target_kind`/`query` (the auth
@@ -324,30 +353,15 @@ pub(super) fn build_officer_entities(
             org.add_evidence(ev);
             out.push(org);
 
-            if let Some(url) = co.opencorporates_url.as_deref().filter(|u| !u.is_empty()) {
-                let mut ue = Entity::new(EntityKind::Url, url, 0.68, scan_id);
-                ue.tag("opencorporates");
-                ue.tag("profile-url");
-                ue.add_evidence(Evidence::new(
-                    SRC,
-                    format!("OpenCorporates profile URL for {name}"),
-                ));
-                out.push(ue);
-            }
-
-            if let Some(num) = co.company_number.as_deref()
-                && !num.is_empty()
-                && co.jurisdiction_code.as_deref() == Some("au")
-            {
-                let mut acn = Entity::new(EntityKind::AbnAcn, num, confidence::STRONG, scan_id);
-                acn.tag("opencorporates");
-                acn.tag("company-number");
-                acn.add_evidence(
-                    Evidence::new(SRC, format!("AU company number for {name}"))
-                        .with_attr("company_name", name),
-                );
-                out.push(acn);
-            }
+            emit_profile_url_and_company_number(
+                &mut out,
+                name,
+                co.opencorporates_url.as_deref(),
+                co.company_number.as_deref(),
+                co.jurisdiction_code.as_deref(),
+                confidence::STRONG,
+                scan_id,
+            );
         }
     }
 
