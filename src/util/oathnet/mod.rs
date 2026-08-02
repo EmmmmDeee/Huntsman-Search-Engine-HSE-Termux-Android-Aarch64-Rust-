@@ -463,172 +463,12 @@ pub async fn search(
             url.push_str(&crate::util::http::urlencode(c));
         }
 
-        // A genuine 429 is a transient burst rate-limit — the key still has
-        // credits, the request was simply too fast — DISTINCT from true
-        // exhaustion (`"left_today":0`). Diagnosed as a real bug: a 429 used to
-        // be classified identically to true exhaustion, immediately latching
-        // `mark_quota_exhausted()` and abandoning OathNet for the rest of the
-        // scan with zero backoff. Retry with exponential backoff instead; only
-        // latch exhaustion if backoff attempts run out, so a persistent 429
-        // still degrades exactly as before rather than retrying forever.
-        let mut attempt = 0u32;
-        let sd: SearchData = loop {
-            let (body, http_status) = CLIENT.get_with_status(&url, key).await?;
-            // Retain the paid response verbatim BEFORE parsing/extraction — operator
-            // policy: purchased data is kept in absolute completeness until manually
-            // deleted (see `util::raw_archive`). The endpoint label is the last two
-            // path segments (e.g. `/service/v2/breach/search` → `breach-search`) and the
-            // query is the looked-up value, so the saved filename names exactly what was
-            // queried. The archive skips empty bodies on its own.
-            let trimmed = path.trim_matches('/');
-            let mut segs = trimmed.rsplit('/').take(2);
-            let endpoint_label = match (segs.next(), segs.next()) {
-                (Some(b), Some(a)) => format!("{a}-{b}"),
-                (Some(b), None) => b.to_owned(),
-                _ => trimmed.to_owned(),
-            };
-            crate::util::raw_archive::record("oathnet", &endpoint_label, value, &body);
-            // Detect actual quota exhaustion. Earlier check used `body.contains("quota")`
-            // which false-positives on legitimate metadata fields like `session_quota`
-            // and `recommended_quota`. Match only true exhaustion signals.
-            // Detect quota exhaustion from STRUCTURALLY-SCOPED signals only. The former
-            // bare-phrase checks ("limit exceeded"/"Daily quota exceeded"/"quota exceeded")
-            // substring-matched the whole body, so a breach record whose free-text field
-            // contained one of those phrases both discarded the entire page AND latched the
-            // daily-quota kill for the rest of the scan. The `"left_today":0` JSON key/value
-            // is specific enough not to collide with payload text, and a genuine 429 is
-            // handled from the parsed envelope below.
-            if body.contains("\"left_today\":0")
-                || body.contains("\"is_unlimited\":false,\"left_today\":0")
-            {
-                mark_quota_exhausted();
-                cache_put(ck, &all_items);
-                return Ok(all_items);
+        let sd = match fetch_page_with_retry(&url, key, path, value, &ck, all_items).await? {
+            PageFetch::Stop(items) => return Ok(items),
+            PageFetch::Data(sd, items) => {
+                all_items = items;
+                sd
             }
-            // A non-JSON body — an empty/whitespace 200, an HTML gateway/error page,
-            // or an anti-bot challenge interstitial — is "no results / provider
-            // unavailable this page", NOT a module failure. The bare
-            // `serde_json::from_str` below would otherwise surface it as a cryptic
-            // `expected value at line 1 column 1` hard error that fails the whole
-            // module every query. Mirrors see_know's `parse_response` non-JSON
-            // tolerance; a recognised challenge additionally logs one actionable
-            // diagnostic so the operator knows WHY OathNet is returning nothing.
-            // Returns whatever earlier pages already accumulated rather than
-            // discarding them.
-            let head = body.trim_start();
-            if !head.starts_with('{') && !head.starts_with('[') {
-                if is_challenge_page(&body) {
-                    warn_challenge_once();
-                } else if !head.is_empty() {
-                    tracing::debug!(
-                        preview = %body.chars().take(80).collect::<String>(),
-                        "oathnet: non-JSON response body treated as no results"
-                    );
-                }
-                if all_items.is_empty() {
-                    cache_put(ck, &[]);
-                } else {
-                    cache_put(ck, &all_items);
-                }
-                return Ok(all_items);
-            }
-            let env: Envelope =
-                serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
-            // Record real quota state regardless of success/failure — a
-            // quota-exhausted 403 carries this block too, and that's
-            // exactly the moment an operator most wants to see the real
-            // left_today rather than just "something failed".
-            if let Some(q) = real_quota_from_envelope(&env) {
-                record_real_quota(q);
-            }
-            if !env.success {
-                let code = effective_error_status(
-                    env.errors.as_ref().and_then(|e| e.status_code),
-                    http_status,
-                );
-                if code == 404 {
-                    // Negative-cache the clean miss so subsequent scans of the same
-                    // dead target don't re-spend an OathNet lookup confirming it's
-                    // still empty. The cache is per-process so this only affects
-                    // within-session re-queries. Only a true first-page 404 negative-
-                    // caches an empty result; a 404 on a later page still returns
-                    // whatever earlier pages already accumulated.
-                    if all_items.is_empty() {
-                        cache_put(ck, &[]);
-                    } else {
-                        cache_put(ck, &all_items);
-                    }
-                    return Ok(all_items);
-                }
-                if code == 429 {
-                    if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
-                        mark_quota_exhausted();
-                        cache_put(ck, &all_items);
-                        return Ok(all_items);
-                    }
-                    let delay = RATE_LIMIT_BACKOFF.delay(attempt);
-                    tracing::debug!(
-                        path,
-                        attempt = attempt + 1,
-                        delay_ms = delay.as_millis() as u64,
-                        "oathnet 429 rate-limited — backing off"
-                    );
-                    tokio::time::sleep(delay).await;
-                    attempt += 1;
-                    continue;
-                }
-                // `docs/OATHNET_API_GUIDE.txt` §13: "5xx: retry up to 3
-                // times with exponential backoff (2s, 4s, 8s)" — identical
-                // numbers to `RATE_LIMIT_BACKOFF`, reused rather than
-                // duplicated. Previously ANY status other than 404/429
-                // (including every 5xx) fell straight to the generic,
-                // unretried `Err` below — a transient server error got no
-                // retry at all despite the documented policy, and the
-                // module `Err`'d out of pagination on what might have been
-                // a one-off blip. After retries are exhausted, still
-                // return `Err` (not `Ok(all_items)`) — a persistent 5xx is
-                // a real failure signal, not a clean "no more pages" or a
-                // quota condition, and must not be silently absorbed as
-                // either.
-                // Status 0 means curl reported no HTTP response at all (a
-                // connection reset after connect) — transient in the same
-                // way a 5xx is, per `CurlClient::get_with_status`'s doc, so
-                // it shares the same retry-then-fail treatment.
-                if code == 0 || (500..600).contains(&code) {
-                    if RATE_LIMIT_BACKOFF.should_retry(attempt) {
-                        let delay = RATE_LIMIT_BACKOFF.delay(attempt);
-                        tracing::debug!(
-                            path,
-                            attempt = attempt + 1,
-                            delay_ms = delay.as_millis() as u64,
-                            status = code,
-                            "oathnet server error — retrying with backoff"
-                        );
-                        tokio::time::sleep(delay).await;
-                        attempt += 1;
-                        continue;
-                    }
-                    return Err(Error::module(
-                        "oathnet",
-                        format!("HTTP {code} after {attempt} retries"),
-                    ));
-                }
-                return Err(Error::module("oathnet", "API returned success=false"));
-            }
-            let data = match env.data {
-                Some(d) => d,
-                // Negative-cache empty data envelopes too (first page only).
-                None => {
-                    if all_items.is_empty() {
-                        cache_put(ck, &[]);
-                    } else {
-                        cache_put(ck, &all_items);
-                    }
-                    return Ok(all_items);
-                }
-            };
-            break serde_json::from_value(data)
-                .map_err(|e| Error::module("oathnet", e.to_string()))?;
         };
 
         // Enrich each page against its OWN `dbname_info` block before
@@ -676,6 +516,206 @@ pub async fn search(
 
     cache_put(ck, &all_items);
     Ok(all_items)
+}
+
+/// Outcome of fetching (and retrying) one page of an OathNet paginated
+/// search — [`search`]'s outer pagination loop matches on this to decide
+/// whether to continue to the next page or stop. `all_items` is handed back
+/// in both variants (the retry loop only ever reads it, for the early-stop
+/// cache write) so the caller keeps owning its accumulator across calls
+/// without a clone.
+enum PageFetch {
+    /// A parsed page of results.
+    Data(SearchData, Vec<Value>),
+    /// Pagination is over (quota exhausted, clean miss, non-JSON response,
+    /// or 429/5xx retries exhausted) — this is the final result.
+    Stop(Vec<Value>),
+}
+
+/// Fetch one OathNet page at `url`, retrying on a transient 429 or 5xx per
+/// `docs/OATHNET_API_GUIDE.txt` §13's documented backoff policy. Extracted
+/// from [`search`]'s inner retry loop unchanged; the only adaptation is that
+/// every path that used to `return Ok(all_items)`/`return Err(...)` directly
+/// out of `search` now does so out of this function instead, via
+/// [`PageFetch`] and `?` respectively — `search`'s `.await?` and `match` on
+/// the result reproduce the exact same control flow one level up.
+async fn fetch_page_with_retry(
+    url: &str,
+    key: &str,
+    path: &str,
+    value: &str,
+    ck: &str,
+    all_items: Vec<Value>,
+) -> Result<PageFetch> {
+    // A genuine 429 is a transient burst rate-limit — the key still has
+    // credits, the request was simply too fast — DISTINCT from true
+    // exhaustion (`"left_today":0`). Diagnosed as a real bug: a 429 used to
+    // be classified identically to true exhaustion, immediately latching
+    // `mark_quota_exhausted()` and abandoning OathNet for the rest of the
+    // scan with zero backoff. Retry with exponential backoff instead; only
+    // latch exhaustion if backoff attempts run out, so a persistent 429
+    // still degrades exactly as before rather than retrying forever.
+    let mut attempt = 0u32;
+    loop {
+        let (body, http_status) = CLIENT.get_with_status(url, key).await?;
+        // Retain the paid response verbatim BEFORE parsing/extraction — operator
+        // policy: purchased data is kept in absolute completeness until manually
+        // deleted (see `util::raw_archive`). The endpoint label is the last two
+        // path segments (e.g. `/service/v2/breach/search` → `breach-search`) and the
+        // query is the looked-up value, so the saved filename names exactly what was
+        // queried. The archive skips empty bodies on its own.
+        let trimmed = path.trim_matches('/');
+        let mut segs = trimmed.rsplit('/').take(2);
+        let endpoint_label = match (segs.next(), segs.next()) {
+            (Some(b), Some(a)) => format!("{a}-{b}"),
+            (Some(b), None) => b.to_owned(),
+            _ => trimmed.to_owned(),
+        };
+        crate::util::raw_archive::record("oathnet", &endpoint_label, value, &body);
+        // Detect actual quota exhaustion. Earlier check used `body.contains("quota")`
+        // which false-positives on legitimate metadata fields like `session_quota`
+        // and `recommended_quota`. Match only true exhaustion signals.
+        // Detect quota exhaustion from STRUCTURALLY-SCOPED signals only. The former
+        // bare-phrase checks ("limit exceeded"/"Daily quota exceeded"/"quota exceeded")
+        // substring-matched the whole body, so a breach record whose free-text field
+        // contained one of those phrases both discarded the entire page AND latched the
+        // daily-quota kill for the rest of the scan. The `"left_today":0` JSON key/value
+        // is specific enough not to collide with payload text, and a genuine 429 is
+        // handled from the parsed envelope below.
+        if body.contains("\"left_today\":0")
+            || body.contains("\"is_unlimited\":false,\"left_today\":0")
+        {
+            mark_quota_exhausted();
+            cache_put(ck.to_string(), &all_items);
+            return Ok(PageFetch::Stop(all_items));
+        }
+        // A non-JSON body — an empty/whitespace 200, an HTML gateway/error page,
+        // or an anti-bot challenge interstitial — is "no results / provider
+        // unavailable this page", NOT a module failure. The bare
+        // `serde_json::from_str` below would otherwise surface it as a cryptic
+        // `expected value at line 1 column 1` hard error that fails the whole
+        // module every query. Mirrors see_know's `parse_response` non-JSON
+        // tolerance; a recognised challenge additionally logs one actionable
+        // diagnostic so the operator knows WHY OathNet is returning nothing.
+        // Returns whatever earlier pages already accumulated rather than
+        // discarding them.
+        let head = body.trim_start();
+        if !head.starts_with('{') && !head.starts_with('[') {
+            if is_challenge_page(&body) {
+                warn_challenge_once();
+            } else if !head.is_empty() {
+                tracing::debug!(
+                    preview = %body.chars().take(80).collect::<String>(),
+                    "oathnet: non-JSON response body treated as no results"
+                );
+            }
+            if all_items.is_empty() {
+                cache_put(ck.to_string(), &[]);
+            } else {
+                cache_put(ck.to_string(), &all_items);
+            }
+            return Ok(PageFetch::Stop(all_items));
+        }
+        let env: Envelope =
+            serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
+        // Record real quota state regardless of success/failure — a
+        // quota-exhausted 403 carries this block too, and that's
+        // exactly the moment an operator most wants to see the real
+        // left_today rather than just "something failed".
+        if let Some(q) = real_quota_from_envelope(&env) {
+            record_real_quota(q);
+        }
+        if !env.success {
+            let code = effective_error_status(
+                env.errors.as_ref().and_then(|e| e.status_code),
+                http_status,
+            );
+            if code == 404 {
+                // Negative-cache the clean miss so subsequent scans of the same
+                // dead target don't re-spend an OathNet lookup confirming it's
+                // still empty. The cache is per-process so this only affects
+                // within-session re-queries. Only a true first-page 404 negative-
+                // caches an empty result; a 404 on a later page still returns
+                // whatever earlier pages already accumulated.
+                if all_items.is_empty() {
+                    cache_put(ck.to_string(), &[]);
+                } else {
+                    cache_put(ck.to_string(), &all_items);
+                }
+                return Ok(PageFetch::Stop(all_items));
+            }
+            if code == 429 {
+                if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
+                    mark_quota_exhausted();
+                    cache_put(ck.to_string(), &all_items);
+                    return Ok(PageFetch::Stop(all_items));
+                }
+                let delay = RATE_LIMIT_BACKOFF.delay(attempt);
+                tracing::debug!(
+                    path,
+                    attempt = attempt + 1,
+                    delay_ms = delay.as_millis() as u64,
+                    "oathnet 429 rate-limited — backing off"
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+                continue;
+            }
+            // `docs/OATHNET_API_GUIDE.txt` §13: "5xx: retry up to 3
+            // times with exponential backoff (2s, 4s, 8s)" — identical
+            // numbers to `RATE_LIMIT_BACKOFF`, reused rather than
+            // duplicated. Previously ANY status other than 404/429
+            // (including every 5xx) fell straight to the generic,
+            // unretried `Err` below — a transient server error got no
+            // retry at all despite the documented policy, and the
+            // module `Err`'d out of pagination on what might have been
+            // a one-off blip. After retries are exhausted, still
+            // return `Err` (not `Ok(all_items)`) — a persistent 5xx is
+            // a real failure signal, not a clean "no more pages" or a
+            // quota condition, and must not be silently absorbed as
+            // either.
+            // Status 0 means curl reported no HTTP response at all (a
+            // connection reset after connect) — transient in the same
+            // way a 5xx is, per `CurlClient::get_with_status`'s doc, so
+            // it shares the same retry-then-fail treatment.
+            if code == 0 || (500..600).contains(&code) {
+                if RATE_LIMIT_BACKOFF.should_retry(attempt) {
+                    let delay = RATE_LIMIT_BACKOFF.delay(attempt);
+                    tracing::debug!(
+                        path,
+                        attempt = attempt + 1,
+                        delay_ms = delay.as_millis() as u64,
+                        status = code,
+                        "oathnet server error — retrying with backoff"
+                    );
+                    tokio::time::sleep(delay).await;
+                    attempt += 1;
+                    continue;
+                }
+                return Err(Error::module(
+                    "oathnet",
+                    format!("HTTP {code} after {attempt} retries"),
+                ));
+            }
+            return Err(Error::module("oathnet", "API returned success=false"));
+        }
+        let data = match env.data {
+            Some(d) => d,
+            // Negative-cache empty data envelopes too (first page only).
+            None => {
+                if all_items.is_empty() {
+                    cache_put(ck.to_string(), &[]);
+                } else {
+                    cache_put(ck.to_string(), &all_items);
+                }
+                return Ok(PageFetch::Stop(all_items));
+            }
+        };
+        return Ok(PageFetch::Data(
+            serde_json::from_value(data).map_err(|e| Error::module("oathnet", e.to_string()))?,
+            all_items,
+        ));
+    }
 }
 
 /// Additively stamp each row with the canonical `breach_date` its OWN `dbname`
