@@ -1372,12 +1372,14 @@ fn collect_key_env_consts(dir: &Path, out: &mut std::collections::HashSet<String
     }
 }
 
-/// Guards the THREE independent places a key-gated module's env var must be
+/// Guards the FOUR independent places a key-gated module's env var must be
 /// documented for an operator to ever discover it — `env_template.txt` (the
 /// `hse provision` template), `util::keys::constants::KNOWN_KEYS` (drives the
-/// Settings-page paste grid), and `install.sh`'s own hand-maintained
-/// `~/.huntsman.env` heredoc (what a fresh `curl | bash` install writes) — all
-/// stay in sync with the modules that actually exist.
+/// Settings-page paste grid), `install.sh`'s own hand-maintained
+/// `~/.huntsman.env` heredoc (what a fresh `curl | bash` install writes), and
+/// the repo-root `.env.example` (the browsable provider catalogue `AUTONOMY.md`
+/// and `OSINT_API_REFERENCE.md` both point operators at) — all stay in sync
+/// with the modules that actually exist.
 ///
 /// This is the inverse direction of `env_template_keys_are_all_consumed`
 /// (documented ⇒ consumed) and closes the gap that let a real drift ship: a
@@ -1456,6 +1458,51 @@ fn key_gated_modules_are_documented_everywhere_an_operator_would_look() {
          `hse provision --env-only --discover` (the single canonical env-template \
          source), so a fresh install offers every key with autonomous discovery \
          and no drift-prone second list"
+    );
+
+    // 4. The repo-root `.env.example` — the browsable provider catalogue
+    //    (signup links, free-tier notes, key formats) that `docs/AUTONOMY.md`
+    //    and `docs/OSINT_API_REFERENCE.md` both send operators to. It was the
+    //    one provisioning surface with NO guard at all, and had already drifted:
+    //    `HUNTSMAN_ALIENVAULT_KEY` was consumed by `ip_reputation`, listed in
+    //    `KNOWN_KEYS` AND in `env_template.txt`, yet missing here.
+    //
+    //    Deliberately FORWARD-ONLY (consumed ⇒ documented). The reverse
+    //    direction is NOT asserted, because `.env.example` legitimately carries
+    //    entries that are not module-read credentials: tuning knobs
+    //    (`HUNTSMAN_DNS_RESOLVERS`, `HUNTSMAN_EMAIL_DOMAINS`,
+    //    `HUNTSMAN_SEARCH_PROXY`, `HUNTSMAN_SEEKNOW_BASE`,
+    //    `HUNTSMAN_SEEKNOW_SCAN_CAP`) plus reserved keys for not-yet-wired
+    //    providers. Asserting documented ⇒ consumed would fail on every one of
+    //    those and pressure a future contributor to DELETE real operator
+    //    documentation just to stay green.
+    let env_example = fs::read_to_string(root.join(".env.example")).unwrap();
+    let example_keys: std::collections::HashSet<&str> = env_example
+        .lines()
+        .map(str::trim)
+        // Entries are commented-out placeholders (`# HUNTSMAN_X=value`), so the
+        // leading `#` is stripped before matching.
+        .map(|l| l.trim_start_matches('#').trim())
+        .filter(|l| l.starts_with("HUNTSMAN_"))
+        // `split_once('=')` (not `split('=').next()`, which never fails) so an
+        // `=` is REQUIRED: a bare `# HUNTSMAN_X` mention with no placeholder
+        // would otherwise count as "documented" while giving the operator
+        // nothing to fill in, letting a real drift pass the guard.
+        .filter_map(|l| l.split_once('=').map(|(name, _)| name))
+        .map(str::trim)
+        .collect();
+    let mut missing_from_example: Vec<&String> = consumed
+        .iter()
+        .filter(|k| !example_keys.contains(k.as_str()))
+        .collect();
+    // `consumed` is a HashSet, so sort for a stable, reproducible failure
+    // message when more than one key is missing.
+    missing_from_example.sort();
+    assert!(
+        missing_from_example.is_empty(),
+        "module(s) read a key the repo-root .env.example never documents (an \
+         operator browsing the provider catalogue can't discover it): \
+         {missing_from_example:?}"
     );
 }
 
