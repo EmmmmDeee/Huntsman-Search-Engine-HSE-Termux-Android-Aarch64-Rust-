@@ -241,20 +241,17 @@ pub(super) fn extract_bluetooth_intel(
         );
         e.tag("wigle");
         e.tag("bluetooth-beacon");
-        let mut ev = Evidence::new(
+        let ev = Evidence::new(
             SRC,
             format!("Bluetooth beacon observed near {target_value}"),
         )
         .with_attr("source", "wigle_bluetooth")
         .with_attr("coordinates", target_value)
         .with_attr("beacons_observed", beacons_observed.to_string());
-        if let Some(oui) = crate::util::oui::classify_mac(mac) {
-            e.tag(format!("vendor:{}", oui.vendor));
-            e.tag(format!("device:{}", oui.class.as_str()));
-            ev = ev
-                .with_attr("vendor", oui.vendor)
-                .with_attr("device_class", oui.class.as_str());
-        }
+        // Shared OUI-classification primitive (parity with the signal_radar
+        // Bluetooth/Wi-Fi paths): also carries the trackable/randomized
+        // distinction AU-122 needs, which this call site previously lacked.
+        let ev = crate::util::oui::tag_oui_classification(&mut e, ev, mac);
         e.add_evidence(ev);
         if let Some(ref ssid) = net.ssid {
             e.tag(format!("name:{}", ssid.trim()));

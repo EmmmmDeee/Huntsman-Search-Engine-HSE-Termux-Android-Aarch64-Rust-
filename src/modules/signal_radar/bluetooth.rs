@@ -67,19 +67,8 @@ pub(super) fn parse_bt_json(stdout: &[u8], scan_id: &str) -> Result<ModuleResult
         // OUI classification — the same primitive the WiGLE path applies, so a
         // radar pin carries the vendor + device class where the address is real
         // hardware, and is flagged `randomized` (not attributed to any vendor)
-        // where it is a locally-administered privacy address. This is the signal
-        // AU-122 partitions on: a randomized MAC is a rotating throwaway, not a
-        // followable device, and must never be plotted as one.
-        if let Some(oui) = crate::util::oui::classify_mac(&dev.address) {
-            e.tag(format!("vendor:{}", oui.vendor));
-            e.tag(format!("device:{}", oui.class.as_str()));
-            let trackable = crate::util::oui::is_locally_administered(&dev.address) == Some(false);
-            e.tag(if trackable { "trackable" } else { "randomized" });
-            ev = ev
-                .with_attr("vendor", oui.vendor)
-                .with_attr("device_class", oui.class.as_str())
-                .with_attr("trackable", trackable.to_string());
-        }
+        // where it is a locally-administered privacy address.
+        ev = crate::util::oui::tag_oui_classification(&mut e, ev, &dev.address);
 
         e.add_evidence(ev);
 

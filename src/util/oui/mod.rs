@@ -136,6 +136,37 @@ pub fn classify_mac(mac: &str) -> Option<OuiInfo> {
     Some(lookup_prefix(&prefix))
 }
 
+/// Tag `entity` with its MAC's OUI vendor + device class, plus whether it's a
+/// followable (`trackable`) or privacy-rotated (`randomized`) address, and
+/// attach the same classification to `ev`'s attributes — returning it for the
+/// caller to chain further. The shared primitive behind every module that
+/// observes a MAC/BSSID (`signal_radar`'s `bluetooth`/`wifi` scanners,
+/// [`crate::modules::wigle`]), so a radar pin or WiGLE beacon carries
+/// identical tagging regardless of which sensor path found it. A no-op
+/// (returns `ev` unchanged) when
+/// [`classify_mac`] can't parse `mac` at all.
+///
+/// AU-122 partitions on the `trackable`/`randomized` tag: a randomized MAC is
+/// a rotating privacy address, not a followable device, and must never be
+/// plotted as one.
+#[must_use]
+pub fn tag_oui_classification(
+    entity: &mut crate::core::entity::Entity,
+    ev: crate::core::entity::Evidence,
+    mac: &str,
+) -> crate::core::entity::Evidence {
+    let Some(oui) = classify_mac(mac) else {
+        return ev;
+    };
+    entity.tag(format!("vendor:{}", oui.vendor));
+    entity.tag(format!("device:{}", oui.class.as_str()));
+    let trackable = is_locally_administered(mac) == Some(false);
+    entity.tag(if trackable { "trackable" } else { "randomized" });
+    ev.with_attr("vendor", oui.vendor)
+        .with_attr("device_class", oui.class.as_str())
+        .with_attr("trackable", trackable.to_string())
+}
+
 /// Internal lookup — pulls the const tables. Public for tests; not
 /// otherwise re-exported.
 pub(crate) fn lookup_prefix(prefix_6hex: &str) -> OuiInfo {

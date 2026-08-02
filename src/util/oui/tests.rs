@@ -108,6 +108,47 @@ use super::*;
     }
 
     #[test]
+    fn tag_oui_classification_tags_vendor_device_and_trackable() {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut e = Entity::new(EntityKind::MacAddress, "3C:07:54:AB:CD:EF", 0.5, "s");
+        let ev = Evidence::new("test", "summary");
+        let ev = tag_oui_classification(&mut e, ev, "3C:07:54:AB:CD:EF");
+        assert!(e.has_tag("vendor:Apple"));
+        assert!(e.has_tag("device:phone"));
+        assert!(e.has_tag("trackable"));
+        assert_eq!(ev.attributes.get("vendor").map(String::as_str), Some("Apple"));
+        assert_eq!(
+            ev.attributes.get("trackable").map(String::as_str),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn tag_oui_classification_flags_a_randomized_address() {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut e = Entity::new(EntityKind::MacAddress, "02:00:00:00:00:01", 0.5, "s");
+        let ev = Evidence::new("test", "summary");
+        let ev = tag_oui_classification(&mut e, ev, "02:00:00:00:00:01");
+        assert!(e.has_tag("randomized"));
+        assert!(!e.has_tag("trackable"));
+        assert_eq!(
+            ev.attributes.get("trackable").map(String::as_str),
+            Some("false")
+        );
+    }
+
+    #[test]
+    fn tag_oui_classification_is_a_noop_on_an_unparseable_mac() {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut e = Entity::new(EntityKind::MacAddress, "not-a-mac", 0.5, "s");
+        let ev = Evidence::new("test", "summary");
+        let before_tags = e.tags.clone();
+        let ev = tag_oui_classification(&mut e, ev, "zz");
+        assert_eq!(e.tags, before_tags, "no tags added for an unparseable MAC");
+        assert!(!ev.attributes.contains_key("vendor"));
+    }
+
+    #[test]
     fn universally_administered_mac_still_classifies_normally() {
         // Control: a real IEEE OUI (U/L bit clear) is unaffected by the
         // randomized-address guard and still resolves to its vendor.
