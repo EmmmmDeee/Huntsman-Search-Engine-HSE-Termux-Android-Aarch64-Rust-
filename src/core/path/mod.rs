@@ -299,8 +299,17 @@ pub fn connect_values(
             }
         }
     }
-    // Rank: fewest hops, then strongest weakest-link, then node sequence (stable);
-    // drop duplicate routes that distinct candidate pairs may have produced.
+    rank_and_cap_paths(&mut all, max_paths);
+    all
+}
+
+/// Rank a batch of candidate [`ConnectionPath`]s in place — fewest hops first,
+/// then strongest weakest-link (`strength`), then node sequence for a stable
+/// deterministic order — drop duplicate routes that distinct candidate pairs
+/// may have produced, and cap to `max_paths`. Shared by [`connect_values`] and
+/// [`connect_cross_scan`], which differ only in the graph the candidates were
+/// gathered from, not in how the result is ranked.
+fn rank_and_cap_paths(all: &mut Vec<ConnectionPath>, max_paths: usize) {
     all.sort_by(|a, b| {
         a.hops
             .cmp(&b.hops)
@@ -309,7 +318,6 @@ pub fn connect_values(
     });
     all.dedup_by(|a, b| a.nodes == b.nodes);
     all.truncate(max_paths);
-    all
 }
 
 /// Max bridging scans loaded when expanding a connection query across the local
@@ -433,14 +441,7 @@ pub fn connect_cross_scan(
             }
         }
     }
-    all.sort_by(|a, b| {
-        a.hops
-            .cmp(&b.hops)
-            .then_with(|| b.strength.total_cmp(&a.strength))
-            .then_with(|| a.nodes.cmp(&b.nodes))
-    });
-    all.dedup_by(|a, b| a.nodes == b.nodes);
-    all.truncate(max_paths);
+    rank_and_cap_paths(&mut all, max_paths);
     all
 }
 

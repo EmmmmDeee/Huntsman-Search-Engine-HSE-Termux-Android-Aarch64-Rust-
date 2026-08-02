@@ -211,7 +211,29 @@ pub fn rank_autonomous_targets<F: Fn(&str) -> usize>(
     exclude: &std::collections::HashSet<String>,
     limit: usize,
 ) -> Vec<AutonomousTarget> {
-    let mut out: Vec<AutonomousTarget> = entities
+    let mut out = score_eligible_targets(entities, degree_of, exclude);
+    out.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
+    out.truncate(limit);
+    out
+}
+
+/// Score every pivotable, [`history::is_cross_scan_candidate`], non-excluded
+/// entity into an [`AutonomousTarget`] via [`autonomous_target_score`] —
+/// unordered, uncapped. Shared by [`rank_autonomous_targets`] (which sorts and
+/// truncates the result directly) and [`plan_autonomous_sweep`] (which feeds
+/// it into the greedy MMR selection below) — the two differ only in what they
+/// do with this pool afterward, not in how it is built.
+fn score_eligible_targets<F: Fn(&str) -> usize>(
+    entities: &[Entity],
+    degree_of: F,
+    exclude: &std::collections::HashSet<String>,
+) -> Vec<AutonomousTarget> {
+    entities
         .iter()
         .filter(|e| !exclude.contains(&e.uid) && history::is_cross_scan_candidate(e))
         .filter_map(|e| {
@@ -225,15 +247,7 @@ pub fn rank_autonomous_targets<F: Fn(&str) -> usize>(
                 cross_scan_degree: degree,
             })
         })
-        .collect();
-    out.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.uid.cmp(&b.uid))
-    });
-    out.truncate(limit);
-    out
+        .collect()
 }
 
 /// Default diversity weight for [`plan_autonomous_sweep`]. `0.0` reproduces the
@@ -282,21 +296,7 @@ pub fn plan_autonomous_sweep<F: Fn(&str) -> usize>(
     diversity: f64,
 ) -> AutonomousPlan {
     // 1) Score every eligible pivotable, non-excluded candidate once.
-    let mut pool: Vec<AutonomousTarget> = entities
-        .iter()
-        .filter(|e| !exclude.contains(&e.uid) && history::is_cross_scan_candidate(e))
-        .filter_map(|e| {
-            let kind = crate::core::scan::TargetKind::from_entity_kind(&e.kind)?;
-            let degree = degree_of(&e.uid);
-            Some(AutonomousTarget {
-                uid: e.uid.clone(),
-                kind,
-                value: e.value.clone(),
-                score: autonomous_target_score(&e.kind, degree, e.c_effective()),
-                cross_scan_degree: degree,
-            })
-        })
-        .collect();
+    let mut pool = score_eligible_targets(entities, degree_of, exclude);
     let considered = pool.len();
     let div = diversity.max(0.0);
     let cap = limit.min(considered);

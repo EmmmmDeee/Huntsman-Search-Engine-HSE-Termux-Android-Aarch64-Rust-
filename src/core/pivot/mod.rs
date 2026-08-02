@@ -100,20 +100,7 @@ pub fn detect(entities: &[Entity], relations: &[Relation]) -> Vec<PivotNode> {
     }
 
     let degree: Vec<usize> = (0..n).map(|i| g.degree(i)).collect();
-    let betweenness = if n <= MAX_BETWEENNESS_NODES {
-        brandes_betweenness(&g)
-    } else {
-        vec![0.0; n]
-    };
-
-    // Exact single-point-of-failure flag per node: a cut vertex is one whose removal
-    // fragments the graph (the precise binary complement to the continuous betweenness),
-    // from the same shared primitive — one extra O(V+E) pass over the graph already built.
-    let (cut_vertices, _bridges) = g.cut_vertices_and_bridges();
-    let mut is_cut = vec![false; n];
-    for c in cut_vertices {
-        is_cut[c] = true;
-    }
+    let (betweenness, is_cut) = betweenness_and_cut_vertices(&g);
 
     // Per-node coreness: the embeddedness/robustness complement to the fragility signals
     // (betweenness, cut vertex). One extra O(V+E) bucket-peel over the same graph.
@@ -169,8 +156,20 @@ pub fn structural_index(
     if n == 0 {
         return HashMap::new();
     }
+    let (betweenness, is_cut) = betweenness_and_cut_vertices(&g);
+    (0..n)
+        .map(|i| (g.uid(i).to_string(), (betweenness[i], is_cut[i])))
+        .collect()
+}
+
+/// The bounded Brandes-betweenness pass ([`MAX_BETWEENNESS_NODES`]-gated, zeroed
+/// above it) plus the per-node cut-vertex (articulation point) flag, both
+/// derived from the same graph build — one shared O(V+E)+O(V·E) computation
+/// [`detect`] and [`structural_index`] each need over their own `g`.
+fn betweenness_and_cut_vertices(g: &Graph) -> (Vec<f64>, Vec<bool>) {
+    let n = g.node_count();
     let betweenness = if n <= MAX_BETWEENNESS_NODES {
-        brandes_betweenness(&g)
+        brandes_betweenness(g)
     } else {
         vec![0.0; n]
     };
@@ -179,9 +178,7 @@ pub fn structural_index(
     for c in cut_vertices {
         is_cut[c] = true;
     }
-    (0..n)
-        .map(|i| (g.uid(i).to_string(), (betweenness[i], is_cut[i])))
-        .collect()
+    (betweenness, is_cut)
 }
 
 /// The relationship graph's **bridges** (cut edges): the links that are single points of
