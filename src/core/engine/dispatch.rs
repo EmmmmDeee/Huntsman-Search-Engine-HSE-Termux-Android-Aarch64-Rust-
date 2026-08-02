@@ -969,133 +969,27 @@ impl super::ScanEngine {
         ctx: &mut ModuleContext,
         state: &mut DispatchState<'_>,
     ) {
-        use tokio::sync::Semaphore;
-        use tokio::task::JoinSet;
-
         // Paid modules are heavier than free ones (per-query billing, tighter
         // provider rate limits), so bound them below the free-phase width. `.max(1)`
         // keeps the `== 0` sequential intent from starving the phase to a deadlock.
         let paid_concurrency = cx.opts.effective_max_concurrent().clamp(1, 4);
-        let sem = Arc::new(Semaphore::new(paid_concurrency));
-        let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
-        let scan_id_arc: Arc<str> = cx.scan_id.into();
-        // Snapshot ctx once for all paid tasks this phase — like Phase 2, they take
-        // `&ModuleContext` (read-only). A paid module therefore does not see keys a
-        // sibling paid module discovers DURING this phase; that cross-dependency is
-        // rare, and the global pool + end-of-phase inject still deliver every key to
-        // Phase 2 (the cascade that actually matters).
-        let ctx_shared: Arc<ModuleContext> = Arc::new(ctx.clone());
-
-        let target_sources = target_distinct_sources(state.entity_map, cx.target);
-        for &idx in self
-            .graph
-            .dispatch_order_for(cx.target.kind, cx.opts.convex_budget)
-        {
-            // Absorb any finished tasks so the `max_entities` gate below reads live.
-            while let Some(joined) = set.try_join_next() {
-                self.absorb_dispatch_outcome(cx, joined, state);
-            }
-            let Some(module) = self.modules.get(idx) else {
-                continue;
-            };
-            if !matches!(module.cost(), ModuleCost::Paid) {
-                continue;
-            }
-            if ctx.cancel.is_cancelled() {
-                break;
-            }
-            // Same entity-budget short-circuit the sequential path and Phase 2
-            // apply. Without it, a scan already AT max_entities kept burning
-            // the most expensive dispatches there are — paid per-query APIs.
-            if cx
-                .opts
-                .max_entities
-                .is_some_and(|cap| state.entity_map.len() >= cap)
-            {
-                break;
-            }
-            let name = module.name();
-            if !module.accepts(cx.target) {
-                continue;
-            }
-            if self.gate_skips(cx, &**module, target_sources, state.stats) {
-                continue;
-            }
-            if !state.dispatched.insert(dispatch_key(name, cx.target)) {
-                state.stats.deduped += 1;
-                self.emit_skipped(cx.scan_id, name, "already dispatched for this target");
-                continue;
-            }
-            // Inter-scan entity cache (C9): a hit replays inline without spawning.
-            let ttl_secs = module.cache_ttl_secs();
-            let cache_key = if ttl_secs > 0 {
-                archive_key(name, cx.target)
-            } else {
-                String::new()
-            };
-            if ttl_secs > 0
-                && let Ok(Some(cached)) = self.store.lookup_module_result_fresh(&cache_key)
-            {
-                self.replay_cached_result(cx, &**module, cached, state);
-                continue;
-            }
-
-            let Ok(permit) = Arc::clone(&sem).acquire_owned().await else {
-                break;
-            };
-            let module_arc: Arc<dyn Module> = Arc::clone(module);
-            let target = cx.target.clone();
-            let ctx_task = Arc::clone(&ctx_shared);
-            let emitter = self.emitter.clone();
-            let sid = Arc::clone(&scan_id_arc);
-            let throttle_ms = cx.opts.effective_throttle_ms();
-            let module_timeout_ms = super::resolve_timeout(cx.opts, &*module_arc);
-            let attack_techniques = module.attack_techniques();
-            // MANDATORY: re-establish the foreign-key scan scope inside the task —
-            // tokio task-locals do NOT propagate across `spawn`, so without this a
-            // paid module's discovered keys / `ApiKey` entities land in the unscoped
-            // bucket and are dropped at drain (a silent data-loss regression).
-            let scope_sid = sid.to_string();
-            set.spawn(crate::util::found_keys::with_scan(scope_sid, async move {
-                let _permit = permit;
-                log_module_dispatch(name, &target);
-                emitter.emit(
-                    &sid,
-                    EventKind::ModuleStart {
-                        module: name.into(),
-                    },
-                );
-                if throttle_ms > 0 {
-                    sleep(Duration::from_millis(throttle_ms)).await;
-                }
-                let result = run_module_guarded(
-                    module_timeout_ms,
-                    name,
-                    module_arc.process(&target, &ctx_task),
-                )
-                .instrument(tracing::info_span!(
-                    "module",
-                    module = name,
-                    scan_id = %sid,
-                    target = %target.value
-                ))
-                .await;
-                DispatchOutcome {
-                    name,
-                    result,
-                    ttl_secs,
-                    cache_key,
-                    attack_techniques,
-                }
-            }));
-        }
-
-        while let Some(joined) = set.join_next().await {
-            if ctx.cancel.is_cancelled() {
-                set.abort_all();
-            }
-            self.absorb_dispatch_outcome(cx, joined, state);
-        }
+        self.run_dispatch_phase(
+            cx,
+            ctx,
+            state,
+            paid_concurrency,
+            |cost| matches!(cost, ModuleCost::Paid),
+            // Paid dispatch is never dedup-exempt: every Paid module (there is no
+            // sub-tier below it) goes through the `dispatch_key` check.
+            |_cost| false,
+            // No spawned paid task ever reads the regional-search ambient
+            // (`search_engines`/`web_crawler` are Free), so `false` here is
+            // observationally identical to the original code's not wrapping the
+            // spawned future in `with_regional` at all — `regional_enabled()`
+            // degrades to `false` when unscoped either way.
+            false,
+        )
+        .await;
         // Fold every key the paid providers discovered (persisted in the global
         // key_pool regardless of task order) into `ctx` ONCE, so Phase 2's clone
         // carries them. Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl,
@@ -1114,27 +1008,65 @@ impl super::ScanEngine {
         ctx: &mut ModuleContext,
         state: &mut DispatchState<'_>,
     ) -> Result<()> {
-        use tokio::sync::Semaphore;
-        use tokio::task::JoinSet;
-
-        // ctx now contains any keys discovered in Phase 1. Same index-iteration
-        // pattern as Phase 1 — Arc::clone moves to the single spawn site below,
-        // instead of being paid for every candidate during candidate-list
-        // construction.
         // `effective_max_concurrent()` bounds the operator-supplied value to
         // `MAX_CONCURRENT`: a raw `max_concurrent` reaches here straight from
         // API/CLI input, and `Semaphore::new` panics above `MAX_PERMITS`, so the
         // clamp is what stops a config value from crashing the scan (and from
         // defeating the gentle-pacing default). The `== 0` sequential branch (see
         // `dispatch_target`) is unaffected (the clamp preserves 0).
-        let sem = Arc::new(Semaphore::new(cx.opts.effective_max_concurrent()));
+        self.run_dispatch_phase(
+            cx,
+            ctx,
+            state,
+            cx.opts.effective_max_concurrent(),
+            |cost| !matches!(cost, ModuleCost::Paid),
+            // Free-cost modules are exempt from the dispatch-key dedup check;
+            // only KeyGated survivors of this phase's cost filter still dedup.
+            |cost| matches!(cost, ModuleCost::Free),
+            crate::util::regional::regional_enabled(),
+        )
+        .await;
+        Ok(())
+    }
+
+    /// The shared bounded-`JoinSet` dispatch loop behind both concurrent-dispatch
+    /// phases ([`run_paid_phase`](Self::run_paid_phase),
+    /// [`spawn_free_phase`](Self::spawn_free_phase)): walk this target's dispatch
+    /// order, opportunistically drain finished tasks so the `max_entities` gate
+    /// reads live, filter by `cost_filter`, re-check `accepts()`/`gate_skips`,
+    /// dedup via `dispatch_key` unless `dedup_exempt` says otherwise, replay a
+    /// fresh inter-scan cache hit inline, then spawn a permit-bounded task doing
+    /// throttle + tracing span + [`run_module_guarded`]. `regional_on` is always
+    /// passed to `with_regional` (never conditionally skipped) — passing `false`
+    /// for a phase whose spawned tasks never read the regional ambient is
+    /// observationally identical to not wrapping at all, since
+    /// [`crate::util::regional::regional_enabled`] degrades to `false` when
+    /// unscoped, so this stays one spawn shape instead of two.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_dispatch_phase(
+        &self,
+        cx: &DispatchCx<'_>,
+        ctx: &mut ModuleContext,
+        state: &mut DispatchState<'_>,
+        concurrency: usize,
+        cost_filter: impl Fn(ModuleCost) -> bool,
+        dedup_exempt: impl Fn(ModuleCost) -> bool,
+        regional_on: bool,
+    ) {
+        use tokio::sync::Semaphore;
+        use tokio::task::JoinSet;
+
+        let sem = Arc::new(Semaphore::new(concurrency));
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
         let scan_id_arc: Arc<str> = cx.scan_id.into();
-        // Share one context across all spawned modules in this round instead of
+        // Share one context across all spawned modules in this phase instead of
         // deep-cloning the keys map + scan_id per dispatch. Modules take
-        // `&ModuleContext` (read-only) and ctx is stable within a round, so an
+        // `&ModuleContext` (read-only) and ctx is stable within a phase, so an
         // Arc bump per spawn replaces N HashMap/String clones — a real win on a
-        // low-RAM phone with ~80 modules/round.
+        // low-RAM phone with ~80 modules/round. (A paid module therefore does not
+        // see keys a sibling paid module discovers DURING this phase; that
+        // cross-dependency is rare, and the global pool + end-of-phase
+        // `hot_inject_keys` still deliver every key to Phase 2.)
         let ctx_shared: Arc<ModuleContext> = Arc::new(ctx.clone());
 
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
@@ -1154,12 +1086,15 @@ impl super::ScanEngine {
             let Some(module) = self.modules.get(idx) else {
                 continue;
             };
-            if matches!(module.cost(), ModuleCost::Paid) {
+            if !cost_filter(module.cost()) {
                 continue;
             }
             if ctx.cancel.is_cancelled() {
                 break;
             }
+            // Same entity-budget short-circuit the sequential path applies.
+            // Without it, a scan already AT max_entities kept burning dispatches
+            // — including, in the paid phase, the most expensive there are.
             if cx
                 .opts
                 .max_entities
@@ -1168,14 +1103,13 @@ impl super::ScanEngine {
                 break;
             }
             let name = module.name();
-
             if !module.accepts(cx.target) {
                 continue;
             }
             if self.gate_skips(cx, &**module, target_sources, state.stats) {
                 continue;
             }
-            if !matches!(module.cost(), ModuleCost::Free)
+            if !dedup_exempt(module.cost())
                 && !state.dispatched.insert(dispatch_key(name, cx.target))
             {
                 state.stats.deduped += 1;
@@ -1191,7 +1125,6 @@ impl super::ScanEngine {
             } else {
                 String::new()
             };
-
             // Cache hit: feed result directly without spawning a task.
             if ttl_secs > 0
                 && let Ok(Some(cached)) = self.store.lookup_module_result_fresh(&cache_key)
@@ -1203,10 +1136,9 @@ impl super::ScanEngine {
             let Ok(permit) = Arc::clone(&sem).acquire_owned().await else {
                 break;
             };
-
             let module_arc: Arc<dyn Module> = Arc::clone(module);
             let target = cx.target.clone();
-            let ctx = Arc::clone(&ctx_shared);
+            let ctx_task = Arc::clone(&ctx_shared);
             let emitter = self.emitter.clone();
             let sid = Arc::clone(&scan_id_arc);
             let throttle_ms = cx.opts.effective_throttle_ms();
@@ -1217,25 +1149,20 @@ impl super::ScanEngine {
             // moves into the task for free and rides back out in the outcome,
             // where `finalise_module_result` stamps each admitted entity.
             let attack_techniques = module.attack_techniques();
-
-            // Re-set the foreign-key scan-scope AND regional-search ambients
-            // INSIDE the spawned task: tokio task-locals do NOT propagate
-            // across `spawn`, so without this the concurrent path's
-            // `scan_body` calls would land in the unscoped bucket and be lost
-            // at drain, and `search_engines::regional_enabled()` would
-            // silently read the unscoped `false` default instead of this
-            // scan's actual setting (PROBLEM_TREE T2.11). Both `with_scan`
-            // and `with_regional` are allow-listed pure `core → util` leaves.
-            // `regional_enabled()` reads the CURRENT task's ambient — still
-            // valid here since dispatch runs on the same task `with_regional`
-            // was established on in `run_with_ledger`, right up to this spawn.
+            // MANDATORY: re-establish the foreign-key scan scope AND the
+            // regional-search ambient INSIDE the spawned task: tokio task-locals
+            // do NOT propagate across `spawn`, so without this a module's
+            // discovered keys / `ApiKey` entities would land in the unscoped
+            // bucket and be dropped at drain (a silent data-loss regression), and
+            // `regional_enabled()` would silently read the unscoped `false`
+            // default instead of this scan's actual setting (PROBLEM_TREE T2.11).
+            // Both `with_scan` and `with_regional` are allow-listed pure
+            // `core -> util` leaves.
             let scope_sid = sid.to_string();
-            let regional_on = crate::util::regional::regional_enabled();
             set.spawn(crate::util::found_keys::with_scan(
                 scope_sid,
                 crate::util::regional::with_regional(regional_on, async move {
                     let _permit = permit;
-
                     log_module_dispatch(name, &target);
                     emitter.emit(
                         &sid,
@@ -1243,7 +1170,6 @@ impl super::ScanEngine {
                             module: name.into(),
                         },
                     );
-
                     // Politeness delay BEFORE hitting the upstream — the throttle
                     // exists to be polite to providers, i.e. to space out the CALLS.
                     // It must come before the fetch, not after: a spawned task's result
@@ -1257,7 +1183,6 @@ impl super::ScanEngine {
                     if throttle_ms > 0 {
                         sleep(Duration::from_millis(throttle_ms)).await;
                     }
-
                     // `.instrument()` (not an ambient span) because a spawned task
                     // does NOT inherit the dispatcher's current span — without it the
                     // external HTTP logs from this concurrently-running module would
@@ -1266,7 +1191,7 @@ impl super::ScanEngine {
                     let result = run_module_guarded(
                         module_timeout_ms,
                         name,
-                        module_arc.process(&target, &ctx),
+                        module_arc.process(&target, &ctx_task),
                     )
                     .instrument(tracing::info_span!(
                         "module",
@@ -1275,7 +1200,6 @@ impl super::ScanEngine {
                         target = %target.value
                     ))
                     .await;
-
                     DispatchOutcome {
                         name,
                         result,
@@ -1291,7 +1215,7 @@ impl super::ScanEngine {
             // Operator/wall-time cancel during the drain: abort the remaining
             // in-flight modules so a single dispatch's post-cancel tail is
             // bounded to near-zero instead of up to one module-timeout (8
-            // modules × a 20 s timeout is 20 s of dead wait per candidate after
+            // modules x a 20 s timeout is 20 s of dead wait per candidate after
             // the deadline). The just-joined result below is still finalised —
             // we keep everything already collected; the aborted tasks come back
             // as cancelled joins on the next iterations and are skipped.
@@ -1302,7 +1226,6 @@ impl super::ScanEngine {
             }
             self.absorb_dispatch_outcome(cx, joined, state);
         }
-        Ok(())
     }
 
     /// Absorb one joined concurrent-dispatch result: archive it to the
