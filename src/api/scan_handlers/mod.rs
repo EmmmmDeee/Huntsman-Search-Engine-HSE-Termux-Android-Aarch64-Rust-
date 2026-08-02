@@ -2,7 +2,12 @@
 //!
 //! Split by responsibility:
 //! - [`core`] — CRUD lifecycle: create, cancel, list, get, delete, rerun,
-//!   import, batch, radar, plan preview, events history.
+//!   import, batch, plan preview, events history.
+//! - [`autonomous`] — Seedless investigation: the platform ranks its own
+//!   collected entities and dispatches on its own initiative (auto, plan
+//!   preview, multi-target sweep).
+//! - [`radar`] — Live device-sensor sweeps: one-shot, continuous, and the
+//!   persisted-history review surfaces.
 //! - [`analysis`] — Entity analysis: entities, diff, filter, facets,
 //!   correlations, relations, network.
 //! - [`intel`] — Intelligence synthesis: leads, timeline, communities,
@@ -16,9 +21,11 @@ use crate::core::entity::scan_id;
 use crate::core::scan::{Scan, ScanRequest, Target};
 
 pub mod analysis;
+pub mod autonomous;
 pub mod core;
 pub mod diagnostics;
 pub mod intel;
+pub mod radar;
 
 // ─── Public re-exports ────────────────────────────────────────────────────────
 
@@ -27,21 +34,22 @@ pub use analysis::{
     scan_entities_facets, scan_entities_filter, scan_exposure, scan_identities, scan_location,
     scan_network, scan_relations, scan_snake_svg, scan_stealer_rows,
 };
+pub use autonomous::{scan_auto, scan_auto_plan, scan_auto_sweep};
 pub use core::{
-    plan_preview, radar_history, radar_live, radar_recurring, radar_sweep, scan_auto,
-    scan_auto_plan, scan_auto_sweep, scan_batch, scan_cancel, scan_create, scan_delete,
-    scan_events_history, scan_get, scan_import, scan_list, scan_profiles, scan_rerun,
+    plan_preview, scan_batch, scan_cancel, scan_create, scan_delete, scan_events_history, scan_get,
+    scan_import, scan_list, scan_profiles, scan_rerun,
 };
 pub use diagnostics::{
     scan_audit, scan_benchmark, scan_duplicates, scan_gaps, scan_metrics, scan_pivots,
 };
 pub use intel::{scan_communities, scan_leads, scan_path, scan_timeline, scan_trust};
+pub use radar::{radar_history, radar_live, radar_recurring, radar_sweep};
 
 // Re-exported for tests (private helper, only needed in the test module).
 #[cfg(test)]
-pub(crate) use core::radar_scan_spec;
-#[cfg(test)]
 pub(crate) use diagnostics::snapshot_still_relevant_to;
+#[cfg(test)]
+pub(crate) use radar::radar_scan_spec;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
