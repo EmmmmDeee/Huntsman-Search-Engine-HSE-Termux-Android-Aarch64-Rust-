@@ -111,8 +111,13 @@ The loop runs these stages in order. All are load-bearing; none may be skipped.
 Each cycle appends one row. Rejected candidates are recorded too, so they are
 not re-proposed. This is committed state, not memory.
 
+Rows are written **one cycle in arrears**: a cycle's row records its PR number,
+which only exists after SHIP, so cycle *N* records cycle *N−1*. This keeps every
+row factual rather than predicting an unassigned number.
+
 | Cycle | Date | PR | Unit | Leverage rationale | Evidence | Rejected-with-reason |
 |------:|------|----|------|--------------------|----------|----------------------|
 | — | 2026-08-02 | — | Charter established | Foundation for the never-regress recursive loop | `tests/autonomy_charter.rs` guards every invariant/stage | — |
+| 1 | 2026-08-02 | #329 | Close the key-guard blind spot that hid `HUNTSMAN_GITHUB_TOKEN` | Guard saw only `const …ENV` declarations, so inline `key_opt("…")` reads were exempt — a registered, poolable credential read by 3 live modules was invisible to Settings, `hse provision` and `hse doctor`. Fixing the detector closes the whole bug class, not one instance. | Red: `module(s) read a key env_template.txt never mentions … ["HUNTSMAN_GITHUB_TOKEN"]`. Green: architecture 40, util::keys 29, app::doctor 13. Confirmed end-to-end — `hse doctor` now ranks it `[multiplier]`. | Adding `/stealer` to `ENDPOINT_COSTS` (earlier cycle): rejected — endpoint is live-verified 404 and never called, so a cost row would be dead config contradicting its removal. |
 
 <!-- New ledger rows are appended above this line by the RECORD stage. -->
