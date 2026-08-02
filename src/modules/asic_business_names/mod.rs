@@ -18,16 +18,15 @@ use async_trait::async_trait;
 use crate::core::confidence;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::ckan::{Response as CkanResp, datastore_search_url, field_str};
-use crate::util::http::fetch_json;
+use crate::util::ckan::field_str;
 
 const SRC: &str = "asic_business_names";
 /// data.gov.au CKAN action base — `datastore_search` is appended by
-/// [`datastore_search_url`].
+/// [`crate::util::ckan::datastore_search`].
 const CKAN_BASE: &str = "https://data.gov.au/data/api/3/action";
 /// ASIC – Business Names dataset (data.gov.au resource).
 const RES: &str = "55ad4b1c-5eeb-44ea-8b29-d410da431be3";
@@ -103,23 +102,17 @@ impl Module for AsicBusinessNames {
     }
 }
 
-/// Query the Business Names datastore by free-text name, via the shared CKAN
-/// envelope (T2.118). Every real failure now surfaces instead of collapsing into
-/// an empty `Vec` indistinguishable from "no registration by this name":
-/// `fetch_json` propagates transport/status/parse failures via `?`, and a
-/// `success == Some(false)` envelope (returned by CKAN with HTTP 200 on a bad
-/// resource id / portal error) becomes an explicit `Error::module`. A genuine
-/// empty result set is still the honest clean miss.
+/// Query the Business Names datastore by free-text name, via the shared
+/// [`crate::util::ckan::datastore_search`] (T2.118). Every real failure now
+/// surfaces instead of collapsing into an empty `Vec` indistinguishable from
+/// "no registration by this name". A genuine empty result set is still the
+/// honest clean miss.
 async fn ckan_query(ctx: &ModuleContext, name: &str) -> Result<Vec<Map<String, Value>>> {
-    let url = datastore_search_url(CKAN_BASE, RES, name, MAX_HITS);
-    let resp: CkanResp = fetch_json(&ctx.http, SRC, &url).await?;
-    if resp.success == Some(false) {
-        return Err(Error::module(
-            SRC,
-            "CKAN datastore_search returned success=false (bad resource id or portal error)",
-        ));
-    }
-    Ok(resp.result.map(|r| r.records).unwrap_or_default())
+    Ok(
+        crate::util::ckan::datastore_search(&ctx.http, CKAN_BASE, RES, name, MAX_HITS, SRC)
+            .await?
+            .records,
+    )
 }
 
 /// Lower-cased alphanumeric name tokens (≥2 chars).

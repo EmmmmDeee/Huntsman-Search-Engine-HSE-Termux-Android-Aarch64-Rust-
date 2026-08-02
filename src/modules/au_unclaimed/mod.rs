@@ -45,12 +45,10 @@ use async_trait::async_trait;
 
 use crate::core::{
     entity::EntityKind,
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::ckan::Response as CkanResp;
-use crate::util::http::fetch_json;
 
 const SRC: &str = "au_unclaimed";
 
@@ -133,9 +131,10 @@ impl Module for AuUnclaimed {
 ///
 /// Extends `out` in place. QLD is the *only* pass (see the module docs for why
 /// every other state/territory lacks a queryable datastore), so a genuine
-/// failure of its **primary** query — a transport error, non-2xx status, or
-/// unparseable body (propagated by `fetch_json` via `?`), or a CKAN
-/// `success:false` application error — is returned as a real `Error` (T2.119)
+/// failure of its **primary** query — a transport error, non-2xx status,
+/// unparseable body, or a CKAN `success:false` application error, all
+/// surfaced by [`crate::util::ckan::datastore_search`] — is returned as a
+/// real `Error` (T2.119)
 /// rather than swallowed into an empty result; [`AuUnclaimed::process`]
 /// surfaces it so a real outage of the last QLD source is visible instead of
 /// masquerading as "no unclaimed money found." A genuinely empty result set
@@ -144,8 +143,8 @@ impl Module for AuUnclaimed {
 /// best-effort enrichment layered on the primary records already in hand.
 async fn process_qld(target: &Target, ctx: &ModuleContext, out: &mut ModuleResult) -> Result<()> {
     use qld_helpers::{
-        derive_query, exact_postcodes, merge_records, query_url, records_to_entities,
-        suburbs_to_entities,
+        ACTION_BASE, MAX_RECORDS, RESOURCE_ID, derive_query, exact_postcodes, merge_records,
+        records_to_entities, suburbs_to_entities,
     };
 
     let full = target.value.trim();
@@ -154,26 +153,36 @@ async fn process_qld(target: &Target, ctx: &ModuleContext, out: &mut ModuleResul
     }
     let surname = derive_query(target);
 
-    let broad: CkanResp = fetch_json(&ctx.http, qld_helpers::SRC, &query_url(surname)).await?;
     // A `success:false` (bad resource id / portal error) is a genuine
     // application-level failure of the sole QLD source, not a "no data" result —
     // surface it as a module error (mirrors `acnc_charities`/the ASIC modules).
-    if broad.success == Some(false) {
-        return Err(Error::module(
-            qld_helpers::SRC,
-            "CKAN datastore_search returned success=false (bad resource id or portal error)",
-        ));
-    }
-    let Some(broad_res) = broad.result else {
-        return Ok(());
-    };
+    // A response with no `result` field at all resolves to an empty (honest
+    // clean-miss) set via `datastore_search`.
+    let broad_res = crate::util::ckan::datastore_search(
+        &ctx.http,
+        ACTION_BASE,
+        RESOURCE_ID,
+        surname,
+        MAX_RECORDS,
+        qld_helpers::SRC,
+    )
+    .await?;
     let total = broad_res.total.unwrap_or(broad_res.records.len() as u64);
     let mut records = broad_res.records;
 
+    // Best-effort enrichment: a failure of this secondary exact-name fetch
+    // (transport error or CKAN `success:false`) is silently skipped, not
+    // propagated — only the primary (broad) query above is a hard failure.
     if surname != full
-        && let Ok(exact) =
-            fetch_json::<CkanResp>(&ctx.http, qld_helpers::SRC, &query_url(full)).await
-        && let Some(exact_res) = exact.result
+        && let Ok(exact_res) = crate::util::ckan::datastore_search(
+            &ctx.http,
+            ACTION_BASE,
+            RESOURCE_ID,
+            full,
+            MAX_RECORDS,
+            qld_helpers::SRC,
+        )
+        .await
     {
         records = merge_records(exact_res.records, records);
     }

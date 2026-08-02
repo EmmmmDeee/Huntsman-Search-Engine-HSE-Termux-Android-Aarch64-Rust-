@@ -56,11 +56,6 @@ pub(super) fn record_is_exact(rec: &Map<String, Value>, query: &str) -> bool {
             .any(|n| name_matches_query(n, query))
 }
 
-/// The datastore_search URL for one full-text query.
-pub(super) fn query_url(q: &str) -> String {
-    crate::util::ckan::datastore_search_url(super::ACTION_BASE, super::RESOURCE_ID, q, MAX_RECORDS)
-}
-
 /// Build the geocodable registered-address string from the locality fields
 /// ("Sydney, NSW 2000, Australia"). The street line (`Address_Line_1`) often
 /// can't be geocoded reliably (e.g. "Room 202, Codrington Building (H69)…") so it

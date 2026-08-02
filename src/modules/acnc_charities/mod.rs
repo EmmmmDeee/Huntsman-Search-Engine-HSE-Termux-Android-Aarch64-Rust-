@@ -37,9 +37,6 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::ckan::Response as CkanResp;
-use crate::util::http::fetch_json;
-
 mod entity;
 #[cfg(test)]
 mod tests;
@@ -144,18 +141,18 @@ impl Module for AcncCharities {
             return Ok(ModuleResult::new());
         }
 
-        let resp: CkanResp = fetch_json(&ctx.http, SRC, &entity::query_url(query)).await?;
-        // Surface an application-level CKAN failure (success=false) as a module
-        // error rather than masquerading as "no findings".
-        if resp.success == Some(false) {
-            return Err(crate::core::error::Error::module(
-                SRC,
-                "CKAN datastore_search returned success=false (bad resource id or portal error)",
-            ));
-        }
-        let Some(res) = resp.result else {
-            return Ok(ModuleResult::new());
-        };
+        // Surfaces an application-level CKAN failure (success=false) as a module
+        // error rather than masquerading as "no findings"; a response with no
+        // `result` field at all resolves to an empty (honest clean-miss) set.
+        let res = crate::util::ckan::datastore_search(
+            &ctx.http,
+            ACTION_BASE,
+            RESOURCE_ID,
+            query,
+            MAX_RECORDS,
+            SRC,
+        )
+        .await?;
         let total = res.total.unwrap_or(res.records.len() as u64);
 
         let mut out = ModuleResult::new();

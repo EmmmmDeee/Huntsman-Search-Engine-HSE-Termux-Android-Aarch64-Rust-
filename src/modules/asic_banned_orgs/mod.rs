@@ -18,16 +18,15 @@ use async_trait::async_trait;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::ckan::{Response as CkanResp, datastore_search_url, field_str};
-use crate::util::http::fetch_json;
+use crate::util::ckan::field_str;
 
 const SRC: &str = "asic_banned_orgs";
 /// data.gov.au CKAN action base — `datastore_search` is appended by
-/// [`datastore_search_url`].
+/// [`crate::util::ckan::datastore_search`].
 const CKAN_BASE: &str = "https://data.gov.au/data/api/3/action";
 /// ASIC – Banned and Disqualified Organisations dataset (data.gov.au resource).
 const RES: &str = "ced03961-e6f7-4263-895a-0fd1d7996043";
@@ -96,25 +95,19 @@ impl Module for AsicBannedOrgs {
 }
 
 /// Query the Banned & Disqualified Organisations datastore by free-text name,
-/// via the shared CKAN envelope (T2.118). Unlike the previous hand-rolled fetch
-/// — which collapsed a transport error, a non-2xx status, a body-read failure,
-/// AND a CKAN application error (`success: false`, returned with HTTP 200) all
-/// into an empty `Vec` indistinguishable from a genuine "no banned org by this
-/// name" — every real failure now surfaces: `fetch_json` propagates transport/
-/// status/parse failures via `?`, and a `success == Some(false)` envelope
-/// (bad resource id / datastore offline / rate-limit) becomes an explicit
-/// `Error::module`. A genuine empty result set (no `result`, or an empty
-/// `records`) is still the honest clean miss.
+/// via the shared [`crate::util::ckan::datastore_search`] (T2.118). Unlike
+/// the previous hand-rolled fetch — which collapsed a transport error, a
+/// non-2xx status, a body-read failure, AND a CKAN application error
+/// (`success: false`, returned with HTTP 200) all into an empty `Vec`
+/// indistinguishable from a genuine "no banned org by this name" — every
+/// real failure now surfaces as an `Error`. A genuine empty result set (no
+/// `result`, or an empty `records`) is still the honest clean miss.
 async fn ckan_query(ctx: &ModuleContext, name: &str) -> Result<Vec<Map<String, Value>>> {
-    let url = datastore_search_url(CKAN_BASE, RES, name, MAX_HITS);
-    let resp: CkanResp = fetch_json(&ctx.http, SRC, &url).await?;
-    if resp.success == Some(false) {
-        return Err(Error::module(
-            SRC,
-            "CKAN datastore_search returned success=false (bad resource id or portal error)",
-        ));
-    }
-    Ok(resp.result.map(|r| r.records).unwrap_or_default())
+    Ok(
+        crate::util::ckan::datastore_search(&ctx.http, CKAN_BASE, RES, name, MAX_HITS, SRC)
+            .await?
+            .records,
+    )
 }
 
 fn name_tokens(name: &str) -> Vec<String> {

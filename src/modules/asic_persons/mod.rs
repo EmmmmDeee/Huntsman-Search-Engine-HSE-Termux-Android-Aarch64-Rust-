@@ -37,12 +37,11 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::ckan::{Response as CkanResp, datastore_search_url, field_str};
-use crate::util::http::fetch_json;
+use crate::util::ckan::field_str;
 
 const SRC: &str = "asic_persons";
 /// data.gov.au CKAN action base — `datastore_search` is appended by
-/// [`datastore_search_url`].
+/// [`crate::util::ckan::datastore_search`].
 const CKAN_BASE: &str = "https://data.gov.au/data/api/3/action";
 /// ASIC – Banned and Disqualified Persons dataset (data.gov.au resource).
 const BANNED_RES: &str = "741da9e3-7e0c-458e-830c-c518698e1788";
@@ -172,29 +171,26 @@ impl Module for AsicPersons {
     }
 }
 
-/// Query one CKAN datastore resource by free-text name, via the shared CKAN
-/// envelope (T2.118). Returns the matched records, or a real `Error` when the
-/// register genuinely failed to answer — a transport error, non-2xx status, or
-/// unparseable body (propagated by `fetch_json` via `?`), or a CKAN application
-/// error (`success: false`, which CKAN returns with HTTP 200 on a bad resource
-/// id / offline datastore / rate-limit). Previously every one of these
-/// collapsed into an empty `Vec` indistinguishable from a genuine "not in this
-/// register"; `process()` now folds the three registers' results so a real
-/// outage surfaces instead (see its `or_hard_failure` fold).
+/// Query one CKAN datastore resource by free-text name, via the shared
+/// [`crate::util::ckan::datastore_search`] (T2.118). Returns the matched
+/// records, or a real `Error` when the register genuinely failed to answer —
+/// a transport error, non-2xx status, unparseable body, or a CKAN
+/// application error (`success: false`, which CKAN returns with HTTP 200 on
+/// a bad resource id / offline datastore / rate-limit). Previously every one
+/// of these collapsed into an empty `Vec` indistinguishable from a genuine
+/// "not in this register"; `process()` now folds the three registers'
+/// results so a real outage surfaces instead (see its `or_hard_failure`
+/// fold).
 async fn ckan_query(
     ctx: &ModuleContext,
     resource_id: &str,
     name: &str,
 ) -> Result<Vec<Map<String, Value>>> {
-    let url = datastore_search_url(CKAN_BASE, resource_id, name, MAX_HITS);
-    let resp: CkanResp = fetch_json(&ctx.http, SRC, &url).await?;
-    if resp.success == Some(false) {
-        return Err(Error::module(
-            SRC,
-            "CKAN datastore_search returned success=false (bad resource id or portal error)",
-        ));
-    }
-    Ok(resp.result.map(|r| r.records).unwrap_or_default())
+    Ok(
+        crate::util::ckan::datastore_search(&ctx.http, CKAN_BASE, resource_id, name, MAX_HITS, SRC)
+            .await?
+            .records,
+    )
 }
 
 /// Lower-cased alphabetic name tokens (≥2 chars) of a full name.

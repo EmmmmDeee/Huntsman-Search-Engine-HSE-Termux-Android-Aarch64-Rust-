@@ -200,11 +200,6 @@ fn clean_person_name(raw: &str) -> Option<String> {
     Some(crate::util::str_util::title_case(&joined))
 }
 
-/// The datastore_search URL for one full-text query.
-pub(super) fn query_url(q: &str) -> String {
-    crate::util::ckan::datastore_search_url(ACTION_BASE, RESOURCE_ID, q, MAX_RECORDS)
-}
-
 /// Merge an exact-name (`primary`) record set *ahead of* a broad surname
 /// (`secondary`) set, de-duplicating on the CKAN row `_id`. Exact rows lead so
 /// the seeded person's own record survives the `MAX_RECORDS` cap even when a

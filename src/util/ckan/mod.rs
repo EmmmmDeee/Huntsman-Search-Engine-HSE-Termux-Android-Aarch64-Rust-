@@ -11,6 +11,8 @@
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
+use crate::core::error::{Error, Result};
+
 /// The CKAN `action/datastore_search` response envelope.
 ///
 /// CKAN action endpoints return HTTP 200 even on application errors (bad
@@ -33,7 +35,7 @@ pub struct Response {
 /// they are kept as raw JSON objects and read defensively via [`field_str`]
 /// rather than risking a deserialize failure on a numerically-typed column
 /// (an `ABN`/`Amount`/`PCode` that the datastore happens to type as a number).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct ResultSet {
     #[serde(default)]
     pub total: Option<u64>,
@@ -67,6 +69,38 @@ pub fn datastore_search_url(action_base: &str, resource_id: &str, q: &str, limit
         "{action_base}/datastore_search?resource_id={resource_id}&q={}&limit={limit}",
         crate::util::http::urlencode(q)
     )
+}
+
+/// Fetch and validate one CKAN `datastore_search` query: builds the URL via
+/// [`datastore_search_url`], performs the request, and surfaces an
+/// application-level `success: false` envelope (CKAN's own "bad resource id
+/// / datastore offline / rate-limit" signal, returned with HTTP 200) as an
+/// [`Error::module`] — every real failure now surfaces instead of collapsing
+/// into an empty result indistinguishable from a genuine "no findings".
+/// A response that carries no `result` field at all is the honest empty
+/// case and resolves to a default (empty) [`ResultSet`], not an error.
+///
+/// Shared by every CKAN-backed module (`acnc_charities`, `asic_persons`,
+/// `asic_banned_orgs`, `asic_business_names`, `au_unclaimed`'s QLD path) —
+/// each previously re-implemented this identical fetch-validate-unwrap
+/// sequence, only the portal/resource/query differing.
+pub async fn datastore_search(
+    client: &reqwest::Client,
+    action_base: &str,
+    resource_id: &str,
+    q: &str,
+    limit: usize,
+    src: &'static str,
+) -> Result<ResultSet> {
+    let url = datastore_search_url(action_base, resource_id, q, limit);
+    let resp: Response = crate::util::http::fetch_json(client, src, &url).await?;
+    if resp.success == Some(false) {
+        return Err(Error::module(
+            src,
+            "CKAN datastore_search returned success=false (bad resource id or portal error)",
+        ));
+    }
+    Ok(resp.result.unwrap_or_default())
 }
 
 #[cfg(test)]
