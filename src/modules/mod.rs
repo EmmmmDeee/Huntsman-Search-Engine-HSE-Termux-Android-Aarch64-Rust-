@@ -50,7 +50,6 @@ pub mod comb_search;
 pub mod contact_enrich;
 pub mod cpan_user;
 pub mod crates_io;
-pub mod credential_entropy_analyzer;
 pub mod criminal_ip;
 pub mod crtsh;
 pub mod dehashed;
@@ -78,7 +77,6 @@ pub mod employer_pivot;
 pub mod epieos;
 pub mod exa_search;
 pub mod exif_geo;
-pub mod external_credential_discovery;
 pub mod fediverse;
 pub mod fofa;
 pub mod fullcontact;
@@ -468,8 +466,6 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             // OSINT orchestration API modules
             Arc::new(seon::Seon),
             Arc::new(key_discovery::KeyDiscoveryModule),
-            Arc::new(external_credential_discovery::ExternalCredentialDiscovery),
-            Arc::new(credential_entropy_analyzer::CredentialEntropyAnalyzer),
             Arc::new(opensanctions::OpenSanctions),
             Arc::new(keybase::Keybase),
             Arc::new(emailrep::EmailRep),

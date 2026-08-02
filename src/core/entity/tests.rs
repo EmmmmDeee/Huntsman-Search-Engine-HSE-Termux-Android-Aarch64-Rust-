@@ -535,24 +535,11 @@ fn c_eff_clamped_to_one() {
 }
 
 #[test]
-fn tier_rank_is_monotonic_and_finite() {
-    // Tier ladder used by the bounded best-first halting bound.
-    assert!(Classification::Candidate.rank() < Classification::Probable.rank());
-    assert!(Classification::Probable.rank() < Classification::Verified.rank());
+fn classification_count_matches_the_tier_ladder() {
+    // Pinned so a future tier addition/removal is a deliberate edit, not a
+    // silent drift — tests/halting.rs's expansion bound depends on this
+    // exact value staying in sync with Classification's own variant count.
     assert_eq!(Classification::COUNT, 3);
-    // Highest rank must be < COUNT so it indexes a finite ladder.
-    assert!(Classification::Verified.rank() < Classification::COUNT);
-}
-
-#[test]
-fn tier_tracks_c_eff_bands() {
-    let mut e = email("a@b.com");
-    e.confidence = 0.30;
-    assert_eq!(e.tier(), Classification::Candidate);
-    e.confidence = 0.50;
-    assert_eq!(e.tier(), Classification::Probable);
-    e.confidence = 0.90;
-    assert_eq!(e.tier(), Classification::Verified);
 }
 
 #[test]

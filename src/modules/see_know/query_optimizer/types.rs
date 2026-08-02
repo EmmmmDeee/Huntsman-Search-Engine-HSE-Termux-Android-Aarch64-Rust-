@@ -103,11 +103,6 @@ impl EndpointRegistry {
     pub fn credit_cost(&self, endpoint: &str) -> f32 {
         crate::util::see_know::config::get_endpoint_cost(endpoint)
     }
-
-    /// All registered canonical paths.
-    pub fn all_endpoints(&self) -> Vec<&'static str> {
-        self.metadata.keys().copied().collect()
-    }
 }
 
 impl Default for EndpointRegistry {
@@ -128,8 +123,6 @@ mod tests {
         assert_eq!(r.entity_type_count("/discord/user"), 2);
         assert_eq!(r.pivot_potential("/discord/user"), 80.0);
         assert_eq!(r.pivot_potential("/network/email-check"), 75.0);
-        // …and every EndpointCall path is covered (18 + deep = 19).
-        assert!(r.all_endpoints().len() >= 19);
     }
 
     #[test]

@@ -127,29 +127,6 @@ impl CostAnalyzer {
             reasoning,
         }
     }
-
-    /// Batch analyze multiple queries
-    pub fn analyze_batch(
-        &self,
-        queries: Vec<(&str, u8, Option<f32>, u32)>,
-        remaining_time: u32,
-        remaining_budget: u32,
-    ) -> Vec<(String, CostAnalysis)> {
-        queries
-            .iter()
-            .map(|(endpoint, depth, cache_age, latency)| {
-                let analysis = self.calculate_effective_cost(
-                    endpoint,
-                    *depth,
-                    *cache_age,
-                    *latency,
-                    remaining_time,
-                    remaining_budget,
-                );
-                (endpoint.to_string(), analysis)
-            })
-            .collect()
-    }
 }
 
 impl Default for CostAnalyzer {

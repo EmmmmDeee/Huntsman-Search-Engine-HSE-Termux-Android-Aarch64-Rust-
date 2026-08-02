@@ -39,30 +39,6 @@ pub fn get_cache_dir() -> PathBuf {
     cache
 }
 
-/// Value scoring weights (configurable)
-pub const VALUE_ENTITY_DIVERSITY_WEIGHT: f32 = 0.25;
-pub const VALUE_HIT_RATE_WEIGHT: f32 = 0.30;
-pub const VALUE_PIVOT_POTENTIAL_WEIGHT: f32 = 0.25;
-pub const VALUE_FRESHNESS_WEIGHT: f32 = 0.10;
-pub const VALUE_COVERAGE_WEIGHT: f32 = 0.10;
-
-/// ROI thresholds per cascade depth
-pub const ROI_DEPTH_1_THRESHOLD: f32 = 10.0;
-pub const ROI_DEPTH_2_THRESHOLD: f32 = 25.0;
-pub const ROI_DEPTH_3_THRESHOLD: f32 = 50.0;
-pub const ROI_DEPTH_4_PLUS_THRESHOLD: f32 = 100.0;
-
-/// Budget allocation per cascade depth
-pub const BUDGET_DEPTH_1_RATIO: f32 = 0.60;
-pub const BUDGET_DEPTH_2_RATIO: f32 = 0.30;
-pub const BUDGET_DEPTH_3_RATIO: f32 = 0.10;
-
-/// Cache TTL in seconds (24 hours)
-pub const CACHE_TTL_SECS: u64 = 86400;
-
-/// Query timeout in seconds
-pub const QUERY_TIMEOUT_SECS: u64 = 78;
-
 /// Maximum concurrent queries
 pub const MAX_CONCURRENT_QUERIES: usize = 10;
 

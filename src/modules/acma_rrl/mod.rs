@@ -121,12 +121,6 @@ pub(super) fn extract_abn_from_html(html: &str) -> Option<String> {
     if abn.len() == 11 { Some(abn) } else { None }
 }
 
-/// Remove HTML tags from a table cell, returning its visible text.
-///
-/// A single-pass character filter that drops everything between `<` and `>`.
-/// Sufficient for the flat, well-formed RRL cells (no nested-bracket or
-/// entity-decoding concerns here); the caller trims the result.
-
 #[async_trait]
 impl Module for AcmaRrl {
     fn name(&self) -> &'static str {

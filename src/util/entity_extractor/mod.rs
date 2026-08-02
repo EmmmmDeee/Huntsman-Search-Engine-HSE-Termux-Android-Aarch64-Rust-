@@ -7,11 +7,9 @@
 
 pub mod classifier;
 pub mod extractor;
-pub mod ml_classifier;
 pub mod patterns;
 
 pub use extractor::EntityExtractor;
-pub use ml_classifier::MlClassifier;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

@@ -79,10 +79,17 @@ pub(super) fn emit_key_with(
     } else {
         detection
     };
+    // Exposure CRITICALITY (orthogonal to ROI and detection): how grave the leak
+    // is if abused — an AWS root secret or a live Stripe key dwarfs a low-impact
+    // analytics token. Computed up front so it drives the entity's confidence
+    // (higher-value keys rank above the flat baseline; low-value ones sink
+    // below it) as well as the `key-criticality` tag below — one classification,
+    // both effects, via the single `key_value_tier` source of truth.
+    let value_tier = key_value_tier(service);
     let mut entity = Entity::new(
         EntityKind::ApiKey,
         key_val,
-        confidence::HIGH_PLUSPLUS,
+        value_tier.confidence(),
         scan_id,
     );
     entity.tag("api-key");
@@ -113,14 +120,10 @@ pub(super) fn emit_key_with(
     if roi == crate::util::key_roi::KeyRoi::Multiplier {
         entity.tag("force-multiplier");
     }
-    // Exposure CRITICALITY (orthogonal to ROI and detection): how grave the leak
-    // is if abused — an AWS root secret or a live Stripe key dwarfs a low-impact
-    // analytics token. The classifier already computes this tier (it drives the
-    // entity confidence); stamping it as an explicit tag makes the retained-key
-    // intelligence sortable in the web UI and lets the correlator rank the
-    // exposure portfolio (AU-095) — a revoke-this-first order rather than a flat
-    // list. No new classification: same `key_value_tier` single source of truth.
-    let value_tier = key_value_tier(service);
+    // Stamp the criticality tier (computed above) as an explicit tag too, so
+    // the retained-key intelligence is sortable in the web UI and the
+    // correlator can rank the exposure portfolio (AU-095) — a
+    // revoke-this-first order rather than a flat list.
     entity.tag(format!("key-criticality:{}", value_tier.as_str()));
     if value_tier.is_high_value() {
         entity.tag("high-value");

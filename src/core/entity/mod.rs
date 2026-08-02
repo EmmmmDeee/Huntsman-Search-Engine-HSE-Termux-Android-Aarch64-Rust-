@@ -327,31 +327,9 @@ impl Classification {
         }
     }
 
-    /// Stable, dense tier rank (0 = Candidate, 1 = Probable, 2 = Verified).
-    ///
-    /// This is the finite tier ladder intended to back a bounded best-first
-    /// expansion: with a `(target, tier)` visited-set an entity is expanded at
-    /// most once per rank, and because there are exactly
-    /// [`Classification::COUNT`] ranks, total expansions are bounded by
-    /// `entities × COUNT`.
-    ///
-    /// NOTE (current state): the engine's expansion visited-set is still keyed
-    /// on `(TargetKind, normalised value)` and expands each target at most
-    /// once overall — it does not yet key on tier or re-queue on tier
-    /// graduation. `rank()`/[`Self::COUNT`] are the ladder that the planned
-    /// tier-aware frontier will use; until that lands, this method is consumed
-    /// by tests and ranking, not by the live visited-set.
-    #[inline]
-    pub fn rank(self) -> u8 {
-        match self {
-            Self::Candidate => 0,
-            Self::Probable => 1,
-            Self::Verified => 2,
-        }
-    }
-
-    /// Number of distinct confidence tiers. Fixed and finite — the
-    /// multiplier in the halting bound `expansions ≤ entities × COUNT`.
+    /// Number of distinct confidence tiers. Fixed and finite — used as the
+    /// tier-ladder size in the engine's bounded-expansion halting proof
+    /// (`tests/halting.rs`): expansions ≤ `entities × COUNT`.
     pub const COUNT: u8 = 3;
 }
 
@@ -751,19 +729,6 @@ impl Entity {
     #[inline]
     pub fn classify(&self) -> Classification {
         Classification::from_c_eff(self.c_effective())
-    }
-
-    /// The entity's current confidence tier — alias for [`Self::classify`] that
-    /// names the role the value is intended to play in a tier-aware bounded
-    /// best-first expansion (key the visited-set on `(target, tier_rank)` and
-    /// re-queue at most once per tier when a merge lifts the entity).
-    ///
-    /// NOTE (current state): the live engine does not yet key its visited-set
-    /// on tier or re-queue on graduation — see [`Classification::rank`]. This
-    /// alias documents intent and is used by ranking/tests today.
-    #[inline]
-    pub fn tier(&self) -> Classification {
-        self.classify()
     }
 
     /// Apply gamma-decay over elapsed time since `observed_at`.

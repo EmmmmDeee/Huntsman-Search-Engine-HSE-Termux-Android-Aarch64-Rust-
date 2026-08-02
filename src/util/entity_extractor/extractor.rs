@@ -1,8 +1,6 @@
 //! End-to-end entity extraction pipeline.
 
-use super::{
-    EntityKind, ExtractedEntity, ExtractionResult, classifier::EntityClassifier, patterns,
-};
+use super::{ExtractedEntity, ExtractionResult, classifier::EntityClassifier, patterns};
 use tracing::{debug, info};
 
 /// Main entity extractor: patterns + classification + deduplication.
@@ -50,34 +48,6 @@ impl EntityExtractor {
 
         entities
     }
-
-    /// Extract from text AND fold into CSV-like batch format.
-    pub fn extract_and_batch(&self, text: &str) -> Vec<ExtractedBatch> {
-        let entities = self.extract_from_text(text);
-
-        // Group by kind for batch output
-        let mut batches: std::collections::HashMap<EntityKind, Vec<String>> =
-            std::collections::HashMap::new();
-
-        for entity in entities {
-            batches
-                .entry(entity.kind.clone())
-                .or_default()
-                .push(entity.value);
-        }
-
-        batches
-            .into_iter()
-            .map(|(kind, values)| {
-                let count = values.len();
-                ExtractedBatch {
-                    kind,
-                    values,
-                    count,
-                }
-            })
-            .collect()
-    }
 }
 
 impl Default for EntityExtractor {
@@ -86,17 +56,10 @@ impl Default for EntityExtractor {
     }
 }
 
-/// Batch of entities grouped by kind.
-#[derive(Debug, Clone)]
-pub struct ExtractedBatch {
-    pub kind: EntityKind,
-    pub values: Vec<String>,
-    pub count: usize,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::entity_extractor::EntityKind;
 
     #[test]
     fn extract_from_mixed_text() {
@@ -108,15 +71,5 @@ mod tests {
         assert!(entities.iter().any(|e| e.kind == EntityKind::Email));
         assert!(entities.iter().any(|e| e.kind == EntityKind::Url));
         // Phone extraction may depend on regex tuning
-    }
-
-    #[test]
-    fn extract_and_batch() {
-        let extractor = EntityExtractor::new(0.60).expect("should succeed");
-        let text = "test1@example.com test2@example.com https://example.com";
-
-        let batches = extractor.extract_and_batch(text);
-        let email_batch = batches.iter().find(|b| b.kind == EntityKind::Email);
-        assert!(email_batch.is_some());
     }
 }

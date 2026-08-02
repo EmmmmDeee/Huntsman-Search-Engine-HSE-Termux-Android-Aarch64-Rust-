@@ -76,10 +76,6 @@ pub(super) fn parse_ahpra_html(html: &str) -> Vec<(String, String, String)> {
     results
 }
 
-/// Remove HTML tags from a table cell, returning its visible text — a
-/// single-pass character filter that drops everything between `<` and `>`.
-/// Sufficient for the flat, well-formed AHPRA cells; the caller trims.
-
 #[async_trait]
 impl Module for Ahpra {
     fn name(&self) -> &'static str {

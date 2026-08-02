@@ -188,31 +188,6 @@ impl ValueScorer {
             reasoning,
         }
     }
-
-    /// Batch score multiple candidates
-    pub fn score_candidates(
-        &self,
-        endpoints: Vec<&str>,
-        target_type: &str,
-        cache_ages: Option<Vec<Option<f32>>>,
-        specificity: f32,
-    ) -> Vec<(String, ValueScore)> {
-        endpoints
-            .iter()
-            .enumerate()
-            .map(|(idx, endpoint)| {
-                let cache_age = cache_ages
-                    .as_ref()
-                    .and_then(|ages| ages.get(idx))
-                    .copied()
-                    .flatten();
-
-                let score =
-                    self.calculate_composite_value(endpoint, target_type, cache_age, specificity);
-                (endpoint.to_string(), score)
-            })
-            .collect()
-    }
 }
 
 #[cfg(test)]
@@ -277,24 +252,6 @@ mod tests {
         // Should be high value (search is primary, email is good specificity)
         assert!(score.composite > 60.0);
         assert!(score.is_high_value());
-    }
-
-    #[test]
-    fn test_batch_scoring() {
-        let scorer = ValueScorer::new();
-
-        let candidates = vec!["/search", "/username/social", "/search/deep"];
-        let results = scorer.score_candidates(candidates, "email", None, 0.8);
-
-        assert_eq!(results.len(), 3);
-
-        // /search should score highest
-        let search_score = results
-            .iter()
-            .find(|(ep, _)| ep == "/search")
-            .map_or(0.0, |(_, score)| score.composite);
-
-        assert!(search_score > 50.0);
     }
 
     #[test]
