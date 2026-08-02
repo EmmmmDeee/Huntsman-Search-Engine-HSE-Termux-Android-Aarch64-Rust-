@@ -250,6 +250,31 @@ struct ExpansionState<'a> {
     quarantined: &'a HashSet<String>,
 }
 
+/// Read-only per-round context for expansion-candidate selection — bundles
+/// the round-invariant inputs [`ScanEngine::select_expansion_candidates`]
+/// needs so its own signature stays under the argument-count lint instead of
+/// taking each field as a separate parameter.
+struct RoundCandidateCx<'a> {
+    scan_id: &'a str,
+    opts: &'a ScanOptions,
+    seed: &'a Target,
+    /// `seed.value`, trimmed/`www.`-stripped/lowercased — computed once per
+    /// round by the caller (`strip_www`), reused for every candidate's
+    /// incidental-infra "is this literally the seed" check.
+    seed_stripped: &'a str,
+    has_paid: bool,
+    decay_base: Option<f64>,
+    subject_identities: &'a [String],
+}
+
+/// Normalise a value for the seed/candidate equality check in
+/// [`ScanEngine::select_expansion_candidates`]'s incidental-infra gate:
+/// trimmed, `www.`-stripped, lowercased — so `Www.Example.com` and
+/// `example.com` compare equal.
+fn strip_www(s: &str) -> String {
+    s.trim().trim_start_matches("www.").to_ascii_lowercase()
+}
+
 impl StopReason {
     fn label(&self) -> String {
         match self {
@@ -1757,6 +1782,251 @@ impl ScanEngine {
         }
     }
 
+    /// Weigh every working-set entity against this round's expansion gates
+    /// (confidence floor, recycled-snippet/ROI/non-pivotable-kind/speculative/
+    /// wrong-identity/non-routable-IP/coarse-geo/incidental-infra pruning,
+    /// then the already-visited cycle guard) and build the ranked candidate
+    /// list for dispatch. Extracted from `run_expansion`'s per-entity loop
+    /// unchanged: same gates in the same order, same `visited` cycle-guard
+    /// semantics, same weighting (strategy weight × corroboration prior ×
+    /// optional convex/geo/social-profile multipliers) — only the
+    /// surrounding round-invariant inputs moved into [`RoundCandidateCx`] so
+    /// this method's own signature stays under the argument-count lint.
+    fn select_expansion_candidates(
+        &self,
+        cx: &RoundCandidateCx,
+        entity_map: &TrackedEntityMap,
+        visited: &mut HashSet<(TargetKind, String)>,
+    ) -> Vec<(Target, f64, String)> {
+        // At most one candidate per working-set entity survives the gates;
+        // reserve up front so the push loop never re-grows on a large round.
+        let mut next: Vec<(Target, f64, String)> = Vec::with_capacity(entity_map.len());
+        for entity in entity_map.values() {
+            // Hoist the two pure-but-repeated scores: `c_effective()` is read
+            // up to four times below (the floor check, the wrong-identity gate,
+            // the strategy weight, the convex premium) and `source_count()`
+            // twice. Computing each once per candidate trims redundant work in
+            // the hottest expansion loop on the constrained target. When the
+            // depth-decay policy is on, this single value is
+            // generation-discounted, so every downstream expansion decision
+            // (floor / rank / gate) sees the decayed confidence consistently.
+            let c_eff = expansion_confidence(entity, cx.decay_base);
+            if c_eff < cx.opts.effective_min_expand_confidence() {
+                self.emit_excluded(cx.scan_id, entity, "below_min_expand_confidence");
+                continue;
+            }
+            let source_count = entity.source_count();
+            // Search-snippet recycling is the lowest-reliability discovery
+            // path: a value scraped from the *text* of whatever page a search
+            // engine returned for a recycled query — a Subway-directory
+            // "Austin, Texas", an unrelated contact email on a scraped page.
+            // At the relaxed deep/`--full` expansion floor these clear
+            // `min_expand_confidence` on a single source, so without this gate
+            // the recursion budget gets burned pivoting on strangers. The
+            // wrong-identity gate below can't catch them: it only covers
+            // Username/Person and is lifted entirely by
+            // `--expand-all-identities`. Record the lead, but don't pivot
+            // until a second, independent source corroborates it —
+            // corroboration lifts `source_count` past 1 and the entity
+            // expands normally on a later round.
+            if entity.is_uncorroborated_recycled() {
+                self.emit_excluded(cx.scan_id, entity, "uncorroborated_recycled");
+                continue;
+            }
+            // ROI bundle: convergence-pruning. Once an entity has 2+
+            // corroborating sources at high confidence, further dispatch
+            // only re-confirms what we already know. Skip it.
+            if cx.opts.max_roi && crate::core::roi::is_saturated(entity) {
+                self.emit_excluded(cx.scan_id, entity, "roi_saturated");
+                continue;
+            }
+            // A kind with no external search target (Credential, Password,
+            // DeviceId, TrackingId, Other) cannot be pivoted on. Previously
+            // this was a silent `continue` — a black box. Record it so the
+            // logs show exactly why the entity was not expanded.
+            let Some(tk) = TargetKind::from_entity_kind(&entity.kind) else {
+                self.emit_excluded(cx.scan_id, entity, "non_pivotable_kind");
+                continue;
+            };
+            // Speculative name-permutation gate — OPT-IN (`--gate-speculative`),
+            // OFF by default. name_intel's `firstname.lastname@provider` /
+            // handle guesses are frequently the subject's REAL identifiers, so
+            // by default the scan EXPANDS and validates them (the whole point of
+            // a name scan) — pivoting confirms which guesses are real. Only when
+            // the operator opts in (expecting heavy namesake collision and
+            // wanting a faster, tighter sweep) does an uncorroborated permutation
+            // stay a recorded-but-not-pivoted candidate until a reliable source
+            // confirms it. `--expand-all-identities` / `--full` force the
+            // exhaustive sweep regardless.
+            if cx.opts.gate_speculative
+                && !cx.opts.expand_all_identities
+                && entity.is_uncorroborated_name_permutation()
+            {
+                self.emit_excluded(cx.scan_id, entity, "uncorroborated_speculative");
+                continue;
+            }
+            // Wrong-identity gate: an uncorroborated, non-verified
+            // Username/Person whose handle shares no overlap with the
+            // subject's confirmed identity is a different person. Recording it
+            // as a candidate is fine, but pivoting on it would search the web
+            // for a stranger and import their footprint. Verified or
+            // multi-source identities, and anything overlapping the subject,
+            // still expand — so genuine aliases are never lost.
+            if !cx.opts.expand_all_identities
+                && crate::core::scan::is_wrong_identity_pivot(
+                    &entity.kind,
+                    c_eff,
+                    source_count,
+                    &entity.value,
+                    cx.subject_identities,
+                )
+            {
+                self.emit_excluded(cx.scan_id, entity, "identity_mismatch");
+                continue;
+            }
+            // Never pivot on a non-routable / reserved / documentation IP
+            // (e.g. 192.0.2.1 scraped from a tutorial page, or a private
+            // 192.168.x surfaced by local sensors). No external OSINT source
+            // can resolve these, so expanding them only burns whole rounds
+            // on guaranteed-empty lookups and pollutes the graph with noise.
+            if tk == TargetKind::IpAddress
+                && crate::core::validation::is_non_routable_ip(&entity.value)
+            {
+                self.emit_excluded(cx.scan_id, entity, "non_routable_ip");
+                continue;
+            }
+            // Never recursively pivot a COARSE-tagged Coordinates OR Address
+            // entity — a country/region-level fix a module explicitly flagged
+            // as non-specific (e.g. `geo_intel`'s phone-prefix-to-country-
+            // centroid fallback, `phone_geo`'s carrier-country Address pass).
+            // Dispatching it to further geo-consuming modules (offline ASGS/
+            // gazetteer lookups, reverse/forward geocoders, registries) snaps
+            // it to "the nearest locality" or geocodes it outright, manufacturing
+            // a fresh, precise-looking named suburb/street from an admittedly
+            // imprecise input — a live phone scan reproduced exactly this for
+            // the Coordinates case: a country-centroid fix (tagged `coarse`)
+            // got ASGS-snapped to "Ghan, NT", then forward-geocoded into a
+            // VERIFIED-tier street address the subject has no connection to.
+            // Both kinds carry the identical risk (a bare "Australia" Address
+            // re-dispatched to a geocoder is the same laundering shape one hop
+            // earlier), and `relation::builders::COARSE_ADDRESS_TAGS` already
+            // treats a COARSE Address with the same suspicion for household
+            // linking — this extends that established judgement to recursion.
+            // A module can't self-guard against this: it only ever sees the
+            // bare (kind, value) Target, never the originating entity's tags,
+            // so the gate has to live here, at the one point that still has
+            // both. The entity itself is unaffected (its own confidence and
+            // the correlator's admissibility gates already decide whether it
+            // counts as evidence) — only further recursive expansion is
+            // stopped. The SAME discipline the codebase already applies to
+            // co-residence linking and cross-scan history bridging
+            // (`engine::history::is_cross_scan_candidate`); this closes the
+            // third, most consequential place a coarse geo fix was still
+            // treated as precise.
+            if matches!(tk, TargetKind::Coordinates | TargetKind::Address)
+                && entity.has_tag(crate::core::tags::COARSE)
+            {
+                self.emit_excluded(cx.scan_id, entity, "coarse_geo_not_pivoted");
+                continue;
+            }
+            // Don't deep-expand *incidentally-discovered* haystack
+            // infrastructure — it maps a platform/CDN/provider's own estate,
+            // not the subject, and burns the round budget that should go to
+            // target-specific enrichment:
+            //   • a non-central DOMAIN — a mega/social platform
+            //     (twitter.com, …) or shared mail/DNS/registrar infra
+            //     (sendgrid.net, secureserver.net, ns*.dnsmadeeasy.com), whose
+            //     NS/MX/SOA fan out into dozens of generic provider domains;
+            //   • a CDN-edge IP — a Cloudflare/Fastly anycast address whose
+            //     reverse-IP lookup returns thousands of co-tenant strangers
+            //     (a real scan pulled 480+ co-hosted domains through two).
+            // Still expand when the candidate IS the seed (you're
+            // investigating that property itself).
+            {
+                let candidate_is_seed =
+                    cx.seed.kind == tk && cx.seed_stripped == strip_www(&entity.value);
+                let is_incidental_infra = match tk {
+                    // Freemail / social / shared CDN-DNS-registrar infra is
+                    // never the subject's own estate — expanding it maps the
+                    // provider, not the target. All consolidated in the
+                    // core-side `is_noncentral_domain` (mega + infra lists,
+                    // incl. freemail and ISP webmail) so the engine stays free
+                    // of any `util` import (core → modules → util only).
+                    TargetKind::Domain => crate::core::scan::is_noncentral_domain(&entity.value),
+                    TargetKind::IpAddress => crate::core::validation::is_cdn_edge_ip(&entity.value),
+                    _ => false,
+                };
+                if is_incidental_infra && !candidate_is_seed {
+                    self.emit_excluded(cx.scan_id, entity, "incidental_infra");
+                    continue;
+                }
+            }
+            let new_target = Target::new(tk, entity.value.clone());
+            let key = visit_key(&new_target);
+            if visited.insert(key) {
+                let richness = self.graph.richness_for(tk);
+                // Strategy weight × a non-saturating corroboration prior.
+                // c_effective() clamps at 1.0, erasing the cross-correlation
+                // signal for confident pivots; re-apply it on the ranking so
+                // a lead confirmed by N independent sources is dispatched
+                // ahead of an equally-confident single-source lead (its
+                // dispatch is likelier to yield genuine children).
+                let mut weight = crate::core::scan::expansion_weight_for_strategy(
+                    cx.opts.expansion_strategy,
+                    tk,
+                    c_eff,
+                    &entity.value,
+                    cx.has_paid,
+                    richness,
+                ) * crate::core::scan::corroboration_prior(source_count);
+                // Convex (optionality / barbell) budget allocation, opt-in:
+                // multiply by a convexity premium for heavy-tailed upside over
+                // per-kind dispatch cost, so the bounded budget favours cheap,
+                // high-optionality identity leads over saturated infrastructure.
+                // Neutral (×≈1) for the confident cheap core, so it only
+                // re-sorts the uncertain tail and the expensive infra.
+                if cx.opts.convex_budget {
+                    weight *= crate::core::convex::optionality_multiplier(
+                        tk,
+                        source_count,
+                        c_eff,
+                        richness,
+                    );
+                }
+                // Geo-corroboration bonus: entities confirmed by anchoring
+                // geo sources (self-reported address, photo GPS, registry
+                // address, person-enrichment location) rank slightly ahead
+                // of equal-weight entities with no person-anchored geo
+                // signal. Each anchoring geo source contributes +2%, capped
+                // at +10%, keeping the bonus sub-dominant to the confidence
+                // and corroboration factors.
+                let anchoring_geo_count = entity
+                    .corroborating_sources()
+                    .into_iter()
+                    .filter(|s| crate::core::correlator::is_anchoring_geo_source(s))
+                    .count();
+                if anchoring_geo_count > 0 {
+                    weight *= 1.0 + (anchoring_geo_count as f64 * 0.02).min(0.10);
+                }
+                // Social-profile URL priority boost: a confirmed social-profile
+                // URL crawl can complete the tracking-ID co-ownership pivot.
+                // +15% nudges these above generic domain/IP targets at equal
+                // confidence so the crawl fires within the wall-clock budget.
+                // Sub-dominant to confidence and corroboration factors.
+                if tk == TargetKind::Url && entity.has_tag("social-profile") {
+                    weight *= 1.15;
+                }
+                next.push((new_target, weight, entity.uid.clone()));
+            } else {
+                // This exact target was already dispatched (or queued) this
+                // scan. Skipping it prevents an infinite pivot cycle, but the
+                // decision must be visible rather than a silent drop.
+                self.emit_excluded(cx.scan_id, entity, "already_dispatched_this_scan");
+            }
+        }
+        next
+    }
+
     /// Drive the expansion loop. Returns the stop reason for diagnostics.
     ///
     /// Takes the mutable scan-wide accumulators as one [`ExpansionState`] *by
@@ -1908,240 +2178,21 @@ impl ScanEngine {
 
             // At most one candidate per working-set entity survives the gates;
             // reserve up front so the push loop never re-grows on a large round.
-            let mut next: Vec<(Target, f64, String)> = Vec::with_capacity(entity_map.len());
             // Seed identity normalised ONCE for the incidental-infra
             // candidate-is-seed check below; it is invariant across the whole
-            // candidate loop, so computing `strip(&seed.value)` (a trim +
+            // candidate loop, so computing `strip_www(&seed.value)` (a trim +
             // lowercasing allocation) per entity was pure repeated work.
-            let strip = |s: &str| s.trim().trim_start_matches("www.").to_ascii_lowercase();
-            let seed_stripped = strip(&seed.value);
-            for entity in entity_map.values() {
-                // Hoist the two pure-but-repeated scores: `c_effective()` is read
-                // up to four times below (the floor check, the wrong-identity gate,
-                // the strategy weight, the convex premium) and `source_count()`
-                // twice. Computing each once per candidate trims redundant work in
-                // the hottest expansion loop on the constrained target. When the
-                // depth-decay policy is on, this single value is
-                // generation-discounted, so every downstream expansion decision
-                // (floor / rank / gate) sees the decayed confidence consistently.
-                let c_eff = expansion_confidence(entity, decay_base);
-                if c_eff < opts.effective_min_expand_confidence() {
-                    self.emit_excluded(scan_id, entity, "below_min_expand_confidence");
-                    continue;
-                }
-                let source_count = entity.source_count();
-                // Search-snippet recycling is the lowest-reliability discovery
-                // path: a value scraped from the *text* of whatever page a search
-                // engine returned for a recycled query — a Subway-directory
-                // "Austin, Texas", an unrelated contact email on a scraped page.
-                // At the relaxed deep/`--full` expansion floor these clear
-                // `min_expand_confidence` on a single source, so without this gate
-                // the recursion budget gets burned pivoting on strangers. The
-                // wrong-identity gate below can't catch them: it only covers
-                // Username/Person and is lifted entirely by
-                // `--expand-all-identities`. Record the lead, but don't pivot
-                // until a second, independent source corroborates it —
-                // corroboration lifts `source_count` past 1 and the entity
-                // expands normally on a later round.
-                if entity.is_uncorroborated_recycled() {
-                    self.emit_excluded(scan_id, entity, "uncorroborated_recycled");
-                    continue;
-                }
-                // ROI bundle: convergence-pruning. Once an entity has 2+
-                // corroborating sources at high confidence, further dispatch
-                // only re-confirms what we already know. Skip it.
-                if opts.max_roi && crate::core::roi::is_saturated(entity) {
-                    self.emit_excluded(scan_id, entity, "roi_saturated");
-                    continue;
-                }
-                // A kind with no external search target (Credential, Password,
-                // DeviceId, TrackingId, Other) cannot be pivoted on. Previously
-                // this was a silent `continue` — a black box. Record it so the
-                // logs show exactly why the entity was not expanded.
-                let Some(tk) = TargetKind::from_entity_kind(&entity.kind) else {
-                    self.emit_excluded(scan_id, entity, "non_pivotable_kind");
-                    continue;
-                };
-                // Speculative name-permutation gate — OPT-IN (`--gate-speculative`),
-                // OFF by default. name_intel's `firstname.lastname@provider` /
-                // handle guesses are frequently the subject's REAL identifiers, so
-                // by default the scan EXPANDS and validates them (the whole point of
-                // a name scan) — pivoting confirms which guesses are real. Only when
-                // the operator opts in (expecting heavy namesake collision and
-                // wanting a faster, tighter sweep) does an uncorroborated permutation
-                // stay a recorded-but-not-pivoted candidate until a reliable source
-                // confirms it. `--expand-all-identities` / `--full` force the
-                // exhaustive sweep regardless.
-                if opts.gate_speculative
-                    && !opts.expand_all_identities
-                    && entity.is_uncorroborated_name_permutation()
-                {
-                    self.emit_excluded(scan_id, entity, "uncorroborated_speculative");
-                    continue;
-                }
-                // Wrong-identity gate: an uncorroborated, non-verified
-                // Username/Person whose handle shares no overlap with the
-                // subject's confirmed identity is a different person. Recording it
-                // as a candidate is fine, but pivoting on it would search the web
-                // for a stranger and import their footprint. Verified or
-                // multi-source identities, and anything overlapping the subject,
-                // still expand — so genuine aliases are never lost.
-                if !opts.expand_all_identities
-                    && crate::core::scan::is_wrong_identity_pivot(
-                        &entity.kind,
-                        c_eff,
-                        source_count,
-                        &entity.value,
-                        &subject_identities,
-                    )
-                {
-                    self.emit_excluded(scan_id, entity, "identity_mismatch");
-                    continue;
-                }
-                // Never pivot on a non-routable / reserved / documentation IP
-                // (e.g. 192.0.2.1 scraped from a tutorial page, or a private
-                // 192.168.x surfaced by local sensors). No external OSINT source
-                // can resolve these, so expanding them only burns whole rounds
-                // on guaranteed-empty lookups and pollutes the graph with noise.
-                if tk == TargetKind::IpAddress
-                    && crate::core::validation::is_non_routable_ip(&entity.value)
-                {
-                    self.emit_excluded(scan_id, entity, "non_routable_ip");
-                    continue;
-                }
-                // Never recursively pivot a COARSE-tagged Coordinates OR Address
-                // entity — a country/region-level fix a module explicitly flagged
-                // as non-specific (e.g. `geo_intel`'s phone-prefix-to-country-
-                // centroid fallback, `phone_geo`'s carrier-country Address pass).
-                // Dispatching it to further geo-consuming modules (offline ASGS/
-                // gazetteer lookups, reverse/forward geocoders, registries) snaps
-                // it to "the nearest locality" or geocodes it outright, manufacturing
-                // a fresh, precise-looking named suburb/street from an admittedly
-                // imprecise input — a live phone scan reproduced exactly this for
-                // the Coordinates case: a country-centroid fix (tagged `coarse`)
-                // got ASGS-snapped to "Ghan, NT", then forward-geocoded into a
-                // VERIFIED-tier street address the subject has no connection to.
-                // Both kinds carry the identical risk (a bare "Australia" Address
-                // re-dispatched to a geocoder is the same laundering shape one hop
-                // earlier), and `relation::builders::COARSE_ADDRESS_TAGS` already
-                // treats a COARSE Address with the same suspicion for household
-                // linking — this extends that established judgement to recursion.
-                // A module can't self-guard against this: it only ever sees the
-                // bare (kind, value) Target, never the originating entity's tags,
-                // so the gate has to live here, at the one point that still has
-                // both. The entity itself is unaffected (its own confidence and
-                // the correlator's admissibility gates already decide whether it
-                // counts as evidence) — only further recursive expansion is
-                // stopped. The SAME discipline the codebase already applies to
-                // co-residence linking and cross-scan history bridging
-                // (`engine::history::is_cross_scan_candidate`); this closes the
-                // third, most consequential place a coarse geo fix was still
-                // treated as precise.
-                if matches!(tk, TargetKind::Coordinates | TargetKind::Address)
-                    && entity.has_tag(crate::core::tags::COARSE)
-                {
-                    self.emit_excluded(scan_id, entity, "coarse_geo_not_pivoted");
-                    continue;
-                }
-                // Don't deep-expand *incidentally-discovered* haystack
-                // infrastructure — it maps a platform/CDN/provider's own estate,
-                // not the subject, and burns the round budget that should go to
-                // target-specific enrichment:
-                //   • a non-central DOMAIN — a mega/social platform
-                //     (twitter.com, …) or shared mail/DNS/registrar infra
-                //     (sendgrid.net, secureserver.net, ns*.dnsmadeeasy.com), whose
-                //     NS/MX/SOA fan out into dozens of generic provider domains;
-                //   • a CDN-edge IP — a Cloudflare/Fastly anycast address whose
-                //     reverse-IP lookup returns thousands of co-tenant strangers
-                //     (a real scan pulled 480+ co-hosted domains through two).
-                // Still expand when the candidate IS the seed (you're
-                // investigating that property itself).
-                {
-                    let candidate_is_seed =
-                        seed.kind == tk && seed_stripped == strip(&entity.value);
-                    let is_incidental_infra = match tk {
-                        // Freemail / social / shared CDN-DNS-registrar infra is
-                        // never the subject's own estate — expanding it maps the
-                        // provider, not the target. All consolidated in the
-                        // core-side `is_noncentral_domain` (mega + infra lists,
-                        // incl. freemail and ISP webmail) so the engine stays free
-                        // of any `util` import (core → modules → util only).
-                        TargetKind::Domain => {
-                            crate::core::scan::is_noncentral_domain(&entity.value)
-                        }
-                        TargetKind::IpAddress => {
-                            crate::core::validation::is_cdn_edge_ip(&entity.value)
-                        }
-                        _ => false,
-                    };
-                    if is_incidental_infra && !candidate_is_seed {
-                        self.emit_excluded(scan_id, entity, "incidental_infra");
-                        continue;
-                    }
-                }
-                let new_target = Target::new(tk, entity.value.clone());
-                let key = visit_key(&new_target);
-                if visited.insert(key) {
-                    let richness = self.graph.richness_for(tk);
-                    // Strategy weight × a non-saturating corroboration prior.
-                    // c_effective() clamps at 1.0, erasing the cross-correlation
-                    // signal for confident pivots; re-apply it on the ranking so
-                    // a lead confirmed by N independent sources is dispatched
-                    // ahead of an equally-confident single-source lead (its
-                    // dispatch is likelier to yield genuine children).
-                    let mut weight = crate::core::scan::expansion_weight_for_strategy(
-                        opts.expansion_strategy,
-                        tk,
-                        c_eff,
-                        &entity.value,
-                        has_paid,
-                        richness,
-                    ) * crate::core::scan::corroboration_prior(source_count);
-                    // Convex (optionality / barbell) budget allocation, opt-in:
-                    // multiply by a convexity premium for heavy-tailed upside over
-                    // per-kind dispatch cost, so the bounded budget favours cheap,
-                    // high-optionality identity leads over saturated infrastructure.
-                    // Neutral (×≈1) for the confident cheap core, so it only
-                    // re-sorts the uncertain tail and the expensive infra.
-                    if opts.convex_budget {
-                        weight *= crate::core::convex::optionality_multiplier(
-                            tk,
-                            source_count,
-                            c_eff,
-                            richness,
-                        );
-                    }
-                    // Geo-corroboration bonus: entities confirmed by anchoring
-                    // geo sources (self-reported address, photo GPS, registry
-                    // address, person-enrichment location) rank slightly ahead
-                    // of equal-weight entities with no person-anchored geo
-                    // signal. Each anchoring geo source contributes +2%, capped
-                    // at +10%, keeping the bonus sub-dominant to the confidence
-                    // and corroboration factors.
-                    let anchoring_geo_count = entity
-                        .corroborating_sources()
-                        .into_iter()
-                        .filter(|s| crate::core::correlator::is_anchoring_geo_source(s))
-                        .count();
-                    if anchoring_geo_count > 0 {
-                        weight *= 1.0 + (anchoring_geo_count as f64 * 0.02).min(0.10);
-                    }
-                    // Social-profile URL priority boost: a confirmed social-profile
-                    // URL crawl can complete the tracking-ID co-ownership pivot.
-                    // +15% nudges these above generic domain/IP targets at equal
-                    // confidence so the crawl fires within the wall-clock budget.
-                    // Sub-dominant to confidence and corroboration factors.
-                    if tk == TargetKind::Url && entity.has_tag("social-profile") {
-                        weight *= 1.15;
-                    }
-                    next.push((new_target, weight, entity.uid.clone()));
-                } else {
-                    // This exact target was already dispatched (or queued) this
-                    // scan. Skipping it prevents an infinite pivot cycle, but the
-                    // decision must be visible rather than a silent drop.
-                    self.emit_excluded(scan_id, entity, "already_dispatched_this_scan");
-                }
-            }
+            let seed_stripped = strip_www(&seed.value);
+            let cand_cx = RoundCandidateCx {
+                scan_id,
+                opts,
+                seed,
+                seed_stripped: &seed_stripped,
+                has_paid,
+                decay_base,
+                subject_identities: &subject_identities,
+            };
+            let mut next = self.select_expansion_candidates(&cand_cx, entity_map, visited);
 
             // Sort expansion candidates by weighted score (descending), with a
             // DETERMINISTIC total tie-break. The weight combines geo_npv with
