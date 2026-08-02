@@ -246,6 +246,29 @@ pub struct KeysPoolAddRequest {
     pub env: Option<String>,
 }
 
+/// The shared gate every key-pool WRITE handler (`keys_pool_add`,
+/// `settings_keys_put`, `keys_pool_revoke`, `keys_pool_rotate`) applies before
+/// touching state: loopback-only AND requires the operator to have started
+/// with `--allow-key-write`. `Some(response)` is the rejection to return
+/// immediately; `None` means the request may proceed.
+fn require_key_write(s: &AppState, peer: &SocketAddr) -> Option<axum::response::Response> {
+    if !s.allow_key_write {
+        return Some(
+            (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "key writes disabled; restart with `hse serve --allow-key-write`"
+                })),
+            )
+                .into_response(),
+        );
+    }
+    if !peer.ip().is_loopback() {
+        return Some(forbidden("key writes are loopback-only"));
+    }
+    None
+}
+
 /// `POST /api/v1/keys/pool/add` — add a NEW key to a service's rotation pool.
 /// The web Settings page's key editor (`settings/keys` PUT) already lets an
 /// operator set the PRIMARY `HUNTSMAN_*_KEY` env var for any service; this is
@@ -259,17 +282,8 @@ pub async fn keys_pool_add(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(req): Json<KeysPoolAddRequest>,
 ) -> impl IntoResponse {
-    if !s.allow_key_write {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({
-                "error": "key writes disabled; restart with `hse serve --allow-key-write`"
-            })),
-        )
-            .into_response();
-    }
-    if !peer.ip().is_loopback() {
-        return forbidden("key writes are loopback-only");
+    if let Some(resp) = require_key_write(&s, &peer) {
+        return resp;
     }
     let service = req.service.trim();
     let key = req.key.trim();
@@ -338,17 +352,8 @@ pub async fn settings_keys_put(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(req): Json<KeysPutRequest>,
 ) -> impl IntoResponse {
-    if !s.allow_key_write {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({
-                "error": "key writes disabled; restart with `hse serve --allow-key-write`"
-            })),
-        )
-            .into_response();
-    }
-    if !peer.ip().is_loopback() {
-        return forbidden("key writes are loopback-only");
+    if let Some(resp) = require_key_write(&s, &peer) {
+        return resp;
     }
     if req.updates.is_empty() && req.deletes.is_empty() {
         return bad_request("no updates or deletes");
@@ -418,17 +423,8 @@ pub async fn keys_pool_revoke(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(req): Json<KeysPoolRevokeRequest>,
 ) -> impl IntoResponse {
-    if !s.allow_key_write {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({
-                "error": "key writes disabled; restart with `hse serve --allow-key-write`"
-            })),
-        )
-            .into_response();
-    }
-    if !peer.ip().is_loopback() {
-        return forbidden("key writes are loopback-only");
+    if let Some(resp) = require_key_write(&s, &peer) {
+        return resp;
     }
     if req.service.trim().is_empty() || req.id.trim().is_empty() {
         return bad_request("service and id are required");
@@ -461,17 +457,8 @@ pub async fn keys_pool_rotate(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(req): Json<KeysPoolRotateRequest>,
 ) -> impl IntoResponse {
-    if !s.allow_key_write {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({
-                "error": "key writes disabled; restart with `hse serve --allow-key-write`"
-            })),
-        )
-            .into_response();
-    }
-    if !peer.ip().is_loopback() {
-        return forbidden("key writes are loopback-only");
+    if let Some(resp) = require_key_write(&s, &peer) {
+        return resp;
     }
     if req.service.trim().is_empty() || req.id.trim().is_empty() || req.new.trim().is_empty() {
         return bad_request("service, id and new value are required");
