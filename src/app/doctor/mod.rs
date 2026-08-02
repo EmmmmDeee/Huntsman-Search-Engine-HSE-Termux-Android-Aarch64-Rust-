@@ -41,21 +41,57 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
     println!("DB path:   {}", default_db_path());
     println!("Keys path: {}", keys::env_path());
 
-    // Tracks a CRITICAL storage fault only — the database will not open, or its
-    // integrity check reported corruption. Soft states (missing keys, a module
-    // failure streak, a stale cell DB, a large WAL) are informational and never
-    // set this. When set, `cmd_doctor` returns `Err` at the end so `hse
-    // diagnostics` (which treats doctor as a fail-able section) and a scripted
-    // standalone `hse doctor` both surface a broken DB via a non-zero exit
-    // instead of a silent PASS — while still printing the full report first.
-    let mut critical = false;
-
-    println!("\nStorage:");
     let db_path = default_db_path();
     // Kept as a `Result` (not unwrapped into the match arm) so the same open
     // handle can back the scraper-health section further down without a
     // second `Store::open` — the DB is opened once per `doctor` run either way.
-    let store_result = Store::open(&db_path);
+    let (critical, store_result) = print_storage_section(&db_path);
+
+    print_external_tools_section();
+    print_modules_section(&mods);
+    print_module_health_section();
+    print_persisted_drift_section();
+
+    // ── Live capability preflight (opt-in, --live) ─────────────────────
+    // The module-health section above is reactive — it only knows what real
+    // scans in THIS process have already tried. `--live` is the proactive
+    // complement: probe every keyless module against its real provider now, so
+    // a drifted or dead capability shows up before an investigation relies on
+    // it. Network-bound, so it is opt-in; the default `doctor` run stays offline.
+    if live {
+        print_live_capability_report().await;
+    }
+
+    let loaded = keys::load();
+    print_loaded_keys_section(&loaded);
+    print_unset_keys_section(&loaded);
+    print_live_key_validation_section(&loaded).await;
+    print_scraper_health_section(&store_result, &loaded);
+    print_weak_findings_section(&store_result);
+    print_cell_tower_section();
+    print_wigle_account_section(&loaded).await;
+    print_seeknow_account_section(&loaded).await;
+
+    if critical {
+        return Err(crate::core::error::Error::Other(
+            "critical storage fault — the database could not be opened or failed its \
+             integrity check (see the FAIL line(s) above)"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Storage section: opens the DB, runs the integrity check, and reports WAL
+/// size. Returns the CRITICAL flag (set only here — a hard storage fault:
+/// the database would not open, or its integrity check reported corruption;
+/// soft states like missing keys or a failure streak never set it) alongside
+/// the open `Store` handle, which several later sections reuse rather than
+/// re-opening the DB.
+fn print_storage_section(db_path: &str) -> (bool, Result<Store>) {
+    println!("\nStorage:");
+    let mut critical = false;
+    let store_result = Store::open(db_path);
     match &store_result {
         Ok(store) => {
             println!("  ok — database opens cleanly");
@@ -91,7 +127,12 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
             println!("  FAIL — {e}");
         }
     }
+    (critical, store_result)
+}
 
+/// External tools section: whether `curl` is on `PATH` (its absence silently
+/// disables several HTTP-dependent modules).
+fn print_external_tools_section() {
     println!("\nExternal tools:");
     let curl_ok = std::process::Command::new("curl")
         .arg("--version")
@@ -104,20 +145,25 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
     } else {
         println!("{}", curl_missing_message());
     }
+}
 
+/// Modules section: registered module count by cost tier.
+fn print_modules_section(mods: &[std::sync::Arc<dyn crate::core::module::Module>]) {
     println!("\nModules ({} registered):", mods.len());
     let mut by_cost = std::collections::BTreeMap::<&str, usize>::new();
-    for m in &mods {
+    for m in mods {
         *by_cost.entry(cost_label(m.cost())).or_default() += 1;
     }
     for (cost, count) in &by_cost {
         println!("  {cost:<10} {count}");
     }
+}
 
-    // ── Module health (T2.7 / SOL-HEALTH-SIGNAL) ───────────────────────
-    // Per-process failure streaks driven by real dispatch outcomes — quiet
-    // by default (a freshly-started or fully healthy process reports
-    // nothing extra), surfacing only sources actually worth investigating.
+/// Module health section (T2.7 / SOL-HEALTH-SIGNAL): per-process failure
+/// streaks driven by real dispatch outcomes — quiet by default (a freshly-
+/// started or fully healthy process reports nothing extra), surfacing only
+/// sources actually worth investigating.
+fn print_module_health_section() {
     let unhealthy = crate::core::engine::module_health_report();
     if unhealthy.is_empty() {
         println!("\nModule health: no modules currently show a failure streak");
@@ -130,16 +176,18 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
             println!("  {}", format_module_health(h));
         }
     }
+}
 
-    // ── Persisted capability drift (offline, always shown) ─────────────
-    // A confirmed-drift finding from a PAST live probe (`--live` here, or the
-    // Web UI's "Run live capability probe" panel) is persisted to
-    // `~/.huntsman/capability_drift.json` so it survives past that one
-    // printout/response. Surfaced here, on every (even offline) `doctor` run,
-    // so the operator doesn't have to remember to re-run `--live` to be
-    // reminded a capability is known-dead. Ages out past 7 days (matches the
-    // weekly CI drift-sweep cadence) — a stale finding may well be resolved by
-    // now, so it is dropped rather than nagging forever.
+/// Persisted capability drift section (offline, always shown): a confirmed-
+/// drift finding from a PAST live probe (`--live` here, or the Web UI's "Run
+/// live capability probe" panel) is persisted to
+/// `~/.huntsman/capability_drift.json` so it survives past that one
+/// printout/response. Surfaced here, on every (even offline) `doctor` run,
+/// so the operator doesn't have to remember to re-run `--live` to be
+/// reminded a capability is known-dead. Ages out past 7 days (matches the
+/// weekly CI drift-sweep cadence) — a stale finding may well be resolved by
+/// now, so it is dropped rather than nagging forever.
+fn print_persisted_drift_section() {
     const DRIFT_TTL_SECS: u64 = 7 * 24 * 60 * 60;
     let persisted_drift = crate::selftest::capability_probe::recent_confirmed_drift(DRIFT_TTL_SECS);
     if !persisted_drift.is_empty() {
@@ -152,19 +200,11 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
         }
         println!("  run `hse doctor --live` to re-check whether these have recovered");
     }
+}
 
-    // ── Live capability preflight (opt-in, --live) ─────────────────────
-    // The module-health section above is reactive — it only knows what real
-    // scans in THIS process have already tried. `--live` is the proactive
-    // complement: probe every keyless module against its real provider now, so
-    // a drifted or dead capability shows up before an investigation relies on
-    // it. Network-bound, so it is opt-in; the default `doctor` run stays offline.
-    if live {
-        print_live_capability_report().await;
-    }
-
-    let loaded = keys::load();
-    let huntsman_keys = sorted_huntsman_keys(&loaded);
+/// HUNTSMAN_* keys loaded section: which env vars are actually set.
+fn print_loaded_keys_section(loaded: &std::collections::HashMap<String, String>) {
+    let huntsman_keys = sorted_huntsman_keys(loaded);
     println!("\nHUNTSMAN_* keys loaded: {}", huntsman_keys.len());
     for k in &huntsman_keys {
         println!("  - {k}");
@@ -172,18 +212,20 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
     if huntsman_keys.is_empty() {
         println!("  (none set; all free modules still work)");
     }
+}
 
-    // ── Unset keys + where to get them (mostly free), ranked by acquisition ──
-    // The "failing modules" in a scan are usually just these — unconfigured
-    // optional providers, which skip cleanly rather than erroring. Ranked by
-    // ROI tier (see `rank_unset_keys`) so the operator registers the keys that
-    // unlock the most collection first, each with its free-signup hint.
-    // A key that ships a zero-config embedded default (HIBP / OathNet / SeekNow /
-    // WiGLE) is never "unset" from the operator's view — its module works with no
-    // action — even when the env file hasn't been populated with the default yet.
-    // Treat those as present so the "register these" list shows only keys that
-    // genuinely need acquisition (the canonical distinction `acquisition_status`
-    // draws via `has_embedded_default`).
+/// Unset keys section, ranked by acquisition value. The "failing modules" in
+/// a scan are usually just these — unconfigured optional providers, which
+/// skip cleanly rather than erroring. Ranked by ROI tier (see
+/// `rank_unset_keys`) so the operator registers the keys that unlock the
+/// most collection first, each with its free-signup hint. A key that ships a
+/// zero-config embedded default (HIBP / OathNet / SeekNow / WiGLE) is never
+/// "unset" from the operator's view — its module works with no action — even
+/// when the env file hasn't been populated with the default yet. Treat those
+/// as present so the "register these" list shows only keys that genuinely
+/// need acquisition (the canonical distinction `acquisition_status` draws
+/// via `has_embedded_default`).
+fn print_unset_keys_section(loaded: &std::collections::HashMap<String, String>) {
     let embedded_default: std::collections::HashSet<&'static str> = keys::acquisition_status()
         .into_iter()
         .filter(|a| a.has_embedded_default)
@@ -204,55 +246,65 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
             }
         }
     }
+}
 
-    // ── Live key validation (network, best-effort) ───────────────────
-    // Probe every CONFIGURED key against its registered validation endpoint, so
-    // `hse doctor` reports which keys actually authenticate — not just WiGLE.
-    // Only a definitive 401/403 is reported as a bad key; a transient / non-auth
-    // outcome is "unknown", never a false "dead". Bounded concurrency keeps this
-    // from firing a curl storm on a phone; output is sorted for determinism.
-    {
-        use crate::util::service_defs::KeyPlacement;
-        use futures::StreamExt;
-        // Skip services whose validation needs a PAIRED credential a single env
-        // var can't supply, or the probe would false-REJECT a working key:
-        //   - `BasicAuth` (censys id+secret, passivetotal user:key), and
-        //   - WiGLE (`Authorization: Basic base64(user:token)` — the pool stores
-        //     user and token as separate vars; WiGLE also has its own dedicated
-        //     health section below, so it is never silently dropped).
-        let to_probe: Vec<(&'static str, String)> = crate::util::service_defs::service_defs()
-            .iter()
-            .filter(|d| {
-                !matches!(d.key_header, KeyPlacement::BasicAuth) && !d.name.starts_with("wigle")
-            })
-            .filter_map(|d| loaded.get(d.env_var).map(|k| (d.name, k.clone())))
-            .collect();
-        println!("\nKey validation (live probe of configured keys):");
-        if to_probe.is_empty() {
-            println!("  (no keys configured for validatable services)");
-        } else {
-            let mut results: Vec<(&'static str, Option<bool>)> = futures::stream::iter(to_probe)
+/// Live key validation section (network, best-effort): probe every
+/// CONFIGURED key against its registered validation endpoint, so `hse
+/// doctor` reports which keys actually authenticate — not just WiGLE. Only a
+/// definitive 401/403 is reported as a bad key; a transient / non-auth
+/// outcome is "unknown", never a false "dead". Bounded concurrency keeps
+/// this from firing a curl storm on a phone; output is sorted for
+/// determinism.
+async fn print_live_key_validation_section(loaded: &std::collections::HashMap<String, String>) {
+    use crate::util::service_defs::KeyPlacement;
+    use futures::StreamExt;
+    // Skip services whose validation needs a PAIRED credential a single env
+    // var can't supply, or the probe would false-REJECT a working key:
+    //   - `BasicAuth` (censys id+secret, passivetotal user:key), and
+    //   - WiGLE (`Authorization: Basic base64(user:token)` — the pool stores
+    //     user and token as separate vars; WiGLE also has its own dedicated
+    //     health section below, so it is never silently dropped).
+    let to_probe: Vec<(&'static str, String)> = crate::util::service_defs::service_defs()
+        .iter()
+        .filter(|d| {
+            !matches!(d.key_header, KeyPlacement::BasicAuth) && !d.name.starts_with("wigle")
+        })
+        .filter_map(|d| loaded.get(d.env_var).map(|k| (d.name, k.clone())))
+        .collect();
+    println!("\nKey validation (live probe of configured keys):");
+    if to_probe.is_empty() {
+        println!("  (no keys configured for validatable services)");
+    } else {
+        let mut results: Vec<(&'static str, Option<bool>)> =
+            futures::stream::iter(to_probe)
                 .map(|(svc, key)| async move {
                     (svc, crate::util::key_pool::validate_key(svc, &key).await)
                 })
                 .buffer_unordered(6)
                 .collect()
                 .await;
-            results.sort_by(|a, b| a.0.cmp(b.0));
-            for (svc, outcome) in results {
-                println!("  {svc:<16} {}", validation_label(outcome));
-            }
+        results.sort_by(|a, b| a.0.cmp(b.0));
+        for (svc, outcome) in results {
+            println!("  {svc:<16} {}", validation_label(outcome));
         }
     }
+}
 
-    // ── Per-source scraper health (T2.7 / SOL-HEALTH-SIGNAL) ──────────
-    // Derived from the persisted event log across ALL scans (a rolling
-    // window — see `recent_module_outcome_events`'s doc), not just this
-    // process: a source that has errored on every one of its last N runs is
-    // real drift an operator should know about even if the failing scans
-    // happened days ago in unrelated invocations.
+/// Per-source scraper health section (T2.7 / SOL-HEALTH-SIGNAL), plus its two
+/// nested sub-sections (key authentication, silent zero-yield drift). Derived
+/// from the persisted event log across ALL scans (a rolling window — see
+/// `recent_module_outcome_events`'s doc), not just this process: a source
+/// that has errored on every one of its last N runs is real drift an
+/// operator should know about even if the failing scans happened days ago in
+/// unrelated invocations. `loaded` feeds the key-authentication sub-section
+/// (fusing observed auth-shaped drift with which keys are actually
+/// configured).
+fn print_scraper_health_section(
+    store_result: &Result<Store>,
+    loaded: &std::collections::HashMap<String, String>,
+) {
     println!("\nScraper health (recent window):");
-    match &store_result {
+    match store_result {
         Ok(store) => match store.recent_module_outcome_events(scraper_health::RECENT_EVENTS_WINDOW)
         {
             Ok(events) => {
@@ -347,22 +399,24 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
         },
         Err(_) => println!("  skipped — database did not open (see Storage above)"),
     }
+}
 
-    // ── Weak findings review (cross-scan) ───────────────────────────────
-    // `Store::low_confidence_evidence` has no `scan_id` filter by design — it
-    // queries the WHOLE local intelligence DB, not one investigation. That is
-    // exactly why this lives here, in the cross-scan operator dashboard
-    // (alongside the scraper-health signal just above), and NOT as an `hse
-    // audit` report section: `hse audit` scores one scan/source's evidentiary
-    // quality, and silently blending in weak entities from OTHER, unrelated
-    // scans would itself be the wrong-scope evidentiary contamination this
-    // project's correlator audits (AU-056/AU-085, AU-105, the GEXF
-    // co-occurrence fix) have repeatedly closed elsewhere.
+/// Weak findings review section (cross-scan). `Store::low_confidence_evidence`
+/// has no `scan_id` filter by design — it queries the WHOLE local
+/// intelligence DB, not one investigation. That is exactly why this lives
+/// here, in the cross-scan operator dashboard (alongside the scraper-health
+/// signal just above), and NOT as an `hse audit` report section: `hse audit`
+/// scores one scan/source's evidentiary quality, and silently blending in
+/// weak entities from OTHER, unrelated scans would itself be the wrong-scope
+/// evidentiary contamination this project's correlator audits (AU-056/
+/// AU-085, AU-105, the GEXF co-occurrence fix) have repeatedly closed
+/// elsewhere.
+fn print_weak_findings_section(store_result: &Result<Store>) {
     println!(
         "\nWeak findings (last 7 days, confidence < {:.2}):",
         Store::DEFAULT_LOW_CONFIDENCE_THRESHOLD
     );
-    match &store_result {
+    match store_result {
         Ok(store) => match store.low_confidence_evidence(
             Store::DEFAULT_LOW_CONFIDENCE_THRESHOLD,
             crate::core::port::EVENTS_RETENTION_SECS as i64,
@@ -372,13 +426,15 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
         },
         Err(_) => println!("  skipped — database did not open (see Storage above)"),
     }
+}
 
-    // ── Cell tower database freshness ──────────────────────────────────
-    // `hse cells import` is a manual trigger with no auto-resync (a named,
-    // unbuilt gap in SOLUTION_TREE §4a) — surfacing staleness here at least
-    // makes an operator relying on GEOINT cell-tower correlation (AU-084,
-    // `cell_intel`/`cell_local`) aware their local dataset may no longer
-    // reflect current tower deployments, rather than trusting it silently.
+/// Cell tower database freshness section. `hse cells import` is a manual
+/// trigger with no auto-resync (a named, unbuilt gap in SOLUTION_TREE §4a) —
+/// surfacing staleness here at least makes an operator relying on GEOINT
+/// cell-tower correlation (AU-084, `cell_intel`/`cell_local`) aware their
+/// local dataset may no longer reflect current tower deployments, rather
+/// than trusting it silently.
+fn print_cell_tower_section() {
     println!("\nCell tower database:");
     match cell_db::open_ro() {
         Ok(conn) => match cell_db::last_import(&conn) {
@@ -404,12 +460,13 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
              local cell-tower lookups"
         ),
     }
+}
 
-    // ── WiGLE account health (network call, best-effort) ──────────────
-    // Poll /api/v2/profile/user. Surfaces the "email unverified →
-    // throttled" warning that the WiGLE account page calls out but which
-    // our queries don't otherwise expose until they start silently
-    // returning fewer results.
+/// WiGLE account health section (network call, best-effort). Polls
+/// /api/v2/profile/user. Surfaces the "email unverified → throttled" warning
+/// that the WiGLE account page calls out but which our queries don't
+/// otherwise expose until they start silently returning fewer results.
+async fn print_wigle_account_section(loaded: &std::collections::HashMap<String, String>) {
     println!("\nWiGLE account:");
     let wigle_user = loaded
         .get("HUNTSMAN_WIGLE_USER")
@@ -432,17 +489,19 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
     if let Some(user) = status.user.as_deref() {
         println!("  user:           {user}");
     }
+}
 
-    // ── SeekNow account health (network call, best-effort) ──────────────
-    // Probes /credits — a free meta-query, no scan budget spent — so a dead
-    // or plan-lacking key is caught HERE, before an operator discovers it
-    // only via SeekNow (HSE's highest-priority paid source, and its
-    // proactive API-key-harvesting engine — see `util::key_harvest`)
-    // silently returning nothing on every scan. `query_credits` now also
-    // latches `is_key_invalid()` on an auth rejection — previously only the
-    // data-bearing `search`/`get_path` calls did that classification, so a
-    // fresh process (like this one) that only ever calls `query_credits`
-    // could never detect a dead key at all.
+/// SeekNow account health section (network call, best-effort). Probes
+/// /credits — a free meta-query, no scan budget spent — so a dead or
+/// plan-lacking key is caught HERE, before an operator discovers it only via
+/// SeekNow (HSE's highest-priority paid source, and its proactive
+/// API-key-harvesting engine — see `util::key_harvest`) silently returning
+/// nothing on every scan. `query_credits` now also latches `is_key_invalid()`
+/// on an auth rejection — previously only the data-bearing `search`/
+/// `get_path` calls did that classification, so a fresh process (like this
+/// one) that only ever calls `query_credits` could never detect a dead key
+/// at all.
+async fn print_seeknow_account_section(loaded: &std::collections::HashMap<String, String>) {
     println!("\nSeekNow account:");
     // Print the host the probe will hit FIRST, so a resolution failure below is
     // immediately actionable ("could not resolve see-know.eu" → check the domain
@@ -486,15 +545,6 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
              may lack a paid plan, or the API schema changed."
         ),
     }
-
-    if critical {
-        return Err(crate::core::error::Error::Other(
-            "critical storage fault — the database could not be opened or failed its \
-             integrity check (see the FAIL line(s) above)"
-                .into(),
-        ));
-    }
-    Ok(())
 }
 
 /// The DoH-retry marker `util::curl_client::CurlClient::exec` appends to its
