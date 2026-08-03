@@ -30,6 +30,41 @@ use super::{host_from_url, host_only};
     }
 
     #[test]
+    fn host_only_cuts_a_query_or_fragment_with_no_path_slash() {
+        // Regression: the authority component ends at the first `/`, `?` OR `#`
+        // (RFC 3986 §3.2). Splitting on `/` alone only *appears* to handle a
+        // query because the common shape carries a path slash first
+        // (`…/a/b?x=1`, covered above). With an EMPTY path — a legal and
+        // commonplace shape for a bio/profile link (`https://site.com?utm=x`,
+        // `https://site.com#about`) — nothing cut the query/fragment and the
+        // whole `example.com?x=1` was returned AS the host, then minted as a
+        // malformed `Domain` entity by every caller that trusts this helper.
+        assert_eq!(host_only("https://example.com?x=1"), "example.com");
+        assert_eq!(host_only("https://example.com#frag"), "example.com");
+        assert_eq!(host_only("https://example.com:8443?x=1"), "example.com");
+        // A query containing a slash must still cut at the `?`, not the `/`.
+        assert_eq!(host_only("https://example.com?next=/a/b"), "example.com");
+        // Scheme-less forms take the same path.
+        assert_eq!(host_only("example.com?x=1"), "example.com");
+        // The IPv6 literal branch stays intact alongside a query.
+        assert_eq!(host_only("https://[2001:db8::1]?x=1"), "[2001:db8::1]");
+    }
+
+    #[test]
+    fn host_from_url_strips_a_query_or_fragment_from_the_host() {
+        // The end-to-end consequence: without the cut, this yielded
+        // `Some("example.com?x=1")` — a domain entity that is not a domain.
+        assert_eq!(
+            host_from_url("https://Example.com?utm_source=x"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(
+            host_from_url("https://Example.com#section"),
+            Some("example.com".to_string())
+        );
+    }
+
+    #[test]
     fn host_only_path_without_scheme() {
         // No scheme: the whole string is treated as host/authority + path.
         assert_eq!(host_only("example.com/some/path"), "example.com");

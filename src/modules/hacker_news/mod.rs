@@ -327,20 +327,33 @@ fn algolia_domain_entities(body: &str, username: &str, scan_id: &str) -> Vec<Ent
         .collect()
 }
 
+/// The submitted link's host, as a domain — via the shared
+/// [`crate::util::url_util::host_from_url`] every other module uses.
+///
+/// This used to be hand-rolled here, and the copy did NOT lowercase: two HN
+/// submissions differing only in case (`Example.com` vs `example.com`) produced
+/// two distinct `Domain` entities that the caller's case-sensitive
+/// `sort_unstable()` + `dedup()` could not collapse. The shared helper
+/// lowercases (and handles case-insensitive schemes, ports, IPv6 literals, and
+/// query/fragment cuts) in one tested place.
 fn extract_domain_from_url(url: &str) -> Option<String> {
-    let without_scheme = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))?;
-    let domain = without_scheme.split('/').next()?;
-    let domain = domain.split('?').next()?;
-    let domain = domain.split('#').next()?;
-    // Remove port
-    let domain = domain.split(':').next()?;
-    if domain.contains('.') && domain.len() >= 4 {
-        Some(domain.to_string())
-    } else {
-        None
+    // The shared helper accepts a scheme-less authority too; HN's `url` field is
+    // always an absolute submission link, so requiring the scheme here keeps the
+    // previous behaviour of ignoring anything that is not one.
+    //
+    // Matched case-INSENSITIVELY: a scheme is case-insensitive per RFC 3986
+    // §3.1 (`HTTPS://` is valid), and the helper this delegates to already
+    // treats it that way — a case-sensitive guard here would reject an absolute
+    // URL the helper would happily parse, contradicting the very consolidation
+    // this function exists to perform.
+    let scheme_ok = ["http://", "https://"].iter().any(|s| {
+        url.get(..s.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(s))
+    });
+    if !scheme_ok {
+        return None;
     }
+    crate::util::url_util::host_from_url(url).filter(|d| d.len() >= 4)
 }
 
 #[cfg(test)]
