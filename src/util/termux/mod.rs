@@ -90,6 +90,16 @@ struct State {
     /// of the individual invocation.
     timed_out: HashMap<String, Backoff>,
     activity: Activity,
+    /// The same tally, split per `termux-*` binary.
+    ///
+    /// The aggregate above answers "did this sweep read ANY radio?", which is
+    /// too coarse for a caller that speaks for ONE of them: a successful
+    /// `termux-wifi-scaninfo` makes `reads > 0`, masking a Bluetooth tool that
+    /// was skipped or failed in the same window. A per-radio display that
+    /// trusted the aggregate would then report "nothing nearby" for a radio it
+    /// never actually read — asserting an observation of absence from an absence
+    /// of observation, the one thing this accounting exists to prevent.
+    by_tool: HashMap<String, Activity>,
 }
 
 /// One invocation's timeout backoff: when it may next be attempted, and how
@@ -157,6 +167,22 @@ pub fn activity() -> Activity {
     state().activity
 }
 
+/// The [`Activity`] tally for ONE `termux-*` binary (e.g.
+/// `"termux-bluetooth-scaninfo"`), or an all-zero tally if it was never called.
+///
+/// Use this instead of [`activity`] whenever the caller speaks for a single
+/// radio. The aggregate cannot answer "was *Bluetooth* read?" — a successful
+/// Wi-Fi scan in the same window sets `reads > 0` and masks a Bluetooth tool
+/// that was skipped or failed, so a per-radio display trusting it would report
+/// "nothing nearby" for a radio it never read.
+///
+/// Snapshot before and after a sweep and use [`Activity::since`], exactly as
+/// with the aggregate.
+#[must_use]
+pub fn activity_for(tool: &str) -> Activity {
+    state().by_tool.get(tool).copied().unwrap_or_default()
+}
+
 /// The skip-cache key for a timeout: the exact invocation, not the binary.
 ///
 /// `termux-location -p gps -r once` (a 12 s wait for a fresh satellite lock)
@@ -193,6 +219,7 @@ fn check_skip(cmd: &str, args: &[&str], now: Instant) -> Option<&'static str> {
         return None;
     };
     st.activity.skipped += 1;
+    st.by_tool.entry(cmd.to_string()).or_default().skipped += 1;
     Some(reason)
 }
 
@@ -202,6 +229,7 @@ fn record_absent(cmd: &str, now: Instant) {
     let mut st = state();
     st.absent.insert(cmd.to_string(), now + ABSENT_TTL);
     st.activity.failed += 1;
+    st.by_tool.entry(cmd.to_string()).or_default().failed += 1;
 }
 
 /// Record that this exact invocation timed out, escalating its backoff one step
@@ -221,6 +249,7 @@ fn record_timeout(cmd: &str, args: &[&str], now: Instant) -> Duration {
     let delay = TIMEOUT_BACKOFF.delay(entry.consecutive - 1);
     entry.until = now + delay;
     st.activity.failed += 1;
+    st.by_tool.entry(cmd.to_string()).or_default().failed += 1;
     delay
 }
 
@@ -234,10 +263,19 @@ fn record_responsive(cmd: &str, args: &[&str], read: bool) {
     let mut st = state();
     st.absent.remove(cmd);
     st.timed_out.remove(&invocation_key(cmd, args));
+    // Bump the aggregate first, then the per-tool tally: `st` is a `MutexGuard`,
+    // so holding a `&mut` into one field across an access to another goes
+    // through `DerefMut` twice and does not borrow-split.
     if read {
         st.activity.reads += 1;
     } else {
         st.activity.failed += 1;
+    }
+    let per_tool = st.by_tool.entry(cmd.to_string()).or_default();
+    if read {
+        per_tool.reads += 1;
+    } else {
+        per_tool.failed += 1;
     }
 }
 
