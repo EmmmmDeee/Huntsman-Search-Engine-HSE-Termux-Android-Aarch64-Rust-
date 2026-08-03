@@ -379,27 +379,6 @@ pub fn slugify(s: &str) -> String {
     slug
 }
 
-/// Char-boundary-safe truncation that appends `…` when the string exceeds
-/// `max_chars`. Uses char count, not byte length, so multibyte characters
-/// are never split.
-///
-/// ```
-/// use huntsman_search_engine::util::str_util::truncate_display;
-///
-/// assert_eq!(truncate_display("hello", 10), "hello");
-/// assert_eq!(truncate_display("hello world", 5), "hello…");
-/// ```
-#[must_use]
-pub fn truncate_display(s: &str, max_chars: usize) -> String {
-    let mut chars = s.chars();
-    let head: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{head}…")
-    } else {
-        head
-    }
-}
-
 /// Mask a secret (API key, token, password) for display: a 4+4 head/tail hint
 /// for a value long enough that 8 exposed characters are a small fraction,
 /// full masking otherwise. The single-sourced policy for every UI that shows a

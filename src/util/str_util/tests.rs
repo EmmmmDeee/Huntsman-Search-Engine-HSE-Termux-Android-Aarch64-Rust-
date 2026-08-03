@@ -1,7 +1,7 @@
 
 use super::{
     ascii_digits, char_window, find_ascii_ci, fold_ascii_lower, is_handle, mask_secret, nonempty,
-    parse_asn, slugify, truncate_display, truncate_safe, whole_word_token_match,
+    parse_asn, slugify, truncate_safe, whole_word_token_match,
 };
 
     #[test]
@@ -203,16 +203,6 @@ use super::{
         assert_eq!(slugify(""), "");
     }
 
-    #[test]
-    fn truncate_display_appends_ellipsis_when_long() {
-        assert_eq!(truncate_display("hello", 10), "hello");
-        assert_eq!(truncate_display("hello world", 5), "hello…");
-        let long: String = "a".repeat(300);
-        let t = truncate_display(&long, 200);
-        assert!(t.ends_with('…'));
-        assert_eq!(t.chars().count(), 201);
-    }
-
     // ── find_ascii_ci ─────────────────────────────────────────────────────────
 
     #[test]
@@ -285,7 +275,7 @@ mod prop {
 
     use super::super::{
         ascii_digits, ceil_char_boundary, char_window, find_ascii_ci, floor_char_boundary,
-        slugify, truncate_display, truncate_safe,
+        slugify, truncate_safe,
     };
 
     proptest! {
@@ -369,17 +359,5 @@ mod prop {
             prop_assert!(d.len() <= s.len());
         }
 
-        /// `truncate_display` is char-bounded; lossless when it already fits.
-        #[test]
-        fn truncate_display_char_bound(s in ".{0,64}", max in 0usize..40) {
-            let t = truncate_display(&s, max);
-            if s.chars().count() <= max {
-                prop_assert_eq!(&t, &s);
-            } else {
-                // head (max chars) + the single ellipsis.
-                prop_assert_eq!(t.chars().count(), max + 1);
-                prop_assert!(t.ends_with('…'));
-            }
-        }
     }
 }
