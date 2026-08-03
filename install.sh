@@ -104,6 +104,87 @@ fi
 HSE_INSTALL_DIR="${HSE_INSTALL_DIR:-$HOME/.local/share/hse}"
 RUST_MIN_VERSION="1.88"
 
+# ─── Stale-install cleanup (definitions; invoked after the new binary lands) ──
+# Signature stamped into every wrapper this installer generates, and present for
+# free in the compiled binary (its clap `about` string). Cleanup removes ONLY
+# files carrying one of these signatures, so it can never touch user data.
+HSE_MANAGED_MARKER="HSE-MANAGED: created by the HSE installer; safe for it to remove"
+# The compiled binary's built-in banner — present in the bytes of any real `hse`
+# binary, so a stale copy is identified WITHOUT executing it.
+HSE_BINARY_SIGNATURE="Huntsman Search Engine (HSE)"
+# Every executable name this installer places in the bin dir.
+HSE_OWNED_NAMES=(hse hse-bg hse-watch hse-wakelock)
+
+# True iff FILE is an HSE-owned artifact: a generated wrapper (carries the
+# marker) or a compiled `hse` (carries the embedded banner). `grep -a` scans
+# binary bytes and reads through a live symlink, so nothing is executed. A
+# broken symlink fails the `-f` test → reported NOT owned (handled separately as
+# a dangling link).
+_hse_is_owned() {
+    local f="$1"
+    [[ -f "$f" ]] || return 1
+    grep -qaF "$HSE_MANAGED_MARKER" "$f" 2>/dev/null && return 0
+    grep -qaF "$HSE_BINARY_SIGNATURE" "$f" 2>/dev/null && return 0
+    return 1
+}
+
+# Remove old / duplicate HSE artifacts so a fresh install can never be shadowed
+# by a stale one (the classic "an old `hse` in another PATH dir keeps winning").
+# Runs AFTER the new binary + wrappers are in place, so the current copies in
+# $HSE_BIN_DIR are skipped. Touches ONLY hse-named executables it can positively
+# identify as its own, plus its own staging temp files — never ~/.huntsman.env,
+# ~/.huntsman/, or anything unrecognised. Best-effort: a cleanup failure never
+# fails the install.
+purge_stale_installs() {
+    step "Removing stale / duplicate HSE installs"
+    local removed=0 tmp dir name f fresh keep
+    local -a path_dirs
+
+    # 1. This installer's own staging temp files, left by a crashed prior run.
+    for tmp in "$HSE_BIN_DIR"/.hse.new.*; do
+        [[ -e "$tmp" ]] || continue
+        rm -f "$tmp" 2>/dev/null && { ok "removed stale staging file: $tmp"; removed=$((removed + 1)); }
+    done
+
+    # 2. Duplicate hse binaries / wrappers in OTHER PATH directories. Splitting
+    #    PATH via `read -ra` (not word-splitting) keeps entries containing spaces
+    #    intact.
+    IFS=: read -ra path_dirs <<< "$PATH"
+    for dir in "${path_dirs[@]}"; do
+        [[ -n "$dir" && -d "$dir" ]] || continue
+        for name in "${HSE_OWNED_NAMES[@]}"; do
+            f="$dir/$name"
+            # Never touch the current install: skip anything that is the SAME
+            # file as any freshly-installed artifact — a hardlink, or a symlink
+            # pointing at it (under this or any other name). `-ef` follows links
+            # and is a portable bash builtin (no realpath/readlink -f needed).
+            if [[ -e "$f" ]]; then
+                keep=0
+                for fresh in "${HSE_OWNED_NAMES[@]}"; do
+                    [[ "$f" -ef "$HSE_BIN_DIR/$fresh" ]] && { keep=1; break; }
+                done
+                [[ $keep -eq 1 ]] && continue
+            fi
+            # A dangling hse* symlink: broken leftover from a removed install.
+            if [[ -L "$f" && ! -e "$f" ]]; then
+                rm -f "$f" 2>/dev/null && { ok "removed dangling symlink: $f"; removed=$((removed + 1)); }
+                continue
+            fi
+            # A real, positively-identified HSE artifact shadowing the fresh one.
+            if _hse_is_owned "$f"; then
+                rm -f "$f" 2>/dev/null \
+                    && { log_warn "removed stale HSE '$name' at $f (was shadowing $HSE_BIN_DIR/$name)"; removed=$((removed + 1)); }
+            fi
+        done
+    done
+
+    if [[ $removed -eq 0 ]]; then
+        ok "no stale HSE artifacts found"
+    else
+        ok "cleaned $removed stale HSE artifact(s)"
+    fi
+}
+
 # ─── Detect environment ──────────────────────────────────────────────────────
 step "Detecting environment"
 
@@ -798,6 +879,7 @@ if [[ $IS_TERMUX -eq 1 ]]; then
     # definition of that logic, replacing the copy each wrapper used to carry.
     WAKELOCK_HELPER="$HSE_BIN_DIR/hse-wakelock"
     printf '#!%s/bin/bash\n' "$PREFIX" > "$WAKELOCK_HELPER"
+    printf '# %s\n' "$HSE_MANAGED_MARKER" >> "$WAKELOCK_HELPER"
     cat >> "$WAKELOCK_HELPER" <<'WAKELOCK'
 # hse-wakelock — reference-counted wrapper around Termux's process-global wake
 # lock. Sourced by hse-bg and hse-watch; not meant to be run directly.
@@ -847,6 +929,7 @@ WAKELOCK
     # the scan engine survives Android's aggressive process kills.
     BG_WRAPPER="$HSE_BIN_DIR/hse-bg"
     printf '#!%s/bin/bash\n' "$PREFIX" > "$BG_WRAPPER"
+    printf '# %s\n' "$HSE_MANAGED_MARKER" >> "$BG_WRAPPER"
     # Absolute path to the shared helper, resolved at INSTALL time. Deriving it
     # from $0 works for a PATH lookup (argv[1] is the resolved path) but not for
     # `bash hse-bg` from another directory, and this costs nothing.
@@ -918,6 +1001,7 @@ WRAPPER
     # idle until the watchlist has at least one seed.
     WATCH_WRAPPER="$HSE_BIN_DIR/hse-watch"
     printf '#!%s/bin/bash\n' "$PREFIX" > "$WATCH_WRAPPER"
+    printf '# %s\n' "$HSE_MANAGED_MARKER" >> "$WATCH_WRAPPER"
     # Absolute path to the shared helper, resolved at INSTALL time (see hse-bg).
     printf 'HSE_WAKELOCK_HELPER="%s/hse-wakelock"\n' "$HSE_BIN_DIR" >> "$WATCH_WRAPPER"
     cat >> "$WATCH_WRAPPER" <<'WATCH'
@@ -1107,6 +1191,14 @@ BOOT
         hint "  https://f-droid.org/packages/com.termux.api/"
     fi
 fi
+
+# ─── Purge stale / duplicate installs ────────────────────────────────────────
+# The fresh binary + wrappers are now in $HSE_BIN_DIR; remove any older copies
+# elsewhere on PATH so a bare `hse` can never resolve to a previous version.
+# Runs on every install (Termux and standard Unix), and only after a build has
+# actually produced a new binary — HSE_SKIP_BUILD exits long before this point,
+# so cleanup never runs without a replacement in place.
+purge_stale_installs || log_warn "stale-install cleanup skipped (non-fatal)"
 
 # ─── Keys / env file (single canonical template) ───────────────────────────────────
 # Delegate to `hse provision` — the Rust-native env-merge that owns the ONE
