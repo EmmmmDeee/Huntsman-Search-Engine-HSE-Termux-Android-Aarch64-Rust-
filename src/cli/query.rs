@@ -1,27 +1,51 @@
-//! `hse query "<text>"` — general web search.
+//! `hse query "<text>"` — general web search, rendered as a table or JSON.
 //!
-//! Runs a plain, everyday free-text query across HSE's keyless multi-engine
-//! scraper and prints ranked web results. Unlike `hse search`, which classifies
-//! a seed into an OSINT target kind and wraps it in `site:`/`intext:` dorks,
-//! `query` searches the text verbatim and returns the raw web results,
-//! deduplicated across engines and ranked by how many independent engines
-//! surfaced each URL.
+//! Both sources ([`web_search`] for clearnet, [`crate::util::ahmia::search`] for
+//! `--dark`) reduce to the same [`Report`], so there is exactly one renderer and
+//! one place to change when the output changes. The user-facing description of
+//! what the command does lives on the clap `Query` variant in `cli::command`;
+//! the ranking rationale lives in the `websearch` module.
 
 use crate::core::error::{Error, Result};
-use crate::modules::search_engines::websearch::{WebResult, web_search};
+use crate::modules::search_engines::websearch::web_search;
 use std::time::{Duration, Instant};
 
 use super::truncate;
 
-/// Default overall wall-clock ceiling, in seconds. Each engine request
-/// self-clamps to this deadline (and to its own per-request cap), so a blocked
-/// or slow engine can never push the command past it. 17 engines at concurrency
-/// 6 typically finish in a few seconds; this is only the safety wall.
+/// Default overall wall-clock ceiling, in seconds. Bounds the whole command:
+/// on the clearnet path every engine request self-clamps to it, and on `--dark`
+/// it caps the single Ahmia request. Only a safety wall — 17 engines at
+/// concurrency 6 typically finish in a few seconds.
 const DEFAULT_TIMEOUT_SECS: u64 = 20;
 
-/// Column width the result title is truncated to before the URL is printed on
-/// its own line.
+/// Column width the result title/snippet is truncated to before the URL is
+/// printed on its own line.
 const TITLE_WIDTH: usize = 96;
+
+/// One rendered result row, borrowed from whichever source produced it so
+/// rendering allocates nothing per row.
+struct Row<'a> {
+    url: &'a str,
+    title: &'a str,
+    snippet: &'a str,
+    /// Cross-engine corroboration count. `None` for sources where the notion
+    /// does not apply (Ahmia returns one index, not N independent engines) —
+    /// which also suppresses the `[N×]` badge and the JSON `engines` key.
+    engines: Option<u32>,
+}
+
+/// Everything the renderer needs, independent of which source produced it.
+struct Report<'a> {
+    query: &'a str,
+    /// Attribution for the JSON `source` key; `None` for the multi-engine path.
+    source: Option<&'a str>,
+    heading: String,
+    /// Fixed line printed under the heading (the `--dark` scope disclaimer).
+    note: Option<&'a str>,
+    empty: String,
+    show_snippets: bool,
+    rows: Vec<Row<'a>>,
+}
 
 pub(super) async fn cmd_query(
     query: String,
@@ -39,148 +63,158 @@ pub(super) async fn cmd_query(
         ));
     }
 
+    // Resolve the output format BEFORE dispatching any request. Validating it
+    // after the fetch (as this once did) meant a typo like `--output tabel` paid
+    // for the full 17-engine fan-out — seconds of mobile data on a Termux link —
+    // only to fail at the print step with nothing to show for it.
+    let json = match output.as_str() {
+        "json" => true,
+        "table" => false,
+        other => {
+            return Err(Error::Other(format!(
+                "unknown --output format {other:?} (expected `table` or `json`)"
+            )));
+        }
+    };
+
     let secs = timeout.unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(3, 60);
 
     if dark {
-        return dark_exposure_search(q, limit, secs, &output).await;
+        let mut hits = crate::util::ahmia::search(q, secs * 1_000).await;
+        cap(&mut hits, limit);
+        return render(&dark_report(q, &hits), json);
     }
 
-    let deadline = Instant::now() + Duration::from_secs(secs);
-    let mut results = web_search(q, deadline).await;
-    if limit > 0 && results.len() > limit {
-        results.truncate(limit);
-    }
+    let mut results = web_search(q, Instant::now() + Duration::from_secs(secs)).await;
+    cap(&mut results, limit);
+    render(&web_report(q, &results), json)
+}
 
-    match output.as_str() {
-        "json" => print_json(q, &results),
-        "table" => {
-            print_table(q, &results);
-            Ok(())
-        }
-        other => Err(Error::Other(format!(
-            "unknown --output format {other:?} (expected `table` or `json`)"
-        ))),
+/// Keep at most `limit` rows; `0` means unlimited. (`Vec::truncate` is already a
+/// no-op when the vec is shorter, so no length check is needed.)
+fn cap<T>(rows: &mut Vec<T>, limit: usize) {
+    if limit > 0 {
+        rows.truncate(limit);
     }
 }
 
-/// `--dark`: dark-web exposure search via Ahmia's clearnet-served onion index.
-///
-/// Reports hidden-service pages that MENTION the search term. Nothing here
-/// fetches an onion address — the finding is the mention, and following it up
-/// is a deliberate human decision made outside HSE.
-async fn dark_exposure_search(q: &str, limit: usize, secs: u64, output: &str) -> Result<()> {
-    let mut hits = crate::util::ahmia::search(q, secs * 1_000).await;
-    if limit > 0 && hits.len() > limit {
-        hits.truncate(limit);
-    }
-
-    match output {
-        "json" => {
-            let items: Vec<_> = hits
-                .iter()
-                .map(|h| {
-                    serde_json::json!({
-                        "onion_url": h.onion_url,
-                        "title": h.title,
-                        "snippet": h.snippet,
-                    })
-                })
-                .collect();
-            let body = serde_json::to_string_pretty(&serde_json::json!({
-                "query": q,
-                "source": "ahmia.fi",
-                "count": hits.len(),
-                "results": items,
-            }))
-            .map_err(|e| Error::Other(format!("json: {e}")))?;
-            println!("{body}");
-            Ok(())
-        }
-        "table" => {
-            if hits.is_empty() {
-                println!(
-                    "No dark-web mentions of {q:?} in Ahmia's index \
-                     (or Ahmia was unreachable within the time budget)."
-                );
-                return Ok(());
-            }
-            println!(
-                "Dark-web exposure: {q:?} — {} onion page(s) mentioning this term (source: ahmia.fi)",
-                hits.len()
-            );
-            println!("Addresses are reported as evidence of exposure; HSE does not fetch them.");
-            println!();
-            for (i, h) in hits.iter().enumerate() {
-                let title = if h.title.trim().is_empty() {
-                    "(no title)"
-                } else {
-                    h.title.trim()
-                };
-                println!("{:>3}. {}", i + 1, truncate(title, TITLE_WIDTH));
-                println!("       {}", h.onion_url);
-                if !h.snippet.trim().is_empty() {
-                    println!("       {}", truncate(h.snippet.trim(), TITLE_WIDTH));
-                }
-            }
-            Ok(())
-        }
-        other => Err(Error::Other(format!(
-            "unknown --output format {other:?} (expected `table` or `json`)"
-        ))),
-    }
-}
-
-fn print_json(query: &str, results: &[WebResult]) -> Result<()> {
-    let items: Vec<_> = results
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            serde_json::json!({
-                "rank": i + 1,
-                "engines": r.engine_count,
-                "title": r.title,
-                "url": r.url,
-                "snippet": r.snippet,
-            })
-        })
-        .collect();
-    let body = serde_json::to_string_pretty(&serde_json::json!({
-        "query": query,
-        "count": results.len(),
-        "results": items,
-    }))
-    .map_err(|e| Error::Other(format!("json: {e}")))?;
-    println!("{body}");
-    Ok(())
-}
-
-fn print_table(query: &str, results: &[WebResult]) {
-    if results.is_empty() {
-        println!(
-            "No results for {query:?} — every engine was blocked, unreachable, \
+fn web_report<'a>(
+    q: &'a str,
+    results: &'a [crate::modules::search_engines::websearch::WebResult],
+) -> Report<'a> {
+    Report {
+        query: q,
+        source: None,
+        heading: format!(
+            "Web search: {q:?} — {} result(s), ranked by cross-engine corroboration",
+            results.len()
+        ),
+        note: None,
+        empty: format!(
+            "No results for {q:?} — every engine was blocked, unreachable, \
              or returned nothing within the time budget."
-        );
-        return;
+        ),
+        show_snippets: false,
+        rows: results
+            .iter()
+            .map(|r| Row {
+                url: &r.url,
+                title: &r.title,
+                snippet: &r.snippet,
+                engines: Some(r.engine_count),
+            })
+            .collect(),
+    }
+}
+
+/// `--dark`: dark-web exposure via Ahmia's clearnet-served onion index.
+///
+/// Reports hidden-service pages that MENTION the term. Nothing here fetches an
+/// onion address — the finding is the mention, and following it up is a
+/// deliberate human decision made outside HSE.
+fn dark_report<'a>(q: &'a str, hits: &'a [crate::util::ahmia::AhmiaResult]) -> Report<'a> {
+    Report {
+        query: q,
+        source: Some("ahmia.fi"),
+        heading: format!(
+            "Dark-web exposure: {q:?} — {} onion page(s) mentioning this term (source: ahmia.fi)",
+            hits.len()
+        ),
+        note: Some("Addresses are reported as evidence of exposure; HSE does not fetch them."),
+        empty: format!(
+            "No dark-web mentions of {q:?} in Ahmia's index \
+             (or Ahmia was unreachable within the time budget)."
+        ),
+        show_snippets: true,
+        rows: hits
+            .iter()
+            .map(|h| Row {
+                url: &h.onion_url,
+                title: &h.title,
+                snippet: &h.snippet,
+                engines: None,
+            })
+            .collect(),
+    }
+}
+
+fn render(rep: &Report<'_>, json: bool) -> Result<()> {
+    if json {
+        let items: Vec<_> = rep
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let mut o = serde_json::json!({
+                    "rank": i + 1,
+                    "title": r.title,
+                    "url": r.url,
+                    "snippet": r.snippet,
+                });
+                if let Some(n) = r.engines {
+                    o["engines"] = serde_json::json!(n);
+                }
+                o
+            })
+            .collect();
+        let mut body = serde_json::json!({
+            "query": rep.query,
+            "count": rep.rows.len(),
+            "results": items,
+        });
+        if let Some(src) = rep.source {
+            body["source"] = serde_json::json!(src);
+        }
+        let text =
+            serde_json::to_string_pretty(&body).map_err(|e| Error::Other(format!("json: {e}")))?;
+        println!("{text}");
+        return Ok(());
     }
 
-    println!(
-        "Web search: {query:?} — {} result(s), ranked by cross-engine corroboration",
-        results.len()
-    );
+    if rep.rows.is_empty() {
+        println!("{}", rep.empty);
+        return Ok(());
+    }
+    println!("{}", rep.heading);
+    if let Some(note) = rep.note {
+        println!("{note}");
+    }
     println!();
-    for (i, r) in results.iter().enumerate() {
+    for (i, r) in rep.rows.iter().enumerate() {
         let title = if r.title.trim().is_empty() {
             "(no title)"
         } else {
             r.title.trim()
         };
-        // `[N×]` = N independent engines returned this URL.
-        println!(
-            "{:>3}. [{}×] {}",
-            i + 1,
-            r.engine_count,
-            truncate(title, TITLE_WIDTH)
-        );
+        match r.engines {
+            // `[N×]` = N independent engines returned this URL.
+            Some(n) => println!("{:>3}. [{n}×] {}", i + 1, truncate(title, TITLE_WIDTH)),
+            None => println!("{:>3}. {}", i + 1, truncate(title, TITLE_WIDTH)),
+        }
         println!("       {}", r.url);
+        if rep.show_snippets && !r.snippet.trim().is_empty() {
+            println!("       {}", truncate(r.snippet.trim(), TITLE_WIDTH));
+        }
     }
+    Ok(())
 }

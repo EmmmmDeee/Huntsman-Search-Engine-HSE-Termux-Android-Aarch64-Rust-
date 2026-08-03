@@ -83,8 +83,60 @@ fn search_url_encodes_the_query() {
 }
 
 #[test]
-fn blank_query_is_rejected_before_any_request() {
-    // `search` short-circuits on empty input; verified via the pure URL builder
-    // plus the guard in `search` itself (no network in unit tests).
-    assert_eq!(parse_results(""), Vec::new());
+fn redirect_url_is_cut_at_the_next_query_parameter() {
+    // The original fixture put `redirect_url` LAST, so it never exercised the
+    // other ordering. It turns out no manual cut is needed — `urldecode` is
+    // form-urlencoded and that grammar already ends a value at `&` — but that is
+    // a property of a shared helper this module does not own, so pin it here:
+    // swapping `urldecode` for a naive percent-decoder would silently append
+    // `&search_term=…` to every recorded onion address.
+    let html = r#"<li class="result">
+        <h4><a href="/search/redirect?redirect_url=http%3A%2F%2Fcutme123456789abc.onion%2Fp&amp;search_term=acme">T</a></h4>
+        <p>d</p></li>"#;
+    let r = parse_results(html);
+    assert_eq!(r.len(), 1);
+    assert_eq!(
+        r[0].onion_url, "http://cutme123456789abc.onion/p",
+        "the following query parameter must not be swallowed into the URL"
+    );
+}
+
+#[test]
+fn onion_host_is_matched_case_insensitively_and_past_a_port() {
+    // Ahmia can surface an uppercase host or an explicit port. Matching the raw
+    // host chain missed both and silently dropped the hit.
+    let html = r#"
+      <li class="result"><h4><a href="HTTP://UPPER1234567890AB.ONION/x">U</a></h4><p>d</p></li>
+      <li class="result"><h4><a href="http://ported1234567890a.onion:8080/y">P</a></h4><p>d</p></li>
+    "#;
+    let urls: Vec<_> = parse_results(html)
+        .into_iter()
+        .map(|r| r.onion_url)
+        .collect();
+    assert_eq!(
+        urls,
+        vec![
+            "HTTP://UPPER1234567890AB.ONION/x".to_string(),
+            "http://ported1234567890a.onion:8080/y".to_string(),
+        ],
+        "uppercase and :port onion hosts must both be recognised"
+    );
+}
+
+#[test]
+fn entities_are_decoded_exactly_once() {
+    // `strip_tags_plain` does not decode, so exactly ONE `decode_entities` pass
+    // runs here — the round-trip property `decode_entities` documents. The
+    // indexed page contains the escaped text `&amp;lt;`, which denotes the
+    // literal four characters `&lt;`; decoding once yields exactly that. A
+    // second pass (which `strip_html`, decoding internally, would have caused)
+    // collapses it further to `<` and diverges from every other title HSE
+    // decodes.
+    let html = r#"<li class="result"><h4><a href="http://enttest1234567890.onion/">A &amp;lt; B</a></h4><p>x</p></li>"#;
+    let r = parse_results(html);
+    assert_eq!(r.len(), 1);
+    assert_eq!(
+        r[0].title, "A &lt; B",
+        "one decode pass must leave the escaped entity intact, not collapse it to `<`"
+    );
 }

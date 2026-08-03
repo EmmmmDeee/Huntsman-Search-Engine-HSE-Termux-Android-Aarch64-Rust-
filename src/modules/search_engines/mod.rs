@@ -217,14 +217,21 @@ const PIVOT_ENGINE_CAP: usize = 8;
 /// pass reach it via `super::`, so it never needs `pub(super)` (which would
 /// over-expose it past the module-private `EngineSpec` return type).
 fn proven_live_engines() -> Vec<&'static EngineSpec> {
-    let proven: std::collections::BTreeSet<&'static str> = SESSION_EMPTY_COUNTS
+    pivot_engine_set(&proven_engine_names())
+}
+
+/// Snapshot (one lock) of the engines that have returned ≥1 result this session
+/// — the `proven` input to [`order_engines_for_primary`] and
+/// [`pivot_engine_set`]. Shared by the OSINT primary pass, the pivot pass, and
+/// the `websearch` general-search path so all three read liveness identically.
+fn proven_engine_names() -> std::collections::BTreeSet<&'static str> {
+    SESSION_EMPTY_COUNTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
         .filter(|(_, live)| live.ever_hit)
         .map(|(name, _)| *name)
-        .collect();
-    pivot_engine_set(&proven)
+        .collect()
 }
 
 /// Pure core of [`proven_live_engines`]: the reliable core UNIONed with the
@@ -532,15 +539,7 @@ impl Module for SearchEngines {
             // fill the bounded concurrency slots first — under a tight deadline
             // their results survive, while unproven/blocked engines no longer
             // occupy the early slots purely by declaration order.
-            let proven: std::collections::BTreeSet<&'static str> = {
-                let map = SESSION_EMPTY_COUNTS
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                map.iter()
-                    .filter(|(_, l)| l.ever_hit)
-                    .map(|(n, _)| *n)
-                    .collect()
-            };
+            let proven = proven_engine_names();
             let reliable: std::collections::BTreeSet<&'static str> =
                 reliable_engines().iter().map(|e| e.name).collect();
             let live: Vec<&'static EngineSpec> = ENGINES

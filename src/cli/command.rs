@@ -257,8 +257,9 @@ pub enum Command {
         /// onion addresses it reports.
         #[arg(long)]
         dark: bool,
-        /// Overall time budget in seconds (clamped to 3–60). Each engine
-        /// request self-clamps to this deadline.
+        /// Overall time budget in seconds (clamped to 3–60). Bounds the whole
+        /// command: every engine request self-clamps to it on the default path,
+        /// and it caps the single Ahmia request under `--dark`.
         #[arg(long)]
         timeout: Option<u64>,
         /// Output format: `table` (default) or `json`.

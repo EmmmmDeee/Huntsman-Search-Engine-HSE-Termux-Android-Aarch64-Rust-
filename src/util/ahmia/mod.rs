@@ -25,8 +25,10 @@
 //! See `SECURITY.md`: HSE is defensive-only. A "which markets are up right
 //! now" capability is out of scope and is not implemented here.
 
-use crate::util::html::{decode_entities, strip_html};
-use crate::util::http::{urldecode, urlencode};
+use crate::util::html::{decode_entities, strip_tags_plain};
+use crate::util::http::{UA_BROWSER, urldecode, urlencode};
+use crate::util::url_util::host_from_url;
+use std::borrow::Cow;
 
 /// Ahmia's clearnet search endpoint.
 const AHMIA_SEARCH_URL: &str = "https://ahmia.fi/search/?q=";
@@ -66,9 +68,7 @@ pub async fn search(query: &str, timeout_ms: u64) -> Vec<AhmiaResult> {
     // Routed through the shared curl helper, so this inherits the SSRF pin,
     // protocol/redirect hardening, and max-filesize guard applied to every
     // outbound fetch.
-    let ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
-              (KHTML, like Gecko) Chrome/125.0 Safari/537.36";
-    match crate::util::curl::fetch_with_ua(&search_url(query), timeout_ms, ua).await {
+    match crate::util::curl::fetch_with_ua(&search_url(query), timeout_ms, UA_BROWSER).await {
         Some(html) => parse_results(&html),
         None => Vec::new(),
     }
@@ -96,14 +96,14 @@ pub fn parse_results(html: &str) -> Vec<AhmiaResult> {
         let Some(href) = extract_attr(block, "href=\"") else {
             continue;
         };
-        let Some(onion_url) = normalize_onion_href(&href) else {
+        let Some(onion_url) = normalize_onion_href(href) else {
             continue;
         };
         if !seen.insert(onion_url.clone()) {
             continue;
         }
-        let title = extract_tag_text(block, "<h4").unwrap_or_default();
-        let snippet = extract_tag_text(block, "<p").unwrap_or_default();
+        let title = extract_tag_text(block, "<h4", "</h4").unwrap_or_default();
+        let snippet = extract_tag_text(block, "<p", "</p").unwrap_or_default();
         out.push(AhmiaResult {
             onion_url,
             title,
@@ -113,25 +113,36 @@ pub fn parse_results(html: &str) -> Vec<AhmiaResult> {
     out
 }
 
-/// Pull the first value of `attr` (given including `="`) out of `block`.
-fn extract_attr(block: &str, attr: &str) -> Option<String> {
+/// Borrow the first value of `attr` (given including `="`) out of `block`.
+///
+/// Returns a slice of `block` rather than an owned `String`: this runs for every
+/// `<li>` on the page — nav and footer included, most of which are rejected — so
+/// the allocation would be paid mostly on entries that are thrown away.
+fn extract_attr<'a>(block: &'a str, attr: &str) -> Option<&'a str> {
     let start = block.find(attr)? + attr.len();
     let rest = &block[start..];
     let end = rest.find('"')?;
-    Some(rest[..end].to_string())
+    Some(&rest[..end])
 }
 
-/// Extract the visible text of the first `tag` element in `block`, stripped of
-/// markup and entity-decoded. `tag` is the opening delimiter, e.g. `"<h4"`.
-fn extract_tag_text(block: &str, tag: &str) -> Option<String> {
-    let start = block.find(tag)?;
+/// Extract the visible text of the first `open`…`close` element in `block`,
+/// stripped of markup and entity-decoded. Delimiters are passed as a pair (e.g.
+/// `("<h4", "</h4")`) so no per-call `format!` is needed to derive the closer.
+///
+/// Uses [`strip_tags_plain`] (a single allocation-free char scan) rather than
+/// `strip_html` (three regex passes): these are short, well-formed inline
+/// fragments with no `<script>`/`<style>` to guard against. `strip_tags_plain`
+/// does not decode entities, so exactly ONE [`decode_entities`] pass is applied
+/// here — `strip_html` would have decoded internally and made this a second,
+/// invariant-breaking pass (`&amp;lt;` must round-trip to `&lt;`, not `<`).
+fn extract_tag_text(block: &str, open: &str, close: &str) -> Option<String> {
+    let start = block.find(open)?;
     let after_open = block[start..].find('>')? + start + 1;
     // Close on the matching end tag when present, else run to the block end.
-    let close = format!("</{}", tag.trim_start_matches('<'));
     let end = block[after_open..]
-        .find(&close)
+        .find(close)
         .map_or(block.len(), |e| after_open + e);
-    let text = decode_entities(&strip_html(&block[after_open..end]));
+    let text = decode_entities(&strip_tags_plain(&block[after_open..end]));
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if text.is_empty() { None } else { Some(text) }
 }
@@ -141,22 +152,26 @@ fn extract_tag_text(block: &str, tag: &str) -> Option<String> {
 /// onion address (Ahmia's own nav links, about pages, clearnet mirrors), so
 /// non-results never enter the output.
 fn normalize_onion_href(href: &str) -> Option<String> {
-    let raw = if let Some(idx) = href.find("redirect_url=") {
-        urldecode(&href[idx + "redirect_url=".len()..])
-    } else {
-        href.to_string()
+    let raw: Cow<'_, str> = match href.find("redirect_url=") {
+        Some(idx) => {
+            // `redirect_url` is not necessarily the LAST query parameter, but the
+            // remainder needs no manual cut: `urldecode` is form-urlencoded
+            // (`parse(…).next()`), and that grammar treats `&` as the pair
+            // separator — so decoding stops at the next parameter on its own, for
+            // both a raw `&` and the `&amp;` entity form found in raw HTML.
+            // `redirect_url_is_cut_at_the_next_query_parameter` pins that.
+            Cow::Owned(urldecode(&href[idx + "redirect_url=".len()..]))
+        }
+        // Borrowed: a non-redirect href needs no allocation at all, and most
+        // hrefs on the page are rejected below.
+        None => Cow::Borrowed(href),
     };
-    let raw = raw.trim().to_string();
-    // Strip any scheme, then keep just the host portion.
-    let host = raw
-        .rsplit("://")
-        .next()?
-        .split('/')
-        .next()?
-        .split('?')
-        .next()?;
-    if host.ends_with(".onion") && !host.is_empty() {
-        Some(raw)
+    let raw = raw.trim();
+    // `host_from_url` lowercases and strips any `:port` (and keeps bracketed
+    // IPv6 intact), so `HTTP://ABC.ONION:8080/x` is recognised — the previous
+    // hand-rolled scheme/path split matched neither case.
+    if host_from_url(raw)?.ends_with(".onion") {
+        Some(raw.to_string())
     } else {
         None
     }
