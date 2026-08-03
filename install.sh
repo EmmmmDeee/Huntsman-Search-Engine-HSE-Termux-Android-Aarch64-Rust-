@@ -771,6 +771,13 @@ step "Installing binary to $HSE_BIN_DIR/hse"
 RESTART_BG=0
 RESTART_BARE=0
 BG_PID_FILE="$HOME/.cache/hse-bg.pid"
+# Deliberately a bare liveness probe, not the hse_pid_matches identity check the
+# wrappers use: that helper lives in the hse-wakelock file, which this run has
+# not written yet (and any copy on disk belongs to the OLD install). It is safe
+# to be approximate here because this only sets a flag — the actions it triggers
+# are `hse-bg stop` then `hse-bg start`, both of which re-probe with the real
+# identity check. A recycled pid therefore costs a start that reports itself as
+# a restart, never a signal to an unrelated process.
 if [[ -f "$BG_PID_FILE" ]] && kill -0 "$(cat "$BG_PID_FILE" 2>/dev/null)" 2>/dev/null; then
     RESTART_BG=1
     ok "Detected a running hse-bg server — will restart it onto the new build"
@@ -896,14 +903,86 @@ if [[ $IS_TERMUX -eq 1 ]]; then
 # cannot strand the lock forever — the next release garbage-collects it.
 HSE_WAKELOCK_DIR="${HSE_WAKELOCK_DIR:-$HOME/.cache/hse-wakelock.d}"
 
+# True when $1 is a live pid that is still one of OUR processes.
+#
+#   $2  expected basename of the running executable, or "" to skip that test
+#   $3  substring the command line must contain, or "" to skip that test
+#
+# `kill -0` alone is NOT a sound test for a pid read back from a file. Linux
+# wraps pids at /proc/sys/kernel/pid_max — 32768 on stock Termux — and Android's
+# low-memory killer reaps background processes as a matter of course, which is
+# the entire reason this wake-lock exists. A recorded pid whose process was
+# reaped is therefore genuinely likely to have been REUSED by an unrelated
+# process the user owns, and `kill -0` cannot tell the two apart.
+#
+# Both directions of error do damage, so neither test may guess:
+#   * a false "still ours" makes `stop` SIGTERM that innocent process, and
+#     leaves the wake-lock held by a dead holder;
+#   * a false "not ours" makes `start` launch a SECOND server against a port
+#     the first one still holds.
+hse_pid_matches() {
+    _pid="${1:-}"
+    _exe="${2:-}"
+    _argv="${3:-}"
+    # Reject non-numeric before it can reach `kill`, and reject 0 specially:
+    # `kill 0` signals the caller's entire process group — from `hse-bg stop`
+    # that is the operator's shell. A truncated pid file must never do that.
+    case "$_pid" in
+        '' | 0 | *[!0-9]*) return 1 ;;
+    esac
+    kill -0 "$_pid" 2>/dev/null || return 1
+
+    # Preferred signal: which binary is actually running. Unlike an argv match
+    # this cannot be fooled by an unrelated path that happens to contain "hse",
+    # nor broken by a future change to how the server is invoked.
+    if [ -n "$_exe" ]; then
+        _t="$(readlink "/proc/$_pid/exe" 2>/dev/null || true)"
+        if [ -n "$_t" ]; then
+            # An upgrade renames the new binary over the running one, after
+            # which the kernel reports the target as "<path> (deleted)". That
+            # is precisely when install.sh restarts the server, so it has to
+            # keep counting as ours.
+            _t="${_t% (deleted)}"
+            [ "${_t##*/}" = "$_exe" ] && return 0
+            return 1
+        fi
+    fi
+
+    # Fallback — and the only usable signal for a shell wrapper, whose
+    # executable is bash rather than anything named after us.
+    if [ -n "$_argv" ] && [ -r "/proc/$_pid/cmdline" ]; then
+        # Tested with `if`, not run as a bare pipeline whose status is returned:
+        # "no match" is a normal answer here, not an error. Every caller today
+        # invokes this from a condition, where `set -e` is suspended for the
+        # whole call — but that leaves correctness resting on the call site, and
+        # a future caller running it as a plain command would turn "not ours"
+        # into a wrapper that exits part-way through `stop`.
+        # `-F`: the contract is a literal substring, never a regex.
+        if tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null | grep -qF -- "$_argv"; then
+            return 0
+        fi
+        return 1
+    fi
+
+    # /proc unreadable, or nothing to compare against. Answer on liveness alone
+    # rather than guessing "dead": that is exactly the old behaviour, whereas a
+    # wrong "dead" would introduce the double-start failure above.
+    return 0
+}
+
 hse_wakelock_gc() {
     [ -d "$HSE_WAKELOCK_DIR" ] || return 0
     for _h in "$HSE_WAKELOCK_DIR"/*; do
         [ -e "$_h" ] || continue
         _p="$(cat "$_h" 2>/dev/null || true)"
-        if [ -z "$_p" ] || ! kill -0 "$_p" 2>/dev/null; then
-            rm -f "$_h"
-        fi
+        # The two holders record different KINDS of pid, so they need different
+        # identity tests: hse-bg registers the `hse` server itself, hse-watch
+        # registers its own shell wrapper.
+        case "${_h##*/}" in
+            hse-bg)    hse_pid_matches "$_p" hse ''         || rm -f "$_h" ;;
+            hse-watch) hse_pid_matches "$_p" ''  hse-watch  || rm -f "$_h" ;;
+            *)         hse_pid_matches "$_p" ''  ''         || rm -f "$_h" ;;
+        esac
     done
 }
 
@@ -944,9 +1023,19 @@ mkdir -p "$(dirname "$PID_FILE")"
 # Refcounted wake-lock, shared with hse-watch (see hse-wakelock).
 . "$HSE_WAKELOCK_HELPER"
 
+# Is the recorded pid still OUR server? See hse_pid_matches — a bare `kill -0`
+# trusts a recycled pid, which on Android is a routine occurrence rather than a
+# corner case.
+bg_running() {
+    [[ -f "$PID_FILE" ]] || return 1
+    # The recorded pid is the server itself: `nohup hse serve` execs, so the
+    # pid `$!` captured below IS the `hse` binary.
+    hse_pid_matches "$(cat "$PID_FILE" 2>/dev/null)" hse 'hse serve'
+}
+
 case "${1:-start}" in
     start)
-        if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        if bg_running; then
             echo "hse-bg already running (pid $(cat "$PID_FILE"))"
             exit 0
         fi
@@ -961,9 +1050,9 @@ case "${1:-start}" in
         echo "Open: http://127.0.0.1:8080"
         ;;
     stop)
-        if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-            # `|| true`: the pid can exit between the `kill -0` probe above and
-            # here. Under `set -e` a failed kill would abort BEFORE the release
+        if bg_running; then
+            # `|| true`: the pid can exit between the probe above and here.
+            # Under `set -e` a failed kill would abort BEFORE the release
             # below, stranding the holder file — and if this was the last holder,
             # nothing would ever trigger the GC that drops the shared wake-lock.
             kill "$(cat "$PID_FILE")" 2>/dev/null || true
@@ -977,7 +1066,7 @@ case "${1:-start}" in
         fi
         ;;
     status)
-        if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        if bg_running; then
             echo "Running: pid $(cat "$PID_FILE")"
         else
             echo "Not running"
@@ -1061,9 +1150,20 @@ run_loop() {
     done
 }
 
+# Is the recorded pid still OUR loop? See hse_pid_matches. The pid recorded here
+# is the backgrounded `"$0" run-loop` wrapper, so its command line carries the
+# wrapper's own name.
+watch_running() {
+    [ -f "$PID_FILE" ] || return 1
+    # No exe test here: the recorded pid is the backgrounded `"$0" run-loop`
+    # shell, whose executable is bash. Its argv carries the wrapper's path,
+    # which is what identifies it.
+    hse_pid_matches "$(cat "$PID_FILE" 2>/dev/null)" '' 'hse-watch'
+}
+
 case "${1:-start}" in
     start)
-        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        if watch_running; then
             echo "hse-watch already running (pid $(cat "$PID_FILE"))"
             exit 0
         fi
@@ -1083,9 +1183,9 @@ case "${1:-start}" in
         sweep_once
         ;;
     stop)
-        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-            # `|| true`: the pid can exit between the `kill -0` probe above and
-            # here. Under `set -e` a failed kill would abort BEFORE the release
+        if watch_running; then
+            # `|| true`: the pid can exit between the probe above and here.
+            # Under `set -e` a failed kill would abort BEFORE the release
             # below, stranding the holder file — and if this was the last holder,
             # nothing would ever trigger the GC that drops the shared wake-lock.
             kill "$(cat "$PID_FILE")" 2>/dev/null || true
@@ -1100,7 +1200,7 @@ case "${1:-start}" in
         fi
         ;;
     status)
-        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        if watch_running; then
             echo "Running: pid $(cat "$PID_FILE"); $(seed_count) seed(s); every ${INTERVAL}s"
         else
             echo "Not running; $(seed_count) seed(s) in $WATCHLIST"
