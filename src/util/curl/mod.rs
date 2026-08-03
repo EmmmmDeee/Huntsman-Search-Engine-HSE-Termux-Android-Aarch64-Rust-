@@ -171,7 +171,11 @@ async fn curl_exec(
         // single `curl_exec` call take up to ~3x its budget, silently breaking
         // every caller's deadline contract (the same guarantee
         // `search_engines::fetch::fetch_timeout_ms` documents and relies on).
-        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+        // `Instant + Duration` panics on overflow (its `Add` impl is a bare
+        // `checked_add(...).expect(...)`), and `timeout_ms` is a parameter on
+        // every public fetch helper in this module — a nonsensically large
+        // caller value must fail this one fetch, not crash the process.
+        let deadline = std::time::Instant::now().checked_add(Duration::from_millis(timeout_ms))?;
         let mut tried: Vec<String> = Vec::new();
         while tried.len() < MAX_PROXY_FAILOVER {
             let remaining_ms = deadline
