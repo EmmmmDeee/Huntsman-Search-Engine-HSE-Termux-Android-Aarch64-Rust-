@@ -57,7 +57,6 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_SEON_KEY",
     "HUNTSMAN_OPENSANCTIONS_KEY",
     "HUNTSMAN_EPIEOS_KEY",
-    "HUNTSMAN_PROXYCURL_KEY",
     "HUNTSMAN_OPENCORP_KEY",
     // Read inline (`ctx.key_opt("HUNTSMAN_GITHUB_TOKEN")`) by github_user,
     // github_code_search and github_commits rather than via an `_ENV` const,
@@ -130,7 +129,6 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
         "HUNTSMAN_DEHASHED_KEY" => {
             "DeHashed — paid (v2 API, key-only); needs an active search subscription at https://dehashed.com"
         }
-        "HUNTSMAN_PROXYCURL_KEY" => "Proxycurl — paid, https://nubela.co/proxycurl",
         "HUNTSMAN_SEON_KEY" => "SEON — free trial at https://seon.io",
         "HUNTSMAN_OPENSANCTIONS_KEY" => {
             "OpenSanctions — free trial/nonprofit key at https://www.opensanctions.org/api/"

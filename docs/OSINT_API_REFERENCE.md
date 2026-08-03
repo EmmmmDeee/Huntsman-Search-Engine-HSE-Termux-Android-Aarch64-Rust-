@@ -100,7 +100,6 @@ light up, and (c) compare your own keys against what HSE will recognise.
 | **EmailRep** | email reputation/profile | free (ltd) | alnum | M K D |
 | **Epieos** | email→linked accounts (Google, etc.) | ltd | alnum | M K D |
 | **FullContact** | person/company enrichment | ltd | 32 alnum | M K D |
-| **Proxycurl** | LinkedIn person/company data | paid | alnum | M K D |
 | **Seon** | fraud/digital-footprint enrichment | trial | alnum | M K D |
 | **OpenSanctions** | sanctions/PEP/watchlist screening (incl. Australia's DFAT list) | free trial/nonprofit | alnum | M K D |
 | **OFAC (US Treasury)** | SDN + Consolidated sanctions-list screening | free | — (no key) | M D |
@@ -251,7 +250,7 @@ HSE reads keys from `HUNTSMAN_*` env vars (or the UI Settings panel). Recognised
 keyed providers include:
 
 `OATHNET, NIAMONX, SEEKNOW, HIBP, DEHASHED, INTELX, HUNTER, EMAILREP, EPIEOS,
-FULLCONTACT, PROXYCURL, SEON, OPENSANCTIONS, OSINTCAT, SHODAN, CENSYS (ID+SECRET),
+FULLCONTACT, SEON, OPENSANCTIONS, OSINTCAT, SHODAN, CENSYS (ID+SECRET),
 ZOOMEYE, BINARYEDGE, FOFA, NETLAS, ONYPHE, FULLHUNT, CRIMINALIP, LEAKIX, GREYNOISE,
 VIRUSTOTAL, ABUSEIPDB, ABUSECH, THREATFOX, ALIENVAULT, URLSCAN, PULSEDIVE,
 PASSIVETOTAL, SECTRAILS, WHOISXML, DOMAINSDB, BUILTWITH, C99, BREACHDIR, NUMVERIFY,

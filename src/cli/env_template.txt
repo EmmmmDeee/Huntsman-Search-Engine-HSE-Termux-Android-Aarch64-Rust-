@@ -65,7 +65,6 @@ HUNTSMAN_OSINTCAT_KEY="insert_osintcat_key_here"
 HUNTSMAN_SEON_KEY="insert_seon_key_here"
 HUNTSMAN_OPENSANCTIONS_KEY="insert_opensanctions_key_here"
 HUNTSMAN_EMAILREP_KEY="insert_emailrep_key_here"
-HUNTSMAN_PROXYCURL_KEY="insert_proxycurl_key_here"
 HUNTSMAN_OPENCORP_KEY="insert_opencorporates_key_here"
 # GitHub PAT — optional for github_user / github_code_search / github_commits:
 # they all run key-free, but unauthenticated calls share GitHub's 60 req/hour
