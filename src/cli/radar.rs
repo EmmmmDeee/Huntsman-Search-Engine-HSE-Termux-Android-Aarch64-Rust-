@@ -30,6 +30,13 @@ use super::{color_confidence, truncate, use_color};
 
 use crate::core::engine::LOCAL_PASSIVE_MODULES as SENSOR_MODULES;
 
+/// The `termux-*` binary whose activity decides whether the live Bluetooth map
+/// was refreshed from a real radio read this tick.
+///
+/// Taken from the sensor enum rather than spelled out, so the map cannot end up
+/// watching the counters of a tool the scanner no longer calls.
+const BT_TOOL: &str = crate::modules::termux_sensor::Sensor::BluetoothScan.tool();
+
 /// Seconds between sensor sweeps. Not operator-tunable: the radar has exactly
 /// two states, and 10 s is fast enough to track a device moving on foot or in
 /// traffic while leaving the radios idle most of the time.
@@ -119,6 +126,31 @@ impl SeenSet {
     /// Number of uids currently remembered (never exceeds `capacity`).
     fn len(&self) -> usize {
         self.set.len()
+    }
+}
+
+/// Whether the Bluetooth radio was actually read during a sweep, given that
+/// sweep's tally for [`BT_TOOL`] alone.
+///
+/// The predicate is `reads > 0`, deliberately NOT
+/// [`Activity::took_no_readings`]: that method answers `false` for an IDLE
+/// tally, because across a whole sweep "nothing was even asked for" is a
+/// genuinely different claim from "we asked and got nothing back", and
+/// conflating them would misreport the sweep.
+///
+/// For ONE radio's map the two collapse. A tick that never invoked the tool read
+/// the radio exactly as much as a tick whose invocation timed out: not at all.
+/// Either way the map must say so rather than draw an empty field, which the
+/// operator would read as "nothing nearby".
+///
+/// [`Activity::took_no_readings`]: crate::util::termux::Activity::took_no_readings
+const fn bt_read_outcome(
+    bt: crate::util::termux::Activity,
+) -> crate::core::radar_live::BtReadOutcome {
+    if bt.reads > 0 {
+        crate::core::radar_live::BtReadOutcome::Read
+    } else {
+        crate::core::radar_live::BtReadOutcome::NotRead
     }
 }
 
@@ -244,9 +276,13 @@ pub(super) async fn cmd_radar() -> Result<()> {
         // empty sweep can say WHICH empty it is: radios read and quiet, or
         // radios never read. See the `no new signals` branch below.
         let sensors_before = crate::util::termux::activity();
+        // …and separately with the Bluetooth tool's OWN counters, because the
+        // live map speaks for that one radio. See the map block below.
+        let bt_before = crate::util::termux::activity_for(BT_TOOL);
         let sweep_result =
             run_sub_scan(&engine, sweep_scan, sweep_target, sweep_ctx, &radar_stop).await?;
         let sensors = crate::util::termux::activity().since(sensors_before);
+        let bt_sensor = crate::util::termux::activity_for(BT_TOOL).since(bt_before);
         if radar_stop.load(std::sync::atomic::Ordering::Relaxed) {
             eprintln!("\nradar stopped");
             break 'sweeps;
@@ -263,20 +299,20 @@ pub(super) async fn cmd_radar() -> Result<()> {
         // here would let the NEXT repaint rewind up into that progress output
         // and overwrite it.
         //
-        // `took_no_readings()` is whole-sweep, so it is only trusted in the
-        // negative direction: if NO sensor tool answered, the Bluetooth radio
-        // certainly was not read. (A BT-scoped counter, so a co-sensor success
-        // stops masking a BT-only failure, lands separately.)
+        // The read/not-read verdict comes from the BLUETOOTH tool's own tally,
+        // not the whole-sweep aggregate. The aggregate cannot answer "was the
+        // Bluetooth radio read?": a successful Wi-Fi or cell read in the same
+        // sweep sets `reads > 0` and masks a Bluetooth scan that was skipped by
+        // the backoff cache or failed outright. Believing it would paint an
+        // empty map as "nothing nearby" for a radio that was never read —
+        // asserting an observation of absence from an absence of observation,
+        // which is the one thing this map must never do.
         let bt_sightings: Vec<crate::core::radar_track::SweepObservation> = sweep_entities
             .iter()
             .filter(|e| e.has_tag("bluetooth"))
             .filter_map(crate::core::radar_track::observation_from_entity)
             .collect();
-        let bt_read = if sensors.took_no_readings() {
-            crate::core::radar_live::BtReadOutcome::NotRead
-        } else {
-            crate::core::radar_live::BtReadOutcome::Read
-        };
+        let bt_read = bt_read_outcome(bt_sensor);
         let bt_delta = bt_radar.apply_tick(&bt_sightings, bt_read);
         let bt_map =
             super::live_frame::render_bt_map(&bt_radar, &bt_delta, u64::from(sweep_num), color);
@@ -534,5 +570,71 @@ mod tests {
             "a was still the oldest and got evicted"
         );
         assert!(!seen.insert("c".to_string()), "c remains");
+    }
+
+    /// The map may only claim a radio read when THAT radio was read.
+    #[test]
+    fn only_a_successful_bluetooth_read_counts_as_read() {
+        use crate::core::radar_live::BtReadOutcome;
+        use crate::util::termux::Activity;
+
+        let read = |reads, skipped, failed| {
+            bt_read_outcome(Activity {
+                reads,
+                skipped,
+                failed,
+            })
+        };
+
+        assert_eq!(read(1, 0, 0), BtReadOutcome::Read, "the tool answered");
+        assert_eq!(
+            read(1, 0, 2),
+            BtReadOutcome::Read,
+            "one good read is a read, whatever else went wrong alongside it"
+        );
+        assert_eq!(
+            read(0, 1, 0),
+            BtReadOutcome::NotRead,
+            "skipped by the backoff cache — the radio was never touched"
+        );
+        assert_eq!(
+            read(0, 0, 1),
+            BtReadOutcome::NotRead,
+            "ran and returned nothing usable — an absence of observation"
+        );
+    }
+
+    /// The reason this predicate is not `took_no_readings()`.
+    ///
+    /// An idle tally means the tool was never invoked in this window. For the
+    /// sweep as a whole that is deliberately NOT "blind" — nothing was asked
+    /// for, so nothing can be concluded. But for one radio's map it is exactly
+    /// as unread as a failure, and drawing an empty field would tell the
+    /// operator "nothing nearby" about a radio nobody switched on.
+    #[test]
+    fn an_idle_bluetooth_tally_is_not_read_even_though_it_is_not_blind() {
+        use crate::core::radar_live::BtReadOutcome;
+        use crate::util::termux::Activity;
+
+        let idle = Activity::default();
+        assert!(idle.is_idle());
+        assert!(
+            !idle.took_no_readings(),
+            "precondition: the aggregate predicate reports idle as NOT blind"
+        );
+        assert_eq!(
+            bt_read_outcome(idle),
+            BtReadOutcome::NotRead,
+            "never invoked still means the map has nothing to show"
+        );
+    }
+
+    /// The map watches the counters of the tool the scanner actually runs.
+    #[test]
+    fn bt_tool_is_the_scanners_bluetooth_binary() {
+        assert_eq!(
+            BT_TOOL,
+            crate::modules::termux_sensor::Sensor::BluetoothScan.tool()
+        );
     }
 }
