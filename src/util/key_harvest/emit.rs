@@ -248,7 +248,16 @@ pub fn store_api_credential(
         return;
     };
 
-    if !seen.insert(format!("@breach-cred:{service}:{password}")) {
+    // Hash the password into the dedup key rather than embedding it whole: a
+    // stealer/breach `password` field is an arbitrary-length attacker/victim-
+    // supplied string, unlike `emit_key_with`'s `key_val` (bounded by
+    // `KEY_PATTERNS`'s own regexes) — an unbounded value here would both
+    // allocate unboundedly and retain a second plaintext copy of the secret in
+    // `seen` for the rest of the page's processing.
+    if !seen.insert(format!(
+        "@breach-cred:{service}:{}",
+        crate::util::key_pool::key_id(&password)
+    )) {
         return;
     }
     let mut entity = Entity::new(
