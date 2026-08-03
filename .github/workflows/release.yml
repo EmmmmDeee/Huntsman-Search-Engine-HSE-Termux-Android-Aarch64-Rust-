@@ -75,6 +75,9 @@ jobs:
           GH_REF_NAME: ${{ github.ref_name }}
           GH_REF_TYPE: ${{ github.ref_type }}
           GH_EVENT_NAME: ${{ github.event_name }}
+          # For the `gh api` compare call in the already-released branch below.
+          # Read-only use; the job's `contents: write` is for the publish step.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           publish=true
@@ -91,8 +94,33 @@ jobs:
                 ver="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n1)"
                 tag="v${ver}"
                 if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
-                  echo "Tag ${tag} already exists — nothing to publish."
                   publish=false
+                  # "Already released" is NOT automatically "nothing to ship".
+                  # This is the only delivery channel: install.sh and the
+                  # in-app updater both fetch the LATEST RELEASE, so any commit
+                  # on main past that tag is merged work that reaches no user.
+                  # Skipping silently reported that state as success — main sat
+                  # 11 commits past v1.39.0 for a whole session of merges before
+                  # anyone noticed the installer was still serving 1.39.0.
+                  # So: say how far behind the release is, loudly.
+                  ahead="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${tag}...${GITHUB_SHA}" \
+                            --jq '.ahead_by' 2>/dev/null || echo unknown)"
+                  if [[ "$ahead" == "unknown" ]]; then
+                    echo "Tag ${tag} already exists — nothing to publish."
+                    echo "Could not determine how far main is ahead of ${tag}." >> "$GITHUB_STEP_SUMMARY"
+                  elif [[ "$ahead" -gt 0 ]]; then
+                    echo "::warning title=Unreleased work on main::main is ${ahead} commit(s) past ${tag}. Those changes ship to nobody until Cargo.toml's version is bumped — the installer and auto-updater only ever fetch the latest release."
+                    {
+                      echo "### ⚠ ${ahead} commit(s) on main are unreleased"
+                      echo
+                      echo "\`main\` is **${ahead} commit(s)** past \`${tag}\`, and \`Cargo.toml\` still says \`${ver}\`."
+                      echo "Users installing via \`install.sh\` or auto-update receive **${tag}**, without those changes."
+                      echo
+                      echo "Bump \`version\` in \`Cargo.toml\` (and \`Cargo.lock\`) to cut a release containing them."
+                    } >> "$GITHUB_STEP_SUMMARY"
+                  else
+                    echo "Tag ${tag} already exists and main is level with it — nothing to publish."
+                  fi
                 fi
               fi
               ;;
