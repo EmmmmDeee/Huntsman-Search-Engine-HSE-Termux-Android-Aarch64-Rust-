@@ -861,3 +861,183 @@ Part II is a **conditional** valuation. The condition — that all features work
 measured, and they measured otherwise. Both parts should be read together: Part
 I is the price today, Part II is the price on delivery of correctness, and §19
 is the value of the work between them.
+
+---
+
+# Part III — Customer-base projection and whole-project valuation
+
+Answers two distinct questions: *how many paying customers is it realistic to
+expect year-by-year with average-quality marketing/SEO*, and *what is the
+whole project — source code and all — worth today.* Both are estimates built
+on stated, sourced assumptions, not measurements. Nothing here should be read
+with the confidence of Parts I–II.
+
+## 21. Method and its limits
+
+**What I could not get:** no competitor publishes paying-customer counts.
+SpiderFoot (the closest peer) discloses GitHub stars/forks but not commercial
+HX subscriber counts; Maltego, OSINT Industries, Skopenow and ShadowDragon
+disclose none of user, customer, or revenue figures. "Use competitors as base
+rates" is therefore implemented as: **anchor the traffic/conversion inputs to
+published category benchmarks** (freemium devtool conversion, organic SaaS
+traffic ramps) and to the one hard competitor data point that exists
+(SpiderFoot's GitHub trajectory), not to fabricated competitor customer
+counts.
+
+**Sourced benchmark inputs:**
+
+| Input | Value used | Source |
+|---|---|---|
+| Devtool freemium free→paid conversion | 1.0–2.4%, rising with maturity | OpenView SaaS Benchmarks (median 2–5% all SaaS; devtool sub-segment 1–3%) |
+| Mature niche B2B organic traffic ceiling | ~1,500–6,500 sessions/mo by Yr 2–5 | Industry SEO-benchmark aggregates for niche tool categories |
+| Organic trial/try conversion | 4.5–8% of sessions | SaaS organic-traffic benchmark aggregates (2–5% typical; higher used here because HSE's free tier is instant/no-signup, closer to a download-page CVR than a trial-signup CVR) |
+| Free-user annual retention | 45–65% | Assumption — devtool community tiers typically show high first-year drop-off; not vendor-sourced |
+| Paid-customer annual churn | 18–35% | Assumption, single-product/no-support-contract SMB SaaS norm; not vendor-sourced |
+| SpiderFoot GitHub trajectory (reference only) | 18–29k stars, 2,892 forks, built over **years**, not months | GitHub |
+
+**Explicitly an estimate, explicitly average-quality:** "average" is
+operationalised as organic SEO/GitHub/community-post growth only — no paid
+acquisition, no dedicated marketing hire, no conference/analyst presence
+(the things ShadowDragon, Maltego and Skopenow all have and HSE's team of one
+does not).
+
+**Pricing basis:** the customer-base model prices at **Part I's ship-today
+figure, A$495/yr per operator** — the project **as it exists now**, not the
+Part II hypothetical. Team/Sovereign tiers are excluded because they require
+features that do not exist yet (Part I §2.3); modelling revenue from an
+unshippable SKU would overstate the as-is case.
+
+## 22. Year-by-year customer and revenue projection
+
+Three scenarios — LOW (weak execution), BASE (average, as specified), HIGH
+(above-average execution and unusually strong niche fit) — from the same
+funnel: organic sessions → free-tier installs (with retention) → paid
+conversion (with churn) → ARR at A$495/seat.
+
+### BASE case (average-quality marketing/SEO — the requested scenario)
+
+| Year | Avg. organic sessions/mo | New free users | Active free base (EOY) | New paid | **Paid customers (EOY)** | **ARR (A$)** | **ARR (US$)** |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 200 | 144 | 144 | 1 | **1** | **713** | 498 |
+| 2 | 950 | 684 | 763 | 11 | **13** | **6,201** | 4,329 |
+| 3 | 2,350 | 1,692 | 2,112 | 42 | **52** | **25,557** | 17,841 |
+| 4 | 4,100 | 2,952 | 4,113 | 91 | **129** | **63,964** | 44,653 |
+| 5 | 5,750 | 4,140 | 6,402 | 154 | **251** | **124,033** | 86,587 |
+
+### LOW case (weak execution — floor)
+
+| Year | **Paid customers (EOY)** | **ARR (A$)** |
+|---:|---:|---:|
+| 1 | 0 | 160 |
+| 2 | 3 | 1,415 |
+| 3 | 10 | 5,169 |
+| 4 | 24 | 11,861 |
+| 5 | 43 | 21,237 |
+
+### HIGH case (above-average execution — ceiling for "average" framing)
+
+| Year | **Paid customers (EOY)** | **ARR (A$)** |
+|---:|---:|---:|
+| 1 | 5 | 2,495 |
+| 2 | 48 | 23,765 |
+| 3 | 210 | 103,983 |
+| 4 | 591 | 292,495 |
+| 5 | 1,269 | 628,336 |
+
+**Read against the SpiderFoot anchor:** SpiderFoot's OSS project needed
+multiple years to reach ~18–29k GitHub stars. BASE's Year-5 active free base
+of ~6,400 is well short of that trajectory even after five years — consistent
+with HSE being a narrower-audience (Termux-Android-only, AU-optimised),
+proprietary-licensed tool competing against a free, permissively-licensed,
+decade-old category leader. **The BASE case should be read as the realistic
+scenario; the HIGH case requires SEO/marketing performance HSE's current
+single-maintainer, no-budget posture gives no evidence of.**
+
+## 23. What the customer-base model implies for pricing tier mix
+
+At A$495/yr flat (Rung 1 only, since Rungs 2–3 aren't shippable), the
+model **cannot validate Part II's higher rungs** — there is no projected
+customer segment paying A$2,950 or A$6,500+/seat until Rungs 2–3 actually
+ship (Part I §2.3, Part II §11). Revenue from those rungs is upside not yet
+modellable from today's product.
+
+## 24. Whole-project valuation — reconciling asset cost against revenue traction
+
+Two independent valuation approaches, reconciled rather than averaged.
+
+### 24.1 Cost/asset-floor approach
+
+Part I §6.3 derived a **replacement-cost band of A$0.8M–2.6M** from 305,007
+lines of tested, architecturally-enforced Rust (4.2–10.2 engineer-years at
+A$180k–260k/yr fully loaded).
+
+That figure is *reproduction* cost, not *acquisition* value — a buyer does
+not pay full rebuild cost for an asset carrying:
+
+| Discount factor | Why | Evidence |
+|---|---|---|
+| Single-maintainer concentration risk | No team continuity; Part I §9 flags source-escrow as a procurement condition at scale | 43 releases, apparently solo-cadenced |
+| Unresolved precision defects | Buyer inherits the CRITICAL/HIGH findings `hse audit` already names | Part I §2.1 |
+| Missing commercial scaffolding | Auth/RBAC, PDF export, chain-of-custody, support — all absent | Part I §2.3 |
+| 7-week public track record | Too short to de-risk for a conservative acquirer | Part I §2.4 |
+
+Applying a **40% discount** (standard for concentrated, early-stage technical
+assets in down-market tuck-in valuation) to the replacement-cost band:
+
+| | Low | High |
+|---|---:|---:|
+| Replacement cost | A$800,000 | A$2,600,000 |
+| **Discounted asset floor (−40%)** | **A$480,000** | **A$1,560,000** |
+
+### 24.2 Revenue-multiple approach
+
+Applying niche/micro-SaaS multiples (2.0–3.5× ARR — "standalone single-product
+vendors struggle to break 5×," per cybersecurity-M&A benchmark sources) to the
+**BASE-case Year-3 ARR** (the earliest year revenue is non-trivial enough to
+value rather than round to zero):
+
+| | Low (2.0×) | High (3.5×) |
+|---|---:|---:|
+| Y3 ARR (BASE) | A$25,557 | A$25,557 |
+| **Revenue-multiple value** | **A$51,000** | **A$89,000** |
+
+**This is the central finding of Part III: at every year in the LOW and BASE
+scenarios, and until roughly Year 5 even in the HIGH scenario, the
+revenue-multiple value stays one to two orders of magnitude below the
+discounted asset floor.** For an under-monetised technical asset like this
+one, revenue traction is a secondary signal, not the primary valuation
+driver — the code itself is worth more than what it has sold so far.
+
+### 24.3 Reconciliation
+
+Standard practice for an early-revenue technical asset is the **greater of**
+the discounted cost floor and the capitalized revenue value, plus a modest
+premium for the de-risking that even small revenue traction provides (proof
+the product converts real users, not just a hypothesis):
+
+| Component | Low | High |
+|---|---:|---:|
+| Discounted asset floor | A$480,000 | A$1,560,000 |
+| + traction premium (partial weight on Y3 revenue-multiple value) | +A$25,000 | +A$150,000 |
+| **Whole-project valuation, as-is, source code included** | **A$505,000** | **A$1,710,000** |
+| **In USD** | **US$353,000** | **US$1,194,000** |
+| **Point estimate** | **A$1,107,500 (US$773,000)** | |
+
+## 25. What would move this number
+
+| Lever | Effect |
+|---|---:|
+| A second engineer joins (removes single-maintainer discount) | **+~A$200k–400k** (partial discount reversal) |
+| Precision fixes land (§2.1) + auth/RBAC ships (Part II §11) | **+~A$300k–600k** (asset re-rates toward the undiscounted replacement-cost band, and Rung 2/3 revenue becomes modellable) |
+| 12 more months of release cadence at current pace with no regressions | **+~A$100k–200k** (track-record discount narrows) |
+| BASE case realised through Year 3 (52 paying customers, A$25.6k ARR) | Validates the revenue-multiple floor but does not yet change which approach dominates (§24.3) |
+| HIGH case realised (1,269 customers by Yr 5, A$628k ARR) | **Revenue-multiple value (A$1.26M–2.2M) overtakes the asset floor** — valuation basis flips to a revenue multiple |
+
+## 26. Caveat
+
+Every number in Part III is a model output built on stated assumptions and
+category benchmarks, not on measured competitor data — no comparator in this
+market publishes customer or revenue figures, so "use competitors as base
+rates" could only be implemented via published conversion/traffic benchmarks
+plus the one disclosed competitor trajectory (SpiderFoot's GitHub growth).
+Treat the ranges, not the point estimates, as the honest output.
