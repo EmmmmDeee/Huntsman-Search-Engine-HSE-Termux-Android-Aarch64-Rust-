@@ -17,6 +17,54 @@ use super::*;
     }
 
     #[test]
+    fn merge_preserves_a_real_value_written_with_an_export_prefix() {
+        // `docs/SEEKNOW_SETUP.md` tells operators to add a key by appending
+        //     echo 'export HUNTSMAN_SEEKNOW_KEY="…"' >> ~/.huntsman.env
+        // and `dotenvy` (util::keys::io) accepts that form, so the key WORKS —
+        // right up until the next `curl … | bash`. `parse_kv` took everything
+        // before `=` as the key name, so the name was `export HUNTSMAN_…`,
+        // which failed the `HUNTSMAN_` check and returned None. `merge_template`
+        // therefore never saw the value and wrote the TEMPLATE PLACEHOLDER over
+        // the operator's real key. Silent, and on the documented happy path.
+        let existing = "export HUNTSMAN_OATHNET_KEY=\"real-rotated-key-abc\"\n";
+        let merged = merge_template(existing, template_for_test());
+        assert!(
+            merged.contains("real-rotated-key-abc"),
+            "an `export`-prefixed key was dropped by the merge; merged:\n{merged}"
+        );
+        assert!(
+            !merged.contains("insert_oathnet_pro_key_here"),
+            "the placeholder overwrote a real operator key; merged:\n{merged}"
+        );
+    }
+
+    #[test]
+    fn parse_kv_accepts_the_documented_export_form() {
+        // Same defect at the unit level, and the reason `export` must be
+        // stripped rather than merely tolerated: the KEY NAME has to come out
+        // clean so it matches the template line it is meant to replace.
+        assert_eq!(
+            parse_kv("export HUNTSMAN_X=\"abc\""),
+            Some(("HUNTSMAN_X".to_string(), "abc".to_string()))
+        );
+        // Unquoted and extra-whitespace variants of the same shell idiom.
+        assert_eq!(
+            parse_kv("export   HUNTSMAN_X=plain"),
+            Some(("HUNTSMAN_X".to_string(), "plain".to_string()))
+        );
+        // `export` must only be honoured as a STANDALONE leading keyword. This
+        // input is chosen so it can only pass while that holds: strip `export`
+        // without requiring the separating whitespace and the name becomes
+        // `HUNTSMAN_X`, which parses as a real key and fails this assertion.
+        //
+        // (`exported=1` would NOT test anything: its key is `exported` when the
+        // rule is right and `ed` when it is wrong, and neither starts with
+        // `HUNTSMAN_`, so it returns None either way — a guard that cannot
+        // catch the regression it exists to prevent.)
+        assert_eq!(parse_kv("exportHUNTSMAN_X=1"), None);
+    }
+
+    #[test]
     fn merge_keeps_placeholders_for_unset_keys() {
         let merged = merge_template("", template_for_test());
         assert!(merged.contains("HUNTSMAN_OATHNET_KEY=\"insert_oathnet_pro_key_here\""));
