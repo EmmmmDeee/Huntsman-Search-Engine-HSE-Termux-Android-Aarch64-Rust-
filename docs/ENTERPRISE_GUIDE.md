@@ -148,8 +148,8 @@ discord-export-123456789.zip
 ### Cost Breakdown
 ```
 /search: 1 credit
-/search/deep: 3 credits (if fast /search returned empty)
-/username/social: 2 credits
+/search/deep: 1 credit (if fast /search returned empty)
+/username/social: 1 credit
 /discord/user: 1 credit
 /enterprise/discord/history: 5 credits ← enterprise only
 /enterprise/discord/messages: 5 credits ← enterprise only
