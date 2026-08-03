@@ -146,9 +146,10 @@ async fn run_command(command: Command) -> Result<()> {
         Command::Query {
             query,
             limit,
+            dark,
             timeout,
             output,
-        } => query::cmd_query(query, limit, timeout, output).await,
+        } => query::cmd_query(query, limit, dark, timeout, output).await,
         Command::Config { key, value } => config::cmd_config(key, value),
         Command::Diagnostics { json } => diagnostics::cmd_diagnostics(json).await,
         Command::Audit {

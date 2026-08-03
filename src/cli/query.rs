@@ -26,6 +26,7 @@ const TITLE_WIDTH: usize = 96;
 pub(super) async fn cmd_query(
     query: String,
     limit: usize,
+    dark: bool,
     timeout: Option<u64>,
     output: String,
 ) -> Result<()> {
@@ -39,8 +40,12 @@ pub(super) async fn cmd_query(
     }
 
     let secs = timeout.unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(3, 60);
-    let deadline = Instant::now() + Duration::from_secs(secs);
 
+    if dark {
+        return dark_exposure_search(q, limit, secs, &output).await;
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(secs);
     let mut results = web_search(q, deadline).await;
     if limit > 0 && results.len() > limit {
         results.truncate(limit);
@@ -50,6 +55,73 @@ pub(super) async fn cmd_query(
         "json" => print_json(q, &results),
         "table" => {
             print_table(q, &results);
+            Ok(())
+        }
+        other => Err(Error::Other(format!(
+            "unknown --output format {other:?} (expected `table` or `json`)"
+        ))),
+    }
+}
+
+/// `--dark`: dark-web exposure search via Ahmia's clearnet-served onion index.
+///
+/// Reports hidden-service pages that MENTION the search term. Nothing here
+/// fetches an onion address — the finding is the mention, and following it up
+/// is a deliberate human decision made outside HSE.
+async fn dark_exposure_search(q: &str, limit: usize, secs: u64, output: &str) -> Result<()> {
+    let mut hits = crate::util::ahmia::search(q, secs * 1_000).await;
+    if limit > 0 && hits.len() > limit {
+        hits.truncate(limit);
+    }
+
+    match output {
+        "json" => {
+            let items: Vec<_> = hits
+                .iter()
+                .map(|h| {
+                    serde_json::json!({
+                        "onion_url": h.onion_url,
+                        "title": h.title,
+                        "snippet": h.snippet,
+                    })
+                })
+                .collect();
+            let body = serde_json::to_string_pretty(&serde_json::json!({
+                "query": q,
+                "source": "ahmia.fi",
+                "count": hits.len(),
+                "results": items,
+            }))
+            .map_err(|e| Error::Other(format!("json: {e}")))?;
+            println!("{body}");
+            Ok(())
+        }
+        "table" => {
+            if hits.is_empty() {
+                println!(
+                    "No dark-web mentions of {q:?} in Ahmia's index \
+                     (or Ahmia was unreachable within the time budget)."
+                );
+                return Ok(());
+            }
+            println!(
+                "Dark-web exposure: {q:?} — {} onion page(s) mentioning this term (source: ahmia.fi)",
+                hits.len()
+            );
+            println!("Addresses are reported as evidence of exposure; HSE does not fetch them.");
+            println!();
+            for (i, h) in hits.iter().enumerate() {
+                let title = if h.title.trim().is_empty() {
+                    "(no title)"
+                } else {
+                    h.title.trim()
+                };
+                println!("{:>3}. {}", i + 1, truncate(title, TITLE_WIDTH));
+                println!("       {}", h.onion_url);
+                if !h.snippet.trim().is_empty() {
+                    println!("       {}", truncate(h.snippet.trim(), TITLE_WIDTH));
+                }
+            }
             Ok(())
         }
         other => Err(Error::Other(format!(

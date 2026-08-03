@@ -250,6 +250,13 @@ pub enum Command {
         /// Maximum results to print (0 = no limit).
         #[arg(short = 'n', long, default_value_t = 20)]
         limit: usize,
+        /// Dark-web EXPOSURE search: query Ahmia's onion index over clearnet
+        /// (no Tor required) to find hidden-service pages that mention the
+        /// search term — e.g. your own domain or brand appearing in a leak
+        /// listing. Reports where a mention exists; HSE never fetches the
+        /// onion addresses it reports.
+        #[arg(long)]
+        dark: bool,
         /// Overall time budget in seconds (clamped to 3–60). Each engine
         /// request self-clamps to this deadline.
         #[arg(long)]
