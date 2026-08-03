@@ -586,15 +586,6 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         probe_parser: None,
     },
     ServiceDef {
-        name: "proxycurl",
-        env_var: "HUNTSMAN_PROXYCURL_KEY",
-        category: "identity",
-        test_url: "https://nubela.co/proxycurl/api/v2/linkedin",
-        key_header: KeyPlacement::BearerAuth,
-        rate_limit_reset_secs: 12,
-        probe_parser: None,
-    },
-    ServiceDef {
         name: "opencorporates",
         env_var: "HUNTSMAN_OPENCORP_KEY",
         category: "identity",

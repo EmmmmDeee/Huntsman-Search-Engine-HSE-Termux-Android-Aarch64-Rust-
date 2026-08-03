@@ -2861,8 +2861,6 @@ fn entity_confidence_uses_named_ladder_constants() {
         ("src/modules/nostr/mod.rs", "0.66"),
         ("src/modules/npm_author/mod.rs", "0.66"),
         ("src/modules/npm_author/mod.rs", "0.74"),
-        ("src/modules/proxycurl/build.rs", "0.68"),
-        ("src/modules/proxycurl/build.rs", "0.68"),
     ];
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -2877,10 +2875,11 @@ fn entity_confidence_uses_named_ladder_constants() {
     expected.sort();
 
     // Compare as MULTISETS, not sets. `Vec::contains` tests membership only, so
-    // with a duplicate baseline row (proxycurl/build.rs carries two 0.68 sites) a
-    // third identical literal in that same file would still be "contained" and
-    // slip through, and normalising one of a duplicate pair would leave the stale
-    // row undetected. Counting occurrences is what actually enforces the ratchet.
+    // where a file carries the SAME bare literal at two sites (a duplicate
+    // baseline row), a third identical literal in that file would still be
+    // "contained" and slip through, and normalising one of a duplicate pair
+    // would leave the stale row undetected. Counting occurrences is what
+    // actually enforces the ratchet.
     let tally = |rows: &[(String, String)]| {
         let mut m: std::collections::BTreeMap<(String, String), usize> =
             std::collections::BTreeMap::new();

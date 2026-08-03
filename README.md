@@ -8,7 +8,7 @@
 **All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
 SpiderFoot-inspired breadth without the daemon or the footprint.**
 
-Pure-Rust OSINT / GEOINT platform with **171 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **170 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 dark-console Web UI, zero native dependencies, keyless-first.
 
@@ -166,7 +166,7 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 171 modules
+hse modules                                                 # list all 170 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse query "melbourne coworking spaces"                      # general web search across the free engines
@@ -234,7 +234,7 @@ the onion address itself.
 
 ---
 
-## Module Overview (171 modules — 135 free, 36 key-gated/paid)
+## Module Overview (170 modules — 135 free, 35 key-gated/paid)
 
 > A curated highlight of the modules below (not the full list). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run
@@ -257,10 +257,10 @@ the onion address itself.
 - **Termux sensors**: `cell_intel`, `device_sensors`, `local_net`, `signal_radar`
 - **Other**: `api_key_probe`, `chain_intel`
 
-**Key-gated / Paid — 33 (28 key-gated · 5 paid):**
+**Key-gated / Paid — 32 (28 key-gated · 4 paid):**
 - `abn_lookup`, `abuseipdb`, `censys`, `criminal_ip`, `dehashed`, `emailrep`
 - `epieos`, `exa_search`, `fullcontact`, `hibp`, `hlr_cnam`, `hunter_io`, `intelx`, `ipqs`
-- `leakix`, `netlas`, `niamonx`, `numverify`, `oathnet_pro`, `onyphe`, `opencellid`, `osintcat`, `proxycurl`
+- `leakix`, `netlas`, `niamonx`, `numverify`, `oathnet_pro`, `onyphe`, `opencellid`, `osintcat`
 - `securitytrails`, `see_know`, `seon`, `threatfox`, `trove_au`, `virustotal`, `whoisxml`
 - `wifi_intel`, `wigle`, `zoomeye`
 
