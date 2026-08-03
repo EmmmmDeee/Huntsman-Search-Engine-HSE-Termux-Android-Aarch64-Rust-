@@ -2978,15 +2978,37 @@ fn every_src_file_is_wired_into_the_module_tree() {
     let mut files = Vec::new();
     collect_rs_files(&src, &mut files);
 
-    let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Declared and included targets are tracked by resolved, canonicalized path
+    // (not by bare module name): a `mod name;` in one directory must not make an
+    // unrelated `name.rs`/`name/mod.rs` elsewhere in the tree read as reachable.
+    let mut declared: std::collections::HashSet<std::path::PathBuf> =
+        std::collections::HashSet::new();
     let mut included: std::collections::HashSet<std::path::PathBuf> =
         std::collections::HashSet::new();
     for f in &files {
         let text = fs::read_to_string(f).unwrap();
         let dir = f.parent().unwrap();
+        let fname = f.file_name().unwrap().to_string_lossy();
+        // Rust's own resolution rule: a `mod.rs`/`lib.rs`/`main.rs` declares its
+        // children as siblings in its own directory, but a *leaf* `name.rs`
+        // declares its children under a `name/` subdirectory of its own dir —
+        // e.g. `util/geo/coords.rs`'s `mod tests;` resolves to
+        // `util/geo/coords/tests.rs`, not `util/geo/tests.rs`.
+        let mod_base = if matches!(&*fname, "mod.rs" | "lib.rs" | "main.rs") {
+            dir.to_path_buf()
+        } else {
+            dir.join(f.file_stem().unwrap())
+        };
         for line in text.lines() {
             if let Some(name) = parse_file_mod_decl(line) {
-                declared.insert(name);
+                for candidate in [
+                    mod_base.join(format!("{name}.rs")),
+                    mod_base.join(&name).join("mod.rs"),
+                ] {
+                    if let Ok(p) = candidate.canonicalize() {
+                        declared.insert(p);
+                    }
+                }
             }
             if let Some((_, after)) = line.trim().split_once("include!(\"")
                 && let Some((rel, _)) = after.split_once('"')
@@ -3004,14 +3026,9 @@ fn every_src_file_is_wired_into_the_module_tree() {
         if fname == "main.rs" || fname == "lib.rs" {
             continue;
         }
-        let reachable = if fname == "mod.rs" {
-            f.parent()
-                .and_then(Path::file_name)
-                .is_some_and(|d| declared.contains(&*d.to_string_lossy()))
-        } else {
-            declared.contains(&*f.file_stem().unwrap().to_string_lossy())
-        };
-        let via_include = f.canonicalize().is_ok_and(|c| included.contains(&c));
+        let canonical = f.canonicalize().ok();
+        let reachable = canonical.as_ref().is_some_and(|c| declared.contains(c));
+        let via_include = canonical.as_ref().is_some_and(|c| included.contains(c));
         if !reachable && !via_include {
             orphans.push(f.strip_prefix(&src).unwrap_or(f).display().to_string());
         }
