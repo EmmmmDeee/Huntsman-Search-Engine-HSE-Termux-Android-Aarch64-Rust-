@@ -234,6 +234,30 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// General web search: run an everyday free-text query across every free
+    /// search engine and print ranked results.
+    ///
+    /// Unlike `hse search`, which treats its input as an OSINT target
+    /// (email / username / domain / …) and wraps it in `site:`/`intext:` dorks,
+    /// `query` searches the text verbatim — e.g.
+    /// `hse query "buy panadeine forte online"` — and returns the raw web
+    /// results, deduplicated across engines and ranked by how many independent
+    /// engines surfaced each URL.
+    Query {
+        /// The free-text search query. Quote multi-word queries.
+        #[arg(allow_hyphen_values = true)]
+        query: String,
+        /// Maximum results to print (0 = no limit).
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+        /// Overall time budget in seconds (clamped to 3–60). Each engine
+        /// request self-clamps to this deadline.
+        #[arg(long)]
+        timeout: Option<u64>,
+        /// Output format: `table` (default) or `json`.
+        #[arg(short, long, default_value = "table")]
+        output: String,
+    },
     /// View or set persistent capability toggles (universal toggleability,
     /// SpiderFoot-style). No args lists all toggles; `hse config <key> <on|off>`
     /// sets one — e.g. `hse config engine.google off`.

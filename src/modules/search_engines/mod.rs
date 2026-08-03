@@ -48,6 +48,7 @@ mod fetch;
 pub(crate) mod health;
 mod helpers;
 mod queries;
+pub(crate) mod websearch;
 
 use build::build_entities;
 use engines::{ENGINES, EngineSpec, reliable_engines};
