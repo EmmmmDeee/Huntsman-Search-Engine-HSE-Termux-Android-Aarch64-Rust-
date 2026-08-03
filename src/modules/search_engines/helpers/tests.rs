@@ -842,16 +842,24 @@ fn extract_surrounding_text_does_not_leak_a_straddling_img_tags_base64_attrs() {
         r#"<img src="data:image/png;base64,{long_base64}" loading="lazy" onerror="this.__e=event"/><p>Data from Wikipedia</p><a href="ANCHOR">Real Title</a>"#
     );
     let pos = html.find("ANCHOR").expect("should succeed");
+    let img_open = html.find("<img").expect("should succeed");
+    let img_close = html.find("\"/>").expect("should succeed") + 3; // just past the tag's own '>'
+    let naive_start = pos.saturating_sub(300);
     assert!(
-        pos.saturating_sub(300) < html.find("<img").expect("should succeed") + long_base64.len(),
-        "test setup sanity: the naive window start must land inside the img tag, \
-         or this test doesn't reproduce the bug"
+        naive_start > img_open && naive_start < img_close,
+        "test setup sanity: the naive window start ({naive_start}) must land \
+         strictly INSIDE the img tag ({img_open}..{img_close}), or this test \
+         doesn't reproduce the bug"
     );
     let out = extract_surrounding_text(&html, "ANCHOR", 200);
     assert!(
         !out.contains("QUFBQUFB") && !out.contains("onerror") && !out.contains("loading"),
         "the preceding result's raw favicon <img> attribute data must not leak \
          into the extracted text: {out:?}"
+    );
+    assert!(
+        out.contains("Data from Wikipedia") || out.contains("Real Title"),
+        "genuine visible text near the anchor must still be kept, not over-skipped: {out:?}"
     );
 }
 
