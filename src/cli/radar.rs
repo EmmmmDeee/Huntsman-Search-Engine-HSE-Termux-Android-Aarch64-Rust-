@@ -184,6 +184,13 @@ pub(super) async fn cmd_radar() -> Result<()> {
     let crate::app::runtime::ApplicationRuntime { store, bus, engine } =
         crate::app::runtime::build_runtime(1024)?;
     let mut seen_entities = SeenSet::with_capacity(SEEN_CAPACITY);
+    // The live Bluetooth map: a per-device presence model fed one increment per
+    // sweep, repainted in place. Distinct from `seen_entities` (which is
+    // novelty-once, for deciding what to PIVOT): this tracks devices over time,
+    // so the operator sees a device persist, weaken, and leave rather than a
+    // one-shot "new" line that never updates again.
+    let mut bt_radar = crate::core::radar_live::BtRadarState::default();
+    let mut bt_frame = super::live_frame::Frame::new();
     let mut sweep_num = 0u32;
     // Set by `run_sub_scan` the moment Ctrl-C interrupts an in-flight sweep or
     // pivot, so the loop stops immediately rather than starting another one.
@@ -245,6 +252,34 @@ pub(super) async fn cmd_radar() -> Result<()> {
             break 'sweeps;
         }
         let sweep_entities = store.entities_for_scan(&sweep_sid)?;
+
+        // ── Live Bluetooth map ──────────────────────────────────────────────
+        // Fold this sweep's Bluetooth sightings into the presence model and
+        // repaint the map in place, BEFORE the (slow) pivot phase below — so the
+        // map refreshes every sweep at sensor cadence rather than waiting on
+        // however long the full-pipeline enumeration of each new device takes.
+        //
+        // `took_no_readings()` is whole-sweep, so it is only trusted in the
+        // negative direction: if NO sensor tool answered, the Bluetooth radio
+        // certainly was not read. (A BT-specific counter would let a co-sensor
+        // success stop masking a BT-only failure — the next unit.)
+        let bt_sightings: Vec<crate::core::radar_track::SweepObservation> = sweep_entities
+            .iter()
+            .filter(|e| e.has_tag("bluetooth"))
+            .filter_map(crate::core::radar_track::observation_from_entity)
+            .collect();
+        let bt_read = if sensors.took_no_readings() {
+            crate::core::radar_live::BtReadOutcome::NotRead
+        } else {
+            crate::core::radar_live::BtReadOutcome::Read
+        };
+        let bt_delta = bt_radar.apply_tick(&bt_sightings, bt_read);
+        bt_frame.repaint(&super::live_frame::render_bt_map(
+            &bt_radar,
+            &bt_delta,
+            u64::from(sweep_num),
+            color,
+        ));
 
         // Phase 2: Identify NEW entities (not seen in previous sweeps)
         let mut new_targets: Vec<(crate::core::scan::TargetKind, String)> = Vec::new();
