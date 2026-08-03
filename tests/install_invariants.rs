@@ -36,6 +36,48 @@ fn heredoc(script: &str, tag: &str) -> String {
     after[..end].to_string()
 }
 
+#[test]
+fn tty_detection_happens_before_stdout_is_redirected_into_a_pipe() {
+    // `exec > >(tee -a "$LOG_FILE") 2>&1` replaces fd 1 with a PIPE (process
+    // substitution always yields one). Every `[ -t 1 ]` / `[ -t 0 && -t 1 ]`
+    // evaluated after that point is therefore unconditionally FALSE — not
+    // "usually false", not "false when piped", but false on every install
+    // including a fully interactive one.
+    //
+    // That silently disabled two things on real devices: colour output, and —
+    // far worse — the `termux-setup-storage` prompt, so `~/storage` was never
+    // linked and every sensor module (device_sensors, signal_radar, wifi_intel,
+    // cell_intel) no-opped. The installer would cheerfully report success while
+    // the GEOINT half of the product was inert.
+    //
+    // So interactivity must be sampled BEFORE the redirect and cached.
+    let script = install_sh();
+    // Locate the redirect by LINE, skipping comments — the explanation above it
+    // necessarily quotes `exec > >(tee …)`, and a naive substring search would
+    // match that prose instead of the command it describes.
+    let redirect_line = script
+        .lines()
+        .position(|l| !is_comment(l) && l.contains("exec > >(tee"))
+        .expect("install.sh no longer mirrors output into the log with `exec > >(tee …)`");
+    let mut late = Vec::new();
+    for (i, line) in script.lines().enumerate() {
+        if is_comment(line) || i <= redirect_line {
+            continue;
+        }
+        if line.contains("-t 1") || line.contains("-t 0") {
+            late.push(format!("install.sh:{}: {}", i + 1, line.trim()));
+        }
+    }
+    assert!(
+        late.is_empty(),
+        "install.sh tests for a terminal AFTER `exec > >(tee …)` has already made \
+         fd 1 a pipe, so the test can never be true — colour and the \
+         termux-setup-storage prompt are dead code. Sample interactivity before \
+         the redirect and cache it (e.g. INTERACTIVE=1):\n  {}",
+        late.join("\n  ")
+    );
+}
+
 /// A shell comment cannot execute, so a wrapper is free to *mention* the raw
 /// wake-lock calls while explaining why it does not make them. Only real code
 /// is checked. (The shebang, written outside the heredoc, is not seen here.)

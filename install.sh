@@ -40,10 +40,33 @@ mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/hse-install.log"
 : > "$LOG_FILE"
 
+# Sample interactivity BEFORE the redirect below. `exec > >(tee …)` replaces
+# fd 1 with a pipe (process substitution always yields one), so every `-t 1`
+# test after that point is unconditionally false — on a piped install AND on a
+# fully interactive one. Testing afterwards silently disabled colour and, far
+# worse, made the termux-setup-storage prompt unreachable, so ~/storage was
+# never linked and every sensor module no-opped while the installer reported
+# success. Cache the answer here; nothing below may re-test fd 1.
+# Two DIFFERENT capabilities, deliberately sampled separately:
+#   COLOR_TTY  — is stdout a terminal? (governs ANSI colour)
+#   CAN_PROMPT — is a controlling terminal reachable? (governs asking questions)
+# A combined `-t 0 && -t 1` test conflates them and fails exactly where it
+# matters: the documented one-line install `curl -fsSL … | bash` hands the
+# script a PIPE on stdin (the script text itself) while stdout is still the
+# user's terminal. Gating on stdin there would disable colour AND the storage
+# prompt for the primary install path. Prompts read /dev/tty, not stdin, so
+# stdin's type is irrelevant to whether we can ask.
+COLOR_TTY=0
+[[ -t 1 ]] && COLOR_TTY=1
+CAN_PROMPT=0
+if [[ -e /dev/tty ]] && (exec 3</dev/tty) 2>/dev/null; then
+    CAN_PROMPT=1
+fi
+
 # Mirror everything to the log file from here on.
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-if [[ -t 1 ]]; then
+if [[ $COLOR_TTY -eq 1 ]]; then
     BOLD=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[0;31m'; GREEN=$'\033[0;32m'
     YELLOW=$'\033[1;33m'; BLUE=$'\033[0;34m'; CYAN=$'\033[0;36m'; NC=$'\033[0m'
 else
@@ -728,13 +751,28 @@ if [[ $IS_TERMUX -eq 1 ]]; then
     # Shared-storage symlink — needed for import command + sensor modules
     # that read GPS NMEA logs / WiFi scans from external storage.
     if [[ ! -d "$HOME/storage" ]]; then
-        if [[ -t 0 && -t 1 ]]; then
-            printf "  ${CYAN}?${NC} Grant shared-storage access now? (recommended for sensor modules) [y/N] "
-            read -r reply || reply=""
+        if [[ $CAN_PROMPT -eq 1 ]]; then
+            printf "  %s?%s Grant shared-storage access now? (recommended for sensor modules) [y/N] " "$CYAN" "$NC"
+            read -r reply </dev/tty || reply=""
             if [[ "${reply,,}" == "y" || "${reply,,}" == "yes" ]]; then
-                termux-setup-storage \
-                    && ok "Shared storage linked at $HOME/storage" \
-                    || log_warn "termux-setup-storage failed (denied permission?)"
+                # `termux-setup-storage` returns BEFORE the Android permission
+                # dialog is answered, so its exit status reports nothing about
+                # the outcome. Check the filesystem instead.
+                termux-setup-storage || true
+                # The Android permission dialog is ASYNCHRONOUS —
+                # termux-setup-storage returns long before the user taps Allow.
+                # Poll for the result rather than declaring failure after a
+                # fixed guess, which would warn while the dialog is still up.
+                for _ in $(seq 1 30); do
+                    [[ -d "$HOME/storage" ]] && break
+                    sleep 1
+                done
+                if [[ -d "$HOME/storage" ]]; then
+                    ok "Shared storage linked at $HOME/storage"
+                else
+                    log_warn "shared storage not linked (permission denied or still pending)"
+                    hint "Re-run later: termux-setup-storage"
+                fi
             else
                 hint "Skipped. Run later: termux-setup-storage"
             fi
