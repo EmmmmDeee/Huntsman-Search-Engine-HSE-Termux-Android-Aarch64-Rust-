@@ -117,6 +117,20 @@ impl Frame {
         out
     }
 
+    /// Forget the previously drawn frame, so the next [`repaint`](Self::repaint)
+    /// draws fresh at the cursor's current position instead of rewinding.
+    ///
+    /// **Call this whenever anything else writes to stderr between repaints.**
+    /// A frame rewinds by the line count it last drew, which is only correct
+    /// while the cursor is still where that draw left it. If unrelated output
+    /// (progress lines, warnings) has scrolled past in between, rewinding would
+    /// climb into that output and overwrite it — garbling the log rather than
+    /// updating the map. Invalidating trades in-place updating for correctness
+    /// in exactly the case where in-place updating is no longer possible.
+    pub(super) fn invalidate(&mut self) {
+        self.last_lines = 0;
+    }
+
     /// Draw `lines`, overwriting the previously drawn frame in place (or
     /// appending, when stderr is not a terminal).
     ///
