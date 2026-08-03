@@ -82,7 +82,11 @@ The loop runs these stages in order. All are load-bearing; none may be skipped.
 2. **SENSE** — derive current state from authoritative sources only, never from
    recall: build and query the binary (`hse --help`, `hse modules`,
    `hse selftest`, `hse diagnostics`), read `scripts/gate.sh`, read `git log`
-   since the last cycle. Cite every fact to its source.
+   since the last cycle. Cite every fact to its source. Gap analysis is part of
+   SENSE: 100% file relevance — every `.rs` under `src/` must be wired into the
+   module tree, not stranded on disk — is enforced by
+   `every_src_file_is_wired_into_the_module_tree` (`tests/architecture.rs`), so a
+   dead/orphan file is a red gate, not a silent gap.
 3. **SELECT** — find the highest-leverage unit via *delegated coverage* (fan out
    readers across subsystems; hold conclusions, not file dumps). Adversarially
    **verify** each candidate against real source (default: not-a-defect unless

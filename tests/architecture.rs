@@ -2930,3 +2930,98 @@ fn entity_confidence_uses_named_ladder_constants() {
             .collect::<Vec<_>>()
     );
 }
+
+/// Parse a file-module declaration `mod NAME;` of any visibility, returning
+/// `NAME`. Inline `mod NAME { … }` blocks (no trailing `;`) and every other line
+/// yield `None`.
+fn parse_file_mod_decl(line: &str) -> Option<String> {
+    let mut l = line.trim();
+    if l.starts_with("//") {
+        return None;
+    }
+    // Strip a leading visibility: `pub`, optionally followed by `(…)`.
+    if let Some(rest) = l.strip_prefix("pub") {
+        l = rest.trim_start();
+        if let Some(after) = l.strip_prefix('(') {
+            l = after.split_once(')').map_or("", |(_, r)| r).trim_start();
+        }
+    }
+    // Take the identifier up to the terminating `;`. Requiring a `;` (rather
+    // than end-of-line) tolerates a trailing `// comment` — `mod archive; // …`
+    // is common here — while still rejecting an inline `mod X { … }` block,
+    // which has no `;`.
+    let after_mod = l.strip_prefix("mod ")?.trim_start();
+    let name = after_mod[..after_mod.find(';')?].trim();
+    if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        Some(name.to_string())
+    } else {
+        None
+    }
+}
+
+/// 100% file relevance: every `.rs` file under `src/` must be wired into the
+/// crate — declared `mod <name>;` (a directory through its `mod.rs`, a leaf
+/// through `<name>.rs`) or pulled in via `include!("…")`.
+///
+/// Cargo compiles only files reachable from `lib.rs`/`main.rs` through the module
+/// tree and SILENTLY ignores an orphan `.rs`: no compile error, no clippy
+/// warning. A stranded file — a half-finished module, a stale copy, an un-wired
+/// new file — therefore reads as live code while being dead weight. This makes
+/// such a file a test failure, so what exists on disk is always what compiles.
+///
+/// (The repo uses no `#[path = "…"]` attributes; a file reached only that way
+/// would surface here as a false orphan, correctly flagging that this check must
+/// then learn about `#[path]`.)
+#[test]
+fn every_src_file_is_wired_into_the_module_tree() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    collect_rs_files(&src, &mut files);
+
+    let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut included: std::collections::HashSet<std::path::PathBuf> =
+        std::collections::HashSet::new();
+    for f in &files {
+        let text = fs::read_to_string(f).unwrap();
+        let dir = f.parent().unwrap();
+        for line in text.lines() {
+            if let Some(name) = parse_file_mod_decl(line) {
+                declared.insert(name);
+            }
+            if let Some((_, after)) = line.trim().split_once("include!(\"")
+                && let Some((rel, _)) = after.split_once('"')
+                && let Ok(p) = dir.join(rel).canonicalize()
+            {
+                included.insert(p);
+            }
+        }
+    }
+
+    let mut orphans = Vec::new();
+    for f in &files {
+        let fname = f.file_name().unwrap().to_string_lossy().into_owned();
+        // Crate roots are reachable by definition, not via a `mod` declaration.
+        if fname == "main.rs" || fname == "lib.rs" {
+            continue;
+        }
+        let reachable = if fname == "mod.rs" {
+            f.parent()
+                .and_then(Path::file_name)
+                .is_some_and(|d| declared.contains(&*d.to_string_lossy()))
+        } else {
+            declared.contains(&*f.file_stem().unwrap().to_string_lossy())
+        };
+        let via_include = f.canonicalize().is_ok_and(|c| included.contains(&c));
+        if !reachable && !via_include {
+            orphans.push(f.strip_prefix(&src).unwrap_or(f).display().to_string());
+        }
+    }
+    orphans.sort();
+
+    assert!(
+        orphans.is_empty(),
+        "orphan src file(s): present on disk but not `mod`-linked or `include!`d, \
+         so cargo never compiles them — 100% file relevance is broken:\n  {}",
+        orphans.join("\n  ")
+    );
+}
