@@ -1041,3 +1041,83 @@ market publishes customer or revenue figures, so "use competitors as base
 rates" could only be implemented via published conversion/traffic benchmarks
 plus the one disclosed competitor trajectory (SpiderFoot's GitHub growth).
 Treat the ranges, not the point estimates, as the honest output.
+
+---
+
+# Part IV — NPV of the going-concern revenue stream
+
+Part III reconciled a discounted asset floor against a crude revenue multiple.
+This part replaces that shortcut with a proper discounted cash flow, and the
+result sharpens — and partly overturns — how Part III's number should be
+read.
+
+## 27. Method
+
+5-year FCF (from Part III's ARR projections) + a Gordon-growth terminal value
+at Year 5, discounted at rates appropriate to a single-founder, pre-
+institutional, early-revenue security tool (**25–35%** — venture/small-business
+risk territory, not a public-market WACC). Two lenses, because *whose* cash
+flow this is changes the answer materially:
+
+- **Lens A — owner-operator.** No salary charged against revenue. This is
+  what the business is worth as an income stream to the person already
+  running it for free.
+- **Lens B — acquirer.** Deducts a **A$60,000/yr** (growing 3%/yr) part-time
+  senior-engineer maintenance cost — the real cost a buyer must pay someone
+  to keep releasing, fix the precision defects `hse audit` names (Part I
+  §2.1), and keep the free-scraper layer alive against anti-bot drift
+  (Part I §2.2). This is what the revenue stream is worth to a third party
+  who is *not* donating founder labour.
+
+85% gross margin; A$3,000–6,500/yr infra opex; 3% terminal growth.
+
+## 28. NPV by scenario, lens, and discount rate
+
+| Scenario | Lens | r=25% | r=30% | r=35% |
+|---|---|---:|---:|---:|
+| **LOW** | Owner (A) | A$19,300 | A$12,800 | A$8,600 |
+| LOW | Acquirer (B) | **−A$253,400** | **−A$209,500** | **−A$178,900** |
+| **BASE** | Owner (A) | **A$212,000** | **A$152,200** | **A$113,800** |
+| BASE | Acquirer (B) | **−A$60,700** | **−A$70,000** | **−A$73,700** |
+| **HIGH** | Owner (A) | A$1,134,500 | A$816,400 | A$612,000 |
+| HIGH | Acquirer (B) | A$861,800 | A$594,200 | A$424,500 |
+
+(US$ at 0.6981: BASE/Owner/30% = US$106,265; BASE/Acquirer/30% = −US$48,868.)
+
+## 29. The finding this sharpens
+
+**Under LOW and BASE — the realistic scenarios (Part III §22) — the
+acquirer-lens NPV is negative at every discount rate tested.** Once a real
+maintenance cost is charged against the revenue this customer base generates,
+the going-concern cash flow does not cover it. Only the owner-operator lens
+(nobody paid to sustain it) is positive, and even then modest: **A$113,800–
+212,000** at BASE. Only in the HIGH scenario — the one Part III already
+flagged as unevidenced by current execution — does the business clear a
+positive NPV under real operating costs, and even then only **A$424,500–
+861,800**, still below the discounted asset floor's midpoint.
+
+This confirms Part III's core conclusion on stronger ground: **the
+~A$1.1M figure this project is worth is not a valuation of its subscription
+revenue.** A rigorous DCF of that revenue, under the requested "average
+marketing/SEO" assumption, is worth roughly **A$150k to the person already
+running it for free, and is value-destructive to anyone who'd have to pay to
+maintain it.** The number that matters is the replacement-cost asset floor
+(Part I §6.3, Part III §24.1) — 305,007 lines of tested, architecturally-
+enforced Rust — with the revenue stream serving only as a small, mostly
+owner-lens, proof-of-demand signal on top of it.
+
+## 30. What HSE is worth today
+
+| Basis | Value | Status |
+|---|---:|---|
+| DCF of revenue, acquirer lens, BASE, r=30% | **−A$70,000** | Negative — revenue alone doesn't fund its own upkeep |
+| DCF of revenue, owner lens, BASE, r=30% | A$152,200 | Positive only because no one is paid to run it |
+| Discounted replacement-cost asset floor (Part III §24.1) | A$480,000–1,560,000 | **Dominant term** |
+| **Reconciled whole-project value (Part III §24.3)** | **A$505,000–1,710,000** | Unchanged by this DCF — confirmed, not contradicted |
+| **Point estimate** | **A$1,107,500 (≈US$773,000)** | **HSE's value today is a code/asset valuation, not a cash-flow one** |
+
+If a second engineer joins, the precision defects and missing scaffolding
+close (Part I §2.1, §2.3), and the customer base tracks BASE or better, the
+acquirer-lens NPV turns positive and starts to matter as an independent
+valuation pillar rather than a rounding error against the asset floor. It
+does not today.
