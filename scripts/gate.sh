@@ -88,7 +88,13 @@ fi
 # ── ci.yml: install.sh syntax + shellcheck ───────────────────────────────────
 run "install.sh syntax" bash -n install.sh
 if command -v shellcheck >/dev/null 2>&1; then
-    run "shellcheck" shellcheck install.sh scripts/gate.sh
+    # `--severity=warning` mirrors ci.yml's ShellCheck step exactly. Without it
+    # this gate was STRICTER than CI: install.sh carries several long-standing
+    # `info`-level notes (SC2015 A && B || C, SC2059 printf format) that CI
+    # tolerates, so a host that happens to have shellcheck installed reported a
+    # FAIL for something CI passes. A gate that cries wolf is worse than one
+    # that skips: it trains you to ignore it.
+    run "shellcheck" shellcheck --severity=warning install.sh scripts/gate.sh
 else
     skip "shellcheck" "not installed"
 fi
