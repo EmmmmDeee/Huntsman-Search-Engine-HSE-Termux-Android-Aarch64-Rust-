@@ -224,6 +224,18 @@ fn algolia_domain_entities_collapses_case_variant_hosts() {
 }
 
 #[test]
+fn algolia_domain_entities_accepts_an_uppercase_scheme() {
+    // A scheme is case-insensitive (RFC 3986 §3.1), and the shared helper this
+    // delegates to treats it that way — so the local "is it absolute?" guard
+    // must too. A case-SENSITIVE guard silently dropped `HTTPS://…` links the
+    // helper would have parsed fine.
+    let body = r#"[{"url":"HTTPS://Example.com/a"},{"url":"HtTp://other.org/b"}]"#;
+    let out = algolia_domain_entities(body, "someuser", "s");
+    let vals: Vec<&str> = out.iter().map(|e| e.value.as_str()).collect();
+    assert_eq!(vals, vec!["example.com", "other.org"]);
+}
+
+#[test]
 fn algolia_domain_entities_drops_a_query_from_a_pathless_link() {
     // The shared helper cuts the authority at `?`/`#` even with no path slash,
     // so a bare submission link with a tracking query yields the host alone —

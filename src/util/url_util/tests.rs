@@ -51,7 +51,7 @@ use super::{host_from_url, host_only};
     }
 
     #[test]
-    fn host_from_url_rejects_a_query_polluted_host() {
+    fn host_from_url_strips_a_query_or_fragment_from_the_host() {
         // The end-to-end consequence: without the cut, this yielded
         // `Some("example.com?x=1")` — a domain entity that is not a domain.
         assert_eq!(

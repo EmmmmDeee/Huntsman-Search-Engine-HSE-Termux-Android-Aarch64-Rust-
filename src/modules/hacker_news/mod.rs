@@ -340,7 +340,17 @@ fn extract_domain_from_url(url: &str) -> Option<String> {
     // The shared helper accepts a scheme-less authority too; HN's `url` field is
     // always an absolute submission link, so requiring the scheme here keeps the
     // previous behaviour of ignoring anything that is not one.
-    if !url.starts_with("http://") && !url.starts_with("https://") {
+    //
+    // Matched case-INSENSITIVELY: a scheme is case-insensitive per RFC 3986
+    // §3.1 (`HTTPS://` is valid), and the helper this delegates to already
+    // treats it that way — a case-sensitive guard here would reject an absolute
+    // URL the helper would happily parse, contradicting the very consolidation
+    // this function exists to perform.
+    let scheme_ok = ["http://", "https://"].iter().any(|s| {
+        url.get(..s.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(s))
+    });
+    if !scheme_ok {
         return None;
     }
     crate::util::url_util::host_from_url(url).filter(|d| d.len() >= 4)
