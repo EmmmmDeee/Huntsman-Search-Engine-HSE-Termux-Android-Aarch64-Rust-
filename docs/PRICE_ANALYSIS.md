@@ -663,3 +663,201 @@ the £41,650/yr they charge for *purchased location data*, are the clearest
 available evidence that the market pays for what HSE does natively — provided
 it arrives wrapped in the commercial scaffolding that buyer's procurement
 requires.
+
+---
+
+# Part II — Price under the "all features work" assumption
+
+Sections 1–10 priced the software **as measured**, including the precision
+defects and source-yield failures I observed. This part re-derives the price
+on the requested assumption that every shipped capability functions correctly
+and reliably at its stated purpose.
+
+Everything is expressed as tables. Part I's evidence base and FX rates carry
+over unchanged (AUD/USD 0.6981 · EUR/AUD 1.6441 · GBP/AUD 1.9158, 3 Aug 2026).
+
+## 11. Exactly what the assumption relaxes
+
+The assumption is read as: *capabilities that exist are assumed to work.* It
+does not conjure capabilities that are absent, and it does not change facts
+that are not about software behaviour.
+
+| Part I constraint | Type | Under the assumption | Price effect |
+|---|---|---|---|
+| §2.1 Precision — audit graded a live scan **44/100 (D)**, 1 CRITICAL finding, phantom identities, spurious AU geo | Functional defect | **Removed** — output is client-deliverable without triage | **Large ↑** |
+| §2.2 Free-source yield — **2 up / 12 blocked / 3 down of 17** engines | Functional/environmental | **Removed** — all 17 engines yield; 135 free modules deliver full value | **Large ↑** |
+| Module reliability across all 170 | Functional | **Removed** — all return correct data | **Moderate ↑** |
+| §2.3 No auth / RBAC / SSO | **Absent feature** | Still absent | No change |
+| §2.3 No PDF/DOCX report export | **Absent feature** | Still absent | No change |
+| §2.3 No chain-of-custody hashing | **Absent feature** | Still absent | No change |
+| §2.3 Live sessions in-memory only | **Absent feature** | Still absent | No change |
+| §2.3 No support / SLA / training | Not software | Still absent | No change |
+| §2.3 No SOC 2 / DPA / pen-test / insurance | Not software | Still absent | No change |
+| §2.4 7-week track record (43 releases) | Not software | Unchanged | No change |
+| §2.4 Termux aarch64 primary platform | By design | Unchanged | No change |
+| **§4 HSE owns no proprietary data** | **Architecture** | **Unchanged — still the binding constraint** | **No change** |
+
+> The single most important line in that table is the last one. Perfect
+> function does not turn a tool into a data vendor. HSE still prices against
+> the tool population, just at the top of it instead of the middle.
+
+## 12. HSE quantified capability metrics
+
+All verified from the running v1.40.0 binary or the source tree (Part I §1).
+
+| Metric | Value | Source |
+|---|---|---|
+| Modules registered | **170** | `hse modules` |
+| — free / key-gated / paid | **135 / 31 / 4** (79.4% / 18.2% / 2.4%) | `hse diagnostics` |
+| Module categories | 14 | `hse modules` |
+| Module reachability | **100%** from every realistic seed kind | `hse selftest` |
+| Seed types accepted | 16 | CLI |
+| Correlator rules | **122** deterministic (`AU-001`–`AU-123`, AU-065 reserved) | source |
+| Search engines | 17 | `hse engines` |
+| Optional provider keys supported | 51 | `hse diagnostics` |
+| HTTP API routes | 83 | source |
+| CLI subcommands | 18 | `hse --help` |
+| Source size | **305,007 lines / 922 files** | `wc -l` |
+| Test annotations | 6,081 | `grep` |
+| Self-test | **10/10 pass, 0 fail**, 63 ms | `hse selftest` |
+| Module metadata probes | 3,230, no panic | `hse selftest` |
+| Release binary | 20.6 MB (x86_64 release build) | `ls -l` |
+| Release cadence | 43 releases / 47 days = **0.91 per day** | GitHub API |
+| **Marginal cost per query, 135 free modules** | **A$0.00** | Architecture |
+| **Metering** | **None — unlimited scans, entities, seats-of-one** | Architecture |
+| **Data egress off-device** | **Zero** (loopback default) | Architecture |
+
+## 13. Competitor price table with unit economics
+
+Published prices, converted to AUD, with the metered unit rate each implies.
+This is the table that decides the price.
+
+| Product / SKU | Price (native) | **A$/yr** | Metered units/yr | **A$ per unit** | Deployment |
+|---|---|---:|---:|---:|---|
+| SpiderFoot OSS | Free | **0** | unmetered | 0.00 | Self-hosted |
+| Recon-ng / theHarvester / Maigret | Free | **0** | unmetered | 0.00 | Self-hosted |
+| Maltego Basic | €0 | **0** | 2,400–12,000 | 0.00 | Desktop + cloud |
+| Hunchly | US$129.99 | **186** | unmetered | — | Browser plug-in |
+| Lampyre (annual) | US$313 | **448** | credits extra | — | Desktop |
+| OSINT Industries Basic | £19/mo | **437** | 360 | **1.21** | SaaS |
+| OSINT Industries Intermediate | £49/mo | **1,126** | 1,200 | **0.94** | SaaS |
+| Shodan Freelancer | US$69/mo | **1,186** | not published | — | SaaS |
+| OSINT Industries Advanced | £99/mo | **2,276** | 3,600 | **0.63** | SaaS |
+| ShadowDragon Horizon Mobile *(add-on only)* | £1,100 | **2,107** | — | — | Cloud + mobile client |
+| IntelX Researcher | €2,500 | **4,110** | not published | — | SaaS |
+| Maltego Entry | €3,000 | **4,932** | 10,000 | **0.49** | Desktop + cloud |
+| IntelX API | €5,000 | **8,220** | 182,500 | **0.05** | API |
+| ShadowDragon Monitor +500/day | £6,000 | **11,495** | 182,500 | **0.06** | Cloud |
+| Maltego Professional (5 seats) | €7,500 | **12,331** | 20,000–40,000 | **0.31–0.62** | Desktop + cloud |
+| ShadowDragon Horizon Investigate+ | £8,350 | **15,997** | — | — | Cloud |
+| ShadowDragon Breach Data 500/mo | £13,500 | **25,863** | 6,000 | **4.31** | Cloud |
+| Skopenow (median contract) | US$23,760 | **34,035** | not published | — | SaaS |
+| ShadowDragon LBI 6,000/yr | £41,650 | **79,793** | 6,000 | **13.30** | Cloud |
+| ShadowDragon Breach Data 2,000/mo | £44,800 | **85,828** | 24,000 | **3.58** | Cloud |
+| ShadowDragon LBI 12,000/yr | £58,200 | **111,500** | 12,000 | **9.29** | Cloud |
+| ShadowDragon Teams Monitor Enterprise | £67,550 | **129,412** | 1,460,000 | **0.09** | Cloud |
+| Constella Intelligence (avg) | US$365,000 | **522,848** | not published | — | Cloud |
+| **HSE (recommended, §15)** | **A$1,395** | **1,395** | **unmetered** | **0.00** | **On-device** |
+
+## 14. Quantified gap analysis — HSE vs each competitor
+
+Verified metrics only. "n/p" = not published by the vendor; I am not
+estimating it.
+
+| Competitor | Their A$/yr | HSE Δ price | Modules/sources | Metering | Their edge, quantified | HSE edge, quantified |
+|---|---:|---:|---|---|---|---|
+| **SpiderFoot OSS** | 0 | **+1,395** | "200+" (third-party figure, not verified by me) vs HSE **170** (verified) | none | Free; more modules; decade of hardening; open licence | 122 correlation rules; on-device Android; self-audit; ATT&CK inline; radar; 0 Python deps |
+| **Maltego Entry** | 4,932 | **−3,537 (−72%)** | n/p transforms | 10,000 credits | Bundled commercial data; standard analyst UI; Hunchly included | Unmetered (breaks even at **2,828 queries/yr**); automated expansion vs manual transforms; on-device |
+| **Maltego Professional** | 12,331 / 5 seats = **2,466/seat** | **−1,071/seat (−43%)** | n/p | 20–40k credits | Unlimited commercial data; SSO; Cases/Admin | Unmetered; on-device; 1 seat minimum vs 5 |
+| **OSINT Industries Intermediate** | 1,126 | **+269 (+24%)** | 5 published search types vs HSE **170 modules / 14 categories** | 1,200 credits | Clean output; PDF+Word export; cloud cases; no keys needed | **34× the module count**; unmetered (breaks even at **1,486 queries/yr**); on-device |
+| **OSINT Industries Advanced** | 2,276 | **−881 (−39%)** | as above | 3,600 credits | as above + 100 GB storage | as above; breaks even at **2,207 queries/yr** |
+| **IntelX Researcher** | 4,110 | **−2,715 (−66%)** | 1 proprietary index | n/p | **A proprietary corpus HSE cannot replicate at any engineering budget** | Full platform vs a search box; HSE's `intelx` module is a client to them |
+| **Skopenow** | 34,035 | **−32,640 (−96%)** | n/p | n/p | Court-usable automated reports; case management; compliance posture | 170-module technical surface; on-device; 1/24 the price |
+| **ShadowDragon field seat** (Investigate+ £8,350 + Mobile £1,100) | **18,104** | **−16,709 (−92%)** | n/p SocialNet platforms | per-SKU credits | Maintained social parsers; licensed breach corpus; G-Cloud presence; support | **Mobile is native, not an add-on**; their mobile SKU alone is A$2,107/yr and is a *cloud client* |
+| **ShadowDragon Breach 500/mo** | 25,863 | — | — | 6,000 q/yr @ **A$4.31** | Licensed corpus | HSE breaks even at **324 queries/yr** — but BYO-key, so not a true substitute |
+| **ShadowDragon LBI 6k** | 79,793 | — | — | 6,000 @ **A$13.30** | Purchased location data | `hse radar` senses on-device at A$0.00; breaks even at **105 queries/yr** |
+| **Constella** | 522,848 | **−521,453 (−99.7%)** | Breach corpus | n/p | The corpus *is* the product | Not comparable — included to bound the market |
+
+## 15. Revised price ladder
+
+| Rung | Product | **A$/yr** | US$/yr | Basis | Ship today? |
+|---|---|---:|---:|---|---|
+| 0 | **Community** | **0** | 0 | Answers "why not free SpiderFoot?"; full capability, non-commercial, no support | ✅ Yes |
+| 1 | **Professional** (1 operator) | **1,395** | 974 | Band A$1,200–1,800; three methods converge (§16) | ✅ **Yes** |
+| 2 | **Team** (3-seat min) | **2,950/seat** | 2,059 | Below Maltego Professional's A$2,466/seat only if data excluded; positioned as the no-cloud team tool | ❌ Needs auth/RBAC, PDF export, persistent sessions, SLA |
+| 3 | **Sovereign / Field** | **6,500–11,000/seat** | 4,538–7,679 | 1.65–2.79× under ShadowDragon's A$18,104 field seat | ❌ Needs Rung 2 + chain-of-custody, signed builds, compliance artefacts |
+| 3b | Sovereign site licence (≤25 seats) | **95,000–210,000** | 66,320–146,600 | Volume-discounted Rung 3 | ❌ As above |
+| 4 | OEM / source / acquisition | **1.8M–2.6M+** | 1.26M–1.82M | Upper half of the A$0.8M–2.6M replacement-cost band (§6.3); a *working* asset commands the top | — |
+
+## 16. Rung 1 derivation — three methods
+
+| Method | Calculation | Band |
+|---|---|---|
+| **Comparable-licence anchoring** | Above OSINT Industries Intermediate (A$1,126, 34× fewer module types, metered); below OSINT Industries Advanced (A$2,276) and Maltego Entry's software share (~A$2,466) | **A$1,200–2,300** |
+| **Value-substitution** | Gross substituted software value A$2,500–4,000, discounted 30–45% for absent scaffolding + no support + 7-week track record (was 40–60% in Part I; the precision discount comes off) | **A$1,375–2,800** |
+| **Unmetered break-even** | An operator running 3,000 identity queries/yr pays A$1,890 (OSINT Ind. Advanced rate) to A$4,932 (Maltego Entry). HSE unmetered undercuts every metered rival above ~1,500 queries/yr | **A$1,400–2,000** |
+| **Overlap of all three** | — | **A$1,400–2,000** |
+| **Recommended** | Priced at the lower edge of the overlap to stay an easy yes against free SpiderFoot | **A$1,395** |
+
+## 17. Break-even — where unmetered wins
+
+Annual queries at which HSE at A$1,395 unmetered costs less than each metered rival.
+
+| Rival | A$/unit | **Break-even (queries/yr)** | Per working day (250/yr) |
+|---|---:|---:|---:|
+| ShadowDragon LBI 6k | 13.30 | **105** | 0.4 |
+| ShadowDragon LBI 12k | 9.29 | **150** | 0.6 |
+| ShadowDragon Breach 500/mo | 4.31 | **324** | 1.3 |
+| ShadowDragon Breach 2000/mo | 3.58 | **390** | 1.6 |
+| OSINT Industries Basic | 1.21 | **1,150** | 4.6 |
+| OSINT Industries Intermediate | 0.94 | **1,486** | 5.9 |
+| OSINT Industries Advanced | 0.63 | **2,207** | 8.8 |
+| Maltego Professional | 0.62 | **2,263** | 9.1 |
+| Maltego Entry | 0.49 | **2,828** | 11.3 |
+| Maltego Prof. Advanced | 0.31 | **4,525** | 18.1 |
+| ShadowDragon Teams Enterprise | 0.09 | **15,738** | 63.0 |
+| ShadowDragon Monitor +500/day | 0.06 | **22,148** | 88.6 |
+| IntelX API | 0.05 | **30,970** | 123.9 |
+
+**Read:** a single investigator doing ~6 identity lookups a working day already
+beats OSINT Industries Intermediate. HSE's unmetered model is a genuine
+economic weapon against low-volume, high-unit-cost SKUs — and a weak one
+against high-volume bulk API tiers.
+
+## 18. Value density at each price
+
+| Price | A$/module | A$/correlation rule | A$/day | A$/query at 3,000 q/yr |
+|---|---:|---:|---:|---:|
+| A$495 (Part I, as-measured) | 2.91 | 4.06 | 1.36 | 0.17 |
+| **A$1,395 (Part II, assume-works)** | **8.21** | **11.43** | **3.82** | **0.47** |
+| A$2,950 (Rung 2) | 17.35 | 24.18 | 8.08 | 0.98 |
+| A$6,500 (Rung 3 low) | 38.24 | 53.28 | 17.81 | 2.17 |
+| A$11,000 (Rung 3 high) | 64.71 | 90.16 | 30.14 | 3.67 |
+
+Even at Rung 3, A$3.67 per query undercuts ShadowDragon's breach (A$4.31) and
+location (A$13.30) unit rates.
+
+## 19. What the assumption is worth — the ROI of fixing §2.1 and §2.2
+
+| Rung | Part I (as measured) | Part II (assume works) | **Delta** | Multiple |
+|---|---:|---:|---:|---:|
+| Professional | A$495 | **A$1,395** | **+A$900/seat/yr** | 2.82× |
+| Team | A$1,450 | **A$2,950** | **+A$1,500/seat/yr** | 2.03× |
+| Sovereign (low) | A$3,500 | **A$6,500** | **+A$3,000/seat/yr** | 1.86× |
+| Sovereign (high) | A$6,000 | **A$11,000** | **+A$5,000/seat/yr** | 1.83× |
+| OEM / source | A$0.8M–2.6M | **A$1.8M–2.6M** | **+A$1.0M at the floor** | 2.25× at floor |
+
+**This is the most actionable number in the document.** The gap between
+Part I and Part II is not a market judgement — it is the price of the four
+defects HSE's own `hse audit` already names: infrastructure pollution, role
+mailboxes treated as PII, name-derived phantom identities, and generic domain
+noise. Closing them is worth **+A$900 per seat per year at Rung 1 alone**, and
+roughly **+A$1.0M on the asset value**.
+
+## 20. Caveat carried forward
+
+Part II is a **conditional** valuation. The condition — that all features work
+— is not something I verified; Part I §2.1 and §2.2 record what I actually
+measured, and they measured otherwise. Both parts should be read together: Part
+I is the price today, Part II is the price on delivery of correctness, and §19
+is the value of the work between them.
