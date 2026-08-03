@@ -826,6 +826,36 @@ fn extract_surrounding_text_does_not_leak_a_straddling_svg_paths_raw_data() {
 }
 
 #[test]
+fn extract_surrounding_text_does_not_leak_a_straddling_img_tags_base64_attrs() {
+    // Regression, found via a real live Brave capture: a "Data from Wikipedia"
+    // knowledge-panel result with no visible title fell back to this ±300-char
+    // window. The window's start landed strictly INSIDE the PRECEDING result's
+    // favicon `<img src="data:image/…;base64,…" loading="lazy"
+    // onerror="…"/>` tag — the tag's own opening `<img` sits further back,
+    // outside the window — so `strip_tags`'s `in_tag` state started FALSE and
+    // dumped the raw base64/attribute text straight into the extracted text as
+    // if it were visible content. Unlike the svg/style/script case, `<img>` has
+    // no closing tag to search for — `skip_straddling_tag_attrs` handles it by
+    // finding the tag's own real (quote-aware) closing `>` instead.
+    let long_base64 = "QUFBQUFBQUFBQUFB".repeat(30); // well over 300 chars
+    let html = format!(
+        r#"<img src="data:image/png;base64,{long_base64}" loading="lazy" onerror="this.__e=event"/><p>Data from Wikipedia</p><a href="ANCHOR">Real Title</a>"#
+    );
+    let pos = html.find("ANCHOR").expect("should succeed");
+    assert!(
+        pos.saturating_sub(300) < html.find("<img").expect("should succeed") + long_base64.len(),
+        "test setup sanity: the naive window start must land inside the img tag, \
+         or this test doesn't reproduce the bug"
+    );
+    let out = extract_surrounding_text(&html, "ANCHOR", 200);
+    assert!(
+        !out.contains("QUFBQUFB") && !out.contains("onerror") && !out.contains("loading"),
+        "the preceding result's raw favicon <img> attribute data must not leak \
+         into the extracted text: {out:?}"
+    );
+}
+
+#[test]
 fn extract_surrounding_text_excludes_swisscows_own_icon_svg_path_from_a_real_capture() {
     // Same regression, proven against the real capture that surfaced it
     // rather than only a synthetic fragment.

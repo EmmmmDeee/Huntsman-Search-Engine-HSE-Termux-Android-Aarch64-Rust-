@@ -192,6 +192,7 @@ pub(in crate::modules::search_engines) fn extract_surrounding_text(
     let end = ceil_char_boundary(html, (pos + anchor.len() + 300).min(html.len()));
     let start = floor_char_boundary(html, pos.saturating_sub(300));
     let start = floor_char_boundary(html, skip_straddling_inline_block(html, start).min(end));
+    let start = floor_char_boundary(html, skip_straddling_tag_attrs(html, start).min(end));
     strip_tags(&html[start..end], max_len)
 }
 
@@ -259,6 +260,52 @@ fn skip_straddling_inline_block(html: &str, pos: usize) -> usize {
             }
         }
     }
+}
+
+/// If `pos` sits inside SOME tag's `<…>` span — the nearest `<` within
+/// [`STRADDLE_LOOKBACK`] before `pos` has no real (quote-aware) `>` before
+/// `pos` — returns the byte offset just past that tag's own closing `>`
+/// instead. Unlike [`skip_straddling_inline_block`] (svg/style/script, whose
+/// BODY must also be skipped), a void/self-closing element like `<img>` has no
+/// body: skipping past its own `>` is sufficient.
+///
+/// A long attribute value — Brave's favicon `<img src="data:image/…;base64,
+/// <hundreds of chars>" loading="lazy" onerror="…"/>` — can easily exceed the
+/// ±300-char `extract_surrounding_text` window. When the window's start lands
+/// mid-attribute, `strip_tags`'s `in_tag` state starts FALSE (it never saw the
+/// truncated-away `<img`), so it treats the base64/attribute text as ordinary
+/// visible content. A real Brave capture demonstrated exactly this: an
+/// icon-only result with no title text fell back to this window, which began
+/// mid-way through the PRECEDING result's favicon `<img>` tag, and its raw
+/// base64 `src` leaked into the extracted text as if it were the title.
+///
+/// Single quote-aware forward pass from the tag's own `<`, mirroring
+/// `strip_tags`'s own `in_tag`/`attr_quote` state machine so the two can never
+/// disagree about where a tag really ends.
+fn skip_straddling_tag_attrs(html: &str, pos: usize) -> usize {
+    let lookback = floor_char_boundary(html, pos.saturating_sub(STRADDLE_LOOKBACK));
+    let Some(open_rel) = html[lookback..pos].rfind('<') else {
+        return pos;
+    };
+    let tag_start = lookback + open_rel;
+    let mut attr_quote: Option<char> = None;
+    let mut idx = tag_start + 1;
+    for c in html[tag_start + 1..].chars() {
+        match attr_quote {
+            Some(q) if c == q => attr_quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => attr_quote = Some(c),
+            None if c == '>' => {
+                // The tag's real close: before `pos` means it closed cleanly
+                // and `pos` sits outside it; at-or-after `pos` means `pos`
+                // fell inside the tag's own span — resume just past this `>`.
+                return if idx < pos { pos } else { idx + c.len_utf8() };
+            }
+            None => {}
+        }
+        idx += c.len_utf8();
+    }
+    html.len()
 }
 
 pub(in crate::modules::search_engines) fn extract_snippet_near(
