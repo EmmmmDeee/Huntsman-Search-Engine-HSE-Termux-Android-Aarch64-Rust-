@@ -745,17 +745,83 @@ if [[ $IS_TERMUX -eq 1 ]]; then
         ok "Shared storage already configured at $HOME/storage"
     fi
 
+    # Shared, REFERENCE-COUNTED wake-lock manager.
+    #
+    # Termux's `termux-wake-lock` / `termux-wake-unlock` act on ONE app-wide
+    # lock; they are not reference counted. `hse-bg` and `hse-watch` are meant
+    # to run at the same time (the Termux:Boot script starts BOTH), so when each
+    # one called the raw unlock itself, stopping either released the lock the
+    # other was still relying on — and Android then killed the survivor at
+    # screen-off. Unattended collection died silently, which is the exact
+    # failure the wake-lock exists to prevent.
+    #
+    # Both wrappers now register as named holders here, and the shared lock is
+    # only dropped once the LAST holder is gone. This is also the single
+    # definition of that logic, replacing the copy each wrapper used to carry.
+    WAKELOCK_HELPER="$HSE_BIN_DIR/hse-wakelock"
+    printf '#!%s/bin/bash\n' "$PREFIX" > "$WAKELOCK_HELPER"
+    cat >> "$WAKELOCK_HELPER" <<'WAKELOCK'
+# hse-wakelock — reference-counted wrapper around Termux's process-global wake
+# lock. Sourced by hse-bg and hse-watch; not meant to be run directly.
+#
+#   hse_wakelock_acquire <holder> [pid]  register <holder> and hold the lock
+#   hse_wakelock_release <holder>        drop <holder>; unlock if none remain
+#
+# [pid] defaults to the calling shell. Pass it explicitly when the process that
+# must keep the lock alive is NOT the caller — hse-bg registers the backgrounded
+# `hse serve` pid, because the launcher exits immediately and would otherwise be
+# garbage-collected as a dead holder on the next release.
+#
+# Holder files record the owning PID so a wrapper killed with SIGKILL (no trap)
+# cannot strand the lock forever — the next release garbage-collects it.
+HSE_WAKELOCK_DIR="${HSE_WAKELOCK_DIR:-$HOME/.cache/hse-wakelock.d}"
+
+hse_wakelock_gc() {
+    [ -d "$HSE_WAKELOCK_DIR" ] || return 0
+    for _h in "$HSE_WAKELOCK_DIR"/*; do
+        [ -e "$_h" ] || continue
+        _p="$(cat "$_h" 2>/dev/null || true)"
+        if [ -z "$_p" ] || ! kill -0 "$_p" 2>/dev/null; then
+            rm -f "$_h"
+        fi
+    done
+}
+
+hse_wakelock_acquire() {
+    mkdir -p "$HSE_WAKELOCK_DIR"
+    echo "${2:-$$}" > "$HSE_WAKELOCK_DIR/$1"
+    command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock || true
+}
+
+hse_wakelock_release() {
+    rm -f "$HSE_WAKELOCK_DIR/$1"
+    hse_wakelock_gc
+    # Only surrender the shared lock when nobody else is holding it.
+    if [ -z "$(ls -A "$HSE_WAKELOCK_DIR" 2>/dev/null)" ]; then
+        command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock || true
+    fi
+}
+WAKELOCK
+    chmod 0755 "$WAKELOCK_HELPER"
+    ok "Installed hse-wakelock (refcounted wake-lock shared by hse-bg + hse-watch)"
+
     # Background-scan wrapper. Wraps `hse serve` in nohup + wake-lock so
     # the scan engine survives Android's aggressive process kills.
     BG_WRAPPER="$HSE_BIN_DIR/hse-bg"
-    cat > "$BG_WRAPPER" <<'WRAPPER'
-#!/data/data/com.termux/files/usr/bin/bash
+    printf '#!%s/bin/bash\n' "$PREFIX" > "$BG_WRAPPER"
+    # Absolute path to the shared helper, resolved at INSTALL time. Deriving it
+    # from $0 works for a PATH lookup (argv[1] is the resolved path) but not for
+    # `bash hse-bg` from another directory, and this costs nothing.
+    printf 'HSE_WAKELOCK_HELPER="%s/hse-wakelock"\n' "$HSE_BIN_DIR" >> "$BG_WRAPPER"
+    cat >> "$BG_WRAPPER" <<'WRAPPER'
 # hse-bg — run `hse serve` in background with wake-lock so Android can't
 # kill the process when the screen turns off. Stop with: hse-bg stop
 set -e
 PID_FILE="$HOME/.cache/hse-bg.pid"
 LOG_FILE="$HOME/.cache/hse-bg.log"
 mkdir -p "$(dirname "$PID_FILE")"
+# Refcounted wake-lock, shared with hse-watch (see hse-wakelock).
+. "$HSE_WAKELOCK_HELPER"
 
 case "${1:-start}" in
     start)
@@ -763,22 +829,30 @@ case "${1:-start}" in
             echo "hse-bg already running (pid $(cat "$PID_FILE"))"
             exit 0
         fi
-        command -v termux-wake-lock >/dev/null && termux-wake-lock || true
         nohup hse serve >> "$LOG_FILE" 2>&1 &
         echo $! > "$PID_FILE"
+        # Register the SERVER's pid as the holder, not this short-lived
+        # launcher's — the launcher exits immediately and would otherwise be
+        # garbage-collected as a dead holder on the next release.
+        hse_wakelock_acquire hse-bg "$(cat "$PID_FILE")"
         echo "Started hse serve (pid $(cat "$PID_FILE"))"
         echo "Logs: $LOG_FILE"
         echo "Open: http://127.0.0.1:8080"
         ;;
     stop)
         if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-            kill "$(cat "$PID_FILE")"
+            # `|| true`: the pid can exit between the `kill -0` probe above and
+            # here. Under `set -e` a failed kill would abort BEFORE the release
+            # below, stranding the holder file — and if this was the last holder,
+            # nothing would ever trigger the GC that drops the shared wake-lock.
+            kill "$(cat "$PID_FILE")" 2>/dev/null || true
             rm -f "$PID_FILE"
-            command -v termux-wake-unlock >/dev/null && termux-wake-unlock || true
+            hse_wakelock_release hse-bg
             echo "Stopped"
         else
             echo "Not running"
             rm -f "$PID_FILE"
+            hse_wakelock_release hse-bg
         fi
         ;;
     status)
@@ -805,8 +879,10 @@ WRAPPER
     # findings in the local store for later review in the web UI. Opt-in: it stays
     # idle until the watchlist has at least one seed.
     WATCH_WRAPPER="$HSE_BIN_DIR/hse-watch"
-    cat > "$WATCH_WRAPPER" <<'WATCH'
-#!/data/data/com.termux/files/usr/bin/bash
+    printf '#!%s/bin/bash\n' "$PREFIX" > "$WATCH_WRAPPER"
+    # Absolute path to the shared helper, resolved at INSTALL time (see hse-bg).
+    printf 'HSE_WAKELOCK_HELPER="%s/hse-wakelock"\n' "$HSE_BIN_DIR" >> "$WATCH_WRAPPER"
+    cat >> "$WATCH_WRAPPER" <<'WATCH'
 # hse-watch — unattended, recurring OSINT collection over a watchlist.
 #
 # Sweeps every seed in the watchlist on a fixed interval, accumulating findings
@@ -827,6 +903,8 @@ INTERVAL="${HSE_WATCH_INTERVAL:-3600}"
 PID_FILE="$HOME/.cache/hse-watch.pid"
 LOG_FILE="$HOME/.cache/hse-watch.log"
 mkdir -p "$(dirname "$PID_FILE")"
+# Refcounted wake-lock, shared with hse-bg (see hse-wakelock).
+. "$HSE_WAKELOCK_HELPER"
 
 stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -851,8 +929,10 @@ sweep_once() {
 }
 
 run_loop() {
-    command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock || true
-    trap 'command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock || true; exit 0' TERM INT
+    # Registers THIS loop as a named wake-lock holder. The shared lock is only
+    # surrendered once hse-bg has also let go (see hse-wakelock).
+    hse_wakelock_acquire hse-watch
+    trap 'hse_wakelock_release hse-watch; exit 0' TERM INT
     while true; do
         sweep_once
         sleep "$INTERVAL"
@@ -882,13 +962,19 @@ case "${1:-start}" in
         ;;
     stop)
         if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-            kill "$(cat "$PID_FILE")"
+            # `|| true`: the pid can exit between the `kill -0` probe above and
+            # here. Under `set -e` a failed kill would abort BEFORE the release
+            # below, stranding the holder file — and if this was the last holder,
+            # nothing would ever trigger the GC that drops the shared wake-lock.
+            kill "$(cat "$PID_FILE")" 2>/dev/null || true
             rm -f "$PID_FILE"
-            command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock || true
+            # The killed loop's TERM trap releases too; release is idempotent.
+            hse_wakelock_release hse-watch
             echo "Stopped"
         else
             echo "Not running"
             rm -f "$PID_FILE"
+            hse_wakelock_release hse-watch
         fi
         ;;
     status)
@@ -937,9 +1023,13 @@ WATCHLIST
     if [[ -d "$BOOT_DIR" ]]; then
         BOOT_SCRIPT="$BOOT_DIR/hse-autostart"
         if [[ ! -f "$BOOT_SCRIPT" ]]; then
-            cat > "$BOOT_SCRIPT" <<'BOOT'
-#!/data/data/com.termux/files/usr/bin/bash
-termux-wake-lock 2>/dev/null || true
+            printf '#!%s/bin/bash\n' "$PREFIX" > "$BOOT_SCRIPT"
+            cat >> "$BOOT_SCRIPT" <<'BOOT'
+# Autostart for Termux:Boot. Deliberately takes NO wake-lock of its own:
+# hse-bg and hse-watch each register with the refcounted hse-wakelock helper,
+# so the lock is held for exactly as long as one of them is running. A raw
+# `termux-wake-lock` here would be an unowned fourth holder that nothing ever
+# releases.
 hse-bg start
 # Recurring collection — no-op while the watchlist is empty, so this is safe to
 # leave on; it begins sweeping only once you add a seed to ~/.huntsman/watchlist.txt.
