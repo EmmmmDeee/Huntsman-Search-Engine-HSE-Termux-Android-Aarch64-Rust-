@@ -25,8 +25,10 @@
 //!     ~every 15 min, so tracking one across ticks is meaningless — those are
 //!     counted only as an anonymous [`TickDelta::randomized_seen`] aggregate
 //!     ("N private/rotating addresses nearby this tick"), never a followable pin.
-//!   * A **bonded** device is the operator's OWN paired kit — surfaced as such,
-//!     never treated as a foreign device to follow.
+//!   * A **bonded** device is the operator's OWN paired kit. It earns no track
+//!     either; it is surfaced as its own [`TickDelta::bonded_seen`] aggregate
+//!     ("N of your own devices discoverable"), which is self-exposure
+//!     information, never a foreign device to follow.
 //!
 //! **Read-vs-empty is a first-class distinction.** A tick where the Bluetooth
 //! radio was never read ([`BtReadOutcome::NotRead`] — permission withheld,
@@ -71,7 +73,13 @@ pub enum Presence {
     /// Still tracked, decaying.
     Missing(u32),
     /// Unseen for [`DEPART_AFTER_MISSED_READS`] consecutive read ticks — gone.
-    /// Reported once, then removed from the active map.
+    ///
+    /// This is a **transition, not a resting state**: the track is reported once
+    /// in [`TickDelta::departed`] and removed from the map in the same
+    /// [`BtRadarState::apply_tick`] call, so it is deliberately NOT observable
+    /// afterwards via [`BtRadarState::presence_of`] (which returns `None`) or
+    /// [`BtRadarState::tracks_ranked`]. Consume a departure from the tick's
+    /// delta; do not poll for it.
     Departed,
 }
 
@@ -132,9 +140,21 @@ pub struct TickDelta {
     /// Trackable devices that departed this tick (crossed the missed-read
     /// threshold) — reported once, then dropped from the active map.
     pub departed: Vec<String>,
+    /// Devices dropped this tick because the track map hit its capacity
+    /// ceiling, NOT because they left. Reported separately so a saturated map
+    /// is visible rather than silent: a device here is no longer in the state,
+    /// and is guaranteed absent from [`Self::new`] and [`Self::present`] for the
+    /// same tick, so a render layer never paints a device the state does not
+    /// contain.
+    pub evicted: Vec<String>,
     /// Count of randomized / rotating privacy addresses observed this tick.
     /// Aggregate only — never attributed to an individual track.
     pub randomized_seen: usize,
+    /// Count of the operator's OWN bonded (paired) devices observed this tick —
+    /// their car, earbuds, watch. Surfaced as an aggregate for self-exposure
+    /// awareness (AU-117: what of *yours* is discoverable), never tracked as a
+    /// foreign device to follow.
+    pub bonded_seen: usize,
 }
 
 impl TickDelta {
@@ -146,7 +166,9 @@ impl TickDelta {
             present: Vec::new(),
             missing: Vec::new(),
             departed: Vec::new(),
+            evicted: Vec::new(),
             randomized_seen: 0,
+            bonded_seen: 0,
         }
     }
 }
@@ -235,7 +257,9 @@ impl BtRadarState {
             present: Vec::new(),
             missing: Vec::new(),
             departed: Vec::new(),
+            evicted: Vec::new(),
             randomized_seen: 0,
+            bonded_seen: 0,
         };
 
         // Which trackable devices we saw this read, so the ageing pass below can
@@ -249,9 +273,15 @@ impl BtRadarState {
                 continue;
             }
             if !Self::is_trackable(&mac, dev.bonded) {
-                // Randomized / bonded: count rotating privacy addresses as an
-                // anonymous aggregate; bonded own-kit is simply not a track.
-                if oui::is_locally_administered(&mac) != Some(false) {
+                // Neither earns a persistent track, but each is surfaced as its
+                // own anonymous aggregate rather than silently dropped: bonded
+                // devices are the operator's own kit (self-exposure awareness),
+                // randomized addresses are rotating throwaways. Bonded is
+                // checked first so an operator's own device with a randomized
+                // address counts once, as theirs.
+                if dev.bonded {
+                    delta.bonded_seen += 1;
+                } else {
                     delta.randomized_seen += 1;
                 }
                 continue;
@@ -278,7 +308,7 @@ impl BtRadarState {
                 delta.present.push(mac);
             } else {
                 let (vendor, device_class) = classify(&mac);
-                self.insert_track(BtTrack {
+                if let Some(evicted) = self.insert_track(BtTrack {
                     mac: mac.clone(),
                     name,
                     vendor,
@@ -288,7 +318,9 @@ impl BtRadarState {
                     sweeps_seen: 1,
                     presence: Presence::New,
                     missed_reads: 0,
-                });
+                }) {
+                    delta.evicted.push(evicted);
+                }
                 delta.new.push(mac);
             }
         }
@@ -315,22 +347,41 @@ impl BtRadarState {
             self.order.retain(|k| k != &mac);
         }
 
+        // Reconcile the delta with the post-tick state. A device evicted under
+        // capacity pressure is NOT in the map any more, so it must not also be
+        // reported as new/present — a render layer trusting the delta would
+        // otherwise paint a device `BtRadarState` does not contain. (A dense
+        // single-tick overflow is exactly where this bites: the early entries of
+        // one huge sighting list are evicted by the later ones.)
+        if !delta.evicted.is_empty() {
+            let evicted: std::collections::HashSet<&String> = delta.evicted.iter().collect();
+            delta.new.retain(|m| !evicted.contains(m));
+            delta.present.retain(|m| !evicted.contains(m));
+            delta.missing.retain(|m| !evicted.contains(m));
+        }
+
         delta.new.sort();
         delta.present.sort();
         delta.missing.sort();
         delta.departed.sort();
+        delta.evicted.sort();
         delta
     }
 
-    /// Insert a new track, evicting the oldest-observed one first if at capacity.
-    fn insert_track(&mut self, track: BtTrack) {
+    /// Insert a new track, evicting the oldest-observed one first if at
+    /// capacity. Returns the evicted MAC, so the caller can report the drop
+    /// rather than losing a device silently.
+    fn insert_track(&mut self, track: BtTrack) -> Option<String> {
+        let mut evicted = None;
         if self.tracks.len() >= self.capacity
             && let Some(oldest) = self.order.pop_front()
         {
             self.tracks.remove(&oldest);
+            evicted = Some(oldest);
         }
         self.order.push_back(track.mac.clone());
         self.tracks.insert(track.mac.clone(), track);
+        evicted
     }
 
     /// Every live track, ranked for the map: most-persistent first (by

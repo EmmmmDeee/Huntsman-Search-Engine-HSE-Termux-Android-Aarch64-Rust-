@@ -139,15 +139,80 @@ fn randomized_mac_never_gets_a_persistent_track() {
 #[test]
 fn a_bonded_device_is_the_operators_own_kit_not_a_track() {
     // The operator's paired car/earbuds/watch recur trivially and must never be
-    // surfaced as a foreign device to follow.
+    // surfaced as a foreign device to follow — but they ARE surfaced as their
+    // own aggregate (self-exposure: what of yours is discoverable), not
+    // silently dropped.
     let mut r = BtRadarState::default();
     let d = r.apply_tick(&[bonded(HW1)], BtReadOutcome::Read);
     assert!(d.new.is_empty() && d.present.is_empty());
+    assert_eq!(d.bonded_seen, 1, "own kit is surfaced as its own aggregate");
     assert_eq!(
         d.randomized_seen, 0,
-        "own kit is not a rotating address either"
+        "own kit is not counted as a rotating address"
     );
     assert!(r.is_empty(), "a bonded device earns no track");
+}
+
+#[test]
+fn capacity_eviction_is_reported_and_never_contradicts_the_state() {
+    // Regression (Copilot review, PR #343): `insert_track` evicts under capacity
+    // pressure, but the delta used to report every newly-seen MAC as `new`
+    // regardless — so a dense single-tick overflow yielded a TickDelta naming
+    // devices that had ALREADY been evicted, and never said which were dropped.
+    // A render layer trusting that delta paints devices the state does not hold.
+    let cap = 4;
+    let mut r = BtRadarState::with_capacity(cap);
+    let macs: Vec<String> = (0..20u32)
+        .map(|i| format!("3C:5A:B4:00:00:{i:02X}"))
+        .collect();
+    let sightings: Vec<SweepObservation> = macs.iter().map(|m| obs(m)).collect();
+
+    let d = r.apply_tick(&sightings, BtReadOutcome::Read);
+
+    // The overflow is visible, not silent.
+    assert!(
+        !d.evicted.is_empty(),
+        "a saturated map must report its drops"
+    );
+    // THE INVARIANT: everything the delta calls new/present is actually in the
+    // state after the tick, and nothing evicted is also claimed as present.
+    for mac in d.new.iter().chain(d.present.iter()) {
+        assert!(
+            r.presence_of(mac).is_some(),
+            "delta claims {mac} is live, but the state does not hold it"
+        );
+        assert!(
+            !d.evicted.contains(mac),
+            "{mac} is reported as both live and evicted"
+        );
+    }
+    assert_eq!(r.len(), cap, "the map still sits exactly at capacity");
+    assert_eq!(
+        d.new.len(),
+        cap,
+        "exactly the surviving devices are reported as new"
+    );
+}
+
+#[test]
+fn eviction_is_distinct_from_departure() {
+    // Both remove a track, but they mean opposite things: `departed` = the
+    // device left the area (observed absence); `evicted` = the map ran out of
+    // room (our limitation, NOT evidence the device went anywhere). Conflating
+    // them would tell the operator a device left when it did not.
+    let mut r = BtRadarState::with_capacity(1);
+    let d1 = r.apply_tick(&[obs(HW1)], BtReadOutcome::Read);
+    assert_eq!(d1.new, vec![lc(HW1)]);
+    assert!(d1.evicted.is_empty() && d1.departed.is_empty());
+
+    // A second distinct device at capacity 1 evicts the first — an eviction,
+    // never a departure.
+    let d2 = r.apply_tick(&[obs(HW1), obs(HW2)], BtReadOutcome::Read);
+    assert_eq!(d2.evicted, vec![lc(HW1)], "the displaced device is evicted");
+    assert!(
+        d2.departed.is_empty(),
+        "capacity pressure is not a departure — the device never left"
+    );
 }
 
 // ── read-vs-empty: absence of a reading is not absence of a device ───────────
