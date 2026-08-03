@@ -195,6 +195,46 @@ fn algolia_domain_entities_emits_all_distinct_domains_deterministically() {
 }
 
 #[test]
+fn algolia_domain_entities_collapses_case_variant_hosts() {
+    // Regression: `extract_domain_from_url` used to be hand-rolled here and did
+    // NOT lowercase, so two submissions differing only in host case minted two
+    // distinct `Domain` entities that the caller's case-sensitive
+    // `sort_unstable()` + `dedup()` could not collapse. Routing through the
+    // shared `util::url_util::host_from_url` (which lowercases) makes them one.
+    let urls = [
+        "https://Example.com/a",
+        "https://example.com/b",
+        "https://EXAMPLE.COM/c",
+    ];
+    let body = format!(
+        "[{}]",
+        urls.iter()
+            .map(|u| format!(r#"{{"url":"{u}"}}"#))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+
+    let out = algolia_domain_entities(&body, "someuser", "s");
+    assert_eq!(
+        out.len(),
+        1,
+        "case-variant hosts are ONE domain, not three: {out:?}"
+    );
+    assert_eq!(out[0].value, "example.com", "emitted lowercased");
+}
+
+#[test]
+fn algolia_domain_entities_drops_a_query_from_a_pathless_link() {
+    // The shared helper cuts the authority at `?`/`#` even with no path slash,
+    // so a bare submission link with a tracking query yields the host alone —
+    // not `example.com?utm=x` minted as a "domain".
+    let body = r#"[{"url":"https://example.com?utm_source=hn"}]"#;
+    let out = algolia_domain_entities(body, "someuser", "s");
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].value, "example.com");
+}
+
+#[test]
 fn algolia_domain_entities_no_urls_yields_nothing() {
     let body = r#"[{"title":"no url field here"}]"#;
     assert!(algolia_domain_entities(body, "someuser", "s").is_empty());
