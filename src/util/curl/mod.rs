@@ -140,26 +140,19 @@ async fn ssrf_resolve_pin(url: &str) -> Option<Vec<String>> {
 /// header set — lives in exactly one place and can't drift between the direct
 /// and proxied variants).
 ///
-/// Proxy precedence: an explicit `proxy_override` (from [`fetch_via_proxy`]) wins,
-/// else a health-ranked entry from the validated [`crate::util::egress`] pool
-/// with per-request failover, else — only when NO proxy is configured — a direct
-/// connection pinned to a vetted public IP. When proxied the SSRF pin is skipped
-/// (the proxy resolves and isolates us); a direct fetch with no resolvable public
-/// IP is refused; and a configured-but-exhausted pool never silently goes direct.
+/// Proxy precedence: a health-ranked entry from the validated
+/// [`crate::util::egress`] pool with per-request failover, else — only when NO
+/// proxy is configured — a direct connection pinned to a vetted public IP. When
+/// proxied the SSRF pin is skipped (the proxy resolves and isolates us); a
+/// direct fetch with no resolvable public IP is refused; and a configured-but-
+/// exhausted pool never silently goes direct.
 async fn curl_exec(
     url: &str,
     timeout_ms: u64,
     ua: &str,
     post_data: Option<&str>,
-    proxy_override: Option<&str>,
 ) -> Option<String> {
     let secs = (timeout_ms / 1000).max(3).to_string();
-
-    // An explicit override (from `fetch_via_proxy`) wins — a single attempt, no
-    // pool involvement or reporting (the caller chose this exact proxy).
-    if let Some(p) = proxy_override {
-        return run_curl_once(url, &secs, ua, post_data, timeout_ms, Some(p), None).await;
-    }
 
     // The validated proxy pool with per-request FAILOVER. Try up to
     // MAX_PROXY_FAILOVER healthy proxies, reporting each real outcome so the
@@ -266,12 +259,12 @@ async fn run_curl_once(
 /// Fetch a URL via curl subprocess. Returns the response body on
 /// success, None on any error (timeout, non-zero exit, missing curl).
 pub async fn fetch(url: &str, timeout_ms: u64) -> Option<String> {
-    curl_exec(url, timeout_ms, UA_MOBILE, None, None).await
+    curl_exec(url, timeout_ms, UA_MOBILE, None).await
 }
 
 /// Fetch with a specific User-Agent string.
 pub async fn fetch_with_ua(url: &str, timeout_ms: u64, ua: &str) -> Option<String> {
-    curl_exec(url, timeout_ms, ua, None, None).await
+    curl_exec(url, timeout_ms, ua, None).await
 }
 
 /// POST form data with a specific User-Agent string.
@@ -281,14 +274,7 @@ pub async fn fetch_post_with_ua(
     timeout_ms: u64,
     ua: &str,
 ) -> Option<String> {
-    curl_exec(url, timeout_ms, ua, Some(data), None).await
-}
-
-/// Fetch a URL through a specific proxy (SOCKS5, HTTP, or HTTPS).
-/// Proxy format: `socks5://host:port`, `http://user:pass@host:port`, etc.
-/// Delegates to the shared [`curl_exec`] (proxy path skips the SSRF pin).
-pub async fn fetch_via_proxy(url: &str, timeout_ms: u64, ua: &str, proxy: &str) -> Option<String> {
-    curl_exec(url, timeout_ms, ua, None, Some(proxy)).await
+    curl_exec(url, timeout_ms, ua, Some(data)).await
 }
 
 /// Fetch JSON from a URL via curl, deserialise as T.
