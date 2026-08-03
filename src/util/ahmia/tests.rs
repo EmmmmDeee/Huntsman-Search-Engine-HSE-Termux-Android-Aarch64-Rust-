@@ -140,3 +140,77 @@ fn entities_are_decoded_exactly_once() {
         "one decode pass must leave the escaped entity intact, not collapse it to `<`"
     );
 }
+
+/// Live wire-format drift check for the Ahmia onion index.
+///
+/// [`parse_results`] is exercised above against a canned fixture, which cannot
+/// notice ahmia.fi changing its result markup. When that happens the parser
+/// yields nothing, `hse query --dark` silently reports "no dark-web mentions",
+/// and the failure is invisible — the exact class of defect
+/// `tests/live_drift.rs` exists to surface. This closes that gap for the one
+/// scraper the registry-driven fleet sweep structurally cannot reach (Ahmia is
+/// a `util`, not a registered `Module`).
+///
+/// Follows the live-drift outcome contract: a provider outage, block, or
+/// timeout is a SKIP that prints and passes — only "endpoint reached, HTML
+/// returned, parser produced zero results" is a failure. The query is a generic
+/// high-frequency term chosen so the index is certain to hold matches; the
+/// assertion is about PARSER HEALTH, never about what the dark web contains.
+#[tokio::test]
+#[ignore = "hits the live ahmia.fi index; run manually"]
+async fn ahmia_live_parses_real_results() {
+    // Long budget: ahmia.fi is frequently slow, and a timeout here must read as
+    // a skip rather than a flake.
+    let hits = search("forum", 25_000).await;
+
+    if hits.is_empty() {
+        // `search` collapses transport failure to an empty vec by design (an
+        // unreachable Ahmia is a quiet no-op, never a scan failure), so re-probe
+        // to tell "never served results" from "served results we failed to
+        // parse" — only the latter is our defect.
+        //
+        // A NON-EMPTY BODY IS NOT A RESULTS PAGE. Verified live 2026-08-03 from a
+        // datacenter IP: `https://ahmia.fi/search/?q=…` answers 302 → `/`, and
+        // curl follows it (FETCH_HARDENING_ARGS sets `--max-redirs 5`), so the
+        // 4.7 KB homepage arrives looking like a successful fetch. Treating that
+        // as "reached" reddened this test on a BLOCK, which is precisely the
+        // flakiness `tests/live_drift.rs` forbids ("a red run is an actionable
+        // drift, never a flaky endpoint"). Discriminate on the results container
+        // instead: no container ⇒ we were redirected/blocked ⇒ skip.
+        let served_results = crate::util::curl::fetch_with_ua(
+            &search_url("forum"),
+            25_000,
+            crate::util::http::UA_BROWSER,
+        )
+        .await
+        .is_some_and(|body| body.contains("searchResults") || body.contains(r#"class="result"#));
+
+        assert!(
+            !served_results,
+            "DRIFT: ahmia.fi served a real results page (its results container is \
+             present) yet `parse_results` extracted zero onion results — the \
+             upstream result markup has changed and `hse query --dark` is now \
+             silently blind."
+        );
+        println!(
+            "ahmia.fi did not serve a results page (redirected, blocked, or \
+             unreachable) — skipping drift assertion"
+        );
+        return;
+    }
+
+    println!("ahmia live: {} result(s) parsed", hits.len());
+    for h in hits.iter().take(3) {
+        println!("  {} — {}", h.onion_url, h.title);
+    }
+
+    // Every parsed row must be a real onion address: the parser's core contract
+    // is that clearnet nav/footer links never enter the output.
+    for h in &hits {
+        assert!(
+            h.onion_url.to_ascii_lowercase().contains(".onion"),
+            "parser emitted a non-onion URL: {}",
+            h.onion_url
+        );
+    }
+}

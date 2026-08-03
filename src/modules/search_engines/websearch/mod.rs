@@ -247,4 +247,95 @@ mod tests {
         assert_eq!(ranked[0].url, "https://ex.com/a");
         assert_eq!(ranked[1].url, "https://ex.com/z");
     }
+
+    /// Live end-to-end check for the general-search path.
+    ///
+    /// Everything above is pure ranking logic over synthetic rows; none of it
+    /// touches an engine. The fetch-and-parse half — 17 HTML scrapers, the most
+    /// drift-prone code in this repo — has no coverage here, and the
+    /// registry-driven fleet sweep in `tests/live_drift.rs` structurally cannot
+    /// reach it because [`web_search`] bypasses `Module::process` entirely. When
+    /// an engine changes its markup the parser yields nothing and `hse query`
+    /// silently reports "no results", which is indistinguishable from a genuinely
+    /// empty search.
+    ///
+    /// Live-drift outcome contract: engines that are blocked, throttled, or
+    /// unreachable are a SKIP that prints and passes — a datacenter IP is
+    /// CAPTCHA-blocked by most of this fleet, so a red run here must mean drift,
+    /// never an unlucky network. Only "at least one engine served a real results
+    /// page, yet the parse produced zero rows" is a failure.
+    #[tokio::test]
+    #[ignore = "hits the live search-engine fleet; run manually"]
+    async fn websearch_live_returns_ranked_results() {
+        // A generic, high-frequency term: any working engine must return
+        // results, so an empty parse cannot be blamed on an obscure query.
+        let deadline = Instant::now() + std::time::Duration::from_secs(45);
+        let results = web_search("rust programming language", deadline).await;
+
+        if results.is_empty() {
+            // `web_search` collapses "every engine blocked" and "engines
+            // answered but nothing parsed" into the same empty vec, so probe the
+            // transport directly to tell a network condition from our defect.
+            // `reliable_engines()` is the fleet's CAPTCHA-resistant core.
+            // A non-empty body is NOT a results page: a soft-block, consent wall,
+            // or redirect-to-homepage all return plenty of bytes. Use the repo's
+            // own liveness signal, whose contract is exactly this question —
+            // "a genuine results page carries many external links, whereas a
+            // nav/interstitial/soft-block page carries mostly the engine's own
+            // links... When this count is high yet `parse_results` yields
+            // nothing, the parser really is at fault" (fetch/mod.rs).
+            let mut served = Vec::new();
+            for e in reliable_engines() {
+                if let Some(body) = crate::util::curl::fetch_with_ua(
+                    &(e.build_url)("rust programming language"),
+                    20_000,
+                    e.ua,
+                )
+                .await
+                    && !super::super::fetch::is_captcha_page(&body)
+                    && super::super::fetch::external_link_count(&body, e.name) >= 5
+                {
+                    served.push(e.name);
+                }
+            }
+            assert!(
+                served.is_empty(),
+                "DRIFT: engine(s) {served:?} served a real results page (many \
+                 external result links present, no CAPTCHA) yet the parser \
+                 extracted zero rows — their result markup has changed and \
+                 `hse query` is now silently blind."
+            );
+            println!("every probed engine was blocked/unreachable — skipping drift assertion");
+            return;
+        }
+
+        println!("websearch live: {} ranked result(s)", results.len());
+        for r in results.iter().take(3) {
+            println!("  [{}x] {} — {}", r.engine_count, r.url, r.title);
+        }
+
+        // Contract of the ranking stage: corroboration is non-increasing, every
+        // row carries a usable absolute URL, and dedup left no duplicate.
+        let mut seen = std::collections::HashSet::new();
+        let mut prev = u32::MAX;
+        for r in &results {
+            assert!(
+                r.url.starts_with("http"),
+                "non-absolute URL survived parsing: {}",
+                r.url
+            );
+            assert!(r.engine_count >= 1, "result with zero engines: {}", r.url);
+            assert!(
+                r.engine_count <= prev,
+                "results are not sorted by descending corroboration: {} after {prev}",
+                r.engine_count
+            );
+            prev = r.engine_count;
+            assert!(
+                seen.insert(canonicalize_url(&r.url)),
+                "duplicate canonical URL survived dedup: {}",
+                r.url
+            );
+        }
+    }
 }
