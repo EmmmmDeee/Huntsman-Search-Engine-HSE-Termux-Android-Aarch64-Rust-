@@ -201,14 +201,28 @@ use super::*;
 
         // The AGGREGATE cannot tell them apart: a read happened, so it reports
         // readings were taken. Trusting this for the dead radio is the bug.
+        //
+        // `>=`, not `== 1`: `activity()` is process-global and the test binary
+        // runs its threads in parallel, so a sibling test's `record_responsive`
+        // can land inside this window and inflate the delta. That is not a
+        // defect — it is the very coupling this test exists to describe. The
+        // claim under test is only that the aggregate saw *a* read and so
+        // cannot speak for the dead tool; pinning the exact count would buy no
+        // extra assurance and cost a flake.
         let agg = activity().since(agg_before);
-        assert_eq!(agg.reads, 1);
+        assert!(
+            agg.reads >= 1,
+            "the successful sibling must show up in the aggregate"
+        );
         assert!(
             !agg.took_no_readings(),
             "the aggregate sees the sibling's read and reports the sweep as read"
         );
 
-        // The PER-TOOL tallies are unambiguous.
+        // The PER-TOOL tallies are unambiguous — and can be asserted exactly,
+        // precisely because per-tool keys are not shared: these two tool names
+        // exist only in this test, so no sibling can touch their counts. That
+        // exactness is the whole point of the split.
         let ok = activity_for(OK_TOOL).since(ok_before);
         assert_eq!(ok.reads, 1);
         assert!(!ok.took_no_readings(), "this tool genuinely read");
