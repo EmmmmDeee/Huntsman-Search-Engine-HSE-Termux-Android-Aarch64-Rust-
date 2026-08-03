@@ -152,8 +152,6 @@ async fn curl_exec(
     ua: &str,
     post_data: Option<&str>,
 ) -> Option<String> {
-    let secs = (timeout_ms / 1000).max(3).to_string();
-
     // The validated proxy pool with per-request FAILOVER. Try up to
     // MAX_PROXY_FAILOVER healthy proxies, reporting each real outcome so the
     // pool self-heals (a dead proxy accrues failures and drops out of
@@ -167,14 +165,36 @@ async fn curl_exec(
     // but every entry is currently failing" (⇒ give up, return None) from "no
     // proxy configured at all" (⇒ the normal SSRF-pinned direct path below).
     if crate::util::egress::pool_is_configured() {
+        // Budget the WHOLE failover loop, not each attempt independently — a
+        // fixed deadline, decremented per attempt. Reusing the caller's full
+        // `timeout_ms` on every one of up to MAX_PROXY_FAILOVER attempts let a
+        // single `curl_exec` call take up to ~3x its budget, silently breaking
+        // every caller's deadline contract (the same guarantee
+        // `search_engines::fetch::fetch_timeout_ms` documents and relies on).
+        // `Instant + Duration` panics on overflow (its `Add` impl is a bare
+        // `checked_add(...).expect(...)`), and `timeout_ms` is a parameter on
+        // every public fetch helper in this module — a nonsensically large
+        // caller value must fail this one fetch, not crash the process.
+        let deadline = std::time::Instant::now().checked_add(Duration::from_millis(timeout_ms))?;
         let mut tried: Vec<String> = Vec::new();
         while tried.len() < MAX_PROXY_FAILOVER {
+            let remaining_ms = deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .as_millis() as u64;
+            // Not enough budget left for another attempt to have a realistic
+            // chance — subprocess spawn + TCP handshake overhead alone would
+            // likely consume the remainder. Stop rather than return a request
+            // doomed to fail right as the caller's deadline expires.
+            if remaining_ms < MIN_PROXY_ATTEMPT_MS {
+                break;
+            }
             let Some(proxy) = crate::util::egress::next_proxy_excluding(&tried) else {
                 break;
             };
+            let secs = curl_max_time_arg(remaining_ms);
             let started = std::time::Instant::now();
             let res =
-                run_curl_once(url, &secs, ua, post_data, timeout_ms, Some(&proxy), None).await;
+                run_curl_once(url, &secs, ua, post_data, remaining_ms, Some(&proxy), None).await;
             #[allow(clippy::cast_possible_truncation)]
             let latency = started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
             crate::util::egress::report_proxy(&proxy, res.is_some(), latency);
@@ -191,10 +211,26 @@ async fn curl_exec(
     // No proxy configured: direct connection, pinned to a vetted public IP so an
     // attacker-controlled host can't be rebound onto an internal address. Refuse
     // the fetch if the host has no resolvable public IP.
+    let secs = curl_max_time_arg(timeout_ms);
     match ssrf_resolve_pin(url).await {
         Some(pin) => run_curl_once(url, &secs, ua, post_data, timeout_ms, None, Some(&pin)).await,
         None => None,
     }
+}
+
+/// Minimum remaining budget (ms) worth attempting another proxy in the
+/// failover loop. Below this, subprocess spawn + TCP handshake overhead alone
+/// would likely consume the whole remainder.
+const MIN_PROXY_ATTEMPT_MS: u64 = 250;
+
+/// Format a millisecond budget as curl's `--max-time` argument. curl accepts
+/// fractional seconds (e.g. `"1.500"`), so this honours a sub-second budget
+/// precisely instead of rounding it up to a multi-second floor. Floors the
+/// numerator at 1ms so the result is never `"0.000"` — curl treats
+/// `--max-time 0` as **no limit**, the opposite of what a near-zero budget
+/// means here.
+fn curl_max_time_arg(timeout_ms: u64) -> String {
+    format!("{:.3}", timeout_ms.max(1) as f64 / 1000.0)
 }
 
 /// Maximum distinct proxies tried for one fetch before giving up. Bounds the
