@@ -951,8 +951,17 @@ hse_pid_matches() {
     # Fallback — and the only usable signal for a shell wrapper, whose
     # executable is bash rather than anything named after us.
     if [ -n "$_argv" ] && [ -r "/proc/$_pid/cmdline" ]; then
-        tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null | grep -q -- "$_argv"
-        return $?
+        # Tested with `if`, not run as a bare pipeline whose status is returned:
+        # "no match" is a normal answer here, not an error. Every caller today
+        # invokes this from a condition, where `set -e` is suspended for the
+        # whole call — but that leaves correctness resting on the call site, and
+        # a future caller running it as a plain command would turn "not ours"
+        # into a wrapper that exits part-way through `stop`.
+        # `-F`: the contract is a literal substring, never a regex.
+        if tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null | grep -qF -- "$_argv"; then
+            return 0
+        fi
+        return 1
     fi
 
     # /proc unreadable, or nothing to compare against. Answer on liveness alone
