@@ -178,3 +178,60 @@ use super::*;
         };
         assert_eq!(Activity::default().since(earlier), Activity::default());
     }
+
+    /// The masking bug the per-tool tally exists to fix: one radio succeeding
+    /// must not make a DIFFERENT radio look like it was read.
+    ///
+    /// Uses the real process-global counters via `record_responsive`, so this
+    /// pins the actual accounting rather than a re-implementation. Both tools
+    /// are fictitious names, so no other test's tallies are disturbed.
+    #[test]
+    fn a_sibling_tools_success_does_not_mask_this_tools_failure() {
+        const OK_TOOL: &str = "termux-test-radio-that-works";
+        const DEAD_TOOL: &str = "termux-test-radio-that-does-not";
+
+        let agg_before = activity();
+        let ok_before = activity_for(OK_TOOL);
+        let dead_before = activity_for(DEAD_TOOL);
+
+        // One tool reads successfully; the other runs and returns nothing usable
+        // — exactly the mixed sweep that defeated the aggregate.
+        record_responsive(OK_TOOL, &[], true);
+        record_responsive(DEAD_TOOL, &[], false);
+
+        // The AGGREGATE cannot tell them apart: a read happened, so it reports
+        // readings were taken. Trusting this for the dead radio is the bug.
+        let agg = activity().since(agg_before);
+        assert_eq!(agg.reads, 1);
+        assert!(
+            !agg.took_no_readings(),
+            "the aggregate sees the sibling's read and reports the sweep as read"
+        );
+
+        // The PER-TOOL tallies are unambiguous.
+        let ok = activity_for(OK_TOOL).since(ok_before);
+        assert_eq!(ok.reads, 1);
+        assert!(!ok.took_no_readings(), "this tool genuinely read");
+
+        let dead = activity_for(DEAD_TOOL).since(dead_before);
+        assert_eq!(dead.reads, 0);
+        assert_eq!(dead.failed, 1);
+        assert!(
+            dead.took_no_readings(),
+            "this tool took no reading, regardless of what its sibling did"
+        );
+    }
+
+    /// A tool never called reports an all-zero (idle) tally rather than panicking
+    /// or inventing counts — so a caller can snapshot before a sweep that may
+    /// never invoke it.
+    #[test]
+    fn activity_for_an_uncalled_tool_is_idle() {
+        let a = activity_for("termux-test-never-invoked");
+        assert_eq!(a, Activity::default());
+        assert!(a.is_idle());
+        assert!(
+            !a.took_no_readings(),
+            "never asked for is idle, not blind — the two are different claims"
+        );
+    }
