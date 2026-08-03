@@ -1,17 +1,15 @@
 //! Entity extraction: regex patterns, confidence scoring, kind classification.
 //!
 //! Extracts candidate entities from unstructured text (OCR, PDFs, etc.) with:
-//! - Pattern matching (email, phone, hash, IP, domain, person name, etc.)
+//! - Pattern matching (email, IPv4, domain, URL, social handle, MD5/SHA hashes)
 //! - Confidence scoring based on format validation + extraction method
 //! - Auto-kind classification via heuristics + JSON schema mapping
 
 pub mod classifier;
 pub mod extractor;
-pub mod ml_classifier;
 pub mod patterns;
 
 pub use extractor::EntityExtractor;
-pub use ml_classifier::MlClassifier;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

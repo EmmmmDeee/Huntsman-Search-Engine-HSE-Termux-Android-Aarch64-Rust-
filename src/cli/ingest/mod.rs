@@ -1,7 +1,9 @@
 //! `hse ingest` command: Parse documents → extract entities → output JSONL batch.
 //!
-//! Supports auto-scan: extracted entities can optionally be fed into the HSE scan pipeline
-//! for automatic recursive expansion and cross-correlation. Phase 4 integration.
+//! `--auto-scan` is reserved for feeding extracted entities into the HSE scan
+//! engine, but that wiring is NOT implemented: the flag warns and runs no scan
+//! (entities are still extracted and written). It exists so the CLI surface and
+//! `converter::extracted_to_hse_entity` are ready for when the engine is wired.
 
 mod converter;
 
@@ -37,7 +39,7 @@ pub struct IngestArgs {
     #[arg(long, default_value = "0.30")]
     pub min_confidence: f64,
 
-    /// Auto-scan extracted entities (not yet implemented)
+    /// Auto-scan extracted entities (NOT IMPLEMENTED — warns and runs no scan)
     #[arg(long)]
     pub auto_scan: bool,
 
@@ -281,16 +283,16 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
         }
     }
 
-    // Phase 4: Auto-scan integration (when --auto-scan flag is set)
-    // Future: Wire extracted entities into HSE scan pipeline via:
-    // 1. Convert ExtractedEntity → core::entity::Entity using converter::extracted_to_hse_entity()
-    // 2. Create or use existing scan record with unique scan_id
-    // 3. Call storage::Store::upsert_entities_batch(&entities, &scan_id)
-    // 4. Execute engine::ScanEngine::run() with the extracted entities as seeds
-    // 5. Return scan results to user with "auto-scan" tag
+    // --auto-scan is NOT implemented: extracted entities are not fed into the
+    // scan engine. Warn (not info!, which is usually silent) so the flag never
+    // reads as a silent success — the run still emits the extraction output
+    // below, so the work is not wasted. Wiring it in means: convert via
+    // converter::extracted_to_hse_entity, upsert under a scan_id, then run the
+    // engine over the entities as seeds.
     if args.auto_scan {
-        info!("Auto-scan flag set; implementation pending Phase 4 engine integration");
-        // Auto-scan wiring deferred: requires Store/Engine context not available at CLI level
+        tracing::warn!(
+            "--auto-scan is not implemented: entities were extracted but no scan was run"
+        );
     }
 
     // Format output

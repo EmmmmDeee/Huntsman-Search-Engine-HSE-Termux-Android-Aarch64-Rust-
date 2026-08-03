@@ -396,7 +396,7 @@ pub enum Command {
         #[arg(short, long, default_value = "table")]
         output: String,
     },
-    /// Parse documents (image/PDF/CSV/JSON/JSONL/text), extract entities (email, phone, IP, domain, hash, etc.),
+    /// Parse documents (image/PDF/CSV/JSON/JSONL/text), extract entities (email, IPv4, domain, URL, social handle, MD5/SHA hashes),
     /// classify by kind, assign confidence scores, and output as HSE-ready batch queries (JSONL/JSON/CSV/table).
     Ingest {
         /// Input file path (image, PDF, CSV, JSON, JSONL, text).
@@ -412,7 +412,7 @@ pub enum Command {
         /// Minimum confidence threshold (0.0-1.0, default 0.30).
         #[arg(long, default_value = "0.30")]
         min_confidence: f64,
-        /// Auto-scan extracted entities (future integration).
+        /// Auto-scan extracted entities (NOT IMPLEMENTED — warns and runs no scan).
         #[arg(long)]
         auto_scan: bool,
         /// Output file (default: stdout).
