@@ -356,6 +356,40 @@ async fn fetch_engine(
     (engine.name, Some(acc))
 }
 
+/// Fan one query out across `engines` — already filtered and ordered by the
+/// caller (via [`order_engines_for_primary`]) — with the module's bounded
+/// concurrency, then return the batch name-sorted so the result never depends on
+/// which engine happened to answer first (Determinism Requirement).
+///
+/// Single source of the map→[`fetch_engine`]→`buffer_unordered`→sort mechanism
+/// shared by the OSINT primary pass ([`SearchEngines::process`]) and the general
+/// [`websearch::web_search`] path, so the concurrency width and the determinism
+/// sort can never drift between them. `qi` is the query index passed through to
+/// `fetch_engine` (0 enables its pagination); `proven`-set snapshotting stays at
+/// the caller so a multi-query scan's engine ordering is fixed once, not
+/// recomputed per query.
+async fn run_engine_batch(
+    engines: Vec<&'static EngineSpec>,
+    query: &str,
+    qi: usize,
+    deadline: std::time::Instant,
+) -> Vec<(&'static str, Option<Vec<SearchResult>>)> {
+    let futs: Vec<_> = engines
+        .into_iter()
+        .map(|engine| {
+            let url = (engine.build_url)(query);
+            let post_body = engine.build_post.map(|f| f(query));
+            fetch_engine(engine, url, post_body, query.to_string(), qi, deadline)
+        })
+        .collect();
+    let mut batch: Vec<(&'static str, Option<Vec<SearchResult>>)> = futures::stream::iter(futs)
+        .buffer_unordered(ENGINE_CONCURRENCY)
+        .collect()
+        .await;
+    batch.sort_by(|a, b| a.0.cmp(b.0));
+    batch
+}
+
 fn is_social_host(host: &str) -> bool {
     // Accept only the canonical profile-serving hosts: a social root domain or
     // its www/m/mobile alias. Arbitrary subdomains (pic., business., create.,
@@ -550,24 +584,15 @@ impl Module for SearchEngines {
                         && !(qi > 0 && dead_engines.contains(e.name))
                 })
                 .collect();
-            let futs: Vec<_> = order_engines_for_primary(live, &proven, &reliable)
-                .into_iter()
-                .map(|engine| {
-                    let url = (engine.build_url)(query);
-                    let post_body = engine.build_post.map(|f| f(query));
-                    fetch_engine(engine, url, post_body, query.clone(), qi, primary_deadline)
-                })
-                .collect();
-            let mut batch: Vec<(&'static str, Option<Vec<SearchResult>>)> =
-                futures::stream::iter(futs)
-                    .buffer_unordered(ENGINE_CONCURRENCY)
-                    .collect()
-                    .await;
-
-            // Completion order is racy, so order the batch by engine name before
-            // appending — the persisted result must not depend on which engine
-            // happened to answer first (Determinism Requirement).
-            batch.sort_by(|a, b| a.0.cmp(b.0));
+            // Fan out this query across the ordered live set with bounded
+            // concurrency; the batch comes back name-sorted (see run_engine_batch).
+            let batch = run_engine_batch(
+                order_engines_for_primary(live, &proven, &reliable),
+                query,
+                qi,
+                primary_deadline,
+            )
+            .await;
             for (name, res) in batch {
                 match res {
                     Some(mut results) => {

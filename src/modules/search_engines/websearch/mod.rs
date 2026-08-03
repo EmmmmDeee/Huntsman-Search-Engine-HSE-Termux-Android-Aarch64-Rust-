@@ -22,10 +22,9 @@
 use super::engines::{ENGINES, EngineSpec, reliable_engines};
 use super::helpers::{canonicalize_url, dedup_results, url_engine_counts};
 use super::{
-    ENGINE_CONCURRENCY, SearchResult, engine_enabled, fetch_engine, order_engines_for_primary,
-    proven_engine_names, record_empty, record_hit, session_dead,
+    SearchResult, engine_enabled, order_engines_for_primary, proven_engine_names, record_empty,
+    record_hit, run_engine_batch, session_dead,
 };
-use futures::StreamExt;
 use std::collections::{BTreeSet, HashMap};
 use std::time::Instant;
 
@@ -76,22 +75,17 @@ pub(crate) async fn web_search(query: &str, deadline: Instant) -> Vec<WebResult>
     // request self-clamps to `deadline` and inherits the SSRF pin, block detection
     // and alt-UA retry. `qi = 0` marks this as the first (only) query, which is
     // what enables pagination and session-liveness accounting.
-    let futs: Vec<_> = order_engines_for_primary(live, &proven, &reliable)
-        .into_iter()
-        .map(|engine| {
-            let url = (engine.build_url)(query);
-            let post_body = engine.build_post.map(|f| f(query));
-            fetch_engine(engine, url, post_body, query.to_string(), 0, deadline)
-        })
-        .collect();
-
-    let mut batch: Vec<(&'static str, Option<Vec<SearchResult>>)> = futures::stream::iter(futs)
-        .buffer_unordered(ENGINE_CONCURRENCY)
-        .collect()
-        .await;
-    // Completion order is racy; sort by engine name so the ranking input — and
-    // therefore the printed output — never depends on which engine answered first.
-    batch.sort_by(|a, b| a.0.cmp(b.0));
+    // Fan out with bounded concurrency; the batch returns name-sorted so the
+    // ranking input — and the printed output — never depends on which engine
+    // answered first. `qi = 0` marks this the first (only) query, enabling
+    // fetch_engine's pagination and the session-liveness accounting below.
+    let batch = run_engine_batch(
+        order_engines_for_primary(live, &proven, &reliable),
+        query,
+        0,
+        deadline,
+    )
+    .await;
 
     // Feed the shared session-liveness map rather than only reading it: a general
     // query now contributes the same up/down evidence a scan does, so a blocked
