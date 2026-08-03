@@ -40,6 +40,37 @@ pub struct SweepObservation {
     pub bonded: bool,
 }
 
+/// Read one RF sighting off a scan entity, or `None` when the entity is not an
+/// RF device observation at all.
+///
+/// The *mapping* is single-sourced here — which evidence attribute carries the
+/// device name (`name` for Bluetooth, `ssid` for a Wi-Fi AP) and which tag means
+/// "the operator is bonded to this" — because that is the drift-prone part and
+/// two consumers read it: the API's cross-sweep persistence review and the CLI's
+/// live radar. The *filter* deliberately stays at the call site, since the two
+/// genuinely differ (the review folds in Wi-Fi APs; the Bluetooth radar does
+/// not).
+#[must_use]
+pub fn observation_from_entity(e: &crate::core::entity::Entity) -> Option<SweepObservation> {
+    if e.kind != crate::core::entity::EntityKind::MacAddress {
+        return None;
+    }
+    let name = e
+        .evidence
+        .iter()
+        .find_map(|ev| {
+            ev.attributes
+                .get("name")
+                .or_else(|| ev.attributes.get("ssid"))
+        })
+        .map(String::to_string);
+    Some(SweepObservation {
+        mac: e.value.clone(),
+        name,
+        bonded: e.has_tag("bond:bonded"),
+    })
+}
+
 /// One radar sweep: every RF device it observed, with when it ran.
 pub struct Sweep {
     pub scan_id: String,

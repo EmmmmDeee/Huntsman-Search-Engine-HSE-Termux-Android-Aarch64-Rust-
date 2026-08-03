@@ -184,6 +184,13 @@ pub(super) async fn cmd_radar() -> Result<()> {
     let crate::app::runtime::ApplicationRuntime { store, bus, engine } =
         crate::app::runtime::build_runtime(1024)?;
     let mut seen_entities = SeenSet::with_capacity(SEEN_CAPACITY);
+    // The live Bluetooth map: a per-device presence model fed one increment per
+    // sweep, repainted in place. Distinct from `seen_entities` (which is
+    // novelty-once, for deciding what to PIVOT): this tracks devices over time,
+    // so the operator sees a device persist, weaken, and leave rather than a
+    // one-shot "new" line that never updates again.
+    let mut bt_radar = crate::core::radar_live::BtRadarState::default();
+    let mut bt_frame = super::live_frame::Frame::new();
     let mut sweep_num = 0u32;
     // Set by `run_sub_scan` the moment Ctrl-C interrupts an in-flight sweep or
     // pivot, so the loop stops immediately rather than starting another one.
@@ -245,6 +252,34 @@ pub(super) async fn cmd_radar() -> Result<()> {
             break 'sweeps;
         }
         let sweep_entities = store.entities_for_scan(&sweep_sid)?;
+
+        // ── Live Bluetooth map ──────────────────────────────────────────────
+        // Fold this sweep's Bluetooth sightings into the presence model. The
+        // reduce happens here (at sensor cadence, before the slow pivot phase),
+        // but the PAINT is deferred to the end of the sweep body: the frame
+        // rewinds by the line count it last drew, which is only valid while the
+        // cursor is still where that draw left it, and the pivot phase below
+        // emits an unbounded number of `eprintln!` progress lines. Painting
+        // here would let the NEXT repaint rewind up into that progress output
+        // and overwrite it.
+        //
+        // `took_no_readings()` is whole-sweep, so it is only trusted in the
+        // negative direction: if NO sensor tool answered, the Bluetooth radio
+        // certainly was not read. (A BT-scoped counter, so a co-sensor success
+        // stops masking a BT-only failure, lands separately.)
+        let bt_sightings: Vec<crate::core::radar_track::SweepObservation> = sweep_entities
+            .iter()
+            .filter(|e| e.has_tag("bluetooth"))
+            .filter_map(crate::core::radar_track::observation_from_entity)
+            .collect();
+        let bt_read = if sensors.took_no_readings() {
+            crate::core::radar_live::BtReadOutcome::NotRead
+        } else {
+            crate::core::radar_live::BtReadOutcome::Read
+        };
+        let bt_delta = bt_radar.apply_tick(&bt_sightings, bt_read);
+        let bt_map =
+            super::live_frame::render_bt_map(&bt_radar, &bt_delta, u64::from(sweep_num), color);
 
         // Phase 2: Identify NEW entities (not seen in previous sweeps)
         let mut new_targets: Vec<(crate::core::scan::TargetKind, String)> = Vec::new();
@@ -382,6 +417,30 @@ pub(super) async fn cmd_radar() -> Result<()> {
                 }
             }
         }
+
+        // Paint the live Bluetooth map LAST, so it is the bottom-most thing on
+        // screen and the cursor is left immediately below it — the one position
+        // from which the next sweep's rewind is valid.
+        //
+        // The rewind is dropped UNCONDITIONALLY here, and that is deliberate.
+        // Every sweep emits its own stderr progress between paints (the sweep
+        // header, then either the "no new signals" line or the new-signal and
+        // pivot lines), so the cursor is never where the previous paint left
+        // it. Rewinding anyway would climb up into that output and overwrite
+        // it — garbling the operator's log to animate a map, which is a strictly
+        // worse trade. Each sweep therefore appends one refreshed map block:
+        // still an updated increment per sweep, just not a cursor-in-place one.
+        //
+        // Gating this on a "did anything print?" flag was considered and
+        // rejected: it is a correctness invariant that a future `eprintln!`
+        // could silently break, and today the answer is always yes anyway.
+        // Genuine in-place animation needs the map to be the ONLY stderr
+        // surface in this loop — i.e. the per-sweep status folded INTO the
+        // frame and the streaming pivot progress moved behind it — which is a
+        // real change to the command's output contract, not a detail to smuggle
+        // in here.
+        bt_frame.invalidate();
+        bt_frame.repaint(&bt_map);
 
         // Wait for next sweep
         tokio::select! {

@@ -13,6 +13,7 @@ mod engines;
 mod ingest;
 mod keys_cmd;
 mod live;
+mod live_frame;
 mod logging;
 mod modules;
 mod oathnet_batch;
