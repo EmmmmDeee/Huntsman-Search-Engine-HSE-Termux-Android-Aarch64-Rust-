@@ -88,6 +88,72 @@ use super::*;
         assert_eq!(decode_entities("&café"), "&café");
     }
 
+    /// The exact shape a CDN returns when an origin is unreachable — the first
+    /// 200 characters are doctype and IE conditional comments, and the title is
+    /// the only line that names the failure.
+    const CLOUDFLARE_523: &str = concat!(
+        "<!DOCTYPE html>\n",
+        "<!--[if lt IE 7]> <html class=\"no-js ie6 oldie\" lang=\"en-US\"> <![endif]-->\n",
+        "<!--[if IE 7]>    <html class=\"no-js ie7 oldie\" lang=\"en-US\"> <![endif]-->\n",
+        "<!--[if IE 8]>    <html class=\"no-js ie8 oldie\" lang=\"en-US\"> <![endif]-->\n",
+        "<head>\n<title>psbdmp.ws | 523: Origin is unreachable</title>\n",
+        "<style>.x{color:red}</style>\n</head>\n",
+        "<body><h1>Error 523</h1><p>Origin is unreachable</p></body></html>",
+    );
+
+    #[test]
+    fn title_of_an_error_page_names_the_failure() {
+        assert_eq!(
+            title(CLOUDFLARE_523).as_deref(),
+            Some("psbdmp.ws | 523: Origin is unreachable"),
+            "the title is the whole diagnostic value of a CDN error page"
+        );
+    }
+
+    #[test]
+    fn title_decodes_entities_and_collapses_whitespace() {
+        assert_eq!(
+            title("<html><title>\n  Bad\n  &amp;  broken\n</title>").as_deref(),
+            Some("Bad & broken")
+        );
+    }
+
+    #[test]
+    fn title_tolerates_attributes_and_reports_absence() {
+        assert_eq!(
+            title("<title lang=\"en\">Gateway Time-out</title>").as_deref(),
+            Some("Gateway Time-out")
+        );
+        assert_eq!(title("<html><body>no title here</body></html>"), None);
+        assert_eq!(title("<title></title>"), None, "an empty title is no title");
+        assert_eq!(title("<title>unterminated"), None);
+    }
+
+    #[test]
+    fn looks_like_document_requires_an_opener_not_a_stray_bracket() {
+        assert!(looks_like_document(CLOUDFLARE_523));
+        assert!(looks_like_document("  \n<html lang=\"en\">"));
+        assert!(looks_like_document("<!doctype HTML PUBLIC ..."));
+
+        // The case that must NOT be treated as a document: a JSON error payload
+        // that merely quotes markup. Rewriting it would destroy the real message.
+        assert!(!looks_like_document(
+            r#"{"error":"unexpected <html> in response"}"#
+        ));
+        assert!(!looks_like_document("plain text failure"));
+        assert!(!looks_like_document(""));
+        assert!(
+            !looks_like_document("<result><html>x</html></result>"),
+            "an XML payload whose first element is not <html> is not a document"
+        );
+    }
+
+    #[test]
+    fn collapse_whitespace_flattens_stripped_markup() {
+        assert_eq!(collapse_whitespace("  a\n\n\tb   c \r\n"), "a b c");
+        assert_eq!(collapse_whitespace("   "), "");
+    }
+
 // ── Property tests: the HTML helpers never panic on hostile bytes ───────────
 // strip_html / decode_entities run on every scraped page — fully attacker-
 // controlled. The doc claims the `&…;` slice "can never split a codepoint";

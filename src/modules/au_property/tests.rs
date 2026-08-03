@@ -3,7 +3,7 @@ use super::parse::{
     parse_nsw_response, parse_qld_response, parse_vic_response, record_to_entities,
     state_capital_coords, strip_html,
 };
-use super::{AuProperty, all_legs_unreachable};
+use super::{AuProperty, LegOutcome, LegTally, leg_failure};
 use crate::core::entity::{Entity, EntityKind};
 use crate::core::module::Module;
 use crate::core::scan::{Target, TargetKind};
@@ -379,30 +379,114 @@ mod prop {
     }
 }
 
-// ── `all_legs_unreachable` — the "every portal is down" vs "genuinely no
-// records" distinction (2026-07-14 live finding: NSW/VIC/QLD all now 404). ──
+// ── `leg_failure` — what the operator is actually told when nothing came back.
+// The 2026-07-14 live finding (NSW/VIC/QLD all 404) is only ONE of the two ways
+// a run ends empty; the other is that nothing was reachable at all, which on a
+// Termux handset is routine. Conflating them was the fault this replaced. ──
 
+/// Every leg answered with an error status — the real, confirmed 2026-07-14
+/// state. Only here is the "retired/migrated legacy URLs" inference earned,
+/// because statuses were genuinely observed.
 #[test]
-fn all_legs_unreachable_true_when_every_leg_failed_and_nothing_found() {
-    // Regression: this is the REAL state confirmed live for NSW ELVIS, VIC
-    // MapShare WFS, and QLD titles search on 2026-07-14 — all three return
-    // 404 from live, reachable government servers. Before this fix,
-    // `process()` swallowed this into a silent `Ok(empty)`, indistinguishable
-    // from "this person genuinely has no property record."
-    assert!(all_legs_unreachable(false, false));
+fn leg_failure_reports_dead_endpoints_when_statuses_were_observed() {
+    let msg = leg_failure(LegTally {
+        ok: 0,
+        http_error: 3,
+        unreachable: 0,
+    })
+    .expect("three error statuses and no success is a hard failure");
+    assert!(msg.contains("non-success HTTP status"), "{msg}");
+    assert!(msg.contains("retired/migrated"), "{msg}");
+    assert!(
+        !msg.contains("DNS, connect, TLS, or timeout"),
+        "must not claim unreachability that was not observed: {msg}"
+    );
 }
 
+/// Nothing answered at all. The old code reported this as "returned a
+/// non-success HTTP status" — asserting an observation it never made, and
+/// pointing the operator at this module instead of at their connectivity.
 #[test]
-fn all_legs_unreachable_false_when_a_leg_responded_even_with_no_match() {
-    // A portal answered (any_leg_http_ok) but this particular name had no
-    // record there — a genuinely empty, honest result, not a failure.
-    assert!(!all_legs_unreachable(true, false));
+fn leg_failure_does_not_claim_a_status_it_never_saw() {
+    let msg = leg_failure(LegTally {
+        ok: 0,
+        http_error: 0,
+        unreachable: 3,
+    })
+    .expect("three unreachable legs and no success is a hard failure");
+    // Assert on the transport vocabulary rather than one phrasing: the
+    // unreachable-only message reads "none of the N … could be reached" while
+    // the mixed one reads "could not be reached at all", so a single literal
+    // would pin prose rather than meaning.
+    assert!(msg.contains("DNS, connect, TLS, or timeout"), "{msg}");
+    assert!(msg.contains("connectivity failure on this device"), "{msg}");
+    assert!(
+        !msg.contains("non-success HTTP status"),
+        "regression: a transport failure must never be reported as an HTTP status: {msg}"
+    );
+    assert!(
+        !msg.contains("retired/migrated"),
+        "an unreached endpoint is no evidence at all about the URL: {msg}"
+    );
 }
 
+/// Mixed causes are reported as mixed rather than rounded to whichever is
+/// convenient.
 #[test]
-fn all_legs_unreachable_false_when_entities_were_found() {
-    // Found something, regardless of the HTTP-status bookkeeping — never
-    // report a hard failure over a real result.
-    assert!(!all_legs_unreachable(false, true));
-    assert!(!all_legs_unreachable(true, true));
+fn leg_failure_reports_mixed_causes_honestly() {
+    let msg = leg_failure(LegTally {
+        ok: 0,
+        http_error: 1,
+        unreachable: 2,
+    })
+    .expect("no success is a hard failure");
+    assert!(msg.contains('1') && msg.contains('2'), "{msg}");
+    assert!(msg.contains("non-success HTTP status"), "{msg}");
+    assert!(msg.contains("DNS, connect, TLS, or timeout"), "{msg}");
+}
+
+/// A leg answering 2xx means the registers WERE consulted, so an empty result
+/// is a real "no records for this name" — never an error, whatever the other
+/// legs did.
+#[test]
+fn leg_failure_is_none_once_any_leg_answered() {
+    for tally in [
+        LegTally {
+            ok: 1,
+            http_error: 0,
+            unreachable: 0,
+        },
+        LegTally {
+            ok: 1,
+            http_error: 1,
+            unreachable: 1,
+        },
+    ] {
+        assert!(
+            leg_failure(tally).is_none(),
+            "a 2xx answer makes an empty result honest, not a failure: {tally:?}"
+        );
+    }
+}
+
+/// No leg ran, so there is nothing to report on — must not fabricate a failure.
+#[test]
+fn leg_failure_is_none_when_no_leg_was_attempted() {
+    assert!(leg_failure(LegTally::default()).is_none());
+}
+
+/// The tally saturates rather than wrapping, so a future fan-out over many
+/// legs cannot roll a u8 back to zero and turn a total outage into "no legs
+/// attempted" (which `leg_failure` reports as success).
+#[test]
+fn leg_tally_saturates() {
+    let mut t = LegTally::default();
+    for _ in 0..300 {
+        t.record(LegOutcome::Unreachable);
+    }
+    assert_eq!(t.unreachable, u8::MAX);
+    assert!(
+        leg_failure(t).is_some(),
+        "a saturated tally is still a failure"
+    );
 }

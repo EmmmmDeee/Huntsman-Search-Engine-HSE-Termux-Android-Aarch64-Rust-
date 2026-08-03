@@ -207,7 +207,7 @@ impl Geocode {
             .await?;
 
         if !resp.status().is_success() {
-            return Err(Error::module("geocode", format!("HTTP {}", resp.status())));
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
         let data: NominatimResp = crate::util::http::json_scanned(resp, SRC)
