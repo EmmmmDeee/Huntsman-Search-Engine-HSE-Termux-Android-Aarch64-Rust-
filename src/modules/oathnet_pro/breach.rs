@@ -284,7 +284,7 @@ pub(super) fn extract_breach_page(
         // Unconditional — independent of the candidate cap and the target
         // match (see the doc comment), kept after PII extraction to preserve
         // the original per-row ordering.
-        store_api_credential(item, SRC);
+        store_api_credential(item, SRC, scan_id, seen, result);
         extract_api_keys_from_item(item, scan_id, SRC, seen, result);
     }
 }

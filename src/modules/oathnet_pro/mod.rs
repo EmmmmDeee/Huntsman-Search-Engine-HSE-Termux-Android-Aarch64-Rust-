@@ -276,7 +276,7 @@ impl Module for OathnetPro {
             result.entities.reserve(stealer_items.len());
             for item in &stealer_items {
                 extract_stealer_entities(item, &ctx.scan_id, &key_fp, &mut seen, &mut result);
-                store_api_credential(item, SRC);
+                store_api_credential(item, SRC, &ctx.scan_id, &mut seen, &mut result);
                 extract_api_keys_from_item(item, &ctx.scan_id, SRC, &mut seen, &mut result);
             }
         }

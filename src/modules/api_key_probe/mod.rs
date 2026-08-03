@@ -1,9 +1,20 @@
-//! API key identification and cataloging module.
+//! API key identification and reporting module.
 //!
 //! Accepts a raw API key as a seed, probes it against all known OSINT
-//! service endpoints in parallel, identifies which service(s) it
-//! belongs to, extracts account metadata (plan, credits, quotas),
-//! and auto-stores valid keys in the key pool for future use.
+//! service endpoints in parallel, identifies which service(s) it belongs
+//! to, and extracts account metadata (plan, credits, quotas) as a
+//! reportable finding.
+//!
+//! This intentionally does NOT auto-enroll a validated key into
+//! [`crate::util::key_pool`] for HSE's own future reuse: a discovered
+//! `ApiKey` target can come from anywhere with no ownership check (a
+//! crawled page, a breach dump, an import), so auto-pooling would mean HSE
+//! authenticates against real third-party services with a credential of
+//! unverified ownership on its own initiative, then keeps using it in
+//! later scans. The full validation result (service, category, plan/quota
+//! metadata) is still reported as an entity below; an operator who reviews
+//! it and wants the key available for future scans can pool it explicitly
+//! (`hse keys add`).
 
 use std::time::Duration;
 
@@ -17,7 +28,6 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::key_pool::{self, KeyEntry, KeyStatus};
 
 const SRC: &str = "api_key_probe";
 
@@ -33,7 +43,7 @@ impl Module for ApiKeyProbe {
     }
 
     fn description(&self) -> &'static str {
-        "API key probe — identifies, validates, and catalogs API keys across OSINT services"
+        "API key probe — identifies and validates API keys against known OSINT services, reporting the match as a finding (never auto-pooled for reuse)"
     }
 
     fn priority(&self) -> u8 {
@@ -96,7 +106,6 @@ impl Module for ApiKeyProbe {
             tasks.spawn(async move { (i, probe_endpoint(&url, &key, &headers).await) });
         }
 
-        let pool = key_pool::global_pool();
         let mut identified = Vec::new();
         // Probes that never got an answer (no network, DNS/TLS failure, timeout)
         // are counted separately from probes that ran and simply didn't match, so
@@ -130,12 +139,6 @@ impl Module for ApiKeyProbe {
             }
 
             let info = (probe.parse_info)(&json);
-
-            let mut entry = KeyEntry::new(key);
-            entry.status = KeyStatus::Active;
-            entry.last_validated = Some(crate::core::entity::unix_now());
-            entry.notes = Some("Auto-identified by api_key_probe".to_string());
-            pool.add(probe.service, entry);
 
             let mut entity = Entity::new(
                 EntityKind::ApiKey,
@@ -219,10 +222,6 @@ impl Module for ApiKeyProbe {
                 "every API-key probe failed at the transport level (no network reachable?) — \
                  cannot determine whether this key matches any known service",
             ));
-        }
-
-        if let Err(e) = key_pool::save_pool(&pool) {
-            tracing::warn!("failed to save key pool: {e}");
         }
 
         if !identified.is_empty() {

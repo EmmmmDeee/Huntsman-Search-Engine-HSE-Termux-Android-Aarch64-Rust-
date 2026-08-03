@@ -636,6 +636,69 @@ fn md5_password_hash_is_not_emitted_as_an_api_key() {
     assert!(result.entities.iter().any(|e| e.kind == EntityKind::ApiKey));
 }
 
+// ─── store_api_credential ──────────────────────────────────────
+
+#[test]
+fn store_api_credential_reports_a_finding_instead_of_pooling_it() {
+    // Regression: this used to silently write the password straight into the
+    // shared, cross-scan key pool for later automatic reuse against the live
+    // service (`hse keys validate`) — no visible finding, no operator
+    // decision point. It must now surface as a plain Credential entity the
+    // operator can review, and touch nothing pool-related.
+    let item = serde_json::json!({
+        "url": "https://api.shodan.io/shodan/host/1.1.1.1",
+        "username": "victim@example.com",
+        "password": "hunter2-leaked",
+    });
+    let (mut seen, mut result) = empty_state();
+    store_api_credential(&item, "oathnet_pro", "test-scan", &mut seen, &mut result);
+
+    assert_eq!(
+        result.entities.len(),
+        1,
+        "expected exactly one finding, got {:?}",
+        result.entities
+    );
+    let cred = &result.entities[0];
+    assert_eq!(cred.kind, EntityKind::Credential);
+    assert_eq!(cred.value, "hunter2-leaked");
+    assert!(cred.has_tag("service:shodan"), "tags: {:?}", cred.tags);
+    assert!(cred.has_tag("stealer-credential"));
+    assert!(cred.has_tag("oathnet-pro"));
+}
+
+#[test]
+fn store_api_credential_dedups_the_same_service_and_password() {
+    let item = serde_json::json!({
+        "url": "https://api.shodan.io/shodan/host/1.1.1.1",
+        "username": "victim@example.com",
+        "password": "hunter2-leaked",
+    });
+    let (mut seen, mut result) = empty_state();
+    store_api_credential(&item, "oathnet_pro", "test-scan", &mut seen, &mut result);
+    store_api_credential(&item, "oathnet_pro", "test-scan", &mut seen, &mut result);
+    assert_eq!(
+        result.entities.len(),
+        1,
+        "duplicate row must not double-emit"
+    );
+}
+
+#[test]
+fn store_api_credential_ignores_unrecognised_services_and_empty_or_placeholder_passwords() {
+    let (mut seen, mut result) = empty_state();
+    for item in [
+        serde_json::json!({ "url": "https://not-a-real-service.example", "password": "x" }),
+        serde_json::json!({ "url": "https://api.shodan.io/host", "password": "" }),
+        serde_json::json!({ "url": "https://api.shodan.io/host", "password": "***" }),
+        serde_json::json!({ "url": "https://api.shodan.io/host", "password": "UPGRADE to see this" }),
+        serde_json::json!({}),
+    ] {
+        store_api_credential(&item, "oathnet_pro", "test-scan", &mut seen, &mut result);
+    }
+    assert!(result.entities.is_empty(), "got {:?}", result.entities);
+}
+
 #[test]
 fn prefixless_osint_key_in_password_field_attributed_by_record_url() {
     // A stealer record for an OSINT provider: a prefix-less Shodan key (32 alnum)
