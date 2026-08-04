@@ -42,6 +42,7 @@ pub mod censys;
 pub mod cert_intel;
 pub mod certspotter;
 pub mod chain_intel;
+pub mod chess_profile;
 pub mod cloud_storage;
 pub mod codeberg_user;
 pub mod codewars_user;
@@ -413,6 +414,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(github_user::GithubUser),
             Arc::new(github_code_search::GithubCodeSearch),
             Arc::new(github_commits::GithubCommits),
+            Arc::new(chess_profile::ChessProfile),
             Arc::new(gaming_profile::GamingProfile),
             Arc::new(steam_profile::SteamProfile),
             Arc::new(structured_id::StructuredId),

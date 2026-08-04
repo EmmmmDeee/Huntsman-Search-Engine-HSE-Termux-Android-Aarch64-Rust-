@@ -30,3 +30,10 @@ path = "fuzz_targets/cert_der.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ingest_text"
+path = "fuzz_targets/ingest_text.rs"
+test = false
+doc = false
+bench = false
