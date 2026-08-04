@@ -9,7 +9,6 @@ mod converter;
 
 use crate::util::document_parse::{DocumentFormat, DocumentResult};
 use crate::util::entity_extractor::EntityExtractor;
-use clap::Parser;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -22,41 +21,33 @@ use tracing::info;
 /// these entities re-stamps them with the scan that adopts them.
 const PENDING_SCAN_ID: &str = "ingest-pending";
 
-#[derive(Parser, Debug)]
+/// Arguments for `hse ingest`. Populated from the `Command::Ingest` clap variant
+/// in `cli::command`, which owns the flags and short-names — this is a plain
+/// data-transfer struct, NOT a parser, so it carries no clap attributes.
+#[derive(Debug)]
 pub struct IngestArgs {
     /// Input file path (image, PDF, CSV, JSON, JSONL, text)
-    #[arg(short, long, value_name = "PATH")]
     pub file: PathBuf,
 
     /// Output format: jsonl (default), json, csv, table, hse
-    ///
-    /// Short flag is `-F`: `-f` is the input file and `-o` the output file,
-    /// and clap panics at startup on a duplicate short name.
-    #[arg(short = 'F', long, default_value = "jsonl")]
     pub output_format: String,
 
     /// Minimum confidence threshold (0.0-1.0)
-    #[arg(long, default_value = "0.30")]
     pub min_confidence: f64,
 
     /// Auto-scan extracted entities (NOT IMPLEMENTED — warns and runs no scan)
-    #[arg(long)]
     pub auto_scan: bool,
 
     /// Output file (default: stdout)
-    #[arg(short, long)]
     pub output: Option<PathBuf>,
 
     /// Extract EXIF geolocation from images
-    #[arg(long)]
     pub extract_geolocation: bool,
 
     /// Generate reverse image search variants for detected images
-    #[arg(long)]
     pub generate_reverse_search_variants: bool,
 
     /// Output directory for reverse image search variants
-    #[arg(long, value_name = "DIR")]
     pub image_variant_output_dir: Option<PathBuf>,
 }
 

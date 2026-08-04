@@ -88,10 +88,11 @@ pub fn extract_by_patterns(text: &str) -> Vec<ExtractedEntity> {
     // IPv6 extraction. The candidate regex over-matches (hex + colons), so every
     // hit is gated hard before it is trusted:
     //   1. at least two colons — an IPv6 address always has them;
-    //   2. no ALPHABETIC neighbour — an adjacent letter means the run was carved
-    //      out of a larger word (the `d::` inside `std::vector`, `::ba` in
-    //      `foo::bar`); the maximal run already guarantees the neighbour is not
-    //      hex/colon, so a letter there is the giveaway;
+    //   2. no ALPHABETIC neighbour (any script, via `char::is_alphabetic`) — an
+    //      adjacent letter means the run was carved out of a larger word (the
+    //      `d::` inside `std::vector`, `::ba` in `foo::bar`, or an address glued
+    //      to a multibyte word like `café2001:db8::1`); the maximal run already
+    //      guarantees the neighbour is not hex/colon, so a letter is the giveaway;
     //   3. it must parse via `Ipv6Addr::from_str` — this rejects MAC addresses
     //      (`01:23:…`, 6 groups, no `::`), `12:34:56` clock times, and malformed
     //      groups outright;
@@ -104,15 +105,11 @@ pub fn extract_by_patterns(text: &str) -> Vec<ExtractedEntity> {
         if value.bytes().filter(|&b| b == b':').count() < 2 {
             continue;
         }
-        let clipped_from_word = text[..cap.start()]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_ascii_alphabetic())
-            || text[cap.end()..]
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_alphabetic());
-        if clipped_from_word {
+        let before = text[..cap.start()].chars().next_back();
+        let after = text[cap.end()..].chars().next();
+        if matches!(before, Some(c) if c.is_alphabetic())
+            || matches!(after, Some(c) if c.is_alphabetic())
+        {
             continue;
         }
         let Ok(addr) = value.parse::<Ipv6Addr>() else {
@@ -344,6 +341,8 @@ mod tests {
             "mac 01:23:45:67:89:ab",
             "meeting at 12:34:56 today",
             "loop ::1 and :: unspecified",
+            // Glued to a multibyte word — rejected by the Unicode-aware boundary.
+            "café2001:db8::1",
         ] {
             let hits = extract_by_patterns(text);
             assert!(
