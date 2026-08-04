@@ -583,7 +583,16 @@ fn records_for_type(
                                     let addr = addr.trim();
                                     // May have `!size` suffix: `dmarc@example.com!10m`.
                                     let addr = addr.split('!').next().unwrap_or(addr).trim();
-                                    if addr.contains('@') && seen.insert(format!("dmarc:{addr}")) {
+                                    // A role local-part or provider-domain rua/ruf
+                                    // address (`hostmaster@`, a third-party DMARC
+                                    // service) is infrastructure contact, not the
+                                    // subject's own mail — same gate dns_intel's
+                                    // parallel (non-DoH) DMARC parser already
+                                    // applies to `dmarc.report_addresses()`.
+                                    if addr.contains('@')
+                                        && !crate::util::domains::is_infrastructure_email(addr)
+                                        && seen.insert(format!("dmarc:{addr}"))
+                                    {
                                         let mut e = Entity::new(
                                             EntityKind::Email,
                                             addr,
@@ -649,10 +658,15 @@ fn records_for_type(
                         );
                         out.push(e);
                     }
-                    // Zone admin email from RNAME.
+                    // Zone admin email from RNAME. A role local-part
+                    // (`hostmaster@`, the RFC 1035 §3.3.13 convention itself) or
+                    // provider-domain address is infrastructure contact, not the
+                    // subject's own mail — same gate dns_intel's parallel
+                    // (non-DoH) SOA handler already applies.
                     let rname = parts[1].trim_end_matches('.');
                     if let Some(email) = soa_rname_to_email(rname)
                         && email.contains('@')
+                        && !crate::util::domains::is_infrastructure_email(&email)
                         && seen.insert(format!("soa-email:{}", email.to_ascii_lowercase()))
                     {
                         let mut e =

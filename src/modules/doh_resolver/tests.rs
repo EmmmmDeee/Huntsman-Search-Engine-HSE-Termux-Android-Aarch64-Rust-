@@ -373,8 +373,11 @@ fn soa_rname_single_label_returns_none() {
 
 #[test]
 fn soa_record_extracts_primary_ns_and_zone_admin_email() {
-    // SOA RDATA: `mname rname serial refresh retry expire minimum`
-    let data = "ns1.example.com. hostmaster.example.com. 2024010101 3600 900 604800 300";
+    // SOA RDATA: `mname rname serial refresh retry expire minimum`.
+    // Non-role rname deliberately — "hostmaster" (RFC 1035 §3.3.13's own
+    // convention) is a role local-part and would now be suppressed; see
+    // `soa_suppresses_role_local_part_zone_admin_email` below.
+    let data = "ns1.example.com. dnsops.example.com. 2024010101 3600 900 604800 300";
     let records = vec![rec_typed(6, "example.com.", data)];
     let mut seen = HashSet::new();
     let out = records_for_type("SOA", &records, "example.com", &mut seen, "s");
@@ -393,8 +396,29 @@ fn soa_record_extracts_primary_ns_and_zone_admin_email() {
         .iter()
         .find(|e| e.kind == EntityKind::Email)
         .expect("should succeed");
-    assert_eq!(email.value, "hostmaster@example.com");
+    assert_eq!(email.value, "dnsops@example.com");
     assert!(email.has_tag("soa") && email.has_tag("zone-admin"));
+}
+
+#[test]
+fn soa_suppresses_role_local_part_zone_admin_email() {
+    // Regression test for the audit finding (role-mailbox-as-pii): a SOA
+    // RNAME using the RFC 1035 §3.3.13 `hostmaster.` convention is
+    // infrastructure contact, not the subject's own mail — the same gate
+    // dns_intel's parallel (non-DoH) SOA handler already applies.
+    let data = "ns1.example.com. hostmaster.example.com. 2024010101 3600 900 604800 300";
+    let records = vec![rec_typed(6, "example.com.", data)];
+    let mut seen = HashSet::new();
+    let out = records_for_type("SOA", &records, "example.com", &mut seen, "s");
+    assert!(
+        !out.iter().any(|e| e.kind == EntityKind::Email),
+        "a role-local-part SOA RNAME must not surface as an Email entity"
+    );
+    assert!(
+        out.iter()
+            .any(|e| e.kind == EntityKind::Domain && e.value == "ns1.example.com"),
+        "the primary nameserver is unaffected"
+    );
 }
 
 #[test]
@@ -417,6 +441,22 @@ fn dmarc_txt_extracts_rua_and_ruf_reporting_addresses() {
     for e in out.iter().filter(|e| e.kind == EntityKind::Email) {
         assert!(e.has_tag("dmarc-reporting"));
     }
+}
+
+#[test]
+fn dmarc_suppresses_role_local_part_reporting_address() {
+    // Regression test for the audit finding (role-mailbox-as-pii): a DMARC
+    // rua/ruf reporting address on a role local-part (`hostmaster@`) or an
+    // INFRA_MAIL-listed domain (google.com) is infrastructure contact, not
+    // the subject's own mail — the same gate dns_intel's parallel (non-DoH)
+    // DMARC parser already applies via `dmarc.report_addresses()`.
+    let txt =
+        "v=DMARC1; p=reject; rua=mailto:hostmaster@example.com; ruf=mailto:reports@google.com";
+    let out = run("TXT", &[txt]);
+    assert!(
+        !out.iter().any(|e| e.kind == EntityKind::Email),
+        "role-local-part / infra-mail-domain DMARC reporting addresses must not surface"
+    );
 }
 
 // ── CAA (RFC 8659, type 257) ────────────────────────────────────────────────

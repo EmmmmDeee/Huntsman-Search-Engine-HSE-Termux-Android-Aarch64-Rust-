@@ -228,8 +228,27 @@ pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
     let count = |k: &str| entities.iter().filter(|e| e.kind == k).count();
 
     // ── 1. Infrastructure pollution ──────────────────────────────────────────
+    // A domain a DNS-recon module (dns_intel / doh_resolver) already labelled
+    // `ns` / `mx` / `soa` / `nameserver` is a correctly-attributed
+    // infrastructure FACT about the subject's own zone — the module told the
+    // truth about what it found and tagged it accordingly. That is different
+    // from the misattribution this rule exists to catch: a provider's OWN
+    // estate (a CDN edge IP, a registrar's abuse desk, a co-hosted mega-domain)
+    // silently entering the graph as if it were the subject's. Only the
+    // latter is "pollution" — flagging the former as well would tell an
+    // operator to suppress their own scan's nameserver/MX records.
+    const KNOWN_ZONE_RECORD_TAGS: &[&str] = &["ns", "mx", "soa", "nameserver"];
     let mut infra: Vec<String> = Vec::new();
     for e in entities {
+        if e.kind == "domain"
+            && e.tags.iter().any(|t| {
+                KNOWN_ZONE_RECORD_TAGS
+                    .iter()
+                    .any(|k| t.eq_ignore_ascii_case(k))
+            })
+        {
+            continue;
+        }
         let hit = match e.kind.as_str() {
             "ip_address" => crate::core::validation::is_cdn_edge_ip(&e.value),
             "domain" => crate::core::scan::is_noncentral_domain(&e.value),
@@ -260,7 +279,9 @@ pub fn audit(all_entities: &[AuditEntity], log: LogSignals) -> AuditReport {
             examples: examples(infra),
             recommendation: "Exclude these from expansion and correlation \
                 (is_cdn_edge_ip / is_noncentral_domain / is_infrastructure_email already gate \
-                them in the engine — investigate the module that emitted each one)."
+                them in the engine — investigate the module that emitted each one). A domain \
+                already tagged ns/mx/soa/nameserver is excluded from this finding: it is a \
+                correctly-attributed record of the subject's own zone, not a misattribution."
                 .into(),
         });
     }

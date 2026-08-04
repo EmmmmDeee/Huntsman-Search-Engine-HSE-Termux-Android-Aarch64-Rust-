@@ -290,7 +290,14 @@ fn build_abuse_email(contacts: &[RdapContact], ip: &str, scan_id: &str) -> Optio
     let vc = find_contact(contacts, "abuse")?.vcard_array.as_ref()?;
     let email = crate::modules::whois::vcard_field(vc, "email")?;
     let email = email.trim();
-    if !crate::util::extract::looks_like_email(email) {
+    // An RDAP abuse contact resolves to a registrar/provider desk by
+    // construction, but it is still free-text-sourced — a role-local-part or
+    // provider-domain address (hostmaster@, dns@cloudflare.com) is
+    // infrastructure contact, never the subject's own mail. Same gate
+    // whois/dns_intel already apply to their own abuse/admin contacts.
+    if !crate::util::extract::looks_like_email(email)
+        || crate::util::domains::is_infrastructure_email(email)
+    {
         return None;
     }
     let mut ee = Entity::new(EntityKind::Email, email, confidence::STRONG, scan_id);
@@ -466,7 +473,10 @@ fn contact_emails(
     emails
         .unwrap_or_default()
         .iter()
-        .filter(|email| crate::util::extract::looks_like_email(email))
+        .filter(|email| {
+            crate::util::extract::looks_like_email(email)
+                && !crate::util::domains::is_infrastructure_email(email)
+        })
         .map(|email| {
             let mut e = Entity::new(
                 EntityKind::Email,
