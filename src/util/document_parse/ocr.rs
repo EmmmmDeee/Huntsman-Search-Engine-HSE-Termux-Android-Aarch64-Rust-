@@ -34,8 +34,18 @@ async fn run_bounded(mut cmd: Command, timeout_secs: u64) -> DocumentResult<Outp
         }
     };
     output.map_err(|e| {
-        warn!("tesseract execution failed: {}", e);
-        DocumentParseError::OcrUnavailable
+        // Only a genuinely absent binary is `OcrUnavailable` — that variant's
+        // message asserts "tesseract missing" and must stay true wherever it is
+        // shown. Permission denied, ENOMEM, a broken interpreter and the rest
+        // are real, actionable, and different from "not installed", so the
+        // underlying error is carried through instead of being flattened.
+        if e.kind() == std::io::ErrorKind::NotFound {
+            warn!("tesseract vanished between the probe and the spawn");
+            DocumentParseError::OcrUnavailable
+        } else {
+            warn!("tesseract execution failed: {}", e);
+            DocumentParseError::IoError(e)
+        }
     })
 }
 
@@ -75,8 +85,12 @@ pub async fn ocr_image<P: AsRef<Path>>(
     let output = run_bounded(cmd, timeout_secs).await?;
 
     if !output.status.success() {
-        warn!("tesseract returned non-zero exit code");
-        return Err(DocumentParseError::OcrUnavailable);
+        // Tesseract is installed and ran; it rejected this input. Reporting
+        // that as "tesseract missing" would send an operator to install a
+        // package they already have.
+        let code = output.status.code();
+        warn!(?code, "tesseract returned a failure exit status");
+        return Err(DocumentParseError::OcrFailed { code });
     }
 
     let text = String::from_utf8(output.stdout)?;
@@ -130,10 +144,10 @@ mod tests {
     #[tokio::test]
     async fn a_command_that_overruns_is_reported_as_a_timeout() {
         let mut cmd = Command::new("sleep");
-        cmd.arg("30");
+        cmd.arg("5");
         let err = run_bounded(cmd, 1)
             .await
-            .expect_err("a 30s sleep must not finish within a 1s budget");
+            .expect_err("a 5s sleep must not finish within a 1s budget");
         assert!(
             matches!(err, DocumentParseError::OcrTimeout { secs: 1 }),
             "a hang must surface as OcrTimeout carrying the budget, not as \
@@ -148,6 +162,34 @@ mod tests {
             .await
             .expect("`true` must complete well inside a 30s budget");
         assert!(out.status.success());
+    }
+
+    /// Only an absent binary may be reported as "tesseract missing".
+    ///
+    /// `OcrUnavailable`'s message asserts that, so every other failure has to
+    /// stay distinguishable: a spawn error carries its `io::Error`, and a
+    /// process that ran and exited non-zero is not a spawn failure at all — it
+    /// returns a completed `Output` the caller classifies as `OcrFailed`.
+    /// Flattening those into "missing" would send an operator to install a
+    /// package they already have.
+    #[tokio::test]
+    async fn only_an_absent_binary_is_reported_as_missing() {
+        let err = run_bounded(Command::new("hse-no-such-binary-should-exist-xyz"), 30)
+            .await
+            .expect_err("a missing binary must fail");
+        assert!(
+            matches!(err, DocumentParseError::OcrUnavailable),
+            "an absent binary is the one case that may claim 'missing' — got {err:?}"
+        );
+
+        let out = run_bounded(Command::new("false"), 30)
+            .await
+            .expect("`false` spawns fine; it merely exits non-zero");
+        assert!(
+            !out.status.success(),
+            "the failing exit status must reach the caller intact, so it can be \
+             reported as OcrFailed rather than as a missing binary"
+        );
     }
 
     /// Zero means "no bound" — a caller that never considered the timeout must
