@@ -9,13 +9,14 @@
     "",
     "CONCURRENCY: two automated sessions ran this loop at the same time on",
     "separate branches and both wrote this file, with different schemas and",
-    "overlapping slot numbers. They were merged as a union, not reconciled into",
-    "one sequence — `cycle_1_slots` below is the other session's run, and",
+    "overlapping slot numbers. They are merged as a union, not reconciled into",
+    "one sequence — the cycle_N_slots lists are the other session's run, and",
     "`concurrent_session_runs` is this branch's. A future cycle should pick ONE",
-    "shape before adding to either, or every merge from main will conflict here."
+    "shape before adding to either, or every merge from main will conflict here.",
+    "The resolution is scripted: .agent/merge_state.py."
   ],
-  "cycle_count": 1,
-  "last_verified_commit": "1cc9219c",
+  "cycle_count": 2,
+  "last_verified_commit": "4111299e",
   "verified_against": {
     "note": "This crate declares NO [features]; `--all-features` is a no-op here. The authoritative gate is scripts/gate.sh, which spans several workflow files and includes the rustdoc-lint and MSRV passes that reconstructing from ci.yml alone drops.",
     "toolchain": "1.97.1 (rust-toolchain.toml)",
@@ -43,6 +44,13 @@
       "slot": 3,
       "outcome": "oathnet door-guard completeness. Copilot's finding on #362 confirmed against source. #363 landed the equivalent code fix in parallel, so #364 narrowed to what #363 shipped without: the pinning test, a fix for a pre-existing test-suite race (reset_budget clears RESPONSE_CACHE, racing the cache tests), and the rate-limit misdiagnosis #363's change made reachable.",
       "commit": "0b281b8b"
+    },
+    {
+      "cycle": 1,
+      "slot": "all",
+      "category": "DEBUG/HARDENING/COMPLETION/UPGRADE/GAP-ANALYSIS",
+      "outcome": "Cycle 1 landed whole in 4111299e: oathnet rate-limit misdiagnosis, ingest fuzz target, chess_profile recovery, MSRV drift ratchet, DbWriter backlog disclosure.",
+      "commit": "4111299e"
     }
   ],
   "cycle_1_slots": [
@@ -50,7 +58,7 @@
       "slot": 1,
       "category": "DEBUG",
       "instruction": "Drive PR #364 to green and merge it.",
-      "status": "CI-bound"
+      "status": "COMPLETE — PR #364 merged, squashed to main as 4111299e, 6/6 CI green."
     },
     {
       "slot": 2,
@@ -102,6 +110,26 @@
       "cycle": 1
     },
     {
+      "candidate": "Audit the ~252 `let _ =` result-swallowing sites",
+      "reason": "Measured all 233 on non-test paths. 175 are `let _ = writeln!/write!` to stdout (a broken pipe is not actionable and panicking on it is worse); 23 are inside inline #[cfg(test)] modules; 6 are bus/oneshot sends that fail only when no receiver exists; 5 are the deliberate discards in fuzz_entry_parse_der. Of the ~17 filesystem/process operations, exactly ONE was a real defect — the create_dir_private chain, fixed as cycle 2 slot 1 — plus one minor silent write fixed as slot 3.",
+      "cycle": 2
+    },
+    {
+      "candidate": "Audit the 20 statement-position `.ok();` sites",
+      "reason": "Zero of 20 are Result-swallowing. 13 are `remove_dir_all().ok()` test cleanup inside data_log.rs's inline test module (cfg(test) begins at line 306 of 623); the remaining 7 bind an Option that is then used. The grep pattern `\\.ok();$` was matching the last line of multi-line expressions whose value IS bound.",
+      "cycle": 2
+    },
+    {
+      "candidate": "OD-3 — wire benches into CI so perf regressions are visible",
+      "reason": "Premise was wrong, verified empirically: `cargo check --all-targets --locked` — which ci.yml's check job already runs — DOES compile both benches (confirmed by touching them and watching the rebuild; `--lib` does not). So they are already guarded against perf-path API drift, exactly as CLAUDE.md states. What is genuinely absent is EXECUTING them for regression detection, and that is not a defensible increment on shared GitHub-hosted runners: Criterion variance there is large enough that a threshold gate produces false failures — the same \"gate that passes while measuring the wrong thing\" failure mode cycle 1 slot 4 existed to remove. Needs dedicated hardware or a statistical baseline, not a workflow line.",
+      "cycle": 2
+    },
+    {
+      "candidate": "Add rustdoc to the 240 undocumented public items",
+      "reason": "Measured 240 of 1252 top-level pub items without a preceding doc/attr line. Deprioritised rather than rejected outright: this crate is `publish = false` and its lib is never consumed as an external API (see the crate-root doc comment), so the readers are the maintainers, who already have the architecture docs and the running binary as reference. Bulk-documenting self-evident items would add noise faster than signal. Worth revisiting as a targeted `missing_docs` lint on core/ and util/ only.",
+      "cycle": 2
+    },
+    {
       "candidate": "Deduplicate tower-http 0.6.11 vs 0.7.0",
       "reason": "0.6.11 is pulled transitively by axum 0.8; the direct dependency is already 0.7. Cannot be resolved without an upstream axum bump. Out of this crate's control.",
       "source_branch": "claude/huntsman-price-analysis-ewy20t"
@@ -126,7 +154,7 @@
     {
       "id": "OD-3",
       "summary": "benches/correlation_pass.rs and benches/scan_throughput.rs compile under `cargo check --all-targets` but no workflow ever executes them, so performance regressions are invisible.",
-      "status": "open"
+      "status": "CLOSED cycle 2 as REJECTED — benches ARE compiled by CI. See rejected_candidates."
     },
     {
       "id": "OD-4",
@@ -137,6 +165,11 @@
       "id": "OD-5",
       "summary": "PR #317 carries 4 modules absent from main (builtwith, fofa, proxycurl, key_discovery) behind 11 conflicts and ~20k lines of two-way divergence, with CI never having run on it.",
       "status": "open, decomposition plan recorded on the PR"
+    },
+    {
+      "id": "OD-6",
+      "summary": "util::atomic_file::create_dir_private previously returned Ok(()) for a pre-existing directory it could not chmod to 0700, because DirBuilder::recursive(true) succeeds on an existing dir and the repairing set_permissions was discarded. Its own doc claimed a 0700 guarantee it did not deliver, and key_vault.db / key_pool.json live beneath that directory.",
+      "status": "CLOSED cycle 2 slot 1 — the achieved mode is now verified and a failure is disclosed at warn!, with the Ok contract deliberately unchanged so the infallible path accessors still return a usable PathBuf."
     },
     {
       "id": "PA-2",
@@ -155,6 +188,38 @@
       "summary": "src/util/ahmia/mod.rs:25 doc-comment asserts 'See SECURITY.md: HSE is defensive-only', which now contradicts the maintainer's edited SECURITY.md scope ('all forms (offensive and defensive)'). CLAUDE.md also still states defensive-only and cites SECURITY.md as the authority.",
       "status": "open — policy question deliberately NOT resolved unilaterally; raised with maintainer twice. Slot 1 fixed only the objective corruption, not the policy.",
       "source_branch": "claude/huntsman-price-analysis-ewy20t"
+    }
+  ],
+  "cycle_2_slots": [
+    {
+      "slot": 1,
+      "category": "HARDENING",
+      "instruction": "create_dir_private must not report Ok for a directory it failed to make private; verify the achieved mode and disclose.",
+      "status": "COMPLETE"
+    },
+    {
+      "slot": 2,
+      "category": "GAP-ANALYSIS",
+      "instruction": "Close the result-swallowing audit with a per-class verdict.",
+      "status": "COMPLETE — 233 non-test sites classified; exactly ONE real defect (the create_dir_private chain, slot 1) plus one minor silent write (capability_probe). The rest are justified."
+    },
+    {
+      "slot": 3,
+      "category": "DEBUG",
+      "instruction": "Disclose the silent drift-map write in selftest::capability_probe::record_confirmed_drift_at.",
+      "status": "COMPLETE — re-resolved after the original slot 3 (data_log rotation) was aborted as a non-defect."
+    },
+    {
+      "slot": 4,
+      "category": "UPGRADE",
+      "instruction": "OD-3 — wire the Criterion benches into CI.",
+      "status": "ABORTED — the premise was false. See rejected_candidates."
+    },
+    {
+      "slot": 5,
+      "category": "COMPLETION",
+      "instruction": "Extract one self-contained module from PR #317 onto current main (OD-5).",
+      "status": "NOT STARTED — carried to cycle 3. The largest remaining item and deliberately not rushed."
     }
   ],
   "concurrent_session_runs": [
