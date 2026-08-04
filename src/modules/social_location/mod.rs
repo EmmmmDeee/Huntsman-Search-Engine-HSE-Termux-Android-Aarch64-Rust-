@@ -133,7 +133,7 @@ impl Module for SocialLocation {
                     let mut c = Entity::new(
                         EntityKind::Coordinates,
                         &coord_val,
-                        conf - 0.10,
+                        confidence::derived_from(conf),
                         &ctx.scan_id,
                     );
                     c.tag("addr-derived");

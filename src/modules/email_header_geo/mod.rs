@@ -115,7 +115,7 @@ impl Module for EmailHeaderGeo {
                 let mut c = Entity::new(
                     EntityKind::Coordinates,
                     &coord_val,
-                    geo.confidence - 0.10,
+                    confidence::derived_from(geo.confidence),
                     &ctx.scan_id,
                 );
                 c.tag("addr-derived");

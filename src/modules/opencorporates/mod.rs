@@ -95,7 +95,7 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
         entity.tag("dissolved");
         // A dissolved company is less likely to be the current operating entity;
         // pull confidence down slightly so live entities rank above it.
-        entity.confidence = (entity.confidence - 0.10).max(0.10);
+        entity.confidence = confidence::derived_from(entity.confidence);
     }
 
     let mut ev = [
