@@ -8,7 +8,7 @@
     "non-defects. See CLAUDE.md and docs/OPERATIONAL_CONSTITUTION.md."
   ],
   "cycle_count": 1,
-  "last_verified_commit": "07aba65d",
+  "last_verified_commit": "pending-slot5",
   "verified_against": {
     "note": "This crate declares NO [features]; `--all-features` is a no-op here. The authoritative gate is scripts/gate.sh, which spans several workflow files and includes the rustdoc-lint and MSRV passes that reconstructing from ci.yml alone drops.",
     "toolchain": "1.97.1 (rust-toolchain.toml)",
@@ -67,7 +67,7 @@
       "slot": 5,
       "category": "GAP-ANALYSIS",
       "instruction": "Decide and record the DbWriter unbounded-channel question (OD-1).",
-      "status": "pending"
+      "status": "COMPLETE \u2014 DECIDED: keep the channel unbounded, and disclose a pathological backlog. Bounding it would force try_send (drops events, breaking the flush() contract) or an async submit() at a sync engine call site. The queue is also already bounded in practice by DEFAULT_MAX_ENTITIES=2500 and the wall-time watchdog. The real defect was that a storage stall was INVISIBLE, so writer_loop now discloses queue depth past BACKLOG_WARN_EVENTS=1024 with hysteresis at half."
     }
   ],
   "observations": [
@@ -98,8 +98,7 @@
     {
       "id": "OD-1",
       "summary": "DbWriter uses mpsc::unbounded_channel (src/core/engine/writer.rs:39). If event production outpaces sqlite batch writes the queue grows without bound, on a platform whose whole point is a memory-constrained no-root Android device. Exposure INCREASED when #315 raised DEFAULT_SCAN_DEPTH 3->5, since more rounds means more events.",
-      "status": "measured, not yet fixed",
-      "note": "Bounding it is not free: submit() is currently infallible and non-blocking, so a bounded channel forces either a drop (silently losing the event log the flush() barrier exists to guarantee) or an async submit (call-site change). Needs a deliberate decision, not a reflex."
+      "status": "CLOSED cycle 1 slot 5 \u2014 resolved as a disclosure, not a bound. See src/core/engine/writer.rs module docs for why unbounded is correct here and what actually bounds it."
     },
     {
       "id": "OD-2",
