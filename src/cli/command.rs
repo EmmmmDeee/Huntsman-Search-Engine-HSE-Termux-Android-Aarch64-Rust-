@@ -76,20 +76,20 @@ pub enum Command {
         timeout: Option<u64>,
         /// Recursive expansion depth. 0 = single round; 1+ auto-feeds discovered
         /// entities back as new scan targets, up to N rounds deep. Omit to use
-        /// the comprehensive product default (MAX_DEPTH = 3); `--auto` overrides an
-        /// omitted value.
+        /// the comprehensive product default (DEFAULT_SCAN_DEPTH = 3, below the
+        /// MAX_DEPTH = 5 ceiling); `--auto` overrides an omitted value.
         #[arg(short, long)]
         depth: Option<u32>,
-        /// Shorthand for deep recursive expansion: pins depth to MAX_DEPTH (3) and
-        /// clamps the expansion floor to ≤0.40. With the comprehensive default
-        /// (depth 3, floor 0.20) this now matches the default; kept for explicitness
+        /// Shorthand for deep recursive expansion: pins depth to the MAX_DEPTH (5)
+        /// ceiling and clamps the expansion floor to ≤0.40 — two hops deeper than
+        /// the comprehensive default (depth 3, floor 0.20). Kept for explicitness
         /// and for use alongside a raised `--min-expand-confidence`. Overridden by
         /// an explicit --depth.
         #[arg(short = 'R', long)]
         recursive: bool,
         /// COMPLETE scan — the no-compromise preset. Auto-detects the seed kind,
         /// runs EVERY module (overrides --free-only/--passive-only/--modules),
-        /// expands to MAX_DEPTH (3) at the Probable floor, and disables ROI
+        /// expands to MAX_DEPTH (5) at the Probable floor, and disables ROI
         /// pruning so nothing is skipped. The single "get everything" option.
         #[arg(
             short = 'F',
