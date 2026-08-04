@@ -831,7 +831,13 @@ impl Module for DohResolver {
         // indistinguishable from a real negative. On Termux this is the primary
         // transport precisely because the system resolver is often blocked, so an
         // operator reading a dossier needs to know DNS itself did not answer.
-        if dns_wholly_unreachable(&outcomes) {
+        // Cancellation is NOT an outage. A cancelled scan aborts in-flight
+        // requests, which surfaces as `Unreachable`, so a scan cancelled after one
+        // unreachable query would otherwise be reported as "DNS never answered" —
+        // misattributing the operator's own stop (or the wall-time watchdog) to
+        // the network. The zero-query case is already excluded inside
+        // `dns_wholly_unreachable`; this covers the partial-then-cancelled case.
+        if !ctx.cancel.is_cancelled() && dns_wholly_unreachable(&outcomes) {
             return Err(crate::core::error::Error::module(
                 SRC,
                 format!(
@@ -859,9 +865,14 @@ impl Module for DohResolver {
 /// on Termux the DoH path is the primary transport precisely because the system
 /// resolver is often blocked, so the outage case is common rather than exotic.
 enum DohOutcome {
-    /// A provider answered. The records are that answer, empty or not — a
-    /// non-zero DNS status (NXDOMAIN, SERVFAIL from the authority) is still an
-    /// answer, and still means "no records", not "no resolver".
+    /// A provider RESOLVED the name. Either `NOERROR` with the answer, or
+    /// `NXDOMAIN` — an authoritative statement that the name does not exist,
+    /// which is a genuine negative and correctly carries zero records.
+    ///
+    /// `SERVFAIL`/`REFUSED`/`FORMERR` are deliberately NOT this: they are the
+    /// resolver failing to answer, not proof of absence, and treating them as an
+    /// empty answer would recreate the exact conflation this type exists to
+    /// prevent, one layer down.
     Answered(Vec<DohRecord>),
     /// Neither Cloudflare nor Google could be reached, or neither reply decoded.
     /// Nothing was established about the domain.
@@ -897,6 +908,25 @@ fn dns_wholly_unreachable(outcomes: &[DohOutcome]) -> bool {
             .all(|o| matches!(o, DohOutcome::Unreachable))
 }
 
+/// A decoded DoH reply's DNS `Status`, classified into "the resolver answered"
+/// versus "the resolver failed to answer".
+///
+/// `NOERROR` (0) carries the records. `NXDOMAIN` (3) is an authoritative
+/// negative — the name does not exist — so it resolves with zero records and
+/// needs no failover. Everything else (`SERVFAIL` 2, `REFUSED` 5, `FORMERR` 1,
+/// …) is the resolver failing, NOT a negative existence proof: those must fall
+/// through to the second provider, exactly as the pre-`DohOutcome` code did via
+/// its `&& data.status == 0` guard.
+///
+/// Pure, so the classification is unit-testable without a resolver.
+fn classify_status(status: i32, answer: Vec<DohRecord>) -> Option<Vec<DohRecord>> {
+    match status {
+        0 => Some(answer),
+        3 => Some(Vec::new()),
+        _ => None,
+    }
+}
+
 async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> DohOutcome {
     let cf_url = format!("https://cloudflare-dns.com/dns-query?name={domain}&type={rtype}");
     let resp = http
@@ -907,15 +937,9 @@ async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> DohOutc
         .await;
     if let Ok(r) = resp
         && let Ok(data) = crate::util::http::json_decode::<DohResp>(SRC, r).await
+        && let Some(records) = classify_status(data.status, data.answer)
     {
-        // A decoded reply is an ANSWER even when `status != 0`: the resolver was
-        // reached and reported NXDOMAIN/SERVFAIL. Only the non-zero-status answer
-        // carries no records, which `records()` already represents.
-        return DohOutcome::Answered(if data.status == 0 {
-            data.answer
-        } else {
-            Vec::new()
-        });
+        return DohOutcome::Answered(records);
     }
     let google_url = format!("https://dns.google/resolve?name={domain}&type={rtype}");
     let resp = http
@@ -925,12 +949,9 @@ async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> DohOutc
         .await;
     if let Ok(r) = resp
         && let Ok(data) = crate::util::http::json_decode::<DohResp>(SRC, r).await
+        && let Some(records) = classify_status(data.status, data.answer)
     {
-        return DohOutcome::Answered(if data.status == 0 {
-            data.answer
-        } else {
-            Vec::new()
-        });
+        return DohOutcome::Answered(records);
     }
     DohOutcome::Unreachable
 }

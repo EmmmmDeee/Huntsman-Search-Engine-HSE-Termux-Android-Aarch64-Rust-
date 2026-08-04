@@ -626,3 +626,58 @@ fn an_unreachable_resolver_is_not_the_same_as_a_domain_with_no_records() {
     assert!(DohOutcome::Unreachable.records().is_empty());
     assert!(DohOutcome::Answered(Vec::new()).records().is_empty());
 }
+
+/// A resolver FAILING to answer is not a domain having no records — and it must
+/// still fail over to the second provider.
+///
+/// Both findings came from the review on #316, and the second exposed a
+/// regression introduced by the first version of that PR. Before it, the guard
+/// was `... && data.status == 0`, so a SERVFAIL from Cloudflare fell through to
+/// Google. Moving that check inside the return made ANY decodable reply
+/// short-circuit, so a single SERVFAIL silently disabled the Google fallback —
+/// removing exactly the redundancy this module exists to provide on Termux,
+/// where the port-53 transport is frequently blocked.
+///
+/// `classify_status` restores it: only a resolved reply short-circuits.
+#[test]
+fn a_resolver_failure_is_not_a_negative_and_must_fail_over() {
+    use super::classify_status;
+
+    let rec = || super::DohRecord {
+        name: "example.com".to_string(),
+        rtype: 1,
+        data: "93.184.216.34".to_string(),
+    };
+
+    // NOERROR carries the answer through.
+    let got = classify_status(0, vec![rec()]).expect("NOERROR resolves");
+    assert_eq!(got.len(), 1, "NOERROR must carry its records");
+
+    // NOERROR with no answer is a real negative: the type has no records.
+    assert!(
+        classify_status(0, Vec::new())
+            .expect("NOERROR resolves")
+            .is_empty(),
+        "NOERROR with no answer is a genuine empty result"
+    );
+
+    // NXDOMAIN is an AUTHORITATIVE negative — the name does not exist. It
+    // resolves, with zero records, and needs no failover.
+    assert!(
+        classify_status(3, Vec::new())
+            .expect("NXDOMAIN resolves")
+            .is_empty(),
+        "NXDOMAIN is a negative existence proof, not a resolver failure"
+    );
+
+    // SERVFAIL / REFUSED / FORMERR are the resolver failing to answer. They are
+    // NOT proof of absence and MUST fall through to the other provider — `None`
+    // is what makes the `&& let Some(..)` guard continue to the Google arm.
+    for status in [1, 2, 5, 9, 16] {
+        assert!(
+            classify_status(status, Vec::new()).is_none(),
+            "DNS status {status} is a resolver failure and must fail over, \
+             not be reported as 'no records'"
+        );
+    }
+}
