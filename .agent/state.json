@@ -41,7 +41,7 @@
   "cycle_1_slots": [
     { "slot": 1, "category": "DEBUG", "instruction": "Drive PR #364 to green and merge it.", "status": "CI-bound" },
     { "slot": 2, "category": "HARDENING", "instruction": "Add a cargo-fuzz target for the util::entity_extractor ingest path and register it in fuzz.yml.", "status": "COMPLETE" },
-    { "slot": 3, "category": "COMPLETION", "instruction": "Port chess_profile from the closed #305 branch (780e369c) onto current main.", "status": "pending" },
+    { "slot": 3, "category": "COMPLETION", "instruction": "Port chess_profile from the closed #305 branch (780e369c) onto current main.", "status": "COMPLETE — needed ZERO source adaptation; the API it was written against (fetch_json_or_404, urlencode, confidence::HIGH_PLUSPLUS_PLUS, core::tags, the Module trait) is unchanged in main. Only registration + the README/API-reference counts the architecture ratchet enforces. Registry 170 -> 171." },
     { "slot": 4, "category": "UPGRADE", "instruction": "Collapse the MSRV triplication in ci.yml to one source of truth.", "status": "pending" },
     { "slot": 5, "category": "GAP-ANALYSIS", "instruction": "Decide and record the DbWriter unbounded-channel question (OD-1).", "status": "pending" }
   ],
