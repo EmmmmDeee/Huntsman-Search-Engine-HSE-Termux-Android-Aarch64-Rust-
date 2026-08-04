@@ -1,4 +1,4 @@
-# Security Policy
+⁸# Security Policy
 
 ## Supported versions
 
@@ -16,10 +16,4 @@ within a few business days and to coordinate disclosure responsibly.
 ## Scope and responsible use
 
 Huntsman Search Engine is an OSINT/GEOINT and breach-intelligence tool intended
-for **authorised use only** — security testing, fraud prevention, due
-diligence, and investigations conducted with a lawful basis. Processing
-personal data without a lawful basis, or using the tool to harass or surveil
-individuals, is outside its intended use and may be unlawful under the
-Australian *Privacy Act 1988*, the EU GDPR, or your local equivalent. The
-maintainers provide the software for legitimate use and disclaim responsibility
-for misuse.
+for **authorised use only** — security, MITRE attack, testing, fraud, diligence, offensive, etc. 
