@@ -396,7 +396,7 @@ pub enum Command {
         #[arg(short, long, default_value = "table")]
         output: String,
     },
-    /// Parse documents (image/PDF/CSV/JSON/JSONL/text), extract entities (email, IPv4, domain, URL, social handle, MD5/SHA hashes),
+    /// Parse documents (image/PDF/CSV/JSON/JSONL/text), extract entities (email, IPv4, IPv6, domain, URL, social handle, MD5/SHA hashes),
     /// classify by kind, assign confidence scores, and output as HSE-ready batch queries (JSONL/JSON/CSV/table).
     Ingest {
         /// Input file path (image, PDF, CSV, JSON, JSONL, text).

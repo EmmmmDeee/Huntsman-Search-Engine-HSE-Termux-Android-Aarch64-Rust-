@@ -1,7 +1,7 @@
 //! Entity extraction: regex patterns, confidence scoring, kind classification.
 //!
 //! Extracts candidate entities from unstructured text (OCR, PDFs, etc.) with:
-//! - Pattern matching (email, IPv4, domain, URL, social handle, MD5/SHA hashes)
+//! - Pattern matching (email, IPv4, IPv6, domain, URL, social handle, MD5/SHA hashes)
 //! - Confidence scoring based on format validation + extraction method
 //! - Auto-kind classification via heuristics + JSON schema mapping
 

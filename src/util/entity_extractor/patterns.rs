@@ -6,18 +6,22 @@
 //! the social-handle matcher and the hex-hash classifier — neither is part of the
 //! core embedded-entity locator set.
 //!
-//! Extracted kinds: `Email`, `Ipv4`, `Domain`, `Url`, `SocialHandle`, and `Hash`
-//! (MD5 / SHA-1 / SHA-256 / SHA-512, distinguished by hex length). Phone, IPv6,
-//! username, person-name and license-ID locators were removed: each matched
-//! almost any digit run or capitalised word pair, so — without a validating
-//! parser to gate them — they emitted far more noise than signal. `EntityKind`
-//! still models those kinds; they reach the graph via caller hints and the core
-//! classifier, not via free-text regex here.
+//! Extracted kinds: `Email`, `Ipv4`, `Ipv6`, `Domain`, `Url`, `SocialHandle`, and
+//! `Hash` (MD5 / SHA-1 / SHA-256 / SHA-512, distinguished by hex length). IPv6 is
+//! **validated** through [`std::net::Ipv6Addr`] rather than trusted from the
+//! regex, so a deliberately loose candidate pattern can't leak `std::vector`-style
+//! `::`, MAC addresses or `12:34:56` clock times. Phone, username, person-name and
+//! license-ID locators stay removed: each matched almost any digit run or
+//! capitalised word pair and — unlike IPv6 — has no cheap validating parser to
+//! gate it, so it emitted far more noise than signal. `EntityKind` still models
+//! those kinds; they reach the graph via caller hints and the core classifier, not
+//! via free-text regex here.
 
 use super::{EntityKind, ExtractedEntity};
 use crate::util::str_util::char_window;
 use lazy_static::lazy_static;
 use regex::Regex;
+use std::net::Ipv6Addr;
 
 // Canonical locators from `core::classifier`. Re-exported under the legacy names
 // so existing call sites keep compiling after the duplicate regex definitions
@@ -30,6 +34,13 @@ pub use crate::core::classifier::URL_RE as URL_PATTERN;
 lazy_static! {
     // Social handle: @ + alphanumeric (Twitter, Instagram style)
     pub static ref SOCIAL_HANDLE: Regex = Regex::new(r"@[a-zA-Z0-9_]{1,30}").expect("valid social regex");
+
+    // IPv6 CANDIDATE: any run of hex digits and colons. Deliberately loose — it
+    // only has to *find* candidates; `extract_by_patterns` then validates each one
+    // through `Ipv6Addr::from_str` and a boundary check, so the regex never has to
+    // judge whether a run is a real address. (Single char class, no alternation →
+    // linear time, no ReDoS.)
+    pub static ref IPV6_CANDIDATE: Regex = Regex::new(r"[0-9A-Fa-f:]+").expect("valid ipv6 candidate regex");
 
     // One MAXIMAL run of hex digits, bounded by word boundaries so a hex run
     // embedded in a longer alphanumeric token is not carved out of it. The
@@ -72,6 +83,52 @@ pub fn extract_by_patterns(text: &str) -> Vec<ExtractedEntity> {
                 boost_reason: Some("Valid IPv4 range".to_string()),
             });
         }
+    }
+
+    // IPv6 extraction. The candidate regex over-matches (hex + colons), so every
+    // hit is gated hard before it is trusted:
+    //   1. at least two colons — an IPv6 address always has them;
+    //   2. no ALPHABETIC neighbour — an adjacent letter means the run was carved
+    //      out of a larger word (the `d::` inside `std::vector`, `::ba` in
+    //      `foo::bar`); the maximal run already guarantees the neighbour is not
+    //      hex/colon, so a letter there is the giveaway;
+    //   3. it must parse via `Ipv6Addr::from_str` — this rejects MAC addresses
+    //      (`01:23:…`, 6 groups, no `::`), `12:34:56` clock times, and malformed
+    //      groups outright;
+    //   4. it must not be the loopback (`::1`) or unspecified (`::`) address —
+    //      both are pure noise in prose (and `::` is rife in source code).
+    // What survives is a real RFC 4291 address, emitted in canonical compressed
+    // form so equivalent spellings deduplicate.
+    for cap in IPV6_CANDIDATE.find_iter(text) {
+        let value = cap.as_str();
+        if value.bytes().filter(|&b| b == b':').count() < 2 {
+            continue;
+        }
+        let clipped_from_word = text[..cap.start()]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+            || text[cap.end()..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic());
+        if clipped_from_word {
+            continue;
+        }
+        let Ok(addr) = value.parse::<Ipv6Addr>() else {
+            continue;
+        };
+        if addr.is_loopback() || addr.is_unspecified() {
+            continue;
+        }
+        entities.push(ExtractedEntity {
+            kind: EntityKind::Ipv6,
+            value: addr.to_string(), // canonical, lower-case compressed form
+            confidence: 0.88,
+            context: extract_context(text, cap.start()),
+            source_pattern: "ipv6_rfc4291".to_string(),
+            boost_reason: Some("Valid IPv6 address (std-parsed)".to_string()),
+        });
     }
 
     // Domain extraction
@@ -248,6 +305,52 @@ mod tests {
                 .any(|e| e.kind == EntityKind::Hash && e.source_pattern == "hash_sha512"),
             "SHA-512 not classified: {sha512_hits:?}"
         );
+    }
+
+    #[test]
+    fn extract_ipv6_valid_forms() {
+        // Compressed, fully-expanded (canonicalised on emit), and link-local.
+        for (text, expected) in [
+            ("Host 2001:db8::1 online", "2001:db8::1"),
+            (
+                "full 2001:0db8:85a3:0000:0000:8a2e:0370:7334 addr",
+                "2001:db8:85a3::8a2e:370:7334",
+            ),
+            (
+                "link fe80::1ff:fe23:4567:890a here",
+                "fe80::1ff:fe23:4567:890a",
+            ),
+            // Bracketed, as in a URL authority.
+            ("connect [2001:db8::dead:beef]:443", "2001:db8::dead:beef"),
+        ] {
+            let hits = extract_by_patterns(text);
+            assert!(
+                hits.iter()
+                    .any(|e| e.kind == EntityKind::Ipv6 && e.value == expected),
+                "expected IPv6 {expected} from {text:?}, got {hits:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ipv6_extraction_rejects_noise() {
+        // Rust/C++ path separators, a Haskell type signature, a MAC address, a
+        // clock time, and the loopback/unspecified addresses must NOT surface as
+        // IPv6 — the boundary check, the parser, and the loopback/unspecified
+        // filter each kill a different class of false positive.
+        for text in [
+            "use std::vector; foo::bar::baz",
+            "signature x :: Int -> Int",
+            "mac 01:23:45:67:89:ab",
+            "meeting at 12:34:56 today",
+            "loop ::1 and :: unspecified",
+        ] {
+            let hits = extract_by_patterns(text);
+            assert!(
+                !hits.iter().any(|e| e.kind == EntityKind::Ipv6),
+                "no IPv6 expected from {text:?}, got {hits:?}"
+            );
+        }
     }
 
     #[test]
