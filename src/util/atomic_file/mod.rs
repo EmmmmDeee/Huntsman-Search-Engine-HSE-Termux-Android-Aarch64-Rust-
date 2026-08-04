@@ -84,14 +84,49 @@ fn write_inner(tmp: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(tmp, path)
 }
 
+/// True when `mode`'s group and other bits are all clear — i.e. the directory is
+/// owner-only, whatever the owner bits happen to be.
+///
+/// Tests the property that matters (nobody else can read, write or list) rather
+/// than equality with `0o700`, so a `0o500` or `0o600` directory is correctly
+/// treated as private instead of being reported as an exposure. Pure, so the
+/// classification is driven by values in tests rather than by contriving a
+/// filesystem this process cannot chmod.
+#[cfg(unix)]
+#[must_use]
+pub(crate) fn is_private_mode(mode: u32) -> bool {
+    mode & 0o077 == 0
+}
+
 /// Create `path` (and any missing parents) as a **private** directory — mode
 /// `0700` on unix, so the sensitive trees under `~/.huntsman` (dossiers, key
-/// pool, DB) aren't world-listable. Idempotent, and it guarantees `path` is
-/// `0700` **on return even when it already existed**: `DirBuilder::mode()` only
-/// sets the mode on components this call CREATES, so a pre-existing dir (e.g. an
-/// older install's `~/.huntsman` created world-listable at `0755` by a plain
-/// `create_dir_all`) would otherwise be left loose — the re-`set_permissions`
-/// below repairs it. Plain `create_dir_all` off unix.
+/// pool, DB) aren't world-listable. Idempotent.
+///
+/// `DirBuilder::mode()` only applies to components this call CREATES, so a
+/// pre-existing directory — an older install's `~/.huntsman` left world-listable
+/// at `0755` by a plain `create_dir_all` — is repaired by the
+/// `set_permissions` below rather than by the builder.
+///
+/// ## What the return value does and does not mean
+///
+/// `Ok(())` means the directory EXISTS, not that it is private. That distinction
+/// used to be invisible and is the reason this function grew a verification
+/// step: `recursive(true)` returns `Ok` for a directory that already exists, and
+/// the repairing `set_permissions` was discarded, so a pre-existing `0755`
+/// directory this process cannot chmod (not the owner, a read-only mount, a
+/// filesystem with no POSIX modes) produced a clean `Ok` while `key_vault.db`
+/// and `key_pool.json` sat readable by every other local UID. The doc comment
+/// claimed a `0700` guarantee the code did not deliver.
+///
+/// The `Ok` contract is kept deliberately — every caller
+/// ([`crate::util::paths::huntsman_dir`] and [`crate::util::paths::subdir`] are
+/// infallible accessors returning `PathBuf`) wants a usable path even when the
+/// mode could not be tightened, and failing the call would break a read path
+/// that still works. So the mode is now VERIFIED after the repair attempt and a
+/// failure is disclosed at `warn!` with the mode actually observed. The result
+/// is the same directory, the same return value, and an operator who can find
+/// out — instead of a silent exposure in the one primitive whose entire job is
+/// preventing it.
 pub fn create_dir_private(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -104,6 +139,23 @@ pub fn create_dir_private(path: &Path) -> std::io::Result<()> {
         // by another user can't turn a create success into an error; the create
         // result is what callers observe.
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+
+        // Verify rather than assume. Only meaningful once the directory exists,
+        // so a genuine create failure (which the caller already sees) is not
+        // also reported as a permissions problem.
+        if created.is_ok()
+            && let Ok(meta) = std::fs::metadata(path)
+        {
+            let mode = meta.permissions().mode();
+            if !is_private_mode(mode) {
+                tracing::warn!(
+                    path = %path.display(),
+                    mode = format!("{:o}", mode & 0o777),
+                    "directory is not owner-only and could not be tightened to 0700 — \
+                     secrets stored beneath it are readable by other local users"
+                );
+            }
+        }
         created
     }
     #[cfg(not(unix))]

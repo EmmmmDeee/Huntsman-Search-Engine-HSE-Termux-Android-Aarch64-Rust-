@@ -303,7 +303,22 @@ fn record_confirmed_drift_at(path: &std::path::Path, reports: &[ProbeReport], no
     for r in reports.iter().filter(|r| r.is_confirmed_drift()) {
         map.insert(r.module.to_string(), now);
     }
-    let _ = write_drift_map_at(path, &map);
+    // Disclosed rather than discarded. This store is the ONLY thing that carries
+    // a confirmed-drift finding past the printout that reported it — the next
+    // offline `hse doctor` reads it instead of re-probing. A silent write
+    // failure therefore does not just lose a file: it makes the next run report
+    // a module as healthy that this run proved was drifting, with nothing
+    // anywhere saying the finding was dropped. Still best-effort (a probe result
+    // is worth printing even when it cannot be persisted), so the return value
+    // stays discarded and only the silence is fixed.
+    if let Err(e) = write_drift_map_at(path, &map) {
+        tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "could not persist confirmed-drift findings — the next offline run will \
+             not see them and may report these modules as healthy"
+        );
+    }
 }
 
 /// Persist this sweep's confirmed-drift modules to the on-device store. Called
