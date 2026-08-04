@@ -189,6 +189,13 @@ fn ct_log_entities(
             // than a bogus Domain like `admin@example.com` (which `.contains('.')`
             // alone would have admitted); parity with the sibling crtsh module.
             if crate::util::extract::looks_like_email(&name) {
+                // CT-log SAN emails skew heavily toward automated cert-admin
+                // desks (`hostmaster@`, `admin@`) rather than the subject's own
+                // mail — the same false-positive class `whois`/`dns_intel`
+                // already gate on. Parity with those modules.
+                if crate::util::domains::is_infrastructure_email(&name) {
+                    return None;
+                }
                 let mut e = Entity::new(EntityKind::Email, &name, confidence::HIGH_PLUS, scan_id);
                 e.tag(tags::CT_LOG);
                 e.add_evidence(cert_ev(entry, format!("Email in certificate SAN: {name}")));
@@ -274,7 +281,8 @@ fn parse_certificate(
     // pivots. Deduped across both cert paths via `seen_subs`; an email string can
     // never collide with the hostnames the set also holds.
     for email in &email_sans {
-        if !seen_subs.insert(email.clone()) {
+        if !seen_subs.insert(email.clone()) || crate::util::domains::is_infrastructure_email(email)
+        {
             continue;
         }
         let mut e = Entity::new(EntityKind::Email, email, confidence::HIGH_PLUS, scan_id);
