@@ -69,13 +69,13 @@ pub const MAX_CONCURRENT_QUERIES: usize = 10;
 /// Endpoint credit costs
 pub const ENDPOINT_COSTS: &[(&str, f32)] = &[
     ("/search", 1.0),
-    ("/search/deep", 3.0),
-    ("/username/social", 2.0),
+    ("/search/deep", 1.0),
+    ("/username/social", 1.0),
     ("/username/github", 1.0),
     ("/username/twitter", 1.0),
     ("/username/tiktok", 1.0),
     ("/username/reddit", 1.0),
-    ("/username/history", 2.0),
+    ("/username/history", 1.0),
     ("/discord/user", 1.0),
     ("/discord/to-roblox", 1.0),
     ("/enterprise/discord/history", 5.0),
@@ -113,8 +113,18 @@ mod tests {
 
     #[test]
     fn test_endpoint_costs() {
+        // Pinned to the SeekNow contract's documented credit charges. `search`,
+        // `search/deep`, `username/social` and `username/history` are all
+        // 1-credit endpoints — `search/deep`'s own doc in `endpoints.rs` calls
+        // it "the same 1-credit cost" as `search` — but the table previously
+        // billed them 3/2/2, over-stating cost to the ROI router and
+        // de-prioritising them. Enterprise stays 5, and `credits`/`status` 0.
         assert_eq!(get_endpoint_cost("/search"), 1.0);
-        assert_eq!(get_endpoint_cost("/search/deep"), 3.0);
+        assert_eq!(get_endpoint_cost("/search/deep"), 1.0);
+        assert_eq!(get_endpoint_cost("/username/social"), 1.0);
+        assert_eq!(get_endpoint_cost("/username/history"), 1.0);
         assert_eq!(get_endpoint_cost("/enterprise/discord/history"), 5.0);
+        assert_eq!(get_endpoint_cost("/credits"), 0.0);
+        assert_eq!(get_endpoint_cost("/status"), 0.0);
     }
 }

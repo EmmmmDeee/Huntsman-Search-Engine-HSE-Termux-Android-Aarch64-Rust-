@@ -53,6 +53,20 @@ fn parse_kv(line: &str) -> Option<(String, String)> {
     if trimmed.starts_with('#') || trimmed.is_empty() {
         return None;
     }
+    // `export KEY=value` is a real shell idiom, it is what
+    // `docs/SEEKNOW_SETUP.md` instructs operators to append, and `dotenvy`
+    // (util::keys::io) accepts it — so the key WORKS, right up until the next
+    // `curl … | bash`. Without stripping the keyword the name below parses as
+    // `export HUNTSMAN_…`, fails the `HUNTSMAN_` test, and the line becomes
+    // invisible: `merge_template` then writes the template PLACEHOLDER over the
+    // operator's real key, and `count_keys` under-reports what is configured.
+    //
+    // Stripped only when `export` stands alone as a keyword, so an ordinary key
+    // that merely begins with those letters (`exported=1`) is left untouched.
+    let trimmed = trimmed
+        .strip_prefix("export")
+        .filter(|rest| rest.starts_with([' ', '\t']))
+        .map_or(trimmed, str::trim_start);
     let eq = trimmed.find('=')?;
     let key = trimmed[..eq].trim();
     if !key.starts_with("HUNTSMAN_") {

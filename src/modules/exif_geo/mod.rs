@@ -8,8 +8,8 @@
 //! Workflow when a `Url` target arrives:
 //!   1. Skip non-image URLs by file extension (`.jpg`, `.jpeg`,
 //!      `.tif`, `.tiff`, `.webp`, `.heic`). `.png` is deliberately
-//!      excluded (see [`IMAGE_EXTS`]): PNGs almost never carry EXIF GPS,
-//!      so fetching them only wastes quota.
+//!      excluded (see [`crate::util::exif::IMAGE_EXTS`]): PNGs almost never
+//!      carry EXIF GPS, so fetching them only wastes quota.
 //!   2. Fetch the bytes via `ctx.http` (capped at 8 MB so a
 //!      misclassified video URL doesn't drain memory).
 //!   3. Parse with `kamadak-exif`. Returns nothing if no EXIF tags or
@@ -69,15 +69,6 @@ const SRC: &str = "exif_geo";
 /// exceed it but rarely appear from URL pivots. Prevents a
 /// misclassified video URL or PDF from draining memory.
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
-
-/// File extensions worth fetching for EXIF analysis. Anything else
-/// short-circuits before the HTTP call — no point downloading a
-/// PNG just to fail at the EXIF reader (PNGs *can* embed EXIF in
-/// rare cases but the vast majority don't, and we'd rather save the
-/// quota).
-pub(super) const IMAGE_EXTS: &[&str] = &[
-    ".jpg", ".jpeg", ".jpe", ".jfif", ".tif", ".tiff", ".heic", ".heif", ".webp",
-];
 
 pub struct ExifGeo;
 

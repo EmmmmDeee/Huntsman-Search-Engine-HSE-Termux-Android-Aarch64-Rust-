@@ -139,8 +139,8 @@ ValueScore = (
 #### 1. **Direct Credit Cost**
 ```
 /search: 1 credit
-/search/deep: 3 credits (only on fast miss)
-/username/social: 2 credits
+/search/deep: 1 credit (only on fast miss)
+/username/social: 1 credit
 /discord/user: 1 credit
 /enterprise/discord/*: 5 credits each
 /network/email-check: 1 credit
@@ -212,19 +212,23 @@ Low ROI (<20): Skip unless required
 1. Generate query candidates for target type
    Example: Email input → [/search, /network/email-check, /search/deep]
 
-2. Score each candidate
+2. Score each candidate (credit cost only — the router's EFFECTIVE cost also
+   adds latency and cascade terms; see step 3)
    /search: Value=85, Cost=1.0, ROI=85
    /network/email-check: Value=65, Cost=1.0, ROI=65
-   /search/deep: Value=95, Cost=3.0, ROI=31.7
+   /search/deep: Value=95, Cost=1.0, ROI=95
 
-3. Sort by ROI
-   [/search (85), /network/email-check (65), /search/deep (31.7)]
+3. Sort by EFFECTIVE cost, not credits alone. /search/deep bills the SAME
+   1 credit as /search, so credit-ROI alone would rank it first — but
+   `calculate_effective_cost` adds `latency*0.15`, and deep's ~40s against
+   fast's ~5s is what keeps it a fallback rather than a first call.
+   [/search (85), /network/email-check (65), /search/deep (fallback, ~40s)]
 
 4. Execute in order while budget/time permits
    - Execute /search (cost 1, value 85)
    - If hit, stop (found entities)
-   - If miss AND budget >3 AND time >45s:
-     - Execute /search/deep (cost 3, value 95)
+   - If miss AND time permits (~40s):
+     - Execute /search/deep (cost 1, value 95)
 
 5. Return combined results
 ```
@@ -404,7 +408,7 @@ pub const BUDGET_DEPTH_3_RATIO: f32 = 0.10;
 Candidates:
   /search: Value=85, Cost=1.0, ROI=85
   /network/email-check: Value=65, Cost=1.0, ROI=65
-  /search/deep: Value=95, Cost=3.0, ROI=31.7
+  /search/deep: Value=95, Cost=1.0, ROI=95 (latency-gated: fallback only)
 
 Execution Plan:
   1. /search (ROI 85)
@@ -416,8 +420,8 @@ Execution Plan:
      Cost: 1 credit
      Expected: 8-12 services (platforms user registered on)
      
-  3. /search/deep (ROI 31.7, only if /search miss)
-     Cost: 3 credits
+  3. /search/deep (only if /search miss — same 1 credit, ~40s vs ~5s)
+     Cost: 1 credit
      Expected: Deep breach search, rare registrations
 
 Budget Remaining: 997 credits (post-depth-1 queries)
@@ -451,24 +455,27 @@ Final ROI: 127 entities found from 8 credits spent ≈ 15.9 entities/credit
 **Query Optimizer Analysis:**
 ```
 Candidates:
-  /username/social: Value=75, Cost=2.0, ROI=37.5
+  /username/social: Value=75, Cost=1.0, ROI=75
   /search: Value=50, Cost=1.0, ROI=50
-  /username/history: Value=40, Cost=2.0, ROI=20
+  /username/history: Value=40, Cost=1.0, ROI=40
 
 Execution Plan (Budget: 300 credits):
-  1. /search (ROI 50)
+  1. /username/social (ROI 75)
      Cost: 1 credit
-     Expected: Generic results (low precision for username-only)
-     
-  2. /username/social (ROI 37.5)
-     Cost: 2 credits
      Expected: 15+ platform results (Twitter, TikTok, Reddit, etc.)
      Cache: Miss
-     
-  3. /username/history (ROI 20, only if budget >100)
-     Cost: 2 credits
+
+  2. /search (ROI 50)
+     Cost: 1 credit
+     Expected: Generic results (low precision for username-only)
+
+  3. /username/history (ROI 40)
+     Cost: 1 credit
      Expected: Old usernames, account registrations
-     Decision: SKIP (low ROI, budget allocated to cascade)
+     Decision: EXECUTE — correcting the price from 2 credits to the contract's
+       1 lifted ROI from 20 to 40, clearing `route_query`'s ExecuteIfBudget
+       threshold. This endpoint was previously skipped purely because it was
+       over-billed.
 
 Budget Remaining: 297 credits
 

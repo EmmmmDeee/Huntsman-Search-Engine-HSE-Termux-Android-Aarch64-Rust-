@@ -565,14 +565,22 @@ pub fn coarse_provider_coords(
 }
 
 /// Build the `Asn` entity shared verbatim by every IP-geo provider module
-/// (`ip_geo` / `ipinfo` / `ip2location` / `ipquery` / `ip_whois_geo`).
+/// (`ip_geo` / `ipinfo` / `ip2location` / `ipquery` / `ip_whois_geo` /
+/// `criminal_ip` / `shodan`).
 ///
 /// Each of those modules emitted exactly
 /// `Entity::new(EntityKind::Asn, asn, confidence::HIGH_PLUSPLUS, scan_id)` carrying a single
 /// `Evidence::new(src, format!("ASN for {ip}"))`, then optionally stamped one
-/// provider tag on top. That birth was byte-identical across all five, so it
+/// provider tag on top. That birth was byte-identical across all of them, so it
 /// lives here once: the fixed `0.80` confidence and the `"ASN for {ip}"`
 /// evidence summary can no longer drift between the modules.
+///
+/// `censys` and `ipqs` deliberately do NOT route through here: each attaches a
+/// genuinely distinct evidence summary and an extra attribute the birth this
+/// helper standardises does not carry (`censys` a conditional `country`,
+/// `ipqs` an `ip` attr and its own `… via IPQS` wording). Folding them in would
+/// either drop that data or bloat this deliberately-minimal signature — so they
+/// stay hand-rolled by design, not by drift.
 ///
 /// The two genuine per-module differences are kept at the call site, *not*
 /// pushed into the signature: the caller passes the already-formatted ASN

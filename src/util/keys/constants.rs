@@ -57,8 +57,11 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_SEON_KEY",
     "HUNTSMAN_OPENSANCTIONS_KEY",
     "HUNTSMAN_EPIEOS_KEY",
-    "HUNTSMAN_PROXYCURL_KEY",
     "HUNTSMAN_OPENCORP_KEY",
+    // Read inline (`ctx.key_opt("HUNTSMAN_GITHUB_TOKEN")`) by github_user,
+    // github_code_search and github_commits rather than via an `_ENV` const,
+    // which is exactly why it went unregistered here for so long.
+    "HUNTSMAN_GITHUB_TOKEN",
     // Breach / search multipliers — high-leverage paid pools the Settings
     // grid must surface so the operator can paste/rotate them in the UI.
     "HUNTSMAN_SEEKNOW_KEY",
@@ -107,6 +110,9 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
         "HUNTSMAN_NETLAS_KEY" => "Netlas — free tier at https://app.netlas.io/registration",
         "HUNTSMAN_PULSEDIVE_KEY" => "Pulsedive — free key at https://pulsedive.com/about/api",
         "HUNTSMAN_OPENCORP_KEY" => "OpenCorporates — https://opencorporates.com/api_accounts/new",
+        "HUNTSMAN_GITHUB_TOKEN" => {
+            "GitHub — optional; the github_* modules run key-free but share GitHub's 60 req/hour unauthenticated limit. A no-scope personal access token from https://github.com/settings/tokens raises it."
+        }
         "HUNTSMAN_NUMVERIFY_KEY" => "numverify — free tier at https://numverify.com/product",
         "HUNTSMAN_HLR_KEY" => "HLR Lookups — free trial at https://hlrlookups.com",
         "HUNTSMAN_OPENCNAM_KEY" => "OpenCNAM — free tier at https://www.opencnam.com/register",
@@ -123,7 +129,6 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
         "HUNTSMAN_DEHASHED_KEY" => {
             "DeHashed — paid (v2 API, key-only); needs an active search subscription at https://dehashed.com"
         }
-        "HUNTSMAN_PROXYCURL_KEY" => "Proxycurl — paid, https://nubela.co/proxycurl",
         "HUNTSMAN_SEON_KEY" => "SEON — free trial at https://seon.io",
         "HUNTSMAN_OPENSANCTIONS_KEY" => {
             "OpenSanctions — free trial/nonprofit key at https://www.opensanctions.org/api/"

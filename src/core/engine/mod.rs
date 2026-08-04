@@ -81,6 +81,7 @@ use crate::core::module::ModuleCost;
 
 use crate::core::{
     dependency::ModuleGraph,
+    engine_host::{EngineHost, NoopEngineHost},
     entity::Entity,
     error::{Error, Result},
     event::{Event, EventBus, EventKind},
@@ -106,6 +107,10 @@ pub struct ScanEngine {
     writer: DbWriter,
     /// Module-owned effects supplied by the application composition root.
     module_runtime: Arc<dyn ModuleRuntime>,
+    /// `util`-backed host effects — the egress proxy pool and the module-health
+    /// quarantine — supplied by the same composition root, so `core` drives
+    /// them without naming `util`. See [`crate::core::engine_host`].
+    host: Arc<dyn EngineHost>,
 }
 
 /// Reason an expansion round stopped before depth was exhausted.
@@ -137,32 +142,6 @@ pub(crate) struct ModuleStats {
     pub cached: usize,
 }
 
-/// The scan-wide working entity set, wrapping `HashMap<String, Entity>` to
-/// track which UIDs were inserted or mutated since the last
-/// [`take_dirty`](Self::take_dirty) call.
-///
-/// Every expansion round used to checkpoint the WHOLE accumulated entity set
-/// to storage, every round with dispatch activity — round 50 re-persisted
-/// round 1's untouched entities all over again, making the per-round
-/// checkpoint cost grow with total accumulated entities, not with what that
-/// round actually changed. `take_dirty()` lets the round loop persist only
-/// what changed since the last checkpoint instead.
-///
-/// Only the two mutating operations the engine actually performs on the
-/// working set (`insert`, `get_mut`) are wrapped, so dirty-tracking can never
-/// be forgotten at a call site — every existing `get_mut` in this engine
-/// already writes through the returned reference (verified: none are used
-/// read-only), so marking dirty unconditionally on a successful lookup is
-/// exactly right for the current call sites, and merely conservative (never
-/// incorrect) for a hypothetical future read-only one. Read-only access
-/// (`.values()`, `.len()`, `.get()`, `.contains_key()`, iteration, …) goes
-/// through [`Deref`](std::ops::Deref) to the inner map, unrestricted — live correlation
-/// (`correlate_incremental`) still reads the FULL working set every round,
-/// which is correct: a correlation rule can legitimately relate an entity
-/// from round 1 to one from round 5, so narrowing correlation's input to
-/// only the dirty subset would silently miss cross-round correlations. Only
-/// the checkpoint's PERSISTENCE volume is narrowed here, never correlation's
-/// input, and never what any reader sees.
 /// A `JoinHandle` that aborts its task when dropped.
 ///
 /// Dropping a bare `tokio::JoinHandle` **detaches** the task — it does not
@@ -190,6 +169,32 @@ impl Drop for AbortOnDrop {
     }
 }
 
+/// The scan-wide working entity set, wrapping `HashMap<String, Entity>` to
+/// track which UIDs were inserted or mutated since the last
+/// [`take_dirty`](Self::take_dirty) call.
+///
+/// Every expansion round used to checkpoint the WHOLE accumulated entity set
+/// to storage, every round with dispatch activity — round 50 re-persisted
+/// round 1's untouched entities all over again, making the per-round
+/// checkpoint cost grow with total accumulated entities, not with what that
+/// round actually changed. `take_dirty()` lets the round loop persist only
+/// what changed since the last checkpoint instead.
+///
+/// Only the two mutating operations the engine actually performs on the
+/// working set (`insert`, `get_mut`) are wrapped, so dirty-tracking can never
+/// be forgotten at a call site — every existing `get_mut` in this engine
+/// already writes through the returned reference (verified: none are used
+/// read-only), so marking dirty unconditionally on a successful lookup is
+/// exactly right for the current call sites, and merely conservative (never
+/// incorrect) for a hypothetical future read-only one. Read-only access
+/// (`.values()`, `.len()`, `.get()`, `.contains_key()`, iteration, …) goes
+/// through [`Deref`](std::ops::Deref) to the inner map, unrestricted — live correlation
+/// (`correlate_incremental`) still reads the FULL working set every round,
+/// which is correct: a correlation rule can legitimately relate an entity
+/// from round 1 to one from round 5, so narrowing correlation's input to
+/// only the dirty subset would silently miss cross-round correlations. Only
+/// the checkpoint's PERSISTENCE volume is narrowed here, never correlation's
+/// input, and never what any reader sees.
 struct TrackedEntityMap {
     map: HashMap<String, Entity>,
     dirty: HashSet<String>,
@@ -282,6 +287,71 @@ impl std::ops::Deref for TrackedEntityMap {
     }
 }
 
+/// Upper bound on the working set for the per-round reconsideration pass
+/// ([`reconsider_working_set`]).
+///
+/// Deliberately far larger than [`ScanEngine::INCREMENTAL_CORRELATE_MAX_ENTITIES`]
+/// (the live-correlation preview bound), because the two passes have opposite
+/// deferrability. The live pass evaluates all 34 correlation rules — genuinely
+/// expensive — and deferring it loses nothing, since the complete,
+/// budget-bounded pass still runs at finalise. Reconsideration is the opposite:
+/// a reconsideration deferred past its round is a set-aside lead **never
+/// expanded** (finalise re-promotes it, but finalise is after the last
+/// expansion round), so it must keep running well past the point where the live
+/// preview sensibly defers.
+///
+/// Its per-round cost is lighter than the live pass but not free: two of the
+/// three promotion passes are O(n) tag/geo scans, while
+/// [`promote_multipath_corroborated`] runs the AU-062 multipath detector, whose
+/// identity-pair probing is bounded by
+/// [`crate::core::relation::graph::IDENTITY_PAIR_PROBE_CAP`] (so it is capped,
+/// not linear). This bound therefore exists to cap that probe and the per-round
+/// working-set clone on a pathologically large set — not to trade away recall,
+/// which is why it sits far above the live-pass bound.
+const RECONSIDER_MAX_ENTITIES: usize = 20_000;
+
+/// Free/offline reconsideration of the whole working set: re-promote, in place,
+/// any set-aside lead that evidence gathered since now corroborates, so it
+/// clears the expansion floor and is selected as a candidate THIS round instead
+/// of only at finalise (too late to expand). Returns the number promoted.
+///
+/// Runs the three cross-angle promotion passes — geo-corroborated family,
+/// multi-path corroboration, and geo-corroborated breach candidates — over a
+/// snapshot, then writes back only the entities a pass actually changed through
+/// [`TrackedEntityMap::insert`] so those re-promotions are dirty-tracked and
+/// checkpointed. Idempotent: each pass is tag-guarded, so re-running across
+/// rounds never double-promotes. Bounded by [`RECONSIDER_MAX_ENTITIES`] so a
+/// pathologically large set cannot make the per-round clone stall a round.
+fn reconsider_working_set(entity_map: &mut TrackedEntityMap, relations: &[Relation]) -> usize {
+    if entity_map.len() > RECONSIDER_MAX_ENTITIES {
+        return 0;
+    }
+    let mut snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+    let promoted = promote_geo_corroborated_family(&mut snapshot)
+        + promote_multipath_corroborated(&mut snapshot, relations)
+        + promote_breach_candidate_geo_corroborated(&mut snapshot);
+    if promoted > 0 {
+        for e in snapshot {
+            // Write back ONLY the entities a pass mutated. `insert` marks the
+            // uid dirty unconditionally, so re-inserting the whole snapshot
+            // would dirty every entity in the working set on a single
+            // promotion, forcing the round's checkpoint to persist all of them
+            // and defeating dirty-tracking. Each promotion pass ADDS a
+            // corroboration evidence record to every entity it lifts (and never
+            // removes one), so a changed entity is exactly one whose evidence
+            // count grew over the stored copy — the cheap, allocation-free
+            // signal used here in place of a full entity comparison.
+            let changed = entity_map
+                .get(&e.uid)
+                .is_none_or(|stored| stored.evidence.len() != e.evidence.len());
+            if changed {
+                entity_map.insert(e.uid.clone(), e);
+            }
+        }
+    }
+    promoted
+}
+
 /// Mutable scan-wide accumulators threaded through the expansion loop: the
 /// working entity set, the visited-target set (the cycle guard), the run
 /// tallies, the paid-dedup ledger, the lineage (`DerivedFrom`) edges, and the
@@ -348,12 +418,34 @@ impl ScanEngine {
         Self::with_module_runtime(modules, store, bus, Arc::new(NoopModuleRuntime))
     }
 
-    /// Construct an engine with explicit module-layer runtime effects.
+    /// Construct an engine with explicit module-layer runtime effects and the
+    /// no-op host — no egress refresh, no module quarantine.
     pub fn with_module_runtime(
+        modules: Vec<Arc<dyn Module>>,
+        store: Arc<dyn StoragePort>,
+        bus: EventBus,
+        module_runtime: Arc<dyn ModuleRuntime>,
+    ) -> Self {
+        Self::with_runtime_and_host(
+            modules,
+            store,
+            bus,
+            module_runtime,
+            Arc::new(NoopEngineHost),
+        )
+    }
+
+    /// Construct an engine with both injected contracts.
+    ///
+    /// The application composition root uses this one. `core` must not name the
+    /// `util`-backed host itself — that is the layering edge this indirection
+    /// exists to keep (`core_does_not_import_util_directly`).
+    pub fn with_runtime_and_host(
         mut modules: Vec<Arc<dyn Module>>,
         store: Arc<dyn StoragePort>,
         bus: EventBus,
         module_runtime: Arc<dyn ModuleRuntime>,
+        host: Arc<dyn EngineHost>,
     ) -> Self {
         modules.sort_by_key(|m| std::cmp::Reverse(m.priority()));
         let writer = DbWriter::spawn(Arc::clone(&store));
@@ -367,6 +459,7 @@ impl ScanEngine {
             graph,
             writer,
             module_runtime,
+            host,
         }
     }
 
@@ -574,11 +667,10 @@ impl ScanEngine {
         // before it can make a resource unreachable. Detached (never blocks the
         // scan) and internally throttled; not spawned at all when no proxy/feed
         // is configured, so a proxy-less deployment pays nothing.
-        if crate::util::egress::pool_is_configured()
-            || std::env::var(crate::util::egress::PROXY_FEEDS_ENV).is_ok()
-        {
-            tokio::spawn(async {
-                let (fed, ok) = crate::util::egress::refresh_pool().await;
+        if self.host.egress_is_configured() {
+            let host = Arc::clone(&self.host);
+            tokio::spawn(async move {
+                let (fed, ok) = host.refresh_egress_pool().await;
                 if fed > 0 || ok > 0 {
                     tracing::debug!(fed, validated_ok = ok, "egress proxy pool refreshed");
                 }
@@ -618,12 +710,9 @@ impl ScanEngine {
         // (falls back to an empty set = no quarantine). On a fresh DB the event
         // log is empty, so the set is empty and dispatch is unchanged.
         let quarantined: HashSet<String> = if opts.skip_dead_modules && opts.modules.is_none() {
-            use crate::util::scraper_health::{
-                RECENT_EVENTS_WINDOW, aggregate_source_health, quarantined_modules,
-            };
             self.store
-                .recent_module_outcome_events(RECENT_EVENTS_WINDOW)
-                .map(|evs| quarantined_modules(&aggregate_source_health(&evs)))
+                .recent_module_outcome_events(self.host.health_events_limit())
+                .map(|evs| self.host.quarantined_modules(&evs))
                 .unwrap_or_default()
         } else {
             HashSet::new()
@@ -1808,33 +1897,18 @@ impl ScanEngine {
             // ── Reconsideration: "return to old data when downstream adds
             // credibility" ──────────────────────────────────────────────────
             // Before selecting this round's candidates, re-run the free/offline
-            // promotion passes over the WHOLE accumulated working set, so any
-            // prior entity that the evidence gathered since now corroborates is
-            // lifted in place (a corroboration tag + evidence → higher
-            // `c_effective`) ABOVE the expansion floor and is therefore picked up
-            // as a candidate THIS round — instead of that re-promotion only
-            // happening at finalise (too late to expand it). This is the
-            // autonomous mechanism that lets the scan come back to a lead it had
-            // set aside once later rounds make it credible. Idempotent
-            // (tag-guarded — a promotion never double-stamps across rounds) and
-            // bounded by working-set size exactly like the live correlation pass,
-            // so it can never itself stall a round.
-            if entity_map.len() <= Self::INCREMENTAL_CORRELATE_MAX_ENTITIES {
-                let mut snapshot: Vec<Entity> = entity_map.snapshot();
-                let promoted = promote_geo_corroborated_family(&mut snapshot)
-                    + promote_multipath_corroborated(&mut snapshot, relations.as_slice())
-                    + promote_breach_candidate_geo_corroborated(&mut snapshot);
-                if promoted > 0 {
-                    for e in snapshot {
-                        entity_map.insert(e.uid.clone(), e);
-                    }
-                    debug!(
-                        scan_id,
-                        promoted,
-                        round = depth,
-                        "reconsidered prior data — re-promoted candidates on new downstream corroboration"
-                    );
-                }
+            // promotion passes over the WHOLE accumulated working set so any
+            // prior lead that later evidence now corroborates is lifted in place
+            // and picked up as a candidate THIS round (see
+            // [`reconsider_working_set`]).
+            let promoted = reconsider_working_set(entity_map, relations.as_slice());
+            if promoted > 0 {
+                debug!(
+                    scan_id,
+                    promoted,
+                    round = depth,
+                    "reconsidered prior data — re-promoted candidates on new downstream corroboration"
+                );
             }
             // Snapshot the entity set at round start — entities discovered
             // during this round will be expansion candidates in the next round,

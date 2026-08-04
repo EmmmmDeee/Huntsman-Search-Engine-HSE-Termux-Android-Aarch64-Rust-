@@ -12,6 +12,27 @@ use super::*;
     }
 
     #[test]
+    fn curl_max_time_arg_honours_a_sub_second_budget_precisely() {
+        // Regression: this used to be `(timeout_ms / 1000).max(3)`, which
+        // floored ANY sub-3s budget up to a flat 3 seconds — a caller with
+        // 500ms left got a curl call allowed to run 6x longer than its actual
+        // remaining deadline. curl accepts fractional `--max-time` seconds, so
+        // the real budget is now passed through exactly instead of rounded up.
+        assert_eq!(curl_max_time_arg(500), "0.500");
+        assert_eq!(curl_max_time_arg(1_500), "1.500");
+        assert_eq!(curl_max_time_arg(3_000), "3.000");
+    }
+
+    #[test]
+    fn curl_max_time_arg_never_emits_zero() {
+        // curl treats `--max-time 0` as NO LIMIT — the opposite of what a
+        // near-zero remaining budget means here. A near-empty or literally
+        // zero budget must still floor to a tiny positive value, never "0".
+        assert_eq!(curl_max_time_arg(0), "0.001");
+        assert_ne!(curl_max_time_arg(0), "0.000");
+    }
+
+    #[test]
     fn fetch_hardening_pins_protocols_and_bounds_redirects_and_size() {
         // Locks the security-critical content of the single-sourced hardening
         // args so a careless future edit that loosens the protocol allow-list,

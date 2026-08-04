@@ -28,6 +28,13 @@ use crate::core::{
 use crate::util::extract::is_placeholder_secret;
 use crate::util::json::{is_null_sentinel, val_str};
 
+/// Maximum length of an IEEE 802.11 SSID, in octets. A value in an `ssid` field
+/// longer than this is not a network name (a truncated blob, a joined list), so
+/// it must not be typed as one — see the saved-Wi-Fi pass in
+/// [`extract_rich_detail`], which still surfaces such a value rather than
+/// dropping it.
+const MAX_SSID_OCTETS: usize = 32;
+
 /// A value that is an *absence/redaction marker*, not real data: a SQL NULL
 /// sentinel (`\N`, written for an empty column in dumped exports) or a provider
 /// redaction placeholder (`UPGRADE_TO_SEE_FULL`, `REDACTED`, bracketed
@@ -130,6 +137,13 @@ const RICH_DETAIL_SKIP: &[&str] = &[
     "mac",
     "mac_address",
     "bssid",
+    // Saved Wi-Fi network names — typed as `Ssid` (or, when over the 802.11
+    // length limit, surfaced as `Other` by that same pass), so the catch-all must
+    // not also mint a duplicate node from the `@other:` namespace.
+    "ssid",
+    "wifi_ssid",
+    "wifi_name",
+    "network_name",
     "hwid",
     "machine_id",
     "device_id",
@@ -342,6 +356,52 @@ pub fn extract_rich_detail(
                 &["device"],
             );
         }
+    }
+    // ── Saved Wi-Fi network names — the geolocation pivot a stealer log buries. ──
+    //
+    // An SSID is a *locatable* identifier, not just a label: `TargetKind::Ssid` is
+    // accepted by [`crate::modules::wigle`], whose `ssid_search` resolves a
+    // sufficiently unique name to every GPS point WiGLE has ever observed it at.
+    // Untyped, this value reached the catch-all below as an `Other("ssid")` node —
+    // a dead end the expansion loop cannot walk, since only a typed kind maps to a
+    // `TargetKind`. Typing it opens the edge from "this machine had this network
+    // saved" to "here is where that network physically is", which places the
+    // machine's owner. It pairs with the `bssid` handled just above: the BSSID
+    // geolocates via `mylnikov`, the SSID via `wigle`, and a record carrying both
+    // yields two independent fixes on the same access point.
+    //
+    // Generic/default names (`NETGEAR`, `Free Public WiFi`) are emitted too. They
+    // are real recorded data, and `wigle::ssid_search` applies its OWN uniqueness
+    // gate before geolocating, so a default name cannot manufacture a false fix —
+    // filtering here would discard a true observation to prevent a failure that
+    // the consumer already prevents.
+    for k in ["ssid", "wifi_ssid", "wifi_name", "network_name"] {
+        let Some(s) = val_str(item, k) else { continue };
+        if is_absent_marker(&s) {
+            continue;
+        }
+        // Case-SENSITIVE dedup key. IEEE 802.11 SSIDs are case-sensitive, and
+        // `core::entity` deliberately excludes `Ssid` from identity folding for
+        // exactly that reason; lowercasing here would collapse two genuinely
+        // different networks into one node.
+        if !seen.insert(format!("@ssid:{s}")) {
+            continue;
+        }
+        // A value longer than the 802.11 limit is not an SSID, so it must not be
+        // typed as one — but it is still real recorded data, so it is surfaced as
+        // an `Other(k)` node rather than dropped. These keys sit in
+        // `RICH_DETAIL_SKIP`, so the catch-all will not surface them for us.
+        let entity = if s.len() <= MAX_SSID_OCTETS {
+            Entity::new(EntityKind::Ssid, &s, confidence::MEDIUM_PLUS, scan_id)
+        } else {
+            Entity::new(
+                EntityKind::Other(k.to_string()),
+                &s,
+                confidence::LOW,
+                scan_id,
+            )
+        };
+        push_context_entity(result, entity, ev, source, &["wifi-network", "stealer"]);
     }
     for k in [
         "hwid",

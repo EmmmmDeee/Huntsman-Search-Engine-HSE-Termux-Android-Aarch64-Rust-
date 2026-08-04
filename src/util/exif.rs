@@ -12,6 +12,37 @@ use std::path::Path;
 
 use exif::{In, Tag, Value};
 
+/// Extensions of the image formats worth fetching for EXIF.
+///
+/// PNG, GIF and SVG are deliberately **absent**: they carry no EXIF GPS in
+/// practice, so fetching one only spends bandwidth and quota to parse a
+/// container that cannot answer "where was this taken?".
+///
+/// Shared here rather than owned by `modules::exif_geo` because two independent
+/// subsystems must agree on the answer: `exif_geo` uses it to decide which URL
+/// targets it accepts, and `modules::web_crawler` uses it to decide which
+/// discovered links are worth surfacing as EXIF leads. If the crawler surfaced a
+/// format `exif_geo` refuses, every such lead would be a dead entity; if it
+/// surfaced fewer, real coordinates would be silently lost. One list keeps the
+/// producer and the consumer in step by construction.
+pub const IMAGE_EXTS: &[&str] = &[
+    ".jpg", ".jpeg", ".jpe", ".jfif", ".tif", ".tiff", ".heic", ".heif", ".webp",
+];
+
+/// True if `url` ends (case-insensitively) with one of [`IMAGE_EXTS`]. Query
+/// strings and fragments are stripped first, so `https://x.com/a.jpg?w=1024`
+/// still matches while `https://x.com/page.html?img=x.jpg` does not.
+#[must_use]
+pub fn looks_like_image_url(url: &str) -> bool {
+    let trimmed = url.trim();
+    // Strip query string and fragment in one pass. `split(['?', '#'])` splits at
+    // either delimiter; the first segment is the URL path, which is what we
+    // extension-check.
+    let path = trimmed.split(['?', '#']).next().unwrap_or(trimmed);
+    let lower = path.to_lowercase();
+    IMAGE_EXTS.iter().any(|ext| lower.ends_with(ext))
+}
+
 /// Read an ASCII string field if it exists, trimming nulls and
 /// whitespace. Returns `None` for empty / missing fields.
 ///

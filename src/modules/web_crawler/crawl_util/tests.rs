@@ -22,7 +22,115 @@ use super::*;
             internal_links: 0,
             external_links: 0,
             notable_pages: Vec::new(),
+            image_urls: Vec::new(),
+            image_urls_seen: HashSet::new(),
         }
+    }
+
+    #[test]
+    fn crawled_images_are_captured_as_exif_leads_but_never_queued() {
+        // A JPEG is not a page: it must never enter the crawl queue. But it IS a
+        // geolocation lead — `exif_geo` reads the GPS IFD out of it — so the URL
+        // has to survive as an entity rather than being discarded, which is what
+        // this arm used to do to every binary link alike.
+        let html = concat!(
+            r#"<a href="/photos/family.jpg">photo</a>"#,
+            r#"<a href="/scan.TIFF">scan</a>"#,
+            r#"<a href="/pic.heic?w=1024">heic</a>"#,
+            r#"<a href="/about.html">about</a>"#,
+        );
+        let mut state = empty_state();
+        extract_links(
+            html,
+            "https://example.com/",
+            "example.com",
+            "example.com",
+            &mut state,
+        );
+
+        assert_eq!(
+            state.image_urls,
+            vec![
+                "https://example.com/photos/family.jpg",
+                "https://example.com/scan.TIFF",
+                "https://example.com/pic.heic",
+            ],
+            "every EXIF-capable image must be captured, in discovery order"
+        );
+        // The crawl queue holds the HTML page only — never an image.
+        let queued: Vec<&str> = state.queue.iter().map(|(u, _)| u.as_str()).collect();
+        assert_eq!(queued, vec!["https://example.com/about.html"]);
+    }
+
+    #[test]
+    fn every_exif_capable_image_extension_counts_as_binary() {
+        // Regression: `BINARY_EXTENSIONS` listed jpg/tiff/webp but NOT heic,
+        // heif, jpe or jfif, so a link to one of those was treated as a page —
+        // the crawler enqueued it and spent a page-budget slot fetching and
+        // HTML-parsing binary image data. `is_binary_url` now defers to the
+        // shared `util::exif::IMAGE_EXTS`, so the two lists cannot drift apart.
+        for ext in crate::util::exif::IMAGE_EXTS {
+            let url = format!("https://example.com/photo{ext}");
+            assert!(
+                is_binary_url(&url),
+                "{ext} is fetched for EXIF, so it must never be crawled as a page"
+            );
+        }
+    }
+
+    #[test]
+    fn non_exif_binaries_are_not_captured_as_image_leads() {
+        // PNG/GIF/SVG carry no EXIF GPS in practice and are deliberately absent
+        // from `util::exif::IMAGE_EXTS`; capturing them would spend an 8 MiB
+        // fetch each to learn nothing. Non-image binaries likewise.
+        let html = concat!(
+            r#"<a href="/logo.png">png</a>"#,
+            r#"<a href="/anim.gif">gif</a>"#,
+            r#"<a href="/icon.svg">svg</a>"#,
+            r#"<a href="/report.pdf">pdf</a>"#,
+            r#"<a href="/app.zip">zip</a>"#,
+        );
+        let mut state = empty_state();
+        extract_links(
+            html,
+            "https://example.com/",
+            "example.com",
+            "example.com",
+            &mut state,
+        );
+        assert!(
+            state.image_urls.is_empty(),
+            "no EXIF-incapable binary should become a lead, got {:?}",
+            state.image_urls
+        );
+    }
+
+    #[test]
+    fn image_leads_are_capped_and_deduplicated() {
+        // A gallery page must not turn one crawl into hundreds of image fetches.
+        let mut html: String = (0..IMAGE_LEADS_CAP + 25)
+            .map(|i| format!(r#"<a href="/img{i}.jpg">i</a>"#))
+            .collect();
+        // The same photo linked twice (thumbnail + full size) is one lead.
+        html.push_str(r#"<a href="/img0.jpg">dupe</a>"#);
+        let mut state = empty_state();
+        extract_links(
+            &html,
+            "https://example.com/",
+            "example.com",
+            "example.com",
+            &mut state,
+        );
+        // Emitted leads are capped and unique.
+        assert_eq!(state.image_urls.len(), IMAGE_LEADS_CAP);
+        let mut sorted = state.image_urls.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), state.image_urls.len(), "leads must be unique");
+        // But the TRUE discovered total is retained past the cap (25 more than
+        // the cap, minus the one duplicate `/img0.jpg`), so the evidence can
+        // report the real figure rather than the saturated one.
+        assert_eq!(state.image_urls_seen.len(), IMAGE_LEADS_CAP + 25);
     }
 
     #[test]

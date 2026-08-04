@@ -63,6 +63,16 @@ pub fn huntsman_dir() -> PathBuf {
 /// `$HOME/.huntsman/<name>` — a file directly under the base data directory,
 /// created (0700) on demand. The one-liner every per-file path accessor is built
 /// from (`data_file("key_pool.json")`, `data_file("settings.json")`, …).
+///
+/// Deliberately has **no env-var escape hatch**. An override that returned early
+/// would skip [`huntsman_dir`]'s `create_dir_private` — the sole mechanism that
+/// creates, and re-tightens, the base directory `0700` — so the key pool and key
+/// vault would land under the ambient umask (the exact exposure this module
+/// exists to close, see above). It would also desynchronise this accessor from
+/// [`subdir`]: `huntsman.db` would move while the `raw/` archive it indexes
+/// stayed behind. Tests get their isolation from the `cfg(test)` switch in
+/// [`huntsman_dir`] instead, which is compile-time and applies to every accessor
+/// uniformly.
 #[must_use]
 pub fn data_file(name: &str) -> PathBuf {
     huntsman_dir().join(name)

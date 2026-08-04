@@ -8,7 +8,7 @@
 **All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
 SpiderFoot-inspired breadth without the daemon or the footprint.**
 
-Pure-Rust OSINT / GEOINT platform with **171 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **170 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 dark-console Web UI, zero native dependencies, keyless-first.
 
@@ -166,9 +166,11 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 171 modules
+hse modules                                                 # list all 170 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
+hse query "melbourne coworking spaces"                      # general web search across the free engines
+hse query "acme.example" --dark                             # dark-web EXPOSURE: onion pages mentioning an asset
 hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
 hse scan --kind domain --value example.com --depth 2        # domain recon
 hse scan --kind email --value user@example.com --free-only  # email pivot (free only)
@@ -188,6 +190,24 @@ never touches your keys/config:
 scripts/standard-test.sh             # canonical seed (Kylo4kylo)
 scripts/standard-test.sh "<seed>"    # any handle/username
 ```
+
+### General & dark-web-exposure search — `hse query`
+
+Distinct from the entity-oriented `hse scan`, `hse query` runs an everyday
+free-text search across the free keyless engines and returns ranked web results
+— corroboration-weighted (how many independent engines surfaced each URL) and
+deduplicated:
+
+```bash
+hse query "who owns example.com"                    # general web search, table output
+hse query "site:gov.au grant register" --output json
+hse query "acme.example" --dark                     # dark-web exposure via Ahmia (clearnet)
+```
+
+`--dark` answers a **defensive** question — *is an asset you control (a domain,
+brand, or email) mentioned on Tor-indexed onion pages?* — by querying Ahmia's
+clearnet index. It reports the mention as evidence of exposure and never fetches
+the onion address itself.
 
 ---
 
@@ -214,7 +234,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ---
 
-## Module Overview (171 modules — 135 free, 36 key-gated/paid)
+## Module Overview (170 modules — 135 free, 35 key-gated/paid)
 
 > A curated highlight of the modules below (not the full list). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run
@@ -237,10 +257,10 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 - **Termux sensors**: `cell_intel`, `device_sensors`, `local_net`, `signal_radar`
 - **Other**: `api_key_probe`, `chain_intel`
 
-**Key-gated / Paid — 33 (28 key-gated · 5 paid):**
+**Key-gated / Paid — 32 (28 key-gated · 4 paid):**
 - `abn_lookup`, `abuseipdb`, `censys`, `criminal_ip`, `dehashed`, `emailrep`
 - `epieos`, `exa_search`, `fullcontact`, `hibp`, `hlr_cnam`, `hunter_io`, `intelx`, `ipqs`
-- `leakix`, `netlas`, `niamonx`, `numverify`, `oathnet_pro`, `onyphe`, `opencellid`, `osintcat`, `proxycurl`
+- `leakix`, `netlas`, `niamonx`, `numverify`, `oathnet_pro`, `onyphe`, `opencellid`, `osintcat`
 - `securitytrails`, `see_know`, `seon`, `threatfox`, `trove_au`, `virustotal`, `whoisxml`
 - `wifi_intel`, `wigle`, `zoomeye`
 

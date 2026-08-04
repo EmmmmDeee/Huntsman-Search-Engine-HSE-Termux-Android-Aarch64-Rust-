@@ -22,7 +22,7 @@ Huntsman Search Engine (HSE) **automatically** uses the SeekNow API for breach +
 cp .env.example ~/.huntsman.env
 
 # Add just your API key (HSE auto-configures everything else)
-echo 'export HUNTSMAN_SEEKNOW_KEY="seek-your-api-key-here"' >> ~/.huntsman.env
+echo 'HUNTSMAN_SEEKNOW_KEY="seek-your-api-key-here"' >> ~/.huntsman.env
 ```
 
 That's it! HSE **automatically**:
@@ -160,7 +160,7 @@ HSE extracts **17 entity types** from SeekNow responses across the 19 wired endp
 
 ```bash
 # Just add your key — HSE configures everything else automatically
-echo 'export HUNTSMAN_SEEKNOW_KEY="seek-your-api-key-here"' >> ~/.huntsman.env
+echo 'HUNTSMAN_SEEKNOW_KEY="seek-your-api-key-here"' >> ~/.huntsman.env
 
 # Verify setup
 hse doctor

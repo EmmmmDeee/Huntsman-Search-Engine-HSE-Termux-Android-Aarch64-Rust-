@@ -33,7 +33,7 @@ pub const KEY_ENV: &str = "HUNTSMAN_OATHNET_KEY";
 /// response. Empirically saves ~60% of OathNet API calls on expansion scans.
 ///
 /// Backed by the shared [`ResponseCache`] primitive (cap 1024).
-static RESPONSE_CACHE: ResponseCache<Vec<Value>> = ResponseCache::new(1024);
+static RESPONSE_CACHE: ResponseCache<SearchResult> = ResponseCache::new(1024);
 
 /// Shared curl-subprocess client. `x-api-key` auth, 12s curl timeout,
 /// 15s outer tokio timeout — same calibration as the SeekNow client
@@ -56,16 +56,95 @@ static BUDGET: QuotaBudget = QuotaBudget::new(
     "HUNTSMAN_OATHNET_SESSION_CAP",
 );
 
+/// Whether an enumeration returned the whole answer — and if not, what stopped
+/// it.
+///
+/// Pagination has six exits and five of them can leave the item set short. Every
+/// one used to return a bare `Vec<Value>` indistinguishable from a complete
+/// result, so a dossier built on a truncated sweep reported N findings with
+/// nothing saying more existed. Only the budget exit said anything at all, and
+/// only to the log.
+///
+/// The causes are kept apart rather than collapsed into one `truncated: bool`
+/// because an operator acts on them differently: raise the scan cap (which
+/// spends money), wait for the daily quota to reset, retry after a rate limit,
+/// or report a provider that advertises more pages without a cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Completeness {
+    /// The provider reported no further pages. This is the whole answer.
+    Complete,
+    /// The operator's own scan/session budget stopped pagination with more
+    /// pages available. The cap is a paid-quota spending guard and is working
+    /// as intended — the defect was never disclosing that it bit.
+    BudgetExhausted,
+    /// The provider's daily paid quota ran out mid-enumeration
+    /// (`left_today: 0`).
+    QuotaExhausted,
+    /// Rate-limited with no retries left, mid-enumeration.
+    RateLimited,
+    /// The provider reported `has_more` but supplied no cursor to continue.
+    CursorMissing,
+    /// A page *after* the first returned 404. Earlier pages are real; the rest
+    /// is unknown. A first-page 404 is a genuine empty result, not this.
+    PageVanished,
+}
+
+impl Completeness {
+    /// True when the item set is real but short of the full answer.
+    #[must_use]
+    pub fn is_partial(self) -> bool {
+        !matches!(self, Self::Complete)
+    }
+
+    /// Stable tag for evidence attributes and logs; `None` when complete.
+    #[must_use]
+    pub fn reason(self) -> Option<&'static str> {
+        match self {
+            Self::Complete => None,
+            Self::BudgetExhausted => Some("scan/session budget exhausted"),
+            Self::QuotaExhausted => Some("provider daily quota exhausted"),
+            Self::RateLimited => Some("rate-limited, retries exhausted"),
+            Self::CursorMissing => Some("provider reported more pages but gave no cursor"),
+            Self::PageVanished => Some("a page after the first returned 404"),
+        }
+    }
+}
+
+/// A page-set plus whether it is the whole answer.
+///
+/// Cached as a unit, deliberately: the truncation has to survive a cache hit or
+/// the second caller for the same `(path, field, value)` is told a partial set
+/// is complete — which is what happened before, since `cache_put` ran on every
+/// exit including the truncating ones.
+#[derive(Debug, Clone)]
+pub struct SearchResult {
+    pub items: Vec<Value>,
+    pub completeness: Completeness,
+}
+
+impl SearchResult {
+    fn new(items: Vec<Value>, completeness: Completeness) -> Self {
+        Self {
+            items,
+            completeness,
+        }
+    }
+}
+
 fn cache_key(path: &str, field: &str, value: &str) -> String {
     format!("{path}:{field}:{}", value.to_lowercase())
 }
 
-fn cache_get(key: &str) -> Option<Vec<Value>> {
+fn cache_get(key: &str) -> Option<SearchResult> {
     RESPONSE_CACHE.get(key)
 }
 
-fn cache_put(key: String, items: &[Value]) {
-    RESPONSE_CACHE.put(key, items.to_vec());
+/// Cache the page-set WITH its completeness, so a hit reports the same truth the
+/// original call did.
+fn cache_put(key: String, items: &[Value], completeness: Completeness) -> SearchResult {
+    let res = SearchResult::new(items.to_vec(), completeness);
+    RESPONSE_CACHE.put(key, res.clone());
+    res
 }
 
 /// Atomically reserve one query against the OathNet budget (see
@@ -394,13 +473,13 @@ pub async fn search(
     value: &str,
     page_size: u32,
     session_id: Option<&str>,
-) -> Result<Vec<Value>> {
+) -> Result<SearchResult> {
     let ck = cache_key(path, field, value);
     if let Some(cached) = cache_get(&ck) {
         return Ok(cached);
     }
     if is_quota_exhausted() || !budget_try_increment() {
-        return Ok(Vec::new());
+        return Ok(SearchResult::new(Vec::new(), Completeness::Complete));
     }
     // A search session (when the caller initialised one for this value) lets the
     // breach + stealer queries share ONE lookup. The id is threaded in
@@ -419,6 +498,9 @@ pub async fn search(
     // own scan/session budget is exhausted, exactly like a single-page query
     // already would, rather than a separately invented page-count cap.
     let mut all_items: Vec<Value> = Vec::new();
+    // Set by whichever exit stops pagination short; the loop's normal end
+    // leaves it `Complete`.
+    let mut completeness = Completeness::Complete;
     let mut cursor: Option<String> = None;
     loop {
         // Do NOT change filters between pages (the cursor is bound to the
@@ -470,8 +552,9 @@ pub async fn search(
                 || body.contains("\"is_unlimited\":false,\"left_today\":0")
             {
                 mark_quota_exhausted();
-                cache_put(ck, &all_items);
-                return Ok(all_items);
+                // The provider's paid daily quota ran out part-way through, so
+                // whatever pages we already have is all we will get today.
+                return Ok(cache_put(ck, &all_items, Completeness::QuotaExhausted));
             }
             let env: Envelope =
                 serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
@@ -494,18 +577,20 @@ pub async fn search(
                     // within-session re-queries. Only a true first-page 404 negative-
                     // caches an empty result; a 404 on a later page still returns
                     // whatever earlier pages already accumulated.
-                    if all_items.is_empty() {
-                        cache_put(ck, &[]);
+                    // A FIRST-page 404 is a genuine empty result and is
+                    // negative-cached as complete. A 404 on a later page means
+                    // earlier pages are real and the remainder is unknown.
+                    let completeness = if all_items.is_empty() {
+                        Completeness::Complete
                     } else {
-                        cache_put(ck, &all_items);
-                    }
-                    return Ok(all_items);
+                        Completeness::PageVanished
+                    };
+                    return Ok(cache_put(ck, &all_items, completeness));
                 }
                 if code == 429 {
                     if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
                         mark_quota_exhausted();
-                        cache_put(ck, &all_items);
-                        return Ok(all_items);
+                        return Ok(cache_put(ck, &all_items, Completeness::RateLimited));
                     }
                     let delay = RATE_LIMIT_BACKOFF.delay(attempt);
                     tracing::debug!(
@@ -560,12 +645,9 @@ pub async fn search(
                 Some(d) => d,
                 // Negative-cache empty data envelopes too (first page only).
                 None => {
-                    if all_items.is_empty() {
-                        cache_put(ck, &[]);
-                    } else {
-                        cache_put(ck, &all_items);
-                    }
-                    return Ok(all_items);
+                    // The provider returned an envelope with no data block: it
+                    // has nothing further, so this IS the whole answer.
+                    return Ok(cache_put(ck, &all_items, Completeness::Complete));
                 }
             };
             break serde_json::from_value(data)
@@ -587,7 +669,9 @@ pub async fn search(
         let Some(next) = continuation_cursor(has_more, next_cursor) else {
             if has_more {
                 // Server says more exist but gave no cursor to continue —
-                // nothing more this call can do.
+                // nothing more this call can do. The item set is short and the
+                // caller has to be told, not just the log.
+                completeness = Completeness::CursorMissing;
                 tracing::debug!(
                     path,
                     fetched = all_items.len(),
@@ -605,6 +689,7 @@ pub async fn search(
             // fetched rather than erroring, but say so — this is real,
             // honest partial data, not a silent truncation dressed up as
             // complete.
+            completeness = Completeness::BudgetExhausted;
             tracing::debug!(
                 path,
                 fetched = all_items.len(),
@@ -615,8 +700,7 @@ pub async fn search(
         cursor = Some(next);
     }
 
-    cache_put(ck, &all_items);
-    Ok(all_items)
+    Ok(cache_put(ck, &all_items, completeness))
 }
 
 /// Additively stamp each row with the canonical `breach_date` its OWN `dbname`

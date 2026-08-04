@@ -20,11 +20,23 @@
 //!   * ACN emitted for downstream abn_lookup: 0.82
 //!   * Address from registered office: 0.72
 //!
-//! Note: ASIC Connect Online is rate-limited by IP. This module uses a light
-//! scraping strategy with a single polite request per scan. The ABN/ACN pivot
-//! via `abn_lookup` then enriches the full company record including HQ address
-//! and geolocation — making this the highest-confidence AU geo pivot after a
-//! FullName seed.
+//! **Live status (2026-08-04):** a direct request to the endpoint above
+//! returns `403` — including with a full browser `User-Agent` header — which
+//! is an anti-bot/WAF (or JS-challenge) block, NOT the plain IP rate-limiting
+//! this doc previously assumed. A rate limit would show as an eventual `429`
+//! or a delayed `200`; an immediate, UA-independent `403` on every request
+//! means no plain HTTP client (this module's `reqwest`/`curl` transport
+//! included) can currently pass it without a headless-browser-class
+//! workaround. Confirmed live from a non-residential IP; not yet confirmed
+//! whether a Termux/mobile-carrier IP fares differently. No fix attempted
+//! here — this is the module's next candidate work, the same
+//! "confirmed-dead-endpoint, no rewrite yet" pattern already documented for
+//! `au_property`'s three legs.
+//!
+//! This module uses a light scraping strategy with a single polite request
+//! per scan. The ABN/ACN pivot via `abn_lookup` then enriches the full
+//! company record including HQ address and geolocation — making this the
+//! highest-confidence AU geo pivot after a FullName seed, when reachable.
 //!
 //! `process()` distinguishes "the request never actually got a readable
 //! response" (a real `Error::module` failure, surfaced to the operator and to

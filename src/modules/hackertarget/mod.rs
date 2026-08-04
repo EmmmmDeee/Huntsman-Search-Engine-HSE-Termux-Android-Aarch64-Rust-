@@ -205,7 +205,7 @@ impl HackerTarget {
             .await?;
 
         if !resp.status().is_success() {
-            return Err(Error::module(SRC, format!("HTTP {}", resp.status())));
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
         let body = crate::util::http::read_text(SRC, resp).await?;

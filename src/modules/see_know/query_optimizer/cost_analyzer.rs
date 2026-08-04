@@ -166,7 +166,7 @@ mod tests {
     fn test_credit_costs() {
         let analyzer = CostAnalyzer::new();
         assert_eq!(analyzer.get_credit_cost("/search"), 1.0);
-        assert_eq!(analyzer.get_credit_cost("/search/deep"), 3.0);
+        assert_eq!(analyzer.get_credit_cost("/search/deep"), 1.0);
         assert_eq!(analyzer.get_credit_cost("/enterprise/discord/history"), 5.0);
         assert_eq!(analyzer.get_credit_cost("/credits"), 0.0);
     }

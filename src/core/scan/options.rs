@@ -371,7 +371,7 @@ const _: () = assert!(DEFAULT_SCAN_DEPTH == MAX_DEPTH);
 
 /// Default hard cap on total entities for the `hse scan` product surface, applied
 /// at the CLI boundary when the operator gives no explicit `--max-entities`. Now
-/// that the default scan is comprehensive (depth [`MAX_DEPTH`], a 0.20 expansion
+/// that the default scan is comprehensive (depth 3, a 0.20 expansion
 /// floor), a common-name seed could otherwise fan the frontier out without bound —
 /// hundreds of breach/permutation identifiers, each re-expanded — and exhaust RAM
 /// on a 4 GB no-root Termux device. This generous ceiling (≈4× a typical scan's

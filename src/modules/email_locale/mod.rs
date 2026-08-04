@@ -147,7 +147,7 @@ impl Module for EmailLocale {
                 let mut ce = Entity::new(
                     EntityKind::Coordinates,
                     &coords,
-                    geo.confidence - 0.10,
+                    confidence::derived_from(geo.confidence),
                     &ctx.scan_id,
                 );
                 ce.tag("geoint");
