@@ -50,6 +50,25 @@
       "after": "all rows parse as 4 fields; value quoted per RFC 4180; kind/source_pattern also escaped; formula guard applied",
       "verified": "scripts/gate.sh --quick: 7 executed checks PASS, 4 skipped (MSRV, aarch64 cross-build, shellcheck, audit/deny/machete)",
       "tests_added": 3
+    },
+    {
+      "cycle": 0,
+      "slot": 2,
+      "category": "HARDENING",
+      "title": "hse ingest --min-confidence nan|inf|out-of-range silently discarded the entire result set",
+      "files": [
+        "src/util/entity_extractor/mod.rs",
+        "src/util/entity_extractor/extractor.rs",
+        "src/util/entity_extractor/classifier.rs",
+        "src/cli/command.rs"
+      ],
+      "evidence_level": "L4 (reproduced end-to-end with the real binary before and after)",
+      "before": "--min-confidence nan -> exit 0, empty deliverable, 3 entities dropped with no error",
+      "after": "nan/inf/5.0 -> exit 2 with a clap usage error naming the reason; 0.0/0.30/1.0 unaffected",
+      "also": "typed ExtractionError::InvalidConfidenceFloor; both Default impls de-panicked (now structurally panic-free); Debug/Clone/Copy derived on EntityExtractor and EntityClassifier",
+      "verified": "scripts/gate.sh --quick: 7 executed checks PASS, 4 skipped",
+      "tests_added": 9,
+      "note": "clippy caught default_constructed_unit_structs on the first attempt; fixed in place before commit"
     }
   ],
   "rejected_candidates": [
@@ -70,13 +89,5 @@
       "why": "Naive greps overstate by ~6x (393 -> 59 after excluding tests.rs, inline cfg(test) mods, and doc examples). All 59 survivors are guarded by an immediately-preceding invariant that the message names. Zero unwrap/panic/unreachable in production code."
     }
   ],
-  "open_defects": [
-    {
-      "id": "min-confidence-unvalidated",
-      "category": "HARDENING",
-      "slot_planned": 2,
-      "detail": "hse ingest --min-confidence nan|inf|5.0 exits 0 with a completely empty deliverable, silently dropping every entity. Verified end-to-end. src/core/scan/options.rs guards the scan path with three is_finite() accessors (lines 427/441/449); the ingest path has no equivalent. No value_parser on any of the 7 f64 CLI args.",
-      "status": "open \u2014 resolved as slot 2 of this cycle"
-    }
-  ]
+  "open_defects": []
 }

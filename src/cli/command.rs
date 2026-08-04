@@ -9,6 +9,30 @@ use clap::{Parser, Subcommand};
 
 use super::keys_cmd::KeysAction;
 
+/// Parse a `--min-confidence` argument, rejecting anything that is not a usable
+/// threshold.
+///
+/// `f64::from_str` accepts `nan` and `inf`, and clap's default `f64` parser
+/// takes them verbatim. A NaN floor makes the extractor's
+/// `confidence >= min_confidence` filter false for every entity, so the command
+/// used to exit 0 having silently discarded its entire result set — the failure
+/// mode this crate treats as its cardinal sin. Rejecting at the argument
+/// boundary turns that into a clap usage error, before any work is done, and
+/// finally enforces the `(0.0-1.0)` range the flag's own help text has always
+/// advertised.
+fn confidence_floor(s: &str) -> Result<f64, String> {
+    let v: f64 = s
+        .parse()
+        .map_err(|_| format!("`{s}` is not a number (expected 0.0-1.0)"))?;
+    if !v.is_finite() {
+        return Err(format!("`{s}` is not a finite number (expected 0.0-1.0)"));
+    }
+    if !(0.0..=1.0).contains(&v) {
+        return Err(format!("`{s}` is outside the range 0.0-1.0"));
+    }
+    Ok(v)
+}
+
 #[derive(Parser)]
 #[command(
     name = "hse",
@@ -410,7 +434,7 @@ pub enum Command {
         #[arg(short = 'F', long, default_value = "jsonl")]
         output_format: String,
         /// Minimum confidence threshold (0.0-1.0, default 0.30).
-        #[arg(long, default_value = "0.30")]
+        #[arg(long, default_value = "0.30", value_parser = confidence_floor)]
         min_confidence: f64,
         /// Auto-scan extracted entities (NOT IMPLEMENTED — warns and runs no scan).
         #[arg(long)]
@@ -713,5 +737,48 @@ mod tests {
     #[test]
     fn cli_definition_is_internally_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn confidence_floor_accepts_the_documented_range_inclusive() {
+        for s in ["0.0", "0.30", "0.5", "1.0"] {
+            assert!(
+                confidence_floor(s).is_ok(),
+                "{s} is inside the advertised 0.0-1.0 range"
+            );
+        }
+    }
+
+    #[test]
+    fn confidence_floor_rejects_non_finite_values() {
+        // Regression: `f64::from_str` accepts these, and clap's stock f64
+        // parser passed them straight through. A NaN floor made the extractor's
+        // `confidence >= floor` filter false for EVERY entity, so
+        // `hse ingest --min-confidence nan` exited 0 having emitted nothing at
+        // all — silent total data loss, no error, no warning.
+        for s in ["nan", "NaN", "inf", "-inf", "infinity"] {
+            let err = confidence_floor(s).expect_err("{s} must be rejected");
+            assert!(
+                err.contains("finite"),
+                "the message must name the reason, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn confidence_floor_rejects_values_outside_zero_to_one() {
+        for s in ["1.0001", "5.0", "-0.5", "1e9"] {
+            let err = confidence_floor(s).expect_err("{s} must be rejected");
+            assert!(
+                err.contains("0.0-1.0"),
+                "the message must name the range, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn confidence_floor_rejects_non_numeric_input() {
+        let err = confidence_floor("high").expect_err("non-numeric must be rejected");
+        assert!(err.contains("not a number"), "got: {err}");
     }
 }
