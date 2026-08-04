@@ -2860,12 +2860,77 @@ fn call_args(s: &str) -> Option<Vec<String>> {
     None
 }
 
-/// True for a bare float literal such as `0.68` — the thing this invariant
-/// forbids. A `confidence::HIGH_PLUS` path, or any compound expression, is not.
-fn is_bare_float(s: &str) -> bool {
-    let t = s.trim();
-    t.strip_prefix("0.")
-        .is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
+/// Every bare float literal (`0.68`) appearing anywhere in `s`, in order.
+///
+/// # Why "anywhere" and not "is the whole argument"
+///
+/// This used to be `is_bare_float(&args[2])`, true only when the confidence
+/// argument was a lone literal. A literal *embedded in an expression* was
+/// therefore invisible, and `steam_profile` has three:
+/// `(conf - 0.27).max(0.42)`, `(conf - 0.33).max(0.42)`,
+/// `(conf - 0.25).max(0.38)`. Each `.max(..)` is a hardcoded confidence floor —
+/// exactly the unauditable magic number the invariant exists to forbid — and
+/// each sailed past the ratchet.
+///
+/// The inventory was visibly inconsistent as a result:
+/// `asic_business_names`'s bare `0.42` was baselined while `steam_profile`'s
+/// identical `0.42` was not, purely because one sat in an expression.
+///
+/// Only `0.NN` is matched, which is the entire ladder's shape, and a leading
+/// alphanumeric, `_` or `.` disqualifies the match so an identifier or a
+/// dotted path cannot be misread as a literal.
+fn bare_float_literals(s: &str) -> Vec<String> {
+    let c: Vec<char> = s.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < c.len() {
+        let starts_literal = c[i] == '0'
+            && c.get(i + 1) == Some(&'.')
+            && (i == 0 || !(c[i - 1].is_alphanumeric() || c[i - 1] == '_' || c[i - 1] == '.'));
+        if starts_literal {
+            let mut j = i + 2;
+            while j < c.len() && c[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > i + 2 {
+                out.push(c[i..j].iter().collect::<String>());
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// The slicing and literal detection the confidence ratchet depends on, asserted
+/// directly — a ratchet whose scanner is untested measures whatever it reaches.
+#[test]
+fn bare_float_detection_sees_literals_inside_expressions() {
+    // The shape that used to evade the ratchet entirely.
+    assert_eq!(
+        bare_float_literals("(conf - 0.27).max(0.42)"),
+        vec!["0.27".to_string(), "0.42".to_string()]
+    );
+    // A lone literal still matches, as before.
+    assert_eq!(bare_float_literals("0.68"), vec!["0.68".to_string()]);
+    assert_eq!(bare_float_literals(" 0.68 "), vec!["0.68".to_string()]);
+    // Named constants are not literals, however they are combined.
+    assert!(bare_float_literals("confidence::HIGH_PLUS").is_empty());
+    // Equality, not `.all(..)`: `all` on an empty iterator is TRUE, so the
+    // obvious spelling would still pass if the detector regressed to finding
+    // nothing — a check that certifies what it never verified, which is the
+    // exact class of defect this ratchet exists to catch.
+    assert_eq!(
+        bare_float_literals("(conf - 0.13).max(confidence::LOW_MEDIUM)"),
+        vec!["0.13".to_string()]
+    );
+    // An identifier or dotted path that merely contains the characters must not
+    // be misread — `v0.42` is a name, `x.0.42` is field access.
+    assert!(bare_float_literals("v0.42").is_empty());
+    assert!(bare_float_literals("tuple.0.42").is_empty());
+    // `0.` with no digits is not a literal we recognise.
+    assert!(bare_float_literals("0.").is_empty());
 }
 
 /// Blank the *contents* of comments and string/char literals, preserving **byte**
@@ -3350,8 +3415,10 @@ fn collect_bare_confidence(dir: &Path, root: &Path, out: &mut Vec<(String, Strin
                 continue;
             };
             // Entity::new(kind, value, confidence, scan_id)
-            if args.len() >= 3 && is_bare_float(&args[2]) {
-                out.push((rel.clone(), args[2].trim().to_string()));
+            if args.len() >= 3 {
+                for lit in bare_float_literals(&args[2]) {
+                    out.push((rel.clone(), lit));
+                }
             }
         }
     }
@@ -3425,10 +3492,41 @@ fn entity_confidence_uses_named_ladder_constants() {
         ("src/modules/oathnet_pro/breach.rs", "0.70"), // [revealed]
         ("src/modules/opencorporates/mod.rs", "0.68"), // [revealed]
         ("src/modules/opencorporates/mod.rs", "0.68"), // [revealed]
+        // ── [embedded] ───────────────────────────────────────────────────
+        // Literals inside a compound confidence argument, invisible until
+        // `bare_float_literals` replaced the whole-argument test. Like the
+        // `[revealed]` rows they pre-date this inventory; unlike them they are
+        // DELIBERATE, and `derived_confidence_goes_through_the_shared_step`
+        // records the same families with the reasons in full:
+        //
+        //   * `phone_geo` steps by 0.08, not the shared 0.10 — a country
+        //     centroid from a dialling prefix is a different inference.
+        //   * `steam_profile` runs a graded family (0.05 … 0.33) with per-kind
+        //     floors, ranking eight kinds of profile-derived signal against one
+        //     another. Its `.max(0.42)` / `.max(0.38)` floors are the two rows
+        //     that genuinely should be named — its other floors already are
+        //     (`.max(confidence::LOW_MEDIUM)`), which makes these inconsistent
+        //     rather than principled.
+        //
+        // The two ratchets deliberately overlap here: one asks whether the
+        // derivation STEP is hand-rolled, this one asks whether a bare float
+        // sits in an `Entity::new` confidence argument. The `0.27` in
+        // `(conf - 0.27).max(0.42)` is honestly both.
+        ("src/modules/phone_geo/mod.rs", "0.08"), // [embedded]
         ("src/modules/see_know/extract/mod.rs", "0.70"), // [revealed]
         ("src/modules/sourceforge_user/mod.rs", "0.79"), // [revealed]
         ("src/modules/sourceforge_user/mod.rs", "0.86"), // [revealed]
-        ("src/modules/whois/mod.rs", "0.68"),          // [revealed]
+        ("src/modules/steam_profile/mod.rs", "0.05"), // [embedded]
+        ("src/modules/steam_profile/mod.rs", "0.13"), // [embedded]
+        ("src/modules/steam_profile/mod.rs", "0.15"), // [embedded]
+        ("src/modules/steam_profile/mod.rs", "0.20"), // [embedded]
+        ("src/modules/steam_profile/mod.rs", "0.25"), // [embedded]
+        ("src/modules/steam_profile/mod.rs", "0.27"), // [embedded]
+        ("src/modules/steam_profile/mod.rs", "0.33"), // [embedded]
+        ("src/modules/steam_profile/mod.rs", "0.38"), // [embedded] hardcoded floor
+        ("src/modules/steam_profile/mod.rs", "0.42"), // [embedded] hardcoded floor
+        ("src/modules/steam_profile/mod.rs", "0.42"), // [embedded] hardcoded floor
+        ("src/modules/whois/mod.rs", "0.68"),     // [revealed]
     ];
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
