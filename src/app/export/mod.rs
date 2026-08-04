@@ -103,7 +103,8 @@ pub async fn cmd_export(
                 crate::util::atomic_file::write(std::path::Path::new(&path), body.as_bytes())
                     .map_err(|e| Error::Other(format!("write {path}: {e}")))?;
             } else {
-                std::fs::write(&path, &body)
+                tokio::fs::write(&path, &body)
+                    .await
                     .map_err(|e| Error::Other(format!("write {path}: {e}")))?;
             }
             eprintln!("exported {} bytes to {path}", body.len());

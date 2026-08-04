@@ -74,7 +74,7 @@ pub async fn cmd_doctor(live: bool) -> Result<()> {
             // WAL high-water mark: a never-checkpointed `-wal` can grow without
             // bound under a long-lived process. Report it so the operator can
             // see (and a TRUNCATE checkpoint at the next scan boundary resets it).
-            if let Ok(meta) = std::fs::metadata(format!("{db_path}-wal")) {
+            if let Ok(meta) = tokio::fs::metadata(format!("{db_path}-wal")).await {
                 let kib = meta.len() / 1024;
                 println!("  WAL size:   {kib} KiB");
                 if meta.len() > 64 * 1024 * 1024 {

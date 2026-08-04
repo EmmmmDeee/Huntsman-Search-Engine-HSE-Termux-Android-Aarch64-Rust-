@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "cycle_count": 1,
-  "last_verified_commit": "46623417",
+  "last_verified_commit": "pending-slot2",
   "baseline": {
     "commit": "46623417",
     "branch": "claude/huntsman-price-analysis-ewy20t",
@@ -42,6 +42,15 @@
       "instruction": "Remove stray U+2078 breaking the SECURITY.md H1; replace the garbled supported-versions sentence. Preserve the maintainer's scope wording verbatim.",
       "outcome": "Done. head -1 is now exactly '# Security Policy'. Only remaining non-ASCII is the em-dash in the maintainer's own scope sentence (intended punctuation, untouched). Diff touches only the 2 target lines.",
       "verification": "cargo fmt --check clean; clippy -D warnings silent; cargo test --all-features 6225 passed / 0 failed. No Rust source parses SECURITY.md (only a //! doc-comment reference in util/ahmia/mod.rs), so the gate was structurally unaffected \u2014 run anyway rather than assumed."
+    },
+    {
+      "cycle": 1,
+      "slot": 2,
+      "category": "HARDENING",
+      "instruction": "Move blocking std::fs off the async runtime in src/app; app::cells is HTTP-reachable on a 2-worker runtime.",
+      "outcome": "Spec UNDERSTATED the defect. The real issue was not the 3 std::fs calls but that download_and_import (reachable from POST /api/v1/cells/import via cells_handlers.rs:196, verified) called import_from_file synchronously \u2014 a fn that opens a SQLite write connection and parses a gzip CSV bounded only by MAX_DECOMPRESSED_BYTES = 16 GiB, inserting every row. On a 2-worker runtime (WORKER_THREADS, main.rs) one web-triggered import stalled half the executor for the whole parse. The streaming download above it was already correctly async. Fix: import_from_file stays private+sync; new import_from_file_off_runtime is the ONLY async path in, so the blocking version cannot be reached from async by accident; a panic in the import now returns Err instead of unwinding a worker. Five CLI-only sites (export/import/local/doctor) converted to tokio::fs.",
+      "verification": "cargo fmt --check clean; clippy --all-targets --all-features -D warnings silent; cargo test --all-features 6226 passed / 0 failed (was 6225 \u2014 +1 new boundary test). New test off_runtime_import_propagates_the_same_error_as_the_blocking_call asserts the wrapper is behaviourally transparent.",
+      "self_correction": "My own async-detection scanner MISSED export/mod.rs:106 and local.rs:139 (brace-tracking bug); caught by manual per-file verification. The 2 remaining std::fs:: in src/app (cells:340, local.rs:96) are inside SYNCHRONOUS fns \u2014 blocking IO there is correct, not a miss."
     }
   ],
   "rejected_candidates": [

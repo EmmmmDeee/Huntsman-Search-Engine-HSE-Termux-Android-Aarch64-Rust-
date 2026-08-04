@@ -170,7 +170,7 @@ async fn cmd_import(
     key_override: Option<String>,
 ) -> Result<()> {
     match (file, country) {
-        (Some(path), _) => import_from_file(&path, None),
+        (Some(path), _) => import_from_file_off_runtime(path, None).await,
         (None, Some(ref country)) => {
             let mcc = mcc_for_country(country);
 
@@ -273,7 +273,7 @@ pub(crate) async fn download_and_import(url: &str, filename: &str, mcc: Option<i
                 chunk.map_err(|e| Error::Other(format!("Download error: {}", e.without_url())))?;
             total += chunk.len() as u64;
             if total > MAX_DOWNLOAD_BYTES {
-                let _ = std::fs::remove_file(&tmp);
+                let _ = tokio::fs::remove_file(&tmp).await;
                 return Err(Error::Other(format!(
                     "download exceeds the {MAX_DOWNLOAD_BYTES}-byte cap — refusing (host may be compromised)"
                 )));
@@ -284,8 +284,11 @@ pub(crate) async fn download_and_import(url: &str, filename: &str, mcc: Option<i
         }
     }
 
-    let result = import_from_file(tmp.to_str().unwrap_or(filename), mcc);
-    let _ = std::fs::remove_file(&tmp);
+    // Preserves the previous fallback: a temp path that is not valid UTF-8
+    // degrades to `filename` rather than failing the import outright.
+    let import_path = tmp.to_str().unwrap_or(filename).to_string();
+    let result = import_from_file_off_runtime(import_path, mcc).await;
+    let _ = tokio::fs::remove_file(&tmp).await;
     result
 }
 
@@ -298,6 +301,30 @@ fn tempfile_path() -> std::path::PathBuf {
 }
 
 // ── file import ───────────────────────────────────────────────────────────────
+
+/// The ONLY path async code may take into [`import_from_file`].
+///
+/// [`import_from_file`] is CPU- and IO-bound to a degree that makes running it
+/// on a tokio worker a real stall, not a theoretical one: it opens a SQLite
+/// write connection and parses a gzip CSV bounded only by
+/// [`MAX_DECOMPRESSED_BYTES`] (16 GiB), inserting every row. The runtime is
+/// deliberately sized at 2 worker threads for low-power Termux devices
+/// (`WORKER_THREADS` in `main.rs`), and `POST /api/v1/cells/import` reaches
+/// this through `api::cells_handlers` → [`download_and_import`] — so a single
+/// web-triggered OpenCelliD import previously blocked *half* the server's
+/// executor for the duration of a multi-gigabyte parse. The streaming download
+/// directly above it was already correctly async (`tokio::fs` +
+/// `AsyncWriteExt`); only the import was synchronous.
+///
+/// Keeping [`import_from_file`] private and routing both async callers through
+/// this wrapper means the blocking version cannot be reached from async code
+/// by accident. A panic inside the import surfaces as a normal `Err` here
+/// rather than unwinding a worker thread.
+async fn import_from_file_off_runtime(path: String, mcc_hint: Option<i64>) -> Result<()> {
+    tokio::task::spawn_blocking(move || import_from_file(&path, mcc_hint))
+        .await
+        .map_err(|e| Error::Other(format!("cell-tower import task failed: {e}")))?
+}
 
 fn import_from_file(path: &str, mcc_hint: Option<i64>) -> Result<()> {
     let p = std::path::Path::new(path);
