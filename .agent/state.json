@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "cycle_count": 0,
+  "last_verified_commit": "bf4d8c317",
+  "branch": "claude/new-session-56pt8z",
+  "baseline": {
+    "measured_at_commit": "bf4d8c317",
+    "build": "clean",
+    "test": "6231 passed / 0 failed / 24 ignored",
+    "clippy_D_warnings": "silent",
+    "fmt": "clean",
+    "rustdoc_lints": "clean",
+    "files_rs": 923,
+    "lines_rs": 307682,
+    "production_unwrap": 0,
+    "production_panic_unreachable": 0,
+    "production_expect": 59,
+    "production_let_underscore": 241,
+    "production_ok_discard": 7,
+    "todo_unimplemented_macros": 0,
+    "note": "Counts exclude *tests.rs, inline #[cfg(test)] mod blocks, and doc comments. Naive greps overstate these by ~6x (393 vs 59 for expect) because this crate keeps tests inline and writes long doc examples."
+  },
+  "environment": {
+    "cargo_audit": "absent",
+    "cargo_udeps": "absent",
+    "cargo_machete": "absent",
+    "cargo_deny": "absent",
+    "cargo_fuzz": "absent",
+    "note": "CI is the authority for these; this host cannot run them."
+  },
+  "invariants": {
+    "unsafe": "#![forbid(unsafe_code)] \u2014 zero unsafe blocks confirmed",
+    "features": "Cargo.toml has NO [features] section; --all-features is a no-op",
+    "msrv": "1.88",
+    "edition": "2024",
+    "toolchain_pin": "1.97.1",
+    "publish": false
+  },
+  "completed_slots": [
+    {
+      "cycle": 0,
+      "slot": 1,
+      "category": "DEBUG",
+      "title": "ingest CSV export emitted non-RFC-4180 backslash escapes and bypassed the formula-injection guard",
+      "files": [
+        "src/cli/ingest/mod.rs"
+      ],
+      "evidence_level": "L4 (reproduced end-to-end with the real binary before and after)",
+      "before": "hse ingest -F csv on a value containing commas produced a 6-field row against a 4-field header",
+      "after": "all rows parse as 4 fields; value quoted per RFC 4180; kind/source_pattern also escaped; formula guard applied",
+      "verified": "scripts/gate.sh --quick: 7 executed checks PASS, 4 skipped (MSRV, aarch64 cross-build, shellcheck, audit/deny/machete)",
+      "tests_added": 3
+    }
+  ],
+  "rejected_candidates": [
+    {
+      "candidate": "Test-coverage gap in util/geohash/country.rs",
+      "why": "FALSE POSITIVE \u2014 tests live in a sibling tests.rs wired via mod.rs; 18 assertions incl. the shadow test. Directory-proximity heuristics do not work on this crate."
+    },
+    {
+      "candidate": "Test-coverage gap in core/correlator/rules/geo/profile.rs (AU-018)",
+      "why": "FALSE POSITIVE \u2014 correlator/tests.rs:5193 calls rule_au_018_email_address_colocation directly; extract_ratemyagent_suburb tested in geo/mod.rs:506."
+    },
+    {
+      "candidate": "Dedupe the 7 duplicate dependency roots",
+      "why": "Only tower-http is direct; the rest are transitive, mostly via the criterion dev-dependency. Churning them buys nothing and cannot be verified here (cargo-tree only)."
+    },
+    {
+      "candidate": "Panic-surface audit of .expect() call sites",
+      "why": "Naive greps overstate by ~6x (393 -> 59 after excluding tests.rs, inline cfg(test) mods, and doc examples). All 59 survivors are guarded by an immediately-preceding invariant that the message names. Zero unwrap/panic/unreachable in production code."
+    }
+  ],
+  "open_defects": [
+    {
+      "id": "min-confidence-unvalidated",
+      "category": "HARDENING",
+      "slot_planned": 2,
+      "detail": "hse ingest --min-confidence nan|inf|5.0 exits 0 with a completely empty deliverable, silently dropping every entity. Verified end-to-end. src/core/scan/options.rs guards the scan path with three is_finite() accessors (lines 427/441/449); the ingest path has no equivalent. No value_parser on any of the 7 f64 CLI args.",
+      "status": "open \u2014 resolved as slot 2 of this cycle"
+    }
+  ]
+}

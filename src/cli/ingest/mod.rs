@@ -356,15 +356,31 @@ fn format_output(
         )
         .to_string()),
 
+        // Emitted through the crate's single CSV escaper — the same one
+        // `api::scan_export` uses and `app::import::csv` inverts — rather than a
+        // local rule. The previous `value.replace(',', "\\,")` was not CSV at
+        // all: RFC 4180 escapes by quoting the field, not by backslashing the
+        // delimiter, so a value carrying a comma (an extracted URL such as
+        // `https://example.com/path,with,commas` is the common case) split into
+        // extra columns in every conforming reader, and a value carrying `"`,
+        // CR or LF broke the row structure outright. Escaping only `value` also
+        // left the other three columns unguarded.
+        //
+        // The bypass additionally skipped [`csv_escape`]'s formula-injection
+        // guard, which matters more here than on any other export path: ingest's
+        // input is an untrusted document, so a crafted value beginning `=`/`+`/
+        // `-`/`@` became a live formula when the operator opened the export in
+        // Excel or LibreOffice — the exact OWASP case that guard exists to defang.
         "csv" => {
+            use crate::api::scan_export::csv_escape;
             let mut csv = String::from("kind,value,confidence,source_pattern\n");
             for e in entities {
                 csv.push_str(&format!(
                     "{},{},{},{}\n",
-                    e.kind.to_str(),
-                    e.value.replace(',', "\\,"),
+                    csv_escape(e.kind.to_str()),
+                    csv_escape(&e.value),
                     e.confidence,
-                    e.source_pattern
+                    csv_escape(&e.source_pattern)
                 ));
             }
             Ok(csv)
@@ -417,6 +433,109 @@ mod tests {
         let output = format_output(&sample(), "jsonl", "notes.txt").expect("should succeed");
         assert!(output.contains("test@example.com"));
         assert!(output.contains("email"));
+    }
+
+    /// Build a one-entity sample carrying `value`, for the CSV escaping tests.
+    fn sample_valued(value: &str) -> Vec<crate::util::entity_extractor::ExtractedEntity> {
+        vec![crate::util::entity_extractor::ExtractedEntity {
+            kind: EntityKind::Url,
+            value: value.to_string(),
+            confidence: 0.8,
+            context: None,
+            source_pattern: "url_http".to_string(),
+            boost_reason: None,
+        }]
+    }
+
+    /// Split one CSV record the way a conforming RFC-4180 reader does: fields
+    /// separated by commas, except inside a `"`-quoted field, where `""` is a
+    /// literal quote. Deliberately a local reader rather than the crate's own
+    /// importer, so this pins the *interchange* contract (what any spreadsheet
+    /// or `csv` library sees) and not merely round-tripping through HSE.
+    fn rfc4180_fields(record: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut cur = String::new();
+        let mut in_quotes = false;
+        let mut chars = record.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '"' if in_quotes && chars.peek() == Some(&'"') => {
+                    chars.next();
+                    cur.push('"');
+                }
+                '"' => in_quotes = !in_quotes,
+                ',' if !in_quotes => out.push(std::mem::take(&mut cur)),
+                _ => cur.push(c),
+            }
+        }
+        out.push(cur);
+        out
+    }
+
+    #[test]
+    fn format_csv_keeps_a_comma_bearing_value_in_one_field() {
+        // Regression: the emitter used `value.replace(',', "\\,")`, which is not
+        // RFC 4180 — a conforming reader saw `https://example.com/path\` +
+        // `with\` + `commas` as three fields, so this row carried 6 columns
+        // against a 4-column header and every later column shifted.
+        let out = format_output(
+            &sample_valued("https://example.com/path,with,commas"),
+            "csv",
+            "notes.txt",
+        )
+        .expect("csv formatting must succeed");
+
+        let mut lines = out.lines();
+        let header = rfc4180_fields(lines.next().expect("header row"));
+        let row = rfc4180_fields(lines.next().expect("data row"));
+
+        assert_eq!(header.len(), 4, "header is kind,value,confidence,pattern");
+        assert_eq!(
+            row.len(),
+            header.len(),
+            "a comma inside a value must not create extra columns: {row:?}"
+        );
+        assert_eq!(row[1], "https://example.com/path,with,commas");
+        assert!(
+            !out.contains("\\,"),
+            "backslash-escaping is not CSV and must not reappear"
+        );
+    }
+
+    #[test]
+    fn format_csv_survives_quotes_and_newlines_in_a_value() {
+        let out = format_output(
+            &sample_valued("say \"hi\"\nsecond line"),
+            "csv",
+            "notes.txt",
+        )
+        .expect("csv formatting must succeed");
+        // The embedded LF is inside a quoted field, so the record spans two
+        // physical lines; parse the whole body after the header as one record.
+        let body = out
+            .split_once('\n')
+            .expect("header then body")
+            .1
+            .trim_end_matches('\n');
+        let row = rfc4180_fields(body);
+        assert_eq!(row.len(), 4, "quotes/newlines must stay inside one field");
+        assert_eq!(row[1], "say \"hi\"\nsecond line");
+    }
+
+    #[test]
+    fn format_csv_defangs_a_spreadsheet_formula_from_an_ingested_document() {
+        // Ingest's input is an untrusted document, so a value beginning `=`
+        // would execute on open in Excel/LibreOffice. The shared escaper's
+        // apostrophe guard must apply here exactly as it does on the API
+        // export path — the old local rule skipped it entirely.
+        let out = format_output(&sample_valued("=cmd|'/c calc'!A1"), "csv", "notes.txt")
+            .expect("csv formatting must succeed");
+        let row = rfc4180_fields(out.lines().nth(1).expect("data row"));
+        assert!(
+            row[1].starts_with('\''),
+            "a leading `=` must be neutralised with the apostrophe guard: {:?}",
+            row[1]
+        );
     }
 
     #[test]
