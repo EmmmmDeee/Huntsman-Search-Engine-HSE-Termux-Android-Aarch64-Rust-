@@ -129,7 +129,7 @@ use super::*;
         let key = "reset_budget_clears_cache_test_key";
         cache_put(
             key.to_string(),
-            &[json!({"stale": true})],
+            vec![json!({"stale": true})],
             Completeness::Complete,
         );
         assert!(
@@ -612,7 +612,7 @@ use super::*;
         let key = "truncation_survives_cache_test_key";
         let partial = cache_put(
             key.to_string(),
-            &[json!({"row": 1})],
+            vec![json!({"row": 1})],
             Completeness::BudgetExhausted,
         );
         assert!(partial.completeness.is_partial());
