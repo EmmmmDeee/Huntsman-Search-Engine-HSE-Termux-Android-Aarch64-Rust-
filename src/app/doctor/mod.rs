@@ -681,13 +681,14 @@ fn format_weak_findings(anomalies: &[EvidenceAnomaly]) -> String {
     // a real report showed 1346 findings whose every printed row was the same
     // module at the same confidence, which reads as "1346 things to review"
     // rather than "one module emits 1340 speculative pivots at its floor".
-    let mut counts: Vec<(&str, usize)> = Vec::new();
+    let mut tally: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for a in anomalies {
-        match counts.iter_mut().find(|(m, _)| *m == a.module_name) {
-            Some((_, n)) => *n += 1,
-            None => counts.push((&a.module_name, 1)),
-        }
+        *tally.entry(a.module_name.as_str()).or_default() += 1;
     }
+    // Sorted into a total order (count desc, then name) — a HashMap's iteration
+    // order is arbitrary, and a diagnostic report that reshuffles between runs on
+    // identical data is not one an operator can diff.
+    let mut counts: Vec<(&str, usize)> = tally.into_iter().collect();
     counts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
     out.push_str("    by module: ");
     out.push_str(
@@ -710,22 +711,18 @@ fn format_weak_findings(anomalies: &[EvidenceAnomaly]) -> String {
     // weak findings is represented.
     const SHOWN: usize = 20;
     const PER_MODULE: usize = 3;
-    let mut printed_per_module: Vec<(&str, usize)> = Vec::new();
+    let mut printed_per_module: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::new();
     let mut printed = 0usize;
     for a in anomalies {
         if printed >= SHOWN {
             break;
         }
-        let seen = match printed_per_module
-            .iter_mut()
-            .find(|(m, _)| *m == a.module_name)
-        {
-            Some((_, n)) => n,
-            None => {
-                printed_per_module.push((&a.module_name, 0));
-                &mut printed_per_module.last_mut().expect("just pushed").1
-            }
-        };
+        // Lookup only — the ROWS keep `anomalies`' own weakest-first order, so
+        // the map's arbitrary iteration order never reaches the output.
+        let seen = printed_per_module
+            .entry(a.module_name.as_str())
+            .or_insert(0);
         if *seen >= PER_MODULE {
             continue;
         }
