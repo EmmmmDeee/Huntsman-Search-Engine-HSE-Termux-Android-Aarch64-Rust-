@@ -190,20 +190,26 @@ impl Module for AuElectoral {
         // longer performs a name search (see the module doc comment) — every
         // call returned the identical generic error page, live-confirmed
         // against both a nonsense name and a real enrolled public figure.
+        // Bases, not finished URLs: the loop below breaks as soon as a leg
+        // yields entities, so building all three query strings up front would
+        // format URLs that are usually never requested. The saving is trivial
+        // beside three HTTP round-trips — the reason to write it this way is
+        // that the URL is now constructed next to the call that uses it.
         let legs = [
-            format!("https://check.elections.nsw.gov.au/search?name={encoded}"),
-            format!("https://check.vec.vic.gov.au/search?name={encoded}"),
-            format!("https://enrol.ecq.qld.gov.au/check?name={encoded}"),
+            "https://check.elections.nsw.gov.au/search?name=",
+            "https://check.vec.vic.gov.au/search?name=",
+            "https://enrol.ecq.qld.gov.au/check?name=",
         ];
 
-        for url in &legs {
+        for base in legs {
             // First hit wins — unchanged. A leg that answered with a division
             // stops the remaining lookups, exactly as the three `if
             // all_entities.is_empty()` guards did before.
             if !all_entities.is_empty() {
                 break;
             }
-            let (outcome, entities) = query_roll(url, full_name, ctx).await;
+            let url = format!("{base}{encoded}");
+            let (outcome, entities) = query_roll(&url, full_name, ctx).await;
             all_entities.extend(entities);
             outcomes.push(outcome);
         }

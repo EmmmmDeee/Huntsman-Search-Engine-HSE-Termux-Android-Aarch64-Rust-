@@ -283,7 +283,12 @@ fn an_unreachable_commission_is_not_the_same_as_an_absent_enrolment() {
 
     // A commission that answered with no division is a REAL negative — the
     // lookup path demonstrably works. This must not be reported as an outage.
+    // First-hit-wins makes this single-leg shape the common success case.
     assert!(!rolls_wholly_unreachable(&[RollOutcome::Answered]));
+
+    // ...and its mirror: one leg tried, and it could not be reached. Nothing
+    // was established, so this IS an outage even though only one leg ran.
+    assert!(rolls_wholly_unreachable(&[RollOutcome::Unreachable]));
 
     // One answer rescues the rest: the empties alongside it are genuine.
     assert!(!rolls_wholly_unreachable(&[
@@ -300,9 +305,4 @@ fn an_unreachable_commission_is_not_the_same_as_an_absent_enrolment() {
     // No legs ran at all — cancellation, or a name that never got queried.
     // That is its own condition and must NOT be blamed on the registries.
     assert!(!rolls_wholly_unreachable(&[]));
-
-    // First-hit-wins means a single answering leg is the common success shape,
-    // and one leg is enough to keep the module out of the error path.
-    assert!(!rolls_wholly_unreachable(&[RollOutcome::Answered]));
-    assert!(rolls_wholly_unreachable(&[RollOutcome::Unreachable]));
 }
