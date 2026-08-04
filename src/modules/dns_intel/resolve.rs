@@ -703,6 +703,46 @@ pub(super) async fn reverse_lookup(target: &Target, ctx: &ModuleContext) -> Resu
     Ok(entities)
 }
 
+/// How a DNSBL sweep actually went, as opposed to how many zones we tried.
+///
+/// The old code kept a single `checked` counter incremented once per zone
+/// regardless of outcome, and treated `lookup_ip(..).is_ok()` as the only
+/// signal. "Listed" is `Ok`; **everything else** — a genuine NXDOMAIN *and* a
+/// SERVFAIL *and* a timeout — was `Err` and therefore silently "not listed".
+/// With DNS down, all eight zones failed, `listed_on` stayed empty, `checked`
+/// reached 8, and the module emitted `status: clean`, `checked_count: 8`,
+/// "clean on 8 blocklists". That is not a missing result; it is a fabricated
+/// positive reputation verdict about an address.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct BlocklistTally {
+    /// Zones queried before cancellation.
+    pub(super) attempted: u32,
+    /// Zones that actually answered — listed, or authoritatively not listed.
+    /// This, not `attempted`, is the honest denominator for a verdict.
+    pub(super) answered: u32,
+    /// Zones that established nothing (SERVFAIL, REFUSED, timeout, no route).
+    pub(super) unresolved: u32,
+}
+
+impl BlocklistTally {
+    /// True when zones were tried and **none** answered, so no reputation
+    /// statement of any kind is supported.
+    ///
+    /// Pure, so the decision that turns a sweep into a `ModuleError` is
+    /// unit-testable without eight live blocklist zones. Requires
+    /// `attempted > 0`: a sweep where nothing ran (cancelled before the first
+    /// zone) established nothing either, but that is the operator's doing and
+    /// is not an outage to report.
+    ///
+    /// A single answering zone is enough to keep the verdict honest — it proves
+    /// the resolver path works, so the silence from the others is a real
+    /// negative for those zones and is disclosed as partial coverage rather
+    /// than counted as a pass.
+    pub(super) fn is_wholly_unresolved(&self) -> bool {
+        self.attempted > 0 && self.answered == 0
+    }
+}
+
 /// DNSBL reputation check against 8 blocklists.
 pub(super) async fn blocklist_check(target: &Target, ctx: &ModuleContext) -> Result<Vec<Entity>> {
     use super::constants::BLOCKLISTS;
@@ -720,18 +760,52 @@ pub(super) async fn blocklist_check(target: &Target, ctx: &ModuleContext) -> Res
 
     let resolver = shared_resolver();
     let mut listed_on: Vec<&str> = Vec::new();
-    let mut checked = 0u32;
+    let mut tally = BlocklistTally::default();
 
     for (zone, label) in BLOCKLISTS {
         if ctx.cancel.is_cancelled() {
             break;
         }
+        tally.attempted += 1;
         let query = format!("{reversed}.{zone}");
-        if resolver.lookup_ip(query.as_str()).await.is_ok() {
-            listed_on.push(label);
+        match resolver.lookup_ip(query.as_str()).await {
+            // A DNSBL publishes an A record (127.0.0.x) for a listed address.
+            Ok(_) => {
+                listed_on.push(label);
+                tally.answered += 1;
+            }
+            // The zone authoritatively said "no such record" — NXDOMAIN, or
+            // NOERROR with no answers. That is the DNSBL saying *not listed*,
+            // and it is a real check.
+            //
+            // `is_no_records_found()` is exactly this and nothing more:
+            // hickory maps SERVFAIL/REFUSED/FORMERR and friends to
+            // `ResponseCode(..)`, never to `NoRecordsFound`, so a failing
+            // resolver cannot slip through here dressed as a clean result.
+            Err(e) if e.is_no_records_found() => tally.answered += 1,
+            // SERVFAIL, REFUSED, timeout, no route. The zone established
+            // nothing, so it must not be counted as a check that passed.
+            Err(_) => tally.unresolved += 1,
         }
-        checked += 1;
     }
+
+    // Not one blocklist answered. Emitting the entity below would assert
+    // "clean on N blocklists" — a positive reputation verdict about an address,
+    // manufactured out of a DNS outage. Cancellation is excluded: an operator's
+    // own stop leaves the remaining zones unresolved and is not the network's
+    // fault.
+    if !ctx.cancel.is_cancelled() && tally.is_wholly_unresolved() {
+        return Err(crate::core::error::Error::module(
+            SRC,
+            format!(
+                "no DNSBL answered for {ip}: all {} blocklist zones failed to resolve. \
+                 Reporting this as 'clean' would be a reputation verdict nothing \
+                 established.",
+                tally.attempted
+            ),
+        ));
+    }
+    let checked = tally.answered;
 
     let mut entity = Entity::new(
         EntityKind::IpAddress,
@@ -742,32 +816,50 @@ pub(super) async fn blocklist_check(target: &Target, ctx: &ModuleContext) -> Res
     entity.tag("dnsbl-checked");
 
     if listed_on.is_empty() {
-        entity.add_evidence(
-            Evidence::new(SRC, format!("{ip} clean on {checked} blocklists"))
-                .with_attr("listed_count", "0")
-                .with_attr("checked_count", checked.to_string())
-                .with_attr("status", "clean"),
-        );
+        // `checked` is now the count that ANSWERED, not the count attempted, so
+        // "clean on N" is a claim each of those N zones actually made. Any zone
+        // that failed to resolve is disclosed rather than folded into N — an
+        // undisclosed partial sweep reads as full coverage.
+        let mut ev = Evidence::new(SRC, format!("{ip} clean on {checked} blocklists"))
+            .with_attr("listed_count", "0")
+            .with_attr("checked_count", checked.to_string())
+            .with_attr("status", "clean");
+        if tally.unresolved > 0 {
+            ev = ev
+                .with_attr("unresolved_count", tally.unresolved.to_string())
+                .with_attr("attempted_count", tally.attempted.to_string())
+                .with_attr("coverage", "partial");
+        }
+        entity.add_evidence(ev);
     } else {
         entity.tag("blocklisted");
         if listed_on.len() >= 3 {
             entity.tag("high-risk");
         }
         listed_on.sort_unstable();
-        entity.add_evidence(
-            Evidence::new(
-                SRC,
-                format!(
-                    "{ip} listed on {} of {} blocklists",
-                    listed_on.len(),
-                    checked
-                ),
-            )
-            .with_attr("listed_count", listed_on.len().to_string())
-            .with_attr("checked_count", checked.to_string())
-            .with_attr("listed_on", listed_on.join(", "))
-            .with_attr("status", "listed"),
-        );
+        // Same disclosure as the clean branch: "listed on 1 of 3" must not hide
+        // that five more zones were asked and never answered. A listing is a
+        // positive finding and stands on its own, but the DENOMINATOR is a
+        // coverage claim, and an undisclosed partial denominator overstates it.
+        let mut ev = Evidence::new(
+            SRC,
+            format!(
+                "{ip} listed on {} of {} blocklists",
+                listed_on.len(),
+                checked
+            ),
+        )
+        .with_attr("listed_count", listed_on.len().to_string())
+        .with_attr("checked_count", checked.to_string())
+        .with_attr("listed_on", listed_on.join(", "))
+        .with_attr("status", "listed");
+        if tally.unresolved > 0 {
+            ev = ev
+                .with_attr("unresolved_count", tally.unresolved.to_string())
+                .with_attr("attempted_count", tally.attempted.to_string())
+                .with_attr("coverage", "partial");
+        }
+        entity.add_evidence(ev);
     }
 
     Ok(vec![entity])

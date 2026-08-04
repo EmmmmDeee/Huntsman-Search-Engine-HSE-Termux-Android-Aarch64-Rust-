@@ -386,3 +386,87 @@ fn metadata() {
     assert_eq!(m.priority(), 31);
     assert_eq!(m.max_timeout_ms(), 15_000);
 }
+
+// ─── A DNS outage must not become a clean reputation verdict ──────────────
+
+use super::resolve::BlocklistTally;
+
+/// `blocklist_check` ALWAYS emits an entity, unlike the CAA and PTR lookups in
+/// the same file which emit only on a positive result. That makes this the one
+/// place in the module where a resolver failure did not merely lose data — it
+/// manufactured a finding.
+///
+/// The old loop was `if resolver.lookup_ip(..).await.is_ok() { listed }` with
+/// `checked += 1` every iteration. "Listed" is `Ok`; a genuine NXDOMAIN, a
+/// SERVFAIL and a timeout are all `Err`, so all three read as *not listed*.
+/// With DNS down, eight zones failed, nothing was listed, `checked` reached 8,
+/// and the entity asserted `status: clean`, `checked_count: 8`,
+/// "clean on 8 blocklists" — about an address nothing had been established for.
+#[test]
+fn a_dns_outage_is_not_a_clean_blocklist_verdict() {
+    // Every zone tried, none answered: no reputation statement is supported.
+    assert!(
+        BlocklistTally {
+            attempted: 8,
+            answered: 0,
+            unresolved: 8,
+        }
+        .is_wholly_unresolved()
+    );
+
+    // One zone answered "not listed" and the rest failed. The verdict is
+    // supportable but PARTIAL — it must be emitted, not errored, and the
+    // denominator must be the 1 that answered, never the 8 attempted.
+    let partial = BlocklistTally {
+        attempted: 8,
+        answered: 1,
+        unresolved: 7,
+    };
+    assert!(!partial.is_wholly_unresolved());
+    assert_eq!(partial.answered, 1, "the denominator is what ANSWERED");
+    assert!(
+        partial.unresolved > 0,
+        "partial coverage must be disclosable"
+    );
+
+    // A full, healthy sweep.
+    let full = BlocklistTally {
+        attempted: 8,
+        answered: 8,
+        unresolved: 0,
+    };
+    assert!(!full.is_wholly_unresolved());
+    assert_eq!(full.unresolved, 0, "nothing to disclose on a full sweep");
+
+    // Nothing ran at all — cancelled before the first zone. That is the
+    // operator's own stop, not an outage, and must NOT be reported as one.
+    assert!(!BlocklistTally::default().is_wholly_unresolved());
+    assert!(
+        !BlocklistTally {
+            attempted: 0,
+            answered: 0,
+            unresolved: 0,
+        }
+        .is_wholly_unresolved()
+    );
+
+    // A single zone that answered is enough to keep the module out of the
+    // error path — it proves the resolver path works.
+    assert!(
+        !BlocklistTally {
+            attempted: 1,
+            answered: 1,
+            unresolved: 0,
+        }
+        .is_wholly_unresolved()
+    );
+    // ...and a single zone that did not answer is an outage for that sweep.
+    assert!(
+        BlocklistTally {
+            attempted: 1,
+            answered: 0,
+            unresolved: 1,
+        }
+        .is_wholly_unresolved()
+    );
+}
