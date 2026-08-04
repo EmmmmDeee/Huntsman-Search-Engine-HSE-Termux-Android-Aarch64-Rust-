@@ -167,7 +167,7 @@ pub(super) async fn recycle_entities(
                     let mut c = Entity::new(
                         EntityKind::Coordinates,
                         &coord_val,
-                        base_conf - 0.10,
+                        confidence::derived_from(base_conf),
                         &scan_id,
                     );
                     c.tag("addr-derived");

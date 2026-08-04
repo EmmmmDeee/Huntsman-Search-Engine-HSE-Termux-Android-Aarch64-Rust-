@@ -91,7 +91,7 @@ pub(super) fn records_to_entities(resp: &GleifResp, query: &str, scan_id: &str) 
             }
             Some("INACTIVE" | "ANNULLED") => {
                 org.tag("inactive");
-                org.confidence = (org.confidence - 0.10).max(0.10);
+                org.confidence = confidence::derived_from(org.confidence);
             }
             _ => {}
         }

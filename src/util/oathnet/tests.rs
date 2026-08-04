@@ -127,7 +127,11 @@ use super::*;
         // every later re-scan of the same value, forever, with no live
         // re-check. reset_budget() must also clear the cache.
         let key = "reset_budget_clears_cache_test_key";
-        cache_put(key.to_string(), &[json!({"stale": true})]);
+        cache_put(
+            key.to_string(),
+            &[json!({"stale": true})],
+            Completeness::Complete,
+        );
         assert!(
             cache_get(key).is_some(),
             "sanity: the cache must actually hold the value before reset"
@@ -590,4 +594,62 @@ use super::*;
         // `status_code: 0` in the body is not a real HTTP status — it must
         // not shadow a genuine transport-layer status.
         assert_eq!(effective_error_status(Some(0), 500), 500);
+    }
+
+    // ─── An incomplete enumeration must keep saying so ──────────────────────
+
+    /// A truncated page-set is real data that is NOT the whole answer, and the
+    /// distinction has to survive the cache.
+    ///
+    /// `cache_put` runs on every exit from `search`, including the five that
+    /// stop pagination short. Before completeness was cached alongside the
+    /// items, the SECOND caller for the same `(path, field, value)` — a
+    /// different module in the same scan, which is the whole point of this
+    /// cache — got the truncated set with no marker at all, not even the log
+    /// line the first call emitted.
+    #[test]
+    fn truncation_survives_the_response_cache() {
+        let key = "truncation_survives_cache_test_key";
+        let partial = cache_put(
+            key.to_string(),
+            &[json!({"row": 1})],
+            Completeness::BudgetExhausted,
+        );
+        assert!(partial.completeness.is_partial());
+
+        let hit = cache_get(key).expect("the value must be cached");
+        assert_eq!(
+            hit.completeness,
+            Completeness::BudgetExhausted,
+            "a cache hit must report the same completeness the original call did, \
+             or the second module in a scan is told a partial set is complete"
+        );
+        assert!(hit.completeness.is_partial());
+        reset_budget();
+    }
+
+    /// Each stop reason is distinct and carries an operator-actionable message.
+    /// They are deliberately not collapsed into one `truncated: bool`: raising
+    /// the scan cap spends money, a daily quota needs waiting out, a rate limit
+    /// needs a retry, and a missing cursor is a provider bug worth reporting.
+    #[test]
+    fn every_partial_reason_is_distinct_and_actionable() {
+        assert_eq!(Completeness::Complete.reason(), None);
+        assert!(!Completeness::Complete.is_partial());
+
+        let partial = [
+            Completeness::BudgetExhausted,
+            Completeness::QuotaExhausted,
+            Completeness::RateLimited,
+            Completeness::CursorMissing,
+            Completeness::PageVanished,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for c in partial {
+            assert!(c.is_partial(), "{c:?} must count as partial");
+            let r = c.reason().expect("a partial result must explain itself");
+            assert!(!r.is_empty());
+            assert!(seen.insert(r), "{c:?} reuses another variant's reason: {r}");
+        }
+        assert_eq!(seen.len(), 5, "all five partial reasons must be distinct");
     }

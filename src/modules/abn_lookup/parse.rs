@@ -57,7 +57,7 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
         org.tag("active");
     } else if !status.is_empty() {
         org.tag("inactive");
-        org.confidence = (org.confidence - 0.10).max(0.10);
+        org.confidence = confidence::derived_from(org.confidence);
     }
 
     let mut ev = Evidence::new(SRC, format!("ABR: {entity_name} (ABN {abn})"))

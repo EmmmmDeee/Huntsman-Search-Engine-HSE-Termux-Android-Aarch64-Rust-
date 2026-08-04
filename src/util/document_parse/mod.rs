@@ -67,8 +67,28 @@ impl DocumentFormat {
 /// Document parsing error.
 #[derive(Error, Debug)]
 pub enum DocumentParseError {
+    /// The binary genuinely is not there — the `which` probe failed, or the
+    /// spawn returned `ErrorKind::NotFound`. Nothing else, because the message
+    /// asserts "tesseract missing" and that must stay true wherever it is shown.
     #[error("OCR not available (tesseract missing); image processing disabled")]
     OcrUnavailable,
+    /// Distinct from [`Self::OcrUnavailable`] on purpose: "tesseract is not
+    /// installed" and "tesseract ran and would not finish" are different facts
+    /// about the host, and an operator can act on them differently — install a
+    /// package, versus feed a smaller image or raise the bound. Folding a hang
+    /// into "unavailable" would report a capability the host actually has as
+    /// missing.
+    #[error("OCR timed out after {secs}s; tesseract did not finish")]
+    OcrTimeout { secs: u64 },
+    /// Tesseract ran to completion and reported failure. Also distinct from
+    /// "missing": the binary is installed and working, it rejected this input.
+    /// The exit code is carried rather than dropped — it is the only thing that
+    /// distinguishes one refusal from another.
+    #[error("OCR failed; tesseract exited with {}", match code {
+        Some(c) => c.to_string(),
+        None => "a signal".to_string(),
+    })]
+    OcrFailed { code: Option<i32> },
     #[error("PDF parsing error: {0}")]
     PdfError(String),
     #[error("CSV parsing error: {0}")]

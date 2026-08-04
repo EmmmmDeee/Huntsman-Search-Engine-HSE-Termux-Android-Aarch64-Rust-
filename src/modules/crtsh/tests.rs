@@ -166,17 +166,41 @@ fn subdomain_match_is_case_insensitive_against_base() {
 
 #[test]
 fn surfaces_san_emails_above_min_length() {
+    // Non-role local-part deliberately (see `suppresses_role_mailbox_san_email`
+    // below for the role-address case) — "admin" is a role token gated by
+    // `is_infrastructure_email` and would no longer surface.
     let e = entries(
-        r#"[{"name_value":"admin@example.com\na@b","issuer_name":"CA","not_before":"2024-01-01"}]"#,
+        r#"[{"name_value":"jdoe@example.com\na@b","issuer_name":"CA","not_before":"2024-01-01"}]"#,
     );
     let out = build_entities(&e, "example.com", "s");
     let email = out.iter().find(|x| x.kind == EntityKind::Email);
     let email = email.expect("should succeed");
-    assert_eq!(email.value, "admin@example.com");
+    assert_eq!(email.value, "jdoe@example.com");
     assert!((email.confidence - confidence::HIGH_PLUS).abs() < 1e-9);
     assert!(email.has_tag(tags::CT_LOG));
     // "a@b" is below MIN_EMAIL_LEN → not surfaced.
     assert!(!out.iter().any(|x| x.value == "a@b"));
+}
+
+#[test]
+fn suppresses_role_mailbox_san_email() {
+    // A cert-admin desk (`hostmaster@`) is infrastructure contact, not the
+    // subject's own mail — the same false-positive class `whois`/`dns_intel`
+    // already gate on via `is_infrastructure_email`. Regression test for the
+    // audit finding (role-mailbox-as-pii) that a CT-log SAN previously bypassed
+    // that gate entirely.
+    let e = entries(
+        r#"[{"name_value":"api.example.com\nhostmaster@example.com","issuer_name":"CA","not_before":"2024-01-01"}]"#,
+    );
+    let out = build_entities(&e, "example.com", "s");
+    assert!(
+        !out.iter().any(|x| x.kind == EntityKind::Email),
+        "a role-mailbox SAN must not surface as an Email entity"
+    );
+    assert!(
+        out.iter().any(|x| x.value == "api.example.com"),
+        "the co-listed real subdomain still emits as a Domain"
+    );
 }
 
 #[test]

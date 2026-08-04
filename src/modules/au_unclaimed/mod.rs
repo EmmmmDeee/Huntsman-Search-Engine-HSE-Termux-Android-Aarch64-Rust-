@@ -192,6 +192,7 @@ async fn process_qld(target: &Target, ctx: &ModuleContext, out: &mut ModuleResul
         &records,
         total,
         full,
+        surname,
         broadened,
         &ctx.scan_id,
     ));

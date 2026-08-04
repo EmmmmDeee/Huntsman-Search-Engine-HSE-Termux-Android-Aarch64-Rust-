@@ -54,10 +54,21 @@ pub fn engine_setup(
     let path = tmp_db(prefix, suffix);
     let store = Arc::new(Store::open(&path).unwrap());
     let (bus, _rx) = tokio::sync::broadcast::channel(256);
-    let engine = ScanEngine::new(
+    // This helper is the integration suite's composition root, so it composes
+    // the REAL host — not `ScanEngine::new`, which now takes `NoopEngineHost`.
+    //
+    // That distinction is load-bearing:
+    // `capability_aware_dispatch_quarantines_a_dead_module_and_runs_the_healthy_one`
+    // exercises the module-health quarantine end to end, and the quarantine
+    // policy lives in `util::scraper_health` behind the host. With the no-op
+    // host the dead module is never quarantined and the test fails — which is
+    // exactly how this was caught.
+    let engine = ScanEngine::with_runtime_and_host(
         modules,
         Arc::clone(&store) as Arc<dyn huntsman_search_engine::core::StoragePort>,
         bus.clone(),
+        Arc::new(huntsman_search_engine::core::module_runtime::NoopModuleRuntime),
+        Arc::new(huntsman_search_engine::util::engine_host::UtilEngineHost),
     );
     let sid = scan_id(kind.canonical_str(), value);
     let target = Target::new(kind, value.to_string());

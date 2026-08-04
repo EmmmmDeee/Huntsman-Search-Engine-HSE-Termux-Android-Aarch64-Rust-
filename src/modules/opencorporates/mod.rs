@@ -33,7 +33,7 @@ use serde::Deserialize;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -95,7 +95,7 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
         entity.tag("dissolved");
         // A dissolved company is less likely to be the current operating entity;
         // pull confidence down slightly so live entities rank above it.
-        entity.confidence = (entity.confidence - 0.10).max(0.10);
+        entity.confidence = confidence::derived_from(entity.confidence);
     }
 
     let mut ev = [
@@ -516,7 +516,7 @@ impl Module for OpenCorporates {
             return Ok(ModuleResult::new());
         }
         if !status.is_success() {
-            return Err(Error::module(SRC, format!("HTTP {status}")));
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
         let mut result = ModuleResult::new();

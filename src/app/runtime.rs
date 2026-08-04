@@ -32,11 +32,15 @@ pub fn build_runtime(bus_capacity: usize) -> Result<ApplicationRuntime> {
     let _ = db.prune_raw_archive(RAW_ARCHIVE_MAX_ROWS);
     let store: Arc<dyn StoragePort> = Arc::new(db);
     let (bus, _rx) = tokio::sync::broadcast::channel(bus_capacity);
-    let engine = Arc::new(ScanEngine::with_module_runtime(
+    let engine = Arc::new(ScanEngine::with_runtime_and_host(
         registry(),
         Arc::clone(&store),
         bus.clone(),
         module_runtime(),
+        // The composition root is the one layer allowed to name both sides, so
+        // the real egress pool and health policy are wired in here rather than
+        // reached for from inside `core`.
+        Arc::new(crate::util::engine_host::UtilEngineHost),
     ));
     Ok(ApplicationRuntime { store, bus, engine })
 }
