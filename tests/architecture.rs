@@ -24,22 +24,24 @@ fn scan_dir(dir: &Path, patterns: &[&str], violations: &mut Vec<String>) {
             // exactly as the inline-`#[cfg(test)]`-module case already is.
             continue;
         } else if path.extension().is_some_and(|e| e == "rs") {
-            let content = fs::read_to_string(&path).unwrap();
-            let mut in_test = false;
-            for (i, line) in content.lines().enumerate() {
+            let raw = fs::read_to_string(&path).unwrap();
+            // This used to latch `in_test = true` on the first `#[cfg(test)]`
+            // and never reset, so everything below it went unscanned. With
+            // `#[cfg(test)] mod tests;` declared at the top of most files here,
+            // that hid 43,478 of the 205,361 lines in `src/` — 21% — from the
+            // layering invariants. `production_source` drops the attributed
+            // ITEM instead, and blanks comment and literal content so a path
+            // merely named in prose is not read as an import. Line numbers
+            // survive the transform, so the report still points at real source.
+            let scanned = production_source(&raw);
+            let raw_lines: Vec<&str> = raw.lines().collect();
+            for (i, line) in scanned.lines().enumerate() {
                 let trimmed = line.trim();
-                if trimmed == "#[cfg(test)]" {
-                    in_test = true;
-                    continue;
-                }
-                if in_test {
-                    continue;
-                }
-                if trimmed.starts_with("//") {
-                    continue;
-                }
                 if patterns.iter().any(|p| trimmed.contains(p)) {
-                    violations.push(format!("{}:{}: {}", path.display(), i + 1, trimmed));
+                    // Show the original line — the scanned copy has its literals
+                    // blanked and would print a confusing half-empty statement.
+                    let shown = raw_lines.get(i).map_or(trimmed, |l| l.trim());
+                    violations.push(format!("{}:{}: {}", path.display(), i + 1, shown));
                 }
             }
         }
@@ -382,11 +384,112 @@ fn core_does_not_import_util_directly() {
                 && !line.contains("util::oathnet_batch")
         })
         .collect();
+
+    // ── Revealed backlog ─────────────────────────────────────────────────────
+    // These are NOT allow-listed. `util::egress` owns a mutable proxy pool,
+    // reads env, probes the network and spawns a task; `util::scraper_health`
+    // is read from inside the dispatch loop. Neither is the pure, dependency-
+    // free leaf the exceptions above are scoped to, so calling them "allowed"
+    // would be silencing the assertion — which CLAUDE.md forbids: "a change
+    // that trips them is a design decision — raise it, don't silence it."
+    //
+    // They were invisible until `scan_dir` stopped latching `in_test` on the
+    // first `#[cfg(test)]`. `core/engine/mod.rs` declares that at line 63 of
+    // 2724, so 2661 lines — including every one of these — went unscanned. The
+    // violations pre-date this change by a long way; the guard simply never
+    // reached them.
+    //
+    // Frozen here so the invariant still bites on GROWTH (a fifth violation
+    // fails immediately) while the design question is raised rather than
+    // buried. Shrink this list; never extend it. Resolving it means giving
+    // `core` a port for egress refresh and module health the way it already has
+    // one for storage — a change to `core`'s dependency surface that needs its
+    // own unit and its own regression evidence, not a drive-by edit inside a
+    // test-tooling fix.
+    const REVEALED: &[(&str, &str)] = &[
+        ("src/core/engine/mod.rs", "util::egress"),
+        ("src/core/engine/mod.rs", "util::egress"),
+        ("src/core/engine/mod.rs", "util::egress"),
+        ("src/core/engine/mod.rs", "util::scraper_health"),
+    ];
+
+    let tally = |rows: &[(String, String)]| {
+        let mut m: std::collections::BTreeMap<(String, String), usize> =
+            std::collections::BTreeMap::new();
+        for r in rows {
+            *m.entry(r.clone()).or_default() += 1;
+        }
+        m
+    };
+    let found: Vec<(String, String)> = allowed
+        .iter()
+        .filter_map(|v| util_violation_key(v))
+        .collect();
+    // Anything the key parser could not read must not be swallowed.
+    let unparsed: Vec<&String> = allowed
+        .iter()
+        .filter(|v| util_violation_key(v).is_none())
+        .collect();
     assert!(
-        allowed.is_empty(),
-        "core/ must not import util/ (except the allow-listed pure/leaf helpers above).\nViolations:\n{}",
+        unparsed.is_empty(),
+        "could not key these violations against the revealed backlog, so they \
+         cannot be judged — fix `util_violation_key`:\n{unparsed:#?}"
+    );
+
+    let found_counts = tally(&found);
+    let expected_counts = tally(
+        &REVEALED
+            .iter()
+            .map(|(f, m)| ((*f).to_string(), (*m).to_string()))
+            .collect::<Vec<_>>(),
+    );
+    let added: Vec<String> = found_counts
+        .iter()
+        .filter_map(|(k, n)| {
+            let allow = expected_counts.get(k).copied().unwrap_or(0);
+            (*n > allow).then(|| format!("{} uses `{}` x{} (backlog allows {allow})", k.0, k.1, n))
+        })
+        .collect();
+    let fixed: Vec<String> = expected_counts
+        .iter()
+        .filter_map(|(k, n)| {
+            let actual = found_counts.get(k).copied().unwrap_or(0);
+            (*n > actual).then(|| format!("{} uses `{}` x{} (now only {actual})", k.0, k.1, n))
+        })
+        .collect();
+
+    assert!(
+        added.is_empty(),
+        "core/ must not import util/ (except the allow-listed pure/leaf helpers above).\n\
+         New violation(s) beyond the frozen revealed backlog:\n{added:#?}\n\
+         Full violation list:\n{}",
         allowed.join("\n")
     );
+    assert!(
+        fixed.is_empty(),
+        "these revealed-backlog entries are gone (nice — you resolved them). \
+         Delete them from REVEALED so the backlog stays truthful:\n{fixed:#?}"
+    );
+}
+
+/// `(repo-relative file, "util::<module>")` for a `scan_for_violations` line,
+/// which is formatted `<abs path>:<line>: <trimmed source>`.
+///
+/// Line-number free on purpose: an edit above a site must not churn a frozen
+/// list, exactly as in the confidence ratchets.
+fn util_violation_key(v: &str) -> Option<(String, String)> {
+    // The first `": "` is the one after the line number — a path holds no space
+    // and `path:line` holds none either, so this cannot land inside the source.
+    let (loc, code) = v.split_once(": ")?;
+    let path = loc.rsplit_once(':')?.0.replace('\\', "/");
+    let file = path.split_once("/src/").map(|(_, t)| format!("src/{t}"))?;
+    let at = code.find("crate::util::")?;
+    let rest = &code[at + "crate::util::".len()..];
+    let module: String = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    (!module.is_empty()).then(|| (file, format!("util::{module}")))
 }
 
 #[test]
@@ -1700,16 +1803,23 @@ fn correlator_rules_source() -> String {
     let mut out = String::new();
     for p in files {
         let text = fs::read_to_string(&p).expect("rule file readable");
-        // Truncate at the file's own `#[cfg(test)]` boundary (always at file
-        // end by this codebase's convention — see `geo/mod.rs`/`location/mod.rs`
-        // for the inline form). Without this, a trailing test module's
-        // `assert_eq!(.., "AU-NNN")` for one rule reads as a SUBSEQUENT
-        // emission of whichever rule function was declared last in the file,
-        // producing a false `correlation_rule_ids_match_their_function_number`
-        // mismatch the moment the file under scan has more than one rule and
-        // an inline (not split-out) test module.
-        let code = text.split("#[cfg(test)]").next().unwrap_or(&text);
-        out.push_str(code);
+        // Drop the file's `#[cfg(test)]` ITEMS. Without this, a test module's
+        // `assert_eq!(.., "AU-NNN")` for one rule reads as a SUBSEQUENT emission
+        // of whichever rule function was declared last in the file, producing a
+        // false `correlation_rule_ids_match_their_function_number` mismatch.
+        //
+        // This was `text.split("#[cfg(test)]").next()`, justified by a comment
+        // claiming the marker sits "always at file end by this codebase's
+        // convention". The tree says otherwise: `rules/geo/mod.rs` declares it
+        // at line 111 of 540 and `transitive.rs` at 110 of 350, so 429 and 240
+        // lines of *rules* went unscanned — the dispatch, id-match and
+        // duplicate-number invariants were all reading a fraction of the file.
+        //
+        // `strip_cfg_test_items`, not `production_source`: the id-match
+        // invariant reads `rule_id: "AU-NNN"` out of a string literal, and
+        // blanking literals would leave it scanning empty quotes and passing
+        // vacuously.
+        out.push_str(&strip_cfg_test_items(&text));
         out.push('\n');
     }
     out
@@ -2190,9 +2300,20 @@ fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
                     continue;
                 }
                 if let Ok(s) = fs::read_to_string(&p) {
-                    // Drop this file's own `#[cfg(test)] mod tests` tail so a
+                    // Drop this file's `#[cfg(test)]` items so a
                     // `use is_valid_coords` in a unit test can't satisfy the gate.
-                    combined.push_str(s.split("mod tests").next().unwrap_or(&s));
+                    //
+                    // This was `s.split("mod tests").next()`, which cut at the
+                    // first occurrence of the *substring* `mod tests` — so with
+                    // `#[cfg(test)] mod tests;` at the top of a file, every
+                    // production function below it vanished. For a gate phrased
+                    // as "must CONTAIN the guard call" that fails the safe way
+                    // (a false offender, not a false pass), but it is still
+                    // wrong, and it would have started failing spuriously the
+                    // moment a provider's coord call moved below the
+                    // declaration. `production_source` also means a mention of
+                    // the helper in a comment no longer satisfies the gate.
+                    combined.push_str(&production_source(&s));
                     combined.push('\n');
                 }
             }
@@ -2200,9 +2321,10 @@ fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
         } else {
             panic!("coarse provider {provider} missing at {flat:?}");
         };
-        // Flat-file modules keep their test tail here (directory modules were
-        // already stripped per-file above; this is a no-op for them).
-        let prod = src.split("mod tests").next().unwrap_or(&src);
+        // Flat-file modules are stripped here (directory modules were already
+        // stripped per-file above; this is a no-op for them).
+        let prod = production_source(&src);
+        let prod = prod.as_str();
         // The gate is satisfied either by calling `is_plausible_provider_coord`
         // directly OR by building the entity through `coarse_provider_coords`,
         // which applies that exact gate internally (ipinfo/ip2location/
@@ -2251,18 +2373,17 @@ fn no_inline_module_bodies_outside_allowed_exceptions() {
             {
                 continue;
             }
-            let content = fs::read_to_string(&path).unwrap();
+            let raw = fs::read_to_string(&path).unwrap();
             let rel = path.display().to_string().replace('\\', "/");
-            // Once the first `#[cfg(test)]` appears, the rest of the file is
-            // test scaffolding by this tree's layout convention (test modules
-            // come last) — same simplification the layering scanner uses.
-            let mut in_test = false;
+            // This latched `in_test` on the first `#[cfg(test)]` and never
+            // reset, justified by "test modules come last". They do not: the
+            // prevailing idiom here is `#[cfg(test)] mod tests;` at the TOP of
+            // the file, so every inline `mod foo { … }` below it went unchecked
+            // and this invariant under-reported by construction.
+            let content = production_source(&raw);
             for (i, line) in content.lines().enumerate() {
                 let t = line.trim();
-                if t == "#[cfg(test)]" {
-                    in_test = true;
-                }
-                if in_test || !t.ends_with('{') {
+                if !t.ends_with('{') {
                     continue;
                 }
                 let rest = ["pub(crate) mod ", "pub(super) mod ", "pub mod ", "mod "]
@@ -2747,26 +2868,440 @@ fn is_bare_float(s: &str) -> bool {
         .is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// The production slice of a source file: everything before the first
-/// `#[cfg(test)]`, with comment-only lines blanked. Doc examples are blanked
-/// deliberately — a `///` example is an illustrative fixture, and a doctest
-/// cannot see the parent module's `use` statements, so naming a constant there
-/// would not even compile. Mirrors the scoping `scan_dir` above already uses.
-fn production_source(content: &str) -> String {
-    let mut out = String::new();
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed == "#[cfg(test)]" {
-            break;
-        }
-        if trimmed.starts_with("//") {
+/// Blank the *contents* of comments and string/char literals, preserving **byte**
+/// length and line structure so the result stays offset-aligned with the input.
+///
+/// Every scanner below counts delimiters, and a brace, quote or semicolon inside
+/// a string or a comment is not a delimiter. Doing this once, up front, is what
+/// lets [`production_source`] brace-match a `#[cfg(test)] mod tests { … }` body
+/// exactly rather than approximately.
+///
+/// Byte length is preserved, not merely character count: a blanked multi-byte
+/// char is replaced by as many spaces as it occupied. That keeps every byte
+/// offset in the output valid in the input too, so a future caller can map a
+/// finding back to a source position — the obvious next step for these ratchets,
+/// which today report file-and-value only. Blanking a 3-byte `…` to one space
+/// would silently shift every offset after the first non-ASCII comment in a file.
+///
+/// Handles the forms that actually occur in this tree: line comments, *nesting*
+/// block comments, plain and raw strings (`r"…"`, `r#"…"#`), and char literals —
+/// including the lifetime-vs-char-literal ambiguity, where `'static` must not be
+/// read as an unterminated `'`.
+fn blank_strings_and_comments(src: &str) -> String {
+    let c: Vec<char> = src.chars().collect();
+    let mut out = String::with_capacity(src.len());
+    // Blank one char, keeping newlines so line structure survives and padding to
+    // the char's own byte width so offsets survive too.
+    let blank = |out: &mut String, ch: char| {
+        if ch == '\n' {
             out.push('\n');
-            continue;
+        } else {
+            for _ in 0..ch.len_utf8() {
+                out.push(' ');
+            }
         }
-        out.push_str(line);
-        out.push('\n');
+    };
+    let mut i = 0;
+    while i < c.len() {
+        let cur = c[i];
+        let next = c.get(i + 1).copied();
+        match cur {
+            '/' if next == Some('/') => {
+                while i < c.len() && c[i] != '\n' {
+                    blank(&mut out, c[i]);
+                    i += 1;
+                }
+            }
+            '/' if next == Some('*') => {
+                // Rust block comments nest, so a depth counter is required.
+                let mut depth = 1usize;
+                out.push_str("  ");
+                i += 2;
+                while i < c.len() && depth > 0 {
+                    if c[i] == '/' && c.get(i + 1) == Some(&'*') {
+                        depth += 1;
+                        out.push_str("  ");
+                        i += 2;
+                    } else if c[i] == '*' && c.get(i + 1) == Some(&'/') {
+                        depth -= 1;
+                        out.push_str("  ");
+                        i += 2;
+                    } else {
+                        blank(&mut out, c[i]);
+                        i += 1;
+                    }
+                }
+            }
+            'r' if matches!(next, Some('"' | '#')) => {
+                // Raw string: r"…", r#"…"#, r##"…"##. Count the hashes so the
+                // terminator matches the opener and an embedded `"#` is safe.
+                let mut j = i + 1;
+                let mut hashes = 0usize;
+                while c.get(j) == Some(&'#') {
+                    hashes += 1;
+                    j += 1;
+                }
+                if c.get(j) != Some(&'"') {
+                    // Just an identifier starting with `r` (e.g. `result`).
+                    out.push(cur);
+                    i += 1;
+                    continue;
+                }
+                out.push('r');
+                for _ in 0..hashes {
+                    out.push('#');
+                }
+                out.push('"');
+                i = j + 1;
+                let close: String = std::iter::once('"')
+                    .chain(std::iter::repeat_n('#', hashes))
+                    .collect();
+                while i < c.len() {
+                    if c[i] == '"' && c[i..].iter().take(close.len()).copied().eq(close.chars()) {
+                        break;
+                    }
+                    blank(&mut out, c[i]);
+                    i += 1;
+                }
+                for _ in 0..close.len().min(c.len().saturating_sub(i)) {
+                    out.push(c[i]);
+                    i += 1;
+                }
+            }
+            '"' => {
+                out.push('"');
+                i += 1;
+                while i < c.len() {
+                    if c[i] == '\\' {
+                        blank(&mut out, c[i]);
+                        i += 1;
+                        if i < c.len() {
+                            blank(&mut out, c[i]);
+                            i += 1;
+                        }
+                        continue;
+                    }
+                    if c[i] == '"' {
+                        out.push('"');
+                        i += 1;
+                        break;
+                    }
+                    blank(&mut out, c[i]);
+                    i += 1;
+                }
+            }
+            '\'' => {
+                // `'a'` and `'\n'` are char literals; `'static` is a lifetime and
+                // must pass through untouched or every following delimiter shifts.
+                let is_char_lit = next == Some('\\') || c.get(i + 2) == Some(&'\'');
+                if !is_char_lit {
+                    out.push(cur);
+                    i += 1;
+                    continue;
+                }
+                out.push('\'');
+                i += 1;
+                while i < c.len() {
+                    if c[i] == '\\' {
+                        blank(&mut out, c[i]);
+                        i += 1;
+                        if i < c.len() {
+                            blank(&mut out, c[i]);
+                            i += 1;
+                        }
+                        continue;
+                    }
+                    if c[i] == '\'' {
+                        out.push('\'');
+                        i += 1;
+                        break;
+                    }
+                    blank(&mut out, c[i]);
+                    i += 1;
+                }
+            }
+            _ => {
+                out.push(cur);
+                i += 1;
+            }
+        }
     }
     out
+}
+
+/// Byte length of the item a `#[cfg(test)]` attribute applies to, measured from
+/// just after the attribute. `s` must already be lexically clean (see
+/// [`blank_strings_and_comments`]).
+///
+/// An item ends at the first `;` outside any bracket, or at the `}` closing the
+/// first block it opens — which covers every form in this tree:
+/// `mod tests;`, `mod tests { … }`, `use x::{a, b};`, `fn helper(…) { … }`, and
+/// `const K: [u8; 4] = …;` (the `;` inside `[u8; 4]` is bracketed, so it is not
+/// mistaken for the end).
+fn cfg_test_item_len(s: &str) -> usize {
+    let mut depth = 0i32;
+    let mut opened_block = false;
+    for (idx, ch) in s.char_indices() {
+        match ch {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth -= 1,
+            '{' => {
+                depth += 1;
+                opened_block = true;
+            }
+            '}' => {
+                depth -= 1;
+                if depth <= 0 && opened_block {
+                    return idx + ch.len_utf8();
+                }
+            }
+            ';' if depth <= 0 => return idx + ch.len_utf8(),
+            _ => {}
+        }
+    }
+    s.len()
+}
+
+/// The production slice of a source file: everything except the items gated
+/// behind `#[cfg(test)]`, with comments and literal contents blanked.
+///
+/// # Why this is not "everything before the first `#[cfg(test)]`"
+///
+/// It used to be, and that made both scanners below near-blind. The dominant
+/// idiom in this tree is `#[cfg(test)] mod tests;` declared at the *top* of a
+/// file, right under the imports — so truncating there discarded the entire
+/// production body. Measured at the time of the fix: 2661 of 2724 lines unseen
+/// in `core/engine/mod.rs`, 521 of 564 in `modules/opencorporates/mod.rs`. A
+/// ratchet that reports PASS over the first thirty lines of a file certifies an
+/// invariant it never checked, which is worse than having no ratchet.
+///
+/// Test code is still excluded, just correctly: each `#[cfg(test)]` item is
+/// skipped by [`cfg_test_item_len`] and scanning resumes after it. Dedicated
+/// `tests.rs` / `*_tests.rs` files are skipped whole by their callers.
+///
+/// Doc examples survive as text but their string and comment content is blanked,
+/// which is deliberate — a `///` example is an illustrative fixture, and a
+/// doctest cannot see the parent module's `use` statements, so naming a constant
+/// there would not even compile.
+fn production_source(content: &str) -> String {
+    blank_strings_and_comments(&strip_cfg_test_items(content))
+}
+
+/// Byte ranges of every `#[cfg(test)]`-attributed item in `content`, attribute
+/// included.
+///
+/// Boundaries are found on a [`blank_strings_and_comments`] copy so a brace or
+/// semicolon inside a literal cannot move them — and because that copy preserves
+/// **byte** length, the ranges it yields index the *original* text exactly. That
+/// alignment is the whole reason [`strip_cfg_test_items`] can hand back real
+/// source rather than blanked source.
+fn cfg_test_item_ranges(content: &str) -> Vec<std::ops::Range<usize>> {
+    const ATTR: &str = "#[cfg(test)]";
+    let clean = blank_strings_and_comments(content);
+    assert_eq!(
+        clean.len(),
+        content.len(),
+        "blanking must preserve byte length or these ranges do not index the original"
+    );
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = clean[from..].find(ATTR) {
+        let at = from + rel;
+        let body = at + ATTR.len();
+        let end = body + cfg_test_item_len(&clean[body..]);
+        out.push(at..end);
+        from = end;
+    }
+    out
+}
+
+/// `content` with every `#[cfg(test)]` item removed and its newlines kept, so
+/// the result stays line-aligned with the input.
+///
+/// Unlike [`production_source`], string and comment **content survives**. That
+/// is not a detail: `correlation_rule_ids_match_their_function_number` reads the
+/// rule id out of `rule_id: "AU-NNN".into()`, a string literal. Blanking it
+/// would leave that invariant scanning empty quotes and passing vacuously — the
+/// exact failure this whole cluster is about.
+///
+/// Use this when the scanner reads literals; use [`production_source`] when it
+/// reads code, where blanking additionally stops a mention inside a comment from
+/// satisfying (or violating) an invariant.
+fn strip_cfg_test_items(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut prev = 0usize;
+    for r in cfg_test_item_ranges(content) {
+        out.push_str(&content[prev..r.start]);
+        out.extend(content[r.start..r.end].chars().filter(|c| *c == '\n'));
+        prev = r.end;
+    }
+    out.push_str(&content[prev..]);
+    out
+}
+
+/// The scanners are only as trustworthy as the slicing they run on, so the
+/// slicing is itself asserted. Each case below is a form that occurs in this
+/// tree and that the previous truncate-at-first-`#[cfg(test)]` implementation
+/// got wrong.
+#[test]
+fn production_source_keeps_production_and_drops_test_items() {
+    let src = r#"
+use std::fmt;
+
+#[cfg(test)]
+mod tests;
+
+pub fn real() -> f64 { 0.68 }
+
+#[cfg(test)]
+mod tests2 {
+    pub fn hidden() -> f64 { 0.11 }
+}
+
+pub fn also_real() -> f64 { 0.74 }
+
+#[cfg(test)]
+pub(super) const HELPER: [u8; 4] = [0; 4];
+
+pub fn third() -> f64 { 0.42 }
+"#;
+    let out = production_source(src);
+    for keep in [
+        "pub fn real",
+        "0.68",
+        "pub fn also_real",
+        "0.74",
+        "third",
+        "0.42",
+    ] {
+        assert!(
+            out.contains(keep),
+            "production code dropped: {keep}\n---\n{out}"
+        );
+    }
+    for drop in ["mod tests;", "hidden", "0.11", "HELPER"] {
+        assert!(
+            !out.contains(drop),
+            "test-gated code kept: {drop}\n---\n{out}"
+        );
+    }
+    // The `;` inside `[u8; 4]` must not end the const early and leak `[0; 4]`.
+    assert!(
+        !out.contains("[0; 4]"),
+        "bracketed `;` ended the item early:\n{out}"
+    );
+}
+
+/// [`strip_cfg_test_items`] must keep production code that sits *below* a
+/// top-of-file `#[cfg(test)] mod tests;` — the shape that made four scanners
+/// near-blind — **and** must keep string-literal content, which
+/// [`production_source`] deliberately destroys.
+///
+/// The literal half is not hypothetical: `correlation_rule_ids_match_their_
+/// function_number` reads the rule id out of `rule_id: "AU-NNN".into()`. Route
+/// that scanner through the blanking variant and it scans empty quotes and
+/// passes vacuously, which is a worse failure than the truncation it replaced.
+#[test]
+fn strip_cfg_test_items_keeps_literals_and_code_below_the_marker() {
+    const SRC: &str = r#"
+use std::fmt;
+
+#[cfg(test)]
+mod tests;
+
+pub fn rule_au_042_example() -> Correlation {
+    Correlation::new("AU-042", "an example rule")
+}
+
+#[cfg(test)]
+mod inline_tests {
+    fn helper() -> &'static str { "AU-999" }
+}
+
+pub fn rule_au_043_second() -> Correlation {
+    Correlation::new("AU-043", "a second rule")
+}
+"#;
+    let out = strip_cfg_test_items(SRC);
+
+    // Production code below the top-of-file marker survives — the whole point.
+    for keep in [
+        "rule_au_042_example",
+        "rule_au_043_second",
+        "\"AU-042\"",
+        "\"AU-043\"",
+        "an example rule",
+    ] {
+        assert!(
+            out.contains(keep),
+            "dropped from production: {keep}\n---\n{out}"
+        );
+    }
+    // Test-gated code goes, including the id that would forge a duplicate.
+    for drop in ["mod tests;", "inline_tests", "helper", "AU-999"] {
+        assert!(
+            !out.contains(drop),
+            "kept test-gated code: {drop}\n---\n{out}"
+        );
+    }
+    // Contrast: the blanking variant would empty exactly the literals the rule-id
+    // scanner reads. This pins WHY the two helpers are separate.
+    let blanked = production_source(SRC);
+    assert!(
+        blanked.contains("rule_au_042_example"),
+        "code identifiers must survive blanking"
+    );
+    assert!(
+        !blanked.contains("\"AU-042\""),
+        "production_source is supposed to blank literal content; if it no longer \
+         does, strip_cfg_test_items has no reason to exist separately"
+    );
+    assert_eq!(
+        out.lines().count(),
+        SRC.lines().count(),
+        "line structure was not preserved"
+    );
+}
+
+/// A brace, quote or semicolon inside a literal or a comment is not a
+/// delimiter. If this slips, every item boundary after it shifts.
+///
+/// The non-ASCII rows are load-bearing, not decoration: blanking a 3-byte `…` to
+/// a single space would preserve the character count while silently shifting
+/// every *byte* offset after it, which is the alignment the doc promises and
+/// that a future caller mapping a finding back to a source position would rely
+/// on. This tree's comments are full of `—` and `…`, so it is the common case.
+#[test]
+fn lexical_blanking_neutralises_delimiters_in_literals_and_comments() {
+    const SRC: &str = r####"
+let a = "a } brace ; and \" quote";
+let b = r#"raw " with }"#;
+let c = '}';
+let d: &'static str = "x";
+// comment with } and ; — plus an em dash and an ellipsis …
+/* nested /* block } */ still comment ; — and another … */
+let e = "unicode } inside a string: αβγ — …";
+let real = 0.68;
+"####;
+    let out = blank_strings_and_comments(SRC);
+
+    assert_eq!(out.matches('}').count(), 0, "a delimiter survived:\n{out}");
+    assert!(out.contains("0.68"), "real code was blanked:\n{out}");
+    assert!(
+        out.contains("'static"),
+        "lifetime was eaten as a char literal:\n{out}"
+    );
+    assert_eq!(
+        out.lines().count(),
+        SRC.lines().count(),
+        "line structure was not preserved"
+    );
+    assert_eq!(
+        out.len(),
+        SRC.len(),
+        "byte length was not preserved, so byte offsets no longer map back to \
+         the source — a multi-byte char was blanked to fewer bytes"
+    );
 }
 
 /// Collect every production `Entity::new` call whose confidence argument is a
@@ -2830,29 +3365,53 @@ fn collect_bare_confidence(dir: &Path, root: &Path, out: &mut Vec<(String, Strin
 /// that. `src/core` is fully normalised and must stay that way.
 ///
 /// The baseline below is the frozen inventory of sites that still carry an
-/// unnormalised value. Every one of them sits 0.01–0.03 away from an existing
-/// rung (0.66 vs `HIGH` 0.65, 0.68 vs `HIGH_PLUS` 0.70, 0.74 vs `VERY_HIGH`
-/// 0.75, 0.42 vs `LOW` 0.40, 0.38/0.28 between rungs) — evidence of
-/// uncoordinated drift between modules rather than deliberately designed tiers.
-/// They are NOT normalised here because doing so would change emitted
-/// confidence, which is a behavioural change that needs its own decision and
-/// its own regression evidence.
+/// unnormalised value. Most sit 0.01–0.03 off an existing rung (0.66 vs `HIGH`
+/// 0.65, 0.68 vs `HIGH_PLUS` 0.70, 0.74 vs `VERY_HIGH` 0.75, 0.42 vs `LOW` 0.40,
+/// 0.38/0.28 between rungs) — uncoordinated drift between modules rather than
+/// deliberately designed tiers. A few (`0.55` = `MEDIUM_HIGH`, `0.70` =
+/// `HIGH_PLUS`) land *exactly* on a rung and are only spelled as literals, so
+/// naming them would be a pure rename; the rest cannot be normalised without
+/// changing an emitted confidence. Neither is done here: a behavioural change
+/// needs its own decision and its own regression evidence, and mixing a free
+/// rename into this commit would blur which rows moved and why.
 ///
-/// This is a ratchet, asserted as exact set equality:
+/// This is a ratchet, asserted as multiset equality:
 ///   * a NEW bare literal fails the test — drift cannot grow;
 ///   * normalising one also fails, asking you to delete its baseline row — so
 ///     the inventory can only shrink, and never silently misreports.
+///
+/// The inventory is only as good as [`production_source`]'s slicing, which was
+/// truncating most files at their first `#[cfg(test)]` and hiding 18 of the 32
+/// occurrences now listed. That is fixed and asserted separately by
+/// `production_source_keeps_production_and_drops_test_items`; a ratchet whose
+/// scanner is untested measures whatever it happens to reach.
 #[test]
 fn entity_confidence_uses_named_ladder_constants() {
     /// Frozen drift inventory. Line-number free so unrelated edits above a site
     /// don't churn it. Shrink this list; never extend it.
+    ///
+    /// The 18 occurrences below marked `[revealed]` are **not new drift**. They
+    /// pre-date this inventory and were invisible until `production_source` was
+    /// fixed to skip `#[cfg(test)]` *items* rather than truncate the file at the
+    /// first one — see that function's docs. Every one of them was already in the
+    /// tree when the shorter baseline was frozen; the scanner simply never
+    /// reached them. Recording them is the correction, not a regression.
     const BASELINE: &[(&str, &str)] = &[
         ("src/modules/asic_business_names/mod.rs", "0.42"),
+        ("src/modules/au_people/mod.rs", "0.42"), // [revealed]
+        ("src/modules/bitbucket_user/mod.rs", "0.86"), // [revealed]
+        ("src/modules/codewars_user/mod.rs", "0.48"), // [revealed]
+        ("src/modules/codewars_user/mod.rs", "0.84"), // [revealed]
+        ("src/modules/cpan_user/mod.rs", "0.66"), // [revealed]
+        ("src/modules/cpan_user/mod.rs", "0.87"), // [revealed]
         ("src/modules/crates_io/mod.rs", "0.66"),
         ("src/modules/crates_io/mod.rs", "0.74"),
         ("src/modules/doh_resolver/mod.rs", "0.68"),
+        ("src/modules/epieos/mod.rs", "0.42"), // [revealed]
+        ("src/modules/epieos/mod.rs", "0.42"), // [revealed]
         ("src/modules/fediverse/mod.rs", "0.68"),
         ("src/modules/geo_intel/ip_geo.rs", "0.68"),
+        ("src/modules/hexpm_user/mod.rs", "0.87"), // [revealed]
         ("src/modules/ip2location/mod.rs", "0.68"),
         ("src/modules/ip_reputation/mod.rs", "0.68"),
         ("src/modules/mastodon_user/mod.rs", "0.28"),
@@ -2861,6 +3420,15 @@ fn entity_confidence_uses_named_ladder_constants() {
         ("src/modules/nostr/mod.rs", "0.66"),
         ("src/modules/npm_author/mod.rs", "0.66"),
         ("src/modules/npm_author/mod.rs", "0.74"),
+        ("src/modules/oathnet_pro/breach.rs", "0.55"), // [revealed]
+        ("src/modules/oathnet_pro/breach.rs", "0.55"), // [revealed]
+        ("src/modules/oathnet_pro/breach.rs", "0.70"), // [revealed]
+        ("src/modules/opencorporates/mod.rs", "0.68"), // [revealed]
+        ("src/modules/opencorporates/mod.rs", "0.68"), // [revealed]
+        ("src/modules/see_know/extract/mod.rs", "0.70"), // [revealed]
+        ("src/modules/sourceforge_user/mod.rs", "0.79"), // [revealed]
+        ("src/modules/sourceforge_user/mod.rs", "0.86"), // [revealed]
+        ("src/modules/whois/mod.rs", "0.68"),          // [revealed]
     ];
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -2927,6 +3495,181 @@ fn entity_confidence_uses_named_ladder_constants() {
             .iter()
             .filter(|(p, _)| p.starts_with("src/core/"))
             .collect::<Vec<_>>()
+    );
+}
+
+/// The final path segment of the left operand of a `- 0.NN`, if that operand is
+/// a simple identifier path. `geo.confidence` → `confidence`;
+/// `addr.confidence()` → `confidence`; `conf` → `conf`.
+///
+/// Returns `None` when the operand is not an identifier — a numeric literal, an
+/// opening delimiter, a closing brace — which is how a *negative literal*
+/// (`(-0.0236, 37.9062)`, a latitude) is told apart from a *subtraction*.
+fn subtraction_lhs_segment(before: &str) -> Option<String> {
+    let mut s = before.trim_end();
+    // `addr.confidence()` — step back over an empty call's parens so the
+    // accessor form is read the same as the field form.
+    if let Some(t) = s.strip_suffix("()") {
+        s = t.trim_end();
+    }
+    let mut seg: Vec<char> = s
+        .chars()
+        .rev()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    seg.reverse();
+    // A leading digit means we walked back into a number, not an identifier.
+    let starts_with_digit = seg.first().is_some_and(char::is_ascii_digit);
+    (!seg.is_empty() && !starts_with_digit).then(|| seg.into_iter().collect())
+}
+
+/// Collect every production site that subtracts a bare float from a
+/// confidence-valued expression, as `(repo-relative path, literal)`.
+///
+/// "Confidence-valued" is decided syntactically: the left operand's final path
+/// segment contains `conf`. That matches the vocabulary actually in use
+/// (`x.confidence`, `x.confidence()`, `conf`, `base_conf`, `coord_conf`) and
+/// deliberately does not match unrelated arithmetic such as
+/// `device_fix.rs`'s `ceiling - 0.05`, which clamps a ceiling rather than
+/// deriving a finding from a parent.
+fn collect_hand_rolled_derivations(dir: &Path, root: &Path, out: &mut Vec<(String, String)>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_hand_rolled_derivations(&path, root, out);
+            continue;
+        }
+        // Same test-file exclusions as the bare-literal scan above: a test that
+        // asserts `(e.confidence - 0.72).abs() < 1e-9` is comparing, not
+        // deriving, and freezing those would make every threshold assertion in
+        // the tree a ratchet entry.
+        if path
+            .file_name()
+            .is_some_and(|n| n == "tests.rs" || n.to_string_lossy().ends_with("_tests.rs"))
+            || path.extension().is_none_or(|e| e != "rs")
+        {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let src = production_source(&fs::read_to_string(&path).unwrap());
+        for (idx, _) in src.match_indices('-') {
+            // `->`, `-=` and `--` fail this immediately; so does `- x`.
+            let rhs = src[idx + 1..].trim_start();
+            if !rhs.starts_with("0.") {
+                continue;
+            }
+            let Some(seg) = subtraction_lhs_segment(&src[..idx]) else {
+                continue;
+            };
+            if !seg.to_ascii_lowercase().contains("conf") {
+                continue;
+            }
+            let lit: String = rhs
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            out.push((rel.clone(), lit));
+        }
+    }
+}
+
+/// Deriving a finding from a parent finding is [`confidence::derived_from`]'s
+/// job, not each module's.
+///
+/// Eleven production sites independently wrote `parent - 0.10`. Four floored the
+/// result at `0.10` and seven did not, so a weak parent produced a finding at
+/// `ZERO` — the one rung the ladder documents as *never emitted*. Half the tree
+/// guarded that and half did not, and nothing made the difference visible. That
+/// is the drift this ratchet exists to stop: the arithmetic now has one owner,
+/// and a twelfth site cannot quietly re-introduce a twelfth variant.
+///
+/// The baseline is the frozen inventory of sites that keep their own arithmetic
+/// **on purpose**, because folding them into `derived_from` would erase
+/// information rather than share it:
+///
+///   * `phone_geo` steps by `0.08`, not `0.10` — a country-centroid coordinate
+///     from a dialling prefix is a different inference from an address-derived
+///     one, and the step encodes that.
+///   * `steam_profile` runs a *graded* family — `0.05`, `0.13`, `0.15`, `0.20`
+///     (twice), `0.25`, `0.27`, `0.33` — each with its own floor, ranking eight
+///     kinds of profile-derived signal against one another. One shared step
+///     would flatten that ranking to nothing.
+///
+/// Shrink this list only by making a site's step genuinely uniform; never
+/// extend it. A new entry means someone wrote the twelfth variant.
+#[test]
+fn derived_confidence_goes_through_the_shared_step() {
+    /// Frozen inventory of deliberate non-uniform steps. Line-number free so
+    /// unrelated edits above a site don't churn it.
+    const BASELINE: &[(&str, &str)] = &[
+        ("src/modules/phone_geo/mod.rs", "0.08"),
+        ("src/modules/steam_profile/mod.rs", "0.05"),
+        ("src/modules/steam_profile/mod.rs", "0.13"),
+        ("src/modules/steam_profile/mod.rs", "0.15"),
+        ("src/modules/steam_profile/mod.rs", "0.20"),
+        ("src/modules/steam_profile/mod.rs", "0.20"),
+        ("src/modules/steam_profile/mod.rs", "0.25"),
+        ("src/modules/steam_profile/mod.rs", "0.27"),
+        ("src/modules/steam_profile/mod.rs", "0.33"),
+    ];
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut found = Vec::new();
+    collect_hand_rolled_derivations(&root.join("src"), root, &mut found);
+
+    // Multiset, not set: `steam_profile` carries `0.20` at two distinct sites,
+    // so membership testing would let a third `0.20` through and would not
+    // notice if one of the pair were removed. Counting occurrences is what
+    // actually enforces the ratchet.
+    let tally = |rows: &[(String, String)]| {
+        let mut m: std::collections::BTreeMap<(String, String), usize> =
+            std::collections::BTreeMap::new();
+        for r in rows {
+            *m.entry(r.clone()).or_default() += 1;
+        }
+        m
+    };
+    let found_counts = tally(&found);
+    let expected_counts = tally(
+        &BASELINE
+            .iter()
+            .map(|(p, v)| ((*p).to_string(), (*v).to_string()))
+            .collect::<Vec<_>>(),
+    );
+
+    let added: Vec<String> = found_counts
+        .iter()
+        .filter_map(|(k, n)| {
+            let allowed = expected_counts.get(k).copied().unwrap_or(0);
+            (*n > allowed)
+                .then(|| format!("{} `- {}` x{} (baseline allows {allowed})", k.0, k.1, n))
+        })
+        .collect();
+    let fixed: Vec<String> = expected_counts
+        .iter()
+        .filter_map(|(k, n)| {
+            let actual = found_counts.get(k).copied().unwrap_or(0);
+            (*n > actual).then(|| format!("{} `- {}` x{} (now only {actual})", k.0, k.1, n))
+        })
+        .collect();
+
+    assert!(
+        added.is_empty(),
+        "hand-rolled confidence derivation(s) — call \
+         `huntsman_search_engine::core::confidence::derived_from(parent)` instead of \
+         subtracting a step by hand, so the floor that keeps a derived finding off \
+         `ZERO` applies everywhere:\n{added:#?}\n\
+         If the step is genuinely non-uniform (see `steam_profile`), add it to \
+         BASELINE with the reason it differs."
+    );
+    assert!(
+        fixed.is_empty(),
+        "these baseline entries no longer exist (nice — you normalised them). \
+         Delete them from BASELINE so the inventory stays truthful:\n{fixed:#?}"
     );
 }
 

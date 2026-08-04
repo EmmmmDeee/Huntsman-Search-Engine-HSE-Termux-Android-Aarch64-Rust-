@@ -156,7 +156,7 @@ pub(super) fn build_relative(
         Some("ACTIVE") => e.tag("active"),
         Some("INACTIVE" | "ANNULLED") => {
             e.tag("inactive");
-            e.confidence = (e.confidence - 0.10).max(0.10);
+            e.confidence = confidence::derived_from(e.confidence);
         }
         _ => {}
     }
