@@ -1,13 +1,14 @@
 //! `hse ingest` command: Parse documents → extract entities → output JSONL batch.
 //!
-//! Supports auto-scan: extracted entities can optionally be fed into the HSE scan pipeline
-//! for automatic recursive expansion and cross-correlation. Phase 4 integration.
+//! `--auto-scan` is reserved for feeding extracted entities into the HSE scan
+//! engine, but that wiring is NOT implemented: the flag warns and runs no scan
+//! (entities are still extracted and written). It exists so the CLI surface and
+//! `converter::extracted_to_hse_entity` are ready for when the engine is wired.
 
 mod converter;
 
 use crate::util::document_parse::{DocumentFormat, DocumentResult};
 use crate::util::entity_extractor::EntityExtractor;
-use clap::Parser;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -20,41 +21,33 @@ use tracing::info;
 /// these entities re-stamps them with the scan that adopts them.
 const PENDING_SCAN_ID: &str = "ingest-pending";
 
-#[derive(Parser, Debug)]
+/// Arguments for `hse ingest`. Populated from the `Command::Ingest` clap variant
+/// in `cli::command`, which owns the flags and short-names — this is a plain
+/// data-transfer struct, NOT a parser, so it carries no clap attributes.
+#[derive(Debug)]
 pub struct IngestArgs {
     /// Input file path (image, PDF, CSV, JSON, JSONL, text)
-    #[arg(short, long, value_name = "PATH")]
     pub file: PathBuf,
 
     /// Output format: jsonl (default), json, csv, table, hse
-    ///
-    /// Short flag is `-F`: `-f` is the input file and `-o` the output file,
-    /// and clap panics at startup on a duplicate short name.
-    #[arg(short = 'F', long, default_value = "jsonl")]
     pub output_format: String,
 
     /// Minimum confidence threshold (0.0-1.0)
-    #[arg(long, default_value = "0.30")]
     pub min_confidence: f64,
 
-    /// Auto-scan extracted entities (not yet implemented)
-    #[arg(long)]
+    /// Auto-scan extracted entities (NOT IMPLEMENTED — warns and runs no scan)
     pub auto_scan: bool,
 
     /// Output file (default: stdout)
-    #[arg(short, long)]
     pub output: Option<PathBuf>,
 
     /// Extract EXIF geolocation from images
-    #[arg(long)]
     pub extract_geolocation: bool,
 
     /// Generate reverse image search variants for detected images
-    #[arg(long)]
     pub generate_reverse_search_variants: bool,
 
     /// Output directory for reverse image search variants
-    #[arg(long, value_name = "DIR")]
     pub image_variant_output_dir: Option<PathBuf>,
 }
 
@@ -281,16 +274,16 @@ pub async fn run(args: IngestArgs) -> DocumentResult<()> {
         }
     }
 
-    // Phase 4: Auto-scan integration (when --auto-scan flag is set)
-    // Future: Wire extracted entities into HSE scan pipeline via:
-    // 1. Convert ExtractedEntity → core::entity::Entity using converter::extracted_to_hse_entity()
-    // 2. Create or use existing scan record with unique scan_id
-    // 3. Call storage::Store::upsert_entities_batch(&entities, &scan_id)
-    // 4. Execute engine::ScanEngine::run() with the extracted entities as seeds
-    // 5. Return scan results to user with "auto-scan" tag
+    // --auto-scan is NOT implemented: extracted entities are not fed into the
+    // scan engine. Warn (not info!, which is usually silent) so the flag never
+    // reads as a silent success — the run still emits the extraction output
+    // below, so the work is not wasted. Wiring it in means: convert via
+    // converter::extracted_to_hse_entity, upsert under a scan_id, then run the
+    // engine over the entities as seeds.
     if args.auto_scan {
-        info!("Auto-scan flag set; implementation pending Phase 4 engine integration");
-        // Auto-scan wiring deferred: requires Store/Engine context not available at CLI level
+        tracing::warn!(
+            "--auto-scan is not implemented: entities were extracted but no scan was run"
+        );
     }
 
     // Format output

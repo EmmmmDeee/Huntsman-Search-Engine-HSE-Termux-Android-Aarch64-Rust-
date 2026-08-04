@@ -153,6 +153,106 @@ use super::*;
         );
     }
 
+    // ── cooldown expiry against an injected clock ─────────────────────────────
+    //
+    // These drive time by PASSING a later `now`, never by sleeping, so they are
+    // deterministic and cost no wall-clock time. A device suspend is, from this
+    // module's side, indistinguishable from the clock jumping forward while none
+    // of our code ran — which is exactly what these hand it.
+    //
+    // They assert that expiry tracks the wall clock it is GIVEN. That
+    // `SystemTime` keeps advancing across an Android doze is a property of the
+    // OS, not of this code, and is deliberately not asserted here.
+
+    /// A fixed wall-clock origin, so these tests don't depend on when they run.
+    fn t0() -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000)
+    }
+
+    #[test]
+    fn hard_trip_expiry_tracks_the_injected_wall_clock() {
+        let m = "t_clock_hard_expiry";
+        record_error_at(m, "HTTP 429 Too Many Requests", t0());
+        assert!(is_open_at(m, t0() + Duration::from_secs(1)));
+        assert!(
+            is_open_at(m, t0() + RATE_LIMIT_COOLDOWN - Duration::from_secs(1)),
+            "still benched one second before the cooldown elapses"
+        );
+        assert!(
+            !is_open_at(m, t0() + RATE_LIMIT_COOLDOWN + Duration::from_secs(1)),
+            "must reopen once the wall clock passes the deadline"
+        );
+    }
+
+    #[test]
+    fn a_suspend_outlasting_the_cooldown_reopens_the_breaker_on_wake() {
+        // The defect this module's clock note describes: with a monotonic
+        // deadline the elapsed suspend does not count, so the provider stays
+        // benched long past its 600 s cooldown and its findings are silently
+        // dropped. Against a wall clock, two hours of suspend is two hours.
+        let m = "t_clock_long_suspend";
+        record_error_at(m, "API count exceeded", t0());
+        assert!(is_open_at(m, t0() + Duration::from_secs(30)));
+        assert!(
+            !is_open_at(m, t0() + Duration::from_secs(7_200)),
+            "a suspend longer than the cooldown must leave the provider retryable"
+        );
+    }
+
+    #[test]
+    fn a_suspend_shorter_than_the_cooldown_leaves_the_trip_intact() {
+        // The converse guard: the fix must not reopen a breaker early.
+        let m = "t_clock_short_suspend";
+        record_error_at(m, "429", t0());
+        assert!(
+            is_open_at(m, t0() + Duration::from_secs(300)),
+            "half the cooldown has passed — the provider is still rate-limited"
+        );
+    }
+
+    #[test]
+    fn soft_trip_expiry_tracks_the_injected_wall_clock() {
+        let m = "t_clock_soft_expiry";
+        record_soft_failure_at(m, t0());
+        record_soft_failure_at(m, t0());
+        record_soft_failure_at(m, t0()); // third consecutive → soft trip
+        assert!(is_open_at(m, t0() + SOFT_COOLDOWN - Duration::from_secs(1)));
+        assert!(
+            !is_open_at(m, t0() + SOFT_COOLDOWN + Duration::from_secs(1)),
+            "the shorter soft cooldown expires on the same wall clock"
+        );
+    }
+
+    #[test]
+    fn an_untripped_soft_streak_is_never_expired_by_the_clock() {
+        // A sub-threshold streak carries NO deadline, so no amount of elapsed
+        // time may clear it — otherwise a doze would silently reset the streak
+        // and a persistently-failing provider would never reach its trip.
+        let m = "t_clock_streak_survives";
+        record_soft_failure_at(m, t0());
+        record_soft_failure_at(m, t0()); // streak = 2, threshold is 3
+        let a_day_later = t0() + Duration::from_secs(86_400);
+        assert!(!is_open_at(m, a_day_later), "two failures must not be open");
+        record_soft_failure_at(m, a_day_later);
+        assert!(
+            is_open_at(m, a_day_later + Duration::from_secs(1)),
+            "the streak survived the gap, so the third failure still trips"
+        );
+    }
+
+    #[test]
+    fn a_backwards_clock_step_lengthens_the_cooldown_without_panicking() {
+        // The documented exposure of using a wall clock: an NTP correction
+        // steps time backwards mid-cooldown. The trip must stay open (longer
+        // than intended, the safe direction) and nothing may panic.
+        let m = "t_clock_backwards_step";
+        record_error_at(m, "429", t0());
+        assert!(
+            is_open_at(m, t0() - Duration::from_secs(3_600)),
+            "a backwards step lengthens the bench rather than corrupting it"
+        );
+    }
+
     #[test]
     fn is_rate_limited_still_matches_429_402_as_a_standalone_token() {
         // The token-anchoring in the fix above must not overcorrect: an actual
