@@ -69,6 +69,14 @@ impl DocumentFormat {
 pub enum DocumentParseError {
     #[error("OCR not available (tesseract missing); image processing disabled")]
     OcrUnavailable,
+    /// Distinct from [`Self::OcrUnavailable`] on purpose: "tesseract is not
+    /// installed" and "tesseract ran and would not finish" are different facts
+    /// about the host, and an operator can act on them differently — install a
+    /// package, versus feed a smaller image or raise the bound. Folding a hang
+    /// into "unavailable" would report a capability the host actually has as
+    /// missing.
+    #[error("OCR timed out after {secs}s; tesseract did not finish")]
+    OcrTimeout { secs: u64 },
     #[error("PDF parsing error: {0}")]
     PdfError(String),
     #[error("CSV parsing error: {0}")]
