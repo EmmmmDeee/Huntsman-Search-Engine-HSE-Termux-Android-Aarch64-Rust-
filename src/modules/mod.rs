@@ -28,6 +28,7 @@ pub mod beacondb;
 pub mod bgpview;
 pub mod bitbucket_user;
 pub mod bluesky_user;
+pub mod builtwith;
 // Shared "maximum raw data" breach/stealer extractor — a `pub(crate)` HELPER
 // (no `Module` impl), consumed by see_know / oathnet_pro / dehashed via
 // `crate::modules::breach_rich::extract_rich_detail`, not a registered module.
@@ -365,6 +366,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(onyphe::Onyphe),
             Arc::new(zoomeye::ZoomEye),
             Arc::new(fofa::Fofa),
+            Arc::new(builtwith::BuiltWith),
             Arc::new(ipqs::IpQs),
             Arc::new(contact_enrich::ContactEnrich),
             Arc::new(hunter_io::HunterIo),
