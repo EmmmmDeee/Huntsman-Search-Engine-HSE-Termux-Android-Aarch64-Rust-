@@ -19,6 +19,8 @@ on:
     paths:
       - 'fuzz/**'
       - 'src/modules/cert_intel/**'
+      - 'src/util/entity_extractor/**'
+      - 'src/util/str_util/**'
       - '.github/workflows/fuzz.yml'
 
 permissions:
@@ -30,7 +32,7 @@ concurrency:
 
 jobs:
   fuzz:
-    name: cargo fuzz (cert_der, nightly)
+    name: cargo fuzz (cert_der + ingest_text, nightly)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -77,3 +79,33 @@ jobs:
           # `cargo build` cargo-fuzz spawns — the same override the documented
           # local command in fuzz/README.md already uses.
           cargo +nightly fuzz run cert_der corpus/cert_der -- -max_total_time=120 -seed=1
+
+      # The ingest text pipeline: a whole document an operator pointed the tool
+      # at (crawled page, breach dump, OCR output, imported file), not bytes off
+      # a socket. Byte-index-sensitive — confidence boosting slices a context
+      # window around each match, and `util::str_util::char_window` is what keeps
+      # that off a char boundary; this is what proves it.
+      #
+      # The seed is written inline rather than copied from the source tree
+      # because it is a CORPUS SEED, not a fixture: its job is to hand libFuzzer
+      # one input already covering every extracted kind so mutation starts from
+      # coverage instead of finding the shapes from scratch. Nothing in `src/`
+      # asserts against it, so single-sourcing does not apply. The multi-byte
+      # line is deliberate — it puts a non-ASCII boundary next to a match on the
+      # very first input.
+      - name: Fuzz ingest_text (120s, seeded across every extracted kind)
+        run: |
+          mkdir -p fuzz/corpus/ingest_text
+          cat > fuzz/corpus/ingest_text/seed_all_kinds <<'SEED'
+          contact a.user+tag@example.com or visit https://sub.example.co.uk/path?q=1
+          hosts 192.0.2.44 and 2001:db8::8a2e:370:7334 and fe80::1%eth0 [::ffff:192.0.2.1]
+          md5 5d41402abc4b2a76b9719d911017c592
+          sha1 aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d
+          sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+          follow @some_handle and @a
+          not-an-address std::vector<int> 12:34:56 de:ad:be:ef:00:01
+          multibyte: café → naïve ☃ 日本語 a@b.com 𝔘𝔫𝔦𝔠𝔬𝔡𝔢
+          SEED
+          cd fuzz
+          # `+nightly` for the same rust-toolchain.toml precedence reason as above.
+          cargo +nightly fuzz run ingest_text corpus/ingest_text -- -max_total_time=120 -seed=1

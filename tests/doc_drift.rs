@@ -200,3 +200,120 @@ fn doc_roi_examples_use_the_real_credit_costs() {
         drift.join("\n  ")
     );
 }
+
+/// `ci.yml`'s MSRV job must pin exactly the version `Cargo.toml` declares.
+///
+/// The MSRV floor lives in four places at once: `Cargo.toml`'s `rust-version`,
+/// and three independent literals in `ci.yml` — the job NAME operators read in
+/// the checks list, the `RUSTUP_TOOLCHAIN` env var that actually decides which
+/// compiler runs, and the `dtolnay/rust-toolchain@<ver>` ref that installs it.
+/// Nothing tied them together, so raising `rust-version` while leaving the
+/// workflow alone left a green "MSRV (1.88)" check that was, in fact, no longer
+/// testing the crate's real floor — a gate that passes while measuring the
+/// wrong thing, which is worse than no gate.
+///
+/// #350 identified this and deliberately left it, because the obvious fix —
+/// `dtolnay/rust-toolchain@master` plus a `toolchain:` input read from the
+/// manifest — trades a pinned action for a floating one, which is the exact
+/// drift class every other workflow here is pinned to avoid.
+///
+/// This resolves it the other way round. The action stays pinned; the guard
+/// moves into the test suite, where this repo already keeps its no-silent-drift
+/// ratchets. `Cargo.toml` becomes the single source of truth in the only sense
+/// that matters — divergence fails a required check — and the workflow gains no
+/// new moving parts.
+///
+/// If the three literals ever need to differ from `rust-version` on purpose,
+/// that is a real decision and this test is the right place to argue with.
+#[test]
+fn ci_msrv_job_pins_the_version_cargo_toml_declares() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    let manifest = fs::read_to_string(root.join("Cargo.toml")).expect("Cargo.toml must exist");
+    let msrv = manifest
+        .lines()
+        .find_map(|l| {
+            let (k, v) = l.split_once('=')?;
+            (k.trim() == "rust-version").then(|| v.trim().trim_matches('"').to_string())
+        })
+        .expect("Cargo.toml must declare rust-version");
+
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))
+        .expect(".github/workflows/ci.yml must exist");
+
+    // Each expected literal, paired with what it controls, so a failure names
+    // the one that drifted rather than just "something is wrong".
+    let required = [
+        (
+            format!("name: MSRV ({msrv})"),
+            "the job name shown in the checks list",
+        ),
+        (
+            format!("RUSTUP_TOOLCHAIN: \"{msrv}\""),
+            "the env var that actually selects the compiler (highest rustup precedence)",
+        ),
+        (
+            format!("uses: dtolnay/rust-toolchain@{msrv}"),
+            "the action ref that installs the toolchain",
+        ),
+    ];
+
+    let missing: Vec<String> = required
+        .iter()
+        .filter(|(needle, _)| !ci.contains(needle.as_str()))
+        .map(|(needle, what)| format!("`{needle}`  — {what}"))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "Cargo.toml declares rust-version = \"{msrv}\", but ci.yml's MSRV job does not \
+         pin it everywhere. Missing:\n  {}\n\
+         Update .github/workflows/ci.yml so all three agree, or change rust-version.",
+        missing.join("\n  ")
+    );
+
+    // A stale literal elsewhere in the file is the same defect wearing a
+    // different hat: the job would install `msrv` and then be described, or
+    // overridden, by a different version. Catch any OTHER `1.NN` toolchain
+    // reference inside the msrv job block.
+    // Line-based, because a YAML job block is defined by indentation: the job
+    // key sits at two spaces, and its body is everything more deeply indented
+    // (blank lines included) until the next two-space key.
+    let mut in_job = false;
+    let msrv_block: Vec<&str> = ci
+        .lines()
+        .filter(|line| {
+            if line.trim_end() == "  msrv:" {
+                in_job = true;
+                return false;
+            }
+            if in_job && !line.trim().is_empty() && !line.starts_with("   ") {
+                in_job = false;
+            }
+            in_job
+        })
+        .collect();
+    assert!(
+        !msrv_block.is_empty(),
+        "ci.yml no longer has an `msrv:` job whose body this guard can read — \
+         it silently stopped checking"
+    );
+    for (i, line) in msrv_block.iter().enumerate() {
+        // Comments are prose, not configuration. This job's header comment
+        // explains the rustup precedence rule by NAMING the 1.97.1 pin it has
+        // to override, so scanning comments would flag the very explanation
+        // that documents why the override is correct.
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        let is_toolchain_ref = line.contains("RUSTUP_TOOLCHAIN")
+            || line.contains("dtolnay/rust-toolchain@")
+            || line.contains("name: MSRV");
+        assert!(
+            !is_toolchain_ref || line.contains(&msrv),
+            "ci.yml msrv job line {} pins a toolchain other than rust-version = \"{msrv}\": {}",
+            i + 1,
+            line.trim()
+        );
+    }
+}

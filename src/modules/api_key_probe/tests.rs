@@ -231,3 +231,45 @@ use super::*;
             }
         }
     }
+
+/// The identified-services report must be deterministic.
+///
+/// `identified` is filled inside the `join_next` loop, which resolves in
+/// COMPLETION order — network-race order, not spawn order. That order reached
+/// the operator verbatim in the evidence headline and the `services_matched`
+/// attribute, so two runs against the same key and the same services could
+/// print them in different orders and a diff of two reports showed a change
+/// where nothing had changed.
+#[test]
+fn identified_services_are_reported_in_a_stable_order() {
+    // One `identified` row: (service, category, parsed info pairs).
+    type Row = (&'static str, &'static str, Vec<(String, String)>);
+
+    // Two arrival orders of the SAME three services — what the race produces.
+    let mut race_a: Vec<Row> = vec![
+        ("virustotal", "malware", vec![]),
+        ("shodan", "infra", vec![]),
+        ("censys", "infra", vec![]),
+    ];
+    let mut race_b: Vec<Row> = vec![
+        ("censys", "infra", vec![]),
+        ("virustotal", "malware", vec![]),
+        ("shodan", "infra", vec![]),
+    ];
+
+    super::sort_identified_for_report(&mut race_a);
+    super::sort_identified_for_report(&mut race_b);
+
+    let names_a: Vec<&str> = race_a.iter().map(|(s, _, _)| *s).collect();
+    let names_b: Vec<&str> = race_b.iter().map(|(s, _, _)| *s).collect();
+
+    assert_eq!(
+        names_a, names_b,
+        "two different completion orders must produce the SAME report"
+    );
+    assert_eq!(
+        names_a,
+        vec!["censys", "shodan", "virustotal"],
+        "sorted by service name"
+    );
+}
