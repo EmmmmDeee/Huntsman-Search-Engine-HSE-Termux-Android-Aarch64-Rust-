@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "cycle_count": 1,
-  "last_verified_commit": "ca0131af",
+  "last_verified_commit": "7e386afa",
   "baseline": {
     "commit": "46623417",
     "branch": "claude/huntsman-price-analysis-ewy20t",
@@ -21,7 +21,7 @@
       "security_md_corrupted": "U+2078 superscript-eight prepended to '# Security Policy' breaks the H1; supported-versions sentence is garbled ('more potentiation and bis empowered'). Live on main.",
       "blocking_fs_in_async": "15 sites; app::cells + app::export are HTTP-reachable (api/cells_handlers.rs imports app::cells) on a 2-worker tokio runtime.",
       "modules_without_tests": "RETRACTED — this finding was false. The detector keyed on the existence of a tests.rs FILE, not on the presence of tests, and every one of the eight modules carried an inline `#[cfg(test)] mod tests { .. }` in its mod.rs: bluesky_user 15, codeberg_user 9, devto 7, gitlab_user 8, lobsters 8, mastodon_user 8, stackoverflow_user 11, url_extract 5 — 71 tests, not zero. Superseded by tier2_actionable.inline_vs_file_test_placement.",
-      "inline_vs_file_test_placement": "Real, smaller finding left behind by the retraction: module tests are split between two conventions — an inline `mod tests { .. }` in mod.rs and a separate `tests.rs` declared with `#[cfg(test)] mod tests;`. Only the file form is checked by every_src_file_is_wired_into_the_module_tree, which is why the codeberg_user orphan (incident 2) went undetected at authoring time. Six modules remain on the inline form: devto, gitlab_user, lobsters, mastodon_user, stackoverflow_user, url_extract. Not a defect on its own — candidate for a later slot, and only worth doing where it comes with real added contract coverage.",
+      "inline_vs_file_test_placement": "NOT A FINDING — measured, and the premise was wrong twice over. First stated as 'two conventions, only the file form is arch-checked, six modules remain on the inline form'. Actual counts across src: `mod tests { include!(\"tests.rs\"); }` 191 files, bare `mod tests;` 107 files, tests written inline in mod.rs ~129 files. Three established forms, not two, and the inline form is not a residue — it is the single largest population. every_src_file_is_wired_into_the_module_tree accepts BOTH file-linking forms (it tracks `mod` declarations AND `include!(..)` targets — read the source at tests/architecture.rs, do not infer it). So the codeberg_user orphan was not a symptom of a convention split: that file had NEITHER link, which is a different and much narrower defect. Conclusion: moving tests between these forms is style churn, not a fix, and must not be scheduled as one. Three such moves (mastodon_user, stackoverflow_user, url_extract) were made and then reverted before commit on exactly this reasoning — they changed no test.",
       "rustdoc_gap": "270 of 1662 public items (16%) lack adjacent doc/attr; worst: core/tags.rs (31), util/key_pool/pool.rs (12), storage/mod.rs (12).",
       "duplicate_deps": "15 pairs; tower-http 0.6.11 is transitive via axum (direct dep is 0.7) \u2014 not actionable without an axum bump.",
       "missing_docs_lint": "not enabled in src/lib.rs"
@@ -106,6 +106,20 @@
       "reality": "Confirmed by `git show --stat b609d2fa` (2 files, not 1) and by running the arch test at that HEAD, which failed naming the orphan. Not a false alarm this time — a real defect, mine.",
       "how_caught": "Only because slot 3 forced me to check the coverage of the very module involved. Nothing in my own process caught it; the repo's arch test would have, had I run the gate after that commit instead of citing the gate result from the commit before it.",
       "lesson": "Two, and the second is the load-bearing one. (1) Stage by explicit path, never `git add -A` on a tree an agent has been writing into. (2) A gate result belongs to the tree it ran on. b609d2fa's message quoted 6232/0 from 77a98e71 and shipped a different tree — re-run the gate on the exact tree being committed, or say in the message which commit the numbers came from."
+    },
+    {
+      "cycle": 1,
+      "what": "The working tree was moved to `main` a second time by something outside this session, mid-slot, while three modules' work sat staged.",
+      "reality": "Not damage. `git reflog` showed 'checkout: moving from claude/huntsman-price-analysis-ewy20t to main' at HEAD@{0}, and `git merge-base --is-ancestor ca0131af HEAD` returned NO simply because HEAD was main. Both slot commits were intact on the branch. Recovered with stash -> checkout branch -> stash pop; nothing lost.",
+      "how_caught": "Applied the lesson from the first occurrence before reacting: checked the ref, not the file contents. The file contents alone looked exactly like a revert of ca0131af.",
+      "lesson": "This is now a recurring condition of this environment, not a one-off. Re-read `git rev-parse --abbrev-ref HEAD` after any long-running external work, and prefer `git stash` over any in-place 'repair' when the tree looks wrong."
+    },
+    {
+      "cycle": 1,
+      "what": "scripts/gate.sh reported FAIL doctests — all 71, having passed on a near-identical tree twenty minutes earlier.",
+      "reality": "Environmental, not a code defect. Every failure was `collect2: fatal error: ld terminated with signal 7 [Bus error]` during linking; the filesystem was 100% full with 188 MB free and target/ at 24 GB. SIGBUS in ld is a truncated mmap, i.e. the disk, not the source. Freed 15 GB by removing target/debug/incremental (13 G), target/release and target/doc — all regenerable — and the identical gate ran fully green.",
+      "how_caught": "The failure count was the tell: 71 of 71, not one. A content defect does not fail every doctest at once. Read the actual linker error instead of the summary line.",
+      "lesson": "Read the error, not the PASS/FAIL. And check `df -h` before diagnosing any sudden whole-category build failure — this environment has a fixed per-session disk allowance that a long cargo session will exhaust."
     }
   ]
 }
