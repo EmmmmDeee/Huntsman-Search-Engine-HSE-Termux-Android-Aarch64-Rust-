@@ -99,9 +99,16 @@ fn application_layer_owns_runtime_composition() {
     let runtime = fs::read_to_string(root.join("src/app/runtime.rs")).unwrap();
     for required in [
         "Store::open(",
-        "ScanEngine::with_module_runtime(",
+        // The composition constructor. It gained the host parameter when
+        // `core` stopped reaching into `util` directly; app is the one layer
+        // permitted to name both sides, which is why the wiring lives here.
+        "ScanEngine::with_runtime_and_host(",
         "registry()",
         "module_runtime()",
+        // Pin the REAL host too. Without this the engine would silently fall
+        // back to `NoopEngineHost` — no egress pool refresh, no module-health
+        // quarantine — and every test would still pass.
+        "UtilEngineHost",
     ] {
         assert!(
             runtime.contains(required),
@@ -116,6 +123,7 @@ fn application_layer_owns_runtime_composition() {
                 "fn build_runtime(",
                 "ScanEngine::new(",
                 "ScanEngine::with_module_runtime(",
+                "ScanEngine::with_runtime_and_host(",
                 "Store::open(",
                 "crate::storage",
             ],
@@ -385,111 +393,24 @@ fn core_does_not_import_util_directly() {
         })
         .collect();
 
-    // ── Revealed backlog ─────────────────────────────────────────────────────
-    // These are NOT allow-listed. `util::egress` owns a mutable proxy pool,
-    // reads env, probes the network and spawns a task; `util::scraper_health`
-    // is read from inside the dispatch loop. Neither is the pure, dependency-
-    // free leaf the exceptions above are scoped to, so calling them "allowed"
-    // would be silencing the assertion — which CLAUDE.md forbids: "a change
-    // that trips them is a design decision — raise it, don't silence it."
+    // The revealed backlog is EMPTY and the scaffolding that froze it is gone.
     //
-    // They were invisible until `scan_dir` stopped latching `in_test` on the
-    // first `#[cfg(test)]`. `core/engine/mod.rs` declares that at line 63 of
-    // 2724, so 2661 lines — including every one of these — went unscanned. The
-    // violations pre-date this change by a long way; the guard simply never
-    // reached them.
+    // Un-blinding `scan_dir` (#355) surfaced four real violations here, all in
+    // `core/engine/mod.rs`: three `util::egress` calls and one
+    // `util::scraper_health` import. They were frozen in a shrink-only list
+    // rather than allow-listed, because CLAUDE.md is explicit that a tripped
+    // invariant is a design decision to raise, not silence.
     //
-    // Frozen here so the invariant still bites on GROWTH (a fifth violation
-    // fails immediately) while the design question is raised rather than
-    // buried. Shrink this list; never extend it. Resolving it means giving
-    // `core` a port for egress refresh and module health the way it already has
-    // one for storage — a change to `core`'s dependency surface that needs its
-    // own unit and its own regression evidence, not a drive-by edit inside a
-    // test-tooling fix.
-    const REVEALED: &[(&str, &str)] = &[
-        ("src/core/engine/mod.rs", "util::egress"),
-        ("src/core/engine/mod.rs", "util::egress"),
-        ("src/core/engine/mod.rs", "util::egress"),
-        ("src/core/engine/mod.rs", "util::scraper_health"),
-    ];
-
-    let tally = |rows: &[(String, String)]| {
-        let mut m: std::collections::BTreeMap<(String, String), usize> =
-            std::collections::BTreeMap::new();
-        for r in rows {
-            *m.entry(r.clone()).or_default() += 1;
-        }
-        m
-    };
-    let found: Vec<(String, String)> = allowed
-        .iter()
-        .filter_map(|v| util_violation_key(v))
-        .collect();
-    // Anything the key parser could not read must not be swallowed.
-    let unparsed: Vec<&String> = allowed
-        .iter()
-        .filter(|v| util_violation_key(v).is_none())
-        .collect();
+    // They were then resolved properly: `core::engine_host::EngineHost` is the
+    // contract, `util::engine_host::UtilEngineHost` implements it, and
+    // `app::runtime` injects it — the same `util → core` direction
+    // `storage::Store` already uses for `StoragePort`. With nothing left to
+    // record, this is a plain assertion again.
     assert!(
-        unparsed.is_empty(),
-        "could not key these violations against the revealed backlog, so they \
-         cannot be judged — fix `util_violation_key`:\n{unparsed:#?}"
-    );
-
-    let found_counts = tally(&found);
-    let expected_counts = tally(
-        &REVEALED
-            .iter()
-            .map(|(f, m)| ((*f).to_string(), (*m).to_string()))
-            .collect::<Vec<_>>(),
-    );
-    let added: Vec<String> = found_counts
-        .iter()
-        .filter_map(|(k, n)| {
-            let allow = expected_counts.get(k).copied().unwrap_or(0);
-            (*n > allow).then(|| format!("{} uses `{}` x{} (backlog allows {allow})", k.0, k.1, n))
-        })
-        .collect();
-    let fixed: Vec<String> = expected_counts
-        .iter()
-        .filter_map(|(k, n)| {
-            let actual = found_counts.get(k).copied().unwrap_or(0);
-            (*n > actual).then(|| format!("{} uses `{}` x{} (now only {actual})", k.0, k.1, n))
-        })
-        .collect();
-
-    assert!(
-        added.is_empty(),
-        "core/ must not import util/ (except the allow-listed pure/leaf helpers above).\n\
-         New violation(s) beyond the frozen revealed backlog:\n{added:#?}\n\
-         Full violation list:\n{}",
+        allowed.is_empty(),
+        "core/ must not import util/ (except the allow-listed pure/leaf helpers above).\nViolations:\n{}",
         allowed.join("\n")
     );
-    assert!(
-        fixed.is_empty(),
-        "these revealed-backlog entries are gone (nice — you resolved them). \
-         Delete them from REVEALED so the backlog stays truthful:\n{fixed:#?}"
-    );
-}
-
-/// `(repo-relative file, "util::<module>")` for a `scan_for_violations` line,
-/// which is formatted `<abs path>:<line>: <trimmed source>`.
-///
-/// Line-number free on purpose: an edit above a site must not churn a frozen
-/// list, exactly as in the confidence ratchets.
-fn util_violation_key(v: &str) -> Option<(String, String)> {
-    // The first `": "` is the one after the line number — a path holds no space
-    // and `path:line` holds none either, so this cannot land inside the source.
-    let (loc, code) = v.split_once(": ")?;
-    let path = loc.rsplit_once(':')?.0.replace('\\', "/");
-    let file = path.split_once("/src/").map(|(_, t)| format!("src/{t}"))?;
-    let at = code.find("crate::util::")?;
-    let rest = &code[at + "crate::util::".len()..];
-    let module: String = rest
-        .chars()
-        .take_while(|c| c.is_alphanumeric() || *c == '_')
-        .collect();
-    (!module.is_empty()).then(|| (file, format!("util::{module}")))
 }
 
 #[test]
@@ -2860,12 +2781,77 @@ fn call_args(s: &str) -> Option<Vec<String>> {
     None
 }
 
-/// True for a bare float literal such as `0.68` — the thing this invariant
-/// forbids. A `confidence::HIGH_PLUS` path, or any compound expression, is not.
-fn is_bare_float(s: &str) -> bool {
-    let t = s.trim();
-    t.strip_prefix("0.")
-        .is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
+/// Every bare float literal (`0.68`) appearing anywhere in `s`, in order.
+///
+/// # Why "anywhere" and not "is the whole argument"
+///
+/// This used to be `is_bare_float(&args[2])`, true only when the confidence
+/// argument was a lone literal. A literal *embedded in an expression* was
+/// therefore invisible, and `steam_profile` has three:
+/// `(conf - 0.27).max(0.42)`, `(conf - 0.33).max(0.42)`,
+/// `(conf - 0.25).max(0.38)`. Each `.max(..)` is a hardcoded confidence floor —
+/// exactly the unauditable magic number the invariant exists to forbid — and
+/// each sailed past the ratchet.
+///
+/// The inventory was visibly inconsistent as a result:
+/// `asic_business_names`'s bare `0.42` was baselined while `steam_profile`'s
+/// identical `0.42` was not, purely because one sat in an expression.
+///
+/// Only `0.NN` is matched, which is the entire ladder's shape, and a leading
+/// alphanumeric, `_` or `.` disqualifies the match so an identifier or a
+/// dotted path cannot be misread as a literal.
+fn bare_float_literals(s: &str) -> Vec<String> {
+    let c: Vec<char> = s.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < c.len() {
+        let starts_literal = c[i] == '0'
+            && c.get(i + 1) == Some(&'.')
+            && (i == 0 || !(c[i - 1].is_alphanumeric() || c[i - 1] == '_' || c[i - 1] == '.'));
+        if starts_literal {
+            let mut j = i + 2;
+            while j < c.len() && c[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > i + 2 {
+                out.push(c[i..j].iter().collect::<String>());
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// The slicing and literal detection the confidence ratchet depends on, asserted
+/// directly — a ratchet whose scanner is untested measures whatever it reaches.
+#[test]
+fn bare_float_detection_sees_literals_inside_expressions() {
+    // The shape that used to evade the ratchet entirely.
+    assert_eq!(
+        bare_float_literals("(conf - 0.27).max(0.42)"),
+        vec!["0.27".to_string(), "0.42".to_string()]
+    );
+    // A lone literal still matches, as before.
+    assert_eq!(bare_float_literals("0.68"), vec!["0.68".to_string()]);
+    assert_eq!(bare_float_literals(" 0.68 "), vec!["0.68".to_string()]);
+    // Named constants are not literals, however they are combined.
+    assert!(bare_float_literals("confidence::HIGH_PLUS").is_empty());
+    // Equality, not `.all(..)`: `all` on an empty iterator is TRUE, so the
+    // obvious spelling would still pass if the detector regressed to finding
+    // nothing — a check that certifies what it never verified, which is the
+    // exact class of defect this ratchet exists to catch.
+    assert_eq!(
+        bare_float_literals("(conf - 0.13).max(confidence::LOW_MEDIUM)"),
+        vec!["0.13".to_string()]
+    );
+    // An identifier or dotted path that merely contains the characters must not
+    // be misread — `v0.42` is a name, `x.0.42` is field access.
+    assert!(bare_float_literals("v0.42").is_empty());
+    assert!(bare_float_literals("tuple.0.42").is_empty());
+    // `0.` with no digits is not a literal we recognise.
+    assert!(bare_float_literals("0.").is_empty());
 }
 
 /// Blank the *contents* of comments and string/char literals, preserving **byte**
@@ -3350,8 +3336,10 @@ fn collect_bare_confidence(dir: &Path, root: &Path, out: &mut Vec<(String, Strin
                 continue;
             };
             // Entity::new(kind, value, confidence, scan_id)
-            if args.len() >= 3 && is_bare_float(&args[2]) {
-                out.push((rel.clone(), args[2].trim().to_string()));
+            if args.len() >= 3 {
+                for lit in bare_float_literals(&args[2]) {
+                    out.push((rel.clone(), lit));
+                }
             }
         }
     }
@@ -3425,10 +3413,41 @@ fn entity_confidence_uses_named_ladder_constants() {
         ("src/modules/oathnet_pro/breach.rs", "0.70"), // [revealed]
         ("src/modules/opencorporates/mod.rs", "0.68"), // [revealed]
         ("src/modules/opencorporates/mod.rs", "0.68"), // [revealed]
+        // ── [embedded] ───────────────────────────────────────────────────
+        // Literals inside a compound confidence argument, invisible until
+        // `bare_float_literals` replaced the whole-argument test. Like the
+        // `[revealed]` rows they pre-date this inventory; unlike them they are
+        // DELIBERATE, and `derived_confidence_goes_through_the_shared_step`
+        // records the same families with the reasons in full:
+        //
+        //   * `phone_geo` steps by 0.08, not the shared 0.10 — a country
+        //     centroid from a dialling prefix is a different inference.
+        //   * `steam_profile` runs a graded family (0.05 … 0.33) with per-kind
+        //     floors, ranking eight kinds of profile-derived signal against one
+        //     another. Its `.max(0.42)` / `.max(0.38)` floors are the two rows
+        //     that genuinely should be named — its other floors already are
+        //     (`.max(confidence::LOW_MEDIUM)`), which makes these inconsistent
+        //     rather than principled.
+        //
+        // The two ratchets deliberately overlap here: one asks whether the
+        // derivation STEP is hand-rolled, this one asks whether a bare float
+        // sits in an `Entity::new` confidence argument. The `0.27` in
+        // `(conf - 0.27).max(0.42)` is honestly both.
+        ("src/modules/phone_geo/mod.rs", "0.08"), // [embedded]
         ("src/modules/see_know/extract/mod.rs", "0.70"), // [revealed]
         ("src/modules/sourceforge_user/mod.rs", "0.79"), // [revealed]
         ("src/modules/sourceforge_user/mod.rs", "0.86"), // [revealed]
-        ("src/modules/whois/mod.rs", "0.68"),          // [revealed]
+        ("src/modules/steam_profile/mod.rs", "0.05"), // [embedded]
+        ("src/modules/steam_profile/mod.rs", "0.13"), // [embedded]
+        ("src/modules/steam_profile/mod.rs", "0.15"), // [embedded]
+        ("src/modules/steam_profile/mod.rs", "0.20"), // [embedded]
+        ("src/modules/steam_profile/mod.rs", "0.25"), // [embedded]
+        ("src/modules/steam_profile/mod.rs", "0.27"), // [embedded]
+        ("src/modules/steam_profile/mod.rs", "0.33"), // [embedded]
+        ("src/modules/steam_profile/mod.rs", "0.38"), // [embedded] hardcoded floor
+        ("src/modules/steam_profile/mod.rs", "0.42"), // [embedded] hardcoded floor
+        ("src/modules/steam_profile/mod.rs", "0.42"), // [embedded] hardcoded floor
+        ("src/modules/whois/mod.rs", "0.68"),     // [revealed]
     ];
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
