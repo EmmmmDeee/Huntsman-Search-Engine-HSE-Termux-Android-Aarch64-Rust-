@@ -442,3 +442,36 @@ mod multibyte_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// `extract_by_patterns` is reached from `hse ingest --file` OUTSIDE every
+        /// `catch_unwind` in the engine (see `extract_context`), so a panic on any
+        /// document byte-sequence would terminate the whole process. The sibling
+        /// `multibyte_tests` pin specific accented/emoji/CJK cases; this generalises
+        /// them: over *arbitrary* Unicode text (any `char`, including control
+        /// characters and newlines) the extractor must be TOTAL — never panic —
+        /// every emitted `context` must be a real substring of the input (no
+        /// fabricated provenance), and no entity may carry an empty value.
+        #[test]
+        fn extract_by_patterns_is_total_over_arbitrary_text(
+            s in proptest::collection::vec(any::<char>(), 0..200)
+                .prop_map(|cs| cs.into_iter().collect::<String>())
+        ) {
+            let entities = extract_by_patterns(&s);
+            for e in &entities {
+                prop_assert!(!e.value.is_empty(), "empty value emitted for {:?}", e.kind);
+                if let Some(ctx) = &e.context {
+                    prop_assert!(
+                        s.contains(ctx.as_str()),
+                        "context {ctx:?} is not a substring of the input"
+                    );
+                }
+            }
+        }
+    }
+}
