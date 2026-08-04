@@ -23,7 +23,7 @@
       "modules_without_tests": "RETRACTED — this finding was false. The detector keyed on the existence of a tests.rs FILE, not on the presence of tests, and every one of the eight modules carried an inline `#[cfg(test)] mod tests { .. }` in its mod.rs: bluesky_user 15, codeberg_user 9, devto 7, gitlab_user 8, lobsters 8, mastodon_user 8, stackoverflow_user 11, url_extract 5 — 71 tests, not zero. Superseded by tier2_actionable.inline_vs_file_test_placement.",
       "inline_vs_file_test_placement": "NOT A FINDING — measured, and the premise was wrong twice over. First stated as 'two conventions, only the file form is arch-checked, six modules remain on the inline form'. Actual counts across src: `mod tests { include!(\"tests.rs\"); }` 191 files, bare `mod tests;` 107 files, tests written inline in mod.rs ~129 files. Three established forms, not two, and the inline form is not a residue — it is the single largest population. every_src_file_is_wired_into_the_module_tree accepts BOTH file-linking forms (it tracks `mod` declarations AND `include!(..)` targets — read the source at tests/architecture.rs, do not infer it). So the codeberg_user orphan was not a symptom of a convention split: that file had NEITHER link, which is a different and much narrower defect. Conclusion: moving tests between these forms is style churn, not a fix, and must not be scheduled as one. Three such moves (mastodon_user, stackoverflow_user, url_extract) were made and then reverted before commit on exactly this reasoning — they changed no test.",
       "rustdoc_gap": "270 of 1662 public items (16%) lack adjacent doc/attr; worst: core/tags.rs (31), util/key_pool/pool.rs (12), storage/mod.rs (12).",
-      "duplicate_deps": "15 pairs; tower-http 0.6.11 is transitive via axum (direct dep is 0.7) \u2014 not actionable without an axum bump.",
+      "duplicate_deps": "15 pairs; tower-http 0.6.11 is transitive via axum (direct dep is 0.7) — not actionable without an axum bump.",
       "missing_docs_lint": "not enabled in src/lib.rs"
     }
   },
@@ -32,18 +32,20 @@
       "cycle": 1,
       "slot": 1,
       "category": "DEBUG",
+      "commit": "fc2e35e8",
       "instruction": "Remove stray U+2078 breaking the SECURITY.md H1; replace the garbled supported-versions sentence. Preserve the maintainer's scope wording verbatim.",
       "outcome": "Done. head -1 is now exactly '# Security Policy'. Only remaining non-ASCII is the em-dash in the maintainer's own scope sentence (intended punctuation, untouched). Diff touches only the 2 target lines.",
-      "verification": "cargo fmt --check clean; clippy -D warnings silent; cargo test --all-features 6225 passed / 0 failed. No Rust source parses SECURITY.md (only a //! doc-comment reference in util/ahmia/mod.rs), so the gate was structurally unaffected \u2014 run anyway rather than assumed."
+      "verification": "cargo fmt --check clean; clippy -D warnings silent; cargo test --all-features 6225 passed / 0 failed. No Rust source parses SECURITY.md (only a //! doc-comment reference in util/ahmia/mod.rs), so the gate was structurally unaffected — run anyway rather than assumed."
     },
     {
       "cycle": 1,
       "slot": 2,
       "category": "HARDENING",
+      "commit": "83de026d",
       "instruction": "Move blocking std::fs off the async runtime in src/app; app::cells is HTTP-reachable on a 2-worker runtime.",
-      "outcome": "Spec UNDERSTATED the defect. The real issue was not the 3 std::fs calls but that download_and_import (reachable from POST /api/v1/cells/import via cells_handlers.rs:196, verified) called import_from_file synchronously \u2014 a fn that opens a SQLite write connection and parses a gzip CSV bounded only by MAX_DECOMPRESSED_BYTES = 16 GiB, inserting every row. On a 2-worker runtime (WORKER_THREADS, main.rs) one web-triggered import stalled half the executor for the whole parse. The streaming download above it was already correctly async. Fix: import_from_file stays private+sync; new import_from_file_off_runtime is the ONLY async path in, so the blocking version cannot be reached from async by accident; a panic in the import now returns Err instead of unwinding a worker. Five CLI-only sites (export/import/local/doctor) converted to tokio::fs.",
-      "verification": "cargo fmt --check clean; clippy --all-targets --all-features -D warnings silent; cargo test --all-features 6226 passed / 0 failed (was 6225 \u2014 +1 new boundary test). New test off_runtime_import_propagates_the_same_error_as_the_blocking_call asserts the wrapper is behaviourally transparent.",
-      "self_correction": "My own async-detection scanner MISSED export/mod.rs:106 and local.rs:139 (brace-tracking bug); caught by manual per-file verification. The 2 remaining std::fs:: in src/app (cells:340, local.rs:96) are inside SYNCHRONOUS fns \u2014 blocking IO there is correct, not a miss."
+      "outcome": "Spec UNDERSTATED the defect. The real issue was not the 3 std::fs calls but that download_and_import (reachable from POST /api/v1/cells/import via cells_handlers.rs:196, verified) called import_from_file synchronously — a fn that opens a SQLite write connection and parses a gzip CSV bounded only by MAX_DECOMPRESSED_BYTES = 16 GiB, inserting every row. On a 2-worker runtime (WORKER_THREADS, main.rs) one web-triggered import stalled half the executor for the whole parse. The streaming download above it was already correctly async. Fix: import_from_file stays private+sync; new import_from_file_off_runtime is the ONLY async path in, so the blocking version cannot be reached from async by accident; a panic in the import now returns Err instead of unwinding a worker. Five CLI-only sites (export/import/local/doctor) converted to tokio::fs.",
+      "verification": "cargo fmt --check clean; clippy --all-targets --all-features -D warnings silent; cargo test --all-features 6226 passed / 0 failed (was 6225 — +1 new boundary test). New test off_runtime_import_propagates_the_same_error_as_the_blocking_call asserts the wrapper is behaviourally transparent.",
+      "self_correction": "My own async-detection scanner MISSED export/mod.rs:106 and local.rs:139 (brace-tracking bug); caught by manual per-file verification. The 2 remaining std::fs:: in src/app (cells:340, local.rs:96) are inside SYNCHRONOUS fns — blocking IO there is correct, not a miss."
     },
     {
       "cycle": 1,
@@ -52,7 +54,7 @@
       "commit": "ca0131af",
       "instruction_as_resolved_in_phase_b": "GAP-ANALYSIS: create tests.rs for the 8 module dirs with zero coverage, each asserting accepts() kind-gating, produces() against literally-constructed EntityKinds, and one parse/extract negative path. Acceptance: all 8 have `#[cfg(test)] mod tests`; cargo test count rises by >=24.",
       "aborted_as_scoped": "Premise false. The eight modules already held 71 tests inline (see phase_a_findings.tier2_actionable.modules_without_tests, now retracted). The acceptance criterion 'all 8 have #[cfg(test)] mod tests' was ALREADY SATISFIED at the moment I wrote it. Had I executed the slot as scoped I would have added eight suites of duplicate coverage and reported it as closing a gap.",
-      "re_resolved_as": "DEBUG: repair the orphaned test file that checking the premise uncovered \u2014 the highest-priority item on the board, because it had the gate red.",
+      "re_resolved_as": "DEBUG: repair the orphaned test file that checking the premise uncovered — the highest-priority item on the board, because it had the gate red.",
       "outcome": "src/modules/codeberg_user/tests.rs (355 lines, 20 tests) was on disk with no `mod tests;` declaration, so cargo never compiled it, while a 9-test inline block still sat in mod.rs. Declared the file, deleted the superseded inline block (the inline 9 are a strict subset by name), and applied the same transform to bluesky_user. Compiled tests for the two modules: 24 -> 42.",
       "verification": "every_src_file_is_wired_into_the_module_tree was RED at HEAD naming modules/codeberg_user/tests.rs, and is green after. Full gate: 6251 tests / 0 failures, 46 architecture tests, fmt clean, clippy -D warnings silent, rustdoc lints clean, doctests 71/0. MSRV and aarch64 cross-build SKIPPED by --quick; shellcheck not installed; audit/deny/machete skipped by the manifest path filter. CI is the authority for those four.",
       "verification_beyond_passing": "Passing was not treated as evidence the new tests assert anything. Mutated production code twice: widening accepts() to TargetKind::Email failed accepts_username_only, and dropping EntityKind::Coordinates from produces() failed every_emitted_kind_is_declared_in_produces. Both mutations caught, by exactly those tests and no others; source restored from backup before the gate ran."
@@ -61,7 +63,7 @@
   "rejected_candidates": [
     {
       "candidate": "Replace unwrap()/expect() with typed errors",
-      "reason": "No unwrap() exists in production code (0 occurrences). All 80 expect() are Regex::new on compile-time literals inside lazy_static \u2014 failure is a programmer error surfaced at first use, not a fallible runtime path. No defect to fix."
+      "reason": "No unwrap() exists in production code (0 occurrences). All 80 expect() are Regex::new on compile-time literals inside lazy_static — failure is a programmer error surfaced at first use, not a fallible runtime path. No defect to fix."
     },
     {
       "candidate": "Deduplicate tower-http 0.6.11 vs 0.7.0",
@@ -75,7 +77,7 @@
   "open_defects": [
     {
       "id": "D2",
-      "what": "asic_director returns 403 (anti-bot WAF) \u2014 needs headless-browser-class work",
+      "what": "asic_director returns 403 (anti-bot WAF) — needs headless-browser-class work",
       "state": "documented in-module, no fix attempted (correctly)",
       "slot": null
     },
@@ -88,7 +90,7 @@
     {
       "id": "D4",
       "what": "src/util/ahmia/mod.rs:25 doc-comment asserts 'See SECURITY.md: HSE is defensive-only', which now contradicts the maintainer's edited SECURITY.md scope ('all forms (offensive and defensive)'). CLAUDE.md also still states defensive-only and cites SECURITY.md as the authority.",
-      "state": "open \u2014 policy question deliberately NOT resolved unilaterally; raised with maintainer twice. Slot 1 fixed only the objective corruption, not the policy.",
+      "state": "open — policy question deliberately NOT resolved unilaterally; raised with maintainer twice. Slot 1 fixed only the objective corruption, not the policy.",
       "slot": null
     }
   ],
@@ -96,7 +98,7 @@
     {
       "cycle": 1,
       "what": "I reported mid-verification that the merge had reverted slot-2 edits in doctor/import/export.",
-      "reality": "FALSE ALARM, my error. git reflog showed 'checkout: moving from claude/huntsman-price-analysis-ewy20t to main' \u2014 an external process had switched the working tree to main, so I was reading main's content and misattributing it to merge damage. Both slot commits were intact on the branch throughout. Nothing was lost.",
+      "reality": "FALSE ALARM, my error. git reflog showed 'checkout: moving from claude/huntsman-price-analysis-ewy20t to main' — an external process had switched the working tree to main, so I was reading main's content and misattributing it to merge damage. Both slot commits were intact on the branch throughout. Nothing was lost.",
       "how_caught": "Checked reflog + `git merge-base --is-ancestor` before taking any recovery action. Had I 'recovered' from the phantom incident I would have caused real damage.",
       "lesson": "Verify which ref the working tree is on BEFORE concluding content was lost."
     },
