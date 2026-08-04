@@ -70,9 +70,12 @@ pub fn strip_tags_plain(html: &str) -> String {
 /// its verbatim treatment, so "contains `<html`" would be the wrong test.
 #[must_use]
 pub fn looks_like_document(html: &str) -> bool {
+    // `find_ascii_ci(…) == Some(0)` rather than `to_lowercase().starts_with(…)`:
+    // allocation-free, and it keeps every offset in this module derived from the
+    // original string (see [`title`] for why that matters).
+    use crate::util::str_util::find_ascii_ci;
     let head = html.trim_start();
-    let lower: String = head.chars().take(16).collect::<String>().to_lowercase();
-    lower.starts_with("<!doctype html") || lower.starts_with("<html")
+    find_ascii_ci(head, "<!doctype html") == Some(0) || find_ascii_ci(head, "<html") == Some(0)
 }
 
 /// The document's `<title>` text — decoded and whitespace-collapsed — or `None`
@@ -85,13 +88,17 @@ pub fn looks_like_document(html: &str) -> bool {
 /// comments carrying no diagnostic content at all.
 #[must_use]
 pub fn title(html: &str) -> Option<String> {
-    // Case-insensitive scan without a regex: this runs on error paths that may
-    // already be under memory pressure on a Termux device.
-    let lower = html.to_lowercase();
-    let open = lower.find("<title")?;
+    // `find_ascii_ci`, NOT `to_lowercase().find(…)`: `to_lowercase` is not
+    // byte-length-preserving (`İ` → `i̇`, `ẞ` → `ß`), so an offset taken from a
+    // lowercased copy can land mid-codepoint when used to slice the original and
+    // panic. Error bodies are fully upstream-controlled, so that input is
+    // reachable by anything an upstream chooses to return. See the helper's own
+    // docs — it exists for exactly this panic class.
+    use crate::util::str_util::find_ascii_ci;
+    let open = find_ascii_ci(html, "<title")?;
     // Skip any attributes on the tag itself.
     let after_open = open + html[open..].find('>')? + 1;
-    let close = lower[after_open..].find("</title>")? + after_open;
+    let close = after_open + find_ascii_ci(&html[after_open..], "</title>")?;
     let text = collapse_whitespace(&decode_entities(&html[after_open..close]));
     (!text.is_empty()).then_some(text)
 }

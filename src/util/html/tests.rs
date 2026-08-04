@@ -148,6 +148,58 @@ use super::*;
         );
     }
 
+    /// The panic class `find_ascii_ci` exists to prevent, exercised on the
+    /// characters that actually trigger it.
+    ///
+    /// `to_lowercase()` is not byte-length-preserving — `İ` (U+0130, 2 bytes)
+    /// lowercases to `i̇` (3 bytes) and `ẞ` to `ß` — so an offset taken from a
+    /// lowercased copy and used to slice the ORIGINAL can land mid-codepoint and
+    /// panic. Error bodies are entirely upstream-controlled, so this input is
+    /// reachable by anything a server chooses to return.
+    #[test]
+    fn title_and_document_detection_survive_length_changing_lowercase() {
+        // `İ`/`ẞ` BEFORE the tag, so a lowercased-copy offset would be shifted
+        // past a char boundary in the original.
+        let html = "İİİẞ<html><head><title>İstanbul ẞ Error</title></head>";
+        assert_eq!(title(html).as_deref(), Some("İstanbul ẞ Error"));
+
+        // Same characters inside the title text itself.
+        assert_eq!(
+            title("<title>İ ẞ İ</title>").as_deref(),
+            Some("İ ẞ İ"),
+            "title text must round-trip unchanged"
+        );
+
+        // And in a document that must still be detected.
+        assert!(looks_like_document("<HTML lang=\"tr\">İ"));
+        assert!(!looks_like_document("İ<html>"), "not at position 0");
+
+        // The two concrete failures of the `to_lowercase()`-offset shape, both
+        // reproduced against it before this fix:
+        //   * silent corruption — it returned "日本語<", trailing garbage from a
+        //     close offset shifted 2 bytes by `İ` (2 bytes → 3);
+        //   * an outright panic — `ẞ` (3 bytes) → `ß` (2) shifts the offset
+        //     backwards into the middle of an emoji.
+        assert_eq!(title("İ<title>日本語</title>").as_deref(), Some("日本語"));
+        assert_eq!(title("ẞ<title>😀😀</title>").as_deref(), Some("😀😀"));
+
+        // Total over arbitrary placements: must never panic.
+        for filler in ["İ", "ẞ", "İẞ", "e\u{301}", "😀"] {
+            for tpl in [
+                "{f}<title>x</title>",
+                "<title>{f}</title>",
+                "<title{f}>x</title>",
+                "<html>{f}<title>{f}x{f}</title>{f}",
+                "{f}",
+                "<title>{f}",
+            ] {
+                let s = tpl.replace("{f}", filler);
+                let _ = title(&s);
+                let _ = looks_like_document(&s);
+            }
+        }
+    }
+
     #[test]
     fn collapse_whitespace_flattens_stripped_markup() {
         assert_eq!(collapse_whitespace("  a\n\n\tb   c \r\n"), "a b c");
