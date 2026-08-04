@@ -356,18 +356,27 @@ fn format_output(
         )
         .to_string()),
 
+        // Emit through the same `csv` crate that `csv_parse` reads with, so the
+        // output round-trips. The previous hand-rolled writer replaced only `,`
+        // with `\,` and left `"`, `\n`, and `\r` untouched — which HSE's own
+        // `csv::Reader` parses as extra fields (and a newline in a value splits
+        // the row), so `hse ingest -f csv` produced CSV that `hse` could not
+        // re-ingest. `csv::Writer` RFC-4180-quotes only the fields that need it,
+        // so plain values (emails, IPs) are unchanged.
         "csv" => {
-            let mut csv = String::from("kind,value,confidence,source_pattern\n");
+            let mut wtr = csv::Writer::from_writer(Vec::new());
+            wtr.write_record(["kind", "value", "confidence", "source_pattern"])?;
             for e in entities {
-                csv.push_str(&format!(
-                    "{},{},{},{}\n",
+                let confidence = e.confidence.to_string();
+                wtr.write_record([
                     e.kind.to_str(),
-                    e.value.replace(',', "\\,"),
-                    e.confidence,
-                    e.source_pattern
-                ));
+                    e.value.as_str(),
+                    confidence.as_str(),
+                    e.source_pattern.as_str(),
+                ])?;
             }
-            Ok(csv)
+            let bytes = wtr.into_inner().map_err(csv::IntoInnerError::into_error)?;
+            Ok(String::from_utf8(bytes)?)
         }
 
         "table" => {
@@ -440,6 +449,36 @@ mod tests {
                 .any(|e| e.source.contains("notes.txt")),
             "evidence must name the source document"
         );
+    }
+
+    #[test]
+    fn format_csv_round_trips_through_the_csv_reader() {
+        // The old hand-rolled writer escaped only `,` as `\,` and left `"` and
+        // `\n` untouched, so HSE's own `csv::Reader` re-parsed the row into the
+        // wrong number of fields (and a newline split it into two rows). A value
+        // carrying all three delimiter hazards must survive extract -> csv ->
+        // re-read byte-for-byte.
+        let mut ents = sample();
+        ents[0].value = "a,b\"c\nd".to_string();
+        let csv = format_output(&ents, "csv", "notes.txt").expect("csv format should succeed");
+
+        let mut reader = csv::ReaderBuilder::new().from_reader(csv.as_bytes());
+        let headers = reader.headers().expect("must have a header row").clone();
+        assert_eq!(
+            headers.iter().collect::<Vec<_>>(),
+            ["kind", "value", "confidence", "source_pattern"]
+        );
+        let records: Vec<_> = reader
+            .records()
+            .collect::<Result<_, _>>()
+            .expect("every row must parse as exactly one record");
+        assert_eq!(records.len(), 1, "one entity must yield exactly one row");
+        assert_eq!(&records[0][0], "email");
+        assert_eq!(
+            &records[0][1], "a,b\"c\nd",
+            "value must survive the CSV round-trip unchanged"
+        );
+        assert_eq!(&records[0][3], "email_rfc5322");
     }
 
     #[test]
