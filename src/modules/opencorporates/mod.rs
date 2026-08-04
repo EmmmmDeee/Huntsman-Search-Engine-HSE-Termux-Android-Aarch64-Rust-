@@ -33,7 +33,7 @@ use serde::Deserialize;
 use crate::core::{
     confidence,
     entity::{Entity, EntityKind, Evidence},
-    error::{Error, Result},
+    error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -516,7 +516,7 @@ impl Module for OpenCorporates {
             return Ok(ModuleResult::new());
         }
         if !status.is_success() {
-            return Err(Error::module(SRC, format!("HTTP {status}")));
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
         let mut result = ModuleResult::new();

@@ -84,14 +84,47 @@ pub async fn error_snippet(resp: reqwest::Response) -> String {
     let redacted = redact_credentials(&body);
     let trimmed = redacted.trim();
     if trimmed.is_empty() {
-        "<empty>".to_string()
-    } else {
-        trimmed
-            .replace(['\n', '\r'], " ")
-            .chars()
-            .take(200)
-            .collect()
+        return "<empty>".to_string();
     }
+    // An HTML document's first 200 characters are doctype and IE conditional
+    // comments, so the verbatim path below reduces a CDN/WAF/origin error page
+    // to pure boilerplate. Observed in production: a 523 from an unreachable
+    // origin was persisted, and reported by `hse doctor`, as
+    // `HTTP 523 <unknown status code>: <!DOCTYPE html> <!--[if lt IE 7]> …` —
+    // 200 characters that name neither the host nor the failure. Summarise the
+    // document instead; a JSON/text payload is untouched.
+    if let Some(summary) = html_error_summary(trimmed) {
+        return summary;
+    }
+    trimmed
+        .replace(['\n', '\r'], " ")
+        .chars()
+        .take(SNIPPET_CHARS)
+        .collect()
+}
+
+/// Characters of body text kept in an error message. Enough for a real API error
+/// payload; short enough that a persisted `ModuleError` event stays readable.
+const SNIPPET_CHARS: usize = 200;
+
+/// Reduce an HTML error page to its single most diagnostic line, or `None` when
+/// the body is not an HTML document (leaving JSON/text payloads verbatim).
+///
+/// Prefers `<title>`, which for every common error page — Cloudflare, nginx,
+/// Apache, IIS, AWS ALB — is a one-line statement of the failure
+/// (`example.com | 523: Origin is unreachable`, `504 Gateway Time-out`). Falls
+/// back to the tag-stripped body when a page has no usable title, which is still
+/// strictly better than raw markup.
+fn html_error_summary(body: &str) -> Option<String> {
+    use crate::util::html;
+    if !html::looks_like_document(body) {
+        return None;
+    }
+    let text = html::title(body).or_else(|| {
+        let stripped = html::collapse_whitespace(&html::strip_html(body));
+        (!stripped.is_empty()).then_some(stripped)
+    })?;
+    Some(text.chars().take(SNIPPET_CHARS).collect())
 }
 
 /// Read a response body but stop after `cap` bytes. A hostile or misconfigured
@@ -334,6 +367,32 @@ fn transport_is_transient(e: &reqwest::Error) -> bool {
     e.is_timeout() || e.is_connect()
 }
 
+/// The message for "reqwest could not send it, and the curl fallback failed too",
+/// naming the URL exactly once.
+///
+/// `reqwest`'s own send-failure `Display` already embeds the URL
+/// (`error sending request for url (https://…)`), so unconditionally appending
+/// `for {url}` printed it twice. In production that produced
+/// `transport error (error sending request for url (https://psbdmp.ws/api/v3/search/…))
+/// and curl fallback failed for https://psbdmp.ws/api/v3/search/…` — double the
+/// length for no extra information, and, because these URLs carry the scan
+/// target in the path, the subject's email address written twice into a
+/// persisted error event.
+///
+/// The URL is only appended when the transport message does not already contain
+/// it: not every `reqwest::Error` variant names the URL, and dropping it
+/// unconditionally would lose the one detail that identifies which request
+/// failed.
+pub(super) fn transport_and_fallback_failed(transport: &str, url: &str) -> String {
+    let transport = redact_credentials(transport);
+    let url = redact_credentials(url);
+    if transport.contains(url.as_str()) {
+        format!("transport error ({transport}); curl fallback also failed")
+    } else {
+        format!("transport error ({transport}) and curl fallback failed for {url}")
+    }
+}
+
 /// Read, scan for leaked API keys, and JSON-decode a successful response body — the
 /// shared success tail of the JSON fetch helpers.
 async fn decode_json_body<T: DeserializeOwned>(resp: reqwest::Response, module: &str) -> Result<T> {
@@ -396,11 +455,7 @@ async fn fetch_json_inner<T: DeserializeOwned>(
                     }
                     Err(Error::module(
                         module,
-                        format!(
-                            "transport error ({}) and curl fallback failed for {}",
-                            redact_credentials(&transport.to_string()),
-                            redact_credentials(url)
-                        ),
+                        transport_and_fallback_failed(&transport.to_string(), url),
                     ))
                 }
             }
