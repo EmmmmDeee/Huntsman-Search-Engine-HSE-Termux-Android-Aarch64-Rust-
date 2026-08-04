@@ -2,6 +2,7 @@
 
 pub mod abn;
 pub mod address_au;
+pub mod ahmia;
 pub mod atomic_file;
 pub mod atproto;
 pub mod backoff;
@@ -61,6 +62,7 @@ pub mod scan;
 pub mod scraper_health;
 pub mod see_know;
 
+pub mod engine_host;
 pub mod paths;
 pub mod recon;
 pub mod service_defs;

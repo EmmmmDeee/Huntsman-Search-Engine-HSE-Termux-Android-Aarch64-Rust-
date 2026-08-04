@@ -943,7 +943,6 @@ pub async fn radar_recurring(
     State(s): State<Arc<AppState>>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    use crate::core::entity::EntityKind;
     use crate::core::radar_track::{Sweep, SweepObservation, recurring_devices};
 
     let limit: usize = params
@@ -968,28 +967,14 @@ pub async fn radar_recurring(
             let Ok(entities) = store.entities_for_scan(&scan.id) else {
                 continue;
             };
+            // This review folds in Wi-Fi APs as well as Bluetooth; the mapping
+            // itself is shared with the CLI's live radar (see
+            // `radar_track::observation_from_entity`) so the two cannot drift in
+            // how they read a name/bond state off an entity.
             let devices: Vec<SweepObservation> = entities
                 .iter()
-                .filter(|e| {
-                    e.kind == EntityKind::MacAddress
-                        && (e.has_tag("bluetooth") || e.has_tag(crate::core::tags::WIFI_AP))
-                })
-                .map(|e| {
-                    let name = e
-                        .evidence
-                        .iter()
-                        .find_map(|ev| {
-                            ev.attributes
-                                .get("name")
-                                .or_else(|| ev.attributes.get("ssid"))
-                        })
-                        .map(String::to_string);
-                    SweepObservation {
-                        mac: e.value.clone(),
-                        name,
-                        bonded: e.has_tag("bond:bonded"),
-                    }
-                })
+                .filter(|e| e.has_tag("bluetooth") || e.has_tag(crate::core::tags::WIFI_AP))
+                .filter_map(crate::core::radar_track::observation_from_entity)
                 .collect();
             sweeps.push(Sweep {
                 scan_id: scan.id.clone(),

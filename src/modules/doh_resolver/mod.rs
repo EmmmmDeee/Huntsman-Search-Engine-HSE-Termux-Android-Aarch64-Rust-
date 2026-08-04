@@ -583,7 +583,16 @@ fn records_for_type(
                                     let addr = addr.trim();
                                     // May have `!size` suffix: `dmarc@example.com!10m`.
                                     let addr = addr.split('!').next().unwrap_or(addr).trim();
-                                    if addr.contains('@') && seen.insert(format!("dmarc:{addr}")) {
+                                    // A role local-part or provider-domain rua/ruf
+                                    // address (`hostmaster@`, a third-party DMARC
+                                    // service) is infrastructure contact, not the
+                                    // subject's own mail — same gate dns_intel's
+                                    // parallel (non-DoH) DMARC parser already
+                                    // applies to `dmarc.report_addresses()`.
+                                    if addr.contains('@')
+                                        && !crate::util::domains::is_infrastructure_email(addr)
+                                        && seen.insert(format!("dmarc:{addr}"))
+                                    {
                                         let mut e = Entity::new(
                                             EntityKind::Email,
                                             addr,
@@ -649,10 +658,15 @@ fn records_for_type(
                         );
                         out.push(e);
                     }
-                    // Zone admin email from RNAME.
+                    // Zone admin email from RNAME. A role local-part
+                    // (`hostmaster@`, the RFC 1035 §3.3.13 convention itself) or
+                    // provider-domain address is infrastructure contact, not the
+                    // subject's own mail — same gate dns_intel's parallel
+                    // (non-DoH) SOA handler already applies.
                     let rname = parts[1].trim_end_matches('.');
                     if let Some(email) = soa_rname_to_email(rname)
                         && email.contains('@')
+                        && !crate::util::domains::is_infrastructure_email(&email)
                         && seen.insert(format!("soa-email:{}", email.to_ascii_lowercase()))
                     {
                         let mut e =
@@ -754,43 +768,47 @@ impl Module for DohResolver {
 
         let mut result = ModuleResult::new();
         let mut seen: HashSet<String> = HashSet::new();
-        let mut empty_count = 0usize;
+        let mut outcomes: Vec<DohOutcome> = Vec::new();
 
         for (i, rtype) in RECORD_TYPES.iter().enumerate() {
             if ctx.cancel.is_cancelled() {
                 break;
             }
-            let records = query_doh(&domain, rtype, &ctx.http).await;
-            if records.is_empty() {
-                empty_count += 1;
-            }
-            // If the first two queries (A + AAAA) both return nothing, both
-            // Cloudflare and Google DoH are unreachable from this IP — skip
-            // remaining record types to free the concurrency slot immediately.
-            if i == 1 && empty_count == 2 {
-                break;
-            }
+            let outcome = query_doh(&domain, rtype, &ctx.http).await;
             result.entities.extend(records_for_type(
                 rtype,
-                &records,
+                outcome.records(),
                 &domain,
                 &mut seen,
                 &ctx.scan_id,
             ));
+            outcomes.push(outcome);
+            // If the first two queries (A + AAAA) were both UNREACHABLE, neither
+            // Cloudflare nor Google is reachable from this IP — skip the
+            // remaining record types to free the concurrency slot immediately.
+            //
+            // Gated on unreachability, not on emptiness. The previous version
+            // broke when the first two merely returned no records, which a
+            // parked, MX-only or TXT-only domain does from a perfectly healthy
+            // resolver — so a legitimate answer was being read as an outage.
+            if i == 1 && dns_wholly_unreachable(&outcomes) {
+                break;
+            }
         }
 
         // DMARC lives at `_dmarc.{domain}` (RFC 7489 §6.6.3), not at the apex.
         // Query it separately so the parser sees the correct subdomain context.
         if !ctx.cancel.is_cancelled() {
             let dmarc_domain = format!("_dmarc.{domain}");
-            let dmarc_records = query_doh(&dmarc_domain, "TXT", &ctx.http).await;
+            let dmarc = query_doh(&dmarc_domain, "TXT", &ctx.http).await;
             result.entities.extend(records_for_type(
                 "TXT",
-                &dmarc_records,
+                dmarc.records(),
                 &domain,
                 &mut seen,
                 &ctx.scan_id,
             ));
+            outcomes.push(dmarc);
         }
 
         // CAA (RFC 8659, type 257) — a dedicated aggregating pass, not part of the
@@ -801,10 +819,11 @@ impl Module for DohResolver {
         // domain's authorised CAs and its published security/abuse contact are
         // lost on the exact platform HSE targets.
         if !ctx.cancel.is_cancelled() {
-            let caa_records = query_doh(&domain, "CAA", &ctx.http).await;
+            let caa = query_doh(&domain, "CAA", &ctx.http).await;
             result
                 .entities
-                .extend(caa_entities(&caa_records, &domain, &ctx.scan_id));
+                .extend(caa_entities(caa.records(), &domain, &ctx.scan_id));
+            outcomes.push(caa);
         }
 
         // TLSRPT (RFC 8460) lives at `_smtp._tls.{domain}` as a TXT record, like
@@ -813,16 +832,116 @@ impl Module for DohResolver {
         // path, since the hickory transport that would resolve it is blocked.
         if !ctx.cancel.is_cancelled() {
             let tlsrpt_domain = format!("_smtp._tls.{domain}");
-            let tlsrpt_records = query_doh(&tlsrpt_domain, "TXT", &ctx.http).await;
+            let tlsrpt = query_doh(&tlsrpt_domain, "TXT", &ctx.http).await;
             result
                 .entities
-                .extend(tlsrpt_entities(&tlsrpt_records, &domain, &ctx.scan_id));
+                .extend(tlsrpt_entities(tlsrpt.records(), &domain, &ctx.scan_id));
+            outcomes.push(tlsrpt);
+        }
+
+        // Every query failed to reach a resolver: nothing was established about
+        // this domain. Returning Ok here would report "no DNS records" — the same
+        // answer a domain with genuinely none produces — so a DoH outage would be
+        // indistinguishable from a real negative. On Termux this is the primary
+        // transport precisely because the system resolver is often blocked, so an
+        // operator reading a dossier needs to know DNS itself did not answer.
+        // Cancellation is NOT an outage. A cancelled scan aborts in-flight
+        // requests, which surfaces as `Unreachable`, so a scan cancelled after one
+        // unreachable query would otherwise be reported as "DNS never answered" —
+        // misattributing the operator's own stop (or the wall-time watchdog) to
+        // the network. The zero-query case is already excluded inside
+        // `dns_wholly_unreachable`; this covers the partial-then-cancelled case.
+        if !ctx.cancel.is_cancelled() && dns_wholly_unreachable(&outcomes) {
+            return Err(crate::core::error::Error::module(
+                SRC,
+                format!(
+                    "no DoH resolver answered for {domain}: both cloudflare-dns.com and \
+                     dns.google were unreachable or undecodable across {} quer{}. \
+                     Reporting this rather than an empty result, because zero records \
+                     from an unanswered query is indistinguishable from a domain that \
+                     genuinely has none.",
+                    outcomes.len(),
+                    if outcomes.len() == 1 { "y" } else { "ies" }
+                ),
+            ));
         }
         Ok(result)
     }
 }
 
-async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> Vec<DohRecord> {
+/// What a DoH query actually established.
+///
+/// The distinction is the point. Both arms can carry zero records, but they mean
+/// opposite things to an operator: `Answered(vec![])` is a resolver saying "this
+/// name has no such record", while `Unreachable` is HSE saying "nobody answered,
+/// so I do not know". Collapsing them — as this returned a bare `Vec` before —
+/// makes a DNS outage indistinguishable from a domain with no DMARC record, and
+/// on Termux the DoH path is the primary transport precisely because the system
+/// resolver is often blocked, so the outage case is common rather than exotic.
+enum DohOutcome {
+    /// A provider RESOLVED the name. Either `NOERROR` with the answer, or
+    /// `NXDOMAIN` — an authoritative statement that the name does not exist,
+    /// which is a genuine negative and correctly carries zero records.
+    ///
+    /// `SERVFAIL`/`REFUSED`/`FORMERR` are deliberately NOT this: they are the
+    /// resolver failing to answer, not proof of absence, and treating them as an
+    /// empty answer would recreate the exact conflation this type exists to
+    /// prevent, one layer down.
+    Answered(Vec<DohRecord>),
+    /// Neither Cloudflare nor Google could be reached, or neither reply decoded.
+    /// Nothing was established about the domain.
+    Unreachable,
+}
+
+impl DohOutcome {
+    /// The records this outcome carries — empty for [`Self::Unreachable`], which
+    /// is why callers that only extend an entity list can treat both alike while
+    /// the aggregate check below still sees the difference.
+    fn records(&self) -> &[DohRecord] {
+        match self {
+            Self::Answered(r) => r,
+            Self::Unreachable => &[],
+        }
+    }
+}
+
+/// True when NOTHING was resolved for this domain — every query failed to reach a
+/// resolver, so the module established nothing at all.
+///
+/// Pure, so the decision that turns a scan into a `ModuleError` is unit-testable
+/// without a live DoH endpoint. Deliberately requires ALL outcomes to be
+/// unreachable: one provider answering, even with zero records, means DNS worked
+/// and the domain genuinely lacks that record.
+///
+/// An empty slice is NOT unreachable — no queries ran (cancellation), which is
+/// its own thing and must not be reported as a DNS outage.
+fn dns_wholly_unreachable(outcomes: &[DohOutcome]) -> bool {
+    !outcomes.is_empty()
+        && outcomes
+            .iter()
+            .all(|o| matches!(o, DohOutcome::Unreachable))
+}
+
+/// A decoded DoH reply's DNS `Status`, classified into "the resolver answered"
+/// versus "the resolver failed to answer".
+///
+/// `NOERROR` (0) carries the records. `NXDOMAIN` (3) is an authoritative
+/// negative — the name does not exist — so it resolves with zero records and
+/// needs no failover. Everything else (`SERVFAIL` 2, `REFUSED` 5, `FORMERR` 1,
+/// …) is the resolver failing, NOT a negative existence proof: those must fall
+/// through to the second provider, exactly as the pre-`DohOutcome` code did via
+/// its `&& data.status == 0` guard.
+///
+/// Pure, so the classification is unit-testable without a resolver.
+fn classify_status(status: i32, answer: Vec<DohRecord>) -> Option<Vec<DohRecord>> {
+    match status {
+        0 => Some(answer),
+        3 => Some(Vec::new()),
+        _ => None,
+    }
+}
+
+async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> DohOutcome {
     let cf_url = format!("https://cloudflare-dns.com/dns-query?name={domain}&type={rtype}");
     let resp = http
         .get(&cf_url)
@@ -832,9 +951,9 @@ async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> Vec<Doh
         .await;
     if let Ok(r) = resp
         && let Ok(data) = crate::util::http::json_decode::<DohResp>(SRC, r).await
-        && data.status == 0
+        && let Some(records) = classify_status(data.status, data.answer)
     {
-        return data.answer;
+        return DohOutcome::Answered(records);
     }
     let google_url = format!("https://dns.google/resolve?name={domain}&type={rtype}");
     let resp = http
@@ -844,11 +963,11 @@ async fn query_doh(domain: &str, rtype: &str, http: &reqwest::Client) -> Vec<Doh
         .await;
     if let Ok(r) = resp
         && let Ok(data) = crate::util::http::json_decode::<DohResp>(SRC, r).await
-        && data.status == 0
+        && let Some(records) = classify_status(data.status, data.answer)
     {
-        return data.answer;
+        return DohOutcome::Answered(records);
     }
-    Vec::new()
+    DohOutcome::Unreachable
 }
 
 #[cfg(test)]

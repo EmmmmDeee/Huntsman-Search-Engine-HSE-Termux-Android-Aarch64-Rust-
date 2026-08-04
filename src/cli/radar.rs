@@ -16,6 +16,7 @@
 //! observed signal through the identity chain SeekNow and the breach corpora
 //! open up.
 
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use crate::core::error::Result;
@@ -28,6 +29,13 @@ use crate::util::{http::build_client, keys, uid::scan_id};
 use super::{color_confidence, truncate, use_color};
 
 use crate::core::engine::LOCAL_PASSIVE_MODULES as SENSOR_MODULES;
+
+/// The `termux-*` binary whose activity decides whether the live Bluetooth map
+/// was refreshed from a real radio read this tick.
+///
+/// Taken from the sensor enum rather than spelled out, so the map cannot end up
+/// watching the counters of a tool the scanner no longer calls.
+const BT_TOOL: &str = crate::modules::termux_sensor::Sensor::BluetoothScan.tool();
 
 /// Seconds between sensor sweeps. Not operator-tunable: the radar has exactly
 /// two states, and 10 s is fast enough to track a device moving on foot or in
@@ -45,6 +53,106 @@ const RADAR_SWEEP_INTERVAL_SECS: u64 = 10;
 ///
 /// [`MAX_DEPTH`]: crate::core::scan::MAX_DEPTH
 const RADAR_PIVOT_DEPTH: u32 = 5;
+
+/// Maximum number of already-seen entity uids the radar remembers across sweeps.
+///
+/// Generous enough that a stationary session (a location has at most a few
+/// hundred APs/towers/BT devices, plus the entities its pivots discover) never
+/// evicts, while bounding the memory a *moving* session accretes. `hse radar` is
+/// explicitly built to track a device in motion, so without a cap its seen-set
+/// grows with every signal passed en route for the whole session — the
+/// per-scan `max_entities` ceilings bound one scan, never this cross-sweep set.
+const SEEN_CAPACITY: usize = 50_000;
+
+/// Bounded, insertion-ordered membership set for entity uids the radar has
+/// already observed — the "have I seen this signal before?" check that makes
+/// each sweep pivot only on genuinely NEW signals.
+///
+/// A plain [`HashSet`] answers that but grows without limit across a long or
+/// moving session (see [`SEEN_CAPACITY`]). This caps the set and evicts
+/// oldest-first when full. FIFO is the correct policy here, not merely the
+/// simplest: the oldest uids are the signals left furthest behind as the device
+/// moves — the least likely to recur — and if an evicted signal IS re-observed
+/// later, treating it as new re-pivots it, which is bounded, correct rework, not
+/// a lost observation.
+struct SeenSet {
+    set: HashSet<String>,
+    order: VecDeque<String>,
+    capacity: usize,
+}
+
+impl SeenSet {
+    fn with_capacity(capacity: usize) -> Self {
+        // Runtime assert, not `debug_assert!`: a zero capacity would let the
+        // `len() <= capacity` guarantee below break silently in a release build,
+        // so the precondition must hold in every build, not just debug.
+        assert!(capacity >= 1, "a zero-capacity seen-set remembers nothing");
+        Self {
+            set: HashSet::with_capacity(capacity),
+            order: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    /// Record `uid`, returning `true` when it was NOT already present — the
+    /// "this is a new signal, pivot it" answer, matching [`HashSet::insert`]'s
+    /// return. When the set is at capacity, the oldest uid is evicted first so
+    /// the size never exceeds `capacity`.
+    fn insert(&mut self, uid: String) -> bool {
+        if self.set.len() < self.capacity {
+            // Warm-up (the overwhelmingly common path until the cap is reached):
+            // let `HashSet::insert` report novelty in a single hash of the key,
+            // rather than hashing twice via `contains` + `insert`.
+            let is_new = self.set.insert(uid.clone());
+            if is_new {
+                self.order.push_back(uid);
+            }
+            return is_new;
+        }
+        // At capacity: check membership before evicting so a re-sighting evicts
+        // nothing, and evict-before-insert so the size never momentarily exceeds
+        // `capacity`.
+        if self.set.contains(&uid) {
+            return false;
+        }
+        if let Some(oldest) = self.order.pop_front() {
+            self.set.remove(&oldest);
+        }
+        self.order.push_back(uid.clone());
+        self.set.insert(uid);
+        true
+    }
+
+    /// Number of uids currently remembered (never exceeds `capacity`).
+    fn len(&self) -> usize {
+        self.set.len()
+    }
+}
+
+/// Whether the Bluetooth radio was actually read during a sweep, given that
+/// sweep's tally for [`BT_TOOL`] alone.
+///
+/// The predicate is `reads > 0`, deliberately NOT
+/// [`Activity::took_no_readings`]: that method answers `false` for an IDLE
+/// tally, because across a whole sweep "nothing was even asked for" is a
+/// genuinely different claim from "we asked and got nothing back", and
+/// conflating them would misreport the sweep.
+///
+/// For ONE radio's map the two collapse. A tick that never invoked the tool read
+/// the radio exactly as much as a tick whose invocation timed out: not at all.
+/// Either way the map must say so rather than draw an empty field, which the
+/// operator would read as "nothing nearby".
+///
+/// [`Activity::took_no_readings`]: crate::util::termux::Activity::took_no_readings
+const fn bt_read_outcome(
+    bt: crate::util::termux::Activity,
+) -> crate::core::radar_live::BtReadOutcome {
+    if bt.reads > 0 {
+        crate::core::radar_live::BtReadOutcome::Read
+    } else {
+        crate::core::radar_live::BtReadOutcome::NotRead
+    }
+}
 
 /// Run one sub-scan (a sensor sweep or a pivot), racing an operator Ctrl-C
 /// against it. A press signals the scan's OWN cooperative-cancel flag (so it
@@ -76,8 +184,6 @@ async fn run_sub_scan(
 }
 
 pub(super) async fn cmd_radar() -> Result<()> {
-    use std::collections::HashSet;
-
     // The radar is armed by default — running `hse radar` IS the deliberate
     // activation, so no prior opt-in is needed. The `feature.live_radar` toggle is
     // now a kill-switch: it only refuses here if the operator has explicitly set it
@@ -109,7 +215,14 @@ pub(super) async fn cmd_radar() -> Result<()> {
 
     let crate::app::runtime::ApplicationRuntime { store, bus, engine } =
         crate::app::runtime::build_runtime(1024)?;
-    let mut seen_entities: HashSet<String> = HashSet::new();
+    let mut seen_entities = SeenSet::with_capacity(SEEN_CAPACITY);
+    // The live Bluetooth map: a per-device presence model fed one increment per
+    // sweep, repainted in place. Distinct from `seen_entities` (which is
+    // novelty-once, for deciding what to PIVOT): this tracks devices over time,
+    // so the operator sees a device persist, weaken, and leave rather than a
+    // one-shot "new" line that never updates again.
+    let mut bt_radar = crate::core::radar_live::BtRadarState::default();
+    let mut bt_frame = super::live_frame::Frame::new();
     let mut sweep_num = 0u32;
     // Set by `run_sub_scan` the moment Ctrl-C interrupts an in-flight sweep or
     // pivot, so the loop stops immediately rather than starting another one.
@@ -163,14 +276,46 @@ pub(super) async fn cmd_radar() -> Result<()> {
         // empty sweep can say WHICH empty it is: radios read and quiet, or
         // radios never read. See the `no new signals` branch below.
         let sensors_before = crate::util::termux::activity();
+        // …and separately with the Bluetooth tool's OWN counters, because the
+        // live map speaks for that one radio. See the map block below.
+        let bt_before = crate::util::termux::activity_for(BT_TOOL);
         let sweep_result =
             run_sub_scan(&engine, sweep_scan, sweep_target, sweep_ctx, &radar_stop).await?;
         let sensors = crate::util::termux::activity().since(sensors_before);
+        let bt_sensor = crate::util::termux::activity_for(BT_TOOL).since(bt_before);
         if radar_stop.load(std::sync::atomic::Ordering::Relaxed) {
             eprintln!("\nradar stopped");
             break 'sweeps;
         }
         let sweep_entities = store.entities_for_scan(&sweep_sid)?;
+
+        // ── Live Bluetooth map ──────────────────────────────────────────────
+        // Fold this sweep's Bluetooth sightings into the presence model. The
+        // reduce happens here (at sensor cadence, before the slow pivot phase),
+        // but the PAINT is deferred to the end of the sweep body: the frame
+        // rewinds by the line count it last drew, which is only valid while the
+        // cursor is still where that draw left it, and the pivot phase below
+        // emits an unbounded number of `eprintln!` progress lines. Painting
+        // here would let the NEXT repaint rewind up into that progress output
+        // and overwrite it.
+        //
+        // The read/not-read verdict comes from the BLUETOOTH tool's own tally,
+        // not the whole-sweep aggregate. The aggregate cannot answer "was the
+        // Bluetooth radio read?": a successful Wi-Fi or cell read in the same
+        // sweep sets `reads > 0` and masks a Bluetooth scan that was skipped by
+        // the backoff cache or failed outright. Believing it would paint an
+        // empty map as "nothing nearby" for a radio that was never read —
+        // asserting an observation of absence from an absence of observation,
+        // which is the one thing this map must never do.
+        let bt_sightings: Vec<crate::core::radar_track::SweepObservation> = sweep_entities
+            .iter()
+            .filter(|e| e.has_tag("bluetooth"))
+            .filter_map(crate::core::radar_track::observation_from_entity)
+            .collect();
+        let bt_read = bt_read_outcome(bt_sensor);
+        let bt_delta = bt_radar.apply_tick(&bt_sightings, bt_read);
+        let bt_map =
+            super::live_frame::render_bt_map(&bt_radar, &bt_delta, u64::from(sweep_num), color);
 
         // Phase 2: Identify NEW entities (not seen in previous sweeps)
         let mut new_targets: Vec<(crate::core::scan::TargetKind, String)> = Vec::new();
@@ -309,6 +454,30 @@ pub(super) async fn cmd_radar() -> Result<()> {
             }
         }
 
+        // Paint the live Bluetooth map LAST, so it is the bottom-most thing on
+        // screen and the cursor is left immediately below it — the one position
+        // from which the next sweep's rewind is valid.
+        //
+        // The rewind is dropped UNCONDITIONALLY here, and that is deliberate.
+        // Every sweep emits its own stderr progress between paints (the sweep
+        // header, then either the "no new signals" line or the new-signal and
+        // pivot lines), so the cursor is never where the previous paint left
+        // it. Rewinding anyway would climb up into that output and overwrite
+        // it — garbling the operator's log to animate a map, which is a strictly
+        // worse trade. Each sweep therefore appends one refreshed map block:
+        // still an updated increment per sweep, just not a cursor-in-place one.
+        //
+        // Gating this on a "did anything print?" flag was considered and
+        // rejected: it is a correctness invariant that a future `eprintln!`
+        // could silently break, and today the answer is always yes anyway.
+        // Genuine in-place animation needs the map to be the ONLY stderr
+        // surface in this loop — i.e. the per-sweep status folded INTO the
+        // frame and the streaming pivot progress moved behind it — which is a
+        // real change to the command's output contract, not a detail to smuggle
+        // in here.
+        bt_frame.invalidate();
+        bt_frame.repaint(&bt_map);
+
         // Wait for next sweep
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -325,4 +494,147 @@ pub(super) async fn cmd_radar() -> Result<()> {
         seen_entities.len()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insert_reports_novelty_like_a_hashset() {
+        let mut seen = SeenSet::with_capacity(8);
+        assert!(seen.insert("a".to_string()), "first sighting is new");
+        assert!(!seen.insert("a".to_string()), "second sighting is not new");
+        assert!(seen.insert("b".to_string()));
+        assert_eq!(seen.len(), 2);
+    }
+
+    #[test]
+    fn size_never_exceeds_capacity() {
+        // The whole point of the type: a long/moving session inserts far more
+        // distinct signals than the cap, and the set must stay bounded.
+        let cap = 16;
+        let mut seen = SeenSet::with_capacity(cap);
+        for i in 0..cap * 100 {
+            seen.insert(format!("uid-{i}"));
+            assert!(
+                seen.len() <= cap,
+                "size {} exceeded capacity {cap} after {i} inserts",
+                seen.len()
+            );
+        }
+        assert_eq!(seen.len(), cap, "a saturated set sits exactly at capacity");
+    }
+
+    #[test]
+    fn eviction_is_oldest_first() {
+        let mut seen = SeenSet::with_capacity(3);
+        for u in ["a", "b", "c"] {
+            assert!(seen.insert(u.to_string()));
+        }
+        // Inserting a 4th evicts the OLDEST ("a"), not "b"/"c".
+        assert!(seen.insert("d".to_string()));
+        assert_eq!(seen.len(), 3);
+        // "b" and "c" are still remembered (re-insert returns false)...
+        assert!(!seen.insert("b".to_string()), "b must still be present");
+        assert!(!seen.insert("c".to_string()), "c must still be present");
+        // ...while "a" was forgotten, so it reads as new again (a bounded,
+        // acceptable re-pivot — never a lost observation).
+        assert!(
+            seen.insert("a".to_string()),
+            "a was evicted, so it is new again"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "zero-capacity")]
+    fn zero_capacity_is_rejected_in_every_build() {
+        // The `len() <= capacity` guarantee is meaningless at capacity 0, so the
+        // constructor must reject it with a runtime assert (not a debug-only one
+        // that vanishes in release).
+        let _ = SeenSet::with_capacity(0);
+    }
+
+    #[test]
+    fn re_seeing_an_entry_does_not_change_its_eviction_age() {
+        // Membership re-hits must NOT refresh recency (this is FIFO, not LRU):
+        // re-observing "a" while it is present leaves it first in line to go.
+        let mut seen = SeenSet::with_capacity(2);
+        assert!(seen.insert("a".to_string()));
+        assert!(seen.insert("b".to_string()));
+        assert!(!seen.insert("a".to_string()), "a already present");
+        // Insert "c": capacity 2, so the oldest ("a") is evicted despite the re-hit.
+        assert!(seen.insert("c".to_string()));
+        assert!(
+            seen.insert("a".to_string()),
+            "a was still the oldest and got evicted"
+        );
+        assert!(!seen.insert("c".to_string()), "c remains");
+    }
+
+    /// The map may only claim a radio read when THAT radio was read.
+    #[test]
+    fn only_a_successful_bluetooth_read_counts_as_read() {
+        use crate::core::radar_live::BtReadOutcome;
+        use crate::util::termux::Activity;
+
+        let read = |reads, skipped, failed| {
+            bt_read_outcome(Activity {
+                reads,
+                skipped,
+                failed,
+            })
+        };
+
+        assert_eq!(read(1, 0, 0), BtReadOutcome::Read, "the tool answered");
+        assert_eq!(
+            read(1, 0, 2),
+            BtReadOutcome::Read,
+            "one good read is a read, whatever else went wrong alongside it"
+        );
+        assert_eq!(
+            read(0, 1, 0),
+            BtReadOutcome::NotRead,
+            "skipped by the backoff cache — the radio was never touched"
+        );
+        assert_eq!(
+            read(0, 0, 1),
+            BtReadOutcome::NotRead,
+            "ran and returned nothing usable — an absence of observation"
+        );
+    }
+
+    /// The reason this predicate is not `took_no_readings()`.
+    ///
+    /// An idle tally means the tool was never invoked in this window. For the
+    /// sweep as a whole that is deliberately NOT "blind" — nothing was asked
+    /// for, so nothing can be concluded. But for one radio's map it is exactly
+    /// as unread as a failure, and drawing an empty field would tell the
+    /// operator "nothing nearby" about a radio nobody switched on.
+    #[test]
+    fn an_idle_bluetooth_tally_is_not_read_even_though_it_is_not_blind() {
+        use crate::core::radar_live::BtReadOutcome;
+        use crate::util::termux::Activity;
+
+        let idle = Activity::default();
+        assert!(idle.is_idle());
+        assert!(
+            !idle.took_no_readings(),
+            "precondition: the aggregate predicate reports idle as NOT blind"
+        );
+        assert_eq!(
+            bt_read_outcome(idle),
+            BtReadOutcome::NotRead,
+            "never invoked still means the map has nothing to show"
+        );
+    }
+
+    /// The map watches the counters of the tool the scanner actually runs.
+    #[test]
+    fn bt_tool_is_the_scanners_bluetooth_binary() {
+        assert_eq!(
+            BT_TOOL,
+            crate::modules::termux_sensor::Sensor::BluetoothScan.tool()
+        );
+    }
 }

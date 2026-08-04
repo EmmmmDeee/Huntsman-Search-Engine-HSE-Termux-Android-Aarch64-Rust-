@@ -87,7 +87,7 @@ impl Module for BreachTimezone {
                 let mut c = Entity::new(
                     EntityKind::Coordinates,
                     &coord_val,
-                    tz.confidence - 0.10,
+                    confidence::derived_from(tz.confidence),
                     &ctx.scan_id,
                 );
                 c.tag("addr-derived");

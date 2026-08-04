@@ -476,9 +476,11 @@ fn build_paid_entities(ip: &str, body: HostResp, scan_id: &str) -> Vec<Entity> {
     if let Some(asn) = &body.asn
         && !asn.is_empty()
     {
-        let mut ae = Entity::new(EntityKind::Asn, asn, confidence::HIGH_PLUSPLUS, scan_id);
+        // Shared, byte-identical ASN birth (see `util::geo::ip_asn_entity`) —
+        // single-sourced so the `0.80` + `ASN for {ip}` evidence can't drift
+        // from the other IP-geo providers; the provider tag layers on after.
+        let mut ae = crate::util::geo::ip_asn_entity(asn, SRC, ip, scan_id);
         ae.tag("shodan");
-        ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
         result.push(ae);
     }
     // Prefer Shodan's own host coordinates (guarded so the `(0,0)`

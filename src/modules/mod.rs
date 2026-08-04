@@ -149,7 +149,6 @@ pub mod wikidata_geo;
 // not a registered `Module`, so it is `pub(crate)` (the registry guard only
 // inspects `pub mod` declarations).
 pub(crate) mod profile_kit;
-pub mod proxycurl;
 pub mod psbdmp;
 pub mod pwned_passwords;
 pub mod pypi_user;
@@ -466,7 +465,6 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(keybase::Keybase),
             Arc::new(emailrep::EmailRep),
             Arc::new(epieos::Epieos),
-            Arc::new(proxycurl::Proxycurl),
             Arc::new(fullcontact::FullContact),
             Arc::new(numverify::NumVerify),
             Arc::new(photon::Photon),

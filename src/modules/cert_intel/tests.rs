@@ -40,11 +40,13 @@ fn ct_log_discriminates_subdomain_from_co_hosted_confidence() {
 #[test]
 fn ct_log_emits_rfc822_name_as_email_not_domain() {
     // crt.sh returns rfc822Name SANs inline in `name_value`. An email address
-    // (`admin@example.com`) contains a dot, so the prior `.contains('.')`-only
+    // (`jdoe@example.com`) contains a dot, so the prior `.contains('.')`-only
     // gate minted it as a bogus Domain entity. It must now surface as an Email
     // pivot, and the co-listed real subdomain must still emit as a Domain.
+    // A non-role local-part is used deliberately (see
+    // `ct_log_suppresses_role_mailbox_san` below for the role-address case).
     let entries = vec![CrtEntry {
-        name_value: "api.example.com\nadmin@example.com".to_string(),
+        name_value: "api.example.com\njdoe@example.com".to_string(),
         issuer_name: Some("Let's Encrypt".to_string()),
         not_before: None,
         not_after: None,
@@ -57,7 +59,7 @@ fn ct_log_emits_rfc822_name_as_email_not_domain() {
         .iter()
         .find(|e| e.kind == EntityKind::Email)
         .expect("rfc822Name SAN surfaced as an Email entity");
-    assert_eq!(email.value, "admin@example.com");
+    assert_eq!(email.value, "jdoe@example.com");
     assert!(email.has_tag(tags::CT_LOG));
     // The email must NEVER appear as a Domain (the false attribution being fixed).
     assert!(
@@ -66,6 +68,34 @@ fn ct_log_emits_rfc822_name_as_email_not_domain() {
         "an email SAN must not be emitted as a Domain entity"
     );
     // The genuine subdomain is unaffected.
+    assert!(
+        out.iter()
+            .any(|e| e.kind == EntityKind::Domain && e.value == "api.example.com"),
+        "the co-listed real subdomain still emits as a Domain"
+    );
+}
+
+#[test]
+fn ct_log_suppresses_role_mailbox_san() {
+    // A cert-admin desk (`hostmaster@`) is infrastructure contact, not the
+    // subject's own mail — the same false-positive class `whois`/`dns_intel`
+    // already gate on via `is_infrastructure_email`. Regression test for the
+    // audit finding (role-mailbox-as-pii) that a CT-log SAN previously bypassed
+    // that gate entirely.
+    let entries = vec![CrtEntry {
+        name_value: "api.example.com\nhostmaster@example.com".to_string(),
+        issuer_name: Some("Let's Encrypt".to_string()),
+        not_before: None,
+        not_after: None,
+        serial_number: None,
+    }];
+    let mut seen = std::collections::HashSet::new();
+    let out = ct_log_entities(&entries, "example.com", "s", &mut seen);
+
+    assert!(
+        !out.iter().any(|e| e.kind == EntityKind::Email),
+        "a role-mailbox SAN must not surface as an Email entity"
+    );
     assert!(
         out.iter()
             .any(|e| e.kind == EntityKind::Domain && e.value == "api.example.com"),

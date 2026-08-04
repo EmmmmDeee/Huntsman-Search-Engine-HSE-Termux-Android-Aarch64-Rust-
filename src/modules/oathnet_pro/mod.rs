@@ -15,7 +15,9 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
-use crate::util::oathnet::{self, paths, val_str, val_str_coerce, val_str_or, val_str_or_coerce};
+use crate::util::oathnet::{
+    self, Completeness, paths, val_str, val_str_coerce, val_str_or, val_str_or_coerce,
+};
 // The target-identity matcher is shared with see_know via `util::target_match`
 // (one definition for both breach pools); reached by bare name in `breach.rs`
 // through its `use super::*`. The non-match demotion itself is
@@ -199,7 +201,7 @@ impl Module for OathnetPro {
         // API's own documented maximum rather than a per-kind guess.
         const BREACH_PAGE_SIZE: u32 = 1000;
         let page_size: u32 = BREACH_PAGE_SIZE;
-        let items = oathnet::search(
+        let found = oathnet::search(
             key,
             paths::BREACH,
             field,
@@ -208,9 +210,14 @@ impl Module for OathnetPro {
             session_id.as_deref(),
         )
         .await?;
+        let breach_completeness = found.completeness;
+        let items = found.items;
         if items.is_empty() {
             return Ok(result);
         }
+        // Everything appended from here to the stealer sweep came out of THIS
+        // enumeration, so its coverage verdict applies to exactly that slice.
+        let breach_start = result.entities.len();
 
         // Classify every row against the target identity ONCE. This single pass
         // drives all three downstream decisions — the honest parent dossier
@@ -261,9 +268,16 @@ impl Module for OathnetPro {
         // unlike Breach Search's 1000) — `oathnet::search`'s own cursor
         // pagination now carries past that ceiling if the server reports
         // more results than one page holds.
+        let breach_fetched = items.len();
+        mark_partial_coverage(
+            &mut result.entities[breach_start..],
+            breach_completeness,
+            breach_fetched,
+        );
+
         if oathnet::stealer_indexable(field)
             && !ctx.cancel.is_cancelled()
-            && let Ok(stealer_items) = oathnet::search(
+            && let Ok(stealer_found) = oathnet::search(
                 key,
                 paths::STEALER,
                 field,
@@ -273,12 +287,20 @@ impl Module for OathnetPro {
             )
             .await
         {
+            let stealer_completeness = stealer_found.completeness;
+            let stealer_items = stealer_found.items;
+            let stealer_start = result.entities.len();
             result.entities.reserve(stealer_items.len());
             for item in &stealer_items {
                 extract_stealer_entities(item, &ctx.scan_id, &key_fp, &mut seen, &mut result);
-                store_api_credential(item, SRC);
+                store_api_credential(item, SRC, &ctx.scan_id, &mut seen, &mut result);
                 extract_api_keys_from_item(item, &ctx.scan_id, SRC, &mut seen, &mut result);
             }
+            mark_partial_coverage(
+                &mut result.entities[stealer_start..],
+                stealer_completeness,
+                stealer_items.len(),
+            );
         }
 
         // Holehe, Discord, GHunt, IP info, Steam, Xbox, Roblox, and
@@ -302,6 +324,33 @@ use crate::util::preflight::{is_local_domain, is_placeholder_username, is_privat
 // slugged (see `breach.rs`'s Person-creation guard) — both oathnet_pro and
 // see_know extract from the same breach-schema fields, so they share this too.
 use crate::core::validation::is_username_derived_name;
+
+/// Stamp entities produced by an INCOMPLETE enumeration so the coverage limit
+/// travels with the data.
+///
+/// The truncation was previously disclosed only by a `tracing::debug!` inside
+/// `util::oathnet::search`. That line is visible at the default log level, but a
+/// dossier or JSON export read on its own carried nothing — it reported N
+/// findings with no indication more existed. For a tool whose deliverable is an
+/// exported artifact, a disclosure that lives only in an ephemeral log is not
+/// carried with the data.
+///
+/// Applied per sweep, over that sweep's own slice of the result, because the
+/// breach and stealer enumerations can stop for different reasons.
+fn mark_partial_coverage(entities: &mut [Entity], completeness: Completeness, fetched: usize) {
+    let Some(reason) = completeness.reason() else {
+        return;
+    };
+    for e in entities {
+        e.tag("coverage:partial");
+        e.add_evidence(
+            Evidence::new(SRC, format!("enumeration incomplete: {reason}"))
+                .with_attr("coverage", "partial")
+                .with_attr("reason", reason)
+                .with_attr("fetched", fetched.to_string()),
+        );
+    }
+}
 
 /// True for inputs that empirically waste an OathNet lookup for `kind` — junk
 /// the breach/stealer corpora never match: test/example-TLD emails, placeholder

@@ -233,14 +233,12 @@ fn build_entities(body: &Resp, target: &Target, scan_id: &str) -> Vec<Entity> {
         }
         if let Some(asn) = w.as_no {
             let asn_str = format!("AS{asn}");
-            let mut ae = Entity::new(
-                EntityKind::Asn,
-                &asn_str,
-                confidence::HIGH_PLUSPLUS,
-                scan_id,
-            );
+            // Shared, byte-identical ASN birth — the same `0.80` + `ASN for {ip}`
+            // evidence every IP-geo provider emits, single-sourced so it can't
+            // drift (see `util::geo::ip_asn_entity`). The provider tag layers on
+            // after, as at the helper's other call sites.
+            let mut ae = crate::util::geo::ip_asn_entity(&asn_str, SRC, ip, scan_id);
             ae.tag("criminal_ip");
-            ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
             out.push(ae);
         }
         // Whois geolocation → a real `Coordinates` fix (guarded so the API's

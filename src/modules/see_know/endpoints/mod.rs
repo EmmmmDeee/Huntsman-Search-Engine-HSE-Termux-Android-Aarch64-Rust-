@@ -270,8 +270,12 @@ impl EndpointCall {
             Self::XboxProfile => ("xbox", "gaming/xbox", "gamertag"),
             Self::MinecraftProfile => ("minecraft", "gaming/minecraft", "username"),
             Self::SteamProfile => ("steam", "gaming/steam", "id"),
-            Self::DiscordUser => ("discord_user", "discord/user", "id"),
-            Self::DiscordToRoblox => ("discord_to_roblox", "discord/to-roblox", "id"),
+            // The PUBLIC Discord endpoints take `?discord_id=` per the SeekNow
+            // contract — only the /enterprise/discord/* endpoints use `?id=`.
+            // Sending `id` here left the required param unset, so every lookup
+            // 400'd / returned nothing.
+            Self::DiscordUser => ("discord_user", "discord/user", "discord_id"),
+            Self::DiscordToRoblox => ("discord_to_roblox", "discord/to-roblox", "discord_id"),
             Self::PhoneInfo => ("phone_info", "network/phone", "phone"),
             Self::IpInfo => ("ip_info", "network/ip", "ip"),
             Self::DomainIntel => ("domain_intel", "domain/intel", "domain"),

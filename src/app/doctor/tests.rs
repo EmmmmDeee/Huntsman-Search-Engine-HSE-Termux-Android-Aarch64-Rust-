@@ -241,7 +241,7 @@ use super::*;
     }
 
     #[test]
-    fn format_weak_findings_caps_the_printed_list_and_notes_the_remainder() {
+    fn format_weak_findings_caps_one_modules_rows_and_notes_the_remainder() {
         let anomalies: Vec<EvidenceAnomaly> = (0..25)
             .map(|i| EvidenceAnomaly {
                 entity_uid: format!("{i:064}"),
@@ -251,6 +251,63 @@ use super::*;
             })
             .collect();
         let out = format_weak_findings(&anomalies);
-        assert_eq!(out.matches("conf=").count(), 20, "must cap the printed rows at 20: {out}");
-        assert!(out.contains("… and 5 more"), "{out}");
+        // A single module gets at most PER_MODULE rows, not the whole budget.
+        assert_eq!(
+            out.matches("conf=").count(),
+            3,
+            "one module must not consume the whole sample: {out}"
+        );
+        assert!(out.contains("… and 22 more"), "{out}");
+        // The full count is still stated, both in the header and per module.
+        assert!(out.contains("25 weak finding"), "{out}");
+        assert!(out.contains("search_engines 25"), "{out}");
+    }
+
+    /// The reported production shape: one module emitting thousands of findings
+    /// at its flat floor, and a handful of genuinely interesting ones above it.
+    ///
+    /// Before the per-module cap, the list was sorted weakest-first and truncated
+    /// at 20 — and 0.20 is the lowest confidence any module routinely emits, so
+    /// every printed row was the same module at the same confidence and the rows
+    /// this section exists to surface were unreachable. An operator saw 20
+    /// identical lines and "… and 1326 more".
+    #[test]
+    fn a_flat_floor_module_cannot_crowd_out_every_other_module() {
+        let mut anomalies: Vec<EvidenceAnomaly> = (0..1340)
+            .map(|i| EvidenceAnomaly {
+                entity_uid: format!("{i:064}"),
+                module_name: "name_intel".to_string(),
+                confidence: 0.20,
+                created_at: 0,
+            })
+            .collect();
+        // The entities the section is FOR: a breach-pool near-miss and a
+        // demoted registry hit, both above the flood's floor.
+        anomalies.push(EvidenceAnomaly {
+            entity_uid: format!("{:064}", 9001),
+            module_name: "breach_pool".to_string(),
+            confidence: 0.25,
+            created_at: 0,
+        });
+        anomalies.push(EvidenceAnomaly {
+            entity_uid: format!("{:064}", 9002),
+            module_name: "asic_persons".to_string(),
+            confidence: 0.28,
+            created_at: 0,
+        });
+        // Weakest-first, as the store returns them.
+        anomalies.sort_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap());
+
+        let out = format_weak_findings(&anomalies);
+        assert!(
+            out.contains("breach_pool") && out.contains("asic_persons"),
+            "the findings worth reviewing must be reachable: {out}"
+        );
+        assert_eq!(
+            out.matches("conf=0.20").count(),
+            3,
+            "the flood is capped at PER_MODULE rows: {out}"
+        );
+        // And its scale is stated as a number rather than implied by repetition.
+        assert!(out.contains("name_intel 1340"), "{out}");
     }

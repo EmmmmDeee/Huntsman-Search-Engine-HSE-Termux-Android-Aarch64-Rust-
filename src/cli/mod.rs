@@ -13,10 +13,12 @@ mod engines;
 mod ingest;
 mod keys_cmd;
 mod live;
+mod live_frame;
 mod logging;
 mod modules;
 mod oathnet_batch;
 mod provision;
+mod query;
 mod radar;
 mod scan;
 mod selftest;
@@ -142,6 +144,13 @@ async fn run_command(command: Command) -> Result<()> {
         }
         Command::Modules { category, json } => modules::cmd_modules(category, json),
         Command::Engines { json } => engines::cmd_engines(json).await,
+        Command::Query {
+            query,
+            limit,
+            dark,
+            timeout,
+            output,
+        } => query::cmd_query(query, limit, dark, timeout, output).await,
         Command::Config { key, value } => config::cmd_config(key, value),
         Command::Diagnostics { json } => diagnostics::cmd_diagnostics(json).await,
         Command::Audit {

@@ -474,7 +474,7 @@ pub(super) fn extract_entities(
                 Entity::new(
                     EntityKind::Other("iban".to_string()),
                     iban.trim(),
-                    0.70,
+                    confidence::HIGH_PLUS,
                     scan_id,
                 ),
                 &ev,

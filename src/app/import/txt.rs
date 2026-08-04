@@ -56,7 +56,11 @@ pub(super) fn parse_oathnet_txt(
                         let mut de = Entity::new(
                             EntityKind::Domain,
                             domain,
-                            if is_sub { 0.45 } else { 0.50 },
+                            if is_sub {
+                                confidence::LOW_MEDIUM
+                            } else {
+                                confidence::MEDIUM
+                            },
                             &sid,
                         );
                         de.tag("import");

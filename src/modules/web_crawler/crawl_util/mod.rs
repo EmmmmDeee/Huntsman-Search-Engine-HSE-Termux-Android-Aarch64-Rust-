@@ -1,4 +1,4 @@
-use super::{BINARY_EXTENSIONS, CrawlState, MAX_DEPTH, MAX_PAGES};
+use super::{BINARY_EXTENSIONS, CrawlState, IMAGE_LEADS_CAP, MAX_DEPTH, MAX_PAGES};
 use crate::core::error::{Error, Result};
 use crate::util::http::RequestBuilderExt;
 use std::collections::HashSet;
@@ -288,6 +288,16 @@ pub(super) fn is_disallowed(url: &str, rules: &[String]) -> bool {
 }
 
 pub(super) fn is_binary_url(url: &str) -> bool {
+    // Every EXIF-capable image counts as binary, by construction rather than by
+    // a second hand-maintained list. `BINARY_EXTENSIONS` listed `jpg`/`tiff`/
+    // `webp` but not `heic`, `heif`, `jpe` or `jfif`, so a link to one of those
+    // was treated as a *page*: the crawler enqueued it and spent a page-budget
+    // slot fetching and HTML-parsing binary image data. Deferring to
+    // `util::exif::IMAGE_EXTS` — the same list `exif_geo` fetches from — means
+    // the two can no longer disagree about what an image is.
+    if crate::util::exif::looks_like_image_url(url) {
+        return true;
+    }
     let lower = url.to_lowercase();
     let path = lower.split('?').next().unwrap_or(&lower);
     // Match `.<ext>` without allocating a `format!(".{ext}")` per extension:
@@ -335,6 +345,25 @@ pub(super) fn extract_links(
         let clean = format!("{}://{}{}", scheme, host, resolved.path());
 
         if is_binary_url(&clean) {
+            // A binary URL is never crawled — it is not a page — but an IMAGE
+            // among them is a geolocation lead, not noise: `modules::exif_geo`
+            // accepts an image `Url` target and reads the GPS IFD out of it.
+            // Dropping these outright (as this arm used to) meant every photo
+            // the crawl walked past took its coordinates with it, since only a
+            // typed entity can become a scan target. Recorded here, emitted in
+            // `build_entities`, and still never enqueued.
+            if crate::util::exif::looks_like_image_url(&clean) {
+                // Count every DISTINCT image first, so the evidence reports the
+                // true discovered total even past the cap — `insert` returns
+                // false for a URL already seen, which also does the dedup. Only
+                // then, if this is a new image and we are under the cap, keep it
+                // as an emitted lead.
+                if state.image_urls_seen.insert(clean.clone())
+                    && state.image_urls.len() < IMAGE_LEADS_CAP
+                {
+                    state.image_urls.push(clean);
+                }
+            }
             continue;
         }
 

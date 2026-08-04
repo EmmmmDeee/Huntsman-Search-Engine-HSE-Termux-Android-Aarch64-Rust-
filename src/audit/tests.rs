@@ -140,6 +140,34 @@ fn infrastructure_pollution_is_flagged_critical() {
 }
 
 #[test]
+fn ns_mx_soa_tagged_domains_are_not_infrastructure_pollution() {
+    // A domain a DNS-recon module already labelled ns/mx/soa/nameserver is a
+    // correctly-attributed record of the subject's OWN zone — not a
+    // provider's estate silently entering the graph. Flagging it as
+    // "pollution" told the operator to suppress their own scan's DNS recon.
+    let ents = vec![
+        ent("email", "jordanavery@gmail.com", 1.0, 4, &[]),
+        ent("username", "jordanavery", 1.0, 3, &[]),
+        ent("domain", "ns7-66.akam.net", 0.9, 1, &["dns", "ns"]),
+        ent("domain", "aspmx.l.google.com", 0.95, 1, &["dns", "mx"]),
+        ent(
+            "domain",
+            "ns1.example.com",
+            0.9,
+            1,
+            &["dns", "soa", "nameserver"],
+        ),
+    ];
+    let r = audit(&ents, LogSignals::default());
+    assert!(
+        !r.findings
+            .iter()
+            .any(|f| f.category == "infrastructure-pollution"),
+        "ns/mx/soa-tagged domains must not be counted as infrastructure pollution"
+    );
+}
+
+#[test]
 fn fragment_values_are_detected() {
     assert!(is_fragment("email", "@gmail"));
     assert!(is_fragment("email", "matthew@"));
