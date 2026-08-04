@@ -16,10 +16,14 @@
 //! **Live status (2026-07-14):** all three legacy endpoints this module
 //! targets are currently confirmed dead — real, non-proxy-blocked live
 //! requests to each (root domain reachable, specific path gone) return:
-//! NSW's `/services/public/Property_Name_Address` → `404` (the domain now
-//! serves an unrelated client-rendered "SDT Explorer" SPA at `/explorer/`,
-//! the same "legacy static endpoint retired for a client-rendered app"
-//! pattern already confirmed for `au_electoral`'s AEC leg and `metager`);
+//! NSW's `/services/public/Property_Name_Address` → `404` (re-confirmed
+//! 2026-08-04: `maps.six.nsw.gov.au/` now `308`-redirects wholesale to
+//! `portal.spatial.nsw.gov.au/explorer/index.html`, the client-rendered "SDT
+//! Explorer" SPA — the whole legacy domain was retired, not just this one
+//! path; the same "legacy static endpoint retired for a client-rendered app"
+//! pattern already confirmed for `au_electoral`'s AEC leg and `metager`. The
+//! SPA's actual data API was not identified — that needs a browser-devtools
+//! network trace, not a plain HTTP probe, and is the concrete next step);
 //! VIC's `/mapsharevic/ows` WFS endpoint → `404` (IIS "File or directory not
 //! found", root MapShareVic app itself still live at `200`); QLD's
 //! `/environment/land/title/searching/owners` → `404` (qld.gov.au's own
