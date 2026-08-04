@@ -50,8 +50,9 @@ use passes::{
 };
 pub use ranking::{
     AutonomousPlan, AutonomousTarget, ClusteredTarget, DEFAULT_SWEEP_DIVERSITY, LeverageRanked,
-    autonomous_target_score, enrich_offline_geo, kind_pivot_value, plan_autonomous_sweep,
-    rank_autonomous_targets, rank_enrichment_leverage, rank_identity_aware_targets,
+    autonomous_target_score, enrich_offline_geo, is_autonomous_seed_candidate, kind_pivot_value,
+    plan_autonomous_sweep, rank_autonomous_targets, rank_enrichment_leverage,
+    rank_identity_aware_targets,
 };
 use writer::DbWriter;
 // The per-target dispatch context (`DispatchCx`) and the mutable accumulator
@@ -141,6 +142,33 @@ pub(crate) struct ModuleStats {
     pub cached: usize,
 }
 
+/// A `JoinHandle` that aborts its task when dropped.
+///
+/// Dropping a bare `tokio::JoinHandle` **detaches** the task — it does not
+/// abort it. `Cargo.toml` sets `panic = "unwind"` (deliberately: a panicking
+/// module is caught at the dispatch boundary rather than killing the process),
+/// so any panic between spawning the wall-time watchdog and the explicit
+/// `abort()` at the end of the scan body unwound straight past that abort and
+/// left the watchdog running. It then slept out its full deadline and fired
+/// `cancel()` on the caller's context long after the scan was gone — poisoning
+/// a shared token under a long-lived `serve`/`radar`, so an unrelated later
+/// scan was cancelled for no operator-visible reason.
+///
+/// This is not hypothetical: the scan body already documents that exact hazard
+/// for the *error* path, and it is reachable — `run_gap_fill` calls
+/// `correlator::gap_fill_probes` unguarded, while the sibling
+/// `correlate_incremental` wraps the same rule engine in `catch_unwind`.
+///
+/// Aborting on drop makes the cleanup unconditional: normal return, `?`
+/// early-exit and unwind all reap the task.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// The scan-wide working entity set, wrapping `HashMap<String, Entity>` to
 /// track which UIDs were inserted or mutated since the last
 /// [`take_dirty`](Self::take_dirty) call.
@@ -214,6 +242,33 @@ impl TrackedEntityMap {
             .drain()
             .filter_map(|uid| self.map.get(&uid).cloned())
             .collect()
+    }
+
+    /// The full working set as a **deterministically ordered** `Vec`, sorted by
+    /// `uid`.
+    ///
+    /// The single accessor every correlation/reporting snapshot must use.
+    /// `self.map` is a `HashMap`, so `values().cloned().collect()` yields
+    /// whatever order the hasher happens to produce — and that order is not
+    /// cosmetic here. `correlator::confirmed_only` returns `Cow::Borrowed` in
+    /// the common case, so caller order reaches the rules verbatim; rules that
+    /// build `entity_uids` in slice order (AU-002's identity cluster, for one)
+    /// then bake it into a persisted correlation row. `rank_and_sort`'s
+    /// tie-break even documents the assumption that "the per-group entity_uids
+    /// are already individually sorted" — which was false on the live path.
+    ///
+    /// The finalise pass could not repair it either: `Store::upsert_correlation`
+    /// short-circuits on `if new_set.is_subset(&old_set)`, so the row written
+    /// during the live scan survives. Two runs over identical inputs could
+    /// therefore persist different `entity_uids` orderings for the same
+    /// finding — a reproducibility break in an evidentiary tool.
+    ///
+    /// `uid` is a SHA-256 and unique per entity, so this is a total order and
+    /// needs no secondary tie-break.
+    fn snapshot(&self) -> Vec<Entity> {
+        let mut out: Vec<Entity> = self.map.values().cloned().collect();
+        out.sort_by(|a, b| a.uid.cmp(&b.uid));
+        out
     }
 
     /// Unwrap into the plain map for the one-time final flush
@@ -681,12 +736,15 @@ impl ScanEngine {
         // `Aborted` with all collected entities persisted — so the scan stops
         // promptly AND still prints/streams what it found (the "always display
         // results" + "fallback bound that actually bounds" requirements).
+        // `AbortOnDrop`, not a bare `JoinHandle`: dropping a handle detaches the
+        // task rather than aborting it, so a panic anywhere below unwound past
+        // the explicit stop and leaked the watchdog onto a shared cancel token.
         let wall_watchdog = opts.max_wall_time_secs.map(|secs| {
             let cancel = ctx.cancel.clone();
-            tokio::spawn(async move {
+            AbortOnDrop(tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(secs)).await;
                 cancel.cancel();
-            })
+            }))
         });
 
         let mut entity_map: TrackedEntityMap =
@@ -806,7 +864,7 @@ impl ScanEngine {
         // just the dirty subset) — see [`TrackedEntityMap`]'s doc for why.
         let mut seed_dirty: Vec<Entity> = entity_map.take_dirty();
         self.checkpoint_entities(&scan.id, &mut seed_dirty);
-        let seed_snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+        let seed_snapshot: Vec<Entity> = entity_map.snapshot();
         self.correlate_incremental(&scan.id, &seed_snapshot, &mut emitted_corr);
 
         if opts.depth > 0 {
@@ -876,9 +934,9 @@ impl ScanEngine {
         // Scan body done — stop the wall-time watchdog so it can't fire after
         // we've already finished (and is reaped promptly rather than sleeping
         // out its full deadline in the background on a long-lived `serve`).
-        if let Some(handle) = wall_watchdog {
-            handle.abort();
-        }
+        // Dropping the guard aborts it; the unwind and `?` paths get the same
+        // cleanup from `AbortOnDrop` without needing a line here.
+        drop(wall_watchdog);
 
         let outcome = self
             .finalise_scan(
@@ -1402,7 +1460,7 @@ impl ScanEngine {
         // The gap analysis needs the full relation graph the finaliser will build:
         // the in-flight lineage edges plus the structural edges derivable from the
         // current entity set. Derive once, off a snapshot.
-        let ents: Vec<Entity> = entity_map.values().cloned().collect();
+        let ents: Vec<Entity> = entity_map.snapshot();
         let mut rels = relations.clone();
         rels.extend(crate::core::relation::derive_all(&ents, scan_id));
 
@@ -1593,7 +1651,7 @@ impl ScanEngine {
             return 0;
         }
 
-        let ents: Vec<Entity> = entity_map.values().cloned().collect();
+        let ents: Vec<Entity> = entity_map.snapshot();
         let plan = crate::core::breach_sweep::compile(
             &ents,
             crate::core::breach_sweep::SweepInputs {
@@ -1718,7 +1776,7 @@ impl ScanEngine {
     /// it only attaches its summary and its flags, so this is safe to run after
     /// every gate the scan has already applied.
     fn run_consensus_audit(&self, scan_id: &str, entity_map: &mut TrackedEntityMap) {
-        let mut ents: Vec<Entity> = entity_map.values().cloned().collect();
+        let mut ents: Vec<Entity> = entity_map.snapshot();
         let report = crate::core::breach_consensus::run_consensus_pass(&mut ents, scan_id);
         if report.entities_examined == 0 {
             return;
@@ -2276,7 +2334,7 @@ impl ScanEngine {
                 // miss cross-round correlations.
                 let mut dirty: Vec<Entity> = entity_map.take_dirty();
                 self.checkpoint_entities(scan_id, &mut dirty);
-                let snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+                let snapshot: Vec<Entity> = entity_map.snapshot();
                 self.correlate_incremental(scan_id, &snapshot, emitted_corr);
             }
 

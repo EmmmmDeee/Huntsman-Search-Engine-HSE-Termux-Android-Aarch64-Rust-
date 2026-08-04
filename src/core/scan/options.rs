@@ -62,7 +62,7 @@ pub struct ScanOptions {
     /// Recursive expansion depth. 0 = no expansion (single round, v0.1 behaviour).
     /// Each round picks high-confidence entities from prior rounds, converts
     /// them to scan targets, and runs all accepting modules on them. Deserialises
-    /// to the product default ([`DEFAULT_SCAN_DEPTH`] = 3) when omitted, so an
+    /// to the product default ([`DEFAULT_SCAN_DEPTH`] = [`MAX_DEPTH`]) when omitted, so an
     /// API/web scan recurses to the comprehensive depth by default just like
     /// `hse scan`.
     #[serde(default = "default_scan_depth")]
@@ -332,25 +332,42 @@ pub const THROTTLE_CEILING_MS: u64 = 30_000;
 
 /// Default recursive-expansion depth for the `hse scan` product surface when
 /// the operator gives neither an explicit `--depth` nor `--auto`/`--recursive`.
-/// Defaults to 3 (three hops) so the standard scan is **comprehensive by
-/// default** — the seed → discovered identifiers → their pivots → infrastructure
-/// chain runs to completion, giving every module a target of a kind it accepts
-/// (e.g. the Email→Domain→IP pipeline only reaches the IP modules at the third
-/// hop). The library [`ScanOptions`] default stays `0` (single round) so
-/// programmatic/API callers and the test suite remain deterministic; this product
-/// default is applied at the CLI boundary in `cli::scan`. Operators who want a
-/// faster, shallower sweep set `--depth` explicitly.
-/// Deliberately BELOW [`MAX_DEPTH`]. The ceiling was raised to 5 so the live
-/// radar can chase a device-observed signal through the full identity chain,
-/// but a bare `hse scan` keeps its established 3-hop behaviour: each extra hop
-/// fans the frontier out roughly exponentially, and silently making every scan
-/// two hops deeper would multiply the runtime and API spend of a command whose
-/// behaviour operators already depend on.
-pub const DEFAULT_SCAN_DEPTH: u32 = 3;
+///
+/// Pinned to the full [`MAX_DEPTH`] so **every seed gets the whole recursion
+/// budget to converge on geolocation**. That is the product decision this
+/// constant encodes, and it is deliberately permanent rather than opt-in: the
+/// default [`ExpansionStrategy::GeoConverge`] weights each round toward the
+/// candidates one hop from an Address/Coordinates, and truncating the recursion
+/// at 3 cut that convergence off before the longest geo chains could close.
+/// Those chains are real and are the ones a GEOINT scan exists to walk — e.g.
+/// `Email → Person → Address → Coordinates`, or `Username → Person → Domain →
+/// IpAddress → Coordinates`: a five-hop path that a depth-3 default could not
+/// reach no matter how strongly the weighting favoured it.
+///
+/// The extra hops are NOT unbounded. Each round is still gated by
+/// `min_expand_confidence`, the per-round ROI top-K + knee cutoff
+/// (`core::roi::effective_cutoff`), the [`DEFAULT_MAX_ENTITIES`] budget and the
+/// wall-time watchdog — so on a low-RAM Termux device the frontier is bounded by
+/// yield and entity count, not by an arbitrary hop ceiling. The honest tradeoff
+/// this accepts: a scan whose leads keep clearing those gates now runs longer and
+/// spends more API calls than it did at depth 3. That is the intended exchange —
+/// reaching the location is the point of the scan.
+///
+/// The library [`ScanOptions`] default stays `0` (single round) so programmatic
+/// callers and the test suite remain deterministic; this product default is
+/// applied at the CLI/API boundary. Operators who want a faster, shallower sweep
+/// set `--depth` explicitly.
+pub const DEFAULT_SCAN_DEPTH: u32 = MAX_DEPTH;
 
 // Compile-time guard: the product default must never exceed the clamp ceiling,
 // or a bare `hse scan` would emit the "clamped to MAX_DEPTH" warning on every run.
 const _: () = assert!(DEFAULT_SCAN_DEPTH <= MAX_DEPTH);
+
+// Compile-time guard on the product promise above: a seed must have the FULL
+// recursion budget available to reach geolocation. If someone lowers the default
+// below the ceiling again, the longest geo chains silently stop closing and no
+// test would necessarily catch it — so pin it here, at the definition.
+const _: () = assert!(DEFAULT_SCAN_DEPTH == MAX_DEPTH);
 
 /// Default hard cap on total entities for the `hse scan` product surface, applied
 /// at the CLI boundary when the operator gives no explicit `--max-entities`. Now
@@ -524,7 +541,7 @@ fn default_min_expand_confidence() -> f64 {
 
 /// Serde default for [`ScanOptions::max_entities`] — the comprehensive product
 /// entity cap ([`DEFAULT_MAX_ENTITIES`] = 2500) applied to API/web requests that
-/// omit the field, so the comprehensive depth-3 / floor-0.20 default sweep can't
+/// omit the field, so the comprehensive full-depth / floor-0.20 default sweep can't
 /// run the frontier out without bound on a low-RAM Termux device. DECOUPLED from
 /// [`ScanOptions::default()`], which stays `None` (uncapped) so programmatic
 /// callers manage their own bounds.
@@ -576,7 +593,7 @@ fn default_scan_depth() -> u32 {
 
 /// Serde default for [`ScanRequest::options`] — used when a request omits the
 /// whole `options` object, so it still gets the **comprehensive** product
-/// defaults (depth [`DEFAULT_SCAN_DEPTH`] = 3, expansion floor
+/// defaults (depth [`DEFAULT_SCAN_DEPTH`] = [`MAX_DEPTH`], expansion floor
 /// [`DEFAULT_MIN_EXPAND_CONFIDENCE`] = 0.20, entity cap
 /// [`DEFAULT_MAX_ENTITIES`] = 2500) — matching `hse scan` — rather than the inert
 /// library `ScanOptions::default()` (depth 0, floor 0.50, uncapped). These three
