@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -59,11 +60,12 @@ static BUDGET: QuotaBudget = QuotaBudget::new(
 /// Whether an enumeration returned the whole answer — and if not, what stopped
 /// it.
 ///
-/// Pagination has six exits and five of them can leave the item set short. Every
-/// one used to return a bare `Vec<Value>` indistinguishable from a complete
-/// result, so a dossier built on a truncated sweep reported N findings with
-/// nothing saying more existed. Only the budget exit said anything at all, and
-/// only to the log.
+/// Pagination has six exits and five of them can leave the item set short, and
+/// two further exits refuse the query at the door before a single request is
+/// made. Every one used to return a bare `Vec<Value>` indistinguishable from a
+/// complete result, so a dossier built on a truncated sweep reported N findings
+/// with nothing saying more existed. Only the budget exit said anything at all,
+/// and only to the log.
 ///
 /// The causes are kept apart rather than collapsed into one `truncated: bool`
 /// because an operator acts on them differently: raise the scan cap (which
@@ -73,12 +75,14 @@ static BUDGET: QuotaBudget = QuotaBudget::new(
 pub enum Completeness {
     /// The provider reported no further pages. This is the whole answer.
     Complete,
-    /// The operator's own scan/session budget stopped pagination with more
-    /// pages available. The cap is a paid-quota spending guard and is working
+    /// The operator's own scan/session budget stopped the query — either
+    /// mid-pagination with more pages available, or at the door before a single
+    /// request was made. The cap is a paid-quota spending guard and is working
     /// as intended — the defect was never disclosing that it bit.
     BudgetExhausted,
-    /// The provider's daily paid quota ran out mid-enumeration
-    /// (`left_today: 0`).
+    /// The provider's daily paid quota is spent: either it ran out
+    /// mid-enumeration (`left_today: 0`), or it was already latched before this
+    /// query was attempted.
     QuotaExhausted,
     /// Rate-limited with no retries left, mid-enumeration.
     RateLimited,
@@ -252,6 +256,10 @@ pub fn real_quota() -> Option<RealQuota> {
 pub fn reset_budget() {
     BUDGET.reset_scan();
     RESPONSE_CACHE.clear();
+    // Per-scan, exactly like the quota latch `reset_scan` clears: a rate limit
+    // one scan hit must not bench the provider for every later scan in a
+    // long-lived `hse serve`/`hse live` process.
+    RATE_LIMITED.store(false, Ordering::Release);
 }
 
 /// True while the shared OathNet budget can absorb at least one more billable
@@ -270,9 +278,37 @@ pub fn set_scan_cap_override(cap: u32) {
     BUDGET.set_scan_cap_override(cap);
 }
 
+/// Set when a 429 outlived its retry budget, so the *reason* the module stopped
+/// survives alongside the stop itself.
+///
+/// The 429 path latches `mark_quota_exhausted()` deliberately — a persistent
+/// rate limit must stop the scan firing at OathNet rather than retry forever —
+/// but that latch is the *daily quota* signal, and reusing it made a burst rate
+/// limit indistinguishable from a spent daily allowance everywhere the latch is
+/// read: the door guard in [`search`], and `"quota_exhausted"` in
+/// `api::key_harvest_handlers`. The two need opposite operator responses —
+/// retry shortly vs. wait for the daily reset, possibly hours — so reporting
+/// the wrong one is exactly the misdirection [`Completeness`] exists to remove.
+///
+/// This records the cause without touching the stop: the quota latch is still
+/// set, so every existing gate behaves precisely as before. Cleared by
+/// [`reset_budget`] at the scan boundary, like the rest of the per-scan state.
+static RATE_LIMITED: AtomicBool = AtomicBool::new(false);
+
 fn mark_quota_exhausted() {
     BUDGET.mark_exhausted();
     tracing::warn!("OathNet daily quota exhausted — skipping remaining queries");
+}
+
+/// Latch that the stop came from a rate limit, not a spent daily quota.
+fn mark_rate_limited() {
+    RATE_LIMITED.store(true, Ordering::Release);
+    tracing::warn!("OathNet rate-limited with retries exhausted — skipping remaining queries");
+}
+
+/// True when this scan stopped querying OathNet because of a persistent 429.
+fn is_rate_limited() -> bool {
+    RATE_LIMITED.load(Ordering::Acquire)
 }
 
 fn base_url() -> String {
@@ -488,6 +524,12 @@ pub async fn search(
     // indistinguishable from "we asked and there is nothing" — the exact
     // conflation this type exists to remove, one guard earlier than the
     // pagination exits it was written for.
+    // Checked BEFORE the quota latch, because the 429 path sets both: the quota
+    // latch to stop, this one to say why. Reading the quota latch first would
+    // report every post-rate-limit refusal as a spent daily allowance.
+    if is_rate_limited() {
+        return Ok(SearchResult::new(Vec::new(), Completeness::RateLimited));
+    }
     if is_quota_exhausted() {
         return Ok(SearchResult::new(Vec::new(), Completeness::QuotaExhausted));
     }
@@ -602,7 +644,17 @@ pub async fn search(
                 }
                 if code == 429 {
                     if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
+                        // Both latches: `mark_quota_exhausted` is what actually
+                        // stops the scan re-firing at OathNet (every existing
+                        // gate reads it, unchanged), while `mark_rate_limited`
+                        // records that a 429 — not a spent daily allowance —
+                        // is why. Without the second, this call correctly
+                        // reports `RateLimited` and then every LATER query in
+                        // the scan is refused at the door as `QuotaExhausted`,
+                        // telling the operator to wait hours for a reset that
+                        // was never the problem.
                         mark_quota_exhausted();
+                        mark_rate_limited();
                         return Ok(cache_put(ck, all_items, Completeness::RateLimited));
                     }
                     let delay = RATE_LIMIT_BACKOFF.delay(attempt);
