@@ -547,7 +547,7 @@ pub(super) fn extract_breach_entities_with(
             Entity::new(
                 EntityKind::Username,
                 format!("discord:{did}"),
-                0.55,
+                confidence::MEDIUM_HIGH,
                 scan_id,
             ),
             &ev,
@@ -616,7 +616,7 @@ pub(super) fn extract_breach_entities_with(
                 Entity::new(
                     EntityKind::Username,
                     format!("linkedin:{li}"),
-                    0.55,
+                    confidence::MEDIUM_HIGH,
                     scan_id,
                 ),
                 &ev,
@@ -809,7 +809,7 @@ pub(super) fn extract_breach_entities_with(
             Entity::new(
                 EntityKind::Other("iban".to_string()),
                 iban.trim(),
-                0.70,
+                confidence::HIGH_PLUS,
                 scan_id,
             ),
             &ev,
