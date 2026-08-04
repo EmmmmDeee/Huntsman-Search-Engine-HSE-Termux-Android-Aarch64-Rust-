@@ -323,7 +323,10 @@ impl super::Store {
              ORDER BY observed_at DESC, scan_id DESC",
         )?;
         let rows = stmt.query_map(params![entity_uid], |r| r.get::<_, String>(0))?;
-        Ok(rows.flatten().collect())
+        // `collect_rows`, not `.flatten()`: a dropped row here silently removes a
+        // whole PRIOR SCAN from cross-scan recall, so the read error must be
+        // logged rather than swallowed.
+        Ok(super::collect_rows(rows, "scan_ids_for_entity"))
     }
 
     pub fn observation_count(&self, entity_uid: &str) -> Result<usize> {
@@ -399,7 +402,9 @@ impl super::Store {
         let rows = stmt.query_map(params![scan_id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
         })?;
-        Ok(rows.flatten().collect())
+        // As above: a silently dropped facet row understates a kind's count with
+        // no trace that anything was lost.
+        Ok(super::collect_rows(rows, "entity_facets"))
     }
 
     pub fn get_entity(&self, uid: &str) -> Result<Option<Entity>> {

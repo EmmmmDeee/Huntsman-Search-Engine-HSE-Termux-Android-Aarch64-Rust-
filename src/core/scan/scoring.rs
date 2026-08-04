@@ -111,10 +111,9 @@ pub(super) fn auto_min_expand_confidence(depth: u32, has_paid_keys: bool) -> f64
 /// Statistically-grounded expansion depth for a seed and API tier, via a
 /// geometric **yield-curve** model rather than hand-tuned per-kind constants.
 ///
-/// The previous constants (4–5 per kind) were silently flattened by the old
-/// depth-3 clamp (`MAX_DEPTH` was 3 then, since raised to 5) — every kind
-/// resolved to depth 3 — so depth carried no signal. This model instead
-/// schedules the *largest round whose predicted
+/// The previous constants (4–5 per kind) were silently flattened by the
+/// [`MAX_DEPTH`] clamp when that ceiling was still 3 — every kind resolved to
+/// depth 3 — so depth carried no signal. This model instead schedules the *largest round whose predicted
 /// marginal yield still clears [`MARGINAL_YIELD_FLOOR`]*:
 ///
 /// ```text
@@ -128,7 +127,7 @@ pub(super) fn auto_min_expand_confidence(depth: u32, has_paid_keys: bool) -> f64
 /// via [`crate::core::roi::should_terminate_adaptive`]; computing it ahead of
 /// time lets `--auto` stop one round *before* paying for a round the curve
 /// already predicts is re-confirmation. Net effect: rich identity seeds earn
-/// the full depth-3 budget with paid keys and depth 2 keyless, while terminal
+/// the full [`MAX_DEPTH`] budget with paid keys and less keyless, while terminal
 /// seeds (Coordinates/AbnAcn/ApiKey) correctly resolve at depth 1 — the
 /// differentiation the old constants intended but the clamp erased.
 ///
