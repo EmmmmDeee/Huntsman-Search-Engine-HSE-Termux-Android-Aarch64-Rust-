@@ -15,7 +15,7 @@
     "shape before adding to either, or every merge from main will conflict here."
   ],
   "cycle_count": 1,
-  "last_verified_commit": "pending-merge-verification",
+  "last_verified_commit": "1cc9219c",
   "verified_against": {
     "note": "This crate declares NO [features]; `--all-features` is a no-op here. The authoritative gate is scripts/gate.sh, which spans several workflow files and includes the rustdoc-lint and MSRV passes that reconstructing from ci.yml alone drops.",
     "toolchain": "1.97.1 (rust-toolchain.toml)",
