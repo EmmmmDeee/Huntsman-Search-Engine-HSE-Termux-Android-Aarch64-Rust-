@@ -7,8 +7,8 @@
     "the rejected list is the part that stops cycles rediscovering the same",
     "non-defects. See CLAUDE.md and docs/OPERATIONAL_CONSTITUTION.md."
   ],
-  "cycle_count": 4,
-  "last_verified_commit": "a703caa5",
+  "cycle_count": 5,
+  "last_verified_commit": "2fbbf1ec",
   "verified_against": {
     "note": "This crate declares NO [features]; `--all-features` is a no-op here. The authoritative gate is scripts/gate.sh, which spans several workflow files and includes the rustdoc-lint and MSRV passes that reconstructing from ci.yml alone drops.",
     "toolchain": "1.97.1 (rust-toolchain.toml)",
@@ -145,7 +145,7 @@
     {
       "id": "OD-5",
       "summary": "PR #317 carries 4 modules absent from main (builtwith, fofa, proxycurl, key_discovery) behind 11 conflicts and ~20k lines of two-way divergence, with CI never having run on it.",
-      "status": "IN PROGRESS \u2014 fofa (cycle 3, merged a703caa5) and builtwith (cycle 4) landed. Remaining from #317: proxycurl (1056 lines across 5 files, 13 helpers incl. util::address_au, util::city_coords, util::domains, util::extract, util::url_util) and key_discovery (468 lines, only util::key_pool::global_pool, but it scans local config files for credentials \u2014 review its scope against SECURITY.md BEFORE landing). NOTE for both: the architecture ratchets do NOT catch privacy/PII defects. builtwith proved that \u2014 check every contact-data emission against util::domains::is_infrastructure_email and the #351 precedent by hand."
+      "status": "IN PROGRESS \u2014 fofa (a703caa5), builtwith (2fbbf1ec) and proxycurl (cycle 5) landed. ONE remaining: key_discovery (468 lines, only util::key_pool::global_pool). It scans local config files for API keys \u2014 read src/modules/key_discovery/config_scan.rs against SECURITY.md and confirm it inventories the OPERATOR'S OWN keys rather than harvesting third-party credentials BEFORE landing it. \"Out of scope, do not land\" is an acceptable outcome."
     },
     {
       "id": "OD-6",
@@ -200,5 +200,26 @@
       "instruction": "Extract builtwith from PR #317 (second module).",
       "status": "COMPLETE \u2014 only the README ratchet fired, because env_template.txt already carried HUNTSMAN_BUILTWITH_KEY and the confidence literals were mapped up front from the cycle-3 checklist. The real find was NOT a ratchet: builtwith emitted registrant contact emails with no role/infra gate, reintroducing the leakage #351 removed from cert_intel/crtsh/ip_registry/doh_resolver. Its own existing test asserted the leaky behaviour and had to be rewritten."
     }
-  ]
+  ],
+  "cycle_5_slots": [
+    {
+      "slot": 1,
+      "category": "COMPLETION",
+      "instruction": "Extract proxycurl from PR #317 (third module).",
+      "status": "COMPLETE \u2014 registry 173 -> 174. See module_extraction_checklist; the key ratchet guards FOUR locations, not one."
+    }
+  ],
+  "module_extraction_checklist": {
+    "$note": "Learned across cycles 3-5 extracting fofa, builtwith, proxycurl from #317. Run BEFORE extracting.",
+    "1_key_registration_FOUR_places": [
+      "src/cli/env_template.txt \u2014 what `hse provision` offers",
+      "src/util/keys/constants.rs KNOWN_KEYS \u2014 what the Settings UI can surface",
+      "src/util/keys/constants.rs signup_hint() \u2014 the \"needs key\" notice; say PAID explicitly when there is no free tier",
+      ".env.example at repo root \u2014 the provider catalogue an operator browses"
+    ],
+    "2_confidence": "Map every bare literal onto an EXISTING confidence:: rung. proxycurl had 0.68, which is NOT a rung (HIGH 0.65 / HIGH_PLUS 0.70) \u2014 resolved DOWNWARD because the entities are tagged `derived` and the module doc calls them weaker than their source. Never invent a rung.",
+    "3_readme": "Three figures: line ~11 total, the `hse modules` line ~169, Module Overview header ~237 with its free vs key-gated/paid split. ModuleCost::Paid counts in the key-gated/paid figure.",
+    "4_privacy_NOT_ratcheted": "No architecture test catches PII defects. builtwith emitted registrant contact emails with no role/infra gate, reintroducing the #351 leak, and its own test asserted the leaky behaviour. But do NOT apply the gate reflexively: proxycurl reads profile.personal_emails (the subject OWN addresses) rather than registrant contact blocks, so is_infrastructure_email would drop a sole trader's genuine sales@theirfirm.com. Reason about the data class, do not pattern-match.",
+    "5_scope": "Check the module against SECURITY.md and against already-registered peers. proxycurl is the same class as hunter_io/epieos/contact_enrich/emailrep, all already in main."
+  }
 }

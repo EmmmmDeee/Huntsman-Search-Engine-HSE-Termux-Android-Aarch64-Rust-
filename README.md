@@ -8,7 +8,7 @@
 **All-source OSINT / GEOINT / NETINT reconnaissance in the GhostSec tradition —
 SpiderFoot-inspired breadth without the daemon or the footprint.**
 
-Pure-Rust OSINT / GEOINT platform with **173 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **174 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 dark-console Web UI, zero native dependencies, keyless-first.
 
@@ -166,7 +166,7 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 173 modules
+hse modules                                                 # list all 174 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse query "melbourne coworking spaces"                      # general web search across the free engines
@@ -234,7 +234,7 @@ the onion address itself.
 
 ---
 
-## Module Overview (173 modules — 136 free, 37 key-gated/paid)
+## Module Overview (174 modules — 136 free, 38 key-gated/paid)
 
 > A curated highlight of the modules below (not the full list). The complete, always-current catalogue
 > with target kinds and output entities lives in the running software — run
