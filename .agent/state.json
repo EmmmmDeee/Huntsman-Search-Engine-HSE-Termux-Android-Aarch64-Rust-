@@ -1,0 +1,81 @@
+{
+  "schema": 1,
+  "cycle_count": 1,
+  "last_verified_commit": "46623417",
+  "baseline": {
+    "commit": "46623417",
+    "branch": "claude/huntsman-price-analysis-ewy20t",
+    "cargo_build_all_targets": "clean (3m34s)",
+    "note_all_features": "Cargo.toml has NO [features] section and no [workspace]; --all-features is identical to default. The feature matrix is a single point, verified once rather than swept."
+  },
+  "phase_a_findings": {
+    "tier1_clean": {
+      "unwrap_in_production": 0,
+      "real_panics_in_production": 0,
+      "todo_unimplemented_unreachable": 0,
+      "unsafe_blocks": 0,
+      "note": "forbid(unsafe_code) holds; all 6 'unsafe' greps are comments explaining its avoidance. All 15 TODO/FIXME/HACK greps are XXX placeholder digits in format docs (UA-XXXXXXX-X, UUID shapes), not work markers. All 242 'let _ =' are infallible writeln! into String; all 80 expect() are Regex::new(<literal>) lazy_static idiom; all .ok() are legitimate Option conversions. Tier 1 of the loop's sweep list is already satisfied by this codebase."
+    },
+    "tier2_actionable": {
+      "security_md_corrupted": "U+2078 superscript-eight prepended to '# Security Policy' breaks the H1; supported-versions sentence is garbled ('more potentiation and bis empowered'). Live on main.",
+      "blocking_fs_in_async": "15 sites; app::cells + app::export are HTTP-reachable (api/cells_handlers.rs imports app::cells) on a 2-worker tokio runtime.",
+      "modules_without_tests": [
+        "bluesky_user",
+        "codeberg_user",
+        "devto",
+        "gitlab_user",
+        "lobsters",
+        "mastodon_user",
+        "stackoverflow_user",
+        "url_extract"
+      ],
+      "rustdoc_gap": "270 of 1662 public items (16%) lack adjacent doc/attr; worst: core/tags.rs (31), util/key_pool/pool.rs (12), storage/mod.rs (12).",
+      "duplicate_deps": "15 pairs; tower-http 0.6.11 is transitive via axum (direct dep is 0.7) \u2014 not actionable without an axum bump.",
+      "missing_docs_lint": "not enabled in src/lib.rs"
+    }
+  },
+  "completed_slots": [
+    {
+      "cycle": 1,
+      "slot": 1,
+      "category": "DEBUG",
+      "instruction": "Remove stray U+2078 breaking the SECURITY.md H1; replace the garbled supported-versions sentence. Preserve the maintainer's scope wording verbatim.",
+      "outcome": "Done. head -1 is now exactly '# Security Policy'. Only remaining non-ASCII is the em-dash in the maintainer's own scope sentence (intended punctuation, untouched). Diff touches only the 2 target lines.",
+      "verification": "cargo fmt --check clean; clippy -D warnings silent; cargo test --all-features 6225 passed / 0 failed. No Rust source parses SECURITY.md (only a //! doc-comment reference in util/ahmia/mod.rs), so the gate was structurally unaffected \u2014 run anyway rather than assumed."
+    }
+  ],
+  "rejected_candidates": [
+    {
+      "candidate": "Replace unwrap()/expect() with typed errors",
+      "reason": "No unwrap() exists in production code (0 occurrences). All 80 expect() are Regex::new on compile-time literals inside lazy_static \u2014 failure is a programmer error surfaced at first use, not a fallible runtime path. No defect to fix."
+    },
+    {
+      "candidate": "Deduplicate tower-http 0.6.11 vs 0.7.0",
+      "reason": "0.6.11 is pulled transitively by axum 0.8; the direct dependency is already 0.7. Cannot be resolved without an upstream axum bump. Out of this crate's control."
+    },
+    {
+      "candidate": "Eliminate Result-swallowing (let _ = / .ok())",
+      "reason": "All 242 'let _ =' are writeln!/write! into a String (infallible by construction). All .ok() calls are Option conversions (Url::parse, env::var, str::parse) or test-only directory cleanup. No Result is silently discarded."
+    }
+  ],
+  "open_defects": [
+    {
+      "id": "D2",
+      "what": "asic_director returns 403 (anti-bot WAF) \u2014 needs headless-browser-class work",
+      "state": "documented in-module, no fix attempted (correctly)",
+      "slot": null
+    },
+    {
+      "id": "D3",
+      "what": "au_property NSW leg redirects to client-rendered SPA; data API unidentified",
+      "state": "documented in-module, needs devtools network trace",
+      "slot": null
+    },
+    {
+      "id": "D4",
+      "what": "src/util/ahmia/mod.rs:25 doc-comment asserts 'See SECURITY.md: HSE is defensive-only', which now contradicts the maintainer's edited SECURITY.md scope ('all forms (offensive and defensive)'). CLAUDE.md also still states defensive-only and cites SECURITY.md as the authority.",
+      "state": "open \u2014 policy question deliberately NOT resolved unilaterally; raised with maintainer twice. Slot 1 fixed only the objective corruption, not the policy.",
+      "slot": null
+    }
+  ]
+}
