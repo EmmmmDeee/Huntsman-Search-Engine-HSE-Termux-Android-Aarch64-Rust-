@@ -2917,10 +2917,13 @@ fn bare_float_detection_sees_literals_inside_expressions() {
     assert_eq!(bare_float_literals(" 0.68 "), vec!["0.68".to_string()]);
     // Named constants are not literals, however they are combined.
     assert!(bare_float_literals("confidence::HIGH_PLUS").is_empty());
-    assert!(
-        bare_float_literals("(conf - 0.13).max(confidence::LOW_MEDIUM)")
-            .iter()
-            .all(|l| l == "0.13")
+    // Equality, not `.all(..)`: `all` on an empty iterator is TRUE, so the
+    // obvious spelling would still pass if the detector regressed to finding
+    // nothing — a check that certifies what it never verified, which is the
+    // exact class of defect this ratchet exists to catch.
+    assert_eq!(
+        bare_float_literals("(conf - 0.13).max(confidence::LOW_MEDIUM)"),
+        vec!["0.13".to_string()]
     );
     // An identifier or dotted path that merely contains the characters must not
     // be misread — `v0.42` is a name, `x.0.42` is field access.
