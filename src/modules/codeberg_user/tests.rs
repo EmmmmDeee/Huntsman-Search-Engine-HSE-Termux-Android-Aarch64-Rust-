@@ -135,11 +135,17 @@ fn builds_username_entity_confirmed_on_codeberg() {
     assert!((u.confidence - confidence::EXPERT).abs() < 0.01);
     assert!(u.has_tag("codeberg") && u.has_tag("code"));
     assert_eq!(
-        u.evidence[0].attributes.get("profile_url").map(String::as_str),
+        u.evidence[0]
+            .attributes
+            .get("profile_url")
+            .map(String::as_str),
         Some("https://codeberg.org/alice")
     );
     assert_eq!(
-        u.evidence[0].attributes.get("created_at").map(String::as_str),
+        u.evidence[0]
+            .attributes
+            .get("created_at")
+            .map(String::as_str),
         Some("2021-03-15T00:00:00Z")
     );
 }
@@ -242,7 +248,10 @@ fn emits_website_url_and_domain() {
         .find(|e| e.kind == EntityKind::Domain)
         .expect("must emit domain from website");
     assert_eq!(d.value, "alice.dev");
-    assert!(d.has_tag("derived"), "derived Domain must be tagged as such");
+    assert!(
+        d.has_tag("derived"),
+        "derived Domain must be tagged as such"
+    );
 }
 
 #[test]
