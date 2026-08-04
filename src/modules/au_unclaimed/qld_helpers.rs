@@ -77,6 +77,44 @@ pub(super) fn owner_matches_full_name(owner: &str, seed: &str) -> bool {
     crate::util::str_util::whole_word_token_match(owner, seed)
 }
 
+/// Minimum token length considered a *name* rather than a bare initial. `"M"` in
+/// `"M MCLOUGHLIN"` must not license a match against an unrelated `"M SMITH"`.
+const MIN_QUERY_TOKEN: usize = 2;
+
+/// True if `owner` shares at least one whole-word token (≥ [`MIN_QUERY_TOKEN`]
+/// chars, case-insensitive) with the string we actually **queried** CKAN for.
+///
+/// # Why this gate exists
+/// CKAN's `datastore_search?q=` is a **full-text search across every column**,
+/// not a scoped owner-name lookup ([`query_url`] has no field qualifier). So a
+/// query for `"shop"` also matches rows whose *address* reads
+/// `"Shop 4, 123 Main St"` — an address shape that is ubiquitous in Australian
+/// retail. Those rows come back with an owner who shares nothing at all with the
+/// seed, and the surname-broadening path then emitted each one as a
+/// `family-candidate` Person.
+///
+/// Measured on a real scan (seed `"gift shop"` → derived query `"shop"`): of 85
+/// owner Persons emitted, **60 shared no token with the query** — unrelated
+/// named individuals, most clustered on one postcode, attributed to the subject.
+/// That is both a precision defect and a third-party-PII leak into someone
+/// else's dossier.
+///
+/// This is deliberately a *floor*, not the exactness test: sharing the surname
+/// is exactly what makes a genuine relative a `family-candidate`
+/// ([`owner_matches_full_name`] is the stricter all-tokens check that upgrades a
+/// row to `exact-name-match`). It only drops rows that matched some **other**
+/// column entirely.
+pub(super) fn owner_matches_query(owner: &str, query: &str) -> bool {
+    let owner_words: Vec<&str> = owner
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect();
+    query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| t.len() >= MIN_QUERY_TOKEN)
+        .any(|tok| owner_words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
+}
+
 /// Honorific tokens stripped from the FRONT of a parsed owner name, so the real
 /// register's `"MR HERVE MOREAU"` yields the person "Herve Moreau", not the
 /// title-polluted "Mr Herve Moreau" (which fragments his identity and breaks the
@@ -233,12 +271,20 @@ pub(super) fn records_to_entities(
     records: &[Map<String, Value>],
     total: u64,
     seed: &str,
+    query: &str,
     broadened: bool,
     scan_id: &str,
 ) -> Vec<Entity> {
     let mut out = Vec::new();
     for rec in records {
         let owner = field_str(rec, "Owner").unwrap_or_else(|| "(unknown owner)".to_string());
+        // CKAN full-text-matched this row on SOME column; if it wasn't the owner
+        // name, the row is about an unrelated party and nothing on it — address,
+        // Person, Organisation, or money finding — belongs in this scan. See
+        // [`owner_matches_query`] for the measured impact.
+        if !owner_matches_query(&owner, query) {
+            continue;
+        }
         // The exact-vs-family split only has meaning when the query was
         // surname-*broadened* (a multi-token FullName). For a verbatim search
         // (organisation, single-token name) every row already AND-matched the
