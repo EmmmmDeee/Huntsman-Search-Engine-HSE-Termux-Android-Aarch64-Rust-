@@ -102,6 +102,62 @@ mod tests {
     }
 
     #[test]
+    fn map_entity_kind_pins_every_extractor_variant() {
+        // The ingest→core contract: each extractor kind maps to a fixed core
+        // kind. Only Email/Ipv4 were covered before, leaving the non-obvious
+        // mappings (SocialHandle→Username, Identifier→DeviceId, Port/Hash→Other)
+        // and the Ipv6 arm free to drift silently. Pin all fifteen so a remap is
+        // a test failure, not a surprise in the scan graph.
+        use CoreEntityKind as C;
+        use EntityKind as E;
+        let cases: [(E, C); 15] = [
+            (E::Email, C::Email),
+            (E::Phone, C::Phone),
+            (E::Ipv4, C::IpAddress),
+            (E::Ipv6, C::IpAddress),
+            (E::Domain, C::Domain),
+            (E::Url, C::Url),
+            (E::Hash, C::Other("hash".to_string())),
+            (E::Username, C::Username),
+            (E::Person, C::Person),
+            (E::Organization, C::Organisation),
+            (E::SocialHandle, C::Username),
+            (E::IpRange, C::Cidr),
+            (E::Port, C::Other("port".to_string())),
+            (E::Identifier, C::DeviceId),
+            (
+                E::Unknown("custom-kind".to_string()),
+                C::Other("custom-kind".to_string()),
+            ),
+        ];
+        for (ext, expected) in cases {
+            assert_eq!(
+                map_entity_kind(&ext),
+                expected,
+                "mapping drifted for {ext:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ipv6_entity_converts_to_core_ipaddress() {
+        // Guards the extractor's newly-added Ipv6 kind end-to-end: a document
+        // IPv6 must reach the scan pipeline as an IpAddress with its canonical
+        // value preserved.
+        let extracted = ExtractedEntity {
+            kind: EntityKind::Ipv6,
+            value: "2001:db8::1".to_string(),
+            confidence: 0.88,
+            context: None,
+            source_pattern: "ipv6_rfc4291".to_string(),
+            boost_reason: Some("Valid IPv6 address (std-parsed)".to_string()),
+        };
+        let entity = extracted_to_hse_entity(&extracted, "scan-1", "doc.txt");
+        assert_eq!(entity.kind, CoreEntityKind::IpAddress);
+        assert_eq!(entity.value, "2001:db8::1");
+    }
+
+    #[test]
     fn test_extracted_entity_conversion() {
         let extracted = ExtractedEntity {
             kind: EntityKind::Email,
