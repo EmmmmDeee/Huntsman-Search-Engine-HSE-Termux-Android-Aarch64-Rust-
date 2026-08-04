@@ -470,3 +470,61 @@ fn a_dns_outage_is_not_a_clean_blocklist_verdict() {
         .is_wholly_unresolved()
     );
 }
+
+/// No answers, no verdict — whatever the reason there were none.
+///
+/// `is_wholly_unresolved` decides whether an outage is worth *reporting*, and it
+/// excludes the nothing-ran case on purpose. That is the wrong question for
+/// deciding whether to EMIT: gating only the error on cancellation left a sweep
+/// that was cancelled before any zone answered falling straight through to
+/// `status: clean, checked_count: 0` — "clean on 0 blocklists" — the same
+/// verdict-without-evidence by another route. `supports_a_verdict` is the guard
+/// that closes it, and it asks only whether anything answered.
+#[test]
+fn no_answers_means_no_verdict_however_the_sweep_ended() {
+    // Cancelled before the first zone: nothing ran, nothing to say.
+    assert!(!BlocklistTally::default().supports_a_verdict());
+
+    // Cancelled after some zones failed: still nothing authoritative.
+    assert!(
+        !BlocklistTally {
+            attempted: 3,
+            answered: 0,
+            unresolved: 3,
+        }
+        .supports_a_verdict()
+    );
+
+    // Total outage: also no verdict — this one is additionally an error.
+    let outage = BlocklistTally {
+        attempted: 8,
+        answered: 0,
+        unresolved: 8,
+    };
+    assert!(!outage.supports_a_verdict());
+    assert!(outage.is_wholly_unresolved());
+
+    // One authoritative answer is the whole requirement.
+    assert!(
+        BlocklistTally {
+            attempted: 8,
+            answered: 1,
+            unresolved: 7,
+        }
+        .supports_a_verdict()
+    );
+    assert!(
+        BlocklistTally {
+            attempted: 8,
+            answered: 8,
+            unresolved: 0,
+        }
+        .supports_a_verdict()
+    );
+
+    // The two predicates answer different questions and must not be conflated:
+    // "nothing ran" supports no verdict, yet is NOT an outage to report.
+    let nothing_ran = BlocklistTally::default();
+    assert!(!nothing_ran.supports_a_verdict());
+    assert!(!nothing_ran.is_wholly_unresolved());
+}

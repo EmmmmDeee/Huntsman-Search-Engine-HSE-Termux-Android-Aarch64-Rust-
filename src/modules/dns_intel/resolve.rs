@@ -741,6 +741,19 @@ impl BlocklistTally {
     pub(super) fn is_wholly_unresolved(&self) -> bool {
         self.attempted > 0 && self.answered == 0
     }
+
+    /// True when at least one zone answered, so a reputation verdict is
+    /// supported at all.
+    ///
+    /// This is the emission guard, and it is deliberately blind to *why* there
+    /// were no answers. Gating only the outage ERROR on cancellation was not
+    /// enough: a sweep cancelled before any zone answered then fell past the
+    /// error and emitted `status: clean, checked_count: 0` — "clean on 0
+    /// blocklists" — which is the same verdict-without-evidence reached by
+    /// another route. No answers, no verdict, whatever the cause.
+    pub(super) fn supports_a_verdict(&self) -> bool {
+        self.answered > 0
+    }
 }
 
 /// DNSBL reputation check against 8 blocklists.
@@ -789,21 +802,32 @@ pub(super) async fn blocklist_check(target: &Target, ctx: &ModuleContext) -> Res
         }
     }
 
-    // Not one blocklist answered. Emitting the entity below would assert
-    // "clean on N blocklists" — a positive reputation verdict about an address,
-    // manufactured out of a DNS outage. Cancellation is excluded: an operator's
-    // own stop leaves the remaining zones unresolved and is not the network's
-    // fault.
-    if !ctx.cancel.is_cancelled() && tally.is_wholly_unresolved() {
-        return Err(crate::core::error::Error::module(
-            SRC,
-            format!(
-                "no DNSBL answered for {ip}: all {} blocklist zones failed to resolve. \
-                 Reporting this as 'clean' would be a reputation verdict nothing \
-                 established.",
-                tally.attempted
-            ),
-        ));
+    // No zone answered, so nothing supports a verdict. Two ways to get here and
+    // they are not the same thing:
+    //
+    //   * zones were tried and every one failed — a DNS outage, worth reporting;
+    //   * the sweep was cancelled (before the first zone, or after some failed)
+    //     — the operator's own stop, which is not the network's fault and is not
+    //     an error.
+    //
+    // Both must skip the entity entirely. Gating only the ERROR on cancellation
+    // was not enough: the cancelled path then fell through and emitted
+    // `status: clean`, `checked_count: 0` — "clean on 0 blocklists" — which is
+    // the very verdict-without-evidence this change exists to stop, just reached
+    // by a different route.
+    if !tally.supports_a_verdict() {
+        if !ctx.cancel.is_cancelled() && tally.is_wholly_unresolved() {
+            return Err(crate::core::error::Error::module(
+                SRC,
+                format!(
+                    "no DNSBL answered for {ip}: all {} blocklist zones failed to resolve. \
+                     Reporting this as 'clean' would be a reputation verdict nothing \
+                     established.",
+                    tally.attempted
+                ),
+            ));
+        }
+        return Ok(Vec::new());
     }
     let checked = tally.answered;
 
