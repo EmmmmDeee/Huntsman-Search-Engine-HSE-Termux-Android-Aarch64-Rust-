@@ -119,23 +119,19 @@ impl Default for EntityClassifier {
     }
 }
 
-/// Check if IPv4 is in private range (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16).
+/// Check if IPv4 is in a private range (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16).
+///
+/// Delegates to `std::net::Ipv4Addr::is_private` rather than re-deriving the
+/// RFC 1918 ranges by splitting octets. The hand-rolled version bound only the
+/// first two octets and matched the third and fourth with `_`, so it accepted a
+/// malformed tail (`10.0.x.y` read as private); routing through the std parser
+/// makes a value that is not a valid IPv4 address, by definition, not private.
+/// Reached only for `Ipv4`-kind entities, whose values are canonical since the
+/// extractor now validates them through `Ipv4Addr`, so this is behaviour-
+/// preserving on the live path and stricter on malformed input.
 fn is_private_ipv4(ip: &str) -> bool {
-    let parts: Vec<&str> = ip.split('.').collect();
-    if parts.len() != 4 {
-        return false;
-    }
-
-    if let (Ok(a), Ok(b), _, _) = (
-        parts[0].parse::<u8>(),
-        parts[1].parse::<u8>(),
-        parts[2].parse::<u8>(),
-        parts[3].parse::<u8>(),
-    ) {
-        return a == 10 || (a == 172 && (16..=31).contains(&b)) || (a == 192 && b == 168);
-    }
-
-    false
+    ip.parse::<std::net::Ipv4Addr>()
+        .is_ok_and(|addr| addr.is_private())
 }
 
 #[cfg(test)]
