@@ -141,8 +141,12 @@ fn cache_get(key: &str) -> Option<SearchResult> {
 
 /// Cache the page-set WITH its completeness, so a hit reports the same truth the
 /// original call did.
-fn cache_put(key: String, items: &[Value], completeness: Completeness) -> SearchResult {
-    let res = SearchResult::new(items.to_vec(), completeness);
+fn cache_put(key: String, items: Vec<Value>, completeness: Completeness) -> SearchResult {
+    // Takes the vec by value so callers move `all_items` in: the cache needs one
+    // copy and the caller needs one, and the previous `&[Value]` signature forced
+    // `to_vec()` on top of that clone — two deep copies of a page set that can
+    // run to thousands of breach rows, on every cache write.
+    let res = SearchResult::new(items, completeness);
     RESPONSE_CACHE.put(key, res.clone());
     res
 }
@@ -478,8 +482,17 @@ pub async fn search(
     if let Some(cached) = cache_get(&ck) {
         return Ok(cached);
     }
-    if is_quota_exhausted() || !budget_try_increment() {
-        return Ok(SearchResult::new(Vec::new(), Completeness::Complete));
+    // Split deliberately. Both arms return zero rows, but neither is a
+    // finding: no query was made, so nothing was established about this target.
+    // Reporting `Complete` here would have made "we were not allowed to ask"
+    // indistinguishable from "we asked and there is nothing" — the exact
+    // conflation this type exists to remove, one guard earlier than the
+    // pagination exits it was written for.
+    if is_quota_exhausted() {
+        return Ok(SearchResult::new(Vec::new(), Completeness::QuotaExhausted));
+    }
+    if !budget_try_increment() {
+        return Ok(SearchResult::new(Vec::new(), Completeness::BudgetExhausted));
     }
     // A search session (when the caller initialised one for this value) lets the
     // breach + stealer queries share ONE lookup. The id is threaded in
@@ -554,7 +567,7 @@ pub async fn search(
                 mark_quota_exhausted();
                 // The provider's paid daily quota ran out part-way through, so
                 // whatever pages we already have is all we will get today.
-                return Ok(cache_put(ck, &all_items, Completeness::QuotaExhausted));
+                return Ok(cache_put(ck, all_items, Completeness::QuotaExhausted));
             }
             let env: Envelope =
                 serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
@@ -585,12 +598,12 @@ pub async fn search(
                     } else {
                         Completeness::PageVanished
                     };
-                    return Ok(cache_put(ck, &all_items, completeness));
+                    return Ok(cache_put(ck, all_items, completeness));
                 }
                 if code == 429 {
                     if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
                         mark_quota_exhausted();
-                        return Ok(cache_put(ck, &all_items, Completeness::RateLimited));
+                        return Ok(cache_put(ck, all_items, Completeness::RateLimited));
                     }
                     let delay = RATE_LIMIT_BACKOFF.delay(attempt);
                     tracing::debug!(
@@ -647,7 +660,7 @@ pub async fn search(
                 None => {
                     // The provider returned an envelope with no data block: it
                     // has nothing further, so this IS the whole answer.
-                    return Ok(cache_put(ck, &all_items, Completeness::Complete));
+                    return Ok(cache_put(ck, all_items, Completeness::Complete));
                 }
             };
             break serde_json::from_value(data)
@@ -700,7 +713,7 @@ pub async fn search(
         cursor = Some(next);
     }
 
-    Ok(cache_put(ck, &all_items, completeness))
+    Ok(cache_put(ck, all_items, completeness))
 }
 
 /// Additively stamp each row with the canonical `breach_date` its OWN `dbname`
