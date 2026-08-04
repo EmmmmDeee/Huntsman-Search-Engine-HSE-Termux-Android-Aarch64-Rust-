@@ -482,6 +482,27 @@ mod tests {
     }
 
     #[test]
+    fn format_json_emits_a_parseable_array_carrying_boost_reason() {
+        // "json" (distinct from the newline-delimited "jsonl") was the only
+        // output format with no test. Unlike jsonl it also carries
+        // `boost_reason`; assert the whole is one parseable array and that the
+        // boost reason survives.
+        let mut ents = sample();
+        ents[0].boost_reason = Some("RFC 5322 compliant".to_string());
+        let output = format_output(&ents, "json", "notes.txt").expect("json format should succeed");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output).expect("json output must parse as JSON");
+        let arr = parsed.as_array().expect("json output must be a JSON array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["kind"], "email");
+        assert_eq!(arr[0]["value"], "test@example.com");
+        assert_eq!(arr[0]["confidence"], 0.85);
+        assert_eq!(arr[0]["source_pattern"], "email_rfc5322");
+        assert_eq!(arr[0]["boost_reason"], "RFC 5322 compliant");
+    }
+
+    #[test]
     fn format_rejects_unknown_output_format() {
         assert!(format_output(&sample(), "yaml", "notes.txt").is_err());
     }
