@@ -127,43 +127,58 @@ impl Module for StreamingProbe {
             let sem = Arc::clone(&sem);
             async move {
                 let _permit = sem.acquire().await;
-                let req = match site.method {
-                    Method::Get => client.get(&url),
-                    Method::Head => client.head(&url),
-                };
-                let req = req
-                    .header("User-Agent", BROWSER_UA)
-                    .header("Accept", BROWSER_ACCEPT)
-                    .header("Accept-Language", "en-US,en;q=0.9");
-                let resp = tokio::time::timeout(per_site_timeout, req.send()).await;
-                let resp = match resp {
-                    Ok(Ok(r)) => r,
-                    _ => return ProbeResult::Error,
-                };
+                // `per_site_timeout` must bound the WHOLE probe, not just
+                // `send()`. It previously wrapped only the send, leaving
+                // `read_body_capped` below to run unbounded under the semaphore
+                // permit acquired above — a server that answers headers promptly
+                // and then trickles the body held the permit indefinitely. The
+                // module's own 30s envelope (`max_timeout_ms`) then expired and
+                // the engine discarded EVERY already-completed site hit, turning
+                // one slow server into a total loss for the module. This is the
+                // same defect `username_search` already fixed; its probe body is
+                // built as a future and awaited inside a single timeout, and this
+                // now matches.
+                let probe = async {
+                    let req = match site.method {
+                        Method::Get => client.get(&url),
+                        Method::Head => client.head(&url),
+                    };
+                    let req = req
+                        .header("User-Agent", BROWSER_UA)
+                        .header("Accept", BROWSER_ACCEPT)
+                        .header("Accept-Language", "en-US,en;q=0.9");
+                    let Ok(resp) = req.send().await else {
+                        return ProbeResult::Error;
+                    };
 
-                let status = resp.status().as_u16();
-                let (confidence, verified) = detection_strength(&site.detect);
-                match site.detect {
-                    Detect::StatusEq(want) if status == want => ProbeResult::Found {
-                        url,
-                        confidence,
-                        verified,
-                    },
-                    Detect::StatusEq(_) => ProbeResult::NotFound,
-                    Detect::StatusAndNotBody(want, needle) => {
-                        if status != want {
-                            return ProbeResult::NotFound;
-                        }
-                        match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP).await {
-                            Some(body) if body.contains(needle) => ProbeResult::NotFound,
-                            Some(_) => ProbeResult::Found {
-                                url,
-                                confidence,
-                                verified,
-                            },
-                            None => ProbeResult::Error,
+                    let status = resp.status().as_u16();
+                    let (confidence, verified) = detection_strength(&site.detect);
+                    match site.detect {
+                        Detect::StatusEq(want) if status == want => ProbeResult::Found {
+                            url,
+                            confidence,
+                            verified,
+                        },
+                        Detect::StatusEq(_) => ProbeResult::NotFound,
+                        Detect::StatusAndNotBody(want, needle) => {
+                            if status != want {
+                                return ProbeResult::NotFound;
+                            }
+                            match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP).await {
+                                Some(body) if body.contains(needle) => ProbeResult::NotFound,
+                                Some(_) => ProbeResult::Found {
+                                    url,
+                                    confidence,
+                                    verified,
+                                },
+                                None => ProbeResult::Error,
+                            }
                         }
                     }
+                };
+                match tokio::time::timeout(per_site_timeout, probe).await {
+                    Ok(result) => result,
+                    Err(_) => ProbeResult::Error,
                 }
             }
             .then_with_site(site.name, site.cat)

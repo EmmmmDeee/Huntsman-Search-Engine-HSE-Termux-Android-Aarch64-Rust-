@@ -790,7 +790,7 @@ pub struct ScanRequest {
     pub kind: Option<TargetKind>,
     pub value: String,
     /// Per-scan options. Defaults to [`default_scan_options`] — the
-    /// **comprehensive** product defaults (depth 3, expansion floor 0.20, entity
+    /// **comprehensive** product defaults (depth `DEFAULT_SCAN_DEPTH`, expansion floor 0.20, entity
     /// cap 2500), matching `hse scan` — when omitted, so a bare
     /// `{"value": "..."}` request is as thorough as the CLI and web UI. The same
     /// values are the per-field serde defaults, so an `options` object that omits

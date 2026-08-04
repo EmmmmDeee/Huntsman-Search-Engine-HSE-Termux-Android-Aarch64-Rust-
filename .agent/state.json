@@ -1,44 +1,51 @@
 {
-  "schema_version": 1,
-  "cycle_count": 0,
-  "last_verified_commit": "bf4d8c317",
-  "branch": "claude/new-session-56pt8z",
-  "baseline": {
-    "measured_at_commit": "bf4d8c317",
-    "build": "clean",
-    "test": "6231 passed / 0 failed / 24 ignored",
-    "clippy_D_warnings": "silent",
-    "fmt": "clean",
-    "rustdoc_lints": "clean",
-    "files_rs": 923,
-    "lines_rs": 307682,
-    "production_unwrap": 0,
-    "production_panic_unreachable": 0,
-    "production_expect": 59,
-    "production_let_underscore": 241,
-    "production_ok_discard": 7,
-    "todo_unimplemented_macros": 0,
-    "note": "Counts exclude *tests.rs, inline #[cfg(test)] mod blocks, and doc comments. Naive greps overstate these by ~6x (393 vs 59 for expect) because this crate keeps tests inline and writes long doc examples."
-  },
-  "environment": {
-    "cargo_audit": "absent",
-    "cargo_udeps": "absent",
-    "cargo_machete": "absent",
-    "cargo_deny": "absent",
-    "cargo_fuzz": "absent",
-    "note": "CI is the authority for these; this host cannot run them."
-  },
-  "invariants": {
-    "unsafe": "#![forbid(unsafe_code)] \u2014 zero unsafe blocks confirmed",
-    "features": "Cargo.toml has NO [features] section; --all-features is a no-op",
+  "$comment": [
+    "Execution-loop bookkeeping for automated contributors. Not consumed by the",
+    "crate at build or run time; nothing in src/ or tests/ reads this file.",
+    "Kept in-tree so a later cycle (or a different session) can see what has",
+    "already been tried and, more importantly, what was tried and REJECTED \u2014",
+    "the rejected list is the part that stops cycles rediscovering the same",
+    "non-defects. See CLAUDE.md and docs/OPERATIONAL_CONSTITUTION.md."
+  ],
+  "cycle_count": 3,
+  "last_verified_commit": "259f27725",
+  "verified_against": {
+    "note": "This crate declares NO [features]; `--all-features` is a no-op here. The authoritative gate is scripts/gate.sh, which spans several workflow files and includes the rustdoc-lint and MSRV passes that reconstructing from ci.yml alone drops.",
+    "toolchain": "1.97.1 (rust-toolchain.toml)",
     "msrv": "1.88",
-    "edition": "2024",
-    "toolchain_pin": "1.97.1",
-    "publish": false
+    "edition": "2024"
   },
   "completed_slots": [
     {
       "cycle": 0,
+      "category": "DEBUG",
+      "slot": 1,
+      "outcome": "PR #315 repaired and merged. Red since 2026-08-02 on one rustdoc error; root cause was structural, not a typo: a commit inserted `struct AbortOnDrop` between `TrackedEntityMap`'s 26-line doc comment and the struct, so AbortOnDrop adopted another type's documentation and `Self::take_dirty` could not resolve. Moved the block back rather than rewriting the link. 5 merge conflicts resolved per-hunk on evidence.",
+      "commit": "c866f0db"
+    },
+    {
+      "cycle": 0,
+      "category": "GAP-ANALYSIS",
+      "slot": 2,
+      "outcome": "PRs #302 and #305 closed: both descend from root fed9a5e7 while main descends from 9ec08790, so `git merge-tree` reports 'refusing to merge unrelated histories' and GitHub could never have merged them. Both also register FEWER modules than main (167 and 166 vs 169). PR #317 deliberately kept OPEN: it registers 173 modules and carries builtwith/fofa/proxycurl/key_discovery, none of which exist in main.",
+      "commit": null
+    },
+    {
+      "cycle": 0,
+      "category": "HARDENING",
+      "slot": 3,
+      "outcome": "oathnet door-guard completeness. Copilot's finding on #362 confirmed against source. #363 landed the equivalent code fix in parallel, so #364 narrowed to what #363 shipped without: the pinning test, a fix for a pre-existing test-suite race (reset_budget clears RESPONSE_CACHE, racing the cache tests), and the rate-limit misdiagnosis #363's change made reachable.",
+      "commit": "0b281b8b"
+    },
+    {
+      "cycle": 1,
+      "slot": "all",
+      "category": "DEBUG/HARDENING/COMPLETION/UPGRADE/GAP-ANALYSIS",
+      "outcome": "Cycle 1 landed whole in 4111299e: oathnet rate-limit misdiagnosis, ingest fuzz target, chess_profile recovery, MSRV drift ratchet, DbWriter backlog disclosure.",
+      "commit": "4111299e"
+    },
+    {
+      "cycle": 3,
       "slot": 1,
       "category": "DEBUG",
       "title": "ingest CSV export emitted non-RFC-4180 backslash escapes and bypassed the formula-injection guard",
@@ -49,10 +56,11 @@
       "before": "hse ingest -F csv on a value containing commas produced a 6-field row against a 4-field header",
       "after": "all rows parse as 4 fields; value quoted per RFC 4180; kind/source_pattern also escaped; formula guard applied",
       "verified": "scripts/gate.sh --quick: 7 executed checks PASS, 4 skipped (MSRV, aarch64 cross-build, shellcheck, audit/deny/machete)",
-      "tests_added": 3
+      "tests_added": 3,
+      "session": "claude/new-session-56pt8z (PR #367)"
     },
     {
-      "cycle": 0,
+      "cycle": 3,
       "slot": 2,
       "category": "HARDENING",
       "title": "hse ingest --min-confidence nan|inf|out-of-range silently discarded the entire result set",
@@ -68,10 +76,85 @@
       "also": "typed ExtractionError::InvalidConfidenceFloor; both Default impls de-panicked (now structurally panic-free); Debug/Clone/Copy derived on EntityExtractor and EntityClassifier",
       "verified": "scripts/gate.sh --quick: 7 executed checks PASS, 4 skipped",
       "tests_added": 9,
-      "note": "clippy caught default_constructed_unit_structs on the first attempt; fixed in place before commit"
+      "note": "clippy caught default_constructed_unit_structs on the first attempt; fixed in place before commit",
+      "session": "claude/new-session-56pt8z (PR #367)"
+    }
+  ],
+  "cycle_1_slots": [
+    {
+      "slot": 1,
+      "category": "DEBUG",
+      "instruction": "Drive PR #364 to green and merge it.",
+      "status": "COMPLETE \u2014 PR #364 merged, squashed to main as 4111299e, 6/6 CI green."
+    },
+    {
+      "slot": 2,
+      "category": "HARDENING",
+      "instruction": "Add a cargo-fuzz target for the util::entity_extractor ingest path and register it in fuzz.yml.",
+      "status": "COMPLETE"
+    },
+    {
+      "slot": 3,
+      "category": "COMPLETION",
+      "instruction": "Port chess_profile from the closed #305 branch (780e369c) onto current main.",
+      "status": "COMPLETE \u2014 needed ZERO source adaptation; the API it was written against (fetch_json_or_404, urlencode, confidence::HIGH_PLUSPLUS_PLUS, core::tags, the Module trait) is unchanged in main. Only registration + the README/API-reference counts the architecture ratchet enforces. Registry 170 -> 171."
+    },
+    {
+      "slot": 4,
+      "category": "UPGRADE",
+      "instruction": "Collapse the MSRV triplication in ci.yml to one source of truth.",
+      "status": "COMPLETE \u2014 resolved as a ratchet test (tests/doc_drift.rs::ci_msrv_job_pins_the_version_cargo_toml_declares) rather than a workflow rewrite. #350 rejected the workflow fix because dtolnay/rust-toolchain@master + a toolchain: input trades a pinned action for a floating one; the test keeps the action pinned and still makes divergence fail a required check."
+    },
+    {
+      "slot": 5,
+      "category": "GAP-ANALYSIS",
+      "instruction": "Decide and record the DbWriter unbounded-channel question (OD-1).",
+      "status": "COMPLETE \u2014 DECIDED: keep the channel unbounded, and disclose a pathological backlog. Bounding it would force try_send (drops events, breaking the flush() contract) or an async submit() at a sync engine call site. The queue is also already bounded in practice by DEFAULT_MAX_ENTITIES=2500 and the wall-time watchdog. The real defect was that a storage stall was INVISIBLE, so writer_loop now discloses queue depth past BACKLOG_WARN_EVENTS=1024 with hysteresis at half."
+    }
+  ],
+  "observations": [
+    {
+      "id": "OB-1",
+      "summary": "`cargo tree --duplicates` reports getrandom at v0.2.17, v0.3.4 and v0.4.3. All three are transitive and not directly reachable from this crate's manifest: 0.2 via ring -> rustls -> reqwest, 0.3 via proptest -> rand_core (a dev-dependency only), 0.4 separately. Deduplicating would mean forcing versions on ring/rustls, which is a larger risk than the duplication.",
+      "action": "none \u2014 recorded so a later cycle does not re-derive it"
     }
   ],
   "rejected_candidates": [
+    {
+      "candidate": "Add test coverage to the 8 src/modules/* directories with no tests.rs",
+      "reason": "Not a gap. All 8 (bluesky_user, codeberg_user, devto, gitlab_user, lobsters, mastodon_user, stackoverflow_user, url_extract) carry an inline `#[cfg(test)] mod tests` in mod.rs. The missing-file signal was an artefact of this repo's two valid test layouts.",
+      "cycle": 1
+    },
+    {
+      "candidate": "Replace the 9 `map_err(|_| ...)` sites that discard the cause",
+      "reason": "All 9 discard either a `tokio::time::error::Elapsed` (carries no information beyond 'it timed out', which the replacement message states) or a std parse error where the replacement is strictly more informative to an operator. Nothing is lost.",
+      "cycle": 1
+    },
+    {
+      "candidate": "Eliminate unwrap()/panic!/unsafe on fallible paths",
+      "reason": "Already absent. Zero `unwrap()` in non-test src/; every `panic!` is in a test file or test helper; `#![forbid(unsafe_code)]` is set in lib.rs and all 6 `unsafe` textual hits are prose explaining its avoidance. Zero TODO/FIXME/HACK; the 16 `XXX` hits are format placeholders (`UA-XXXXXXX-X`), not markers.",
+      "cycle": 1
+    },
+    {
+      "candidate": "Audit the ~252 `let _ =` result-swallowing sites",
+      "reason": "Measured all 233 on non-test paths. 175 are `let _ = writeln!/write!` to stdout (a broken pipe is not actionable and panicking on it is worse); 23 are inside inline #[cfg(test)] modules; 6 are bus/oneshot sends that fail only when no receiver exists; 5 are the deliberate discards in fuzz_entry_parse_der. Of the ~17 filesystem/process operations, exactly ONE was a real defect \u2014 the create_dir_private chain, fixed as cycle 2 slot 1 \u2014 plus one minor silent write fixed as slot 3.",
+      "cycle": 2
+    },
+    {
+      "candidate": "Audit the 20 statement-position `.ok();` sites",
+      "reason": "Zero of 20 are Result-swallowing. 13 are `remove_dir_all().ok()` test cleanup inside data_log.rs's inline test module (cfg(test) begins at line 306 of 623); the remaining 7 bind an Option that is then used. The grep pattern `\\.ok();$` was matching the last line of multi-line expressions whose value IS bound.",
+      "cycle": 2
+    },
+    {
+      "candidate": "OD-3 \u2014 wire benches into CI so perf regressions are visible",
+      "reason": "Premise was wrong, verified empirically: `cargo check --all-targets --locked` \u2014 which ci.yml's check job already runs \u2014 DOES compile both benches (confirmed by touching them and watching the rebuild; `--lib` does not). So they are already guarded against perf-path API drift, exactly as CLAUDE.md states. What is genuinely absent is EXECUTING them for regression detection, and that is not a defensible increment on shared GitHub-hosted runners: Criterion variance there is large enough that a threshold gate produces false failures \u2014 the same \"gate that passes while measuring the wrong thing\" failure mode cycle 1 slot 4 existed to remove. Needs dedicated hardware or a statistical baseline, not a workflow line.",
+      "cycle": 2
+    },
+    {
+      "candidate": "Add rustdoc to the 240 undocumented public items",
+      "reason": "Measured 240 of 1252 top-level pub items without a preceding doc/attr line. Deprioritised rather than rejected outright: this crate is `publish = false` and its lib is never consumed as an external API (see the crate-root doc comment), so the readers are the maintainers, who already have the architecture docs and the running binary as reference. Bulk-documenting self-evident items would add noise faster than signal. Worth revisiting as a targeted `missing_docs` lint on core/ and util/ only.",
+      "cycle": 2
+    },
     {
       "candidate": "Test-coverage gap in util/geohash/country.rs",
       "why": "FALSE POSITIVE \u2014 tests live in a sibling tests.rs wired via mod.rs; 18 assertions incl. the shadow test. Directory-proximity heuristics do not work on this crate."
@@ -89,5 +172,79 @@
       "why": "Naive greps overstate by ~6x (393 -> 59 after excluding tests.rs, inline cfg(test) mods, and doc examples). All 59 survivors are guarded by an immediately-preceding invariant that the message names. Zero unwrap/panic/unreachable in production code."
     }
   ],
-  "open_defects": []
+  "open_defects": [
+    {
+      "id": "OD-1",
+      "summary": "DbWriter uses mpsc::unbounded_channel (src/core/engine/writer.rs:39). If event production outpaces sqlite batch writes the queue grows without bound, on a platform whose whole point is a memory-constrained no-root Android device. Exposure INCREASED when #315 raised DEFAULT_SCAN_DEPTH 3->5, since more rounds means more events.",
+      "status": "CLOSED cycle 1 slot 5 \u2014 resolved as a disclosure, not a bound. See src/core/engine/writer.rs module docs for why unbounded is correct here and what actually bounds it."
+    },
+    {
+      "id": "OD-2",
+      "summary": "Fuzz coverage is one target (fuzz/fuzz_targets/cert_der.rs) for a tool whose ingest path parses fully untrusted text: crawled pages, breach dumps, imported files.",
+      "status": "CLOSED cycle 1 slot 2 \u2014 added fuzz/fuzz_targets/ingest_text.rs over util::entity_extractor::fuzz_entry_extract_text, registered in fuzz/Cargo.toml and fuzz.yml (job renamed, push path filter widened to entity_extractor and str_util). Backed by a stable-toolchain test so the harness cannot rot between Monday schedules."
+    },
+    {
+      "id": "OD-3",
+      "summary": "benches/correlation_pass.rs and benches/scan_throughput.rs compile under `cargo check --all-targets` but no workflow ever executes them, so performance regressions are invisible.",
+      "status": "CLOSED cycle 2 as REJECTED \u2014 benches ARE compiled by CI. See rejected_candidates."
+    },
+    {
+      "id": "OD-4",
+      "summary": "ci.yml hardcodes MSRV 1.88 in three places beside Cargo.toml's rust-version. Flagged as latent risk in #350 and left for a conscious maintainer decision.",
+      "status": "CLOSED cycle 1 slot 4 \u2014 guarded by tests/doc_drift.rs::ci_msrv_job_pins_the_version_cargo_toml_declares. Cargo.toml rust-version is now the single source of truth in the sense that matters: divergence from any of the three ci.yml literals fails a required check, without unpinning the action."
+    },
+    {
+      "id": "OD-5",
+      "summary": "PR #317 carries 4 modules absent from main (builtwith, fofa, proxycurl, key_discovery) behind 11 conflicts and ~20k lines of two-way divergence, with CI never having run on it.",
+      "status": "open, decomposition plan recorded on the PR"
+    },
+    {
+      "id": "OD-6",
+      "summary": "util::atomic_file::create_dir_private previously returned Ok(()) for a pre-existing directory it could not chmod to 0700, because DirBuilder::recursive(true) succeeds on an existing dir and the repairing set_permissions was discarded. Its own doc claimed a 0700 guarantee it did not deliver, and key_vault.db / key_pool.json live beneath that directory.",
+      "status": "CLOSED cycle 2 slot 1 \u2014 the achieved mode is now verified and a failure is disclosed at warn!, with the Ok contract deliberately unchanged so the infallible path accessors still return a usable PathBuf."
+    }
+  ],
+  "cycle_2_slots": [
+    {
+      "slot": 1,
+      "category": "HARDENING",
+      "instruction": "create_dir_private must not report Ok for a directory it failed to make private; verify the achieved mode and disclose.",
+      "status": "COMPLETE"
+    },
+    {
+      "slot": 2,
+      "category": "GAP-ANALYSIS",
+      "instruction": "Close the result-swallowing audit with a per-class verdict.",
+      "status": "COMPLETE \u2014 233 non-test sites classified; exactly ONE real defect (the create_dir_private chain, slot 1) plus one minor silent write (capability_probe). The rest are justified."
+    },
+    {
+      "slot": 3,
+      "category": "DEBUG",
+      "instruction": "Disclose the silent drift-map write in selftest::capability_probe::record_confirmed_drift_at.",
+      "status": "COMPLETE \u2014 re-resolved after the original slot 3 (data_log rotation) was aborted as a non-defect."
+    },
+    {
+      "slot": 4,
+      "category": "UPGRADE",
+      "instruction": "OD-3 \u2014 wire the Criterion benches into CI.",
+      "status": "ABORTED \u2014 the premise was false. See rejected_candidates."
+    },
+    {
+      "slot": 5,
+      "category": "COMPLETION",
+      "instruction": "Extract one self-contained module from PR #317 onto current main (OD-5).",
+      "status": "NOT STARTED \u2014 carried to cycle 3. The largest remaining item and deliberately not rushed."
+    }
+  ],
+  "cycle_3_slots": {
+    "branch": "claude/new-session-56pt8z",
+    "pr": 367,
+    "baseline_note": "Counts exclude *tests.rs, inline #[cfg(test)] mod blocks, AND doc comments. Naive greps overstate ~6x: .expect() is 59 in production code, not 393; panic!/unreachable! is 0, not 9; .unwrap() is 0.",
+    "method_finding": "Static/grep/directory-proximity heuristics produced 3 false positives on this crate and 0 true defects. Both real defects came from RUNNING THE BINARY. Prefer execution-driven probing in later cycles.",
+    "slot_1": "DONE \u2014 DEBUG \u2014 ingest CSV emitted non-RFC-4180 backslash escapes and bypassed the formula-injection guard (69edfcb01)",
+    "slot_2": "DONE \u2014 HARDENING \u2014 ingest --min-confidence nan/inf/out-of-range silently discarded the whole result set (3c5702142)",
+    "slot_3": "NOT STARTED \u2014 UPGRADE \u2014 src/util/redact.rs:117 Entity.uid derived from value; redaction mutates value without recomputing uid",
+    "slot_4": "NOT STARTED \u2014 GAP-ANALYSIS \u2014 src/lib.rs:21 cites ten docs/*.md files that do not exist",
+    "slot_5": "NOT STARTED \u2014 COMPLETION \u2014 src/app/cells/mod.rs:400 `hse cells clear` never VACUUMs"
+  }
 }
