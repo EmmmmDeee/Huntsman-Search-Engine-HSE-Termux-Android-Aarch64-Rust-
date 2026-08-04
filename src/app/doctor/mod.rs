@@ -671,12 +671,66 @@ fn format_weak_findings(anomalies: &[EvidenceAnomaly]) -> String {
     if anomalies.is_empty() {
         return "  no weak findings in the tracked window\n".to_string();
     }
-    const SHOWN: usize = 20;
     let mut out = format!(
         "  {} weak finding(s) — review before trusting as evidence:\n",
         anomalies.len()
     );
-    for a in anomalies.iter().take(SHOWN) {
+
+    // Per-module totals first. One module emitting at a flat floor dominates the
+    // raw list entirely, so the counts are the only place its share is legible:
+    // a real report showed 1346 findings whose every printed row was the same
+    // module at the same confidence, which reads as "1346 things to review"
+    // rather than "one module emits 1340 speculative pivots at its floor".
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for a in anomalies {
+        match counts.iter_mut().find(|(m, _)| *m == a.module_name) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((&a.module_name, 1)),
+        }
+    }
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    out.push_str("    by module: ");
+    out.push_str(
+        &counts
+            .iter()
+            .map(|(m, n)| format!("{m} {n}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    out.push('\n');
+
+    // Then a sample, capped PER MODULE.
+    //
+    // The rows are weakest-first, and the weakest confidence any module routinely
+    // emits is a flat speculative floor — so an unbounded `take(SHOWN)` printed
+    // that one module's rows and nothing else, every time. The entities this
+    // section exists to surface (a breach-pool near-miss demoted to 0.25, say)
+    // were unreachable without lowering the threshold below the floor, which
+    // prints nothing at all. Capping per module guarantees every module with
+    // weak findings is represented.
+    const SHOWN: usize = 20;
+    const PER_MODULE: usize = 3;
+    let mut printed_per_module: Vec<(&str, usize)> = Vec::new();
+    let mut printed = 0usize;
+    for a in anomalies {
+        if printed >= SHOWN {
+            break;
+        }
+        let seen = match printed_per_module
+            .iter_mut()
+            .find(|(m, _)| *m == a.module_name)
+        {
+            Some((_, n)) => n,
+            None => {
+                printed_per_module.push((&a.module_name, 0));
+                &mut printed_per_module.last_mut().expect("just pushed").1
+            }
+        };
+        if *seen >= PER_MODULE {
+            continue;
+        }
+        *seen += 1;
+        printed += 1;
         let observed = timefmt::ymd_utc(a.created_at).unwrap_or_else(|| "unknown date".to_string());
         // uid is a SHA-256 hex digest; the first 12 chars are enough to
         // cross-reference against `hse export`/`--output json` without
@@ -687,8 +741,11 @@ fn format_weak_findings(anomalies: &[EvidenceAnomaly]) -> String {
             a.confidence, a.module_name, short_uid, observed
         ));
     }
-    if anomalies.len() > SHOWN {
-        out.push_str(&format!("    … and {} more\n", anomalies.len() - SHOWN));
+    if anomalies.len() > printed {
+        out.push_str(&format!(
+            "    … and {} more (at most {PER_MODULE} shown per module)\n",
+            anomalies.len() - printed
+        ));
     }
     out
 }
