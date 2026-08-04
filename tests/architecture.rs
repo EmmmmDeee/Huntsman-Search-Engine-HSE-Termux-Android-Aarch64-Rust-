@@ -3356,12 +3356,14 @@ fn collect_bare_confidence(dir: &Path, root: &Path, out: &mut Vec<(String, Strin
 /// unnormalised value. Most sit 0.01–0.03 off an existing rung (0.66 vs `HIGH`
 /// 0.65, 0.68 vs `HIGH_PLUS` 0.70, 0.74 vs `VERY_HIGH` 0.75, 0.42 vs `LOW` 0.40,
 /// 0.38/0.28 between rungs) — uncoordinated drift between modules rather than
-/// deliberately designed tiers. A few (`0.55` = `MEDIUM_HIGH`, `0.70` =
-/// `HIGH_PLUS`) land *exactly* on a rung and are only spelled as literals, so
-/// naming them would be a pure rename; the rest cannot be normalised without
-/// changing an emitted confidence. Neither is done here: a behavioural change
-/// needs its own decision and its own regression evidence, and mixing a free
-/// rename into this commit would blur which rows moved and why.
+/// deliberately designed tiers.
+///
+/// Every value that landed *exactly* on a rung has now been named — the four
+/// `0.55`/`0.70` rows in `oathnet_pro::breach` and `see_know::extract` were pure
+/// renames (`MEDIUM_HIGH` is 0.55, `HIGH_PLUS` is 0.70), so they cost nothing
+/// and the inventory shrank rather than grew. What remains cannot be normalised
+/// without changing an emitted confidence, which is a behavioural decision
+/// needing its own evidence, not a cleanup.
 ///
 /// This is a ratchet, asserted as multiset equality:
 ///   * a NEW bare literal fails the test — drift cannot grow;
@@ -3408,9 +3410,6 @@ fn entity_confidence_uses_named_ladder_constants() {
         ("src/modules/nostr/mod.rs", "0.66"),
         ("src/modules/npm_author/mod.rs", "0.66"),
         ("src/modules/npm_author/mod.rs", "0.74"),
-        ("src/modules/oathnet_pro/breach.rs", "0.55"), // [revealed]
-        ("src/modules/oathnet_pro/breach.rs", "0.55"), // [revealed]
-        ("src/modules/oathnet_pro/breach.rs", "0.70"), // [revealed]
         ("src/modules/opencorporates/mod.rs", "0.68"), // [revealed]
         ("src/modules/opencorporates/mod.rs", "0.68"), // [revealed]
         // ── [embedded] ───────────────────────────────────────────────────
@@ -3434,7 +3433,6 @@ fn entity_confidence_uses_named_ladder_constants() {
         // sits in an `Entity::new` confidence argument. The `0.27` in
         // `(conf - 0.27).max(0.42)` is honestly both.
         ("src/modules/phone_geo/mod.rs", "0.08"), // [embedded]
-        ("src/modules/see_know/extract/mod.rs", "0.70"), // [revealed]
         ("src/modules/sourceforge_user/mod.rs", "0.79"), // [revealed]
         ("src/modules/sourceforge_user/mod.rs", "0.86"), // [revealed]
         ("src/modules/steam_profile/mod.rs", "0.05"), // [embedded]
