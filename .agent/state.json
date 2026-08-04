@@ -1,0 +1,37 @@
+{
+  "cycle_count": 0,
+  "phase": "A-complete",
+  "last_verified_commit": "bf4d8c317723096aebaf0290731b473b7df8d18a",
+  "gate": "scripts/gate.sh is the authority (CI-derived, per CLAUDE.md). GATE_EXIT=0 at this commit.",
+  "orientation_notes": [
+    "Crate declares NO [features]; --all-features is IDENTICAL to default. Recorded so it is never reported as extra coverage.",
+    "cargo-machete / udeps / audit / deny are ABSENT locally; gate SKIPs them with reason. CI runs cargo audit (green on #363).",
+    "0 .unwrap() and 0 panic!() on production paths. 0 TODO/FIXME/HACK. #![forbid(unsafe_code)] genuinely holds - all 5 'unsafe' hits are comments explaining its avoidance.",
+    "'134 files without #[cfg(test)]' is NOT a coverage gap: this tree centralises tests per-module in a sibling tests.rs. No coverage tooling installed, so real coverage is UNMEASURED - do not claim it."
+  ],
+  "candidate_pool": [
+    {"id": "C1",  "cat": "HARDENING",     "what": "core/engine/writer.rs:39 unbounded mpsc to the DB-writer actor; queue can grow without bound on a memory-constrained phone where peak RSS is a stated correctness constraint", "status": "VERIFIED"},
+    {"id": "C2",  "cat": "DEBUG",         "what": "33 Instant::now() sites; on Android CLOCK_MONOTONIC stops during deep sleep so Instant::elapsed under-counts and TTLs over-retain. sanctions_ofac/list.rs:164 is a confirmed instance", "status": "VERIFIED-mechanism, per-site triage pending"},
+    {"id": "C3",  "cat": "HARDENING",     "what": "17 blocking std::fs calls inside async fns; MOST are benign (CLI one-shots, metadata stats). Impactful subset: app/cells/mod.rs:275,287 (multi-GB gzip import), api/handlers/mod.rs:581 (server reactor), app/import/local.rs:139 (per-file loop)", "status": "VERIFIED, severity triaged"},
+    {"id": "C4",  "cat": "GAP-ANALYSIS",  "what": "241 `let _ =` and 7 `.ok();` on production paths; needs triage to separate deliberate fire-and-forget from swallowed fallible results", "status": "COUNTED, not triaged"},
+    {"id": "C5",  "cat": "GAP-ANALYSIS",  "what": "80 .expect() on production paths; need classification into genuinely-infallible invariants vs fallible", "status": "COUNTED, not triaged"},
+    {"id": "C6",  "cat": "UPGRADE",       "what": "core::Error leaks String in 5 variants (Http, InvalidTarget, MissingKey, RateLimited, Other); untyped and unmatched-on", "status": "VERIFIED"},
+    {"id": "C7",  "cat": "COMPLETION",    "what": "Task #13 - 429 rate-limit latches mark_quota_exhausted(), reporting a throttle as a daily-quota exhaustion. Needs a sibling rate-limit latch; changes when a PAID api is queried", "status": "VERIFIED via review"},
+    {"id": "C8",  "cat": "COMPLETION",    "what": "Task #5 remainder - opencellid + github_user swallow transport/decode failures. SILENT-MISS class (no false claim emitted), lower severity than the four already fixed", "status": "VERIFIED, downgraded"},
+    {"id": "C9",  "cat": "HARDENING",     "what": "app/cells/mod.rs:297 writes up to 4 GiB to std::env::temp_dir(), which on Android resolves to a nonexistent /tmp and bypasses util::paths", "status": "VERIFIED"},
+    {"id": "C10", "cat": "GAP-ANALYSIS",  "what": "Task #7 - 9 survey candidates my own workflow silently dropped via an unlogged slice(0,24); never confirmed or refuted", "status": "OPEN"},
+    {"id": "C11", "cat": "HARDENING",     "what": "Task #4 - See-Know paid breach data under Android shared external storage; BLOCKED on device verification that chmod is not a no-op on FUSE, else the fix is false assurance", "status": "BLOCKED-L4/L5"},
+    {"id": "C12", "cat": "UPGRADE",       "what": "util/see_know/data_log.rs blocking fs under a std::sync::Mutex from the async endpoint fan-out", "status": "RECORDED, unverified this cycle"},
+    {"id": "C13", "cat": "UPGRADE",       "what": "api_key_probe blocking key-pool save inline in async fn process, bypassing the canonical persist_off_thread helper", "status": "RECORDED, unverified this cycle"},
+    {"id": "C14", "cat": "GAP-ANALYSIS",  "what": "No coverage tooling installed; error-branch coverage is unmeasured across 307,586 lines / 924 files", "status": "TOOLING GAP"},
+    {"id": "C15", "cat": "UPGRADE",       "what": "Duplicate dependency getrandom v0.2 + v0.3; v0.3 arrives ONLY via dev-dependency proptest, so it is NOT in the shipped binary", "status": "VERIFIED NON-ISSUE"},
+    {"id": "C16", "cat": "DEBUG",         "what": "129 numeric `as` casts on production paths; unaudited for truncation on 32/64-bit and on the aarch64 target", "status": "COUNTED, not triaged"}
+  ],
+  "rejected_candidates": [
+    {"id": "R1", "what": "app/update.rs std::process::Command blocking the reactor", "why": "REFUTED by reading. The Command calls sit in SYNC fns (commits_behind, changelog_lines, spawn_detached_update); the async entry points already wrap them in tokio::task::spawn_blocking (:253, :299) with tokio::time::timeout (:251). It is a correct example, not a defect."},
+    {"id": "R2", "what": "panic!() on production paths (6 raw grep hits)", "why": "REFUTED. All 6 are inside #[cfg(test)] items. A grep that does not slice out test items over-reports - the same blindness class fixed in the architecture ratchets this session, inverted."},
+    {"id": "R3", "what": "unsafe blocks lacking SAFETY comments (5 raw hits)", "why": "REFUTED. All 5 are prose in comments explaining why the crate avoids unsafe. #![forbid(unsafe_code)] holds."}
+  ],
+  "completed_slots": [],
+  "open_defects": []
+}
