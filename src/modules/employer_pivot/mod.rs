@@ -223,7 +223,7 @@ impl Module for EmployerPivot {
                         let mut c = Entity::new(
                             EntityKind::Coordinates,
                             &coord_val,
-                            addr.confidence() - 0.10,
+                            confidence::derived_from(addr.confidence()),
                             &ctx.scan_id,
                         );
                         c.tag("addr-derived");
