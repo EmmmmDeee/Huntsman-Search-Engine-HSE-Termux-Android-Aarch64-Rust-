@@ -7,8 +7,8 @@
     "the rejected list is the part that stops cycles rediscovering the same",
     "non-defects. See CLAUDE.md and docs/OPERATIONAL_CONSTITUTION.md."
   ],
-  "cycle_count": 2,
-  "last_verified_commit": "4111299e",
+  "cycle_count": 3,
+  "last_verified_commit": "259f2772",
   "verified_against": {
     "note": "This crate declares NO [features]; `--all-features` is a no-op here. The authoritative gate is scripts/gate.sh, which spans several workflow files and includes the rustdoc-lint and MSRV passes that reconstructing from ci.yml alone drops.",
     "toolchain": "1.97.1 (rust-toolchain.toml)",
@@ -145,7 +145,7 @@
     {
       "id": "OD-5",
       "summary": "PR #317 carries 4 modules absent from main (builtwith, fofa, proxycurl, key_discovery) behind 11 conflicts and ~20k lines of two-way divergence, with CI never having run on it.",
-      "status": "open, decomposition plan recorded on the PR"
+      "status": "IN PROGRESS \u2014 fofa extracted cycle 3. Remaining from #317: builtwith (447 lines, same two util::http helpers, next-easiest), proxycurl (1056 lines across 5 files, needs util::address_au, util::city_coords, util::domains, util::extract, util::url_util), key_discovery (468 lines, only util::key_pool::global_pool but scans config files for credentials \u2014 review its scope against SECURITY.md before landing)."
     },
     {
       "id": "OD-6",
@@ -183,6 +183,14 @@
       "category": "COMPLETION",
       "instruction": "Extract one self-contained module from PR #317 onto current main (OD-5).",
       "status": "NOT STARTED \u2014 carried to cycle 3. The largest remaining item and deliberately not rushed."
+    }
+  ],
+  "cycle_3_slots": [
+    {
+      "slot": 1,
+      "category": "COMPLETION",
+      "instruction": "Extract the most self-contained module from PR #317 onto current main (OD-5), one module per PR.",
+      "status": "COMPLETE \u2014 fofa chosen on a measured dependency footprint: 300 lines needing only core::scan and two util::http helpers, against proxycurl (1056 lines, 13 helpers), builtwith (447) and key_discovery (468, a config-file key scanner that deserves its own security review). Source needed NO adaptation; the three architecture ratchets that fired were all integration requirements #317 never learned because CI never ran on it. Registry 171 -> 172."
     }
   ]
 }
