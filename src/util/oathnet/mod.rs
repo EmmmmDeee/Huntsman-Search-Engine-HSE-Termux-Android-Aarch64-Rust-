@@ -59,11 +59,12 @@ static BUDGET: QuotaBudget = QuotaBudget::new(
 /// Whether an enumeration returned the whole answer — and if not, what stopped
 /// it.
 ///
-/// Pagination has six exits and five of them can leave the item set short. Every
-/// one used to return a bare `Vec<Value>` indistinguishable from a complete
-/// result, so a dossier built on a truncated sweep reported N findings with
-/// nothing saying more existed. Only the budget exit said anything at all, and
-/// only to the log.
+/// Pagination has six exits and five of them can leave the item set short, and
+/// two further exits refuse the query at the door before a single request is
+/// made. Every one used to return a bare `Vec<Value>` indistinguishable from a
+/// complete result, so a dossier built on a truncated sweep reported N findings
+/// with nothing saying more existed. Only the budget exit said anything at all,
+/// and only to the log.
 ///
 /// The causes are kept apart rather than collapsed into one `truncated: bool`
 /// because an operator acts on them differently: raise the scan cap (which
@@ -73,12 +74,14 @@ static BUDGET: QuotaBudget = QuotaBudget::new(
 pub enum Completeness {
     /// The provider reported no further pages. This is the whole answer.
     Complete,
-    /// The operator's own scan/session budget stopped pagination with more
-    /// pages available. The cap is a paid-quota spending guard and is working
+    /// The operator's own scan/session budget stopped the query — either
+    /// mid-pagination with more pages available, or at the door before a single
+    /// request was made. The cap is a paid-quota spending guard and is working
     /// as intended — the defect was never disclosing that it bit.
     BudgetExhausted,
-    /// The provider's daily paid quota ran out mid-enumeration
-    /// (`left_today: 0`).
+    /// The provider's daily paid quota is spent: either it ran out
+    /// mid-enumeration (`left_today: 0`), or it was already latched before this
+    /// query was attempted.
     QuotaExhausted,
     /// Rate-limited with no retries left, mid-enumeration.
     RateLimited,
@@ -141,8 +144,13 @@ fn cache_get(key: &str) -> Option<SearchResult> {
 
 /// Cache the page-set WITH its completeness, so a hit reports the same truth the
 /// original call did.
-fn cache_put(key: String, items: &[Value], completeness: Completeness) -> SearchResult {
-    let res = SearchResult::new(items.to_vec(), completeness);
+///
+/// Takes the items by value: every caller is at a `return` and has no further
+/// use for them, so borrowing only forced a `to_vec()` copy on top of the
+/// `clone()` the cache already needs — two deep copies of a fully-paginated
+/// breach sweep on every write, where one is unavoidable.
+fn cache_put(key: String, items: Vec<Value>, completeness: Completeness) -> SearchResult {
+    let res = SearchResult::new(items, completeness);
     RESPONSE_CACHE.put(key, res.clone());
     res
 }
@@ -478,8 +486,32 @@ pub async fn search(
     if let Some(cached) = cache_get(&ck) {
         return Ok(cached);
     }
-    if is_quota_exhausted() || !budget_try_increment() {
-        return Ok(SearchResult::new(Vec::new(), Completeness::Complete));
+    // Two ways a query is refused before any request is made, and they are NOT
+    // the same fact: the provider's paid daily quota already being spent is not
+    // the operator's own scan/session cap biting, and the two need different
+    // operator responses (wait for the reset vs. raise a cap that spends money).
+    // Both used to return `Completeness::Complete` — the exact conflation this
+    // type exists to remove, made at the worst place in the module: neither exit
+    // performs a request, so not even the `debug!` line the mid-pagination stops
+    // emit would have appeared. An empty set stamped `Complete` carries no
+    // `coverage:partial` tag in `oathnet_pro` and no warning from
+    // `cli/oathnet_batch`, so a dossier recorded "nothing found" for a query
+    // that was never asked.
+    //
+    // The order matters and is unchanged: the provider-quota latch is checked
+    // first, and short-circuits so a refused query never charges a reservation
+    // against a cap it will not spend.
+    //
+    // Neither is written to the response cache, deliberately. No request was
+    // made, so the refusal says nothing about `(path, field, value)` — only
+    // about budget state at this instant. Caching it would pin a transient
+    // refusal onto that target for the life of the process, and the next scan's
+    // `reset_budget()` would no longer be enough to let it re-query live.
+    if is_quota_exhausted() {
+        return Ok(SearchResult::new(Vec::new(), Completeness::QuotaExhausted));
+    }
+    if !budget_try_increment() {
+        return Ok(SearchResult::new(Vec::new(), Completeness::BudgetExhausted));
     }
     // A search session (when the caller initialised one for this value) lets the
     // breach + stealer queries share ONE lookup. The id is threaded in
@@ -554,7 +586,7 @@ pub async fn search(
                 mark_quota_exhausted();
                 // The provider's paid daily quota ran out part-way through, so
                 // whatever pages we already have is all we will get today.
-                return Ok(cache_put(ck, &all_items, Completeness::QuotaExhausted));
+                return Ok(cache_put(ck, all_items, Completeness::QuotaExhausted));
             }
             let env: Envelope =
                 serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
@@ -585,12 +617,12 @@ pub async fn search(
                     } else {
                         Completeness::PageVanished
                     };
-                    return Ok(cache_put(ck, &all_items, completeness));
+                    return Ok(cache_put(ck, all_items, completeness));
                 }
                 if code == 429 {
                     if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
                         mark_quota_exhausted();
-                        return Ok(cache_put(ck, &all_items, Completeness::RateLimited));
+                        return Ok(cache_put(ck, all_items, Completeness::RateLimited));
                     }
                     let delay = RATE_LIMIT_BACKOFF.delay(attempt);
                     tracing::debug!(
@@ -647,7 +679,7 @@ pub async fn search(
                 None => {
                     // The provider returned an envelope with no data block: it
                     // has nothing further, so this IS the whole answer.
-                    return Ok(cache_put(ck, &all_items, Completeness::Complete));
+                    return Ok(cache_put(ck, all_items, Completeness::Complete));
                 }
             };
             break serde_json::from_value(data)
@@ -700,7 +732,7 @@ pub async fn search(
         cursor = Some(next);
     }
 
-    Ok(cache_put(ck, &all_items, completeness))
+    Ok(cache_put(ck, all_items, completeness))
 }
 
 /// Additively stamp each row with the canonical `breach_date` its OWN `dbname`

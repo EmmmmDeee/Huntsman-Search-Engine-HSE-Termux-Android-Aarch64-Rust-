@@ -1,6 +1,25 @@
 use super::*;
     use serde_json::json;
 
+    /// Serialises the tests that touch the process-global [`BUDGET`] and
+    /// [`RESPONSE_CACHE`].
+    ///
+    /// Both are `static`, and `cargo test` runs this module's tests in
+    /// parallel, so without this the cache tests were racing the budget tests
+    /// for real: `reset_budget()` clears `RESPONSE_CACHE`, so one test firing it
+    /// between another's `cache_put` and `cache_get` fails the second on a
+    /// condition it never created. Every test that resets the budget, exhausts
+    /// the cap, latches the quota, or asserts on the cache takes this first.
+    ///
+    /// `lock()` is unwrapped through the poison, not `expect`ed: a panicking
+    /// test would otherwise poison the mutex and cascade into unrelated
+    /// failures that hide the one real failure.
+    static BUDGET_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn budget_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        BUDGET_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn resolve_key_uses_provided_when_non_empty() {
         assert_eq!(resolve_key(Some("my-key")), "my-key");
@@ -107,6 +126,7 @@ use super::*;
         // operator's PAID cap. Pin that the gate enforces a finite per-scan cap and
         // stays refused once reached (the CAS correctness itself is covered by the
         // `util::budget` unit tests; this asserts oathnet routes through it).
+        let _guard = budget_test_guard();
         reset_budget();
         let mut ok = 0u32;
         while budget_try_increment() {
@@ -126,10 +146,11 @@ use super::*;
         // silently keep serving the FIRST scan's cached breach records for
         // every later re-scan of the same value, forever, with no live
         // re-check. reset_budget() must also clear the cache.
+        let _guard = budget_test_guard();
         let key = "reset_budget_clears_cache_test_key";
         cache_put(
             key.to_string(),
-            &[json!({"stale": true})],
+            vec![json!({"stale": true})],
             Completeness::Complete,
         );
         assert!(
@@ -609,10 +630,11 @@ use super::*;
     /// line the first call emitted.
     #[test]
     fn truncation_survives_the_response_cache() {
+        let _guard = budget_test_guard();
         let key = "truncation_survives_cache_test_key";
         let partial = cache_put(
             key.to_string(),
-            &[json!({"row": 1})],
+            vec![json!({"row": 1})],
             Completeness::BudgetExhausted,
         );
         assert!(partial.completeness.is_partial());
@@ -625,6 +647,82 @@ use super::*;
              or the second module in a scan is told a partial set is complete"
         );
         assert!(hit.completeness.is_partial());
+        reset_budget();
+    }
+
+    /// A query refused before any request is made must record WHICH door
+    /// closed, and must not be cached.
+    ///
+    /// Both refusals used to return `Completeness::Complete` — the same
+    /// conflation this type exists to remove, made at the worst place in the
+    /// module: neither exit performs a request, so not even the `debug!` line
+    /// the mid-pagination stops emit would have appeared. An operator reading a
+    /// dossier saw "nothing found" for a query that was never asked.
+    ///
+    /// Hermetic and offline: the guard returns before the first HTTP call, so
+    /// the key is never used and no network is touched. `example.com` is
+    /// reserved (RFC 2606) and would be a dead lookup even if one escaped.
+    ///
+    /// Deliberately a plain `#[test]` driving its own current-thread runtime
+    /// rather than `#[tokio::test]`. [`search`] is async, but the shared-state
+    /// guard above is a `std::sync::MutexGuard`, and holding one across an
+    /// `.await` is exactly the defect `clippy::await_holding_lock` exists to
+    /// catch — it fired here. `block_on` blocks this thread instead, so the
+    /// guard is never held across a yield point, and a single future on a
+    /// private runtime has nothing to interleave with anyway.
+    #[test]
+    fn a_query_refused_at_the_door_records_which_one_closed() {
+        let _guard = budget_test_guard();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime must build");
+
+        let door = |key: &'static str| {
+            rt.block_on(search(
+                key,
+                paths::BREACH,
+                "email",
+                "door-guard@example.com",
+                10,
+                None,
+            ))
+            .expect("the door returns Ok carrying a reason, never an Err")
+        };
+
+        // 1. The operator's own scan/session cap, with the provider latch clear.
+        reset_budget();
+        while budget_try_increment() {}
+        let refused = door("unused-the-guard-returns-first");
+        assert!(refused.items.is_empty(), "no request was made");
+        assert_eq!(
+            refused.completeness,
+            Completeness::BudgetExhausted,
+            "the operator's own cap biting is not the provider's daily quota — \
+             raising the cap spends money, waiting out a quota does not"
+        );
+        assert!(refused.completeness.is_partial());
+
+        // A refusal says nothing about (path, field, value) — only about budget
+        // state right now. Caching it would pin a transient refusal onto this
+        // target for the life of the process, and the next scan's reset_budget()
+        // would no longer be enough to let it re-query live.
+        assert!(
+            cache_get(&cache_key(paths::BREACH, "email", "door-guard@example.com")).is_none(),
+            "a query that never ran must not be cached as its own answer"
+        );
+
+        // 2. The provider's daily quota, on a budget with room to spare.
+        reset_budget();
+        mark_quota_exhausted();
+        let refused = door("unused-the-guard-returns-first");
+        assert!(refused.items.is_empty());
+        assert_eq!(
+            refused.completeness,
+            Completeness::QuotaExhausted,
+            "an already-latched provider quota must not read as the operator's cap"
+        );
+
         reset_budget();
     }
 
