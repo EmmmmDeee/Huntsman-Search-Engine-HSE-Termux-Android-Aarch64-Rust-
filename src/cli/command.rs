@@ -76,20 +76,21 @@ pub enum Command {
         timeout: Option<u64>,
         /// Recursive expansion depth. 0 = single round; 1+ auto-feeds discovered
         /// entities back as new scan targets, up to N rounds deep. Omit to use
-        /// the comprehensive product default (DEFAULT_SCAN_DEPTH = 3, below the
-        /// MAX_DEPTH = 5 ceiling); `--auto` overrides an omitted value.
+        /// the comprehensive product default (`DEFAULT_SCAN_DEPTH`, the full
+        /// `MAX_DEPTH`); `--auto` overrides an
+        /// omitted value.
         #[arg(short, long)]
         depth: Option<u32>,
-        /// Shorthand for deep recursive expansion: pins depth to the MAX_DEPTH (5)
-        /// ceiling and clamps the expansion floor to ≤0.40 — two hops deeper than
-        /// the comprehensive default (depth 3, floor 0.20). Kept for explicitness
+        /// Shorthand for deep recursive expansion: pins depth to `MAX_DEPTH` and
+        /// clamps the expansion floor to ≤0.40. With the comprehensive default
+        /// (full depth, floor 0.20) this now matches the default; kept for explicitness
         /// and for use alongside a raised `--min-expand-confidence`. Overridden by
         /// an explicit --depth.
         #[arg(short = 'R', long)]
         recursive: bool,
         /// COMPLETE scan — the no-compromise preset. Auto-detects the seed kind,
         /// runs EVERY module (overrides --free-only/--passive-only/--modules),
-        /// expands to MAX_DEPTH (5) at the Probable floor, and disables ROI
+        /// expands to `MAX_DEPTH` at the Probable floor, and disables ROI
         /// pruning so nothing is skipped. The single "get everything" option.
         #[arg(
             short = 'F',
@@ -116,7 +117,7 @@ pub enum Command {
         min_expand_confidence: f64,
         /// Hard cap on total entities; stops expansion when reached. Omitted ⇒ the
         /// product default (2500) — a generous Termux on-device safety bound for the
-        /// comprehensive depth-3 default sweep. Pass a larger value (or use a
+        /// comprehensive full-depth default sweep. Pass a larger value (or use a
         /// profile) to go further.
         #[arg(long)]
         max_entities: Option<usize>,

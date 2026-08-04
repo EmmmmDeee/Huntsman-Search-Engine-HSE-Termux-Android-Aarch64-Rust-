@@ -98,6 +98,29 @@ pub fn is_locally_administered(mac: &str) -> Option<bool> {
     Some(first & 0x02 != 0)
 }
 
+/// True when `mac`'s I/G (individual/group) bit is set — a MULTICAST or
+/// broadcast group address rather than one individual interface.
+///
+/// The low bit of the first octet. `01:00:5e:…` (IPv4 multicast),
+/// `33:33:…` (IPv6 multicast) and `ff:ff:ff:ff:ff:ff` (broadcast) all set it.
+/// Orthogonal to [`is_locally_administered`], which reads the *adjacent* U/L
+/// bit (0x02): an address can be group-addressed and universally administered
+/// at once, so a caller that wants "one real, individual device" must test
+/// BOTH. Returns `None` when `mac` has no parseable first octet.
+#[must_use]
+pub fn is_multicast(mac: &str) -> Option<bool> {
+    let hex: String = mac
+        .chars()
+        .filter(char::is_ascii_hexdigit)
+        .take(2)
+        .collect();
+    if hex.len() != 2 {
+        return None;
+    }
+    let first = u8::from_str_radix(&hex, 16).ok()?;
+    Some(first & 0x01 != 0)
+}
+
 /// Look up the OUI for a MAC address and return vendor + device
 /// class. Accepts any common MAC formatting (`AA:BB:CC:DD:EE:FF`,
 /// `aa-bb-cc-dd-ee-ff`, `aabbccddeeff`). Returns `None` only if the

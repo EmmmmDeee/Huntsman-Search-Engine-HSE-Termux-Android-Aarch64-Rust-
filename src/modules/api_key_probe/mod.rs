@@ -224,6 +224,8 @@ impl Module for ApiKeyProbe {
             ));
         }
 
+        sort_identified_for_report(&mut identified);
+
         if !identified.is_empty() {
             let mut summary = Entity::new(
                 EntityKind::Other("api_key_report".into()),
@@ -374,6 +376,23 @@ fn is_error_response(v: &Value) -> bool {
         return true;
     }
     false
+}
+
+/// Put the identified services into a deterministic, reproducible order for the
+/// operator-facing report. **Pure.**
+///
+/// `identified` is filled inside the `join_next` loop, which resolves in
+/// COMPLETION order — network-race order, not spawn order (the `JoinSet`
+/// declaration above already names this). That order reached the operator
+/// verbatim in both the evidence headline and the `services_matched` attribute,
+/// so two runs against the same key and the same services could print them in
+/// different orders, and a diff of two reports showed a change where nothing had
+/// changed.
+///
+/// Sorts by service name. The service strings are unique per probe, so this is a
+/// total order and needs no secondary tie-break.
+fn sort_identified_for_report<C, I>(identified: &mut [(&'static str, C, I)]) {
+    identified.sort_by(|a, b| a.0.cmp(b.0));
 }
 
 #[cfg(test)]

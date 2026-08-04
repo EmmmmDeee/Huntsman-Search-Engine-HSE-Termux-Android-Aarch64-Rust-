@@ -200,6 +200,21 @@ fn core_does_not_import_util_directly() {
                 // same classifier the WiGLE emit path already applies so the two
                 // never disagree on which addresses are real hardware.
                 && !line.contains("util::oui")
+                // Pure, offline, dependency-free generic/default-SSID classifier
+                // (two curated const string tables + one cached aho-corasick
+                // pass over a lowercased copy; no I/O, no state, no upward
+                // deps) — the same leaf category as `util::oui` directly above,
+                // and its exact counterpart: `oui` answers "is this BSSID real
+                // hardware?", `wifi` answers "is this network name a vendor
+                // default?". The autonomous seeding gate
+                // (`core::engine::ranking::is_autonomous_seed_candidate`) uses
+                // it so a `NETGEAR` heard in passing can never seed a scan. It
+                // lives in `util` rather than in `core` precisely so it is the
+                // SAME implementation the WiGLE module applies before spending
+                // a request, and the two can never drift. Scoped to the single
+                // function rather than the whole module so the guard stays
+                // precise if `util::wifi` ever grows a non-pure item.
+                && !line.contains("util::wifi::is_generic_ssid")
                 // Pure, offline look-alike/typosquat comparison for domain
                 // labels (homoglyph skeleton fold + Levenshtein; no I/O, no
                 // deps, no Unicode tables) — same leaf category as
